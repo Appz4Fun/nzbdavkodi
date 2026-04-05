@@ -25,8 +25,16 @@ release:
 # Run tests then build release
 ship: test release
 
+# Generate Kodi repository in dist/
+repo: release
+    python3 scripts/generate_repo.py --output-dir dist
+
 # Clean build artifacts
 clean:
     rm -f plugin.video.nzbdav.zip
     find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
     find . -type d -name .pytest_cache -exec rm -rf {} + 2>/dev/null || true
+
+# Clean everything including dist
+dist-clean: clean
+    rm -rf dist/
