@@ -34,7 +34,8 @@ def build_zip(addon_dir="plugin.video.nzbdav", output_dir="."):
                     zf.writestr(info, fh.read())
 
     size = os.path.getsize(zip_path)
-    entries = len(zipfile.ZipFile(zip_path).namelist())
+    with zipfile.ZipFile(zip_path) as zf:
+        entries = len(zf.namelist())
     print("Created {} ({} entries, {:.0f} KB)".format(zip_path, entries, size / 1024))
     return zip_path
 

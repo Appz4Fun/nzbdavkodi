@@ -214,7 +214,8 @@ def _handle_search(handle, params):
 def _format_info_line(item):
     """Format a single-line label with all parsed PTT elements.
 
-    Example: 1080p | DV HDR10 | x265/HEVC | Atmos DD+ | en | 31.2 GB | FLUX | NZBgeek | today
+    Example: 1080p | DV HDR10 | x265/HEVC | Atmos DD+ | en |
+             31.2 GB | FLUX | NZBgeek | today
     """
     meta = item.get("_meta", {})
     parts = []

@@ -2,7 +2,7 @@
 
 import base64
 import time
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
@@ -32,8 +32,6 @@ def _http_head(url, username="", password=""):
             return resp.getcode()
     except HTTPError as e:
         return e.code
-    except (URLError, Exception):
-        raise
 
 
 def build_webdav_url(filename):

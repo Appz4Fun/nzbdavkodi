@@ -8,6 +8,6 @@ lib_path = os.path.join(addon_dir, "resources", "lib")
 if lib_path not in sys.path:
     sys.path.insert(0, lib_path)
 
-from resources.lib.router import route
+from resources.lib.router import route  # noqa: E402
 
 route(sys.argv)

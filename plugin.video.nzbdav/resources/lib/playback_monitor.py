@@ -16,7 +16,7 @@ class PlaybackMonitor(xbmc.Player):
     """
 
     def __init__(self, stream_url, title="", max_retries=3, retry_delay=5):
-        super(PlaybackMonitor, self).__init__()
+        super().__init__()
         self._stream_url = stream_url
         self._title = title
         self._max_retries = max_retries

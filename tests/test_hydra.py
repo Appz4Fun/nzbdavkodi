@@ -42,7 +42,7 @@ def test_parse_results_empty():
         <channel><newznab:response offset="0" total="0"/></channel>
     </rss>"""
     results = parse_results(xml_text)
-    assert results == []
+    assert not results
 
 
 @patch("resources.lib.hydra._get_settings")
@@ -82,7 +82,7 @@ def test_search_hydra_connection_error(mock_http, mock_settings):
     mock_http.side_effect = Exception("Connection refused")
 
     results = search_hydra("movie", "The Matrix")
-    assert results == []
+    assert not results
 
 
 # --- New tests ---

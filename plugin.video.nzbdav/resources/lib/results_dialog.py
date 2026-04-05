@@ -58,7 +58,7 @@ class ResultsDialog(xbmcgui.WindowXMLDialog):
         self.total_count = kwargs.get("total_count", 0)
         self.filtered_count = kwargs.get("filtered_count", 0)
         self.selected_index = -1
-        super(ResultsDialog, self).__init__(*args)
+        super().__init__(*args)
 
     def onInit(self):
         """Populate the dialog with results data."""
@@ -177,7 +177,7 @@ def show_results_dialog(results, title="", year="", total_count=0):
     idx = dialog.get_selected_index()
     del dialog
 
-    if idx >= 0 and idx < len(results):
+    if 0 <= idx < len(results):
         return results[idx]
     return None
 

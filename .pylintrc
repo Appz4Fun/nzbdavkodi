@@ -1,0 +1,55 @@
+[MAIN]
+# Ignore vendored PTT library
+ignore-paths=plugin.video.nzbdav/resources/lib/ptt
+
+[MESSAGES CONTROL]
+disable=
+    # Kodi modules (xbmc, xbmcgui, etc.) aren't installable on CI
+    import-error,
+    # Lazy imports are intentional -- Kodi modules must be imported inside
+    # functions so tests can mock them via conftest.py
+    import-outside-toplevel,
+    wrong-import-position,
+    # Test files don't need docstrings
+    missing-module-docstring,
+    missing-function-docstring,
+    missing-class-docstring,
+    # Python 3.8 target -- no f-strings
+    consider-using-f-string,
+    # Complexity thresholds too strict for filter/router logic
+    too-many-arguments,
+    too-many-positional-arguments,
+    too-many-locals,
+    too-many-branches,
+    too-many-statements,
+    too-many-return-statements,
+    too-many-instance-attributes,
+    # Style nits not worth enforcing in CI
+    invalid-name,
+    line-too-long,
+    too-many-lines,
+    no-else-return,
+    unnecessary-dunder-call,
+    use-dict-literal,
+    consider-using-ternary,
+    # Protected access used intentionally in tests
+    protected-access,
+    # Unused args common in test fixtures and Kodi callbacks
+    unused-argument,
+    # open() encoding -- binary/json files don't always need it
+    unspecified-encoding,
+    # Broad exception catching is intentional for PTT parsing resilience
+    broad-exception-caught,
+    # Duplicate imports from conditional blocks
+    reimported,
+    # Not subscriptable false positives on older Python
+    unsubscriptable-object,
+    # Raise from handled elsewhere
+    raise-missing-from,
+    # Useless suppression when running different pylint versions
+    useless-suppression,
+    # Unused variable in unpacking
+    unused-variable
+
+[FORMAT]
+max-line-length=120
