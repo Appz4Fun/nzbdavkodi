@@ -17,6 +17,132 @@ def read_addon_xml(path):
     return ET.tostring(tree.getroot(), encoding="unicode")
 
 
+def write_pages_index(output_dir):
+    """Write a simple GitHub Pages landing page for the Kodi repository."""
+    index_path = os.path.join(output_dir, "index.html")
+    html = """<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>NZB-DAV Kodi Repository</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f4f1e8;
+        --panel: #fffdf8;
+        --ink: #1d2a38;
+        --muted: #5b6b79;
+        --accent: #005f73;
+        --accent-2: #0a9396;
+        --border: #d8d2c3;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "Avenir Next", "Segoe UI", sans-serif;
+        background:
+          radial-gradient(
+            circle at top left,
+            rgba(10, 147, 150, 0.15),
+            transparent 32rem
+          ),
+          linear-gradient(180deg, #f8f5ee 0%%, var(--bg) 100%%);
+        color: var(--ink);
+      }
+      main {
+        max-width: 52rem;
+        margin: 0 auto;
+        padding: 3rem 1.25rem 4rem;
+      }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        padding: 1.5rem;
+        box-shadow: 0 16px 40px rgba(29, 42, 56, 0.08);
+      }
+      h1 {
+        margin: 0 0 0.75rem;
+        font-size: clamp(2rem, 4vw, 3.2rem);
+        line-height: 1;
+      }
+      p {
+        color: var(--muted);
+        line-height: 1.6;
+      }
+      ul {
+        list-style: none;
+        padding: 0;
+        margin: 1.5rem 0 0;
+      }
+      li + li { margin-top: 0.75rem; }
+      a {
+        display: block;
+        padding: 0.95rem 1rem;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        color: var(--accent);
+        text-decoration: none;
+        font-weight: 600;
+        background: #ffffff;
+      }
+      a:hover {
+        border-color: var(--accent-2);
+        color: var(--accent-2);
+      }
+      .meta {
+        margin-top: 1.5rem;
+        font-size: 0.95rem;
+      }
+      code {
+        font-family: "SFMono-Regular", "Consolas", monospace;
+        color: var(--ink);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="card">
+        <h1>NZB-DAV Kodi Repository</h1>
+        <p>
+          This site hosts the Kodi repository metadata and release artifacts for
+          the NZB-DAV add-on.
+        </p>
+        <ul>
+          <li><a href="addons.xml">addons.xml</a></li>
+          <li><a href="addons.xml.md5">addons.xml.md5</a></li>
+          <li>
+            <a href="repository.nzbdav/repository.nzbdav.zip">repository.nzbdav.zip</a>
+          </li>
+          <li>
+            <a href="plugin.video.nzbdav/plugin.video.nzbdav.zip">
+              plugin.video.nzbdav.zip
+            </a>
+          </li>
+          <li>
+            <a href="https://github.com/xbmc4lyfe/nzbdavkodi/releases">
+              GitHub Releases
+            </a>
+          </li>
+        </ul>
+        <p class="meta">
+          Add this repository to Kodi with:
+          <code>https://xbmc4lyfe.github.io/nzbdavkodi/addons.xml</code>
+        </p>
+      </div>
+    </main>
+  </body>
+</html>
+"""
+    with open(index_path, "w", encoding="utf-8") as f:
+        f.write(html)
+
+    nojekyll_path = os.path.join(output_dir, ".nojekyll")
+    with open(nojekyll_path, "w", encoding="utf-8") as f:
+        f.write("")
+
+
 def generate_repo(output_dir="dist"):
     os.makedirs(output_dir, exist_ok=True)
 
@@ -43,7 +169,9 @@ def generate_repo(output_dir="dist"):
         f.write(addons_xml)
 
     # Write addons.xml.md5
-    md5 = hashlib.md5(addons_xml.encode("utf-8")).hexdigest()  # noqa: S324  # not used for security
+    md5 = hashlib.md5(
+        addons_xml.encode("utf-8")
+    ).hexdigest()  # noqa: S324  # not used for security
     with open(os.path.join(output_dir, "addons.xml.md5"), "w") as f:
         f.write(md5)
 
@@ -87,6 +215,8 @@ def generate_repo(output_dir="dist"):
         if os.path.exists(repo_icon):
             shutil.copy2(repo_icon, os.path.join(repo_out, "icon.png"))
         print("Built repository addon zip at {}".format(repo_zip_path))
+
+    write_pages_index(output_dir)
 
 
 if __name__ == "__main__":
