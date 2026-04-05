@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 nzbdav contributors
+
 """URL routing for plugin:// calls from Kodi / TMDBHelper."""
 
 from urllib.parse import parse_qs, urlparse

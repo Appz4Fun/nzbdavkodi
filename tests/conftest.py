@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 nzbdav contributors
+
 """Mock Kodi modules for testing outside of Kodi."""
 
 import sys

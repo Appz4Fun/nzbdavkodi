@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 nzbdav contributors
+
 """WebDAV availability checker for nzbdav streams."""
 
 import base64

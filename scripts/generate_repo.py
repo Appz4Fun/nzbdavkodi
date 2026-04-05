@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 nzbdav contributors
+
 """Generate Kodi repository metadata (addons.xml + addons.xml.md5)."""
 
 import argparse

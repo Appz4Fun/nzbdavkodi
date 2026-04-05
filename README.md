@@ -74,8 +74,18 @@ All filters default to **everything enabled** -- deselect what you don't want.
 
 ### Sort & Display
 
-- **Sort by**: Relevance (resolution > HDR > preferred group > audio > size), Size (largest/smallest), Age (newest/oldest)
+- **Sort by**: Relevance, Size (largest/smallest), Age (newest/oldest)
 - **Max results**: Maximum results to display (default: 25)
+
+#### Relevance Sort Order
+
+When sorted by relevance, results are ranked by these criteria in order of priority:
+
+1. **Resolution**: 4K > 1080p > 720p > 480p
+2. **HDR**: Dolby Vision > HDR10+ > HDR10 > HLG > SDR
+3. **Preferred release group** (configured in settings)
+4. **Audio**: TrueHD+Atmos > Atmos DD+ > TrueHD > DTS:X > DTS-HD MA > DTS > DD+ > DD > AAC
+5. **Size**: largest first
 
 ### Polling
 
@@ -161,4 +171,4 @@ mockups/
 
 ## License
 
-MIT
+GPLv3 -- see [LICENSE](LICENSE) for details.

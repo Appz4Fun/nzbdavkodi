@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 nzbdav contributors
+
 from unittest.mock import MagicMock, patch
 
 from resources.lib.resolver import _storage_to_webdav_path, resolve

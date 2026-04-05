@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 nzbdav contributors
+
 import os
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch

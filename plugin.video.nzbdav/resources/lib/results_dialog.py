@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 nzbdav contributors
+
 """Custom full-screen dialog for NZB search results selection."""
 
 import xbmcaddon

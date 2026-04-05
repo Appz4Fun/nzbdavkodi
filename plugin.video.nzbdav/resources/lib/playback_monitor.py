@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 nzbdav contributors
+
 """Playback monitor for detecting and recovering from stream failures."""
 
 import xbmc
