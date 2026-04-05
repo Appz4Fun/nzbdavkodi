@@ -38,6 +38,27 @@ _ERROR_MESSAGES = {
 }
 
 
+def _make_playable_listitem(url, headers):
+    """Create a ListItem with URL and optional HTTP auth headers.
+
+    Uses Kodi's | header syntax on the URL for curl-based HTTP access.
+    """
+    if headers:
+        # Kodi expects: url|Header1=Value1&Header2=Value2
+        # URL-encode header values so base64 padding '=' doesn't break parsing
+        from urllib.parse import quote as _quote
+
+        header_str = "&".join(
+            "{}={}".format(k, _quote(v, safe=" /")) for k, v in headers.items()
+        )
+        play_url = "{}|{}".format(url, header_str)
+    else:
+        play_url = url
+    xbmc.log("NZB-DAV: Play URL: {}".format(play_url), xbmc.LOGDEBUG)
+    li = xbmcgui.ListItem(path=play_url)
+    return li
+
+
 def _get_poll_settings():
     import xbmcaddon
 
@@ -219,15 +240,7 @@ def resolve(handle, params):
                         xbmc.LOGWARNING,
                     )
 
-                # Build URL with pipe-separated headers for Kodi player
-                if stream_headers:
-                    header_str = "&".join(
-                        "{}={}".format(k, v) for k, v in stream_headers.items()
-                    )
-                    play_url = "{}|{}".format(stream_url, header_str)
-                else:
-                    play_url = stream_url
-                li = xbmcgui.ListItem(path=play_url)
+                li = _make_playable_listitem(stream_url, stream_headers)
                 xbmcplugin.setResolvedUrl(handle, True, li)
                 return
 
@@ -320,16 +333,9 @@ def resolve_and_play(nzb_url, title):
             if video_path:
                 dialog.close()
                 stream_url, stream_headers = get_webdav_stream_url_for_path(video_path)
-                if stream_headers:
-                    header_str = "&".join(
-                        "{}={}".format(k, v) for k, v in stream_headers.items()
-                    )
-                    play_url = "{}|{}".format(stream_url, header_str)
-                else:
-                    play_url = stream_url
                 xbmc.log("NZB-DAV: Playing '{}'".format(stream_url), xbmc.LOGINFO)
-                li = xbmcgui.ListItem(path=play_url)
-                xbmc.Player().play(play_url, li)
+                li = _make_playable_listitem(stream_url, stream_headers)
+                xbmc.Player().play(stream_url, li)
                 return
 
         if monitor.waitForAbort(poll_interval):
