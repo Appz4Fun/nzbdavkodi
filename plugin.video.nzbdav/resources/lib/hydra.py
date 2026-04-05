@@ -73,6 +73,26 @@ def search_hydra(search_type, title, year="", imdb="", season="", episode=""):
         return []
 
     results = parse_results(xml_text)
+
+    # Fallback: if IMDB search returned nothing, retry with title
+    if not results and imdb and title:
+        xbmc.log(
+            "NZB-DAV: No results with imdbid={}, retrying with title '{}'".format(
+                imdb, title
+            ),
+            xbmc.LOGINFO,
+        )
+        params.pop("imdbid", None)
+        params["q"] = title
+        fallback_url = "{}/api?{}".format(base_url, urlencode(params))
+        try:
+            xml_text = _http_get(fallback_url)
+            results = parse_results(xml_text)
+        except (URLError, Exception) as e:
+            xbmc.log(
+                "NZB-DAV: Hydra title fallback failed: {}".format(e), xbmc.LOGERROR
+            )
+
     xbmc.log(
         "NZB-DAV: Hydra returned {} results for '{}'".format(len(results), title),
         xbmc.LOGINFO,
