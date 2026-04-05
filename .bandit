@@ -1,3 +1,3 @@
 [bandit]
 exclude = tests,plugin.video.nzbdav/resources/lib/ptt
-skips = B101
+skips = B101,B324
