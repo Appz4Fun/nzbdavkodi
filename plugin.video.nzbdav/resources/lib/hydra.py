@@ -48,7 +48,10 @@ def search_hydra(search_type, title, year="", imdb="", season="", episode=""):
 
     if search_type == "episode":
         params["t"] = "tvsearch"
-        params["q"] = title
+        if imdb:
+            params["imdbid"] = imdb
+        else:
+            params["q"] = title
         if season:
             params["season"] = season
         if episode:
