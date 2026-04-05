@@ -95,10 +95,15 @@ def test_build_webdav_url_special_characters(mock_settings):
 
 @patch("resources.lib.webdav._get_settings")
 def test_get_webdav_stream_url_with_auth(mock_settings):
-    """Stream URL should embed credentials."""
+    """Stream URL should use Kodi pipe-separated auth header."""
     mock_settings.return_value = _SETTINGS_WITH_AUTH
     url = get_webdav_stream_url("movie.mkv")
-    assert url == "http://user:pass@webdav:8080/movie.mkv"
+    assert url.startswith("http://webdav:8080/movie.mkv|Authorization=Basic ")
+    # Verify base64 decodes to user:pass
+    import base64
+
+    auth_part = url.split("Basic ")[1]
+    assert base64.b64decode(auth_part).decode() == "user:pass"
 
 
 @patch("resources.lib.webdav._get_settings")
@@ -111,7 +116,9 @@ def test_get_webdav_stream_url_without_auth(mock_settings):
 
 @patch("resources.lib.webdav._get_settings")
 def test_get_webdav_stream_url_special_chars_in_credentials(mock_settings):
-    """Credentials with special chars should be URL-encoded."""
+    """Credentials with special chars should be base64-encoded in auth header."""
+    import base64
+
     mock_settings.return_value = {
         "webdav_url": "http://webdav:8080",
         "nzbdav_url": "http://nzbdav:3000",
@@ -119,8 +126,9 @@ def test_get_webdav_stream_url_special_chars_in_credentials(mock_settings):
         "password": "p@ss:word",
     }
     url = get_webdav_stream_url("movie.mkv")
-    assert "user%40domain" in url
-    assert "p%40ss%3Aword" in url
+    assert "|Authorization=Basic " in url
+    auth_part = url.split("Basic ")[1]
+    assert base64.b64decode(auth_part).decode() == "user@domain:p@ss:word"
 
 
 # --- check_file_available_with_retry tests ---
@@ -255,11 +263,17 @@ def test_find_video_file_returns_none_on_error(mock_urlopen, mock_settings):
 
 @patch("resources.lib.webdav._get_settings")
 def test_get_webdav_stream_url_for_path_with_auth(mock_settings):
-    """get_webdav_stream_url_for_path embeds credentials in the URL."""
+    """get_webdav_stream_url_for_path uses Kodi pipe-separated auth header."""
+    import base64
+
     mock_settings.return_value = _SETTINGS_WITH_AUTH
     file_path = "/content/uncategorized/Movie/Movie.mkv"
     url = get_webdav_stream_url_for_path(file_path)
-    assert url == "http://user:pass@webdav:8080/content/uncategorized/Movie/Movie.mkv"
+    assert url.startswith(
+        "http://webdav:8080/content/uncategorized/Movie/Movie.mkv|Authorization=Basic "
+    )
+    auth_part = url.split("Basic ")[1]
+    assert base64.b64decode(auth_part).decode() == "user:pass"
 
 
 @patch("resources.lib.webdav._get_settings")

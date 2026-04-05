@@ -48,16 +48,12 @@ def get_webdav_stream_url(filename):
     base = settings["webdav_url"] or settings["nzbdav_url"]
     username = settings["username"]
     password = settings["password"]
+    url = "{}/{}".format(base, quote(filename, safe=""))
     if username:
-        proto, rest = base.split("://", 1)
-        return "{}://{}:{}@{}/{}".format(
-            proto,
-            quote(username, safe=""),
-            quote(password, safe=""),
-            rest,
-            quote(filename, safe=""),
-        )
-    return "{}/{}".format(base, quote(filename, safe=""))
+        credentials = "{}:{}".format(username, password)
+        encoded = base64.b64encode(credentials.encode("utf-8")).decode("utf-8")
+        return "{}|Authorization=Basic {}".format(url, encoded)
+    return url
 
 
 def check_file_available(filename):
@@ -248,23 +244,23 @@ def find_video_file(folder_path):
 
 
 def get_webdav_stream_url_for_path(file_path):
-    """Build a stream URL with embedded credentials for a full WebDAV path."""
+    """Build a stream URL with auth header for a full WebDAV path.
+
+    Uses Kodi's pipe-separated header syntax instead of URL-embedded
+    credentials, which Kodi's VideoPlayer cannot open.
+    """
     settings = _get_settings()
     base = settings["webdav_url"] or settings["nzbdav_url"]
     username = settings["username"]
     password = settings["password"]
 
     # file_path is already URL-encoded from PROPFIND
+    url = "{}{}".format(base, file_path)
     if username:
-        proto, rest = base.split("://", 1)
-        return "{}://{}:{}@{}{}".format(
-            proto,
-            quote(username, safe=""),
-            quote(password, safe=""),
-            rest,
-            file_path,
-        )
-    return "{}{}".format(base, file_path)
+        credentials = "{}:{}".format(username, password)
+        encoded = base64.b64encode(credentials.encode("utf-8")).decode("utf-8")
+        return "{}|Authorization=Basic {}".format(url, encoded)
+    return url
 
 
 def check_file_in_folder(folder_path):
