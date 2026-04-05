@@ -40,7 +40,7 @@ jobs:
       - name: Filter SARIF (remove test/vendor noise)
         run: |
           python3 -c "
-          import json, sys
+          import json
           with open('results.sarif') as f:
               sarif = json.load(f)
           exclude = ('tests/', 'plugin.video.nzbdav/resources/lib/ptt/', 'scripts/')
@@ -53,12 +53,12 @@ jobs:
                       for exc in exclude
                   )
               ]
-          with open('results.sarif', 'w') as f:
+          with open('filtered.sarif', 'w') as f:
               json.dump(sarif, f)
           "
 
       - name: Upload SARIF results file
         uses: github/codeql-action/upload-sarif@d4b3ca9fa7f69d38bfcd667bdc45bc373d16277e # v4
         with:
-          sarif_file: results.sarif
+          sarif_file: filtered.sarif
         if: always()
