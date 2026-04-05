@@ -74,6 +74,11 @@ def route(argv):
         _handle_main_menu(handle)
 
 
+def _clean_params(params):
+    """Clean TMDBHelper params — replace '_' placeholders with empty strings."""
+    return {k: ("" if v == "_" else v) for k, v in params.items()}
+
+
 def _handle_play(handle, params):
     """Called via plugin:// URL from TMDBHelper.
 
@@ -87,6 +92,7 @@ def _handle_play(handle, params):
     from resources.lib.http_util import notify
     from resources.lib.hydra import search_hydra
 
+    params = _clean_params(params)
     search_type = params.get("type", "movie")
     title = params.get("title", "")
     year = params.get("year", "")
@@ -173,6 +179,7 @@ def _handle_search(handle, params):
     from resources.lib.filter import filter_results
     from resources.lib.hydra import search_hydra
 
+    params = _clean_params(params)
     search_type = params.get("type", "movie")
     title = params.get("title", "")
     year = params.get("year", "")
