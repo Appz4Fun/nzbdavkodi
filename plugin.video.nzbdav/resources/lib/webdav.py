@@ -173,7 +173,8 @@ def find_video_file(folder_path):
     username = settings["username"]
     password = settings["password"]
 
-    url = "{}/{}".format(base.rstrip("/"), folder_path.lstrip("/"))
+    encoded_path = quote(folder_path, safe="/")
+    url = "{}/{}".format(base.rstrip("/"), encoded_path.lstrip("/"))
     if not url.endswith("/"):
         url += "/"
 
