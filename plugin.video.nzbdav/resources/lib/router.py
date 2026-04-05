@@ -45,7 +45,7 @@ def route(argv):
     xbmc.log("NZB-DAV: Routing path='{}' params={}".format(path, params), xbmc.LOGDEBUG)
 
     if path == "/play":
-        _handle_play(params)
+        _handle_play(handle, params)
     elif path == "/search":
         _handle_search(handle, params)
     elif path == "/resolve":
@@ -74,13 +74,14 @@ def route(argv):
         _handle_main_menu(handle)
 
 
-def _handle_play(params):
-    """Called via executebuiltin://RunPlugin from TMDBHelper.
+def _handle_play(handle, params):
+    """Called via plugin:// URL from TMDBHelper.
 
-    Shows progress bar while searching, then redirects to full-screen
-    /search directory listing via ActivateWindow.
+    Searches NZBHydra, shows results dialog, then resolves the selected
+    NZB through Kodi's setResolvedUrl pipeline (no dummy.mp4 needed).
     """
     import xbmcgui
+    import xbmcplugin
 
     from resources.lib.cache import get_cached, set_cached
     from resources.lib.http_util import notify
@@ -114,11 +115,13 @@ def _handle_play(params):
 
     if progress.iscanceled():
         progress.close()
+        xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
         return
 
     if not results:
         progress.close()
         notify(_addon_name(), _fmt(30087, title), 3000)
+        xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
         return
 
     progress.update(90, _string(30088))
@@ -132,6 +135,7 @@ def _handle_play(params):
 
     if not filtered:
         notify(_addon_name(), _fmt(30089, title), 3000)
+        xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
         return
 
     # Auto-select best match if enabled
@@ -140,12 +144,12 @@ def _handle_play(params):
     addon = xbmcaddon.Addon()
     if addon.getSetting("auto_select_best").lower() == "true":
         best = filtered[0]
-        from resources.lib.resolver import resolve_and_play
+        from resources.lib.resolver import resolve
 
-        resolve_and_play(best["link"], best["title"])
+        resolve(handle, {"nzburl": best["link"], "title": best["title"]})
         return
 
-    # Show custom results dialog directly (no ActivateWindow needed)
+    # Show custom results dialog
     from resources.lib.results_dialog import show_results_dialog
 
     selected = show_results_dialog(
@@ -153,9 +157,11 @@ def _handle_play(params):
     )
 
     if selected:
-        from resources.lib.resolver import resolve_and_play
+        from resources.lib.resolver import resolve
 
-        resolve_and_play(selected["link"], selected["title"])
+        resolve(handle, {"nzburl": selected["link"], "title": selected["title"]})
+    else:
+        xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
 
 
 def _handle_search(handle, params):
