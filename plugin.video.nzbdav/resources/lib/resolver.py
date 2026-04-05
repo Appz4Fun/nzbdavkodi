@@ -15,7 +15,12 @@ from resources.lib.http_util import notify as _notify
 from resources.lib.i18n import addon_name as _addon_name
 from resources.lib.i18n import fmt as _fmt
 from resources.lib.i18n import string as _string
-from resources.lib.nzbdav_api import get_job_history, get_job_status, submit_nzb
+from resources.lib.nzbdav_api import (
+    find_completed_by_name,
+    get_job_history,
+    get_job_status,
+    submit_nzb,
+)
 from resources.lib.webdav import (
     check_file_available_with_retry,
     find_video_file,
@@ -139,6 +144,23 @@ def resolve(handle, params):
 
     dialog = xbmcgui.DialogProgress()
     dialog.create(_addon_name(), _string(30097))
+
+    # Check if this title was already downloaded — skip re-downloading
+    existing = find_completed_by_name(title)
+    if existing:
+        xbmc.log(
+            "NZB-DAV: '{}' already downloaded, streaming directly".format(title),
+            xbmc.LOGINFO,
+        )
+        webdav_folder = _storage_to_webdav_path(existing["storage"])
+        video_path = find_video_file(webdav_folder)
+        if video_path:
+            dialog.close()
+            stream_url, stream_headers = get_webdav_stream_url_for_path(video_path)
+            li = _make_playable_listitem(stream_url, stream_headers)
+            xbmc.Player().play(li.getPath(), li)
+            xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+            return
 
     xbmc.log("NZB-DAV: Submitting NZB for '{}'".format(title), xbmc.LOGINFO)
     nzo_id = submit_nzb(nzb_url, title)
@@ -280,6 +302,22 @@ def resolve_and_play(nzb_url, title):
 
     dialog = xbmcgui.DialogProgress()
     dialog.create(_addon_name(), _string(30097))
+
+    # Check if this title was already downloaded — skip re-downloading
+    existing = find_completed_by_name(title)
+    if existing:
+        xbmc.log(
+            "NZB-DAV: '{}' already downloaded, streaming directly".format(title),
+            xbmc.LOGINFO,
+        )
+        webdav_folder = _storage_to_webdav_path(existing["storage"])
+        video_path = find_video_file(webdav_folder)
+        if video_path:
+            dialog.close()
+            stream_url, stream_headers = get_webdav_stream_url_for_path(video_path)
+            li = _make_playable_listitem(stream_url, stream_headers)
+            xbmc.Player().play(li.getPath(), li)
+            return
 
     xbmc.log("NZB-DAV: Submitting NZB for '{}'".format(title), xbmc.LOGINFO)
     nzo_id = submit_nzb(nzb_url, title)

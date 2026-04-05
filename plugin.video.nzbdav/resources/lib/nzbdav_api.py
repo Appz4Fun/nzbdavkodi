@@ -91,6 +91,45 @@ def get_job_history(nzo_id):
     return None
 
 
+def find_completed_by_name(name):
+    """Search nzbdav history for a completed download matching the given name.
+
+    Returns dict with: status, storage, name, nzo_id. None if not found.
+    """
+    try:
+        base_url, api_key = _get_settings()
+    except Exception:
+        return None
+
+    params = {
+        "mode": "history",
+        "apikey": api_key,
+        "output": "json",
+    }
+    url = "{}/api?{}".format(base_url, urlencode(params))
+
+    try:
+        response_text = _http_get(url)
+        response = json.loads(response_text)
+    except Exception:
+        return None
+
+    slots = response.get("history", {}).get("slots", [])
+    for slot in slots:
+        if slot.get("name") == name and slot.get("status") == "Completed":
+            xbmc.log(
+                "NZB-DAV: Found existing download '{}' in history".format(name),
+                xbmc.LOGINFO,
+            )
+            return {
+                "status": slot.get("status", ""),
+                "storage": slot.get("storage", ""),
+                "name": slot.get("name", ""),
+                "nzo_id": slot.get("nzo_id", ""),
+            }
+    return None
+
+
 def get_job_status(nzo_id):
     try:
         base_url, api_key = _get_settings()
