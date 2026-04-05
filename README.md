@@ -12,13 +12,16 @@ A Kodi 21 (Omega) player/resolver addon that enables Usenet-based streaming thro
 
 ## How It Works
 
-```
-TMDBHelper (movie/episode)
-    -> NZB-DAV addon searches NZBHydra2
-    -> User picks an NZB from filtered results
-    -> Addon submits NZB to nzbdav
-    -> Polls nzbdav API + WebDAV until stream is ready
-    -> Kodi plays directly from nzbdav's WebDAV server
+```mermaid
+flowchart LR
+    A[TMDBHelper] -->|movie / episode| B[NZB-DAV Addon]
+    B -->|Newznab search| C[NZBHydra2]
+    C -->|NZB results| B
+    B -->|user picks result| D{Filter & Select}
+    D -->|submit NZB| E[nzbdav]
+    E -->|poll status| B
+    E -->|stream ready| F[WebDAV Server]
+    F -->|play| G[Kodi Player]
 ```
 
 No separate SABnzbd needed -- nzbdav handles both downloading and serving.
