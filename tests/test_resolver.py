@@ -98,10 +98,9 @@ def test_resolve_success(
     resolve(1, {"nzburl": "http://hydra/getnzb/abc", "title": "movie.mkv"})
 
     mock_submit.assert_called_once()
-    # Playback uses xbmc.Player().play() directly, setResolvedUrl(False)
-    # signals plugin completion without triggering CFileCache
-    mock_xbmc.Player().play.assert_called_once()
     mock_plugin.setResolvedUrl.assert_called_once()
+    resolve_call = mock_plugin.setResolvedUrl.call_args
+    assert resolve_call[0][1] is True
 
 
 @patch("resources.lib.resolver.xbmcgui")
@@ -327,9 +326,9 @@ def test_resolve_url_encoded_special_characters(
     resolve(1, {"nzburl": encoded_url, "title": encoded_title})
 
     submit_call_args = mock_submit.call_args[0]
-    assert (
-        "hydra:5076" in submit_call_args[0]
-    ), "NZB URL should be decoded before submit"
+    assert "hydra:5076" in submit_call_args[0], (
+        "NZB URL should be decoded before submit"
+    )
     assert "Spider-Man" in submit_call_args[1], "Title should be decoded before submit"
     mock_plugin.setResolvedUrl.assert_called_once()
 
@@ -424,8 +423,9 @@ def test_resolve_status_transitions_queued_to_downloading_to_completed(
 
     resolve(1, {"nzburl": "http://hydra/getnzb/trans", "title": "downloaded.mkv"})
 
-    assert (
-        mock_history.call_count == 3
-    ), "get_job_history should be polled three times before completing"
-    mock_xbmc.Player().play.assert_called_once()
+    assert mock_history.call_count == 3, (
+        "get_job_history should be polled three times before completing"
+    )
     mock_plugin.setResolvedUrl.assert_called_once()
+    resolve_call = mock_plugin.setResolvedUrl.call_args
+    assert resolve_call[0][1] is True

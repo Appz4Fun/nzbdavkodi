@@ -62,6 +62,20 @@ def _make_playable_listitem(url, headers):
 
     xbmc.log("NZB-DAV: Play URL: {}".format(play_url), xbmc.LOGDEBUG)
     li = xbmcgui.ListItem(path=play_url)
+    # Skip HEAD request — nzbdav doesn't advertise Accept-Ranges on HEAD
+    # which causes CFileCache to fail. Kodi will discover range support
+    # on the first GET request instead.
+    li.setContentLookup(False)
+    # Set mime type based on file extension so Kodi doesn't need HEAD
+    lower_url = url.lower()
+    if lower_url.endswith(".mkv"):
+        li.setMimeType("video/x-matroska")
+    elif lower_url.endswith(".mp4") or lower_url.endswith(".m4v"):
+        li.setMimeType("video/mp4")
+    elif lower_url.endswith(".avi"):
+        li.setMimeType("video/x-msvideo")
+    else:
+        li.setMimeType("video/x-matroska")
     return li
 
 
@@ -158,8 +172,7 @@ def resolve(handle, params):
             dialog.close()
             stream_url, stream_headers = get_webdav_stream_url_for_path(video_path)
             li = _make_playable_listitem(stream_url, stream_headers)
-            xbmc.Player().play(li.getPath(), li)
-            xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+            xbmcplugin.setResolvedUrl(handle, True, li)
             return
 
     xbmc.log("NZB-DAV: Submitting NZB for '{}'".format(title), xbmc.LOGINFO)
@@ -263,13 +276,8 @@ def resolve(handle, params):
                         xbmc.LOGWARNING,
                     )
 
-                # Play directly via xbmc.Player — setResolvedUrl uses
-                # CFileCache which crashes on CoreELEC with HTTP streams
                 li = _make_playable_listitem(stream_url, stream_headers)
-                xbmc.Player().play(li.getPath(), li)
-                # Signal that plugin is done (False = don't resolve via
-                # Kodi's pipeline which would open CFileCache again)
-                xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+                xbmcplugin.setResolvedUrl(handle, True, li)
                 return
 
         # Handle WebDAV error types
