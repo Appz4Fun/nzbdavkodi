@@ -48,6 +48,8 @@ disable=
     raise-missing-from,
     # Useless suppression when running different pylint versions
     useless-suppression,
+    # Unknown options across pylint versions (e.g. too-many-positional-arguments on 3.8)
+    unknown-option-value,
     # Unused variable in unpacking
     unused-variable
 
