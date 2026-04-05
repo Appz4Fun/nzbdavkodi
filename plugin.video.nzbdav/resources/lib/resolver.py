@@ -203,7 +203,7 @@ def resolve(handle, params):
             video_path = find_video_file(webdav_folder)
             if video_path:
                 dialog.close()
-                stream_url = get_webdav_stream_url_for_path(video_path)
+                stream_url, stream_headers = get_webdav_stream_url_for_path(video_path)
                 xbmc.log(
                     "NZB-DAV: File available, streaming '{}' via WebDAV".format(
                         video_path
@@ -219,7 +219,15 @@ def resolve(handle, params):
                         xbmc.LOGWARNING,
                     )
 
-                li = xbmcgui.ListItem(path=stream_url)
+                # Build URL with pipe-separated headers for Kodi player
+                if stream_headers:
+                    header_str = "&".join(
+                        "{}={}".format(k, v) for k, v in stream_headers.items()
+                    )
+                    play_url = "{}|{}".format(stream_url, header_str)
+                else:
+                    play_url = stream_url
+                li = xbmcgui.ListItem(path=play_url)
                 xbmcplugin.setResolvedUrl(handle, True, li)
                 return
 
@@ -311,10 +319,17 @@ def resolve_and_play(nzb_url, title):
             video_path = find_video_file(webdav_folder)
             if video_path:
                 dialog.close()
-                stream_url = get_webdav_stream_url_for_path(video_path)
+                stream_url, stream_headers = get_webdav_stream_url_for_path(video_path)
+                if stream_headers:
+                    header_str = "&".join(
+                        "{}={}".format(k, v) for k, v in stream_headers.items()
+                    )
+                    play_url = "{}|{}".format(stream_url, header_str)
+                else:
+                    play_url = stream_url
                 xbmc.log("NZB-DAV: Playing '{}'".format(stream_url), xbmc.LOGINFO)
-                li = xbmcgui.ListItem(path=stream_url)
-                xbmc.Player().play(stream_url, li)
+                li = xbmcgui.ListItem(path=play_url)
+                xbmc.Player().play(play_url, li)
                 return
 
         if monitor.waitForAbort(poll_interval):
