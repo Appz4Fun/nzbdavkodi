@@ -43,7 +43,7 @@ def generate_repo(output_dir="dist"):
         f.write(addons_xml)
 
     # Write addons.xml.md5
-    md5 = hashlib.md5(addons_xml.encode("utf-8")).hexdigest()
+    md5 = hashlib.md5(addons_xml.encode("utf-8"), usedforsecurity=False).hexdigest()  # noqa: S324
     with open(os.path.join(output_dir, "addons.xml.md5"), "w") as f:
         f.write(md5)
 

@@ -28,10 +28,12 @@ No separate SABnzbd needed -- nzbdav handles both downloading and serving.
 
 ## Requirements
 
-- **Kodi 21 (Omega)** or later
-- **NZBHydra2** -- running and accessible
-- **nzbdav** -- running and accessible (provides both SABnzbd-compatible API and WebDAV)
-- **TMDBHelper** (or Fen, Seren) -- to trigger searches
+| Component | Description |
+|-----------|-------------|
+| **Kodi 21 (Omega)** | Or later |
+| **NZBHydra2** | Running and accessible |
+| **nzbdav** | Running and accessible (provides SABnzbd-compatible API + WebDAV) |
+| **TMDBHelper** | To trigger searches |
 
 ## Installation
 
@@ -47,8 +49,9 @@ Install through the NZB-DAV repository for automatic updates:
 ### Manual Install
 
 1. Download `plugin.video.nzbdav.zip` from the [releases page](../../releases)
-2. In Kodi: **Settings > Add-ons > Install from zip file**
-3. Select `plugin.video.nzbdav.zip`
+2. In Kodi: **Settings > Add-ons > Install from zip file** > select `plugin.video.nzbdav.zip`
+
+---
 
 ## Configuration
 
@@ -65,73 +68,86 @@ Open the addon settings (**Add-ons > My add-ons > Video add-ons > NZB-DAV > Conf
 | WebDAV URL | Leave empty to use nzbdav URL, or set a different URL if WebDAV is on a separate port |
 | WebDAV Username | Username for WebDAV authentication |
 | WebDAV Password | Password for WebDAV authentication |
-| Cache Duration | Search result cache TTL in seconds (default: 300, 0 to disable) |
-| Auto-select best match | Skip result list and automatically pick the top result (default: off) |
 
 ### Player Installation
 
-Select which addons to install the NZB-DAV player file to:
-- TMDBHelper
-- Fen
-- Seren
-
-Then click **Install Player File** to copy `nzbdav.json` to the selected addons.
+Click **Install Player File** to install the `nzbdav.json` player to TMDBHelper. This registers NZB-DAV as a playback source in TMDBHelper's player selection menu.
 
 ### Quality Filters
 
 All filters default to **everything enabled** -- deselect what you don't want.
 
-- **Resolution**: 2160p, 1080p, 720p, 480p
-- **HDR**: HDR10, HDR10+, Dolby Vision, HLG, SDR
-- **Audio**: Atmos, TrueHD, DTS-HD MA, DTS:X, DD+, DD, AAC
-- **Video Codec**: x265/HEVC, x264/AVC, AV1, VP9, MPEG-2
-- **Language**: English, Spanish, French, German, Italian, Portuguese, Dutch, Russian, Japanese, Korean, Chinese, Arabic, Hindi
+| Filter | Options |
+|--------|---------|
+| Resolution | 2160p, 1080p, 720p, 480p |
+| HDR | HDR10, HDR10+, Dolby Vision, HLG, SDR |
+| Audio | Atmos, TrueHD, DTS-HD MA, DTS:X, DD+, DD, AAC |
+| Video Codec | x265/HEVC, x264/AVC, AV1, VP9, MPEG-2 |
+| Language | EN, ES, FR, DE, IT, PT, NL, RU, JA, KO, ZH, AR, HI |
 
 ### Keyword Filters
 
-- **Preferred release groups**: Comma-separated list (e.g., `SPARKS,FGT,NTb`) -- boosted to top
-- **Excluded release groups**: Comma-separated list -- removed from results
-- **Min/Max file size**: In MB (0 = no limit)
-- **Exclude/Require keywords**: Comma-separated
+| Setting | Description |
+|---------|-------------|
+| Preferred release groups | Comma-separated (e.g., `SPARKS,FGT,NTb`) -- boosted to top |
+| Excluded release groups | Comma-separated -- removed from results |
+| Min file size | In MB (0 = no limit) |
+| Max file size | In MB (0 = no limit) |
+| Exclude keywords | Comma-separated |
+| Require keywords | Comma-separated |
 
 ### Sort & Display
 
-- **Sort by**: Relevance, Size (largest/smallest), Age (newest/oldest)
-- **Max results**: Maximum results to display (default: 25)
+| Setting | Options | Default |
+|---------|---------|---------|
+| Sort by | Relevance, Size (largest/smallest), Age (newest/oldest) | Relevance |
+| Max results | 1--100 | 25 |
 
-#### Relevance Sort Order
+### Relevance Sort Order
 
-When sorted by relevance, results are ranked by these criteria in order of priority:
+When sorted by relevance, results are ranked by priority:
 
-1. **Resolution**: 4K > 1080p > 720p > 480p
-2. **HDR**: Dolby Vision > HDR10+ > HDR10 > HLG > SDR
-3. **Preferred release group** (configured in settings)
-4. **Audio**: TrueHD+Atmos > Atmos DD+ > TrueHD > DTS:X > DTS-HD MA > DTS > DD+ > DD > AAC
-5. **Size**: largest first
+| Priority | Criteria | Ranking |
+|----------|----------|---------|
+| 1 | Resolution | 4K > 1080p > 720p > 480p |
+| 2 | HDR | Dolby Vision > HDR10+ > HDR10 > HLG > SDR |
+| 3 | Preferred group | Configured groups boosted |
+| 4 | Audio | TrueHD+Atmos > Atmos DD+ > TrueHD > DTS:X > DTS-HD MA > DTS > DD+ > DD > AAC |
+| 5 | Size | Largest first |
 
 ### Polling
 
-- **Poll interval**: Seconds between status checks (default: 5)
-- **Download timeout**: Max wait time in seconds (default: 3600)
+| Setting | Description | Default |
+|---------|-------------|---------|
+| Poll interval | Seconds between status checks | 5 |
+| Download timeout | Max wait time in seconds | 3600 |
 
 ### Search Cache
 
-- **Cache duration**: How long to cache search results in seconds (default: 300, set to 0 to disable)
-- Use **Clear Cache** from the addon main menu to manually clear all cached results
+| Setting | Description | Default |
+|---------|-------------|---------|
+| Cache duration | Seconds to cache search results (0 to disable) | 300 |
+| Clear Cache | Available from addon main menu | -- |
 
 ### Auto-Select
 
-- **Auto-select best match**: When enabled, the addon automatically picks the top result (after filtering and sorting) and skips the result list entirely. Useful for hands-free playback.
+| Setting | Description | Default |
+|---------|-------------|---------|
+| Auto-select best match | Automatically pick the top result and skip the selection dialog | Off |
+
+---
 
 ## Usage
 
 1. Open **TMDBHelper** and browse to a movie or TV episode
 2. Select **Play with NZB-DAV**
-3. Pick an NZB from the custom full-screen results dialog -- each result shows two lines: filename with size/age/indexer/group on line 1, and resolution/HDR/codec/audio/source with color-coded labels on line 2
+3. Pick an NZB from the full-screen results dialog
 4. Wait for the download to complete (progress dialog shows status)
 5. Playback starts automatically from nzbdav's WebDAV server
 
-With **Auto-select best match** enabled, step 3 is skipped -- the addon automatically picks the top result.
+With **Auto-select best match** enabled, step 3 is skipped automatically.
+
+---
 
 ## Development
 
@@ -200,13 +216,17 @@ tests/
 4. GitHub Actions builds the zip, creates a GitHub Release, and updates the Kodi repo on GitHub Pages
 5. Kodi picks up the update automatically via the repository
 
+---
+
 ## Compatibility
 
-- Kodi 21 (Omega) and later
-- Python 3.8+
-- CoreELEC, LibreELEC, OSMC, Windows, macOS, Linux
-- ARM64 (aarch64), x86_64
-- No pip packages required -- all dependencies vendored
+| Platform | Supported |
+|----------|-----------|
+| Kodi | 21 (Omega) and later |
+| Python | 3.8+ |
+| OS | CoreELEC, LibreELEC, OSMC, Windows, macOS, Linux |
+| Architecture | ARM64 (aarch64), x86_64 |
+| Dependencies | None -- all vendored, no pip required |
 
 ## License
 
