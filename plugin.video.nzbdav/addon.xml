@@ -11,9 +11,12 @@
     </extension>
     <extension point="xbmc.addon.metadata">
         <summary lang="en_GB">NZB-DAV Usenet streaming for Kodi</summary>
+        <summary lang="en">NZB-DAV Usenet streaming for Kodi</summary>
         <description lang="en_GB">Search NZBHydra2 for NZBs and stream via nzbdav WebDAV. Works as a TMDBHelper player.</description>
+        <description lang="en">Search NZBHydra2 for NZBs and stream via nzbdav WebDAV. Works as a TMDBHelper player.</description>
         <platform>all</platform>
         <license>GPL-3.0-or-later</license>
+        <news>v0.1.0 - Initial release</news>
         <assets>
             <icon>resources/icon.png</icon>
             <fanart>resources/fanart.jpg</fanart>

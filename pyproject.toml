@@ -1,3 +1,21 @@
+[project]
+name = "plugin.video.nzbdav"
+version = "0.1.0"
+description = "Kodi addon — stream Usenet via NZBHydra2 + nzbdav WebDAV"
+requires-python = ">=3.8"
+license = "GPL-3.0-or-later"
+authors = [{ name = "nzbdav" }]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Video",
+]
+
 [tool.ruff]
 target-version = "py38"
 exclude = ["plugin.video.nzbdav/resources/lib/ptt/"]
@@ -9,3 +27,6 @@ select = ["E", "F", "W", "I"]
 target-version = ["py38"]
 line-length = 88
 extend-exclude = "ptt/"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

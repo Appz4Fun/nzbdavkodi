@@ -1,0 +1,12 @@
+v0.1.0 (2026-04-05)
+- Initial release
+- NZBHydra2 search integration (movie + TV)
+- nzbdav submission and WebDAV streaming
+- TMDBHelper player integration
+- PTT-based quality filtering (resolution, HDR, audio, codec, language)
+- Custom full-screen results dialog with color-coded labels
+- Keyword and release group filters
+- Relevance-based sorting
+- Search result caching
+- Auto-select best match mode
+- Playback monitoring with retry

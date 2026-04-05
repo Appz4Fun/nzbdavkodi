@@ -35,7 +35,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements-test.txt
-          pip install ruff black
+          pip install "ruff>=0.15" "black>=24"
 
       - name: Lint
         run: |

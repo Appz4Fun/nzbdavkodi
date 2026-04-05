@@ -1,0 +1,14 @@
+# Normalize line endings
+* text=auto
+
+# Python
+*.py text diff=python
+
+# Binary files
+*.png binary
+*.jpg binary
+*.zip binary
+
+# Exclude from language stats
+*.zip linguist-generated
+plugin.video.nzbdav/resources/lib/ptt/** linguist-vendored
