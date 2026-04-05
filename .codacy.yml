@@ -1,0 +1,24 @@
+---
+engines:
+  pylint:
+    enabled: true
+    exclude_paths:
+      - "tests/**"
+      - "plugin.video.nzbdav/resources/lib/ptt/**"
+      - "scripts/**"
+  prospector:
+    enabled: true
+    exclude_paths:
+      - "tests/**"
+      - "plugin.video.nzbdav/resources/lib/ptt/**"
+      - "scripts/**"
+  bandit:
+    enabled: true
+    exclude_paths:
+      - "tests/**"
+      - "plugin.video.nzbdav/resources/lib/ptt/**"
+exclude_paths:
+  - "plugin.video.nzbdav/resources/lib/ptt/**"
+  - "tests/**"
+  - "mockups/**"
+  - "docs/**"
