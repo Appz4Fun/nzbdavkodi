@@ -16,12 +16,14 @@ Flow: TMDBHelper calls plugin:// URL -> router.py dispatches -> hydra.py searche
 ## Commands
 
 ```bash
-just test          # Run all tests (101 tests, ~0.1s)
+just test          # Run all 132 tests (~1s)
 just lint          # ruff + black check
 just lint-fix      # Auto-fix lint issues
 just release       # Build plugin.video.nzbdav.zip
 just ship          # test + release
+just repo          # Build release + generate Kodi repo in dist/
 just clean         # Remove __pycache__, .pytest_cache, zip
+just dist-clean    # clean + remove dist/
 ```
 
 ## Code Layout
@@ -29,7 +31,17 @@ just clean         # Remove __pycache__, .pytest_cache, zip
 - `plugin.video.nzbdav/` -- The Kodi addon (installed via zip)
 - `plugin.video.nzbdav/resources/lib/` -- All Python modules
 - `plugin.video.nzbdav/resources/lib/ptt/` -- Vendored PTT library (DO NOT EDIT unless fixing compatibility)
+- `scripts/` -- Build and repo generation scripts (`build_zip.py`, `generate_repo.py`)
+- `repo/repository.nzbdav/` -- Kodi repository addon descriptor (points to GitHub Pages)
+- `.github/workflows/` -- CI (test+lint on push/PR), Release (build+deploy on `v*` tags)
 - `tests/` -- pytest tests with Kodi module mocks in conftest.py
+
+## CI/CD
+
+- **CI** runs on every push to main and PRs: tests across Python 3.8/3.10/3.12, ruff, black
+- **Release** triggers on `v*` tags: runs tests, verifies addon.xml version matches tag, builds zip, creates GitHub Release, deploys Kodi repo to GitHub Pages
+- **Kodi repo** served at `https://xbmc4lyfe.github.io/nzbdavkodi/`
+- To release: bump version in `addon.xml`, commit, `git tag v0.X.0 && git push origin main v0.X.0`
 
 ## Key Patterns
 

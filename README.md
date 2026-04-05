@@ -1,5 +1,13 @@
 # NZB-DAV Kodi Addon
 
+[![CI](https://github.com/xbmc4lyfe/nzbdavkodi/actions/workflows/ci.yml/badge.svg)](https://github.com/xbmc4lyfe/nzbdavkodi/actions/workflows/ci.yml)
+[![Pylint](https://github.com/xbmc4lyfe/nzbdavkodi/actions/workflows/pylint.yml/badge.svg)](https://github.com/xbmc4lyfe/nzbdavkodi/actions/workflows/pylint.yml)
+[![CodeQL](https://github.com/xbmc4lyfe/nzbdavkodi/actions/workflows/codeql.yml/badge.svg)](https://github.com/xbmc4lyfe/nzbdavkodi/actions/workflows/codeql.yml)
+[![Release](https://github.com/xbmc4lyfe/nzbdavkodi/actions/workflows/release.yml/badge.svg)](https://github.com/xbmc4lyfe/nzbdavkodi/actions/workflows/release.yml)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![Kodi](https://img.shields.io/badge/Kodi-21%20Omega-blue.svg)](https://kodi.tv/)
+[![Python](https://img.shields.io/badge/Python-3.8%2B-blue.svg)](https://www.python.org/)
+
 A Kodi 21 (Omega) player/resolver addon that enables Usenet-based streaming through NZBHydra2 and nzbdav. Works as a TMDBHelper player -- search for a movie or TV episode, pick an NZB, and stream it directly through nzbdav's WebDAV server.
 
 ## How It Works
@@ -23,6 +31,17 @@ No separate SABnzbd needed -- nzbdav handles both downloading and serving.
 - **TMDBHelper** (or Fen, Seren) -- to trigger searches
 
 ## Installation
+
+### Via Kodi Repository (recommended)
+
+Install through the NZB-DAV repository for automatic updates:
+
+1. Download `repository.nzbdav.zip` from the [releases page](../../releases) or [GitHub Pages](https://xbmc4lyfe.github.io/nzbdavkodi/repository.nzbdav/repository.nzbdav.zip)
+2. In Kodi: **Settings > Add-ons > Install from zip file** > select `repository.nzbdav.zip`
+3. **Settings > Add-ons > Install from repository > NZB-DAV Repository > Video add-ons > NZB-DAV**
+4. Future updates are installed automatically
+
+### Manual Install
 
 1. Download `plugin.video.nzbdav.zip` from the [releases page](../../releases)
 2. In Kodi: **Settings > Add-ons > Install from zip file**
@@ -127,7 +146,9 @@ just lint          # Check ruff + black formatting
 just lint-fix      # Auto-fix lint issues
 just release       # Build plugin.video.nzbdav.zip
 just ship          # Run tests then build release
+just repo          # Build release + generate Kodi repo in dist/
 just clean         # Remove build artifacts
+just dist-clean    # Remove build artifacts + dist/
 ```
 
 ### Project Structure
@@ -150,16 +171,31 @@ plugin.video.nzbdav/
       cache.py           # JSON-based search result cache
       player_installer.py # Player JSON installer
       http_util.py       # Shared HTTP utilities
+      playback_monitor.py # Stream failure detection + retry
       ptt/               # Vendored PTT library
     skins/Default/
       1080i/results-dialog.xml  # Dialog skin XML
       media/white.png           # Texture for backgrounds
+scripts/
+  build_zip.py           # Addon zip builder
+  generate_repo.py       # Kodi repo metadata generator
+repo/
+  repository.nzbdav/     # Repository addon (points to GitHub Pages)
+.github/workflows/
+  ci.yml                 # Test + lint on push/PR
+  release.yml            # Build + deploy on version tags
 tests/
   conftest.py            # Kodi module mocks
   test_*.py              # 132 tests
-mockups/
-  results-mockups.html   # Design reference mockup
 ```
+
+### Releasing
+
+1. Bump `version` in `plugin.video.nzbdav/addon.xml`
+2. Commit: `git commit -am "release: v0.2.0"`
+3. Tag and push: `git tag v0.2.0 && git push origin main v0.2.0`
+4. GitHub Actions builds the zip, creates a GitHub Release, and updates the Kodi repo on GitHub Pages
+5. Kodi picks up the update automatically via the repository
 
 ## Compatibility
 
