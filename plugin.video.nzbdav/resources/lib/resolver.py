@@ -148,9 +148,7 @@ def resolve(handle, params):
                 ),
                 xbmc.LOGERROR,
             )
-            _notify(
-                _addon_name(), _fmt(30099, int(elapsed))
-            )
+            _notify(_addon_name(), _fmt(30099, int(elapsed)))
             xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
             return
 
@@ -182,8 +180,8 @@ def resolve(handle, params):
                 dialog.close()
                 xbmc.log(
                     "NZB-DAV: Job {} failed/deleted (status={})".format(nzo_id, status),
-                xbmc.LOGERROR,
-            )
+                    xbmc.LOGERROR,
+                )
                 _notify(_addon_name(), _string(30100))
                 xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
                 return
