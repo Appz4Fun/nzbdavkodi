@@ -43,14 +43,16 @@ jobs:
           import json
           with open('results.sarif') as f:
               sarif = json.load(f)
-          exclude = ('tests/', 'plugin.video.nzbdav/resources/lib/ptt/', 'scripts/')
+          exclude_prefix = ('tests/', 'plugin.video.nzbdav/resources/lib/ptt/', 'scripts/')
+          exclude_suffix = ('.md',)
+          def should_exclude(uri):
+              return any(uri.startswith(p) for p in exclude_prefix) or any(uri.endswith(s) for s in exclude_suffix)
           for run in sarif.get('runs', []):
               run['results'] = [
                   r for r in run.get('results', [])
                   if not any(
-                      loc.get('physicalLocation', {}).get('artifactLocation', {}).get('uri', '').startswith(exc)
+                      should_exclude(loc.get('physicalLocation', {}).get('artifactLocation', {}).get('uri', ''))
                       for loc in r.get('locations', [])
-                      for exc in exclude
                   )
               ]
           with open('filtered.sarif', 'w') as f:
