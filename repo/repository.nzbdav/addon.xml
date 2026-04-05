@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<addon id="repository.nzbdav"
+       name="NZB-DAV Repository"
+       version="1.0.0"
+       provider-name="nzbdav">
+    <requires>
+        <import addon="xbmc.python" version="3.0.0"/>
+    </requires>
+    <extension point="xbmc.addon.repository" name="NZB-DAV Repository">
+        <dir>
+            <info compressed="false">https://xbmc4lyfe.github.io/nzbdavkodi/addons.xml</info>
+            <checksum>https://xbmc4lyfe.github.io/nzbdavkodi/addons.xml.md5</checksum>
+            <datadir zip="true">https://xbmc4lyfe.github.io/nzbdavkodi</datadir>
+        </dir>
+    </extension>
+    <extension point="xbmc.addon.metadata">
+        <summary lang="en_GB">NZB-DAV addon repository</summary>
+        <description lang="en_GB">Install and update the NZB-DAV Kodi addon.</description>
+        <platform>all</platform>
+    </extension>
+</addon>
