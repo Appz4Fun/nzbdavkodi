@@ -1,0 +1,19 @@
+addon:
+  - changed-files:
+    - any-glob-to-any-file: 'plugin.video.nzbdav/**'
+
+tests:
+  - changed-files:
+    - any-glob-to-any-file: 'tests/**'
+
+ci:
+  - changed-files:
+    - any-glob-to-any-file: '.github/**'
+
+scripts:
+  - changed-files:
+    - any-glob-to-any-file: 'scripts/**'
+
+docs:
+  - changed-files:
+    - any-glob-to-any-file: '*.md'
