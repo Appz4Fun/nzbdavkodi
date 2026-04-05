@@ -37,6 +37,26 @@ jobs:
           gh-code-scanning-compat: true
           max-allowed-issues: 2147483647
 
+      - name: Filter SARIF (remove test/vendor noise)
+        run: |
+          python3 -c "
+          import json, sys
+          with open('results.sarif') as f:
+              sarif = json.load(f)
+          exclude = ('tests/', 'plugin.video.nzbdav/resources/lib/ptt/', 'scripts/')
+          for run in sarif.get('runs', []):
+              run['results'] = [
+                  r for r in run.get('results', [])
+                  if not any(
+                      loc.get('physicalLocation', {}).get('artifactLocation', {}).get('uri', '').startswith(exc)
+                      for loc in r.get('locations', [])
+                      for exc in exclude
+                  )
+              ]
+          with open('results.sarif', 'w') as f:
+              json.dump(sarif, f)
+          "
+
       - name: Upload SARIF results file
         uses: github/codeql-action/upload-sarif@d4b3ca9fa7f69d38bfcd667bdc45bc373d16277e # v4
         with:
