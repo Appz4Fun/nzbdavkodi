@@ -46,30 +46,22 @@ _ERROR_MESSAGES = {
 def _make_playable_listitem(url, headers):
     """Create a ListItem with URL and optional HTTP auth headers.
 
-    Uses inputstream.ffmpegdirect to bypass Kodi's CFileCache which
-    crashes on CoreELEC with HTTP streams. Falls back to pipe-header
-    syntax if ffmpegdirect is not available.
+    Uses Kodi's pipe-separated header syntax on the URL.
     """
     from urllib.parse import quote as _quote
 
     all_headers = dict(headers) if headers else {}
-    all_headers["Connection"] = "Keep-Alive"
 
-    header_str = "&".join(
-        "{}={}".format(k, _quote(v, safe=" /")) for k, v in all_headers.items()
-    )
+    if all_headers:
+        header_str = "&".join(
+            "{}={}".format(k, _quote(v, safe=" /")) for k, v in all_headers.items()
+        )
+        play_url = "{}|{}".format(url, header_str)
+    else:
+        play_url = url
 
-    li = xbmcgui.ListItem(path=url)
-
-    # Use inputstream.ffmpegdirect for reliable HTTP playback
-    li.setProperty("inputstream", "inputstream.ffmpegdirect")
-    li.setProperty("inputstream.ffmpegdirect.is_realtime_stream", "false")
-    li.setProperty("inputstream.ffmpegdirect.stream_mode", "catchup")
-    li.setProperty("inputstream.ffmpegdirect.open_mode", "curl")
-    if header_str:
-        li.setProperty("inputstream.ffmpegdirect.stream_headers", header_str)
-
-    xbmc.log("NZB-DAV: Play URL: {} (ffmpegdirect)".format(url), xbmc.LOGDEBUG)
+    xbmc.log("NZB-DAV: Play URL: {}".format(play_url), xbmc.LOGDEBUG)
+    li = xbmcgui.ListItem(path=play_url)
     return li
 
 
