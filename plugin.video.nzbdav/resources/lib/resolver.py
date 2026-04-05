@@ -43,17 +43,18 @@ def _make_playable_listitem(url, headers):
 
     Uses Kodi's | header syntax on the URL for curl-based HTTP access.
     """
-    if headers:
-        # Kodi expects: url|Header1=Value1&Header2=Value2
-        # URL-encode header values so base64 padding '=' doesn't break parsing
-        from urllib.parse import quote as _quote
+    from urllib.parse import quote as _quote
 
-        header_str = "&".join(
-            "{}={}".format(k, _quote(v, safe=" /")) for k, v in headers.items()
-        )
-        play_url = "{}|{}".format(url, header_str)
-    else:
-        play_url = url
+    # Always request keep-alive and byte serving for seekable playback
+    all_headers = dict(headers) if headers else {}
+    all_headers["Connection"] = "Keep-Alive"
+
+    # Kodi expects: url|Header1=Value1&Header2=Value2
+    # URL-encode header values so base64 padding '=' doesn't break parsing
+    header_str = "&".join(
+        "{}={}".format(k, _quote(v, safe=" /")) for k, v in all_headers.items()
+    )
+    play_url = "{}|{}".format(url, header_str)
     xbmc.log("NZB-DAV: Play URL: {}".format(play_url), xbmc.LOGDEBUG)
     li = xbmcgui.ListItem(path=play_url)
     return li
