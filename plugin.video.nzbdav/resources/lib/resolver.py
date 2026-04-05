@@ -241,12 +241,13 @@ def resolve(handle, params):
                         xbmc.LOGWARNING,
                     )
 
-                # Use xbmc.Player().play() instead of setResolvedUrl
-                # to bypass CFileCache which crashes on CoreELEC
+                # Play directly via xbmc.Player — setResolvedUrl uses
+                # CFileCache which crashes on CoreELEC with HTTP streams
                 li = _make_playable_listitem(stream_url, stream_headers)
                 xbmc.Player().play(li.getPath(), li)
-                # Still call setResolvedUrl to tell Kodi we're done
-                xbmcplugin.setResolvedUrl(handle, True, li)
+                # Signal that plugin is done (False = don't resolve via
+                # Kodi's pipeline which would open CFileCache again)
+                xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
                 return
 
         # Handle WebDAV error types
