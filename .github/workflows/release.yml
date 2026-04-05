@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install test dependencies
+        run: pip install -r requirements-test.txt
+
+      - name: Run tests
+        run: python -m pytest tests/ -v --tb=short
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify addon.xml version matches tag
+        run: |
+          xml_version=$(python3 -c "
+          import xml.etree.ElementTree as ET
+          tree = ET.parse('plugin.video.nzbdav/addon.xml')
+          print(tree.getroot().get('version'))
+          ")
+          if [ "$xml_version" != "${{ steps.version.outputs.version }}" ]; then
+            echo "ERROR: addon.xml version ($xml_version) does not match tag (${{ steps.version.outputs.version }})"
+            exit 1
+          fi
+
+      - name: Build addon zip
+        run: python3 scripts/build_zip.py
+
+      - name: Generate repository metadata
+        run: python3 scripts/generate_repo.py --output-dir dist
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: plugin.video.nzbdav.zip
+          generate_release_notes: true
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./dist
+          keep_files: false
