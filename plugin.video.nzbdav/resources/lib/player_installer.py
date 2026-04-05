@@ -11,6 +11,9 @@ import xbmcaddon
 import xbmcvfs
 
 from resources.lib.http_util import notify as _notify
+from resources.lib.i18n import addon_name as _addon_name
+from resources.lib.i18n import fmt as _fmt
+from resources.lib.i18n import string as _string
 
 PLAYER_TARGETS = {
     "TMDBHelper": {
@@ -63,7 +66,7 @@ def install_player():
 
     names = list(PLAYER_TARGETS.keys())
     dialog = xbmcgui.Dialog()
-    selected = dialog.multiselect("Install NZB-DAV Player To", names)
+    selected = dialog.multiselect(_string(30093), names)
 
     if selected is None or len(selected) == 0:
         return
@@ -105,6 +108,6 @@ def install_player():
             )
 
     if succeeded:
-        _notify("NZB-DAV", "Player installed to: {}".format(", ".join(succeeded)))
+        _notify(_addon_name(), _fmt(30094, ", ".join(succeeded)))
     if failed:
-        _notify("NZB-DAV", "Failed to install to: {}".format(", ".join(failed)))
+        _notify(_addon_name(), _fmt(30095, ", ".join(failed)))

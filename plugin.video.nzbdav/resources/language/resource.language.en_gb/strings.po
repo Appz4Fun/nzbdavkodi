@@ -1,0 +1,455 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: plugin.video.nzbdav\n"
+"Language: en_GB\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgctxt "#30000"
+msgid "Connection"
+msgstr "Connection"
+
+msgctxt "#30001"
+msgid "NZBHydra2"
+msgstr "NZBHydra2"
+
+msgctxt "#30002"
+msgid "NZBHydra2 URL"
+msgstr "NZBHydra2 URL"
+
+msgctxt "#30003"
+msgid "API Key"
+msgstr "API Key"
+
+msgctxt "#30004"
+msgid "nzbdav"
+msgstr "nzbdav"
+
+msgctxt "#30005"
+msgid "nzbdav URL"
+msgstr "nzbdav URL"
+
+msgctxt "#30006"
+msgid "WebDAV"
+msgstr "WebDAV"
+
+msgctxt "#30007"
+msgid "WebDAV URL (leave empty to use nzbdav URL)"
+msgstr "WebDAV URL (leave empty to use nzbdav URL)"
+
+msgctxt "#30008"
+msgid "Username"
+msgstr "Username"
+
+msgctxt "#30009"
+msgid "Password"
+msgstr "Password"
+
+msgctxt "#30010"
+msgid "Player Installation"
+msgstr "Player Installation"
+
+msgctxt "#30011"
+msgid "Install Player File"
+msgstr "Install Player File"
+
+msgctxt "#30012"
+msgid "Quality Filters"
+msgstr "Quality Filters"
+
+msgctxt "#30013"
+msgid "Resolution"
+msgstr "Resolution"
+
+msgctxt "#30014"
+msgid "2160p / 4K"
+msgstr "2160p / 4K"
+
+msgctxt "#30015"
+msgid "1080p"
+msgstr "1080p"
+
+msgctxt "#30016"
+msgid "720p"
+msgstr "720p"
+
+msgctxt "#30017"
+msgid "480p"
+msgstr "480p"
+
+msgctxt "#30018"
+msgid "HDR"
+msgstr "HDR"
+
+msgctxt "#30019"
+msgid "HDR10"
+msgstr "HDR10"
+
+msgctxt "#30020"
+msgid "HDR10+"
+msgstr "HDR10+"
+
+msgctxt "#30021"
+msgid "Dolby Vision"
+msgstr "Dolby Vision"
+
+msgctxt "#30022"
+msgid "HLG"
+msgstr "HLG"
+
+msgctxt "#30023"
+msgid "SDR"
+msgstr "SDR"
+
+msgctxt "#30024"
+msgid "Audio"
+msgstr "Audio"
+
+msgctxt "#30025"
+msgid "Atmos"
+msgstr "Atmos"
+
+msgctxt "#30026"
+msgid "TrueHD"
+msgstr "TrueHD"
+
+msgctxt "#30027"
+msgid "DTS-HD MA"
+msgstr "DTS-HD MA"
+
+msgctxt "#30028"
+msgid "DTS:X"
+msgstr "DTS:X"
+
+msgctxt "#30029"
+msgid "DD+ (EAC3)"
+msgstr "DD+ (EAC3)"
+
+msgctxt "#30030"
+msgid "DD (AC3)"
+msgstr "DD (AC3)"
+
+msgctxt "#30031"
+msgid "AAC"
+msgstr "AAC"
+
+msgctxt "#30032"
+msgid "Video Codec"
+msgstr "Video Codec"
+
+msgctxt "#30033"
+msgid "x265 / HEVC"
+msgstr "x265 / HEVC"
+
+msgctxt "#30034"
+msgid "x264 / AVC"
+msgstr "x264 / AVC"
+
+msgctxt "#30035"
+msgid "AV1"
+msgstr "AV1"
+
+msgctxt "#30036"
+msgid "VP9"
+msgstr "VP9"
+
+msgctxt "#30037"
+msgid "MPEG-2"
+msgstr "MPEG-2"
+
+msgctxt "#30038"
+msgid "Language"
+msgstr "Language"
+
+msgctxt "#30039"
+msgid "English"
+msgstr "English"
+
+msgctxt "#30040"
+msgid "Spanish"
+msgstr "Spanish"
+
+msgctxt "#30041"
+msgid "French"
+msgstr "French"
+
+msgctxt "#30042"
+msgid "German"
+msgstr "German"
+
+msgctxt "#30043"
+msgid "Italian"
+msgstr "Italian"
+
+msgctxt "#30044"
+msgid "Portuguese"
+msgstr "Portuguese"
+
+msgctxt "#30045"
+msgid "Dutch"
+msgstr "Dutch"
+
+msgctxt "#30046"
+msgid "Russian"
+msgstr "Russian"
+
+msgctxt "#30047"
+msgid "Japanese"
+msgstr "Japanese"
+
+msgctxt "#30048"
+msgid "Korean"
+msgstr "Korean"
+
+msgctxt "#30049"
+msgid "Chinese"
+msgstr "Chinese"
+
+msgctxt "#30050"
+msgid "Arabic"
+msgstr "Arabic"
+
+msgctxt "#30051"
+msgid "Hindi"
+msgstr "Hindi"
+
+msgctxt "#30052"
+msgid "Keyword Filters"
+msgstr "Keyword Filters"
+
+msgctxt "#30053"
+msgid "Release Groups"
+msgstr "Release Groups"
+
+msgctxt "#30054"
+msgid "Preferred groups (comma-separated)"
+msgstr "Preferred groups (comma-separated)"
+
+msgctxt "#30055"
+msgid "Excluded groups (comma-separated)"
+msgstr "Excluded groups (comma-separated)"
+
+msgctxt "#30056"
+msgid "File Size"
+msgstr "File Size"
+
+msgctxt "#30057"
+msgid "Min size (MB, 0=no limit)"
+msgstr "Min size (MB, 0=no limit)"
+
+msgctxt "#30058"
+msgid "Max size (MB, 0=no limit)"
+msgstr "Max size (MB, 0=no limit)"
+
+msgctxt "#30059"
+msgid "Keywords"
+msgstr "Keywords"
+
+msgctxt "#30060"
+msgid "Exclude keywords (comma-separated)"
+msgstr "Exclude keywords (comma-separated)"
+
+msgctxt "#30061"
+msgid "Required keywords (comma-separated)"
+msgstr "Required keywords (comma-separated)"
+
+msgctxt "#30062"
+msgid "Sorting"
+msgstr "Sorting"
+
+msgctxt "#30063"
+msgid "Sort by"
+msgstr "Sort by"
+
+msgctxt "#30064"
+msgid "Max results"
+msgstr "Max results"
+
+msgctxt "#30065"
+msgid "Auto-Select"
+msgstr "Auto-Select"
+
+msgctxt "#30066"
+msgid "Auto-select best match (skip result list)"
+msgstr "Auto-select best match (skip result list)"
+
+msgctxt "#30067"
+msgid "Advanced"
+msgstr "Advanced"
+
+msgctxt "#30068"
+msgid "Polling"
+msgstr "Polling"
+
+msgctxt "#30069"
+msgid "Poll interval (seconds)"
+msgstr "Poll interval (seconds)"
+
+msgctxt "#30070"
+msgid "Download timeout (seconds)"
+msgstr "Download timeout (seconds)"
+
+msgctxt "#30071"
+msgid "Search Cache"
+msgstr "Search Cache"
+
+msgctxt "#30072"
+msgid "Cache duration (seconds, 0=disabled)"
+msgstr "Cache duration (seconds, 0=disabled)"
+
+msgctxt "#30073"
+msgid "Stream Resilience"
+msgstr "Stream Resilience"
+
+msgctxt "#30074"
+msgid "Auto-retry on stream failure"
+msgstr "Auto-retry on stream failure"
+
+msgctxt "#30075"
+msgid "Max retry attempts"
+msgstr "Max retry attempts"
+
+msgctxt "#30076"
+msgid "Retry delay (seconds)"
+msgstr "Retry delay (seconds)"
+
+msgctxt "#30077"
+msgid "Relevance"
+msgstr "Relevance"
+
+msgctxt "#30078"
+msgid "Size (largest first)"
+msgstr "Size (largest first)"
+
+msgctxt "#30079"
+msgid "Size (smallest first)"
+msgstr "Size (smallest first)"
+
+msgctxt "#30080"
+msgid "Age (newest first)"
+msgstr "Age (newest first)"
+
+msgctxt "#30081"
+msgid "Age (oldest first)"
+msgstr "Age (oldest first)"
+
+msgctxt "#30082"
+msgid "Search cache cleared"
+msgstr "Search cache cleared"
+
+msgctxt "#30083"
+msgid "Searching NZBHydra for {}..."
+msgstr "Searching NZBHydra for {}..."
+
+msgctxt "#30084"
+msgid "Querying NZBHydra2..."
+msgstr "Querying NZBHydra2..."
+
+msgctxt "#30085"
+msgid "Caching {} results..."
+msgstr "Caching {} results..."
+
+msgctxt "#30086"
+msgid "Loaded {} results from cache"
+msgstr "Loaded {} results from cache"
+
+msgctxt "#30087"
+msgid "No results found for {}"
+msgstr "No results found for {}"
+
+msgctxt "#30088"
+msgid "Filtering results..."
+msgstr "Filtering results..."
+
+msgctxt "#30089"
+msgid "No results after filtering for {}"
+msgstr "No results after filtering for {}"
+
+msgctxt "#30091"
+msgid "Clear Cache"
+msgstr "Clear Cache"
+
+msgctxt "#30092"
+msgid "Settings"
+msgstr "Settings"
+
+msgctxt "#30093"
+msgid "Install NZB-DAV Player To"
+msgstr "Install NZB-DAV Player To"
+
+msgctxt "#30094"
+msgid "Player installed to: {}"
+msgstr "Player installed to: {}"
+
+msgctxt "#30095"
+msgid "Failed to install to: {}"
+msgstr "Failed to install to: {}"
+
+msgctxt "#30096"
+msgid "No NZB URL provided"
+msgstr "No NZB URL provided"
+
+msgctxt "#30097"
+msgid "Submitting NZB to nzbdav..."
+msgstr "Submitting NZB to nzbdav..."
+
+msgctxt "#30098"
+msgid "Failed to submit NZB to nzbdav"
+msgstr "Failed to submit NZB to nzbdav"
+
+msgctxt "#30099"
+msgid "Download timed out after {} seconds"
+msgstr "Download timed out after {} seconds"
+
+msgctxt "#30100"
+msgid "Download failed"
+msgstr "Download failed"
+
+msgctxt "#30101"
+msgid "Download timed out"
+msgstr "Download timed out"
+
+msgctxt "#30102"
+msgid "Queued..."
+msgstr "Queued..."
+
+msgctxt "#30103"
+msgid "Fetching NZB..."
+msgstr "Fetching NZB..."
+
+msgctxt "#30104"
+msgid "Waiting for propagation..."
+msgstr "Waiting for propagation..."
+
+msgctxt "#30105"
+msgid "Downloading... {}%"
+msgstr "Downloading... {}%"
+
+msgctxt "#30106"
+msgid "Paused"
+msgstr "Paused"
+
+msgctxt "#30107"
+msgid "WebDAV authentication failed. Check credentials."
+msgstr "WebDAV authentication failed. Check credentials."
+
+msgctxt "#30108"
+msgid "WebDAV server error. Retrying..."
+msgstr "WebDAV server error. Retrying..."
+
+msgctxt "#30109"
+msgid "WebDAV connection error. Check server."
+msgstr "WebDAV connection error. Check server."
+
+msgctxt "#30110"
+msgid "{} sources found"
+msgstr "{} sources found"
+
+msgctxt "#30111"
+msgid "Sorted by relevance"
+msgstr "Sorted by relevance"
+
+msgctxt "#30112"
+msgid "Showing {} of {} sources after filters"
+msgstr "Showing {} of {} sources after filters"

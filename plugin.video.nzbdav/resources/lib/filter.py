@@ -90,6 +90,15 @@ def _csv_setting(addon, key):
     return [x.strip() for x in val.split(",") if x.strip()]
 
 
+def _int_setting(addon, key, default):
+    """Read an integer Kodi setting with a safe fallback."""
+    raw = addon.getSetting(key)
+    try:
+        return int(raw if raw not in (None, "") else default)
+    except (TypeError, ValueError):
+        return default
+
+
 def _get_filter_settings():
     """Read filter settings from Kodi addon config."""
     import xbmcaddon
@@ -178,10 +187,10 @@ def _get_filter_settings():
         "exclude_release_group": [
             g.lower() for g in _csv_setting(addon, "filter_exclude_release_group")
         ],
-        "min_size": int(addon.getSetting("filter_min_size") or "0"),
-        "max_size": int(addon.getSetting("filter_max_size") or "0"),
-        "sort_order": int(addon.getSetting("sort_order") or "0"),
-        "max_results": int(addon.getSetting("max_results") or "25"),
+        "min_size": _int_setting(addon, "filter_min_size", 0),
+        "max_size": _int_setting(addon, "filter_max_size", 0),
+        "sort_order": _int_setting(addon, "sort_order", 0),
+        "max_results": _int_setting(addon, "max_results", 25),
     }
 
 

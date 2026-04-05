@@ -1,3 +1,9 @@
+v0.2.0 (2026-04-05)
+- Add Kodi localization support for addon UI and settings labels
+- Add GitHub community health files and repository best-practice coverage tests
+- Fix enum settings labels so sort order renders localized text in Kodi
+- Harden numeric setting parsing to avoid filter/search regressions
+
 v0.1.0 (2026-04-05)
 - Initial release
 - NZBHydra2 search integration (movie + TV)

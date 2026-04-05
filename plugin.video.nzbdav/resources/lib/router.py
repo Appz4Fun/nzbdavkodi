@@ -7,6 +7,10 @@ from urllib.parse import parse_qs, urlparse
 
 import xbmc
 
+from resources.lib.i18n import addon_name as _addon_name
+from resources.lib.i18n import fmt as _fmt
+from resources.lib.i18n import string as _string
+
 
 def parse_route(url):
     """Extract the path from a plugin:// URL."""
@@ -61,7 +65,7 @@ def route(argv):
         clear_cache()
         from resources.lib.http_util import notify
 
-        notify("NZB-DAV", "Search cache cleared", 3000)
+        notify(_addon_name(), _string(30082), 3000)
     elif path == "/settings":
         import xbmcaddon
 
@@ -91,22 +95,22 @@ def _handle_play(params):
 
     # Show progress bar while searching
     progress = xbmcgui.DialogProgress()
-    progress.create("NZB-DAV", "Searching NZBHydra for {}...".format(title))
+    progress.create(_addon_name(), _fmt(30083, title))
     progress.update(10)
 
     cache_kwargs = dict(year=year, imdb=imdb, season=season, episode=episode)
     results = get_cached(search_type, title, **cache_kwargs)
 
     if results is None:
-        progress.update(30, "Querying NZBHydra2...")
+        progress.update(30, _string(30084))
         results = search_hydra(
             search_type, title, year=year, imdb=imdb, season=season, episode=episode
         )
         if results:
-            progress.update(70, "Caching {} results...".format(len(results)))
+            progress.update(70, _fmt(30085, len(results)))
             set_cached(search_type, title, results, **cache_kwargs)
     else:
-        progress.update(70, "Loaded {} results from cache".format(len(results)))
+        progress.update(70, _fmt(30086, len(results)))
 
     if progress.iscanceled():
         progress.close()
@@ -114,10 +118,10 @@ def _handle_play(params):
 
     if not results:
         progress.close()
-        notify("NZB-DAV", "No results found for {}".format(title), 3000)
+        notify(_addon_name(), _fmt(30087, title), 3000)
         return
 
-    progress.update(90, "Filtering results...")
+    progress.update(90, _string(30088))
 
     from resources.lib.filter import filter_results
 
@@ -127,7 +131,7 @@ def _handle_play(params):
     progress.close()
 
     if not filtered:
-        notify("NZB-DAV", "No results after filtering for {}".format(title), 3000)
+        notify(_addon_name(), _fmt(30089, title), 3000)
         return
 
     # Auto-select best match if enabled
@@ -182,7 +186,7 @@ def _handle_search(handle, params):
     if not results:
         from resources.lib.http_util import notify
 
-        notify("NZB-DAV", "No results found for {}".format(title), 3000)
+        notify(_addon_name(), _fmt(30087, title), 3000)
         xbmcplugin.endOfDirectory(handle, succeeded=False)
         return
 
@@ -298,15 +302,15 @@ def _handle_main_menu(handle):
     import xbmcgui
     import xbmcplugin
 
-    li = xbmcgui.ListItem(label="Install Player File")
+    li = xbmcgui.ListItem(label=_string(30011))
     url = "plugin://plugin.video.nzbdav/install_player"
     xbmcplugin.addDirectoryItem(handle=handle, url=url, listitem=li, isFolder=False)
 
-    li = xbmcgui.ListItem(label="Clear Cache")
+    li = xbmcgui.ListItem(label=_string(30091))
     url = "plugin://plugin.video.nzbdav/clear_cache"
     xbmcplugin.addDirectoryItem(handle=handle, url=url, listitem=li, isFolder=False)
 
-    li = xbmcgui.ListItem(label="Settings")
+    li = xbmcgui.ListItem(label=_string(30092))
     url = "plugin://plugin.video.nzbdav/settings"
     xbmcplugin.addDirectoryItem(handle=handle, url=url, listitem=li, isFolder=False)
 

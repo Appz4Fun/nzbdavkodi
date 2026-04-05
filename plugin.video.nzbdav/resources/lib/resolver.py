@@ -12,6 +12,9 @@ import xbmcgui
 import xbmcplugin
 
 from resources.lib.http_util import notify as _notify
+from resources.lib.i18n import addon_name as _addon_name
+from resources.lib.i18n import fmt as _fmt
+from resources.lib.i18n import string as _string
 from resources.lib.nzbdav_api import get_job_history, get_job_status, submit_nzb
 from resources.lib.webdav import (
     check_file_available_with_retry,
@@ -21,17 +24,17 @@ from resources.lib.webdav import (
 )
 
 _STATUS_MESSAGES = {
-    "Queued": "Queued...",
-    "Fetching": "Fetching NZB...",
-    "Propagating": "Waiting for propagation...",
-    "Downloading": "Downloading... {}%",
-    "Paused": "Paused",
+    "Queued": 30102,
+    "Fetching": 30103,
+    "Propagating": 30104,
+    "Downloading": 30105,
+    "Paused": 30106,
 }
 
 _ERROR_MESSAGES = {
-    "auth_failed": "WebDAV authentication failed. Check credentials.",
-    "server_error": "WebDAV server error. Retrying...",
-    "connection_error": "WebDAV connection error. Check server.",
+    "auth_failed": 30107,
+    "server_error": 30108,
+    "connection_error": 30109,
 }
 
 
@@ -106,20 +109,20 @@ def resolve(handle, params):
     title = unquote(params.get("title", ""))
 
     if not nzb_url:
-        _notify("NZB-DAV", "No NZB URL provided")
+        _notify(_addon_name(), _string(30096))
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
         return
 
     poll_interval, download_timeout = _get_poll_settings()
 
     dialog = xbmcgui.DialogProgress()
-    dialog.create("NZB-DAV", "Submitting NZB to nzbdav...")
+    dialog.create(_addon_name(), _string(30097))
 
     xbmc.log("NZB-DAV: Submitting NZB for '{}'".format(title), xbmc.LOGINFO)
     nzo_id = submit_nzb(nzb_url, title)
     if not nzo_id:
         dialog.close()
-        _notify("NZB-DAV", "Failed to submit NZB to nzbdav")
+        _notify(_addon_name(), _string(30098))
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
         return
 
@@ -146,7 +149,7 @@ def resolve(handle, params):
                 xbmc.LOGERROR,
             )
             _notify(
-                "NZB-DAV", "Download timed out after {} seconds".format(int(elapsed))
+                _addon_name(), _fmt(30099, int(elapsed))
             )
             xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
             return
@@ -179,15 +182,19 @@ def resolve(handle, params):
                 dialog.close()
                 xbmc.log(
                     "NZB-DAV: Job {} failed/deleted (status={})".format(nzo_id, status),
-                    xbmc.LOGERROR,
-                )
-                _notify("NZB-DAV", "Download failed")
+                xbmc.LOGERROR,
+            )
+                _notify(_addon_name(), _string(30100))
                 xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
                 return
 
-            msg = _STATUS_MESSAGES.get(status, "Status: {}".format(status))
-            if "{}" in msg:
-                msg = msg.format(percentage)
+            msg_id = _STATUS_MESSAGES.get(status)
+            if not msg_id:
+                msg = "Status: {}".format(status)
+            elif msg_id == 30105:
+                msg = _fmt(msg_id, percentage)
+            else:
+                msg = _string(msg_id)
             progress = min(int(percentage or 0), 100)
             dialog.update(progress, msg)
 
@@ -222,7 +229,7 @@ def resolve(handle, params):
         if webdav_error == "auth_failed":
             dialog.close()
             xbmc.log("NZB-DAV: WebDAV auth failed, stopping resolve", xbmc.LOGERROR)
-            _notify("NZB-DAV", _ERROR_MESSAGES["auth_failed"])
+            _notify(_addon_name(), _string(_ERROR_MESSAGES["auth_failed"]))
             xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
             return
 
@@ -247,13 +254,13 @@ def resolve_and_play(nzb_url, title):
     poll_interval, download_timeout = _get_poll_settings()
 
     dialog = xbmcgui.DialogProgress()
-    dialog.create("NZB-DAV", "Submitting NZB to nzbdav...")
+    dialog.create(_addon_name(), _string(30097))
 
     xbmc.log("NZB-DAV: Submitting NZB for '{}'".format(title), xbmc.LOGINFO)
     nzo_id = submit_nzb(nzb_url, title)
     if not nzo_id:
         dialog.close()
-        _notify("NZB-DAV", "Failed to submit NZB to nzbdav")
+        _notify(_addon_name(), _string(30098))
         return
 
     xbmc.log("NZB-DAV: NZB submitted, nzo_id={}, polling".format(nzo_id), xbmc.LOGINFO)
@@ -266,7 +273,7 @@ def resolve_and_play(nzb_url, title):
 
         if elapsed >= download_timeout:
             dialog.close()
-            _notify("NZB-DAV", "Download timed out")
+            _notify(_addon_name(), _string(30101))
             return
 
         if dialog.iscanceled():
@@ -281,18 +288,22 @@ def resolve_and_play(nzb_url, title):
 
             if status.lower() in ("failed", "deleted"):
                 dialog.close()
-                _notify("NZB-DAV", "Download failed")
+                _notify(_addon_name(), _string(30100))
                 return
 
-            msg = _STATUS_MESSAGES.get(status, "Status: {}".format(status))
-            if "{}" in msg:
-                msg = msg.format(percentage)
+            msg_id = _STATUS_MESSAGES.get(status)
+            if not msg_id:
+                msg = "Status: {}".format(status)
+            elif msg_id == 30105:
+                msg = _fmt(msg_id, percentage)
+            else:
+                msg = _string(msg_id)
             progress = min(int(percentage or 0), 100)
             dialog.update(progress, msg)
 
         if webdav_error == "auth_failed":
             dialog.close()
-            _notify("NZB-DAV", _ERROR_MESSAGES["auth_failed"])
+            _notify(_addon_name(), _string(_ERROR_MESSAGES["auth_failed"]))
             return
 
         # Check history for completed download

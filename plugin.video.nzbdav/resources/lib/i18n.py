@@ -1,0 +1,65 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 nzbdav contributors
+
+"""Localization helpers for Kodi-visible strings."""
+
+import xbmcaddon
+
+_FALLBACK_NAME = "NZB-DAV"
+_FALLBACK_STRINGS = {
+    30011: "Install Player File",
+    30082: "Search cache cleared",
+    30083: "Searching NZBHydra for {}...",
+    30084: "Querying NZBHydra2...",
+    30085: "Caching {} results...",
+    30086: "Loaded {} results from cache",
+    30087: "No results found for {}",
+    30088: "Filtering results...",
+    30089: "No results after filtering for {}",
+    30091: "Clear Cache",
+    30092: "Settings",
+    30093: "Install NZB-DAV Player To",
+    30094: "Player installed to: {}",
+    30095: "Failed to install to: {}",
+    30096: "No NZB URL provided",
+    30097: "Submitting NZB to nzbdav...",
+    30098: "Failed to submit NZB to nzbdav",
+    30099: "Download timed out after {} seconds",
+    30100: "Download failed",
+    30101: "Download timed out",
+    30102: "Queued...",
+    30103: "Fetching NZB...",
+    30104: "Waiting for propagation...",
+    30105: "Downloading... {}%",
+    30106: "Paused",
+    30107: "WebDAV authentication failed. Check credentials.",
+    30108: "WebDAV server error. Retrying...",
+    30109: "WebDAV connection error. Check server.",
+    30110: "{} sources found",
+    30111: "Sorted by relevance",
+    30112: "Showing {} of {} sources after filters",
+}
+
+
+def addon():
+    """Return the active addon instance."""
+    return xbmcaddon.Addon()
+
+
+def addon_name():
+    """Return the localized addon name from addon metadata."""
+    name = addon().getAddonInfo("name")
+    return name if isinstance(name, str) and name else _FALLBACK_NAME
+
+
+def string(msg_id):
+    """Return a localized string by numeric id."""
+    value = addon().getLocalizedString(msg_id)
+    if isinstance(value, str) and value:
+        return value
+    return _FALLBACK_STRINGS.get(msg_id, "")
+
+
+def fmt(msg_id, *args, **kwargs):
+    """Format a localized string with arguments."""
+    return string(msg_id).format(*args, **kwargs)

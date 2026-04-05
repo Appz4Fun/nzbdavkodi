@@ -6,6 +6,9 @@
 import xbmcaddon
 import xbmcgui
 
+from resources.lib.i18n import fmt as _fmt
+from resources.lib.i18n import string as _string
+
 # Color constants matching the mockup
 _RES_COLORS = {
     "2160p": "FFA78BFA",
@@ -70,13 +73,11 @@ class ResultsDialog(xbmcgui.WindowXMLDialog):
         if self.year:
             title_display = "{} ({})".format(self.title, self.year)
         self.setProperty("title", title_display)
-        self.setProperty("count", "{} sources found".format(self.filtered_count))
-        self.setProperty("sort_info", "Sorted by relevance")
+        self.setProperty("count", _fmt(30110, self.filtered_count))
+        self.setProperty("sort_info", _string(30111))
         self.setProperty(
             "filter_info",
-            "Showing {} of {} sources after filters".format(
-                self.filtered_count, self.total_count
-            ),
+            _fmt(30112, self.filtered_count, self.total_count),
         )
 
         list_control = self.getControl(LIST_ID)
