@@ -385,6 +385,7 @@ class StreamProxy(object):
         self._server = None
         self._thread = None
         self.port = 0
+        self._context_lock = threading.Lock()
 
     def start(self):
         """Start the proxy server on a random port."""
@@ -432,7 +433,8 @@ class StreamProxy(object):
         if is_mp4 and content_length > 0:
             self._prepare_faststart(ctx, remote_url, auth_header, content_length)
 
-        self._server.stream_context = ctx
+        with self._context_lock:
+            self._server.stream_context = ctx
         local_url = "http://127.0.0.1:{}/stream".format(self.port)
         xbmc.log(
             "NZB-DAV: Proxy ready (faststart={}): {}".format(
