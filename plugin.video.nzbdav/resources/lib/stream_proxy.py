@@ -165,14 +165,18 @@ class _StreamHandler(BaseHTTPRequestHandler):
         total_length = ctx["virtual_length"]
 
         range_header = self.headers.get("Range")
-        if range_header and not range_header.startswith("bytes=0-"):
-            # For non-initial range requests, serve from appropriate section
+        if range_header:
             start, end = self._parse_range(range_header, total_length)
             if start is None:
                 self.send_error(416)
                 return
-            self._serve_faststart_range(ctx, start, end)
-            return
+            # bytes=0-(total-1) is a full-file request — serve as 200 OK
+            # so CFileCache detects Accept-Ranges on initial probe
+            if start == 0 and end >= total_length - 1:
+                pass  # Fall through to full 200 OK response below
+            else:
+                self._serve_faststart_range(ctx, start, end)
+                return
 
         # Serve full file: ftyp + moov + mdat (streamed)
         self.send_response(200)

@@ -62,7 +62,7 @@ def test_storage_to_webdav_path_trailing_slash():
 @patch("resources.lib.resolver.get_job_status")
 @patch("resources.lib.resolver.submit_nzb")
 @patch("resources.lib.resolver.get_webdav_stream_url_for_path")
-@patch("resources.lib.resolver.validate_stream")
+@patch("resources.lib.resolver._validate_stream_url")
 @patch("resources.lib.resolver._get_poll_settings")
 def test_resolve_success(
     mock_poll,
@@ -297,7 +297,7 @@ def test_resolve_deleted_status(
 @patch("resources.lib.resolver.get_job_status")
 @patch("resources.lib.resolver.submit_nzb")
 @patch("resources.lib.resolver.get_webdav_stream_url_for_path")
-@patch("resources.lib.resolver.validate_stream")
+@patch("resources.lib.resolver._validate_stream_url")
 @patch("resources.lib.resolver._get_poll_settings")
 def test_resolve_url_encoded_special_characters(
     mock_poll,
@@ -394,7 +394,7 @@ def test_resolve_poll_interval_respected(
 @patch("resources.lib.resolver.get_job_status")
 @patch("resources.lib.resolver.submit_nzb")
 @patch("resources.lib.resolver.get_webdav_stream_url_for_path")
-@patch("resources.lib.resolver.validate_stream")
+@patch("resources.lib.resolver._validate_stream_url")
 @patch("resources.lib.resolver._get_poll_settings")
 def test_resolve_status_transitions_queued_to_downloading_to_completed(
     mock_poll,
@@ -524,7 +524,7 @@ def test_resolve_max_iterations_safeguard(
 @patch("resources.lib.resolver.get_job_status")
 @patch("resources.lib.resolver.submit_nzb")
 @patch("resources.lib.resolver.get_webdav_stream_url_for_path")
-@patch("resources.lib.resolver.validate_stream")
+@patch("resources.lib.resolver._validate_stream_url")
 @patch("resources.lib.resolver._get_poll_settings")
 def test_resolve_retries_submit_on_transient_failure(
     mock_poll,

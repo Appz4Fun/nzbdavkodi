@@ -65,7 +65,9 @@ def search_hydra(search_type, title, year="", imdb="", season="", episode=""):
             params["q"] = title
 
     url = "{}/api?{}".format(base_url, urlencode(params))
-    xbmc.log("NZB-DAV: Hydra search URL: {}".format(url), xbmc.LOGDEBUG)
+    from resources.lib.http_util import redact_url
+
+    xbmc.log("NZB-DAV: Hydra search URL: {}".format(redact_url(url)), xbmc.LOGDEBUG)
 
     try:
         xml_text = _http_get(url)

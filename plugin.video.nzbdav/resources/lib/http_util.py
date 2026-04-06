@@ -3,7 +3,20 @@
 
 """Shared HTTP and Kodi utility functions."""
 
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
+
+
+def redact_url(url):
+    """Redact API keys from URLs for safe logging."""
+    parts = urlsplit(url)
+    query = [
+        (k, "REDACTED" if k.lower() == "apikey" else v)
+        for k, v in parse_qsl(parts.query, keep_blank_values=True)
+    ]
+    return urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment)
+    )
 
 
 def http_get(url, timeout=15):

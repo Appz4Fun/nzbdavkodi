@@ -25,10 +25,32 @@ from resources.lib.webdav import (
     check_file_available_with_retry,
     find_video_file,
     get_webdav_stream_url_for_path,
-    validate_stream,
 )
 
 MAX_POLL_ITERATIONS = 720  # 1 hour at 5s interval
+
+
+def _validate_stream_url(url, headers):
+    """Verify the stream URL supports range requests (seekable streaming).
+
+    Validates the actual resolved URL rather than building one from a title.
+    Returns True if range requests are supported, False otherwise.
+    """
+    from urllib.request import Request, urlopen
+
+    req = Request(url, method="HEAD")
+    req.add_header("Range", "bytes=0-0")
+    if headers:
+        for key, value in headers.items():
+            req.add_header(key, value)
+    try:
+        with urlopen(req, timeout=10) as resp:
+            return resp.getcode() == 206 or "bytes" in resp.headers.get(
+                "Accept-Ranges", ""
+            )
+    except Exception:
+        return False
+
 
 _STATUS_MESSAGES = {
     "Queued": 30102,
@@ -194,15 +216,7 @@ def _poll_once(nzo_id, title):
         job_status[0] = get_job_status(nzo_id)
 
     def check_history():
-        history = get_job_history(nzo_id)
-        history_status[0] = history
-        # If not in history and not in queue, check WebDAV availability
-        # using the legacy method to surface auth/server errors
-        if history is None and job_status[0] is None:
-            _, error = check_file_available_with_retry(
-                title, max_retries=1, retry_delay=1
-            )
-            error_type[0] = error
+        history_status[0] = get_job_history(nzo_id)
 
     t1 = threading.Thread(target=check_queue)
     t2 = threading.Thread(target=check_history)
@@ -210,6 +224,12 @@ def _poll_once(nzo_id, title):
     t2.start()
     t1.join(timeout=10)
     t2.join(timeout=10)
+
+    # Only probe WebDAV for errors after both threads have finished,
+    # so we don't falsely conclude the job is missing
+    if history_status[0] is None and job_status[0] is None:
+        _, error = check_file_available_with_retry(title, max_retries=1, retry_delay=1)
+        error_type[0] = error
 
     xbmc.log(
         "NZB-DAV: Poll result - job_status={} history_status={} error_type={}".format(
@@ -374,10 +394,10 @@ def _resolve_inner(handle, nzb_url, title, dialog, poll_interval, download_timeo
                 )
 
                 # Validate stream supports range requests before playback
-                if not validate_stream(title):
+                if not _validate_stream_url(stream_url, stream_headers):
                     xbmc.log(
                         "NZB-DAV: Stream validation failed for '{}', "
-                        "attempting playback anyway".format(title),
+                        "attempting playback anyway".format(video_path),
                         xbmc.LOGWARNING,
                     )
 

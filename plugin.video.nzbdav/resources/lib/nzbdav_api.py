@@ -35,7 +35,9 @@ def submit_nzb(nzb_url, nzb_name=""):
         "output": "json",
     }
     url = "{}/api?{}".format(base_url, urlencode(params))
-    xbmc.log("NZB-DAV: Submit NZB URL: {}".format(url), xbmc.LOGDEBUG)
+    from resources.lib.http_util import redact_url
+
+    xbmc.log("NZB-DAV: Submit NZB URL: {}".format(redact_url(url)), xbmc.LOGDEBUG)
     try:
         response_text = _http_get(url)
         response = json.loads(response_text)
@@ -216,7 +218,9 @@ def get_job_status(nzo_id):
         "output": "json",
     }
     url = "{}/api?{}".format(base_url, urlencode(params))
-    xbmc.log("NZB-DAV: Job status URL: {}".format(url), xbmc.LOGDEBUG)
+    from resources.lib.http_util import redact_url
+
+    xbmc.log("NZB-DAV: Job status URL: {}".format(redact_url(url)), xbmc.LOGDEBUG)
     try:
         response_text = _http_get(url)
         response = json.loads(response_text)
