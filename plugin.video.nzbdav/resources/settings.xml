@@ -86,5 +86,7 @@
 		<setting id="stream_auto_retry" label="30074" type="bool" default="true" />
 		<setting id="stream_max_retries" label="30075" type="number" default="3" />
 		<setting id="stream_retry_delay" label="30076" type="number" default="5" />
+		<setting label="30118" type="lsep" />
+		<setting id="proxy_convert_subs" label="30119" type="bool" default="true" />
 	</category>
 </settings>

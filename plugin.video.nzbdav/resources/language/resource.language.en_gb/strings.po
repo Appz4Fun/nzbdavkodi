@@ -473,3 +473,11 @@ msgstr "Stream failed after {} retries. Try a different source."
 msgctxt "#30117"
 msgid "STRM Key (from nzbdav database)"
 msgstr "STRM Key (from nzbdav database)"
+
+msgctxt "#30118"
+msgid "Proxy"
+msgstr "Proxy"
+
+msgctxt "#30119"
+msgid "Convert MP4 subtitles to SRT"
+msgstr "Convert MP4 subtitles to SRT"
