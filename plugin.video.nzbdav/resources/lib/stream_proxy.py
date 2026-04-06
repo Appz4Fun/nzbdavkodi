@@ -127,7 +127,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *args):  # pylint: disable=arguments-renamed
-        pass
+        xbmc.log("NZB-DAV: Proxy HTTP: {}".format(fmt % args), xbmc.LOGDEBUG)
 
     def do_POST(self):
         """Handle POST /prepare — plugin sends stream config via HTTP."""
@@ -224,13 +224,27 @@ class _StreamHandler(BaseHTTPRequestHandler):
         try:
             # 1. Write ftyp
             self.wfile.write(ftyp)
+            xbmc.log(
+                "NZB-DAV: Faststart wrote ftyp ({} bytes)".format(len(ftyp)),
+                xbmc.LOGDEBUG,
+            )
 
             # 2. Write adjusted moov
             self.wfile.write(moov)
+            xbmc.log(
+                "NZB-DAV: Faststart wrote moov ({} bytes)".format(len(moov)),
+                xbmc.LOGDEBUG,
+            )
 
             # 3. Write pre-fetched mdat head (zero gap after moov)
             if mdat_prefetch:
                 self.wfile.write(mdat_prefetch)
+                xbmc.log(
+                    "NZB-DAV: Faststart wrote mdat prefetch ({} bytes)".format(
+                        prefetch_len
+                    ),
+                    xbmc.LOGDEBUG,
+                )
 
             # 4. Stream remainder of mdat from remote
             remaining_offset = mdat_offset + prefetch_len
@@ -244,17 +258,41 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 if ctx.get("auth_header"):
                     req.add_header("Authorization", ctx["auth_header"])
 
+                xbmc.log(
+                    "NZB-DAV: Faststart opening remote range {}-{}".format(
+                        remaining_offset, remaining_end
+                    ),
+                    xbmc.LOGDEBUG,
+                )
                 with urlopen(req, timeout=60) as resp:
+                    xbmc.log(
+                        "NZB-DAV: Faststart remote connected, streaming mdat",
+                        xbmc.LOGDEBUG,
+                    )
+                    bytes_sent = 0
                     while True:
                         chunk = resp.read(1048576)
                         if not chunk:
                             break
                         try:
                             self.wfile.write(chunk)
+                            bytes_sent += len(chunk)
                         except (BrokenPipeError, ConnectionResetError):
+                            xbmc.log(
+                                "NZB-DAV: Faststart client disconnected after {} bytes of mdat".format(
+                                    bytes_sent
+                                ),
+                                xbmc.LOGDEBUG,
+                            )
                             break
+                    xbmc.log(
+                        "NZB-DAV: Faststart mdat streaming done ({} bytes sent)".format(
+                            bytes_sent
+                        ),
+                        xbmc.LOGDEBUG,
+                    )
         except (BrokenPipeError, ConnectionResetError):
-            pass
+            xbmc.log("NZB-DAV: Faststart connection closed by client", xbmc.LOGDEBUG)
         except Exception as e:
             xbmc.log("NZB-DAV: Faststart stream failed: {}".format(e), xbmc.LOGERROR)
 

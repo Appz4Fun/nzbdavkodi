@@ -461,3 +461,11 @@ msgstr "Test NZBHydra Connection"
 msgctxt "#30114"
 msgid "Test nzbdav Connection"
 msgstr "Test nzbdav Connection"
+
+msgctxt "#30115"
+msgid "Stream failed. Try an MKV version or check nzbdav server."
+msgstr "Stream failed. Try an MKV version or check nzbdav server."
+
+msgctxt "#30116"
+msgid "Stream failed after {} retries. Try a different source."
+msgstr "Stream failed after {} retries. Try a different source."

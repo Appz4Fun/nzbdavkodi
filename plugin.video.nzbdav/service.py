@@ -111,6 +111,11 @@ class NzbdavPlayer(xbmc.Player):
                 ),
                 xbmc.LOGERROR,
             )
+            enabled, max_retries, _ = self._read_settings()
+            if not enabled or self._retry_count >= max_retries:
+                from resources.lib.i18n import string as _s
+
+                _notify("NZB-DAV", _s(30115), 8000)
 
     def _save_position(self):
         """Save current playback position for resume on retry."""
@@ -136,9 +141,8 @@ class NzbdavPlayer(xbmc.Player):
         )
         _notify(
             "NZB-DAV",
-            "Stream interrupted. Reconnecting... ({}/{})".format(
-                self._retry_count, max_retries
-            ),
+            "Reconnecting ({}/{})...".format(self._retry_count, max_retries),
+            5000,
         )
 
         if self._monitor.waitForAbort(retry_delay):
@@ -186,10 +190,9 @@ class NzbdavPlayer(xbmc.Player):
                 ),
                 xbmc.LOGERROR,
             )
-            _notify(
-                "NZB-DAV",
-                "Stream failed after {} retries".format(max_retries),
-            )
+            from resources.lib.i18n import fmt as _f
+
+            _notify("NZB-DAV", _f(30116, max_retries), 8000)
             self._active = False
             return
 
