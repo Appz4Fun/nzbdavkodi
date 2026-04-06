@@ -136,6 +136,8 @@ def test_prepare_stream_remuxes_mp4_when_ffmpeg_available():
 
     with patch(
         "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
+    ), patch.object(sp, "_get_content_length", return_value=1000000), patch.object(
+        sp, "_probe_duration", return_value=3600.0
     ):
         url = sp.prepare_stream("http://host/film.mp4", auth_header="Basic abc")
 
@@ -208,3 +210,64 @@ def test_probe_duration_returns_none_on_n_a():
 
     stderr = "  Duration: N/A, start: 0.000000\n"
     assert _parse_ffmpeg_duration(stderr) is None
+
+
+# ---------------------------------------------------------------------------
+# StreamProxy.prepare_stream — duration probe for MP4
+# ---------------------------------------------------------------------------
+
+
+def test_prepare_stream_probes_duration_for_mp4():
+    import base64
+
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 9999
+
+    mock_proc = MagicMock()
+    mock_proc.communicate.return_value = (
+        b"",
+        b"  Duration: 02:00:00.00, start: 0.000000, bitrate: 30000 kb/s\n",
+    )
+    mock_proc.returncode = 1  # ffmpeg -f null returns non-zero
+
+    auth = "Basic " + base64.b64encode(b"user:pass").decode()
+    with patch(
+        "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
+    ), patch.object(sp, "_get_content_length", return_value=5000000000), patch(
+        "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
+    ):
+        sp.prepare_stream("http://host/film.mp4", auth_header=auth)
+
+    ctx = sp._server.stream_context
+    assert ctx["remux"] is True
+    assert ctx["duration_seconds"] == 7200.0
+    assert ctx["total_bytes"] == 5000000000
+    assert ctx["seekable"] is True
+
+
+def test_prepare_stream_falls_back_to_non_seekable_on_probe_failure():
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 9999
+
+    mock_proc = MagicMock()
+    mock_proc.communicate.return_value = (b"", b"some error\n")
+    mock_proc.returncode = 1
+
+    with patch(
+        "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
+    ), patch.object(sp, "_get_content_length", return_value=5000000000), patch(
+        "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
+    ):
+        sp.prepare_stream("http://host/film.mp4")
+
+    ctx = sp._server.stream_context
+    assert ctx["remux"] is True
+    assert ctx["seekable"] is False

@@ -318,15 +318,23 @@ class StreamProxy:
         use_remux = is_mp4 and ffmpeg_path is not None
 
         if use_remux:
+            content_length = self._get_content_length(remote_url, auth_header)
+            duration = self._probe_duration(ffmpeg_path, remote_url, auth_header)
+            seekable = duration is not None and content_length > 0
             ctx = {
                 "remote_url": remote_url,
                 "auth_header": auth_header,
                 "content_type": "video/x-matroska",
                 "remux": True,
                 "ffmpeg_path": ffmpeg_path,
+                "total_bytes": content_length,
+                "duration_seconds": duration,
+                "seekable": seekable,
             }
             xbmc.log(
-                "NZB-DAV: Will remux MP4->MKV via {}".format(ffmpeg_path),
+                "NZB-DAV: Will remux MP4->MKV via {} (seekable={}, duration={})".format(
+                    ffmpeg_path, seekable, duration
+                ),
                 xbmc.LOGINFO,
             )
         else:
@@ -347,6 +355,27 @@ class StreamProxy:
             xbmc.LOGINFO,
         )
         return local_url
+
+    def _probe_duration(self, ffmpeg_path, url, auth_header):
+        """Probe file duration using ffmpeg. Returns seconds or None."""
+        input_url = url
+        if auth_header and auth_header.startswith("Basic "):
+            import base64
+
+            decoded = base64.b64decode(auth_header[6:]).decode("utf-8")
+            input_url = url.replace("://", "://{}@".format(decoded), 1)
+
+        try:
+            proc = subprocess.Popen(
+                [ffmpeg_path, "-v", "warning", "-i", input_url, "-f", "null", "-"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            _, stderr = proc.communicate(timeout=120)
+            return _parse_ffmpeg_duration(stderr.decode(errors="replace"))
+        except Exception as e:
+            xbmc.log("NZB-DAV: Duration probe failed: {}".format(e), xbmc.LOGWARNING)
+            return None
 
     def _get_content_length(self, url, auth_header):
         """Get file size via HEAD or range probe."""
