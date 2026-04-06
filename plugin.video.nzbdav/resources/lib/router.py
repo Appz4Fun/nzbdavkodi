@@ -108,38 +108,75 @@ def _handle_play(handle, params):
     progress = xbmcgui.DialogProgress()
     progress.create(_addon_name(), _fmt(30083, title))
     progress.update(10)
+    xbmc.log(
+        "NZB-DAV: Search stage: checking cache for '{}' ({})".format(
+            title, search_type
+        ),
+        xbmc.LOGDEBUG,
+    )
 
     cache_kwargs = dict(year=year, imdb=imdb, season=season, episode=episode)
     results = get_cached(search_type, title, **cache_kwargs)
 
     if results is None:
         progress.update(30, _string(30084))
+        xbmc.log(
+            "NZB-DAV: Search stage: querying NZBHydra for '{}'".format(title),
+            xbmc.LOGDEBUG,
+        )
         results, search_error = search_hydra(
             search_type, title, year=year, imdb=imdb, season=season, episode=episode
         )
         if search_error:
+            xbmc.log(
+                "NZB-DAV: Search stage: NZBHydra error — {}".format(search_error),
+                xbmc.LOGWARNING,
+            )
             progress.close()
             notify(_addon_name(), search_error, 5000)
             xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
             return
         if results:
             progress.update(70, _fmt(30085, len(results)))
+            xbmc.log(
+                "NZB-DAV: Search stage: caching {} results for '{}'".format(
+                    len(results), title
+                ),
+                xbmc.LOGDEBUG,
+            )
             set_cached(search_type, title, results, **cache_kwargs)
     else:
         progress.update(70, _fmt(30086, len(results)))
+        xbmc.log(
+            "NZB-DAV: Search stage: loaded {} results from cache for '{}'".format(
+                len(results), title
+            ),
+            xbmc.LOGDEBUG,
+        )
 
     if progress.iscanceled():
+        xbmc.log("NZB-DAV: Search stage: cancelled by user", xbmc.LOGDEBUG)
         progress.close()
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
         return
 
     if not results:
+        xbmc.log(
+            "NZB-DAV: Search stage: no results found for '{}'".format(title),
+            xbmc.LOGINFO,
+        )
         progress.close()
         notify(_addon_name(), _fmt(30087, title), 3000)
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
         return
 
     progress.update(90, _string(30088))
+    xbmc.log(
+        "NZB-DAV: Search stage: filtering {} results for '{}'".format(
+            len(results), title
+        ),
+        xbmc.LOGDEBUG,
+    )
 
     from resources.lib.filter import filter_results
 
@@ -210,21 +247,52 @@ def _handle_search(handle, params):
     episode = params.get("episode", "")
 
     cache_kwargs = dict(year=year, imdb=imdb, season=season, episode=episode)
+    xbmc.log(
+        "NZB-DAV: Search stage: checking cache for '{}' ({})".format(
+            title, search_type
+        ),
+        xbmc.LOGDEBUG,
+    )
     results = get_cached(search_type, title, **cache_kwargs)
     if results is None:
+        xbmc.log(
+            "NZB-DAV: Search stage: querying NZBHydra for '{}'".format(title),
+            xbmc.LOGDEBUG,
+        )
         results, search_error = search_hydra(
             search_type, title, year=year, imdb=imdb, season=season, episode=episode
         )
         if search_error:
+            xbmc.log(
+                "NZB-DAV: Search stage: NZBHydra error — {}".format(search_error),
+                xbmc.LOGWARNING,
+            )
             from resources.lib.http_util import notify
 
             notify(_addon_name(), search_error, 5000)
             xbmcplugin.endOfDirectory(handle, succeeded=False)
             return
         if results:
+            xbmc.log(
+                "NZB-DAV: Search stage: caching {} results for '{}'".format(
+                    len(results), title
+                ),
+                xbmc.LOGDEBUG,
+            )
             set_cached(search_type, title, results, **cache_kwargs)
+    else:
+        xbmc.log(
+            "NZB-DAV: Search stage: loaded {} results from cache for '{}'".format(
+                len(results), title
+            ),
+            xbmc.LOGDEBUG,
+        )
 
     if not results:
+        xbmc.log(
+            "NZB-DAV: Search stage: no results found for '{}'".format(title),
+            xbmc.LOGINFO,
+        )
         from resources.lib.http_util import notify
 
         notify(_addon_name(), _fmt(30087, title), 3000)
@@ -232,6 +300,12 @@ def _handle_search(handle, params):
         return
 
     total_count = len(results)
+    xbmc.log(
+        "NZB-DAV: Search stage: filtering {} results for '{}'".format(
+            len(results), title
+        ),
+        xbmc.LOGDEBUG,
+    )
     filtered, all_parsed = filter_results(results)
 
     if not filtered:
