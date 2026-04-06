@@ -16,6 +16,7 @@ import xbmc  # noqa: E402
 import xbmcaddon  # noqa: E402
 import xbmcgui  # noqa: E402
 from resources.lib.http_util import notify as _notify  # noqa: E402
+from resources.lib.stream_proxy import StreamProxy  # noqa: E402
 
 # Window property keys for IPC between plugin and service
 _PROP_STREAM_URL = "nzbdav.stream_url"
