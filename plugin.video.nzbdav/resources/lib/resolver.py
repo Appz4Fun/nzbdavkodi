@@ -107,49 +107,16 @@ def _make_playable_listitem(url, headers):
 
 
 def _play_direct(handle, stream_url, stream_headers):
-    """Play stream via local proxy for all formats.
+    """Play the WebDAV stream URL directly via Kodi's player.
 
-    All files go through the proxy to avoid stale-handle issues where Kodi
-    tries to play the TMDBHelper plugin:// URL instead of our stream.
-    MP4 files get faststart (moov relocation); MKV/other pass through as-is.
+    No proxy needed — Kodi handles HTTP range requests natively, which
+    lets it seek to the moov atom in MP4 files without faststart.
     """
-    _play_via_proxy_resolved(handle, stream_url, stream_headers)
+    play_url = _build_play_url(stream_url, stream_headers)
+    xbmc.log("NZB-DAV: Playing direct: {}".format(stream_url), xbmc.LOGINFO)
 
-
-def _play_via_proxy_resolved(handle, stream_url, stream_headers):
-    """Play via the service's stream proxy.
-
-    The proxy runs in the background service (service.py) so it survives
-    after this plugin script exits.  We send the stream config via HTTP POST
-    to /prepare, then tell Kodi to play the proxy URL.
-    """
-    from resources.lib.stream_proxy import (
-        get_proxy,
-        get_service_proxy_port,
-        prepare_stream_via_service,
-    )
-
-    auth_header = None
-    if stream_headers and "Authorization" in stream_headers:
-        auth_header = stream_headers["Authorization"]
-
-    # Prefer the service proxy (survives script exit); fall back to local
-    service_port = get_service_proxy_port()
-    if service_port:
-        proxy_url = prepare_stream_via_service(service_port, stream_url, auth_header)
-    else:
-        xbmc.log(
-            "NZB-DAV: Service proxy not available, using local proxy",
-            xbmc.LOGWARNING,
-        )
-        proxy = get_proxy()
-        proxy_url = proxy.prepare_stream(stream_url, auth_header)
-
-    xbmc.log("NZB-DAV: Playing via proxy: {}".format(proxy_url), xbmc.LOGINFO)
-
-    li = xbmcgui.ListItem(path=proxy_url)
+    li = xbmcgui.ListItem(path=play_url)
     li.setContentLookup(False)
-    # Set mime type based on source file extension
     lower_url = stream_url.lower()
     if lower_url.endswith(".mkv"):
         li.setMimeType("video/x-matroska")
@@ -160,55 +127,21 @@ def _play_via_proxy_resolved(handle, stream_url, stream_headers):
     else:
         li.setMimeType("video/x-matroska")
 
-    # Use Player().play() for reliable playback — setResolvedUrl can fail
-    # when the plugin handle goes stale after WindowXMLDialog.doModal()
     xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
-    xbmc.Player().play(proxy_url, li)
+    xbmc.Player().play(play_url, li)
 
     # Signal the background service to monitor this stream for failures
     home = xbmcgui.Window(10000)
-    home.setProperty("nzbdav.stream_url", proxy_url)
+    home.setProperty("nzbdav.stream_url", play_url)
     home.setProperty("nzbdav.stream_title", stream_url.rsplit("/", 1)[-1])
     home.setProperty("nzbdav.active", "true")
 
 
 def _play_via_proxy(stream_url, stream_headers):
-    """Play a stream (for resolve_and_play path).
-
-    Uses proxy for MP4 (faststart), direct for MKV/other.
-    """
-    from resources.lib.stream_proxy import (
-        get_proxy,
-        get_service_proxy_port,
-        prepare_stream_via_service,
-    )
-
-    lower_url = stream_url.lower()
-    is_mp4 = lower_url.endswith((".mp4", ".m4v"))
-
-    if is_mp4:
-        auth_header = None
-        if stream_headers and "Authorization" in stream_headers:
-            auth_header = stream_headers["Authorization"]
-
-        service_port = get_service_proxy_port()
-        if service_port:
-            proxy_url = prepare_stream_via_service(
-                service_port, stream_url, auth_header
-            )
-        else:
-            proxy = get_proxy()
-            proxy_url = proxy.prepare_stream(stream_url, auth_header)
-
-        xbmc.log("NZB-DAV: Playing via proxy: {}".format(proxy_url), xbmc.LOGINFO)
-
-        li = xbmcgui.ListItem(path=proxy_url)
-        li.setContentLookup(False)
-        li.setMimeType("video/mp4")
-        xbmc.Player().play(proxy_url, li)
-    else:
-        li = _make_playable_listitem(stream_url, stream_headers)
-        xbmc.Player().play(li.getPath(), li)
+    """Play a stream directly (for resolve_and_play path)."""
+    li = _make_playable_listitem(stream_url, stream_headers)
+    xbmc.log("NZB-DAV: Playing direct: {}".format(stream_url), xbmc.LOGINFO)
+    xbmc.Player().play(li.getPath(), li)
 
 
 def _get_poll_settings():
