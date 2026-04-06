@@ -271,3 +271,38 @@ def test_prepare_stream_falls_back_to_non_seekable_on_probe_failure():
     ctx = sp._server.stream_context
     assert ctx["remux"] is True
     assert ctx["seekable"] is False
+
+
+# ---------------------------------------------------------------------------
+# Seek detection — is_seek_request
+# ---------------------------------------------------------------------------
+
+_SEEK_THRESHOLD = 10 * 1024 * 1024  # 10MB
+
+
+def test_seek_detection_continuation():
+    """Request near current position is NOT a seek."""
+    from resources.lib.stream_proxy import _is_seek_request
+
+    assert _is_seek_request(5000000, 5500000) is False  # 500KB ahead
+
+
+def test_seek_detection_forward_jump():
+    """Request far ahead IS a seek."""
+    from resources.lib.stream_proxy import _is_seek_request
+
+    assert _is_seek_request(5000000, 50000000) is True  # 45MB ahead
+
+
+def test_seek_detection_backward():
+    """Any backward request IS a seek."""
+    from resources.lib.stream_proxy import _is_seek_request
+
+    assert _is_seek_request(50000000, 10000000) is True
+
+
+def test_seek_detection_from_zero():
+    """Request at 0 when current is 0 is NOT a seek."""
+    from resources.lib.stream_proxy import _is_seek_request
+
+    assert _is_seek_request(0, 0) is False

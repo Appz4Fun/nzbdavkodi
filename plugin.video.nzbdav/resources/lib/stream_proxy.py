@@ -61,6 +61,21 @@ def _parse_ffmpeg_duration(stderr_text):
     )
 
 
+_SEEK_THRESHOLD = 10 * 1024 * 1024  # 10MB
+
+
+def _is_seek_request(current_byte_pos, requested_byte_pos):
+    """Determine if a range request is a genuine seek or a continuation.
+
+    Returns True if the request is far from the current position (>10MB
+    gap or backward), meaning ffmpeg should be restarted with -ss.
+    """
+    delta = requested_byte_pos - current_byte_pos
+    if delta < 0:
+        return True  # backward seek
+    return delta > _SEEK_THRESHOLD
+
+
 class _StreamHandler(BaseHTTPRequestHandler):
     """HTTP handler that remuxes MP4 to MKV or proxies other formats."""
 
@@ -108,7 +123,11 @@ class _StreamHandler(BaseHTTPRequestHandler):
         if ctx.get("remux"):
             self.send_response(200)
             self.send_header("Content-Type", "video/x-matroska")
-            self.send_header("Accept-Ranges", "none")
+            if ctx.get("seekable"):
+                self.send_header("Content-Length", str(ctx["total_bytes"]))
+                self.send_header("Accept-Ranges", "bytes")
+            else:
+                self.send_header("Accept-Ranges", "none")
             self.send_header("Connection", "close")
             self.end_headers()
         else:
