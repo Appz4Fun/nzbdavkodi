@@ -53,8 +53,13 @@ disable=
     # Unused variable in unpacking
     unused-variable,
     # Duplicate code between playback_monitor.py and service.py is intentional
-    # (service.py embeds the monitor for the background service context)
-    duplicate-code
+    duplicate-code,
+    # subprocess.Popen can't use `with` when we need the process handle for kill/wait
+    consider-using-with,
+    # Global singleton pattern for proxy instance
+    global-statement,
+    # arguments-differ used intentionally (log_message override)
+    arguments-differ
 
 [FORMAT]
 max-line-length=120

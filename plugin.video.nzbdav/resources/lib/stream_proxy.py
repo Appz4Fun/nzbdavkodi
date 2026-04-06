@@ -87,8 +87,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
 
     protocol_version = "HTTP/1.1"
 
-    def log_message(self, format, *args):  # noqa: A002
-        xbmc.log("NZB-DAV: Proxy: {}".format(format % args), xbmc.LOGDEBUG)
+    def log_message(self, fmt, *args):  # pylint: disable=arguments-differ
+        xbmc.log("NZB-DAV: Proxy: {}".format(fmt % args), xbmc.LOGDEBUG)
 
     def do_POST(self):
         """Handle POST /prepare — plugin sends stream config via HTTP."""
