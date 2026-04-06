@@ -140,14 +140,27 @@ def _handle_play(handle, params):
     from resources.lib.filter import filter_results
 
     total_count = len(results)
-    filtered = filter_results(results)
+    filtered, all_parsed = filter_results(results)
 
     progress.close()
 
     if not filtered:
-        notify(_addon_name(), _fmt(30089, title), 3000)
-        xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
-        return
+        if all_parsed:
+            choice = xbmcgui.Dialog().yesno(
+                _addon_name(),
+                "All {} results were filtered out. Show unfiltered?".format(
+                    len(all_parsed)
+                ),
+            )
+            if choice:
+                filtered = all_parsed
+            else:
+                xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+                return
+        else:
+            notify(_addon_name(), _fmt(30087, title), 3000)
+            xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+            return
 
     # Auto-select best match if enabled
     import xbmcaddon
@@ -215,7 +228,29 @@ def _handle_search(handle, params):
         return
 
     total_count = len(results)
-    filtered = filter_results(results)
+    filtered, all_parsed = filter_results(results)
+
+    if not filtered:
+        if all_parsed:
+            import xbmcgui as _gui
+
+            choice = _gui.Dialog().yesno(
+                _addon_name(),
+                "All {} results were filtered out. Show unfiltered?".format(
+                    len(all_parsed)
+                ),
+            )
+            if choice:
+                filtered = all_parsed
+            else:
+                xbmcplugin.endOfDirectory(handle, succeeded=False)
+                return
+        else:
+            from resources.lib.http_util import notify
+
+            notify(_addon_name(), _fmt(30087, title), 3000)
+            xbmcplugin.endOfDirectory(handle, succeeded=False)
+            return
 
     # Auto-select best match if enabled
     addon = xbmcaddon.Addon()
