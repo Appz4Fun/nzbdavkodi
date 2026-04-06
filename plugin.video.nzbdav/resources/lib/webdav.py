@@ -160,13 +160,17 @@ def check_file_available_with_retry(filename, max_retries=3, retry_delay=2):
     return False, "connection_error"
 
 
-def find_video_file(folder_path):
+def find_video_file(folder_path, _depth=0):
     """Browse a WebDAV folder and find the video file.
 
     Uses PROPFIND to list files, returns the path to the largest video file.
+    Recurses into subdirectories up to 2 levels deep if no video found.
     Returns None if no video file found.
     """
     import xml.etree.ElementTree as ET
+
+    if _depth > 2:
+        return None
 
     settings = _get_settings()
     base = settings["webdav_url"] or settings["nzbdav_url"]
@@ -197,12 +201,25 @@ def find_video_file(folder_path):
 
         best_file = None
         best_size = 0
+        subdirs = []
 
         for response in root.findall(".//D:response", ns):
             href = response.find("D:href", ns)
             if href is None:
                 continue
             href_text = href.text or ""
+
+            # Check if it's a collection (subdirectory)
+            resource_type = response.find(".//D:resourcetype/D:collection", ns)
+            if resource_type is not None:
+                # Skip the folder itself (href matches our request URL)
+                from urllib.parse import urlparse
+
+                parsed_href = urlparse(href_text).path.rstrip("/")
+                request_path = urlparse(url).path.rstrip("/")
+                if parsed_href != request_path:
+                    subdirs.append(parsed_href + "/")
+                continue
 
             # Check if it's a video file
             lower_href = href_text.lower()
@@ -229,6 +246,18 @@ def find_video_file(folder_path):
                 xbmc.LOGINFO,
             )
             return file_path
+
+        # No video found at this level, recurse into subdirectories
+        for subdir in subdirs:
+            xbmc.log(
+                "NZB-DAV: No video at depth {}, checking subfolder: {}".format(
+                    _depth, subdir
+                ),
+                xbmc.LOGDEBUG,
+            )
+            result = find_video_file(subdir, _depth + 1)
+            if result:
+                return result
 
         return None
     except Exception as e:

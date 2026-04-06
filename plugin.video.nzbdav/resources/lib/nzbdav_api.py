@@ -94,6 +94,9 @@ def get_job_history(nzo_id):
 def find_completed_by_name(name):
     """Search nzbdav history for a completed download matching the given name.
 
+    Uses the SABnzbd search parameter to narrow results, then matches by name.
+    Falls back to checking the full history if search returns nothing.
+
     Returns dict with: status, storage, name, nzo_id. None if not found.
     """
     try:
@@ -101,10 +104,15 @@ def find_completed_by_name(name):
     except Exception:
         return None
 
+    # Extract a short search term from the name (first few words)
+    search_term = name.split(".")[0] if "." in name else name
+
     params = {
         "mode": "history",
         "apikey": api_key,
         "output": "json",
+        "limit": 200,
+        "search": search_term,
     }
     url = "{}/api?{}".format(base_url, urlencode(params))
 
@@ -127,6 +135,30 @@ def find_completed_by_name(name):
                 "name": slot.get("name", ""),
                 "nzo_id": slot.get("nzo_id", ""),
             }
+
+    # Fallback: broader search without search term filter
+    if search_term:
+        params.pop("search")
+        url = "{}/api?{}".format(base_url, urlencode(params))
+        try:
+            response_text = _http_get(url)
+            response = json.loads(response_text)
+        except Exception:
+            return None
+
+        slots = response.get("history", {}).get("slots", [])
+        for slot in slots:
+            if slot.get("name") == name and slot.get("status") == "Completed":
+                xbmc.log(
+                    "NZB-DAV: Found '{}' in history (broad search)".format(name),
+                    xbmc.LOGINFO,
+                )
+                return {
+                    "status": slot.get("status", ""),
+                    "storage": slot.get("storage", ""),
+                    "name": slot.get("name", ""),
+                    "nzo_id": slot.get("nzo_id", ""),
+                }
     return None
 
 

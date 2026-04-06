@@ -43,22 +43,25 @@ _ERROR_MESSAGES = {
 }
 
 
+def _build_play_url(url, headers):
+    """Build a play URL with optional pipe-separated HTTP headers."""
+    from urllib.parse import quote as _quote
+
+    all_headers = dict(headers) if headers else {}
+    if all_headers:
+        header_str = "&".join(
+            "{}={}".format(k, _quote(v, safe=" /")) for k, v in all_headers.items()
+        )
+        return "{}|{}".format(url, header_str)
+    return url
+
+
 def _make_playable_listitem(url, headers):
     """Create a ListItem with URL and optional HTTP auth headers.
 
     Uses Kodi's pipe-separated header syntax on the URL.
     """
-    from urllib.parse import quote as _quote
-
-    all_headers = dict(headers) if headers else {}
-
-    if all_headers:
-        header_str = "&".join(
-            "{}={}".format(k, _quote(v, safe=" /")) for k, v in all_headers.items()
-        )
-        play_url = "{}|{}".format(url, header_str)
-    else:
-        play_url = url
+    play_url = _build_play_url(url, headers)
 
     xbmc.log("NZB-DAV: Play URL: {}".format(play_url), xbmc.LOGDEBUG)
     li = xbmcgui.ListItem(path=play_url)
@@ -77,6 +80,74 @@ def _make_playable_listitem(url, headers):
     else:
         li.setMimeType("video/x-matroska")
     return li
+
+
+def _play_direct(handle, stream_url, stream_headers):
+    """Play stream — uses proxy for MP4 (faststart), direct for MKV/other.
+
+    MP4 files need the proxy for faststart (moov relocation) because nzbdav's
+    connection:close causes OOM/timeout when CFileCache seeks to the moov atom.
+    MKV files work fine with setResolvedUrl since their index is at the start.
+    """
+    lower_url = stream_url.lower()
+    is_mp4 = lower_url.endswith((".mp4", ".m4v"))
+
+    if is_mp4:
+        _play_via_proxy_resolved(handle, stream_url, stream_headers)
+    else:
+        # MKV and other formats — use setResolvedUrl directly (works fine)
+        li = _make_playable_listitem(stream_url, stream_headers)
+        xbmcplugin.setResolvedUrl(handle, True, li)
+
+
+def _play_via_proxy_resolved(handle, stream_url, stream_headers):
+    """Play MP4 via local faststart proxy."""
+    from resources.lib.stream_proxy import get_proxy
+
+    proxy = get_proxy()
+
+    auth_header = None
+    if stream_headers and "Authorization" in stream_headers:
+        auth_header = stream_headers["Authorization"]
+
+    proxy_url = proxy.prepare_stream(stream_url, auth_header)
+    xbmc.log("NZB-DAV: Playing via proxy: {}".format(proxy_url), xbmc.LOGINFO)
+
+    li = xbmcgui.ListItem(path=proxy_url)
+    li.setContentLookup(False)
+    li.setMimeType("video/mp4")
+
+    # Close the resolution pipeline — we'll play directly instead
+    xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+    xbmc.Player().play(proxy_url, li)
+
+
+def _play_via_proxy(stream_url, stream_headers):
+    """Play a stream (for resolve_and_play path).
+
+    Uses proxy for MP4 (faststart), direct for MKV/other.
+    """
+    lower_url = stream_url.lower()
+    is_mp4 = lower_url.endswith((".mp4", ".m4v"))
+
+    if is_mp4:
+        from resources.lib.stream_proxy import get_proxy
+
+        proxy = get_proxy()
+        auth_header = None
+        if stream_headers and "Authorization" in stream_headers:
+            auth_header = stream_headers["Authorization"]
+
+        proxy_url = proxy.prepare_stream(stream_url, auth_header)
+        xbmc.log("NZB-DAV: Playing via proxy: {}".format(proxy_url), xbmc.LOGINFO)
+
+        li = xbmcgui.ListItem(path=proxy_url)
+        li.setContentLookup(False)
+        li.setMimeType("video/mp4")
+        xbmc.Player().play(proxy_url, li)
+    else:
+        li = _make_playable_listitem(stream_url, stream_headers)
+        xbmc.Player().play(li.getPath(), li)
 
 
 def _get_poll_settings():
@@ -171,8 +242,7 @@ def resolve(handle, params):
         if video_path:
             dialog.close()
             stream_url, stream_headers = get_webdav_stream_url_for_path(video_path)
-            li = _make_playable_listitem(stream_url, stream_headers)
-            xbmcplugin.setResolvedUrl(handle, True, li)
+            _play_direct(handle, stream_url, stream_headers)
             return
 
     xbmc.log("NZB-DAV: Submitting NZB for '{}'".format(title), xbmc.LOGINFO)
@@ -253,6 +323,17 @@ def resolve(handle, params):
             progress = min(int(percentage or 0), 100)
             dialog.update(progress, msg)
 
+        # Check history for failed download
+        if history and history["status"] == "Failed":
+            dialog.close()
+            xbmc.log(
+                "NZB-DAV: Download failed in history for nzo_id={}".format(nzo_id),
+                xbmc.LOGERROR,
+            )
+            _notify(_addon_name(), _string(30100))
+            xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+            return
+
         # Check history for completed download
         if history and history["status"] == "Completed":
             storage = history["storage"]
@@ -276,8 +357,7 @@ def resolve(handle, params):
                         xbmc.LOGWARNING,
                     )
 
-                li = _make_playable_listitem(stream_url, stream_headers)
-                xbmcplugin.setResolvedUrl(handle, True, li)
+                _play_direct(handle, stream_url, stream_headers)
                 return
 
         # Handle WebDAV error types
@@ -323,8 +403,7 @@ def resolve_and_play(nzb_url, title):
         if video_path:
             dialog.close()
             stream_url, stream_headers = get_webdav_stream_url_for_path(video_path)
-            li = _make_playable_listitem(stream_url, stream_headers)
-            xbmc.Player().play(li.getPath(), li)
+            _play_via_proxy(stream_url, stream_headers)
             return
 
     xbmc.log("NZB-DAV: Submitting NZB for '{}'".format(title), xbmc.LOGINFO)
@@ -377,6 +456,16 @@ def resolve_and_play(nzb_url, title):
             _notify(_addon_name(), _string(_ERROR_MESSAGES["auth_failed"]))
             return
 
+        # Check history for failed download
+        if history and history["status"] == "Failed":
+            dialog.close()
+            xbmc.log(
+                "NZB-DAV: Download failed in history for nzo_id={}".format(nzo_id),
+                xbmc.LOGERROR,
+            )
+            _notify(_addon_name(), _string(30100))
+            return
+
         # Check history for completed download
         if history and history["status"] == "Completed":
             storage = history["storage"]
@@ -386,8 +475,7 @@ def resolve_and_play(nzb_url, title):
                 dialog.close()
                 stream_url, stream_headers = get_webdav_stream_url_for_path(video_path)
                 xbmc.log("NZB-DAV: Playing '{}'".format(stream_url), xbmc.LOGINFO)
-                li = _make_playable_listitem(stream_url, stream_headers)
-                xbmc.Player().play(stream_url, li)
+                _play_via_proxy(stream_url, stream_headers)
                 return
 
         if monitor.waitForAbort(poll_interval):
