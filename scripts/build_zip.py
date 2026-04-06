@@ -11,7 +11,14 @@ import zipfile
 
 def build_zip(addon_dir="plugin.video.nzbdav", output_dir="."):
     addon_id = os.path.basename(addon_dir)
-    zip_path = os.path.join(output_dir, "{}.zip".format(addon_id))
+
+    # Read version from addon.xml for versioned zip filename
+    import xml.etree.ElementTree as ET
+
+    addon_xml_path = os.path.join(addon_dir, "addon.xml")
+    tree = ET.parse(addon_xml_path)
+    version = tree.getroot().attrib["version"]
+    zip_path = os.path.join(output_dir, "{}-{}.zip".format(addon_id, version))
 
     skip_dirs = {"__pycache__", ".pytest_cache"}
     skip_files = {".DS_Store"}

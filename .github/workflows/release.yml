@@ -55,5 +55,5 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2
         with:
-          files: plugin.video.nzbdav.zip
+          files: plugin.video.nzbdav-${{ steps.version.outputs.version }}.zip
           generate_release_notes: true

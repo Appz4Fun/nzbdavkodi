@@ -29,6 +29,6 @@ def test_generate_repo_writes_pages_root_files(tmp_path, monkeypatch):
     assert index_path.exists()
     contents = index_path.read_text(encoding="utf-8")
     assert "addons.xml" in contents
-    assert "repository.nzbdav/repository.nzbdav.zip" in contents
-    assert "plugin.video.nzbdav/plugin.video.nzbdav.zip" in contents
+    assert "repository.nzbdav/" in contents
+    assert "plugin.video.nzbdav/" in contents
     assert (tmp_path / ".nojekyll").exists()
