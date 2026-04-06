@@ -144,8 +144,7 @@ def _play_direct(handle, stream_url, stream_headers):
             li.setContentLookup(False)
             li.setMimeType("video/x-matroska")
 
-            xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
-            xbmc.Player().play(proxy_url, li)
+            xbmcplugin.setResolvedUrl(handle, True, li)
 
             home = xbmcgui.Window(10000)
             home.setProperty("nzbdav.stream_url", proxy_url)
@@ -158,8 +157,7 @@ def _play_direct(handle, stream_url, stream_headers):
     xbmc.log("NZB-DAV: Playing direct: {}".format(stream_url), xbmc.LOGINFO)
 
     li = _make_playable_listitem(stream_url, stream_headers)
-    xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
-    xbmc.Player().play(li.getPath(), li)
+    xbmcplugin.setResolvedUrl(handle, True, li)
 
     home = xbmcgui.Window(10000)
     home.setProperty("nzbdav.stream_url", play_url)
