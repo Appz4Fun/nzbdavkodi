@@ -142,10 +142,10 @@ def _play_via_proxy_resolved(handle, stream_url, stream_headers):
     else:
         li.setMimeType("video/x-matroska")
 
-    # Resolve via Kodi's pipeline — proxy URL is a real HTTP URL
-    # so setResolvedUrl(True) works correctly, enabling playlist
-    # queuing, Up Next, and Trakt scrobbling
-    xbmcplugin.setResolvedUrl(handle, True, li)
+    # Use Player().play() for reliable playback — setResolvedUrl can fail
+    # when the plugin handle goes stale after WindowXMLDialog.doModal()
+    xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+    xbmc.Player().play(proxy_url, li)
 
     # Signal the background service to monitor this stream for failures
     home = xbmcgui.Window(10000)

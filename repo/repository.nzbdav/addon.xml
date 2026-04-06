@@ -17,5 +17,8 @@
         <summary lang="en_GB">NZB-DAV addon repository</summary>
         <description lang="en_GB">Install and update the NZB-DAV Kodi addon.</description>
         <platform>all</platform>
+        <assets>
+            <icon>icon.png</icon>
+        </assets>
     </extension>
 </addon>

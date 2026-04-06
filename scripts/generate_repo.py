@@ -125,8 +125,12 @@ def write_pages_index(output_dir):
           </li>
         </ul>
         <p class="meta">
-          Add this repository to Kodi with:
-          <code>https://xbmc4lyfe.github.io/nzbdavkodi/addons.xml</code>
+          <strong>File source URL:</strong>
+          <code>https://xbmc4lyfe.github.io/nzbdavkodi/</code>
+        </p>
+        <p class="meta">
+          Add this URL in Kodi &rarr; File Manager &rarr; Add source, then
+          install <code>repository.nzbdav</code> from zip.
         </p>
       </div>
     </main>
