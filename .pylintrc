@@ -51,7 +51,10 @@ disable=
     # Unknown options across pylint versions (e.g. too-many-positional-arguments on 3.8)
     unknown-option-value,
     # Unused variable in unpacking
-    unused-variable
+    unused-variable,
+    # Duplicate code between playback_monitor.py and service.py is intentional
+    # (service.py embeds the monitor for the background service context)
+    duplicate-code
 
 [FORMAT]
 max-line-length=120
