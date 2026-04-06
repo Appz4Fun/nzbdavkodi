@@ -203,22 +203,42 @@ def find_video_file(folder_path, _depth=0):
         best_size = 0
         subdirs = []
 
+        from urllib.parse import urlparse
+
         for response in root.findall(".//D:response", ns):
             href = response.find("D:href", ns)
             if href is None:
                 continue
-            href_text = href.text or ""
+            href_text = (href.text or "").strip()
+
+            if not href_text:
+                xbmc.log(
+                    "NZB-DAV: Skipping response with empty href in PROPFIND",
+                    xbmc.LOGWARNING,
+                )
+                continue
+
+            try:
+                parsed_href_obj = urlparse(href_text)
+                # For relative paths (no scheme), use href_text as the path directly
+                if parsed_href_obj.scheme:
+                    href_path = parsed_href_obj.path
+                else:
+                    href_path = href_text
+            except Exception as e:
+                xbmc.log(
+                    "NZB-DAV: Skipping malformed href '{}': {}".format(href_text, e),
+                    xbmc.LOGWARNING,
+                )
+                continue
 
             # Check if it's a collection (subdirectory)
             resource_type = response.find(".//D:resourcetype/D:collection", ns)
             if resource_type is not None:
                 # Skip the folder itself (href matches our request URL)
-                from urllib.parse import urlparse
-
-                parsed_href = urlparse(href_text).path.rstrip("/")
                 request_path = urlparse(url).path.rstrip("/")
-                if parsed_href != request_path:
-                    subdirs.append(parsed_href + "/")
+                if href_path.rstrip("/") != request_path:
+                    subdirs.append(href_path.rstrip("/") + "/")
                 continue
 
             # Check if it's a video file
@@ -232,15 +252,10 @@ def find_video_file(folder_path, _depth=0):
 
             if size >= best_size:
                 best_size = size
-                best_file = href_text
+                best_file = href_path
 
         if best_file:
-            # The href from PROPFIND uses localhost:8080, convert to our base URL
-            # Extract just the path portion
-            from urllib.parse import urlparse
-
-            parsed = urlparse(best_file)
-            file_path = parsed.path
+            file_path = best_file
             xbmc.log(
                 "NZB-DAV: Found video file: {} ({} bytes)".format(file_path, best_size),
                 xbmc.LOGINFO,

@@ -282,3 +282,83 @@ def test_get_webdav_stream_url_for_path_without_auth(mock_settings):
     url, headers = get_webdav_stream_url_for_path(file_path)
     assert url == "http://webdav:8080/content/uncategorized/Movie/Movie.mkv"
     assert headers == {}
+
+
+# --- find_video_file hardening tests ---
+
+_PROPFIND_WITH_EMPTY_HREF = """<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href></D:href>
+    <D:propstat>
+      <D:prop><D:resourcetype/></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/content/uncategorized/Movie/Good.Movie.2024.mkv</D:href>
+    <D:propstat>
+      <D:prop>
+        <D:getcontentlength>2147483648</D:getcontentlength>
+        <D:resourcetype/>
+      </D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+</D:multistatus>"""
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_handles_malformed_href(mock_urlopen, mock_settings):
+    """find_video_file should skip malformed hrefs without crashing."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    mock_resp = MagicMock()
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    mock_resp.read.return_value = _PROPFIND_WITH_EMPTY_HREF.encode("utf-8")
+    mock_urlopen.return_value = mock_resp
+
+    path = find_video_file("/content/uncategorized/Movie/")
+    assert path is not None
+    assert path.endswith(".mkv")
+    assert "Good.Movie.2024" in path
+
+
+_PROPFIND_RELATIVE_HREFS = """<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/content/uncategorized/Relative%20Movie/</D:href>
+    <D:propstat>
+      <D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/content/uncategorized/Relative%20Movie/Relative.Movie.2024.mkv</D:href>
+    <D:propstat>
+      <D:prop>
+        <D:getcontentlength>3221225472</D:getcontentlength>
+        <D:resourcetype/>
+      </D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+</D:multistatus>"""
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_handles_relative_href(mock_urlopen, mock_settings):
+    """find_video_file should handle relative path hrefs (no http://host prefix)."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    mock_resp = MagicMock()
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    mock_resp.read.return_value = _PROPFIND_RELATIVE_HREFS.encode("utf-8")
+    mock_urlopen.return_value = mock_resp
+
+    path = find_video_file("/content/uncategorized/Relative Movie/")
+    assert path is not None
+    assert path.endswith(".mkv")
+    assert "Relative.Movie.2024" in path
