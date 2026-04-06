@@ -279,8 +279,6 @@ def test_prepare_stream_falls_back_to_non_seekable_on_probe_failure():
 # Seek detection — is_seek_request
 # ---------------------------------------------------------------------------
 
-_SEEK_THRESHOLD = 10 * 1024 * 1024  # 10MB
-
 
 def test_seek_detection_continuation():
     """Request near current position is NOT a seek."""
