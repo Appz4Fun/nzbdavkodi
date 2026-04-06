@@ -111,7 +111,7 @@ def test_get_webdav_stream_url_without_auth(mock_settings):
     mock_settings.return_value = _SETTINGS_NO_AUTH
     url, headers = get_webdav_stream_url("movie.mkv")
     assert url == "http://webdav:8080/movie.mkv"
-    assert headers == {}
+    assert not headers
 
 
 @patch("resources.lib.webdav._get_settings")
@@ -281,7 +281,7 @@ def test_get_webdav_stream_url_for_path_without_auth(mock_settings):
     file_path = "/content/uncategorized/Movie/Movie.mkv"
     url, headers = get_webdav_stream_url_for_path(file_path)
     assert url == "http://webdav:8080/content/uncategorized/Movie/Movie.mkv"
-    assert headers == {}
+    assert not headers
 
 
 # --- find_video_file hardening tests ---

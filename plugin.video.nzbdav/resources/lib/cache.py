@@ -92,7 +92,7 @@ def _evict_oldest():
         if total <= MAX_CACHE_SIZE_BYTES:
             return
         # Sort by mtime ascending (oldest first)
-        files.sort(key=lambda p: os.path.getmtime(p))
+        files.sort(key=os.path.getmtime)
         for path in files:
             if total <= MAX_CACHE_SIZE_BYTES:
                 break

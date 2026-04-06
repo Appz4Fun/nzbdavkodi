@@ -465,7 +465,7 @@ def test_get_content_length_falls_back_to_range_probe():
     def fake_urlopen(req, timeout):
         if call_count[0] == 0:
             call_count[0] += 1
-            raise Exception("HEAD failed")
+            raise OSError("HEAD failed")
         return mock_resp
 
     with patch("resources.lib.stream_proxy.urlopen", side_effect=fake_urlopen):

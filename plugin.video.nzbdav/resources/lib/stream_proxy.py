@@ -126,7 +126,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
 
     protocol_version = "HTTP/1.1"
 
-    def log_message(self, format, *args):
+    def log_message(self, fmt, *args):  # pylint: disable=arguments-renamed
         pass
 
     def do_HEAD(self):
@@ -378,7 +378,7 @@ class _ThreadedHTTPServer(_ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
 
-class StreamProxy(object):
+class StreamProxy:
     """Local HTTP proxy server for nzbdav streams."""
 
     def __init__(self):
@@ -390,7 +390,9 @@ class StreamProxy(object):
     def start(self):
         """Start the proxy server on a random port."""
         self._server = _ThreadedHTTPServer(("127.0.0.1", 0), _StreamHandler)
-        self._server.stream_context = None
+        self._server.stream_context = (
+            None  # pylint: disable=attribute-defined-outside-init
+        )
         self.port = self._server.server_address[1]
         self._thread = threading.Thread(target=self._server.serve_forever)
         self._thread.daemon = True
@@ -434,7 +436,9 @@ class StreamProxy(object):
             self._prepare_faststart(ctx, remote_url, auth_header, content_length)
 
         with self._context_lock:
-            self._server.stream_context = ctx
+            self._server.stream_context = (
+                ctx  # pylint: disable=attribute-defined-outside-init
+            )
         local_url = "http://127.0.0.1:{}/stream".format(self.port)
         xbmc.log(
             "NZB-DAV: Proxy ready (faststart={}): {}".format(
@@ -608,7 +612,7 @@ class StreamProxy(object):
 
 def get_proxy():
     """Get or create the singleton stream proxy."""
-    global _proxy
+    global _proxy  # pylint: disable=global-statement
     with _proxy_lock:
         if _proxy is None:
             _proxy = StreamProxy()
