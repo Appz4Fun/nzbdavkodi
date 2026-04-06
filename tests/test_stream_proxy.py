@@ -134,17 +134,25 @@ def test_prepare_stream_remuxes_mp4_when_ffmpeg_available():
     sp._context_lock = __import__("threading").Lock()
     sp.port = 9999
 
+    mock_proc = MagicMock()
+    mock_proc.communicate.return_value = (
+        b"",
+        b"  Duration: 01:00:00.00, start: 0.000000\n",
+    )
+
     with patch(
         "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
-    ), patch.object(sp, "_get_content_length", return_value=1000000), patch.object(
-        sp, "_probe_duration", return_value=3600.0
+    ), patch.object(sp, "_get_content_length", return_value=5000000000), patch(
+        "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
     ):
-        url = sp.prepare_stream("http://host/film.mp4", auth_header="Basic abc")
+        auth = "Basic " + __import__("base64").b64encode(b"user:pass").decode()
+        url = sp.prepare_stream("http://host/film.mp4", auth_header=auth)
 
     assert url == "http://127.0.0.1:9999/stream"
     ctx = sp._server.stream_context
     assert ctx["remux"] is True
-    assert ctx["ffmpeg_path"] == "/usr/bin/ffmpeg"
+    assert ctx["seekable"] is True
+    assert ctx["duration_seconds"] == 3600.0
 
 
 def test_prepare_stream_proxies_mkv():
@@ -306,3 +314,90 @@ def test_seek_detection_from_zero():
     from resources.lib.stream_proxy import _is_seek_request
 
     assert _is_seek_request(0, 0) is False
+
+
+# ---------------------------------------------------------------------------
+# _build_ffmpeg_cmd — subtitle flag toggling
+# ---------------------------------------------------------------------------
+
+
+def test_build_ffmpeg_cmd_includes_subs_by_default():
+    """Default: subtitle mapping flags are present."""
+    handler = _make_handler()
+    ctx = {
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "remote_url": "http://host/film.mp4",
+        "auth_header": None,
+    }
+    cmd = handler._build_ffmpeg_cmd(ctx)
+    assert "-map" in cmd
+    # Check subs mapping is present (0:s? appears after 0:a)
+    assert "0:s?" in cmd
+    assert "srt" in cmd
+
+
+def test_build_ffmpeg_cmd_excludes_subs_when_setting_off():
+    """When proxy_convert_subs is false, no subtitle flags."""
+    import sys
+
+    handler = _make_handler()
+    ctx = {
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "remote_url": "http://host/film.mp4",
+        "auth_header": None,
+    }
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.return_value = "false"
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        cmd = handler._build_ffmpeg_cmd(ctx)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    assert "0:s?" not in cmd
+    assert "srt" not in cmd
+
+
+def test_build_ffmpeg_cmd_includes_seek():
+    """When seek_seconds is set, -ss appears before -i."""
+    handler = _make_handler()
+    ctx = {
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "remote_url": "http://host/film.mp4",
+        "auth_header": None,
+    }
+    cmd = handler._build_ffmpeg_cmd(ctx, seek_seconds=3600.5)
+    ss_idx = cmd.index("-ss")
+    i_idx = cmd.index("-i")
+    assert ss_idx < i_idx
+    assert cmd[ss_idx + 1] == "3600.500"
+
+
+def test_build_ffmpeg_cmd_no_seek_when_none():
+    """When seek_seconds is None, -ss is not in the command."""
+    handler = _make_handler()
+    ctx = {
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "remote_url": "http://host/film.mp4",
+        "auth_header": None,
+    }
+    cmd = handler._build_ffmpeg_cmd(ctx, seek_seconds=None)
+    assert "-ss" not in cmd
+
+
+def test_build_ffmpeg_cmd_embeds_basic_auth():
+    """Basic auth header is embedded in the URL for ffmpeg."""
+    import base64
+
+    handler = _make_handler()
+    auth = "Basic " + base64.b64encode(b"user:pass").decode()
+    ctx = {
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "remote_url": "http://host/film.mp4",
+        "auth_header": auth,
+    }
+    cmd = handler._build_ffmpeg_cmd(ctx)
+    i_idx = cmd.index("-i")
+    assert "user:pass@host" in cmd[i_idx + 1]
