@@ -42,8 +42,9 @@ def submit_nzb(nzb_url, nzb_name=""):
     except (URLError, json.JSONDecodeError, Exception) as e:
         xbmc.log("NZB-DAV: Submit NZB request failed: {}".format(e), xbmc.LOGERROR)
         return None
-    if response.get("status") and response.get("nzo_ids"):
-        nzo_id = response["nzo_ids"][0]
+    nzo_ids = response.get("nzo_ids")
+    if response.get("status") and isinstance(nzo_ids, list) and nzo_ids and nzo_ids[0]:
+        nzo_id = nzo_ids[0]
         xbmc.log(
             "NZB-DAV: NZB submitted successfully, nzo_id={}".format(nzo_id),
             xbmc.LOGINFO,

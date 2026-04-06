@@ -232,6 +232,24 @@ def test_get_job_history_connection_error(mock_http, mock_settings):
 
 @patch("resources.lib.nzbdav_api._get_settings")
 @patch("resources.lib.nzbdav_api._http_get")
+def test_submit_nzb_handles_malformed_response(mock_http, mock_settings):
+    """submit_nzb handles malformed API responses gracefully."""
+    mock_settings.return_value = ("http://nzbdav:3333", "testkey")
+    # status false with null nzo_id
+    mock_http.return_value = '{"status": false, "nzo_ids": [null]}'
+    assert submit_nzb("http://nzb/test.nzb", "test") is None
+
+    # empty nzo_ids list
+    mock_http.return_value = '{"status": true, "nzo_ids": []}'
+    assert submit_nzb("http://nzb/test.nzb", "test") is None
+
+    # missing nzo_ids entirely
+    mock_http.return_value = '{"status": true}'
+    assert submit_nzb("http://nzb/test.nzb", "test") is None
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
 def test_get_job_history_finds_correct_slot(mock_http, mock_settings):
     """get_job_history finds the correct slot among multiple history entries."""
     mock_settings.return_value = ("http://nzbdav:3000", "testkey")
