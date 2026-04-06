@@ -47,6 +47,39 @@ def test_parse_range_zero_start():
 
 
 # ---------------------------------------------------------------------------
+# _validate_url
+# ---------------------------------------------------------------------------
+
+
+def test_validate_url_rejects_none():
+    import pytest
+    from resources.lib.stream_proxy import _validate_url
+
+    with pytest.raises(ValueError, match="None"):
+        _validate_url(None)
+
+
+def test_validate_url_rejects_ftp():
+    import pytest
+    from resources.lib.stream_proxy import _validate_url
+
+    with pytest.raises(ValueError):
+        _validate_url("ftp://host/file.mp4")
+
+
+def test_validate_url_accepts_http():
+    from resources.lib.stream_proxy import _validate_url
+
+    _validate_url("http://host/file.mp4")  # should not raise
+
+
+def test_validate_url_accepts_https():
+    from resources.lib.stream_proxy import _validate_url
+
+    _validate_url("https://host/file.mp4")  # should not raise
+
+
+# ---------------------------------------------------------------------------
 # StreamProxy._detect_content_type
 # ---------------------------------------------------------------------------
 

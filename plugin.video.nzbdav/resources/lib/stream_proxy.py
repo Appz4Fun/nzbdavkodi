@@ -47,7 +47,7 @@ def _find_ffmpeg():
 def _validate_url(url):
     """Reject URLs with unexpected schemes to prevent command injection."""
     if not url or not url.startswith(("http://", "https://")):
-        raise ValueError("Invalid URL scheme: {}".format(url[:30]))
+        raise ValueError("Invalid URL scheme: {}".format(repr(url)[:30]))
 
 
 def _parse_ffmpeg_duration(stderr_text):
@@ -253,7 +253,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     try:
                         self.server.active_ffmpeg.kill()
                         self.server.active_ffmpeg.wait()
-                    except Exception:
+                    except OSError:
                         pass
                     self.server.active_ffmpeg = None
 
