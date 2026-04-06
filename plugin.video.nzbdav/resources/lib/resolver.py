@@ -85,25 +85,17 @@ def _make_playable_listitem(url, headers):
 
 
 def _play_direct(handle, stream_url, stream_headers):
-    """Play stream — uses proxy for MP4 (faststart), direct for MKV/other.
+    """Play stream via local proxy for all formats.
 
-    MP4 files need the proxy for faststart (moov relocation) because nzbdav's
-    connection:close causes OOM/timeout when CFileCache seeks to the moov atom.
-    MKV files work fine with setResolvedUrl since their index is at the start.
+    All files go through the proxy to avoid stale-handle issues where Kodi
+    tries to play the TMDBHelper plugin:// URL instead of our stream.
+    MP4 files get faststart (moov relocation); MKV/other pass through as-is.
     """
-    lower_url = stream_url.lower()
-    is_mp4 = lower_url.endswith((".mp4", ".m4v"))
-
-    if is_mp4:
-        _play_via_proxy_resolved(handle, stream_url, stream_headers)
-    else:
-        # MKV and other formats — use setResolvedUrl directly (works fine)
-        li = _make_playable_listitem(stream_url, stream_headers)
-        xbmcplugin.setResolvedUrl(handle, True, li)
+    _play_via_proxy_resolved(handle, stream_url, stream_headers)
 
 
 def _play_via_proxy_resolved(handle, stream_url, stream_headers):
-    """Play MP4 via local faststart proxy."""
+    """Play via local proxy — handles all formats."""
     from resources.lib.stream_proxy import get_proxy
 
     proxy = get_proxy()
@@ -117,9 +109,19 @@ def _play_via_proxy_resolved(handle, stream_url, stream_headers):
 
     li = xbmcgui.ListItem(path=proxy_url)
     li.setContentLookup(False)
-    li.setMimeType("video/mp4")
+    # Set mime type based on source file extension
+    lower_url = stream_url.lower()
+    if lower_url.endswith(".mkv"):
+        li.setMimeType("video/x-matroska")
+    elif lower_url.endswith((".mp4", ".m4v")):
+        li.setMimeType("video/mp4")
+    elif lower_url.endswith(".avi"):
+        li.setMimeType("video/x-msvideo")
+    else:
+        li.setMimeType("video/x-matroska")
 
-    # Close the resolution pipeline — we'll play directly instead
+    # Close the resolution pipeline — we'll play via Player() directly
+    # to avoid stale handle issues with TMDBHelper
     xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
     xbmc.Player().play(proxy_url, li)
 

@@ -53,6 +53,7 @@ def test_storage_to_webdav_path_trailing_slash():
 # --- resolve() tests ---
 
 
+@patch("resources.lib.stream_proxy.get_proxy")
 @patch("resources.lib.resolver.xbmc")
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver.xbmcplugin")
@@ -74,6 +75,7 @@ def test_resolve_success(
     mock_plugin,
     mock_gui,
     mock_xbmc,
+    mock_get_proxy,
 ):
     mock_poll.return_value = (2, 60)
     mock_submit.return_value = "SABnzbd_nzo_abc123"
@@ -90,6 +92,9 @@ def test_resolve_success(
     )
     mock_validate.return_value = True
     mock_xbmc.Monitor.return_value = _make_monitor()
+    mock_proxy = MagicMock()
+    mock_proxy.prepare_stream.return_value = "http://127.0.0.1:57800/stream"
+    mock_get_proxy.return_value = mock_proxy
 
     dialog = MagicMock()
     dialog.iscanceled.return_value = False
@@ -98,10 +103,11 @@ def test_resolve_success(
     resolve(1, {"nzburl": "http://hydra/getnzb/abc", "title": "movie.mkv"})
 
     mock_submit.assert_called_once()
-    # MKV files use setResolvedUrl(handle, True, ...) directly
+    # All formats go through proxy — setResolvedUrl(False) + Player().play()
     mock_plugin.setResolvedUrl.assert_called_once()
     resolve_call = mock_plugin.setResolvedUrl.call_args
-    assert resolve_call[0][1] is True
+    assert resolve_call[0][1] is False
+    mock_xbmc.Player.return_value.play.assert_called_once()
 
 
 @patch("resources.lib.resolver.find_completed_by_name")
@@ -336,9 +342,9 @@ def test_resolve_url_encoded_special_characters(
     resolve(1, {"nzburl": encoded_url, "title": encoded_title})
 
     submit_call_args = mock_submit.call_args[0]
-    assert (
-        "hydra:5076" in submit_call_args[0]
-    ), "NZB URL should be decoded before submit"
+    assert "hydra:5076" in submit_call_args[0], (
+        "NZB URL should be decoded before submit"
+    )
     assert "Spider-Man" in submit_call_args[1], "Title should be decoded before submit"
     mock_plugin.setResolvedUrl.assert_called_once()
 
@@ -379,6 +385,7 @@ def test_resolve_poll_interval_respected(
     monitor.waitForAbort.assert_called_with(poll_interval)
 
 
+@patch("resources.lib.stream_proxy.get_proxy")
 @patch("resources.lib.resolver.xbmc")
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver.xbmcplugin")
@@ -400,6 +407,7 @@ def test_resolve_status_transitions_queued_to_downloading_to_completed(
     mock_plugin,
     mock_gui,
     mock_xbmc,
+    mock_get_proxy,
 ):
     """resolve() handles Queued -> Downloading -> Completed via history."""
     mock_poll.return_value = (1, 3600)
@@ -424,6 +432,9 @@ def test_resolve_status_transitions_queued_to_downloading_to_completed(
         {"Authorization": "Basic dXNlcjpwYXNz"},
     )
     mock_validate.return_value = True
+    mock_proxy = MagicMock()
+    mock_proxy.prepare_stream.return_value = "http://127.0.0.1:57800/stream"
+    mock_get_proxy.return_value = mock_proxy
 
     dialog = MagicMock()
     dialog.iscanceled.return_value = False
@@ -433,13 +444,14 @@ def test_resolve_status_transitions_queued_to_downloading_to_completed(
 
     resolve(1, {"nzburl": "http://hydra/getnzb/trans", "title": "downloaded.mkv"})
 
-    assert (
-        mock_history.call_count == 3
-    ), "get_job_history should be polled three times before completing"
-    # MKV files use setResolvedUrl(handle, True, ...) directly
+    assert mock_history.call_count == 3, (
+        "get_job_history should be polled three times before completing"
+    )
+    # All formats go through proxy — setResolvedUrl(False) + Player().play()
     mock_plugin.setResolvedUrl.assert_called_once()
     resolve_call = mock_plugin.setResolvedUrl.call_args
-    assert resolve_call[0][1] is True
+    assert resolve_call[0][1] is False
+    mock_xbmc.Player.return_value.play.assert_called_once()
 
 
 @patch("resources.lib.resolver.find_completed_by_name")

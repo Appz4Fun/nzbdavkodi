@@ -83,6 +83,37 @@ def _clean_params(params):
     return {k: ("" if v == "_" else v) for k, v in params.items()}
 
 
+def _lookup_episode_info(imdb, tmdb_id=""):
+    """Look up show title and episode info from IMDB ID via TMDB API.
+
+    Used when TMDBHelper passes only IMDB ID without season/episode
+    (e.g., from calendar widgets).
+    """
+    try:
+        import json
+        from urllib.request import urlopen
+
+        # Use IMDB suggestion API to get the show title
+        url = "https://v2.sg.media-imdb.com/suggestion/t/{}.json".format(imdb)
+        with urlopen(url, timeout=5) as resp:
+            data = json.loads(resp.read())
+            results = data.get("d", [])
+            if results:
+                title = results[0].get("l", "")
+                if title:
+                    xbmc.log(
+                        "NZB-DAV: Looked up title '{}' for {}".format(title, imdb),
+                        xbmc.LOGDEBUG,
+                    )
+                    return {"title": title}
+    except Exception as e:
+        xbmc.log(
+            "NZB-DAV: Episode lookup failed for {}: {}".format(imdb, e),
+            xbmc.LOGDEBUG,
+        )
+    return None
+
+
 def _handle_play(handle, params):
     """Called via plugin:// URL from TMDBHelper.
 
@@ -101,8 +132,63 @@ def _handle_play(handle, params):
     title = params.get("title", "")
     year = params.get("year", "")
     imdb = params.get("imdb", "")
-    season = params.get("season", "")
-    episode = params.get("episode", "")
+    season = params.get("season", "") or params.get("ep_season", "")
+    episode = params.get("episode", "") or params.get("ep_episode", "")
+
+    # Fallback: try every possible Kodi InfoLabel source for episode info
+    if search_type == "episode" and (not season or not episode):
+        # Try all known InfoLabel paths
+        label_sources = [
+            ("ListItem", "ListItem.Season", "ListItem.Episode", "ListItem.TVShowTitle"),
+            (
+                "Container.ListItem",
+                "Container.ListItem.Season",
+                "Container.ListItem.Episode",
+                "Container.ListItem.TVShowTitle",
+            ),
+            (
+                "VideoPlayer",
+                "VideoPlayer.Season",
+                "VideoPlayer.Episode",
+                "VideoPlayer.TVShowTitle",
+            ),
+            (
+                "Container(50).ListItem",
+                "Container(50).ListItem.Season",
+                "Container(50).ListItem.Episode",
+                "Container(50).ListItem.TVShowTitle",
+            ),
+        ]
+        for src_name, s_label, e_label, t_label in label_sources:
+            il_s = xbmc.getInfoLabel(s_label)
+            il_e = xbmc.getInfoLabel(e_label)
+            il_t = xbmc.getInfoLabel(t_label)
+            xbmc.log(
+                "NZB-DAV: InfoLabel [{}]: S='{}' E='{}' T='{}'".format(
+                    src_name, il_s, il_e, il_t
+                ),
+                xbmc.LOGDEBUG,
+            )
+            if il_s and il_s not in ("", "-1", "0"):
+                season = season or il_s
+            if il_e and il_e not in ("", "-1", "0"):
+                episode = episode or il_e
+            if il_t and not title:
+                title = il_t
+            if season and episode:
+                xbmc.log(
+                    "NZB-DAV: InfoLabel resolved: '{}' S{}E{} (from {})".format(
+                        title, season, episode, src_name
+                    ),
+                    xbmc.LOGINFO,
+                )
+                break
+
+    # If we still have IMDB but no title, look up from IMDB
+    if search_type == "episode" and imdb and not title:
+        looked_up = _lookup_episode_info(imdb, params.get("tmdb_id", ""))
+        if looked_up:
+            title = looked_up.get("title", title)
 
     # Show progress bar while searching
     progress = xbmcgui.DialogProgress()
@@ -243,8 +329,16 @@ def _handle_search(handle, params):
     title = params.get("title", "")
     year = params.get("year", "")
     imdb = params.get("imdb", "")
-    season = params.get("season", "")
-    episode = params.get("episode", "")
+    season = params.get("season", "") or params.get("ep_season", "")
+    episode = params.get("episode", "") or params.get("ep_episode", "")
+
+    # If we have IMDB but no title/season/episode, look up from TMDB
+    if search_type == "episode" and imdb and not title:
+        looked_up = _lookup_episode_info(imdb, params.get("tmdb_id", ""))
+        if looked_up:
+            title = looked_up.get("title", title)
+            season = season or looked_up.get("season", "")
+            episode = episode or looked_up.get("episode", "")
 
     cache_kwargs = dict(year=year, imdb=imdb, season=season, episode=episode)
     xbmc.log(
