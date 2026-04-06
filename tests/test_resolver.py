@@ -3,7 +3,7 @@
 
 from unittest.mock import MagicMock, patch
 
-from resources.lib.resolver import _storage_to_webdav_path, resolve
+from resources.lib.resolver import MAX_POLL_ITERATIONS, _storage_to_webdav_path, resolve
 
 
 def _make_monitor(abort_after=None):
@@ -454,3 +454,41 @@ def test_resolve_dialog_closed_on_exception(
 
     dialog.close.assert_called()
     mock_plugin.setResolvedUrl.assert_called_once()
+
+
+@patch("resources.lib.resolver.find_completed_by_name")
+@patch("resources.lib.resolver.xbmc")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.xbmcplugin")
+@patch("resources.lib.resolver.get_job_history")
+@patch("resources.lib.resolver.get_job_status")
+@patch("resources.lib.resolver.submit_nzb")
+@patch("resources.lib.resolver._get_poll_settings")
+def test_resolve_max_iterations_safeguard(
+    mock_poll,
+    mock_submit,
+    mock_status,
+    mock_history,
+    mock_plugin,
+    mock_gui,
+    mock_xbmc,
+    mock_find,
+):
+    """Resolve loop exits after MAX_POLL_ITERATIONS even without timeout."""
+    mock_poll.return_value = (0, 999999)  # Very long timeout, 0s interval
+    mock_find.return_value = None
+    mock_submit.return_value = "SABnzbd_nzo_stuck"
+    mock_status.return_value = {"status": "Queued", "percentage": "0"}
+    mock_history.return_value = None
+    mock_xbmc.Monitor.return_value = MagicMock()
+    mock_xbmc.Monitor.return_value.waitForAbort.return_value = False
+
+    dialog = MagicMock()
+    dialog.iscanceled.return_value = False
+    mock_gui.DialogProgress.return_value = dialog
+
+    resolve(1, {"nzburl": "http://hydra/getnzb/stuck", "title": "stuck.mkv"})
+
+    mock_plugin.setResolvedUrl.assert_called_once()
+    assert mock_plugin.setResolvedUrl.call_args[0][1] is False
+    assert mock_status.call_count <= MAX_POLL_ITERATIONS

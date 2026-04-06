@@ -28,6 +28,8 @@ from resources.lib.webdav import (
     validate_stream,
 )
 
+MAX_POLL_ITERATIONS = 720  # 1 hour at 5s interval
+
 _STATUS_MESSAGES = {
     "Queued": 30102,
     "Fetching": 30103,
@@ -249,8 +251,21 @@ def _resolve_inner(handle, nzb_url, title, dialog, poll_interval, download_timeo
     monitor = xbmc.Monitor()
     start_time = time.time()
     last_status = None
+    iteration = 0
 
     while True:
+        iteration += 1
+        if iteration > MAX_POLL_ITERATIONS:
+            xbmc.log(
+                "NZB-DAV: Max poll iterations ({}) reached for nzo_id={}".format(
+                    MAX_POLL_ITERATIONS, nzo_id
+                ),
+                xbmc.LOGERROR,
+            )
+            _notify(_addon_name(), _string(30099))
+            xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+            return
+
         elapsed = time.time() - start_time
 
         if elapsed >= download_timeout:
@@ -410,8 +425,20 @@ def _resolve_and_play_inner(nzb_url, title, dialog, poll_interval, download_time
 
     monitor = xbmc.Monitor()
     start_time = time.time()
+    iteration = 0
 
     while True:
+        iteration += 1
+        if iteration > MAX_POLL_ITERATIONS:
+            xbmc.log(
+                "NZB-DAV: Max poll iterations ({}) reached for nzo_id={}".format(
+                    MAX_POLL_ITERATIONS, nzo_id
+                ),
+                xbmc.LOGERROR,
+            )
+            _notify(_addon_name(), _string(30099))
+            return
+
         elapsed = time.time() - start_time
 
         if elapsed >= download_timeout:
