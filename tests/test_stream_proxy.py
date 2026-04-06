@@ -176,3 +176,35 @@ def test_prepare_stream_falls_back_to_proxy_without_ffmpeg():
 
     ctx = sp._server.stream_context
     assert ctx["remux"] is False
+
+
+# ---------------------------------------------------------------------------
+# _probe_duration — parse duration from ffmpeg stderr
+# ---------------------------------------------------------------------------
+
+
+def test_probe_duration_parses_hms():
+    from resources.lib.stream_proxy import _parse_ffmpeg_duration
+
+    stderr = "  Duration: 01:30:45.67, start: 0.000000, bitrate: 30000 kb/s\n"
+    assert _parse_ffmpeg_duration(stderr) == 5445.67
+
+
+def test_probe_duration_parses_minutes_only():
+    from resources.lib.stream_proxy import _parse_ffmpeg_duration
+
+    stderr = "  Duration: 00:02:30.00, start: 0.000000\n"
+    assert _parse_ffmpeg_duration(stderr) == 150.0
+
+
+def test_probe_duration_returns_none_on_missing():
+    from resources.lib.stream_proxy import _parse_ffmpeg_duration
+
+    assert _parse_ffmpeg_duration("no duration here") is None
+
+
+def test_probe_duration_returns_none_on_n_a():
+    from resources.lib.stream_proxy import _parse_ffmpeg_duration
+
+    stderr = "  Duration: N/A, start: 0.000000\n"
+    assert _parse_ffmpeg_duration(stderr) is None

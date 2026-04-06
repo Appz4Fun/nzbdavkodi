@@ -11,6 +11,7 @@ For MKV and other files, proxies range requests directly to the remote
 WebDAV server with proper 206 responses.
 """
 
+import re
 import shutil
 import subprocess
 import threading
@@ -41,6 +42,23 @@ def _find_ffmpeg():
         if found:
             return found
     return None
+
+
+def _parse_ffmpeg_duration(stderr_text):
+    """Parse 'Duration: HH:MM:SS.xx' from ffmpeg stderr output.
+
+    Returns duration in seconds as a float, or None if not found.
+    """
+    match = re.search(r"Duration:\s*(\d+):(\d+):(\d+)\.(\d+)", stderr_text)
+    if not match:
+        return None
+    hours, minutes, seconds, frac = match.groups()
+    return (
+        int(hours) * 3600
+        + int(minutes) * 60
+        + int(seconds)
+        + int(frac) / (10 ** len(frac))
+    )
 
 
 class _StreamHandler(BaseHTTPRequestHandler):
