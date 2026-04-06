@@ -183,6 +183,9 @@ class _StreamHandler(BaseHTTPRequestHandler):
             ]
         )
 
+        # Use explicit per-stream copy to avoid -c copy overriding -c:s srt
+        cmd.extend(["-c:v", "copy", "-c:a", "copy"])
+
         # Subtitle conversion (toggleable via setting)
         try:
             import xbmcaddon
@@ -195,8 +198,6 @@ class _StreamHandler(BaseHTTPRequestHandler):
 
         cmd.extend(
             [
-                "-c",
-                "copy",
                 "-f",
                 "matroska",
                 "-fflags",
@@ -240,6 +241,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 if self.server.active_ffmpeg:
                     try:
                         self.server.active_ffmpeg.kill()
+                        self.server.active_ffmpeg.wait()
                     except Exception:
                         pass
                     self.server.active_ffmpeg = None
@@ -298,6 +300,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
             )
         finally:
             proc.kill()
+            proc.wait()
             stderr = proc.stderr.read().decode(errors="replace")
             if stderr.strip():
                 xbmc.log("NZB-DAV: ffmpeg: {}".format(stderr[:300]), xbmc.LOGDEBUG)
@@ -467,8 +470,18 @@ class StreamProxy:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
-            _, stderr = proc.communicate(timeout=120)
-            return _parse_ffmpeg_duration(stderr.decode(errors="replace"))
+            # Read stderr line-by-line; Duration appears in the header.
+            # Kill ffmpeg as soon as we have it to avoid reading the whole file.
+            collected = ""
+            for line in proc.stderr:
+                collected += line.decode(errors="replace")
+                result = _parse_ffmpeg_duration(collected)
+                if result is not None:
+                    proc.kill()
+                    proc.wait()
+                    return result
+            proc.wait(timeout=30)
+            return _parse_ffmpeg_duration(collected)
         except Exception as e:
             xbmc.log("NZB-DAV: Duration probe failed: {}".format(e), xbmc.LOGWARNING)
             return None

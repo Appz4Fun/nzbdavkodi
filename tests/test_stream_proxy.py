@@ -135,10 +135,7 @@ def test_prepare_stream_remuxes_mp4_when_ffmpeg_available():
     sp.port = 9999
 
     mock_proc = MagicMock()
-    mock_proc.communicate.return_value = (
-        b"",
-        b"  Duration: 01:00:00.00, start: 0.000000\n",
-    )
+    mock_proc.stderr = iter([b"  Duration: 01:00:00.00, start: 0.000000\n"])
 
     with patch(
         "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
@@ -236,11 +233,9 @@ def test_prepare_stream_probes_duration_for_mp4():
     sp.port = 9999
 
     mock_proc = MagicMock()
-    mock_proc.communicate.return_value = (
-        b"",
-        b"  Duration: 02:00:00.00, start: 0.000000, bitrate: 30000 kb/s\n",
+    mock_proc.stderr = iter(
+        [b"  Duration: 02:00:00.00, start: 0.000000, bitrate: 30000 kb/s\n"]
     )
-    mock_proc.returncode = 1  # ffmpeg -f null returns non-zero
 
     auth = "Basic " + base64.b64encode(b"user:pass").decode()
     with patch(
@@ -266,8 +261,7 @@ def test_prepare_stream_falls_back_to_non_seekable_on_probe_failure():
     sp.port = 9999
 
     mock_proc = MagicMock()
-    mock_proc.communicate.return_value = (b"", b"some error\n")
-    mock_proc.returncode = 1
+    mock_proc.stderr = iter([b"some error\n"])
 
     with patch(
         "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
