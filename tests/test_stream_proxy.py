@@ -80,6 +80,36 @@ def test_validate_url_accepts_https():
 
 
 # ---------------------------------------------------------------------------
+# _embed_auth_in_url
+# ---------------------------------------------------------------------------
+
+
+def test_embed_auth_none_header():
+    from resources.lib.stream_proxy import _embed_auth_in_url
+
+    assert _embed_auth_in_url("http://host/file.mp4", None) == "http://host/file.mp4"
+
+
+def test_embed_auth_basic():
+    import base64
+
+    from resources.lib.stream_proxy import _embed_auth_in_url
+
+    auth = "Basic " + base64.b64encode(b"user:pass").decode()
+    result = _embed_auth_in_url("http://host/file.mp4", auth)
+    assert result == "http://user:pass@host/file.mp4"
+
+
+def test_embed_auth_non_basic_ignored():
+    from resources.lib.stream_proxy import _embed_auth_in_url
+
+    assert (
+        _embed_auth_in_url("http://host/file.mp4", "Bearer tok")
+        == "http://host/file.mp4"
+    )
+
+
+# ---------------------------------------------------------------------------
 # StreamProxy._detect_content_type
 # ---------------------------------------------------------------------------
 

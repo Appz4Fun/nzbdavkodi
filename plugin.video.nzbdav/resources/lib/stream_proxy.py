@@ -50,6 +50,16 @@ def _validate_url(url):
         raise ValueError("Invalid URL scheme: {}".format(repr(url)[:30]))
 
 
+def _embed_auth_in_url(url, auth_header):
+    """Embed Basic auth credentials into a URL for ffmpeg."""
+    if auth_header and auth_header.startswith("Basic "):
+        import base64
+
+        decoded = base64.b64decode(auth_header[6:]).decode("utf-8")
+        return url.replace("://", "://{}@".format(decoded), 1)
+    return url
+
+
 def _parse_ffmpeg_duration(stderr_text):
     """Parse 'Duration: HH:MM:SS.xx' from ffmpeg stderr output.
 
@@ -163,15 +173,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
         ffmpeg = ctx["ffmpeg_path"]
         input_url = ctx["remote_url"]
         _validate_url(input_url)
-        if ctx.get("auth_header"):
-            auth = ctx["auth_header"]
-            if auth.startswith("Basic "):
-                import base64
-
-                decoded = base64.b64decode(auth[6:]).decode("utf-8")
-                input_url = ctx["remote_url"].replace(
-                    "://", "://{}@".format(decoded), 1
-                )
+        input_url = _embed_auth_in_url(input_url, ctx.get("auth_header"))
 
         cmd = [ffmpeg]
         if seek_seconds is not None and seek_seconds > 0:
@@ -482,11 +484,7 @@ class StreamProxy:
         """Probe file duration using ffmpeg. Returns seconds or None."""
         _validate_url(url)
         input_url = url
-        if auth_header and auth_header.startswith("Basic "):
-            import base64
-
-            decoded = base64.b64decode(auth_header[6:]).decode("utf-8")
-            input_url = url.replace("://", "://{}@".format(decoded), 1)
+        input_url = _embed_auth_in_url(input_url, auth_header)
 
         try:
             proc = subprocess.Popen(
