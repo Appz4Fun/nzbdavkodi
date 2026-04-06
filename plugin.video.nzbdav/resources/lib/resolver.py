@@ -235,7 +235,23 @@ def _resolve_inner(handle, nzb_url, title, dialog, poll_interval, download_timeo
             return
 
     xbmc.log("NZB-DAV: Submitting NZB for '{}'".format(title), xbmc.LOGINFO)
-    nzo_id = submit_nzb(nzb_url, title)
+    max_submit_retries = 3
+    nzo_id = None
+    monitor = xbmc.Monitor()
+    for attempt in range(1, max_submit_retries + 1):
+        nzo_id = submit_nzb(nzb_url, title)
+        if nzo_id:
+            break
+        xbmc.log(
+            "NZB-DAV: Submit attempt {}/{} failed for '{}'".format(
+                attempt, max_submit_retries, title
+            ),
+            xbmc.LOGWARNING,
+        )
+        if attempt < max_submit_retries:
+            if monitor.waitForAbort(2):
+                return
+
     if not nzo_id:
         _notify(_addon_name(), _string(30098))
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
@@ -247,8 +263,6 @@ def _resolve_inner(handle, nzb_url, title, dialog, poll_interval, download_timeo
         ),
         xbmc.LOGINFO,
     )
-
-    monitor = xbmc.Monitor()
     start_time = time.time()
     last_status = None
     iteration = 0
@@ -416,14 +430,28 @@ def _resolve_and_play_inner(nzb_url, title, dialog, poll_interval, download_time
             return
 
     xbmc.log("NZB-DAV: Submitting NZB for '{}'".format(title), xbmc.LOGINFO)
-    nzo_id = submit_nzb(nzb_url, title)
+    max_submit_retries = 3
+    nzo_id = None
+    monitor = xbmc.Monitor()
+    for attempt in range(1, max_submit_retries + 1):
+        nzo_id = submit_nzb(nzb_url, title)
+        if nzo_id:
+            break
+        xbmc.log(
+            "NZB-DAV: Submit attempt {}/{} failed for '{}'".format(
+                attempt, max_submit_retries, title
+            ),
+            xbmc.LOGWARNING,
+        )
+        if attempt < max_submit_retries:
+            if monitor.waitForAbort(2):
+                return
+
     if not nzo_id:
         _notify(_addon_name(), _string(30098))
         return
 
     xbmc.log("NZB-DAV: NZB submitted, nzo_id={}, polling".format(nzo_id), xbmc.LOGINFO)
-
-    monitor = xbmc.Monitor()
     start_time = time.time()
     iteration = 0
 

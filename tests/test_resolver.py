@@ -104,13 +104,21 @@ def test_resolve_success(
     assert resolve_call[0][1] is True
 
 
+@patch("resources.lib.resolver.find_completed_by_name")
+@patch("resources.lib.resolver.xbmc")
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver.xbmcplugin")
 @patch("resources.lib.resolver.submit_nzb")
 @patch("resources.lib.resolver._get_poll_settings")
-def test_resolve_submit_failure(mock_poll, mock_submit, mock_plugin, mock_gui):
+def test_resolve_submit_failure(
+    mock_poll, mock_submit, mock_plugin, mock_gui, mock_xbmc, mock_find_completed
+):
+    """All submit retries fail — setResolvedUrl called with False."""
     mock_poll.return_value = (2, 60)
     mock_submit.return_value = None
+    mock_find_completed.return_value = None
+    mock_xbmc.Monitor.return_value = MagicMock()
+    mock_xbmc.Monitor.return_value.waitForAbort.return_value = False
 
     dialog = MagicMock()
     mock_gui.DialogProgress.return_value = dialog
@@ -118,6 +126,7 @@ def test_resolve_submit_failure(mock_poll, mock_submit, mock_plugin, mock_gui):
     resolve(1, {"nzburl": "http://hydra/getnzb/abc", "title": "movie.mkv"})
 
     mock_plugin.setResolvedUrl.assert_called_once_with(1, False, mock_gui.ListItem())
+    assert mock_submit.call_count == 3
 
 
 @patch("resources.lib.resolver.xbmc")
@@ -492,3 +501,56 @@ def test_resolve_max_iterations_safeguard(
     mock_plugin.setResolvedUrl.assert_called_once()
     assert mock_plugin.setResolvedUrl.call_args[0][1] is False
     assert mock_status.call_count <= MAX_POLL_ITERATIONS
+
+
+@patch("resources.lib.resolver.find_completed_by_name")
+@patch("resources.lib.resolver.xbmc")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.xbmcplugin")
+@patch("resources.lib.resolver.find_video_file")
+@patch("resources.lib.resolver.get_job_history")
+@patch("resources.lib.resolver.get_job_status")
+@patch("resources.lib.resolver.submit_nzb")
+@patch("resources.lib.resolver.get_webdav_stream_url_for_path")
+@patch("resources.lib.resolver.validate_stream")
+@patch("resources.lib.resolver._get_poll_settings")
+def test_resolve_retries_submit_on_transient_failure(
+    mock_poll,
+    mock_validate,
+    mock_stream_url,
+    mock_submit,
+    mock_status,
+    mock_history,
+    mock_find,
+    mock_plugin,
+    mock_gui,
+    mock_xbmc,
+    mock_find_completed,
+):
+    """resolve should retry submit_nzb if it fails the first time."""
+    mock_poll.return_value = (2, 60)
+    mock_find_completed.return_value = None
+    # First call fails, second succeeds
+    mock_submit.side_effect = [None, "SABnzbd_nzo_retry123"]
+    mock_status.return_value = {"status": "Downloading", "percentage": "100"}
+    mock_history.return_value = {
+        "status": "Completed",
+        "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/movie",
+        "name": "movie",
+    }
+    mock_find.return_value = "/content/uncategorized/movie/movie.mkv"
+    mock_stream_url.return_value = (
+        "http://webdav:8080/content/uncategorized/movie/movie.mkv",
+        {"Authorization": "Basic dXNlcjpwYXNz"},
+    )
+    mock_validate.return_value = True
+    mock_xbmc.Monitor.return_value = MagicMock()
+    mock_xbmc.Monitor.return_value.waitForAbort.return_value = False
+
+    dialog = MagicMock()
+    dialog.iscanceled.return_value = False
+    mock_gui.DialogProgress.return_value = dialog
+
+    resolve(1, {"nzburl": "http://hydra/getnzb/abc", "title": "movie.mkv"})
+
+    assert mock_submit.call_count == 2
