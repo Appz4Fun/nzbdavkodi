@@ -55,6 +55,9 @@ jobs:
                       for loc in r.get('locations', [])
                   )
               ]
+          # Ensure at least one run with results exists (upload-sarif rejects empty)
+          if not sarif.get('runs'):
+              sarif['runs'] = [{'tool': {'driver': {'name': 'codacy'}}, 'results': []}]
           with open('filtered.sarif', 'w') as f:
               json.dump(sarif, f)
           "
