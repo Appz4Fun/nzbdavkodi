@@ -471,8 +471,11 @@ class StreamProxy:
             "faststart": False,
         }
 
-        if is_mp4 and content_length > 0:
-            self._prepare_faststart(ctx, remote_url, auth_header, content_length)
+        # Skip faststart — nzbdav supports range requests, so Kodi can
+        # seek to the moov atom itself.  Faststart moov relocation was causing
+        # demuxer failures on large files (corrupted offset adjustments).
+        # if is_mp4 and content_length > 0:
+        #     self._prepare_faststart(ctx, remote_url, auth_header, content_length)
 
         with self._context_lock:
             self._server.stream_context = ctx  # pylint: disable=attribute-defined-outside-init
