@@ -110,9 +110,14 @@ def _handle_play(handle, params):
 
     if results is None:
         progress.update(30, _string(30084))
-        results = search_hydra(
+        results, search_error = search_hydra(
             search_type, title, year=year, imdb=imdb, season=season, episode=episode
         )
+        if search_error:
+            progress.close()
+            notify(_addon_name(), search_error, 5000)
+            xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+            return
         if results:
             progress.update(70, _fmt(30085, len(results)))
             set_cached(search_type, title, results, **cache_kwargs)
@@ -190,9 +195,15 @@ def _handle_search(handle, params):
     cache_kwargs = dict(year=year, imdb=imdb, season=season, episode=episode)
     results = get_cached(search_type, title, **cache_kwargs)
     if results is None:
-        results = search_hydra(
+        results, search_error = search_hydra(
             search_type, title, year=year, imdb=imdb, season=season, episode=episode
         )
+        if search_error:
+            from resources.lib.http_util import notify
+
+            notify(_addon_name(), search_error, 5000)
+            xbmcplugin.endOfDirectory(handle, succeeded=False)
+            return
         if results:
             set_cached(search_type, title, results, **cache_kwargs)
 

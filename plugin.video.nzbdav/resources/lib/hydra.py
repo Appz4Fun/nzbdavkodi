@@ -36,13 +36,14 @@ def search_hydra(search_type, title, year="", imdb="", season="", episode=""):
         episode: Episode number (TV only)
 
     Returns:
-        List of result dicts with keys: title, link, size, indexer, pubdate, age
+        Tuple of (results, error) where results is a list of result dicts and
+        error is None on success or a string describing the failure.
     """
     try:
         base_url, api_key = _get_settings()
     except Exception as e:
         xbmc.log("NZB-DAV: Failed to read Hydra settings: {}".format(e), xbmc.LOGERROR)
-        return []
+        return [], "Failed to read NZBHydra settings"
 
     params = {"apikey": api_key, "o": "xml"}
 
@@ -70,7 +71,7 @@ def search_hydra(search_type, title, year="", imdb="", season="", episode=""):
         xml_text = _http_get(url)
     except (URLError, Exception) as e:
         xbmc.log("NZB-DAV: Hydra search request failed: {}".format(e), xbmc.LOGERROR)
-        return []
+        return [], "Search failed: {}".format(str(e)[:80])
 
     results = parse_results(xml_text)
 
@@ -92,12 +93,13 @@ def search_hydra(search_type, title, year="", imdb="", season="", episode=""):
             xbmc.log(
                 "NZB-DAV: Hydra title fallback failed: {}".format(e), xbmc.LOGERROR
             )
+            return [], "Search failed: {}".format(str(e)[:80])
 
     xbmc.log(
         "NZB-DAV: Hydra returned {} results for '{}'".format(len(results), title),
         xbmc.LOGINFO,
     )
-    return results
+    return results, None
 
 
 def parse_results(xml_text):

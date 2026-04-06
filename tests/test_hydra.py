@@ -54,7 +54,8 @@ def test_search_hydra_movie(mock_http, mock_settings):
     mock_settings.return_value = ("http://hydra:5076", "testkey")
     mock_http.return_value = _load_fixture("hydra_movie_response.xml")
 
-    results = search_hydra("movie", "The Matrix", year="1999", imdb="tt0133093")
+    results, error = search_hydra("movie", "The Matrix", year="1999", imdb="tt0133093")
+    assert error is None
     assert len(results) == 2
 
     call_url = mock_http.call_args[0][0]
@@ -69,7 +70,8 @@ def test_search_hydra_tv(mock_http, mock_settings):
     mock_settings.return_value = ("http://hydra:5076", "testkey")
     mock_http.return_value = _load_fixture("hydra_tv_response.xml")
 
-    results = search_hydra("episode", "Breaking Bad", season="5", episode="14")
+    results, error = search_hydra("episode", "Breaking Bad", season="5", episode="14")
+    assert error is None
     assert len(results) == 1
 
     call_url = mock_http.call_args[0][0]
@@ -84,8 +86,9 @@ def test_search_hydra_connection_error(mock_http, mock_settings):
     mock_settings.return_value = ("http://hydra:5076", "testkey")
     mock_http.side_effect = Exception("Connection refused")
 
-    results = search_hydra("movie", "The Matrix")
+    results, error = search_hydra("movie", "The Matrix")
     assert not results
+    assert error is not None
 
 
 # --- New tests ---
@@ -172,7 +175,8 @@ def test_search_hydra_movie_no_imdb_falls_back_to_title(mock_http, mock_settings
     mock_settings.return_value = ("http://hydra:5076", "testkey")
     mock_http.return_value = _load_fixture("hydra_movie_response.xml")
 
-    results = search_hydra("movie", "The Matrix", year="1999")
+    results, error = search_hydra("movie", "The Matrix", year="1999")
+    assert error is None
     assert len(results) == 2, "Should still return results from fixture"
 
     call_url = mock_http.call_args[0][0]
@@ -252,3 +256,18 @@ def test_parse_results_indexer_from_enclosure_fallback():
     assert (
         results[0]["indexer"] == ""
     ), "Indexer should be empty when no newznab:attr indexer is present"
+
+
+@patch("resources.lib.hydra._get_settings")
+@patch("resources.lib.hydra._http_get")
+def test_search_hydra_returns_error_on_connection_failure(mock_http, mock_settings):
+    """search_hydra should return ([], error_string) on connection failure."""
+    from urllib.error import URLError
+
+    mock_settings.return_value = ("http://hydra:5076", "testkey")
+    mock_http.side_effect = URLError("Connection refused")
+
+    results, error = search_hydra("movie", "The Matrix")
+    assert not results
+    assert error is not None
+    assert "failed" in error.lower() or "connection" in error.lower()
