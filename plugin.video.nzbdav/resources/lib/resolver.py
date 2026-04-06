@@ -253,6 +253,13 @@ def _resolve_inner(handle, nzb_url, title, dialog, poll_interval, download_timeo
                 return
 
     if not nzo_id:
+        xbmc.log(
+            "NZB-DAV: All {} submit attempts failed for '{}'. "
+            "Check nzbdav URL and API key in settings.".format(
+                max_submit_retries, title
+            ),
+            xbmc.LOGERROR,
+        )
         _notify(_addon_name(), _string(30098))
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
         return
@@ -284,8 +291,10 @@ def _resolve_inner(handle, nzb_url, title, dialog, poll_interval, download_timeo
 
         if elapsed >= download_timeout:
             xbmc.log(
-                "NZB-DAV: Download timed out after {}s for nzo_id={}".format(
-                    int(elapsed), nzo_id
+                "NZB-DAV: Download timed out after {}s for nzo_id={} (title='{}'). "
+                "Check the nzbdav queue for stalled jobs or increase the "
+                "download timeout in addon settings.".format(
+                    int(elapsed), nzo_id, title
                 ),
                 xbmc.LOGERROR,
             )
@@ -338,7 +347,10 @@ def _resolve_inner(handle, nzb_url, title, dialog, poll_interval, download_timeo
         # Check history for failed download
         if history and history["status"] == "Failed":
             xbmc.log(
-                "NZB-DAV: Download failed in history for nzo_id={}".format(nzo_id),
+                "NZB-DAV: Download failed on the server side for nzo_id={} "
+                "(title='{}'). Check the nzbdav history for the failure reason.".format(
+                    nzo_id, title
+                ),
                 xbmc.LOGERROR,
             )
             _notify(_addon_name(), _string(30100))
@@ -372,7 +384,11 @@ def _resolve_inner(handle, nzb_url, title, dialog, poll_interval, download_timeo
 
         # Handle WebDAV error types
         if webdav_error == "auth_failed":
-            xbmc.log("NZB-DAV: WebDAV auth failed, stopping resolve", xbmc.LOGERROR)
+            xbmc.log(
+                "NZB-DAV: WebDAV authentication failed for nzo_id={}. "
+                "Check WebDAV username and password in addon settings.".format(nzo_id),
+                xbmc.LOGERROR,
+            )
             _notify(_addon_name(), _string(_ERROR_MESSAGES["auth_failed"]))
             xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
             return
@@ -448,6 +464,13 @@ def _resolve_and_play_inner(nzb_url, title, dialog, poll_interval, download_time
                 return
 
     if not nzo_id:
+        xbmc.log(
+            "NZB-DAV: All {} submit attempts failed for '{}'. "
+            "Check nzbdav URL and API key in settings.".format(
+                max_submit_retries, title
+            ),
+            xbmc.LOGERROR,
+        )
         _notify(_addon_name(), _string(30098))
         return
 
@@ -470,6 +493,14 @@ def _resolve_and_play_inner(nzb_url, title, dialog, poll_interval, download_time
         elapsed = time.time() - start_time
 
         if elapsed >= download_timeout:
+            xbmc.log(
+                "NZB-DAV: Download timed out after {}s for nzo_id={} (title='{}'). "
+                "Check the nzbdav queue for stalled jobs or increase the "
+                "download timeout in addon settings.".format(
+                    int(elapsed), nzo_id, title
+                ),
+                xbmc.LOGERROR,
+            )
             _notify(_addon_name(), _string(30101))
             return
 
@@ -497,13 +528,21 @@ def _resolve_and_play_inner(nzb_url, title, dialog, poll_interval, download_time
             dialog.update(progress, msg)
 
         if webdav_error == "auth_failed":
+            xbmc.log(
+                "NZB-DAV: WebDAV authentication failed for nzo_id={}. "
+                "Check WebDAV username and password in addon settings.".format(nzo_id),
+                xbmc.LOGERROR,
+            )
             _notify(_addon_name(), _string(_ERROR_MESSAGES["auth_failed"]))
             return
 
         # Check history for failed download
         if history and history["status"] == "Failed":
             xbmc.log(
-                "NZB-DAV: Download failed in history for nzo_id={}".format(nzo_id),
+                "NZB-DAV: Download failed on the server side for nzo_id={} "
+                "(title='{}'). Check the nzbdav history for the failure reason.".format(
+                    nzo_id, title
+                ),
                 xbmc.LOGERROR,
             )
             _notify(_addon_name(), _string(30100))
