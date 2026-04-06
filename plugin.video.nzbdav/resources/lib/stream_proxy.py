@@ -81,7 +81,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
 
     protocol_version = "HTTP/1.1"
 
-    def log_message(self, fmt, *args):  # pylint: disable=arguments-renamed
+    def log_message(self, fmt, *args):  # pylint: disable=arguments-differ
         xbmc.log("NZB-DAV: Proxy: {}".format(fmt % args), xbmc.LOGDEBUG)
 
     def do_POST(self):
@@ -149,7 +149,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
         else:
             self._serve_proxy(ctx)
 
-    def _build_ffmpeg_cmd(self, ctx, seek_seconds=None):
+    @staticmethod
+    def _build_ffmpeg_cmd(ctx, seek_seconds=None):
         """Build the ffmpeg remux command list."""
         ffmpeg = ctx["ffmpeg_path"]
         input_url = ctx["remote_url"]
@@ -350,7 +351,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
         except Exception as e:
             xbmc.log("NZB-DAV: Proxy range failed: {}".format(e), xbmc.LOGERROR)
 
-    def _parse_range(self, range_header, content_length):
+    @staticmethod
+    def _parse_range(range_header, content_length):
         """Parse Range header, return (start, end) or (None, None)."""
         try:
             range_spec = range_header.replace("bytes=", "")
@@ -370,6 +372,14 @@ class _ThreadedHTTPServer(_ThreadingMixIn, HTTPServer):
 
     allow_reuse_address = True
     daemon_threads = True
+
+    def __init__(self, *args, **kwargs):
+        self.stream_context = None
+        self.active_ffmpeg = None
+        self.current_byte_pos = 0
+        self.ffmpeg_lock = threading.Lock()
+        self.owner_proxy = None
+        super().__init__(*args, **kwargs)
 
 
 class StreamProxy:
@@ -455,7 +465,8 @@ class StreamProxy:
         )
         return local_url
 
-    def _probe_duration(self, ffmpeg_path, url, auth_header):
+    @staticmethod
+    def _probe_duration(ffmpeg_path, url, auth_header):
         """Probe file duration using ffmpeg. Returns seconds or None."""
         input_url = url
         if auth_header and auth_header.startswith("Basic "):
@@ -486,7 +497,8 @@ class StreamProxy:
             xbmc.log("NZB-DAV: Duration probe failed: {}".format(e), xbmc.LOGWARNING)
             return None
 
-    def _get_content_length(self, url, auth_header):
+    @staticmethod
+    def _get_content_length(url, auth_header):
         """Get file size via HEAD or range probe."""
         req = Request(url, method="HEAD")
         if auth_header:
@@ -507,7 +519,8 @@ class StreamProxy:
         except Exception:
             return 0
 
-    def _detect_content_type(self, url):
+    @staticmethod
+    def _detect_content_type(url):
         """Detect content type from URL extension."""
         lower = url.lower()
         if lower.endswith(".mkv"):

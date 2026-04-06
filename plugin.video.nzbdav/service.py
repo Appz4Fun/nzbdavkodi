@@ -41,7 +41,8 @@ class NzbdavPlayer(xbmc.Player):
         self._playback_ended = False
         self._monitor = xbmc.Monitor()
 
-    def _read_settings(self):
+    @staticmethod
+    def _read_settings():
         """Read retry settings from addon config."""
         addon = xbmcaddon.Addon()
         enabled = addon.getSetting("stream_auto_retry").lower() == "true"
@@ -76,6 +77,7 @@ class NzbdavPlayer(xbmc.Player):
             )
 
     def onAVStarted(self):
+        """Reset retry state when playback begins successfully."""
         if self._active:
             self._retry_count = 0
             self._playback_error = False
@@ -85,6 +87,7 @@ class NzbdavPlayer(xbmc.Player):
             )
 
     def onPlayBackStopped(self):
+        """Mark stream inactive when user stops playback."""
         if self._active:
             xbmc.log(
                 "NZB-DAV: Playback stopped for '{}'".format(self._title),
@@ -94,6 +97,7 @@ class NzbdavPlayer(xbmc.Player):
             self._playback_ended = True
 
     def onPlayBackEnded(self):
+        """Mark stream inactive when playback finishes naturally."""
         if self._active:
             xbmc.log(
                 "NZB-DAV: Playback completed for '{}'".format(self._title),
@@ -103,6 +107,7 @@ class NzbdavPlayer(xbmc.Player):
             self._playback_ended = True
 
     def onPlayBackError(self):
+        """Flag playback error for retry logic and notify if retries exhausted."""
         if self._active:
             self._playback_error = True
             xbmc.log(
