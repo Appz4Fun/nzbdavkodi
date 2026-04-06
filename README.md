@@ -41,8 +41,8 @@ No separate SABnzbd needed -- nzbdav handles both downloading and serving.
 
 Install through the NZB-DAV repository for automatic updates:
 
-1. Download the repository zip from the [releases page](../../releases) or [GitHub Pages](https://xbmc4lyfe.github.io/nzbdavkodi/repository.nzbdav/)
-2. In Kodi: **Settings > Add-ons > Install from zip file** > select `repository.nzbdav.zip`
+1. In Kodi: **Settings > File Manager > Add source** > enter `https://xbmc4lyfe.github.io/nzbdavkodi/` > name it `nzbdav`
+2. **Settings > Add-ons > Install from zip file** > `nzbdav` > `repository.nzbdav` > `repository.nzbdav-1.0.0.zip`
 3. **Settings > Add-ons > Install from repository > NZB-DAV Repository > Video add-ons > NZB-DAV**
 4. Future updates are installed automatically
 
@@ -50,6 +50,48 @@ Install through the NZB-DAV repository for automatic updates:
 
 1. Download the addon zip from the [releases page](../../releases)
 2. In Kodi: **Settings > Add-ons > Install from zip file** > select `plugin.video.nzbdav.zip`
+
+---
+
+## TMDBHelper Setup
+
+NZB-DAV works as a player for TMDBHelper, which provides the movie/TV browsing interface. If you don't have TMDBHelper installed yet:
+
+### 1. Install TMDBHelper
+
+TMDBHelper is available from the official Kodi repository:
+
+1. **Settings > Add-ons > Install from repository > Kodi Add-on repository > Video add-ons > TheMovieDb Helper**
+2. Click **Install** and wait for the notification
+
+If it's not in the official repo for your Kodi version, install from the [TMDBHelper GitHub releases](https://github.com/jurialmunkey/plugin.video.themoviedb.helper/releases):
+
+1. Download the latest `plugin.video.themoviedb.helper` zip
+2. **Settings > Add-ons > Install from zip file** > select the downloaded zip
+
+### 2. Configure TMDBHelper
+
+1. Open TMDBHelper settings: **Add-ons > My add-ons > Video add-ons > TheMovieDb Helper > Configure**
+2. Under **API Keys**, enter a [TMDB API key](https://www.themoviedb.org/settings/api) (free account required)
+3. Under **Players**, set **Default player** to **NZB-DAV** for both Movies and TV Shows
+
+### 3. Install the NZB-DAV Player File
+
+The player file tells TMDBHelper how to call NZB-DAV:
+
+1. Open NZB-DAV settings: **Add-ons > My add-ons > Video add-ons > NZB-DAV > Configure**
+2. Click **Install Player File** and select **TMDBHelper** from the list
+3. Restart Kodi (or go to TMDBHelper settings > **Players** > **Update players**)
+
+### 4. Set NZB-DAV as the Default Player
+
+1. Open TMDBHelper settings > **Players**
+2. Set **Default player (Movies)** to **NZB-DAV**
+3. Set **Default player (TV Shows)** to **NZB-DAV**
+
+With this configured, selecting any movie or episode in TMDBHelper will automatically search and stream via NZB-DAV without a player selection prompt.
+
+> **Tip:** If you want to keep multiple players available (e.g., NZB-DAV + a Debrid service), leave the default player as **Choose** and you'll get a player selection dialog each time.
 
 ---
 
