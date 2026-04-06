@@ -41,14 +41,14 @@ No separate SABnzbd needed -- nzbdav handles both downloading and serving.
 
 Install through the NZB-DAV repository for automatic updates:
 
-1. Download `repository.nzbdav.zip` from the [releases page](../../releases) or [GitHub Pages](https://xbmc4lyfe.github.io/nzbdavkodi/repository.nzbdav/repository.nzbdav.zip)
+1. Download the repository zip from the [releases page](../../releases) or [GitHub Pages](https://xbmc4lyfe.github.io/nzbdavkodi/repository.nzbdav/)
 2. In Kodi: **Settings > Add-ons > Install from zip file** > select `repository.nzbdav.zip`
 3. **Settings > Add-ons > Install from repository > NZB-DAV Repository > Video add-ons > NZB-DAV**
 4. Future updates are installed automatically
 
 ### Manual Install
 
-1. Download `plugin.video.nzbdav.zip` from the [releases page](../../releases)
+1. Download the addon zip from the [releases page](../../releases)
 2. In Kodi: **Settings > Add-ons > Install from zip file** > select `plugin.video.nzbdav.zip`
 
 ---
@@ -57,17 +57,21 @@ Install through the NZB-DAV repository for automatic updates:
 
 Open the addon settings (**Add-ons > My add-ons > Video add-ons > NZB-DAV > Configure**):
 
+![NZB-DAV Settings](docs/images/settings.png)
+
 ### Connection Settings
 
-| Setting | Description |
-|---------|-------------|
+| Setting | Where to find it |
+|---------|-----------------|
 | NZBHydra2 URL | URL to your NZBHydra2 instance (e.g., `http://192.168.1.100:5076`) |
-| NZBHydra2 API Key | API key from NZBHydra2's config |
-| nzbdav URL | URL to your nzbdav instance (e.g., `http://192.168.1.100:3000`) |
-| nzbdav API Key | API key from nzbdav's config |
+| NZBHydra2 API Key | NZBHydra2 web UI > `http://<hydra>:5076/config/main` > **Security** section > **API key** |
+| nzbdav URL | URL to your nzbdav instance (e.g., `http://192.168.1.100:3333`) |
+| nzbdav API Key | nzbdav web UI > `http://<nzbdav>/settings` > **Usenet** tab > **API Key** |
 | WebDAV URL | Leave empty to use nzbdav URL, or set a different URL if WebDAV is on a separate port |
-| WebDAV Username | Username for WebDAV authentication |
-| WebDAV Password | Password for WebDAV authentication |
+| WebDAV Username | nzbdav web UI > `http://<nzbdav>/settings` > **WebDAV** tab > **Username** |
+| WebDAV Password | nzbdav web UI > `http://<nzbdav>/settings` > **WebDAV** tab > **Password** |
+
+> **Tip for entering long API keys:** Use a Kodi remote app with keyboard support (e.g., Sybu on iPhone). Navigate to the nzbdav/NZBHydra2 settings page on your computer, copy the key, then paste from your clipboard into the Kodi input field via the remote app's on-screen keyboard.
 
 ### Player Installation
 
@@ -159,7 +163,7 @@ With **Auto-select best match** enabled, step 3 is skipped automatically.
 ### Commands
 
 ```bash
-just test          # Run all 132 tests
+just test          # Run all 223 tests
 just test-verbose  # Run tests with full output
 just lint          # Check ruff + black formatting
 just lint-fix      # Auto-fix lint issues
@@ -187,6 +191,7 @@ plugin.video.nzbdav/
       filter.py          # Result filtering with PTT
       results_dialog.py  # Custom full-screen results dialog
       resolver.py        # Download + polling orchestrator
+      stream_proxy.py    # Local HTTP proxy with MP4 faststart
       cache.py           # JSON-based search result cache
       player_installer.py # Player JSON installer
       http_util.py       # Shared HTTP utilities
@@ -205,14 +210,14 @@ repo/
   release.yml            # Build + deploy on version tags
 tests/
   conftest.py            # Kodi module mocks
-  test_*.py              # 132 tests
+  test_*.py              # 223 tests
 ```
 
 ### Releasing
 
 1. Bump `version` in `plugin.video.nzbdav/addon.xml`
-2. Commit: `git commit -am "release: v0.2.0"`
-3. Tag and push: `git tag v0.2.0 && git push origin main v0.2.0`
+2. Commit: `git commit -am "release: v0.X.0"`
+3. Tag and push: `git tag v0.X.0 && git push origin main v0.X.0`
 4. GitHub Actions builds the zip, creates a GitHub Release, and updates the Kodi repo on GitHub Pages
 5. Kodi picks up the update automatically via the repository
 

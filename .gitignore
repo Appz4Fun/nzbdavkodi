@@ -21,4 +21,7 @@ plugin.video.nzbdav.zip
 ~/
 
 # Project
-docs/
+docs/superpowers/
+
+# Build zips (versioned)
+plugin.video.nzbdav-*.zip
