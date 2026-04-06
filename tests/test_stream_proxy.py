@@ -579,8 +579,8 @@ def test_prepare_stream_passthrough_for_mkv():
     assert ctx["faststart"] is False
 
 
-def test_prepare_stream_skips_faststart_for_mp4():
-    """MP4 files no longer trigger faststart — Kodi seeks to moov natively."""
+def test_prepare_stream_calls_faststart_for_mp4():
+    """MP4 files trigger _prepare_faststart."""
     from resources.lib.stream_proxy import StreamProxy
 
     sp = StreamProxy.__new__(StreamProxy)
@@ -593,7 +593,7 @@ def test_prepare_stream_skips_faststart_for_mp4():
     ), patch.object(sp, "_prepare_faststart") as mock_fs:
         sp.prepare_stream("http://host/film.mp4")
 
-    mock_fs.assert_not_called()
+    mock_fs.assert_called_once()
 
 
 def test_prepare_stream_skips_faststart_when_content_length_zero():
