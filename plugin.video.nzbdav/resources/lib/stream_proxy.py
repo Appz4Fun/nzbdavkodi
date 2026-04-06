@@ -129,6 +129,38 @@ class _StreamHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):  # pylint: disable=arguments-renamed
         pass
 
+    def do_POST(self):
+        """Handle POST /prepare — plugin sends stream config via HTTP."""
+        import json
+
+        if "/prepare" not in self.path:
+            self.send_error(404)
+            return
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length) if length else b""
+        try:
+            data = json.loads(body)
+        except Exception:
+            self.send_error(400)
+            return
+
+        remote_url = data.get("remote_url", "")
+        auth_header = data.get("auth_header")
+        if not remote_url:
+            self.send_error(400)
+            return
+
+        # Use the owning StreamProxy to prepare the stream context
+        proxy = self.server.owner_proxy
+        proxy_url = proxy.prepare_stream(remote_url, auth_header)
+
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        resp = json.dumps({"proxy_url": proxy_url}).encode()
+        self.send_header("Content-Length", str(len(resp)))
+        self.end_headers()
+        self.wfile.write(resp)
+
     def do_HEAD(self):
         ctx = self.server.stream_context
         if ctx is None:
@@ -398,9 +430,8 @@ class StreamProxy:
     def start(self):
         """Start the proxy server on a random port."""
         self._server = _ThreadedHTTPServer(("127.0.0.1", 0), _StreamHandler)
-        self._server.stream_context = (
-            None  # pylint: disable=attribute-defined-outside-init
-        )
+        self._server.stream_context = None
+        self._server.owner_proxy = self
         self.port = self._server.server_address[1]
         self._thread = threading.Thread(target=self._server.serve_forever)
         self._thread.daemon = True
@@ -444,9 +475,7 @@ class StreamProxy:
             self._prepare_faststart(ctx, remote_url, auth_header, content_length)
 
         with self._context_lock:
-            self._server.stream_context = (
-                ctx  # pylint: disable=attribute-defined-outside-init
-            )
+            self._server.stream_context = ctx  # pylint: disable=attribute-defined-outside-init
         local_url = "http://127.0.0.1:{}/stream".format(self.port)
         xbmc.log(
             "NZB-DAV: Proxy ready (faststart={}): {}".format(
@@ -618,8 +647,37 @@ class StreamProxy:
             return None
 
 
+def get_service_proxy_port():
+    """Get the proxy port from the background service, or 0 if not running."""
+    try:
+        import xbmcgui
+
+        home = xbmcgui.Window(10000)
+        port_str = home.getProperty("nzbdav.proxy_port")
+        return int(port_str) if port_str else 0
+    except Exception:
+        return 0
+
+
+def prepare_stream_via_service(port, remote_url, auth_header=None):
+    """Ask the service's proxy to prepare a stream. Returns the proxy URL."""
+    import json
+
+    url = "http://127.0.0.1:{}/prepare".format(port)
+    data = json.dumps({"remote_url": remote_url, "auth_header": auth_header})
+    req = Request(url, data=data.encode(), method="POST")
+    req.add_header("Content-Type", "application/json")
+    with urlopen(req, timeout=60) as resp:
+        result = json.loads(resp.read())
+        return result["proxy_url"]
+
+
 def get_proxy():
-    """Get or create the singleton stream proxy."""
+    """Get or create the singleton stream proxy.
+
+    Falls back to a local singleton when the service hasn't started yet
+    (e.g. during tests).
+    """
     global _proxy  # pylint: disable=global-statement
     with _proxy_lock:
         if _proxy is None:

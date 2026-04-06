@@ -53,6 +53,7 @@ def test_storage_to_webdav_path_trailing_slash():
 # --- resolve() tests ---
 
 
+@patch("resources.lib.stream_proxy.get_service_proxy_port", return_value=0)
 @patch("resources.lib.stream_proxy.get_proxy")
 @patch("resources.lib.resolver.xbmc")
 @patch("resources.lib.resolver.xbmcgui")
@@ -76,6 +77,7 @@ def test_resolve_success(
     mock_gui,
     mock_xbmc,
     mock_get_proxy,
+    mock_service_port,
 ):
     mock_poll.return_value = (2, 60)
     mock_submit.return_value = "SABnzbd_nzo_abc123"
@@ -385,6 +387,7 @@ def test_resolve_poll_interval_respected(
     monitor.waitForAbort.assert_called_with(poll_interval)
 
 
+@patch("resources.lib.stream_proxy.get_service_proxy_port", return_value=0)
 @patch("resources.lib.stream_proxy.get_proxy")
 @patch("resources.lib.resolver.xbmc")
 @patch("resources.lib.resolver.xbmcgui")
@@ -408,6 +411,7 @@ def test_resolve_status_transitions_queued_to_downloading_to_completed(
     mock_gui,
     mock_xbmc,
     mock_get_proxy,
+    mock_service_port,
 ):
     """resolve() handles Queued -> Downloading -> Completed via history."""
     mock_poll.return_value = (1, 3600)

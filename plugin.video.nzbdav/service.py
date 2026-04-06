@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 nzbdav contributors
 
-"""NZB-DAV background service — monitors playback and retries on failure."""
+"""NZB-DAV background service — hosts stream proxy and monitors playback."""
 
 import os
 import sys
@@ -21,6 +21,7 @@ from resources.lib.http_util import notify as _notify  # noqa: E402
 _PROP_STREAM_URL = "nzbdav.stream_url"
 _PROP_STREAM_TITLE = "nzbdav.stream_title"
 _PROP_ACTIVE = "nzbdav.active"
+_PROP_PROXY_PORT = "nzbdav.proxy_port"
 
 _HOME_WINDOW = xbmcgui.Window(10000)
 
@@ -200,13 +201,25 @@ def main():
     monitor = xbmc.Monitor()
     player = NzbdavPlayer()
 
-    xbmc.log("NZB-DAV: Service started", xbmc.LOGINFO)
+    # Start the stream proxy in this long-lived service process.
+    # Plugin scripts are short-lived — their daemon threads get killed
+    # when Kodi's CPythonInvoker destroys the interpreter after the script
+    # exits, so the proxy must live here instead.
+    proxy = StreamProxy()
+    proxy.start()
+    _HOME_WINDOW.setProperty(_PROP_PROXY_PORT, str(proxy.port))
+    xbmc.log(
+        "NZB-DAV: Service started (proxy on port {})".format(proxy.port),
+        xbmc.LOGINFO,
+    )
 
     while not monitor.abortRequested():
         if monitor.waitForAbort(1):
             break
         player.tick()
 
+    proxy.stop()
+    _HOME_WINDOW.clearProperty(_PROP_PROXY_PORT)
     xbmc.log("NZB-DAV: Service stopped", xbmc.LOGINFO)
 
 

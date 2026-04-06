@@ -117,16 +117,34 @@ def _play_direct(handle, stream_url, stream_headers):
 
 
 def _play_via_proxy_resolved(handle, stream_url, stream_headers):
-    """Play via local proxy — handles all formats."""
-    from resources.lib.stream_proxy import get_proxy
+    """Play via the service's stream proxy.
 
-    proxy = get_proxy()
+    The proxy runs in the background service (service.py) so it survives
+    after this plugin script exits.  We send the stream config via HTTP POST
+    to /prepare, then tell Kodi to play the proxy URL.
+    """
+    from resources.lib.stream_proxy import (
+        get_proxy,
+        get_service_proxy_port,
+        prepare_stream_via_service,
+    )
 
     auth_header = None
     if stream_headers and "Authorization" in stream_headers:
         auth_header = stream_headers["Authorization"]
 
-    proxy_url = proxy.prepare_stream(stream_url, auth_header)
+    # Prefer the service proxy (survives script exit); fall back to local
+    service_port = get_service_proxy_port()
+    if service_port:
+        proxy_url = prepare_stream_via_service(service_port, stream_url, auth_header)
+    else:
+        xbmc.log(
+            "NZB-DAV: Service proxy not available, using local proxy",
+            xbmc.LOGWARNING,
+        )
+        proxy = get_proxy()
+        proxy_url = proxy.prepare_stream(stream_url, auth_header)
+
     xbmc.log("NZB-DAV: Playing via proxy: {}".format(proxy_url), xbmc.LOGINFO)
 
     li = xbmcgui.ListItem(path=proxy_url)
@@ -159,18 +177,29 @@ def _play_via_proxy(stream_url, stream_headers):
 
     Uses proxy for MP4 (faststart), direct for MKV/other.
     """
+    from resources.lib.stream_proxy import (
+        get_proxy,
+        get_service_proxy_port,
+        prepare_stream_via_service,
+    )
+
     lower_url = stream_url.lower()
     is_mp4 = lower_url.endswith((".mp4", ".m4v"))
 
     if is_mp4:
-        from resources.lib.stream_proxy import get_proxy
-
-        proxy = get_proxy()
         auth_header = None
         if stream_headers and "Authorization" in stream_headers:
             auth_header = stream_headers["Authorization"]
 
-        proxy_url = proxy.prepare_stream(stream_url, auth_header)
+        service_port = get_service_proxy_port()
+        if service_port:
+            proxy_url = prepare_stream_via_service(
+                service_port, stream_url, auth_header
+            )
+        else:
+            proxy = get_proxy()
+            proxy_url = proxy.prepare_stream(stream_url, auth_header)
+
         xbmc.log("NZB-DAV: Playing via proxy: {}".format(proxy_url), xbmc.LOGINFO)
 
         li = xbmcgui.ListItem(path=proxy_url)
