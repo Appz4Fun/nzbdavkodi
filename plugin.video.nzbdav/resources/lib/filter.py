@@ -298,7 +298,10 @@ def matches_filters(result, meta, settings):
         return False
 
     if result.get("size"):
-        size_mb = int(result["size"]) / 1048576
+        try:
+            size_mb = int(result["size"]) / 1048576
+        except (ValueError, TypeError):
+            size_mb = 0
         if settings["min_size"] > 0 and size_mb < settings["min_size"]:
             return False
         if settings["max_size"] > 0 and size_mb > settings["max_size"]:

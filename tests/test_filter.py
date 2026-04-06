@@ -6,6 +6,7 @@ from unittest.mock import patch
 from resources.lib.filter import (
     _sort_results,
     filter_results,
+    matches_filters,
     parse_title_metadata,
 )
 
@@ -540,3 +541,82 @@ def test_filter_results_attaches_meta_key(mock_settings):
         assert "audio" in meta, "_meta must contain audio list"
         assert "hdr" in meta, "_meta must contain hdr list"
         assert "group" in meta, "_meta must contain group"
+
+
+# --- Size parsing robustness tests ---
+
+
+def test_matches_filters_non_numeric_size():
+    """matches_filters should not crash on non-numeric size values."""
+    result = {
+        "title": "Movie.2024.1080p.BluRay.x264-GRP",
+        "size": "not-a-number",
+    }
+    meta = parse_title_metadata(result["title"])
+    settings = {
+        "resolutions": [],
+        "hdr": [],
+        "audio": [],
+        "codecs": [],
+        "languages": [],
+        "exclude_keywords": [],
+        "require_keywords": [],
+        "release_group": [],
+        "exclude_release_group": [],
+        "min_size": 100,
+        "max_size": 0,
+        "sort_order": 0,
+        "max_results": 25,
+    }
+    # Should not raise, should return False (can't meet min_size)
+    assert matches_filters(result, meta, settings) is False
+
+
+def test_matches_filters_empty_size():
+    """matches_filters should handle empty string size gracefully."""
+    result = {
+        "title": "Movie.2024.1080p.BluRay.x264-GRP",
+        "size": "",
+    }
+    meta = parse_title_metadata(result["title"])
+    settings = {
+        "resolutions": [],
+        "hdr": [],
+        "audio": [],
+        "codecs": [],
+        "languages": [],
+        "exclude_keywords": [],
+        "require_keywords": [],
+        "release_group": [],
+        "exclude_release_group": [],
+        "min_size": 0,
+        "max_size": 0,
+        "sort_order": 0,
+        "max_results": 25,
+    }
+    assert matches_filters(result, meta, settings) is True
+
+
+def test_matches_filters_none_size():
+    """matches_filters should handle None size gracefully."""
+    result = {
+        "title": "Movie.2024.1080p.BluRay.x264-GRP",
+        "size": None,
+    }
+    meta = parse_title_metadata(result["title"])
+    settings = {
+        "resolutions": [],
+        "hdr": [],
+        "audio": [],
+        "codecs": [],
+        "languages": [],
+        "exclude_keywords": [],
+        "require_keywords": [],
+        "release_group": [],
+        "exclude_release_group": [],
+        "min_size": 0,
+        "max_size": 0,
+        "sort_order": 0,
+        "max_results": 25,
+    }
+    assert matches_filters(result, meta, settings) is True
