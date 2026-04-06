@@ -432,6 +432,13 @@ def _resolve_inner(handle, nzb_url, title, dialog, poll_interval, download_timeo
 
                 _play_direct(handle, stream_url, stream_headers)
                 return
+            else:
+                xbmc.log(
+                    "NZB-DAV: Completed but no video found at '{}', retrying...".format(
+                        webdav_folder
+                    ),
+                    xbmc.LOGWARNING,
+                )
 
         # Handle WebDAV error types
         if webdav_error == "auth_failed":
@@ -609,6 +616,13 @@ def _resolve_and_play_inner(nzb_url, title, dialog, poll_interval, download_time
                 xbmc.log("NZB-DAV: Playing '{}'".format(stream_url), xbmc.LOGINFO)
                 _play_via_proxy(stream_url, stream_headers)
                 return
+            else:
+                xbmc.log(
+                    "NZB-DAV: Completed but no video found at '{}', retrying...".format(
+                        webdav_folder
+                    ),
+                    xbmc.LOGWARNING,
+                )
 
         if monitor.waitForAbort(poll_interval):
             return

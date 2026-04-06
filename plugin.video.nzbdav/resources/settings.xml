@@ -8,7 +8,6 @@
 		<setting label="30004" type="lsep" />
 		<setting id="nzbdav_url" label="30005" type="text" default="http://localhost:3000" />
 		<setting id="nzbdav_api_key" label="30003" type="text" default="" option="hidden" />
-		<setting id="nzbdav_strm_key" label="30117" type="text" default="" option="hidden" />
 		<setting label="30114" type="action" action="RunPlugin(plugin://plugin.video.nzbdav/test_nzbdav)" option="close" />
 		<setting label="30006" type="lsep" />
 		<setting id="webdav_url" label="30007" type="text" default="" />
