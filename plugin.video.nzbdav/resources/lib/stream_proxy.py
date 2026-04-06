@@ -44,6 +44,12 @@ def _find_ffmpeg():
     return None
 
 
+def _validate_url(url):
+    """Reject URLs with unexpected schemes to prevent command injection."""
+    if not url or not url.startswith(("http://", "https://")):
+        raise ValueError("Invalid URL scheme: {}".format(url[:30]))
+
+
 def _parse_ffmpeg_duration(stderr_text):
     """Parse 'Duration: HH:MM:SS.xx' from ffmpeg stderr output.
 
@@ -154,6 +160,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
         """Build the ffmpeg remux command list."""
         ffmpeg = ctx["ffmpeg_path"]
         input_url = ctx["remote_url"]
+        _validate_url(input_url)
         if ctx.get("auth_header"):
             auth = ctx["auth_header"]
             if auth.startswith("Basic "):
@@ -254,7 +261,9 @@ class _StreamHandler(BaseHTTPRequestHandler):
         )
 
         try:
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False
+            )
         except Exception as e:
             xbmc.log("NZB-DAV: Failed to start ffmpeg: {}".format(e), xbmc.LOGERROR)
             self.send_error(500)
@@ -468,6 +477,7 @@ class StreamProxy:
     @staticmethod
     def _probe_duration(ffmpeg_path, url, auth_header):
         """Probe file duration using ffmpeg. Returns seconds or None."""
+        _validate_url(url)
         input_url = url
         if auth_header and auth_header.startswith("Basic "):
             import base64
@@ -480,6 +490,7 @@ class StreamProxy:
                 [ffmpeg_path, "-v", "warning", "-i", input_url, "-f", "null", "-"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                shell=False,
             )
             # Read stderr line-by-line; Duration appears in the header.
             # Kill ffmpeg as soon as we have it to avoid reading the whole file.
