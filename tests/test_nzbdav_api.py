@@ -4,7 +4,12 @@
 import json
 from unittest.mock import patch
 
-from resources.lib.nzbdav_api import get_job_history, get_job_status, submit_nzb
+from resources.lib.nzbdav_api import (
+    get_completed_names,
+    get_job_history,
+    get_job_status,
+    submit_nzb,
+)
 
 
 @patch("resources.lib.nzbdav_api._get_settings")
@@ -281,3 +286,33 @@ def test_get_job_history_finds_correct_slot(mock_http, mock_settings):
     assert result is not None
     assert result["name"] == "Target Movie"
     assert result["storage"].endswith("Target Movie")
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_get_completed_names_returns_set(mock_http, mock_settings):
+    """get_completed_names returns a set of completed download names."""
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.return_value = json.dumps(
+        {
+            "history": {
+                "slots": [
+                    {"name": "Movie.A.2024", "status": "Completed"},
+                    {"name": "Movie.B.2023", "status": "Completed"},
+                    {"name": "Movie.C.2022", "status": "Failed"},
+                ]
+            }
+        }
+    )
+    names = get_completed_names()
+    assert names == {"Movie.A.2024", "Movie.B.2023"}
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_get_completed_names_returns_empty_on_error(mock_http, mock_settings):
+    """get_completed_names returns empty set on connection error."""
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.side_effect = Exception("Connection refused")
+    names = get_completed_names()
+    assert names == set()

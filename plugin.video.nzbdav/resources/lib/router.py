@@ -83,6 +83,18 @@ def _clean_params(params):
     return {k: ("" if v == "_" else v) for k, v in params.items()}
 
 
+def _tag_available(results):
+    """Tag results that are already downloaded in nzbdav with _available flag."""
+    from resources.lib.nzbdav_api import get_completed_names
+
+    completed = get_completed_names()
+    if not completed:
+        return
+    for result in results:
+        if result.get("title") in completed:
+            result["_available"] = True
+
+
 def _lookup_episode_info(imdb, tmdb_id=""):
     """Look up show title and episode info from IMDB ID via TMDB API.
 
@@ -300,6 +312,9 @@ def _handle_play(handle, params):
         resolve(handle, {"nzburl": best["link"], "title": best["title"]})
         return
 
+    # Tag results already downloaded in nzbdav
+    _tag_available(filtered)
+
     # Show custom results dialog
     from resources.lib.results_dialog import show_results_dialog
 
@@ -432,6 +447,9 @@ def _handle_search(handle, params):
 
         resolve_and_play(best["link"], best["title"])
         return
+
+    # Tag results already downloaded in nzbdav
+    _tag_available(filtered)
 
     # Show custom results dialog
     from resources.lib.results_dialog import show_results_dialog

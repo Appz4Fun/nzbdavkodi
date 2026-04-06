@@ -163,6 +163,43 @@ def find_completed_by_name(name):
     return None
 
 
+def get_completed_names():
+    """Fetch all completed download names from nzbdav history.
+
+    Returns a set of name strings for fast membership testing.
+    Returns empty set on any error (non-blocking).
+    """
+    try:
+        base_url, api_key = _get_settings()
+    except Exception:
+        return set()
+
+    params = {
+        "mode": "history",
+        "apikey": api_key,
+        "output": "json",
+        "limit": 500,
+    }
+    url = "{}/api?{}".format(base_url, urlencode(params))
+
+    try:
+        response_text = _http_get(url)
+        response = json.loads(response_text)
+    except Exception:
+        return set()
+
+    slots = response.get("history", {}).get("slots", [])
+    names = set()
+    for slot in slots:
+        if slot.get("status") == "Completed" and slot.get("name"):
+            names.add(slot["name"])
+    xbmc.log(
+        "NZB-DAV: Loaded {} completed download names from history".format(len(names)),
+        xbmc.LOGDEBUG,
+    )
+    return names
+
+
 def get_job_status(nzo_id):
     try:
         base_url, api_key = _get_settings()

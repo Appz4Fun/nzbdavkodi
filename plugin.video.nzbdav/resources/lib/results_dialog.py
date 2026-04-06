@@ -129,6 +129,10 @@ class ResultsDialog(xbmcgui.WindowXMLDialog):
             # Group
             li.setProperty("group", _c(meta.get("group", ""), "FF34D399"))
 
+            # Already downloaded indicator
+            if result.get("_available"):
+                li.setProperty("available", _c("\u26a1", "FF00FF88"))
+
             # Alternating row background
             li.setProperty("row_bg", _BG_A if i % 2 == 0 else _BG_B)
 
