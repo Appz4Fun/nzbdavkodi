@@ -431,3 +431,26 @@ def test_resolve_status_transitions_queued_to_downloading_to_completed(
     mock_plugin.setResolvedUrl.assert_called_once()
     resolve_call = mock_plugin.setResolvedUrl.call_args
     assert resolve_call[0][1] is True
+
+
+@patch("resources.lib.resolver.find_completed_by_name")
+@patch("resources.lib.resolver.xbmc")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.xbmcplugin")
+@patch("resources.lib.resolver.submit_nzb")
+@patch("resources.lib.resolver._get_poll_settings")
+def test_resolve_dialog_closed_on_exception(
+    mock_poll, mock_submit, mock_plugin, mock_gui, mock_xbmc, mock_find
+):
+    """Dialog must be closed even if an exception occurs during resolve."""
+    mock_poll.return_value = (2, 60)
+    mock_find.return_value = None
+    mock_submit.side_effect = RuntimeError("unexpected crash")
+
+    dialog = MagicMock()
+    mock_gui.DialogProgress.return_value = dialog
+
+    resolve(1, {"nzburl": "http://hydra/getnzb/abc", "title": "movie.mkv"})
+
+    dialog.close.assert_called()
+    mock_plugin.setResolvedUrl.assert_called_once()
