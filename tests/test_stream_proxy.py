@@ -366,17 +366,17 @@ def test_prepare_stream_falls_back_to_non_seekable_on_probe_failure():
 
 
 def test_seek_detection_continuation():
-    """Request near current position is NOT a seek."""
-    from resources.lib.stream_proxy import _is_seek_request
+    """Request within threshold of current position is NOT a seek."""
+    from resources.lib.stream_proxy import _SEEK_THRESHOLD, _is_seek_request
 
-    assert _is_seek_request(5000000, 5500000) is False  # 500KB ahead
+    assert _is_seek_request(0, _SEEK_THRESHOLD - 1) is False
 
 
 def test_seek_detection_forward_jump():
-    """Request far ahead IS a seek."""
-    from resources.lib.stream_proxy import _is_seek_request
+    """Request beyond threshold IS a seek."""
+    from resources.lib.stream_proxy import _SEEK_THRESHOLD, _is_seek_request
 
-    assert _is_seek_request(5000000, 50000000) is True  # 45MB ahead
+    assert _is_seek_request(0, _SEEK_THRESHOLD + 1) is True
 
 
 def test_seek_detection_backward():
@@ -518,3 +518,101 @@ def test_serve_remux_continuation_seeks_to_position():
     seek_val = float(cmd[ss_idx + 1])
     # 500000000 / 10000000000 * 7200 = 360.0 seconds
     assert abs(seek_val - 360.0) < 0.1
+
+
+def test_serve_remux_explicit_seek_kills_existing():
+    """An explicit seek (large jump) kills the existing ffmpeg process."""
+    ctx = {
+        "remote_url": "http://host/film.mp4",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "total_bytes": 10000000000,
+        "duration_seconds": 7200.0,
+        "seekable": True,
+        "remux": True,
+    }
+
+    old_proc = MagicMock()
+    handler = _make_handler_with_server(
+        ctx, range_header="bytes=5000000000-", current_byte_pos=100000000
+    )
+    handler.server.active_ffmpeg = old_proc
+
+    mock_proc = MagicMock()
+    mock_proc.stdout.read.return_value = b""
+    mock_proc.stderr.read.return_value = b""
+
+    with patch("resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc):
+        handler._serve_remux(ctx)
+
+    old_proc.kill.assert_called_once()
+    old_proc.wait.assert_called_once()
+
+
+def test_serve_remux_non_seekable_no_ss():
+    """Non-seekable remux does not include -ss even with a Range header."""
+    ctx = {
+        "remote_url": "http://host/film.mp4",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "total_bytes": 10000000000,
+        "duration_seconds": None,
+        "seekable": False,
+        "remux": True,
+    }
+
+    handler = _make_handler_with_server(ctx, range_header="bytes=500000000-")
+
+    mock_proc = MagicMock()
+    mock_proc.stdout.read.return_value = b""
+    mock_proc.stderr.read.return_value = b""
+
+    with patch(
+        "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
+    ) as mock_popen:
+        handler._serve_remux(ctx)
+
+    cmd = mock_popen.call_args[0][0]
+    assert "-ss" not in cmd
+
+
+# ---------------------------------------------------------------------------
+# do_HEAD — handler-level tests
+# ---------------------------------------------------------------------------
+
+
+def test_head_seekable_remux_returns_accept_ranges():
+    """HEAD on a seekable remux context returns Accept-Ranges: bytes."""
+    ctx = {
+        "remux": True,
+        "seekable": True,
+        "total_bytes": 10000000000,
+    }
+    handler = _make_handler_with_server(ctx)
+    handler.do_HEAD()
+
+    handler.send_response.assert_called_once_with(200)
+    handler.send_header.assert_any_call("Content-Length", "10000000000")
+    handler.send_header.assert_any_call("Accept-Ranges", "bytes")
+
+
+def test_head_non_seekable_remux_no_ranges():
+    """HEAD on a non-seekable remux context returns Accept-Ranges: none."""
+    ctx = {
+        "remux": True,
+        "seekable": False,
+        "total_bytes": 0,
+    }
+    handler = _make_handler_with_server(ctx)
+    handler.do_HEAD()
+
+    handler.send_response.assert_called_once_with(200)
+    handler.send_header.assert_any_call("Accept-Ranges", "none")
+
+
+def test_head_no_context_returns_404():
+    """HEAD with no stream context returns 404."""
+    handler = _make_handler_with_server(ctx=None)
+    handler.do_HEAD()
+
+    handler.send_error.assert_called_once_with(404)
