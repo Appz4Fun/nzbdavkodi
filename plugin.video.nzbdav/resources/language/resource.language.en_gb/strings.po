@@ -469,3 +469,7 @@ msgstr "Stream failed. Try an MKV version or check nzbdav server."
 msgctxt "#30116"
 msgid "Stream failed after {} retries. Try a different source."
 msgstr "Stream failed after {} retries. Try a different source."
+
+msgctxt "#30117"
+msgid "STRM Key (from nzbdav database)"
+msgstr "STRM Key (from nzbdav database)"

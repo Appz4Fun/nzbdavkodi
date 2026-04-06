@@ -263,7 +263,7 @@ def test_find_video_file_returns_none_on_error(mock_urlopen, mock_settings):
 
 @patch("resources.lib.webdav._get_settings")
 def test_get_webdav_stream_url_for_path_with_auth(mock_settings):
-    """get_webdav_stream_url_for_path uses Kodi pipe-separated auth header."""
+    """get_webdav_stream_url_for_path builds WebDAV URL with auth headers."""
     import base64
 
     mock_settings.return_value = _SETTINGS_WITH_AUTH
