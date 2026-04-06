@@ -248,7 +248,12 @@ def find_video_file(folder_path, _depth=0):
 
             # Get file size
             size_el = response.find(".//D:getcontentlength", ns)
-            size = int(size_el.text) if size_el is not None and size_el.text else 0
+            size = 0
+            if size_el is not None and size_el.text:
+                try:
+                    size = int(size_el.text.strip())
+                except ValueError:
+                    pass
 
             if size >= best_size:
                 best_size = size

@@ -103,11 +103,10 @@ def test_resolve_success(
     resolve(1, {"nzburl": "http://hydra/getnzb/abc", "title": "movie.mkv"})
 
     mock_submit.assert_called_once()
-    # All formats go through proxy — setResolvedUrl(False) + Player().play()
+    # All formats go through proxy — setResolvedUrl(True) with proxy URL
     mock_plugin.setResolvedUrl.assert_called_once()
     resolve_call = mock_plugin.setResolvedUrl.call_args
-    assert resolve_call[0][1] is False
-    mock_xbmc.Player.return_value.play.assert_called_once()
+    assert resolve_call[0][1] is True
 
 
 @patch("resources.lib.resolver.find_completed_by_name")
@@ -447,11 +446,10 @@ def test_resolve_status_transitions_queued_to_downloading_to_completed(
     assert (
         mock_history.call_count == 3
     ), "get_job_history should be polled three times before completing"
-    # All formats go through proxy — setResolvedUrl(False) + Player().play()
+    # All formats go through proxy — setResolvedUrl(True) with proxy URL
     mock_plugin.setResolvedUrl.assert_called_once()
     resolve_call = mock_plugin.setResolvedUrl.call_args
-    assert resolve_call[0][1] is False
-    mock_xbmc.Player.return_value.play.assert_called_once()
+    assert resolve_call[0][1] is True
 
 
 @patch("resources.lib.resolver.find_completed_by_name")

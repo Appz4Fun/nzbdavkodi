@@ -35,8 +35,8 @@ PLAYER_JSON = {
     "plugin": "plugin.video.nzbdav",
     "priority": 100,
     "is_resolvable": "true",
-    "play_movie": "executebuiltin://RunPlugin(plugin://plugin.video.nzbdav/play?type=movie&title={title}&year={year}&imdb={imdb})",
-    "play_episode": "executebuiltin://RunPlugin(plugin://plugin.video.nzbdav/play?type=episode&title={showname}&year={showyear}&season={season}&episode={episode}&imdb={imdb})",
+    "play_movie": "plugin://plugin.video.nzbdav/play?type=movie&title={title}&year={year}&imdb={imdb}",
+    "play_episode": "plugin://plugin.video.nzbdav/play?type=episode&title={showname}&year={showyear}&season={season}&episode={episode}&imdb={imdb}&tmdb_id={tmdb_id}&ep_season={ep_showseason}&ep_episode={ep_showepisode}",
 }
 
 
