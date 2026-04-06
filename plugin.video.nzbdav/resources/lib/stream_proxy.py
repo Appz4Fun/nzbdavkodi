@@ -233,8 +233,15 @@ class _StreamHandler(BaseHTTPRequestHandler):
             if parsed[0] is not None:
                 requested_start = parsed[0]
 
-        # Determine if this is a seek
+        # Calculate seek position for any non-zero Range request when we have
+        # duration info.  This covers both explicit seeks (user skips ahead)
+        # and continuations (Kodi reconnects mid-stream after a broken pipe).
+        # Each GET spawns a fresh ffmpeg, so we must always tell it where to
+        # start — otherwise continuations would restart from byte 0.
         seek_seconds = None
+        if seekable and duration is not None and total_bytes and requested_start > 0:
+            seek_seconds = (requested_start / total_bytes) * duration
+
         with self.server.ffmpeg_lock:
             current_pos = self.server.current_byte_pos
             is_seek = (
@@ -243,14 +250,13 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 and _is_seek_request(current_pos, requested_start)
             )
             if is_seek:
-                seek_seconds = (requested_start / total_bytes) * duration
                 xbmc.log(
                     "NZB-DAV: Seek to byte {} -> {:.1f}s".format(
                         requested_start, seek_seconds
                     ),
                     xbmc.LOGINFO,
                 )
-                # Kill existing ffmpeg
+                # Kill existing ffmpeg (may still be alive from a prior GET)
                 if self.server.active_ffmpeg:
                     try:
                         self.server.active_ffmpeg.kill()
@@ -278,7 +284,11 @@ class _StreamHandler(BaseHTTPRequestHandler):
             self.server.active_ffmpeg = proc
             self.server.current_byte_pos = requested_start
 
-        # Send response headers
+        # Send response headers.
+        # NOTE: Content-Length uses the source MP4 byte size, not the MKV
+        # output size (which differs due to container overhead).  Kodi needs
+        # these headers for the progress bar and seek offset calculation;
+        # the source size is a close-enough approximation.
         if seekable and total_bytes > 0:
             self.send_response(206)
             self.send_header("Content-Type", "video/x-matroska")

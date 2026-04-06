@@ -16,6 +16,28 @@ def _make_handler():
     return _StreamHandler.__new__(_StreamHandler)
 
 
+def _make_handler_with_server(ctx, range_header=None, current_byte_pos=0):
+    """Create a _StreamHandler wired to a mock server for handler-level tests."""
+    import threading
+
+    handler = _StreamHandler.__new__(_StreamHandler)
+
+    handler.server = MagicMock()
+    handler.server.stream_context = ctx
+    handler.server.active_ffmpeg = None
+    handler.server.current_byte_pos = current_byte_pos
+    handler.server.ffmpeg_lock = threading.Lock()
+
+    handler.headers = {"Range": range_header} if range_header else {}
+    handler.wfile = MagicMock()
+    handler.send_response = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
+    handler.send_error = MagicMock()
+
+    return handler
+
+
 def test_parse_range_standard():
     h = _make_handler()
     assert h._parse_range("bytes=0-999", 10000) == (0, 999)
@@ -456,3 +478,43 @@ def test_build_ffmpeg_cmd_embeds_basic_auth():
     cmd = handler._build_ffmpeg_cmd(ctx)
     i_idx = cmd.index("-i")
     assert "user:pass@host" in cmd[i_idx + 1]
+
+
+# ---------------------------------------------------------------------------
+# _serve_remux — handler-level tests
+# ---------------------------------------------------------------------------
+
+
+def test_serve_remux_continuation_seeks_to_position():
+    """A continuation request (within threshold of current pos) must still
+    seek ffmpeg to the requested byte position, not restart from byte 0."""
+    ctx = {
+        "remote_url": "http://host/film.mp4",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "total_bytes": 10000000000,
+        "duration_seconds": 7200.0,
+        "seekable": True,
+        "remux": True,
+    }
+
+    # 5 MB ahead of current — within 10 MB threshold, classified as continuation
+    handler = _make_handler_with_server(
+        ctx, range_header="bytes=500000000-", current_byte_pos=495000000
+    )
+
+    mock_proc = MagicMock()
+    mock_proc.stdout.read.return_value = b""
+    mock_proc.stderr.read.return_value = b""
+
+    with patch(
+        "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
+    ) as mock_popen:
+        handler._serve_remux(ctx)
+
+    cmd = mock_popen.call_args[0][0]
+    assert "-ss" in cmd, "Continuation should use -ss to resume at position"
+    ss_idx = cmd.index("-ss")
+    seek_val = float(cmd[ss_idx + 1])
+    # 500000000 / 10000000000 * 7200 = 360.0 seconds
+    assert abs(seek_val - 360.0) < 0.1
