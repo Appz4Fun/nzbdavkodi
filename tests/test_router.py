@@ -200,6 +200,22 @@ def test_format_info_line_full():
     assert "GB" in label
 
 
+@patch("resources.lib.router.xbmc")
+def test_route_dispatches_to_test_hydra(mock_xbmc):
+    """Route /test_hydra should call the hydra connection test."""
+    with patch("resources.lib.router._test_hydra_connection") as mock_test:
+        route(["plugin://plugin.video.nzbdav/test_hydra", "1", ""])
+        mock_test.assert_called_once()
+
+
+@patch("resources.lib.router.xbmc")
+def test_route_dispatches_to_test_nzbdav(mock_xbmc):
+    """Route /test_nzbdav should call the nzbdav connection test."""
+    with patch("resources.lib.router._test_nzbdav_connection") as mock_test:
+        route(["plugin://plugin.video.nzbdav/test_nzbdav", "1", ""])
+        mock_test.assert_called_once()
+
+
 def test_format_info_line_minimal():
     """Test label with no metadata."""
     item = {

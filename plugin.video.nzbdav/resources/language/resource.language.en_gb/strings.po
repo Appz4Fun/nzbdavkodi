@@ -453,3 +453,11 @@ msgstr "Sorted by relevance"
 msgctxt "#30112"
 msgid "Showing {} of {} sources after filters"
 msgstr "Showing {} of {} sources after filters"
+
+msgctxt "#30113"
+msgid "Test NZBHydra Connection"
+msgstr "Test NZBHydra Connection"
+
+msgctxt "#30114"
+msgid "Test nzbdav Connection"
+msgstr "Test nzbdav Connection"

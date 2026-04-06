@@ -4,9 +4,11 @@
 		<setting label="30001" type="lsep" />
 		<setting id="hydra_url" label="30002" type="text" default="http://localhost:5076" />
 		<setting id="hydra_api_key" label="30003" type="text" default="" option="hidden" />
+		<setting label="30113" type="action" action="RunPlugin(plugin://plugin.video.nzbdav/test_hydra)" option="close" />
 		<setting label="30004" type="lsep" />
 		<setting id="nzbdav_url" label="30005" type="text" default="http://localhost:3000" />
 		<setting id="nzbdav_api_key" label="30003" type="text" default="" option="hidden" />
+		<setting label="30114" type="action" action="RunPlugin(plugin://plugin.video.nzbdav/test_nzbdav)" option="close" />
 		<setting label="30006" type="lsep" />
 		<setting id="webdav_url" label="30007" type="text" default="" />
 		<setting id="webdav_username" label="30008" type="text" default="" />

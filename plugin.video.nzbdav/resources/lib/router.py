@@ -70,6 +70,10 @@ def route(argv):
         import xbmcaddon
 
         xbmcaddon.Addon().openSettings()
+    elif path == "/test_hydra":
+        _test_hydra_connection()
+    elif path == "/test_nzbdav":
+        _test_nzbdav_connection()
     else:
         _handle_main_menu(handle)
 
@@ -354,6 +358,64 @@ def _get_tmdb_poster(imdb_id):
         return ""
     except Exception:
         return ""
+
+
+def _test_hydra_connection():
+    """Test NZBHydra2 connection by hitting the caps endpoint."""
+    import xbmcaddon
+
+    from resources.lib.http_util import http_get, notify
+
+    addon = xbmcaddon.Addon()
+    url = addon.getSetting("hydra_url").rstrip("/")
+    api_key = addon.getSetting("hydra_api_key")
+
+    if not url:
+        notify(_addon_name(), "NZBHydra URL not configured", 3000)
+        return
+
+    test_url = "{}/api?apikey={}&t=caps&o=xml".format(url, api_key)
+    try:
+        response = http_get(test_url)
+        if "<caps>" in response or "<server" in response:
+            notify(_addon_name(), "NZBHydra connection OK", 3000)
+        else:
+            notify(_addon_name(), "NZBHydra: unexpected response", 5000)
+    except Exception as e:
+        notify(
+            _addon_name(),
+            "NZBHydra: {}".format(str(e)[:60]),
+            5000,
+        )
+
+
+def _test_nzbdav_connection():
+    """Test nzbdav connection by hitting the version endpoint."""
+    import xbmcaddon
+
+    from resources.lib.http_util import http_get, notify
+
+    addon = xbmcaddon.Addon()
+    url = addon.getSetting("nzbdav_url").rstrip("/")
+    api_key = addon.getSetting("nzbdav_api_key")
+
+    if not url:
+        notify(_addon_name(), "nzbdav URL not configured", 3000)
+        return
+
+    test_url = "{}/api?mode=version&apikey={}&output=json".format(url, api_key)
+    try:
+        response = http_get(test_url)
+        if "version" in response:
+            notify(_addon_name(), "nzbdav connection OK", 3000)
+        else:
+            notify(_addon_name(), "nzbdav: unexpected response", 5000)
+    except Exception as e:
+        notify(
+            _addon_name(),
+            "nzbdav: {}".format(str(e)[:60]),
+            5000,
+        )
 
 
 def _handle_main_menu(handle):
