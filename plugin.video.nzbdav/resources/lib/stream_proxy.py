@@ -339,6 +339,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
                         self.wfile.write(chunk)
                     except (BrokenPipeError, ConnectionResetError):
                         break
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # Normal — Kodi closed the connection on playback stop
         except Exception as e:
             xbmc.log("NZB-DAV: Proxy full stream failed: {}".format(e), xbmc.LOGERROR)
 
@@ -367,6 +369,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     if not chunk:
                         break
                     self.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # Normal — Kodi closed the connection on playback stop
         except Exception as e:
             xbmc.log("NZB-DAV: Proxy range failed: {}".format(e), xbmc.LOGERROR)
 
