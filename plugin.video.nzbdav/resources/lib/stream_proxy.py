@@ -149,50 +149,106 @@ class _StreamHandler(BaseHTTPRequestHandler):
         else:
             self._serve_proxy(ctx)
 
-    def _serve_remux(self, ctx):
-        """Remux MP4 to MKV on the fly using ffmpeg -c copy."""
+    def _build_ffmpeg_cmd(self, ctx, seek_seconds=None):
+        """Build the ffmpeg remux command list."""
         ffmpeg = ctx["ffmpeg_path"]
-        remote_url = ctx["remote_url"]
-
-        # Build ffmpeg input URL with auth if needed
-        input_url = remote_url
+        input_url = ctx["remote_url"]
         if ctx.get("auth_header"):
-            # Embed basic auth in the URL for ffmpeg
             auth = ctx["auth_header"]
             if auth.startswith("Basic "):
                 import base64
 
                 decoded = base64.b64decode(auth[6:]).decode("utf-8")
-                # Insert user:pass into URL
-                input_url = remote_url.replace("://", "://{}@".format(decoded), 1)
+                input_url = ctx["remote_url"].replace(
+                    "://", "://{}@".format(decoded), 1
+                )
 
-        xbmc.log(
-            "NZB-DAV: Remuxing MP4->MKV: {}".format(remote_url[:80]),
-            xbmc.LOGINFO,
+        cmd = [ffmpeg]
+        if seek_seconds is not None and seek_seconds > 0:
+            cmd.extend(["-ss", "{:.3f}".format(seek_seconds)])
+        cmd.extend(
+            [
+                "-v",
+                "warning",
+                "-reconnect",
+                "1",
+                "-reconnect_streamed",
+                "1",
+                "-i",
+                input_url,
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a",
+            ]
         )
 
-        cmd = [
-            ffmpeg,
-            "-v",
-            "warning",
-            "-reconnect",
-            "1",
-            "-reconnect_streamed",
-            "1",
-            "-i",
-            input_url,
-            "-map",
-            "0:v:0",
-            "-map",
-            "0:a",
-            "-c",
-            "copy",
-            "-f",
-            "matroska",
-            "-fflags",
-            "+genpts+flush_packets",
-            "pipe:1",
-        ]
+        # Subtitle conversion (toggleable via setting)
+        try:
+            import xbmcaddon
+
+            convert_subs = xbmcaddon.Addon().getSetting("proxy_convert_subs")
+            if convert_subs != "false":
+                cmd.extend(["-map", "0:s?", "-c:s", "srt"])
+        except Exception:
+            pass  # outside Kodi context (tests), skip subtitle setting
+
+        cmd.extend(
+            [
+                "-c",
+                "copy",
+                "-f",
+                "matroska",
+                "-fflags",
+                "+genpts+flush_packets",
+                "pipe:1",
+            ]
+        )
+        return cmd
+
+    def _serve_remux(self, ctx):
+        """Remux MP4 to MKV on the fly, with optional seeking."""
+        total_bytes = ctx.get("total_bytes", 0)
+        duration = ctx.get("duration_seconds")
+        seekable = ctx.get("seekable", False)
+
+        # Parse range request
+        range_header = self.headers.get("Range")
+        requested_start = 0
+        if range_header:
+            parsed = self._parse_range(range_header, total_bytes or 1)
+            if parsed[0] is not None:
+                requested_start = parsed[0]
+
+        # Determine if this is a seek
+        seek_seconds = None
+        with self.server.ffmpeg_lock:
+            current_pos = self.server.current_byte_pos
+            if (
+                seekable
+                and requested_start > 0
+                and _is_seek_request(current_pos, requested_start)
+            ):
+                seek_seconds = (requested_start / total_bytes) * duration
+                xbmc.log(
+                    "NZB-DAV: Seek to byte {} -> {:.1f}s".format(
+                        requested_start, seek_seconds
+                    ),
+                    xbmc.LOGINFO,
+                )
+                # Kill existing ffmpeg
+                if self.server.active_ffmpeg:
+                    try:
+                        self.server.active_ffmpeg.kill()
+                    except Exception:
+                        pass
+                    self.server.active_ffmpeg = None
+
+        cmd = self._build_ffmpeg_cmd(ctx, seek_seconds=seek_seconds)
+        xbmc.log(
+            "NZB-DAV: Remuxing MP4->MKV (seek={})".format(seek_seconds),
+            xbmc.LOGINFO,
+        )
 
         try:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -201,12 +257,28 @@ class _StreamHandler(BaseHTTPRequestHandler):
             self.send_error(500)
             return
 
-        self.send_response(200)
-        self.send_header("Content-Type", "video/x-matroska")
-        self.send_header("Accept-Ranges", "none")
+        with self.server.ffmpeg_lock:
+            self.server.active_ffmpeg = proc
+            self.server.current_byte_pos = requested_start
+
+        # Send response headers
+        if seekable and total_bytes > 0:
+            self.send_response(206)
+            self.send_header("Content-Type", "video/x-matroska")
+            self.send_header("Content-Length", str(total_bytes - requested_start))
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header(
+                "Content-Range",
+                "bytes {}-{}/{}".format(requested_start, total_bytes - 1, total_bytes),
+            )
+        else:
+            self.send_response(200)
+            self.send_header("Content-Type", "video/x-matroska")
+            self.send_header("Accept-Ranges", "none")
         self.send_header("Connection", "close")
         self.end_headers()
 
+        # Stream ffmpeg output
         total = 0
         try:
             while True:
@@ -215,6 +287,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     break
                 self.wfile.write(chunk)
                 total += len(chunk)
+                with self.server.ffmpeg_lock:
+                    self.server.current_byte_pos = requested_start + total
         except (BrokenPipeError, ConnectionResetError):
             xbmc.log(
                 "NZB-DAV: Remux client disconnected after {} MB".format(
@@ -308,6 +382,9 @@ class StreamProxy:
         """Start the proxy server on a random port."""
         self._server = _ThreadedHTTPServer(("127.0.0.1", 0), _StreamHandler)
         self._server.stream_context = None
+        self._server.active_ffmpeg = None
+        self._server.current_byte_pos = 0
+        self._server.ffmpeg_lock = threading.Lock()
         self._server.owner_proxy = self
         self.port = self._server.server_address[1]
         self._thread = threading.Thread(target=self._server.serve_forever)
