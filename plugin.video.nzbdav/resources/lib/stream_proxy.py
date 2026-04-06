@@ -408,10 +408,6 @@ class StreamProxy:
     def start(self):
         """Start the proxy server on a random port."""
         self._server = _ThreadedHTTPServer(("127.0.0.1", 0), _StreamHandler)
-        self._server.stream_context = None
-        self._server.active_ffmpeg = None
-        self._server.current_byte_pos = 0
-        self._server.ffmpeg_lock = threading.Lock()
         self._server.owner_proxy = self
         self.port = self._server.server_address[1]
         self._thread = threading.Thread(target=self._server.serve_forever)
