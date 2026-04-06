@@ -147,6 +147,12 @@ def _play_via_proxy_resolved(handle, stream_url, stream_headers):
     # queuing, Up Next, and Trakt scrobbling
     xbmcplugin.setResolvedUrl(handle, True, li)
 
+    # Signal the background service to monitor this stream for failures
+    home = xbmcgui.Window(10000)
+    home.setProperty("nzbdav.stream_url", proxy_url)
+    home.setProperty("nzbdav.stream_title", stream_url.rsplit("/", 1)[-1])
+    home.setProperty("nzbdav.active", "true")
+
 
 def _play_via_proxy(stream_url, stream_headers):
     """Play a stream (for resolve_and_play path).
