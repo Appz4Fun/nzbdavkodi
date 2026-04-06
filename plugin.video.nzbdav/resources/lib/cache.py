@@ -11,6 +11,8 @@ import xbmc
 import xbmcaddon
 import xbmcvfs
 
+MAX_CACHE_SIZE_BYTES = 52428800  # 50MB
+
 
 def _get_cache_dir():
     addon = xbmcaddon.Addon()
@@ -72,6 +74,38 @@ def set_cached(search_type, title, results, **kwargs):
             "NZB-DAV: Cached {} results for '{}'".format(len(results), title),
             xbmc.LOGDEBUG,
         )
+    except OSError:
+        pass
+    _evict_oldest()
+
+
+def _evict_oldest():
+    """Delete oldest cache files until total size is under MAX_CACHE_SIZE_BYTES."""
+    cache_dir = _get_cache_dir()
+    try:
+        files = [
+            os.path.join(cache_dir, f)
+            for f in os.listdir(cache_dir)
+            if f.endswith(".json")
+        ]
+        total = sum(os.path.getsize(p) for p in files if os.path.exists(p))
+        if total <= MAX_CACHE_SIZE_BYTES:
+            return
+        # Sort by mtime ascending (oldest first)
+        files.sort(key=lambda p: os.path.getmtime(p))
+        for path in files:
+            if total <= MAX_CACHE_SIZE_BYTES:
+                break
+            try:
+                size = os.path.getsize(path)
+                os.remove(path)
+                total -= size
+                xbmc.log(
+                    "NZB-DAV: Cache evicted '{}'".format(os.path.basename(path)),
+                    xbmc.LOGDEBUG,
+                )
+            except OSError:
+                pass
     except OSError:
         pass
 
