@@ -11,12 +11,14 @@ Two external services, one addon:
 - **nzbdav**: SABnzbd-compatible API for NZB submission + WebDAV for streaming
 - **This addon**: Bridges TMDBHelper -> NZBHydra2 -> nzbdav -> Kodi player
 
-Flow: TMDBHelper calls plugin:// URL -> router.py dispatches -> hydra.py searches -> filter.py filters with PTT -> user picks result -> resolver.py submits to nzbdav + polls -> webdav.py checks availability -> setResolvedUrl() plays stream.
+Flow: TMDBHelper calls plugin:// URL -> router.py dispatches -> hydra.py searches -> filter.py filters with PTT -> user picks result -> resolver.py submits to nzbdav + polls -> webdav.py checks availability -> stream_proxy.py remuxes MP4 to MKV via ffmpeg (with subtitle conversion and seeking) -> setResolvedUrl() plays stream.
+
+The background service (`service.py`) runs a `StreamProxy` HTTP server that remuxes MP4 files on the fly to MKV using ffmpeg. This bypasses a 32-bit Kodi CFileCache bug with large MP4 moov atoms. MKV and other formats are proxied directly with range request support.
 
 ## Commands
 
 ```bash
-just test          # Run all 132 tests (~1s)
+just test          # Run all 235 tests (~2s)
 just lint          # ruff + black check
 just lint-fix      # Auto-fix lint issues
 just release       # Build plugin.video.nzbdav.zip

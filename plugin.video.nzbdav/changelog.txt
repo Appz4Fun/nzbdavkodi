@@ -1,3 +1,45 @@
+v0.4.4 (unreleased)
+- Fix continuation requests restarting ffmpeg from byte 0 instead of resuming
+- Fix _validate_url crash when URL is None
+- Extract _embed_auth_in_url helper to DRY auth credential embedding
+- Remove duplicate server attribute initialization
+- Narrow exception handling in seek-kill block to OSError
+- Add handler-level tests for HEAD and GET responses
+- Add Content-Length approximation comment for MKV remux
+
+v0.4.3 (2026-04-06)
+- Remux MP4 to MKV on the fly via ffmpeg (fixes 32-bit Kodi CFileCache bug)
+- Add subtitle conversion (mov_text to SRT) with toggleable setting
+- Add byte-range seeking with duration probe and progress bar support
+- Fix playback-failed dialog caused by setResolvedUrl(False)
+- Add background service for playback auto-recovery with retry
+- Move stream proxy to background service to survive script exit
+- Show helpful error messages on playback failure
+- Resolve all GitHub code scanning alerts (pylint, bandit, CodeQL)
+
+v0.4.1 (2026-04-06)
+- Address high/medium findings from code review
+
+v0.4.0 (2026-04-06)
+- Show lightning bolt indicator for already-downloaded NZBs
+- Suppress BrokenPipeError log spam when stopping playback
+
+v0.3.0 (2026-04-05)
+- Fix WebDAV streaming on CoreELEC with MP4 faststart proxy
+- Route all formats through local proxy to fix stale handle playback
+- Skip re-downloading if NZB already completed in nzbdav history
+- Add Test Connection buttons for NZBHydra and nzbdav in settings
+- Retry NZB submission up to 3 times on transient failure
+- Propagate NZBHydra search errors to user with clear messages
+- Show filter count and offer to show all when everything filtered
+- Add LRU cache eviction when cache exceeds 50MB limit
+- Harden PROPFIND XML parsing against malformed responses
+- Add thread safety lock to stream proxy context assignment
+- Add max iterations safeguard to resolve poll loop
+- Use IMDB ID for TV show searches instead of title-only text search
+- URL-encode WebDAV folder paths and auth header values
+- Add detailed progress logging during search stages
+
 v0.2.0 (2026-04-05)
 - Add Kodi localization support for addon UI and settings labels
 - Add GitHub community health files and repository best-practice coverage tests

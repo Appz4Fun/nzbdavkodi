@@ -22,7 +22,7 @@
         <license>GPL-3.0-or-later</license>
         <source>https://github.com/xbmc4lyfe/nzbdavkodi</source>
         <website>https://xbmc4lyfe.github.io/nzbdavkodi/</website>
-        <news>v0.2.0 - Add localization, repository best-practice metadata, and settings compatibility fixes</news>
+        <news>v0.4.3 - Remux MP4 to MKV via ffmpeg, subtitle conversion, byte-range seeking, playback reliability fixes</news>
         <assets>
             <icon>resources/icon.png</icon>
             <fanart>resources/fanart.jpg</fanart>
