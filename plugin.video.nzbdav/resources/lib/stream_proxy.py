@@ -87,8 +87,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
 
     protocol_version = "HTTP/1.1"
 
-    def log_message(self, fmt, *args):  # pylint: disable=arguments-differ
-        xbmc.log("NZB-DAV: Proxy: {}".format(fmt % args), xbmc.LOGDEBUG)
+    def log_message(self, format, *args):  # noqa: A002
+        xbmc.log("NZB-DAV: Proxy: {}".format(format % args), xbmc.LOGDEBUG)
 
     def do_POST(self):
         """Handle POST /prepare — plugin sends stream config via HTTP."""
@@ -101,7 +101,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
         body = self.rfile.read(length) if length else b""
         try:
             data = json.loads(body)
-        except Exception:
+        except (ValueError, KeyError):
             self.send_error(400)
             return
 
@@ -122,6 +122,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
         self.wfile.write(resp)
 
     def do_HEAD(self):
+        """Respond to HEAD with content metadata (type, length, ranges)."""
         ctx = self.server.stream_context
         if ctx is None:
             self.send_error(404)
@@ -145,6 +146,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def do_GET(self):
+        """Serve the stream via remux (MP4) or direct proxy (MKV etc.)."""
         ctx = self.server.stream_context
         if ctx is None:
             self.send_error(404)
@@ -201,7 +203,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
             convert_subs = xbmcaddon.Addon().getSetting("proxy_convert_subs")
             if convert_subs != "false":
                 cmd.extend(["-map", "0:s?", "-c:s", "srt"])
-        except Exception:
+        except Exception:  # noqa: BLE001 — Kodi module may not exist
             pass  # outside Kodi context (tests), skip subtitle setting
 
         cmd.extend(
@@ -233,11 +235,12 @@ class _StreamHandler(BaseHTTPRequestHandler):
         seek_seconds = None
         with self.server.ffmpeg_lock:
             current_pos = self.server.current_byte_pos
-            if (
+            is_seek = (
                 seekable
                 and requested_start > 0
                 and _is_seek_request(current_pos, requested_start)
-            ):
+            )
+            if is_seek:
                 seek_seconds = (requested_start / total_bytes) * duration
                 xbmc.log(
                     "NZB-DAV: Seek to byte {} -> {:.1f}s".format(
@@ -264,7 +267,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
             proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False
             )
-        except Exception as e:
+        except OSError as e:
             xbmc.log("NZB-DAV: Failed to start ffmpeg: {}".format(e), xbmc.LOGERROR)
             self.send_error(500)
             return
@@ -338,7 +341,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
             if ctx.get("auth_header"):
                 req.add_header("Authorization", ctx["auth_header"])
 
-            with urlopen(req, timeout=120) as resp:
+            with urlopen(req, timeout=120) as resp:  # nosec B310
                 self.send_response(206)
                 self.send_header("Content-Type", ctx["content_type"])
                 self.send_header("Content-Length", str(end - start + 1))
@@ -357,7 +360,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     self.wfile.write(chunk)
         except (BrokenPipeError, ConnectionResetError):
             pass
-        except Exception as e:
+        except (OSError, ValueError) as e:
             xbmc.log("NZB-DAV: Proxy range failed: {}".format(e), xbmc.LOGERROR)
 
     @staticmethod
@@ -504,7 +507,7 @@ class StreamProxy:
                     return result
             proc.wait(timeout=30)
             return _parse_ffmpeg_duration(collected)
-        except Exception as e:
+        except (OSError, subprocess.SubprocessError, ValueError) as e:
             xbmc.log("NZB-DAV: Duration probe failed: {}".format(e), xbmc.LOGWARNING)
             return None
 
@@ -515,19 +518,19 @@ class StreamProxy:
         if auth_header:
             req.add_header("Authorization", auth_header)
         try:
-            with urlopen(req, timeout=10) as resp:
+            with urlopen(req, timeout=10) as resp:  # nosec B310
                 return int(resp.headers.get("Content-Length", 0))
-        except Exception:
+        except (OSError, ValueError):
             pass
         try:
             req = Request(url)
             req.add_header("Range", "bytes=-1")
             if auth_header:
                 req.add_header("Authorization", auth_header)
-            with urlopen(req, timeout=10) as resp:
+            with urlopen(req, timeout=10) as resp:  # nosec B310
                 cr = resp.headers.get("Content-Range", "")
                 return int(cr.split("/")[1]) if "/" in cr else 0
-        except Exception:
+        except (OSError, ValueError):
             return 0
 
     @staticmethod
@@ -551,7 +554,7 @@ def get_service_proxy_port():
         home = xbmcgui.Window(10000)
         port_str = home.getProperty("nzbdav.proxy_port")
         return int(port_str) if port_str else 0
-    except Exception:
+    except Exception:  # noqa: BLE001 — Kodi module may not exist
         return 0
 
 
@@ -563,14 +566,14 @@ def prepare_stream_via_service(port, remote_url, auth_header=None):
     data = json.dumps({"remote_url": remote_url, "auth_header": auth_header})
     req = Request(url, data=data.encode(), method="POST")
     req.add_header("Content-Type", "application/json")
-    with urlopen(req, timeout=60) as resp:
+    with urlopen(req, timeout=60) as resp:  # nosec B310
         result = json.loads(resp.read())
         return result["proxy_url"]
 
 
 def get_proxy():
     """Get or create the singleton stream proxy."""
-    global _proxy  # pylint: disable=global-statement
+    global _proxy
     with _proxy_lock:
         if _proxy is None:
             _proxy = StreamProxy()

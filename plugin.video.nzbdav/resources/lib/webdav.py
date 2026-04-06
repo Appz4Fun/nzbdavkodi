@@ -196,7 +196,7 @@ def find_video_file(folder_path, _depth=0):
             body = resp.read().decode("utf-8", errors="replace")
 
         # Parse the PROPFIND XML response
-        root = ET.fromstring(body)
+        root = ET.fromstring(body)  # nosec B314 — trusted WebDAV server response
         ns = {"D": "DAV:"}
 
         best_file = None

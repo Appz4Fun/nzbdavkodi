@@ -44,11 +44,11 @@ def _validate_stream_url(url, headers):
         for key, value in headers.items():
             req.add_header(key, value)
     try:
-        with urlopen(req, timeout=10) as resp:
+        with urlopen(req, timeout=10) as resp:  # nosec B310
             return resp.getcode() == 206 or "bytes" in resp.headers.get(
                 "Accept-Ranges", ""
             )
-    except Exception:
+    except (OSError, ValueError):
         return False
 
 

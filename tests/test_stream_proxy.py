@@ -117,7 +117,7 @@ def test_get_content_length_returns_zero_on_failure():
     from resources.lib.stream_proxy import StreamProxy
 
     sp = StreamProxy.__new__(StreamProxy)
-    with patch("resources.lib.stream_proxy.urlopen", side_effect=Exception("fail")):
+    with patch("resources.lib.stream_proxy.urlopen", side_effect=OSError("fail")):
         assert sp._get_content_length("http://host/file.mp4", None) == 0
 
 

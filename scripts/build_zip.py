@@ -16,7 +16,7 @@ def build_zip(addon_dir="plugin.video.nzbdav", output_dir="."):
     import xml.etree.ElementTree as ET
 
     addon_xml_path = os.path.join(addon_dir, "addon.xml")
-    tree = ET.parse(addon_xml_path)
+    tree = ET.parse(addon_xml_path)  # nosec B314 — parsing our own addon.xml
     version = tree.getroot().attrib["version"]
     zip_path = os.path.join(output_dir, "{}-{}.zip".format(addon_id, version))
 

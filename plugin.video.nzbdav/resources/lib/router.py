@@ -107,7 +107,7 @@ def _lookup_episode_info(imdb, tmdb_id=""):
 
         # Use IMDB suggestion API to get the show title
         url = "https://v2.sg.media-imdb.com/suggestion/t/{}.json".format(imdb)
-        with urlopen(url, timeout=5) as resp:
+        with urlopen(url, timeout=5) as resp:  # nosec B310
             data = json.loads(resp.read())
             results = data.get("d", [])
             if results:
@@ -525,7 +525,7 @@ def _get_tmdb_poster(imdb_id):
         # Fall back to a free poster service
         url = "https://v2.sg.media-imdb.com/suggestion/t/{}.json".format(imdb_id)
         try:
-            with urlopen(url, timeout=3) as resp:
+            with urlopen(url, timeout=3) as resp:  # nosec B310
                 data = json.loads(resp.read())
                 results = data.get("d", [])
                 if results and results[0].get("i"):
