@@ -227,13 +227,14 @@ With **Auto-select best match** enabled, the dialog is skipped and the top resul
 ### Commands
 
 ```bash
-just test          # Run all 233 tests
+just test          # Run all 247 tests
 just test-verbose  # Run tests with full output
 just lint          # Check ruff + black formatting
 just lint-fix      # Auto-fix lint issues
 just release       # Build plugin.video.nzbdav.zip
 just ship          # Run tests then build release
 just repo          # Build release + generate Kodi repo in dist/
+just repo-zip      # Build repo + copy repository zip to cwd
 just clean         # Remove build artifacts
 just dist-clean    # Remove build artifacts + dist/
 ```
@@ -280,7 +281,7 @@ repo/
   bandit.yml             # Bandit security scan
 tests/
   conftest.py            # Kodi module mocks
-  test_*.py              # 233 tests
+  test_*.py              # 247 tests
 ```
 
 ### Releasing
