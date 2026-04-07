@@ -680,3 +680,52 @@ def test_prepare_stream_uses_faststart_for_mp4():
     assert ctx["remux"] is False
     assert info["seekable"] is True
     assert info["virtual_size"] == 5000000132
+
+
+def test_prepare_stream_direct_redirect_for_already_faststart():
+    """Already-faststart MP4 returns remote URL directly (no proxy hop)."""
+    import threading
+
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_context = None
+    sp._context_lock = threading.Lock()
+    sp.port = 9999
+
+    mock_layout = {
+        "ftyp_data": b"\x00" * 16,
+        "ftyp_end": 16,
+        "moov_data": b"\x00" * 50,
+        "mdat_offset": 66,
+        "original_moov_offset": 16,
+        "moov_before_mdat": True,
+    }
+    mock_faststart = {
+        "header_data": b"\x00" * 66,
+        "virtual_size": 566,
+        "payload_remote_start": 66,
+        "payload_remote_end": 67,
+        "payload_size": 500,
+        "already_faststart": True,
+    }
+
+    with patch(
+        "resources.lib.stream_proxy._find_ffmpeg", return_value=None
+    ), patch.object(sp, "_get_content_length", return_value=566), patch(
+        "resources.lib.stream_proxy.fetch_remote_mp4_layout",
+        return_value=mock_layout,
+    ), patch(
+        "resources.lib.stream_proxy.build_faststart_layout",
+        return_value=mock_faststart,
+    ):
+        url, info = sp.prepare_stream(
+            "http://host/faststart.mp4", auth_header="Basic dXNlcjpwYXNz"
+        )
+
+    # Direct redirect: URL is the remote URL, not the proxy URL
+    assert url == "http://host/faststart.mp4"
+    assert info["direct"] is True
+    assert info["seekable"] is True
+    assert info["remux"] is False

@@ -136,6 +136,25 @@ def _play_direct(handle, stream_url, stream_headers):
                 service_port, stream_url, auth_header
             )
 
+            if stream_info.get("direct"):
+                # Already-faststart MP4 — play the WebDAV URL directly.
+                # No proxy needed: moov is at the front, Kodi seeks natively.
+                xbmc.log(
+                    "NZB-DAV: MP4 already faststart, direct play: {}".format(
+                        stream_url
+                    ),
+                    xbmc.LOGINFO,
+                )
+                li = _make_playable_listitem(stream_url, stream_headers)
+                xbmcplugin.setResolvedUrl(handle, True, li)
+
+                home = xbmcgui.Window(10000)
+                play_url = _build_play_url(stream_url, stream_headers)
+                home.setProperty("nzbdav.stream_url", play_url)
+                home.setProperty("nzbdav.stream_title", stream_url.rsplit("/", 1)[-1])
+                home.setProperty("nzbdav.active", "true")
+                return
+
             li = xbmcgui.ListItem(path=proxy_url)
             li.setContentLookup(False)
 
@@ -202,6 +221,18 @@ def _play_via_proxy(stream_url, stream_headers):
             proxy_url, stream_info = prepare_stream_via_service(
                 service_port, stream_url, auth_header
             )
+
+            if stream_info.get("direct"):
+                # Already-faststart MP4 — play WebDAV URL directly
+                xbmc.log(
+                    "NZB-DAV: MP4 already faststart, direct play: {}".format(
+                        stream_url
+                    ),
+                    xbmc.LOGINFO,
+                )
+                li = _make_playable_listitem(stream_url, stream_headers)
+                xbmc.Player().play(li.getPath(), li)
+                return
 
             li = xbmcgui.ListItem(path=proxy_url)
             li.setContentLookup(False)

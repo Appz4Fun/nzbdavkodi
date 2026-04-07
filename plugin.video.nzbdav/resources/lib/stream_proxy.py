@@ -678,16 +678,23 @@ class StreamProxy:
                     xbmc.LOGINFO,
                 )
             elif faststart is not None and faststart.get("already_faststart"):
-                # Already faststart — just proxy directly with range support
-                ctx = {
-                    "remote_url": remote_url,
-                    "auth_header": auth_header,
-                    "content_length": content_length,
-                    "content_type": "video/mp4",
+                # Already faststart — redirect directly to WebDAV URL.
+                # No proxy needed: moov is at the front, Kodi can seek natively.
+                # This follows the Stremio ecosystem pattern: expose the direct
+                # byte-servable URL when the backend stream is already good.
+                xbmc.log(
+                    "NZB-DAV: MP4 already faststart, direct redirect", xbmc.LOGINFO
+                )
+                stream_info = {
+                    "duration_seconds": None,
+                    "total_bytes": content_length,
+                    "virtual_size": 0,
+                    "seekable": True,
                     "remux": False,
                     "faststart": False,
+                    "direct": True,
                 }
-                xbmc.log("NZB-DAV: MP4 already faststart, direct proxy", xbmc.LOGINFO)
+                return remote_url, stream_info
             else:
                 # Tier 2: Try temp-file faststart (ffmpeg -movflags +faststart)
                 ffmpeg_path = _find_ffmpeg()
