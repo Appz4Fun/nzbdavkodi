@@ -21,6 +21,24 @@ from urllib.request import Request, urlopen
 
 import xbmc
 
+# mp4_parser functions are imported here so tests can patch them at this
+# module's namespace.  They have no Kodi dependencies, so the import is safe
+# at module load time.  If mp4_parser is unavailable (e.g. during a partial
+# install) we fall back gracefully to None, which prepare_stream treats as a
+# failed faststart parse.
+try:
+    from resources.lib.mp4_parser import (  # noqa: E402
+        RangeCache,
+        _http_range,
+        build_faststart_layout,
+        fetch_remote_mp4_layout,
+    )
+except Exception:  # noqa: BLE001
+    RangeCache = None  # type: ignore[assignment,misc]
+    _http_range = None  # type: ignore[assignment]
+    build_faststart_layout = None  # type: ignore[assignment]
+    fetch_remote_mp4_layout = None  # type: ignore[assignment]
+
 # Singleton proxy instance
 _proxy = None
 _proxy_lock = threading.Lock()
@@ -145,7 +163,21 @@ class _StreamHandler(BaseHTTPRequestHandler):
         if ctx is None:
             self.send_error(404)
             return
-        if ctx.get("remux"):
+        if ctx.get("faststart"):
+            self.send_response(200)
+            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Content-Length", str(ctx["virtual_size"]))
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+        elif ctx.get("temp_faststart"):
+            self.send_response(200)
+            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Content-Length", str(ctx["content_length"]))
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+        elif ctx.get("remux"):
             self.send_response(200)
             self.send_header("Content-Type", "video/x-matroska")
             self.send_header("Accept-Ranges", "none")
@@ -170,6 +202,10 @@ class _StreamHandler(BaseHTTPRequestHandler):
             self._serve_hls_manifest(ctx)
         elif "/segment/" in self.path:
             self._serve_hls_segment(ctx)
+        elif ctx.get("faststart"):
+            self._serve_mp4_faststart(ctx)
+        elif ctx.get("temp_faststart"):
+            self._serve_temp_faststart(ctx)
         elif ctx.get("remux"):
             self._serve_remux(ctx)
         else:
@@ -397,6 +433,138 @@ class _StreamHandler(BaseHTTPRequestHandler):
         )
         return cmd
 
+    def _serve_mp4_faststart(self, ctx):
+        """Serve MP4 with virtual faststart layout (moov before mdat)."""
+        header_data = ctx["header_data"]
+        virtual_size = ctx["virtual_size"]
+        payload_remote_start = ctx["payload_remote_start"]
+        payload_size = ctx["payload_size"]
+        range_cache = ctx.get("range_cache")
+        header_len = len(header_data)
+
+        # Parse Range header
+        range_header = self.headers.get("Range")
+        if range_header:
+            start, end = self._parse_range(range_header, virtual_size)
+            if start is None:
+                self.send_error(416)
+                return
+        else:
+            start, end = 0, virtual_size - 1
+
+        length = end - start + 1
+        if range_header:
+            self.send_response(206)
+            self.send_header(
+                "Content-Range",
+                "bytes {}-{}/{}".format(start, end, virtual_size),
+            )
+        else:
+            self.send_response(200)
+        self.send_header("Content-Type", "video/mp4")
+        self.send_header("Content-Length", str(length))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+
+        bytes_sent = 0
+        pos = start
+
+        try:
+            while bytes_sent < length:
+                remaining = length - bytes_sent
+
+                if pos < header_len:
+                    # Serve from cached header (ftyp + moov)
+                    chunk_end = min(header_len, pos + remaining)
+                    self.wfile.write(header_data[pos:chunk_end])
+                    sent = chunk_end - pos
+                    bytes_sent += sent
+                    pos += sent
+
+                elif pos < header_len + payload_size:
+                    # Serve from remote payload via range request
+                    payload_offset = pos - header_len
+                    remote_pos = payload_remote_start + payload_offset
+                    chunk_size = min(remaining, 1048576)  # 1 MB chunks
+                    remote_end = remote_pos + chunk_size - 1
+
+                    # Try cache first
+                    cached = None
+                    if range_cache:
+                        cached = range_cache.get(remote_pos, remote_end + 1)
+
+                    if cached:
+                        data = cached
+                    else:
+                        data = _http_range(
+                            ctx["remote_url"],
+                            remote_pos,
+                            remote_end,
+                            ctx.get("auth_header"),
+                        )
+                        if range_cache:
+                            range_cache.put(remote_pos, data)
+
+                    self.wfile.write(data)
+                    bytes_sent += len(data)
+                    pos += len(data)
+                else:
+                    break
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception as e:
+            xbmc.log("NZB-DAV: Faststart proxy error: {}".format(e), xbmc.LOGERROR)
+
+    def _serve_temp_faststart(self, ctx):
+        """Serve a temp-file faststart MP4 with range support."""
+        import os
+
+        temp_path = ctx["temp_path"]
+        if not os.path.exists(temp_path):
+            self.send_error(404)
+            return
+
+        file_size = ctx["content_length"]
+        range_header = self.headers.get("Range")
+        if range_header:
+            start, end = self._parse_range(range_header, file_size)
+            if start is None:
+                self.send_error(416)
+                return
+        else:
+            start, end = 0, file_size - 1
+
+        length = end - start + 1
+        if range_header:
+            self.send_response(206)
+            self.send_header(
+                "Content-Range",
+                "bytes {}-{}/{}".format(start, end, file_size),
+            )
+        else:
+            self.send_response(200)
+        self.send_header("Content-Type", "video/mp4")
+        self.send_header("Content-Length", str(length))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+
+        try:
+            with open(temp_path, "rb") as f:
+                f.seek(start)
+                remaining = length
+                while remaining > 0:
+                    chunk = f.read(min(remaining, 1048576))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception as e:
+            xbmc.log("NZB-DAV: Temp faststart error: {}".format(e), xbmc.LOGERROR)
+
     def _serve_remux(self, ctx):
         """Remux MP4 to MKV on the fly, with optional seeking."""
         total_bytes = ctx.get("total_bytes", 0)
@@ -616,35 +784,120 @@ class StreamProxy:
         """Set up proxy for a new stream.
 
         Returns (local_proxy_url, stream_info_dict).
-        stream_info_dict contains duration_seconds, total_bytes, seekable, remux.
+        stream_info_dict contains duration_seconds, total_bytes, seekable, remux,
+        faststart, and virtual_size.
         """
         content_type = self._detect_content_type(remote_url)
         lower_url = remote_url.lower()
         is_mp4 = lower_url.endswith((".mp4", ".m4v"))
 
-        ffmpeg_path = _find_ffmpeg() if is_mp4 else None
-        use_remux = is_mp4 and ffmpeg_path is not None
-
-        if use_remux:
+        if is_mp4:
             content_length = self._get_content_length(remote_url, auth_header)
-            duration = self._probe_duration(ffmpeg_path, remote_url, auth_header)
-            seekable = duration is not None and content_length > 0
-            ctx = {
-                "remote_url": remote_url,
-                "auth_header": auth_header,
-                "content_type": "video/x-matroska",
-                "remux": True,
-                "ffmpeg_path": ffmpeg_path,
-                "total_bytes": content_length,
-                "duration_seconds": duration,
-                "seekable": seekable,
-            }
-            xbmc.log(
-                "NZB-DAV: Will remux MP4->MKV via {} (seekable={}, duration={})".format(
-                    ffmpeg_path, seekable, duration
-                ),
-                xbmc.LOGINFO,
-            )
+
+            # Tier 1: Try virtual moov-relocation (pure Python, no temp files)
+            try:
+                if fetch_remote_mp4_layout is None:
+                    raise ImportError("mp4_parser not available")
+                layout_info = fetch_remote_mp4_layout(
+                    remote_url, content_length, auth_header
+                )
+                if layout_info:
+                    faststart = build_faststart_layout(layout_info)
+                else:
+                    faststart = None
+            except Exception as e:
+                xbmc.log(
+                    "NZB-DAV: MP4 faststart parse failed: {}".format(e), xbmc.LOGWARNING
+                )
+                faststart = None
+
+            if faststart is not None and not faststart.get("already_faststart"):
+                ctx = {
+                    "remote_url": remote_url,
+                    "auth_header": auth_header,
+                    "content_type": "video/mp4",
+                    "faststart": True,
+                    "remux": False,
+                    "header_data": faststart["header_data"],
+                    "virtual_size": faststart["virtual_size"],
+                    "payload_remote_start": faststart["payload_remote_start"],
+                    "payload_remote_end": faststart["payload_remote_end"],
+                    "payload_size": faststart["payload_size"],
+                    "range_cache": RangeCache(),
+                }
+                xbmc.log(
+                    "NZB-DAV: MP4 faststart proxy (virtual={}B, header={}B)".format(
+                        faststart["virtual_size"], len(faststart["header_data"])
+                    ),
+                    xbmc.LOGINFO,
+                )
+            elif faststart is not None and faststart.get("already_faststart"):
+                # Already faststart — just proxy directly with range support
+                ctx = {
+                    "remote_url": remote_url,
+                    "auth_header": auth_header,
+                    "content_length": content_length,
+                    "content_type": "video/mp4",
+                    "remux": False,
+                    "faststart": False,
+                }
+                xbmc.log("NZB-DAV: MP4 already faststart, direct proxy", xbmc.LOGINFO)
+            else:
+                # Tier 2: Try temp-file faststart (ffmpeg -movflags +faststart)
+                ffmpeg_path = _find_ffmpeg()
+                temp_path = (
+                    self._prepare_tempfile_faststart(
+                        ffmpeg_path, remote_url, auth_header
+                    )
+                    if ffmpeg_path
+                    else None
+                )
+
+                if temp_path:
+                    import os
+
+                    temp_size = os.path.getsize(temp_path)
+                    ctx = {
+                        "remote_url": remote_url,
+                        "auth_header": auth_header,
+                        "content_type": "video/mp4",
+                        "faststart": False,
+                        "remux": False,
+                        "temp_faststart": True,
+                        "temp_path": temp_path,
+                        "content_length": temp_size,
+                    }
+                    xbmc.log(
+                        "NZB-DAV: MP4 temp-file faststart ({}B)".format(temp_size),
+                        xbmc.LOGINFO,
+                    )
+                elif ffmpeg_path:
+                    # Tier 3: MKV remux fallback (existing behavior)
+                    duration = self._probe_duration(
+                        ffmpeg_path, remote_url, auth_header
+                    )
+                    ctx = {
+                        "remote_url": remote_url,
+                        "auth_header": auth_header,
+                        "content_type": "video/x-matroska",
+                        "remux": True,
+                        "faststart": False,
+                        "ffmpeg_path": ffmpeg_path,
+                        "total_bytes": content_length,
+                        "duration_seconds": duration,
+                        "seekable": duration is not None and content_length > 0,
+                    }
+                    xbmc.log("NZB-DAV: MP4 fallback to MKV remux", xbmc.LOGWARNING)
+                else:
+                    # Last resort: direct proxy (may fail for large files)
+                    ctx = {
+                        "remote_url": remote_url,
+                        "auth_header": auth_header,
+                        "content_length": content_length,
+                        "content_type": "video/mp4",
+                        "remux": False,
+                        "faststart": False,
+                    }
         else:
             content_length = self._get_content_length(remote_url, auth_header)
             ctx = {
@@ -659,14 +912,20 @@ class StreamProxy:
             self._server.stream_context = ctx
         local_url = "http://127.0.0.1:{}/stream".format(self.port)
         xbmc.log(
-            "NZB-DAV: Proxy ready (remux={}): {}".format(use_remux, local_url),
+            "NZB-DAV: Proxy ready (remux={}, faststart={}): {}".format(
+                ctx.get("remux", False), ctx.get("faststart", False), local_url
+            ),
             xbmc.LOGINFO,
         )
         stream_info = {
             "duration_seconds": ctx.get("duration_seconds"),
             "total_bytes": ctx.get("total_bytes", ctx.get("content_length", 0)),
-            "seekable": ctx.get("seekable", False),
-            "remux": use_remux,
+            "virtual_size": ctx.get("virtual_size", 0),
+            "seekable": ctx.get("seekable", False)
+            or ctx.get("faststart", False)
+            or ctx.get("temp_faststart", False),
+            "remux": ctx.get("remux", False),
+            "faststart": ctx.get("faststart", False),
         }
         return local_url, stream_info
 
@@ -713,6 +972,60 @@ class StreamProxy:
         except (OSError, subprocess.SubprocessError, ValueError) as e:
             xbmc.log("NZB-DAV: Duration probe failed: {}".format(e), xbmc.LOGWARNING)
             return None
+
+    @staticmethod
+    def _prepare_tempfile_faststart(ffmpeg_path, url, auth_header):
+        """Remux MP4 with faststart to a temp file. Returns path or None."""
+        import os
+        import tempfile
+
+        if not ffmpeg_path:
+            return None
+
+        _validate_url(url)
+        input_url = _embed_auth_in_url(url, auth_header)
+        temp_dir = tempfile.gettempdir()
+        temp_path = os.path.join(temp_dir, "nzbdav_faststart.mp4")
+
+        cmd = [
+            ffmpeg_path,
+            "-v",
+            "warning",
+            "-y",
+            "-reconnect",
+            "1",
+            "-reconnect_streamed",
+            "1",
+            "-i",
+            input_url,
+            "-map",
+            "0",
+            "-c",
+            "copy",
+            "-movflags",
+            "+faststart",
+            temp_path,
+        ]
+
+        try:
+            xbmc.log("NZB-DAV: Temp-file faststart remux starting", xbmc.LOGINFO)
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False
+            )
+            _, stderr = proc.communicate(timeout=600)  # 10 min timeout
+            if proc.returncode != 0:
+                xbmc.log(
+                    "NZB-DAV: Temp faststart failed: {}".format(
+                        stderr.decode(errors="replace")[:300]
+                    ),
+                    xbmc.LOGWARNING,
+                )
+                return None
+            if os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
+                return temp_path
+        except (OSError, subprocess.SubprocessError) as e:
+            xbmc.log("NZB-DAV: Temp faststart error: {}".format(e), xbmc.LOGWARNING)
+        return None
 
     @staticmethod
     def _get_content_length(url, auth_header):
