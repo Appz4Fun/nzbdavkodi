@@ -118,6 +118,12 @@ class ResultsDialog(xbmcgui.WindowXMLDialog):
             src_color = _SRC_COLORS.get(quality, "FFAAAAAA")
             li.setProperty("quality", _c(src_display, src_color))
 
+            # Container (MKV, MP4, etc.) — default to MKV since most
+            # scene releases are MKV and only MP4 releases tag the title.
+            container = (meta.get("container", "") or "MKV").upper()
+            container_color = "FF34D399" if container == "MKV" else "FFEF4444"
+            li.setProperty("container", _c(container, container_color))
+
             # Size
             li.setProperty("size", _c(_format_size(result.get("size")), "FFA1A1AA"))
 

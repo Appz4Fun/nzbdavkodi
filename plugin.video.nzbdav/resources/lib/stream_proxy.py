@@ -128,11 +128,13 @@ class _StreamHandler(BaseHTTPRequestHandler):
             return
 
         proxy = self.server.owner_proxy
-        proxy_url = proxy.prepare_stream(remote_url, auth_header)
+        proxy_url, stream_info = proxy.prepare_stream(remote_url, auth_header)
 
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
-        resp = json.dumps({"proxy_url": proxy_url}).encode()
+        result = {"proxy_url": proxy_url}
+        result.update(stream_info)
+        resp = json.dumps(result).encode()
         self.send_header("Content-Length", str(len(resp)))
         self.end_headers()
         self.wfile.write(resp)
@@ -146,11 +148,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
         if ctx.get("remux"):
             self.send_response(200)
             self.send_header("Content-Type", "video/x-matroska")
-            if ctx.get("seekable"):
-                self.send_header("Content-Length", str(ctx["total_bytes"]))
-                self.send_header("Accept-Ranges", "bytes")
-            else:
-                self.send_header("Accept-Ranges", "none")
+            self.send_header("Accept-Ranges", "none")
             self.send_header("Connection", "close")
             self.end_headers()
         else:
@@ -162,16 +160,170 @@ class _StreamHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def do_GET(self):
-        """Serve the stream via remux (MP4) or direct proxy (MKV etc.)."""
+        """Route requests to the appropriate handler."""
         ctx = self.server.stream_context
         if ctx is None:
             self.send_error(404)
             return
 
-        if ctx.get("remux"):
+        if self.path.endswith(".m3u8"):
+            self._serve_hls_manifest(ctx)
+        elif "/segment/" in self.path:
+            self._serve_hls_segment(ctx)
+        elif ctx.get("remux"):
             self._serve_remux(ctx)
         else:
             self._serve_proxy(ctx)
+
+    # ------------------------------------------------------------------
+    # HLS — manifest + segment endpoints for MP4 remux with seeking
+    # ------------------------------------------------------------------
+
+    _HLS_SEGMENT_DURATION = 10  # seconds per segment
+
+    def _serve_hls_manifest(self, ctx):
+        """Generate an HLS VOD manifest for the remuxed stream."""
+        duration = ctx.get("duration_seconds")
+        if duration is None or duration <= 0:
+            self.send_error(503)
+            return
+
+        seg_dur = self._HLS_SEGMENT_DURATION
+        num_segments = int(duration // seg_dur)
+        last_seg_dur = duration - (num_segments * seg_dur)
+        if last_seg_dur > 0.5:
+            num_segments += 1
+        else:
+            last_seg_dur = seg_dur  # absorb tiny remainder
+
+        lines = [
+            "#EXTM3U",
+            "#EXT-X-VERSION:3",
+            "#EXT-X-TARGETDURATION:{}".format(seg_dur),
+            "#EXT-X-PLAYLIST-TYPE:VOD",
+            "#EXT-X-MEDIA-SEQUENCE:0",
+        ]
+        for i in range(num_segments):
+            d = last_seg_dur if i == num_segments - 1 else seg_dur
+            lines.append("#EXTINF:{:.3f},".format(float(d)))
+            lines.append("segment/{}.ts".format(i))
+        lines.append("#EXT-X-ENDLIST")
+        lines.append("")
+
+        body = "\n".join(lines).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/vnd.apple.mpegurl")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _serve_hls_segment(self, ctx):
+        """Serve a single HLS segment by remuxing with ffmpeg -ss/-t."""
+        # Parse segment index from path: /segment/42.mkv -> 42
+        try:
+            seg_str = self.path.rsplit("/", 1)[-1].split(".")[0]
+            seg_index = int(seg_str)
+        except (ValueError, IndexError):
+            self.send_error(400)
+            return
+
+        seg_dur = self._HLS_SEGMENT_DURATION
+        seek_seconds = seg_index * seg_dur
+        duration = ctx.get("duration_seconds", 0)
+
+        # Clamp segment duration for the last segment
+        remaining = duration - seek_seconds
+        if remaining <= 0:
+            self.send_error(404)
+            return
+        t = min(seg_dur, remaining)
+
+        ffmpeg = ctx["ffmpeg_path"]
+        input_url = ctx["remote_url"]
+        _validate_url(input_url)
+        input_url = _embed_auth_in_url(input_url, ctx.get("auth_header"))
+
+        cmd = [
+            ffmpeg,
+            "-ss",
+            "{:.3f}".format(seek_seconds),
+            "-v",
+            "warning",
+            "-reconnect",
+            "1",
+            "-reconnect_streamed",
+            "1",
+            "-i",
+            input_url,
+            "-t",
+            "{:.3f}".format(t),
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a",
+            "-c:v",
+            "copy",
+            "-c:a",
+            "copy",
+        ]
+
+        # Subtitles
+        try:
+            import xbmcaddon
+
+            if xbmcaddon.Addon().getSetting("proxy_convert_subs") != "false":
+                cmd.extend(["-map", "0:s?", "-c:s", "copy"])
+        except Exception:
+            pass
+
+        cmd.extend(
+            [
+                "-f",
+                "mpegts",
+                "-fflags",
+                "+genpts",
+                "pipe:1",
+            ]
+        )
+
+        xbmc.log(
+            "NZB-DAV: HLS segment {} (ss={:.1f} t={:.1f})".format(
+                seg_index, seek_seconds, t
+            ),
+            xbmc.LOGDEBUG,
+        )
+
+        try:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False
+            )
+        except OSError as e:
+            xbmc.log("NZB-DAV: HLS segment ffmpeg failed: {}".format(e), xbmc.LOGERROR)
+            self.send_error(500)
+            return
+
+        self.send_response(200)
+        self.send_header("Content-Type", "video/mp2t")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
+        total = 0
+        try:
+            while True:
+                chunk = proc.stdout.read(65536)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                total += len(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            proc.kill()
+            proc.wait()
+            stderr = proc.stderr.read().decode(errors="replace")
+            if stderr.strip():
+                xbmc.log("NZB-DAV: HLS ffmpeg: {}".format(stderr[:300]), xbmc.LOGDEBUG)
 
     @staticmethod
     def _build_ffmpeg_cmd(ctx, seek_seconds=None):
@@ -213,6 +365,26 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 cmd.extend(["-map", "0:s?", "-c:s", "srt"])
         except Exception:  # noqa: BLE001 — Kodi module may not exist
             pass  # outside Kodi context (tests), skip subtitle setting
+
+        # Write duration into MKV Segment Info so Kodi knows the total
+        # length.  Without this, piped MKV has no Duration element and
+        # Kodi treats the stream as live (no progress bar, no seeking,
+        # no pause).  -metadata DURATION= makes ffmpeg's matroska muxer
+        # write the Duration element in the header.
+        duration_secs = ctx.get("duration_seconds")
+        if duration_secs is not None:
+            remaining = duration_secs
+            if seek_seconds is not None and seek_seconds > 0:
+                remaining = max(0, duration_secs - seek_seconds)
+            hours = int(remaining // 3600)
+            mins = int((remaining % 3600) // 60)
+            secs = remaining % 60
+            cmd.extend(
+                [
+                    "-metadata",
+                    "DURATION={:02d}:{:02d}:{:06.3f}".format(hours, mins, secs),
+                ]
+            )
 
         cmd.extend(
             [
@@ -291,32 +463,22 @@ class _StreamHandler(BaseHTTPRequestHandler):
             self.server.current_byte_pos = requested_start
 
         # Send response headers.
-        # NOTE: Content-Length uses the source MP4 byte size, not the MKV
-        # output size (which differs due to container overhead).  Kodi needs
-        # these headers for the progress bar and seek offset calculation;
-        # the source size is a close-enough approximation.
-        if seekable and total_bytes > 0:
-            self.send_response(206)
-            self.send_header("Content-Type", "video/x-matroska")
-            self.send_header("Content-Length", str(total_bytes - requested_start))
-            self.send_header("Accept-Ranges", "bytes")
-            self.send_header(
-                "Content-Range",
-                "bytes {}-{}/{}".format(requested_start, total_bytes - 1, total_bytes),
-            )
-        else:
-            self.send_response(200)
-            self.send_header("Content-Type", "video/x-matroska")
-            self.send_header("Accept-Ranges", "none")
+        # Do NOT advertise Accept-Ranges: bytes — the piped MKV has no Cues
+        # (seek index), so Kodi's demuxer cannot seek by byte offset and will
+        # hang trying.  Duration is embedded via -metadata DURATION= in the
+        # MKV header, which gives Kodi a correct progress bar.  Seeking is
+        # handled by stopping and restarting playback with a new -ss offset.
+        self.send_response(200)
+        self.send_header("Content-Type", "video/x-matroska")
+        self.send_header("Accept-Ranges", "none")
         self.send_header("Connection", "close")
         self.end_headers()
 
-        # Stream ffmpeg output
+        # Stream ffmpeg output to Kodi.  Duration is written into the MKV
+        # header by ffmpeg via -metadata DURATION= (see _build_ffmpeg_cmd).
         total = 0
         try:
             while True:
-                # 64 KB: large enough for good throughput, small enough to
-                # flush promptly so Kodi's buffer stays filled.
                 chunk = proc.stdout.read(65536)
                 if not chunk:
                     break
@@ -451,7 +613,11 @@ class StreamProxy:
             self._thread = None
 
     def prepare_stream(self, remote_url, auth_header=None):
-        """Set up proxy for a new stream. Returns the local proxy URL."""
+        """Set up proxy for a new stream.
+
+        Returns (local_proxy_url, stream_info_dict).
+        stream_info_dict contains duration_seconds, total_bytes, seekable, remux.
+        """
         content_type = self._detect_content_type(remote_url)
         lower_url = remote_url.lower()
         is_mp4 = lower_url.endswith((".mp4", ".m4v"))
@@ -496,7 +662,13 @@ class StreamProxy:
             "NZB-DAV: Proxy ready (remux={}): {}".format(use_remux, local_url),
             xbmc.LOGINFO,
         )
-        return local_url
+        stream_info = {
+            "duration_seconds": ctx.get("duration_seconds"),
+            "total_bytes": ctx.get("total_bytes", ctx.get("content_length", 0)),
+            "seekable": ctx.get("seekable", False),
+            "remux": use_remux,
+        }
+        return local_url, stream_info
 
     @staticmethod
     def _probe_duration(ffmpeg_path, url, auth_header):
@@ -590,7 +762,11 @@ def get_service_proxy_port():
 
 
 def prepare_stream_via_service(port, remote_url, auth_header=None):
-    """Ask the service's proxy to prepare a stream. Returns the proxy URL."""
+    """Ask the service's proxy to prepare a stream.
+
+    Returns (proxy_url, stream_info) where stream_info contains
+    duration_seconds, total_bytes, seekable, remux.
+    """
     import json
 
     url = "http://127.0.0.1:{}/prepare".format(port)
@@ -599,7 +775,8 @@ def prepare_stream_via_service(port, remote_url, auth_header=None):
     req.add_header("Content-Type", "application/json")
     with urlopen(req, timeout=60) as resp:  # nosec B310
         result = json.loads(resp.read())
-        return result["proxy_url"]
+        proxy_url = result.pop("proxy_url")
+        return proxy_url, result
 
 
 def get_proxy():

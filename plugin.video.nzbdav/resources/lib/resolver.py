@@ -111,29 +111,28 @@ def _play_direct(handle, stream_url, stream_headers):
 
     MP4 files are remuxed on the fly to MKV via ffmpeg (-c copy) through
     the service proxy.  This bypasses a Kodi CFileCache bug that prevents
-    parsing large MP4 moov atoms over HTTP.
+    parsing large MP4 moov atoms over HTTP.  Duration is embedded in the
+    MKV header for correct progress bar and pause support.
 
     MKV and other formats play the WebDAV URL directly.
-
-    TODO: Add seeking support for remuxed streams (ffmpeg -ss).
-    TODO: Map all audio/subtitle tracks in remux, not just video+audio.
     """
-    from resources.lib.stream_proxy import (
-        get_service_proxy_port,
-        prepare_stream_via_service,
-    )
 
     lower_url = stream_url.lower()
     is_mp4 = lower_url.endswith((".mp4", ".m4v"))
 
     if is_mp4:
+        from resources.lib.stream_proxy import (
+            get_service_proxy_port,
+            prepare_stream_via_service,
+        )
+
         auth_header = None
         if stream_headers and "Authorization" in stream_headers:
             auth_header = stream_headers["Authorization"]
 
         service_port = get_service_proxy_port()
         if service_port:
-            proxy_url = prepare_stream_via_service(
+            proxy_url, stream_info = prepare_stream_via_service(
                 service_port, stream_url, auth_header
             )
             xbmc.log(
@@ -143,6 +142,11 @@ def _play_direct(handle, stream_url, stream_headers):
             li = xbmcgui.ListItem(path=proxy_url)
             li.setContentLookup(False)
             li.setMimeType("video/x-matroska")
+
+            duration = stream_info.get("duration_seconds")
+            if duration:
+                info_tag = li.getVideoInfoTag()
+                info_tag.setDuration(int(duration))
 
             xbmcplugin.setResolvedUrl(handle, True, li)
 
@@ -170,22 +174,23 @@ def _play_via_proxy(stream_url, stream_headers):
 
     MP4 via remux proxy, others direct.
     """
-    from resources.lib.stream_proxy import (
-        get_service_proxy_port,
-        prepare_stream_via_service,
-    )
 
     lower_url = stream_url.lower()
     is_mp4 = lower_url.endswith((".mp4", ".m4v"))
 
     if is_mp4:
+        from resources.lib.stream_proxy import (
+            get_service_proxy_port,
+            prepare_stream_via_service,
+        )
+
         auth_header = None
         if stream_headers and "Authorization" in stream_headers:
             auth_header = stream_headers["Authorization"]
 
         service_port = get_service_proxy_port()
         if service_port:
-            proxy_url = prepare_stream_via_service(
+            proxy_url, stream_info = prepare_stream_via_service(
                 service_port, stream_url, auth_header
             )
             xbmc.log(
@@ -195,6 +200,12 @@ def _play_via_proxy(stream_url, stream_headers):
             li = xbmcgui.ListItem(path=proxy_url)
             li.setContentLookup(False)
             li.setMimeType("video/x-matroska")
+
+            duration = stream_info.get("duration_seconds")
+            if duration:
+                info_tag = li.getVideoInfoTag()
+                info_tag.setDuration(int(duration))
+
             xbmc.Player().play(proxy_url, li)
             return
 

@@ -228,13 +228,15 @@ def test_prepare_stream_remuxes_mp4_when_ffmpeg_available():
         "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
     ):
         auth = "Basic " + __import__("base64").b64encode(b"user:pass").decode()
-        url = sp.prepare_stream("http://host/film.mp4", auth_header=auth)
+        url, info = sp.prepare_stream("http://host/film.mp4", auth_header=auth)
 
     assert url == "http://127.0.0.1:9999/stream"
     ctx = sp._server.stream_context
     assert ctx["remux"] is True
     assert ctx["seekable"] is True
     assert ctx["duration_seconds"] == 3600.0
+    assert info["duration_seconds"] == 3600.0
+    assert info["seekable"] is True
 
 
 def test_prepare_stream_proxies_mkv():
@@ -582,7 +584,7 @@ def test_serve_remux_non_seekable_no_ss():
 
 
 def test_head_seekable_remux_returns_accept_ranges():
-    """HEAD on a seekable remux context returns Accept-Ranges: bytes."""
+    """HEAD on a seekable remux context returns Accept-Ranges: none (piped MKV has no Cues)."""
     ctx = {
         "remux": True,
         "seekable": True,
@@ -592,8 +594,7 @@ def test_head_seekable_remux_returns_accept_ranges():
     handler.do_HEAD()
 
     handler.send_response.assert_called_once_with(200)
-    handler.send_header.assert_any_call("Content-Length", "10000000000")
-    handler.send_header.assert_any_call("Accept-Ranges", "bytes")
+    handler.send_header.assert_any_call("Accept-Ranges", "none")
 
 
 def test_head_non_seekable_remux_no_ranges():
