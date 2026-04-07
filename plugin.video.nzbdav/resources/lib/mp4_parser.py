@@ -9,6 +9,7 @@ layout (moov-before-mdat) without modifying the original file.
 """
 
 import struct
+from urllib.request import Request, urlopen
 
 
 def read_box_header(data, offset):
@@ -164,3 +165,132 @@ def rewrite_moov_offsets(moov_bytes, delta):
         return None
     data[header_size:] = child_data
     return bytes(data)
+
+
+_HEAD_PROBE_SIZE = 65536  # 64 KB — enough to find ftyp and moov-at-front
+_TAIL_PROBE_SIZE = 524288  # 512 KB — initial tail probe for moov-at-end
+_TAIL_PROBE_MAX = 8 * 1048576  # 8 MB — max tail probe before giving up
+_MAX_MOOV_SIZE = 50 * 1048576  # 50 MB — safety cap for moov fetch
+
+
+def _http_range(url, start, end, auth_header=None):
+    """Fetch a byte range from a URL. Returns bytes."""
+    req = Request(url)
+    req.add_header("Range", "bytes={}-{}".format(start, end))
+    if auth_header:
+        req.add_header("Authorization", auth_header)
+    with urlopen(req, timeout=30) as resp:  # nosec B310
+        return resp.read()
+
+
+def fetch_remote_mp4_layout(url, file_size, auth_header=None):
+    """Fetch MP4 layout info from a remote file using HTTP range requests.
+
+    Fetches the file header to get ftyp, then probes the tail to find moov.
+    If moov is already at the beginning (faststart), returns directly.
+
+    Uses progressive tail probing: starts with 512KB, doubles each time,
+    up to 8MB. Only trusts moov found via proper box boundary parsing
+    (no brute-force byte string search).
+
+    Args:
+        url: Remote HTTP URL of the MP4 file.
+        file_size: Total file size in bytes.
+        auth_header: Optional 'Basic xxx' auth header string.
+
+    Returns:
+        Dict with keys: ftyp_data, ftyp_end, moov_data, mdat_offset,
+        original_moov_offset, moov_before_mdat. Or None on failure.
+    """
+    # 1. Fetch the first 64KB to find ftyp and check for moov-at-front
+    head_size = min(_HEAD_PROBE_SIZE, file_size)
+    head_data = _http_range(url, 0, head_size - 1, auth_header)
+    head_layout = scan_top_level_boxes(head_data)
+
+    ftyp_data = b""
+    ftyp_end = 0
+    if head_layout["ftyp_offset"] >= 0:
+        ftyp_end = head_layout["ftyp_offset"] + head_layout["ftyp_size"]
+        if ftyp_end <= len(head_data):
+            ftyp_data = head_data[head_layout["ftyp_offset"] : ftyp_end]
+
+    # Check if moov is already at the front (faststart)
+    if head_layout["moov_offset"] >= 0 and head_layout["moov_before_mdat"]:
+        moov_offset = head_layout["moov_offset"]
+        moov_size = head_layout["moov_size"]
+        if moov_size > _MAX_MOOV_SIZE:
+            return None
+        if moov_offset + moov_size <= len(head_data):
+            moov_data = head_data[moov_offset : moov_offset + moov_size]
+        else:
+            moov_data = _http_range(
+                url, moov_offset, moov_offset + moov_size - 1, auth_header
+            )
+        return {
+            "ftyp_data": ftyp_data,
+            "ftyp_end": ftyp_end,
+            "moov_data": moov_data,
+            "mdat_offset": head_layout["mdat_offset"],
+            "original_moov_offset": moov_offset,
+            "moov_before_mdat": True,
+        }
+
+    # 2. Moov not in head — progressive tail probe
+    tail_probe_size = _TAIL_PROBE_SIZE
+    while tail_probe_size <= _TAIL_PROBE_MAX:
+        tail_start = max(0, file_size - tail_probe_size)
+        tail_data = _http_range(url, tail_start, file_size - 1, auth_header)
+
+        # Scan from the beginning of the tail slice.
+        # Since we're likely in the middle of mdat, the first box parse
+        # will probably fail or return garbage. We need to find a valid
+        # box boundary. Strategy: scan forward looking for 'moov' type
+        # at proper box header positions only.
+        tail_layout = scan_top_level_boxes(tail_data)
+
+        if tail_layout["moov_offset"] >= 0:
+            moov_rel_offset = tail_layout["moov_offset"]
+            moov_size = tail_layout["moov_size"]
+            moov_abs_offset = tail_start + moov_rel_offset
+
+            # Validate: moov must fit within the file
+            if moov_abs_offset + moov_size > file_size:
+                return None
+            if moov_size > _MAX_MOOV_SIZE:
+                return None
+            if moov_size < 8:
+                return None
+
+            # Fetch full moov if it extends beyond our tail probe
+            if moov_rel_offset + moov_size <= len(tail_data):
+                moov_data = tail_data[moov_rel_offset : moov_rel_offset + moov_size]
+            else:
+                moov_data = _http_range(
+                    url, moov_abs_offset, moov_abs_offset + moov_size - 1, auth_header
+                )
+
+            # Validate the fetched moov starts with a proper box header
+            verify = read_box_header(moov_data, 0)
+            if verify is None or verify[0] != b"moov":
+                return None
+
+            # Get mdat info from head probe
+            mdat_offset = head_layout["mdat_offset"]
+            if mdat_offset < 0:
+                # mdat wasn't visible in head probe — it must start
+                # right after ftyp and any passthrough atoms
+                mdat_offset = ftyp_end
+
+            return {
+                "ftyp_data": ftyp_data,
+                "ftyp_end": ftyp_end,
+                "moov_data": moov_data,
+                "mdat_offset": mdat_offset,
+                "original_moov_offset": moov_abs_offset,
+                "moov_before_mdat": False,
+            }
+
+        # Moov not found — double the probe window
+        tail_probe_size *= 2
+
+    return None  # Cannot find moov

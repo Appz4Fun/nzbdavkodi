@@ -4,6 +4,7 @@
 """Tests for mp4_parser.py -- MP4 box header parsing."""
 
 import struct
+from unittest.mock import MagicMock, patch
 
 
 def test_read_box_header_standard():
@@ -163,3 +164,76 @@ def test_rewrite_stco_overflow_returns_none():
 
     result = rewrite_moov_offsets(moov, 1000)
     assert result is None  # overflow — caller should use fallback
+
+
+def _make_mock_response(data, status=200, headers=None):
+    """Create a mock HTTP response."""
+    resp = MagicMock()
+    resp.read.return_value = data
+    resp.getcode.return_value = status
+    resp.headers = headers or {}
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=False)
+    return resp
+
+
+def test_fetch_moov_from_tail():
+    """Fetch moov from the end of a remote MP4 file."""
+    from resources.lib.mp4_parser import fetch_remote_mp4_layout
+
+    ftyp = struct.pack(">I", 32) + b"ftyp" + b"\x00" * 24
+    mdat = struct.pack(">I", 200) + b"mdat" + b"\x00" * 192
+    moov = struct.pack(">I", 100) + b"moov" + b"\x00" * 92
+    full_file = ftyp + mdat + moov
+
+    file_size = len(full_file)
+
+    def mock_urlopen(req, timeout=None):
+        range_header = req.get_header("Range") or ""
+        if range_header.startswith("bytes="):
+            parts = range_header.replace("bytes=", "").split("-")
+            start = int(parts[0])
+            end = int(parts[1]) if parts[1] else file_size - 1
+            return _make_mock_response(full_file[start : end + 1])
+        return _make_mock_response(full_file)
+
+    with patch("resources.lib.mp4_parser.urlopen", side_effect=mock_urlopen):
+        layout = fetch_remote_mp4_layout(
+            "http://host/file.mp4", file_size, auth_header=None
+        )
+
+    assert layout is not None
+    assert layout["ftyp_data"] == ftyp
+    assert layout["moov_data"] is not None
+    assert len(layout["moov_data"]) == 100
+    assert layout["mdat_offset"] == 32
+    assert layout["moov_before_mdat"] is False
+    assert layout["ftyp_end"] == 32
+    assert layout["original_moov_offset"] == 232
+
+
+def test_fetch_moov_already_faststart():
+    """Moov at front should be detected from head probe."""
+    from resources.lib.mp4_parser import fetch_remote_mp4_layout
+
+    ftyp = struct.pack(">I", 16) + b"ftyp" + b"\x00" * 8
+    moov = struct.pack(">I", 100) + b"moov" + b"\x00" * 92
+    mdat = struct.pack(">I", 500) + b"mdat" + b"\x00" * 492
+    full_file = ftyp + moov + mdat
+
+    file_size = len(full_file)
+
+    def mock_urlopen(req, timeout=None):
+        range_header = req.get_header("Range") or ""
+        parts = range_header.replace("bytes=", "").split("-")
+        start = int(parts[0])
+        end = int(parts[1]) if parts[1] else file_size - 1
+        return _make_mock_response(full_file[start : end + 1])
+
+    with patch("resources.lib.mp4_parser.urlopen", side_effect=mock_urlopen):
+        layout = fetch_remote_mp4_layout(
+            "http://host/file.mp4", file_size, auth_header=None
+        )
+
+    assert layout is not None
+    assert layout["moov_before_mdat"] is True
