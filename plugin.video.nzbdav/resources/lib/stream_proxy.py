@@ -29,13 +29,11 @@ import xbmc
 try:
     from resources.lib.mp4_parser import (  # noqa: E402
         RangeCache,
-        _http_range,
         build_faststart_layout,
         fetch_remote_mp4_layout,
     )
 except Exception:  # noqa: BLE001
     RangeCache = None  # type: ignore[assignment,misc]
-    _http_range = None  # type: ignore[assignment]
     build_faststart_layout = None  # type: ignore[assignment]
     fetch_remote_mp4_layout = None  # type: ignore[assignment]
 

@@ -88,6 +88,40 @@ def scan_top_level_boxes(data):
 _MAX_STCO_OFFSET = 0xFFFFFFFF  # 2^32 - 1
 
 
+def _rewrite_stco(data, body_start, body_end, delta):
+    """Rewrite 32-bit chunk offsets in an stco box. Returns False on overflow."""
+    count_off = body_start + 4  # skip version+flags
+    if count_off + 4 > body_end:
+        return True
+    count = struct.unpack_from(">I", data, count_off)[0]
+    entry_off = count_off + 4
+    for i in range(count):
+        pos = entry_off + i * 4
+        if pos + 4 > body_end:
+            break
+        old = struct.unpack_from(">I", data, pos)[0]
+        new_val = old + delta
+        if new_val > _MAX_STCO_OFFSET or new_val < 0:
+            return False
+        struct.pack_into(">I", data, pos, new_val)
+    return True
+
+
+def _rewrite_co64(data, body_start, body_end, delta):
+    """Rewrite 64-bit chunk offsets in a co64 box."""
+    count_off = body_start + 4
+    if count_off + 4 > body_end:
+        return
+    count = struct.unpack_from(">I", data, count_off)[0]
+    entry_off = count_off + 4
+    for i in range(count):
+        pos = entry_off + i * 8
+        if pos + 8 > body_end:
+            break
+        old = struct.unpack_from(">Q", data, pos)[0]
+        struct.pack_into(">Q", data, pos, old + delta)
+
+
 def _rewrite_offsets_recursive(data, delta):
     """Walk MP4 box tree, rewriting stco/co64 chunk offsets by delta.
 
@@ -110,30 +144,10 @@ def _rewrite_offsets_recursive(data, delta):
         body_end = offset + total_size
 
         if box_type == b"stco":
-            count_off = body_start + 4  # skip version+flags
-            if count_off + 4 <= body_end:
-                count = struct.unpack_from(">I", data, count_off)[0]
-                entry_off = count_off + 4
-                for i in range(count):
-                    pos = entry_off + i * 4
-                    if pos + 4 <= body_end:
-                        old = struct.unpack_from(">I", data, pos)[0]
-                        new_val = old + delta
-                        if new_val > _MAX_STCO_OFFSET or new_val < 0:
-                            return False  # overflow
-                        struct.pack_into(">I", data, pos, new_val)
-
+            if not _rewrite_stco(data, body_start, body_end, delta):
+                return False
         elif box_type == b"co64":
-            count_off = body_start + 4
-            if count_off + 4 <= body_end:
-                count = struct.unpack_from(">I", data, count_off)[0]
-                entry_off = count_off + 4
-                for i in range(count):
-                    pos = entry_off + i * 8
-                    if pos + 8 <= body_end:
-                        old = struct.unpack_from(">Q", data, pos)[0]
-                        struct.pack_into(">Q", data, pos, old + delta)
-
+            _rewrite_co64(data, body_start, body_end, delta)
         elif box_type in _CONTAINERS:
             child_data = data[body_start:body_end]
             if not _rewrite_offsets_recursive(child_data, delta):

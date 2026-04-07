@@ -189,7 +189,7 @@ class NzbdavPlayer(xbmc.Player):
 
         # Wait for playback to start or fail (10s timeout)
         for _ in range(20):
-            if self._state == PlaybackState.IDLE or self._state == PlaybackState.ERROR:
+            if self._state in (PlaybackState.IDLE, PlaybackState.ERROR):
                 break
             try:
                 if self.isPlaying():
