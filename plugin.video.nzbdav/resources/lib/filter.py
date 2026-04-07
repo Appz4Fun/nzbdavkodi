@@ -5,6 +5,145 @@
 
 import xbmc
 
+# ---------------------------------------------------------------------------
+# Known release groups — master list for multiselect dialogs
+# ---------------------------------------------------------------------------
+
+ALL_RELEASE_GROUPS = [
+    "4KDVS",
+    "Amen",
+    "AOC",
+    "APEX",
+    "B0MBARDiERS",
+    "Ben The Men",
+    "BHDstudio",
+    "BiTOR",
+    "BYNDR",
+    "c0kE",
+    "CiNEPHiLES",
+    "CM",
+    "CMRG",
+    "DDR",
+    "DEFLATE",
+    "DirtyHippie",
+    "DiscoD",
+    "DON",
+    "DreamHD",
+    "DVSUX",
+    "EDITH",
+    "ENDSTATiON",
+    "ETHEL",
+    "EVO",
+    "FETiSH",
+    "FGT",
+    "FLUX",
+    "FraMeSToR",
+    "FrameStor",
+    "FW",
+    "GalaxyRG",
+    "GLHF",
+    "Gungnir",
+    "hallowed",
+    "HDS",
+    "HDT",
+    "HHWEB",
+    "HiDt",
+    "HONE",
+    "HSaber",
+    "IAMABLE",
+    "j3rico",
+    "KC",
+    "Kira",
+    "Kitsune",
+    "KOGi",
+    "KTR",
+    "LEGi0N",
+    "MainFrame",
+    "MgB",
+    "MIXED",
+    "mkv",
+    "mp4",
+    "MZABI",
+    "NAHOM",
+    "Narcos",
+    "NBQ",
+    "NHTFS",
+    "NOGRP",
+    "NTb",
+    "NUXWIO",
+    "P2P",
+    "playWEB",
+    "PSA",
+    "R3MiX",
+    "Ralphy",
+    "RARBG",
+    "SDH",
+    "Sensei",
+    "SESKAPiLE",
+    "SEV",
+    "SiC",
+    "SMURF",
+    "SPHD",
+    "SPx",
+    "STRiKES",
+    "SuccessfulCrab",
+    "SUPPLY",
+    "SURCODE",
+    "SWTYBLZ",
+    "TERMiNAL",
+    "TEPES",
+    "TheBiscuitMan",
+    "ToonsHub",
+    "TrollUHD",
+    "TW",
+    "VSEX",
+    "W4NK3R",
+    "WADU",
+    "WiKi",
+    "WRB",
+    "XEBEC",
+    "XXX",
+    "ZAX",
+]
+
+DEFAULT_PREFERRED_GROUPS = {
+    "CiNEPHiLES",
+    "DiscoD",
+    "DON",
+    "FrameStor",
+    "hallowed",
+    "HiDt",
+    "HONE",
+    "j3rico",
+    "Kira",
+    "MainFrame",
+    "SEV",
+    "SPHD",
+    "W4NK3R",
+}
+
+DEFAULT_EXCLUDED_GROUPS = {
+    "4KDVS",
+    "B0MBARDiERS",
+    "Ben The Men",
+    "BHDstudio",
+    "BiTOR",
+    "c0kE",
+    "ENDSTATiON",
+    "Gungnir",
+    "HDS",
+    "HSaber",
+    "NUXWIO",
+    "Ralphy",
+    "SESKAPiLE",
+    "SPx",
+    "STRiKES",
+    "SURCODE",
+    "TW",
+    "WiKi",
+    "ZAX",
+}
+
 _RESOLUTION_MAP = {
     "2160p": "2160p",
     "4K": "2160p",
@@ -543,3 +682,34 @@ def _fallback_parse(title):
         result["group"] = m.group(1)
 
     return result
+
+
+def configure_groups_dialog(setting_id, title, default_set):
+    """Show a multiselect dialog for release group configuration.
+
+    Args:
+        setting_id: Kodi setting ID to read/write (comma-separated string).
+        title: Dialog title string.
+        default_set: Set of group names to preselect when setting is empty.
+    """
+    import xbmcaddon
+    import xbmcgui
+
+    addon = xbmcaddon.Addon()
+    current = _csv_setting(addon, setting_id)
+
+    if current:
+        selected = set(current)
+    else:
+        selected = set(default_set)
+
+    preselect = [i for i, g in enumerate(ALL_RELEASE_GROUPS) if g in selected]
+
+    dialog = xbmcgui.Dialog()
+    result = dialog.multiselect(title, ALL_RELEASE_GROUPS, preselect=preselect)
+
+    if result is None:
+        return
+
+    chosen = [ALL_RELEASE_GROUPS[i] for i in result]
+    addon.setSetting(setting_id, ",".join(chosen))

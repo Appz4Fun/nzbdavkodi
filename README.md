@@ -21,10 +21,24 @@ flowchart LR
     D -->|submit NZB| E[nzbdav]
     E -->|poll status| B
     E -->|stream ready| F[WebDAV Server]
-    F -->|play| G[Kodi Player]
+    F -->|MP4| G[Stream Proxy]
+    F -->|MKV / other| H[Kodi Player]
+    G -->|remux to MKV| H
 ```
 
 No separate SABnzbd needed -- nzbdav handles both downloading and serving.
+
+## MP4 Stream Proxy
+
+MP4 files are automatically remuxed to MKV on the fly through a local ffmpeg proxy. This works around a 32-bit Kodi `CFileCache` bug where parsing large MP4 moov atoms over HTTP fails with "corrupted data" errors. MKV and other formats play directly without the proxy.
+
+The proxy runs as a background service (`service.py`) on a random local port. When an MP4 is requested:
+
+1. **Duration probe** -- ffmpeg reads just the file header to get the total duration, then exits immediately
+2. **Remux** -- `ffmpeg -c:v copy -c:a copy -c:s srt -f matroska pipe:1` streams the remuxed MKV back to Kodi with no re-encoding
+3. **Subtitle conversion** -- MP4 `mov_text` subtitles are converted to SRT for MKV compatibility (toggleable in settings)
+4. **Seeking** -- Kodi's progress bar and seek controls work by mapping byte offsets to time positions; the proxy kills and respawns ffmpeg with `-ss` at the calculated timestamp
+5. **Graceful fallback** -- if ffmpeg is not installed, MP4 files play directly (no remux, no seeking)
 
 ## Requirements
 
@@ -80,7 +94,7 @@ If it's not in the official repo for your Kodi version, install from the [TMDBHe
 The player file tells TMDBHelper how to call NZB-DAV:
 
 1. Open NZB-DAV settings: **Add-ons > My add-ons > Video add-ons > NZB-DAV > Configure**
-2. Click **Install Player File** and select **TMDBHelper** from the list
+2. Click **Install Player File** (installs directly to TMDBHelper)
 3. Restart Kodi (or go to TMDBHelper settings > **Players** > **Update players**)
 
 ### 4. Set NZB-DAV as the Default Player
@@ -109,7 +123,6 @@ Open the addon settings (**Add-ons > My add-ons > Video add-ons > NZB-DAV > Conf
 | NZBHydra2 API Key | NZBHydra2 web UI > `http://<hydra>:5076/config/main` > **Security** section > **API key** |
 | nzbdav URL | URL to your nzbdav instance (e.g., `http://192.168.1.100:3333`) |
 | nzbdav API Key | nzbdav web UI > `http://<nzbdav>/settings` > **Usenet** tab > **API Key** |
-| WebDAV URL | Leave empty to use nzbdav URL, or set a different URL if WebDAV is on a separate port |
 | WebDAV Username | nzbdav web UI > `http://<nzbdav>/settings` > **WebDAV** tab > **Username** |
 | WebDAV Password | nzbdav web UI > `http://<nzbdav>/settings` > **WebDAV** tab > **Password** |
 
@@ -117,7 +130,7 @@ Open the addon settings (**Add-ons > My add-ons > Video add-ons > NZB-DAV > Conf
 
 ### Player Installation
 
-Click **Install Player File** to install the `nzbdav.json` player to TMDBHelper. This registers NZB-DAV as a playback source in TMDBHelper's player selection menu.
+Click **Install Player File** to install the `nzbdav.json` player to TMDBHelper. This registers NZB-DAV as a playback source in TMDBHelper's player selection menu. The player is installed directly to TMDBHelper's players directory.
 
 ### Quality Filters
 
@@ -191,7 +204,15 @@ When sorted by relevance, results are ranked by priority:
 4. Wait for the download to complete (progress dialog shows status)
 5. Playback starts automatically from nzbdav's WebDAV server
 
-With **Auto-select best match** enabled, step 3 is skipped automatically.
+### Results Dialog
+
+The results dialog shows all matching NZBs with color-coded quality labels, sorted by relevance. Each row displays the release name, resolution, codec, audio format, release type, file size, age, indexer, and release group.
+
+![NZB Results Dialog](docs/images/results-dialog.png)
+
+The status bar at the bottom shows how many sources passed your filters. Use **Enter** to download and play, **C** for the context menu, or **Esc** to go back.
+
+With **Auto-select best match** enabled, the dialog is skipped and the top result plays automatically.
 
 ---
 
@@ -205,7 +226,7 @@ With **Auto-select best match** enabled, step 3 is skipped automatically.
 ### Commands
 
 ```bash
-just test          # Run all 223 tests
+just test          # Run all 233 tests
 just test-verbose  # Run tests with full output
 just lint          # Check ruff + black formatting
 just lint-fix      # Auto-fix lint issues
@@ -222,9 +243,9 @@ just dist-clean    # Remove build artifacts + dist/
 plugin.video.nzbdav/
   addon.xml              # Kodi addon manifest
   addon.py               # Entry point
+  service.py             # Background service (stream proxy + playback monitor)
   resources/
     settings.xml         # Kodi settings UI
-    players/nzbdav.json  # TMDBHelper player template
     lib/
       router.py          # URL routing
       hydra.py           # NZBHydra2 API client
@@ -233,12 +254,14 @@ plugin.video.nzbdav/
       filter.py          # Result filtering with PTT
       results_dialog.py  # Custom full-screen results dialog
       resolver.py        # Download + polling orchestrator
-      stream_proxy.py    # Local HTTP proxy with MP4 faststart
+      stream_proxy.py    # Local HTTP proxy -- MP4->MKV remux via ffmpeg
       cache.py           # JSON-based search result cache
-      player_installer.py # Player JSON installer
+      player_installer.py # TMDBHelper player JSON installer
       http_util.py       # Shared HTTP utilities
+      i18n.py            # Localization helper
       playback_monitor.py # Stream failure detection + retry
-      ptt/               # Vendored PTT library
+      ptt/               # Vendored PTT library (parse-torrent-title)
+    language/             # Kodi localization files
     skins/Default/
       1080i/results-dialog.xml  # Dialog skin XML
       media/white.png           # Texture for backgrounds
@@ -248,11 +271,15 @@ scripts/
 repo/
   repository.nzbdav/     # Repository addon (points to GitHub Pages)
 .github/workflows/
-  ci.yml                 # Test + lint on push/PR
+  ci.yml                 # Test + lint on push/PR (Python 3.8/3.10/3.12)
   release.yml            # Build + deploy on version tags
+  pylint.yml             # Pylint analysis
+  codacy.yml             # Codacy security scan
+  codeql.yml             # CodeQL analysis
+  bandit.yml             # Bandit security scan
 tests/
   conftest.py            # Kodi module mocks
-  test_*.py              # 223 tests
+  test_*.py              # 233 tests
 ```
 
 ### Releasing

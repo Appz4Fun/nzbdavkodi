@@ -70,6 +70,28 @@ def route(argv):
         import xbmcaddon
 
         xbmcaddon.Addon().openSettings()
+    elif path == "/configure_preferred_groups":
+        from resources.lib.filter import (
+            DEFAULT_PREFERRED_GROUPS,
+            configure_groups_dialog,
+        )
+
+        configure_groups_dialog(
+            "filter_release_group",
+            _string(30054),
+            DEFAULT_PREFERRED_GROUPS,
+        )
+    elif path == "/configure_excluded_groups":
+        from resources.lib.filter import (
+            DEFAULT_EXCLUDED_GROUPS,
+            configure_groups_dialog,
+        )
+
+        configure_groups_dialog(
+            "filter_exclude_release_group",
+            _string(30055),
+            DEFAULT_EXCLUDED_GROUPS,
+        )
     elif path == "/test_hydra":
         _test_hydra_connection()
     elif path == "/test_nzbdav":

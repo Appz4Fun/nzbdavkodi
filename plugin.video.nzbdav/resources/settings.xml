@@ -59,8 +59,10 @@
 	</category>
 	<category label="30052">
 		<setting label="30053" type="lsep" />
-		<setting id="filter_release_group" label="30054" type="text" default="" />
-		<setting id="filter_exclude_release_group" label="30055" type="text" default="" />
+		<setting id="filter_release_group" label="30054" type="text" default="" visible="false" />
+		<setting id="filter_exclude_release_group" label="30055" type="text" default="" visible="false" />
+		<setting label="30054" type="action" action="RunPlugin(plugin://plugin.video.nzbdav/configure_preferred_groups)" option="close" />
+		<setting label="30055" type="action" action="RunPlugin(plugin://plugin.video.nzbdav/configure_excluded_groups)" option="close" />
 		<setting label="30056" type="lsep" />
 		<setting id="filter_min_size" label="30057" type="number" default="0" />
 		<setting id="filter_max_size" label="30058" type="number" default="0" />

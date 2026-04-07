@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="plugin.video.nzbdav"
        name="NZB-DAV"
-       version="0.4.3"
+       version="0.4.4"
        provider-name="nzbdav">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
@@ -22,7 +22,41 @@
         <license>GPL-3.0-or-later</license>
         <source>https://github.com/xbmc4lyfe/nzbdavkodi</source>
         <website>https://xbmc4lyfe.github.io/nzbdavkodi/</website>
-        <news>v0.4.3 - Remux MP4 to MKV via ffmpeg, subtitle conversion, byte-range seeking, playback reliability fixes</news>
+        <news>v0.4.4
+- Simplify settings: TMDBHelper-only install, remove WebDAV URL field
+- Release group multiselect dialogs with curated defaults
+- Fix continuation requests restarting ffmpeg from byte 0
+
+v0.4.3
+- Remux MP4 to MKV on the fly via ffmpeg (fixes 32-bit Kodi CFileCache bug)
+- Subtitle conversion (mov_text to SRT) with toggleable setting
+- Byte-range seeking with duration probe and progress bar
+- Background service for stream proxy and playback auto-recovery
+- Fix playback-failed dialog caused by setResolvedUrl
+
+v0.4.1
+- Address high/medium findings from code review
+
+v0.4.0
+- Show lightning bolt indicator for already-downloaded NZBs
+- Suppress BrokenPipeError log spam when stopping playback
+
+v0.3.0
+- WebDAV streaming on CoreELEC with MP4 faststart proxy
+- Skip re-downloading if NZB already completed in nzbdav history
+- Test Connection buttons for NZBHydra and nzbdav in settings
+- Retry NZB submission up to 3 times on transient failure
+- Show filter count and offer to show all when everything filtered
+- LRU cache eviction when cache exceeds 50MB limit
+- Use IMDB ID for TV show searches
+
+v0.2.0
+- Kodi localization support for addon UI and settings labels
+- Repository best-practice metadata and coverage tests
+
+v0.1.0
+- Initial release with NZBHydra2 search, nzbdav streaming, TMDBHelper integration
+- PTT-based quality filtering, custom results dialog, search caching</news>
         <assets>
             <icon>resources/icon.png</icon>
             <fanart>resources/fanart.jpg</fanart>

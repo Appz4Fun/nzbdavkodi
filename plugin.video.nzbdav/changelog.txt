@@ -1,11 +1,14 @@
-v0.4.4 (unreleased)
+v0.4.4 (2026-04-06)
+- Simplify player installer to TMDBHelper-only (no multi-select dialog)
+- Remove WebDAV URL setting (defaults to nzbdav URL automatically)
+- Replace release group text fields with multiselect dialogs
+- Add 93 known release groups with curated preferred/excluded defaults
 - Fix continuation requests restarting ffmpeg from byte 0 instead of resuming
 - Fix _validate_url crash when URL is None
 - Extract _embed_auth_in_url helper to DRY auth credential embedding
 - Remove duplicate server attribute initialization
 - Narrow exception handling in seek-kill block to OSError
 - Add handler-level tests for HEAD and GET responses
-- Add Content-Length approximation comment for MKV remux
 
 v0.4.3 (2026-04-06)
 - Remux MP4 to MKV on the fly via ffmpeg (fixes 32-bit Kodi CFileCache bug)

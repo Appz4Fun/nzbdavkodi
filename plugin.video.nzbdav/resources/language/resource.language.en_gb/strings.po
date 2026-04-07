@@ -223,12 +223,12 @@ msgid "Release Groups"
 msgstr "Release Groups"
 
 msgctxt "#30054"
-msgid "Preferred groups (comma-separated)"
-msgstr "Preferred groups (comma-separated)"
+msgid "Configure Preferred Groups..."
+msgstr "Configure Preferred Groups..."
 
 msgctxt "#30055"
-msgid "Excluded groups (comma-separated)"
-msgstr "Excluded groups (comma-separated)"
+msgid "Configure Excluded Groups..."
+msgstr "Configure Excluded Groups..."
 
 msgctxt "#30056"
 msgid "File Size"
