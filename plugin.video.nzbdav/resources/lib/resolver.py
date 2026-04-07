@@ -230,10 +230,26 @@ def _storage_to_webdav_path(storage):
 def _poll_once(nzo_id, title):
     """Poll nzbdav queue API and history API in parallel.
 
-    Returns (job_status, history_status, error_type).
-    job_status is from the queue API (active downloads).
-    history_status is from the history API (completed downloads).
-    error_type is set if a WebDAV check encounters auth/server errors.
+    Args:
+        nzo_id: nzbdav job identifier to poll.
+        title: Human-readable title used for the WebDAV filename check.
+
+    Returns:
+        A tuple of (job_status, history_status, error_type):
+        - job_status: Dict from the queue API when the job is active, or None
+          when the job is missing from the queue.
+        - history_status: Dict from the history API when the job completed, or
+          None when not present.
+        - error_type: None when polling succeeds; otherwise the error string
+          returned by check_file_available_with_retry() when both APIs return
+          None (e.g., "not_found", "auth_failed", "server_error",
+          "connection_error").
+
+    Side effects:
+        Spawns two threads to call get_job_status() and get_job_history().
+        Performs HTTP requests to nzbdav queue/history endpoints and, when
+        neither returns data, a WebDAV availability probe.
+        Logs poll results to the Kodi log.
     """
     job_status = [None]
     history_status = [None]

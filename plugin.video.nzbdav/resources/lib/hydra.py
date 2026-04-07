@@ -25,19 +25,26 @@ def _get_settings():
 
 
 def search_hydra(search_type, title, year="", imdb="", season="", episode=""):
-    """Search NZBHydra2 for NZBs.
+    """Search NZBHydra2 for NZB entries.
 
     Args:
-        search_type: "movie" or "episode"
-        title: Movie or show title
-        year: Release year
-        imdb: IMDb ID (e.g. "tt0133093")
-        season: Season number (TV only)
-        episode: Episode number (TV only)
+        search_type: Either "movie" or "episode" to select the Newznab query.
+        title: Movie or show title used when imdb is not provided.
+        year: Release year for movie searches (optional).
+        imdb: IMDb ID such as "tt0133093" (preferred when available).
+        season: Season number for TV searches (optional).
+        episode: Episode number for TV searches (optional).
 
     Returns:
-        Tuple of (results, error) where results is a list of result dicts and
-        error is None on success or a string describing the failure.
+        A tuple of (results, error_message). results is a list of dicts with
+        keys: title, link, size, indexer, pubdate, age. error_message is None
+        on success or a short string describing the failure.
+
+    Side effects:
+        Reads NZBHydra settings from Kodi via xbmcaddon.Addon().
+        Performs one or two HTTP GET requests to NZBHydra2 (fallback by title
+        when an imdb-based search returns no results).
+        Logs search URLs and errors to the Kodi log.
     """
     try:
         base_url, api_key = _get_settings()

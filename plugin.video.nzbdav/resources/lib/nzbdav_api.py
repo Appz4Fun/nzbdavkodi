@@ -22,6 +22,22 @@ def _get_settings():
 
 
 def submit_nzb(nzb_url, nzb_name=""):
+    """Submit an NZB URL to nzbdav's SABnzbd-compatible API.
+
+    Args:
+        nzb_url: Absolute URL to the NZB file as returned by NZBHydra2.
+        nzb_name: Human-friendly title shown in nzbdav's queue/history.
+
+    Returns:
+        The nzo_id string assigned by nzbdav when the request succeeds, or
+        None if settings are missing, the HTTP request fails, or the response
+        does not include an nzo_id.
+
+    Side effects:
+        Reads nzbdav settings from Kodi via xbmcaddon.Addon().
+        Performs an HTTP GET to nzbdav /api with mode=addurl.
+        Logs submission URLs, successes, and errors to the Kodi log.
+    """
     try:
         base_url, api_key = _get_settings()
     except Exception as e:
@@ -168,8 +184,15 @@ def find_completed_by_name(name):
 def get_completed_names():
     """Fetch all completed download names from nzbdav history.
 
-    Returns a set of name strings for fast membership testing.
-    Returns empty set on any error (non-blocking).
+    Returns:
+        A set of completed download names for fast membership checks. Returns
+        an empty set on any error or when no completed jobs exist.
+
+    Side effects:
+        Reads nzbdav settings from Kodi via xbmcaddon.Addon().
+        Performs an HTTP GET to nzbdav /api?mode=history on every call; avoid
+        calling this in tight loops.
+        Logs the number of names loaded at debug level.
     """
     try:
         base_url, api_key = _get_settings()

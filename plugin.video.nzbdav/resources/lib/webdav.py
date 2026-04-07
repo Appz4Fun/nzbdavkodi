@@ -76,18 +76,26 @@ def check_file_available(filename):
 def check_file_available_with_retry(filename, max_retries=3, retry_delay=2):
     """Check WebDAV file availability with retry logic.
 
-    Retries up to max_retries times on connection errors with retry_delay seconds
-    between attempts. Distinguishes between different failure modes.
-
     Args:
         filename: The filename to check on the WebDAV server.
-        max_retries: Maximum number of retry attempts on connection errors.
-        retry_delay: Seconds to wait between retries.
+        max_retries: Maximum number of retries after a connection error; a
+            connection error can trigger up to max_retries + 1 HEAD requests.
+        retry_delay: Seconds to sleep between connection error retries.
 
     Returns:
-        Tuple of (available: bool, error_type: str or None).
-        error_type is one of: None (success), "not_found", "auth_failed",
-        "server_error", "connection_error".
+        Tuple of (available, error_type). available is True only when the HEAD
+        request returns 200. error_type is:
+        - None when the file is available.
+        - "not_found" for 404 or any other non-2xx/non-auth/server status.
+        - "auth_failed" for 401/403 responses.
+        - "server_error" for 5xx responses.
+        - "connection_error" when all retries fail due to network errors.
+
+    Side effects:
+        Reads WebDAV credentials from Kodi via xbmcaddon.Addon().
+        Performs one or more HTTP HEAD requests to the WebDAV server.
+        Sleeps for retry_delay seconds between connection error retries.
+        Logs availability checks and failures to the Kodi log.
     """
     settings = _get_settings()
     url = build_webdav_url(filename)
@@ -161,11 +169,22 @@ def check_file_available_with_retry(filename, max_retries=3, retry_delay=2):
 
 
 def find_video_file(folder_path, _depth=0):
-    """Browse a WebDAV folder and find the video file.
+    """Browse a WebDAV folder and find the largest video file.
 
-    Uses PROPFIND to list files, returns the path to the largest video file.
-    Recurses into subdirectories up to 2 levels deep if no video found.
-    Returns None if no video file found.
+    Args:
+        folder_path: WebDAV folder path to scan (may be absolute or relative).
+        _depth: Internal recursion depth counter (used to cap traversal).
+
+    Returns:
+        The path (relative to the WebDAV base) of the largest video file found,
+        or None when no video is located or an error occurs.
+
+    Side effects:
+        Reads WebDAV settings from Kodi via xbmcaddon.Addon().
+        Issues a PROPFIND request at the target path and, if no video is found
+        at that level, recurses into subdirectories up to two levels deep
+        (three total levels including the starting folder).
+        Logs discovered files, recursion steps, and errors to the Kodi log.
     """
     import xml.etree.ElementTree as ET
 
