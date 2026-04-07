@@ -321,7 +321,7 @@ def test_build_faststart_layout_stco_overflow_returns_none():
     ftyp = struct.pack(">I", 16) + b"ftyp" + b"\x00" * 8
 
     stco_body = struct.pack(">I", 0) + struct.pack(">I", 1)
-    stco_body += struct.pack(">I", 4294967000)  # near 2^32
+    stco_body += struct.pack(">I", 0xFFFFFFFF)  # exactly at 2^32 - 1
     stco = struct.pack(">I", 8 + len(stco_body)) + b"stco" + stco_body
     stbl = struct.pack(">I", 8 + len(stco)) + b"stbl" + stco
     minf = struct.pack(">I", 8 + len(stbl)) + b"minf" + stbl
@@ -334,12 +334,13 @@ def test_build_faststart_layout_stco_overflow_returns_none():
         "ftyp_end": 16,
         "moov_data": moov,
         "mdat_offset": 16,
-        "original_moov_offset": 5000000016,
+        "original_moov_offset": 1016,
         "moov_before_mdat": False,
     }
 
+    # delta = moov_size, and 0xFFFFFFFF + moov_size > 0xFFFFFFFF → overflow
     layout = build_faststart_layout(layout_info)
-    assert layout is None  # overflow — caller uses fallback
+    assert layout is None  # stco overflow — caller uses fallback
 
 
 def test_build_faststart_layout_with_free_atoms():

@@ -345,10 +345,9 @@ def build_faststart_layout(layout_info):
         }
 
     # Moov is after mdat — need to rewrite offsets.
-    # If the original moov offset exceeds 32-bit address space, stco offsets
-    # (which are 32-bit) cannot represent the mdat region, so bail out.
-    if original_moov_offset > _MAX_STCO_OFFSET:
-        return None
+    # Files >4GB typically use co64 (64-bit chunk offsets) which can handle
+    # any size. The stco overflow check is in rewrite_moov_offsets() and only
+    # triggers for files that actually use 32-bit stco with values near 2^32.
 
     # Virtual layout: ftyp + moov + original[ftyp_end:moov_start]
     moov_size = len(moov_data)
@@ -369,8 +368,6 @@ def build_faststart_layout(layout_info):
         "payload_size": payload_size,
         "already_faststart": False,
     }
-
-
 
 
 class RangeCache:

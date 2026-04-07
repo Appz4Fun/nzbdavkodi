@@ -648,8 +648,25 @@ class StreamProxy:
                     remote_url, content_length, auth_header
                 )
                 if layout_info:
+                    xbmc.log(
+                        "NZB-DAV: MP4 layout: moov_before_mdat={}, moov={}B".format(
+                            layout_info.get("moov_before_mdat"),
+                            len(layout_info.get("moov_data", b"")),
+                        ),
+                        xbmc.LOGINFO,
+                    )
                     faststart = build_faststart_layout(layout_info)
+                    if faststart is None:
+                        xbmc.log(
+                            "NZB-DAV: stco overflow — moov relocation failed "
+                            "(file >4GB with 32-bit chunk offsets)",
+                            xbmc.LOGWARNING,
+                        )
                 else:
+                    xbmc.log(
+                        "NZB-DAV: MP4 layout fetch returned None",
+                        xbmc.LOGWARNING,
+                    )
                     faststart = None
             except Exception as e:
                 xbmc.log(
@@ -697,14 +714,27 @@ class StreamProxy:
                 return remote_url, stream_info
             else:
                 # Tier 2: Try temp-file faststart (ffmpeg -movflags +faststart)
+                # Skip for large files (>4GB) — temp remux would take too long
+                # and would time out the prepare_stream_via_service call.
+                _TEMP_FASTSTART_MAX = 4 * 1073741824  # 4 GB
                 ffmpeg_path = _find_ffmpeg()
-                temp_path = (
-                    self._prepare_tempfile_faststart(
-                        ffmpeg_path, remote_url, auth_header
+                if content_length > _TEMP_FASTSTART_MAX:
+                    xbmc.log(
+                        "NZB-DAV: File too large for temp-file faststart "
+                        "({}B > {}B), skipping to MKV remux".format(
+                            content_length, _TEMP_FASTSTART_MAX
+                        ),
+                        xbmc.LOGINFO,
                     )
-                    if ffmpeg_path
-                    else None
-                )
+                    temp_path = None
+                else:
+                    temp_path = (
+                        self._prepare_tempfile_faststart(
+                            ffmpeg_path, remote_url, auth_header
+                        )
+                        if ffmpeg_path
+                        else None
+                    )
 
                 if temp_path:
                     import os
