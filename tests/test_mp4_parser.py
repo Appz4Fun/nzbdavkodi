@@ -92,3 +92,74 @@ def test_scan_top_level_boxes_with_free_atoms():
     # Other atoms tracked for virtual layout
     assert len(result["other_atoms"]) == 1
     assert result["other_atoms"][0] == (16, 24, b"free")
+
+
+def test_rewrite_stco_offsets():
+    """Rewrite 32-bit chunk offsets in a moov atom."""
+    from resources.lib.mp4_parser import rewrite_moov_offsets
+
+    # Build minimal moov > trak > mdia > minf > stbl > stco
+    # stco: version(1) + flags(3) + entry_count(4) + offsets(4 each)
+    stco_body = struct.pack(">I", 0) + struct.pack(">I", 3)  # version+flags, count=3
+    stco_body += struct.pack(">III", 1000, 2000, 3000)  # 3 offsets
+    stco = struct.pack(">I", 8 + len(stco_body)) + b"stco" + stco_body
+
+    stbl = struct.pack(">I", 8 + len(stco)) + b"stbl" + stco
+    minf = struct.pack(">I", 8 + len(stbl)) + b"minf" + stbl
+    mdia = struct.pack(">I", 8 + len(minf)) + b"mdia" + minf
+    trak = struct.pack(">I", 8 + len(mdia)) + b"trak" + mdia
+    moov_body = trak
+    moov = struct.pack(">I", 8 + len(moov_body)) + b"moov" + moov_body
+
+    result = rewrite_moov_offsets(moov, 500)
+
+    stco_start = result.index(b"stco")
+    off_start = stco_start + 4 + 4 + 4  # type + version+flags + count
+    o1 = struct.unpack_from(">I", result, off_start)[0]
+    o2 = struct.unpack_from(">I", result, off_start + 4)[0]
+    o3 = struct.unpack_from(">I", result, off_start + 8)[0]
+    assert o1 == 1500
+    assert o2 == 2500
+    assert o3 == 3500
+
+
+def test_rewrite_co64_offsets():
+    """Rewrite 64-bit chunk offsets in a moov atom."""
+    from resources.lib.mp4_parser import rewrite_moov_offsets
+
+    co64_body = struct.pack(">I", 0) + struct.pack(">I", 2)
+    co64_body += struct.pack(">QQ", 5000000000, 6000000000)
+    co64 = struct.pack(">I", 8 + len(co64_body)) + b"co64" + co64_body
+
+    stbl = struct.pack(">I", 8 + len(co64)) + b"stbl" + co64
+    minf = struct.pack(">I", 8 + len(stbl)) + b"minf" + stbl
+    mdia = struct.pack(">I", 8 + len(minf)) + b"mdia" + minf
+    trak = struct.pack(">I", 8 + len(mdia)) + b"trak" + mdia
+    moov = struct.pack(">I", 8 + len(trak)) + b"moov" + trak
+
+    result = rewrite_moov_offsets(moov, 1000)
+
+    co64_start = result.index(b"co64")
+    off_start = co64_start + 4 + 4 + 4
+    o1 = struct.unpack_from(">Q", result, off_start)[0]
+    o2 = struct.unpack_from(">Q", result, off_start + 8)[0]
+    assert o1 == 5000001000
+    assert o2 == 6000001000
+
+
+def test_rewrite_stco_overflow_returns_none():
+    """Rewriting stco that would overflow 32-bit returns None."""
+    from resources.lib.mp4_parser import rewrite_moov_offsets
+
+    stco_body = struct.pack(">I", 0) + struct.pack(">I", 1)
+    stco_body += struct.pack(">I", 4294967000)  # near 2^32 limit
+    stco = struct.pack(">I", 8 + len(stco_body)) + b"stco" + stco_body
+
+    stbl = struct.pack(">I", 8 + len(stco)) + b"stbl" + stco
+    minf = struct.pack(">I", 8 + len(stbl)) + b"minf" + stbl
+    mdia = struct.pack(">I", 8 + len(minf)) + b"mdia" + minf
+    trak = struct.pack(">I", 8 + len(mdia)) + b"trak" + mdia
+    moov = struct.pack(">I", 8 + len(trak)) + b"moov" + trak
+
+    result = rewrite_moov_offsets(moov, 1000)
+    assert result is None  # overflow — caller should use fallback

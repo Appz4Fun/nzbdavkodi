@@ -80,3 +80,87 @@ def scan_top_level_boxes(data):
     if result["moov_offset"] >= 0 and result["mdat_offset"] >= 0:
         result["moov_before_mdat"] = result["moov_offset"] < result["mdat_offset"]
     return result
+
+
+_MAX_STCO_OFFSET = 0xFFFFFFFF  # 2^32 - 1
+
+
+def _rewrite_offsets_recursive(data, delta):
+    """Walk MP4 box tree, rewriting stco/co64 chunk offsets by delta.
+
+    Operates on a mutable bytearray in-place. Walks container boxes
+    (moov, trak, mdia, minf, stbl, edts) recursively.
+
+    Returns True on success, False if stco overflow detected.
+    """
+    _CONTAINERS = {b"moov", b"trak", b"mdia", b"minf", b"stbl", b"edts", b"udta"}
+    offset = 0
+    while offset + 8 <= len(data):
+        parsed = read_box_header(bytes(data), offset)
+        if parsed is None:
+            break
+        box_type, header_size, total_size = parsed
+        if total_size < 8:
+            break
+
+        body_start = offset + header_size
+        body_end = offset + total_size
+
+        if box_type == b"stco":
+            count_off = body_start + 4  # skip version+flags
+            if count_off + 4 <= body_end:
+                count = struct.unpack_from(">I", data, count_off)[0]
+                entry_off = count_off + 4
+                for i in range(count):
+                    pos = entry_off + i * 4
+                    if pos + 4 <= body_end:
+                        old = struct.unpack_from(">I", data, pos)[0]
+                        new_val = old + delta
+                        if new_val > _MAX_STCO_OFFSET or new_val < 0:
+                            return False  # overflow
+                        struct.pack_into(">I", data, pos, new_val)
+
+        elif box_type == b"co64":
+            count_off = body_start + 4
+            if count_off + 4 <= body_end:
+                count = struct.unpack_from(">I", data, count_off)[0]
+                entry_off = count_off + 4
+                for i in range(count):
+                    pos = entry_off + i * 8
+                    if pos + 8 <= body_end:
+                        old = struct.unpack_from(">Q", data, pos)[0]
+                        struct.pack_into(">Q", data, pos, old + delta)
+
+        elif box_type in _CONTAINERS:
+            child_data = data[body_start:body_end]
+            if not _rewrite_offsets_recursive(child_data, delta):
+                return False
+            data[body_start:body_end] = child_data
+
+        offset += total_size
+
+    return True
+
+
+def rewrite_moov_offsets(moov_bytes, delta):
+    """Rewrite all stco/co64 chunk offsets in a moov atom by delta.
+
+    Args:
+        moov_bytes: Raw bytes of the complete moov box (including header).
+        delta: Integer to add to every chunk offset. Positive when moving
+               moov before mdat (offsets increase by moov_size).
+
+    Returns:
+        New bytes with adjusted offsets, or None if stco overflow detected
+        (caller should fall back to temp-file faststart or MKV remux).
+    """
+    data = bytearray(moov_bytes)
+    parsed = read_box_header(bytes(data), 0)
+    if parsed is None:
+        return None
+    _, header_size, _ = parsed
+    child_data = data[header_size:]
+    if not _rewrite_offsets_recursive(child_data, delta):
+        return None
+    data[header_size:] = child_data
+    return bytes(data)
