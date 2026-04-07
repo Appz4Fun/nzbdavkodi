@@ -176,8 +176,9 @@ def find_video_file(folder_path, _depth=0):
         _depth: Internal recursion depth counter (used to cap traversal).
 
     Returns:
-        The path (relative to the WebDAV base) of the largest video file found,
-        or None when no video is located or an error occurs.
+        The WebDAV href path of the largest video file found, typically an
+        absolute server path beginning with "/", or None when no video is
+        located or an error occurs.
 
     Side effects:
         Reads WebDAV settings from Kodi via xbmcaddon.Addon().
