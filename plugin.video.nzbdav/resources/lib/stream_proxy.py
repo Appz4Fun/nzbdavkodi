@@ -507,7 +507,7 @@ class StreamProxy:
 
         try:
             proc = subprocess.Popen(
-                [ffmpeg_path, "-v", "warning", "-i", input_url, "-f", "null", "-"],
+                [ffmpeg_path, "-v", "info", "-i", input_url, "-f", "null", "-"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 shell=False,
@@ -522,6 +522,17 @@ class StreamProxy:
                     proc.kill()
                     proc.wait()
                     return result
+                # Safety: if we've read too much stderr without finding
+                # Duration, the header is missing — bail out before ffmpeg
+                # decodes the entire file.
+                if len(collected) > 8192:
+                    xbmc.log(
+                        "NZB-DAV: Duration not found in first 8KB of ffmpeg output",
+                        xbmc.LOGWARNING,
+                    )
+                    proc.kill()
+                    proc.wait()
+                    return None
             # 30 s: generous upper bound for ffmpeg to finish reading the file
             # header on a slow/remote source; the normal path exits early via
             # proc.kill() once Duration is found in stderr.

@@ -376,6 +376,7 @@ def parse_title_metadata(title):
     edition = parsed.get("edition", "") or ""
     year = parsed.get("year", 0) or 0
     upscaled = bool(parsed.get("upscaled", False))
+    container = parsed.get("container", "") or ""
 
     raw_channels = parsed.get("channels", [])
     if isinstance(raw_channels, str):
@@ -394,6 +395,7 @@ def parse_title_metadata(title):
         "channels": channels,
         "year": year,
         "upscaled": upscaled,
+        "container": container,
     }
 
 

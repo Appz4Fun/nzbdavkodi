@@ -131,11 +131,11 @@ def test_format_size_bytes():
 
 
 def test_format_size_none():
-    assert _format_size(None) == "N/A"
+    assert _format_size(None) == ""
 
 
 def test_format_size_zero():
-    assert _format_size(0) == "N/A"
+    assert _format_size(0) == ""
 
 
 def test_format_size_very_large():

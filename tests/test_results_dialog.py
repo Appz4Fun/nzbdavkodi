@@ -99,7 +99,7 @@ def test_format_size_gigabytes():
 
 
 def test_format_size_megabytes():
-    assert _format_size(512 * 1024**2) == "512 MB"
+    assert _format_size(512 * 1024**2) == "512.0 MB"
 
 
 def test_format_size_bytes():

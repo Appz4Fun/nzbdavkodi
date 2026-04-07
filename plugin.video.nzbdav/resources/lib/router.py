@@ -7,6 +7,7 @@ from urllib.parse import parse_qs, urlparse
 
 import xbmc
 
+from resources.lib.http_util import format_size as _format_size
 from resources.lib.i18n import addon_name as _addon_name
 from resources.lib.i18n import fmt as _fmt
 from resources.lib.i18n import string as _string
@@ -107,8 +108,6 @@ def _clean_params(params):
     calling external players; see PlayerConfig docs:
     https://github.com/jurialmunkey/plugin.video.themoviedb.helper/wiki/PlayerConfig
     """
-    # Preserve TMDBHelper contract: '_' means "no value" rather than a literal
-    # underscore so downstream handlers see an empty string instead.
     return {k: ("" if v == "_" else v) for k, v in params.items()}
 
 
@@ -526,7 +525,7 @@ def _format_info_line(item):
         parts.append("/".join(langs))
 
     size_str = _format_size(item.get("size"))
-    if size_str and size_str != "N/A":
+    if size_str:
         parts.append(size_str)
 
     group = meta.get("group", "")
@@ -651,15 +650,3 @@ def _handle_main_menu(handle):
     xbmcplugin.addDirectoryItem(handle=handle, url=url, listitem=li, isFolder=False)
 
     xbmcplugin.endOfDirectory(handle)
-
-
-def _format_size(size_bytes):
-    """Format byte size to human readable."""
-    if not size_bytes:
-        return "N/A"
-    size_bytes = int(size_bytes)
-    if size_bytes >= 1073741824:
-        return "{:.1f} GB".format(size_bytes / 1073741824)
-    if size_bytes >= 1048576:
-        return "{:.1f} MB".format(size_bytes / 1048576)
-    return "{} B".format(size_bytes)

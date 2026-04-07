@@ -26,6 +26,18 @@ def http_get(url, timeout=15):
         return resp.read().decode("utf-8")
 
 
+def format_size(size_bytes):
+    """Format byte size to human readable."""
+    if not size_bytes:
+        return ""
+    size_bytes = int(size_bytes)
+    if size_bytes >= 1073741824:
+        return "{:.1f} GB".format(size_bytes / 1073741824)
+    if size_bytes >= 1048576:
+        return "{:.1f} MB".format(size_bytes / 1048576)
+    return "{} B".format(size_bytes)
+
+
 def notify(heading, message, duration=5000):
     """Show a Kodi notification."""
     import xbmc
