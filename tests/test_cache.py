@@ -109,6 +109,24 @@ def test_cache_miss_returns_none(mock_addon_mod, mock_cache_dir):
 
 
 @patch("resources.lib.cache._get_cache_dir")
+@patch("resources.lib.cache.xbmcaddon")
+def test_cache_read_handles_corrupted_json(mock_addon_mod, mock_cache_dir):
+    """Reading a corrupted cache file should return None, not raise JSONDecodeError."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        mock_cache_dir.return_value = tmpdir
+        addon = MagicMock()
+        addon.getSetting.return_value = "300"
+        mock_addon_mod.Addon.return_value = addon
+
+        cache_path = os.path.join(tmpdir, "movie_Test.json")
+        with open(cache_path, "w") as f:
+            f.write("{not valid json]")
+
+        cached = get_cached("movie", "Test")
+        assert cached is None
+
+
+@patch("resources.lib.cache._get_cache_dir")
 def test_cache_evicts_oldest_when_over_limit(mock_cache_dir):
     """Cache should evict oldest files when total size exceeds limit."""
     with tempfile.TemporaryDirectory() as tmpdir:

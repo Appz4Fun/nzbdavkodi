@@ -2,6 +2,7 @@
 # Copyright (C) 2026 nzbdav contributors
 
 from unittest.mock import MagicMock, patch
+from urllib.error import HTTPError
 from urllib.parse import unquote
 
 from resources.lib.webdav import (
@@ -255,6 +256,23 @@ def test_find_video_file_returns_none_on_error(mock_urlopen, mock_settings):
     mock_urlopen.side_effect = Exception("Connection refused")
 
     path = find_video_file("/content/uncategorized/Some Folder/")
+    assert path is None
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_returns_none_on_403(mock_urlopen, mock_settings):
+    """find_video_file returns None (not raise) on HTTP 403 auth failure."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    mock_urlopen.side_effect = HTTPError(
+        url="http://webdav:8080/content/forbidden/",
+        code=403,
+        msg="Forbidden",
+        hdrs=None,
+        fp=None,
+    )
+
+    path = find_video_file("/content/uncategorized/Forbidden/")
     assert path is None
 
 
