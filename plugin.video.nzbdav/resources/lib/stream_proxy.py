@@ -329,32 +329,30 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     pos += sent
 
                 elif pos < header_len + payload_size:
-                    # Serve from remote payload via range request
+                    # Serve from remote payload via a single streaming connection.
+                    # One HTTP range request for the entire remaining payload,
+                    # then stream chunks through to Kodi.  This avoids per-chunk
+                    # connection overhead that causes slow seeking.
                     payload_offset = pos - header_len
                     remote_pos = payload_remote_start + payload_offset
-                    chunk_size = min(remaining, 1048576)  # 1 MB chunks
-                    remote_end = remote_pos + chunk_size - 1
+                    remote_end = payload_remote_start + payload_size - 1
 
-                    # Try cache first
-                    cached = None
-                    if range_cache:
-                        cached = range_cache.get(remote_pos, remote_end + 1)
+                    req = Request(ctx["remote_url"])
+                    req.add_header(
+                        "Range", "bytes={}-{}".format(remote_pos, remote_end)
+                    )
+                    if ctx.get("auth_header"):
+                        req.add_header("Authorization", ctx["auth_header"])
 
-                    if cached:
-                        data = cached
-                    else:
-                        data = _http_range(
-                            ctx["remote_url"],
-                            remote_pos,
-                            remote_end,
-                            ctx.get("auth_header"),
-                        )
-                        if range_cache:
-                            range_cache.put(remote_pos, data)
-
-                    self.wfile.write(data)
-                    bytes_sent += len(data)
-                    pos += len(data)
+                    with urlopen(req, timeout=120) as resp:  # nosec B310
+                        while bytes_sent < length:
+                            chunk = resp.read(1048576)  # 1 MB read buffer
+                            if not chunk:
+                                break
+                            self.wfile.write(chunk)
+                            bytes_sent += len(chunk)
+                            pos += len(chunk)
+                    break  # done streaming
                 else:
                     break
         except (BrokenPipeError, ConnectionResetError):
