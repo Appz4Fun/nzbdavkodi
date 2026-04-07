@@ -237,17 +237,50 @@ def fetch_remote_mp4_layout(url, file_size, auth_header=None):
             "moov_before_mdat": True,
         }
 
-    # 2. Moov not in head — progressive tail probe
+    # 2. Moov not in head — compute location from mdat info or tail probe
+    #
+    # Strategy A: If the head probe found mdat with a known size, we can
+    # compute exactly where moov starts (right after mdat ends).
+    # This is precise and avoids blind tail scanning.
+    mdat_offset = head_layout["mdat_offset"]
+    mdat_size = head_layout["mdat_size"]
+
+    if mdat_offset >= 0 and mdat_size > 0:
+        mdat_end = mdat_offset + mdat_size
+        if mdat_end < file_size:
+            # Fetch the box header right after mdat to confirm it's moov
+            probe = _http_range(
+                url, mdat_end, min(mdat_end + 15, file_size - 1), auth_header
+            )
+            hdr = read_box_header(probe, 0)
+            if hdr is not None and hdr[0] == b"moov":
+                moov_abs_offset = mdat_end
+                moov_size = hdr[2]
+                if moov_size > _MAX_MOOV_SIZE:
+                    return None
+                if moov_abs_offset + moov_size > file_size:
+                    return None
+                moov_data = _http_range(
+                    url, moov_abs_offset, moov_abs_offset + moov_size - 1, auth_header
+                )
+                # Validate
+                verify = read_box_header(moov_data, 0)
+                if verify is None or verify[0] != b"moov":
+                    return None
+                return {
+                    "ftyp_data": ftyp_data,
+                    "ftyp_end": ftyp_end,
+                    "moov_data": moov_data,
+                    "mdat_offset": mdat_offset,
+                    "original_moov_offset": moov_abs_offset,
+                    "moov_before_mdat": False,
+                }
+
+    # Strategy B: Progressive tail probe (fallback when mdat size unknown)
     tail_probe_size = _TAIL_PROBE_SIZE
     while tail_probe_size <= _TAIL_PROBE_MAX:
         tail_start = max(0, file_size - tail_probe_size)
         tail_data = _http_range(url, tail_start, file_size - 1, auth_header)
-
-        # Scan from the beginning of the tail slice.
-        # Since we're likely in the middle of mdat, the first box parse
-        # will probably fail or return garbage. We need to find a valid
-        # box boundary. Strategy: scan forward looking for 'moov' type
-        # at proper box header positions only.
         tail_layout = scan_top_level_boxes(tail_data)
 
         if tail_layout["moov_offset"] >= 0:
@@ -255,7 +288,6 @@ def fetch_remote_mp4_layout(url, file_size, auth_header=None):
             moov_size = tail_layout["moov_size"]
             moov_abs_offset = tail_start + moov_rel_offset
 
-            # Validate: moov must fit within the file
             if moov_abs_offset + moov_size > file_size:
                 return None
             if moov_size > _MAX_MOOV_SIZE:
@@ -263,7 +295,6 @@ def fetch_remote_mp4_layout(url, file_size, auth_header=None):
             if moov_size < 8:
                 return None
 
-            # Fetch full moov if it extends beyond our tail probe
             if moov_rel_offset + moov_size <= len(tail_data):
                 moov_data = tail_data[moov_rel_offset : moov_rel_offset + moov_size]
             else:
@@ -271,16 +302,11 @@ def fetch_remote_mp4_layout(url, file_size, auth_header=None):
                     url, moov_abs_offset, moov_abs_offset + moov_size - 1, auth_header
                 )
 
-            # Validate the fetched moov starts with a proper box header
             verify = read_box_header(moov_data, 0)
             if verify is None or verify[0] != b"moov":
                 return None
 
-            # Get mdat info from head probe
-            mdat_offset = head_layout["mdat_offset"]
             if mdat_offset < 0:
-                # mdat wasn't visible in head probe — it must start
-                # right after ftyp and any passthrough atoms
                 mdat_offset = ftyp_end
 
             return {
@@ -292,7 +318,6 @@ def fetch_remote_mp4_layout(url, file_size, auth_header=None):
                 "moov_before_mdat": False,
             }
 
-        # Moov not found — double the probe window
         tail_probe_size *= 2
 
     return None  # Cannot find moov
