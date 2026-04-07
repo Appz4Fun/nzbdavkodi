@@ -283,8 +283,14 @@ def _poll_once(nzo_id, title):
     return job_status[0], history_status[0], error_type[0]
 
 
-def _resolve_inner(handle, nzb_url, title, dialog, poll_interval, download_timeout):
-    """Core resolve logic — runs inside a try/finally in resolve()."""
+def _poll_until_ready(nzb_url, title, dialog, poll_interval, download_timeout):
+    """Submit NZB and poll until download completes.
+
+    Returns ``(stream_url, stream_headers)`` on success, or ``(None, None)``
+    on failure (timeout, cancellation, server error, etc.).  All user
+    notifications are issued inside this function; the caller only needs to
+    decide what to do with the resulting stream URL.
+    """
     # Check if this title was already downloaded — skip re-downloading
     existing = find_completed_by_name(title)
     if existing:
@@ -295,9 +301,7 @@ def _resolve_inner(handle, nzb_url, title, dialog, poll_interval, download_timeo
         webdav_folder = _storage_to_webdav_path(existing["storage"])
         video_path = find_video_file(webdav_folder)
         if video_path:
-            stream_url, stream_headers = get_webdav_stream_url_for_path(video_path)
-            _play_direct(handle, stream_url, stream_headers)
-            return
+            return get_webdav_stream_url_for_path(video_path)
 
     xbmc.log("NZB-DAV: Submitting NZB for '{}'".format(title), xbmc.LOGINFO)
     max_submit_retries = 3
@@ -315,7 +319,7 @@ def _resolve_inner(handle, nzb_url, title, dialog, poll_interval, download_timeo
         )
         if attempt < max_submit_retries:
             if monitor.waitForAbort(2):
-                return
+                return None, None
 
     if not nzo_id:
         xbmc.log(
@@ -326,8 +330,7 @@ def _resolve_inner(handle, nzb_url, title, dialog, poll_interval, download_timeo
             xbmc.LOGERROR,
         )
         _notify(_addon_name(), _string(30098))
-        xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
-        return
+        return None, None
 
     xbmc.log(
         "NZB-DAV: NZB submitted, nzo_id={}, polling every {}s (timeout={}s)".format(
@@ -349,8 +352,7 @@ def _resolve_inner(handle, nzb_url, title, dialog, poll_interval, download_timeo
                 xbmc.LOGERROR,
             )
             _notify(_addon_name(), _string(30099))
-            xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
-            return
+            return None, None
 
         elapsed = time.time() - start_time
 
@@ -364,16 +366,14 @@ def _resolve_inner(handle, nzb_url, title, dialog, poll_interval, download_timeo
                 xbmc.LOGERROR,
             )
             _notify(_addon_name(), _fmt(30099, int(elapsed)))
-            xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
-            return
+            return None, None
 
         if dialog.iscanceled():
             xbmc.log(
                 "NZB-DAV: User cancelled resolve for nzo_id={}".format(nzo_id),
                 xbmc.LOGINFO,
             )
-            xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
-            return
+            return None, None
 
         job_status, history, webdav_error = _poll_once(nzo_id, title)
 
@@ -396,8 +396,7 @@ def _resolve_inner(handle, nzb_url, title, dialog, poll_interval, download_timeo
                     xbmc.LOGERROR,
                 )
                 _notify(_addon_name(), _string(30100))
-                xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
-                return
+                return None, None
 
             msg_id = _STATUS_MESSAGES.get(status)
             if not msg_id:
@@ -419,8 +418,7 @@ def _resolve_inner(handle, nzb_url, title, dialog, poll_interval, download_timeo
                 xbmc.LOGERROR,
             )
             _notify(_addon_name(), _string(30100))
-            xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
-            return
+            return None, None
 
         # Check history for completed download
         if history and history["status"] == "Completed":
@@ -444,8 +442,7 @@ def _resolve_inner(handle, nzb_url, title, dialog, poll_interval, download_timeo
                         xbmc.LOGWARNING,
                     )
 
-                _play_direct(handle, stream_url, stream_headers)
-                return
+                return stream_url, stream_headers
             else:
                 xbmc.log(
                     "NZB-DAV: Completed but no video found at '{}', retrying...".format(
@@ -462,8 +459,7 @@ def _resolve_inner(handle, nzb_url, title, dialog, poll_interval, download_timeo
                 xbmc.LOGERROR,
             )
             _notify(_addon_name(), _string(_ERROR_MESSAGES["auth_failed"]))
-            xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
-            return
+            return None, None
 
         if webdav_error == "server_error":
             xbmc.log(
@@ -474,10 +470,16 @@ def _resolve_inner(handle, nzb_url, title, dialog, poll_interval, download_timeo
         if monitor.waitForAbort(poll_interval):
             # Kodi is shutting down
             xbmc.log("NZB-DAV: Kodi shutdown detected, aborting resolve", xbmc.LOGINFO)
-            return
+            return None, None
 
 
 def resolve(handle, params):
+    """Handle plugin:// URL resolution (TMDBHelper integration).
+
+    Decodes parameters, polls until the stream is ready, then calls
+    setResolvedUrl() — True on success, False on any failure — so Kodi
+    always receives a resolution response and does not hang.
+    """
     nzb_url = unquote(params.get("nzburl", ""))
     title = unquote(params.get("title", ""))
 
@@ -492,7 +494,13 @@ def resolve(handle, params):
     dialog.create(_addon_name(), _string(30097))
 
     try:
-        _resolve_inner(handle, nzb_url, title, dialog, poll_interval, download_timeout)
+        stream_url, stream_headers = _poll_until_ready(
+            nzb_url, title, dialog, poll_interval, download_timeout
+        )
+        if stream_url:
+            _play_direct(handle, stream_url, stream_headers)
+        else:
+            xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
     except Exception as e:
         xbmc.log("NZB-DAV: Unexpected error in resolve: {}".format(e), xbmc.LOGERROR)
         _notify(_addon_name(), "Error: {}".format(str(e)[:80]))
@@ -501,151 +509,12 @@ def resolve(handle, params):
         dialog.close()
 
 
-def _resolve_and_play_inner(nzb_url, title, dialog, poll_interval, download_timeout):
-    """Core resolve_and_play logic — runs inside a try/finally in resolve_and_play()."""
-    # Check if this title was already downloaded — skip re-downloading
-    existing = find_completed_by_name(title)
-    if existing:
-        xbmc.log(
-            "NZB-DAV: '{}' already downloaded, streaming directly".format(title),
-            xbmc.LOGINFO,
-        )
-        webdav_folder = _storage_to_webdav_path(existing["storage"])
-        video_path = find_video_file(webdav_folder)
-        if video_path:
-            stream_url, stream_headers = get_webdav_stream_url_for_path(video_path)
-            _play_via_proxy(stream_url, stream_headers)
-            return
-
-    xbmc.log("NZB-DAV: Submitting NZB for '{}'".format(title), xbmc.LOGINFO)
-    max_submit_retries = 3
-    nzo_id = None
-    monitor = xbmc.Monitor()
-    for attempt in range(1, max_submit_retries + 1):
-        nzo_id = submit_nzb(nzb_url, title)
-        if nzo_id:
-            break
-        xbmc.log(
-            "NZB-DAV: Submit attempt {}/{} failed for '{}'".format(
-                attempt, max_submit_retries, title
-            ),
-            xbmc.LOGWARNING,
-        )
-        if attempt < max_submit_retries:
-            if monitor.waitForAbort(2):
-                return
-
-    if not nzo_id:
-        xbmc.log(
-            "NZB-DAV: All {} submit attempts failed for '{}'. "
-            "Check nzbdav URL and API key in settings.".format(
-                max_submit_retries, title
-            ),
-            xbmc.LOGERROR,
-        )
-        _notify(_addon_name(), _string(30098))
-        return
-
-    xbmc.log("NZB-DAV: NZB submitted, nzo_id={}, polling".format(nzo_id), xbmc.LOGINFO)
-    start_time = time.time()
-    iteration = 0
-
-    while True:
-        iteration += 1
-        if iteration > MAX_POLL_ITERATIONS:
-            xbmc.log(
-                "NZB-DAV: Max poll iterations ({}) reached for nzo_id={}".format(
-                    MAX_POLL_ITERATIONS, nzo_id
-                ),
-                xbmc.LOGERROR,
-            )
-            _notify(_addon_name(), _string(30099))
-            return
-
-        elapsed = time.time() - start_time
-
-        if elapsed >= download_timeout:
-            xbmc.log(
-                "NZB-DAV: Download timed out after {}s for nzo_id={} (title='{}'). "
-                "Check the nzbdav queue for stalled jobs or increase the "
-                "download timeout in addon settings.".format(
-                    int(elapsed), nzo_id, title
-                ),
-                xbmc.LOGERROR,
-            )
-            _notify(_addon_name(), _string(30101))
-            return
-
-        if dialog.iscanceled():
-            return
-
-        job_status, history, webdav_error = _poll_once(nzo_id, title)
-
-        if job_status:
-            status = job_status.get("status", "Unknown")
-            percentage = job_status.get("percentage", "0")
-
-            if status.lower() in ("failed", "deleted"):
-                _notify(_addon_name(), _string(30100))
-                return
-
-            msg_id = _STATUS_MESSAGES.get(status)
-            if not msg_id:
-                msg = "Status: {}".format(status)
-            elif msg_id == 30105:
-                msg = _fmt(msg_id, percentage)
-            else:
-                msg = _string(msg_id)
-            progress = min(int(percentage or 0), 100)
-            dialog.update(progress, msg)
-
-        if webdav_error == "auth_failed":
-            xbmc.log(
-                "NZB-DAV: WebDAV authentication failed for nzo_id={}. "
-                "Check WebDAV username and password in addon settings.".format(nzo_id),
-                xbmc.LOGERROR,
-            )
-            _notify(_addon_name(), _string(_ERROR_MESSAGES["auth_failed"]))
-            return
-
-        # Check history for failed download
-        if history and history["status"] == "Failed":
-            xbmc.log(
-                "NZB-DAV: Download failed on the server side for nzo_id={} "
-                "(title='{}'). Check the nzbdav history for the failure reason.".format(
-                    nzo_id, title
-                ),
-                xbmc.LOGERROR,
-            )
-            _notify(_addon_name(), _string(30100))
-            return
-
-        # Check history for completed download
-        if history and history["status"] == "Completed":
-            storage = history["storage"]
-            webdav_folder = _storage_to_webdav_path(storage)
-            video_path = find_video_file(webdav_folder)
-            if video_path:
-                stream_url, stream_headers = get_webdav_stream_url_for_path(video_path)
-                xbmc.log("NZB-DAV: Playing '{}'".format(stream_url), xbmc.LOGINFO)
-                _play_via_proxy(stream_url, stream_headers)
-                return
-            else:
-                xbmc.log(
-                    "NZB-DAV: Completed but no video found at '{}', retrying...".format(
-                        webdav_folder
-                    ),
-                    xbmc.LOGWARNING,
-                )
-
-        if monitor.waitForAbort(poll_interval):
-            return
-
-
 def resolve_and_play(nzb_url, title):
-    """Submit NZB, poll until ready, play directly via xbmc.Player.
+    """Handle direct execution (executebuiltin://RunPlugin calls).
 
-    Used when called via executebuiltin://RunPlugin (not plugin:// directory).
+    Polls until the stream is ready, then plays via xbmc.Player().
+    Unlike resolve(), there is no plugin handle so setResolvedUrl() is not
+    called; playback simply does not start on failure.
     """
     poll_interval, download_timeout = _get_poll_settings()
 
@@ -653,7 +522,11 @@ def resolve_and_play(nzb_url, title):
     dialog.create(_addon_name(), _string(30097))
 
     try:
-        _resolve_and_play_inner(nzb_url, title, dialog, poll_interval, download_timeout)
+        stream_url, stream_headers = _poll_until_ready(
+            nzb_url, title, dialog, poll_interval, download_timeout
+        )
+        if stream_url:
+            _play_via_proxy(stream_url, stream_headers)
     except Exception as e:
         xbmc.log(
             "NZB-DAV: Unexpected error in resolve_and_play: {}".format(e), xbmc.LOGERROR
