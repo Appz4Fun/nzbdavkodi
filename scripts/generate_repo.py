@@ -192,11 +192,13 @@ def generate_repo(output_dir="dist"):
         shutil.copy2(addon_zip, os.path.join(dest_dir, addon_zip))
         # Also copy addon.xml into the addon subfolder (Kodi expects this)
         shutil.copy2(main_addon, os.path.join(dest_dir, "addon.xml"))
-        # Copy icon/fanart if they exist
+        # Copy icon/fanart preserving paths declared in addon.xml <assets>
         for asset in ["resources/icon.png", "resources/fanart.jpg"]:
             src = os.path.join("plugin.video.nzbdav", asset)
             if os.path.exists(src):
-                shutil.copy2(src, os.path.join(dest_dir, os.path.basename(asset)))
+                asset_dest = os.path.join(dest_dir, asset)
+                os.makedirs(os.path.dirname(asset_dest), exist_ok=True)
+                shutil.copy2(src, asset_dest)
         print("Copied addon zip + metadata to {}".format(dest_dir))
 
     # Build repository addon zip and copy into output
