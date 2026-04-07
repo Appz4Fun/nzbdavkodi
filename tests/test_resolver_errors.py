@@ -24,7 +24,8 @@ def test_resolve_aborts_on_nzbdav_failed_status(
     mock_xbmc,
     mock_notify,
 ):
-    """When nzbdav reports job Failed, resolve() should notify user and call setResolvedUrl(False)."""
+    """When nzbdav reports job Failed, resolve() should notify user and
+    call setResolvedUrl(False)."""
     mock_poll.return_value = (1, 60)
     mock_submit.return_value = "SABnzbd_nzo_failed"
     mock_status.return_value = {"status": "Downloading", "percentage": "20"}
@@ -68,7 +69,8 @@ def test_resolve_times_out_gracefully(
     mock_check_webdav,
     mock_notify,
 ):
-    """When polling exceeds timeout, resolve() should notify and not hang even if status calls return None."""
+    """When polling exceeds timeout, resolve() should notify and not hang
+    even if status calls return None."""
     mock_poll.return_value = (1, 5)  # 5s timeout
     mock_submit.return_value = "SABnzbd_nzo_timeout"
     mock_status.return_value = None  # Simulate connection timeout to nzbdav

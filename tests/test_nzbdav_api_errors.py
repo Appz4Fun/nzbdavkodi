@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 nzbdav contributors
 
-from urllib.error import URLError
 from unittest.mock import patch
+from urllib.error import URLError
 
 from resources.lib.nzbdav_api import get_job_status, submit_nzb
 
