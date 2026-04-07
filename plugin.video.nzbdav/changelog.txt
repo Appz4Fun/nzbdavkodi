@@ -1,3 +1,18 @@
+v0.6.0 (2026-04-07)
+- Add pure-Python MP4 moov-relocation proxy for native seeking, pause, and DV support
+- Parse moov atom from remote MP4 via HTTP range requests, rewrite stco/co64 offsets
+- Serve virtual faststart MP4 (moov-before-mdat) with Accept-Ranges: bytes
+- Three-tier fallback: virtual faststart → temp-file faststart → MKV remux
+- Direct redirect for already-faststart MP4s (skip proxy entirely)
+- Add LRU byte cache for WebDAV range request coalescing
+- Support co64 (64-bit chunk offsets) for files >4GB
+- Compute moov location from mdat size instead of blind tail probing
+- Use single streaming connection per seek instead of per-chunk requests
+- Remove unused HLS segment endpoints
+- Container column in NZB results list (MKV green, MP4 red)
+- Fix zombie ffmpeg from duration probe eating 100% CPU
+- Fix MKV duration via -metadata DURATION= for correct progress bar
+
 v0.5.0 (2026-04-06)
 - Simplify player installer to TMDBHelper-only (no multi-select dialog)
 - Remove WebDAV URL setting (defaults to nzbdav URL automatically)
