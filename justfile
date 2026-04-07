@@ -29,6 +29,11 @@ ship: test release
 repo: release
     python3 scripts/generate_repo.py --output-dir dist
 
+# Copy the repository zip to cwd for easy access
+repo-zip: repo
+    cp dist/repository.nzbdav/repository.nzbdav-*.zip .
+    @ls -lh repository.nzbdav-*.zip
+
 # Clean build artifacts
 clean:
     rm -f plugin.video.nzbdav*.zip

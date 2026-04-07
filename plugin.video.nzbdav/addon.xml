@@ -12,10 +12,10 @@
     <extension point="xbmc.service" library="service.py" start="startup"/>
 
     <extension point="xbmc.addon.metadata">
-        <summary lang="en_GB">NZB-DAV Usenet streaming for Kodi</summary>
-        <summary lang="en">NZB-DAV Usenet streaming for Kodi</summary>
-        <description lang="en_GB">Search NZBHydra2 for NZBs and stream via nzbdav WebDAV. Works as a TMDBHelper player.</description>
-        <description lang="en">Search NZBHydra2 for NZBs and stream via nzbdav WebDAV. Works as a TMDBHelper player.</description>
+        <summary lang="en_GB">Stream Usenet media through TMDBHelper</summary>
+        <summary lang="en">Stream Usenet media through TMDBHelper</summary>
+        <description lang="en_GB">Browse movies and TV shows in TMDBHelper, pick a source from Usenet, and stream it directly in Kodi. NZB-DAV searches your NZBHydra2 indexers, downloads through nzbdav, and plays the file over WebDAV — no manual NZB handling required. Includes smart quality filtering, on-the-fly MP4 to MKV remuxing with subtitle support, and full seeking with a progress bar.</description>
+        <description lang="en">Browse movies and TV shows in TMDBHelper, pick a source from Usenet, and stream it directly in Kodi. NZB-DAV searches your NZBHydra2 indexers, downloads through nzbdav, and plays the file over WebDAV — no manual NZB handling required. Includes smart quality filtering, on-the-fly MP4 to MKV remuxing with subtitle support, and full seeking with a progress bar.</description>
         <disclaimer lang="en_GB">Requires your own NZBHydra2 and nzbdav instances plus valid API/WebDAV access. No content is provided.</disclaimer>
         <disclaimer lang="en">Requires your own NZBHydra2 and nzbdav instances plus valid API/WebDAV access. No content is provided.</disclaimer>
         <platform>all</platform>
