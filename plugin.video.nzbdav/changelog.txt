@@ -1,4 +1,4 @@
-v0.4.4 (2026-04-06)
+v0.5.0 (2026-04-06)
 - Simplify player installer to TMDBHelper-only (no multi-select dialog)
 - Remove WebDAV URL setting (defaults to nzbdav URL automatically)
 - Replace release group text fields with multiselect dialogs
