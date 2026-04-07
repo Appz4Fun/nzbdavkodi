@@ -385,3 +385,33 @@ def test_build_faststart_layout_with_free_atoms():
     off_start = stco_pos + 4 + 4 + 4
     o1 = struct.unpack_from(">I", header, off_start)[0]
     assert o1 == 48 + moov_size
+
+
+def test_range_cache_stores_and_retrieves():
+    """Cache stores fetched ranges and serves overlapping requests."""
+    from resources.lib.mp4_parser import RangeCache
+
+    cache = RangeCache(max_bytes=1048576)
+    cache.put(100, b"hello world")
+    assert cache.get(100, 111) == b"hello world"
+    assert cache.get(105, 111) == b" world"
+    assert cache.get(100, 105) == b"hello"
+
+
+def test_range_cache_miss_returns_none():
+    """Cache returns None for ranges not stored."""
+    from resources.lib.mp4_parser import RangeCache
+
+    cache = RangeCache(max_bytes=1048576)
+    assert cache.get(0, 100) is None
+
+
+def test_range_cache_evicts_oldest():
+    """Cache evicts oldest entries when over max_bytes."""
+    from resources.lib.mp4_parser import RangeCache
+
+    cache = RangeCache(max_bytes=20)
+    cache.put(0, b"a" * 15)
+    cache.put(100, b"b" * 10)  # triggers eviction of first entry
+    assert cache.get(0, 15) is None
+    assert cache.get(100, 110) == b"b" * 10

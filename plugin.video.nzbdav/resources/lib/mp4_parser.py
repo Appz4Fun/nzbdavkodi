@@ -9,6 +9,8 @@ layout (moov-before-mdat) without modifying the original file.
 """
 
 import struct
+import threading
+from collections import OrderedDict
 from urllib.request import Request, urlopen
 
 
@@ -367,3 +369,46 @@ def build_faststart_layout(layout_info):
         "payload_size": payload_size,
         "already_faststart": False,
     }
+
+
+
+
+class RangeCache:
+    """Simple LRU byte cache for proxied range requests.
+
+    Stores (start_offset, data) pairs. Supports partial reads from
+    cached ranges. Evicts oldest entries when total bytes exceed max.
+    Thread-safe.
+    """
+
+    def __init__(self, max_bytes=8 * 1048576):
+        self._entries = OrderedDict()  # key: start_offset, value: bytes
+        self._total = 0
+        self._max = max_bytes
+        self._lock = threading.Lock()
+
+    def put(self, start, data):
+        """Cache a byte range."""
+        with self._lock:
+            if start in self._entries:
+                self._total -= len(self._entries[start])
+                del self._entries[start]
+            self._entries[start] = data
+            self._total += len(data)
+            # Evict oldest until under budget
+            while self._total > self._max and self._entries:
+                _, old_data = self._entries.popitem(last=False)
+                self._total -= len(old_data)
+
+    def get(self, start, end):
+        """Return bytes for [start, end) if fully cached, else None."""
+        with self._lock:
+            for entry_start, entry_data in self._entries.items():
+                entry_end = entry_start + len(entry_data)
+                if entry_start <= start and end <= entry_end:
+                    # Move to end (most recent)
+                    self._entries.move_to_end(entry_start)
+                    offset = start - entry_start
+                    length = end - start
+                    return entry_data[offset : offset + length]
+            return None
