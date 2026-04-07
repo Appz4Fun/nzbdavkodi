@@ -107,12 +107,12 @@ def _make_playable_listitem(url, headers):
 
 
 def _play_direct(handle, stream_url, stream_headers):
-    """Play a stream — MP4 via remux proxy, others direct.
+    """Play a stream — MP4 via faststart proxy (preferred) or MKV remux fallback.
 
-    MP4 files are remuxed on the fly to MKV via ffmpeg (-c copy) through
-    the service proxy.  This bypasses a Kodi CFileCache bug that prevents
-    parsing large MP4 moov atoms over HTTP.  Duration is embedded in the
-    MKV header for correct progress bar and pause support.
+    MP4 files go through the service proxy which tries:
+    1. Virtual moov-relocation (pure Python, video/mp4, full seeking)
+    2. Temp-file faststart (ffmpeg -movflags +faststart, video/mp4, full seeking)
+    3. MKV remux (ffmpeg pipe, video/x-matroska, duration but no seeking)
 
     MKV and other formats play the WebDAV URL directly.
     """
@@ -135,18 +135,27 @@ def _play_direct(handle, stream_url, stream_headers):
             proxy_url, stream_info = prepare_stream_via_service(
                 service_port, stream_url, auth_header
             )
-            xbmc.log(
-                "NZB-DAV: Playing MP4 via remux proxy: {}".format(proxy_url),
-                xbmc.LOGINFO,
-            )
+
             li = xbmcgui.ListItem(path=proxy_url)
             li.setContentLookup(False)
-            li.setMimeType("video/x-matroska")
 
-            duration = stream_info.get("duration_seconds")
-            if duration:
-                info_tag = li.getVideoInfoTag()
-                info_tag.setDuration(int(duration))
+            if stream_info.get("remux"):
+                xbmc.log(
+                    "NZB-DAV: Playing MP4 via remux proxy: {}".format(proxy_url),
+                    xbmc.LOGINFO,
+                )
+                li.setMimeType("video/x-matroska")
+
+                duration = stream_info.get("duration_seconds")
+                if duration:
+                    info_tag = li.getVideoInfoTag()
+                    info_tag.setDuration(int(duration))
+            else:
+                xbmc.log(
+                    "NZB-DAV: Playing MP4 via faststart proxy: {}".format(proxy_url),
+                    xbmc.LOGINFO,
+                )
+                li.setMimeType("video/mp4")
 
             xbmcplugin.setResolvedUrl(handle, True, li)
 
@@ -172,7 +181,7 @@ def _play_direct(handle, stream_url, stream_headers):
 def _play_via_proxy(stream_url, stream_headers):
     """Play a stream (for resolve_and_play path).
 
-    MP4 via remux proxy, others direct.
+    MP4 via faststart proxy (preferred) or MKV remux fallback, others direct.
     """
 
     lower_url = stream_url.lower()
@@ -193,18 +202,27 @@ def _play_via_proxy(stream_url, stream_headers):
             proxy_url, stream_info = prepare_stream_via_service(
                 service_port, stream_url, auth_header
             )
-            xbmc.log(
-                "NZB-DAV: Playing MP4 via remux proxy: {}".format(proxy_url),
-                xbmc.LOGINFO,
-            )
+
             li = xbmcgui.ListItem(path=proxy_url)
             li.setContentLookup(False)
-            li.setMimeType("video/x-matroska")
 
-            duration = stream_info.get("duration_seconds")
-            if duration:
-                info_tag = li.getVideoInfoTag()
-                info_tag.setDuration(int(duration))
+            if stream_info.get("remux"):
+                xbmc.log(
+                    "NZB-DAV: Playing MP4 via remux proxy: {}".format(proxy_url),
+                    xbmc.LOGINFO,
+                )
+                li.setMimeType("video/x-matroska")
+
+                duration = stream_info.get("duration_seconds")
+                if duration:
+                    info_tag = li.getVideoInfoTag()
+                    info_tag.setDuration(int(duration))
+            else:
+                xbmc.log(
+                    "NZB-DAV: Playing MP4 via faststart proxy: {}".format(proxy_url),
+                    xbmc.LOGINFO,
+                )
+                li.setMimeType("video/mp4")
 
             xbmc.Player().play(proxy_url, li)
             return
