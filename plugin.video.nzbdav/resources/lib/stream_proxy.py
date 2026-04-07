@@ -285,7 +285,6 @@ class _StreamHandler(BaseHTTPRequestHandler):
         virtual_size = ctx["virtual_size"]
         payload_remote_start = ctx["payload_remote_start"]
         payload_size = ctx["payload_size"]
-        range_cache = ctx.get("range_cache")
         header_len = len(header_data)
 
         # Parse Range header

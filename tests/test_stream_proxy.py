@@ -228,7 +228,9 @@ def test_prepare_stream_remuxes_mp4_when_ffmpeg_available():
         "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
     ), patch(
         "resources.lib.stream_proxy.fetch_remote_mp4_layout", return_value=None
-    ), patch.object(sp, "_prepare_tempfile_faststart", return_value=None):
+    ), patch.object(
+        sp, "_prepare_tempfile_faststart", return_value=None
+    ):
         auth = "Basic " + __import__("base64").b64encode(b"user:pass").decode()
         url, info = sp.prepare_stream("http://host/film.mp4", auth_header=auth)
 
@@ -335,7 +337,9 @@ def test_prepare_stream_probes_duration_for_mp4():
         "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
     ), patch(
         "resources.lib.stream_proxy.fetch_remote_mp4_layout", return_value=None
-    ), patch.object(sp, "_prepare_tempfile_faststart", return_value=None):
+    ), patch.object(
+        sp, "_prepare_tempfile_faststart", return_value=None
+    ):
         sp.prepare_stream("http://host/film.mp4", auth_header=auth)
 
     ctx = sp._server.stream_context
@@ -362,7 +366,9 @@ def test_prepare_stream_falls_back_to_non_seekable_on_probe_failure():
         "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
     ), patch(
         "resources.lib.stream_proxy.fetch_remote_mp4_layout", return_value=None
-    ), patch.object(sp, "_prepare_tempfile_faststart", return_value=None):
+    ), patch.object(
+        sp, "_prepare_tempfile_faststart", return_value=None
+    ):
         sp.prepare_stream("http://host/film.mp4")
 
     ctx = sp._server.stream_context
@@ -592,7 +598,7 @@ def test_serve_remux_non_seekable_no_ss():
 
 
 def test_head_seekable_remux_returns_accept_ranges():
-    """HEAD on a seekable remux context returns Accept-Ranges: none (piped MKV has no Cues)."""
+    """HEAD on seekable remux returns Accept-Ranges: none (no Cues)."""
     ctx = {
         "remux": True,
         "seekable": True,
