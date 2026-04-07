@@ -77,7 +77,13 @@ def _parse_ffmpeg_duration(stderr_text):
     )
 
 
-_SEEK_THRESHOLD = 10 * 1024 * 1024  # 10MB
+# Byte-offset delta used to distinguish a Kodi buffer-reconnect from a
+# user-initiated seek.  When Kodi reconnects after a brief network hiccup it
+# resumes very close to where it left off; a true seek jumps much further.
+# 10 MB was chosen empirically: large enough to ignore normal buffering
+# overlap, small enough to catch seeks that would noticeably re-position
+# the stream.  Adjust if you observe unnecessary ffmpeg restarts in logs.
+_SEEK_THRESHOLD = 10 * 1024 * 1024
 
 
 def _is_seek_request(current_byte_pos, requested_byte_pos):
@@ -309,6 +315,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
         total = 0
         try:
             while True:
+                # 64 KB: large enough for good throughput, small enough to
+                # flush promptly so Kodi's buffer stays filled.
                 chunk = proc.stdout.read(65536)
                 if not chunk:
                     break
@@ -353,6 +361,9 @@ class _StreamHandler(BaseHTTPRequestHandler):
             if ctx.get("auth_header"):
                 req.add_header("Authorization", ctx["auth_header"])
 
+            # 2-minute timeout: large WebDAV files over a local LAN can be
+            # slow to begin transferring; 120 s avoids a premature error while
+            # still bounding the hang if the server goes silent mid-stream.
             with urlopen(req, timeout=120) as resp:  # nosec B310
                 self.send_response(206)
                 self.send_header("Content-Type", ctx["content_type"])
@@ -366,6 +377,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 self.end_headers()
 
                 while True:
+                    # 1 MB: balances memory pressure and the number of write()
+                    # syscalls when proxying large files.
                     chunk = resp.read(1048576)
                     if not chunk:
                         break
@@ -509,6 +522,9 @@ class StreamProxy:
                     proc.kill()
                     proc.wait()
                     return result
+            # 30 s: generous upper bound for ffmpeg to finish reading the file
+            # header on a slow/remote source; the normal path exits early via
+            # proc.kill() once Duration is found in stderr.
             proc.wait(timeout=30)
             return _parse_ffmpeg_duration(collected)
         except (OSError, subprocess.SubprocessError, ValueError) as e:
