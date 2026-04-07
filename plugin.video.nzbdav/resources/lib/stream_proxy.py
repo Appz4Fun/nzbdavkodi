@@ -32,7 +32,7 @@ try:
         build_faststart_layout,
         fetch_remote_mp4_layout,
     )
-except Exception:  # noqa: BLE001
+except (ImportError, ModuleNotFoundError):
     RangeCache = None  # type: ignore[assignment,misc]
     build_faststart_layout = None  # type: ignore[assignment]
     fetch_remote_mp4_layout = None  # type: ignore[assignment]
@@ -799,9 +799,11 @@ class StreamProxy:
             "duration_seconds": ctx.get("duration_seconds"),
             "total_bytes": ctx.get("total_bytes", ctx.get("content_length", 0)),
             "virtual_size": ctx.get("virtual_size", 0),
-            "seekable": ctx.get("seekable", False)
-            or ctx.get("faststart", False)
-            or ctx.get("temp_faststart", False),
+            "seekable": (
+                ctx.get("seekable", False)
+                or ctx.get("faststart", False)
+                or ctx.get("temp_faststart", False)
+            ),
             "remux": ctx.get("remux", False),
             "faststart": ctx.get("faststart", False),
         }

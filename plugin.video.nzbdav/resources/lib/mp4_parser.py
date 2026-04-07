@@ -199,15 +199,70 @@ def _http_range(url, start, end, auth_header=None):
         return resp.read()
 
 
+def _fetch_and_validate_moov(url, moov_offset, moov_size, auth_header):
+    """Fetch a moov box and validate it. Returns bytes or None."""
+    if moov_size > _MAX_MOOV_SIZE or moov_size < 8:
+        return None
+    moov_data = _http_range(url, moov_offset, moov_offset + moov_size - 1, auth_header)
+    verify = read_box_header(moov_data, 0)
+    if verify is None or verify[0] != b"moov":
+        return None
+    return moov_data
+
+
+def _make_layout(ftyp_data, ftyp_end, moov_data, mdat_offset, moov_offset, faststart):
+    """Build the layout result dict."""
+    return {
+        "ftyp_data": ftyp_data,
+        "ftyp_end": ftyp_end,
+        "moov_data": moov_data,
+        "mdat_offset": mdat_offset,
+        "original_moov_offset": moov_offset,
+        "moov_before_mdat": faststart,
+    }
+
+
+def _find_moov_after_mdat(url, file_size, mdat_offset, mdat_size, auth_header):
+    """Find moov right after mdat using computed offset."""
+    if mdat_offset < 0 or mdat_size <= 0:
+        return None
+    mdat_end = mdat_offset + mdat_size
+    if mdat_end >= file_size:
+        return None
+    probe = _http_range(url, mdat_end, min(mdat_end + 15, file_size - 1), auth_header)
+    hdr = read_box_header(probe, 0)
+    if hdr is None or hdr[0] != b"moov":
+        return None
+    moov_size = hdr[2]
+    if mdat_end + moov_size > file_size:
+        return None
+    return mdat_end, moov_size
+
+
+def _find_moov_by_tail_probe(url, file_size, auth_header):
+    """Find moov via progressive tail probing. Returns (offset, size) or None."""
+    tail_probe_size = _TAIL_PROBE_SIZE
+    while tail_probe_size <= _TAIL_PROBE_MAX:
+        tail_start = max(0, file_size - tail_probe_size)
+        tail_data = _http_range(url, tail_start, file_size - 1, auth_header)
+        tail_layout = scan_top_level_boxes(tail_data)
+
+        if tail_layout["moov_offset"] >= 0:
+            moov_abs = tail_start + tail_layout["moov_offset"]
+            moov_size = tail_layout["moov_size"]
+            if moov_abs + moov_size <= file_size:
+                return moov_abs, moov_size
+            return None
+
+        tail_probe_size *= 2
+    return None
+
+
 def fetch_remote_mp4_layout(url, file_size, auth_header=None):
     """Fetch MP4 layout info from a remote file using HTTP range requests.
 
-    Fetches the file header to get ftyp, then probes the tail to find moov.
-    If moov is already at the beginning (faststart), returns directly.
-
-    Uses progressive tail probing: starts with 512KB, doubles each time,
-    up to 8MB. Only trusts moov found via proper box boundary parsing
-    (no brute-force byte string search).
+    Fetches the file header to get ftyp, then locates moov either by
+    computing its position from mdat size or by progressive tail probing.
 
     Args:
         url: Remote HTTP URL of the MP4 file.
@@ -234,107 +289,49 @@ def fetch_remote_mp4_layout(url, file_size, auth_header=None):
     if head_layout["moov_offset"] >= 0 and head_layout["moov_before_mdat"]:
         moov_offset = head_layout["moov_offset"]
         moov_size = head_layout["moov_size"]
-        if moov_size > _MAX_MOOV_SIZE:
-            return None
         if moov_offset + moov_size <= len(head_data):
             moov_data = head_data[moov_offset : moov_offset + moov_size]
         else:
-            moov_data = _http_range(
-                url, moov_offset, moov_offset + moov_size - 1, auth_header
+            moov_data = _fetch_and_validate_moov(
+                url, moov_offset, moov_size, auth_header
             )
-        return {
-            "ftyp_data": ftyp_data,
-            "ftyp_end": ftyp_end,
-            "moov_data": moov_data,
-            "mdat_offset": head_layout["mdat_offset"],
-            "original_moov_offset": moov_offset,
-            "moov_before_mdat": True,
-        }
+            if moov_data is None:
+                return None
+        return _make_layout(
+            ftyp_data,
+            ftyp_end,
+            moov_data,
+            head_layout["mdat_offset"],
+            moov_offset,
+            True,
+        )
 
-    # 2. Moov not in head — compute location from mdat info or tail probe
-    #
-    # Strategy A: If the head probe found mdat with a known size, we can
-    # compute exactly where moov starts (right after mdat ends).
-    # This is precise and avoids blind tail scanning.
+    # 2. Moov not in head — try computed location, then tail probe
     mdat_offset = head_layout["mdat_offset"]
-    mdat_size = head_layout["mdat_size"]
+    result = _find_moov_after_mdat(
+        url, file_size, mdat_offset, head_layout["mdat_size"], auth_header
+    )
+    if result is None:
+        result = _find_moov_by_tail_probe(url, file_size, auth_header)
+    if result is None:
+        return None
 
-    if mdat_offset >= 0 and mdat_size > 0:
-        mdat_end = mdat_offset + mdat_size
-        if mdat_end < file_size:
-            # Fetch the box header right after mdat to confirm it's moov
-            probe = _http_range(
-                url, mdat_end, min(mdat_end + 15, file_size - 1), auth_header
-            )
-            hdr = read_box_header(probe, 0)
-            if hdr is not None and hdr[0] == b"moov":
-                moov_abs_offset = mdat_end
-                moov_size = hdr[2]
-                if moov_size > _MAX_MOOV_SIZE:
-                    return None
-                if moov_abs_offset + moov_size > file_size:
-                    return None
-                moov_data = _http_range(
-                    url, moov_abs_offset, moov_abs_offset + moov_size - 1, auth_header
-                )
-                # Validate
-                verify = read_box_header(moov_data, 0)
-                if verify is None or verify[0] != b"moov":
-                    return None
-                return {
-                    "ftyp_data": ftyp_data,
-                    "ftyp_end": ftyp_end,
-                    "moov_data": moov_data,
-                    "mdat_offset": mdat_offset,
-                    "original_moov_offset": moov_abs_offset,
-                    "moov_before_mdat": False,
-                }
+    moov_abs_offset, moov_size = result
+    moov_data = _fetch_and_validate_moov(url, moov_abs_offset, moov_size, auth_header)
+    if moov_data is None:
+        return None
 
-    # Strategy B: Progressive tail probe (fallback when mdat size unknown)
-    tail_probe_size = _TAIL_PROBE_SIZE
-    while tail_probe_size <= _TAIL_PROBE_MAX:
-        tail_start = max(0, file_size - tail_probe_size)
-        tail_data = _http_range(url, tail_start, file_size - 1, auth_header)
-        tail_layout = scan_top_level_boxes(tail_data)
+    if mdat_offset < 0:
+        mdat_offset = ftyp_end
 
-        if tail_layout["moov_offset"] >= 0:
-            moov_rel_offset = tail_layout["moov_offset"]
-            moov_size = tail_layout["moov_size"]
-            moov_abs_offset = tail_start + moov_rel_offset
-
-            if moov_abs_offset + moov_size > file_size:
-                return None
-            if moov_size > _MAX_MOOV_SIZE:
-                return None
-            if moov_size < 8:
-                return None
-
-            if moov_rel_offset + moov_size <= len(tail_data):
-                moov_data = tail_data[moov_rel_offset : moov_rel_offset + moov_size]
-            else:
-                moov_data = _http_range(
-                    url, moov_abs_offset, moov_abs_offset + moov_size - 1, auth_header
-                )
-
-            verify = read_box_header(moov_data, 0)
-            if verify is None or verify[0] != b"moov":
-                return None
-
-            if mdat_offset < 0:
-                mdat_offset = ftyp_end
-
-            return {
-                "ftyp_data": ftyp_data,
-                "ftyp_end": ftyp_end,
-                "moov_data": moov_data,
-                "mdat_offset": mdat_offset,
-                "original_moov_offset": moov_abs_offset,
-                "moov_before_mdat": False,
-            }
-
-        tail_probe_size *= 2
-
-    return None  # Cannot find moov
+    return _make_layout(
+        ftyp_data,
+        ftyp_end,
+        moov_data,
+        mdat_offset,
+        moov_abs_offset,
+        False,
+    )
 
 
 def build_faststart_layout(layout_info):
@@ -377,8 +374,7 @@ def build_faststart_layout(layout_info):
             "header_data": header_data,
             "virtual_size": -1,  # caller must use file_size for this case
             "payload_remote_start": moov_end,
-            "payload_remote_end": moov_end
-            + 1,  # sentinel; caller replaces with file_size
+            "payload_remote_end": moov_end + 1,  # sentinel for EOF
             "payload_size": -1,
             "already_faststart": True,
         }
@@ -443,7 +439,7 @@ class RangeCache:
                 entry_end = entry_start + len(entry_data)
                 if entry_start <= start and end <= entry_end:
                     # Move to end (most recent)
-                    self._entries.move_to_end(entry_start)
+                    self._entries.move_to_end(entry_start)  # pylint: disable=no-member
                     offset = start - entry_start
                     length = end - start
                     return entry_data[offset : offset + length]
