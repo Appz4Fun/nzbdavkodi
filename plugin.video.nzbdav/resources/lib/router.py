@@ -101,7 +101,14 @@ def route(argv):
 
 
 def _clean_params(params):
-    """Clean TMDBHelper params — replace '_' placeholders with empty strings."""
+    """Convert TMDBHelper '_' placeholders to empty strings.
+
+    TMDBHelper fills empty template fields with a literal underscore when
+    calling external players; see PlayerConfig docs:
+    https://github.com/jurialmunkey/plugin.video.themoviedb.helper/wiki/PlayerConfig
+    """
+    # Preserve TMDBHelper contract: '_' means "no value" rather than a literal
+    # underscore so downstream handlers see an empty string instead.
     return {k: ("" if v == "_" else v) for k, v in params.items()}
 
 
