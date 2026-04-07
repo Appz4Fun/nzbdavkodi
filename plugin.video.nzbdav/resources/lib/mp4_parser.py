@@ -294,3 +294,76 @@ def fetch_remote_mp4_layout(url, file_size, auth_header=None):
         tail_probe_size *= 2
 
     return None  # Cannot find moov
+
+
+def build_faststart_layout(layout_info):
+    """Build virtual faststart layout from fetched MP4 layout info.
+
+    Takes the output of fetch_remote_mp4_layout() and produces a virtual
+    file layout where moov comes right after ftyp, with rewritten chunk
+    offsets. All atoms between ftyp and moov in the original file
+    (free, wide, uuid, mdat, etc.) are preserved in their original order
+    as the "payload" region.
+
+    Virtual layout:
+        [ftyp][rewritten moov][original bytes from ftyp_end to moov_start]
+
+    Range mapping for payload region:
+        remote_offset = payload_remote_start + (virtual_offset - header_len)
+
+    Returns dict with:
+        header_data: bytes (ftyp + rewritten moov) to serve first
+        virtual_size: total virtual file size
+        payload_remote_start: first byte in original file for payload region
+        payload_remote_end: last byte + 1 in original file for payload region
+        payload_size: payload_remote_end - payload_remote_start
+    Or None if offset rewriting fails (stco overflow).
+    """
+    ftyp_data = layout_info["ftyp_data"]
+    moov_data = layout_info["moov_data"]
+    ftyp_end = layout_info["ftyp_end"]
+    original_moov_offset = layout_info["original_moov_offset"]
+
+    if layout_info["moov_before_mdat"]:
+        # Already faststart — serve ftyp + moov as header, rest as payload.
+        # moov is right after ftyp, so payload starts after moov.
+        moov_end = original_moov_offset + len(moov_data)
+        header_data = ftyp_data + moov_data
+        # payload_remote_start = moov_end (first byte after moov in original)
+        # payload_remote_end is unknown without file_size; use moov_end + 1 as
+        # a sentinel so callers can detect "extends to EOF" and substitute file_size.
+        return {
+            "header_data": header_data,
+            "virtual_size": -1,  # caller must use file_size for this case
+            "payload_remote_start": moov_end,
+            "payload_remote_end": moov_end
+            + 1,  # sentinel; caller replaces with file_size
+            "payload_size": -1,
+            "already_faststart": True,
+        }
+
+    # Moov is after mdat — need to rewrite offsets.
+    # If the original moov offset exceeds 32-bit address space, stco offsets
+    # (which are 32-bit) cannot represent the mdat region, so bail out.
+    if original_moov_offset > _MAX_STCO_OFFSET:
+        return None
+
+    # Virtual layout: ftyp + moov + original[ftyp_end:moov_start]
+    moov_size = len(moov_data)
+    delta = moov_size  # everything from ftyp_end shifts right by moov_size
+
+    rewritten_moov = rewrite_moov_offsets(moov_data, delta)
+    if rewritten_moov is None:
+        return None  # stco overflow — caller uses fallback
+
+    header_data = ftyp_data + rewritten_moov
+    payload_size = original_moov_offset - ftyp_end
+
+    return {
+        "header_data": header_data,
+        "virtual_size": len(header_data) + payload_size,
+        "payload_remote_start": ftyp_end,
+        "payload_remote_end": original_moov_offset,
+        "payload_size": payload_size,
+        "already_faststart": False,
+    }

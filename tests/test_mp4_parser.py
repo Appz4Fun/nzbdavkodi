@@ -237,3 +237,151 @@ def test_fetch_moov_already_faststart():
 
     assert layout is not None
     assert layout["moov_before_mdat"] is True
+
+
+def test_build_faststart_layout_moov_at_end():
+    """Build virtual faststart layout with rewritten offsets."""
+    from resources.lib.mp4_parser import build_faststart_layout
+
+    ftyp = struct.pack(">I", 32) + b"ftyp" + b"\x00" * 24
+
+    # Build moov with stco offsets pointing into mdat (original mdat at offset 32)
+    stco_body = struct.pack(">I", 0) + struct.pack(">I", 2)
+    stco_body += struct.pack(">II", 40, 100)  # offsets into mdat region
+    stco = struct.pack(">I", 8 + len(stco_body)) + b"stco" + stco_body
+    stbl = struct.pack(">I", 8 + len(stco)) + b"stbl" + stco
+    minf = struct.pack(">I", 8 + len(stbl)) + b"minf" + stbl
+    mdia = struct.pack(">I", 8 + len(minf)) + b"mdia" + minf
+    trak = struct.pack(">I", 8 + len(mdia)) + b"trak" + mdia
+    moov = struct.pack(">I", 8 + len(trak)) + b"moov" + trak
+
+    moov_size = len(moov)
+
+    layout_info = {
+        "ftyp_data": ftyp,
+        "ftyp_end": 32,
+        "moov_data": moov,
+        "mdat_offset": 32,
+        "original_moov_offset": 1032,
+        "moov_before_mdat": False,
+    }
+
+    layout = build_faststart_layout(layout_info)
+
+    assert layout is not None
+    # Virtual = ftyp(32) + moov(moov_size) + payload(1032-32=1000)
+    assert layout["virtual_size"] == 32 + moov_size + 1000
+    # Header = ftyp + rewritten moov
+    assert len(layout["header_data"]) == 32 + moov_size
+    # Payload maps to original[ftyp_end:moov_start]
+    assert layout["payload_remote_start"] == 32  # ftyp_end
+    assert layout["payload_remote_end"] == 1032  # original_moov_offset
+    assert layout["payload_size"] == 1000
+
+    # Verify moov offsets were adjusted by delta = moov_size
+    header = layout["header_data"]
+    stco_pos = header.index(b"stco")
+    off_start = stco_pos + 4 + 4 + 4
+    o1 = struct.unpack_from(">I", header, off_start)[0]
+    o2 = struct.unpack_from(">I", header, off_start + 4)[0]
+    assert o1 == 40 + moov_size  # original 40 + delta
+    assert o2 == 100 + moov_size
+
+
+def test_build_faststart_layout_already_faststart():
+    """Already-faststart file returns passthrough layout."""
+    from resources.lib.mp4_parser import build_faststart_layout
+
+    ftyp = struct.pack(">I", 16) + b"ftyp" + b"\x00" * 8
+    moov = struct.pack(">I", 50) + b"moov" + b"\x00" * 42
+
+    layout_info = {
+        "ftyp_data": ftyp,
+        "ftyp_end": 16,
+        "moov_data": moov,
+        "mdat_offset": 66,
+        "original_moov_offset": 16,
+        "moov_before_mdat": True,
+    }
+
+    layout = build_faststart_layout(layout_info)
+
+    assert layout is not None
+    # For faststart files, we just pass through — no rewriting needed
+    # But we still provide the layout for consistent proxy behavior
+    assert layout["header_data"] == ftyp + moov
+    assert layout["payload_remote_start"] == 66  # after moov
+    assert layout["payload_remote_end"] > 66
+
+
+def test_build_faststart_layout_stco_overflow_returns_none():
+    """Layout returns None when stco overflow is detected."""
+    from resources.lib.mp4_parser import build_faststart_layout
+
+    ftyp = struct.pack(">I", 16) + b"ftyp" + b"\x00" * 8
+
+    stco_body = struct.pack(">I", 0) + struct.pack(">I", 1)
+    stco_body += struct.pack(">I", 4294967000)  # near 2^32
+    stco = struct.pack(">I", 8 + len(stco_body)) + b"stco" + stco_body
+    stbl = struct.pack(">I", 8 + len(stco)) + b"stbl" + stco
+    minf = struct.pack(">I", 8 + len(stbl)) + b"minf" + stbl
+    mdia = struct.pack(">I", 8 + len(minf)) + b"mdia" + minf
+    trak = struct.pack(">I", 8 + len(mdia)) + b"trak" + mdia
+    moov = struct.pack(">I", 8 + len(trak)) + b"moov" + trak
+
+    layout_info = {
+        "ftyp_data": ftyp,
+        "ftyp_end": 16,
+        "moov_data": moov,
+        "mdat_offset": 16,
+        "original_moov_offset": 5000000016,
+        "moov_before_mdat": False,
+    }
+
+    layout = build_faststart_layout(layout_info)
+    assert layout is None  # overflow — caller uses fallback
+
+
+def test_build_faststart_layout_with_free_atoms():
+    """Layout preserves free/wide atoms between ftyp and mdat."""
+    from resources.lib.mp4_parser import build_faststart_layout
+
+    ftyp = struct.pack(">I", 16) + b"ftyp" + b"\x00" * 8
+    # In original: ftyp(0..16) + free(16..40) + mdat(40..540) + moov(540..640)
+    # ftyp_end=16, moov_start=540, payload=original[16:540]=524 bytes
+
+    stco_body = struct.pack(">I", 0) + struct.pack(">I", 1)
+    stco_body += struct.pack(">I", 48)  # offset into mdat data
+    stco = struct.pack(">I", 8 + len(stco_body)) + b"stco" + stco_body
+    stbl = struct.pack(">I", 8 + len(stco)) + b"stbl" + stco
+    minf = struct.pack(">I", 8 + len(stbl)) + b"minf" + stbl
+    mdia = struct.pack(">I", 8 + len(minf)) + b"mdia" + minf
+    trak = struct.pack(">I", 8 + len(mdia)) + b"trak" + mdia
+    moov = struct.pack(">I", 8 + len(trak)) + b"moov" + trak
+    moov_size = len(moov)
+
+    layout_info = {
+        "ftyp_data": ftyp,
+        "ftyp_end": 16,
+        "moov_data": moov,
+        "mdat_offset": 40,
+        "original_moov_offset": 540,
+        "moov_before_mdat": False,
+    }
+
+    layout = build_faststart_layout(layout_info)
+
+    assert layout is not None
+    # payload = original[16:540] = 524 bytes (includes free + mdat)
+    assert layout["payload_size"] == 524
+    assert layout["payload_remote_start"] == 16
+    assert layout["payload_remote_end"] == 540
+    # virtual = ftyp(16) + moov(moov_size) + 524
+    assert layout["virtual_size"] == 16 + moov_size + 524
+
+    # stco offset adjusted by moov_size
+    header = layout["header_data"]
+    stco_pos = header.index(b"stco")
+    off_start = stco_pos + 4 + 4 + 4
+    o1 = struct.unpack_from(">I", header, off_start)[0]
+    assert o1 == 48 + moov_size
