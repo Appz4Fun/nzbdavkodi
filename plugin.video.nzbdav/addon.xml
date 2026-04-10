@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="plugin.video.nzbdav"
        name="NZB-DAV"
-       version="0.6.0"
+       version="0.6.1"
        provider-name="nzbdav">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
@@ -22,7 +22,14 @@
         <license>GPL-3.0-or-later</license>
         <source>https://github.com/xbmc4lyfe/nzbdavkodi</source>
         <website>https://xbmc4lyfe.github.io/nzbdavkodi/</website>
-        <news>v0.5.0
+        <news>v0.6.1
+- Fix remaining code scanning alerts (broad-except, locally-disabled)
+
+v0.6.0
+- Fix all code scanning alerts (complexity, broad-except, continuation)
+- Fix pylint warnings (nesting, unused import, consider-using-in)
+
+v0.5.0
 - Simplify settings: TMDBHelper-only install, remove WebDAV URL field
 - Release group multiselect dialogs with curated defaults
 - Fix continuation requests restarting ffmpeg from byte 0
