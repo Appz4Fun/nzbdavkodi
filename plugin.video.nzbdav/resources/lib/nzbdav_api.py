@@ -106,6 +106,7 @@ def get_job_history(nzo_id):
                 "status": slot.get("status", ""),
                 "storage": slot.get("storage", ""),
                 "name": slot.get("name", ""),
+                "fail_message": slot.get("fail_message", ""),
             }
     return None
 

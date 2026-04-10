@@ -53,6 +53,16 @@ _FFMPEG_PATHS = [
 ]
 
 
+def _notify_error(message):
+    """Show a Kodi notification for stream errors."""
+    try:
+        xbmc.executebuiltin(
+            "Notification({}, {}, {})".format("NZB-DAV", str(message)[:80], 5000)
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _find_ffmpeg():
     """Find an ffmpeg binary on the system."""
     for path in _FFMPEG_PATHS:
@@ -358,6 +368,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
             pass
         except (OSError, ValueError, HTTPException) as e:
             xbmc.log("NZB-DAV: Faststart proxy error: {}".format(e), xbmc.LOGERROR)
+            _notify_error("Stream error: {}".format(e))
 
     def _serve_temp_faststart(self, ctx):
         """Serve a temp-file faststart MP4 with range support."""
@@ -407,6 +418,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
             pass
         except OSError as e:
             xbmc.log("NZB-DAV: Temp faststart error: {}".format(e), xbmc.LOGERROR)
+            _notify_error("Stream error: {}".format(e))
 
     def _serve_remux(self, ctx):
         """Remux MP4 to MKV on the fly, with optional seeking."""
@@ -466,12 +478,33 @@ class _StreamHandler(BaseHTTPRequestHandler):
             )
         except OSError as e:
             xbmc.log("NZB-DAV: Failed to start ffmpeg: {}".format(e), xbmc.LOGERROR)
+            _notify_error("Failed to start ffmpeg")
             self.send_error(500)
             return
 
         with self.server.ffmpeg_lock:
             self.server.active_ffmpeg = proc
             self.server.current_byte_pos = requested_start
+
+        # Drain stderr in a background thread to prevent ffmpeg from blocking
+        # when the stderr pipe buffer fills up (~64KB).  Without this, ffmpeg
+        # stalls mid-stream, the proxy stops sending data, and Kodi freezes
+        # once its playback buffer drains.
+        stderr_chunks = []
+
+        def _drain_stderr():
+            try:
+                while True:
+                    data = proc.stderr.read(4096)
+                    if not data:
+                        break
+                    stderr_chunks.append(data)
+            except (OSError, ValueError):
+                pass
+
+        stderr_thread = threading.Thread(target=_drain_stderr)
+        stderr_thread.daemon = True
+        stderr_thread.start()
 
         # Send response headers.
         # Do NOT advertise Accept-Ranges: bytes — the piped MKV has no Cues
@@ -507,7 +540,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
         finally:
             proc.kill()
             proc.wait()
-            stderr = proc.stderr.read().decode(errors="replace")
+            stderr_thread.join(timeout=5)
+            stderr = b"".join(stderr_chunks).decode(errors="replace")
             if stderr.strip():
                 xbmc.log("NZB-DAV: ffmpeg: {}".format(stderr[:300]), xbmc.LOGDEBUG)
             xbmc.log(
@@ -560,6 +594,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
             pass
         except (OSError, ValueError) as e:
             xbmc.log("NZB-DAV: Proxy range failed: {}".format(e), xbmc.LOGERROR)
+            _notify_error("Stream error: {}".format(e))
 
     @staticmethod
     def _parse_range(range_header, content_length):

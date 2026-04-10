@@ -401,6 +401,8 @@ def _poll_until_ready(nzb_url, title, dialog, poll_interval, download_timeout):
     start_time = time.time()
     last_status = None
     iteration = 0
+    no_video_retries = 0
+    max_no_video_retries = 5
 
     while True:
         iteration += 1
@@ -470,14 +472,17 @@ def _poll_until_ready(nzb_url, title, dialog, poll_interval, download_timeout):
 
         # Check history for failed download
         if history and history["status"] == "Failed":
+            fail_msg = history.get("fail_message", "")
             xbmc.log(
-                "NZB-DAV: Download failed on the server side for nzo_id={} "
-                "(title='{}'). Check the nzbdav history for the failure reason.".format(
-                    nzo_id, title
+                "NZB-DAV: Download failed for nzo_id={} (title='{}'): {}".format(
+                    nzo_id, title, fail_msg or "unknown reason"
                 ),
                 xbmc.LOGERROR,
             )
-            _notify(_addon_name(), _string(30100))
+            if fail_msg:
+                _notify(_addon_name(), fail_msg)
+            else:
+                _notify(_addon_name(), _string(30100))
             return None, None
 
         # Check history for completed download
@@ -504,9 +509,27 @@ def _poll_until_ready(nzb_url, title, dialog, poll_interval, download_timeout):
 
                 return stream_url, stream_headers
             else:
+                no_video_retries += 1
+                if no_video_retries >= max_no_video_retries:
+                    xbmc.log(
+                        "NZB-DAV: Download completed but no video file found "
+                        "at '{}' after {} attempts (storage='{}')".format(
+                            webdav_folder, no_video_retries, storage
+                        ),
+                        xbmc.LOGERROR,
+                    )
+                    _notify(
+                        _addon_name(),
+                        "Completed but no video file found on WebDAV",
+                    )
+                    return None, None
                 xbmc.log(
-                    "NZB-DAV: Completed but no video found at '{}', retrying...".format(
-                        webdav_folder
+                    "NZB-DAV: Completed but no video found at '{}', "
+                    "retry {}/{} (storage='{}')...".format(
+                        webdav_folder,
+                        no_video_retries,
+                        max_no_video_retries,
+                        storage,
                     ),
                     xbmc.LOGWARNING,
                 )

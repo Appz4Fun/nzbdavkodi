@@ -1,3 +1,9 @@
+v0.6.5 (2026-04-10)
+- Show nzbdav failure reason to user when download fails
+- Notify user when download completes but no video file found on WebDAV
+- Show stream errors to user instead of silently swallowing them
+- Fix playback freeze caused by ffmpeg stderr pipe buffer filling up
+
 v0.6.2 (2026-04-10)
 - Fix flaky cache eviction test due to non-deterministic file sizes
 
