@@ -1,3 +1,7 @@
+v0.6.1 (2026-04-10)
+- Narrow broad except handlers to specific exception types in stream proxy
+- Remove unnecessary pylint disable comment in MP4 parser
+
 v0.6.0 (2026-04-07)
 - Add pure-Python MP4 moov-relocation proxy for native seeking, pause, and DV support
 - Parse moov atom from remote MP4 via HTTP range requests, rewrite stco/co64 offsets
