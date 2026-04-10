@@ -132,24 +132,23 @@ def test_cache_evicts_oldest_when_over_limit(mock_cache_dir):
     with tempfile.TemporaryDirectory() as tmpdir:
         mock_cache_dir.return_value = tmpdir
 
-        # Create three cache files with distinct mtimes
+        # Create three cache files with identical content and distinct mtimes
         file_paths = []
+        payload = {"timestamp": 0, "results": ["x" * 200]}
         for i in range(3):
             path = os.path.join(tmpdir, "test_{}.json".format(i))
             with open(path, "w") as f:
-                # Write enough data so 3 files exceed a small limit
-                json.dump({"timestamp": time.time(), "results": ["x" * 200]}, f)
+                json.dump(payload, f)
             file_paths.append(path)
             # Stagger mtimes so eviction order is deterministic
-            os.utime(path, (time.time() - (3 - i), time.time() - (3 - i)))
+            os.utime(path, (1000 + i, 1000 + i))
 
         # Confirm all three files exist
         assert len([f for f in os.listdir(tmpdir) if f.endswith(".json")]) == 3
 
-        # Measure the size of one file so we can set the limit to just above it,
-        # meaning 2 files would push over the limit and the oldest gets evicted.
+        # Set the limit to fit exactly one file so the two oldest get evicted.
         single_size = os.path.getsize(file_paths[0])
-        limit = single_size + 1  # allow exactly 1 file before triggering eviction
+        limit = single_size + 1
 
         with patch.object(cache_module, "MAX_CACHE_SIZE_BYTES", limit):
             _evict_oldest()

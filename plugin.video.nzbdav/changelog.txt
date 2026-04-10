@@ -1,3 +1,6 @@
+v0.6.2 (2026-04-10)
+- Fix flaky cache eviction test due to non-deterministic file sizes
+
 v0.6.1 (2026-04-10)
 - Narrow broad except handlers to specific exception types in stream proxy
 - Remove unnecessary pylint disable comment in MP4 parser
