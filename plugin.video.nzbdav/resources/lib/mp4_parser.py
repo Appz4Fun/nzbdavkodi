@@ -439,7 +439,7 @@ class RangeCache:
                 entry_end = entry_start + len(entry_data)
                 if entry_start <= start and end <= entry_end:
                     # Move to end (most recent)
-                    self._entries.move_to_end(entry_start)  # pylint: disable=no-member
+                    self._entries.move_to_end(entry_start)
                     offset = start - entry_start
                     length = end - start
                     return entry_data[offset : offset + length]

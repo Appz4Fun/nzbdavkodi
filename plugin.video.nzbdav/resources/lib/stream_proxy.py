@@ -13,8 +13,10 @@ WebDAV server with proper 206 responses.
 
 import re
 import shutil
+import struct
 import subprocess
 import threading
+from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn as _ThreadingMixIn
 from urllib.request import Request, urlopen
@@ -354,7 +356,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     break
         except (BrokenPipeError, ConnectionResetError):
             pass
-        except Exception as e:
+        except (OSError, ValueError, HTTPException) as e:
             xbmc.log("NZB-DAV: Faststart proxy error: {}".format(e), xbmc.LOGERROR)
 
     def _serve_temp_faststart(self, ctx):
@@ -403,7 +405,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     remaining -= len(chunk)
         except (BrokenPipeError, ConnectionResetError):
             pass
-        except Exception as e:
+        except OSError as e:
             xbmc.log("NZB-DAV: Temp faststart error: {}".format(e), xbmc.LOGERROR)
 
     def _serve_remux(self, ctx):
@@ -663,7 +665,14 @@ class StreamProxy:
                         xbmc.LOGWARNING,
                     )
                     faststart = None
-            except Exception as e:
+            except (
+                ImportError,
+                OSError,
+                ValueError,
+                KeyError,
+                struct.error,
+                HTTPException,
+            ) as e:
                 xbmc.log(
                     "NZB-DAV: MP4 faststart parse failed: {}".format(e), xbmc.LOGWARNING
                 )
