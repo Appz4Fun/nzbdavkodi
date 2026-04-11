@@ -74,7 +74,7 @@ def _build_play_url(url, headers):
     all_headers = dict(headers) if headers else {}
     if all_headers:
         header_str = "&".join(
-            "{}={}".format(k, _quote(v, safe=" /")) for k, v in all_headers.items()
+            "{}={}".format(k, _quote(v, safe=" /=+")) for k, v in all_headers.items()
         )
         return "{}|{}".format(url, header_str)
     return url
@@ -479,10 +479,8 @@ def _poll_until_ready(nzb_url, title, dialog, poll_interval, download_timeout):
                 ),
                 xbmc.LOGERROR,
             )
-            if fail_msg:
-                _notify(_addon_name(), fail_msg[:80])
-            else:
-                _notify(_addon_name(), _string(30100))
+            error_text = fail_msg[:120] if fail_msg else _string(30100)
+            xbmcgui.Dialog().ok(_addon_name(), error_text)
             return None, None
 
         # Check history for completed download
@@ -566,6 +564,7 @@ def resolve(handle, params):
     if not nzb_url:
         _notify(_addon_name(), _string(30096))
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+        xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
         return
 
     poll_interval, download_timeout = _get_poll_settings()
@@ -581,10 +580,12 @@ def resolve(handle, params):
             _play_direct(handle, stream_url, stream_headers)
         else:
             xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+            xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
     except Exception as e:
         xbmc.log("NZB-DAV: Unexpected error in resolve: {}".format(e), xbmc.LOGERROR)
         _notify(_addon_name(), "Error: {}".format(str(e)[:80]))
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+        xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
     finally:
         dialog.close()
 

@@ -175,6 +175,26 @@ def test_route_dispatches_to_handle_search(mock_handle_search):
     assert params["imdb"] == "tt0133093", "imdb param should be forwarded"
 
 
+@patch("resources.lib.router.xbmc")
+@patch("resources.lib.router._handle_search")
+def test_route_redacts_sensitive_params_in_logs(mock_handle_search, mock_xbmc):
+    query = "?" + urlencode(
+        {
+            "type": "movie",
+            "nzburl": "http://hydra/getnzb/abc?apikey=secret123",
+            "api_key": "secret123",
+            "title": "The Matrix",
+        }
+    )
+
+    route(["plugin://plugin.video.nzbdav/search", "1", query])
+
+    logged = mock_xbmc.log.call_args[0][0]
+    assert "secret123" not in logged
+    assert "'nzburl': '***'" in logged
+    assert "'api_key': '***'" in logged
+
+
 @patch("resources.lib.router.install_player", create=True)
 def test_route_dispatches_to_install_player(mock_install):
     """route() with /install_player path should dispatch to install_player."""

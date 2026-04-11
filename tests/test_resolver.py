@@ -724,7 +724,7 @@ def test_poll_until_ready_job_failed(
 
 
 @patch("resources.lib.resolver.find_completed_by_name", return_value=None)
-@patch("resources.lib.resolver._notify")
+@patch("resources.lib.resolver.xbmcgui")
 @patch(
     "resources.lib.resolver.get_job_history",
     return_value={"status": "Failed"},
@@ -733,7 +733,7 @@ def test_poll_until_ready_job_failed(
 @patch("resources.lib.resolver.submit_nzb", return_value="nzo_xyz")
 @patch("resources.lib.resolver.xbmc")
 def test_poll_until_ready_history_failed(
-    mock_xbmc, mock_submit, mock_status, mock_history, mock_notify, mock_find_completed
+    mock_xbmc, mock_submit, mock_status, mock_history, mock_gui, mock_find_completed
 ):
     """_poll_until_ready returns (None, None) when history shows Failed."""
     mock_xbmc.Monitor.return_value = _make_monitor()
@@ -744,7 +744,7 @@ def test_poll_until_ready_history_failed(
 
     assert url is None
     assert headers is None
-    mock_notify.assert_called()
+    mock_gui.Dialog.return_value.ok.assert_called()
 
 
 @patch("resources.lib.resolver._notify")
@@ -771,7 +771,7 @@ def test_poll_until_ready_already_downloaded(
 
 
 @patch("resources.lib.resolver.find_completed_by_name", return_value=None)
-@patch("resources.lib.resolver._notify")
+@patch("resources.lib.resolver.xbmcgui")
 @patch(
     "resources.lib.resolver.get_job_history",
     return_value={"status": "Failed", "fail_message": "CRC error in article"},
@@ -780,7 +780,7 @@ def test_poll_until_ready_already_downloaded(
 @patch("resources.lib.resolver.submit_nzb", return_value="nzo_xyz")
 @patch("resources.lib.resolver.xbmc")
 def test_poll_until_ready_history_failed_shows_fail_message(
-    mock_xbmc, mock_submit, mock_status, mock_history, mock_notify, mock_find_completed
+    mock_xbmc, mock_submit, mock_status, mock_history, mock_gui, mock_find_completed
 ):
     """_poll_until_ready shows the server's fail_message to the user."""
     mock_xbmc.Monitor.return_value = _make_monitor()
@@ -791,9 +791,9 @@ def test_poll_until_ready_history_failed_shows_fail_message(
 
     assert url is None
     assert headers is None
-    # Should notify with the actual fail_message, not generic "Download failed"
-    mock_notify.assert_called_once()
-    assert "CRC error" in mock_notify.call_args[0][1]
+    # Should show modal dialog with the actual fail_message
+    mock_gui.Dialog.return_value.ok.assert_called_once()
+    assert "CRC error" in mock_gui.Dialog.return_value.ok.call_args[0][1]
 
 
 @patch("resources.lib.resolver.find_completed_by_name", return_value=None)

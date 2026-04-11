@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="plugin.video.nzbdav"
        name="NZB-DAV"
-       version="0.6.7"
+       version="0.6.8"
        provider-name="nzbdav">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
@@ -22,7 +22,12 @@
         <license>GPL-3.0-or-later</license>
         <source>https://github.com/xbmc4lyfe/nzbdavkodi</source>
         <website>https://xbmc4lyfe.github.io/nzbdavkodi/</website>
-        <news>v0.6.7
+        <news>v0.6.8
+- Fix playback failing due to URL-encoded '=' in auth header (Kodi pipe syntax)
+- Show download failures in a modal dialog instead of a toast notification
+- Clear video playlist on resolve failure to prevent Kodi retry loop
+
+v0.6.7
 - Fix pylint W0621: remove redundant import os in _serve_temp_faststart
 
 v0.6.6

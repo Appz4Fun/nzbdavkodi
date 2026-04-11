@@ -6,7 +6,6 @@ from unittest.mock import MagicMock, patch
 from resources.lib.resolver import resolve
 
 
-@patch("resources.lib.resolver._notify")
 @patch("resources.lib.resolver.xbmc")
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver.xbmcplugin")
@@ -22,9 +21,8 @@ def test_resolve_aborts_on_nzbdav_failed_status(
     mock_plugin,
     mock_gui,
     mock_xbmc,
-    mock_notify,
 ):
-    """When nzbdav reports job Failed, resolve() should notify user and
+    """When nzbdav reports job Failed, resolve() should show error dialog and
     call setResolvedUrl(False)."""
     mock_poll.return_value = (1, 60)
     mock_submit.return_value = "SABnzbd_nzo_failed"
@@ -44,7 +42,7 @@ def test_resolve_aborts_on_nzbdav_failed_status(
     resolve(1, {"nzburl": "http://hydra/getnzb/fail", "title": "failed.mkv"})
 
     mock_plugin.setResolvedUrl.assert_called_once_with(1, False, mock_gui.ListItem())
-    mock_notify.assert_called_once()
+    mock_gui.Dialog.return_value.ok.assert_called_once()
 
 
 @patch("resources.lib.resolver._notify")
