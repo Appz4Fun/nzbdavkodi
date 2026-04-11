@@ -1,3 +1,6 @@
+v0.6.7 (2026-04-10)
+- Fix pylint W0621: remove redundant import os in _serve_temp_faststart
+
 v0.6.6 (2026-04-10)
 - Validate URL scheme in stream proxy to reject non-HTTP URLs
 - Redact API keys and auth credentials from debug logs

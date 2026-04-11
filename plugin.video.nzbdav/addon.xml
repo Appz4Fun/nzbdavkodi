@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="plugin.video.nzbdav"
        name="NZB-DAV"
-       version="0.6.6"
+       version="0.6.7"
        provider-name="nzbdav">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
@@ -22,7 +22,10 @@
         <license>GPL-3.0-or-later</license>
         <source>https://github.com/xbmc4lyfe/nzbdavkodi</source>
         <website>https://xbmc4lyfe.github.io/nzbdavkodi/</website>
-        <news>v0.6.6
+        <news>v0.6.7
+- Fix pylint W0621: remove redundant import os in _serve_temp_faststart
+
+v0.6.6
 - Validate URL scheme in stream proxy to reject non-HTTP URLs
 - Redact API keys and auth credentials from debug logs
 - Reuse shared notification helper (remove duplicated logic)
