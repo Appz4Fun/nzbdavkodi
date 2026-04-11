@@ -225,7 +225,27 @@ def generate_repo(output_dir="dist"):
             shutil.copy2(repo_icon, os.path.join(repo_out, "icon.png"))
         print("Built repository addon zip at {}".format(repo_zip_path))
 
+    # Generate directory listing index.html for each subdirectory so Kodi's
+    # file manager can browse the repo via GitHub Pages.
+    for subdir in os.listdir(output_dir):
+        subdir_path = os.path.join(output_dir, subdir)
+        if os.path.isdir(subdir_path):
+            _write_dir_index(subdir_path)
+
     write_pages_index(output_dir)
+
+
+def _write_dir_index(dir_path):
+    """Write a simple HTML directory listing that Kodi can parse."""
+    files = sorted(os.listdir(dir_path))
+    links = []
+    for name in files:
+        if name == "index.html":
+            continue
+        links.append('<a href="{}">{}</a><br>'.format(name, name))
+    html = "<html><body>\n{}\n</body></html>\n".format("\n".join(links))
+    with open(os.path.join(dir_path, "index.html"), "w", encoding="utf-8") as f:
+        f.write(html)
 
 
 if __name__ == "__main__":
