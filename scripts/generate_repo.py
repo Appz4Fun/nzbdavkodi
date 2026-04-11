@@ -138,7 +138,7 @@ def _write_dir_index(dir_path):
     for name in files:
         if name == "index.html":
             continue
-        links.append('<a href="{}">{}</a><br>'.format(name, name))
+        links.append('<a href="{n}">{n}</a><br>'.format(n=name))
     html = "<html><body>\n{}\n</body></html>\n".format("\n".join(links))
     with open(os.path.join(dir_path, "index.html"), "w", encoding="utf-8") as f:
         f.write(html)
