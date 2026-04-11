@@ -52,7 +52,10 @@ def search_hydra(search_type, title, year="", imdb="", season="", episode=""):
         xbmc.log("NZB-DAV: Failed to read Hydra settings: {}".format(e), xbmc.LOGERROR)
         return [], "Failed to read NZBHydra settings"
 
-    params = {"apikey": api_key, "o": "xml"}
+    import xbmcaddon
+
+    max_results = int(xbmcaddon.Addon().getSetting("max_results") or 25)
+    params = {"apikey": api_key, "o": "xml", "limit": max_results}
 
     if search_type == "episode":
         params["t"] = "tvsearch"

@@ -4,6 +4,7 @@
 from unittest.mock import patch
 
 from resources.lib.filter import (
+    _dedup_results,
     _sort_results,
     filter_results,
     matches_filters,
@@ -647,3 +648,44 @@ def test_filter_results_returns_all_parsed(mock_settings):
     filtered, all_parsed = filter_results(results)
     assert len(filtered) == 1  # Only 1080p passes
     assert len(all_parsed) == 2  # Both have _meta attached
+
+
+# --- dedup tests ---
+
+
+def test_dedup_merges_same_title_and_size():
+    """Duplicate NZBs (same title+size) are merged, indexer set to Multiple."""
+    results = [
+        _make_result("Movie.2024.2160p.BluRay.REMUX-GRP", size="50000000000"),
+        _make_result("Movie.2024.2160p.BluRay.REMUX-GRP", size="50000000000"),
+        _make_result("Movie.2024.2160p.BluRay.REMUX-GRP", size="50000000000"),
+    ]
+    results[0]["indexer"] = "nzbgeek"
+    results[1]["indexer"] = "drunkenslug"
+    results[2]["indexer"] = "nzbfinder"
+    deduped = _dedup_results(results)
+    assert len(deduped) == 1
+    assert deduped[0]["indexer"] == "Multiple"
+
+
+def test_dedup_keeps_different_sizes():
+    """NZBs with same title but different sizes are kept separate."""
+    results = [
+        _make_result("Movie.2024.2160p.BluRay.REMUX-GRP", size="50000000000"),
+        _make_result("Movie.2024.2160p.BluRay.REMUX-GRP", size="49000000000"),
+    ]
+    results[0]["indexer"] = "nzbgeek"
+    results[1]["indexer"] = "drunkenslug"
+    deduped = _dedup_results(results)
+    assert len(deduped) == 2
+
+
+def test_dedup_single_indexer_unchanged():
+    """A result with no duplicates keeps its original indexer."""
+    results = [
+        _make_result("Movie.2024.2160p.BluRay.REMUX-GRP", size="50000000000"),
+    ]
+    results[0]["indexer"] = "nzbgeek"
+    deduped = _dedup_results(results)
+    assert len(deduped) == 1
+    assert deduped[0]["indexer"] == "nzbgeek"
