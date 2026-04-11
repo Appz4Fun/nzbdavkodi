@@ -17,10 +17,10 @@ def read_addon_xml(path):
     return ET.tostring(tree.getroot(), encoding="unicode")
 
 
-def write_pages_index(output_dir, addon_version="0.0.0"):
+def write_pages_index(output_dir, repo_version="1.0.0"):
     """Write a Kodi-browsable directory listing for the root."""
     index_path = os.path.join(output_dir, "index.html")
-    zip_name = "plugin.video.nzbdav-{}.zip".format(addon_version)
+    zip_name = "repository.nzbdav-{}.zip".format(repo_version)
     html = "<html><body>\n"
     html += '<a href="{z}">{z}</a><br>\n'.format(z=zip_name)
     html += "</body></html>\n"
@@ -128,7 +128,7 @@ def generate_repo(output_dir="dist"):
         if os.path.isdir(subdir_path):
             _write_dir_index(subdir_path)
 
-    write_pages_index(output_dir, version)
+    write_pages_index(output_dir, repo_version)
 
 
 def _write_dir_index(dir_path):
