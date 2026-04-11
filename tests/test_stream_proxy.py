@@ -24,6 +24,7 @@ def _make_handler_with_server(ctx, range_header=None, current_byte_pos=0):
 
     handler.server = MagicMock()
     handler.server.stream_context = ctx
+    handler.server.stream_sessions = {}
     handler.server.active_ffmpeg = None
     handler.server.current_byte_pos = current_byte_pos
     handler.server.ffmpeg_lock = threading.Lock()
@@ -122,11 +123,30 @@ def test_embed_auth_basic():
     assert result == "http://user:pass@host/file.mp4"
 
 
+def test_embed_auth_percent_encodes_reserved_chars():
+    import base64
+
+    from resources.lib.stream_proxy import _embed_auth_in_url
+
+    auth = "Basic " + base64.b64encode(b"user@domain:pa/ss?#word").decode()
+    result = _embed_auth_in_url("http://host/file.mp4", auth)
+    assert result == "http://user%40domain:pa%2Fss%3F%23word@host/file.mp4"
+
+
 def test_embed_auth_non_basic_ignored():
     from resources.lib.stream_proxy import _embed_auth_in_url
 
     assert (
         _embed_auth_in_url("http://host/file.mp4", "Bearer tok")
+        == "http://host/file.mp4"
+    )
+
+
+def test_embed_auth_invalid_basic_ignored():
+    from resources.lib.stream_proxy import _embed_auth_in_url
+
+    assert (
+        _embed_auth_in_url("http://host/file.mp4", "Basic !!!")
         == "http://host/file.mp4"
     )
 
@@ -234,7 +254,7 @@ def test_prepare_stream_remuxes_mp4_when_ffmpeg_available():
         auth = "Basic " + __import__("base64").b64encode(b"user:pass").decode()
         url, info = sp.prepare_stream("http://host/film.mp4", auth_header=auth)
 
-    assert url == "http://127.0.0.1:9999/stream"
+    assert url.startswith("http://127.0.0.1:9999/stream/")
     ctx = sp._server.stream_context
     assert ctx["remux"] is True
     assert ctx["seekable"] is True
@@ -252,11 +272,41 @@ def test_prepare_stream_proxies_mkv():
     sp.port = 9999
 
     with patch.object(sp, "_get_content_length", return_value=100000):
-        sp.prepare_stream("http://host/film.mkv")
+        url, _ = sp.prepare_stream("http://host/film.mkv")
 
+    assert url.startswith("http://127.0.0.1:9999/stream/")
     ctx = sp._server.stream_context
     assert ctx["remux"] is False
     assert ctx["content_length"] == 100000
+
+
+def test_prepare_stream_rejects_invalid_scheme():
+    import pytest
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 9999
+
+    with pytest.raises(ValueError):
+        sp.prepare_stream("file:///etc/passwd")
+
+
+def test_prepare_stream_uses_unique_session_urls():
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 9999
+
+    with patch.object(sp, "_get_content_length", return_value=100000):
+        url1, _ = sp.prepare_stream("http://host/one.mkv")
+        url2, _ = sp.prepare_stream("http://host/two.mkv")
+
+    assert url1 != url2
+    assert len(sp._server.stream_sessions) == 2
 
 
 def test_prepare_stream_falls_back_to_proxy_without_ffmpeg():
@@ -496,6 +546,21 @@ def test_build_ffmpeg_cmd_embeds_basic_auth():
     assert "user:pass@host" in cmd[i_idx + 1]
 
 
+def test_build_ffmpeg_cmd_encodes_reserved_auth_chars():
+    import base64
+
+    handler = _make_handler()
+    auth = "Basic " + base64.b64encode(b"user@domain:pa/ss?#word").decode()
+    ctx = {
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "remote_url": "http://host/film.mp4",
+        "auth_header": auth,
+    }
+    cmd = handler._build_ffmpeg_cmd(ctx)
+    i_idx = cmd.index("-i")
+    assert "user%40domain:pa%2Fss%3F%23word@host" in cmd[i_idx + 1]
+
+
 # ---------------------------------------------------------------------------
 # _serve_remux — handler-level tests
 # ---------------------------------------------------------------------------
@@ -680,7 +745,7 @@ def test_prepare_stream_uses_faststart_for_mp4():
             "http://host/film.mp4", auth_header="Basic dXNlcjpwYXNz"
         )
 
-    assert url == "http://127.0.0.1:9999/stream"
+    assert url.startswith("http://127.0.0.1:9999/stream/")
     ctx = sp._server.stream_context
     assert ctx["faststart"] is True
     assert ctx["remux"] is False
@@ -735,3 +800,48 @@ def test_prepare_stream_direct_redirect_for_already_faststart():
     assert info["direct"] is True
     assert info["seekable"] is True
     assert info["remux"] is False
+
+
+# ---------------------------------------------------------------------------
+# _notify_error — stream error notifications
+# ---------------------------------------------------------------------------
+
+
+def test_faststart_proxy_error_notifies_user():
+    """_serve_mp4_faststart calls _notify on OSError."""
+    ctx = {
+        "remote_url": "http://host/movie.mp4",
+        "auth_header": None,
+        "faststart": True,
+        "header_data": b"\x00" * 100,
+        "virtual_size": 1000,
+        "payload_remote_start": 100,
+        "payload_size": 900,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=200-999")
+
+    with patch(
+        "resources.lib.stream_proxy.urlopen",
+        side_effect=OSError("Connection reset"),
+    ), patch("resources.lib.stream_proxy._notify") as mock_notify:
+        handler._serve_mp4_faststart(ctx)
+
+    mock_notify.assert_called_once()
+    assert mock_notify.call_args[0][0] == "NZB-DAV"
+    assert "Connection reset" in mock_notify.call_args[0][1]
+
+
+def test_head_uses_session_path_context():
+    ctx = {
+        "remux": False,
+        "content_type": "video/mp4",
+        "content_length": 1000,
+    }
+    handler = _make_handler_with_server(ctx=None)
+    handler.path = "/stream/session123"
+    handler.server.stream_sessions = {"session123": ctx}
+
+    handler.do_HEAD()
+
+    handler.send_response.assert_called_once_with(200)
+    assert ctx["last_access"] > 0

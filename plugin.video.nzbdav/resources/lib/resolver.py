@@ -87,7 +87,7 @@ def _make_playable_listitem(url, headers):
     """
     play_url = _build_play_url(url, headers)
 
-    xbmc.log("NZB-DAV: Play URL: {}".format(play_url), xbmc.LOGDEBUG)
+    xbmc.log("NZB-DAV: Play URL set (redacted)", xbmc.LOGDEBUG)
     li = xbmcgui.ListItem(path=play_url)
     # Skip HEAD request — nzbdav doesn't advertise Accept-Ranges on HEAD
     # which causes CFileCache to fail. Kodi will discover range support
@@ -480,7 +480,7 @@ def _poll_until_ready(nzb_url, title, dialog, poll_interval, download_timeout):
                 xbmc.LOGERROR,
             )
             if fail_msg:
-                _notify(_addon_name(), fail_msg)
+                _notify(_addon_name(), fail_msg[:80])
             else:
                 _notify(_addon_name(), _string(30100))
             return None, None
@@ -518,10 +518,7 @@ def _poll_until_ready(nzb_url, title, dialog, poll_interval, download_timeout):
                         ),
                         xbmc.LOGERROR,
                     )
-                    _notify(
-                        _addon_name(),
-                        "Completed but no video file found on WebDAV",
-                    )
+                    _notify(_addon_name(), _string(30120))
                     return None, None
                 xbmc.log(
                     "NZB-DAV: Completed but no video found at '{}', "

@@ -38,6 +38,7 @@ _FALLBACK_STRINGS = {
     30110: "{} sources found",
     30111: "Sorted by relevance",
     30112: "Showing {} of {} sources after filters",
+    30120: "Completed but no video file found on WebDAV",
 }
 
 

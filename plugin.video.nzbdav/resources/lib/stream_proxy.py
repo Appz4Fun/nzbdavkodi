@@ -11,14 +11,18 @@ For MKV and other files, proxies range requests directly to the remote
 WebDAV server with proper 206 responses.
 """
 
+import os
 import re
 import shutil
 import struct
 import subprocess
 import threading
+import time
+import uuid
 from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn as _ThreadingMixIn
+from urllib.parse import quote, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 import xbmc
@@ -39,9 +43,21 @@ except (ImportError, ModuleNotFoundError):
     build_faststart_layout = None  # type: ignore[assignment]
     fetch_remote_mp4_layout = None  # type: ignore[assignment]
 
+from resources.lib.http_util import notify as _notify
+
 # Singleton proxy instance
 _proxy = None
 _proxy_lock = threading.Lock()
+_MAX_STREAM_SESSIONS = 8
+_SESSION_TTL_SECONDS = 6 * 3600
+_PARSE_ERRORS = (
+    ImportError,
+    OSError,
+    ValueError,
+    KeyError,
+    struct.error,
+    HTTPException,
+)
 
 # Common ffmpeg paths on CoreELEC / LibreELEC
 _FFMPEG_PATHS = [
@@ -51,16 +67,6 @@ _FFMPEG_PATHS = [
     "/usr/bin/ffmpeg",
     "/storage/.opt/bin/ffmpeg",
 ]
-
-
-def _notify_error(message):
-    """Show a Kodi notification for stream errors."""
-    try:
-        xbmc.executebuiltin(
-            "Notification({}, {}, {})".format("NZB-DAV", str(message)[:80], 5000)
-        )
-    except Exception:  # noqa: BLE001
-        pass
 
 
 def _find_ffmpeg():
@@ -78,13 +84,40 @@ def _validate_url(url):
         raise ValueError("Invalid URL scheme: {}".format(repr(url)[:30]))
 
 
+def _notify_error(message):
+    """Best-effort notification helper safe to call from proxy threads."""
+    try:
+        _notify("NZB-DAV", str(message)[:80])
+    except (RuntimeError, OSError):
+        pass
+
+
 def _embed_auth_in_url(url, auth_header):
     """Embed Basic auth credentials into a URL for ffmpeg."""
     if auth_header and auth_header.startswith("Basic "):
         import base64
 
-        decoded = base64.b64decode(auth_header[6:]).decode("utf-8")
-        return url.replace("://", "://{}@".format(decoded), 1)
+        try:
+            decoded = base64.b64decode(auth_header[6:], validate=True).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            return url
+
+        username, sep, password = decoded.partition(":")
+        if not sep:
+            return url
+
+        parsed = urlsplit(url)
+        host_part = parsed.netloc.rsplit("@", 1)[-1]
+        userinfo = "{}:{}".format(quote(username, safe=""), quote(password, safe=""))
+        return urlunsplit(
+            (
+                parsed.scheme,
+                "{}@{}".format(userinfo, host_part),
+                parsed.path,
+                parsed.query,
+                parsed.fragment,
+            )
+        )
     return url
 
 
@@ -134,11 +167,35 @@ class _StreamHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):  # pylint: disable=arguments-differ
         xbmc.log("NZB-DAV: Proxy: {}".format(fmt % args), xbmc.LOGDEBUG)
 
+    def _get_stream_context(self):
+        """Look up the active stream context for the current request path."""
+        raw_path = getattr(self, "path", "/stream")
+        path = raw_path.split("?", 1)[0]
+        if path in ("", "/stream"):
+            return getattr(self.server, "stream_context", None)
+        if not path.startswith("/stream/"):
+            return None
+
+        session_id = path[len("/stream/") :]
+        if not session_id or "/" in session_id:
+            return None
+
+        sessions = getattr(self.server, "stream_sessions", {})
+        ctx = sessions.get(session_id)
+        if ctx is not None:
+            ctx["last_access"] = time.time()
+        return ctx
+
+    @staticmethod
+    def _ctx_lock(ctx, server):
+        """Get the remux lock for this stream context."""
+        return ctx.get("ffmpeg_lock") or getattr(server, "ffmpeg_lock")
+
     def do_POST(self):
         """Handle POST /prepare — plugin sends stream config via HTTP."""
         import json
 
-        if "/prepare" not in self.path:
+        if self.path.split("?", 1)[0] != "/prepare":
             self.send_error(404)
             return
         length = int(self.headers.get("Content-Length", 0))
@@ -156,7 +213,11 @@ class _StreamHandler(BaseHTTPRequestHandler):
             return
 
         proxy = self.server.owner_proxy
-        proxy_url, stream_info = proxy.prepare_stream(remote_url, auth_header)
+        try:
+            proxy_url, stream_info = proxy.prepare_stream(remote_url, auth_header)
+        except ValueError:
+            self.send_error(400)
+            return
 
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -169,7 +230,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
 
     def do_HEAD(self):
         """Respond to HEAD with content metadata (type, length, ranges)."""
-        ctx = self.server.stream_context
+        ctx = self._get_stream_context()
         if ctx is None:
             self.send_error(404)
             return
@@ -203,7 +264,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         """Route requests to the appropriate handler."""
-        ctx = self.server.stream_context
+        ctx = self._get_stream_context()
         if ctx is None:
             self.send_error(404)
             return
@@ -368,7 +429,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
             pass
         except (OSError, ValueError, HTTPException) as e:
             xbmc.log("NZB-DAV: Faststart proxy error: {}".format(e), xbmc.LOGERROR)
-            _notify_error("Stream error: {}".format(e))
+            _notify_error(e)
 
     def _serve_temp_faststart(self, ctx):
         """Serve a temp-file faststart MP4 with range support."""
@@ -418,33 +479,25 @@ class _StreamHandler(BaseHTTPRequestHandler):
             pass
         except OSError as e:
             xbmc.log("NZB-DAV: Temp faststart error: {}".format(e), xbmc.LOGERROR)
-            _notify_error("Stream error: {}".format(e))
+            _notify_error(e)
 
-    def _serve_remux(self, ctx):
-        """Remux MP4 to MKV on the fly, with optional seeking."""
-        total_bytes = ctx.get("total_bytes", 0)
+    def _resolve_seek(self, ctx, requested_start, total_bytes):
+        """Compute seek position and kill prior ffmpeg if needed.
+
+        Returns the seek offset in seconds, or None.
+        """
         duration = ctx.get("duration_seconds")
         seekable = ctx.get("seekable", False)
 
-        # Parse range request
-        range_header = self.headers.get("Range")
-        requested_start = 0
-        if range_header:
-            parsed = self._parse_range(range_header, total_bytes or 1)
-            if parsed[0] is not None:
-                requested_start = parsed[0]
-
-        # Calculate seek position for any non-zero Range request when we have
-        # duration info.  This covers both explicit seeks (user skips ahead)
-        # and continuations (Kodi reconnects mid-stream after a broken pipe).
-        # Each GET spawns a fresh ffmpeg, so we must always tell it where to
-        # start — otherwise continuations would restart from byte 0.
         seek_seconds = None
         if seekable and duration is not None and total_bytes and requested_start > 0:
             seek_seconds = (requested_start / total_bytes) * duration
 
-        with self.server.ffmpeg_lock:
-            current_pos = self.server.current_byte_pos
+        lock = self._ctx_lock(ctx, self.server)
+        with lock:
+            current_pos = ctx.get(
+                "current_byte_pos", getattr(self.server, "current_byte_pos", 0)
+            )
             is_seek = (
                 seekable
                 and requested_start > 0
@@ -457,14 +510,33 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     ),
                     xbmc.LOGINFO,
                 )
-                # Kill existing ffmpeg (may still be alive from a prior GET)
-                if self.server.active_ffmpeg:
+                active_ffmpeg = ctx.get(
+                    "active_ffmpeg", getattr(self.server, "active_ffmpeg", None)
+                )
+                if active_ffmpeg:
                     try:
-                        self.server.active_ffmpeg.kill()
-                        self.server.active_ffmpeg.wait()
+                        active_ffmpeg.kill()
+                        active_ffmpeg.wait()
                     except OSError:
                         pass
+                    ctx["active_ffmpeg"] = None
                     self.server.active_ffmpeg = None
+
+        return seek_seconds
+
+    def _serve_remux(self, ctx):
+        """Remux MP4 to MKV on the fly, with optional seeking."""
+        total_bytes = ctx.get("total_bytes", 0)
+
+        # Parse range request
+        range_header = self.headers.get("Range")
+        requested_start = 0
+        if range_header:
+            parsed = self._parse_range(range_header, total_bytes or 1)
+            if parsed[0] is not None:
+                requested_start = parsed[0]
+
+        seek_seconds = self._resolve_seek(ctx, requested_start, total_bytes)
 
         cmd = self._build_ffmpeg_cmd(ctx, seek_seconds=seek_seconds)
         xbmc.log(
@@ -482,7 +554,10 @@ class _StreamHandler(BaseHTTPRequestHandler):
             self.send_error(500)
             return
 
-        with self.server.ffmpeg_lock:
+        lock = self._ctx_lock(ctx, self.server)
+        with lock:
+            ctx["active_ffmpeg"] = proc
+            ctx["current_byte_pos"] = requested_start
             self.server.active_ffmpeg = proc
             self.server.current_byte_pos = requested_start
 
@@ -490,6 +565,9 @@ class _StreamHandler(BaseHTTPRequestHandler):
         # when the stderr pipe buffer fills up (~64KB).  Without this, ffmpeg
         # stalls mid-stream, the proxy stops sending data, and Kodi freezes
         # once its playback buffer drains.
+        # Thread safety: list.append() is atomic under CPython's GIL, and
+        # stderr_thread.join() in the finally block provides a happens-before
+        # guarantee before the main thread reads stderr_chunks.
         stderr_chunks = []
 
         def _drain_stderr():
@@ -528,8 +606,10 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     break
                 self.wfile.write(chunk)
                 total += len(chunk)
-                with self.server.ffmpeg_lock:
-                    self.server.current_byte_pos = requested_start + total
+                with lock:
+                    current_pos = requested_start + total
+                    ctx["current_byte_pos"] = current_pos
+                    self.server.current_byte_pos = current_pos
         except (BrokenPipeError, ConnectionResetError):
             xbmc.log(
                 "NZB-DAV: Remux client disconnected after {} MB".format(
@@ -540,6 +620,11 @@ class _StreamHandler(BaseHTTPRequestHandler):
         finally:
             proc.kill()
             proc.wait()
+            with lock:
+                if ctx.get("active_ffmpeg") is proc:
+                    ctx["active_ffmpeg"] = None
+                if self.server.active_ffmpeg is proc:
+                    self.server.active_ffmpeg = None
             stderr_thread.join(timeout=5)
             stderr = b"".join(stderr_chunks).decode(errors="replace")
             if stderr.strip():
@@ -594,7 +679,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
             pass
         except (OSError, ValueError) as e:
             xbmc.log("NZB-DAV: Proxy range failed: {}".format(e), xbmc.LOGERROR)
-            _notify_error("Stream error: {}".format(e))
+            _notify_error(e)
 
     @staticmethod
     def _parse_range(range_header, content_length):
@@ -620,6 +705,7 @@ class _ThreadedHTTPServer(_ThreadingMixIn, HTTPServer):
 
     def __init__(self, *args, **kwargs):
         self.stream_context = None
+        self.stream_sessions = {}
         self.active_ffmpeg = None
         self.current_byte_pos = 0
         self.ffmpeg_lock = threading.Lock()
@@ -652,11 +738,124 @@ class StreamProxy:
     def stop(self):
         """Stop the proxy server."""
         if self._server:
+            with self._context_lock:
+                sessions = list(getattr(self._server, "stream_sessions", {}).values())
+                self._server.stream_sessions = {}
+            for ctx in sessions:
+                self._cleanup_session(ctx)
+        if self._server:
             self._server.shutdown()
             self._server = None
         if self._thread:
             self._thread.join(timeout=5)
             self._thread = None
+
+    @staticmethod
+    def _try_faststart_layout(remote_url, content_length, auth_header):
+        """Attempt virtual moov-relocation for an MP4.
+
+        Returns the faststart dict, or None on failure.
+        """
+        try:
+            if fetch_remote_mp4_layout is None:
+                raise ImportError("mp4_parser not available")
+            layout_info = fetch_remote_mp4_layout(
+                remote_url, content_length, auth_header
+            )
+            if layout_info:
+                xbmc.log(
+                    "NZB-DAV: MP4 layout: moov_before_mdat={}, moov={}B".format(
+                        layout_info.get("moov_before_mdat"),
+                        len(layout_info.get("moov_data", b"")),
+                    ),
+                    xbmc.LOGINFO,
+                )
+                faststart = build_faststart_layout(layout_info)
+                if faststart is None:
+                    xbmc.log(
+                        "NZB-DAV: stco overflow — moov relocation failed "
+                        "(file >4GB with 32-bit chunk offsets)",
+                        xbmc.LOGWARNING,
+                    )
+                return faststart
+            xbmc.log("NZB-DAV: MP4 layout fetch returned None", xbmc.LOGWARNING)
+            return None
+        except _PARSE_ERRORS as e:
+            xbmc.log(
+                "NZB-DAV: MP4 faststart parse failed: {}".format(e), xbmc.LOGWARNING
+            )
+            return None
+
+    @staticmethod
+    def _cleanup_session(ctx):
+        """Release resources associated with a stream session."""
+        active_ffmpeg = ctx.get("active_ffmpeg")
+        if active_ffmpeg:
+            try:
+                active_ffmpeg.kill()
+                active_ffmpeg.wait()
+            except (OSError, subprocess.SubprocessError, ValueError):
+                pass
+
+        temp_path = ctx.get("temp_path")
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+    def _register_session(self, ctx):
+        """Store a per-stream context and return its unique proxy URL."""
+        session_id = uuid.uuid4().hex
+        now = time.time()
+        ctx["session_id"] = session_id
+        ctx["created_at"] = now
+        ctx["last_access"] = now
+        ctx["ffmpeg_lock"] = threading.Lock()
+        ctx["active_ffmpeg"] = None
+        ctx["current_byte_pos"] = 0
+
+        with self._context_lock:
+            if not isinstance(getattr(self._server, "stream_sessions", None), dict):
+                self._server.stream_sessions = {}
+            self._server.stream_context = ctx
+            self._server.stream_sessions[session_id] = ctx
+            self._prune_sessions_locked(keep_session=session_id)
+
+        return "http://127.0.0.1:{}/stream/{}".format(self.port, session_id)
+
+    def _prune_sessions_locked(self, keep_session=None):
+        """Drop expired sessions and cap the total number retained."""
+        sessions = getattr(self._server, "stream_sessions", {})
+        now = time.time()
+
+        expired = [
+            session_id
+            for session_id, ctx in sessions.items()
+            if session_id != keep_session
+            and now - ctx.get("last_access", ctx.get("created_at", now))
+            > _SESSION_TTL_SECONDS
+        ]
+        for session_id in expired:
+            ctx = sessions.pop(session_id, None)
+            if ctx is not None:
+                self._cleanup_session(ctx)
+
+        while len(sessions) > _MAX_STREAM_SESSIONS:
+            removable = sorted(
+                (
+                    ctx.get("last_access", ctx.get("created_at", 0)),
+                    session_id,
+                )
+                for session_id, ctx in sessions.items()
+                if session_id != keep_session
+            )
+            if not removable:
+                break
+            _, session_id = removable[0]
+            ctx = sessions.pop(session_id, None)
+            if ctx is not None:
+                self._cleanup_session(ctx)
 
     def prepare_stream(self, remote_url, auth_header=None):
         """Set up proxy for a new stream.
@@ -665,53 +864,16 @@ class StreamProxy:
         stream_info_dict contains duration_seconds, total_bytes, seekable, remux,
         faststart, and virtual_size.
         """
+        _validate_url(remote_url)
         content_type = self._detect_content_type(remote_url)
         lower_url = remote_url.lower()
         is_mp4 = lower_url.endswith((".mp4", ".m4v"))
 
         if is_mp4:
             content_length = self._get_content_length(remote_url, auth_header)
-
-            # Tier 1: Try virtual moov-relocation (pure Python, no temp files)
-            try:
-                if fetch_remote_mp4_layout is None:
-                    raise ImportError("mp4_parser not available")
-                layout_info = fetch_remote_mp4_layout(
-                    remote_url, content_length, auth_header
-                )
-                if layout_info:
-                    xbmc.log(
-                        "NZB-DAV: MP4 layout: moov_before_mdat={}, moov={}B".format(
-                            layout_info.get("moov_before_mdat"),
-                            len(layout_info.get("moov_data", b"")),
-                        ),
-                        xbmc.LOGINFO,
-                    )
-                    faststart = build_faststart_layout(layout_info)
-                    if faststart is None:
-                        xbmc.log(
-                            "NZB-DAV: stco overflow — moov relocation failed "
-                            "(file >4GB with 32-bit chunk offsets)",
-                            xbmc.LOGWARNING,
-                        )
-                else:
-                    xbmc.log(
-                        "NZB-DAV: MP4 layout fetch returned None",
-                        xbmc.LOGWARNING,
-                    )
-                    faststart = None
-            except (
-                ImportError,
-                OSError,
-                ValueError,
-                KeyError,
-                struct.error,
-                HTTPException,
-            ) as e:
-                xbmc.log(
-                    "NZB-DAV: MP4 faststart parse failed: {}".format(e), xbmc.LOGWARNING
-                )
-                faststart = None
+            faststart = self._try_faststart_layout(
+                remote_url, content_length, auth_header
+            )
 
             if faststart is not None and not faststart.get("already_faststart"):
                 ctx = {
@@ -776,8 +938,6 @@ class StreamProxy:
                     )
 
                 if temp_path:
-                    import os
-
                     temp_size = os.path.getsize(temp_path)
                     ctx = {
                         "remote_url": remote_url,
@@ -830,9 +990,7 @@ class StreamProxy:
                 "remux": False,
             }
 
-        with self._context_lock:
-            self._server.stream_context = ctx
-        local_url = "http://127.0.0.1:{}/stream".format(self.port)
+        local_url = self._register_session(ctx)
         xbmc.log(
             "NZB-DAV: Proxy ready (remux={}, faststart={}): {}".format(
                 ctx.get("remux", False), ctx.get("faststart", False), local_url
@@ -900,7 +1058,6 @@ class StreamProxy:
     @staticmethod
     def _prepare_tempfile_faststart(ffmpeg_path, url, auth_header):
         """Remux MP4 with faststart to a temp file. Returns path or None."""
-        import os
         import tempfile
 
         if not ffmpeg_path:
@@ -908,8 +1065,11 @@ class StreamProxy:
 
         _validate_url(url)
         input_url = _embed_auth_in_url(url, auth_header)
-        temp_dir = tempfile.gettempdir()
-        temp_path = os.path.join(temp_dir, "nzbdav_faststart.mp4")
+        fd, temp_path = tempfile.mkstemp(
+            prefix="nzbdav_faststart_",
+            suffix=".mp4",
+        )
+        os.close(fd)
 
         cmd = [
             ffmpeg_path,
@@ -949,6 +1109,11 @@ class StreamProxy:
                 return temp_path
         except (OSError, subprocess.SubprocessError) as e:
             xbmc.log("NZB-DAV: Temp faststart error: {}".format(e), xbmc.LOGWARNING)
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
         return None
 
     @staticmethod

@@ -481,3 +481,7 @@ msgstr "Proxy"
 msgctxt "#30119"
 msgid "Convert MP4 subtitles to SRT"
 msgstr "Convert MP4 subtitles to SRT"
+
+msgctxt "#30120"
+msgid "Completed but no video file found on WebDAV"
+msgstr "Completed but no video file found on WebDAV"

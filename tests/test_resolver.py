@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 from resources.lib.resolver import (
     MAX_POLL_ITERATIONS,
+    _make_playable_listitem,
     _poll_until_ready,
     _storage_to_webdav_path,
     resolve,
@@ -53,6 +54,19 @@ def test_storage_to_webdav_path_trailing_slash():
         "/mnt/nzbdav/completed-symlinks/uncategorized/Movie Name/"
     )
     assert result == "/content/uncategorized/Movie Name//"
+
+
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.xbmc")
+def test_make_playable_listitem_redacts_logged_play_url(mock_xbmc, mock_gui):
+    _make_playable_listitem(
+        "http://webdav/movie.mkv",
+        {"Authorization": "Basic dXNlcjpwYXNz"},
+    )
+
+    logged = mock_xbmc.log.call_args[0][0]
+    assert "Basic dXNlcjpwYXNz" not in logged
+    assert "redacted" in logged.lower()
 
 
 # --- resolve() tests ---
@@ -754,3 +768,66 @@ def test_poll_until_ready_already_downloaded(
 
     assert url == "http://webdav/movie.mkv"
     mock_notify.assert_not_called()
+
+
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._notify")
+@patch(
+    "resources.lib.resolver.get_job_history",
+    return_value={"status": "Failed", "fail_message": "CRC error in article"},
+)
+@patch("resources.lib.resolver.get_job_status", return_value=None)
+@patch("resources.lib.resolver.submit_nzb", return_value="nzo_xyz")
+@patch("resources.lib.resolver.xbmc")
+def test_poll_until_ready_history_failed_shows_fail_message(
+    mock_xbmc, mock_submit, mock_status, mock_history, mock_notify, mock_find_completed
+):
+    """_poll_until_ready shows the server's fail_message to the user."""
+    mock_xbmc.Monitor.return_value = _make_monitor()
+
+    url, headers = _poll_until_ready(
+        "http://hydra/nzb", "movie", _make_dialog(), 2, 3600
+    )
+
+    assert url is None
+    assert headers is None
+    # Should notify with the actual fail_message, not generic "Download failed"
+    mock_notify.assert_called_once()
+    assert "CRC error" in mock_notify.call_args[0][1]
+
+
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._notify")
+@patch("resources.lib.resolver.find_video_file", return_value=None)
+@patch(
+    "resources.lib.resolver.get_job_history",
+    return_value={
+        "status": "Completed",
+        "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/movie",
+    },
+)
+@patch("resources.lib.resolver.get_job_status", return_value=None)
+@patch("resources.lib.resolver.submit_nzb", return_value="nzo_xyz")
+@patch("resources.lib.resolver.xbmc")
+def test_poll_until_ready_no_video_after_retries(
+    mock_xbmc,
+    mock_submit,
+    mock_status,
+    mock_history,
+    mock_find_video,
+    mock_notify,
+    mock_find_completed,
+):
+    """_poll_until_ready notifies user when completed but no video found."""
+    mock_xbmc.Monitor.return_value = _make_monitor()
+
+    url, headers = _poll_until_ready(
+        "http://hydra/nzb", "movie", _make_dialog(), 0, 3600
+    )
+
+    assert url is None
+    assert headers is None
+    mock_notify.assert_called_once()
+    # Uses i18n string 30120
+    call_args = mock_notify.call_args[0]
+    assert "video" in call_args[1].lower() or call_args[1] == ""

@@ -1,3 +1,12 @@
+v0.6.6 (2026-04-10)
+- Validate URL scheme in stream proxy to reject non-HTTP URLs
+- Redact API keys and auth credentials from debug logs
+- Reuse shared notification helper (remove duplicated logic)
+- Reduce _serve_remux complexity by extracting seek and faststart helpers
+- Localize "no video file found" notification string
+- Truncate server failure messages to 80 chars for TV UI
+- Fix all code scanning alerts (complexity, indentation, broad-except)
+
 v0.6.5 (2026-04-10)
 - Show nzbdav failure reason to user when download fails
 - Notify user when download completes but no video file found on WebDAV

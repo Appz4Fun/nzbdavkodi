@@ -43,7 +43,17 @@ def route(argv):
     path = parse_route(base_url)
     params = parse_params(query_string)
 
-    xbmc.log("NZB-DAV: Routing path='{}' params={}".format(path, params), xbmc.LOGDEBUG)
+    safe_params = {
+        k: (
+            "***"
+            if "url" in k.lower() or "api" in k.lower() or "key" in k.lower()
+            else v
+        )
+        for k, v in params.items()
+    }
+    xbmc.log(
+        "NZB-DAV: Routing path='{}' params={}".format(path, safe_params), xbmc.LOGDEBUG
+    )
 
     if path == "/play":
         _handle_play(handle, params)

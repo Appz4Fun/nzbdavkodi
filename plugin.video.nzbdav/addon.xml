@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="plugin.video.nzbdav"
        name="NZB-DAV"
-       version="0.6.5"
+       version="0.6.6"
        provider-name="nzbdav">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
@@ -22,7 +22,16 @@
         <license>GPL-3.0-or-later</license>
         <source>https://github.com/xbmc4lyfe/nzbdavkodi</source>
         <website>https://xbmc4lyfe.github.io/nzbdavkodi/</website>
-        <news>v0.6.5
+        <news>v0.6.6
+- Validate URL scheme in stream proxy to reject non-HTTP URLs
+- Redact API keys and auth credentials from debug logs
+- Reuse shared notification helper (remove duplicated logic)
+- Reduce _serve_remux complexity by extracting seek and faststart helpers
+- Localize "no video file found" notification string
+- Truncate server failure messages to 80 chars for TV UI
+- Fix all code scanning alerts (complexity, indentation, broad-except)
+
+v0.6.5
 - Show nzbdav failure reason to user when download fails
 - Notify user when download completes but no video file found on WebDAV
 - Show stream errors to user instead of silently swallowing them
