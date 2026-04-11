@@ -73,6 +73,8 @@ class NzbdavPlayer(xbmc.Player):
         self._title = ""
         self._last_position = 0.0
         self._retry_count = 0
+        self._av_started = False
+        self._play_time = 0.0
         self._monitor = xbmc.Monitor()
 
     @staticmethod
@@ -94,6 +96,8 @@ class NzbdavPlayer(xbmc.Player):
 
     def _check_active(self):
         """Check if the plugin signaled a new stream via window properties."""
+        import time
+
         active = _HOME_WINDOW.getProperty(_PROP_ACTIVE)
         if active == "true":
             self._stream_url = _HOME_WINDOW.getProperty(_PROP_STREAM_URL)
@@ -101,6 +105,8 @@ class NzbdavPlayer(xbmc.Player):
             self._state = PlaybackState.MONITORING
             self._retry_count = 0
             self._last_position = 0.0
+            self._av_started = False
+            self._play_time = time.time()
             # Clear the signal so we don't re-trigger
             _HOME_WINDOW.clearProperty(_PROP_ACTIVE)
             xbmc.log(
@@ -112,6 +118,7 @@ class NzbdavPlayer(xbmc.Player):
         """Reset retry state when playback begins successfully."""
         if self._state in (PlaybackState.MONITORING, PlaybackState.ERROR):
             self._retry_count = 0
+            self._av_started = True
             self._state = PlaybackState.MONITORING
             xbmc.log(
                 "NZB-DAV: Playback started for '{}'".format(self._title),
@@ -137,7 +144,12 @@ class NzbdavPlayer(xbmc.Player):
             self._state = PlaybackState.IDLE
 
     def onPlayBackError(self):
-        """Transition to ERROR state for retry logic; notify if retries exhausted."""
+        """Transition to ERROR state. Dialogs are shown from tick().
+
+        Kodi player callbacks run on internal threads — showing a modal dialog
+        here could deadlock or freeze the UI. So we only set the state flag
+        and let tick() handle user notification on the service loop thread.
+        """
         if self._state == PlaybackState.MONITORING:
             self._state = PlaybackState.ERROR
             xbmc.log(
@@ -146,11 +158,6 @@ class NzbdavPlayer(xbmc.Player):
                 ),
                 xbmc.LOGERROR,
             )
-            enabled, max_retries, _ = self._read_settings()
-            if not enabled or self._retry_count >= max_retries:
-                from resources.lib.i18n import string as _s
-
-                _notify("NZB-DAV", _s(30115), 8000)
 
     def _save_position(self):
         """Save current playback position for resume on retry."""
@@ -203,10 +210,33 @@ class NzbdavPlayer(xbmc.Player):
 
     def tick(self):
         """Called each service loop iteration. Handle retries if needed."""
+        import time
+
         self._check_active()
 
         if self._state == PlaybackState.IDLE:
             return
+
+        # Detect playback that never started (stream error, auth failure, etc.)
+        if self._state == PlaybackState.MONITORING and not self._av_started:
+            elapsed = time.time() - self._play_time
+            if elapsed > 5 and not self.isPlaying():
+                xbmc.log(
+                    "NZB-DAV: Playback never started for '{}' after {:.0f}s".format(
+                        self._title, elapsed
+                    ),
+                    xbmc.LOGERROR,
+                )
+                from resources.lib.i18n import addon_name as _addon_name
+                from resources.lib.i18n import string as _s
+
+                xbmcgui.Dialog().ok(
+                    _addon_name(),
+                    _s(30121),
+                )
+                xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
+                self._state = PlaybackState.IDLE
+                return
 
         self._save_position()
 
@@ -215,6 +245,10 @@ class NzbdavPlayer(xbmc.Player):
 
         enabled, max_retries, retry_delay = self._read_settings()
         if not enabled:
+            from resources.lib.i18n import addon_name as _addon_name
+            from resources.lib.i18n import string as _s
+
+            xbmcgui.Dialog().ok(_addon_name(), _s(30115))
             self._state = PlaybackState.IDLE
             return
 
@@ -225,9 +259,10 @@ class NzbdavPlayer(xbmc.Player):
                 ),
                 xbmc.LOGERROR,
             )
+            from resources.lib.i18n import addon_name as _addon_name
             from resources.lib.i18n import fmt as _f
 
-            _notify("NZB-DAV", _f(30116, max_retries), 8000)
+            xbmcgui.Dialog().ok(_addon_name(), _f(30116, max_retries))
             self._state = PlaybackState.IDLE
             return
 

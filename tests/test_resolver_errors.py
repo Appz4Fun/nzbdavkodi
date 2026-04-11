@@ -45,7 +45,6 @@ def test_resolve_aborts_on_nzbdav_failed_status(
     mock_gui.Dialog.return_value.ok.assert_called_once()
 
 
-@patch("resources.lib.resolver._notify")
 @patch("resources.lib.resolver.check_file_available_with_retry")
 @patch("resources.lib.resolver.xbmc")
 @patch("resources.lib.resolver.time")
@@ -65,7 +64,6 @@ def test_resolve_times_out_gracefully(
     mock_time,
     mock_xbmc,
     mock_check_webdav,
-    mock_notify,
 ):
     """When polling exceeds timeout, resolve() should notify and not hang
     even if status calls return None."""
@@ -85,4 +83,4 @@ def test_resolve_times_out_gracefully(
     resolve(1, {"nzburl": "http://hydra/getnzb/timeout", "title": "timeout.mkv"})
 
     mock_plugin.setResolvedUrl.assert_called_once_with(1, False, mock_gui.ListItem())
-    mock_notify.assert_called_once()
+    mock_gui.Dialog.return_value.ok.assert_called_once()

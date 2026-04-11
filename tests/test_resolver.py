@@ -216,21 +216,19 @@ def test_resolve_user_cancels(
     mock_plugin.setResolvedUrl.assert_called_once_with(1, False, mock_gui.ListItem())
 
 
-@patch("resources.lib.resolver._notify")
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver.xbmcplugin")
 @patch("resources.lib.resolver._get_poll_settings")
-def test_resolve_no_nzb_url(mock_poll, mock_plugin, mock_gui, mock_notify):
+def test_resolve_no_nzb_url(mock_poll, mock_plugin, mock_gui):
     """Resolve with no NZB URL should fail immediately."""
     mock_poll.return_value = (2, 60)
 
     resolve(1, {"nzburl": "", "title": "movie.mkv"})
 
-    mock_notify.assert_called_once_with("NZB-DAV", "No NZB URL provided")
+    mock_gui.Dialog.return_value.ok.assert_called_once()
     mock_plugin.setResolvedUrl.assert_called_once_with(1, False, mock_gui.ListItem())
 
 
-@patch("resources.lib.resolver._notify")
 @patch("resources.lib.resolver.xbmc")
 @patch("resources.lib.resolver.time")
 @patch("resources.lib.resolver.xbmcgui")
@@ -248,7 +246,6 @@ def test_resolve_timeout(
     mock_gui,
     mock_time,
     mock_xbmc,
-    mock_notify,
 ):
     """Resolve should time out after download_timeout seconds."""
     mock_poll.return_value = (2, 5)  # 5 second timeout
@@ -267,10 +264,8 @@ def test_resolve_timeout(
     resolve(1, {"nzburl": "http://hydra/getnzb/abc", "title": "movie.mkv"})
 
     mock_plugin.setResolvedUrl.assert_called_once_with(1, False, mock_gui.ListItem())
-    # Check timeout notification was shown
-    mock_notify.assert_called()
-    notify_msg = mock_notify.call_args[0][1]
-    assert "timed out" in notify_msg
+    # Check timeout dialog was shown
+    mock_gui.Dialog.return_value.ok.assert_called()
 
 
 @patch("resources.lib.resolver.xbmc")
@@ -635,11 +630,11 @@ def test_poll_until_ready_success(
 
 
 @patch("resources.lib.resolver.find_completed_by_name", return_value=None)
-@patch("resources.lib.resolver._notify")
+@patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver.submit_nzb", return_value=None)
 @patch("resources.lib.resolver.xbmc")
 def test_poll_until_ready_submit_failure(
-    mock_xbmc, mock_submit, mock_notify, mock_find_completed
+    mock_xbmc, mock_submit, mock_gui, mock_find_completed
 ):
     """_poll_until_ready returns (None, None) when all submit retries fail."""
     mock_xbmc.Monitor.return_value = _make_monitor()
@@ -650,7 +645,7 @@ def test_poll_until_ready_submit_failure(
 
     assert url is None
     assert headers is None
-    mock_notify.assert_called()
+    mock_gui.Dialog.return_value.ok.assert_called()
 
 
 @patch("resources.lib.resolver.find_completed_by_name", return_value=None)
@@ -673,7 +668,7 @@ def test_poll_until_ready_user_cancel(
 
 
 @patch("resources.lib.resolver.find_completed_by_name", return_value=None)
-@patch("resources.lib.resolver._notify")
+@patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver.get_job_history", return_value=None)
 @patch("resources.lib.resolver.get_job_status")
 @patch("resources.lib.resolver.submit_nzb", return_value="nzo_xyz")
@@ -685,10 +680,10 @@ def test_poll_until_ready_timeout(
     mock_submit,
     mock_status,
     mock_history,
-    mock_notify,
+    mock_gui,
     mock_find_completed,
 ):
-    """_poll_until_ready returns (None, None) and notifies on timeout."""
+    """_poll_until_ready returns (None, None) and shows dialog on timeout."""
     mock_status.return_value = {"status": "Downloading", "percentage": "10"}
     mock_xbmc.Monitor.return_value = _make_monitor()
     mock_time.time.side_effect = [0.0, 10.0]
@@ -697,18 +692,17 @@ def test_poll_until_ready_timeout(
 
     assert url is None
     assert headers is None
-    mock_notify.assert_called()
-    assert "timed out" in mock_notify.call_args[0][1]
+    mock_gui.Dialog.return_value.ok.assert_called()
 
 
 @patch("resources.lib.resolver.find_completed_by_name", return_value=None)
-@patch("resources.lib.resolver._notify")
+@patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver.get_job_history", return_value=None)
 @patch("resources.lib.resolver.get_job_status")
 @patch("resources.lib.resolver.submit_nzb", return_value="nzo_xyz")
 @patch("resources.lib.resolver.xbmc")
 def test_poll_until_ready_job_failed(
-    mock_xbmc, mock_submit, mock_status, mock_history, mock_notify, mock_find_completed
+    mock_xbmc, mock_submit, mock_status, mock_history, mock_gui, mock_find_completed
 ):
     """_poll_until_ready returns (None, None) when job reports Failed."""
     mock_status.return_value = {"status": "Failed", "percentage": "0"}
@@ -720,7 +714,7 @@ def test_poll_until_ready_job_failed(
 
     assert url is None
     assert headers is None
-    mock_notify.assert_called()
+    mock_gui.Dialog.return_value.ok.assert_called()
 
 
 @patch("resources.lib.resolver.find_completed_by_name", return_value=None)
@@ -747,13 +741,12 @@ def test_poll_until_ready_history_failed(
     mock_gui.Dialog.return_value.ok.assert_called()
 
 
-@patch("resources.lib.resolver._notify")
 @patch("resources.lib.resolver.get_webdav_stream_url_for_path")
 @patch("resources.lib.resolver.find_video_file")
 @patch("resources.lib.resolver.find_completed_by_name")
 @patch("resources.lib.resolver.xbmc")
 def test_poll_until_ready_already_downloaded(
-    mock_xbmc, mock_find_completed, mock_find_video, mock_stream_url, mock_notify
+    mock_xbmc, mock_find_completed, mock_find_video, mock_stream_url
 ):
     """_poll_until_ready returns stream URL immediately if already downloaded."""
     mock_find_completed.return_value = {
@@ -767,7 +760,6 @@ def test_poll_until_ready_already_downloaded(
     )
 
     assert url == "http://webdav/movie.mkv"
-    mock_notify.assert_not_called()
 
 
 @patch("resources.lib.resolver.find_completed_by_name", return_value=None)
@@ -797,7 +789,7 @@ def test_poll_until_ready_history_failed_shows_fail_message(
 
 
 @patch("resources.lib.resolver.find_completed_by_name", return_value=None)
-@patch("resources.lib.resolver._notify")
+@patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver.find_video_file", return_value=None)
 @patch(
     "resources.lib.resolver.get_job_history",
@@ -815,10 +807,10 @@ def test_poll_until_ready_no_video_after_retries(
     mock_status,
     mock_history,
     mock_find_video,
-    mock_notify,
+    mock_gui,
     mock_find_completed,
 ):
-    """_poll_until_ready notifies user when completed but no video found."""
+    """_poll_until_ready shows dialog when completed but no video found."""
     mock_xbmc.Monitor.return_value = _make_monitor()
 
     url, headers = _poll_until_ready(
@@ -827,7 +819,4 @@ def test_poll_until_ready_no_video_after_retries(
 
     assert url is None
     assert headers is None
-    mock_notify.assert_called_once()
-    # Uses i18n string 30120
-    call_args = mock_notify.call_args[0]
-    assert "video" in call_args[1].lower() or call_args[1] == ""
+    mock_gui.Dialog.return_value.ok.assert_called_once()

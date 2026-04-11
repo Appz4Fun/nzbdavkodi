@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="plugin.video.nzbdav"
        name="NZB-DAV"
-       version="0.6.9"
+       version="0.6.10"
        provider-name="nzbdav">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
@@ -22,7 +22,12 @@
         <license>GPL-3.0-or-later</license>
         <source>https://github.com/xbmc4lyfe/nzbdavkodi</source>
         <website>https://xbmc4lyfe.github.io/nzbdavkodi/</website>
-        <news>v0.6.9
+        <news>v0.6.10
+- Show modal error dialog on every playback failure (replaces toast notifications)
+- Detect post-resolve stream crashes (missing articles, auth rejection) with error dialog
+- Clear playlist on stream failure to prevent TMDBHelper retry loop
+
+v0.6.9
 - Deduplicate identical NZBs from multiple indexers (same title+size), show "Multiple" as indexer
 - Send configured max results limit to NZBHydra2 API (was hardcoded to 100)
 

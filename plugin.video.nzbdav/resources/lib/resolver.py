@@ -11,7 +11,6 @@ import xbmc
 import xbmcgui
 import xbmcplugin
 
-from resources.lib.http_util import notify as _notify
 from resources.lib.i18n import addon_name as _addon_name
 from resources.lib.i18n import fmt as _fmt
 from resources.lib.i18n import string as _string
@@ -389,7 +388,7 @@ def _poll_until_ready(nzb_url, title, dialog, poll_interval, download_timeout):
             ),
             xbmc.LOGERROR,
         )
-        _notify(_addon_name(), _string(30098))
+        xbmcgui.Dialog().ok(_addon_name(), _string(30098))
         return None, None
 
     xbmc.log(
@@ -413,7 +412,7 @@ def _poll_until_ready(nzb_url, title, dialog, poll_interval, download_timeout):
                 ),
                 xbmc.LOGERROR,
             )
-            _notify(_addon_name(), _string(30099))
+            xbmcgui.Dialog().ok(_addon_name(), _string(30099))
             return None, None
 
         elapsed = time.time() - start_time
@@ -427,7 +426,7 @@ def _poll_until_ready(nzb_url, title, dialog, poll_interval, download_timeout):
                 ),
                 xbmc.LOGERROR,
             )
-            _notify(_addon_name(), _fmt(30099, int(elapsed)))
+            xbmcgui.Dialog().ok(_addon_name(), _fmt(30099, int(elapsed)))
             return None, None
 
         if dialog.iscanceled():
@@ -457,7 +456,7 @@ def _poll_until_ready(nzb_url, title, dialog, poll_interval, download_timeout):
                     "NZB-DAV: Job {} failed/deleted (status={})".format(nzo_id, status),
                     xbmc.LOGERROR,
                 )
-                _notify(_addon_name(), _string(30100))
+                xbmcgui.Dialog().ok(_addon_name(), _string(30100))
                 return None, None
 
             msg_id = _STATUS_MESSAGES.get(status)
@@ -516,7 +515,7 @@ def _poll_until_ready(nzb_url, title, dialog, poll_interval, download_timeout):
                         ),
                         xbmc.LOGERROR,
                     )
-                    _notify(_addon_name(), _string(30120))
+                    xbmcgui.Dialog().ok(_addon_name(), _string(30120))
                     return None, None
                 xbmc.log(
                     "NZB-DAV: Completed but no video found at '{}', "
@@ -536,7 +535,7 @@ def _poll_until_ready(nzb_url, title, dialog, poll_interval, download_timeout):
                 "Check WebDAV username and password in addon settings.".format(nzo_id),
                 xbmc.LOGERROR,
             )
-            _notify(_addon_name(), _string(_ERROR_MESSAGES["auth_failed"]))
+            xbmcgui.Dialog().ok(_addon_name(), _string(_ERROR_MESSAGES["auth_failed"]))
             return None, None
 
         if webdav_error == "server_error":
@@ -562,7 +561,7 @@ def resolve(handle, params):
     title = unquote(params.get("title", ""))
 
     if not nzb_url:
-        _notify(_addon_name(), _string(30096))
+        xbmcgui.Dialog().ok(_addon_name(), _string(30096))
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
         xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
         return
@@ -583,7 +582,7 @@ def resolve(handle, params):
             xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
     except Exception as e:
         xbmc.log("NZB-DAV: Unexpected error in resolve: {}".format(e), xbmc.LOGERROR)
-        _notify(_addon_name(), "Error: {}".format(str(e)[:80]))
+        xbmcgui.Dialog().ok(_addon_name(), "Error: {}".format(str(e)[:80]))
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
         xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
     finally:
@@ -612,6 +611,6 @@ def resolve_and_play(nzb_url, title):
         xbmc.log(
             "NZB-DAV: Unexpected error in resolve_and_play: {}".format(e), xbmc.LOGERROR
         )
-        _notify(_addon_name(), "Error: {}".format(str(e)[:80]))
+        xbmcgui.Dialog().ok(_addon_name(), "Error: {}".format(str(e)[:80]))
     finally:
         dialog.close()

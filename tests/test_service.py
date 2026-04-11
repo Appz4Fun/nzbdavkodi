@@ -3,6 +3,7 @@
 
 """Tests for the NZB-DAV background service."""
 
+import time
 from unittest.mock import patch
 
 from service import NzbdavPlayer, PlaybackState
@@ -102,6 +103,7 @@ def test_tick_does_nothing_when_no_error(mock_window):
 
     player = NzbdavPlayer()
     player._state = PlaybackState.MONITORING
+    player._av_started = True
 
     player.tick()
 
@@ -121,3 +123,41 @@ def test_tick_skips_retry_when_disabled(mock_window):
         player.tick()
 
     assert player._state == PlaybackState.IDLE
+
+
+@patch("service.xbmcgui")
+@patch("service.xbmc")
+@patch("service._HOME_WINDOW")
+def test_tick_shows_dialog_when_playback_never_started(
+    mock_window, mock_xbmc, mock_gui
+):
+    """tick() shows error dialog when AV never starts within timeout."""
+    mock_window.getProperty.return_value = ""
+
+    player = NzbdavPlayer()
+    player._state = PlaybackState.MONITORING
+    player._av_started = False
+    player._play_time = time.time() - 10  # 10 seconds ago
+    player._title = "Shutter.Island.mkv"
+    player.isPlaying = lambda: False
+
+    player.tick()
+
+    assert player._state == PlaybackState.IDLE
+    mock_gui.Dialog.return_value.ok.assert_called_once()
+    mock_xbmc.PlayList.return_value.clear.assert_called_once()
+
+
+@patch("service._HOME_WINDOW")
+def test_tick_waits_before_declaring_failure(mock_window):
+    """tick() does not show error within the 5-second grace period."""
+    mock_window.getProperty.return_value = ""
+
+    player = NzbdavPlayer()
+    player._state = PlaybackState.MONITORING
+    player._av_started = False
+    player._play_time = time.time() - 2  # only 2 seconds ago
+
+    player.tick()
+
+    assert player._state == PlaybackState.MONITORING
