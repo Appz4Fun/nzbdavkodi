@@ -433,8 +433,6 @@ class _StreamHandler(BaseHTTPRequestHandler):
 
     def _serve_temp_faststart(self, ctx):
         """Serve a temp-file faststart MP4 with range support."""
-        import os
-
         temp_path = ctx["temp_path"]
         if not os.path.exists(temp_path):
             self.send_error(404)
