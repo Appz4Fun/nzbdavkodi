@@ -438,8 +438,10 @@ class RangeCache:
             for entry_start, entry_data in self._entries.items():
                 entry_end = entry_start + len(entry_data)
                 if entry_start <= start and end <= entry_end:
-                    # Move to end (most recent)
-                    OrderedDict.move_to_end(self._entries, entry_start)
+                    # Move to end (most recent) — re-insert instead of
+                    # move_to_end to avoid pylint E1101 false positive.
+                    del self._entries[entry_start]
+                    self._entries[entry_start] = entry_data
                     offset = start - entry_start
                     length = end - start
                     return entry_data[offset : offset + length]
