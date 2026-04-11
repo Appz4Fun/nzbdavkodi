@@ -17,13 +17,12 @@ def read_addon_xml(path):
     return ET.tostring(tree.getroot(), encoding="unicode")
 
 
-def write_pages_index(output_dir, repo_version="1.0.0"):
+def write_pages_index(output_dir, addon_version="0.0.0"):
     """Write a Kodi-browsable directory listing for the root."""
     index_path = os.path.join(output_dir, "index.html")
+    zip_name = "plugin.video.nzbdav-{}.zip".format(addon_version)
     html = "<html><body>\n"
-    html += '<a href="repository.nzbdav-{v}.zip">repository.nzbdav-{v}.zip</a><br>\n'.format(
-        v=repo_version
-    )
+    html += '<a href="{z}">{z}</a><br>\n'.format(z=zip_name)
     html += "</body></html>\n"
     with open(index_path, "w", encoding="utf-8") as f:
         f.write(html)
@@ -78,6 +77,8 @@ def generate_repo(output_dir="dist"):
         dest_dir = os.path.join(output_dir, "plugin.video.nzbdav")
         os.makedirs(dest_dir, exist_ok=True)
         shutil.copy2(addon_zip, os.path.join(dest_dir, addon_zip))
+        # Copy addon zip to root for direct install from source URL
+        shutil.copy2(addon_zip, os.path.join(output_dir, addon_zip))
         # Also copy addon.xml into the addon subfolder (Kodi expects this)
         shutil.copy2(main_addon, os.path.join(dest_dir, "addon.xml"))
         # Copy icon/fanart preserving paths declared in addon.xml <assets>
@@ -127,7 +128,7 @@ def generate_repo(output_dir="dist"):
         if os.path.isdir(subdir_path):
             _write_dir_index(subdir_path)
 
-    write_pages_index(output_dir, repo_version)
+    write_pages_index(output_dir, version)
 
 
 def _write_dir_index(dir_path):
