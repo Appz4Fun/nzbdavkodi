@@ -71,8 +71,11 @@ def test_player_json_contains_correct_plugin_url_patterns():
     assert "plugin.video.nzbdav" in PLAYER_JSON["play_movie"]
     assert "type=movie" in PLAYER_JSON["play_movie"]
     assert "{title}" in PLAYER_JSON["play_movie"]
+    # tmdb_id must be forwarded so resolver can clear TMDBHelper bookmarks
+    assert "tmdb_id={tmdb_id}" in PLAYER_JSON["play_movie"]
     assert "plugin.video.nzbdav" in PLAYER_JSON["play_episode"]
     assert "type=episode" in PLAYER_JSON["play_episode"]
     assert "{showname}" in PLAYER_JSON["play_episode"]
+    assert "tmdb_id={tmdb_id}" in PLAYER_JSON["play_episode"]
     roundtripped = json.loads(json.dumps(PLAYER_JSON))
     assert roundtripped["name"] == PLAYER_JSON["name"]

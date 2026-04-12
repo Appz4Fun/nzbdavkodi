@@ -212,90 +212,98 @@ def _make_playable_listitem(url, headers):
     return li
 
 
+def _apply_proxy_mime(li, stream_url, stream_info):
+    """Set mime type and any info metadata on a proxy ListItem."""
+    proxy_url = li.getPath()
+    if stream_info.get("remux"):
+        xbmc.log(
+            "NZB-DAV: Playing via remux proxy: {}".format(proxy_url),
+            xbmc.LOGINFO,
+        )
+        li.setMimeType("video/x-matroska")
+        duration = stream_info.get("duration_seconds")
+        if duration:
+            info_tag = li.getVideoInfoTag()
+            info_tag.setDuration(int(duration))
+    elif stream_info.get("faststart"):
+        xbmc.log(
+            "NZB-DAV: Playing via faststart proxy: {}".format(proxy_url),
+            xbmc.LOGINFO,
+        )
+        li.setMimeType("video/mp4")
+    else:
+        xbmc.log(
+            "NZB-DAV: Playing via pass-through proxy: {}".format(proxy_url),
+            xbmc.LOGINFO,
+        )
+        path = _url_path(stream_url)
+        if path.endswith(".mp4") or path.endswith(".m4v"):
+            li.setMimeType("video/mp4")
+        elif path.endswith(".avi"):
+            li.setMimeType("video/x-msvideo")
+        else:
+            li.setMimeType("video/x-matroska")
+
+
 def _play_direct(handle, stream_url, stream_headers):
-    """Play a stream — MP4 via faststart proxy (preferred) or MKV remux fallback.
+    """Play a stream through the local service proxy.
 
-    MP4 files go through the service proxy which tries:
-    1. Virtual moov-relocation (pure Python, video/mp4, full seeking)
-    2. Temp-file faststart (ffmpeg -movflags +faststart, video/mp4, full seeking)
-    3. MKV remux (ffmpeg pipe, video/x-matroska, duration but no seeking)
+    Every file type routes through the service proxy so Kodi never opens the
+    remote WebDAV URL directly. This avoids Kodi's PROPFIND scan of the
+    parent directory (nzbdav's WebDAV returns localhost:8080 hrefs that
+    break Kodi's directory parser and cascade into an Open failure) and
+    sidesteps pipe-header auth quirks on MKV.
 
-    MKV and other formats play the WebDAV URL directly.
+    The proxy picks the right mode per file: MP4 gets Tier 1-3 faststart or
+    MKV remux; MKV/AVI/other get a range-capable pass-through.
     """
+    from resources.lib.stream_proxy import (
+        get_service_proxy_port,
+        prepare_stream_via_service,
+    )
 
-    lower_url = stream_url.lower()
-    is_mp4 = lower_url.endswith((".mp4", ".m4v"))
+    auth_header = None
+    if stream_headers and "Authorization" in stream_headers:
+        auth_header = stream_headers["Authorization"]
 
-    if is_mp4:
-        from resources.lib.stream_proxy import (
-            get_service_proxy_port,
-            prepare_stream_via_service,
+    service_port = get_service_proxy_port()
+    if service_port:
+        proxy_url, stream_info = prepare_stream_via_service(
+            service_port, stream_url, auth_header
         )
 
-        auth_header = None
-        if stream_headers and "Authorization" in stream_headers:
-            auth_header = stream_headers["Authorization"]
-
-        service_port = get_service_proxy_port()
-        if service_port:
-            proxy_url, stream_info = prepare_stream_via_service(
-                service_port, stream_url, auth_header
+        if stream_info.get("direct"):
+            xbmc.log(
+                "NZB-DAV: MP4 already faststart, direct play: {}".format(stream_url),
+                xbmc.LOGINFO,
             )
-
-            if stream_info.get("direct"):
-                # Already-faststart MP4 — play the WebDAV URL directly.
-                # No proxy needed: moov is at the front, Kodi seeks natively.
-                xbmc.log(
-                    "NZB-DAV: MP4 already faststart, direct play: {}".format(
-                        stream_url
-                    ),
-                    xbmc.LOGINFO,
-                )
-                bust_url = _cache_bust_url(stream_url)
-                li = _make_playable_listitem(bust_url, stream_headers)
-                xbmcplugin.setResolvedUrl(handle, True, li)
-
-                home = xbmcgui.Window(10000)
-                play_url = _build_play_url(bust_url, stream_headers)
-                home.setProperty("nzbdav.stream_url", play_url)
-                home.setProperty("nzbdav.stream_title", stream_url.rsplit("/", 1)[-1])
-                home.setProperty("nzbdav.active", "true")
-                return
-
-            li = xbmcgui.ListItem(path=proxy_url)
-            li.setContentLookup(False)
-
-            if stream_info.get("remux"):
-                xbmc.log(
-                    "NZB-DAV: Playing MP4 via remux proxy: {}".format(proxy_url),
-                    xbmc.LOGINFO,
-                )
-                li.setMimeType("video/x-matroska")
-
-                duration = stream_info.get("duration_seconds")
-                if duration:
-                    info_tag = li.getVideoInfoTag()
-                    info_tag.setDuration(int(duration))
-            else:
-                xbmc.log(
-                    "NZB-DAV: Playing MP4 via faststart proxy: {}".format(proxy_url),
-                    xbmc.LOGINFO,
-                )
-                li.setMimeType("video/mp4")
-
+            bust_url = _cache_bust_url(stream_url)
+            li = _make_playable_listitem(bust_url, stream_headers)
             xbmcplugin.setResolvedUrl(handle, True, li)
 
             home = xbmcgui.Window(10000)
-            home.setProperty("nzbdav.stream_url", proxy_url)
+            play_url = _build_play_url(bust_url, stream_headers)
+            home.setProperty("nzbdav.stream_url", play_url)
             home.setProperty("nzbdav.stream_title", stream_url.rsplit("/", 1)[-1])
             home.setProperty("nzbdav.active", "true")
             return
 
-    # MKV and fallback: play directly
+        li = xbmcgui.ListItem(path=proxy_url)
+        li.setContentLookup(False)
+        _apply_proxy_mime(li, stream_url, stream_info)
+
+        xbmcplugin.setResolvedUrl(handle, True, li)
+
+        home = xbmcgui.Window(10000)
+        home.setProperty("nzbdav.stream_url", proxy_url)
+        home.setProperty("nzbdav.stream_title", stream_url.rsplit("/", 1)[-1])
+        home.setProperty("nzbdav.active", "true")
+        return
+
     bust_url = _cache_bust_url(stream_url)
     play_url = _build_play_url(bust_url, stream_headers)
     xbmc.log(
-        "NZB-DAV: Playing direct (handle={}): {}".format(handle, bust_url),
+        "NZB-DAV: Playing direct (no proxy) (handle={}): {}".format(handle, bust_url),
         xbmc.LOGINFO,
     )
 
@@ -309,70 +317,45 @@ def _play_direct(handle, stream_url, stream_headers):
 
 
 def _play_via_proxy(stream_url, stream_headers):
-    """Play a stream (for resolve_and_play path).
+    """Play a stream for the resolve_and_play (service-side) path.
 
-    MP4 via faststart proxy (preferred) or MKV remux fallback, others direct.
+    Routes everything through the service proxy for the same reasons as
+    _play_direct — see that function's docstring.
     """
+    from resources.lib.stream_proxy import (
+        get_service_proxy_port,
+        prepare_stream_via_service,
+    )
 
-    lower_url = stream_url.lower()
-    is_mp4 = lower_url.endswith((".mp4", ".m4v"))
+    auth_header = None
+    if stream_headers and "Authorization" in stream_headers:
+        auth_header = stream_headers["Authorization"]
 
-    if is_mp4:
-        from resources.lib.stream_proxy import (
-            get_service_proxy_port,
-            prepare_stream_via_service,
+    service_port = get_service_proxy_port()
+    if service_port:
+        proxy_url, stream_info = prepare_stream_via_service(
+            service_port, stream_url, auth_header
         )
 
-        auth_header = None
-        if stream_headers and "Authorization" in stream_headers:
-            auth_header = stream_headers["Authorization"]
-
-        service_port = get_service_proxy_port()
-        if service_port:
-            proxy_url, stream_info = prepare_stream_via_service(
-                service_port, stream_url, auth_header
+        if stream_info.get("direct"):
+            xbmc.log(
+                "NZB-DAV: MP4 already faststart, direct play: {}".format(stream_url),
+                xbmc.LOGINFO,
             )
-
-            if stream_info.get("direct"):
-                # Already-faststart MP4 — play WebDAV URL directly
-                xbmc.log(
-                    "NZB-DAV: MP4 already faststart, direct play: {}".format(
-                        stream_url
-                    ),
-                    xbmc.LOGINFO,
-                )
-                bust_url = _cache_bust_url(stream_url)
-                li = _make_playable_listitem(bust_url, stream_headers)
-                xbmc.Player().play(li.getPath(), li)
-                return
-
-            li = xbmcgui.ListItem(path=proxy_url)
-            li.setContentLookup(False)
-
-            if stream_info.get("remux"):
-                xbmc.log(
-                    "NZB-DAV: Playing MP4 via remux proxy: {}".format(proxy_url),
-                    xbmc.LOGINFO,
-                )
-                li.setMimeType("video/x-matroska")
-
-                duration = stream_info.get("duration_seconds")
-                if duration:
-                    info_tag = li.getVideoInfoTag()
-                    info_tag.setDuration(int(duration))
-            else:
-                xbmc.log(
-                    "NZB-DAV: Playing MP4 via faststart proxy: {}".format(proxy_url),
-                    xbmc.LOGINFO,
-                )
-                li.setMimeType("video/mp4")
-
-            xbmc.Player().play(proxy_url, li)
+            bust_url = _cache_bust_url(stream_url)
+            li = _make_playable_listitem(bust_url, stream_headers)
+            xbmc.Player().play(li.getPath(), li)
             return
+
+        li = xbmcgui.ListItem(path=proxy_url)
+        li.setContentLookup(False)
+        _apply_proxy_mime(li, stream_url, stream_info)
+        xbmc.Player().play(proxy_url, li)
+        return
 
     bust_url = _cache_bust_url(stream_url)
     li = _make_playable_listitem(bust_url, stream_headers)
-    xbmc.log("NZB-DAV: Playing direct: {}".format(stream_url), xbmc.LOGINFO)
+    xbmc.log("NZB-DAV: Playing direct (no proxy): {}".format(stream_url), xbmc.LOGINFO)
     xbmc.Player().play(li.getPath(), li)
 
 

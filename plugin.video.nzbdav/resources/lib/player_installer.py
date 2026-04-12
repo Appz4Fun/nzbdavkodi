@@ -22,7 +22,10 @@ PLAYER_JSON = {
     "plugin": "plugin.video.nzbdav",
     "priority": 100,
     "is_resolvable": "true",
-    "play_movie": "plugin://plugin.video.nzbdav/play?type=movie&title={title}&year={year}&imdb={imdb}",
+    "play_movie": (
+        "plugin://plugin.video.nzbdav/play?type=movie"
+        "&title={title}&year={year}&imdb={imdb}&tmdb_id={tmdb_id}"
+    ),
     "play_episode": (
         "plugin://plugin.video.nzbdav/play?type=episode"
         "&title={showname}&year={showyear}&season={season}&episode={episode}"

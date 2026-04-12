@@ -8,6 +8,8 @@ from resources.lib.resolver import (
     _cache_bust_url,
     _clear_kodi_playback_state,
     _make_playable_listitem,
+    _play_direct,
+    _play_via_proxy,
     _poll_until_ready,
     _storage_to_webdav_path,
     resolve,
@@ -104,6 +106,91 @@ def test_cache_bust_url_preserves_existing_query():
     """If the URL already has a query string, append with &."""
     out = _cache_bust_url("http://webdav/movie.mkv?foo=bar")
     assert "?foo=bar&nzbdav_play=" in out
+
+
+# --- proxy-routing tests ---
+#
+# MKV and other non-MP4 files must route through the local stream proxy, not
+# play the WebDAV URL directly. If they go direct, Kodi 21 runs a PROPFIND
+# scan of the parent directory before Open; nzbdav's WebDAV returns
+# localhost:8080 hrefs which break Kodi's directory parser and cascade into
+# an "Unhandled exception" on Open.
+
+
+@patch("resources.lib.stream_proxy.prepare_stream_via_service")
+@patch("resources.lib.stream_proxy.get_service_proxy_port")
+@patch("resources.lib.resolver.xbmcplugin")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.xbmc")
+def test_play_direct_routes_mkv_through_proxy(
+    mock_xbmc, mock_gui, mock_plugin, mock_get_port, mock_prepare
+):
+    """MKV files must go through the stream proxy, not direct WebDAV."""
+    mock_get_port.return_value = 57800
+    mock_prepare.return_value = (
+        "http://127.0.0.1:57800/stream/abc",
+        {"remux": False, "faststart": False, "direct": False},
+    )
+
+    _play_direct(
+        1,
+        "http://webdav:8080/content/movie/movie.mkv",
+        {"Authorization": "Basic dXNlcjpwYXNz"},
+    )
+
+    mock_prepare.assert_called_once()
+    args = mock_prepare.call_args[0]
+    assert args[0] == 57800
+    assert args[1] == "http://webdav:8080/content/movie/movie.mkv"
+    mock_plugin.setResolvedUrl.assert_called_once()
+    # ListItem must be constructed with the proxy URL, not the WebDAV URL.
+    mock_gui.ListItem.assert_called_with(path="http://127.0.0.1:57800/stream/abc")
+
+
+@patch("resources.lib.stream_proxy.prepare_stream_via_service")
+@patch("resources.lib.stream_proxy.get_service_proxy_port")
+@patch("resources.lib.resolver.xbmcplugin")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.xbmc")
+def test_play_direct_mkv_sets_matroska_mime_on_passthrough(
+    mock_xbmc, mock_gui, mock_plugin, mock_get_port, mock_prepare
+):
+    """Pass-through proxy for MKV must advertise video/x-matroska to Kodi."""
+    mock_get_port.return_value = 57800
+    mock_prepare.return_value = (
+        "http://127.0.0.1:57800/stream/abc",
+        {"remux": False, "faststart": False, "direct": False},
+    )
+    listitem = MagicMock()
+    mock_gui.ListItem.return_value = listitem
+
+    _play_direct(1, "http://webdav:8080/content/movie/movie.mkv", None)
+
+    listitem.setMimeType.assert_called_with("video/x-matroska")
+
+
+@patch("resources.lib.stream_proxy.prepare_stream_via_service")
+@patch("resources.lib.stream_proxy.get_service_proxy_port")
+@patch("resources.lib.resolver.xbmc")
+def test_play_via_proxy_routes_mkv_through_proxy(
+    mock_xbmc, mock_get_port, mock_prepare
+):
+    """Service-side (resolve_and_play) path also routes MKV through proxy."""
+    mock_get_port.return_value = 57800
+    mock_prepare.return_value = (
+        "http://127.0.0.1:57800/stream/abc",
+        {"remux": False, "faststart": False, "direct": False},
+    )
+    player = MagicMock()
+    mock_xbmc.Player.return_value = player
+
+    with patch("resources.lib.resolver.xbmcgui"):
+        _play_via_proxy("http://webdav:8080/content/movie/movie.mkv", None)
+
+    mock_prepare.assert_called_once()
+    # Player must be given the proxy URL, not the WebDAV URL.
+    player.play.assert_called_once()
+    assert player.play.call_args[0][0] == "http://127.0.0.1:57800/stream/abc"
 
 
 # --- _clear_kodi_playback_state tests ---
