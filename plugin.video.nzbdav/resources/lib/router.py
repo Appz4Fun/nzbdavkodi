@@ -121,6 +121,13 @@ def _clean_params(params):
     return {k: ("" if v == "_" else v) for k, v in params.items()}
 
 
+def _show_error_dialog(message):
+    """Show a modal Kodi error dialog."""
+    import xbmcgui
+
+    xbmcgui.Dialog().ok(_addon_name(), message)
+
+
 def _tag_available(results):
     """Tag results that are already downloaded in nzbdav with _available flag."""
     from resources.lib.nzbdav_api import get_completed_names
@@ -269,7 +276,7 @@ def _handle_play(handle, params):
                 xbmc.LOGWARNING,
             )
             progress.close()
-            notify(_addon_name(), search_error, 5000)
+            _show_error_dialog(search_error)
             xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
             return
         if results:
@@ -414,9 +421,7 @@ def _handle_search(handle, params):
                 "NZB-DAV: Search stage: NZBHydra error — {}".format(search_error),
                 xbmc.LOGWARNING,
             )
-            from resources.lib.http_util import notify
-
-            notify(_addon_name(), search_error, 5000)
+            _show_error_dialog(search_error)
             xbmcplugin.endOfDirectory(handle, succeeded=False)
             return
         if results:

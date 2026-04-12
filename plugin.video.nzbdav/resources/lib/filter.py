@@ -467,9 +467,6 @@ def filter_results(results):
     filtered = _sort_results(filtered, settings)
     all_parsed = _sort_results(all_parsed, settings)
 
-    filtered = _dedup_results(filtered)
-    all_parsed = _dedup_results(all_parsed)
-
     max_results = settings["max_results"]
     if max_results > 0:
         filtered = filtered[:max_results]
@@ -479,22 +476,6 @@ def filter_results(results):
         xbmc.LOGDEBUG,
     )
     return filtered, all_parsed
-
-
-def _dedup_results(results):
-    """Merge duplicate NZBs (same title+size) from different indexers."""
-    seen = {}
-    deduped = []
-    for result in results:
-        key = (result["title"], result.get("size", ""))
-        if key in seen:
-            first = seen[key]
-            if first.get("indexer", "") != "Multiple":
-                first["indexer"] = "Multiple"
-        else:
-            seen[key] = result
-            deduped.append(result)
-    return deduped
 
 
 def _sort_results(results, settings):

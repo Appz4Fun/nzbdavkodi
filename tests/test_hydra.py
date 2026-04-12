@@ -88,7 +88,18 @@ def test_search_hydra_connection_error(mock_http, mock_settings):
 
     results, error = search_hydra("movie", "The Matrix")
     assert not results
-    assert error is not None
+    assert error == "NZBHydra unavailable: Connection refused"
+
+
+@patch("resources.lib.hydra._get_settings")
+@patch("resources.lib.hydra._http_get")
+def test_search_hydra_invalid_xml_reports_bad_response(mock_http, mock_settings):
+    mock_settings.return_value = ("http://hydra:5076", "testkey")
+    mock_http.return_value = "<html>NZBHydra is starting"
+
+    results, error = search_hydra("movie", "The Matrix")
+    assert not results
+    assert error.startswith("NZBHydra returned an invalid response:")
 
 
 # --- New tests ---
@@ -269,5 +280,4 @@ def test_search_hydra_returns_error_on_connection_failure(mock_http, mock_settin
 
     results, error = search_hydra("movie", "The Matrix")
     assert not results
-    assert error is not None
-    assert "failed" in error.lower() or "connection" in error.lower()
+    assert error == "NZBHydra unavailable: Connection refused"

@@ -9,6 +9,7 @@ from resources.lib.resolver import (
     _poll_until_ready,
     _storage_to_webdav_path,
     resolve,
+    resolve_and_play,
 )
 
 
@@ -480,7 +481,8 @@ def test_resolve_dialog_closed_on_exception(
     """Dialog must be closed even if an exception occurs during resolve."""
     mock_poll.return_value = (2, 60)
     mock_find.return_value = None
-    mock_submit.side_effect = RuntimeError("unexpected crash")
+    error_message = "unexpected crash " + ("details " * 20)
+    mock_submit.side_effect = RuntimeError(error_message)
 
     dialog = MagicMock()
     mock_gui.DialogProgress.return_value = dialog
@@ -489,6 +491,27 @@ def test_resolve_dialog_closed_on_exception(
 
     dialog.close.assert_called()
     mock_plugin.setResolvedUrl.assert_called_once()
+    mock_gui.Dialog.return_value.ok.assert_called_once_with(
+        "NZB-DAV", "Error: {}".format(error_message)
+    )
+
+
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver._poll_until_ready")
+@patch("resources.lib.resolver._get_poll_settings")
+def test_resolve_and_play_exception_dialog_preserves_long_message(
+    mock_poll, mock_poll_until_ready, mock_gui
+):
+    """Unexpected direct-play errors should show the full dialog message."""
+    mock_poll.return_value = (2, 60)
+    error_message = "direct playback crash " + ("details " * 20)
+    mock_poll_until_ready.side_effect = RuntimeError(error_message)
+
+    resolve_and_play("http://hydra/getnzb/abc", "movie.mkv")
+
+    mock_gui.Dialog.return_value.ok.assert_called_once_with(
+        "NZB-DAV", "Error: {}".format(error_message)
+    )
 
 
 @patch("resources.lib.resolver.find_completed_by_name")
@@ -766,7 +789,10 @@ def test_poll_until_ready_already_downloaded(
 @patch("resources.lib.resolver.xbmcgui")
 @patch(
     "resources.lib.resolver.get_job_history",
-    return_value={"status": "Failed", "fail_message": "CRC error in article"},
+    return_value={
+        "status": "Failed",
+        "fail_message": "CRC error in article " + ("details " * 30),
+    },
 )
 @patch("resources.lib.resolver.get_job_status", return_value=None)
 @patch("resources.lib.resolver.submit_nzb", return_value="nzo_xyz")
@@ -785,7 +811,9 @@ def test_poll_until_ready_history_failed_shows_fail_message(
     assert headers is None
     # Should show modal dialog with the actual fail_message
     mock_gui.Dialog.return_value.ok.assert_called_once()
-    assert "CRC error" in mock_gui.Dialog.return_value.ok.call_args[0][1]
+    assert mock_gui.Dialog.return_value.ok.call_args[0][
+        1
+    ] == "CRC error in article " + ("details " * 30)
 
 
 @patch("resources.lib.resolver.find_completed_by_name", return_value=None)

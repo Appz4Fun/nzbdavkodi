@@ -478,7 +478,7 @@ def _poll_until_ready(nzb_url, title, dialog, poll_interval, download_timeout):
                 ),
                 xbmc.LOGERROR,
             )
-            error_text = fail_msg[:120] if fail_msg else _string(30100)
+            error_text = fail_msg if fail_msg else _string(30100)
             xbmcgui.Dialog().ok(_addon_name(), error_text)
             return None, None
 
@@ -582,7 +582,7 @@ def resolve(handle, params):
             xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
     except Exception as e:
         xbmc.log("NZB-DAV: Unexpected error in resolve: {}".format(e), xbmc.LOGERROR)
-        xbmcgui.Dialog().ok(_addon_name(), "Error: {}".format(str(e)[:80]))
+        xbmcgui.Dialog().ok(_addon_name(), "Error: {}".format(str(e)))
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
         xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
     finally:
@@ -611,6 +611,6 @@ def resolve_and_play(nzb_url, title):
         xbmc.log(
             "NZB-DAV: Unexpected error in resolve_and_play: {}".format(e), xbmc.LOGERROR
         )
-        xbmcgui.Dialog().ok(_addon_name(), "Error: {}".format(str(e)[:80]))
+        xbmcgui.Dialog().ok(_addon_name(), "Error: {}".format(str(e)))
     finally:
         dialog.close()

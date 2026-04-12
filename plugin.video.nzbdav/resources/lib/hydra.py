@@ -14,6 +14,18 @@ from resources.lib.http_util import http_get as _http_get
 NEWZNAB_NS = "http://www.newznab.com/DTD/2010/feeds/attributes/"
 
 
+def _format_request_error(error):
+    """Return a user-facing request error without urllib wrapper noise."""
+    reason = getattr(error, "reason", None)
+    if reason:
+        return str(reason)
+    return str(error)
+
+
+def _hydra_unavailable_error(error):
+    return "NZBHydra unavailable: {}".format(_format_request_error(error))
+
+
 def _get_settings():
     """Read NZBHydra settings from Kodi addon config."""
     import xbmcaddon
@@ -83,9 +95,11 @@ def search_hydra(search_type, title, year="", imdb="", season="", episode=""):
         xml_text = _http_get(url)
     except (URLError, Exception) as e:
         xbmc.log("NZB-DAV: Hydra search request failed: {}".format(e), xbmc.LOGERROR)
-        return [], "Search failed: {}".format(str(e)[:80])
+        return [], _hydra_unavailable_error(e)
 
-    results = parse_results(xml_text)
+    results, parse_error = _parse_results_checked(xml_text)
+    if parse_error:
+        return [], parse_error
 
     # Fallback: if IMDB search returned nothing, retry with title
     if not results and imdb and title:
@@ -100,12 +114,14 @@ def search_hydra(search_type, title, year="", imdb="", season="", episode=""):
         fallback_url = "{}/api?{}".format(base_url, urlencode(params))
         try:
             xml_text = _http_get(fallback_url)
-            results = parse_results(xml_text)
+            results, parse_error = _parse_results_checked(xml_text)
+            if parse_error:
+                return [], parse_error
         except (URLError, Exception) as e:
             xbmc.log(
                 "NZB-DAV: Hydra title fallback failed: {}".format(e), xbmc.LOGERROR
             )
-            return [], "Search failed: {}".format(str(e)[:80])
+            return [], _hydra_unavailable_error(e)
 
     xbmc.log(
         "NZB-DAV: Hydra returned {} results for '{}'".format(len(results), title),
@@ -116,13 +132,25 @@ def search_hydra(search_type, title, year="", imdb="", season="", episode=""):
 
 def parse_results(xml_text):
     """Parse Newznab XML response into a list of result dicts."""
+    results, _ = _parse_results_checked(xml_text)
+    return results
+
+
+def _parse_results_checked(xml_text):
+    """Parse Newznab XML and return (results, error_message)."""
     try:
         root = ET.fromstring(xml_text)
     except ET.ParseError as e:
         xbmc.log(
             "NZB-DAV: Failed to parse Hydra XML response: {}".format(e), xbmc.LOGERROR
         )
-        return []
+        return [], "NZBHydra returned an invalid response: {}".format(e)
+
+    if root.tag != "rss":
+        xbmc.log(
+            "NZB-DAV: Unexpected Hydra XML root: {}".format(root.tag), xbmc.LOGERROR
+        )
+        return [], "NZBHydra returned an invalid response: expected RSS feed"
 
     results = []
     for item in root.iter("item"):
@@ -182,7 +210,7 @@ def parse_results(xml_text):
             }
         )
 
-    return results
+    return results, None
 
 
 def _get_text(element, tag):

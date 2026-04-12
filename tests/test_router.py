@@ -8,6 +8,8 @@ from resources.lib.router import (
     _clean_params,
     _format_info_line,
     _format_size,
+    _handle_play,
+    _handle_search,
     parse_params,
     parse_route,
     route,
@@ -270,3 +272,33 @@ def test_format_info_line_minimal():
     }
     label = _format_info_line(item)
     assert label == "N/A" or "Unknown" in label
+
+
+@patch("xbmcplugin.setResolvedUrl")
+@patch("xbmcgui.Dialog")
+@patch("resources.lib.hydra.search_hydra", return_value=([], "NZBHydra unavailable"))
+@patch("resources.lib.cache.get_cached", return_value=None)
+def test_handle_play_shows_hydra_errors_in_modal_dialog(
+    mock_cache, mock_search, mock_dialog, mock_resolved
+):
+    _handle_play(1, {"type": "movie", "title": "The Matrix"})
+
+    mock_dialog.return_value.ok.assert_called_once_with(
+        "NZB-DAV", "NZBHydra unavailable"
+    )
+    mock_resolved.assert_called_once()
+
+
+@patch("xbmcplugin.endOfDirectory")
+@patch("xbmcgui.Dialog")
+@patch("resources.lib.hydra.search_hydra", return_value=([], "NZBHydra unavailable"))
+@patch("resources.lib.cache.get_cached", return_value=None)
+def test_handle_search_shows_hydra_errors_in_modal_dialog(
+    mock_cache, mock_search, mock_dialog, mock_end
+):
+    _handle_search(1, {"type": "movie", "title": "The Matrix"})
+
+    mock_dialog.return_value.ok.assert_called_once_with(
+        "NZB-DAV", "NZBHydra unavailable"
+    )
+    mock_end.assert_called_once_with(1, succeeded=False)

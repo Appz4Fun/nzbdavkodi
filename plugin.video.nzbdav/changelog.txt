@@ -1,3 +1,8 @@
+v0.6.11 (2026-04-12)
+- Preserve full modal error dialog text where Kodi's Dialog API allows it
+- Show NZBHydra outages and invalid responses in modal dialogs
+- Keep duplicate NZB results visible instead of merging indexers
+
 v0.6.7 (2026-04-10)
 - Fix pylint W0621: remove redundant import os in _serve_temp_faststart
 
