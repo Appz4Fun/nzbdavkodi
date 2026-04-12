@@ -88,6 +88,13 @@ _MAX_TOTAL_ZERO_FILL = 67108864
 # Shared zero buffer reused across all pass-through responses.
 _ZERO_FILL_BUFFER = bytes(65536)
 
+# Socket write timeout for _serve_remux.  If Kodi stops reading from the
+# proxy socket without closing it (decoder stalls for too long, e.g. during
+# a long DB vacuum) wfile.write() would block forever and ffmpeg would keep
+# producing output into the void.  60s comfortably exceeds any normal
+# buffering stall on a healthy client while still bounding zombie lifetime.
+_REMUX_WRITE_TIMEOUT = 60
+
 
 def _find_ffmpeg():
     """Find an ffmpeg binary on the system."""
@@ -644,8 +651,22 @@ class _StreamHandler(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
 
+        # Give the socket a write timeout.  If Kodi stops consuming bytes
+        # without closing the TCP connection — which happens when Kodi's
+        # decoder is stalled by a long operation like a DB vacuum and the
+        # player enters limbo instead of firing onPlayBackStopped — the
+        # socket send buffer fills up and wfile.write() would block forever.
+        # A timeout here guarantees the loop eventually raises, runs the
+        # finally block, and kills ffmpeg instead of leaving a zombie.
+        try:
+            self.connection.settimeout(_REMUX_WRITE_TIMEOUT)
+        except (OSError, AttributeError):
+            pass
+
         # Stream ffmpeg output to Kodi.  Duration is written into the MKV
         # header by ffmpeg via -metadata DURATION= (see _build_ffmpeg_cmd).
+        import socket as _socket
+
         total = 0
         try:
             while True:
@@ -658,7 +679,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     current_pos = requested_start + total
                     ctx["current_byte_pos"] = current_pos
                     self.server.current_byte_pos = current_pos
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError, _socket.timeout):
             xbmc.log(
                 "NZB-DAV: Remux client disconnected after {} MB".format(
                     total // 1048576
@@ -908,18 +929,34 @@ class StreamProxy:
 
     def stop(self):
         """Stop the proxy server."""
-        if self._server:
-            with self._context_lock:
-                sessions = list(getattr(self._server, "stream_sessions", {}).values())
-                self._server.stream_sessions = {}
-            for ctx in sessions:
-                self._cleanup_session(ctx)
+        self.clear_sessions()
         if self._server:
             self._server.shutdown()
             self._server = None
         if self._thread:
             self._thread.join(timeout=5)
             self._thread = None
+
+    def clear_sessions(self):
+        """Tear down every registered session and kill its ffmpeg process.
+
+        Called from:
+        - stop() on service shutdown
+        - prepare_stream() on each new play, so a zombie ffmpeg from a
+          previous stream that Kodi abandoned without firing onPlayBackStopped
+          (e.g. DB-vacuum stall that freezes the decoder) doesn't keep
+          writing into a half-dead TCP socket forever
+        - NzbdavPlayer stop/end hooks for clean-stop cases
+        """
+        if not self._server:
+            return
+        with self._context_lock:
+            sessions = list(getattr(self._server, "stream_sessions", {}).values())
+            self._server.stream_sessions = {}
+            self._server.stream_context = None
+            self._server.active_ffmpeg = None
+        for ctx in sessions:
+            self._cleanup_session(ctx)
 
     @staticmethod
     def _try_faststart_layout(remote_url, content_length, auth_header):
@@ -1036,6 +1073,13 @@ class StreamProxy:
         faststart, and virtual_size.
         """
         _validate_url(remote_url)
+        # Tear down any previous session before starting a new one. Kodi only
+        # ever plays one stream at a time, so anything still in the table is
+        # garbage from a prior play — possibly with a zombie ffmpeg attached
+        # to a half-dead socket if Kodi stalled without firing
+        # onPlayBackStopped. Cleaning up here guarantees the next play gets a
+        # fresh proxy state and no stale ffmpeg hogging the upstream.
+        self.clear_sessions()
         content_type = self._detect_content_type(remote_url)
         lower_url = remote_url.lower()
         is_mp4 = lower_url.endswith((".mp4", ".m4v"))

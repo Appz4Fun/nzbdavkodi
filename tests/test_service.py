@@ -60,6 +60,49 @@ def test_on_playback_stopped_deactivates():
     assert player._state == PlaybackState.IDLE
 
 
+def test_on_playback_stopped_tears_down_proxy_session():
+    """onPlayBackStopped must call proxy.clear_sessions() so ffmpeg
+    remux processes don't linger after the user presses stop."""
+    from unittest.mock import MagicMock
+
+    proxy = MagicMock()
+    player = NzbdavPlayer(proxy=proxy)
+    player._state = PlaybackState.MONITORING
+
+    player.onPlayBackStopped()
+
+    proxy.clear_sessions.assert_called_once()
+
+
+def test_on_playback_ended_tears_down_proxy_session():
+    """Natural end-of-playback must also release the proxy session."""
+    from unittest.mock import MagicMock
+
+    proxy = MagicMock()
+    player = NzbdavPlayer(proxy=proxy)
+    player._state = PlaybackState.MONITORING
+
+    player.onPlayBackEnded()
+
+    proxy.clear_sessions.assert_called_once()
+
+
+def test_playback_stop_hook_survives_proxy_errors():
+    """A misbehaving proxy must not crash the Kodi player callback —
+    xbmc.Player callbacks run on Kodi's thread and an uncaught exception
+    can destabilize the whole addon service."""
+    from unittest.mock import MagicMock
+
+    proxy = MagicMock()
+    proxy.clear_sessions.side_effect = RuntimeError("boom")
+    player = NzbdavPlayer(proxy=proxy)
+    player._state = PlaybackState.MONITORING
+
+    player.onPlayBackStopped()
+
+    assert player._state == PlaybackState.IDLE
+
+
 def test_on_playback_error_sets_flag():
     """onPlayBackError transitions to ERROR when monitoring."""
     player = NzbdavPlayer()

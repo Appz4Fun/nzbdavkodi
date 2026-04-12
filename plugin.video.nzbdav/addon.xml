@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="plugin.video.nzbdav"
        name="NZB-DAV"
-       version="0.6.16"
+       version="0.6.17"
        provider-name="nzbdav">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
@@ -22,7 +22,12 @@
         <license>GPL-3.0-or-later</license>
         <source>https://github.com/xbmc4lyfe/nzbdavkodi</source>
         <website>https://xbmc4lyfe.github.io/nzbdavkodi/</website>
-        <news>v0.6.16
+        <news>v0.6.17
+- Fix zombie ffmpeg remux after a playback stall (e.g. when Kodi's automatic DB vacuum freezes the decoder). Kodi would stop consuming bytes without firing onPlayBackStopped, so ffmpeg kept writing into a dead TCP socket forever and the next replay hung with "Playback never started after 70s"
+- Tear down any prior stream session on every new prepare_stream, and add a 60s write timeout to the remux socket so stuck writes always unwind and kill ffmpeg
+- Hook NzbdavPlayer.onPlayBackStopped / onPlayBackEnded to clear active proxy sessions immediately on clean stops
+
+v0.6.16
 - Fix "Open - Unhandled exception" on &gt;4 GB MKV files on 32-bit Kodi builds (Amlogic CoreELEC and similar) by force-remuxing large non-MP4 files through ffmpeg — Kodi never sees a Content-Length that overflows its cache/file offsets
 - New setting "Force ffmpeg remux above (MB)" (default 4096, 0 disables) so 64-bit Kodi users can turn it off
 - Copy subtitles verbatim when remuxing MKV sources (PGS/DVD/HDMV bitmap subs can't be re-encoded to SRT and were aborting the remux)

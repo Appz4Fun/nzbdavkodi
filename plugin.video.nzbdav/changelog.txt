@@ -1,3 +1,8 @@
+v0.6.17 (2026-04-12)
+- Fix zombie ffmpeg remux process lingering after a Kodi stall; the next replay would hang with "Playback never started"
+- Tear down prior stream sessions on every new prepare_stream and add a 60s write timeout to the remux socket
+- Clear active proxy sessions from NzbdavPlayer onPlayBackStopped / onPlayBackEnded for immediate clean-stop tear-down
+
 v0.6.16 (2026-04-12)
 - Fix "Open - Unhandled exception" on >4 GB MKV files on 32-bit Kodi builds by force-remuxing large non-MP4 files through ffmpeg
 - New setting "Force ffmpeg remux above (MB)" (default 4096, 0 disables)

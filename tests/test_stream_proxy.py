@@ -378,10 +378,15 @@ def test_prepare_stream_rejects_invalid_scheme():
 
 
 def test_prepare_stream_uses_unique_session_urls():
+    """Each prepare_stream must produce a unique session URL, and the
+    previous session must be torn down so at most one session is live
+    at a time (prevents zombie ffmpeg processes from lingering after a
+    Kodi stall that never fired onPlayBackStopped)."""
     from resources.lib.stream_proxy import StreamProxy
 
     sp = StreamProxy.__new__(StreamProxy)
     sp._server = MagicMock()
+    sp._server.stream_sessions = {}
     sp._context_lock = __import__("threading").Lock()
     sp.port = 9999
 
@@ -390,7 +395,9 @@ def test_prepare_stream_uses_unique_session_urls():
         url2, _ = sp.prepare_stream("http://host/two.mkv")
 
     assert url1 != url2
-    assert len(sp._server.stream_sessions) == 2
+    # The second prepare_stream must have cleared the first session.
+    assert len(sp._server.stream_sessions) == 1
+    assert url2.rsplit("/", 1)[-1] in sp._server.stream_sessions
 
 
 def test_prepare_stream_falls_back_to_proxy_without_ffmpeg():
@@ -729,6 +736,119 @@ def test_serve_remux_explicit_seek_kills_existing():
 
     old_proc.kill.assert_called_once()
     old_proc.wait.assert_called_once()
+
+
+def test_serve_remux_write_timeout_exits_loop():
+    """If wfile.write raises socket.timeout (Kodi stopped consuming without
+    closing the TCP connection) the loop must break and the finally block
+    must kill ffmpeg. Otherwise a DB-vacuum-style stall leaves a zombie
+    ffmpeg writing into a dead socket forever."""
+    import socket
+
+    ctx = {
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "total_bytes": 15 * 1024 * 1024 * 1024,
+        "duration_seconds": 3600.0,
+        "seekable": True,
+        "remux": True,
+    }
+
+    handler = _make_handler_with_server(ctx)
+    # First write returns normally, second raises — simulates the socket
+    # send buffer filling up and the timeout firing on the second chunk.
+    handler.wfile.write.side_effect = [None, socket.timeout("timed out")]
+
+    mock_proc = MagicMock()
+    mock_proc.stdout.read.side_effect = [b"chunk1", b"chunk2", b""]
+    mock_proc.stderr.read.return_value = b""
+
+    with patch("resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc):
+        handler._serve_remux(ctx)
+
+    # ffmpeg MUST be killed on timeout — otherwise it leaks
+    mock_proc.kill.assert_called()
+    mock_proc.wait.assert_called()
+
+
+def test_serve_remux_sets_socket_write_timeout():
+    """The remux handler must set a socket write timeout on the connection
+    before streaming, so a blocked write from a half-dead client can't hang
+    the handler thread indefinitely."""
+    from resources.lib.stream_proxy import _REMUX_WRITE_TIMEOUT
+
+    ctx = {
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "total_bytes": 15 * 1024 * 1024 * 1024,
+        "duration_seconds": 3600.0,
+        "seekable": True,
+        "remux": True,
+    }
+
+    handler = _make_handler_with_server(ctx)
+    handler.connection = MagicMock()
+
+    mock_proc = MagicMock()
+    mock_proc.stdout.read.return_value = b""
+    mock_proc.stderr.read.return_value = b""
+
+    with patch("resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc):
+        handler._serve_remux(ctx)
+
+    handler.connection.settimeout.assert_called_once_with(_REMUX_WRITE_TIMEOUT)
+
+
+def test_prepare_stream_clears_previous_sessions():
+    """A second prepare_stream call must tear down ffmpeg processes from
+    any prior session before registering the new one. Prevents zombie
+    remux ffmpegs from surviving across Kodi plays when the player stalls
+    without firing onPlayBackStopped."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_sessions = {}
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 9999
+
+    # First play — set up a session with a fake-running ffmpeg attached.
+    with patch.object(sp, "_get_content_length", return_value=100000):
+        sp.prepare_stream("http://host/one.mkv")
+    old_session = next(iter(sp._server.stream_sessions.values()))
+    old_proc = MagicMock()
+    old_session["active_ffmpeg"] = old_proc
+
+    # Second play — the old ffmpeg must be killed, the old session dropped.
+    with patch.object(sp, "_get_content_length", return_value=200000):
+        sp.prepare_stream("http://host/two.mkv")
+
+    old_proc.kill.assert_called_once()
+    old_proc.wait.assert_called_once()
+    assert len(sp._server.stream_sessions) == 1
+
+
+def test_clear_sessions_kills_all_ffmpegs():
+    """StreamProxy.clear_sessions must kill every registered ffmpeg."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._context_lock = __import__("threading").Lock()
+
+    proc_a, proc_b = MagicMock(), MagicMock()
+    sp._server.stream_sessions = {
+        "a": {"active_ffmpeg": proc_a},
+        "b": {"active_ffmpeg": proc_b},
+    }
+
+    sp.clear_sessions()
+
+    proc_a.kill.assert_called_once()
+    proc_b.kill.assert_called_once()
+    assert sp._server.stream_sessions == {}
 
 
 def test_serve_remux_non_seekable_no_ss():

@@ -66,7 +66,7 @@ class NzbdavPlayer(xbmc.Player):
     (i.e. without the service running).
     """
 
-    def __init__(self):
+    def __init__(self, proxy=None):
         super().__init__()
         self._state = PlaybackState.IDLE
         self._stream_url = ""
@@ -76,6 +76,21 @@ class NzbdavPlayer(xbmc.Player):
         self._av_started = False
         self._play_time = 0.0
         self._monitor = xbmc.Monitor()
+        self._proxy = proxy
+
+    def _cleanup_proxy_session(self):
+        """Kill any active proxy ffmpeg processes.
+
+        Called from onPlayBackStopped / onPlayBackEnded so a clean stop
+        immediately tears down the remux chain instead of leaving ffmpeg
+        running until the next prepare_stream call discovers it.
+        """
+        if self._proxy is None:
+            return
+        try:
+            self._proxy.clear_sessions()
+        except Exception:  # noqa: BLE001 — proxy teardown must never crash the hook
+            pass
 
     @staticmethod
     def _read_settings():
@@ -133,6 +148,7 @@ class NzbdavPlayer(xbmc.Player):
                 xbmc.LOGINFO,
             )
             self._state = PlaybackState.IDLE
+            self._cleanup_proxy_session()
 
     def onPlayBackEnded(self):
         """Mark stream inactive when playback finishes naturally."""
@@ -142,6 +158,7 @@ class NzbdavPlayer(xbmc.Player):
                 xbmc.LOGINFO,
             )
             self._state = PlaybackState.IDLE
+            self._cleanup_proxy_session()
 
     def onPlayBackError(self):
         """Transition to ERROR state. Dialogs are shown from tick().
@@ -273,7 +290,6 @@ class NzbdavPlayer(xbmc.Player):
 def main():
     """Service entry point — runs for the lifetime of Kodi."""
     monitor = xbmc.Monitor()
-    player = NzbdavPlayer()
 
     # Start the stream proxy in this long-lived service process.
     # Plugin scripts are short-lived — their daemon threads get killed
@@ -282,6 +298,11 @@ def main():
     proxy = StreamProxy()
     proxy.start()
     _HOME_WINDOW.setProperty(_PROP_PROXY_PORT, str(proxy.port))
+
+    # Pass the proxy to the player so stop/end callbacks can tear down
+    # active remux ffmpeg processes immediately instead of leaving them
+    # running until the next prepare_stream call.
+    player = NzbdavPlayer(proxy=proxy)
     xbmc.log(
         "NZB-DAV: Service started (proxy on port {})".format(proxy.port),
         xbmc.LOGINFO,
