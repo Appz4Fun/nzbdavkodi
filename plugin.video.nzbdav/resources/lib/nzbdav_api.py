@@ -8,17 +8,27 @@ from urllib.error import URLError
 from urllib.parse import urlencode
 
 import xbmc
+import xbmcaddon
 
 from resources.lib.http_util import http_get as _http_get
 
+_DEFAULT_SUBMIT_TIMEOUT = 30
+
 
 def _get_settings():
-    import xbmcaddon
-
     addon = xbmcaddon.Addon()
     url = addon.getSetting("nzbdav_url").rstrip("/")
     api_key = addon.getSetting("nzbdav_api_key")
     return url, api_key
+
+
+def _get_submit_timeout():
+    """Read the configurable submit timeout from settings, default 30s."""
+    try:
+        raw = xbmcaddon.Addon().getSetting("submit_timeout")
+        return int(raw) if raw else _DEFAULT_SUBMIT_TIMEOUT
+    except (ValueError, TypeError):
+        return _DEFAULT_SUBMIT_TIMEOUT
 
 
 def submit_nzb(nzb_url, nzb_name=""):
@@ -53,9 +63,13 @@ def submit_nzb(nzb_url, nzb_name=""):
     url = "{}/api?{}".format(base_url, urlencode(params))
     from resources.lib.http_util import redact_url
 
-    xbmc.log("NZB-DAV: Submit NZB URL: {}".format(redact_url(url)), xbmc.LOGDEBUG)
+    timeout = _get_submit_timeout()
+    xbmc.log(
+        "NZB-DAV: Submit NZB URL (timeout={}s): {}".format(timeout, redact_url(url)),
+        xbmc.LOGDEBUG,
+    )
     try:
-        response_text = _http_get(url)
+        response_text = _http_get(url, timeout=timeout)
         response = json.loads(response_text)
     except (URLError, json.JSONDecodeError, Exception) as e:
         xbmc.log("NZB-DAV: Submit NZB request failed: {}".format(e), xbmc.LOGERROR)

@@ -80,6 +80,7 @@
 		<setting label="30068" type="lsep" />
 		<setting id="poll_interval" label="30069" type="number" default="5" />
 		<setting id="download_timeout" label="30070" type="number" default="3600" />
+		<setting id="submit_timeout" label="30122" type="number" default="30" />
 		<setting label="30071" type="lsep" />
 		<setting id="cache_ttl" label="30072" type="number" default="300" />
 		<setting label="30073" type="lsep" />

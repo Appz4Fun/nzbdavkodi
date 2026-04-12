@@ -5,6 +5,8 @@ import json
 from unittest.mock import patch
 
 from resources.lib.nzbdav_api import (
+    _DEFAULT_SUBMIT_TIMEOUT,
+    _get_submit_timeout,
     get_completed_names,
     get_job_history,
     get_job_status,
@@ -26,6 +28,41 @@ def test_submit_nzb_returns_nzo_id(mock_http, mock_settings):
     call_url = mock_http.call_args[0][0]
     assert "mode=addurl" in call_url
     assert "apikey=testkey" in call_url
+
+
+@patch("resources.lib.nzbdav_api._get_submit_timeout")
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_submit_nzb_passes_configured_timeout(mock_http, mock_settings, mock_timeout):
+    """submit_nzb should read the submit_timeout setting and pass it to http_get."""
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_timeout.return_value = 90
+    mock_http.return_value = json.dumps({"status": True, "nzo_ids": ["nzo_1"]})
+
+    submit_nzb("http://hydra:5076/getnzb/abc123", "Test")
+
+    assert mock_http.call_args.kwargs["timeout"] == 90
+
+
+@patch("resources.lib.nzbdav_api.xbmcaddon")
+def test_get_submit_timeout_reads_setting(mock_xbmcaddon):
+    """_get_submit_timeout returns the parsed setting value."""
+    mock_xbmcaddon.Addon.return_value.getSetting.return_value = "120"
+    assert _get_submit_timeout() == 120
+
+
+@patch("resources.lib.nzbdav_api.xbmcaddon")
+def test_get_submit_timeout_falls_back_on_empty(mock_xbmcaddon):
+    """_get_submit_timeout returns the default when the setting is empty."""
+    mock_xbmcaddon.Addon.return_value.getSetting.return_value = ""
+    assert _get_submit_timeout() == _DEFAULT_SUBMIT_TIMEOUT
+
+
+@patch("resources.lib.nzbdav_api.xbmcaddon")
+def test_get_submit_timeout_falls_back_on_garbage(mock_xbmcaddon):
+    """_get_submit_timeout returns the default when the setting is non-numeric."""
+    mock_xbmcaddon.Addon.return_value.getSetting.return_value = "not a number"
+    assert _get_submit_timeout() == _DEFAULT_SUBMIT_TIMEOUT
 
 
 @patch("resources.lib.nzbdav_api._get_settings")

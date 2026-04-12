@@ -39,6 +39,7 @@ _FALLBACK_STRINGS = {
     30111: "Sorted by relevance",
     30112: "Showing {} of {} sources after filters",
     30120: "Completed but no video file found on WebDAV",
+    30122: "NZB submit timeout (seconds)",
 }
 
 
