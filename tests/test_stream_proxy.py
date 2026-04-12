@@ -845,3 +845,184 @@ def test_head_uses_session_path_context():
 
     handler.send_response.assert_called_once_with(200)
     assert ctx["last_access"] > 0
+
+
+# ---------------------------------------------------------------------------
+# _serve_proxy — pass-through with zero-fill recovery for missing articles
+# ---------------------------------------------------------------------------
+
+
+def _mock_urlopen_response(chunks, status=206):
+    """Build a mock urlopen-returned object with given byte chunks."""
+    resp = MagicMock()
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=False)
+    data = list(chunks) + [b""]
+    resp.read = MagicMock(side_effect=data)
+    resp.status = status
+    resp.getcode = MagicMock(return_value=status)
+    resp.close = MagicMock()
+    return resp
+
+
+def _collect_written(handler):
+    """Return all bytes written to handler.wfile as a single bytes object."""
+    total = b""
+    for call in handler.wfile.write.call_args_list:
+        arg = call[0][0]
+        total += bytes(arg)
+    return total
+
+
+def test_serve_proxy_streams_happy_path():
+    """Upstream delivers all bytes — client gets them verbatim."""
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 2048,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-2047")
+
+    payload = b"A" * 2048
+    with patch(
+        "resources.lib.stream_proxy.urlopen",
+        return_value=_mock_urlopen_response([payload]),
+    ):
+        handler._serve_proxy(ctx)
+
+    handler.send_response.assert_called_once_with(206)
+    assert _collect_written(handler) == payload
+
+
+def test_serve_proxy_zero_fills_on_upstream_failure():
+    """Upstream cuts out mid-stream — proxy probes, zero-fills, resumes."""
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 20 * 1048576,
+    }
+    handler = _make_handler_with_server(
+        ctx, range_header="bytes=0-{}".format(20 * 1048576 - 1)
+    )
+
+    # Responses in order:
+    # 1. Initial range 0..end: delivers 1 MB of real bytes then upstream closes
+    # 2. Skip probe at +1 MB: success, returns 64 bytes
+    # 3. Resume stream at offset 2M..end: delivers remaining 18 MB
+    first_mb = b"X" * 1048576
+    initial = _mock_urlopen_response([first_mb])
+    probe_1mb = _mock_urlopen_response([b"Y" * 64])
+    resume_payload = b"Z" * (18 * 1048576)
+    resume = _mock_urlopen_response([resume_payload])
+
+    responses = iter([initial, probe_1mb, resume])
+
+    with patch(
+        "resources.lib.stream_proxy.urlopen",
+        side_effect=lambda *a, **kw: next(responses),
+    ), patch("resources.lib.stream_proxy.time.sleep"):
+        handler._serve_proxy(ctx)
+
+    written = _collect_written(handler)
+    assert len(written) == 20 * 1048576
+    assert written[:1048576] == first_mb
+    # Bytes 1M..2M are zero-fill (skip of 1 MB after the 1 MB already served).
+    assert written[1048576 : 2 * 1048576] == bytes(1048576)
+    assert written[2 * 1048576 :] == resume_payload
+
+
+def test_serve_proxy_retries_probes_when_upstream_briefly_down():
+    """If all early probes fail fast, retry with backoff before giving up."""
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 8 * 1048576,
+    }
+    handler = _make_handler_with_server(
+        ctx, range_header="bytes=0-{}".format(8 * 1048576 - 1)
+    )
+
+    first_chunk = b"X" * 1048576
+    initial = _mock_urlopen_response([first_chunk])
+    # First two probe attempts raise ConnectionRefusedError (instant fail),
+    # third attempt succeeds — simulates a brief upstream restart.
+    probe_refused_1 = MagicMock()
+    probe_refused_1.__enter__ = MagicMock(side_effect=ConnectionRefusedError())
+    probe_refused_2 = MagicMock()
+    probe_refused_2.__enter__ = MagicMock(side_effect=ConnectionRefusedError())
+    probe_success = _mock_urlopen_response([b"Y" * 64])
+
+    resume_payload = b"Z" * (6 * 1048576)
+    resume = _mock_urlopen_response([resume_payload])
+
+    responses = iter([initial, probe_refused_1, probe_refused_2, probe_success, resume])
+
+    with patch(
+        "resources.lib.stream_proxy.urlopen",
+        side_effect=lambda *a, **kw: next(responses),
+    ), patch("resources.lib.stream_proxy.time.sleep") as mock_sleep:
+        handler._serve_proxy(ctx)
+
+    # sleep was called at least twice (between retry attempts).
+    assert mock_sleep.call_count >= 2
+    written = _collect_written(handler)
+    assert len(written) == 8 * 1048576
+    assert written[:1048576] == first_chunk
+    assert written[2 * 1048576 :] == resume_payload
+
+
+def test_serve_proxy_zero_fills_remainder_when_recovery_exhausted():
+    """All skip probes fail — zero-fill the rest of the committed response."""
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 8 * 1048576,
+    }
+    handler = _make_handler_with_server(
+        ctx, range_header="bytes=0-{}".format(8 * 1048576 - 1)
+    )
+
+    first_chunk = b"X" * 512000
+    initial = _mock_urlopen_response([first_chunk])
+
+    def _fail_probe(*args, **kwargs):
+        raise OSError("article not found")
+
+    responses = iter([initial])
+
+    def _dispatch(*args, **kwargs):
+        try:
+            return next(responses)
+        except StopIteration:
+            return _fail_probe()
+
+    with patch("resources.lib.stream_proxy.urlopen", side_effect=_dispatch), patch(
+        "resources.lib.stream_proxy.time.sleep"
+    ):
+        handler._serve_proxy(ctx)
+
+    written = _collect_written(handler)
+    assert len(written) == 8 * 1048576
+    assert written[:512000] == first_chunk
+    # Everything after the real bytes is zero-filled.
+    assert written[512000:] == bytes(8 * 1048576 - 512000)
+
+
+def test_serve_proxy_rejects_bad_range():
+    """An unparseable Range header still returns 416 without emitting headers."""
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 1000,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=banana")
+
+    handler._serve_proxy(ctx)
+
+    handler.send_error.assert_called_once_with(416)
+    handler.send_response.assert_not_called()

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="plugin.video.nzbdav"
        name="NZB-DAV"
-       version="0.6.14"
+       version="0.6.15"
        provider-name="nzbdav">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
@@ -22,7 +22,11 @@
         <license>GPL-3.0-or-later</license>
         <source>https://github.com/xbmc4lyfe/nzbdavkodi</source>
         <website>https://xbmc4lyfe.github.io/nzbdavkodi/</website>
-        <news>v0.6.14
+        <news>v0.6.15
+- Stream proxy survives mid-playback upstream failures (missing usenet articles, brief nzbdav restarts) by probing forward to find a readable offset, zero-filling the gap, and resuming the stream — no more black screen / "Playback failed" dialog
+- Recovery uses retry-with-backoff (up to 30 s) so transient upstream unavailability gets a chance to come back before the region is declared unrecoverable
+
+v0.6.14
 - Fix MKV playback failing with "Playback failed to start" / "Unhandled exception"
 - Route all file types through the local stream proxy so Kodi never talks to the WebDAV server directly, avoiding a PROPFIND parent-directory scan that cascaded into an Open failure
 - Forward tmdb_id in the TMDBHelper play_movie template so the replay-bookmark cleanup actually matches movie entries

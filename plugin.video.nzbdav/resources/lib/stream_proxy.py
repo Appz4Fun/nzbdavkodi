@@ -68,6 +68,26 @@ _FFMPEG_PATHS = [
     "/storage/.opt/bin/ffmpeg",
 ]
 
+# Pass-through proxy recovery constants
+_UPSTREAM_OPEN_TIMEOUT = 30
+_SKIP_PROBE_TIMEOUT = 10
+# Geometric skip sizes for probing past a bad article region. 1 MB covers a
+# single missing article (~700 KB). 16 MB covers a cluster of ~20 articles.
+_SKIP_PROBE_SIZES = (1048576, 4194304, 16777216)
+# When a probe fails fast (ConnectionRefused from docker-proxy during nzbdav
+# restart, TCP RST, or immediate HTTP error) we back off and retry before
+# moving to the next skip size. This gives a briefly-unavailable upstream a
+# chance to recover instead of declaring the stream dead in milliseconds.
+_PROBE_RETRY_DELAYS = (2, 4, 6, 8)
+# Wall-clock budget for a single recovery attempt. After this the proxy
+# zero-fills the remainder so the client response always completes.
+_MAX_RECOVERY_SECONDS = 30
+# Cap zero-filled bytes per response to prevent runaway silent playback when
+# an NZB is mostly corrupt. 64 MB ≈ several seconds of 4K REMUX video.
+_MAX_TOTAL_ZERO_FILL = 67108864
+# Shared zero buffer reused across all pass-through responses.
+_ZERO_FILL_BUFFER = bytes(65536)
+
 
 def _find_ffmpeg():
     """Find an ffmpeg binary on the system."""
@@ -633,7 +653,16 @@ class _StreamHandler(BaseHTTPRequestHandler):
             )
 
     def _serve_proxy(self, ctx):
-        """Proxy range requests directly to remote."""
+        """Proxy range requests to remote with missing-article recovery.
+
+        Missing or unfetchable usenet articles cause nzbdav to either 416 or
+        hang mid-stream on the byte ranges that depend on them. Rather than
+        killing playback with a black screen, this routine streams what
+        upstream can serve, probes forward to locate a readable offset past
+        the bad region, zero-fills the gap, and resumes. MKV/MP4 demuxers
+        typically tolerate a few seconds of corrupted bytes as a brief
+        playback glitch.
+        """
         content_length = ctx["content_length"]
         range_header = self.headers.get("Range")
 
@@ -645,39 +674,153 @@ class _StreamHandler(BaseHTTPRequestHandler):
         else:
             start, end = 0, content_length - 1
 
+        total_bytes = end - start + 1
+        self.send_response(206)
+        self.send_header("Content-Type", ctx["content_type"])
+        self.send_header("Content-Length", str(total_bytes))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header(
+            "Content-Range", "bytes {}-{}/{}".format(start, end, content_length)
+        )
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+
+        current = start
+        total_skipped = 0
+
         try:
-            req = Request(ctx["remote_url"])
-            req.add_header("Range", "bytes={}-{}".format(start, end))
-            if ctx.get("auth_header"):
-                req.add_header("Authorization", ctx["auth_header"])
+            while current <= end:
+                written = self._stream_upstream_range(ctx, current, end)
+                current += written
+                if current > end:
+                    return
 
-            # 2-minute timeout: large WebDAV files over a local LAN can be
-            # slow to begin transferring; 120 s avoids a premature error while
-            # still bounding the hang if the server goes silent mid-stream.
-            with urlopen(req, timeout=120) as resp:  # nosec B310
-                self.send_response(206)
-                self.send_header("Content-Type", ctx["content_type"])
-                self.send_header("Content-Length", str(end - start + 1))
-                self.send_header("Accept-Ranges", "bytes")
-                self.send_header(
-                    "Content-Range",
-                    "bytes {}-{}/{}".format(start, end, content_length),
+                remaining = end - current + 1
+                skip = self._find_skip_offset(ctx, current, end)
+
+                if skip is None or total_skipped + skip > _MAX_TOTAL_ZERO_FILL:
+                    xbmc.log(
+                        "NZB-DAV: Zero-fill recovery exhausted at byte {} "
+                        "(filling remaining {} bytes)".format(current, remaining),
+                        xbmc.LOGERROR,
+                    )
+                    self._write_zeros(remaining)
+                    return
+
+                self._write_zeros(skip)
+                total_skipped += skip
+                current += skip
+                xbmc.log(
+                    "NZB-DAV: Zero-filled {} bytes at offset {} to skip bad "
+                    "usenet articles".format(skip, current - skip),
+                    xbmc.LOGWARNING,
                 )
-                self.send_header("Connection", "keep-alive")
-                self.end_headers()
-
-                while True:
-                    # 1 MB: balances memory pressure and the number of write()
-                    # syscalls when proxying large files.
-                    chunk = resp.read(1048576)
-                    if not chunk:
-                        break
-                    self.wfile.write(chunk)
         except (BrokenPipeError, ConnectionResetError):
             pass
+
+    def _stream_upstream_range(self, ctx, start, end):
+        """Stream bytes from upstream to the client.
+
+        Returns the count of bytes successfully written to the client.
+        A short return indicates upstream failed or went silent; the caller
+        is responsible for recovery. BrokenPipeError / ConnectionResetError
+        propagate out so the caller can abort cleanly.
+        """
+        req = Request(ctx["remote_url"])
+        req.add_header("Range", "bytes={}-{}".format(start, end))
+        if ctx.get("auth_header"):
+            req.add_header("Authorization", ctx["auth_header"])
+
+        written = 0
+        try:
+            resp = urlopen(req, timeout=_UPSTREAM_OPEN_TIMEOUT)  # nosec B310
         except (OSError, ValueError) as e:
-            xbmc.log("NZB-DAV: Proxy range failed: {}".format(e), xbmc.LOGERROR)
-            _notify_error(e)
+            xbmc.log(
+                "NZB-DAV: Proxy upstream open failed at byte {}: {}".format(start, e),
+                xbmc.LOGWARNING,
+            )
+            return 0
+
+        try:
+            while True:
+                try:
+                    chunk = resp.read(1048576)
+                except (OSError, ValueError) as e:
+                    xbmc.log(
+                        "NZB-DAV: Proxy upstream read failed at byte {}: {}".format(
+                            start + written, e
+                        ),
+                        xbmc.LOGWARNING,
+                    )
+                    return written
+                if not chunk:
+                    return written
+                self.wfile.write(chunk)
+                written += len(chunk)
+        finally:
+            try:
+                resp.close()
+            except OSError:
+                pass
+
+    def _find_skip_offset(self, ctx, failed_byte, range_end):
+        """Probe forward to find a skip size past a bad article region.
+
+        Tries progressively larger skips and confirms upstream can serve a
+        small range starting at the new offset. Each skip size is retried
+        with backoff so a briefly-unavailable upstream (restart, transient
+        network blip) has a chance to come back before we declare the
+        region unrecoverable. Returns the skip in bytes or None if the
+        recovery budget is exhausted.
+        """
+        start_time = time.time()
+        for skip in _SKIP_PROBE_SIZES:
+            target = failed_byte + skip
+            if target > range_end:
+                return None
+            probe_end = min(target + 1023, range_end)
+
+            delays = (0,) + _PROBE_RETRY_DELAYS
+            for delay in delays:
+                if time.time() - start_time >= _MAX_RECOVERY_SECONDS:
+                    return None
+                if delay:
+                    time.sleep(delay)
+                req = Request(ctx["remote_url"])
+                req.add_header("Range", "bytes={}-{}".format(target, probe_end))
+                if ctx.get("auth_header"):
+                    req.add_header("Authorization", ctx["auth_header"])
+                try:
+                    with urlopen(
+                        req, timeout=_SKIP_PROBE_TIMEOUT
+                    ) as resp:  # nosec B310
+                        status = getattr(resp, "status", None) or resp.getcode()
+                        if status in (200, 206):
+                            resp.read(64)
+                            elapsed = time.time() - start_time
+                            xbmc.log(
+                                "NZB-DAV: Probe succeeded at +{} bytes after "
+                                "{:.1f}s".format(skip, elapsed),
+                                xbmc.LOGINFO,
+                            )
+                            return skip
+                except (OSError, ValueError) as e:
+                    xbmc.log(
+                        "NZB-DAV: Probe at +{} bytes failed ({}): {}".format(
+                            skip, type(e).__name__, e
+                        ),
+                        xbmc.LOGDEBUG,
+                    )
+                    continue
+        return None
+
+    def _write_zeros(self, count):
+        """Write 'count' zero bytes to the client in fixed-size chunks."""
+        remaining = count
+        while remaining > 0:
+            chunk_size = min(remaining, len(_ZERO_FILL_BUFFER))
+            self.wfile.write(_ZERO_FILL_BUFFER[:chunk_size])
+            remaining -= chunk_size
 
     @staticmethod
     def _parse_range(range_header, content_length):
