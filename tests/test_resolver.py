@@ -109,6 +109,29 @@ def test_cache_bust_url_preserves_existing_query():
 # --- _clear_kodi_playback_state tests ---
 
 
+_FAKE_VIDEOS_DB_SCHEMA = """
+CREATE TABLE files (
+    idFile INTEGER PRIMARY KEY,
+    idPath INTEGER,
+    strFilename TEXT
+);
+CREATE TABLE bookmark (
+    idBookmark INTEGER PRIMARY KEY,
+    idFile INTEGER,
+    timeInSeconds REAL
+);
+CREATE TABLE settings (
+    idFile INTEGER PRIMARY KEY,
+    ResumeTime INTEGER
+);
+CREATE TABLE streamdetails (
+    idFile INTEGER,
+    iStreamType INTEGER,
+    strVideoCodec TEXT
+);
+"""
+
+
 def _build_fake_videos_db(tmp_path):
     """Build a minimal MyVideos131.db matching Kodi's schema."""
     import sqlite3
@@ -116,27 +139,7 @@ def _build_fake_videos_db(tmp_path):
     db = tmp_path / "MyVideos131.db"
     conn = sqlite3.connect(str(db))
     cur = conn.cursor()
-    cur.executescript("""
-        CREATE TABLE files (
-            idFile INTEGER PRIMARY KEY,
-            idPath INTEGER,
-            strFilename TEXT
-        );
-        CREATE TABLE bookmark (
-            idBookmark INTEGER PRIMARY KEY,
-            idFile INTEGER,
-            timeInSeconds REAL
-        );
-        CREATE TABLE settings (
-            idFile INTEGER PRIMARY KEY,
-            ResumeTime INTEGER
-        );
-        CREATE TABLE streamdetails (
-            idFile INTEGER,
-            iStreamType INTEGER,
-            strVideoCodec TEXT
-        );
-        """)
+    cur.executescript(_FAKE_VIDEOS_DB_SCHEMA)
     conn.commit()
     conn.close()
     return db
