@@ -98,6 +98,30 @@ def _find_ffmpeg():
     return None
 
 
+# Default threshold above which non-MP4 files are force-remuxed through
+# ffmpeg instead of served as HTTP pass-through. 4 GiB matches the 32-bit
+# file offset boundary that triggers Kodi's `Open - Unhandled exception`
+# on Amlogic/CoreELEC builds. Setting to 0 disables force remux entirely.
+_DEFAULT_FORCE_REMUX_THRESHOLD_MB = 4096
+
+
+def _get_force_remux_threshold_bytes():
+    """Return the remux-force threshold in bytes, or 0 to disable."""
+    try:
+        import xbmcaddon
+
+        raw = xbmcaddon.Addon().getSetting("force_remux_threshold_mb")
+    except Exception:  # noqa: BLE001 — Kodi module may not exist
+        raw = None
+    try:
+        mb = int(raw) if raw not in (None, "") else _DEFAULT_FORCE_REMUX_THRESHOLD_MB
+    except (TypeError, ValueError):
+        mb = _DEFAULT_FORCE_REMUX_THRESHOLD_MB
+    if mb <= 0:
+        return 0
+    return mb * 1024 * 1024
+
+
 def _validate_url(url):
     """Reject URLs with unexpected schemes to prevent command injection."""
     if not url or not url.startswith(("http://", "https://")):
@@ -329,13 +353,19 @@ class _StreamHandler(BaseHTTPRequestHandler):
         # Use explicit per-stream copy to avoid -c copy overriding -c:s srt
         cmd.extend(["-c:v", "copy", "-c:a", "copy"])
 
-        # Subtitle conversion (toggleable via setting)
+        # Subtitle handling (toggleable via setting).
+        # For MP4 input we convert text subs (mov_text/TX3G) to SRT so MKV
+        # output is more compatible.  For MKV input we must use `copy` —
+        # PGS/DVD/HDMV bitmap subs can't be re-encoded to SRT and would
+        # abort the remux; ASS/SSA/SRT all copy fine into MKV anyway.
         try:
             import xbmcaddon
 
             convert_subs = xbmcaddon.Addon().getSetting("proxy_convert_subs")
             if convert_subs != "false":
-                cmd.extend(["-map", "0:s?", "-c:s", "srt"])
+                src_is_mkv = input_url.split("?", 1)[0].lower().endswith(".mkv")
+                sub_codec = "copy" if src_is_mkv else "srt"
+                cmd.extend(["-map", "0:s?", "-c:s", sub_codec])
         except Exception:  # noqa: BLE001 — Kodi module may not exist
             pass  # outside Kodi context (tests), skip subtitle setting
 
@@ -558,7 +588,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
 
         cmd = self._build_ffmpeg_cmd(ctx, seek_seconds=seek_seconds)
         xbmc.log(
-            "NZB-DAV: Remuxing MP4->MKV (seek={})".format(seek_seconds),
+            "NZB-DAV: Remuxing to MKV (seek={})".format(seek_seconds),
             xbmc.LOGINFO,
         )
 
@@ -1123,13 +1153,49 @@ class StreamProxy:
                     }
         else:
             content_length = self._get_content_length(remote_url, auth_header)
-            ctx = {
-                "remote_url": remote_url,
-                "auth_header": auth_header,
-                "content_length": content_length,
-                "content_type": content_type,
-                "remux": False,
-            }
+            threshold = _get_force_remux_threshold_bytes()
+            needs_remux = bool(threshold) and content_length >= threshold
+            ffmpeg_path = _find_ffmpeg() if needs_remux else None
+            if ffmpeg_path:
+                # 32-bit Kodi builds (Amlogic CoreELEC and similar) throw
+                # `Open - Unhandled exception` on pass-through HTTP when the
+                # advertised Content-Length exceeds ~4 GB — a cache/offset
+                # overflow inside Kodi itself that no proxy tweak can fix.
+                # Force a remux through ffmpeg so Kodi sees a streamed MKV
+                # with no Content-Length and no byte-range seeking, the same
+                # shape the MP4 fallback already uses successfully.
+                duration = self._probe_duration(ffmpeg_path, remote_url, auth_header)
+                ctx = {
+                    "remote_url": remote_url,
+                    "auth_header": auth_header,
+                    "content_type": "video/x-matroska",
+                    "remux": True,
+                    "faststart": False,
+                    "ffmpeg_path": ffmpeg_path,
+                    "total_bytes": content_length,
+                    "duration_seconds": duration,
+                    "seekable": duration is not None and content_length > 0,
+                }
+                xbmc.log(
+                    "NZB-DAV: Forcing ffmpeg remux for large {}B file "
+                    "(threshold={}B)".format(content_length, threshold),
+                    xbmc.LOGWARNING,
+                )
+            else:
+                if needs_remux:
+                    xbmc.log(
+                        "NZB-DAV: {}B file exceeds remux threshold but no "
+                        "ffmpeg found — falling back to pass-through, "
+                        "playback may fail on 32-bit Kodi".format(content_length),
+                        xbmc.LOGWARNING,
+                    )
+                ctx = {
+                    "remote_url": remote_url,
+                    "auth_header": auth_header,
+                    "content_length": content_length,
+                    "content_type": content_type,
+                    "remux": False,
+                }
 
         local_url = self._register_session(ctx)
         xbmc.log(

@@ -493,3 +493,7 @@ msgstr "Playback failed to start. The stream may be unavailable or corrupted."
 msgctxt "#30122"
 msgid "NZB submit timeout (seconds)"
 msgstr "NZB submit timeout (seconds)"
+
+msgctxt "#30123"
+msgid "Force ffmpeg remux above (MB, 0=off)"
+msgstr "Force ffmpeg remux above (MB, 0=off)"

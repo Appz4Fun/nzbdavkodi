@@ -280,6 +280,90 @@ def test_prepare_stream_proxies_mkv():
     assert ctx["content_length"] == 100000
 
 
+def test_prepare_stream_forces_remux_for_large_mkv():
+    """Large MKV above threshold must route through ffmpeg remux so Kodi
+    never sees a >4 GB Content-Length — the pass-through path overflows on
+    32-bit Kodi builds with `Open - Unhandled exception`."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 9999
+
+    huge = 15 * 1024 * 1024 * 1024  # 15 GB
+    mock_proc = MagicMock()
+    mock_proc.stderr = iter([b"  Duration: 01:00:00.00, start: 0.000000\n"])
+
+    with patch(
+        "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
+    ), patch.object(sp, "_get_content_length", return_value=huge), patch(
+        "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
+    ):
+        sp.prepare_stream("http://host/film.mkv")
+
+    ctx = sp._server.stream_context
+    assert ctx["remux"] is True
+    assert ctx["content_type"] == "video/x-matroska"
+    assert ctx["total_bytes"] == huge
+    assert ctx["duration_seconds"] == 3600.0
+    assert ctx["seekable"] is True
+    # Pass-through content_length must NOT be set — the MKV response MUST
+    # be streamed with no Content-Length so Kodi can't overflow on it.
+    assert "content_length" not in ctx
+
+
+def test_prepare_stream_large_mkv_falls_back_without_ffmpeg():
+    """If ffmpeg is missing we can't force remux; fall back to pass-through
+    and let the user know why their large file will fail."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 9999
+
+    huge = 15 * 1024 * 1024 * 1024
+
+    with patch(
+        "resources.lib.stream_proxy._find_ffmpeg", return_value=None
+    ), patch.object(sp, "_get_content_length", return_value=huge):
+        sp.prepare_stream("http://host/film.mkv")
+
+    ctx = sp._server.stream_context
+    assert ctx["remux"] is False
+    assert ctx["content_length"] == huge
+
+
+def test_prepare_stream_respects_disabled_threshold():
+    """Setting the threshold to 0 disables force remux entirely even for
+    huge files — escape hatch for users who know their platform is fine."""
+    import sys
+
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 9999
+
+    huge = 15 * 1024 * 1024 * 1024
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.return_value = "0"
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch.object(sp, "_get_content_length", return_value=huge):
+            sp.prepare_stream("http://host/film.mkv")
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    ctx = sp._server.stream_context
+    assert ctx["remux"] is False
+    assert ctx["content_length"] == huge
+
+
 def test_prepare_stream_rejects_invalid_scheme():
     import pytest
     from resources.lib.stream_proxy import StreamProxy
@@ -477,6 +561,23 @@ def test_build_ffmpeg_cmd_includes_subs_by_default():
     # Check subs mapping is present (0:s? appears after 0:a)
     assert "0:s?" in cmd
     assert "srt" in cmd
+
+
+def test_build_ffmpeg_cmd_copies_subs_for_mkv_input():
+    """For MKV inputs the subtitle codec must be `copy`, not `srt`.
+    PGS/DVD/HDMV bitmap subs can't be re-encoded to SRT and would abort
+    the entire remux; `copy` handles every subtitle codec losslessly."""
+    handler = _make_handler()
+    ctx = {
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+    }
+    cmd = handler._build_ffmpeg_cmd(ctx)
+    assert "0:s?" in cmd
+    idx = cmd.index("-c:s")
+    assert cmd[idx + 1] == "copy"
+    assert "srt" not in cmd
 
 
 def test_build_ffmpeg_cmd_excludes_subs_when_setting_off():

@@ -89,5 +89,6 @@
 		<setting id="stream_retry_delay" label="30076" type="number" default="5" />
 		<setting label="30118" type="lsep" />
 		<setting id="proxy_convert_subs" label="30119" type="bool" default="true" />
+		<setting id="force_remux_threshold_mb" label="30123" type="number" default="4096" />
 	</category>
 </settings>

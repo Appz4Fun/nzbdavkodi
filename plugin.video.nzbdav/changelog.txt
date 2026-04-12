@@ -1,3 +1,8 @@
+v0.6.16 (2026-04-12)
+- Fix "Open - Unhandled exception" on >4 GB MKV files on 32-bit Kodi builds by force-remuxing large non-MP4 files through ffmpeg
+- New setting "Force ffmpeg remux above (MB)" (default 4096, 0 disables)
+- Copy subtitles verbatim when remuxing MKV sources (PGS/DVD/HDMV bitmap subs can't be re-encoded to SRT)
+
 v0.6.11 (2026-04-12)
 - Preserve full modal error dialog text where Kodi's Dialog API allows it
 - Show NZBHydra outages and invalid responses in modal dialogs
