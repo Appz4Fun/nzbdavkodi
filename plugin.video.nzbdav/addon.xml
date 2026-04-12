@@ -22,7 +22,15 @@
         <license>GPL-3.0-or-later</license>
         <source>https://github.com/xbmc4lyfe/nzbdavkodi</source>
         <website>https://xbmc4lyfe.github.io/nzbdavkodi/</website>
-        <news>v0.6.11
+        <news>v0.6.13
+- Make NZB submit timeout configurable (Advanced → Polling, default 30s)
+- Avoids hardcoded 15s timeout failing on large NZBs that nzbdav takes longer to parse
+
+v0.6.12
+- Fix replay of the same NZB failing with "Playback failed to start"
+- Clear Kodi's stale bookmarks/settings/streamdetails before each play so auto-resume doesn't misfire on plugin URLs
+
+v0.6.11
 - Preserve full modal error dialog text where Kodi's Dialog API allows it
 - Show NZBHydra outages and invalid responses in modal dialogs
 - Keep duplicate NZB results visible instead of merging indexers
