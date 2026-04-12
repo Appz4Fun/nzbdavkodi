@@ -10,6 +10,7 @@ from urllib.parse import unquote
 import xbmc
 import xbmcgui
 import xbmcplugin
+import xbmcvfs
 
 from resources.lib.i18n import addon_name as _addon_name
 from resources.lib.i18n import fmt as _fmt
@@ -79,6 +80,111 @@ def _build_play_url(url, headers):
     return url
 
 
+def _cache_bust_url(url):
+    """Append a unique query parameter so Kodi treats each play as a fresh URL.
+
+    Replaying the same resolved URL after a stop causes Kodi to try to open
+    the outer plugin:// URL as an input stream, and playback never starts.
+    Appending a unique query parameter gives Kodi a unique cache key each
+    time. nzbdav ignores unknown query parameters on file requests.
+    """
+    separator = "&" if "?" in url else "?"
+    return "{}{}nzbdav_play={}".format(url, separator, int(time.time() * 1000))
+
+
+def _clear_kodi_playback_state(params=None):
+    """Delete Kodi's stored bookmarks, settings, and streamdetails for this play.
+
+    Kodi saves a bookmark (resume point), video settings, and stream details
+    keyed on the *outer* plugin URL — the URL Kodi first tried to play, not
+    the resolved stream URL. When the user replays the same plugin URL, Kodi
+    auto-resumes from the bookmark, which triggers a bug where CVideoPlayer
+    tries to reopen the plugin URL itself as an input stream and fails with
+    ``OpenInputStream - error opening [plugin://...]``. Playback never
+    starts and the user sees dialog 30121.
+
+    Deleting the stored state before each play forces Kodi to treat every
+    play as a fresh first play, which bypasses the broken resume pipeline.
+
+    Called from the resolve flow with the params that led to this play so
+    we can also target the TMDBHelper URL (not just our own plugin URL).
+    """
+    try:
+        import glob
+        import os
+        import re
+        import sqlite3
+        import sys
+
+        db_dir = xbmcvfs.translatePath("special://database/")
+        db_files = sorted(glob.glob(os.path.join(db_dir, "MyVideos*.db")))
+        if not db_files:
+            return
+        db_path = db_files[-1]
+
+        target_ids = set()
+        with sqlite3.connect(db_path, timeout=5.0) as conn:
+            cur = conn.cursor()
+
+            # 1. Our own plugin URL — exact match
+            if sys.argv and len(sys.argv) >= 1:
+                own_url = sys.argv[0]
+                if len(sys.argv) > 2 and sys.argv[2]:
+                    own_url += sys.argv[2]
+                cur.execute(
+                    "SELECT idFile FROM files WHERE strFilename = ?", (own_url,)
+                )
+                for (id_file,) in cur.fetchall():
+                    target_ids.add(id_file)
+
+            # 2. TMDBHelper outer URL — match by tmdb_id (param order varies)
+            tmdb_id = (params or {}).get("tmdb_id", "")
+            if tmdb_id:
+                cur.execute(
+                    "SELECT idFile, strFilename FROM files "
+                    "WHERE strFilename LIKE ? AND strFilename LIKE ?",
+                    (
+                        "plugin://plugin.video.themoviedb.helper/%",
+                        "%tmdb_id=" + tmdb_id + "%",
+                    ),
+                )
+                id_pattern = re.compile(
+                    r"tmdb_id=" + re.escape(tmdb_id) + r"(?:[^0-9]|$)"
+                )
+                for id_file, filename in cur.fetchall():
+                    if id_pattern.search(filename):
+                        target_ids.add(id_file)
+
+            if not target_ids:
+                return
+
+            for id_file in target_ids:
+                cur.execute("DELETE FROM bookmark WHERE idFile = ?", (id_file,))
+                cur.execute("DELETE FROM settings WHERE idFile = ?", (id_file,))
+                cur.execute("DELETE FROM streamdetails WHERE idFile = ?", (id_file,))
+                cur.execute("DELETE FROM files WHERE idFile = ?", (id_file,))
+            conn.commit()
+
+        xbmc.log(
+            "NZB-DAV: Cleared Kodi playback state for {} file(s)".format(
+                len(target_ids)
+            ),
+            xbmc.LOGINFO,
+        )
+    except Exception as e:
+        xbmc.log(
+            "NZB-DAV: Failed to clear Kodi playback state: {}".format(e),
+            xbmc.LOGWARNING,
+        )
+
+
+def _url_path(url):
+    """Return the path portion of a URL, lowercased, for mime detection."""
+    from urllib.parse import urlsplit
+
+    return urlsplit(url).path.lower()
+
+
 def _make_playable_listitem(url, headers):
     """Create a ListItem with URL and optional HTTP auth headers.
 
@@ -92,13 +198,14 @@ def _make_playable_listitem(url, headers):
     # which causes CFileCache to fail. Kodi will discover range support
     # on the first GET request instead.
     li.setContentLookup(False)
-    # Set mime type based on file extension so Kodi doesn't need HEAD
-    lower_url = url.lower()
-    if lower_url.endswith(".mkv"):
+    # Set mime type based on file extension so Kodi doesn't need HEAD.
+    # Strip query/fragment first so cache-busted URLs still detect correctly.
+    path = _url_path(url)
+    if path.endswith(".mkv"):
         li.setMimeType("video/x-matroska")
-    elif lower_url.endswith(".mp4") or lower_url.endswith(".m4v"):
+    elif path.endswith(".mp4") or path.endswith(".m4v"):
         li.setMimeType("video/mp4")
-    elif lower_url.endswith(".avi"):
+    elif path.endswith(".avi"):
         li.setMimeType("video/x-msvideo")
     else:
         li.setMimeType("video/x-matroska")
@@ -144,11 +251,12 @@ def _play_direct(handle, stream_url, stream_headers):
                     ),
                     xbmc.LOGINFO,
                 )
-                li = _make_playable_listitem(stream_url, stream_headers)
+                bust_url = _cache_bust_url(stream_url)
+                li = _make_playable_listitem(bust_url, stream_headers)
                 xbmcplugin.setResolvedUrl(handle, True, li)
 
                 home = xbmcgui.Window(10000)
-                play_url = _build_play_url(stream_url, stream_headers)
+                play_url = _build_play_url(bust_url, stream_headers)
                 home.setProperty("nzbdav.stream_url", play_url)
                 home.setProperty("nzbdav.stream_title", stream_url.rsplit("/", 1)[-1])
                 home.setProperty("nzbdav.active", "true")
@@ -184,10 +292,14 @@ def _play_direct(handle, stream_url, stream_headers):
             return
 
     # MKV and fallback: play directly
-    play_url = _build_play_url(stream_url, stream_headers)
-    xbmc.log("NZB-DAV: Playing direct: {}".format(stream_url), xbmc.LOGINFO)
+    bust_url = _cache_bust_url(stream_url)
+    play_url = _build_play_url(bust_url, stream_headers)
+    xbmc.log(
+        "NZB-DAV: Playing direct (handle={}): {}".format(handle, bust_url),
+        xbmc.LOGINFO,
+    )
 
-    li = _make_playable_listitem(stream_url, stream_headers)
+    li = _make_playable_listitem(bust_url, stream_headers)
     xbmcplugin.setResolvedUrl(handle, True, li)
 
     home = xbmcgui.Window(10000)
@@ -229,7 +341,8 @@ def _play_via_proxy(stream_url, stream_headers):
                     ),
                     xbmc.LOGINFO,
                 )
-                li = _make_playable_listitem(stream_url, stream_headers)
+                bust_url = _cache_bust_url(stream_url)
+                li = _make_playable_listitem(bust_url, stream_headers)
                 xbmc.Player().play(li.getPath(), li)
                 return
 
@@ -257,7 +370,8 @@ def _play_via_proxy(stream_url, stream_headers):
             xbmc.Player().play(proxy_url, li)
             return
 
-    li = _make_playable_listitem(stream_url, stream_headers)
+    bust_url = _cache_bust_url(stream_url)
+    li = _make_playable_listitem(bust_url, stream_headers)
     xbmc.log("NZB-DAV: Playing direct: {}".format(stream_url), xbmc.LOGINFO)
     xbmc.Player().play(li.getPath(), li)
 
@@ -576,6 +690,7 @@ def resolve(handle, params):
             nzb_url, title, dialog, poll_interval, download_timeout
         )
         if stream_url:
+            _clear_kodi_playback_state(params)
             _play_direct(handle, stream_url, stream_headers)
         else:
             xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
@@ -606,6 +721,7 @@ def resolve_and_play(nzb_url, title):
             nzb_url, title, dialog, poll_interval, download_timeout
         )
         if stream_url:
+            _clear_kodi_playback_state()
             _play_via_proxy(stream_url, stream_headers)
     except Exception as e:
         xbmc.log(

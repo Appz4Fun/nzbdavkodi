@@ -5,6 +5,8 @@ from unittest.mock import MagicMock, patch
 
 from resources.lib.resolver import (
     MAX_POLL_ITERATIONS,
+    _cache_bust_url,
+    _clear_kodi_playback_state,
     _make_playable_listitem,
     _poll_until_ready,
     _storage_to_webdav_path,
@@ -68,6 +70,187 @@ def test_make_playable_listitem_redacts_logged_play_url(mock_xbmc, mock_gui):
     logged = mock_xbmc.log.call_args[0][0]
     assert "Basic dXNlcjpwYXNz" not in logged
     assert "redacted" in logged.lower()
+
+
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.xbmc")
+def test_make_playable_listitem_detects_mime_with_fragment(mock_xbmc, mock_gui):
+    """Mime detection must ignore ?query and #fragment on the URL."""
+    mock_li = MagicMock()
+    mock_gui.ListItem.return_value = mock_li
+
+    _make_playable_listitem("http://webdav/movie.mkv#nzbdav_play=123", {})
+    mock_li.setMimeType.assert_called_with("video/x-matroska")
+
+    mock_li.reset_mock()
+    _make_playable_listitem("http://webdav/movie.mp4?foo=bar", {})
+    mock_li.setMimeType.assert_called_with("video/mp4")
+
+
+def test_cache_bust_url_appends_query_param_and_is_unique():
+    """Each call should produce a distinct query param so Kodi sees a new URL."""
+    import time
+
+    a = _cache_bust_url("http://webdav/movie.mkv")
+    time.sleep(0.002)
+    b = _cache_bust_url("http://webdav/movie.mkv")
+
+    assert a.startswith("http://webdav/movie.mkv?nzbdav_play=")
+    assert b.startswith("http://webdav/movie.mkv?nzbdav_play=")
+    assert a != b
+
+
+def test_cache_bust_url_preserves_existing_query():
+    """If the URL already has a query string, append with &."""
+    out = _cache_bust_url("http://webdav/movie.mkv?foo=bar")
+    assert "?foo=bar&nzbdav_play=" in out
+
+
+# --- _clear_kodi_playback_state tests ---
+
+
+def _build_fake_videos_db(tmp_path):
+    """Build a minimal MyVideos131.db matching Kodi's schema."""
+    import sqlite3
+
+    db = tmp_path / "MyVideos131.db"
+    conn = sqlite3.connect(str(db))
+    cur = conn.cursor()
+    cur.executescript("""
+        CREATE TABLE files (
+            idFile INTEGER PRIMARY KEY,
+            idPath INTEGER,
+            strFilename TEXT
+        );
+        CREATE TABLE bookmark (
+            idBookmark INTEGER PRIMARY KEY,
+            idFile INTEGER,
+            timeInSeconds REAL
+        );
+        CREATE TABLE settings (
+            idFile INTEGER PRIMARY KEY,
+            ResumeTime INTEGER
+        );
+        CREATE TABLE streamdetails (
+            idFile INTEGER,
+            iStreamType INTEGER,
+            strVideoCodec TEXT
+        );
+        """)
+    conn.commit()
+    conn.close()
+    return db
+
+
+@patch("resources.lib.resolver.xbmc")
+def test_clear_kodi_playback_state_deletes_tmdb_helper_url(mock_xbmc, tmp_path):
+    """Clearing with tmdb_id deletes TMDBHelper URLs regardless of param order."""
+    import sqlite3
+    import sys
+
+    db = _build_fake_videos_db(tmp_path)
+    conn = sqlite3.connect(str(db))
+    cur = conn.cursor()
+    tmdb_base = "plugin://plugin.video.themoviedb.helper/?info=play"
+    urls = [
+        tmdb_base + "&tmdb_type=movie&tmdb_id=389",
+        tmdb_base + "&tmdb_id=389&tmdb_type=movie",
+        tmdb_base + "&tmdb_type=movie&tmdb_id=3891",  # different id — keep
+        "plugin://plugin.video.nzbdav/play?type=movie&title=Other",  # unrelated
+    ]
+    for i, url in enumerate(urls, start=1):
+        cur.execute(
+            "INSERT INTO files (idFile, idPath, strFilename) VALUES (?, 1, ?)",
+            (i, url),
+        )
+        cur.execute(
+            "INSERT INTO bookmark (idFile, timeInSeconds) VALUES (?, 100.0)", (i,)
+        )
+    conn.commit()
+    conn.close()
+
+    fake_argv = [
+        "plugin://plugin.video.nzbdav/play",
+        "1",
+        "?type=movie&tmdb_id=389",
+    ]
+    with patch("resources.lib.resolver.xbmcvfs") as mock_vfs:
+        mock_vfs.translatePath.return_value = str(tmp_path) + "/"
+        with patch.object(sys, "argv", fake_argv):
+            _clear_kodi_playback_state({"tmdb_id": "389", "type": "movie"})
+
+    conn = sqlite3.connect(str(db))
+    cur = conn.cursor()
+    cur.execute("SELECT strFilename FROM files ORDER BY idFile")
+    remaining = [row[0] for row in cur.fetchall()]
+    conn.close()
+
+    # The two matching TMDBHelper URLs should be gone.
+    # 3891 (different id) and the unrelated nzbdav URL should remain.
+    assert urls[0] not in remaining
+    assert urls[1] not in remaining
+    assert urls[2] in remaining
+    assert urls[3] in remaining
+
+
+@patch("resources.lib.resolver.xbmc")
+def test_clear_kodi_playback_state_deletes_own_plugin_url(mock_xbmc, tmp_path):
+    """Clearing without tmdb_id still deletes our own plugin URL entry."""
+    import sqlite3
+    import sys
+
+    db = _build_fake_videos_db(tmp_path)
+    own_url = "plugin://plugin.video.nzbdav/play?type=movie&title=Test&year=2025"
+    conn = sqlite3.connect(str(db))
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO files (idFile, idPath, strFilename) VALUES (1, 1, ?)", (own_url,)
+    )
+    cur.execute("INSERT INTO bookmark (idFile, timeInSeconds) VALUES (1, 50.0)")
+    conn.commit()
+    conn.close()
+
+    with patch("resources.lib.resolver.xbmcvfs") as mock_vfs:
+        mock_vfs.translatePath.return_value = str(tmp_path) + "/"
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "plugin://plugin.video.nzbdav/play",
+                "1",
+                "?type=movie&title=Test&year=2025",
+            ],
+        ):
+            _clear_kodi_playback_state()
+
+    conn = sqlite3.connect(str(db))
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM files")
+    file_count = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM bookmark")
+    bookmark_count = cur.fetchone()[0]
+    conn.close()
+
+    assert file_count == 0
+    assert bookmark_count == 0
+
+
+@patch("resources.lib.resolver.xbmc")
+def test_clear_kodi_playback_state_no_db_no_crash(mock_xbmc, tmp_path):
+    """If no MyVideos*.db exists, the function should silently return."""
+    with patch("resources.lib.resolver.xbmcvfs") as mock_vfs:
+        mock_vfs.translatePath.return_value = str(tmp_path) + "/"
+        _clear_kodi_playback_state({"tmdb_id": "1"})
+
+
+@patch("resources.lib.resolver.xbmc")
+def test_clear_kodi_playback_state_swallows_db_errors(mock_xbmc, tmp_path):
+    """An exception inside the function should be logged, not propagated."""
+    with patch("resources.lib.resolver.xbmcvfs") as mock_vfs:
+        mock_vfs.translatePath.side_effect = RuntimeError("boom")
+        _clear_kodi_playback_state()
+    # Verify we logged a warning (via xbmc.log).
+    mock_xbmc.log.assert_called()
 
 
 # --- resolve() tests ---
