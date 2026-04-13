@@ -723,6 +723,12 @@ def _poll_until_ready(nzb_url, title, dialog, poll_interval, download_timeout):
                 xbmc.LOGERROR,
             )
             xbmcgui.Dialog().ok(_addon_name(), _string(_ERROR_MESSAGES["auth_failed"]))
+            # Deliberately NOT calling cancel_job here. The WebDAV auth
+            # failure is an addon-side observation problem (the addon
+            # can't read the file the job produced), not a job-side
+            # problem. The job is presumably running fine on nzbdav and
+            # cancelling it would be destructive — the user's nzbdav UI
+            # would show a vanished download for no apparent reason.
             return None, None
 
         if webdav_error == "server_error":

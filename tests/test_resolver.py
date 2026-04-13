@@ -941,13 +941,19 @@ def test_poll_until_ready_success(
     assert headers == {"Authorization": "x"}
 
 
+@patch("resources.lib.resolver.cancel_job")
 @patch("resources.lib.resolver.find_completed_by_name", return_value=None)
 @patch("resources.lib.resolver.get_job_history", return_value=None)
 @patch("resources.lib.resolver.get_job_status")
 @patch("resources.lib.resolver.submit_nzb", return_value=("nzo_xyz", None))
 @patch("resources.lib.resolver.xbmc")
 def test_poll_until_ready_user_cancel(
-    mock_xbmc, mock_submit, mock_status, mock_history, mock_find_completed
+    mock_xbmc,
+    mock_submit,
+    mock_status,
+    mock_history,
+    mock_find_completed,
+    mock_cancel_job,
 ):
     """_poll_until_ready returns (None, None) when the user cancels."""
     mock_status.return_value = {"status": "Downloading", "percentage": "50"}
@@ -960,6 +966,7 @@ def test_poll_until_ready_user_cancel(
     assert headers is None
 
 
+@patch("resources.lib.resolver.cancel_job")
 @patch("resources.lib.resolver.find_completed_by_name", return_value=None)
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver.get_job_history", return_value=None)
@@ -975,6 +982,7 @@ def test_poll_until_ready_timeout(
     mock_history,
     mock_gui,
     mock_find_completed,
+    mock_cancel_job,
 ):
     """_poll_until_ready returns (None, None) and shows dialog on timeout."""
     mock_status.return_value = {"status": "Downloading", "percentage": "10"}
