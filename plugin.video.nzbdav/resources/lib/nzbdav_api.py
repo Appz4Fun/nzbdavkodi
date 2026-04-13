@@ -5,7 +5,7 @@
 
 import json
 import re
-from urllib.error import HTTPError, URLError  # noqa: F401
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 
 import xbmc
@@ -58,9 +58,15 @@ def submit_nzb(nzb_url, nzb_name=""):
         nzb_name: Human-friendly title shown in nzbdav's queue/history.
 
     Returns:
-        The nzo_id string assigned by nzbdav when the request succeeds, or
-        None if settings are missing, the HTTP request fails, or the response
-        does not include an nzo_id.
+        Tuple of (nzo_id, error). At most one of the two is non-None:
+        - On success: (nzo_id_string, None)
+        - On structured HTTP error from nzbdav (any 4xx/5xx that comes
+          back as urllib.error.HTTPError): (None, {"status": int,
+          "message": str}). The caller classifies by status code to
+          decide retry vs surface.
+        - On non-HTTP errors (network unreachable, JSON decode failure,
+          truthy-but-empty response, anything else): (None, None) —
+          caller may retry.
 
     Side effects:
         Reads nzbdav settings from Kodi via xbmcaddon.Addon().
@@ -69,9 +75,9 @@ def submit_nzb(nzb_url, nzb_name=""):
     """
     try:
         base_url, api_key = _get_settings()
-    except Exception as e:
+    except Exception as e:  # pylint: disable=broad-except
         xbmc.log("NZB-DAV: Failed to read nzbdav settings: {}".format(e), xbmc.LOGERROR)
-        return None
+        return None, None
     params = {
         "mode": "addurl",
         "name": nzb_url,
@@ -90,9 +96,29 @@ def submit_nzb(nzb_url, nzb_name=""):
     try:
         response_text = _http_get(url, timeout=timeout)
         response = json.loads(response_text)
-    except (URLError, json.JSONDecodeError, Exception) as e:
+    except HTTPError as e:
+        # nzbdav returned a structured HTTP error (e.g. 500 on duplicate
+        # submit, 502/503/504 from upstream issues). Capture the body so
+        # the caller can either surface it or classify retries based on
+        # status code.
+        body = ""
+        try:
+            body = e.read().decode("utf-8", errors="replace")
+        except Exception:  # pylint: disable=broad-except
+            pass
+        body = _sanitize_server_message(body)[:500]
+        xbmc.log(
+            "NZB-DAV: Submit NZB got HTTP {} from nzbdav: {}".format(e.code, body),
+            xbmc.LOGERROR,
+        )
+        return None, {"status": e.code, "message": body}
+    except (
+        URLError,
+        json.JSONDecodeError,
+        Exception,
+    ) as e:  # pylint: disable=broad-except
         xbmc.log("NZB-DAV: Submit NZB request failed: {}".format(e), xbmc.LOGERROR)
-        return None
+        return None, None
     nzo_ids = response.get("nzo_ids")
     if response.get("status") and isinstance(nzo_ids, list) and nzo_ids and nzo_ids[0]:
         nzo_id = nzo_ids[0]
@@ -100,12 +126,12 @@ def submit_nzb(nzb_url, nzb_name=""):
             "NZB-DAV: NZB submitted successfully, nzo_id={}".format(nzo_id),
             xbmc.LOGINFO,
         )
-        return nzo_id
+        return nzo_id, None
     xbmc.log(
         "NZB-DAV: Submit NZB response had no nzo_ids: {}".format(response),
         xbmc.LOGERROR,
     )
-    return None
+    return None, None
 
 
 def cancel_job(nzo_id, timeout=3):

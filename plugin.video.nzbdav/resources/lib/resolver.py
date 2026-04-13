@@ -476,7 +476,7 @@ def _poll_until_ready(nzb_url, title, dialog, poll_interval, download_timeout):
     nzo_id = None
     monitor = xbmc.Monitor()
     for attempt in range(1, max_submit_retries + 1):
-        nzo_id = submit_nzb(nzb_url, title)
+        nzo_id, _submit_error = submit_nzb(nzb_url, title)
         if nzo_id:
             break
         xbmc.log(
