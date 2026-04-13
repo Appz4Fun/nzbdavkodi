@@ -108,6 +108,85 @@ def submit_nzb(nzb_url, nzb_name=""):
     return None
 
 
+def cancel_job(nzo_id, timeout=3):
+    """Cancel an in-flight nzbdav job by removing it from the queue.
+
+    Issues a single SABnzbd-compatible queue DELETE
+    (mode=queue&name=delete&value=<nzo_id>). This is "cancel" semantics,
+    not "delete everywhere" — completed and failed jobs that have already
+    moved to nzbdav's history are deliberately left intact so the user
+    can still inspect failure history in nzbdav's web UI.
+
+    Args:
+        nzo_id: The nzbdav job identifier to cancel.
+        timeout: HTTP timeout in seconds. Defaults to 3 because this is
+            called from user-facing abort paths (cancel button, Kodi
+            shutdown) where waiting longer feels broken. A healthy
+            nzbdav responds in ~50ms; the 3s cap protects against
+            unreachable backends without blocking the UI thread for the
+            full network timeout.
+
+    Returns:
+        True if nzbdav reported the queue DELETE succeeded (job was
+        found in the active queue and removed). False otherwise — which
+        includes the legitimate "job not in queue anymore" case (it
+        either completed, failed, or was already manually cancelled).
+        Callers should treat False as a non-error: the next play
+        attempt's find_completed_by_name() check will pick up any job
+        that genuinely raced into history.
+
+    Side effects:
+        One HTTP GET to nzbdav /api with a bounded timeout. Logs
+        outcome at LOGINFO on success, LOGDEBUG on "not in queue"
+        (a normal race), LOGWARNING on network error.
+    """
+    try:
+        base_url, api_key = _get_settings()
+    except Exception as e:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: cancel_job failed to read settings: {}".format(e),
+            xbmc.LOGERROR,
+        )
+        return False
+
+    params = {
+        "mode": "queue",
+        "name": "delete",
+        "value": nzo_id,
+        "apikey": api_key,
+        "output": "json",
+    }
+    url = "{}/api?{}".format(base_url, urlencode(params))
+    from resources.lib.http_util import redact_url
+
+    xbmc.log(
+        "NZB-DAV: cancel_job URL (timeout={}s): {}".format(timeout, redact_url(url)),
+        xbmc.LOGDEBUG,
+    )
+    try:
+        response_text = _http_get(url, timeout=timeout)
+        response = json.loads(response_text)
+    except Exception as e:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: cancel_job network error for nzo_id={}: {}".format(nzo_id, e),
+            xbmc.LOGWARNING,
+        )
+        return False
+    if response.get("status") is True:
+        xbmc.log(
+            "NZB-DAV: cancel_job removed nzo_id={} from queue".format(nzo_id),
+            xbmc.LOGINFO,
+        )
+        return True
+    err = response.get("error", "unknown")
+    xbmc.log(
+        "NZB-DAV: cancel_job got status=false for nzo_id={} (job is no longer "
+        "in the active queue, may have completed/failed): {}".format(nzo_id, err),
+        xbmc.LOGDEBUG,
+    )
+    return False
+
+
 def get_job_history(nzo_id):
     """Check if a job is completed in nzbdav's history.
 
