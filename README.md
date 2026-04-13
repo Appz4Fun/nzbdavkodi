@@ -22,24 +22,25 @@ flowchart LR
     D -->|submit NZB| E[nzbdav]
     E -->|poll status| B
     E -->|stream ready| F[WebDAV Server]
-    F -->|MP4| G[Stream Proxy]
-    F -->|MKV / other| H[Kodi Player]
-    G -->|remux to MKV| H
+    F -->|range requests| G[Stream Proxy]
+    G -->|HTTP 206 / zero-fill on bad articles| H[Kodi Player]
 ```
 
 No separate SABnzbd needed -- nzbdav handles both downloading and serving.
 
-## MP4 Stream Proxy
+## Stream Proxy
 
-MP4 files are automatically remuxed to MKV on the fly through a local ffmpeg proxy. This works around a 32-bit Kodi `CFileCache` bug where parsing large MP4 moov atoms over HTTP fails with "corrupted data" errors. MKV and other formats play directly without the proxy.
+Every playback request is routed through a local HTTP proxy (`stream_proxy.py`) running on a random port in the background service. Kodi never talks to the WebDAV server directly, which sidesteps a PROPFIND parent-directory scan that caused `Open - Unhandled exception` errors on several Kodi builds.
 
-The proxy runs as a background service (`service.py`) on a random local port. When an MP4 is requested:
+The proxy picks one of three paths based on the container:
 
-1. **Duration probe** -- ffmpeg reads just the file header to get the total duration, then exits immediately
-2. **Remux** -- `ffmpeg -c:v copy -c:a copy -c:s srt -f matroska pipe:1` streams the remuxed MKV back to Kodi with no re-encoding
-3. **Subtitle conversion** -- MP4 `mov_text` subtitles are converted to SRT for MKV compatibility (toggleable in settings)
-4. **Seeking** -- Kodi's progress bar and seek controls work by mapping byte offsets to time positions; the proxy kills and respawns ffmpeg with `-ss` at the calculated timestamp
-5. **Graceful fallback** -- if ffmpeg is not installed, MP4 files play directly (no remux, no seeking)
+1. **MP4 (already faststart)** -- redirected straight to the WebDAV URL; Kodi seeks and plays natively.
+2. **MP4 (moov at tail)** -- parsed in pure Python via HTTP range requests, `stco` / `co64` chunk offsets rewritten, and served as a virtual faststart MP4 with `Accept-Ranges: bytes`. If parsing fails, falls back to an ffmpeg remux to MKV.
+3. **MKV and other containers** -- served as a byte pass-through with ranged upstream fetches. Kodi gets native seeking from the source file's real Cues, and the proxy layers two recovery mechanisms on top:
+   - **Zero-fill recovery on missing Usenet articles** -- when an upstream read fails mid-stream, the proxy probes forward to find the next readable offset, writes zero bytes across the gap, and keeps streaming. No more black screen when a single article is unrecoverable.
+   - **Pass-through is the default for large files.** `Force ffmpeg remux above (MB)` in Advanced settings defaults to `0` (disabled); set it to a non-zero MB threshold to force the ffmpeg remux branch instead.
+
+The ffmpeg remux branch is still available for files that need container conversion (MP4 `mov_text` subtitles become SRT, for example). If ffmpeg isn't installed, the proxy degrades gracefully to pass-through or direct redirect.
 
 ## Requirements
 
@@ -227,7 +228,7 @@ With **Auto-select best match** enabled, the dialog is skipped and the top resul
 ### Commands
 
 ```bash
-just test          # Run all 247 tests
+just test          # Run all 315 tests
 just test-verbose  # Run tests with full output
 just lint          # Check ruff + black formatting
 just lint-fix      # Auto-fix lint issues
@@ -281,7 +282,7 @@ repo/
   bandit.yml             # Bandit security scan
 tests/
   conftest.py            # Kodi module mocks
-  test_*.py              # 247 tests
+  test_*.py              # 315 tests
 ```
 
 ### Releasing
