@@ -8,6 +8,7 @@ from resources.lib.nzbdav_api import (
     _DEFAULT_SUBMIT_TIMEOUT,
     _get_submit_timeout,
     _sanitize_server_message,
+    cancel_job,
     get_completed_names,
     get_job_history,
     get_job_status,
@@ -386,3 +387,103 @@ def test_sanitize_handles_nested_tags():
 
 def test_sanitize_returns_empty_when_only_whitespace():
     assert _sanitize_server_message("   \n\t  ") == ""
+
+
+# --- cancel_job tests ---
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_cancel_job_succeeds_on_queue(mock_http, mock_settings):
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.return_value = '{"status":true,"error":null}'
+
+    result = cancel_job("nzo_xyz")
+
+    assert result is True
+    assert mock_http.call_count == 1
+    called_url = mock_http.call_args[0][0]
+    assert "mode=queue" in called_url
+    assert "name=delete" in called_url
+    assert "value=nzo_xyz" in called_url
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_cancel_job_returns_false_when_not_in_queue(mock_http, mock_settings):
+    """When nzbdav reports the job isn't in the queue (e.g. it raced into
+    history before our cleanup ran), cancel_job returns False but does
+    NOT treat it as an error — this is the normal race case."""
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.return_value = '{"status":false,"error":"Unrecognized Guid format."}'
+
+    result = cancel_job("nzo_xyz")
+
+    assert result is False
+    assert mock_http.call_count == 1
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_cancel_job_returns_false_on_network_error(mock_http, mock_settings):
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.side_effect = Exception("connection refused")
+
+    result = cancel_job("nzo_xyz")
+
+    assert result is False
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_cancel_job_returns_false_on_settings_error(mock_http, mock_settings):
+    mock_settings.side_effect = Exception("settings unavailable")
+
+    result = cancel_job("nzo_xyz")
+
+    assert result is False
+    assert mock_http.call_count == 0  # _http_get never called
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_cancel_job_uses_default_3s_timeout(mock_http, mock_settings):
+    """The default timeout is 3 seconds — short enough to feel responsive
+    on user cancel and Kodi shutdown."""
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.return_value = '{"status":true}'
+
+    cancel_job("nzo_xyz")
+
+    # _http_get is called with timeout=3 as a keyword argument
+    assert mock_http.call_args.kwargs["timeout"] == 3
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_cancel_job_respects_custom_timeout(mock_http, mock_settings):
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.return_value = '{"status":true}'
+
+    cancel_job("nzo_xyz", timeout=10)
+
+    assert mock_http.call_args.kwargs["timeout"] == 10
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_cancel_job_does_not_touch_history(mock_http, mock_settings):
+    """cancel_job is queue-only by design. The spec deliberately does
+    NOT call mode=history&name=delete because erasing history on a
+    race-into-terminal-state would contradict the Group B 'preserve
+    failure history' rationale."""
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.return_value = '{"status":true}'
+
+    cancel_job("nzo_xyz")
+
+    # Exactly one call (queue), not two (queue + history)
+    assert mock_http.call_count == 1
+    called_url = mock_http.call_args[0][0]
+    assert "mode=queue" in called_url
+    assert "mode=history" not in called_url
