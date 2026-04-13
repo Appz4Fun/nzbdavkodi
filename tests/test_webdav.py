@@ -8,7 +8,6 @@ from urllib.parse import unquote
 from resources.lib.webdav import (
     build_webdav_url,
     check_file_available,
-    check_file_available_with_retry,
     find_video_file,
     get_webdav_stream_url,
     get_webdav_stream_url_for_path,
@@ -131,54 +130,6 @@ def test_get_webdav_stream_url_special_chars_in_credentials(mock_settings):
     assert url == "http://webdav:8080/movie.mkv"
     auth_part = headers["Authorization"].split("Basic ")[1]
     assert base64.b64decode(auth_part).decode() == "user@domain:p@ss:word"
-
-
-# --- check_file_available_with_retry tests ---
-
-
-@patch("resources.lib.webdav._get_settings")
-@patch("resources.lib.webdav._http_head")
-def test_check_file_available_with_retry_success(mock_head, mock_settings):
-    mock_settings.return_value = _SETTINGS_WITH_AUTH
-    mock_head.return_value = 200
-    available, error = check_file_available_with_retry("movie.mkv")
-    assert available is True
-    assert error is None
-
-
-@patch("resources.lib.webdav._get_settings")
-@patch("resources.lib.webdav._http_head")
-def test_check_file_available_with_retry_auth_failed(mock_head, mock_settings):
-    mock_settings.return_value = _SETTINGS_WITH_AUTH
-    mock_head.return_value = 401
-    available, error = check_file_available_with_retry("movie.mkv")
-    assert available is False
-    assert error == "auth_failed"
-
-
-@patch("resources.lib.webdav._get_settings")
-@patch("resources.lib.webdav._http_head")
-def test_check_file_available_with_retry_server_error(mock_head, mock_settings):
-    mock_settings.return_value = _SETTINGS_WITH_AUTH
-    mock_head.return_value = 500
-    available, error = check_file_available_with_retry("movie.mkv")
-    assert available is False
-    assert error == "server_error"
-
-
-@patch("resources.lib.webdav._get_settings")
-@patch("resources.lib.webdav._http_head")
-def test_check_file_available_with_retry_retries_on_connection_error(
-    mock_head, mock_settings
-):
-    mock_settings.return_value = _SETTINGS_WITH_AUTH
-    mock_head.side_effect = [Exception("conn refused"), Exception("conn refused"), 200]
-    available, error = check_file_available_with_retry(
-        "movie.mkv", max_retries=3, retry_delay=0
-    )
-    assert available is True
-    assert error is None
-    assert mock_head.call_count == 3
 
 
 # --- probe_webdav_reachable tests ---
