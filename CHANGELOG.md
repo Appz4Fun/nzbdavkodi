@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Released | What it's about |
 |---|---|---|
+| **[0.6.20](#0620--2026-04-13)** | 2026-04-13 | Resolve-loop: no UI freeze, no silent retry on bad WebDAV creds |
 | **[0.6.19](#0619--2026-04-12)** | 2026-04-12 | README refresh + pylint CI fix |
 | **[0.6.18](#0618--2026-04-12)** | 2026-04-12 | Big MKVs play, seek, and self-heal. **Recommended upgrade.** |
 | [0.6.17](#0617--2026-04-12) | 2026-04-12 | Kill zombie ffmpeg after a stall |
@@ -40,6 +41,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | **[0.1.0](#010--2026-04-05)** | 2026-04-05 | Initial release |
 
 > **Bolded** versions are either major features or recommended upgrades.
+
+---
+
+## [0.6.20] — 2026-04-13
+
+> **Two resolve-loop fixes.** Kodi's UI no longer briefly freezes during resolve polling when nzbdav is momentarily unreachable, and an invalid WebDAV password now surfaces as the "Authentication failed" dialog within a poll iteration instead of being silently masked until the download timeout fires.
+
+**Fixed**
+- Brief UI freeze during resolve polling. The WebDAV retry delay used `time.sleep()` on Kodi's main thread, locking the UI and delaying shutdown. It now uses `xbmc.Monitor().waitForAbort()`, which yields to the Kodi event loop and unwinds immediately on shutdown. (Audit finding C4.)
+- Silent retry loop when WebDAV credentials are wrong. When nzbdav's queue and history APIs both returned no data, the addon probed the WebDAV server using the movie's human-readable title as a filename — which always returned 404, so an invalid-credentials failure never surfaced as the "Authentication failed" dialog and the resolve spinner would just run until the download timeout. The probe now HEADs the WebDAV content root, so a bad password produces the auth dialog within one poll iteration. Server 5xx and network-outage probes also now return accurate error codes in the logs, though those paths remain log-only in the resolver — adding dialogs for them is a separate follow-up. (Audit finding C3.)
 
 ---
 
@@ -389,6 +400,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.6.20]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.6.20
 [0.6.19]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.6.19
 [0.6.18]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.6.18
 [0.6.17]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.6.17

@@ -1,3 +1,7 @@
+v0.6.20 (2026-04-13)
+- Fix brief Kodi UI freeze during resolve polling when nzbdav is momentarily unreachable. The WebDAV retry delay used time.sleep() on Kodi's main thread; it now uses xbmc.Monitor().waitForAbort() so the event loop stays responsive and Kodi shuts down cleanly.
+- Fix silent retry loop when WebDAV credentials are wrong. The poll-loop probe used to use the movie title as a filename (always returned "not found"), masking auth failures. The probe now hits the WebDAV content root so an invalid-credentials failure shows the "Authentication failed" dialog within one poll iteration.
+
 v0.6.19 (2026-04-12)
 - Update README to reflect the v0.6.14+ proxy architecture: every container now routes through the local stream proxy (not just MP4). Documents the MKV pass-through path with zero-fill recovery and native seeking alongside the MP4 faststart/remux branches.
 - Silence pylint W0201 on self.close_connection = True assignments in stream_proxy.py. close_connection is a real BaseHTTPRequestHandler attribute initialized by the parent class, but pylint's static analysis can't see it, so CI was failing on two inline disables' worth of false positives.

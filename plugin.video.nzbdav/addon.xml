@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="plugin.video.nzbdav"
        name="NZB-DAV"
-       version="0.6.19"
+       version="0.6.20"
        provider-name="nzbdav">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
@@ -22,7 +22,11 @@
         <license>GPL-3.0-or-later</license>
         <source>https://github.com/xbmc4lyfe/nzbdavkodi</source>
         <website>https://xbmc4lyfe.github.io/nzbdavkodi/</website>
-        <news>v0.6.19
+        <news>v0.6.20
+- Fix brief Kodi UI freeze during resolve polling when nzbdav is momentarily unreachable. The WebDAV retry delay used time.sleep() on Kodi's main thread; it now uses xbmc.Monitor().waitForAbort(), which yields to the event loop and lets Kodi shut down cleanly while a retry is pending (C4 from internal audit).
+- Fix silent retry loop when WebDAV credentials are wrong. When nzbdav's queue and history APIs both returned no data, the addon used to probe the WebDAV server with the movie's human-readable title as a filename, which always returned "not found" — so an auth failure never surfaced and the resolve dialog spun until the download timeout. The probe now hits the WebDAV content root, so an invalid-credentials failure shows the "Authentication failed" dialog within one poll iteration (C3 from internal audit).
+
+v0.6.19
 - Update README to reflect the v0.6.14+ proxy architecture: every container now routes through the local stream proxy (not just MP4), and the MKV pass-through path with zero-fill recovery and native seeking is documented alongside the MP4 faststart/remux branches.
 - Silence pylint W0201 on `self.close_connection = True` assignments in stream_proxy.py. `close_connection` is a real `BaseHTTPRequestHandler` attribute initialized by the parent class, but pylint's static analysis can't see it, so CI was failing on two inline disables' worth of false positives.
 
