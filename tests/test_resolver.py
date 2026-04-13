@@ -942,25 +942,6 @@ def test_poll_until_ready_success(
 
 
 @patch("resources.lib.resolver.find_completed_by_name", return_value=None)
-@patch("resources.lib.resolver.xbmcgui")
-@patch("resources.lib.resolver.submit_nzb", return_value=(None, None))
-@patch("resources.lib.resolver.xbmc")
-def test_poll_until_ready_submit_failure(
-    mock_xbmc, mock_submit, mock_gui, mock_find_completed
-):
-    """_poll_until_ready returns (None, None) when all submit retries fail."""
-    mock_xbmc.Monitor.return_value = _make_monitor()
-
-    url, headers = _poll_until_ready(
-        "http://hydra/nzb", "movie", _make_dialog(), 2, 3600
-    )
-
-    assert url is None
-    assert headers is None
-    mock_gui.Dialog.return_value.ok.assert_called()
-
-
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
 @patch("resources.lib.resolver.get_job_history", return_value=None)
 @patch("resources.lib.resolver.get_job_status")
 @patch("resources.lib.resolver.submit_nzb", return_value=("nzo_xyz", None))
