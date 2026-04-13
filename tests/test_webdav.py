@@ -15,40 +15,24 @@ from resources.lib.webdav import (
 )
 
 _SETTINGS_WITH_AUTH = {
-    "webdav_url": "http://webdav:8080",
     "nzbdav_url": "http://nzbdav:3000",
     "username": "user",
     "password": "pass",
 }
 
 _SETTINGS_NO_AUTH = {
-    "webdav_url": "http://webdav:8080",
     "nzbdav_url": "http://nzbdav:3000",
     "username": "",
     "password": "",
 }
 
-_SETTINGS_FALLBACK = {
-    "webdav_url": "",
-    "nzbdav_url": "http://nzbdav:3000",
-    "username": "user",
-    "password": "pass",
-}
-
 
 @patch("resources.lib.webdav._get_settings")
-def test_build_webdav_url_with_explicit_url(mock_settings):
+def test_build_webdav_url(mock_settings):
     mock_settings.return_value = _SETTINGS_WITH_AUTH
     url = build_webdav_url("The.Matrix.1999.2160p.mkv")
-    assert url.startswith("http://webdav:8080/")
-    assert "The.Matrix.1999.2160p.mkv" in url
-
-
-@patch("resources.lib.webdav._get_settings")
-def test_build_webdav_url_falls_back_to_nzbdav_url(mock_settings):
-    mock_settings.return_value = _SETTINGS_FALLBACK
-    url = build_webdav_url("movie.mkv")
     assert url.startswith("http://nzbdav:3000/")
+    assert "The.Matrix.1999.2160p.mkv" in url
 
 
 @patch("resources.lib.webdav._get_settings")
@@ -99,7 +83,7 @@ def test_get_webdav_stream_url_with_auth(mock_settings):
     """Stream URL should use Kodi pipe-separated auth header."""
     mock_settings.return_value = _SETTINGS_WITH_AUTH
     url, headers = get_webdav_stream_url("movie.mkv")
-    assert url == "http://webdav:8080/movie.mkv"
+    assert url == "http://nzbdav:3000/movie.mkv"
     import base64
 
     auth_part = headers["Authorization"].split("Basic ")[1]
@@ -111,7 +95,7 @@ def test_get_webdav_stream_url_without_auth(mock_settings):
     """Stream URL without auth should be a plain URL with empty headers."""
     mock_settings.return_value = _SETTINGS_NO_AUTH
     url, headers = get_webdav_stream_url("movie.mkv")
-    assert url == "http://webdav:8080/movie.mkv"
+    assert url == "http://nzbdav:3000/movie.mkv"
     assert not headers
 
 
@@ -121,13 +105,12 @@ def test_get_webdav_stream_url_special_chars_in_credentials(mock_settings):
     import base64
 
     mock_settings.return_value = {
-        "webdav_url": "http://webdav:8080",
         "nzbdav_url": "http://nzbdav:3000",
         "username": "user@domain",
         "password": "p@ss:word",
     }
     url, headers = get_webdav_stream_url("movie.mkv")
-    assert url == "http://webdav:8080/movie.mkv"
+    assert url == "http://nzbdav:3000/movie.mkv"
     auth_part = headers["Authorization"].split("Basic ")[1]
     assert base64.b64decode(auth_part).decode() == "user@domain:p@ss:word"
 
@@ -408,7 +391,7 @@ def test_get_webdav_stream_url_for_path_with_auth(mock_settings):
     mock_settings.return_value = _SETTINGS_WITH_AUTH
     file_path = "/content/uncategorized/Movie/Movie.mkv"
     url, headers = get_webdav_stream_url_for_path(file_path)
-    assert url == "http://webdav:8080/content/uncategorized/Movie/Movie.mkv"
+    assert url == "http://nzbdav:3000/content/uncategorized/Movie/Movie.mkv"
     auth_part = headers["Authorization"].split("Basic ")[1]
     assert base64.b64decode(auth_part).decode() == "user:pass"
 
@@ -419,7 +402,7 @@ def test_get_webdav_stream_url_for_path_without_auth(mock_settings):
     mock_settings.return_value = _SETTINGS_NO_AUTH
     file_path = "/content/uncategorized/Movie/Movie.mkv"
     url, headers = get_webdav_stream_url_for_path(file_path)
-    assert url == "http://webdav:8080/content/uncategorized/Movie/Movie.mkv"
+    assert url == "http://nzbdav:3000/content/uncategorized/Movie/Movie.mkv"
     assert not headers
 
 

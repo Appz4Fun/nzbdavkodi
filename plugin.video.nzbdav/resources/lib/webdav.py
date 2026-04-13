@@ -16,7 +16,6 @@ def _get_settings():
 
     addon = xbmcaddon.Addon()
     return {
-        "webdav_url": addon.getSetting("webdav_url").rstrip("/"),
         "nzbdav_url": addon.getSetting("nzbdav_url").rstrip("/"),
         "username": addon.getSetting("webdav_username"),
         "password": addon.getSetting("webdav_password"),
@@ -50,14 +49,12 @@ def _http_head(url, username="", password=""):
 
 def build_webdav_url(filename):
     settings = _get_settings()
-    base = settings["webdav_url"] or settings["nzbdav_url"]
-    return "{}/{}".format(base, quote(filename, safe=""))
+    return "{}/{}".format(settings["nzbdav_url"], quote(filename, safe=""))
 
 
 def get_webdav_stream_url(filename):
     settings = _get_settings()
-    base = settings["webdav_url"] or settings["nzbdav_url"]
-    url = "{}/{}".format(base, quote(filename, safe=""))
+    url = "{}/{}".format(settings["nzbdav_url"], quote(filename, safe=""))
     headers = _build_auth_headers(settings["username"], settings["password"])
     return url, headers
 
@@ -188,7 +185,7 @@ def find_video_file(folder_path, _depth=0):
         return None
 
     settings = _get_settings()
-    base = settings["webdav_url"] or settings["nzbdav_url"]
+    base = settings["nzbdav_url"]
     username = settings["username"]
     password = settings["password"]
 
@@ -311,10 +308,9 @@ def get_webdav_stream_url_for_path(file_path):
     Returns (url, headers_dict) where headers_dict may be empty if no auth.
     """
     settings = _get_settings()
-    base = settings["webdav_url"] or settings["nzbdav_url"]
 
     # file_path is already URL-encoded from PROPFIND
-    url = "{}{}".format(base, file_path)
+    url = "{}{}".format(settings["nzbdav_url"], file_path)
     headers = _build_auth_headers(settings["username"], settings["password"])
     return url, headers
 

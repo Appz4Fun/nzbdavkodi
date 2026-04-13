@@ -52,18 +52,6 @@ class NzbdavPlayer(xbmc.Player):
     session.  The plugin (resolver.py) signals a new stream by writing window
     properties; ``tick()`` is called every second from the service loop to check
     those properties and handle retries.
-
-    This is the **primary** player monitor used in production.  It differs from
-    :class:`resources.lib.playback_monitor.PlaybackMonitor` in two ways:
-
-    * It is **long-lived** — one instance covers many play sessions rather than
-      being created per-play.
-    * It uses Kodi window properties for inter-process communication so that
-      the short-lived plugin script can hand off monitoring to this service.
-
-    ``PlaybackMonitor`` (in ``playback_monitor.py``) is a self-contained
-    per-play alternative used when calling ``resolve_and_play()`` directly
-    (i.e. without the service running).
     """
 
     def __init__(self, proxy=None):
