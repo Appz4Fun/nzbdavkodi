@@ -668,7 +668,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "video/x-matroska")
         self.send_header("Accept-Ranges", "none")
         self.send_header("Connection", "close")
-        self.close_connection = True
+        self.close_connection = True  # pylint: disable=attribute-defined-outside-init
         self.end_headers()
 
         # Give the socket a write timeout.  If Kodi stops consuming bytes
@@ -765,7 +765,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
         # response's.  So we also set self.close_connection = True to
         # actually tear down the socket after handle() returns.
         self.send_header("Connection", "close")
-        self.close_connection = True
+        self.close_connection = True  # pylint: disable=attribute-defined-outside-init
         self.end_headers()
 
         # Write timeout so a stalled Kodi (DB vacuum, audio sync error, etc.)
