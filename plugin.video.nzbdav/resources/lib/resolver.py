@@ -28,6 +28,7 @@ from resources.lib.webdav import (
 )
 
 MAX_POLL_ITERATIONS = 720  # 1 hour at 5s interval
+_TRANSIENT_HTTP_STATUSES = (502, 503, 504)
 
 
 def _validate_stream_url(url, headers):
@@ -451,6 +452,20 @@ def _poll_once(nzo_id, title, monitor):
     return job_status[0], history_status[0], error_type[0]
 
 
+def _show_submit_error_dialog(submit_error):
+    """Show a Kodi modal dialog reporting nzbdav's actual error message.
+
+    Truncates the message to 200 chars (on top of the 500-char cap
+    already applied in submit_nzb) and falls back to a clear placeholder
+    when nzbdav returned an empty body.
+    """
+    message = submit_error["message"][:200] or "(no error message)"
+    xbmcgui.Dialog().ok(
+        _addon_name(),
+        _fmt(30124, submit_error["status"], message),
+    )
+
+
 def _poll_until_ready(nzb_url, title, dialog, poll_interval, download_timeout):
     """Submit NZB and poll until download completes.
 
@@ -474,22 +489,74 @@ def _poll_until_ready(nzb_url, title, dialog, poll_interval, download_timeout):
     xbmc.log("NZB-DAV: Submitting NZB for '{}'".format(title), xbmc.LOGINFO)
     max_submit_retries = 3
     nzo_id = None
+    last_submit_error = None  # tracks the most recent HTTP error during retries
     monitor = xbmc.Monitor()
     for attempt in range(1, max_submit_retries + 1):
-        nzo_id, _submit_error = submit_nzb(nzb_url, title)
+        nzo_id, submit_error = submit_nzb(nzb_url, title)
         if nzo_id:
             break
-        xbmc.log(
-            "NZB-DAV: Submit attempt {}/{} failed for '{}'".format(
-                attempt, max_submit_retries, title
-            ),
-            xbmc.LOGWARNING,
-        )
+
+        if submit_error:
+            last_submit_error = submit_error
+            status = submit_error["status"]
+            # Transient gateway/service issues — preserve the existing
+            # retry behavior. nzbdav restarting or its upstream proxy
+            # hiccupping is exactly the case retry was designed for.
+            if status in _TRANSIENT_HTTP_STATUSES:
+                xbmc.log(
+                    "NZB-DAV: Submit attempt {}/{} hit transient HTTP {}: {}".format(
+                        attempt, max_submit_retries, status, submit_error["message"]
+                    ),
+                    xbmc.LOGWARNING,
+                )
+                # fall through to the retry-wait below
+            else:
+                # Non-transient HTTP error: 4xx (bad apikey, malformed,
+                # conflict), 500/501 (definite server-side rejection —
+                # duplicate, internal error, not implemented), or any
+                # other unclassified 5xx. Retrying these is futile and
+                # just delays the diagnostic.
+                xbmc.log(
+                    "NZB-DAV: Submit failed with HTTP {}, not retrying: {}".format(
+                        status, submit_error["message"]
+                    ),
+                    xbmc.LOGERROR,
+                )
+                _show_submit_error_dialog(submit_error)
+                return None, None
+        else:
+            # (None, None) — non-HTTP transient (connection refused,
+            # JSON decode error, etc.). Retry as before.
+            xbmc.log(
+                "NZB-DAV: Submit attempt {}/{} failed for '{}'".format(
+                    attempt, max_submit_retries, title
+                ),
+                xbmc.LOGWARNING,
+            )
+
         if attempt < max_submit_retries:
             if monitor.waitForAbort(2):
                 return None, None
 
     if not nzo_id:
+        # Retries exhausted. If the last error we saw was a transient
+        # HTTP error (502/503/504), surface its actual body — that's
+        # more useful than the generic "check your settings" string.
+        # Otherwise (pure connection errors), fall back to the generic
+        # dialog.
+        if last_submit_error:
+            xbmc.log(
+                "NZB-DAV: All {} submit attempts failed for '{}', "
+                "last HTTP {}: {}".format(
+                    max_submit_retries,
+                    title,
+                    last_submit_error["status"],
+                    last_submit_error["message"],
+                ),
+                xbmc.LOGERROR,
+            )
+            _show_submit_error_dialog(last_submit_error)
+            return None, None
         xbmc.log(
             "NZB-DAV: All {} submit attempts failed for '{}'. "
             "Check nzbdav URL and API key in settings.".format(

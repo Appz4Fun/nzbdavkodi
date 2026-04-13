@@ -1137,3 +1137,101 @@ def test_poll_until_ready_no_video_after_retries(
     assert url is None
     assert headers is None
     mock_gui.Dialog.return_value.ok.assert_called_once()
+
+
+# --- HTTP error classification tests for the submit retry loop ---
+
+
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.submit_nzb")
+@patch("resources.lib.resolver.xbmc")
+def test_poll_until_ready_submit_http_500_no_retry(
+    mock_xbmc, mock_submit, mock_gui, mock_find_completed
+):
+    """When submit_nzb returns an HTTP 500 tuple, the retry loop must
+    NOT retry — it must show the dialog with the error body and abort
+    after a single submit attempt."""
+    mock_submit.return_value = (
+        None,
+        {"status": 500, "message": "Internal Server Error: duplicate nzo_id"},
+    )
+    mock_xbmc.Monitor.return_value = _make_monitor()
+
+    url, headers = _poll_until_ready(
+        "http://hydra/nzb", "movie", _make_dialog(), 2, 3600
+    )
+
+    assert url is None
+    assert headers is None
+    assert mock_submit.call_count == 1  # critically: NOT 3
+    mock_gui.Dialog.return_value.ok.assert_called_once()
+
+
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.submit_nzb")
+@patch("resources.lib.resolver.xbmc")
+def test_poll_until_ready_submit_http_502_retries_then_surfaces(
+    mock_xbmc, mock_submit, mock_gui, mock_find_completed
+):
+    """When submit_nzb returns HTTP 502 (transient gateway error), the
+    retry loop SHOULD retry up to 3x. After all retries exhaust, the
+    final dialog surfaces the actual error body, not the generic
+    'check your settings' string."""
+    mock_submit.return_value = (
+        None,
+        {"status": 502, "message": "Bad Gateway: upstream timeout"},
+    )
+    mock_xbmc.Monitor.return_value = _make_monitor()
+
+    url, headers = _poll_until_ready(
+        "http://hydra/nzb", "movie", _make_dialog(), 2, 3600
+    )
+
+    assert url is None
+    assert headers is None
+    assert mock_submit.call_count == 3  # all 3 retries attempted
+    mock_gui.Dialog.return_value.ok.assert_called_once()
+    # The dialog text should contain the 502 error body, not the
+    # generic string. Inspect the call args:
+    call_args_text = str(mock_gui.Dialog.return_value.ok.call_args)
+    assert "502" in call_args_text or "Bad Gateway" in call_args_text
+
+
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.submit_nzb")
+@patch("resources.lib.resolver.xbmc")
+def test_poll_until_ready_submit_http_400_no_retry(
+    mock_xbmc, mock_submit, mock_gui, mock_find_completed
+):
+    """4xx errors are also non-transient and skip the retry loop."""
+    mock_submit.return_value = (
+        None,
+        {"status": 400, "message": "Bad Request: malformed nzburl"},
+    )
+    mock_xbmc.Monitor.return_value = _make_monitor()
+
+    _poll_until_ready("http://hydra/nzb", "movie", _make_dialog(), 2, 3600)
+
+    assert mock_submit.call_count == 1
+    mock_gui.Dialog.return_value.ok.assert_called_once()
+
+
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.submit_nzb")
+@patch("resources.lib.resolver.xbmc")
+def test_poll_until_ready_submit_connection_error_still_retries(
+    mock_xbmc, mock_submit, mock_gui, mock_find_completed
+):
+    """(None, None) — non-HTTP transient — still retries 3x as before
+    and shows the generic dialog after exhausting."""
+    mock_submit.return_value = (None, None)
+    mock_xbmc.Monitor.return_value = _make_monitor()
+
+    _poll_until_ready("http://hydra/nzb", "movie", _make_dialog(), 2, 3600)
+
+    assert mock_submit.call_count == 3  # full retry loop
+    mock_gui.Dialog.return_value.ok.assert_called_once()
