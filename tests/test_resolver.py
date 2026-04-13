@@ -1216,3 +1216,224 @@ def test_poll_until_ready_submit_connection_error_still_retries(
 
     assert mock_submit.call_count == 3  # full retry loop
     mock_gui.Dialog.return_value.ok.assert_called_once()
+
+
+# --- cleanup-on-abort tests (Group A) ---
+
+
+@patch("resources.lib.resolver.cancel_job")
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.time")
+@patch("resources.lib.resolver.get_job_history", return_value=None)
+@patch("resources.lib.resolver.get_job_status")
+@patch("resources.lib.resolver.submit_nzb", return_value=("nzo_xyz", None))
+@patch("resources.lib.resolver.xbmc")
+def test_poll_until_ready_cleanup_on_timeout(
+    mock_xbmc,
+    mock_submit,
+    mock_status,
+    mock_history,
+    mock_time,
+    mock_gui,
+    mock_find_completed,
+    mock_cancel_job,
+):
+    """When the download_timeout fires, _poll_until_ready must call
+    cancel_job(nzo_id) before returning."""
+    mock_status.return_value = {"status": "Downloading", "percentage": "10"}
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    mock_time.time.side_effect = [0.0, 700.0]  # forces elapsed >= 600s timeout
+
+    url, headers = _poll_until_ready(
+        "http://hydra/nzb", "movie", _make_dialog(), 2, 600
+    )
+
+    assert url is None
+    assert headers is None
+    mock_cancel_job.assert_called_once_with("nzo_xyz")
+
+
+@patch("resources.lib.resolver.cancel_job")
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.get_job_history", return_value=None)
+@patch("resources.lib.resolver.get_job_status")
+@patch("resources.lib.resolver.submit_nzb", return_value=("nzo_xyz", None))
+@patch("resources.lib.resolver.xbmc")
+def test_poll_until_ready_cleanup_on_user_cancel(
+    mock_xbmc,
+    mock_submit,
+    mock_status,
+    mock_history,
+    mock_gui,
+    mock_find_completed,
+    mock_cancel_job,
+):
+    """When the user cancels the resolve dialog, cancel_job must fire."""
+    mock_status.return_value = {"status": "Downloading", "percentage": "10"}
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    dialog = _make_dialog(canceled=True)
+
+    url, headers = _poll_until_ready("http://hydra/nzb", "movie", dialog, 2, 3600)
+
+    assert url is None
+    assert headers is None
+    mock_cancel_job.assert_called_once_with("nzo_xyz")
+
+
+@patch("resources.lib.resolver.cancel_job")
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.get_job_history", return_value=None)
+@patch("resources.lib.resolver.get_job_status")
+@patch("resources.lib.resolver.submit_nzb", return_value=("nzo_xyz", None))
+@patch("resources.lib.resolver.xbmc")
+def test_poll_until_ready_cleanup_on_kodi_shutdown(
+    mock_xbmc,
+    mock_submit,
+    mock_status,
+    mock_history,
+    mock_gui,
+    mock_find_completed,
+    mock_cancel_job,
+):
+    """When Kodi shutdown is signaled during the poll wait, cancel_job
+    must fire."""
+    mock_status.return_value = {"status": "Downloading", "percentage": "10"}
+    monitor = MagicMock()
+    # First waitForAbort returns False (initial poll wait), second returns True
+    # (Kodi shutdown signal)
+    monitor.waitForAbort.side_effect = [False, True]
+    mock_xbmc.Monitor.return_value = monitor
+
+    url, headers = _poll_until_ready(
+        "http://hydra/nzb", "movie", _make_dialog(), 2, 3600
+    )
+
+    assert url is None
+    assert headers is None
+    mock_cancel_job.assert_called_once_with("nzo_xyz")
+
+
+@patch("resources.lib.resolver.cancel_job")
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.MAX_POLL_ITERATIONS", 2)
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.get_job_history", return_value=None)
+@patch("resources.lib.resolver.get_job_status")
+@patch("resources.lib.resolver.submit_nzb", return_value=("nzo_xyz", None))
+@patch("resources.lib.resolver.xbmc")
+def test_poll_until_ready_cleanup_on_max_iterations(
+    mock_xbmc,
+    mock_submit,
+    mock_status,
+    mock_history,
+    mock_gui,
+    mock_find_completed,
+    mock_cancel_job,
+):
+    """When MAX_POLL_ITERATIONS is exceeded, cancel_job must fire.
+    The test patches MAX_POLL_ITERATIONS to a small value to make the
+    test fast."""
+    mock_status.return_value = {"status": "Downloading", "percentage": "10"}
+    mock_xbmc.Monitor.return_value = _make_monitor()
+
+    url, headers = _poll_until_ready(
+        "http://hydra/nzb", "movie", _make_dialog(), 2, 3600
+    )
+
+    assert url is None
+    assert headers is None
+    mock_cancel_job.assert_called_once_with("nzo_xyz")
+
+
+# --- negative cleanup tests (Group B — cleanup must NOT fire) ---
+
+
+@patch("resources.lib.resolver.cancel_job")
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.get_job_history", return_value=None)
+@patch("resources.lib.resolver.get_job_status")
+@patch("resources.lib.resolver.submit_nzb", return_value=("nzo_xyz", None))
+@patch("resources.lib.resolver.xbmc")
+def test_poll_until_ready_no_cleanup_on_job_failed_status(
+    mock_xbmc,
+    mock_submit,
+    mock_status,
+    mock_history,
+    mock_gui,
+    mock_find_completed,
+    mock_cancel_job,
+):
+    """When job_status returns Failed, the resolver aborts but does NOT
+    call cancel_job — Group B paths leave nzbdav's history alone."""
+    mock_status.return_value = {"status": "Failed", "percentage": "0"}
+    mock_xbmc.Monitor.return_value = _make_monitor()
+
+    _poll_until_ready("http://hydra/nzb", "movie", _make_dialog(), 2, 3600)
+
+    mock_cancel_job.assert_not_called()
+
+
+@patch("resources.lib.resolver.cancel_job")
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.xbmcgui")
+@patch(
+    "resources.lib.resolver.get_job_history",
+    return_value={"status": "Failed", "fail_message": "test failure"},
+)
+@patch("resources.lib.resolver.get_job_status", return_value=None)
+@patch("resources.lib.resolver.submit_nzb", return_value=("nzo_xyz", None))
+@patch("resources.lib.resolver.xbmc")
+def test_poll_until_ready_no_cleanup_on_history_failed(
+    mock_xbmc,
+    mock_submit,
+    mock_status,
+    mock_history,
+    mock_gui,
+    mock_find_completed,
+    mock_cancel_job,
+):
+    """When history reports Failed, the resolver aborts but does NOT
+    call cancel_job."""
+    mock_xbmc.Monitor.return_value = _make_monitor()
+
+    _poll_until_ready("http://hydra/nzb", "movie", _make_dialog(), 2, 3600)
+
+    mock_cancel_job.assert_not_called()
+
+
+@patch("resources.lib.resolver.cancel_job")
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.find_video_file", return_value=None)
+@patch(
+    "resources.lib.resolver.get_job_history",
+    return_value={
+        "status": "Completed",
+        "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/movie",
+    },
+)
+@patch("resources.lib.resolver.get_job_status", return_value=None)
+@patch("resources.lib.resolver.submit_nzb", return_value=("nzo_xyz", None))
+@patch("resources.lib.resolver.xbmc")
+def test_poll_until_ready_no_cleanup_on_completed_no_video(
+    mock_xbmc,
+    mock_submit,
+    mock_status,
+    mock_history,
+    mock_find_video,
+    mock_gui,
+    mock_find_completed,
+    mock_cancel_job,
+):
+    """When history reports Completed but find_video_file returns None
+    after max retries, the resolver aborts but does NOT call cancel_job
+    — the job actually completed, this is a WebDAV layer issue."""
+    mock_xbmc.Monitor.return_value = _make_monitor()
+
+    _poll_until_ready("http://hydra/nzb", "movie", _make_dialog(), 0, 3600)
+
+    mock_cancel_job.assert_not_called()
