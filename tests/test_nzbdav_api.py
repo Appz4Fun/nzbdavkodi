@@ -7,6 +7,7 @@ from unittest.mock import patch
 from resources.lib.nzbdav_api import (
     _DEFAULT_SUBMIT_TIMEOUT,
     _get_submit_timeout,
+    _sanitize_server_message,
     get_completed_names,
     get_job_history,
     get_job_status,
@@ -353,3 +354,35 @@ def test_get_completed_names_returns_empty_on_error(mock_http, mock_settings):
     mock_http.side_effect = Exception("Connection refused")
     names = get_completed_names()
     assert names == set()
+
+
+# --- _sanitize_server_message tests ---
+
+
+def test_sanitize_empty_string():
+    assert _sanitize_server_message("") == ""
+
+
+def test_sanitize_none():
+    """Defensive: don't crash when passed None (e.g., from a missing body)."""
+    assert _sanitize_server_message(None) == ""
+
+
+def test_sanitize_plain_text():
+    assert _sanitize_server_message("  hello world  ") == "hello world"
+
+
+def test_sanitize_strips_html_tags():
+    assert _sanitize_server_message("<b>bold</b> text") == "bold text"
+
+
+def test_sanitize_collapses_whitespace():
+    assert _sanitize_server_message("a\n\nb\t\tc") == "a b c"
+
+
+def test_sanitize_handles_nested_tags():
+    assert _sanitize_server_message("<div><p>x</p></div>") == "x"
+
+
+def test_sanitize_returns_empty_when_only_whitespace():
+    assert _sanitize_server_message("   \n\t  ") == ""
