@@ -16,6 +16,7 @@ from resources.lib.i18n import addon_name as _addon_name
 from resources.lib.i18n import fmt as _fmt
 from resources.lib.i18n import string as _string
 from resources.lib.nzbdav_api import (
+    cancel_job,
     find_completed_by_name,
     get_job_history,
     get_job_status,
@@ -596,6 +597,7 @@ def _poll_until_ready(nzb_url, title, dialog, poll_interval, download_timeout):
                 xbmc.LOGERROR,
             )
             xbmcgui.Dialog().ok(_addon_name(), _string(30099))
+            cancel_job(nzo_id)
             return None, None
 
         elapsed = time.time() - start_time
@@ -610,6 +612,7 @@ def _poll_until_ready(nzb_url, title, dialog, poll_interval, download_timeout):
                 xbmc.LOGERROR,
             )
             xbmcgui.Dialog().ok(_addon_name(), _fmt(30099, int(elapsed)))
+            cancel_job(nzo_id)
             return None, None
 
         if dialog.iscanceled():
@@ -617,6 +620,7 @@ def _poll_until_ready(nzb_url, title, dialog, poll_interval, download_timeout):
                 "NZB-DAV: User cancelled resolve for nzo_id={}".format(nzo_id),
                 xbmc.LOGINFO,
             )
+            cancel_job(nzo_id)
             return None, None
 
         job_status, history, webdav_error = _poll_once(nzo_id, title, monitor)
@@ -730,6 +734,7 @@ def _poll_until_ready(nzb_url, title, dialog, poll_interval, download_timeout):
         if monitor.waitForAbort(poll_interval):
             # Kodi is shutting down
             xbmc.log("NZB-DAV: Kodi shutdown detected, aborting resolve", xbmc.LOGINFO)
+            cancel_job(nzo_id)
             return None, None
 
 
