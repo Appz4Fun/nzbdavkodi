@@ -4,7 +4,8 @@
 """nzbdav SABnzbd-compatible API client."""
 
 import json
-from urllib.error import URLError
+import re
+from urllib.error import HTTPError, URLError  # noqa: F401
 from urllib.parse import urlencode
 
 import xbmc
@@ -13,6 +14,24 @@ import xbmcaddon
 from resources.lib.http_util import http_get as _http_get
 
 _DEFAULT_SUBMIT_TIMEOUT = 30
+
+_HTML_TAG_RE = re.compile(r"<[^>]*>")
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _sanitize_server_message(raw):
+    """Sanitize a raw HTTP response body for display in a Kodi dialog.
+
+    Strips HTML tags (some servers return styled error pages), collapses
+    runs of whitespace to single spaces, and trims. Returns an empty
+    string if nothing meaningful remains. Caller is responsible for
+    truncation and the empty-fallback ("(no error message)").
+    """
+    if not raw:
+        return ""
+    cleaned = _HTML_TAG_RE.sub("", raw)
+    cleaned = _WHITESPACE_RE.sub(" ", cleaned).strip()
+    return cleaned
 
 
 def _get_settings():
