@@ -25,7 +25,7 @@ def test_resolve_aborts_on_nzbdav_failed_status(
     """When nzbdav reports job Failed, resolve() should show error dialog and
     call setResolvedUrl(False)."""
     mock_poll.return_value = (1, 60)
-    mock_submit.return_value = "SABnzbd_nzo_failed"
+    mock_submit.return_value = ("SABnzbd_nzo_failed", None)
     mock_status.return_value = {"status": "Downloading", "percentage": "20"}
     mock_history.return_value = {
         "status": "Failed",
@@ -68,7 +68,7 @@ def test_resolve_times_out_gracefully(
     """When polling exceeds timeout, resolve() should notify and not hang
     even if status calls return None."""
     mock_poll.return_value = (1, 5)  # 5s timeout
-    mock_submit.return_value = "SABnzbd_nzo_timeout"
+    mock_submit.return_value = ("SABnzbd_nzo_timeout", None)
     mock_status.return_value = None  # Simulate connection timeout to nzbdav
     mock_history.return_value = None
     mock_check_webdav.return_value = (False, "connection_error")
@@ -111,7 +111,7 @@ def test_resolve_aborts_on_webdav_auth_failed_when_nzbdav_apis_silent(
     auth dialog and call setResolvedUrl(False) within a single poll
     iteration — not spin until the download timeout."""
     mock_poll.return_value = (1, 60)  # 1s poll interval, 60s timeout
-    mock_submit.return_value = "SABnzbd_nzo_silent"
+    mock_submit.return_value = ("SABnzbd_nzo_silent", None)
     # Both nzbdav APIs silent — triggers the probe branch in _poll_once.
     mock_status.return_value = None
     mock_history.return_value = None
@@ -176,7 +176,7 @@ def test_resolve_continues_polling_when_webdav_reachable_and_apis_silent(
     On the second iteration the history API returns Completed and the
     resolve succeeds."""
     mock_poll.return_value = (1, 60)
-    mock_submit.return_value = "SABnzbd_nzo_reachable"
+    mock_submit.return_value = ("SABnzbd_nzo_reachable", None)
     # First iteration: both APIs silent. Second iteration: history
     # returns Completed, nzbdav's queue is also empty.
     mock_status.return_value = None

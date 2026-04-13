@@ -10,13 +10,15 @@ from resources.lib.nzbdav_api import get_job_status, submit_nzb
 @patch("resources.lib.nzbdav_api._get_settings")
 @patch("resources.lib.nzbdav_api._http_get")
 def test_submit_nzb_returns_none_on_malformed_json(mock_http, mock_settings):
-    """submit_nzb() should return None (not raise) when response is not valid JSON."""
+    """submit_nzb() should return (None, None) (not raise) when response
+    is not valid JSON. JSONDecodeError is in the broad URLError catch
+    clause and is treated as transient/retryable."""
     mock_settings.return_value = ("http://nzbdav:3000", "testkey")
     mock_http.return_value = "{this is not json"
 
     result = submit_nzb("http://hydra/getnzb/badjson", "Bad.JSON")
 
-    assert result is None
+    assert result == (None, None)
 
 
 @patch("resources.lib.nzbdav_api._get_settings")
