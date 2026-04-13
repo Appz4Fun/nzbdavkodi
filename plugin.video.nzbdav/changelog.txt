@@ -1,3 +1,7 @@
+v0.6.21 (2026-04-13)
+- Fix stale jobs leaking into nzbdav after timeouts and cancellations. The addon now sends a queue-delete (3s timeout) on every abort path (download timeout, user cancel, max poll iterations, Kodi shutdown), so re-submitting the same NZB no longer hits nzbdav's duplicate-rejection path. Failure history is left intact for inspection.
+- Surface nzbdav's actual error message when a submit is rejected. The dialog now shows the real server message instead of a generic "check your settings" string. HTTP 408/502/503/504 still retry 3x (transient gateway issues), HTTP 4xx and HTTP 500/501 short-circuit immediately.
+
 v0.6.20 (2026-04-13)
 - Fix brief Kodi UI freeze during resolve polling when nzbdav is momentarily unreachable. The WebDAV retry delay used time.sleep() on Kodi's main thread; it now uses xbmc.Monitor().waitForAbort() so the event loop stays responsive and Kodi shuts down cleanly.
 - Fix silent retry loop when WebDAV credentials are wrong. The poll-loop probe used to use the movie title as a filename (always returned "not found"), masking auth failures. The probe now hits the WebDAV content root so an invalid-credentials failure shows the "Authentication failed" dialog within one poll iteration.

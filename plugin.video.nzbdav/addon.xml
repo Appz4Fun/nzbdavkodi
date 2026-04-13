@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="plugin.video.nzbdav"
        name="NZB-DAV"
-       version="0.6.20"
+       version="0.6.21"
        provider-name="nzbdav">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
@@ -22,7 +22,11 @@
         <license>GPL-3.0-or-later</license>
         <source>https://github.com/xbmc4lyfe/nzbdavkodi</source>
         <website>https://xbmc4lyfe.github.io/nzbdavkodi/</website>
-        <news>v0.6.20
+        <news>v0.6.21
+- Fix stale jobs in nzbdav after timeouts and cancellations. When the addon gave up on a download (timeout, user cancel, max poll iterations, Kodi shutdown), it left the job sitting in nzbdav's queue indefinitely. Re-submitting the same NZB then hit nzbdav's duplicate-rejection path and the user got a generic "check nzbdav URL and API key" dialog with no real explanation. The addon now sends a SABnzbd-compatible queue delete (3s timeout, fail-quiet) on every abort path so the next attempt is clean. History entries are deliberately left alone so failure history stays inspectable in nzbdav's web UI (audit finding L1).
+- Surface nzbdav's actual error message when a submit is rejected. The submit retry loop used to hide HTTP 4xx/5xx responses behind a generic "all 3 retries failed" dialog. The addon now captures nzbdav's response body (HTML-stripped, whitespace-collapsed), shows the actual server message in the dialog, and classifies retries: HTTP 408/502/503/504 still retry 3x as transient gateway issues, but HTTP 4xx and HTTP 500/501 short-circuit immediately so it's possible to tell apart "duplicate stuck job", "bad API key", and "nzbdav crashed".
+
+v0.6.20
 - Fix brief Kodi UI freeze during resolve polling when nzbdav is momentarily unreachable. The WebDAV retry delay used time.sleep() on Kodi's main thread; it now uses xbmc.Monitor().waitForAbort(), which yields to the event loop and lets Kodi shut down cleanly while a retry is pending (C4 from internal audit).
 - Fix silent retry loop when WebDAV credentials are wrong. When nzbdav's queue and history APIs both returned no data, the addon used to probe the WebDAV server with the movie's human-readable title as a filename, which always returned "not found" — so an auth failure never surfaced and the resolve dialog spun until the download timeout. The probe now hits the WebDAV content root, so an invalid-credentials failure shows the "Authentication failed" dialog within one poll iteration (C3 from internal audit).
 
