@@ -140,6 +140,7 @@ def test_resolve_aborts_on_webdav_auth_failed_when_nzbdav_apis_silent(
     assert mock_probe.call_count >= 1
 
 
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
 @patch("resources.lib.resolver._play_direct")
 @patch("resources.lib.resolver._validate_stream_url")
 @patch("resources.lib.resolver.get_webdav_stream_url_for_path")
@@ -167,6 +168,7 @@ def test_resolve_continues_polling_when_webdav_reachable_and_apis_silent(
     mock_stream_url,
     mock_validate,
     mock_play_direct,
+    mock_find_completed,
 ):
     """Complementary no-false-positive test: when the nzbdav APIs are
     silent but the WebDAV probe reports (True, None), the resolver must
