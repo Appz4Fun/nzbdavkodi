@@ -1,3 +1,7 @@
+v0.6.19 (2026-04-12)
+- Update README to reflect the v0.6.14+ proxy architecture: every container now routes through the local stream proxy (not just MP4). Documents the MKV pass-through path with zero-fill recovery and native seeking alongside the MP4 faststart/remux branches.
+- Silence pylint W0201 on self.close_connection = True assignments in stream_proxy.py. close_connection is a real BaseHTTPRequestHandler attribute initialized by the parent class, but pylint's static analysis can't see it, so CI was failing on two inline disables' worth of false positives.
+
 v0.6.18 (2026-04-12)
 - Disable force-remux for large MKVs by default (force_remux_threshold_mb=0). Pass-through handles 12+ GB MKVs on 32-bit Kodi and gives native seeking + zero-fill recovery on missing Usenet articles. Set force_remux_threshold_mb > 0 to restore v0.6.16 behavior.
 - Fix MemoryError in pass-through upstream reads by shrinking the chunk size from 1 MB to 64 KB, so a second handler thread opened during Kodi CCurlFile recovery doesn't OOM the 32-bit Python heap.

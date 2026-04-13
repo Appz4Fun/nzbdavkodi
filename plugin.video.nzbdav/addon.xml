@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="plugin.video.nzbdav"
        name="NZB-DAV"
-       version="0.6.18"
+       version="0.6.19"
        provider-name="nzbdav">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
@@ -22,7 +22,11 @@
         <license>GPL-3.0-or-later</license>
         <source>https://github.com/xbmc4lyfe/nzbdavkodi</source>
         <website>https://xbmc4lyfe.github.io/nzbdavkodi/</website>
-        <news>v0.6.18
+        <news>v0.6.19
+- Update README to reflect the v0.6.14+ proxy architecture: every container now routes through the local stream proxy (not just MP4), and the MKV pass-through path with zero-fill recovery and native seeking is documented alongside the MP4 faststart/remux branches.
+- Silence pylint W0201 on `self.close_connection = True` assignments in stream_proxy.py. `close_connection` is a real `BaseHTTPRequestHandler` attribute initialized by the parent class, but pylint's static analysis can't see it, so CI was failing on two inline disables' worth of false positives.
+
+v0.6.18
 - Disable force-remux for large MKVs by default (force_remux_threshold_mb now defaults to 0). Live testing confirmed the local stream proxy's pass-through path handles 12+ GB MKVs fine on 32-bit Kodi/CoreELEC builds, and pass-through gives strictly more features than force-remux: native user seeking (via the source MKV's real Cues), v0.6.15 zero-fill recovery on missing Usenet articles, and no ffmpeg CPU overhead. v0.6.16's force-remux branch was defending against `Open - Unhandled exception` that most likely came from the PROPFIND cascade v0.6.14 already fixed, not Content-Length overflow. Users hitting real regressions on their platform can restore the previous behavior by setting force_remux_threshold_mb to 4096 (or any non-zero MB threshold).
 - Fix MemoryError in the pass-through proxy's upstream read loop on 32-bit Kodi. Kodi's CFileCache alone can reserve ~1.5 GB (cachemembuffersize * readbufferfactor), leaving little headroom in Python's 32-bit heap. A 1 MB upstream read chunk was hitting allocation failure when a second handler thread opened during Kodi's CCurlFile reconnect-on-error recovery. Read chunk is now 64 KB (16x smaller, allocation-friendly on a fragmented heap) and MemoryError is explicitly caught.
 - Force `Connection: close` on pass-through responses so the previous handler thread unwinds as soon as Kodi reconnects, instead of lingering with multi-megabyte TCP buffers and a live upstream HTTP response.
