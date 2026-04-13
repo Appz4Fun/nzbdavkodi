@@ -45,7 +45,7 @@ def test_resolve_aborts_on_nzbdav_failed_status(
     mock_gui.Dialog.return_value.ok.assert_called_once()
 
 
-@patch("resources.lib.resolver.check_file_available_with_retry")
+@patch("resources.lib.resolver.probe_webdav_reachable")
 @patch("resources.lib.resolver.xbmc")
 @patch("resources.lib.resolver.time")
 @patch("resources.lib.resolver.xbmcgui")

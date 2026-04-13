@@ -22,9 +22,9 @@ from resources.lib.nzbdav_api import (
     submit_nzb,
 )
 from resources.lib.webdav import (
-    check_file_available_with_retry,
     find_video_file,
     get_webdav_stream_url_for_path,
+    probe_webdav_reachable,
 )
 
 MAX_POLL_ITERATIONS = 720  # 1 hour at 5s interval
@@ -393,12 +393,15 @@ def _storage_to_webdav_path(storage):
     return "/content/{}/".format(relative)
 
 
-def _poll_once(nzo_id, title):
+def _poll_once(nzo_id, title, monitor):
     """Poll nzbdav queue API and history API in parallel.
 
     Args:
         nzo_id: nzbdav job identifier to poll.
-        title: Human-readable title used for the WebDAV filename check.
+        title: Human-readable title used for log messages.
+        monitor: xbmc.Monitor instance passed through to
+            probe_webdav_reachable so the probe's retry wait
+            cooperates with Kodi shutdown.
 
     Returns:
         A tuple of (job_status, history_status, error_type):
@@ -407,14 +410,13 @@ def _poll_once(nzo_id, title):
         - history_status: Dict from the history API when the job completed, or
           None when not present.
         - error_type: None when polling succeeds; otherwise the error string
-          returned by check_file_available_with_retry() when both APIs return
-          None (e.g., "not_found", "auth_failed", "server_error",
-          "connection_error").
+          returned by probe_webdav_reachable() when both APIs return None.
+          One of "auth_failed", "server_error", or "connection_error".
 
     Side effects:
         Spawns two threads to call get_job_status() and get_job_history().
         Performs HTTP requests to nzbdav queue/history endpoints and, when
-        neither returns data, a WebDAV availability probe.
+        neither returns data, a WebDAV reachability probe.
         Logs poll results to the Kodi log.
     """
     job_status = [None]
@@ -435,9 +437,9 @@ def _poll_once(nzo_id, title):
     t2.join(timeout=10)
 
     # Only probe WebDAV for errors after both threads have finished,
-    # so we don't falsely conclude the job is missing
+    # so we don't falsely conclude the job is missing.
     if history_status[0] is None and job_status[0] is None:
-        _, error = check_file_available_with_retry(title, max_retries=1, retry_delay=1)
+        _, error = probe_webdav_reachable(monitor=monitor, max_retries=1, retry_delay=1)
         error_type[0] = error
 
     xbmc.log(
@@ -543,7 +545,7 @@ def _poll_until_ready(nzb_url, title, dialog, poll_interval, download_timeout):
             )
             return None, None
 
-        job_status, history, webdav_error = _poll_once(nzo_id, title)
+        job_status, history, webdav_error = _poll_once(nzo_id, title, monitor)
 
         if job_status:
             status = job_status.get("status", "Unknown")
