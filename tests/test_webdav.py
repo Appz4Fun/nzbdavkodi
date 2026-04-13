@@ -263,21 +263,9 @@ def test_probe_reachable_aborts_on_shutdown_signal(mock_head, mock_settings):
 @patch("resources.lib.webdav._get_settings")
 @patch("resources.lib.webdav._http_head")
 def test_probe_reachable_hits_content_root(mock_head, mock_settings):
-    """The probe URL must be {base}/content/ — the nzbdav content root.
+    """The probe URL must be {nzbdav_url}/content/ — the nzbdav content root.
     Verifies the URL construction and the defense-in-depth rstrip."""
     mock_settings.return_value = _SETTINGS_WITH_AUTH
-    mock_head.return_value = 200
-    probe_webdav_reachable()
-    called_url = mock_head.call_args[0][0]
-    assert called_url == "http://webdav:8080/content/"
-
-
-@patch("resources.lib.webdav._get_settings")
-@patch("resources.lib.webdav._http_head")
-def test_probe_reachable_uses_nzbdav_url_fallback(mock_head, mock_settings):
-    """When webdav_url is empty, fall back to nzbdav_url (same pattern
-    as build_webdav_url at webdav.py:42)."""
-    mock_settings.return_value = _SETTINGS_FALLBACK
     mock_head.return_value = 200
     probe_webdav_reachable()
     called_url = mock_head.call_args[0][0]

@@ -109,11 +109,10 @@ def probe_webdav_reachable(monitor=None, max_retries=1, retry_delay=1):
                                         retry wait
     """
     settings = _get_settings()
-    base = settings["webdav_url"] or settings["nzbdav_url"]
-    # _get_settings() already rstrips "/" on both URL settings
-    # (webdav.py:20-21), so this rstrip is defense-in-depth against a
-    # future refactor that forgets to.
-    url = "{}/content/".format(base.rstrip("/"))
+    # _get_settings() already rstrips "/" on nzbdav_url (webdav.py:19), so
+    # this rstrip is defense-in-depth against a future refactor that
+    # forgets to.
+    url = "{}/content/".format(settings["nzbdav_url"].rstrip("/"))
     mon = monitor or xbmc.Monitor()
 
     attempt = 0
