@@ -16,6 +16,7 @@ def _get_settings():
 
     addon = xbmcaddon.Addon()
     return {
+        "webdav_url": addon.getSetting("webdav_url").rstrip("/"),
         "nzbdav_url": addon.getSetting("nzbdav_url").rstrip("/"),
         "username": addon.getSetting("webdav_username"),
         "password": addon.getSetting("webdav_password"),
@@ -49,12 +50,14 @@ def _http_head(url, username="", password=""):
 
 def build_webdav_url(filename):
     settings = _get_settings()
-    return "{}/{}".format(settings["nzbdav_url"], quote(filename, safe=""))
+    base = settings["webdav_url"] or settings["nzbdav_url"]
+    return "{}/{}".format(base, quote(filename, safe=""))
 
 
 def get_webdav_stream_url(filename):
     settings = _get_settings()
-    url = "{}/{}".format(settings["nzbdav_url"], quote(filename, safe=""))
+    base = settings["webdav_url"] or settings["nzbdav_url"]
+    url = "{}/{}".format(base, quote(filename, safe=""))
     headers = _build_auth_headers(settings["username"], settings["password"])
     return url, headers
 
@@ -109,10 +112,8 @@ def probe_webdav_reachable(monitor=None, max_retries=1, retry_delay=1):
                                         retry wait
     """
     settings = _get_settings()
-    # _get_settings() already rstrips "/" on nzbdav_url (webdav.py:19), so
-    # this rstrip is defense-in-depth against a future refactor that
-    # forgets to.
-    url = "{}/content/".format(settings["nzbdav_url"].rstrip("/"))
+    base = settings["webdav_url"] or settings["nzbdav_url"]
+    url = "{}/content/".format(base.rstrip("/"))
     mon = monitor or xbmc.Monitor()
 
     attempt = 0
@@ -184,7 +185,7 @@ def find_video_file(folder_path, _depth=0):
         return None
 
     settings = _get_settings()
-    base = settings["nzbdav_url"]
+    base = settings["webdav_url"] or settings["nzbdav_url"]
     username = settings["username"]
     password = settings["password"]
 
@@ -266,7 +267,7 @@ def find_video_file(folder_path, _depth=0):
                 except ValueError:
                     pass
 
-            if size >= best_size:
+            if size > best_size:
                 best_size = size
                 best_file = href_path
 
@@ -309,7 +310,8 @@ def get_webdav_stream_url_for_path(file_path):
     settings = _get_settings()
 
     # file_path is already URL-encoded from PROPFIND
-    url = "{}{}".format(settings["nzbdav_url"], file_path)
+    base = settings["webdav_url"] or settings["nzbdav_url"]
+    url = "{}{}".format(base, file_path)
     headers = _build_auth_headers(settings["username"], settings["password"])
     return url, headers
 

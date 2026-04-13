@@ -15,12 +15,14 @@ from resources.lib.webdav import (
 )
 
 _SETTINGS_WITH_AUTH = {
+    "webdav_url": "",
     "nzbdav_url": "http://nzbdav:3000",
     "username": "user",
     "password": "pass",
 }
 
 _SETTINGS_NO_AUTH = {
+    "webdav_url": "",
     "nzbdav_url": "http://nzbdav:3000",
     "username": "",
     "password": "",
@@ -105,6 +107,7 @@ def test_get_webdav_stream_url_special_chars_in_credentials(mock_settings):
     import base64
 
     mock_settings.return_value = {
+        "webdav_url": "",
         "nzbdav_url": "http://nzbdav:3000",
         "username": "user@domain",
         "password": "p@ss:word",
