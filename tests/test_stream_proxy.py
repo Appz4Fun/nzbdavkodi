@@ -883,8 +883,13 @@ def test_serve_remux_non_seekable_no_ss():
 # ---------------------------------------------------------------------------
 
 
-def test_head_seekable_remux_returns_accept_ranges():
-    """HEAD on seekable remux returns Accept-Ranges: none (no Cues)."""
+def test_head_seekable_remux_returns_accept_ranges_none():
+    """HEAD on a seekable remux context currently returns Accept-Ranges:
+    none. An experiment in v0.6.18 tried advertising bytes so Kodi would
+    HTTP-seek past the cache window, but the pipe-output MKV has no Cues
+    and Kodi's demuxer can't translate user seeks into byte offsets — the
+    flag flip only disabled the working cache fallback. Keeping `none`
+    until we can produce an MKV with a real seek index (Cues or fMP4)."""
     ctx = {
         "remux": True,
         "seekable": True,

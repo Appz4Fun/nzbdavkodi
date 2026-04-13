@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="plugin.video.nzbdav"
        name="NZB-DAV"
-       version="0.6.17"
+       version="0.6.18"
        provider-name="nzbdav">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
@@ -22,7 +22,13 @@
         <license>GPL-3.0-or-later</license>
         <source>https://github.com/xbmc4lyfe/nzbdavkodi</source>
         <website>https://xbmc4lyfe.github.io/nzbdavkodi/</website>
-        <news>v0.6.17
+        <news>v0.6.18
+- Disable force-remux for large MKVs by default (force_remux_threshold_mb now defaults to 0). Live testing confirmed the local stream proxy's pass-through path handles 12+ GB MKVs fine on 32-bit Kodi/CoreELEC builds, and pass-through gives strictly more features than force-remux: native user seeking (via the source MKV's real Cues), v0.6.15 zero-fill recovery on missing Usenet articles, and no ffmpeg CPU overhead. v0.6.16's force-remux branch was defending against `Open - Unhandled exception` that most likely came from the PROPFIND cascade v0.6.14 already fixed, not Content-Length overflow. Users hitting real regressions on their platform can restore the previous behavior by setting force_remux_threshold_mb to 4096 (or any non-zero MB threshold).
+- Fix MemoryError in the pass-through proxy's upstream read loop on 32-bit Kodi. Kodi's CFileCache alone can reserve ~1.5 GB (cachemembuffersize * readbufferfactor), leaving little headroom in Python's 32-bit heap. A 1 MB upstream read chunk was hitting allocation failure when a second handler thread opened during Kodi's CCurlFile reconnect-on-error recovery. Read chunk is now 64 KB (16x smaller, allocation-friendly on a fragmented heap) and MemoryError is explicitly caught.
+- Force `Connection: close` on pass-through responses so the previous handler thread unwinds as soon as Kodi reconnects, instead of lingering with multi-megabyte TCP buffers and a live upstream HTTP response.
+- Skip the _clear_kodi_playback_state() DB cleanup when a video is already playing. Kodi's internal library cleanup thread periodically vacuums MyVideos131.db and Textures13.db on its own schedule; if our bookmark-cleanup DELETE happens to fire concurrently, the added DB contention can freeze playback. The bookmark cleanup only matters for new plays anyway, so the isPlayingVideo() guard is a zero-cost skip.
+
+v0.6.17
 - Fix zombie ffmpeg remux after a playback stall (e.g. when Kodi's automatic DB vacuum freezes the decoder). Kodi would stop consuming bytes without firing onPlayBackStopped, so ffmpeg kept writing into a dead TCP socket forever and the next replay hung with "Playback never started after 70s"
 - Tear down any prior stream session on every new prepare_stream, and add a 60s write timeout to the remux socket so stuck writes always unwind and kill ffmpeg
 - Hook NzbdavPlayer.onPlayBackStopped / onPlayBackEnded to clear active proxy sessions immediately on clean stops

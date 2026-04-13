@@ -110,6 +110,16 @@ def _clear_kodi_playback_state(params=None):
     we can also target the TMDBHelper URL (not just our own plugin URL).
     """
     try:
+        # Skip DB access while something is playing to avoid contending
+        # with Kodi's internal vacuum (Textures13.db / MyVideos131.db)
+        # which can stall the decoder and freeze playback.
+        if xbmc.Player().isPlayingVideo():
+            xbmc.log(
+                "NZB-DAV: Skipping playback-state cleanup — video is playing",
+                xbmc.LOGDEBUG,
+            )
+            return
+
         import glob
         import os
         import re

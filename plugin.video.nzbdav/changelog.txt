@@ -1,3 +1,9 @@
+v0.6.18 (2026-04-12)
+- Disable force-remux for large MKVs by default (force_remux_threshold_mb=0). Pass-through handles 12+ GB MKVs on 32-bit Kodi and gives native seeking + zero-fill recovery on missing Usenet articles. Set force_remux_threshold_mb > 0 to restore v0.6.16 behavior.
+- Fix MemoryError in pass-through upstream reads by shrinking the chunk size from 1 MB to 64 KB, so a second handler thread opened during Kodi CCurlFile recovery doesn't OOM the 32-bit Python heap.
+- Force Connection: close on pass-through responses so stale handler threads unwind immediately when Kodi reconnects.
+- Skip _clear_kodi_playback_state() DB cleanup when a video is already playing, avoiding contention with Kodi's internal library vacuum.
+
 v0.6.17 (2026-04-12)
 - Fix zombie ffmpeg remux process lingering after a Kodi stall; the next replay would hang with "Playback never started"
 - Tear down prior stream sessions on every new prepare_stream and add a 60s write timeout to the remux socket

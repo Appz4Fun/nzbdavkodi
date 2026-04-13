@@ -238,6 +238,7 @@ def test_clear_kodi_playback_state_deletes_tmdb_helper_url(mock_xbmc, tmp_path):
     import sqlite3
     import sys
 
+    mock_xbmc.Player.return_value.isPlayingVideo.return_value = False
     db = _build_fake_videos_db(tmp_path)
     conn = sqlite3.connect(str(db))
     cur = conn.cursor()
@@ -289,6 +290,7 @@ def test_clear_kodi_playback_state_deletes_own_plugin_url(mock_xbmc, tmp_path):
     import sqlite3
     import sys
 
+    mock_xbmc.Player.return_value.isPlayingVideo.return_value = False
     db = _build_fake_videos_db(tmp_path)
     own_url = "plugin://plugin.video.nzbdav/play?type=movie&title=Test&year=2025"
     conn = sqlite3.connect(str(db))
@@ -328,14 +330,28 @@ def test_clear_kodi_playback_state_deletes_own_plugin_url(mock_xbmc, tmp_path):
 @patch("resources.lib.resolver.xbmc")
 def test_clear_kodi_playback_state_no_db_no_crash(mock_xbmc, tmp_path):
     """If no MyVideos*.db exists, the function should silently return."""
+    mock_xbmc.Player.return_value.isPlayingVideo.return_value = False
     with patch("resources.lib.resolver.xbmcvfs") as mock_vfs:
         mock_vfs.translatePath.return_value = str(tmp_path) + "/"
         _clear_kodi_playback_state({"tmdb_id": "1"})
 
 
 @patch("resources.lib.resolver.xbmc")
+def test_clear_kodi_playback_state_skips_when_video_playing(mock_xbmc, tmp_path):
+    """If a video is playing, skip DB cleanup to avoid vacuum contention."""
+    mock_xbmc.Player.return_value.isPlayingVideo.return_value = True
+    _clear_kodi_playback_state()
+    # Should have checked isPlayingVideo and returned early — no DB access.
+    mock_xbmc.Player.return_value.isPlayingVideo.assert_called_once()
+    mock_xbmc.log.assert_called()
+    log_calls = [c[0][0] for c in mock_xbmc.log.call_args_list]
+    assert any("Skipping playback-state cleanup" in c for c in log_calls)
+
+
+@patch("resources.lib.resolver.xbmc")
 def test_clear_kodi_playback_state_swallows_db_errors(mock_xbmc, tmp_path):
     """An exception inside the function should be logged, not propagated."""
+    mock_xbmc.Player.return_value.isPlayingVideo.return_value = False
     with patch("resources.lib.resolver.xbmcvfs") as mock_vfs:
         mock_vfs.translatePath.side_effect = RuntimeError("boom")
         _clear_kodi_playback_state()

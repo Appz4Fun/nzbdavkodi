@@ -14,6 +14,7 @@ WebDAV server with proper 206 responses.
 import os
 import re
 import shutil
+import socket as _socket
 import struct
 import subprocess
 import threading
@@ -85,6 +86,13 @@ _MAX_RECOVERY_SECONDS = 30
 # Cap zero-filled bytes per response to prevent runaway silent playback when
 # an NZB is mostly corrupt. 64 MB ≈ several seconds of 4K REMUX video.
 _MAX_TOTAL_ZERO_FILL = 67108864
+# Chunk size for reading from the upstream HTTP response in _serve_proxy.
+# Kept small (64 KB) because on 32-bit Kodi the address space is ~3 GB and
+# Kodi's CFileCache can reserve up to ~1.5 GB on its own. A 1 MB read
+# buffer has been observed to hit MemoryError when a second proxy
+# connection opens during Kodi's CCurlFile reconnect-on-error recovery.
+_UPSTREAM_READ_CHUNK = 65536
+
 # Shared zero buffer reused across all pass-through responses.
 _ZERO_FILL_BUFFER = bytes(65536)
 
@@ -106,10 +114,17 @@ def _find_ffmpeg():
 
 
 # Default threshold above which non-MP4 files are force-remuxed through
-# ffmpeg instead of served as HTTP pass-through. 4 GiB matches the 32-bit
-# file offset boundary that triggers Kodi's `Open - Unhandled exception`
-# on Amlogic/CoreELEC builds. Setting to 0 disables force remux entirely.
-_DEFAULT_FORCE_REMUX_THRESHOLD_MB = 4096
+# ffmpeg instead of served as HTTP pass-through.  0 disables force-remux
+# entirely, which is the new default: live testing on a 32-bit Amlogic
+# CoreELEC build confirmed pass-through works for 12+ GB MKVs and gives
+# strictly better behavior than force-remux (native seeking via the
+# source MKV's real Cues, zero-fill recovery on missing Usenet articles,
+# no ffmpeg CPU tax).  v0.6.16's force-remux-for-large-MKV branch was
+# defending against a symptom (`Open - Unhandled exception`) that was
+# most likely the PROPFIND cascade v0.6.14 already fixed, not a 32-bit
+# content-length overflow as originally diagnosed.  Users who hit real
+# regressions can restore v0.6.16 behavior via the setting.
+_DEFAULT_FORCE_REMUX_THRESHOLD_MB = 0
 
 
 def _get_force_remux_threshold_bytes():
@@ -640,15 +655,20 @@ class _StreamHandler(BaseHTTPRequestHandler):
         stderr_thread.start()
 
         # Send response headers.
-        # Do NOT advertise Accept-Ranges: bytes — the piped MKV has no Cues
-        # (seek index), so Kodi's demuxer cannot seek by byte offset and will
-        # hang trying.  Duration is embedded via -metadata DURATION= in the
-        # MKV header, which gives Kodi a correct progress bar.  Seeking is
-        # handled by stopping and restarting playback with a new -ss offset.
+        # Do NOT advertise Accept-Ranges: bytes — an experiment in v0.6.18
+        # tried advertising bytes + virtual Content-Length so Kodi would
+        # issue byte-range requests on user seek, but the pipe-output MKV
+        # has no Cues (seek index) so Kodi's MKV demuxer cannot translate
+        # a user "skip 10 min" into a byte offset in the first place.
+        # Advertising bytes also disabled Kodi's cache-based seek fallback,
+        # making seeks strictly worse. Reverting until we can produce an
+        # MKV with real Cues (or switch to fMP4). Duration is still embedded
+        # in the MKV header so Kodi's progress bar is accurate.
         self.send_response(200)
         self.send_header("Content-Type", "video/x-matroska")
         self.send_header("Accept-Ranges", "none")
         self.send_header("Connection", "close")
+        self.close_connection = True
         self.end_headers()
 
         # Give the socket a write timeout.  If Kodi stops consuming bytes
@@ -665,8 +685,6 @@ class _StreamHandler(BaseHTTPRequestHandler):
 
         # Stream ffmpeg output to Kodi.  Duration is written into the MKV
         # header by ffmpeg via -metadata DURATION= (see _build_ffmpeg_cmd).
-        import socket as _socket
-
         total = 0
         try:
             while True:
@@ -733,8 +751,33 @@ class _StreamHandler(BaseHTTPRequestHandler):
         self.send_header(
             "Content-Range", "bytes {}-{}/{}".format(start, end, content_length)
         )
-        self.send_header("Connection", "keep-alive")
+        # Force Connection: close on pass-through.  Kodi's CCurlFile opens a
+        # fresh TCP connection on every seek / retry, so keep-alive provides
+        # no benefit here.  But when Kodi reconnects after a CCurlFile error,
+        # keep-alive left the OLD handler thread holding its upstream HTTP
+        # response + multi-megabyte TCP buffers, doubling our memory footprint
+        # and eventually triggering MemoryError in the second handler's 1 MB
+        # chunk read.  Connection: close guarantees the previous handler
+        # unwinds as soon as Kodi finishes reading its current range.
+        #
+        # The response header alone is advisory — BaseHTTPServer decides
+        # close_connection based on the REQUEST's Connection header, not the
+        # response's.  So we also set self.close_connection = True to
+        # actually tear down the socket after handle() returns.
+        self.send_header("Connection", "close")
+        self.close_connection = True
         self.end_headers()
+
+        # Write timeout so a stalled Kodi (DB vacuum, audio sync error, etc.)
+        # can't block this handler in wfile.write() forever.  Without this,
+        # a 14 s Kodi vacuum recreated the exact zombie pattern we fixed in
+        # _serve_remux: first handler stuck writing into a full socket, Kodi
+        # opens a second connection, two handlers + two upstream HTTP
+        # responses live at once, MemoryError hits the second handler.
+        try:
+            self.connection.settimeout(_REMUX_WRITE_TIMEOUT)
+        except (OSError, AttributeError):
+            pass
 
         current = start
         total_skipped = 0
@@ -766,8 +809,17 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     "usenet articles".format(skip, current - skip),
                     xbmc.LOGWARNING,
                 )
-        except (BrokenPipeError, ConnectionResetError):
-            pass
+        except (BrokenPipeError, ConnectionResetError, _socket.timeout):
+            # socket.timeout means Kodi stopped reading from us for longer
+            # than _REMUX_WRITE_TIMEOUT — usually a long DB vacuum or the
+            # decoder otherwise stalling.  Unwind the handler and let
+            # BaseHTTPServer tear down the socket; Kodi's CCurlFile will
+            # reconnect if it still wants bytes.
+            xbmc.log(
+                "NZB-DAV: Pass-through write aborted at byte {} "
+                "(client stalled or disconnected)".format(current),
+                xbmc.LOGWARNING,
+            )
 
     def _stream_upstream_range(self, ctx, start, end):
         """Stream bytes from upstream to the client.
@@ -795,8 +847,15 @@ class _StreamHandler(BaseHTTPRequestHandler):
         try:
             while True:
                 try:
-                    chunk = resp.read(1048576)
-                except (OSError, ValueError) as e:
+                    # 64 KB chunks — on 32-bit Kodi the whole process has
+                    # ~3 GB of address space, and Kodi's CFileCache alone can
+                    # reserve up to 1.5 GB (cachemembuffersize * readbufferfactor).
+                    # A 1 MB read buffer used to hit MemoryError when a second
+                    # connection opened during recovery doubled the proxy's
+                    # live allocations. 64 KB matches the zero-fill buffer
+                    # size and is allocation-friendly on a fragmented heap.
+                    chunk = resp.read(_UPSTREAM_READ_CHUNK)
+                except (MemoryError, OSError, ValueError) as e:
                     xbmc.log(
                         "NZB-DAV: Proxy upstream read failed at byte {}: {}".format(
                             start + written, e
