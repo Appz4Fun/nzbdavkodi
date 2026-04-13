@@ -28,7 +28,14 @@ from resources.lib.webdav import (
 )
 
 MAX_POLL_ITERATIONS = 720  # 1 hour at 5s interval
-_TRANSIENT_HTTP_STATUSES = (502, 503, 504)
+# HTTP status codes the submit retry loop treats as transient and worth
+# retrying. RFC 9110 explicitly calls 408 retry-friendly ("client may
+# assume the server closed the connection due to inactivity and retry").
+# 502/503/504 are classic gateway/service-layer transients. 429 is
+# deliberately excluded because the current 2s retry spacing would just
+# stack rate-limit violations — if 429 ever becomes a real failure mode
+# we'll need backoff first.
+_TRANSIENT_HTTP_STATUSES = (408, 502, 503, 504)
 
 
 def _validate_stream_url(url, headers):
