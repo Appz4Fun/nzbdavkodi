@@ -40,6 +40,10 @@ _FALLBACK_STRINGS = {
     30112: "Showing {} of {} sources after filters",
     30120: "Completed but no video file found on WebDAV",
     30122: "NZB submit timeout (seconds)",
+    30124: (
+        "nzbdav rejected the submission (HTTP {0}). "
+        "Server message: {1}. Check nzbdav's logs for details."
+    ),
 }
 
 

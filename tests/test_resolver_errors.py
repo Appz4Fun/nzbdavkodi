@@ -218,3 +218,44 @@ def test_resolve_continues_polling_when_webdav_reachable_and_apis_silent(
     # The resolve landed successfully (history came back Completed on
     # the second iteration and _play_direct was invoked).
     assert mock_play_direct.called
+
+
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.submit_nzb")
+@patch("resources.lib.resolver.xbmc")
+@patch("resources.lib.resolver.time")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.xbmcplugin")
+@patch("resources.lib.resolver._get_poll_settings")
+def test_resolve_surfaces_http_500_body_to_user(
+    mock_poll,
+    mock_plugin,
+    mock_gui,
+    mock_time,
+    mock_xbmc,
+    mock_submit,
+    mock_find_completed,
+):
+    """End-to-end: when nzbdav returns HTTP 500 on submit, the user
+    sees a dialog with nzbdav's actual error message and resolve()
+    aborts cleanly via setResolvedUrl(False)."""
+    mock_poll.return_value = (1, 60)
+    mock_submit.return_value = (
+        None,
+        {"status": 500, "message": "duplicate nzo_id 9b7e0ea0"},
+    )
+    dialog = MagicMock()
+    dialog.iscanceled.return_value = False
+    mock_gui.DialogProgress.return_value = dialog
+    monitor = MagicMock()
+    monitor.waitForAbort.return_value = False
+    mock_xbmc.Monitor.return_value = monitor
+    mock_time.time.return_value = 0.0  # pin elapsed at 0 (per Task 4 v0.6.20 lesson)
+
+    resolve(1, {"nzburl": "http://hydra/nzb", "title": "movie.mkv"})
+
+    # Dialog fired, resolve aborted via setResolvedUrl(False)
+    mock_gui.Dialog.return_value.ok.assert_called_once()
+    mock_plugin.setResolvedUrl.assert_called_once_with(1, False, mock_gui.ListItem())
+    # Single submit attempt — no retry on 500
+    assert mock_submit.call_count == 1
