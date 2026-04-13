@@ -171,6 +171,85 @@ def check_file_available_with_retry(filename, max_retries=3, retry_delay=2):
     return False, "connection_error"
 
 
+def probe_webdav_reachable(monitor=None, max_retries=1, retry_delay=1):
+    """Probe WebDAV reachability and classify any error.
+
+    HEADs the WebDAV content root to determine whether nzbdav/WebDAV is
+    reachable and whether credentials are valid. This is a reachability
+    probe, not a filename existence check: 404/405 on the root is treated
+    as "reachable" because some WebDAV servers do not allow HEAD on
+    collections but the server is clearly up.
+
+    Args:
+        monitor: Optional xbmc.Monitor instance. If None, a new one is
+            created. Passing one in avoids creating a fresh Monitor on
+            every poll iteration in the resolve loop.
+        max_retries: Number of retries after a connection error
+            (max_retries + 1 total HEAD attempts).
+        retry_delay: Seconds between connection-error retries, using
+            Monitor.waitForAbort so Kodi can shut down cleanly.
+
+    Returns:
+        Tuple of (reachable, error_type):
+        - (True, None)                - server is up, auth OK
+        - (False, "auth_failed")      - 401 or 403
+        - (False, "server_error")     - 5xx
+        - (False, "connection_error") - network error after retries, or
+                                        abort signal received during
+                                        retry wait
+    """
+    settings = _get_settings()
+    base = settings["webdav_url"] or settings["nzbdav_url"]
+    # _get_settings() already rstrips "/" on both URL settings
+    # (webdav.py:20-21), so this rstrip is defense-in-depth against a
+    # future refactor that forgets to.
+    url = "{}/content/".format(base.rstrip("/"))
+    mon = monitor or xbmc.Monitor()
+
+    attempt = 0
+    while attempt <= max_retries:
+        try:
+            status = _http_head(url, settings["username"], settings["password"])
+            if status in (401, 403):
+                xbmc.log(
+                    "NZB-DAV: WebDAV probe auth failed (status={})".format(status),
+                    xbmc.LOGERROR,
+                )
+                return False, "auth_failed"
+            if status >= 500:
+                xbmc.log(
+                    "NZB-DAV: WebDAV probe server error (status={})".format(status),
+                    xbmc.LOGWARNING,
+                )
+                return False, "server_error"
+            # Any other status - server responded, classify as reachable.
+            xbmc.log(
+                "NZB-DAV: WebDAV probe reachable (status={})".format(status),
+                xbmc.LOGDEBUG,
+            )
+            return True, None
+        except Exception as e:  # pylint: disable=broad-except
+            attempt += 1
+            if attempt > max_retries:
+                xbmc.log(
+                    "NZB-DAV: WebDAV probe connection error after {} "
+                    "attempts: {} ({})".format(max_retries + 1, e, type(e).__name__),
+                    xbmc.LOGERROR,
+                )
+                return False, "connection_error"
+            xbmc.log(
+                "NZB-DAV: WebDAV probe connection error "
+                "(attempt {}/{}): {} ({})".format(
+                    attempt, max_retries, e, type(e).__name__
+                ),
+                xbmc.LOGDEBUG,
+            )
+            if mon.waitForAbort(retry_delay):
+                return False, "connection_error"
+    # Unreachable in normal flow — defensive safety net for static analysis.
+    return False, "connection_error"
+
+
 def find_video_file(folder_path, _depth=0):
     """Browse a WebDAV folder and find the largest video file.
 
