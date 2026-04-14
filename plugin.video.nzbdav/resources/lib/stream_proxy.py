@@ -1487,6 +1487,90 @@ class HlsProducer:
                 return True
         return False
 
+    def _init_file_complete(self):
+        """True iff init.mp4 was written by the current ffmpeg
+        generation AND ffmpeg has moved on to segment output.
+
+        Generation boundary: _ensure_ffmpeg_headed_for unlinks
+        BOTH init.mp4 AND seg_<new_target>.m4s before every
+        spawn. So any init.mp4 on disk post-spawn is from the
+        current generation, and any seg_<start_segment>.m4s on
+        disk post-spawn was written by the current ffmpeg too
+        (a prior generation cannot have produced a file we just
+        unlinked).
+
+        The "seg_<start_segment>.m4s exists" signal proves ffmpeg
+        has finished the init box — the fMP4 HLS muxer writes
+        init.mp4 fully before opening any segment file.
+        """
+        if self.segment_format != "fmp4":
+            return False
+        init_path = os.path.join(self.session_dir, "init.mp4")
+        if not os.path.exists(init_path):
+            return False
+        # Reading self._start_segment without the lock is safe:
+        # int reads are atomic under the GIL, and a stale read
+        # is benign — the next poll iteration converges on the
+        # fresh value.
+        first_seg_path = os.path.join(
+            self.session_dir,
+            "seg_{:06d}.m4s".format(self._start_segment),
+        )
+        return os.path.exists(first_seg_path)
+
+    def wait_for_init(self, timeout=_HLS_SEGMENT_WAIT_SECONDS):
+        """Block until init.mp4 for the current producer generation
+        exists and seg_<start_segment>.m4s proves ffmpeg moved past
+        the init write phase. Returns the init path on success or
+        None on timeout.
+
+        CRITICAL A: this method must actively spawn ffmpeg if none
+        is running. Kodi typically fetches #EXT-X-MAP BEFORE any
+        segment, so a poll-only implementation would deadlock on
+        the very first request.
+
+        CRITICAL B: if ffmpeg IS running (e.g. Kodi re-fetches the
+        init after a forward seek to seg 40), this method must NOT
+        rewind the producer back to seg 0. Any running ffmpeg is
+        left at its current _start_segment target.
+        """
+        if self.segment_format != "fmp4":
+            return None
+        init_path = os.path.join(self.session_dir, "init.mp4")
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self._closed:
+                return None
+            # Fast path: files already on disk for the current
+            # generation. The on-disk check IS the truth-source —
+            # _init_ready is just a redundant cached flag we set
+            # below for any downstream consumer that wants to skip
+            # the file syscall on subsequent calls.
+            if self._init_file_complete():
+                self._init_ready = True
+                return init_path
+            with self._lock:
+                proc = self._proc
+                alive = proc is not None and proc.poll() is None
+                current_target = self._start_segment
+            if not alive:
+                # No live ffmpeg — bootstrap (fresh session: target
+                # defaults to 0) or respawn at whatever target the
+                # last generation had. DO NOT hardcode 0 here; a
+                # crashed mid-seek producer still has the right
+                # start_segment to resume at.
+                self._ensure_ffmpeg_headed_for(current_target)
+            # If ffmpeg is alive, leave it alone — it's either
+            # already headed toward the right segment, or the init
+            # re-fetch is racing a valid seek that's already
+            # produced init.mp4 once and will produce it again
+            # after the seek-restart cleans up.
+            if self._init_file_complete():
+                self._init_ready = True
+                return init_path
+            time.sleep(0.25)
+        return None
+
     def wait_for_segment(self, seg_n, timeout=_HLS_SEGMENT_WAIT_SECONDS):
         """Block until seg_n is complete on disk, or timeout expires.
 

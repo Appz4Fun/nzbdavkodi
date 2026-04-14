@@ -2246,6 +2246,317 @@ def test_hls_producer_prepare_raises_when_popen_fails(tmp_path):
         producer.close()
 
 
+def test_hls_producer_init_file_complete_requires_current_generation_segment(tmp_path):
+    """_init_file_complete binds to seg_<start_segment>.m4s, not 'any
+    segment'. Only init.mp4 on disk -> False. init + seg_000099.m4s
+    (wrong index) -> still False. init + seg_000100.m4s at the
+    current target -> True."""
+    import os as _os
+
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        # Simulate a restart target at 100
+        producer._start_segment = 100
+
+        assert producer._init_file_complete() is False  # nothing on disk
+
+        init_path = _os.path.join(producer.session_dir, "init.mp4")
+        with open(init_path, "wb") as f:
+            f.write(b"INIT")
+        assert producer._init_file_complete() is False  # no segment
+
+        wrong_seg = _os.path.join(producer.session_dir, "seg_000099.m4s")
+        with open(wrong_seg, "wb") as f:
+            f.write(b"WRONG")
+        assert producer._init_file_complete() is False  # wrong index
+
+        right_seg = _os.path.join(producer.session_dir, "seg_000100.m4s")
+        with open(right_seg, "wb") as f:
+            f.write(b"RIGHT")
+        assert producer._init_file_complete() is True
+    finally:
+        producer.close()
+
+
+def test_hls_producer_init_ready_ignores_stale_segments_from_prior_generation(tmp_path):
+    """Pre-seed init.mp4 + seg_000005.m4s from a prior generation.
+    Set _start_segment=100. _init_file_complete returns False —
+    the stale seg_000005 is not the current generation's first
+    segment. After creating seg_000100.m4s, it returns True."""
+    import os as _os
+
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        init_path = _os.path.join(producer.session_dir, "init.mp4")
+        with open(init_path, "wb") as f:
+            f.write(b"INIT FROM CURRENT GEN")
+        stale_seg = _os.path.join(producer.session_dir, "seg_000005.m4s")
+        with open(stale_seg, "wb") as f:
+            f.write(b"STALE")
+
+        producer._start_segment = 100
+        assert producer._init_file_complete() is False
+
+        fresh_seg = _os.path.join(producer.session_dir, "seg_000100.m4s")
+        with open(fresh_seg, "wb") as f:
+            f.write(b"FRESH")
+        assert producer._init_file_complete() is True
+    finally:
+        producer.close()
+
+
+def test_hls_producer_init_file_complete_does_not_use_mtime_window(tmp_path):
+    """An ancient-mtime init.mp4 alone (no matching current-generation
+    segment) never satisfies _init_file_complete. Regression guard
+    against reintroducing an mtime-stable window."""
+    import os as _os
+    import time as _time
+
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        init_path = _os.path.join(producer.session_dir, "init.mp4")
+        with open(init_path, "wb") as f:
+            f.write(b"INIT")
+        # Mtime 10 seconds ago
+        ancient = _time.time() - 10
+        _os.utime(init_path, (ancient, ancient))
+
+        producer._start_segment = 0
+        # No seg_000000.m4s -> False, regardless of mtime stability
+        assert producer._init_file_complete() is False
+    finally:
+        producer.close()
+
+
+def test_hls_producer_init_file_complete_returns_false_for_mpegts_ctx(tmp_path):
+    """mpegts producers never return True from _init_file_complete —
+    the method is fmp4-only."""
+    producer = _make_producer(tmp_path)  # mpegts
+    try:
+        assert producer._init_file_complete() is False
+    finally:
+        producer.close()
+
+
+def test_hls_producer_wait_for_init_returns_path_when_current_target_segment_exists(  # noqa: E501
+    tmp_path,
+):
+    """Producer at _start_segment=0 with init.mp4 and seg_000000.m4s
+    on disk. wait_for_init returns the init path."""
+    import os as _os
+
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        init_path = _os.path.join(producer.session_dir, "init.mp4")
+        seg_path = _os.path.join(producer.session_dir, "seg_000000.m4s")
+        with open(init_path, "wb") as f:
+            f.write(b"INIT")
+        with open(seg_path, "wb") as f:
+            f.write(b"SEG0")
+
+        # Patch Popen so no real ffmpeg is started. We expect
+        # wait_for_init to see the existing files and return
+        # without spawning.
+        with patch("resources.lib.stream_proxy.subprocess.Popen"):
+            result = producer.wait_for_init(timeout=2.0)
+
+        assert result == init_path
+    finally:
+        producer.close()
+
+
+def test_hls_producer_wait_for_init_returns_none_for_mpegts(tmp_path):
+    """mpegts producers short-circuit wait_for_init to None (there
+    is no init file)."""
+    producer = _make_producer(tmp_path)
+    try:
+        result = producer.wait_for_init(timeout=0.5)
+        assert result is None
+    finally:
+        producer.close()
+
+
+def test_hls_producer_wait_for_init_spawns_ffmpeg_when_not_running(tmp_path):
+    """Regression guard for the bootstrap deadlock bug. Before
+    wait_for_init, _proc is None. After wait_for_init (even on
+    timeout), Popen was called at least once."""
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None  # alive
+        with patch(
+            "resources.lib.stream_proxy.subprocess.Popen",
+            return_value=mock_proc,
+        ) as mock_popen:
+            producer.wait_for_init(timeout=0.5)
+        assert mock_popen.called
+    finally:
+        producer.close()
+
+
+def test_hls_producer_wait_for_init_does_not_rewind_live_producer(tmp_path):
+    """Regression guard for the rewind bug. If _proc is already alive
+    (simulating a running ffmpeg at seg 40), wait_for_init must NOT
+    call Popen again."""
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 3600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        # Pre-install a fake live proc
+        live_proc = MagicMock()
+        live_proc.poll.return_value = None  # alive
+        producer._proc = live_proc
+        producer._start_segment = 40
+
+        with patch("resources.lib.stream_proxy.subprocess.Popen") as mock_popen:
+            producer.wait_for_init(timeout=0.5)
+
+        assert not mock_popen.called
+        # start_segment must still be 40 — no rewind
+        assert producer._start_segment == 40
+    finally:
+        producer._proc = None  # avoid close() trying to kill the mock
+        producer.close()
+
+
+def test_hls_producer_wait_for_init_respawns_at_current_target_after_crash(tmp_path):
+    """If _proc is dead (poll() returns non-None) and
+    _start_segment=40, wait_for_init's respawn targets seg 40, not
+    0. Regression guard for a crashed-mid-seek producer being
+    accidentally rewound."""
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 3600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        dead_proc = MagicMock()
+        dead_proc.poll.return_value = 1  # exited
+        producer._proc = dead_proc
+        producer._start_segment = 40
+
+        new_proc = MagicMock()
+        new_proc.poll.return_value = None
+        with patch(
+            "resources.lib.stream_proxy.subprocess.Popen",
+            return_value=new_proc,
+        ) as mock_popen:
+            producer.wait_for_init(timeout=0.5)
+
+        assert mock_popen.called
+        args, _kwargs = mock_popen.call_args
+        cmd = args[0]
+        # The new -ss value should be 40 * 30.0 = 1200.0 seconds.
+        ss_idx = cmd.index("-ss")
+        assert float(cmd[ss_idx + 1]) == 1200.0
+        # And -start_number should be 40 (fmp4) or -segment_start_number
+        # should be 40 (mpegts). This producer is fmp4.
+        sn_idx = cmd.index("-start_number")
+        assert cmd[sn_idx + 1] == "40"
+    finally:
+        producer._proc = None
+        producer.close()
+
+
+def test_hls_producer_wait_for_init_returns_none_on_timeout(tmp_path):
+    """If no file ever appears, wait_for_init returns None within
+    the test timeout."""
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        with patch(
+            "resources.lib.stream_proxy.subprocess.Popen",
+            return_value=mock_proc,
+        ):
+            result = producer.wait_for_init(timeout=0.5)
+        assert result is None
+    finally:
+        producer.close()
+
+
 def test_choose_hls_workdir_prefers_first_writable(tmp_path):
     """_choose_hls_workdir walks its candidate list in order and
     returns the first candidate whose parent is writable."""
