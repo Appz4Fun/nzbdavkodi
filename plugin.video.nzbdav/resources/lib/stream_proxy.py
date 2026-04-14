@@ -1430,12 +1430,26 @@ class HlsProducer:
         self.total_segments = int(
             math.ceil(self.duration_seconds / self.segment_seconds)
         )
+        self.segment_format = ctx.get("hls_segment_format", "mpegts")
         self.session_dir = os.path.join(base_workdir, ctx["session_id"])
         os.makedirs(self.session_dir, exist_ok=True)
         self._lock = threading.Lock()
         self._proc = None
         self._start_segment = 0  # -segment_start_number of the live ffmpeg
         self._closed = False
+        # _init_ready MUST be set here, not only in the spawn path:
+        # wait_for_init reads it before the first spawn and would
+        # AttributeError on a fresh session otherwise.
+        self._init_ready = False
+        # Session-wide stderr log. Opened once at session construction,
+        # reused across every ffmpeg spawn (fixing the stderr=PIPE
+        # deadlock from the persistent-producer era), closed in close().
+        # Binary append + unbuffered so a caller can tail the file live
+        # during a stall.
+        self._ffmpeg_log_path = os.path.join(self.session_dir, "ffmpeg.log")
+        self._ffmpeg_log = open(  # noqa: SIM115 — closed in close()
+            self._ffmpeg_log_path, "ab", buffering=0
+        )
 
     def segment_path(self, seg_n):
         """Return the disk path for a segment index."""
@@ -1547,7 +1561,7 @@ class HlsProducer:
                 self._proc = subprocess.Popen(
                     cmd,
                     stdout=subprocess.DEVNULL,
-                    stderr=subprocess.PIPE,
+                    stderr=self._ffmpeg_log,
                     shell=False,
                 )
                 self._start_segment = seg_n
@@ -1630,6 +1644,48 @@ class HlsProducer:
             pattern,
         ]
 
+    def prepare(self):
+        """Eagerly spawn ffmpeg and verify it didn't immediately exit.
+
+        Called from _register_session right after construction. For
+        mpegts producers (the legacy lazy path) this is a no-op,
+        preserving today's behavior. For fmp4 producers this is the
+        spawn-time validation that keeps the matroska late-binding
+        fallback working — without it, ffmpeg's first spawn happens
+        inside wait_for_init AFTER the HLS URL has already been
+        returned to Kodi, so a build that rejects fmp4 HLS would
+        surface as a 504 from /hls/<sess>/init.mp4 instead of a
+        clean session rewrite.
+
+        The 500 ms poll catches argument-rejection and missing-muxer
+        failures (~10-100 ms typical). It does NOT catch later
+        runtime failures (codec init, input I/O after the 500 ms
+        window) — those still surface via the wait_for_init /
+        wait_for_segment timeout path. Consistent with the
+        "experimental" label on the setting.
+
+        Raises:
+            RuntimeError: ffmpeg failed to spawn or exited within
+                the poll window.
+        """
+        if self.segment_format != "fmp4":
+            return  # mpegts is lazy-spawned, no eager validation
+        self._ensure_ffmpeg_headed_for(0)
+        deadline = time.monotonic() + 0.5
+        while time.monotonic() < deadline:
+            with self._lock:
+                proc = self._proc
+            if proc is None:
+                raise RuntimeError("ffmpeg failed to spawn — check ffmpeg.log")
+            rc = proc.poll()
+            if rc is not None:
+                raise RuntimeError(
+                    "ffmpeg exited immediately with code {} — fmp4 "
+                    "HLS likely unsupported by this build".format(rc)
+                )
+            time.sleep(0.05)
+        return  # proc still alive after 500 ms — assume healthy
+
     def close(self):
         """Kill ffmpeg and delete the session directory."""
         with self._lock:
@@ -1642,6 +1698,10 @@ class HlsProducer:
                 proc.wait(timeout=5)
             except (OSError, subprocess.SubprocessError):
                 pass
+        try:
+            self._ffmpeg_log.close()
+        except OSError:
+            pass
         try:
             import shutil as _shutil
 

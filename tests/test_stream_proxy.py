@@ -1790,6 +1790,210 @@ def test_hls_producer_close_kills_ffmpeg_and_removes_dir(tmp_path):
     assert not _os.path.exists(seg_dir)
 
 
+def test_hls_producer_opens_ffmpeg_log_in_init(tmp_path):
+    """HlsProducer.__init__ opens session_dir/ffmpeg.log for append
+    writes and stores it on self._ffmpeg_log."""
+    import os as _os
+
+    producer = _make_producer(tmp_path)
+    log_path = _os.path.join(producer.session_dir, "ffmpeg.log")
+    assert _os.path.exists(log_path)
+    assert hasattr(producer, "_ffmpeg_log")
+    assert not producer._ffmpeg_log.closed
+    producer.close()
+
+
+def test_hls_producer_init_ready_initialized_to_false(tmp_path):
+    """Fresh producer has _init_ready=False without any spawn.
+    Regression guard for AttributeError if _init_ready were only
+    assigned in the spawn path."""
+    producer = _make_producer(tmp_path)
+    assert hasattr(producer, "_init_ready")
+    assert producer._init_ready is False
+    producer.close()
+
+
+def test_hls_producer_defaults_segment_format_to_mpegts(tmp_path):
+    """When ctx does not set hls_segment_format, the producer defaults
+    to mpegts so existing callers keep their behavior."""
+    producer = _make_producer(tmp_path)
+    assert producer.segment_format == "mpegts"
+    producer.close()
+
+
+def test_hls_producer_reads_fmp4_segment_format_from_ctx(tmp_path):
+    """When ctx sets hls_segment_format=fmp4, the producer stores it."""
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    assert producer.segment_format == "fmp4"
+    producer.close()
+
+
+def test_hls_producer_close_closes_ffmpeg_log(tmp_path):
+    """close() closes the session-wide ffmpeg.log file handle."""
+    producer = _make_producer(tmp_path)
+    log_handle = producer._ffmpeg_log
+    producer.close()
+    assert log_handle.closed
+
+
+def test_hls_producer_spawns_ffmpeg_with_session_log_as_stderr(tmp_path):
+    """_ensure_ffmpeg_headed_for spawns ffmpeg with stderr=the
+    session-wide log handle, not subprocess.PIPE. Regression guard
+    for the deadlock bug."""
+    producer = _make_producer(tmp_path, duration=600.0, seg_dur=30.0)
+
+    mock_proc = MagicMock()
+    mock_proc.poll.return_value = None
+
+    with patch(
+        "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
+    ) as mock_popen:
+        producer._ensure_ffmpeg_headed_for(0)
+
+    assert mock_popen.called
+    _, kwargs = mock_popen.call_args
+    import subprocess as _sp
+
+    assert kwargs.get("stderr") is producer._ffmpeg_log
+    assert kwargs.get("stderr") is not _sp.PIPE
+    producer.close()
+
+
+def test_hls_producer_reuses_same_log_handle_across_restarts(tmp_path):
+    """Both ffmpeg spawns across a kill-and-restart receive the
+    same stderr object identity. Regression guard for the
+    file-descriptor leak."""
+    producer = _make_producer(tmp_path, duration=600.0, seg_dur=30.0)
+
+    spawn1_proc = MagicMock()
+    spawn1_proc.poll.return_value = None
+    spawn2_proc = MagicMock()
+    spawn2_proc.poll.return_value = None
+
+    with patch(
+        "resources.lib.stream_proxy.subprocess.Popen",
+        side_effect=[spawn1_proc, spawn2_proc],
+    ) as mock_popen:
+        producer._ensure_ffmpeg_headed_for(0)
+        # Now force a far-forward seek (triggers restart because
+        # 100 - 0 > 60).
+        producer._ensure_ffmpeg_headed_for(100)
+
+    assert mock_popen.call_count == 2
+    stderr1 = mock_popen.call_args_list[0].kwargs["stderr"]
+    stderr2 = mock_popen.call_args_list[1].kwargs["stderr"]
+    assert stderr1 is stderr2
+    assert stderr1 is producer._ffmpeg_log
+    producer.close()
+
+
+def test_hls_producer_prepare_is_noop_for_mpegts(tmp_path):
+    """mpegts producers stay lazy — prepare() does not spawn."""
+    producer = _make_producer(tmp_path)  # defaults to mpegts
+    try:
+        with patch("resources.lib.stream_proxy.subprocess.Popen") as mock_popen:
+            producer.prepare()
+        assert not mock_popen.called
+    finally:
+        producer.close()
+
+
+def test_hls_producer_prepare_returns_for_alive_process(tmp_path):
+    """fmp4 producer; Popen returns a mock whose poll() returns None
+    (alive). prepare() returns without raising."""
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        with patch(
+            "resources.lib.stream_proxy.subprocess.Popen",
+            return_value=mock_proc,
+        ):
+            producer.prepare()  # must not raise
+    finally:
+        producer.close()
+
+
+def test_hls_producer_prepare_raises_when_ffmpeg_exits_immediately(tmp_path):
+    """fmp4 producer; Popen returns a mock whose poll() returns 1
+    (exited). prepare() raises RuntimeError mentioning the exit code."""
+    import pytest
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 1  # exited with non-zero
+        with patch(
+            "resources.lib.stream_proxy.subprocess.Popen",
+            return_value=mock_proc,
+        ):
+            with pytest.raises(RuntimeError, match="1"):
+                producer.prepare()
+    finally:
+        producer._proc = None  # avoid close() trying to kill the mock
+        producer.close()
+
+
+def test_hls_producer_prepare_raises_when_popen_fails(tmp_path):
+    """fmp4 producer; Popen raises OSError. The current
+    _ensure_ffmpeg_headed_for swallows OSError and leaves _proc=None.
+    prepare() should detect the None state and raise RuntimeError."""
+    import pytest
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        with patch(
+            "resources.lib.stream_proxy.subprocess.Popen",
+            side_effect=OSError("ffmpeg not found"),
+        ):
+            with pytest.raises(RuntimeError):
+                producer.prepare()
+    finally:
+        producer.close()
+
+
 def test_choose_hls_workdir_prefers_first_writable(tmp_path):
     """_choose_hls_workdir walks its candidate list in order and
     returns the first candidate whose parent is writable."""
