@@ -18,6 +18,7 @@ from resources.lib.i18n import string as _string
 from resources.lib.nzbdav_api import (
     cancel_job,
     find_completed_by_name,
+    find_queued_by_name,
     get_job_history,
     get_job_status,
     submit_nzb,
@@ -512,6 +513,50 @@ def _show_submit_error_dialog(submit_error):
     )
 
 
+# After a submit timeout, how many times to poll nzbdav before giving
+# up on adoption and retrying the submit. 6 polls * 2 s = 12 s of
+# total wait — enough headroom for nzbdav to finish fetching/parsing a
+# moderately large NZB, short enough not to double the user's wait on
+# a genuine network failure.
+_SUBMIT_ADOPT_POLL_COUNT = 6
+_SUBMIT_ADOPT_POLL_INTERVAL_SECONDS = 2
+
+
+def _adopt_queued_or_completed_job(title, monitor):
+    """Return an existing nzbdav nzo_id for ``title`` if the submit we
+    just timed out on actually reached nzbdav.
+
+    After a client-side submit timeout, nzbdav may be:
+    - Still fetching/parsing the NZB (no queue entry yet)
+    - Processing it (queue entry exists under ``title``)
+    - Already done (history entry exists under ``title``)
+
+    We probe the queue and history a handful of times on a short
+    interval. Returns the matching ``nzo_id`` on the first positive
+    hit, ``None`` if nothing surfaces within the poll budget (caller
+    should then retry the submit).
+
+    ``monitor.waitForAbort`` is used for the inter-poll sleep so Kodi
+    shutdown unwinds the loop immediately rather than stalling.
+    """
+    for poll in range(_SUBMIT_ADOPT_POLL_COUNT):
+        # Queue first — most common hit for big NZBs where the submit
+        # landed but the download hasn't completed in the timeout
+        # window.
+        queued = find_queued_by_name(title)
+        if queued and queued.get("nzo_id"):
+            return queued["nzo_id"]
+        # History second — covers the unusual case where a very small
+        # NZB actually completed during the submit-timeout window.
+        completed = find_completed_by_name(title)
+        if completed and completed.get("nzo_id"):
+            return completed["nzo_id"]
+        if poll < _SUBMIT_ADOPT_POLL_COUNT - 1:
+            if monitor.waitForAbort(_SUBMIT_ADOPT_POLL_INTERVAL_SECONDS):
+                return None
+    return None
+
+
 def _poll_until_ready(nzb_url, title, dialog, poll_interval, download_timeout):
     """Submit NZB and poll until download completes.
 
@@ -545,10 +590,45 @@ def _poll_until_ready(nzb_url, title, dialog, poll_interval, download_timeout):
         if submit_error:
             last_submit_error = submit_error
             status = submit_error["status"]
-            # Transient gateway/service issues — preserve the existing
-            # retry behavior. nzbdav restarting or its upstream proxy
-            # hiccupping is exactly the case retry was designed for.
-            if status in _TRANSIENT_HTTP_STATUSES:
+            # Client-side timeout on submit. nzbdav's /api?mode=addurl
+            # handler can take > 30 s on big NZBs (fetch from indexer,
+            # parse XML, enumerate segments) — longer than the default
+            # HTTP timeout. A timeout does NOT mean the submit failed.
+            # Probing the queue before retrying lets us adopt the job
+            # nzbdav is already processing instead of either bouncing
+            # off the duplicate-rejection path or orphaning the
+            # in-progress job with a second nzo_id.
+            if status == "timeout":
+                xbmc.log(
+                    "NZB-DAV: Submit attempt {}/{} timed out; probing nzbdav "
+                    "queue for '{}' before retrying".format(
+                        attempt, max_submit_retries, title
+                    ),
+                    xbmc.LOGWARNING,
+                )
+                adopted_nzo_id = _adopt_queued_or_completed_job(title, monitor)
+                if adopted_nzo_id:
+                    nzo_id = adopted_nzo_id
+                    xbmc.log(
+                        "NZB-DAV: Adopted existing nzbdav job nzo_id={} for "
+                        "'{}' after submit timeout".format(adopted_nzo_id, title),
+                        xbmc.LOGINFO,
+                    )
+                    break
+                # Not in queue or history yet — fall through to retry
+                # below. Could mean nzbdav is still in the fetch/parse
+                # phase and hasn't created a queue entry, or the first
+                # submit actually failed at the network level. Retrying
+                # is the right call in both cases.
+                xbmc.log(
+                    "NZB-DAV: '{}' not found in nzbdav queue or history "
+                    "after submit timeout; retrying".format(title),
+                    xbmc.LOGWARNING,
+                )
+            elif status in _TRANSIENT_HTTP_STATUSES:
+                # Transient gateway/service issues — preserve the existing
+                # retry behavior. nzbdav restarting or its upstream proxy
+                # hiccupping is exactly the case retry was designed for.
                 xbmc.log(
                     "NZB-DAV: Submit attempt {}/{} hit transient HTTP {}: {}".format(
                         attempt, max_submit_retries, status, submit_error["message"]
