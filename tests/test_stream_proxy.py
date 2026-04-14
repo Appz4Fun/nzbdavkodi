@@ -416,6 +416,56 @@ def test_force_remux_threshold_default_is_nonzero():
     ), "Default threshold must remux 58 GB files (pass-through crashes)"
 
 
+def test_get_force_remux_mode_default_returns_matroska():
+    """Unset / empty / '0' all return 'matroska'."""
+    import sys
+
+    from resources.lib.stream_proxy import _get_force_remux_mode
+
+    mock_addon = MagicMock()
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        for raw in ("", "0", None):
+            mock_addon.getSetting.return_value = raw
+            assert _get_force_remux_mode() == "matroska"
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+
+def test_get_force_remux_mode_hls_fmp4_on_one():
+    """Setting '1' returns 'hls_fmp4'."""
+    import sys
+
+    from resources.lib.stream_proxy import _get_force_remux_mode
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.return_value = "1"
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        assert _get_force_remux_mode() == "hls_fmp4"
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+
+def test_get_force_remux_mode_unknown_value_falls_back_to_matroska():
+    """Any other value safely falls back to matroska."""
+    import sys
+
+    from resources.lib.stream_proxy import _get_force_remux_mode
+
+    mock_addon = MagicMock()
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        for raw in ("2", "true", "garbage", "-1"):
+            mock_addon.getSetting.return_value = raw
+            assert _get_force_remux_mode() == "matroska"
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+
 def test_prepare_stream_force_remuxes_huge_mkv_with_default_threshold():
     """A 58 GB MKV must be force-remuxed even when the user leaves the
     threshold setting at its shipped default. Regression test for

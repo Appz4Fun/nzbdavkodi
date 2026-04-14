@@ -238,6 +238,22 @@ def _get_force_remux_threshold_bytes():
     return mb * 1024 * 1024
 
 
+def _get_force_remux_mode():
+    """Return 'matroska' or 'hls_fmp4' for the force-remux branch.
+
+    Empty string, unset, or '0' -> 'matroska' (default, control path).
+    '1' -> 'hls_fmp4' (experimental, DV-capable).
+    Any other value -> 'matroska' (safe fall-through).
+    """
+    try:
+        import xbmcaddon
+
+        raw = xbmcaddon.Addon().getSetting("force_remux_mode")
+    except Exception:  # noqa: BLE001 — Kodi module may not exist
+        return "matroska"
+    return "hls_fmp4" if raw == "1" else "matroska"
+
+
 def _validate_url(url):
     """Reject URLs with unexpected schemes to prevent command injection."""
     if not url or not url.startswith(("http://", "https://")):

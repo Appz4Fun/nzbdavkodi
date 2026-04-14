@@ -501,3 +501,15 @@ msgstr "Force ffmpeg remux above (MB, 0=off)"
 msgctxt "#30124"
 msgid "nzbdav rejected the submission (HTTP {0}). Server message: {1}. Check nzbdav's logs for details."
 msgstr ""
+
+msgctxt "#30125"
+msgid "Force remux output format"
+msgstr "Force remux output format"
+
+msgctxt "#30126"
+msgid "Piped Matroska (seek limited, DV-safe)"
+msgstr "Piped Matroska (seek limited, DV-safe)"
+
+msgctxt "#30127"
+msgid "Fragmented MP4 HLS (full seek, DV-capable, experimental)"
+msgstr "Fragmented MP4 HLS (full seek, DV-capable, experimental)"
