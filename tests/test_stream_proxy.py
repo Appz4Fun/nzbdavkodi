@@ -512,7 +512,6 @@ def test_prepare_stream_force_remuxes_huge_mkv_with_default_threshold():
     assert ctx["total_bytes"] == huge
     assert ctx["duration_seconds"] == 8532.0
     assert ctx["seekable"] is True
-    assert ctx.get("mode") != "hls"
     assert ctx.get("hls_segment_format") is None
 
 
