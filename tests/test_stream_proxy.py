@@ -2557,6 +2557,66 @@ def test_hls_producer_wait_for_init_returns_none_on_timeout(tmp_path):
         producer.close()
 
 
+def test_hls_producer_wait_for_segment_zero_blocks_until_init_ready(tmp_path):
+    """In fmp4 mode, wait_for_segment(0) does not return even if
+    seg_000000.m4s exists on disk, until init.mp4 is also present
+    AND seg_<start_segment>.m4s exists (i.e. _init_file_complete
+    returns True)."""
+    import os as _os
+    import threading as _threading
+    import time as _time
+
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        # Pre-seed seg_000000.m4s WITHOUT init.mp4
+        seg_path = _os.path.join(producer.session_dir, "seg_000000.m4s")
+        with open(seg_path, "wb") as f:
+            f.write(b"SEG0")
+
+        # No init.mp4 on disk -> _init_file_complete returns False,
+        # so wait_for_segment should not return. Patch Popen so any
+        # ffmpeg start the loop triggers is a no-op.
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+
+        # Create init.mp4 (and re-create seg_000000.m4s, which the
+        # first ensure_ffmpeg_headed_for unlink will have wiped)
+        # halfway through the wait so the gate eventually opens.
+        def create_init_later():
+            _time.sleep(0.5)
+            init_path = _os.path.join(producer.session_dir, "init.mp4")
+            with open(init_path, "wb") as f:
+                f.write(b"INIT")
+            with open(seg_path, "wb") as f:
+                f.write(b"SEG0")
+
+        t = _threading.Thread(target=create_init_later, daemon=True)
+        t.start()
+        try:
+            with patch(
+                "resources.lib.stream_proxy.subprocess.Popen",
+                return_value=mock_proc,
+            ):
+                result = producer.wait_for_segment(0, timeout=3.0)
+        finally:
+            t.join()
+
+        assert result == seg_path
+    finally:
+        producer.close()
+
+
 def test_choose_hls_workdir_prefers_first_writable(tmp_path):
     """_choose_hls_workdir walks its candidate list in order and
     returns the first candidate whose parent is writable."""
