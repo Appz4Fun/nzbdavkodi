@@ -34,6 +34,27 @@ def parse_params(query_string):
     return {k: v[0] for k, v in parsed.items()}
 
 
+def _safe_resolve_handle(handle):
+    """Resolve a plugin handle as a non-playable action.
+
+    Action routes (install_player, clear_cache, settings, configure_*,
+    test_hydra, test_nzbdav, resolve) are reached from ``_handle_main_menu``
+    items created with ``isFolder=False``. Kodi blocks the UI until the
+    plugin calls ``setResolvedUrl`` for that handle; a bare ``return`` from
+    the route leaves Kodi waiting indefinitely.
+
+    Calling ``setResolvedUrl(handle, False, ListItem())`` unblocks Kodi
+    without initiating playback. When the route was invoked via ``RunPlugin``
+    (``handle == -1``) there is no handle to resolve, so the call is skipped.
+    """
+    if handle < 0:
+        return
+    import xbmcgui
+    import xbmcplugin
+
+    xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+
+
 def route(argv):
     """Main entry point called from addon.py with sys.argv."""
     base_url = argv[0]
@@ -55,60 +76,77 @@ def route(argv):
         "NZB-DAV: Routing path='{}' params={}".format(path, safe_params), xbmc.LOGDEBUG
     )
 
-    if path == "/play":
-        _handle_play(handle, params)
-    elif path == "/search":
-        _handle_search(handle, params)
-    elif path == "/resolve":
-        from resources.lib.resolver import resolve_and_play
+    # /play, /search, and the main menu call setResolvedUrl / endOfDirectory
+    # themselves and return early. Everything else is an "action route" that
+    # runs a side-effect and then falls through to _safe_resolve_handle so
+    # Kodi receives a resolution signal.
+    try:
+        if path == "/play":
+            _handle_play(handle, params)
+            return
+        if path == "/search":
+            _handle_search(handle, params)
+            return
+        if path == "/resolve":
+            from resources.lib.resolver import resolve_and_play
 
-        resolve_and_play(
-            params.get("nzburl", ""),
-            params.get("title", ""),
+            resolve_and_play(
+                params.get("nzburl", ""),
+                params.get("title", ""),
+            )
+        elif path == "/install_player":
+            from resources.lib.player_installer import install_player
+
+            install_player()
+        elif path == "/clear_cache":
+            from resources.lib.cache import clear_cache
+
+            clear_cache()
+            from resources.lib.http_util import notify
+
+            notify(_addon_name(), _string(30082), 3000)
+        elif path == "/settings":
+            import xbmcaddon
+
+            xbmcaddon.Addon().openSettings()
+        elif path == "/configure_preferred_groups":
+            from resources.lib.filter import (
+                DEFAULT_PREFERRED_GROUPS,
+                configure_groups_dialog,
+            )
+
+            configure_groups_dialog(
+                "filter_release_group",
+                _string(30054),
+                DEFAULT_PREFERRED_GROUPS,
+            )
+        elif path == "/configure_excluded_groups":
+            from resources.lib.filter import (
+                DEFAULT_EXCLUDED_GROUPS,
+                configure_groups_dialog,
+            )
+
+            configure_groups_dialog(
+                "filter_exclude_release_group",
+                _string(30055),
+                DEFAULT_EXCLUDED_GROUPS,
+            )
+        elif path == "/test_hydra":
+            _test_hydra_connection()
+        elif path == "/test_nzbdav":
+            _test_nzbdav_connection()
+        else:
+            _handle_main_menu(handle)
+            return
+    except Exception as e:
+        xbmc.log(
+            "NZB-DAV: Unhandled error in route for path='{}': {}".format(path, e),
+            xbmc.LOGERROR,
         )
-    elif path == "/install_player":
-        from resources.lib.player_installer import install_player
+        _safe_resolve_handle(handle)
+        raise
 
-        install_player()
-    elif path == "/clear_cache":
-        from resources.lib.cache import clear_cache
-
-        clear_cache()
-        from resources.lib.http_util import notify
-
-        notify(_addon_name(), _string(30082), 3000)
-    elif path == "/settings":
-        import xbmcaddon
-
-        xbmcaddon.Addon().openSettings()
-    elif path == "/configure_preferred_groups":
-        from resources.lib.filter import (
-            DEFAULT_PREFERRED_GROUPS,
-            configure_groups_dialog,
-        )
-
-        configure_groups_dialog(
-            "filter_release_group",
-            _string(30054),
-            DEFAULT_PREFERRED_GROUPS,
-        )
-    elif path == "/configure_excluded_groups":
-        from resources.lib.filter import (
-            DEFAULT_EXCLUDED_GROUPS,
-            configure_groups_dialog,
-        )
-
-        configure_groups_dialog(
-            "filter_exclude_release_group",
-            _string(30055),
-            DEFAULT_EXCLUDED_GROUPS,
-        )
-    elif path == "/test_hydra":
-        _test_hydra_connection()
-    elif path == "/test_nzbdav":
-        _test_nzbdav_connection()
-    else:
-        _handle_main_menu(handle)
+    _safe_resolve_handle(handle)
 
 
 def _clean_params(params):
