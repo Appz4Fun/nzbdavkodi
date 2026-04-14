@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Released | What it's about |
 |---|---|---|
+| **[Unreleased](#unreleased)** | — | Force-remux for 20 GB+ files (matroska default), experimental fmp4 HLS opt-in with DV profile 7 guard, router/DB hardening, PROXY.md architecture doc |
 | **[0.6.21](#0621--2026-04-13)** | 2026-04-13 | Stale-job cleanup + real nzbdav error messages on submit failure |
 | **[0.6.20](#0620--2026-04-13)** | 2026-04-13 | Resolve-loop: no UI freeze, no silent retry on bad WebDAV creds |
 | **[0.6.19](#0619--2026-04-12)** | 2026-04-12 | README refresh + pylint CI fix |
@@ -42,6 +43,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | **[0.1.0](#010--2026-04-05)** | 2026-04-05 | Initial release |
 
 > **Bolded** versions are either major features or recommended upgrades.
+
+---
+
+## [Unreleased]
+
+> **Big-file force-remux on by default + fmp4 HLS spike + two critical hardening fixes.** 100 GB DV REMUXes now force-remux through ffmpeg instead of crashing 32-bit Kodi on pass-through. An experimental fragmented-MP4 HLS branch is available as an opt-in for callers who want full random seek at the cost of unproven Amlogic decoder support. A new `PROXY.md` documents the entire proxy subsystem end-to-end.
+
+**Added**
+- `Force remux output format` setting (`force_remux_mode`) in Advanced. Default `matroska` (piped MKV, DV-safe, seek-limited). Experimental `hls_fmp4` option produces an HLS VOD playlist with fragmented-MP4 segments for full random seek; gated with automatic fallback when the source is confirmed Dolby Vision profile 7 (fmp4 HLS cannot carry dual-layer HEVC) or when the deployed ffmpeg build rejects `-hls_segment_type fmp4` at spawn time.
+- New `HlsProducer` class in `stream_proxy.py` — owns the fmp4 HLS ffmpeg lifecycle, per-session working directory, seek-driven respawns with generation-bound segment completeness tracking, init-file gate to prevent Kodi from reading a segment before `init.mp4` finishes writing, session-wide stderr log reused across respawns (fixes a latent `stderr=PIPE` deadlock).
+- HLS HTTP routes in the stream handler: `/hls/<session>/playlist.m3u8`, `/hls/<session>/init.mp4`, `/hls/<session>/seg_NNNNNN.m4s`. Playlist emits `#EXT-X-VERSION:7` and `#EXT-X-MAP:URI="init.mp4"` when `hls_segment_format=fmp4`. Segment and init URLs enforce that the extension in the request path matches the session's configured segment format.
+- Dolby Vision profile probe (`_probe_dv_profile` + `_parse_ffmpeg_dv_profile`) that runs a short `ffmpeg -i ... -f null -` and scans stderr for `DOVI configuration record: ... profile: N`. Used to gate the fmp4 dispatch: a confirmed profile 7 source (dual-layer FEL with BL+EL+RPU) falls back to the matroska branch because fmp4 HLS has no standard way to carry two HEVC layers in one track and the Amlogic decoder stalls on a P7 single-layer copy. Profiles 5 / 8 / unknown stay on fmp4.
+- `-tag:v hvc1` on the fmp4 branch of `_build_cmd`. HLS fmp4 spec mandates the `hvc1` sample entry tag for HEVC (parameter sets in the sample description box, not inband) and Amlogic's HLS demuxer uses this tag to find `dvcC`/`dvvC` DV configuration records in the init segment. A metadata swap at the muxer, not a re-encode.
+- `PROXY.md` — detailed architecture document covering rationale, component interactions, session lifecycle, the four serving tiers, force-remux modes, HLS producer internals, and a debugging playbook. Linked from the README.
+
+**Changed**
+- `force_remux_threshold_mb` default bumped from `0` (off) to `20000` (20 GB). 12 GB MKVs pass through cleanly on 32-bit Kodi, but 58 GB REMUXes reliably crash `CFileCache`; 20 GB is the empirical breakpoint. The addon now force-remuxes huge files out of the box without the user having to change any setting. Set the threshold back to `0` to restore the previous pass-through-only behavior.
+- `_segment_complete` in `HlsProducer` now records a `_spawn_time` at every ffmpeg `Popen` and verifies that a `seg_<n+1>.m4s` used as a "seg_n is done" signal was written by the current generation (mtime ≥ spawn_time). Without this, a stale `seg_<n+1>` left on disk from the backward-seek cache could make the half-written new `seg_<n>` look complete and produce a truncated response.
+- `prepare_stream`'s HLS dispatch now requires `duration > 0`, not just `duration is not None`. A zero-duration probe result previously built an HLS ctx that would 500 on the first playlist request (the playlist serve path rejects non-positive durations).
+- CI test matrix moved from Python 3.8 to 3.9 + 3.12 after bumping `pytest` to `>=9.0.3` (CVE-2025-71176: `/tmp/pytest-of-<user>` insecure-permissions advisory). The pylint job stays on Python 3.8 to keep validating that addon source remains 3.8-compatible for the Kodi runtime target.
+- README stream-proxy section rewritten to describe all four serving tiers (direct / virtual faststart / pass-through / force-remux) and both force-remux modes.
+
+**Fixed**
+- **C1.** `router.py` dispatch now guarantees that every action route resolves the Kodi plugin handle. Previously, `/resolve`, `/install_player`, `/clear_cache`, `/settings`, `/configure_*`, `/test_hydra`, and `/test_nzbdav` were reached from menu items with `isFolder=False` but never called `setResolvedUrl` or `endOfDirectory`, leaving Kodi hanging indefinitely on the resolution call if any of them threw. A new `_safe_resolve_handle` helper is called on every dispatch path inside a try/except, so a thrown exception can no longer strand Kodi.
+- **C5.** `resolver._clear_kodi_playback_state` narrowed to the `bookmark` table only (from a multi-table DELETE), with a 2 s SQLite busy timeout (down from 5 s), proper `LIKE` wildcard escaping on `tmdb_id` (`%`, `_`, `\` all escaped with `ESCAPE '\\'`), `sqlite3.OperationalError` caught separately from the generic exception path, and a skip path when `xbmc.Player().isPlayingVideo()` is true to avoid contending with Kodi's internal library vacuum. The cleanup was originally added to work around a `CVideoPlayer` resume-pipeline bug; the narrower scope keeps the workaround while drastically reducing the corruption-risk surface on the main resolve path.
+- `_clear_kodi_playback_state` no longer runs during active playback — avoids SQLite contention with Kodi's own `MyVideos131.db` / `Textures13.db` vacuum, which was occasionally freezing the decoder during database-heavy sessions.
+
+**Security**
+- Bumped `pytest` dev dependency to `>=9.0.3,<10` for [CVE-2025-71176](https://github.com/advisories/GHSA-6w46-j5rx-g56g) (insecure permissions on `/tmp/pytest-of-<user>` allowing local DoS or privilege escalation on shared UNIX hosts). Dev-only dependency; no runtime impact on Kodi installations.
 
 ---
 
