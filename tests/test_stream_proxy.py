@@ -512,6 +512,116 @@ def test_prepare_stream_force_remuxes_huge_mkv_with_default_threshold():
     assert ctx["total_bytes"] == huge
     assert ctx["duration_seconds"] == 8532.0
     assert ctx["seekable"] is True
+    assert ctx.get("mode") != "hls"
+    assert ctx.get("hls_segment_format") is None
+
+
+def test_prepare_stream_force_remux_hls_fmp4_setting_produces_hls_ctx():
+    """With force_remux_mode=1 and a duration probe that succeeds,
+    prepare_stream builds an HLS fmp4 ctx instead of the matroska
+    ctx. Producer creation happens in _register_session (not tested
+    here) — this test only asserts the ctx shape that prepare_stream
+    hands to _register_session."""
+    import sys
+
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 9999
+
+    huge = 58 * 1024 * 1024 * 1024
+    mock_proc = MagicMock()
+    mock_proc.stderr = iter([b"  Duration: 02:22:12.00, start: 0.000000\n"])
+
+    mock_addon = MagicMock()
+
+    def get_setting(key):
+        if key == "force_remux_mode":
+            return "1"
+        if key == "force_remux_threshold_mb":
+            return ""
+        return ""
+
+    mock_addon.getSetting.side_effect = get_setting
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch(
+            "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
+        ), patch(
+            "resources.lib.stream_proxy._find_ffprobe", return_value=None
+        ), patch.object(
+            sp, "_get_content_length", return_value=huge
+        ), patch(
+            "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
+        ), patch(
+            "resources.lib.stream_proxy.HlsProducer"
+        ) as mock_producer_cls:
+            mock_producer_cls.return_value = MagicMock()
+            sp.prepare_stream("http://host/shawshank.mkv")
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    ctx = sp._server.stream_context
+    assert ctx["mode"] == "hls"
+    assert ctx["hls_segment_format"] == "fmp4"
+    assert ctx["content_type"] == "application/vnd.apple.mpegurl"
+    assert ctx["remux"] is True
+    assert ctx["total_bytes"] == huge
+    assert ctx["duration_seconds"] == 8532.0
+    assert ctx["seekable"] is True
+    assert ctx["ffmpeg_path"] == "/usr/bin/ffmpeg"
+
+
+def test_prepare_stream_force_remux_hls_fmp4_falls_back_when_duration_probe_fails():
+    """With force_remux_mode=1 but duration probing returning None,
+    prepare_stream falls back to the matroska ctx shape (not fmp4).
+    Rationale: fmp4 HLS needs duration for the playlist; without it,
+    the matroska branch is the safer default."""
+    import sys
+
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 9999
+
+    huge = 58 * 1024 * 1024 * 1024
+    mock_proc = MagicMock()
+    # No "Duration:" line in stderr — _probe_duration returns None.
+    mock_proc.stderr = iter([b"  Stream #0:0: Video: hevc\n"])
+
+    mock_addon = MagicMock()
+
+    def get_setting(key):
+        if key == "force_remux_mode":
+            return "1"
+        return ""
+
+    mock_addon.getSetting.side_effect = get_setting
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch(
+            "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
+        ), patch(
+            "resources.lib.stream_proxy._find_ffprobe", return_value=None
+        ), patch.object(
+            sp, "_get_content_length", return_value=huge
+        ), patch(
+            "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
+        ):
+            sp.prepare_stream("http://host/shawshank.mkv")
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    ctx = sp._server.stream_context
+    assert ctx.get("mode") != "hls"
+    assert ctx["content_type"] == "video/x-matroska"
+    assert ctx["remux"] is True
 
 
 def test_prepare_stream_rejects_invalid_scheme():

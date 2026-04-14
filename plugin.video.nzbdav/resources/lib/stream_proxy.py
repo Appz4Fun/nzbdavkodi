@@ -1990,39 +1990,62 @@ class StreamProxy:
                 # Force a remux through ffmpeg so Kodi sees a streamed
                 # file shape without the problematic Content-Length.
                 #
-                # Output is piped MKV via the same ``_serve_remux`` path
-                # used by the MP4 Tier 3 fallback. Piped Matroska has no
-                # Cues element, so in-buffer seek is cache-bounded
-                # (~3 min forward) and seeks beyond that restart ffmpeg
-                # with ``-ss``. An earlier iteration routed large files
-                # through an HLS VOD playlist for proper random-access
-                # seek, but Dolby Vision HEVC RPU metadata continuity
-                # broke across segment boundaries on the Amlogic HW
-                # decoder, causing mid-playback stalls. The HLS
-                # machinery (``HlsProducer``, ``_HLS_*``, ``_serve_hls_*``)
-                # is intentionally left in-tree so a DV-aware router can
-                # re-enable it for non-DV content later.
+                # Two output shapes, driven by the force_remux_mode
+                # setting:
+                #
+                # - "matroska" (default): piped MKV via _serve_remux,
+                #   cache-bounded seek (~3 min forward), ffmpeg
+                #   restart on large seeks. Known-good on DV HEVC.
+                # - "hls_fmp4" (experimental): fragmented-MP4 HLS VOD
+                #   playlist, full random seek. DV RPU SEI NALs survive
+                #   fmp4 fragment boundaries (unlike mpegts PES
+                #   packetization), so this is the DV-capable path.
+                #   Gated behind a setting because fmp4 HLS on Amlogic
+                #   Kodi is unproven in the field.
                 duration = self._probe_duration(ffmpeg_path, remote_url, auth_header)
-                ctx = {
-                    "remote_url": remote_url,
-                    "auth_header": auth_header,
-                    "content_type": "video/x-matroska",
-                    "remux": True,
-                    "faststart": False,
-                    "ffmpeg_path": ffmpeg_path,
-                    "total_bytes": content_length,
-                    "duration_seconds": duration,
-                    "seekable": duration is not None and content_length > 0,
-                }
-                xbmc.log(
-                    "NZB-DAV: Force-remuxing large {}B file via piped MKV "
-                    "(duration={}, threshold={}B)".format(
-                        content_length,
-                        "{:.1f}s".format(duration) if duration else "unknown",
-                        threshold,
-                    ),
-                    xbmc.LOGWARNING,
-                )
+                if _get_force_remux_mode() == "hls_fmp4" and duration is not None:
+                    ctx = {
+                        "remote_url": remote_url,
+                        "auth_header": auth_header,
+                        "content_type": "application/vnd.apple.mpegurl",
+                        "mode": "hls",
+                        "remux": True,
+                        "faststart": False,
+                        "ffmpeg_path": ffmpeg_path,
+                        "total_bytes": content_length,
+                        "duration_seconds": duration,
+                        "seekable": True,
+                        "hls_segment_duration": _HLS_SEGMENT_SECONDS,
+                        "hls_segment_format": "fmp4",
+                    }
+                    xbmc.log(
+                        "NZB-DAV: Force-remuxing {}B file via fMP4 HLS "
+                        "(experimental, duration={:.1f}s)".format(
+                            content_length, duration
+                        ),
+                        xbmc.LOGWARNING,
+                    )
+                else:
+                    ctx = {
+                        "remote_url": remote_url,
+                        "auth_header": auth_header,
+                        "content_type": "video/x-matroska",
+                        "remux": True,
+                        "faststart": False,
+                        "ffmpeg_path": ffmpeg_path,
+                        "total_bytes": content_length,
+                        "duration_seconds": duration,
+                        "seekable": duration is not None and content_length > 0,
+                    }
+                    xbmc.log(
+                        "NZB-DAV: Force-remuxing large {}B file via piped MKV "
+                        "(duration={}, threshold={}B)".format(
+                            content_length,
+                            "{:.1f}s".format(duration) if duration else "unknown",
+                            threshold,
+                        ),
+                        xbmc.LOGWARNING,
+                    )
             else:
                 if needs_remux:
                     xbmc.log(
