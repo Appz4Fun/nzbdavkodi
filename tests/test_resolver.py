@@ -234,7 +234,12 @@ def _build_fake_videos_db(tmp_path):
 
 @patch("resources.lib.resolver.xbmc")
 def test_clear_kodi_playback_state_deletes_tmdb_helper_url(mock_xbmc, tmp_path):
-    """Clearing with tmdb_id deletes TMDBHelper URLs regardless of param order."""
+    """Clearing with tmdb_id deletes bookmarks for matching TMDBHelper URLs.
+
+    Only ``bookmark`` rows are removed; the ``files`` rows themselves must
+    stay intact so the mutation to Kodi's primary DB is as narrow as
+    possible. Regression test for ISSUE_REPORT.md C5.
+    """
     import sqlite3
     import sys
 
@@ -257,6 +262,12 @@ def test_clear_kodi_playback_state_deletes_tmdb_helper_url(mock_xbmc, tmp_path):
         cur.execute(
             "INSERT INTO bookmark (idFile, timeInSeconds) VALUES (?, 100.0)", (i,)
         )
+        cur.execute("INSERT INTO settings (idFile, ResumeTime) VALUES (?, 100)", (i,))
+        cur.execute(
+            "INSERT INTO streamdetails (idFile, iStreamType, strVideoCodec) "
+            "VALUES (?, 0, 'h264')",
+            (i,),
+        )
     conn.commit()
     conn.close()
 
@@ -272,21 +283,35 @@ def test_clear_kodi_playback_state_deletes_tmdb_helper_url(mock_xbmc, tmp_path):
 
     conn = sqlite3.connect(str(db))
     cur = conn.cursor()
+    # files rows must all still be present — we only touch bookmark.
     cur.execute("SELECT strFilename FROM files ORDER BY idFile")
     remaining = [row[0] for row in cur.fetchall()]
+    assert set(remaining) == set(
+        urls
+    ), "files table must not be mutated — only bookmark rows should be removed"
+    # settings / streamdetails rows must also be preserved.
+    cur.execute("SELECT COUNT(*) FROM settings")
+    assert cur.fetchone()[0] == len(urls), "settings table must not be mutated"
+    cur.execute("SELECT COUNT(*) FROM streamdetails")
+    assert cur.fetchone()[0] == len(urls), "streamdetails table must not be mutated"
+    # The two matching TMDBHelper URLs must have their bookmark rows gone;
+    # the 3891-id row and the unrelated nzbdav row must keep theirs.
+    cur.execute("SELECT idFile FROM bookmark ORDER BY idFile")
+    remaining_bookmarks = {row[0] for row in cur.fetchall()}
     conn.close()
-
-    # The two matching TMDBHelper URLs should be gone.
-    # 3891 (different id) and the unrelated nzbdav URL should remain.
-    assert urls[0] not in remaining
-    assert urls[1] not in remaining
-    assert urls[2] in remaining
-    assert urls[3] in remaining
+    assert 1 not in remaining_bookmarks, "bookmark for tmdb_id=389 (v1) should be gone"
+    assert 2 not in remaining_bookmarks, "bookmark for tmdb_id=389 (v2) should be gone"
+    assert 3 in remaining_bookmarks, "bookmark for tmdb_id=3891 should remain"
+    assert 4 in remaining_bookmarks, "bookmark for unrelated URL should remain"
 
 
 @patch("resources.lib.resolver.xbmc")
 def test_clear_kodi_playback_state_deletes_own_plugin_url(mock_xbmc, tmp_path):
-    """Clearing without tmdb_id still deletes our own plugin URL entry."""
+    """Clearing without tmdb_id deletes the bookmark for our own plugin URL.
+
+    The ``files`` row is preserved; only the ``bookmark`` row is removed.
+    Regression test for ISSUE_REPORT.md C5.
+    """
     import sqlite3
     import sys
 
@@ -299,6 +324,11 @@ def test_clear_kodi_playback_state_deletes_own_plugin_url(mock_xbmc, tmp_path):
         "INSERT INTO files (idFile, idPath, strFilename) VALUES (1, 1, ?)", (own_url,)
     )
     cur.execute("INSERT INTO bookmark (idFile, timeInSeconds) VALUES (1, 50.0)")
+    cur.execute("INSERT INTO settings (idFile, ResumeTime) VALUES (1, 50)")
+    cur.execute(
+        "INSERT INTO streamdetails (idFile, iStreamType, strVideoCodec) "
+        "VALUES (1, 0, 'h264')"
+    )
     conn.commit()
     conn.close()
 
@@ -321,10 +351,93 @@ def test_clear_kodi_playback_state_deletes_own_plugin_url(mock_xbmc, tmp_path):
     file_count = cur.fetchone()[0]
     cur.execute("SELECT COUNT(*) FROM bookmark")
     bookmark_count = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM settings")
+    settings_count = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM streamdetails")
+    streamdetails_count = cur.fetchone()[0]
     conn.close()
 
-    assert file_count == 0
-    assert bookmark_count == 0
+    assert file_count == 1, "files row must be preserved"
+    assert bookmark_count == 0, "bookmark row must be deleted"
+    assert settings_count == 1, "settings row must be preserved"
+    assert streamdetails_count == 1, "streamdetails row must be preserved"
+
+
+@patch("resources.lib.resolver.xbmc")
+def test_clear_kodi_playback_state_escapes_like_wildcards(mock_xbmc, tmp_path):
+    """tmdb_id containing LIKE wildcards must not match unrelated rows.
+
+    A raw LIKE pattern with % or _ in user-controlled tmdb_id would match
+    arbitrary TMDBHelper rows. Regression test for ISSUE_REPORT.md M5 / C5.
+    """
+    import sqlite3
+    import sys
+
+    mock_xbmc.Player.return_value.isPlayingVideo.return_value = False
+    db = _build_fake_videos_db(tmp_path)
+    conn = sqlite3.connect(str(db))
+    cur = conn.cursor()
+    tmdb_base = "plugin://plugin.video.themoviedb.helper/?info=play"
+    urls = [
+        tmdb_base + "&tmdb_id=12345",  # would match LIKE '%tmdb_id=%%'
+        tmdb_base + "&tmdb_id=99999",
+    ]
+    for i, url in enumerate(urls, start=1):
+        cur.execute(
+            "INSERT INTO files (idFile, idPath, strFilename) VALUES (?, 1, ?)",
+            (i, url),
+        )
+        cur.execute(
+            "INSERT INTO bookmark (idFile, timeInSeconds) VALUES (?, 100.0)", (i,)
+        )
+    conn.commit()
+    conn.close()
+
+    fake_argv = ["plugin://plugin.video.nzbdav/play", "1", "?tmdb_id=%"]
+    with patch("resources.lib.resolver.xbmcvfs") as mock_vfs:
+        mock_vfs.translatePath.return_value = str(tmp_path) + "/"
+        with patch.object(sys, "argv", fake_argv):
+            # tmdb_id='%' must not match any row.
+            _clear_kodi_playback_state({"tmdb_id": "%"})
+
+    conn = sqlite3.connect(str(db))
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM bookmark")
+    remaining = cur.fetchone()[0]
+    conn.close()
+    assert remaining == 2, (
+        "LIKE wildcard in tmdb_id must be escaped — "
+        "no unrelated bookmarks should be deleted"
+    )
+
+
+@patch("resources.lib.resolver.xbmc")
+def test_clear_kodi_playback_state_handles_db_busy(mock_xbmc, tmp_path):
+    """A sqlite3.OperationalError (DB locked) must be caught, not propagated."""
+    import sqlite3
+
+    mock_xbmc.Player.return_value.isPlayingVideo.return_value = False
+    db = _build_fake_videos_db(tmp_path)
+
+    # Hold an exclusive lock on the DB so our short-timeout connection
+    # hits OperationalError.
+    blocker = sqlite3.connect(str(db), isolation_level=None)
+    blocker_cur = blocker.cursor()
+    blocker_cur.execute("BEGIN EXCLUSIVE")
+    try:
+        with patch("resources.lib.resolver.xbmcvfs") as mock_vfs:
+            mock_vfs.translatePath.return_value = str(tmp_path) + "/"
+            # Should not raise.
+            _clear_kodi_playback_state({"tmdb_id": "1"})
+    finally:
+        blocker_cur.execute("ROLLBACK")
+        blocker.close()
+
+    # The DEBUG "DB busy" log line should have been emitted.
+    log_calls = [c[0][0] for c in mock_xbmc.log.call_args_list]
+    assert any(
+        "busy" in c.lower() for c in log_calls
+    ), "Expected a log entry mentioning the DB was busy"
 
 
 @patch("resources.lib.resolver.xbmc")
