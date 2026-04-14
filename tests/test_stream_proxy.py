@@ -1899,6 +1899,128 @@ def test_hls_producer_does_not_restart_on_small_forward_seek(tmp_path):
     alive_proc.kill.assert_not_called()
 
 
+def test_hls_producer_unlinks_stale_init_before_respawn(tmp_path):
+    """_ensure_ffmpeg_headed_for in fmp4 mode unlinks init.mp4
+    synchronously before Popen. A patched Popen checks the file is
+    already gone at the moment of spawn."""
+    import os as _os
+
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        init_path = _os.path.join(producer.session_dir, "init.mp4")
+        with open(init_path, "wb") as f:
+            f.write(b"STALE")
+
+        init_existed_at_spawn = {"value": None}
+
+        def spy_popen(*args, **kwargs):
+            init_existed_at_spawn["value"] = _os.path.exists(init_path)
+            proc = MagicMock()
+            proc.poll.return_value = None
+            return proc
+
+        with patch(
+            "resources.lib.stream_proxy.subprocess.Popen",
+            side_effect=spy_popen,
+        ):
+            producer._ensure_ffmpeg_headed_for(40)
+
+        assert init_existed_at_spawn["value"] is False
+    finally:
+        producer.close()
+
+
+def test_hls_producer_unlinks_new_target_segment_before_respawn(tmp_path):
+    """_ensure_ffmpeg_headed_for in fmp4 mode unlinks
+    seg_<new_target>.m4s before Popen. OTHER stale segments at
+    different indices must still be present (regression guard for
+    the backward-seek cache)."""
+    import os as _os
+
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        target_path = _os.path.join(producer.session_dir, "seg_000040.m4s")
+        other_path = _os.path.join(producer.session_dir, "seg_000005.m4s")
+        with open(target_path, "wb") as f:
+            f.write(b"STALE TARGET")
+        with open(other_path, "wb") as f:
+            f.write(b"STALE OTHER")
+
+        target_existed_at_spawn = {"value": None}
+        other_existed_at_spawn = {"value": None}
+
+        def spy_popen(*args, **kwargs):
+            target_existed_at_spawn["value"] = _os.path.exists(target_path)
+            other_existed_at_spawn["value"] = _os.path.exists(other_path)
+            proc = MagicMock()
+            proc.poll.return_value = None
+            return proc
+
+        with patch(
+            "resources.lib.stream_proxy.subprocess.Popen",
+            side_effect=spy_popen,
+        ):
+            producer._ensure_ffmpeg_headed_for(40)
+
+        assert target_existed_at_spawn["value"] is False
+        assert other_existed_at_spawn["value"] is True
+    finally:
+        producer.close()
+
+
+def test_hls_producer_unlink_does_not_run_for_mpegts_branch(tmp_path):
+    """Regression guard: mpegts branch does NOT unlink anything
+    before spawn (preserves existing behavior)."""
+    import os as _os
+
+    producer = _make_producer(tmp_path)  # defaults to mpegts
+    try:
+        stale_path = _os.path.join(producer.session_dir, "seg_000040.ts")
+        with open(stale_path, "wb") as f:
+            f.write(b"STALE")
+
+        stale_existed_at_spawn = {"value": None}
+
+        def spy_popen(*args, **kwargs):
+            stale_existed_at_spawn["value"] = _os.path.exists(stale_path)
+            proc = MagicMock()
+            proc.poll.return_value = None
+            return proc
+
+        with patch(
+            "resources.lib.stream_proxy.subprocess.Popen",
+            side_effect=spy_popen,
+        ):
+            producer._ensure_ffmpeg_headed_for(40)
+
+        # mpegts branch must leave the stale file alone
+        assert stale_existed_at_spawn["value"] is True
+    finally:
+        producer.close()
+
+
 def test_hls_producer_close_kills_ffmpeg_and_removes_dir(tmp_path):
     """close() must kill ffmpeg and delete the session directory."""
     producer = _make_producer(tmp_path)
