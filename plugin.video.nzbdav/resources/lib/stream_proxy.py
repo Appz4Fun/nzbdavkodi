@@ -1021,7 +1021,14 @@ class _StreamHandler(BaseHTTPRequestHandler):
     # ------------------------------------------------------------------
 
     def _serve_hls_playlist(self, ctx):
-        """Emit a VOD-type HLS playlist covering the full source duration."""
+        """Emit a VOD-type HLS playlist covering the full source duration.
+
+        For fmp4 sessions, bumps EXT-X-VERSION to 7 (per ffmpeg HLS muxer
+        recommendation for fMP4) and adds an EXT-X-MAP tag pointing at
+        init.mp4. Segment URIs use the right extension for the session's
+        segment_format (m4s vs ts), unpadded so they're readable in
+        Kodi's logs — the URL parser absorbs leading zeros either way.
+        """
         duration = ctx.get("duration_seconds") or 0.0
         seg_dur = ctx.get("hls_segment_duration", _HLS_SEGMENT_SECONDS)
         if duration <= 0 or seg_dur <= 0:
@@ -1033,20 +1040,26 @@ class _StreamHandler(BaseHTTPRequestHandler):
         total_segs = int(math.ceil(duration / seg_dur))
         target = int(math.ceil(seg_dur))
 
+        is_fmp4 = ctx.get("hls_segment_format") == "fmp4"
+        seg_ext = "m4s" if is_fmp4 else "ts"
+        version = "7" if is_fmp4 else "3"
+
         lines = [
             "#EXTM3U",
-            "#EXT-X-VERSION:3",
+            "#EXT-X-VERSION:{}".format(version),
             "#EXT-X-PLAYLIST-TYPE:VOD",
             "#EXT-X-TARGETDURATION:{}".format(target),
             "#EXT-X-MEDIA-SEQUENCE:0",
             "#EXT-X-INDEPENDENT-SEGMENTS",
         ]
+        if is_fmp4:
+            lines.append('#EXT-X-MAP:URI="init.mp4"')
         for i in range(total_segs):
             start = i * seg_dur
             remaining = max(0.0, duration - start)
             this_dur = min(seg_dur, remaining)
             lines.append("#EXTINF:{:.6f},".format(this_dur))
-            lines.append("seg_{}.ts".format(i))
+            lines.append("seg_{}.{}".format(i, seg_ext))
         lines.append("#EXT-X-ENDLIST")
         body = ("\n".join(lines) + "\n").encode("utf-8")
 
