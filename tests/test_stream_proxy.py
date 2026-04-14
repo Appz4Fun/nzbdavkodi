@@ -1578,6 +1578,161 @@ def test_serve_hls_playlist_shape():
     assert abs(sum(durations) - 8552.576) < 0.001
 
 
+def test_serve_hls_playlist_fmp4_version_is_7():
+    """fmp4 ctx emits #EXT-X-VERSION:7."""
+    from resources.lib.stream_proxy import _StreamHandler
+
+    ctx = {
+        "hls_segment_format": "fmp4",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+    }
+
+    handler = _StreamHandler.__new__(_StreamHandler)
+    handler.send_response = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
+    handler.wfile = MagicMock()
+    handler.send_error = MagicMock()
+
+    captured = []
+    handler.wfile.write.side_effect = lambda b: captured.append(b)
+
+    handler._serve_hls_playlist(ctx)
+
+    body = b"".join(captured).decode("utf-8")
+    assert "#EXT-X-VERSION:7" in body
+
+
+def test_serve_hls_playlist_fmp4_contains_ext_x_map():
+    """fmp4 ctx emits #EXT-X-MAP:URI='init.mp4'."""
+    from resources.lib.stream_proxy import _StreamHandler
+
+    ctx = {
+        "hls_segment_format": "fmp4",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+    }
+
+    handler = _StreamHandler.__new__(_StreamHandler)
+    handler.send_response = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
+    handler.wfile = MagicMock()
+    handler.send_error = MagicMock()
+
+    captured = []
+    handler.wfile.write.side_effect = lambda b: captured.append(b)
+
+    handler._serve_hls_playlist(ctx)
+    body = b"".join(captured).decode("utf-8")
+    assert '#EXT-X-MAP:URI="init.mp4"' in body
+
+
+def test_serve_hls_playlist_fmp4_uses_m4s_extension():
+    """fmp4 ctx segment URIs end in .m4s."""
+    from resources.lib.stream_proxy import _StreamHandler
+
+    ctx = {
+        "hls_segment_format": "fmp4",
+        "duration_seconds": 60.0,
+        "hls_segment_duration": 30.0,
+    }
+
+    handler = _StreamHandler.__new__(_StreamHandler)
+    handler.send_response = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
+    handler.wfile = MagicMock()
+    handler.send_error = MagicMock()
+
+    captured = []
+    handler.wfile.write.side_effect = lambda b: captured.append(b)
+
+    handler._serve_hls_playlist(ctx)
+    body = b"".join(captured).decode("utf-8")
+    assert "seg_0.m4s" in body
+    assert "seg_1.m4s" in body
+    assert ".ts" not in body
+
+
+def test_serve_hls_playlist_mpegts_version_is_still_3():
+    """mpegts ctx still emits #EXT-X-VERSION:3 (no changes)."""
+    from resources.lib.stream_proxy import _StreamHandler
+
+    ctx = {
+        "hls_segment_format": "mpegts",
+        "duration_seconds": 60.0,
+        "hls_segment_duration": 30.0,
+    }
+
+    handler = _StreamHandler.__new__(_StreamHandler)
+    handler.send_response = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
+    handler.wfile = MagicMock()
+    handler.send_error = MagicMock()
+
+    captured = []
+    handler.wfile.write.side_effect = lambda b: captured.append(b)
+
+    handler._serve_hls_playlist(ctx)
+    body = b"".join(captured).decode("utf-8")
+    assert "#EXT-X-VERSION:3" in body
+    assert "#EXT-X-VERSION:7" not in body
+
+
+def test_serve_hls_playlist_mpegts_no_ext_x_map():
+    """mpegts ctx must NOT emit #EXT-X-MAP."""
+    from resources.lib.stream_proxy import _StreamHandler
+
+    ctx = {
+        "hls_segment_format": "mpegts",
+        "duration_seconds": 60.0,
+        "hls_segment_duration": 30.0,
+    }
+
+    handler = _StreamHandler.__new__(_StreamHandler)
+    handler.send_response = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
+    handler.wfile = MagicMock()
+    handler.send_error = MagicMock()
+
+    captured = []
+    handler.wfile.write.side_effect = lambda b: captured.append(b)
+
+    handler._serve_hls_playlist(ctx)
+    body = b"".join(captured).decode("utf-8")
+    assert "#EXT-X-MAP" not in body
+
+
+def test_serve_hls_playlist_mpegts_uses_ts_extension():
+    """Regression: mpegts segment URIs still end in .ts."""
+    from resources.lib.stream_proxy import _StreamHandler
+
+    ctx = {
+        "hls_segment_format": "mpegts",
+        "duration_seconds": 60.0,
+        "hls_segment_duration": 30.0,
+    }
+
+    handler = _StreamHandler.__new__(_StreamHandler)
+    handler.send_response = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
+    handler.wfile = MagicMock()
+    handler.send_error = MagicMock()
+
+    captured = []
+    handler.wfile.write.side_effect = lambda b: captured.append(b)
+
+    handler._serve_hls_playlist(ctx)
+    body = b"".join(captured).decode("utf-8")
+    assert "seg_0.ts" in body
+    assert ".m4s" not in body
+
+
 def test_serve_hls_segment_reads_from_producer_file(tmp_path):
     """The segment handler reads ``hls_producer.wait_for_segment``'s
     returned file path and streams it back with ``Content-Length``,
