@@ -146,6 +146,17 @@ _HLS_SEGMENT_WAIT_SECONDS = 90.0
 # OR when its mtime has been stable for this many milliseconds.
 _HLS_SEGMENT_MTIME_STABLE_MS = 500
 
+# Hard wall-clock deadline for ffmpeg-based probes (duration, DV
+# profile). These probes spawn ``ffmpeg -v info -i <url> -f null -``
+# and scan stderr for a specific line. If ffmpeg hangs on the network
+# read (slow upstream, auth negotiation, stalled header parse) it may
+# never emit stderr output at all — without a wall-clock guard, the
+# reader loop blocks forever. 20 s is very generous for a healthy
+# LAN probe (typical: <2 s to Duration line on a 4K REMUX) and still
+# bounded enough that a stuck probe can't wedge the prepare_stream
+# path past the plugin client's 60 s /prepare timeout.
+_PROBE_DEADLINE_SECONDS = 20.0
+
 
 def _choose_hls_workdir():
     """Return a writable base directory for HLS session working files.
@@ -2640,7 +2651,29 @@ class StreamProxy:
 
     @staticmethod
     def _probe_duration_ffmpeg(ffmpeg_path, input_url):
-        """Parse Duration out of ``ffmpeg -i`` stderr. Returns seconds or None."""
+        """Parse Duration out of ``ffmpeg -i`` stderr. Returns seconds or None.
+
+        Uses the bounded-reader-thread pattern: a daemon thread reads
+        stderr line-by-line into a shared buffer and signals an Event
+        as soon as ``Duration:`` is matched or the 64 KB byte budget
+        is exhausted. The main thread waits on the Event with a
+        hard wall-clock deadline of ``_PROBE_DEADLINE_SECONDS`` so a
+        stuck ffmpeg (slow upstream, stalled header parse, auth hang)
+        can't wedge the probe forever. Either way — match, budget,
+        deadline — the ffmpeg process is killed before returning.
+        """
+        return StreamProxy._probe_ffmpeg_stderr(
+            ffmpeg_path, input_url, _parse_ffmpeg_duration, "Duration"
+        )
+
+    @staticmethod
+    def _probe_ffmpeg_stderr(ffmpeg_path, input_url, parser, label):
+        """Shared body of ``_probe_duration_ffmpeg`` and
+        ``_probe_dv_profile``. Spawns ``ffmpeg -v info -i <url> -f null
+        -`` and runs the parser against collected stderr under a
+        bounded reader thread + wall-clock deadline."""
+        import threading
+
         try:
             proc = subprocess.Popen(
                 [ffmpeg_path, "-v", "info", "-i", input_url, "-f", "null", "-"],
@@ -2648,88 +2681,85 @@ class StreamProxy:
                 stderr=subprocess.PIPE,
                 shell=False,
             )
-            # Read stderr line-by-line; Duration appears in the header.
-            # Kill ffmpeg as soon as we have it to avoid reading the whole file.
-            collected = ""
-            # 64 KB budget: large enough that a 30-subtitle Blu-ray remux's
-            # wall of per-stream probe warnings can't push `Duration:` out.
-            budget = 65536
-            for line in proc.stderr:
-                collected += line.decode(errors="replace")
-                result = _parse_ffmpeg_duration(collected)
-                if result is not None:
-                    proc.kill()
-                    proc.wait()
-                    return result
-                if len(collected) > budget:
-                    xbmc.log(
-                        "NZB-DAV: Duration not found in first {}B of ffmpeg "
-                        "output".format(budget),
-                        xbmc.LOGWARNING,
-                    )
-                    proc.kill()
-                    proc.wait()
-                    return None
-            # 30 s: generous upper bound for ffmpeg to finish reading the file
-            # header on a slow/remote source; the normal path exits early via
-            # proc.kill() once Duration is found in stderr.
-            proc.wait(timeout=30)
-            return _parse_ffmpeg_duration(collected)
         except (OSError, subprocess.SubprocessError, ValueError) as e:
-            xbmc.log("NZB-DAV: Duration probe failed: {}".format(e), xbmc.LOGWARNING)
+            xbmc.log(
+                "NZB-DAV: {} probe spawn failed: {}".format(label, e),
+                xbmc.LOGWARNING,
+            )
             return None
+
+        collected = [""]
+        done = threading.Event()
+        # 64 KB budget: large enough that a 30-subtitle Blu-ray remux's
+        # wall of per-stream probe warnings can't push the match line out.
+        budget = 65536
+
+        def _reader():
+            try:
+                for line in proc.stderr:
+                    collected[0] += line.decode(errors="replace")
+                    if parser(collected[0]) is not None:
+                        return
+                    if len(collected[0]) > budget:
+                        return
+            except Exception:  # pylint: disable=broad-except
+                pass
+            finally:
+                done.set()
+
+        reader = threading.Thread(
+            target=_reader, name="nzbdav-probe-reader", daemon=True
+        )
+        reader.start()
+
+        if not done.wait(timeout=_PROBE_DEADLINE_SECONDS):
+            xbmc.log(
+                "NZB-DAV: {} probe wall-clock deadline ({}s) exceeded, "
+                "killing ffmpeg".format(label, _PROBE_DEADLINE_SECONDS),
+                xbmc.LOGWARNING,
+            )
+
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        try:
+            proc.wait(timeout=5)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+
+        result = parser(collected[0])
+        if result is None and len(collected[0]) > budget:
+            xbmc.log(
+                "NZB-DAV: {} not found in first {}B of ffmpeg output".format(
+                    label, budget
+                ),
+                xbmc.LOGWARNING,
+            )
+        return result
 
     @staticmethod
     def _probe_dv_profile(ffmpeg_path, url, auth_header):
         """Probe the Dolby Vision profile of the source stream.
 
-        Runs ``ffmpeg -i <url> -f null -`` long enough to read the
-        header, parses the ``DOVI configuration record`` line out of
-        stderr, and returns the profile integer (5, 7, 8, ...) or
-        None.
+        Runs ``ffmpeg -i <url> -f null -`` under the same bounded
+        reader-thread + wall-clock deadline pattern as the duration
+        probe (via ``_probe_ffmpeg_stderr``), parsing the
+        ``DOVI configuration record`` line out of stderr. Returns the
+        profile integer (5, 7, 8, ...) or None.
 
         None means either "no DV metadata present" or "probe could
-        not read the header" — both of which are safe defaults for
-        the fmp4 HLS dispatch: only a confirmed profile 7 (dual-layer
-        FEL) has to be routed away from fmp4, because fmp4 HLS cannot
-        carry two HEVC layers in one track and the EL would be
-        silently dropped.
-
-        Structural sibling of ``_probe_duration_ffmpeg`` — same
-        line-by-line stderr scan, same 64 KB byte budget, same
-        short-circuit on match. Kept as a separate pass (rather than
-        folded into the duration probe) so duration-only callers
-        don't pay for DV parsing, and so the fmp4 dispatch path can
-        tolerate a DV probe failure without tainting the duration
-        value that the force-remux branch also uses.
+        not read the header" (including the deadline-exceeded case)
+        — both of which are safe defaults for the fmp4 HLS dispatch:
+        only a confirmed profile 7 (dual-layer FEL) has to be routed
+        away from fmp4, because fmp4 HLS cannot carry two HEVC
+        layers in one track and the EL would be silently dropped.
         """
         _validate_url(url)
         input_url = _embed_auth_in_url(url, auth_header)
-        try:
-            proc = subprocess.Popen(
-                [ffmpeg_path, "-v", "info", "-i", input_url, "-f", "null", "-"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                shell=False,
-            )
-            collected = ""
-            budget = 65536
-            for line in proc.stderr:
-                collected += line.decode(errors="replace")
-                result = _parse_ffmpeg_dv_profile(collected)
-                if result is not None:
-                    proc.kill()
-                    proc.wait()
-                    return result
-                if len(collected) > budget:
-                    proc.kill()
-                    proc.wait()
-                    return None
-            proc.wait(timeout=30)
-            return _parse_ffmpeg_dv_profile(collected)
-        except (OSError, subprocess.SubprocessError, ValueError) as e:
-            xbmc.log("NZB-DAV: DV profile probe failed: {}".format(e), xbmc.LOGWARNING)
-            return None
+        return StreamProxy._probe_ffmpeg_stderr(
+            ffmpeg_path, input_url, _parse_ffmpeg_dv_profile, "DV profile"
+        )
 
     @staticmethod
     def _prepare_tempfile_faststart(ffmpeg_path, url, auth_header):
