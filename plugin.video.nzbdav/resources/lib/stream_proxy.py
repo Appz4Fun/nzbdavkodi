@@ -381,9 +381,21 @@ class _StreamHandler(BaseHTTPRequestHandler):
     def _parse_hls_resource(path):
         """Extract (session_id, resource) from an /hls/ path, or None.
 
-        Returns a tuple ``(session_id, resource)`` where ``resource`` is
-        one of ``"playlist"`` or ``("segment", N)``. Returns ``None`` for
-        malformed paths so the caller can 404.
+        Returns a tuple ``(session_id, resource)`` where ``resource``
+        is one of:
+
+        - ``"playlist"`` — ``/hls/<session>/playlist.m3u8``
+        - ``"init"`` — ``/hls/<session>/init.mp4`` (fmp4 path)
+        - ``("segment", N, "ts")`` — legacy mpegts segment
+        - ``("segment", N, "m4s")`` — fmp4 segment
+
+        Returns ``None`` for malformed paths so the caller can 404.
+
+        The parser is extension-permissive for segments — it accepts
+        both .ts and .m4s regardless of session state. Handler-level
+        validation (``do_HEAD`` / ``_handle_hls``) enforces that the
+        returned extension matches the session's
+        ``hls_segment_format``, returning 404 on mismatch.
         """
         if not path.startswith("/hls/"):
             return None
@@ -393,14 +405,19 @@ class _StreamHandler(BaseHTTPRequestHandler):
         session_id, resource = parts
         if resource == "playlist.m3u8":
             return session_id, "playlist"
-        if resource.startswith("seg_") and resource.endswith(".ts"):
-            try:
-                seg_n = int(resource[len("seg_") : -len(".ts")])
-            except ValueError:
-                return None
-            if seg_n < 0:
-                return None
-            return session_id, ("segment", seg_n)
+        if resource == "init.mp4":
+            return session_id, "init"
+        if resource.startswith("seg_"):
+            for ext in ("ts", "m4s"):
+                suffix = "." + ext
+                if resource.endswith(suffix):
+                    try:
+                        seg_n = int(resource[len("seg_") : -len(suffix)])
+                    except ValueError:
+                        return None
+                    if seg_n < 0:
+                        return None
+                    return session_id, ("segment", seg_n, ext)
         return None
 
     @staticmethod
@@ -458,18 +475,30 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 self.send_error(404)
                 return
             _session_id, resource = parsed
+            seg_fmt = ctx.get("hls_segment_format", "mpegts")
+
             if resource == "playlist":
-                self.send_response(200)
-                self.send_header("Content-Type", "application/vnd.apple.mpegurl")
-                self.send_header("Connection", "close")
-                self.end_headers()
+                content_type = "application/vnd.apple.mpegurl"
+            elif resource == "init":
+                if seg_fmt != "fmp4":
+                    self.send_error(404)
+                    return
+                content_type = "video/mp4"
+            elif isinstance(resource, tuple) and resource[0] == "segment":
+                _, _seg_n, ext = resource
+                expected_ext = "m4s" if seg_fmt == "fmp4" else "ts"
+                if ext != expected_ext:
+                    self.send_error(404)
+                    return
+                content_type = "video/mp4" if seg_fmt == "fmp4" else "video/mp2t"
             else:
-                # Segment HEAD — Kodi's HLS demuxer rarely issues these
-                # but the response is harmless if it does.
-                self.send_response(200)
-                self.send_header("Content-Type", "video/mp2t")
-                self.send_header("Connection", "close")
-                self.end_headers()
+                self.send_error(404)
+                return
+
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Connection", "close")
+            self.end_headers()
             return
 
         ctx = self._get_stream_context()
@@ -526,7 +555,11 @@ class _StreamHandler(BaseHTTPRequestHandler):
             self._serve_proxy(ctx)
 
     def _handle_hls(self, path):
-        """Dispatch an /hls/<session>/... GET to playlist or segment."""
+        """Dispatch an /hls/<session>/... GET to playlist, init, or
+        segment. Enforces strict extension↔ctx-mode validation so a
+        request with the wrong extension for the session's segment
+        format returns 404 rather than being silently served.
+        """
         parsed = self._parse_hls_resource(path)
         if parsed is None:
             self.send_error(404)
@@ -536,11 +569,24 @@ class _StreamHandler(BaseHTTPRequestHandler):
             self.send_error(404)
             return
         _session_id, resource = parsed
+        seg_fmt = ctx.get("hls_segment_format", "mpegts")
+
         if resource == "playlist":
             self._serve_hls_playlist(ctx)
             return
+        if resource == "init":
+            if seg_fmt != "fmp4":
+                self.send_error(404)
+                return
+            self._serve_hls_init(ctx)
+            return
         if isinstance(resource, tuple) and resource[0] == "segment":
-            self._serve_hls_segment(ctx, resource[1])
+            _, seg_n, ext = resource
+            expected_ext = "m4s" if seg_fmt == "fmp4" else "ts"
+            if ext != expected_ext:
+                self.send_error(404)
+                return
+            self._serve_hls_segment(ctx, seg_n)
             return
         self.send_error(404)
 

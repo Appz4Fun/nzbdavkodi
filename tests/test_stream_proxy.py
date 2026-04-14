@@ -1301,12 +1301,63 @@ def test_parse_hls_resource_playlist():
 
 
 def test_parse_hls_resource_segment():
+    """Regression (updated shape): a segment URL with the legacy
+    .ts extension parses to ('segment', N, 'ts')."""
     from resources.lib.stream_proxy import _StreamHandler
 
-    assert _StreamHandler._parse_hls_resource("/hls/abc/seg_42.ts") == (
-        "abc",
-        ("segment", 42),
-    )
+    result = _StreamHandler._parse_hls_resource("/hls/abc/seg_5.ts")
+    assert result == ("abc", ("segment", 5, "ts"))
+
+
+def test_parse_hls_resource_init_mp4_returns_init():
+    """/hls/<session>/init.mp4 parses to (session_id, 'init')."""
+    from resources.lib.stream_proxy import _StreamHandler
+
+    result = _StreamHandler._parse_hls_resource("/hls/abc123/init.mp4")
+    assert result == ("abc123", "init")
+
+
+def test_parse_hls_resource_segment_m4s_returns_extension():
+    """/hls/<s>/seg_5.m4s parses to (session_id, ('segment', 5, 'm4s'))."""
+    from resources.lib.stream_proxy import _StreamHandler
+
+    result = _StreamHandler._parse_hls_resource("/hls/abc123/seg_5.m4s")
+    assert result == ("abc123", ("segment", 5, "m4s"))
+
+
+def test_parse_hls_resource_segment_ts_returns_extension():
+    """/hls/<s>/seg_5.ts parses to (session_id, ('segment', 5, 'ts'))."""
+    from resources.lib.stream_proxy import _StreamHandler
+
+    result = _StreamHandler._parse_hls_resource("/hls/abc123/seg_5.ts")
+    assert result == ("abc123", ("segment", 5, "ts"))
+
+
+def test_parse_hls_resource_segment_padded_index_still_parses():
+    """Zero-padded segment indices still parse to the bare int plus
+    the extension — regression guard for the URL→int→disk path
+    lookup."""
+    from resources.lib.stream_proxy import _StreamHandler
+
+    result = _StreamHandler._parse_hls_resource("/hls/abc/seg_000005.ts")
+    assert result == ("abc", ("segment", 5, "ts"))
+
+
+def test_parse_hls_resource_rejects_wrong_init_filename():
+    """Anything other than exactly 'init.mp4' (e.g. 'not-init.mp4')
+    returns None."""
+    from resources.lib.stream_proxy import _StreamHandler
+
+    assert _StreamHandler._parse_hls_resource("/hls/abc/not-init.mp4") is None
+    assert _StreamHandler._parse_hls_resource("/hls/abc/init.ts") is None
+
+
+def test_parse_hls_resource_rejects_unknown_segment_extension():
+    """Unknown extensions on seg_ URIs return None."""
+    from resources.lib.stream_proxy import _StreamHandler
+
+    assert _StreamHandler._parse_hls_resource("/hls/abc/seg_5.mov") is None
+    assert _StreamHandler._parse_hls_resource("/hls/abc/seg_5.mp4") is None
 
 
 def test_parse_hls_resource_rejects_negative_segment():
@@ -1323,6 +1374,157 @@ def test_parse_hls_resource_rejects_malformed():
     assert _StreamHandler._parse_hls_resource("/hls/abc/unknown.txt") is None
     assert _StreamHandler._parse_hls_resource("/hls/abc/seg_abc.ts") is None
     assert _StreamHandler._parse_hls_resource("/stream/abc") is None
+
+
+def _make_hls_ctx_fmp4():
+    """Construct a minimal fmp4 HLS ctx with a MagicMock producer."""
+    return {
+        "mode": "hls",
+        "hls_segment_format": "fmp4",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_producer": MagicMock(),
+    }
+
+
+def _make_hls_ctx_mpegts():
+    """Construct a minimal mpegts HLS ctx with a MagicMock producer."""
+    return {
+        "mode": "hls",
+        "hls_segment_format": "mpegts",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_producer": MagicMock(),
+    }
+
+
+def _make_handler_for(path, ctx):
+    """Build a minimal _StreamHandler with an injected path and ctx.
+
+    Wires ``handler.server.stream_sessions`` so that
+    ``_get_stream_context`` resolves the ``/hls/<session_id>/...``
+    path back to ``ctx``. Assumes ``path`` is of the form
+    ``/hls/<session_id>/<resource>``.
+    """
+    from resources.lib.stream_proxy import _StreamHandler
+
+    handler = _StreamHandler.__new__(_StreamHandler)
+    handler.path = path
+    handler.server = MagicMock()
+    handler.server.stream_context = ctx
+    # Extract session id from /hls/<session>/... so _get_stream_context
+    # finds ctx in stream_sessions.
+    parts = path[len("/hls/") :].split("/", 1)
+    session_id = parts[0] if parts else "abc"
+    handler.server.stream_sessions = {session_id: ctx}
+    handler.headers = MagicMock()
+    handler.headers.get.return_value = None
+    handler.send_response = MagicMock()
+    handler.send_error = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
+    handler.wfile = MagicMock()
+    return handler
+
+
+def test_head_hls_init_returns_video_mp4():
+    """HEAD /hls/<s>/init.mp4 against an fmp4 ctx returns 200 +
+    Content-Type: video/mp4."""
+    handler = _make_handler_for("/hls/abc/init.mp4", _make_hls_ctx_fmp4())
+    handler.do_HEAD()
+    handler.send_response.assert_called_with(200)
+    ct_calls = [
+        call
+        for call in handler.send_header.call_args_list
+        if call.args[0] == "Content-Type"
+    ]
+    assert ct_calls
+    assert ct_calls[0].args[1] == "video/mp4"
+
+
+def test_head_hls_init_on_mpegts_ctx_returns_404():
+    """HEAD /hls/<s>/init.mp4 against an mpegts ctx is 404 (init is
+    only valid for fmp4 sessions)."""
+    handler = _make_handler_for("/hls/abc/init.mp4", _make_hls_ctx_mpegts())
+    handler.do_HEAD()
+    handler.send_error.assert_called_with(404)
+
+
+def test_head_hls_segment_fmp4_returns_video_mp4():
+    """HEAD /hls/<s>/seg_0.m4s against an fmp4 ctx returns video/mp4."""
+    handler = _make_handler_for("/hls/abc/seg_0.m4s", _make_hls_ctx_fmp4())
+    handler.do_HEAD()
+    handler.send_response.assert_called_with(200)
+    ct_calls = [
+        call
+        for call in handler.send_header.call_args_list
+        if call.args[0] == "Content-Type"
+    ]
+    assert ct_calls[0].args[1] == "video/mp4"
+
+
+def test_head_hls_segment_mpegts_returns_video_mp2t():
+    """Regression: HEAD /hls/<s>/seg_0.ts on an mpegts ctx returns
+    video/mp2t."""
+    handler = _make_handler_for("/hls/abc/seg_0.ts", _make_hls_ctx_mpegts())
+    handler.do_HEAD()
+    handler.send_response.assert_called_with(200)
+    ct_calls = [
+        call
+        for call in handler.send_header.call_args_list
+        if call.args[0] == "Content-Type"
+    ]
+    assert ct_calls[0].args[1] == "video/mp2t"
+
+
+def test_head_hls_ts_segment_on_fmp4_ctx_returns_404():
+    """Strict rejection: .ts URL on fmp4 session is 404."""
+    handler = _make_handler_for("/hls/abc/seg_0.ts", _make_hls_ctx_fmp4())
+    handler.do_HEAD()
+    handler.send_error.assert_called_with(404)
+
+
+def test_head_hls_m4s_segment_on_mpegts_ctx_returns_404():
+    """Strict rejection: .m4s URL on mpegts session is 404."""
+    handler = _make_handler_for("/hls/abc/seg_0.m4s", _make_hls_ctx_mpegts())
+    handler.do_HEAD()
+    handler.send_error.assert_called_with(404)
+
+
+def test_do_get_hls_init_on_mpegts_ctx_returns_404():
+    """GET /hls/<s>/init.mp4 on mpegts ctx is 404."""
+    handler = _make_handler_for("/hls/abc/init.mp4", _make_hls_ctx_mpegts())
+    handler.do_GET()
+    handler.send_error.assert_called_with(404)
+
+
+def test_do_get_hls_ts_segment_on_fmp4_ctx_returns_404():
+    """GET /hls/<s>/seg_0.ts on fmp4 ctx is 404."""
+    handler = _make_handler_for("/hls/abc/seg_0.ts", _make_hls_ctx_fmp4())
+    # Patch out serve methods so a stray dispatch would be visible
+    handler._serve_hls_playlist = MagicMock()
+    handler._serve_hls_segment = MagicMock()
+    handler.do_GET()
+    handler.send_error.assert_called_with(404)
+    handler._serve_hls_segment.assert_not_called()
+
+
+def test_do_get_hls_m4s_segment_on_mpegts_ctx_returns_404():
+    """GET /hls/<s>/seg_0.m4s on mpegts ctx is 404."""
+    handler = _make_handler_for("/hls/abc/seg_0.m4s", _make_hls_ctx_mpegts())
+    handler._serve_hls_segment = MagicMock()
+    handler.do_GET()
+    handler.send_error.assert_called_with(404)
+    handler._serve_hls_segment.assert_not_called()
+
+
+def test_do_get_hls_routes_init_to_serve_hls_init():
+    """GET /hls/<s>/init.mp4 on fmp4 ctx dispatches to
+    _serve_hls_init (added in Task 11)."""
+    handler = _make_handler_for("/hls/abc/init.mp4", _make_hls_ctx_fmp4())
+    handler._serve_hls_init = MagicMock()
+    handler.do_GET()
+    handler._serve_hls_init.assert_called_once()
 
 
 def test_serve_hls_playlist_shape():
