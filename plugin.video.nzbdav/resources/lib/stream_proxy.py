@@ -1550,6 +1550,28 @@ class HlsProducer:
                     pass
             self._proc = None
 
+            # fmp4 generation boundary: unlink both init.mp4 and the
+            # new target segment file so the "seg_<start_segment>.m4s
+            # exists" completeness signal in _init_file_complete is
+            # unambiguously bound to the NEW ffmpeg. Do NOT blanket-
+            # sweep other segments — leaving prior-generation files
+            # in place preserves the backward-seek cache optimization
+            # in _segment_complete.
+            if self.segment_format == "fmp4":
+                init_path = os.path.join(self.session_dir, "init.mp4")
+                try:
+                    os.unlink(init_path)
+                except FileNotFoundError:
+                    pass
+                first_seg_path = os.path.join(
+                    self.session_dir, "seg_{:06d}.m4s".format(seg_n)
+                )
+                try:
+                    os.unlink(first_seg_path)
+                except FileNotFoundError:
+                    pass
+                self._init_ready = False
+
             # Start a new one aimed at seg_n.
             start_time = seg_n * self.segment_seconds
             cmd = self._build_cmd(start_time, seg_n)
