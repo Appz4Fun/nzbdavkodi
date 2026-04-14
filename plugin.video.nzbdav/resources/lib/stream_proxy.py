@@ -1452,8 +1452,10 @@ class HlsProducer:
         )
 
     def segment_path(self, seg_n):
-        """Return the disk path for a segment index."""
-        return os.path.join(self.session_dir, "seg_{:06d}.ts".format(seg_n))
+        """Return the disk path for a segment index, with the extension
+        determined by this producer's segment_format."""
+        ext = "m4s" if self.segment_format == "fmp4" else "ts"
+        return os.path.join(self.session_dir, "seg_{:06d}.{}".format(seg_n, ext))
 
     def _segment_complete(self, seg_n):
         """True if seg_n.ts exists and is no longer being written.
@@ -1575,12 +1577,20 @@ class HlsProducer:
     def _build_cmd(self, start_time, start_segment):
         """Build the persistent-ffmpeg command.
 
-        Uses ffmpeg's segment muxer to write ``seg_%06d.ts`` directly.
-        ``-segment_start_number`` offsets the filename index so a
-        mid-movie restart produces files at the right segment index.
-        ``-segment_time`` sets the target segment duration; the
-        muxer snaps to the next keyframe at or after that point, so
-        actual segments may be slightly longer than requested.
+        Two output shapes, driven by self.segment_format:
+
+        - "mpegts" (default, legacy): ``-f segment -segment_format mpegts``
+          writes ``seg_%06d.ts`` directly via ffmpeg's segment muxer.
+        - "fmp4" (new): ``-f hls -hls_segment_type fmp4`` writes
+          ``init.mp4`` (once per process start) plus ``seg_%06d.m4s``
+          fragments. This is the DV-capable branch — DV RPU SEI NALs
+          survive fmp4 fragment boundaries (vs mpegts PES packetization,
+          which breaks them).
+
+        Filename padding: both branches use ``seg_%06d.<ext>`` so the
+        existing producer tests that construct segment files by name
+        (``seg_000005.ts``, etc.) continue to work, and the URL parser's
+        ``int()`` coercion absorbs leading zeros either way.
 
         Timestamp handling: ``-copyts`` is set so each output frame
         keeps the source PTS. No ``-reset_timestamps`` — an earlier
@@ -1604,8 +1614,8 @@ class HlsProducer:
         """
         _validate_url(self.remote_url)
         input_url = _embed_auth_in_url(self.remote_url, self.auth_header)
-        pattern = os.path.join(self.session_dir, "seg_%06d.ts")
-        return [
+
+        cmd = [
             self.ffmpeg_path,
             "-v",
             "warning",
@@ -1633,16 +1643,51 @@ class HlsProducer:
             "copy",
             "-sn",
             "-copyts",
-            "-f",
-            "segment",
-            "-segment_format",
-            "mpegts",
-            "-segment_time",
-            "{:.3f}".format(self.segment_seconds),
-            "-segment_start_number",
-            str(start_segment),
-            pattern,
         ]
+
+        if self.segment_format == "fmp4":
+            init_path = os.path.join(self.session_dir, "init.mp4")
+            seg_pattern = os.path.join(self.session_dir, "seg_%06d.m4s")
+            playlist_path = os.path.join(self.session_dir, "ffmpeg_playlist.m3u8")
+            cmd.extend(
+                [
+                    "-f",
+                    "hls",
+                    "-hls_time",
+                    "{:.3f}".format(self.segment_seconds),
+                    "-hls_segment_type",
+                    "fmp4",
+                    "-hls_fmp4_init_filename",
+                    init_path,
+                    "-hls_segment_filename",
+                    seg_pattern,
+                    "-hls_playlist_type",
+                    "vod",
+                    "-hls_flags",
+                    "independent_segments",
+                    "-start_number",
+                    str(start_segment),
+                    playlist_path,
+                ]
+            )
+            return cmd
+
+        # mpegts branch — unchanged filename pattern.
+        seg_pattern = os.path.join(self.session_dir, "seg_%06d.ts")
+        cmd.extend(
+            [
+                "-f",
+                "segment",
+                "-segment_format",
+                "mpegts",
+                "-segment_time",
+                "{:.3f}".format(self.segment_seconds),
+                "-segment_start_number",
+                str(start_segment),
+                seg_pattern,
+            ]
+        )
+        return cmd
 
     def prepare(self):
         """Eagerly spawn ffmpeg and verify it didn't immediately exit.

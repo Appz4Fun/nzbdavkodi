@@ -1690,6 +1690,136 @@ def test_hls_producer_cmd_has_no_reset_timestamps(tmp_path):
     assert "-copyts" in cmd
 
 
+def test_hls_producer_fmp4_build_cmd_contains_hls_segment_type(tmp_path):
+    """fmp4 branch emits -f hls + -hls_segment_type fmp4 +
+    -hls_fmp4_init_filename, and has NO -f segment."""
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        cmd = producer._build_cmd(start_time=0.0, start_segment=0)
+        assert "-f" in cmd
+        hls_idx = cmd.index("-f")
+        assert cmd[hls_idx + 1] == "hls"
+        assert "-hls_segment_type" in cmd
+        seg_type_idx = cmd.index("-hls_segment_type")
+        assert cmd[seg_type_idx + 1] == "fmp4"
+        assert "-hls_fmp4_init_filename" in cmd
+        assert "-hls_playlist_type" in cmd
+        # Must NOT have the mpegts segment muxer
+        assert "segment" not in [
+            cmd[cmd.index("-f") + 1],
+        ]
+        assert "-segment_format" not in cmd
+    finally:
+        producer.close()
+
+
+def test_hls_producer_fmp4_build_cmd_uses_padded_filename_pattern(tmp_path):
+    """fmp4 hls_segment_filename uses the zero-padded seg_%06d.m4s
+    pattern to match the mpegts branch and keep parser lookups
+    consistent."""
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        cmd = producer._build_cmd(start_time=0.0, start_segment=0)
+        filename_idx = cmd.index("-hls_segment_filename")
+        seg_pattern = cmd[filename_idx + 1]
+        assert seg_pattern.endswith("seg_%06d.m4s")
+    finally:
+        producer.close()
+
+
+def test_hls_producer_fmp4_build_cmd_drops_subtitles(tmp_path):
+    """fmp4 branch uses -sn (subtitles dropped) — documented Non-Goal
+    regression guard."""
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        cmd = producer._build_cmd(start_time=0.0, start_segment=0)
+        assert "-sn" in cmd
+        assert "-c:s" not in cmd
+    finally:
+        producer.close()
+
+
+def test_hls_producer_mpegts_build_cmd_unchanged(tmp_path):
+    """Regression guard: mpegts branch still contains -f segment and
+    -segment_format mpegts (it's what existing linear-playback tests
+    assume)."""
+    producer = _make_producer(tmp_path)  # defaults to mpegts
+    try:
+        cmd = producer._build_cmd(start_time=0.0, start_segment=0)
+        assert "-f" in cmd
+        f_idx = cmd.index("-f")
+        assert cmd[f_idx + 1] == "segment"
+        assert "-segment_format" in cmd
+        fmt_idx = cmd.index("-segment_format")
+        assert cmd[fmt_idx + 1] == "mpegts"
+        # Must NOT have the fmp4 flags
+        assert "-hls_segment_type" not in cmd
+        assert "-hls_fmp4_init_filename" not in cmd
+    finally:
+        producer.close()
+
+
+def test_hls_producer_fmp4_segment_files_use_m4s_extension(tmp_path):
+    """segment_path(N) returns .m4s for fmp4 producers, .ts for mpegts."""
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx_fmp4 = {
+        "session_id": "sess_fmp4",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer_fmp4 = HlsProducer(ctx_fmp4, str(tmp_path))
+    try:
+        path = producer_fmp4.segment_path(5)
+        assert path.endswith("seg_000005.m4s")
+    finally:
+        producer_fmp4.close()
+
+    producer_ts = _make_producer(tmp_path)  # defaults to mpegts
+    try:
+        path = producer_ts.segment_path(5)
+        assert path.endswith("seg_000005.ts")
+    finally:
+        producer_ts.close()
+
+
 def test_hls_producer_starts_ffmpeg_when_no_file_exists(tmp_path):
     """If the requested segment doesn't exist on disk and no ffmpeg
     is running, the producer must spawn ffmpeg with -ss at the
