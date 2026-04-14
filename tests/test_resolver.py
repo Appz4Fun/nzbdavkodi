@@ -994,14 +994,21 @@ def test_resolve_status_transitions_queued_to_downloading_to_completed(
 @patch("resources.lib.resolver.xbmcplugin")
 @patch("resources.lib.resolver.submit_nzb")
 @patch("resources.lib.resolver._get_poll_settings")
-def test_resolve_dialog_closed_on_exception(
+def test_resolve_dialog_closed_on_submit_exception(
     mock_poll, mock_submit, mock_plugin, mock_gui, mock_xbmc, mock_find
 ):
-    """Dialog must be closed even if an exception occurs during resolve."""
+    """A crashed submit_nzb must not leave the progress dialog open and
+    must not strand Kodi on the plugin handle. The worker-thread
+    isolation added with the UI-pump helper now catches the exception
+    inside the worker, logs it, and surfaces as a normal submit
+    failure — so the specific 'Error: <message>' dialog that the
+    old propagate-to-outer-try path produced no longer fires.
+    What's still asserted: dialog.close, handle resolved False, and
+    the final failure dialog (string 30098) did fire."""
     mock_poll.return_value = (2, 60)
     mock_find.return_value = None
-    error_message = "unexpected crash " + ("details " * 20)
-    mock_submit.side_effect = RuntimeError(error_message)
+    mock_submit.side_effect = RuntimeError("unexpected crash")
+    mock_xbmc.Monitor.return_value = _make_monitor()
 
     dialog = MagicMock()
     mock_gui.DialogProgress.return_value = dialog
@@ -1009,10 +1016,9 @@ def test_resolve_dialog_closed_on_exception(
     resolve(1, {"nzburl": "http://hydra/getnzb/abc", "title": "movie.mkv"})
 
     dialog.close.assert_called()
-    mock_plugin.setResolvedUrl.assert_called_once()
-    mock_gui.Dialog.return_value.ok.assert_called_once_with(
-        "NZB-DAV", "Error: {}".format(error_message)
-    )
+    mock_plugin.setResolvedUrl.assert_called_once_with(1, False, mock_gui.ListItem())
+    # The three-retry submit loop fired the terminal failure dialog.
+    assert mock_gui.Dialog.return_value.ok.called
 
 
 @patch("resources.lib.resolver.xbmcgui")
