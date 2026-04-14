@@ -529,82 +529,143 @@ _SUBMIT_UI_PUMP_INTERVAL_SECONDS = 0.25
 
 
 def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
-    """Run ``submit_nzb`` off the plugin thread and pump the dialog.
+    """Run ``submit_nzb`` off the plugin thread, pump the dialog, and
+    race a concurrent queue probe against the submit.
 
-    submit_nzb issues a synchronous HTTP request that can block for
-    up to the full submit_timeout (120 s default). If that call runs
-    on the Kodi plugin thread, the progress dialog freezes for the
-    duration — no "Submitting..." message updates, no response to
-    the cancel button, nothing. The user thinks the addon hung.
+    submit_nzb issues a synchronous HTTP request to
+    ``/api?mode=addurl`` which on a big NZB routinely takes 30–120 s
+    (fetch the .nzb from the indexer, parse XML, enumerate
+    segments). Running that on the Kodi plugin thread freezes the
+    progress dialog for the duration; even with the dialog pump
+    fix, the user still waits for nzbdav to finish parsing before
+    polling can start.
 
-    This helper runs submit_nzb in a daemon thread and has the
-    caller's thread loop on ``monitor.waitForAbort`` at
-    ``_SUBMIT_UI_PUMP_INTERVAL_SECONDS`` cadence, updating the
-    dialog's progress bar and message, and watching for
-    ``dialog.iscanceled``. The result from the background thread is
-    returned via a shared list (``[nzo_id, error]``) — threading.Event
-    signals completion.
+    The fix is two-part:
 
-    Returns:
-        (nzo_id, submit_error) tuple, same shape as submit_nzb.
-        On cancel: (None, {"status": "cancelled", "message": ""}) —
-        the caller treats this as a user-initiated abort and bails
-        out of the resolve with a False handle.
-        On Kodi shutdown: (None, {"status": "shutdown", "message": ""})
-        — caller bails out equivalently.
+    1. ``submit_nzb`` runs in a daemon worker thread. The plugin
+       thread loops on ``monitor.waitForAbort`` at 250 ms cadence,
+       advancing the dialog's progress bar and redrawing the
+       message, and checking ``dialog.iscanceled`` every tick.
 
-    Side effects:
-        Spawns a daemon thread. The thread is not joined on cancel
-        or shutdown; its submit may still complete in the background,
-        which is fine because the queue-adoption path picks up any
-        orphaned submit on the next play attempt.
+    2. A second daemon thread concurrently probes nzbdav's queue
+       via ``find_queued_by_name``. As soon as nzbdav has created a
+       queue entry for ``title`` — which typically happens seconds
+       after the submit arrives, well before ``addurl`` actually
+       replies — we adopt that ``nzo_id`` and return without
+       waiting for the worker. In the common case this makes the
+       "submitting" phase feel instant even when nzbdav's addurl
+       reply is slow.
+
+    Races:
+    - Queue probe wins: return ``(nzo_id, None)`` immediately. The
+      submit worker is left running; its submit is harmless if it
+      completes anyway (nzbdav sees the job already enqueued).
+    - Submit worker wins: return its result.
+    - User cancels: ``(None, {"status": "cancelled", ...})`` — the
+      caller bails out of the resolve.
+    - Kodi shutdown: ``(None, {"status": "shutdown", ...})``.
+
+    Side effects: spawns two daemon threads. Neither is joined on
+    cancel/shutdown; any orphaned in-flight submit is picked up by
+    the queue-adoption path on the next play attempt.
     """
     import threading
 
-    result = [None, None]
-    done = threading.Event()
+    xbmc.log(
+        "NZB-DAV: _submit_nzb_with_ui_pump entered for '{}' "
+        "(threaded pump + concurrent queue probe)".format(title),
+        xbmc.LOGINFO,
+    )
 
-    def _worker():
+    submit_result = [None, None]
+    submit_done = threading.Event()
+
+    def _submit_worker():
         try:
-            result[0], result[1] = submit_nzb(nzb_url, title)
+            submit_result[0], submit_result[1] = submit_nzb(nzb_url, title)
         except Exception as e:  # pylint: disable=broad-except
             xbmc.log(
                 "NZB-DAV: submit_nzb worker raised: {}".format(e),
                 xbmc.LOGERROR,
             )
-            result[0], result[1] = None, None
+            submit_result[0], submit_result[1] = None, None
         finally:
-            done.set()
+            submit_done.set()
 
-    worker = threading.Thread(target=_worker, name="nzbdav-submit", daemon=True)
-    worker.start()
+    queue_hit = [None]  # nzo_id if the concurrent probe finds a match
+    queue_stop = threading.Event()
+
+    def _queue_probe_worker():
+        # Short grace before the first probe — nzbdav needs the
+        # network round-trip to fetch the .nzb before it can enqueue
+        # anything, so probing immediately just wastes an HTTP call
+        # against an empty queue.
+        if queue_stop.wait(2.0):
+            return
+        while not queue_stop.is_set() and not submit_done.is_set():
+            try:
+                match = find_queued_by_name(title)
+            except Exception as e:  # pylint: disable=broad-except
+                xbmc.log(
+                    "NZB-DAV: concurrent queue probe raised: {}".format(e),
+                    xbmc.LOGWARNING,
+                )
+                match = None
+            if match and match.get("nzo_id"):
+                queue_hit[0] = match["nzo_id"]
+                return
+            # 2 s between probes — fast enough to feel responsive,
+            # slow enough not to hammer nzbdav while it's parsing.
+            if queue_stop.wait(2.0):
+                return
+
+    submit_t = threading.Thread(
+        target=_submit_worker, name="nzbdav-submit", daemon=True
+    )
+    probe_t = threading.Thread(
+        target=_queue_probe_worker, name="nzbdav-submit-probe", daemon=True
+    )
+    submit_t.start()
+    probe_t.start()
 
     elapsed = 0.0
     submit_msg = _string(30097)
-    while not done.is_set():
-        if dialog.iscanceled():
-            xbmc.log(
-                "NZB-DAV: User cancelled during submit for '{}'".format(title),
-                xbmc.LOGINFO,
-            )
-            return None, {"status": "cancelled", "message": ""}
-        if monitor.waitForAbort(_SUBMIT_UI_PUMP_INTERVAL_SECONDS):
-            return None, {"status": "shutdown", "message": ""}
-        elapsed += _SUBMIT_UI_PUMP_INTERVAL_SECONDS
-        # Indeterminate progress bar — DialogProgress has no true
-        # "pulse" mode on all Kodi skins, so we crawl 0 -> 99 over
-        # the submit timeout window and reset to 0 on each pass. The
-        # important thing is that the bar MOVES so the user sees
-        # the addon is alive.
-        pct = int((elapsed * 100) / max(_get_submit_timeout_seconds(), 1)) % 100
-        try:
-            dialog.update(
-                pct,
-                "{}\n{} ({}s)".format(submit_msg, title[:60], int(elapsed)),
-            )
-        except Exception:  # pylint: disable=broad-except
-            pass
-    return result[0], result[1]
+    try:
+        while not submit_done.is_set():
+            # Concurrent probe beat the worker — adopt and go.
+            if queue_hit[0]:
+                xbmc.log(
+                    "NZB-DAV: Concurrent queue probe found '{}' under "
+                    "nzo_id={}; adopting without waiting for addurl "
+                    "response".format(title, queue_hit[0]),
+                    xbmc.LOGINFO,
+                )
+                return queue_hit[0], None
+            if dialog.iscanceled():
+                xbmc.log(
+                    "NZB-DAV: User cancelled during submit for '{}'".format(title),
+                    xbmc.LOGINFO,
+                )
+                return None, {"status": "cancelled", "message": ""}
+            if monitor.waitForAbort(_SUBMIT_UI_PUMP_INTERVAL_SECONDS):
+                return None, {"status": "shutdown", "message": ""}
+            elapsed += _SUBMIT_UI_PUMP_INTERVAL_SECONDS
+            # Indeterminate progress bar — DialogProgress has no true
+            # "pulse" mode on all Kodi skins, so we crawl 0 -> 99 over
+            # the submit timeout window and reset to 0 on each pass.
+            # The important thing is that the bar MOVES so the user
+            # sees the addon is alive.
+            pct = int((elapsed * 100) / max(_get_submit_timeout_seconds(), 1)) % 100
+            try:
+                dialog.update(
+                    pct,
+                    "{}\n{} ({}s)".format(submit_msg, title[:60], int(elapsed)),
+                )
+            except Exception:  # pylint: disable=broad-except
+                pass
+        return submit_result[0], submit_result[1]
+    finally:
+        queue_stop.set()
 
 
 def _get_submit_timeout_seconds():
