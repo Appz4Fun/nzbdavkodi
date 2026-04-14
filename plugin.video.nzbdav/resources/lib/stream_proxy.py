@@ -1545,6 +1545,7 @@ class HlsProducer:
         self._proc = None
         self._start_segment = 0  # -segment_start_number of the live ffmpeg
         self._closed = False
+        self._spawn_time = 0.0  # time.time() of the most recent ffmpeg spawn
         # _init_ready MUST be set here, not only in the spawn path:
         # wait_for_init reads it before the first spawn and would
         # AttributeError on a fresh session otherwise.
@@ -1571,13 +1572,34 @@ class HlsProducer:
         Completion is detected by either: the next segment file also
         exists (ffmpeg has moved on), or the file's mtime has been
         stable for more than _HLS_SEGMENT_MTIME_STABLE_MS.
+
+        For fMP4, the "next segment exists" signal is only trusted
+        if the next segment was created after the current ffmpeg
+        spawn — otherwise a stale seg_n+1 from a prior generation
+        can make this return True while the new seg_n is still
+        being written.
         """
         path = self.segment_path(seg_n)
         if not os.path.exists(path):
             return False
         next_path = self.segment_path(seg_n + 1)
         if os.path.exists(next_path):
-            return True
+            # In fMP4 mode, verify the next segment belongs to the
+            # current generation (created after the latest spawn).
+            if self.segment_format == "fmp4":
+                try:
+                    next_mtime = os.path.getmtime(next_path)
+                except OSError:
+                    pass
+                else:
+                    if next_mtime < self._spawn_time:
+                        # Stale segment from a prior generation —
+                        # ignore it and fall through to mtime check.
+                        pass
+                    else:
+                        return True
+            else:
+                return True
         # Final segment (or ffmpeg briefly mid-transition) — fall back
         # to mtime stability.
         try:
@@ -1800,6 +1822,7 @@ class HlsProducer:
                     shell=False,
                 )
                 self._start_segment = seg_n
+                self._spawn_time = time.time()
             except OSError as e:
                 xbmc.log(
                     "NZB-DAV: HLS producer ffmpeg spawn failed: {}".format(e),
@@ -2377,7 +2400,11 @@ class StreamProxy:
                 #   Gated behind a setting because fmp4 HLS on Amlogic
                 #   Kodi is unproven in the field.
                 duration = self._probe_duration(ffmpeg_path, remote_url, auth_header)
-                if _get_force_remux_mode() == "hls_fmp4" and duration is not None:
+                if (
+                    _get_force_remux_mode() == "hls_fmp4"
+                    and duration is not None
+                    and duration > 0
+                ):
                     ctx = {
                         "remote_url": remote_url,
                         "auth_header": auth_header,
