@@ -314,6 +314,37 @@ def _parse_ffmpeg_duration(stderr_text):
     )
 
 
+def _parse_ffmpeg_dv_profile(stderr_text):
+    """Parse the Dolby Vision profile from ffmpeg stderr output.
+
+    When the source video track carries a Dolby Vision configuration
+    record, ffmpeg prints it as stream side data in the header, e.g.::
+
+        Side data:
+          DOVI configuration record: version: 1.0, profile: 7, level: 6,
+          rpu flag: 1, el flag: 1, bl flag: 1, compatibility id: 0
+
+    Returns the integer profile (5, 7, 8, ...) if found, else None.
+
+    A ``None`` return covers both "no DV metadata" and "could not parse"
+    — callers should treat it as "assume the fmp4 path is safe" rather
+    than "definitely no DV". Only a confirmed profile 7 (dual-layer
+    FEL with base + enhancement layer + RPU) must be routed around
+    fmp4 HLS, because fmp4 has no standard way to carry two HEVC
+    layers in a single track.
+    """
+    match = re.search(
+        r"DOVI configuration record:[^\n]*?profile:\s*(\d+)",
+        stderr_text,
+    )
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
 # Byte-offset delta used to distinguish a Kodi buffer-reconnect from a
 # user-initiated seek.  When Kodi reconnects after a brief network hiccup it
 # resumes very close to where it left off; a true seek jumps much further.
@@ -1905,6 +1936,19 @@ class HlsProducer:
             init_path = os.path.join(self.session_dir, "init.mp4")
             seg_pattern = os.path.join(self.session_dir, "seg_%06d.m4s")
             playlist_path = os.path.join(self.session_dir, "ffmpeg_playlist.m3u8")
+            # Force the HLS-spec sample entry tag on the video track.
+            # fMP4 HLS mandates ``hvc1`` for HEVC (parameter sets in the
+            # sample description box, not inband), and Amlogic's HLS
+            # demuxer looks at ``hvc1``/``hev1`` to decide whether to
+            # inspect the ``dvcC``/``dvvC`` DV configuration records in
+            # the init segment. A source carrying ``hev1`` copied into
+            # fmp4 without re-tagging hides the DV config from the
+            # hardware decoder and is a likely cause of the DV HEVC
+            # stalls seen with the earlier fmp4 spike on CoreELEC
+            # (commit 50a6eb3). ``-tag:v hvc1`` is a metadata swap, not
+            # a re-encode; ffmpeg pulls SPS/PPS/VPS into ``hvcC`` at
+            # the muxer and leaves the bitstream otherwise untouched.
+            cmd.extend(["-tag:v", "hvc1"])
             cmd.extend(
                 [
                     "-f",
@@ -2400,11 +2444,46 @@ class StreamProxy:
                 #   Gated behind a setting because fmp4 HLS on Amlogic
                 #   Kodi is unproven in the field.
                 duration = self._probe_duration(ffmpeg_path, remote_url, auth_header)
-                if (
+                use_fmp4 = (
                     _get_force_remux_mode() == "hls_fmp4"
                     and duration is not None
                     and duration > 0
-                ):
+                )
+                if use_fmp4:
+                    # Gate fmp4 HLS on DV profile. Profile 7 (dual-layer
+                    # FEL with BL+EL+RPU) cannot survive an fmp4 transmux:
+                    # fmp4 HLS has no standard way to carry two HEVC
+                    # layers in one track, so the enhancement layer would
+                    # be silently dropped and Amlogic's decoder is known
+                    # to stall on the resulting stream. Profiles 5 and 8
+                    # are single-layer and safe to try. A None return
+                    # from the probe means either no DV or a parse
+                    # failure — either way we allow fmp4 (the matroska
+                    # path is already proven, so "fall through to
+                    # matroska on parse failure" would be unnecessarily
+                    # conservative).
+                    dv_profile = self._probe_dv_profile(
+                        ffmpeg_path, remote_url, auth_header
+                    )
+                    if dv_profile == 7:
+                        xbmc.log(
+                            "NZB-DAV: Source is Dolby Vision profile 7 "
+                            "(dual-layer FEL); fmp4 HLS cannot carry two "
+                            "HEVC layers — falling back to piped Matroska "
+                            "despite force_remux_mode=hls_fmp4",
+                            xbmc.LOGWARNING,
+                        )
+                        use_fmp4 = False
+                    else:
+                        xbmc.log(
+                            "NZB-DAV: DV profile probe: {}".format(
+                                "profile {}".format(dv_profile)
+                                if dv_profile is not None
+                                else "none/unknown"
+                            ),
+                            xbmc.LOGDEBUG,
+                        )
+                if use_fmp4:
                     ctx = {
                         "remote_url": remote_url,
                         "auth_header": auth_header,
@@ -2598,6 +2677,58 @@ class StreamProxy:
             return _parse_ffmpeg_duration(collected)
         except (OSError, subprocess.SubprocessError, ValueError) as e:
             xbmc.log("NZB-DAV: Duration probe failed: {}".format(e), xbmc.LOGWARNING)
+            return None
+
+    @staticmethod
+    def _probe_dv_profile(ffmpeg_path, url, auth_header):
+        """Probe the Dolby Vision profile of the source stream.
+
+        Runs ``ffmpeg -i <url> -f null -`` long enough to read the
+        header, parses the ``DOVI configuration record`` line out of
+        stderr, and returns the profile integer (5, 7, 8, ...) or
+        None.
+
+        None means either "no DV metadata present" or "probe could
+        not read the header" — both of which are safe defaults for
+        the fmp4 HLS dispatch: only a confirmed profile 7 (dual-layer
+        FEL) has to be routed away from fmp4, because fmp4 HLS cannot
+        carry two HEVC layers in one track and the EL would be
+        silently dropped.
+
+        Structural sibling of ``_probe_duration_ffmpeg`` — same
+        line-by-line stderr scan, same 64 KB byte budget, same
+        short-circuit on match. Kept as a separate pass (rather than
+        folded into the duration probe) so duration-only callers
+        don't pay for DV parsing, and so the fmp4 dispatch path can
+        tolerate a DV probe failure without tainting the duration
+        value that the force-remux branch also uses.
+        """
+        _validate_url(url)
+        input_url = _embed_auth_in_url(url, auth_header)
+        try:
+            proc = subprocess.Popen(
+                [ffmpeg_path, "-v", "info", "-i", input_url, "-f", "null", "-"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                shell=False,
+            )
+            collected = ""
+            budget = 65536
+            for line in proc.stderr:
+                collected += line.decode(errors="replace")
+                result = _parse_ffmpeg_dv_profile(collected)
+                if result is not None:
+                    proc.kill()
+                    proc.wait()
+                    return result
+                if len(collected) > budget:
+                    proc.kill()
+                    proc.wait()
+                    return None
+            proc.wait(timeout=30)
+            return _parse_ffmpeg_dv_profile(collected)
+        except (OSError, subprocess.SubprocessError, ValueError) as e:
+            xbmc.log("NZB-DAV: DV profile probe failed: {}".format(e), xbmc.LOGWARNING)
             return None
 
     @staticmethod
