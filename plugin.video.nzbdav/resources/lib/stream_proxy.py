@@ -1061,6 +1061,49 @@ class _StreamHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
 
+    def _serve_hls_init(self, ctx):
+        """Serve the fMP4 init segment.
+
+        Blocks on ``producer.wait_for_init()`` until the current
+        ffmpeg generation has written init.mp4 AND produced its
+        first segment (the ordering proof that init.mp4 is
+        complete). Returns 504 on timeout, 500 if the producer is
+        missing, 404 if the session is not fmp4.
+        """
+        producer = ctx.get("hls_producer")
+        if producer is None:
+            self.send_error(500)
+            return
+        if ctx.get("hls_segment_format") != "fmp4":
+            self.send_error(404)
+            return
+        init_path = producer.wait_for_init()
+        if init_path is None:
+            xbmc.log("NZB-DAV: HLS init wait timed out", xbmc.LOGWARNING)
+            self.send_error(504)
+            return
+        try:
+            size = os.path.getsize(init_path)
+            with open(init_path, "rb") as f:
+                body = f.read()
+        except OSError as e:
+            xbmc.log(
+                "NZB-DAV: HLS init read failed: {}".format(e),
+                xbmc.LOGERROR,
+            )
+            self.send_error(500)
+            return
+
+        self.send_response(200)
+        self.send_header("Content-Type", "video/mp4")
+        self.send_header("Content-Length", str(size))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def _serve_hls_segment(self, ctx, seg_n):
         """Serve an HLS segment by reading from the session's on-disk
         segment file, produced by the persistent ffmpeg in
@@ -1110,8 +1153,13 @@ class _StreamHandler(BaseHTTPRequestHandler):
             self.send_error(500)
             return
 
+        # Pick Content-Type based on session segment format so HEAD
+        # and GET agree. fmp4 segments are video/mp4; legacy mpegts
+        # segments are video/mp2t.
+        seg_fmt = ctx.get("hls_segment_format", "mpegts")
+        content_type = "video/mp4" if seg_fmt == "fmp4" else "video/mp2t"
         self.send_response(200)
-        self.send_header("Content-Type", "video/mp2t")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(content_length))
         self.send_header("Connection", "close")
         self.close_connection = True  # pylint: disable=attribute-defined-outside-init
