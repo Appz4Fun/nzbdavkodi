@@ -102,22 +102,41 @@ def _cache_bust_url(url):
 
 
 def _clear_kodi_playback_state(params=None):
-    """Delete Kodi's stored bookmarks, settings, and streamdetails for this play.
+    """Delete Kodi's stored resume bookmark for this play.
 
-    Kodi saves a bookmark (resume point), video settings, and stream details
-    keyed on the *outer* plugin URL — the URL Kodi first tried to play, not
-    the resolved stream URL. When the user replays the same plugin URL, Kodi
-    auto-resumes from the bookmark, which triggers a bug where CVideoPlayer
-    tries to reopen the plugin URL itself as an input stream and fails with
+    Kodi saves a bookmark (resume point) keyed on the *outer* plugin URL —
+    the URL Kodi first tried to play, not the resolved stream URL. When the
+    user replays the same plugin URL, Kodi auto-resumes from the bookmark,
+    which triggers a bug where CVideoPlayer tries to reopen the plugin URL
+    itself as an input stream and fails with
     ``OpenInputStream - error opening [plugin://...]``. Playback never
     starts and the user sees dialog 30121.
 
-    Deleting the stored state before each play forces Kodi to treat every
-    play as a fresh first play, which bypasses the broken resume pipeline.
+    Deleting the bookmark before each play forces Kodi to treat every play
+    as a fresh first play, which bypasses the broken resume pipeline.
 
     Called from the resolve flow with the params that led to this play so
     we can also target the TMDBHelper URL (not just our own plugin URL).
+
+    Safety model: this code mutates Kodi's primary video database, so the
+    mutation surface is kept as narrow as possible:
+
+    * Only the ``bookmark`` table is modified. The ``files``, ``settings``,
+      and ``streamdetails`` tables are left alone — a row in ``files``
+      without a matching ``bookmark`` row is the "fresh play" state Kodi
+      already handles correctly, and not touching the foreign-key parent
+      avoids cascading into unrelated library state.
+    * The SQLite busy timeout is short (2s). If Kodi is actively writing we
+      bail out rather than contend — a missed cleanup is recoverable; a
+      long stall on the resolve path is not.
+    * LIKE wildcards (``%``, ``_``, ``\\``) in ``tmdb_id`` are escaped so
+      an odd TMDBHelper param value cannot match unrelated rows.
+    * ``sqlite3.OperationalError`` (the "database is locked" case) is
+      caught separately and logged at DEBUG; everything else is logged at
+      WARNING so real problems surface in the Kodi log.
     """
+    import sqlite3
+
     try:
         # Skip DB access while something is playing to avoid contending
         # with Kodi's internal vacuum (Textures13.db / MyVideos131.db)
@@ -132,7 +151,6 @@ def _clear_kodi_playback_state(params=None):
         import glob
         import os
         import re
-        import sqlite3
         import sys
 
         db_dir = xbmcvfs.translatePath("special://database/")
@@ -140,10 +158,23 @@ def _clear_kodi_playback_state(params=None):
         if not db_files:
             return
         db_path = db_files[-1]
+    except Exception as e:
+        xbmc.log(
+            "NZB-DAV: Failed to locate MyVideos DB for bookmark cleanup: {}".format(e),
+            xbmc.LOGWARNING,
+        )
+        return
 
-        target_ids = set()
-        with sqlite3.connect(db_path, timeout=5.0) as conn:
+    # Escape LIKE wildcards so a tmdb_id containing %, _, or \ cannot
+    # match unrelated rows. Applied with ESCAPE '\\' on the LIKE clause.
+    def _like_escape(value):
+        return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+    try:
+        with sqlite3.connect(db_path, timeout=2.0) as conn:
             cur = conn.cursor()
+
+            target_ids = set()
 
             # 1. Our own plugin URL — exact match
             if sys.argv and len(sys.argv) >= 1:
@@ -159,12 +190,14 @@ def _clear_kodi_playback_state(params=None):
             # 2. TMDBHelper outer URL — match by tmdb_id (param order varies)
             tmdb_id = (params or {}).get("tmdb_id", "")
             if tmdb_id:
+                safe_tmdb_id = _like_escape(tmdb_id)
                 cur.execute(
                     "SELECT idFile, strFilename FROM files "
-                    "WHERE strFilename LIKE ? AND strFilename LIKE ?",
+                    "WHERE strFilename LIKE ? ESCAPE '\\' "
+                    "AND strFilename LIKE ? ESCAPE '\\'",
                     (
                         "plugin://plugin.video.themoviedb.helper/%",
-                        "%tmdb_id=" + tmdb_id + "%",
+                        "%tmdb_id=" + safe_tmdb_id + "%",
                     ),
                 )
                 id_pattern = re.compile(
@@ -177,22 +210,27 @@ def _clear_kodi_playback_state(params=None):
             if not target_ids:
                 return
 
+            # Narrowest possible mutation: only clear bookmark rows. The
+            # files/settings/streamdetails rows stay intact — Kodi will
+            # treat the file as "never resumed" on the next play, which is
+            # exactly the state we want.
             for id_file in target_ids:
                 cur.execute("DELETE FROM bookmark WHERE idFile = ?", (id_file,))
-                cur.execute("DELETE FROM settings WHERE idFile = ?", (id_file,))
-                cur.execute("DELETE FROM streamdetails WHERE idFile = ?", (id_file,))
-                cur.execute("DELETE FROM files WHERE idFile = ?", (id_file,))
-            conn.commit()
 
         xbmc.log(
-            "NZB-DAV: Cleared Kodi playback state for {} file(s)".format(
-                len(target_ids)
-            ),
+            "NZB-DAV: Cleared bookmark for {} file(s)".format(len(target_ids)),
             xbmc.LOGINFO,
         )
-    except Exception as e:
+    except sqlite3.OperationalError as e:
+        # "database is locked" / busy timeout. Kodi holds the writer; we
+        # skip this cleanup and let the next resolve retry.
         xbmc.log(
-            "NZB-DAV: Failed to clear Kodi playback state: {}".format(e),
+            "NZB-DAV: MyVideos DB busy, skipping bookmark cleanup: {}".format(e),
+            xbmc.LOGDEBUG,
+        )
+    except sqlite3.Error as e:
+        xbmc.log(
+            "NZB-DAV: SQLite error during bookmark cleanup: {}".format(e),
             xbmc.LOGWARNING,
         )
 
