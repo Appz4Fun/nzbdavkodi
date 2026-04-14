@@ -1640,6 +1640,129 @@ def test_serve_hls_segment_504_on_producer_timeout():
     handler.send_error.assert_called_once_with(504)
 
 
+def test_serve_hls_init_reads_from_producer_wait_for_init(tmp_path):
+    """_serve_hls_init calls producer.wait_for_init(), reads the
+    resulting file, and writes its bytes to wfile with Content-Length."""
+    import os as _os
+
+    from resources.lib.stream_proxy import _StreamHandler
+
+    init_path = _os.path.join(str(tmp_path), "init.mp4")
+    with open(init_path, "wb") as f:
+        f.write(b"INITCONTENT")
+
+    producer = MagicMock()
+    producer.wait_for_init.return_value = init_path
+    ctx = {
+        "hls_segment_format": "fmp4",
+        "hls_producer": producer,
+    }
+
+    handler = _StreamHandler.__new__(_StreamHandler)
+    handler.send_response = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
+    handler.wfile = MagicMock()
+    handler.send_error = MagicMock()
+
+    handler._serve_hls_init(ctx)
+
+    handler.send_response.assert_called_with(200)
+    ct_calls = [
+        call
+        for call in handler.send_header.call_args_list
+        if call.args[0] == "Content-Type"
+    ]
+    assert ct_calls[0].args[1] == "video/mp4"
+    cl_calls = [
+        call
+        for call in handler.send_header.call_args_list
+        if call.args[0] == "Content-Length"
+    ]
+    assert cl_calls[0].args[1] == str(len(b"INITCONTENT"))
+    handler.wfile.write.assert_called_with(b"INITCONTENT")
+
+
+def test_serve_hls_init_504_on_producer_timeout():
+    """If wait_for_init returns None (timeout), the handler sends 504."""
+    from resources.lib.stream_proxy import _StreamHandler
+
+    producer = MagicMock()
+    producer.wait_for_init.return_value = None
+    ctx = {
+        "hls_segment_format": "fmp4",
+        "hls_producer": producer,
+    }
+
+    handler = _StreamHandler.__new__(_StreamHandler)
+    handler.send_response = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
+    handler.wfile = MagicMock()
+    handler.send_error = MagicMock()
+
+    handler._serve_hls_init(ctx)
+    handler.send_error.assert_called_with(504)
+
+
+def test_serve_hls_init_500_when_producer_missing():
+    """If ctx has no hls_producer, handler sends 500."""
+    from resources.lib.stream_proxy import _StreamHandler
+
+    ctx = {"hls_segment_format": "fmp4"}  # no producer
+
+    handler = _StreamHandler.__new__(_StreamHandler)
+    handler.send_response = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
+    handler.wfile = MagicMock()
+    handler.send_error = MagicMock()
+
+    handler._serve_hls_init(ctx)
+    handler.send_error.assert_called_with(500)
+
+
+def test_serve_hls_segment_fmp4_ctx_uses_video_mp4_content_type(tmp_path):
+    """Regression guard: when ctx is fmp4, _serve_hls_segment must
+    set Content-Type: video/mp4 (NOT the legacy mpegts video/mp2t).
+    Without this, HEAD and GET would disagree on Content-Type for
+    fmp4 segments — flagged by the code reviewer of Tasks 9+10."""
+    import os as _os
+
+    from resources.lib.stream_proxy import _StreamHandler
+
+    seg_path = _os.path.join(str(tmp_path), "seg_000000.m4s")
+    with open(seg_path, "wb") as f:
+        f.write(b"FAKESEG")
+
+    producer = MagicMock()
+    producer.wait_for_segment.return_value = seg_path
+    producer.segment_path.return_value = seg_path
+    ctx = {
+        "hls_segment_format": "fmp4",
+        "hls_producer": producer,
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+    }
+
+    handler = _StreamHandler.__new__(_StreamHandler)
+    handler.send_response = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
+    handler.wfile = MagicMock()
+    handler.send_error = MagicMock()
+
+    handler._serve_hls_segment(ctx, 0)
+
+    ct_calls = [
+        call
+        for call in handler.send_header.call_args_list
+        if call.args[0] == "Content-Type"
+    ]
+    assert ct_calls, "Content-Type header was not set"
+    assert ct_calls[0].args[1] == "video/mp4"
+
+
 def test_build_hls_segment_cmd_includes_cold_start_flags():
     """The HLS segment ffmpeg command must carry the three input-side
     flags that keep cold start fast on large remote MKVs with many
