@@ -1098,6 +1098,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "video/mp4")
         self.send_header("Content-Length", str(size))
         self.send_header("Connection", "close")
+        self.close_connection = True  # pylint: disable=attribute-defined-outside-init
         self.end_headers()
         try:
             self.wfile.write(body)
