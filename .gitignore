@@ -31,3 +31,7 @@ plugin.video.nzbdav-*.zip
 # dev docs
 devdocs
 
+
+
+#Ignore vscode AI rules
+.github/instructions/codacy.instructions.md
