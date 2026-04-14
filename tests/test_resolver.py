@@ -557,6 +557,123 @@ def test_resolve_submit_failure(
     assert mock_submit.call_count == 3
 
 
+@patch("resources.lib.stream_proxy.get_service_proxy_port", return_value=0)
+@patch("resources.lib.stream_proxy.get_proxy")
+@patch("resources.lib.resolver.find_completed_by_name")
+@patch("resources.lib.resolver.find_queued_by_name")
+@patch("resources.lib.resolver.xbmc")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.xbmcplugin")
+@patch("resources.lib.resolver.get_job_history")
+@patch("resources.lib.resolver.get_job_status")
+@patch("resources.lib.resolver.submit_nzb")
+@patch("resources.lib.resolver.get_webdav_stream_url_for_path")
+@patch("resources.lib.resolver._validate_stream_url")
+@patch("resources.lib.resolver.find_video_file")
+@patch("resources.lib.resolver._get_poll_settings")
+def test_resolve_submit_timeout_adopts_queued_nzo_id(
+    mock_poll,
+    mock_find_video,
+    mock_validate,
+    mock_stream_url,
+    mock_submit,
+    mock_status,
+    mock_history,
+    mock_plugin,
+    mock_gui,
+    mock_xbmc,
+    mock_find_queued,
+    mock_find_completed,
+    mock_get_proxy,
+    mock_service_port,
+):
+    """When submit_nzb returns a timeout sentinel, the resolver probes
+    nzbdav's queue and adopts the existing nzo_id instead of retrying
+    the submit. This is the fix for the observed bug where a big NZB
+    that nzbdav had already accepted would be re-submitted and either
+    bounce as a duplicate or orphan the first job."""
+    mock_poll.return_value = (2, 60)
+    mock_submit.return_value = (None, {"status": "timeout", "message": "Timed out"})
+    # First call: pre-submit "already completed" check — nothing there.
+    # Subsequent calls from the adopt helper also return None, so the
+    # queue hit is what ends up winning.
+    mock_find_completed.return_value = None
+    mock_find_queued.return_value = {
+        "nzo_id": "SABnzbd_nzo_already_queued",
+        "name": "movie.mkv",
+        "status": "Downloading",
+    }
+    mock_status.return_value = {"status": "Downloading", "percentage": "100"}
+    mock_history.return_value = {
+        "status": "Completed",
+        "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/movie",
+        "name": "movie",
+    }
+    mock_find_video.return_value = "/content/uncategorized/movie/movie.mkv"
+    mock_stream_url.return_value = (
+        "http://webdav:8080/content/uncategorized/movie/movie.mkv",
+        {"Authorization": "Basic dXNlcjpwYXNz"},
+    )
+    mock_validate.return_value = True
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    mock_proxy = MagicMock()
+    mock_proxy.prepare_stream.return_value = "http://127.0.0.1:57800/stream"
+    mock_get_proxy.return_value = mock_proxy
+
+    dialog = MagicMock()
+    dialog.iscanceled.return_value = False
+    mock_gui.DialogProgress.return_value = dialog
+
+    resolve(1, {"nzburl": "http://hydra/getnzb/abc", "title": "movie.mkv"})
+
+    # Only ONE submit — the adoption path must prevent further retries.
+    assert mock_submit.call_count == 1
+    # The queue probe fires at least once with the title as its argument.
+    assert mock_find_queued.called
+    assert mock_find_queued.call_args[0][0] == "movie.mkv"
+    # Playback was resolved successfully (True) because the polling
+    # loop proceeded against the adopted nzo_id.
+    mock_plugin.setResolvedUrl.assert_called()
+    resolve_call = mock_plugin.setResolvedUrl.call_args
+    assert resolve_call[0][1] is True
+
+
+@patch("resources.lib.resolver.find_completed_by_name")
+@patch("resources.lib.resolver.find_queued_by_name")
+@patch("resources.lib.resolver.xbmc")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.xbmcplugin")
+@patch("resources.lib.resolver.submit_nzb")
+@patch("resources.lib.resolver._get_poll_settings")
+def test_resolve_submit_timeout_retries_when_queue_empty(
+    mock_poll,
+    mock_submit,
+    mock_plugin,
+    mock_gui,
+    mock_xbmc,
+    mock_find_queued,
+    mock_find_completed,
+):
+    """If the queue probe comes up empty after a submit timeout, the
+    resolver falls through to a genuine retry of submit_nzb — the
+    first submit may have actually failed at the network level."""
+    mock_poll.return_value = (2, 60)
+    mock_submit.return_value = (None, {"status": "timeout", "message": "Timed out"})
+    mock_find_queued.return_value = None
+    mock_find_completed.return_value = None
+    mock_xbmc.Monitor.return_value = _make_monitor()
+
+    dialog = MagicMock()
+    mock_gui.DialogProgress.return_value = dialog
+
+    resolve(1, {"nzburl": "http://hydra/getnzb/abc", "title": "movie.mkv"})
+
+    # Three submits (the normal max_submit_retries) because every one
+    # timed out, and no queue/history match was ever found to adopt.
+    assert mock_submit.call_count == 3
+    mock_plugin.setResolvedUrl.assert_called_once_with(1, False, mock_gui.ListItem())
+
+
 @patch("resources.lib.resolver.xbmc")
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver.xbmcplugin")

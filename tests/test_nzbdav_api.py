@@ -2,6 +2,7 @@
 # Copyright (C) 2026 nzbdav contributors
 
 import json
+import socket
 from unittest.mock import patch
 from urllib.error import URLError
 
@@ -10,6 +11,7 @@ from resources.lib.nzbdav_api import (
     _get_submit_timeout,
     _sanitize_server_message,
     cancel_job,
+    find_queued_by_name,
     get_completed_names,
     get_job_history,
     get_job_status,
@@ -87,6 +89,135 @@ def test_submit_nzb_connection_error(mock_http, mock_settings):
     nzo_id, error = submit_nzb("http://hydra:5076/getnzb/abc123", "The.Matrix")
     assert nzo_id is None
     assert error is None
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_submit_nzb_returns_timeout_sentinel_on_socket_timeout(
+    mock_http, mock_settings
+):
+    """A bare socket.timeout from urlopen must be distinguished from a
+    normal connection error. The caller needs to know whether the
+    submit might have actually reached nzbdav, because retrying a
+    submit nzbdav has already accepted causes either a duplicate
+    rejection or an orphaned in-progress job."""
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.side_effect = socket.timeout("timed out")
+
+    nzo_id, error = submit_nzb("http://hydra:5076/getnzb/abc123", "The.Matrix")
+
+    assert nzo_id is None
+    assert error is not None
+    assert error["status"] == "timeout"
+    assert "Timed out" in error["message"]
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_submit_nzb_returns_timeout_sentinel_on_wrapped_timeout(
+    mock_http, mock_settings
+):
+    """urlopen can also raise URLError wrapping a socket.timeout in
+    its .reason attribute. That shape must also be classified as a
+    timeout (not a plain URLError retry case)."""
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.side_effect = URLError(socket.timeout("timed out"))
+
+    nzo_id, error = submit_nzb("http://hydra:5076/getnzb/abc123", "The.Matrix")
+
+    assert nzo_id is None
+    assert error is not None
+    assert error["status"] == "timeout"
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_submit_nzb_non_timeout_urlerror_is_not_timeout_sentinel(
+    mock_http, mock_settings
+):
+    """A URLError that isn't a timeout (e.g. DNS failure) must stay
+    in the None/None branch so the caller's existing connection-error
+    retry logic keeps working."""
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.side_effect = URLError("nodename nor servname provided")
+
+    nzo_id, error = submit_nzb("http://hydra:5076/getnzb/abc123", "The.Matrix")
+
+    assert nzo_id is None
+    assert error is None
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_find_queued_by_name_returns_match(mock_http, mock_settings):
+    """When the target title is present in nzbdav's active queue,
+    find_queued_by_name returns the matching slot's nzo_id."""
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.return_value = json.dumps(
+        {
+            "queue": {
+                "slots": [
+                    {
+                        "nzo_id": "SABnzbd_nzo_other",
+                        "filename": "Some.Other.Movie.mkv",
+                        "status": "Downloading",
+                    },
+                    {
+                        "nzo_id": "SABnzbd_nzo_target",
+                        "filename": "The.Matrix.1999.REMUX",
+                        "status": "Downloading",
+                    },
+                ]
+            }
+        }
+    )
+
+    result = find_queued_by_name("The.Matrix.1999.REMUX")
+
+    assert result is not None
+    assert result["nzo_id"] == "SABnzbd_nzo_target"
+    assert result["status"] == "Downloading"
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_find_queued_by_name_returns_none_when_missing(mock_http, mock_settings):
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.return_value = json.dumps(
+        {
+            "queue": {
+                "slots": [
+                    {
+                        "nzo_id": "SABnzbd_nzo_other",
+                        "filename": "Something.Else",
+                        "status": "Downloading",
+                    },
+                ]
+            }
+        }
+    )
+
+    assert find_queued_by_name("The.Matrix.1999.REMUX") is None
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_find_queued_by_name_handles_request_error(mock_http, mock_settings):
+    """A network failure while probing the queue must return None so
+    the caller falls through to its retry path instead of raising."""
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.side_effect = Exception("Connection refused")
+
+    assert find_queued_by_name("The.Matrix.1999.REMUX") is None
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_find_queued_by_name_handles_empty_queue(mock_http, mock_settings):
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.return_value = json.dumps({"queue": {"slots": []}})
+
+    assert find_queued_by_name("Anything") is None
 
 
 @patch("resources.lib.nzbdav_api._get_settings")
