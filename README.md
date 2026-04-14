@@ -32,15 +32,18 @@ No separate SABnzbd needed -- nzbdav handles both downloading and serving.
 
 Every playback request is routed through a local HTTP proxy (`stream_proxy.py`) running on a random port in the background service. Kodi never talks to the WebDAV server directly, which sidesteps a PROPFIND parent-directory scan that caused `Open - Unhandled exception` errors on several Kodi builds.
 
-The proxy picks one of three paths based on the container:
+The proxy picks one of four paths based on the container and file size:
 
 1. **MP4 (already faststart)** -- redirected straight to the WebDAV URL; Kodi seeks and plays natively.
-2. **MP4 (moov at tail)** -- parsed in pure Python via HTTP range requests, `stco` / `co64` chunk offsets rewritten, and served as a virtual faststart MP4 with `Accept-Ranges: bytes`. If parsing fails, falls back to an ffmpeg remux to MKV.
-3. **MKV and other containers** -- served as a byte pass-through with ranged upstream fetches. Kodi gets native seeking from the source file's real Cues, and the proxy layers two recovery mechanisms on top:
-   - **Zero-fill recovery on missing Usenet articles** -- when an upstream read fails mid-stream, the proxy probes forward to find the next readable offset, writes zero bytes across the gap, and keeps streaming. No more black screen when a single article is unrecoverable.
-   - **Pass-through is the default for large files.** `Force ffmpeg remux above (MB)` in Advanced settings defaults to `0` (disabled); set it to a non-zero MB threshold to force the ffmpeg remux branch instead.
+2. **MP4 (moov at tail)** -- parsed in pure Python via HTTP range requests, `stco` / `co64` chunk offsets rewritten, and served as a virtual faststart MP4 with `Accept-Ranges: bytes`. If parsing fails, falls back to an ffmpeg tempfile remux.
+3. **MKV and other containers (under the force-remux threshold)** -- served as a byte pass-through with ranged upstream fetches. Kodi gets native seeking from the source file's real Cues, and the proxy layers zero-fill recovery on top: when an upstream read fails mid-stream, it probes forward to the next readable offset, writes zero bytes across the gap, and keeps streaming. No more black screen when a single Usenet article is unrecoverable.
+4. **Force remux (files above the threshold, default 20 GB)** -- huge non-MP4 files are streamed through ffmpeg to hide their true size from 32-bit Kodi's `CFileCache` overflow. Two output shapes:
+   - **Piped Matroska (default, DV-safe)** -- `ffmpeg -c copy -f matroska pipe:1`, unsized. Known-good on Dolby Vision HEVC + TrueHD/Atmos 100 GB REMUXes. Seek is approximate (each seek respawns ffmpeg with `-ss`).
+   - **Fragmented MP4 HLS (experimental, opt-in)** -- `force_remux_mode` in Advanced settings. Produces an HLS VOD playlist with per-segment `hvc1`-tagged fMP4. Gives full random seek, but Amlogic hardware decoder support for the fmp4 path is still under development. Dolby Vision profile 7 is automatically routed back to the matroska branch regardless of this setting (fmp4 HLS cannot carry dual-layer HEVC).
 
-The ffmpeg remux branch is still available for files that need container conversion (MP4 `mov_text` subtitles become SRT, for example). If ffmpeg isn't installed, the proxy degrades gracefully to pass-through or direct redirect.
+If ffmpeg isn't installed, the proxy degrades gracefully to pass-through or direct redirect.
+
+> **Architecture deep-dive:** [PROXY.md](PROXY.md) documents the full session lifecycle, how the proxy interacts with `resolver.py` / `service.py` / `router.py` / `mp4_parser.py`, the HLS producer internals, and where to look when debugging playback failures.
 
 ## Requirements
 
@@ -228,7 +231,7 @@ With **Auto-select best match** enabled, the dialog is skipped and the top resul
 ### Commands
 
 ```bash
-just test          # Run all 315 tests
+just test          # Run all 482 tests
 just test-verbose  # Run tests with full output
 just lint          # Check ruff + black formatting
 just lint-fix      # Auto-fix lint issues
@@ -274,15 +277,15 @@ scripts/
 repo/
   repository.nzbdav/     # Repository addon (points to GitHub Pages)
 .github/workflows/
-  ci.yml                 # Test + lint on push/PR (Python 3.8/3.10/3.12)
+  ci.yml                 # Test + lint on push/PR (pytest on Python 3.9/3.12)
   release.yml            # Build + deploy on version tags
-  pylint.yml             # Pylint analysis
-  codacy.yml             # Codacy security scan
+  pylint.yml             # Pylint analysis (Python 3.8 to validate runtime compat)
   codeql.yml             # CodeQL analysis
   bandit.yml             # Bandit security scan
 tests/
   conftest.py            # Kodi module mocks
-  test_*.py              # 315 tests
+  test_*.py              # 482 tests
+PROXY.md                 # Stream proxy architecture deep-dive
 ```
 
 ### Releasing
