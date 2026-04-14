@@ -2270,22 +2270,28 @@ def test_build_hls_segment_cmd_drops_subtitles():
     assert "-c:s" not in cmd
 
 
-def test_hls_segment_seconds_is_at_least_30():
-    """The segment duration must be large enough to hide ffmpeg's
-    cold-start time on the next segment.
+def test_hls_segment_seconds_is_in_reasonable_range():
+    """Segment duration must match the HlsProducer architecture.
 
-    On the CoreELEC test box, each segment spawns a fresh ffmpeg
-    that takes ~10-15 s to open the remote 58 GB MKV, parse the
-    container, seek to the requested keyframe, and start emitting
-    MPEG-TS packets. If segment duration is shorter than cold
-    start, Kodi runs out of buffered data before the next segment
-    is ready, and playback caches continuously. 30 s gives Kodi
-    comfortable headroom. Regression test for the ``constant
-    caching`` report during Shawshank playback.
+    The ORIGINAL rationale for a 30 s minimum was that each segment
+    spawned a fresh ffmpeg with a 10-15 s cold-start cost to open
+    the remote huge MKV. That rationale is obsolete: HlsProducer
+    now runs ONE long-lived ffmpeg per session and writes segments
+    continuously, so cold-start is paid once per session (and once
+    more per seek respawn), not per segment.
+
+    The NEW constraint is on the other end: segments must be long
+    enough to contain at least one IDR (so ``-hls_time`` alignment
+    works), and short enough that the playlist's fixed-duration
+    EXTINF approximation of the real ffmpeg output doesn't drift
+    into visible seek misses or A/V desync. 6 s is the CMAF /
+    Apple HLS author guide default and matches typical UHD REMUX
+    GOP lengths. Anything under ~2 s is a bug; anything over
+    ~30 s reintroduces the drift problem.
     """
     from resources.lib.stream_proxy import _HLS_SEGMENT_SECONDS
 
-    assert _HLS_SEGMENT_SECONDS >= 30.0
+    assert 2.0 <= _HLS_SEGMENT_SECONDS <= 30.0
 
 
 def test_serve_hls_segment_out_of_range_404s():
