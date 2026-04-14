@@ -1577,11 +1577,30 @@ class HlsProducer:
         If ffmpeg is either not running or running in a position that
         will never produce seg_n, kicks off a restart aimed at seg_n.
         Returns the segment file path on success, or None on timeout.
+
+        For fmp4 producers, the loop additionally gates on
+        _init_file_complete so a seg_n read can't race a
+        still-being-written init.mp4.
         """
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if self._closed:
                 return None
+            # fmp4 init gate: seg_n cannot be served until the current
+            # generation's init is on disk AND ffmpeg has moved past
+            # the init write phase. For segment requests we DO want to
+            # head toward seg_n specifically — the caller is asking for
+            # a specific segment, so the "seg_n < start_segment"
+            # restart behavior in _ensure_ffmpeg_headed_for is the
+            # right call (unlike wait_for_init, which preserves the
+            # current generation).
+            if self.segment_format == "fmp4" and not self._init_ready:
+                if self._init_file_complete():
+                    self._init_ready = True
+                else:
+                    self._ensure_ffmpeg_headed_for(seg_n)
+                    time.sleep(0.25)
+                    continue
             if self._segment_complete(seg_n):
                 return self.segment_path(seg_n)
             # Do we need to (re)start ffmpeg to eventually reach seg_n?
