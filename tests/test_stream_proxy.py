@@ -555,6 +555,8 @@ def test_prepare_stream_force_remux_hls_fmp4_setting_produces_hls_ctx():
             sp, "_get_content_length", return_value=huge
         ), patch(
             "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
+        ), patch.object(
+            StreamProxy, "_probe_dv_profile", return_value=None
         ), patch(
             "resources.lib.stream_proxy.HlsProducer"
         ) as mock_producer_cls:
@@ -708,6 +710,269 @@ def test_probe_duration_returns_none_on_n_a():
 
     stderr = "  Duration: N/A, start: 0.000000\n"
     assert _parse_ffmpeg_duration(stderr) is None
+
+
+# ---------------------------------------------------------------------------
+# _parse_ffmpeg_dv_profile
+# ---------------------------------------------------------------------------
+
+
+def test_parse_dv_profile_7_dual_layer():
+    from resources.lib.stream_proxy import _parse_ffmpeg_dv_profile
+
+    stderr = (
+        "  Stream #0:0(und): Video: hevc (Main 10) (hvc1 / 0x31637668), ...\n"
+        "    Side data:\n"
+        "      DOVI configuration record: version: 1.0, profile: 7, "
+        "level: 6, rpu flag: 1, el flag: 1, bl flag: 1, compatibility id: 0\n"
+    )
+    assert _parse_ffmpeg_dv_profile(stderr) == 7
+
+
+def test_parse_dv_profile_5_single_layer():
+    from resources.lib.stream_proxy import _parse_ffmpeg_dv_profile
+
+    stderr = (
+        "      DOVI configuration record: version: 1.0, profile: 5, "
+        "level: 6, rpu flag: 1, el flag: 0, bl flag: 1, compatibility id: 0\n"
+    )
+    assert _parse_ffmpeg_dv_profile(stderr) == 5
+
+
+def test_parse_dv_profile_8_compatible():
+    from resources.lib.stream_proxy import _parse_ffmpeg_dv_profile
+
+    stderr = (
+        "      DOVI configuration record: version: 1.0, profile: 8, "
+        "level: 6, rpu flag: 1, el flag: 0, bl flag: 1, compatibility id: 1\n"
+    )
+    assert _parse_ffmpeg_dv_profile(stderr) == 8
+
+
+def test_parse_dv_profile_returns_none_when_absent():
+    from resources.lib.stream_proxy import _parse_ffmpeg_dv_profile
+
+    stderr = (
+        "  Stream #0:0(und): Video: hevc (Main 10), yuv420p10le, "
+        "3840x2160 [SAR 1:1 DAR 16:9], 24 fps, 24 tbr, 1k tbn\n"
+        "  Stream #0:1(eng): Audio: truehd, 48000 Hz, 7.1, s32 (24 bit)\n"
+    )
+    assert _parse_ffmpeg_dv_profile(stderr) is None
+
+
+def test_parse_dv_profile_returns_none_on_malformed():
+    from resources.lib.stream_proxy import _parse_ffmpeg_dv_profile
+
+    stderr = "DOVI configuration record: version: 1.0, profile: not-a-number\n"
+    assert _parse_ffmpeg_dv_profile(stderr) is None
+
+
+# ---------------------------------------------------------------------------
+# StreamProxy.prepare_stream — DV profile gating for fmp4 HLS
+# ---------------------------------------------------------------------------
+
+
+def _make_fmp4_prepare_fixture(huge_size=58 * 1024 * 1024 * 1024):
+    """Build the StreamProxy instance and addon/settings mocks used by the
+    DV-profile gating tests. Returns (sp, mock_addon, original_addon,
+    duration_proc)."""
+    import sys
+
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 9999
+
+    duration_proc = MagicMock()
+    duration_proc.stderr = iter([b"  Duration: 02:22:12.00, start: 0.000000\n"])
+
+    mock_addon = MagicMock()
+
+    def get_setting(key):
+        if key == "force_remux_mode":
+            return "1"
+        if key == "force_remux_threshold_mb":
+            return ""
+        return ""
+
+    mock_addon.getSetting.side_effect = get_setting
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    return sp, mock_addon, original, duration_proc, huge_size
+
+
+def test_prepare_stream_dv_profile_7_falls_back_to_matroska():
+    """A confirmed Dolby Vision profile 7 source must NOT be served as
+    fmp4 HLS even when force_remux_mode=hls_fmp4. fmp4 HLS has no
+    standard way to carry the BL+EL+RPU dual-layer structure, so the
+    enhancement layer would be silently dropped and Amlogic's decoder
+    is known to stall on the result."""
+    import sys
+
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp, _, original, duration_proc, huge = _make_fmp4_prepare_fixture()
+    try:
+        with patch(
+            "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
+        ), patch(
+            "resources.lib.stream_proxy._find_ffprobe", return_value=None
+        ), patch.object(
+            sp, "_get_content_length", return_value=huge
+        ), patch(
+            "resources.lib.stream_proxy.subprocess.Popen", return_value=duration_proc
+        ), patch.object(
+            StreamProxy, "_probe_dv_profile", return_value=7
+        ):
+            sp.prepare_stream("http://host/dv-p7-remux.mkv")
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    ctx = sp._server.stream_context
+    assert ctx.get("mode") != "hls", "P7 must fall back off the fmp4 path"
+    assert ctx["content_type"] == "video/x-matroska"
+    assert ctx.get("hls_segment_format") is None
+
+
+def test_prepare_stream_dv_profile_5_stays_on_fmp4():
+    """Profile 5 is single-layer IPTPQc2 — safe to attempt fmp4 HLS."""
+    import sys
+
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp, _, original, duration_proc, huge = _make_fmp4_prepare_fixture()
+    try:
+        with patch(
+            "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
+        ), patch(
+            "resources.lib.stream_proxy._find_ffprobe", return_value=None
+        ), patch.object(
+            sp, "_get_content_length", return_value=huge
+        ), patch(
+            "resources.lib.stream_proxy.subprocess.Popen", return_value=duration_proc
+        ), patch.object(
+            StreamProxy, "_probe_dv_profile", return_value=5
+        ), patch(
+            "resources.lib.stream_proxy.HlsProducer"
+        ) as mock_producer_cls:
+            mock_producer_cls.return_value = MagicMock()
+            sp.prepare_stream("http://host/dv-p5-remux.mkv")
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    ctx = sp._server.stream_context
+    assert ctx["mode"] == "hls"
+    assert ctx["hls_segment_format"] == "fmp4"
+
+
+def test_prepare_stream_dv_profile_8_stays_on_fmp4():
+    """Profile 8 is single-layer cross-compatible — safe for fmp4 HLS."""
+    import sys
+
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp, _, original, duration_proc, huge = _make_fmp4_prepare_fixture()
+    try:
+        with patch(
+            "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
+        ), patch(
+            "resources.lib.stream_proxy._find_ffprobe", return_value=None
+        ), patch.object(
+            sp, "_get_content_length", return_value=huge
+        ), patch(
+            "resources.lib.stream_proxy.subprocess.Popen", return_value=duration_proc
+        ), patch.object(
+            StreamProxy, "_probe_dv_profile", return_value=8
+        ), patch(
+            "resources.lib.stream_proxy.HlsProducer"
+        ) as mock_producer_cls:
+            mock_producer_cls.return_value = MagicMock()
+            sp.prepare_stream("http://host/dv-p8-remux.mkv")
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    ctx = sp._server.stream_context
+    assert ctx["mode"] == "hls"
+    assert ctx["hls_segment_format"] == "fmp4"
+
+
+def test_prepare_stream_dv_probe_none_stays_on_fmp4():
+    """A None return from the DV probe (either 'no DV' or 'probe failed')
+    is treated as safe — fmp4 is allowed. Only a *confirmed* profile 7
+    triggers the matroska fallback."""
+    import sys
+
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp, _, original, duration_proc, huge = _make_fmp4_prepare_fixture()
+    try:
+        with patch(
+            "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
+        ), patch(
+            "resources.lib.stream_proxy._find_ffprobe", return_value=None
+        ), patch.object(
+            sp, "_get_content_length", return_value=huge
+        ), patch(
+            "resources.lib.stream_proxy.subprocess.Popen", return_value=duration_proc
+        ), patch.object(
+            StreamProxy, "_probe_dv_profile", return_value=None
+        ), patch(
+            "resources.lib.stream_proxy.HlsProducer"
+        ) as mock_producer_cls:
+            mock_producer_cls.return_value = MagicMock()
+            sp.prepare_stream("http://host/sdr-remux.mkv")
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    ctx = sp._server.stream_context
+    assert ctx["mode"] == "hls"
+    assert ctx["hls_segment_format"] == "fmp4"
+
+
+# ---------------------------------------------------------------------------
+# HlsProducer._build_cmd — fmp4 must emit -tag:v hvc1 for DV compatibility
+# ---------------------------------------------------------------------------
+
+
+def test_hls_producer_fmp4_cmd_emits_hvc1_tag():
+    """The fmp4 branch of _build_cmd must pass -tag:v hvc1 to ffmpeg.
+    HLS fmp4 spec requires the hvc1 sample entry for HEVC, and Amlogic's
+    HLS demuxer uses this tag to locate the dvcC/dvvC DV configuration
+    record in the init segment."""
+    from resources.lib.stream_proxy import HlsProducer
+
+    producer = HlsProducer.__new__(HlsProducer)
+    producer.ffmpeg_path = "/usr/bin/ffmpeg"
+    producer.remote_url = "http://host/movie.mkv"
+    producer.auth_header = None
+    producer.segment_format = "fmp4"
+    producer.segment_seconds = 30.0
+    producer.session_dir = "/tmp/nzbdav-hls/abc123"
+
+    cmd = producer._build_cmd(start_time=0.0, start_segment=0)
+    assert "-tag:v" in cmd
+    tag_idx = cmd.index("-tag:v")
+    assert cmd[tag_idx + 1] == "hvc1"
+
+
+def test_hls_producer_mpegts_cmd_omits_hvc1_tag():
+    """The mpegts branch does NOT pass -tag:v hvc1. The tag only makes
+    sense for fmp4; mpegts carries HEVC as raw NAL units and has no
+    sample entry."""
+    from resources.lib.stream_proxy import HlsProducer
+
+    producer = HlsProducer.__new__(HlsProducer)
+    producer.ffmpeg_path = "/usr/bin/ffmpeg"
+    producer.remote_url = "http://host/movie.mkv"
+    producer.auth_header = None
+    producer.segment_format = "mpegts"
+    producer.segment_seconds = 30.0
+    producer.session_dir = "/tmp/nzbdav-hls/abc123"
+
+    cmd = producer._build_cmd(start_time=0.0, start_segment=0)
+    assert "-tag:v" not in cmd
 
 
 # ---------------------------------------------------------------------------
