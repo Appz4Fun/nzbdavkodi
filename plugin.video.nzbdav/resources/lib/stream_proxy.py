@@ -117,13 +117,21 @@ _ZERO_FILL_BUFFER = bytes(65536)
 # buffering stall on a healthy client while still bounding zombie lifetime.
 _REMUX_WRITE_TIMEOUT = 60
 
-# HLS segment length. Chosen to balance seek granularity (coarser
-# segments mean the HLS demuxer can only land on 30-second boundaries
-# when seeking) against ffmpeg cold-start amortization (each ffmpeg
-# restart on seek costs ~10-15 s on remote huge files, so segments
-# much shorter than that would mean constant buffering on every
-# seek). 30 s is a reasonable compromise.
-_HLS_SEGMENT_SECONDS = 30.0
+# HLS segment length. Shorter segments (6 s) minimize the playlist-
+# vs-actual drift that breaks seek accuracy and A/V sync on the fmp4
+# path. The playlist emits fixed-duration EXTINF values based on
+# this constant, but ffmpeg's `-hls_time` only places cuts at the
+# next IDR after the target, so real segment durations drift ±GOP
+# around the nominal. With 30 s segments and 3-5 s source GOPs that
+# drift accumulates into visible A/V desync and seek misses over a
+# 2-hour movie; with 6 s segments the per-segment error is the same
+# but the accumulation window is shorter and a seek respawn lands
+# much closer to the requested timestamp. The price is more segment
+# file churn and more HTTP round-trips during linear playback, but
+# HlsProducer uses ONE ffmpeg across many segments so cold-start
+# amortization still holds. Also 6 s is the CMAF / Apple HLS author
+# guide recommended default.
+_HLS_SEGMENT_SECONDS = 6.0
 
 # Disk-backed HLS session working directory. Must be on a filesystem
 # with enough free space for the full remuxed output of any active
