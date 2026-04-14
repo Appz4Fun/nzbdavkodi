@@ -1852,14 +1852,50 @@ class StreamProxy:
 
         if ctx.get("mode") == "hls":
             workdir = _choose_hls_workdir()
+            producer = None
             try:
-                ctx["hls_producer"] = HlsProducer(ctx, workdir)
-            except OSError as e:
+                producer = HlsProducer(ctx, workdir)
+                # Eager spawn-time validation: catches ffmpeg builds
+                # that reject -hls_segment_type fmp4 BEFORE the HLS
+                # URL is returned to Kodi, so the matroska fallback
+                # below actually fires for the most likely failure
+                # mode. No-op for mpegts (lazy spawn).
+                producer.prepare()
+                ctx["hls_producer"] = producer
+            except Exception as e:  # noqa: BLE001 — fall back either way
                 xbmc.log(
-                    "NZB-DAV: HLS producer init failed: {}".format(e),
-                    xbmc.LOGERROR,
+                    "NZB-DAV: HLS producer setup failed ({}), "
+                    "rewriting session to matroska fallback".format(e),
+                    xbmc.LOGWARNING,
                 )
-                ctx["hls_producer"] = None
+                # Best-effort cleanup of the partially initialized
+                # producer. HlsProducer.__init__ owns disk resources
+                # (session_dir, ffmpeg.log) that need close()'ing on
+                # the prepare()-failure path; otherwise opt-in fmp4
+                # plays against an unsupported ffmpeg build orphan
+                # the session directory and rely on GC for the file
+                # handle. The `producer = None` sentinel above
+                # protects against AttributeError when the
+                # constructor itself raised (no producer ever
+                # assigned).
+                if producer is not None:
+                    try:
+                        producer.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                # Rewrite ctx in-place to the known-good matroska shape.
+                # ctx already has ffmpeg_path / total_bytes /
+                # duration_seconds from prepare_stream's fmp4 branch,
+                # so _serve_remux has everything it needs.
+                ctx.pop("mode", None)
+                ctx.pop("hls_segment_format", None)
+                ctx.pop("hls_segment_duration", None)
+                ctx.pop("hls_producer", None)
+                ctx["content_type"] = "video/x-matroska"
+                ctx["seekable"] = (
+                    ctx.get("duration_seconds") is not None
+                    and ctx.get("total_bytes", 0) > 0
+                )
 
         with self._context_lock:
             if not isinstance(getattr(self._server, "stream_sessions", None), dict):

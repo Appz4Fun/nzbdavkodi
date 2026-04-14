@@ -2054,6 +2054,303 @@ def test_register_session_hls_returns_playlist_url(tmp_path):
     assert producer.session_dir.startswith(str(tmp_path))
 
 
+def test_register_session_hls_producer_failure_rewrites_to_matroska():
+    """When HlsProducer.__init__ raises, _register_session rewrites
+    ctx in place to the matroska shape and returns a /stream/ URL
+    (not /hls/...)."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_sessions = {}
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 9999
+
+    ctx = {
+        "remote_url": "http://host/shawshank.mkv",
+        "auth_header": None,
+        "content_type": "application/vnd.apple.mpegurl",
+        "mode": "hls",
+        "remux": True,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "total_bytes": 58 * 1024 * 1024 * 1024,
+        "duration_seconds": 8532.0,
+        "seekable": True,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+
+    with patch(
+        "resources.lib.stream_proxy.HlsProducer",
+        side_effect=OSError("workdir not writable"),
+    ):
+        url = sp._register_session(ctx)
+
+    assert url.startswith("http://127.0.0.1:9999/stream/")
+    assert "/hls/" not in url
+    assert ctx.get("mode") is None
+    assert "hls_segment_format" not in ctx
+    assert "hls_producer" not in ctx
+    assert ctx["content_type"] == "video/x-matroska"
+    assert ctx["seekable"] is True
+
+
+def test_register_session_hls_producer_failure_preserves_duration_and_seekable():
+    """After the rewrite, duration_seconds and total_bytes are carried
+    over from the original fmp4 ctx and seekable is recomputed via
+    the matroska rule (duration not None AND total_bytes > 0)."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_sessions = {}
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 9999
+
+    ctx = {
+        "remote_url": "http://host/shawshank.mkv",
+        "auth_header": None,
+        "content_type": "application/vnd.apple.mpegurl",
+        "mode": "hls",
+        "remux": True,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "total_bytes": 123456789,
+        "duration_seconds": 600.0,
+        "seekable": True,
+        "hls_segment_format": "fmp4",
+    }
+
+    with patch(
+        "resources.lib.stream_proxy.HlsProducer",
+        side_effect=OSError("boom"),
+    ):
+        sp._register_session(ctx)
+
+    assert ctx["duration_seconds"] == 600.0
+    assert ctx["total_bytes"] == 123456789
+    assert ctx["seekable"] is True
+
+
+def test_register_session_catches_non_oserror_exceptions():
+    """HlsProducer.__init__ raising ValueError (or anything else)
+    still produces the matroska rewrite, not an unhandled exception.
+
+    Regression guard for the too-narrow except OSError in the
+    pre-spike code."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_sessions = {}
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 9999
+
+    ctx = {
+        "remote_url": "http://host/x.mkv",
+        "auth_header": None,
+        "content_type": "application/vnd.apple.mpegurl",
+        "mode": "hls",
+        "remux": True,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "total_bytes": 100,
+        "duration_seconds": 10.0,
+        "seekable": True,
+        "hls_segment_format": "fmp4",
+    }
+
+    with patch(
+        "resources.lib.stream_proxy.HlsProducer",
+        side_effect=ValueError("unexpected"),
+    ):
+        # Must NOT raise.
+        url = sp._register_session(ctx)
+
+    assert url.startswith("http://127.0.0.1:9999/stream/")
+    assert ctx.get("mode") is None
+
+
+def test_register_session_calls_producer_prepare():
+    """Happy path: _register_session calls producer.prepare() exactly
+    once after construction."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_sessions = {}
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 9999
+
+    ctx = {
+        "remote_url": "http://host/x.mkv",
+        "auth_header": None,
+        "content_type": "application/vnd.apple.mpegurl",
+        "mode": "hls",
+        "remux": True,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "total_bytes": 100,
+        "duration_seconds": 10.0,
+        "seekable": True,
+        "hls_segment_format": "fmp4",
+    }
+
+    producer_mock = MagicMock()
+    with patch("resources.lib.stream_proxy.HlsProducer", return_value=producer_mock):
+        sp._register_session(ctx)
+
+    producer_mock.prepare.assert_called_once_with()
+
+
+def test_register_session_prepare_failure_rewrites_to_matroska():
+    """If producer.prepare() raises (e.g. ffmpeg rejects fmp4 HLS),
+    _register_session rewrites ctx in-place to matroska and returns
+    a /stream/ URL. Regression guard for the spawn-time-validation
+    safety property — without this, a deployed ffmpeg build that
+    doesn't support fmp4 would surface as a 504 from
+    /hls/<sess>/init.mp4 AFTER the URL had already been returned to
+    Kodi."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_sessions = {}
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 9999
+
+    ctx = {
+        "remote_url": "http://host/x.mkv",
+        "auth_header": None,
+        "content_type": "application/vnd.apple.mpegurl",
+        "mode": "hls",
+        "remux": True,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "total_bytes": 100,
+        "duration_seconds": 10.0,
+        "seekable": True,
+        "hls_segment_format": "fmp4",
+    }
+
+    producer_mock = MagicMock()
+    producer_mock.prepare.side_effect = RuntimeError(
+        "ffmpeg exited immediately with code 1 — fmp4 HLS unsupported"
+    )
+    with patch("resources.lib.stream_proxy.HlsProducer", return_value=producer_mock):
+        url = sp._register_session(ctx)
+
+    assert url.startswith("http://127.0.0.1:9999/stream/")
+    assert "/hls/" not in url
+    assert ctx.get("mode") is None
+    assert ctx["content_type"] == "video/x-matroska"
+
+
+def test_register_session_hls_success_unchanged():
+    """Happy path regression: if HlsProducer.__init__ AND prepare
+    both succeed, the returned URL is the HLS URL and ctx keeps
+    mode=='hls' and hls_producer is set on the ctx."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_sessions = {}
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 9999
+
+    ctx = {
+        "remote_url": "http://host/x.mkv",
+        "auth_header": None,
+        "content_type": "application/vnd.apple.mpegurl",
+        "mode": "hls",
+        "remux": True,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "total_bytes": 100,
+        "duration_seconds": 10.0,
+        "seekable": True,
+        "hls_segment_format": "fmp4",
+    }
+
+    producer_mock = MagicMock()
+    # prepare is a no-op (MagicMock auto-returns None)
+    with patch("resources.lib.stream_proxy.HlsProducer", return_value=producer_mock):
+        url = sp._register_session(ctx)
+
+    assert "/hls/" in url
+    assert url.endswith("/playlist.m3u8")
+    assert ctx["mode"] == "hls"
+    assert ctx["hls_producer"] is producer_mock
+
+
+def test_register_session_prepare_failure_closes_partially_initialized_producer():
+    """Regression guard: when producer.prepare() raises, the
+    partially initialized producer is close()'d before the matroska
+    rewrite. Otherwise opt-in fmp4 plays against an unsupported
+    ffmpeg build orphan session_dir + ffmpeg.log every time."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_sessions = {}
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 9999
+
+    ctx = {
+        "remote_url": "http://host/x.mkv",
+        "auth_header": None,
+        "content_type": "application/vnd.apple.mpegurl",
+        "mode": "hls",
+        "remux": True,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "total_bytes": 100,
+        "duration_seconds": 10.0,
+        "seekable": True,
+        "hls_segment_format": "fmp4",
+    }
+
+    producer_mock = MagicMock()
+    producer_mock.prepare.side_effect = RuntimeError("ffmpeg exited immediately")
+    with patch("resources.lib.stream_proxy.HlsProducer", return_value=producer_mock):
+        url = sp._register_session(ctx)
+
+    producer_mock.close.assert_called_once_with()
+    assert url.startswith("http://127.0.0.1:9999/stream/")
+    assert ctx.get("mode") is None
+
+
+def test_register_session_init_failure_does_not_call_close_on_undefined_producer():
+    """Regression guard for the `producer = None` sentinel outside
+    the try block: when HlsProducer.__init__ itself raises, no
+    producer was ever constructed, so close() must not be called.
+    The rewrite still happens and no AttributeError is raised."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_sessions = {}
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 9999
+
+    ctx = {
+        "remote_url": "http://host/x.mkv",
+        "auth_header": None,
+        "content_type": "application/vnd.apple.mpegurl",
+        "mode": "hls",
+        "remux": True,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "total_bytes": 100,
+        "duration_seconds": 10.0,
+        "seekable": True,
+        "hls_segment_format": "fmp4",
+    }
+
+    with patch(
+        "resources.lib.stream_proxy.HlsProducer",
+        side_effect=OSError("workdir not writable"),
+    ):
+        # Must NOT raise AttributeError on a None producer.
+        url = sp._register_session(ctx)
+
+    assert url.startswith("http://127.0.0.1:9999/stream/")
+    assert ctx.get("mode") is None
+
+
 def test_serve_remux_matroska_keeps_accept_ranges_none():
     """The MP4-fallback matroska path must keep `Accept-Ranges: none`.
 
