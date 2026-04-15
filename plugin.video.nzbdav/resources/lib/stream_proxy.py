@@ -288,7 +288,16 @@ def _notify_error(message):
 
 
 def _embed_auth_in_url(url, auth_header):
-    """Embed Basic auth credentials into a URL for ffmpeg."""
+    """Embed Basic auth credentials into a URL for ffmpeg.
+
+    DEPRECATED for new code paths — prefer ``_ffmpeg_auth_args``,
+    which passes the Authorization header to ffmpeg via ``-headers``
+    instead of splicing ``user:password@host`` into the URL. The URL
+    form leaks credentials into ffmpeg's argv, where they're visible
+    via ``ps`` and ``/proc/<pid>/cmdline``, and (worse) into ffmpeg
+    error messages that can end up in the persistent ffmpeg.log
+    archive. Kept here only for callers that still embed-then-pass.
+    """
     if auth_header and auth_header.startswith("Basic "):
         import base64
 
@@ -314,6 +323,32 @@ def _embed_auth_in_url(url, auth_header):
             )
         )
     return url
+
+
+def _ffmpeg_auth_args(auth_header):
+    """Return ffmpeg ``-headers ...`` argv fragment for an
+    Authorization header, or an empty list if no auth is present.
+
+    Pass the result to ``cmd.extend(...)`` BEFORE the ``-i URL``
+    pair. ffmpeg's HTTP demuxer reads ``-headers`` as a string of
+    HTTP headers separated by ``\\r\\n``; the trailing ``\\r\\n``
+    is required to terminate the header line.
+
+    Why this exists: the URL-embedding form (``_embed_auth_in_url``)
+    splices ``user:password@host`` into argv, where the cleartext
+    credentials are visible to other local processes via ``ps`` /
+    ``/proc/cmdline``, and end up in ffmpeg error messages and
+    therefore in the persistent ffmpeg.log archive. The ``-headers``
+    form keeps the URL clean for logging and only puts the (still
+    base64-encoded) Authorization line into argv. On a single-user
+    Kodi appliance this is mostly a defense-in-depth + log-redaction
+    win, but on multi-user systems the difference is meaningful.
+    """
+    if not auth_header:
+        return []
+    if not isinstance(auth_header, str):
+        return []
+    return ["-headers", "Authorization: {}\r\n".format(auth_header)]
 
 
 def _parse_ffmpeg_duration(stderr_text):
@@ -1690,6 +1725,19 @@ class HlsProducer:
             mtime = os.path.getmtime(path)
         except OSError:
             return False
+        # In fMP4 mode, also require that THIS segment was written by
+        # the current ffmpeg generation. Without this guard, a backward
+        # seek can read a stale ``seg_n.m4s`` from a prior generation
+        # whose mtime is far in the past — the mtime-stability check
+        # is trivially true for such a file, and ``_segment_complete``
+        # would return True. The bytes are technically valid but they
+        # were produced against a different edit list / timestamp
+        # base than the current generation's segments, so Kodi's HLS
+        # demuxer either glitches or stalls when it tries to splice
+        # them. The "next segment exists" branch above already has
+        # this guard; this is the matching guard for the mtime path.
+        if self.segment_format == "fmp4" and mtime < self._spawn_time:
+            return False
         if (time.time() - mtime) * 1000.0 > _HLS_SEGMENT_MTIME_STABLE_MS:
             return True
         # If this is the terminal segment (no N+1 will ever exist),
@@ -1988,7 +2036,11 @@ class HlsProducer:
         seek Kodi expects a discontinuity anyway.
         """
         _validate_url(self.remote_url)
-        input_url = _embed_auth_in_url(self.remote_url, self.auth_header)
+        # Pass auth via -headers (not URL-embedded) so credentials
+        # don't leak into argv / ffmpeg.log / error messages. See
+        # _ffmpeg_auth_args for the rationale.
+        input_url = self.remote_url
+        auth_args = _ffmpeg_auth_args(self.auth_header)
 
         # -probesize / -analyzeduration: ffmpeg needs to read enough
         # input bytes AND enough media duration to determine codec
@@ -2027,19 +2079,25 @@ class HlsProducer:
             "1",
             "-reconnect_streamed",
             "1",
-            "-i",
-            input_url,
-            "-map",
-            "0:v:0",
-            "-map",
-            "0:a",
-            "-c:v",
-            "copy",
-            "-c:a",
-            "copy",
-            "-sn",
-            "-copyts",
         ]
+        # Auth headers MUST come before -i so they apply to the input.
+        cmd.extend(auth_args)
+        cmd.extend(
+            [
+                "-i",
+                input_url,
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "copy",
+                "-sn",
+                "-copyts",
+            ]
+        )
 
         if self.segment_format == "fmp4":
             # IMPORTANT: fmp4 arguments must be RELATIVE filenames, not
@@ -2949,16 +3007,29 @@ class StreamProxy:
         )
 
     @staticmethod
-    def _probe_ffmpeg_stderr(ffmpeg_path, input_url, parser, label):
+    def _probe_ffmpeg_stderr(ffmpeg_path, input_url, parser, label, auth_args=None):
         """Shared body of ``_probe_duration_ffmpeg`` and
         ``_probe_dv_profile``. Spawns ``ffmpeg -v info -i <url> -f null
         -`` and runs the parser against collected stderr under a
-        bounded reader thread + wall-clock deadline."""
+        bounded reader thread + wall-clock deadline.
+
+        ``auth_args`` is an optional list of ffmpeg argv pieces (from
+        ``_ffmpeg_auth_args``) that gets inserted before ``-i`` so the
+        Authorization header is passed via ``-headers`` instead of
+        being spliced into the input URL. Callers that build the URL
+        with ``_embed_auth_in_url`` should leave this None; new
+        callers should prefer the ``-headers`` form.
+        """
         import threading
+
+        cmd = [ffmpeg_path, "-v", "info"]
+        if auth_args:
+            cmd.extend(auth_args)
+        cmd.extend(["-i", input_url, "-f", "null", "-"])
 
         try:
             proc = subprocess.Popen(
-                [ffmpeg_path, "-v", "info", "-i", input_url, "-f", "null", "-"],
+                cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 shell=False,
@@ -3038,9 +3109,14 @@ class StreamProxy:
         layers in one track and the EL would be silently dropped.
         """
         _validate_url(url)
-        input_url = _embed_auth_in_url(url, auth_header)
+        # Pass auth via -headers (clean URL, no credential leak into
+        # ffmpeg.log on probe failure). See _ffmpeg_auth_args.
         return StreamProxy._probe_ffmpeg_stderr(
-            ffmpeg_path, input_url, _parse_ffmpeg_dv_profile, "DV profile"
+            ffmpeg_path,
+            url,
+            _parse_ffmpeg_dv_profile,
+            "DV profile",
+            auth_args=_ffmpeg_auth_args(auth_header),
         )
 
     @staticmethod

@@ -663,6 +663,24 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
                 )
             except Exception:  # pylint: disable=broad-except
                 pass
+        # After submit_done fires, re-check queue_hit ONE more time
+        # before returning the submit worker's result. Race window:
+        # the queue probe might have found the job microseconds after
+        # the main loop's last check and microseconds before the
+        # submit worker set submit_done. Without this re-check, a
+        # submit failure (None, error) returned by the worker would
+        # win over a concurrent successful adoption — and the
+        # resolver would fall through to the retry path, double-
+        # submitting a job nzbdav already has. Prefer the adopted
+        # nzo_id whenever the probe found one.
+        if queue_hit[0] and not submit_result[0]:
+            xbmc.log(
+                "NZB-DAV: Queue probe found '{}' under nzo_id={} just as "
+                "submit worker finished; preferring the adopted job over "
+                "the submit result".format(title, queue_hit[0]),
+                xbmc.LOGINFO,
+            )
+            return queue_hit[0], None
         return submit_result[0], submit_result[1]
     finally:
         queue_stop.set()
