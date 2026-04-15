@@ -2060,19 +2060,24 @@ def test_serve_hls_segment_504_on_producer_timeout():
     handler.send_error.assert_called_once_with(504)
 
 
-def test_serve_hls_init_reads_from_producer_wait_for_init(tmp_path):
-    """_serve_hls_init calls producer.wait_for_init(), reads the
-    resulting file, and writes its bytes to wfile with Content-Length."""
+def test_serve_hls_init_serves_canonical_cached_bytes(tmp_path):
+    """_serve_hls_init serves the producer's canonical init bytes
+    cache — NOT the bytes currently on disk. On a seek respawn ffmpeg
+    rewrites init.mp4 with a different edit list; the canonical cache
+    guarantees every Kodi fetch returns the first generation's init
+    so the cached init stays compatible with later segments."""
     import os as _os
 
     from resources.lib.stream_proxy import _StreamHandler
 
     init_path = _os.path.join(str(tmp_path), "init.mp4")
+    # Write STALE bytes to disk to prove the handler doesn't read them.
     with open(init_path, "wb") as f:
-        f.write(b"INITCONTENT")
+        f.write(b"STALE_DISK_BYTES")
 
     producer = MagicMock()
     producer.wait_for_init.return_value = init_path
+    producer._canonical_init_bytes = b"CANONICAL"
     ctx = {
         "hls_segment_format": "fmp4",
         "hls_producer": producer,
@@ -2099,8 +2104,44 @@ def test_serve_hls_init_reads_from_producer_wait_for_init(tmp_path):
         for call in handler.send_header.call_args_list
         if call.args[0] == "Content-Length"
     ]
-    assert cl_calls[0].args[1] == str(len(b"INITCONTENT"))
-    handler.wfile.write.assert_called_with(b"INITCONTENT")
+    assert cl_calls[0].args[1] == str(len(b"CANONICAL"))
+    handler.wfile.write.assert_called_with(b"CANONICAL")
+
+
+def test_serve_hls_init_falls_back_to_disk_when_cache_missing(tmp_path):
+    """If the canonical cache hasn't been populated yet (very early
+    fetch before wait_for_init has actually observed a complete init),
+    the handler falls back to reading the on-disk init file. This is
+    a defensive path — in practice wait_for_init populates the cache
+    before returning a path, so the handler should always hit the
+    cache. Regression guard for the legacy behavior just in case."""
+    import os as _os
+
+    from resources.lib.stream_proxy import _StreamHandler
+
+    init_path = _os.path.join(str(tmp_path), "init.mp4")
+    with open(init_path, "wb") as f:
+        f.write(b"DISK_BYTES")
+
+    producer = MagicMock()
+    producer.wait_for_init.return_value = init_path
+    producer._canonical_init_bytes = None  # cache empty
+    ctx = {
+        "hls_segment_format": "fmp4",
+        "hls_producer": producer,
+    }
+
+    handler = _StreamHandler.__new__(_StreamHandler)
+    handler.send_response = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
+    handler.wfile = MagicMock()
+    handler.send_error = MagicMock()
+
+    handler._serve_hls_init(ctx)
+
+    handler.send_response.assert_called_with(200)
+    handler.wfile.write.assert_called_with(b"DISK_BYTES")
 
 
 def test_serve_hls_init_504_on_producer_timeout():
@@ -2650,10 +2691,15 @@ def test_hls_producer_does_not_restart_on_small_forward_seek(tmp_path):
     alive_proc.kill.assert_not_called()
 
 
-def test_hls_producer_unlinks_stale_init_before_respawn(tmp_path):
-    """_ensure_ffmpeg_headed_for in fmp4 mode unlinks init.mp4
-    synchronously before Popen. A patched Popen checks the file is
-    already gone at the moment of spawn."""
+def test_hls_producer_preserves_init_across_respawn(tmp_path):
+    """_ensure_ffmpeg_headed_for in fmp4 mode must NOT unlink
+    init.mp4 on respawn. The canonical init bytes cache in the
+    producer has already committed to serving the first generation's
+    init to every Kodi fetch, so whatever ffmpeg writes to the disk
+    file on subsequent generations is irrelevant. Unlinking would
+    just race the on-disk overwrite and momentarily fail the
+    _init_file_complete check for no gain. Regression guard for
+    the rewrite that added the canonical cache."""
     import os as _os
 
     from resources.lib.stream_proxy import HlsProducer
@@ -2671,12 +2717,16 @@ def test_hls_producer_unlinks_stale_init_before_respawn(tmp_path):
     try:
         init_path = _os.path.join(producer.session_dir, "init.mp4")
         with open(init_path, "wb") as f:
-            f.write(b"STALE")
+            f.write(b"GEN_0_INIT")
 
         init_existed_at_spawn = {"value": None}
+        init_bytes_at_spawn = {"value": None}
 
         def spy_popen(*args, **kwargs):
             init_existed_at_spawn["value"] = _os.path.exists(init_path)
+            if init_existed_at_spawn["value"]:
+                with open(init_path, "rb") as f:
+                    init_bytes_at_spawn["value"] = f.read()
             proc = MagicMock()
             proc.poll.return_value = None
             return proc
@@ -2687,7 +2737,8 @@ def test_hls_producer_unlinks_stale_init_before_respawn(tmp_path):
         ):
             producer._ensure_ffmpeg_headed_for(40)
 
-        assert init_existed_at_spawn["value"] is False
+        assert init_existed_at_spawn["value"] is True
+        assert init_bytes_at_spawn["value"] == b"GEN_0_INIT"
     finally:
         producer.close()
 

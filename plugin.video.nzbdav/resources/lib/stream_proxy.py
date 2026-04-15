@@ -1145,21 +1145,37 @@ class _StreamHandler(BaseHTTPRequestHandler):
             xbmc.log("NZB-DAV: HLS init wait timed out", xbmc.LOGWARNING)
             self.send_error(504)
             return
-        try:
-            size = os.path.getsize(init_path)
-            with open(init_path, "rb") as f:
-                body = f.read()
-        except OSError as e:
-            xbmc.log(
-                "NZB-DAV: HLS init read failed: {}".format(e),
-                xbmc.LOGERROR,
-            )
-            self.send_error(500)
-            return
+        # Serve the canonical bytes cached in the producer, not whatever
+        # is on disk at this moment. On a seek respawn ffmpeg rewrites
+        # init.mp4 with a different edit list (the ``elst`` box entries
+        # differ per seek position); the ``hvcC``/``mp4a`` codec config
+        # is byte-identical, but HLS clients load the init segment once
+        # and keep it cached, so Kodi would be playing later segments
+        # against an ``elst`` that referenced a different base time.
+        # The canonical-bytes cache guarantees every Kodi fetch returns
+        # the first init's bytes regardless of respawn state — which
+        # makes the init compatible with every segment the producer
+        # emits.
+        body = getattr(producer, "_canonical_init_bytes", None)
+        if body is None:
+            # Very early fetch: wait_for_init returned a path but the
+            # cache hasn't been populated yet (shouldn't happen now
+            # that wait_for_init populates it, but keep the disk-read
+            # fallback for robustness).
+            try:
+                with open(init_path, "rb") as f:
+                    body = f.read()
+            except OSError as e:
+                xbmc.log(
+                    "NZB-DAV: HLS init read failed: {}".format(e),
+                    xbmc.LOGERROR,
+                )
+                self.send_error(500)
+                return
 
         self.send_response(200)
         self.send_header("Content-Type", "video/mp4")
-        self.send_header("Content-Length", str(size))
+        self.send_header("Content-Length", str(len(body)))
         self.send_header("Connection", "close")
         self.close_connection = True  # pylint: disable=attribute-defined-outside-init
         self.end_headers()
@@ -1600,6 +1616,24 @@ class HlsProducer:
         # wait_for_init reads it before the first spawn and would
         # AttributeError on a fresh session otherwise.
         self._init_ready = False
+        # Canonical init segment bytes. Populated the first time
+        # wait_for_init observes a complete init.mp4 on disk. After
+        # that, ``_serve_hls_init`` returns these bytes for every
+        # Kodi request, ignoring whatever ffmpeg writes to the disk
+        # file on subsequent generations. Rationale: on a seek
+        # respawn, ffmpeg produces a new init.mp4 with a different
+        # edit list (``elst`` box) — the codec config (``hvcC``,
+        # ``mp4a``) is byte-identical, so from a decoder
+        # compatibility standpoint the first init works for every
+        # generation. But HLS fmp4 clients only load ``EXT-X-MAP``
+        # once per playlist, so Kodi has already cached the first
+        # init's bytes. Serving a different init on a later request
+        # — or worse, letting Kodi re-parse a half-written disk
+        # file mid-respawn — would be either a no-op (if Kodi
+        # ignores the second fetch) or a decoder stall (if it
+        # accepts it). Caching the bytes here makes the behavior
+        # deterministic regardless of what Kodi does.
+        self._canonical_init_bytes = None
         # Session-wide stderr log. Opened once at session construction,
         # reused across every ffmpeg spawn (fixing the stderr=PIPE
         # deadlock from the persistent-producer era), closed in close().
@@ -1728,6 +1762,27 @@ class HlsProducer:
             # the file syscall on subsequent calls.
             if self._init_file_complete():
                 self._init_ready = True
+                # Cache the first init.mp4 we see so later requests
+                # (and respawn generations with different edit lists)
+                # serve byte-identical data. See the docstring on
+                # self._canonical_init_bytes for the full rationale.
+                if self._canonical_init_bytes is None:
+                    try:
+                        with open(init_path, "rb") as f:
+                            self._canonical_init_bytes = f.read()
+                        xbmc.log(
+                            "NZB-DAV: Cached canonical init.mp4 "
+                            "({} bytes) for session".format(
+                                len(self._canonical_init_bytes)
+                            ),
+                            xbmc.LOGINFO,
+                        )
+                    except OSError as e:
+                        xbmc.log(
+                            "NZB-DAV: Failed to cache canonical "
+                            "init.mp4: {}".format(e),
+                            xbmc.LOGWARNING,
+                        )
                 return init_path
             with self._lock:
                 proc = self._proc
@@ -1833,19 +1888,20 @@ class HlsProducer:
                     pass
             self._proc = None
 
-            # fmp4 generation boundary: unlink both init.mp4 and the
-            # new target segment file so the "seg_<start_segment>.m4s
-            # exists" completeness signal in _init_file_complete is
+            # fmp4 generation boundary: unlink the new target segment
+            # file so the "seg_<start_segment>.m4s exists"
+            # completeness signal in _init_file_complete is
             # unambiguously bound to the NEW ffmpeg. Do NOT blanket-
             # sweep other segments — leaving prior-generation files
             # in place preserves the backward-seek cache optimization
-            # in _segment_complete.
+            # in _segment_complete. Do NOT unlink init.mp4 either:
+            # the canonical bytes cache in _canonical_init_bytes
+            # already committed to serving the first generation's
+            # init to every Kodi request, so whatever new ffmpeg
+            # writes to the on-disk init.mp4 is irrelevant. Unlinking
+            # would just race the on-disk overwrite and momentarily
+            # fail _init_file_complete for no gain.
             if self.segment_format == "fmp4":
-                init_path = os.path.join(self.session_dir, "init.mp4")
-                try:
-                    os.unlink(init_path)
-                except FileNotFoundError:
-                    pass
                 first_seg_path = os.path.join(
                     self.session_dir, "seg_{:06d}.m4s".format(seg_n)
                 )
@@ -1853,6 +1909,10 @@ class HlsProducer:
                     os.unlink(first_seg_path)
                 except FileNotFoundError:
                     pass
+                # Reset _init_ready so wait_for_init/wait_for_segment
+                # re-verify the generation boundary (checks that
+                # seg_<new_target>.m4s exists post-spawn) — but the
+                # canonical init bytes persist across the reset.
                 self._init_ready = False
 
             # Start a new one aimed at seg_n.
@@ -1970,24 +2030,31 @@ class HlsProducer:
             # session dir (see ``_ensure_ffmpeg_headed_for``'s ``Popen``
             # call). Reproduced 2026-04-14 on a 48 GB DV HEVC REMUX
             # and a 27 GB AVC REMUX; both failed with absolute paths,
-            # both succeeded with relative. Verified the error is not
-            # caused by -tag:v hvc1 or by the audio stream — a
-            # video-only copy also failed on absolute paths.
+            # both succeeded with relative.
             init_path = "init.mp4"
             seg_pattern = "seg_%06d.m4s"
             playlist_path = "ffmpeg_playlist.m3u8"
+            # -strict -2 (== -strict experimental) unlocks TrueHD and
+            # DTS-HD MA output in the MP4/fMP4 muxer. ffmpeg 6.0.1
+            # otherwise refuses with "truehd in MP4 support is
+            # experimental, add '-strict -2' if you want to use it"
+            # / "dts in MP4 support is experimental, ..." and fails
+            # to write the init header at all. Virtually every UHD
+            # REMUX uses one of those codecs, so without this flag
+            # the fmp4 HLS path never produces a playable output
+            # on real content. Verified 2026-04-14 against The
+            # Machinist (TrueHD) — failed without -strict, succeeded
+            # with it.
+            cmd.extend(["-strict", "-2"])
             # Force the HLS-spec sample entry tag on the video track.
             # fMP4 HLS mandates ``hvc1`` for HEVC (parameter sets in the
             # sample description box, not inband), and Amlogic's HLS
             # demuxer looks at ``hvc1``/``hev1`` to decide whether to
             # inspect the ``dvcC``/``dvvC`` DV configuration records in
-            # the init segment. A source carrying ``hev1`` copied into
-            # fmp4 without re-tagging hides the DV config from the
-            # hardware decoder and is a likely cause of the DV HEVC
-            # stalls seen with the earlier fmp4 spike on CoreELEC
-            # (commit 50a6eb3). ``-tag:v hvc1`` is a metadata swap, not
-            # a re-encode; ffmpeg pulls SPS/PPS/VPS into ``hvcC`` at
-            # the muxer and leaves the bitstream otherwise untouched.
+            # the init segment. ``-tag:v hvc1`` is a metadata swap,
+            # not a re-encode; ffmpeg pulls SPS/PPS/VPS into ``hvcC``
+            # at the muxer and leaves the bitstream otherwise
+            # untouched.
             cmd.extend(["-tag:v", "hvc1"])
             cmd.extend(
                 [
