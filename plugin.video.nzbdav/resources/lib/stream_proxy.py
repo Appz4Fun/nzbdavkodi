@@ -1991,32 +1991,34 @@ class HlsProducer:
         input_url = _embed_auth_in_url(self.remote_url, self.auth_header)
 
         # -probesize / -analyzeduration: ffmpeg needs to read enough
-        # input bytes AND spend enough wall-clock time inspecting
-        # packets to determine codec parameters before it starts
-        # muxing output. The previous values (1 MB / 0 us) skipped
-        # analysis entirely, which is fine for video stream copy
-        # (the MKV CodecPrivate carries SPS/PPS/VPS) but breaks
-        # audio frame-size detection for DTS / TrueHD: ffmpeg
-        # logs "track 1: codec frame size is not set" and the mp4
-        # muxer falls back to a default per-packet duration that
-        # doesn't match the source, producing a constant ~0.7 s
-        # audio drift over the whole stream.
+        # input bytes AND enough media duration to determine codec
+        # parameters before muxing starts. The original (1 MB / 0)
+        # skipped analysis entirely, which broke audio frame-size
+        # detection: ffmpeg logged "track N: codec frame size is
+        # not set" and the mp4 muxer fell back to a default
+        # per-packet duration that didn't match reality, producing
+        # AV desync on DTS/TrueHD AND outright "no audio" on
+        # E-AC-3 (DDP) sources.
         #
-        # Bumping to 5 MB / 2 s gives ffmpeg enough headroom to
-        # parse a few seconds of audio frames and write the right
-        # sample timing into the fmp4 sample tables. Costs ~2 s of
-        # extra startup latency on the first spawn AND on every
-        # seek respawn, which is the right tradeoff vs visible
-        # AV desync. mpegts mode also benefits because the mpegts
-        # muxer hits the same code path on copy.
+        # The first bump to 5 MB / 2 s helped DTS slightly but
+        # didn't catch E-AC-3 in a sparsely-interleaved MKV — 2 s
+        # of media time covers only a handful of audio packets in
+        # a 4K REMUX where audio is interleaved between large
+        # video keyframes. Bumping to 50 MB / 15 s gives ffmpeg a
+        # comfortable margin to read dozens of audio packets and
+        # determine the codec frame size for any practical source.
+        # Costs ~3-5 s of extra startup latency on first spawn
+        # (and on every seek respawn) — the playback-never-started
+        # watchdog in service.py was raised to 30 s for exactly
+        # this reason.
         cmd = [
             self.ffmpeg_path,
             "-v",
             "warning",
             "-probesize",
-            "5242880",
+            "52428800",
             "-analyzeduration",
-            "2000000",
+            "15000000",
             "-fflags",
             "+fastseek",
             "-ss",
@@ -2173,12 +2175,81 @@ class HlsProducer:
             self._ffmpeg_log.close()
         except OSError:
             pass
+        # Persist the session's ffmpeg.log to a stable rolling
+        # location BEFORE the session dir is deleted. Otherwise
+        # every "playback failed" debug session has to chase a
+        # log that no longer exists — which has bitten us several
+        # times already on the fmp4 spike. Keep the most recent
+        # 10 logs, named by session_id so they're easy to
+        # cross-reference with the kodi.log "session_id=..." lines.
+        try:
+            self._archive_ffmpeg_log()
+        except Exception:  # pylint: disable=broad-except
+            pass
         try:
             import shutil as _shutil
 
             _shutil.rmtree(self.session_dir, ignore_errors=True)
         except OSError:
             pass
+
+    def _archive_ffmpeg_log(self):
+        """Copy the session's ffmpeg.log to /storage/.kodi/temp/
+        nzbdav-hls-logs/ and trim to the most recent 10."""
+        import shutil as _shutil
+
+        src = self._ffmpeg_log_path
+        if not os.path.exists(src):
+            return
+        try:
+            size = os.path.getsize(src)
+        except OSError:
+            return
+        if size == 0:
+            return  # empty log — nothing useful to preserve
+
+        try:
+            import xbmcvfs
+
+            archive_dir = xbmcvfs.translatePath("special://temp/nzbdav-hls-logs/")
+        except Exception:  # pylint: disable=broad-except
+            archive_dir = "/tmp/nzbdav-hls-logs"
+        try:
+            os.makedirs(archive_dir, exist_ok=True)
+        except OSError:
+            return
+
+        session_id = os.path.basename(self.session_dir)
+        dst = os.path.join(archive_dir, "ffmpeg-{}.log".format(session_id))
+        try:
+            _shutil.copy2(src, dst)
+        except OSError:
+            return
+
+        # Trim: keep the 10 most recent archived logs.
+        try:
+            entries = []
+            for name in os.listdir(archive_dir):
+                if not name.startswith("ffmpeg-") or not name.endswith(".log"):
+                    continue
+                full = os.path.join(archive_dir, name)
+                try:
+                    entries.append((os.path.getmtime(full), full))
+                except OSError:
+                    continue
+            entries.sort(reverse=True)
+            for _, path in entries[10:]:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+        except OSError:
+            pass
+
+        xbmc.log(
+            "NZB-DAV: Archived session ffmpeg.log to {}".format(dst),
+            xbmc.LOGINFO,
+        )
 
 
 class StreamProxy:
