@@ -2801,37 +2801,44 @@ class StreamProxy:
                     and duration > 0
                 )
                 if use_fmp4:
-                    # Gate fmp4 HLS on DV profile. Profile 7 (dual-layer
-                    # FEL with BL+EL+RPU) cannot survive an fmp4 transmux:
-                    # fmp4 HLS has no standard way to carry two HEVC
-                    # layers in one track, so the enhancement layer would
-                    # be silently dropped and Amlogic's decoder is known
-                    # to stall on the resulting stream. Profiles 5 and 8
-                    # are single-layer and safe to try. A None return
-                    # from the probe means either no DV or a parse
-                    # failure — either way we allow fmp4 (the matroska
-                    # path is already proven, so "fall through to
-                    # matroska on parse failure" would be unnecessarily
-                    # conservative).
+                    # Gate fmp4 HLS on DV profile. The original gate only
+                    # rejected profile 7 (dual-layer FEL) on the theory
+                    # that single-layer profiles 5 and 8 would pass
+                    # through fmp4 cleanly. 2026-04-15 testing on a DV
+                    # Profile 8 source (Evangelion.3.0+1.0.Thrice.Upon.a.
+                    # Time.2021.2160p.BluRay...DV.HDR.H.265) proved that
+                    # wrong: the CAMLCodec HW decoder opened with
+                    # ``DOVI: version 1.0, profile 8, el type 0``, ffmpeg
+                    # produced 14+ segments cleanly, but ``onAVStarted``
+                    # never fired and the addon's 30 s watchdog tripped
+                    # at 175 s. The HW decoder was stuck in init state
+                    # with partial YUV planes (half-green screen) and
+                    # Kodi froze trying to close the player.
+                    #
+                    # Broadened the gate: ANY confirmed DV profile
+                    # routes to matroska. fmp4 HLS is reserved for
+                    # sources the probe reports as non-DV (or can't
+                    # read, in which case we assume non-DV because
+                    # genuinely unparseable headers are rare and the
+                    # cost of a wrong guess toward fmp4 is low now
+                    # that prepare() has the runtime production
+                    # watchdog to fall back anyway).
                     dv_profile = self._probe_dv_profile(
                         ffmpeg_path, remote_url, auth_header
                     )
-                    if dv_profile == 7:
+                    if dv_profile is not None:
                         xbmc.log(
-                            "NZB-DAV: Source is Dolby Vision profile 7 "
-                            "(dual-layer FEL); fmp4 HLS cannot carry two "
-                            "HEVC layers — falling back to piped Matroska "
-                            "despite force_remux_mode=hls_fmp4",
+                            "NZB-DAV: Source is Dolby Vision profile {}; "
+                            "fmp4 HLS does not decode DV on this Amlogic "
+                            "build — falling back to piped Matroska "
+                            "despite force_remux_mode=hls_fmp4".format(dv_profile),
                             xbmc.LOGWARNING,
                         )
                         use_fmp4 = False
                     else:
                         xbmc.log(
-                            "NZB-DAV: DV profile probe: {}".format(
-                                "profile {}".format(dv_profile)
-                                if dv_profile is not None
-                                else "none/unknown"
-                            ),
+                            "NZB-DAV: DV profile probe: none/unknown "
+                            "— proceeding with fmp4 HLS",
                             xbmc.LOGDEBUG,
                         )
                 if use_fmp4:
