@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Released | What it's about |
 |---|---|---|
-| **[Unreleased](#unreleased)** | — | Force-remux for 20 GB+ files (matroska default), self-healing fmp4 HLS opt-in (full random seek, DV-aware), threaded submit + queue adoption, real-ffmpeg integration tests, PROXY.md |
+| **[1.0.0-pre-alpha](#100-pre-alpha--2026-04-15)** | 2026-04-15 | Force-remux for 20 GB+ files (matroska default), self-healing fmp4 HLS opt-in (full random seek, DV-aware), threaded submit + queue adoption, real-ffmpeg integration tests, PROXY.md |
 | **[0.6.21](#0621--2026-04-13)** | 2026-04-13 | Stale-job cleanup + real nzbdav error messages on submit failure |
 | **[0.6.20](#0620--2026-04-13)** | 2026-04-13 | Resolve-loop: no UI freeze, no silent retry on bad WebDAV creds |
 | **[0.6.19](#0619--2026-04-12)** | 2026-04-12 | README refresh + pylint CI fix |
@@ -46,9 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [1.0.0-pre-alpha] — 2026-04-15
 
-> **Big-file force-remux on by default + the fmp4 HLS spike landed.** 100 GB DV REMUXes now force-remux through ffmpeg instead of crashing 32-bit Kodi on pass-through, and the experimental fragmented-MP4 HLS branch (opt-in via Advanced settings) is now self-healing — every class of fmp4 failure we found falls back automatically to the known-good piped-Matroska path before Kodi ever sees a broken URL. The submit pipeline stops freezing the UI on slow nzbdav `/api?mode=addurl` responses, the resolver hardens against a typo'd setting eating the whole stack, and `PROXY.md` documents the entire proxy subsystem end-to-end.
+> **First major rewrite milestone — tagged on the spike/hls-fmp4 branch as a pre-release before merging to main.** Big-file force-remux on by default, the fmp4 HLS spike landed and self-heals on failure, the submit pipeline stops freezing on slow nzbdav, the resolver hardens against typo'd settings, and `PROXY.md` documents the proxy subsystem end-to-end. 100 GB DV REMUXes now force-remux through ffmpeg instead of crashing 32-bit Kodi on pass-through, and the experimental fragmented-MP4 HLS branch (opt-in via Advanced settings) automatically falls back to the known-good piped-Matroska path before Kodi ever sees a broken URL when ffmpeg can't produce output. Verified on a CoreELEC ARM64 test box against multiple UHD remuxes — fmp4 HLS gives full random seek for non-DV-Profile-7 sources, matroska fallback covers the DV P7 case.
 
 **Added**
 - **`Force remux output format` setting** (`force_remux_mode`) in Advanced. Default `matroska` (piped MKV, DV-safe, seek-limited and known-good on Amlogic). Experimental `hls_fmp4` produces an HLS VOD playlist with fragmented-MP4 segments for full random seek across multi-hundred-gigabyte sources. Gated by an automatic Dolby Vision profile 7 fallback (P7 dual-layer FEL has no fmp4 representation), an early-spawn `ffmpeg` validation, and a 30 s production-output watchdog — see "Runtime fmp4→matroska fallback" under **Changed**.
