@@ -836,8 +836,16 @@ def test_prepare_stream_dv_profile_7_falls_back_to_matroska():
     assert ctx.get("hls_segment_format") is None
 
 
-def test_prepare_stream_dv_profile_5_stays_on_fmp4():
-    """Profile 5 is single-layer IPTPQc2 — safe to attempt fmp4 HLS."""
+def test_prepare_stream_dv_profile_5_falls_back_to_matroska():
+    """Profile 5 (single-layer IPTPQc2) falls back to matroska.
+
+    The original gate allowed P5/P8 through fmp4 on the theory that
+    only dual-layer P7 was broken, but 2026-04-15 testing against a
+    DV Profile 8 source on the Amlogic CoreELEC build proved the HW
+    decoder doesn't actually decode DV on the fmp4 path regardless
+    of profile — onAVStarted never fires, the YUV planes stay half-
+    green, and Kodi freezes on stop. The gate was broadened to
+    route ANY confirmed DV profile back to the matroska pipe."""
     import sys
 
     from resources.lib.stream_proxy import StreamProxy
@@ -854,21 +862,22 @@ def test_prepare_stream_dv_profile_5_stays_on_fmp4():
             "resources.lib.stream_proxy.subprocess.Popen", return_value=duration_proc
         ), patch.object(
             StreamProxy, "_probe_dv_profile", return_value=5
-        ), patch(
-            "resources.lib.stream_proxy.HlsProducer"
-        ) as mock_producer_cls:
-            mock_producer_cls.return_value = MagicMock()
+        ):
             sp.prepare_stream("http://host/dv-p5-remux.mkv")
     finally:
         sys.modules["xbmcaddon"].Addon.return_value = original
 
     ctx = sp._server.stream_context
-    assert ctx["mode"] == "hls"
-    assert ctx["hls_segment_format"] == "fmp4"
+    assert ctx.get("mode") != "hls"
+    assert ctx["content_type"] == "video/x-matroska"
 
 
-def test_prepare_stream_dv_profile_8_stays_on_fmp4():
-    """Profile 8 is single-layer cross-compatible — safe for fmp4 HLS."""
+def test_prepare_stream_dv_profile_8_falls_back_to_matroska():
+    """Profile 8 (single-layer cross-compatible) falls back to matroska
+    for the same reason as P5 — the Amlogic fmp4 HW decoder path
+    doesn't decode DV regardless of single-layer vs dual-layer. See
+    the docstring on test_prepare_stream_dv_profile_5_falls_back_to
+    _matroska for the reproduction details."""
     import sys
 
     from resources.lib.stream_proxy import StreamProxy
@@ -885,17 +894,14 @@ def test_prepare_stream_dv_profile_8_stays_on_fmp4():
             "resources.lib.stream_proxy.subprocess.Popen", return_value=duration_proc
         ), patch.object(
             StreamProxy, "_probe_dv_profile", return_value=8
-        ), patch(
-            "resources.lib.stream_proxy.HlsProducer"
-        ) as mock_producer_cls:
-            mock_producer_cls.return_value = MagicMock()
+        ):
             sp.prepare_stream("http://host/dv-p8-remux.mkv")
     finally:
         sys.modules["xbmcaddon"].Addon.return_value = original
 
     ctx = sp._server.stream_context
-    assert ctx["mode"] == "hls"
-    assert ctx["hls_segment_format"] == "fmp4"
+    assert ctx.get("mode") != "hls"
+    assert ctx["content_type"] == "video/x-matroska"
 
 
 def test_prepare_stream_dv_probe_none_stays_on_fmp4():
