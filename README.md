@@ -39,7 +39,7 @@ The proxy picks one of four paths based on the container and file size:
 3. **MKV and other containers (under the force-remux threshold)** -- served as a byte pass-through with ranged upstream fetches. Kodi gets native seeking from the source file's real Cues, and the proxy layers zero-fill recovery on top: when an upstream read fails mid-stream, it probes forward to the next readable offset, writes zero bytes across the gap, and keeps streaming. No more black screen when a single Usenet article is unrecoverable.
 4. **Force remux (files above the threshold, default 20 GB)** -- huge non-MP4 files are streamed through ffmpeg to hide their true size from 32-bit Kodi's `CFileCache` overflow. Two output shapes:
    - **Piped Matroska (default, DV-safe)** -- `ffmpeg -c copy -f matroska pipe:1`, unsized. Known-good on Dolby Vision HEVC + TrueHD/Atmos 100 GB REMUXes. Seek is approximate (each seek respawns ffmpeg with `-ss`).
-   - **Fragmented MP4 HLS (experimental, opt-in)** -- `force_remux_mode` in Advanced settings. Produces an HLS VOD playlist with per-segment `hvc1`-tagged fMP4. Gives full random seek, but Amlogic hardware decoder support for the fmp4 path is still under development. Dolby Vision profile 7 is automatically routed back to the matroska branch regardless of this setting (fmp4 HLS cannot carry dual-layer HEVC).
+   - **Fragmented MP4 HLS (experimental, opt-in)** -- `force_remux_mode` in Advanced settings. Produces an HLS VOD playlist with per-segment `hvc1`-tagged fMP4 + a canonical `init.mp4` that survives seek respawns. Gives full random seek across multi-hundred-gigabyte sources. **Self-healing**: if ffmpeg fails to start or doesn't produce a valid init segment within 30 s, the proxy automatically rewrites the session to the matroska branch *before* Kodi sees a broken URL. Dolby Vision profile 7 sources are detected and routed straight to matroska (fmp4 HLS cannot carry dual-layer HEVC).
 
 If ffmpeg isn't installed, the proxy degrades gracefully to pass-through or direct redirect.
 
@@ -231,16 +231,17 @@ With **Auto-select best match** enabled, the dialog is skipped and the top resul
 ### Commands
 
 ```bash
-just test          # Run all 482 tests
-just test-verbose  # Run tests with full output
-just lint          # Check ruff + black formatting
-just lint-fix      # Auto-fix lint issues
-just release       # Build plugin.video.nzbdav.zip
-just ship          # Run tests then build release
-just repo          # Build release + generate Kodi repo in dist/
-just repo-zip      # Build repo + copy repository zip to cwd
-just clean         # Remove build artifacts
-just dist-clean    # Remove build artifacts + dist/
+just test              # Run all 496 unit tests (integration tests excluded)
+just test-verbose      # Run unit tests with full output
+just test-integration  # Run integration tests against a real ffmpeg binary
+just lint              # Check ruff + black formatting
+just lint-fix          # Auto-fix lint issues
+just release           # Build plugin.video.nzbdav.zip
+just ship              # Run tests then build release
+just repo              # Build release + generate Kodi repo in dist/
+just repo-zip          # Build repo + copy repository zip to cwd
+just clean             # Remove build artifacts
+just dist-clean        # Remove build artifacts + dist/
 ```
 
 ### Project Structure
@@ -283,9 +284,10 @@ repo/
   codeql.yml             # CodeQL analysis
   bandit.yml             # Bandit security scan
 tests/
-  conftest.py            # Kodi module mocks
-  test_*.py              # 482 tests
-PROXY.md                 # Stream proxy architecture deep-dive
+  conftest.py                       # Kodi module mocks
+  test_*.py                         # 496 unit tests
+  test_integration_hls_ffmpeg.py    # 2 integration tests (real ffmpeg, opt-in)
+PROXY.md                            # Stream proxy architecture deep-dive
 ```
 
 ### Releasing
