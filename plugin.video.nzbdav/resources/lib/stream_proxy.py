@@ -1865,11 +1865,20 @@ class HlsProducer:
                 xbmc.LOGINFO,
             )
             try:
+                # cwd=session_dir is REQUIRED for fmp4 mode: ffmpeg
+                # 6.0.1 on CoreELEC rejects absolute paths for
+                # ``-hls_fmp4_init_filename``, so _build_cmd passes
+                # relative filenames (init.mp4, seg_%06d.m4s,
+                # ffmpeg_playlist.m3u8) and relies on the process cwd
+                # to place them in the session directory. mpegts mode
+                # still passes absolute segment paths and tolerates
+                # either cwd, so setting cwd unconditionally is safe.
                 self._proc = subprocess.Popen(
                     cmd,
                     stdout=subprocess.DEVNULL,
                     stderr=self._ffmpeg_log,
                     shell=False,
+                    cwd=self.session_dir,
                 )
                 self._start_segment = seg_n
                 self._spawn_time = time.time()
@@ -1952,9 +1961,21 @@ class HlsProducer:
         ]
 
         if self.segment_format == "fmp4":
-            init_path = os.path.join(self.session_dir, "init.mp4")
-            seg_pattern = os.path.join(self.session_dir, "seg_%06d.m4s")
-            playlist_path = os.path.join(self.session_dir, "ffmpeg_playlist.m3u8")
+            # IMPORTANT: fmp4 arguments must be RELATIVE filenames, not
+            # absolute paths. ffmpeg 6.0.1 on CoreELEC fails on absolute
+            # paths for ``-hls_fmp4_init_filename`` with "Failed to open
+            # segment <path>: No such file or directory", even when the
+            # parent directory exists and is writable. Relative names
+            # work reliably when ffmpeg is spawned with cwd set to the
+            # session dir (see ``_ensure_ffmpeg_headed_for``'s ``Popen``
+            # call). Reproduced 2026-04-14 on a 48 GB DV HEVC REMUX
+            # and a 27 GB AVC REMUX; both failed with absolute paths,
+            # both succeeded with relative. Verified the error is not
+            # caused by -tag:v hvc1 or by the audio stream — a
+            # video-only copy also failed on absolute paths.
+            init_path = "init.mp4"
+            seg_pattern = "seg_%06d.m4s"
+            playlist_path = "ffmpeg_playlist.m3u8"
             # Force the HLS-spec sample entry tag on the video track.
             # fMP4 HLS mandates ``hvc1`` for HEVC (parameter sets in the
             # sample description box, not inband), and Amlogic's HLS
