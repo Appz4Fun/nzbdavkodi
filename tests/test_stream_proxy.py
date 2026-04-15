@@ -2743,6 +2743,71 @@ def test_hls_producer_preserves_init_across_respawn(tmp_path):
         producer.close()
 
 
+def test_hls_producer_segment_complete_rejects_stale_prior_generation_segment(
+    tmp_path,
+):
+    """_segment_complete in fmp4 mode must NOT return True for a
+    segment file whose mtime predates the current ffmpeg generation's
+    spawn time, even if the mtime-stability fallback is satisfied.
+
+    Regression for H1 from the branch review: a backward seek can
+    leave a stale ``seg_n.m4s`` from a prior generation on disk
+    (mtime far in the past). The mtime-stability path's
+    ``(now - mtime) > 500ms`` check is trivially true for such a
+    file, and without the generation guard ``_segment_complete``
+    would return True. Kodi would then read that stale segment
+    against the canonical (current-generation) init.mp4 — different
+    edit list / timestamp base, decoder glitch or stall.
+    """
+    import os as _os
+    import time as _time
+
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess-stale",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 6.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        # Simulate a stale segment from a prior generation: write
+        # the file and backdate it well before the current spawn.
+        seg_path = producer.segment_path(40)
+        with open(seg_path, "wb") as f:
+            f.write(b"STALE_GEN_BYTES")
+        ancient_mtime = _time.time() - 3600  # 1 hour ago
+        _os.utime(seg_path, (ancient_mtime, ancient_mtime))
+        # Pretend ffmpeg respawned just now, AFTER the stale file
+        # was written. The current generation has not produced
+        # seg_40 yet.
+        producer._spawn_time = _time.time()
+
+        # _segment_complete(40) must return False — the stale file
+        # belongs to a prior generation and must not be served.
+        assert producer._segment_complete(40) is False
+
+        # Sanity check: a freshly-written file that postdates
+        # spawn_time should be considered complete via the mtime
+        # fallback once it's been stable.
+        with open(seg_path, "wb") as f:
+            f.write(b"NEW_GEN_BYTES")
+        # mtime is now — but we need it stable for 500 ms to trip
+        # the fallback. Backdate to spawn_time + small offset so
+        # mtime > spawn_time AND (now - mtime) > 500 ms.
+        fresh_mtime = producer._spawn_time + 0.001
+        _os.utime(seg_path, (fresh_mtime, fresh_mtime))
+        # Sleep just past the stable window.
+        _time.sleep(0.6)
+        assert producer._segment_complete(40) is True
+    finally:
+        producer.close()
+
+
 def test_hls_producer_unlinks_new_target_segment_before_respawn(tmp_path):
     """_ensure_ffmpeg_headed_for in fmp4 mode unlinks
     seg_<new_target>.m4s before Popen. OTHER stale segments at

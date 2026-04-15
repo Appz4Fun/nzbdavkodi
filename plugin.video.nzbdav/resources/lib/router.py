@@ -527,6 +527,13 @@ def _handle_search(handle, params):
         from resources.lib.resolver import resolve_and_play
 
         resolve_and_play(best["link"], best["title"])
+        # Same hang class as C1 (router.py): /search is a directory
+        # route, so Kodi blocks until endOfDirectory fires. Without
+        # this, the auto-select branch returned silently and Kodi
+        # waited forever for a directory listing that never came.
+        # Mark the directory as not-succeeded since playback already
+        # ran via resolve_and_play.
+        xbmcplugin.endOfDirectory(handle, succeeded=False)
         return
 
     # Tag results already downloaded in nzbdav
