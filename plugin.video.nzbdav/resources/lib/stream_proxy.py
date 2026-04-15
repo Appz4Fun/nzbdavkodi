@@ -1990,14 +1990,33 @@ class HlsProducer:
         _validate_url(self.remote_url)
         input_url = _embed_auth_in_url(self.remote_url, self.auth_header)
 
+        # -probesize / -analyzeduration: ffmpeg needs to read enough
+        # input bytes AND spend enough wall-clock time inspecting
+        # packets to determine codec parameters before it starts
+        # muxing output. The previous values (1 MB / 0 us) skipped
+        # analysis entirely, which is fine for video stream copy
+        # (the MKV CodecPrivate carries SPS/PPS/VPS) but breaks
+        # audio frame-size detection for DTS / TrueHD: ffmpeg
+        # logs "track 1: codec frame size is not set" and the mp4
+        # muxer falls back to a default per-packet duration that
+        # doesn't match the source, producing a constant ~0.7 s
+        # audio drift over the whole stream.
+        #
+        # Bumping to 5 MB / 2 s gives ffmpeg enough headroom to
+        # parse a few seconds of audio frames and write the right
+        # sample timing into the fmp4 sample tables. Costs ~2 s of
+        # extra startup latency on the first spawn AND on every
+        # seek respawn, which is the right tradeoff vs visible
+        # AV desync. mpegts mode also benefits because the mpegts
+        # muxer hits the same code path on copy.
         cmd = [
             self.ffmpeg_path,
             "-v",
             "warning",
             "-probesize",
-            "1048576",
+            "5242880",
             "-analyzeduration",
-            "0",
+            "2000000",
             "-fflags",
             "+fastseek",
             "-ss",
