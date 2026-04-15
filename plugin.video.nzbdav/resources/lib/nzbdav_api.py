@@ -49,13 +49,41 @@ def _get_settings():
     return url, api_key
 
 
+# Hard min/max clamp for submit_timeout. The setting is exposed as
+# free-form text in the Kodi UI, so a typo can produce wildly wrong
+# values (we hit ``submit_timeout=300000`` once — 83 hours, which
+# would let a hung connection block the resolver effectively forever
+# before timing out). 5 s is the absolute minimum that still gives
+# nzbdav time to respond on a healthy LAN; 600 s (10 min) is the
+# absolute maximum that's compatible with the queue-adoption path
+# being effective.
+_SUBMIT_TIMEOUT_MIN = 5
+_SUBMIT_TIMEOUT_MAX = 600
+
+
+def _clamp_int_setting(value, lo, hi):
+    """Clamp an int setting value into [lo, hi]. Used to defend
+    against typo'd setting values cascading into pathological
+    behavior (hour-long timeouts, sub-MB threshold, etc.). Returns
+    ``value`` if already in range, otherwise the nearer bound."""
+    if value < lo:
+        return lo
+    if value > hi:
+        return hi
+    return value
+
+
 def _get_submit_timeout():
-    """Read the configurable submit timeout from settings, default 120s."""
+    """Read the configurable submit timeout from settings, default 120s.
+
+    Clamped to [_SUBMIT_TIMEOUT_MIN, _SUBMIT_TIMEOUT_MAX] so a typo
+    in the Kodi settings UI can't produce a 83-hour timeout."""
     try:
         raw = xbmcaddon.Addon().getSetting("submit_timeout")
-        return int(raw) if raw else _DEFAULT_SUBMIT_TIMEOUT
+        value = int(raw) if raw else _DEFAULT_SUBMIT_TIMEOUT
     except (ValueError, TypeError):
         return _DEFAULT_SUBMIT_TIMEOUT
+    return _clamp_int_setting(value, _SUBMIT_TIMEOUT_MIN, _SUBMIT_TIMEOUT_MAX)
 
 
 def _is_timeout_error(exc):

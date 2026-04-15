@@ -71,6 +71,28 @@ def test_get_submit_timeout_falls_back_on_garbage(mock_xbmcaddon):
     assert _get_submit_timeout() == _DEFAULT_SUBMIT_TIMEOUT
 
 
+@patch("resources.lib.nzbdav_api.xbmcaddon")
+def test_get_submit_timeout_clamps_typo_high(mock_xbmcaddon):
+    """A typo'd huge value (e.g. 300000 — meant 300, accidentally
+    typed too many zeros, observed in the wild) is clamped to the
+    upper bound rather than producing a multi-hour timeout that
+    would block the resolver effectively forever."""
+    from resources.lib.nzbdav_api import _SUBMIT_TIMEOUT_MAX
+
+    mock_xbmcaddon.Addon.return_value.getSetting.return_value = "300000"
+    assert _get_submit_timeout() == _SUBMIT_TIMEOUT_MAX
+
+
+@patch("resources.lib.nzbdav_api.xbmcaddon")
+def test_get_submit_timeout_clamps_too_low(mock_xbmcaddon):
+    """A nonsensically small value (e.g. 0 or 1) is clamped up to
+    the minimum so nzbdav has a fighting chance of responding."""
+    from resources.lib.nzbdav_api import _SUBMIT_TIMEOUT_MIN
+
+    mock_xbmcaddon.Addon.return_value.getSetting.return_value = "1"
+    assert _get_submit_timeout() == _SUBMIT_TIMEOUT_MIN
+
+
 @patch("resources.lib.nzbdav_api._get_settings")
 @patch("resources.lib.nzbdav_api._http_get")
 def test_submit_nzb_failure_returns_none(mock_http, mock_settings):

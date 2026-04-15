@@ -2963,9 +2963,16 @@ def test_hls_producer_prepare_is_noop_for_mpegts(tmp_path):
         producer.close()
 
 
-def test_hls_producer_prepare_returns_for_alive_process(tmp_path):
+def test_hls_producer_prepare_returns_when_init_and_first_segment_appear(
+    tmp_path,
+):
     """fmp4 producer; Popen returns a mock whose poll() returns None
-    (alive). prepare() returns without raising."""
+    (alive). prepare() must wait for init.mp4 + seg_000000.m4s on
+    disk before returning. We simulate ffmpeg's output by writing
+    those files mid-prepare via a side-effect on Popen."""
+    import os as _os
+    import threading as _threading
+
     from resources.lib.stream_proxy import HlsProducer
 
     ctx = {
@@ -2981,11 +2988,97 @@ def test_hls_producer_prepare_returns_for_alive_process(tmp_path):
     try:
         mock_proc = MagicMock()
         mock_proc.poll.return_value = None
+
+        def write_files_after_delay():
+            # Drop the files into the session dir 100 ms after Popen
+            # to simulate ffmpeg producing its first output.
+            import time as _time
+
+            _time.sleep(0.1)
+            with open(_os.path.join(producer.session_dir, "init.mp4"), "wb") as f:
+                f.write(b"INIT")
+            with open(_os.path.join(producer.session_dir, "seg_000000.m4s"), "wb") as f:
+                f.write(b"SEG0")
+
+        def spy_popen(*args, **kwargs):
+            _threading.Thread(target=write_files_after_delay, daemon=True).start()
+            return mock_proc
+
+        with patch(
+            "resources.lib.stream_proxy.subprocess.Popen",
+            side_effect=spy_popen,
+        ):
+            producer.prepare()  # must not raise
+    finally:
+        producer.close()
+
+
+def test_hls_producer_prepare_raises_if_no_output_within_deadline(tmp_path):
+    """fmp4 producer; Popen returns an alive mock but no files ever
+    appear on disk. prepare() must raise after the production
+    deadline so _register_session falls back to matroska. This is
+    the runtime safety net for ffmpeg/source combos that spawn
+    cleanly but never produce output (analysis hang, slow
+    upstream, etc)."""
+    import pytest
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    # Shrink the deadline for the test so we don't sit for 30 s.
+    producer._PREPARE_PRODUCTION_TIMEOUT_SECONDS = 0.5
+    try:
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
         with patch(
             "resources.lib.stream_proxy.subprocess.Popen",
             return_value=mock_proc,
         ):
-            producer.prepare()  # must not raise
+            with pytest.raises(RuntimeError, match="did not produce"):
+                producer.prepare()
+    finally:
+        producer.close()
+
+
+def test_hls_producer_prepare_raises_if_ffmpeg_dies_during_production_wait(
+    tmp_path,
+):
+    """fmp4 producer; ffmpeg starts alive but exits non-zero before
+    producing init.mp4. prepare() must raise immediately on the
+    next poll cycle, not wait for the full 30 s production
+    deadline."""
+    import pytest
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        mock_proc = MagicMock()
+        # First few poll() calls return None (alive — passes the
+        # 500 ms argv-rejection window). Then return 1 (exited).
+        mock_proc.poll.side_effect = [None] * 12 + [1] * 100  # ~600 ms alive, then exit
+        with patch(
+            "resources.lib.stream_proxy.subprocess.Popen",
+            return_value=mock_proc,
+        ):
+            with pytest.raises(RuntimeError, match="exited with code"):
+                producer.prepare()
     finally:
         producer.close()
 

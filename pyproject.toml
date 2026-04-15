@@ -30,3 +30,6 @@ extend-exclude = "ptt/"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "integration: tests that spawn a real ffmpeg binary against a generated MKV; skipped by default, run via `just test-integration`",
+]

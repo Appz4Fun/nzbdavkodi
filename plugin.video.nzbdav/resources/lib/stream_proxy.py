@@ -2117,47 +2117,135 @@ class HlsProducer:
         )
         return cmd
 
+    # How long prepare() will wait for ffmpeg to actually produce
+    # init.mp4 + the first segment before declaring the fmp4 path
+    # broken and falling back to matroska. Has to comfortably exceed
+    # ffmpeg's analyzeduration (15 s) plus header write time, plus a
+    # safety margin for slow upstream reads. 30 s is the smallest
+    # value that doesn't false-trip on a healthy 50 Mbps WEB-DL.
+    _PREPARE_PRODUCTION_TIMEOUT_SECONDS = 30.0
+
     def prepare(self):
-        """Eagerly spawn ffmpeg and verify it didn't immediately exit.
+        """Eagerly spawn ffmpeg AND wait for it to actually produce
+        init.mp4 + first segment before returning.
 
         Called from _register_session right after construction. For
-        mpegts producers (the legacy lazy path) this is a no-op,
-        preserving today's behavior. For fmp4 producers this is the
-        spawn-time validation that keeps the matroska late-binding
-        fallback working — without it, ffmpeg's first spawn happens
-        inside wait_for_init AFTER the HLS URL has already been
-        returned to Kodi, so a build that rejects fmp4 HLS would
-        surface as a 504 from /hls/<sess>/init.mp4 instead of a
-        clean session rewrite.
+        mpegts producers (the legacy lazy path) this is a no-op.
+        For fmp4 producers this is the spawn-time validation that
+        keeps the matroska late-binding fallback working — without
+        it, ffmpeg's first spawn happens inside wait_for_init AFTER
+        the HLS URL has already been returned to Kodi.
 
-        The 500 ms poll catches argument-rejection and missing-muxer
-        failures (~10-100 ms typical). It does NOT catch later
-        runtime failures (codec init, input I/O after the 500 ms
-        window) — those still surface via the wait_for_init /
-        wait_for_segment timeout path. Consistent with the
-        "experimental" label on the setting.
+        Two failure-detection windows in sequence:
+
+        1. **Argument rejection (~500 ms).** Catches "ffmpeg argv
+           is wrong" failures: missing muxer, bad option, refused
+           experimental codec, build mismatch, etc. ffmpeg exits
+           with non-zero rc within ~10-100 ms in practice.
+
+        2. **Production failure (up to _PREPARE_PRODUCTION_TIMEOUT
+           _SECONDS).** Catches "ffmpeg started but never produced
+           anything" failures: absolute path bug (a547a2d), -strict
+           -2 missing (b8f09d6), analysis hang (1a56c36), and any
+           future ffmpeg/source combo where output stalls after
+           launch. Polls for init.mp4 + seg_000000.m4s on disk.
+           If neither is on disk by the deadline, OR if ffmpeg has
+           exited with non-zero rc in the meantime, raises so
+           _register_session rewrites ctx to the matroska shape.
+
+        Both checks must pass before prepare() returns successfully.
+        Costs up to 30 s of latency on the first spawn for healthy
+        sessions (typical: 2-5 s). That's the right tradeoff vs
+        handing Kodi a URL that will never play — and the
+        playback-never-started watchdog in service.py was raised
+        to 30 s for exactly this latency budget.
 
         Raises:
-            RuntimeError: ffmpeg failed to spawn or exited within
-                the poll window.
+            RuntimeError: ffmpeg failed to spawn, exited early, or
+                produced no output within the production timeout.
         """
         if self.segment_format != "fmp4":
             return  # mpegts is lazy-spawned, no eager validation
         self._ensure_ffmpeg_headed_for(0)
-        deadline = time.monotonic() + 0.5
-        while time.monotonic() < deadline:
+
+        # Window 1: argument-rejection poll (500 ms).
+        # An early exit with rc != 0 is a hard failure (bad argv,
+        # missing muxer, refused experimental codec). An early exit
+        # with rc == 0 is a SUCCESSFUL completion — possible when
+        # the source is shorter than 500 ms of stream-copy work,
+        # which happens with the synthetic test MKV in the
+        # integration suite. Either way, on early exit we drop
+        # straight to the production check and let it verify the
+        # output files exist.
+        argv_deadline = time.monotonic() + 0.5
+        early_exit = False
+        while time.monotonic() < argv_deadline:
             with self._lock:
                 proc = self._proc
             if proc is None:
                 raise RuntimeError("ffmpeg failed to spawn — check ffmpeg.log")
             rc = proc.poll()
             if rc is not None:
-                raise RuntimeError(
-                    "ffmpeg exited immediately with code {} — fmp4 "
-                    "HLS likely unsupported by this build".format(rc)
-                )
+                if rc != 0:
+                    raise RuntimeError(
+                        "ffmpeg exited immediately with code {} — fmp4 "
+                        "HLS likely unsupported by this build".format(rc)
+                    )
+                early_exit = True
+                break
             time.sleep(0.05)
-        return  # proc still alive after 500 ms — assume healthy
+
+        # Window 2: wait for actual output production. Polls the
+        # file system for init.mp4 + the first segment, AND watches
+        # ffmpeg liveness so a late crash surfaces immediately.
+        # If ffmpeg already exited cleanly in window 1 (rc==0), the
+        # output files should already exist; we just need to verify
+        # them once instead of waiting.
+        init_path = os.path.join(self.session_dir, "init.mp4")
+        first_seg_path = os.path.join(self.session_dir, "seg_000000.m4s")
+        prod_deadline = time.monotonic() + self._PREPARE_PRODUCTION_TIMEOUT_SECONDS
+        while time.monotonic() < prod_deadline:
+            if os.path.exists(init_path) and os.path.exists(first_seg_path):
+                xbmc.log(
+                    "NZB-DAV: HlsProducer.prepare confirmed init.mp4 "
+                    "and seg_000000.m4s on disk",
+                    xbmc.LOGINFO,
+                )
+                return  # healthy — both files are on disk
+            if early_exit:
+                # ffmpeg already finished; if the files aren't here,
+                # they're never going to be. Fail immediately
+                # instead of waiting for the full deadline.
+                raise RuntimeError(
+                    "ffmpeg exited cleanly but produced no init.mp4 / "
+                    "seg_000000.m4s — check ffmpeg.log"
+                )
+            with self._lock:
+                proc = self._proc
+            if proc is None:
+                raise RuntimeError(
+                    "ffmpeg disappeared during prepare — check ffmpeg.log"
+                )
+            rc = proc.poll()
+            if rc is not None:
+                # ffmpeg exited mid-window. rc==0 means the source
+                # was short enough to finish during the production
+                # wait — give the file-existence check one more
+                # iteration before declaring failure.
+                if rc != 0:
+                    raise RuntimeError(
+                        "ffmpeg exited with code {} before producing output "
+                        "— check ffmpeg.log".format(rc)
+                    )
+                early_exit = True
+                continue
+            time.sleep(0.25)
+        raise RuntimeError(
+            "ffmpeg did not produce init.mp4 + seg_000000.m4s within "
+            "{:.0f}s — check ffmpeg.log".format(
+                self._PREPARE_PRODUCTION_TIMEOUT_SECONDS
+            )
+        )
 
     def close(self):
         """Kill ffmpeg and delete the session directory."""
@@ -2208,11 +2296,19 @@ class HlsProducer:
         if size == 0:
             return  # empty log — nothing useful to preserve
 
+        archive_dir = None
         try:
             import xbmcvfs
 
-            archive_dir = xbmcvfs.translatePath("special://temp/nzbdav-hls-logs/")
+            candidate = xbmcvfs.translatePath("special://temp/nzbdav-hls-logs/")
+            # In tests xbmcvfs is mocked and translatePath returns a
+            # MagicMock. Only accept genuine string results so we
+            # don't leak a "MagicMock" directory in cwd.
+            if isinstance(candidate, str):
+                archive_dir = candidate
         except Exception:  # pylint: disable=broad-except
+            pass
+        if not archive_dir:
             archive_dir = "/tmp/nzbdav-hls-logs"
         try:
             os.makedirs(archive_dir, exist_ok=True)
