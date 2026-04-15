@@ -11,6 +11,8 @@
 
 A Kodi 21 (Omega) player/resolver addon that enables Usenet-based streaming through NZBHydra2 and nzbdav. Works as a TMDBHelper player -- search for a movie or TV episode, pick an NZB, and stream it directly through nzbdav's WebDAV server.
 
+> **Current pre-release: `v1.0.0-pre-alpha`** (tagged on the `spike/hls-fmp4` branch, not yet merged to main). Big-file force-remux is on by default, an experimental self-healing fragmented-MP4 HLS path gives full random seek across multi-hundred-gigabyte sources, the submit pipeline no longer freezes on slow nzbdav, and a real-ffmpeg integration test catches container regressions at PR time. See [CHANGELOG.md](CHANGELOG.md#100-pre-alpha--2026-04-15) and [PROXY.md](PROXY.md) for the full picture.
+
 ## How It Works
 
 ```mermaid

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="plugin.video.nzbdav"
        name="NZB-DAV"
-       version="0.6.21"
+       version="1.0.0-pre-alpha"
        provider-name="nzbdav">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
@@ -22,7 +22,19 @@
         <license>GPL-3.0-or-later</license>
         <source>https://github.com/xbmc4lyfe/nzbdavkodi</source>
         <website>https://xbmc4lyfe.github.io/nzbdavkodi/</website>
-        <news>v0.6.21
+        <news>v1.0.0-pre-alpha
+- Big-file force-remux is now ON by default (force_remux_threshold_mb 0 -> 20000 MB). 100 GB DV REMUXes no longer crash 32-bit Kodi's CFileCache on pass-through.
+- New experimental fmp4 HLS force-remux mode (Advanced -> Force remux output format). Gives full random seek across multi-hundred-gigabyte sources for non-DV-Profile-7 content. Self-healing: any ffmpeg startup failure auto-rewrites the session to the known-good piped-Matroska path BEFORE Kodi sees a broken URL.
+- Submit dialog stops freezing on slow nzbdav. submit_nzb runs in a background thread with the dialog pumping every 250 ms (cancel button live, message updates), AND a concurrent queue probe adopts the new nzo_id as soon as nzbdav has enqueued the job — usually 4-8 s instead of waiting for the full /api?mode=addurl reply.
+- Fix router handle-hang: every dispatch path (/resolve, /install_player, /clear_cache, /settings, /configure_*, /test_*, /search auto-select) now resolves the Kodi handle even on a thrown exception. Kodi could previously hang indefinitely.
+- Narrow the resolver's Kodi DB cleanup to the bookmark table only, with 2 s SQLite busy timeout, LIKE wildcard escaping, and a skip when video is already playing.
+- Probe deadline + persistent ffmpeg.log archive: every ffmpeg probe has a 20 s wall-clock timeout (no more zombie probes), and on session close the most recent 10 sessions' logs are kept in special://temp/nzbdav-hls-logs/ for post-mortem.
+- Settings clamping for submit_timeout: a typo'd setting (300000 instead of 300) can no longer cascade into a multi-hour blocking call.
+- Bump pytest dev dep to >=9.0.3 for CVE-2025-71176. Dev-only.
+- New PROXY.md architecture document and `just test-integration` target that runs the actual ffmpeg binary against a synthetic test MKV.
+- 497 unit tests + 2 integration tests pass.
+
+v0.6.21
 - Fix stale jobs in nzbdav after timeouts and cancellations. When the addon gave up on a download (timeout, user cancel, max poll iterations, Kodi shutdown), it left the job sitting in nzbdav's queue indefinitely. Re-submitting the same NZB then hit nzbdav's duplicate-rejection path and the user got a generic "check nzbdav URL and API key" dialog with no real explanation. The addon now sends a SABnzbd-compatible queue delete (3s timeout, fail-quiet) on every abort path so the next attempt is clean. History entries are deliberately left alone so failure history stays inspectable in nzbdav's web UI (audit finding L1).
 - Surface nzbdav's actual error message when a submit is rejected. The submit retry loop used to hide HTTP 4xx/5xx responses behind a generic "all 3 retries failed" dialog. The addon now captures nzbdav's response body (HTML-stripped, whitespace-collapsed), shows the actual server message in the dialog, and classifies retries: HTTP 408/502/503/504 still retry 3x as transient gateway issues, but HTTP 4xx and HTTP 500/501 short-circuit immediately so it's possible to tell apart "duplicate stuck job", "bad API key", and "nzbdav crashed".
 

@@ -1,5 +1,7 @@
 # Stream Proxy Architecture
 
+> **Status:** This document reflects the proxy as of `v1.0.0-pre-alpha` (tagged on `spike/hls-fmp4`). The fmp4 HLS branch (Tier 3.4.2) is opt-in via `force_remux_mode=hls_fmp4` and the runtime self-healing fallback to matroska is the safety net. The other three tiers (direct redirect, virtual MP4 faststart, MKV pass-through) are unchanged from main.
+
 This document describes the local HTTP proxy that sits between Kodi's player and nzbdav's WebDAV server. Start here if you are touching any code in `plugin.video.nzbdav/resources/lib/stream_proxy.py` — or if you are trying to work out why a particular file plays the way it does.
 
 Companion document to `README.md`. The README covers user-facing behavior; this file covers the internals.
