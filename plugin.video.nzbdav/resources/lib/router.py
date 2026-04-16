@@ -135,6 +135,8 @@ def route(argv):
             _test_hydra_connection()
         elif path == "/test_nzbdav":
             _test_nzbdav_connection()
+        elif path == "/test_prowlarr":
+            _test_prowlarr_connection()
         else:
             _handle_main_menu(handle)
             return
@@ -220,7 +222,6 @@ def _handle_play(handle, params):
 
     from resources.lib.cache import get_cached, set_cached
     from resources.lib.http_util import notify
-    from resources.lib.hydra import search_hydra
 
     params = _clean_params(params)
     search_type = params.get("type", "movie")
@@ -302,15 +303,15 @@ def _handle_play(handle, params):
     if results is None:
         progress.update(30, _string(30084))
         xbmc.log(
-            "NZB-DAV: Search stage: querying NZBHydra for '{}'".format(title),
+            "NZB-DAV: Search stage: querying providers for '{}'".format(title),
             xbmc.LOGDEBUG,
         )
-        results, search_error = search_hydra(
+        results, search_error = _search_all_providers(
             search_type, title, year=year, imdb=imdb, season=season, episode=episode
         )
         if search_error:
             xbmc.log(
-                "NZB-DAV: Search stage: NZBHydra error — {}".format(search_error),
+                "NZB-DAV: Search stage: provider error — {}".format(search_error),
                 xbmc.LOGWARNING,
             )
             progress.close()
@@ -420,7 +421,6 @@ def _handle_search(handle, params):
 
     from resources.lib.cache import get_cached, set_cached
     from resources.lib.filter import filter_results
-    from resources.lib.hydra import search_hydra
 
     params = _clean_params(params)
     search_type = params.get("type", "movie")
@@ -448,15 +448,15 @@ def _handle_search(handle, params):
     results = get_cached(search_type, title, **cache_kwargs)
     if results is None:
         xbmc.log(
-            "NZB-DAV: Search stage: querying NZBHydra for '{}'".format(title),
+            "NZB-DAV: Search stage: querying providers for '{}'".format(title),
             xbmc.LOGDEBUG,
         )
-        results, search_error = search_hydra(
+        results, search_error = _search_all_providers(
             search_type, title, year=year, imdb=imdb, season=season, episode=episode
         )
         if search_error:
             xbmc.log(
-                "NZB-DAV: Search stage: NZBHydra error — {}".format(search_error),
+                "NZB-DAV: Search stage: provider error — {}".format(search_error),
                 xbmc.LOGWARNING,
             )
             _show_error_dialog(search_error)
@@ -627,6 +627,67 @@ def _get_tmdb_poster(imdb_id):
         return ""
 
 
+def _search_all_providers(search_type, title, year="", imdb="", season="", episode=""):
+    """Search all enabled providers and return combined, deduplicated results.
+
+    Returns (results, error_message). error_message is set only when ALL
+    enabled providers failed; partial failure is logged but not surfaced.
+    """
+    import xbmcaddon
+
+    addon = xbmcaddon.Addon()
+    hydra_enabled = addon.getSetting("nzbhydra_enabled").lower() != "false"
+    prowlarr_enabled = addon.getSetting("prowlarr_enabled").lower() == "true"
+
+    all_results = []
+    errors = []
+    any_enabled = False
+
+    if hydra_enabled:
+        any_enabled = True
+        from resources.lib.hydra import search_hydra
+
+        h_results, h_error = search_hydra(
+            search_type, title, year=year, imdb=imdb, season=season, episode=episode
+        )
+        if h_error:
+            errors.append(h_error)
+        else:
+            all_results.extend(h_results)
+
+    if prowlarr_enabled:
+        any_enabled = True
+        from resources.lib.prowlarr import search_prowlarr
+
+        p_results, p_error = search_prowlarr(
+            search_type, title, year=year, imdb=imdb, season=season, episode=episode
+        )
+        if p_error:
+            errors.append(p_error)
+        else:
+            all_results.extend(p_results)
+
+    if not any_enabled:
+        return [], "No search providers enabled. Enable NZBHydra2 or Prowlarr in settings."
+
+    # Deduplicate by NZB link URL
+    seen = set()
+    deduped = []
+    for r in all_results:
+        key = r.get("link", "")
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        deduped.append(r)
+
+    # Return first error only if all providers failed
+    if not deduped and errors and len(errors) == (hydra_enabled + prowlarr_enabled):
+        return [], errors[0]
+
+    return deduped, None
+
+
 def _test_hydra_connection():
     """Test NZBHydra2 connection by hitting the caps endpoint."""
     import xbmcaddon
@@ -652,6 +713,35 @@ def _test_hydra_connection():
         notify(
             _addon_name(),
             "NZBHydra: {}".format(str(e)[:60]),
+            5000,
+        )
+
+
+def _test_prowlarr_connection():
+    """Test Prowlarr connection by hitting the indexer endpoint."""
+    import xbmcaddon
+
+    from resources.lib.http_util import http_get, notify
+
+    addon = xbmcaddon.Addon()
+    host = addon.getSetting("prowlarr_host").rstrip("/")
+    api_key = addon.getSetting("prowlarr_api_key")
+
+    if not host:
+        notify(_addon_name(), "Prowlarr URL not configured", 3000)
+        return
+
+    test_url = "{}/api/v1/indexer?apikey={}".format(host, api_key)
+    try:
+        response = http_get(test_url)
+        if "[" in response or "{" in response:
+            notify(_addon_name(), "Prowlarr connection OK", 3000)
+        else:
+            notify(_addon_name(), "Prowlarr: unexpected response", 5000)
+    except Exception as e:
+        notify(
+            _addon_name(),
+            "Prowlarr: {}".format(str(e)[:60]),
             5000,
         )
 
