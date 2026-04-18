@@ -1,0 +1,9 @@
+.env
+data/
+# Drop your own NZBs here. The Ronaldinho sample is committed as a
+# ready-to-run smoke fixture; everything else stays out of the repo.
+nzbs/*
+!nzbs/.gitkeep
+!nzbs/Ronaldinho.The.One.and.Only.S01E03.Who.Said.I.Was.Finished.480p.NF.WEB-DL.DUAL.DDP5.1.Atmos.H.264-POWER.nzb
+# smoke.py writes last-stream.url / .m3u with creds in the URL.
+last-stream.*
