@@ -1,0 +1,26 @@
+name: nzbdavkodi-dev
+
+services:
+  nzbdav:
+    image: nzbdav/nzbdav:latest
+    container_name: nzbdavkodi-nzbdav
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-Australia/Sydney}
+    volumes:
+      - ./data/nzbdav-config:/config
+      - ./data/nzbdav-mnt:/mnt
+    ports:
+      - "${NZBDAV_PORT:-3000}:3000"
+    # Lets nzbdav reach an NZB-serving HTTP server on the host
+    # (used by dev/smoke.py to feed local .nzb files via mode=addurl).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:3000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
