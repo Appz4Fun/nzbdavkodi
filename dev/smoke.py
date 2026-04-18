@@ -129,8 +129,8 @@ def _main():
     ap.add_argument("--title", default=None, help="Job name (default: derived from NZB filename)")
     ap.add_argument(
         "--nzbdav-url",
-        default=os.environ.get("NZBDAV_URL", "http://localhost:3000"),
-        help="default: %(default)s",
+        default=os.environ.get("NZBDAV_URL", "http://localhost:8180"),
+        help="default: %(default)s (nzbdav-rs container listens on 8080; host-published on NZBDAV_PORT, default 8180)",
     )
     ap.add_argument(
         "--nzbdav-api-key",
@@ -161,11 +161,19 @@ def _main():
     if not args.nzbdav_api_key:
         ap.error("--nzbdav-api-key is required (or NZBDAV_API_KEY env)")
 
+    # nzbdav-rs mounts the WebDAV tree under /dav/ (e.g. /dav/content/...),
+    # while the SABnzbd API lives at the root (/api?mode=...). Upstream
+    # nzbdav serves WebDAV at the root. Default webdav_url to
+    # nzbdav_url + /dav so the nzbdav-rs layout works out of the box; an
+    # explicit --webdav-url wins for upstream or non-default layouts.
+    nzbdav_url = args.nzbdav_url.rstrip("/")
+    webdav_url = (args.webdav_url or "{}/dav".format(nzbdav_url)).rstrip("/")
+
     # Settings the addon reads via xbmcaddon.Addon().getSetting(...)
     settings = {
-        "nzbdav_url": args.nzbdav_url.rstrip("/"),
+        "nzbdav_url": nzbdav_url,
         "nzbdav_api_key": args.nzbdav_api_key,
-        "webdav_url": (args.webdav_url or args.nzbdav_url).rstrip("/"),
+        "webdav_url": webdav_url,
         "webdav_username": args.webdav_user,
         "webdav_password": args.webdav_pass,
         "submit_timeout": "120",
