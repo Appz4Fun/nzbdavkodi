@@ -2,25 +2,42 @@ name: nzbdavkodi-dev
 
 services:
   nzbdav:
-    image: nzbdav/nzbdav:latest
+    # Built from the local nzbdav-rs checkout so addon changes can be
+    # validated against in-flight server changes. Override NZBDAV_RS_PATH
+    # in .env if your checkout lives elsewhere.
+    build:
+      context: ${NZBDAV_RS_PATH:-../../../../apps/nzbdav-rs}
+      dockerfile: Dockerfile
+      args:
+        # nzbdav-rs Dockerfile declares this ARG for publishing; local
+        # builds resolve workspace crates by path, so an empty token is
+        # fine.
+        CARGO_REGISTRIES_FORGEJO_TOKEN: ""
+    image: nzbdavkodi-dev/nzbdav-rs:local
     container_name: nzbdavkodi-nzbdav
     environment:
-      - PUID=${PUID:-1000}
-      - PGID=${PGID:-1000}
-      - TZ=${TZ:-Australia/Sydney}
+      - NZBDAV_HOST=0.0.0.0
+      - NZBDAV_PORT=8080
+      - NZBDAV_DB=/data/nzbdav.db
+      - NZBDAV_LOG=${NZBDAV_LOG:-info}
+      - NZBDAV_API_KEY=${NZBDAV_API_KEY:-smokekey-dev-only}
+      - NZBDAV_WEBDAV_USER=${WEBDAV_USER:-admin}
+      - NZBDAV_WEBDAV_PASS=${WEBDAV_PASS:-devpass}
     volumes:
-      - ./data/nzbdav-config:/config
-      - ./data/nzbdav-mnt:/mnt
+      - ./data/nzbdav-rs:/data
     ports:
-      - "${NZBDAV_PORT:-3000}:3000"
-    # Lets nzbdav reach an NZB-serving HTTP server on the host
+      - "${NZBDAV_PORT:-8080}:8080"
+    # Lets the container reach an NZB-serving HTTP server on the host
     # (used by dev/smoke.py to feed local .nzb files via mode=addurl).
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:3000/health || exit 1"]
+      # /ui serves the web UI; reachable without auth on nzbdav-rs.
+      # /api?mode=version requires credentials the healthcheck can't
+      # carry, so /ui is the cleanest is-it-up probe.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/ui || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 30s
+      start_period: 60s

@@ -429,13 +429,30 @@ def _get_poll_settings():
 def _storage_to_webdav_path(storage):
     """Convert nzbdav storage path to WebDAV content path.
 
-    /mnt/nzbdav/completed-symlinks/uncategorized/Name -> /content/uncategorized/Name/
+    Handles two server flavours that return different ``storage`` values
+    in their SABnzbd history:
+
+    * Upstream nzbdav (Node): returns a filesystem path like
+      ``/mnt/nzbdav/completed-symlinks/uncategorized/Name``. Strip the
+      mount prefix and re-root under ``/content/``.
+    * nzbdav-rs (Rust port): returns the WebDAV path directly, e.g.
+      ``/content/uncategorized/Name/`` or (no-category submit) just
+      ``/content/Name/``. Pass through as-is with trailing slash.
+
+    Fallback (unknown shape): take the last two path components as
+    ``{category}/{name}`` under ``/content/``. Good enough for
+    SABnzbd-style layouts we haven't seen yet.
     """
+    # nzbdav-rs already returns a /content/... path.
+    if storage.startswith("/content/"):
+        return storage.rstrip("/") + "/"
+
+    # Upstream nzbdav's completed-symlinks layout.
     prefix = "/mnt/nzbdav/completed-symlinks/"
     if storage.startswith(prefix):
         relative = storage[len(prefix) :]
     else:
-        # Fallback: use the last two path components (category/name)
+        # Fallback: use the last two path components (category/name).
         parts = storage.rstrip("/").split("/")
         relative = "/".join(parts[-2:]) if len(parts) >= 2 else parts[-1]
     return "/content/{}/".format(relative)

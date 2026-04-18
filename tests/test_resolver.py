@@ -61,6 +61,21 @@ def test_storage_to_webdav_path_trailing_slash():
     assert result == "/content/uncategorized/Movie Name//"
 
 
+def test_storage_to_webdav_path_nzbdav_rs_passthrough():
+    """nzbdav-rs returns the WebDAV path directly — pass through with
+    a trailing slash; do NOT re-root it under /content/ a second time."""
+    result = _storage_to_webdav_path("/content/uncategorized/Movie Name")
+    assert result == "/content/uncategorized/Movie Name/"
+
+
+def test_storage_to_webdav_path_nzbdav_rs_passthrough_no_category():
+    """nzbdav-rs with no category: storage is /content/Name/. The prior
+    fallback-by-last-two-components would have produced
+    /content/content/Name/ — the passthrough branch must win first."""
+    result = _storage_to_webdav_path("/content/Movie Name/")
+    assert result == "/content/Movie Name/"
+
+
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver.xbmc")
 def test_make_playable_listitem_redacts_logged_play_url(mock_xbmc, mock_gui):
