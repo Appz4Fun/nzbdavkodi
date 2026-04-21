@@ -25,6 +25,7 @@ plugin.video.nzbdav.zip
 docs/superpowers/
 mockups/
 troubleshooting.md
+.worktrees/
 
 # Build zips (versioned)
 plugin.video.nzbdav-*.zip
