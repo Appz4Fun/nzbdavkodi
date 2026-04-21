@@ -18,6 +18,7 @@ import shutil
 import socket as _socket
 import struct
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -50,6 +51,8 @@ from resources.lib.http_util import notify as _notify
 # Singleton proxy instance
 _proxy = None
 _proxy_lock = threading.Lock()
+_HLS_PRIVATE_TEMP_ROOT = None
+_HLS_PRIVATE_TEMP_ROOT_LOCK = threading.Lock()
 _MAX_STREAM_SESSIONS = 8
 _SESSION_TTL_SECONDS = 6 * 3600
 _PARSE_ERRORS = (
@@ -130,11 +133,12 @@ _HLS_SEGMENT_SECONDS = 30.0
 # session (~5 GB per 30 minutes at typical 4K REMUX bitrates). Each
 # session gets its own subdirectory which is rm -rf'd on cleanup.
 # Candidate paths in order — first one that exists + is writable wins.
+# If none are available, fall back to a private mkdtemp() directory
+# instead of a fixed shared /tmp path.
 _HLS_WORKDIR_CANDIDATES = (
     "/var/media/CACHE_DRIVE/nzbdav-hls",
     "/var/media/STORAGE/nzbdav-hls",
     "/storage/nzbdav-hls",
-    "/tmp/nzbdav-hls",
 )
 
 # How long to wait for a segment file to appear on disk before
@@ -147,13 +151,32 @@ _HLS_SEGMENT_WAIT_SECONDS = 90.0
 _HLS_SEGMENT_MTIME_STABLE_MS = 500
 
 
+def _get_private_hls_temp_root():
+    """Return a reusable private temp root for HLS work files."""
+    global _HLS_PRIVATE_TEMP_ROOT  # pylint: disable=global-statement
+
+    with _HLS_PRIVATE_TEMP_ROOT_LOCK:
+        cached = _HLS_PRIVATE_TEMP_ROOT
+        if cached and os.path.isdir(cached) and os.access(cached, os.W_OK):
+            return cached
+
+        temp_root = tempfile.mkdtemp(prefix="nzbdav-hls-")
+        try:
+            os.chmod(temp_root, 0o700)
+        except OSError:
+            pass
+
+        _HLS_PRIVATE_TEMP_ROOT = temp_root
+        return temp_root
+
+
 def _choose_hls_workdir():
     """Return a writable base directory for HLS session working files.
 
     Walks the candidate list in order and returns the first entry
     whose parent exists, is writable, and has enough free space.
-    Creates the leaf directory if missing. Falls back to /tmp as a
-    last resort.
+    Creates the leaf directory if missing. Falls back to a private
+    temp directory as a last resort.
     """
     for base in _HLS_WORKDIR_CANDIDATES:
         parent = os.path.dirname(base) or "/"
@@ -166,15 +189,7 @@ def _choose_hls_workdir():
         except OSError:
             continue
         return base
-    # Fallback: OS temp dir (usually /tmp)
-    import tempfile
-
-    fallback = os.path.join(tempfile.gettempdir(), "nzbdav-hls")
-    try:
-        os.makedirs(fallback, exist_ok=True)
-    except OSError:
-        pass
-    return fallback
+    return _get_private_hls_temp_root()
 
 
 def _find_ffmpeg():
