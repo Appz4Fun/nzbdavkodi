@@ -442,6 +442,11 @@ class _StreamHandler(BaseHTTPRequestHandler):
     def _start_remux_process(self, ctx, requested_start, seek_seconds):
         """Launch ffmpeg for a remux response and register it on the session."""
         cmd = self._build_ffmpeg_cmd(ctx, seek_seconds=seek_seconds)
+        if not self._is_safe_ffmpeg_cmd(cmd):
+            xbmc.log("NZB-DAV: Refusing to start unsafe ffmpeg command", xbmc.LOGERROR)
+            _notify_error("Failed to start ffmpeg")
+            self.send_error(500)
+            return None, None
         xbmc.log(
             "NZB-DAV: Remuxing to MKV (seek={})".format(seek_seconds),
             xbmc.LOGINFO,
@@ -531,6 +536,22 @@ class _StreamHandler(BaseHTTPRequestHandler):
             "NZB-DAV: Remux done: {} MB sent".format(total // 1048576),
             xbmc.LOGINFO,
         )
+
+    @staticmethod
+    def _is_safe_ffmpeg_cmd(cmd):
+        """Validate command shape and executable before subprocess execution."""
+        if not isinstance(cmd, (list, tuple)) or not cmd:
+            return False
+        if not all(isinstance(arg, str) for arg in cmd):
+            return False
+        exe = cmd[0]
+        exe_name = os.path.basename(exe).lower()
+        if exe_name != "ffmpeg":
+            return False
+        for arg in cmd:
+            if "\x00" in arg or "\n" in arg or "\r" in arg:
+                return False
+        return True
 
     @staticmethod
     def _append_mpegts_output_args(cmd):
