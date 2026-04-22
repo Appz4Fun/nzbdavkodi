@@ -48,6 +48,14 @@ def test_parse_results_empty():
     assert not results
 
 
+def test_source_url_hostname_extracts_host():
+    from resources.lib.hydra import _source_url_hostname
+
+    assert _source_url_hostname("https://indexer.example.com/path?q=1") == (
+        "indexer.example.com"
+    )
+
+
 @patch("resources.lib.hydra._get_settings")
 @patch("resources.lib.hydra._http_get")
 def test_search_hydra_movie(mock_http, mock_settings):
@@ -84,7 +92,7 @@ def test_search_hydra_tv(mock_http, mock_settings):
 @patch("resources.lib.hydra._http_get")
 def test_search_hydra_connection_error(mock_http, mock_settings):
     mock_settings.return_value = ("http://hydra:5076", "testkey")
-    mock_http.side_effect = Exception("Connection refused")
+    mock_http.side_effect = RuntimeError("Connection refused")
 
     results, error = search_hydra("movie", "The Matrix")
     assert not results
