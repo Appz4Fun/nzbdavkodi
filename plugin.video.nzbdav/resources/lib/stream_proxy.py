@@ -208,6 +208,7 @@ def _choose_hls_workdir():
     return _get_private_hls_temp_root()
 
 
+
 def _find_ffmpeg():
     """Find an ffmpeg binary on the system."""
     for path in _FFMPEG_PATHS:
@@ -2259,8 +2260,6 @@ class StreamProxy:
     @staticmethod
     def _prepare_tempfile_faststart(ffmpeg_path, url, auth_header):
         """Remux MP4 with faststart to a temp file. Returns path or None."""
-        import tempfile
-
         if not ffmpeg_path:
             return None
 
