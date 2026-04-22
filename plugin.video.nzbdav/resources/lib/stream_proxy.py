@@ -18,6 +18,7 @@ import shutil
 import socket as _socket
 import struct
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -167,8 +168,6 @@ def _choose_hls_workdir():
             continue
         return base
     # Fallback: OS temp dir (usually /tmp)
-    import tempfile
-
     fallback = os.path.join(tempfile.gettempdir(), "nzbdav-hls")
     try:
         os.makedirs(fallback, exist_ok=True)
@@ -2161,8 +2160,6 @@ class StreamProxy:
     @staticmethod
     def _prepare_tempfile_faststart(ffmpeg_path, url, auth_header):
         """Remux MP4 with faststart to a temp file. Returns path or None."""
-        import tempfile
-
         if not ffmpeg_path:
             return None
 
