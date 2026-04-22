@@ -1063,8 +1063,6 @@ class _StreamHandler(BaseHTTPRequestHandler):
             self.send_error(500)
             return
 
-        import math
-
         total_segs = int(math.ceil(duration / seg_dur))
         target = int(math.ceil(seg_dur))
 
