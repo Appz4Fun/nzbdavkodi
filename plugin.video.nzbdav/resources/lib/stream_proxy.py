@@ -4304,11 +4304,28 @@ def get_service_proxy_port():
         return 0
 
 
+class ServiceProxyUnavailableError(OSError):
+    """Raised when the NZB-DAV background service's proxy is unreachable.
+
+    Distinct from the underlying OSError so resolver's error-handling
+    layer can present the user a specific "background service not
+    running" message instead of the raw ``[Errno 61] Connection
+    refused`` shape. Still inherits OSError so existing broad
+    ``except OSError`` clauses (resolver's _RESOLVE_RUNTIME_ERRORS)
+    keep catching it without a code change.
+    """
+
+
 def prepare_stream_via_service(port, remote_url, auth_header=None):
     """Ask the service's proxy to prepare a stream.
 
     Returns (proxy_url, stream_info) where stream_info contains
     duration_seconds, total_bytes, seekable, remux.
+
+    Raises ServiceProxyUnavailableError when the local proxy port is
+    stale / service crashed / firewall ate the loopback connection —
+    the user-visible error-dialog layer uses the subclass to substitute
+    an actionable message for the opaque ``Connection refused``.
     """
     import json
 
@@ -4316,13 +4333,35 @@ def prepare_stream_via_service(port, remote_url, auth_header=None):
     data = json.dumps({"remote_url": remote_url, "auth_header": auth_header})
     req = Request(url, data=data.encode(), method="POST")
     req.add_header("Content-Type", "application/json")
-    # nosemgrep
-    with urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
-        req, timeout=60
-    ) as resp:
-        result = json.loads(resp.read())
-        proxy_url = result.pop("proxy_url")
-        return proxy_url, result
+    try:
+        # nosemgrep
+        with urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
+            req, timeout=60
+        ) as resp:
+            result = json.loads(resp.read())
+            proxy_url = result.pop("proxy_url")
+            return proxy_url, result
+    except (ConnectionError, _socket.timeout, TimeoutError) as e:
+        # The loopback service isn't answering. Could be: service
+        # crashed, Kodi restart that didn't re-launch it, port stale
+        # from a previous run. Surface a specific error so the user
+        # sees "NZB-DAV background service unreachable" rather than
+        # a bare Errno 61.
+        raise ServiceProxyUnavailableError(
+            "NZB-DAV background service unreachable on 127.0.0.1:{} — "
+            "restart Kodi or toggle the addon".format(port)
+        ) from e
+    except URLError as e:
+        # URLError wraps the same family of errors when urlopen fails.
+        reason = getattr(e, "reason", None)
+        if isinstance(
+            reason, (ConnectionError, _socket.timeout, TimeoutError, OSError)
+        ):
+            raise ServiceProxyUnavailableError(
+                "NZB-DAV background service unreachable on 127.0.0.1:{} — "
+                "restart Kodi or toggle the addon".format(port)
+            ) from e
+        raise
 
 
 def get_proxy():
