@@ -158,3 +158,68 @@ def test_cache_evicts_oldest_when_over_limit(mock_cache_dir):
         assert len(remaining) < 3
         # The newest file (test_2.json, highest mtime) should still be present
         assert "test_2.json" in remaining
+
+
+@patch("resources.lib.cache._get_cache_dir")
+@patch("resources.lib.cache.xbmcaddon")
+def test_get_cached_falls_back_to_300s_when_ttl_setting_unparseable(
+    mock_addon_mod, mock_cache_dir
+):
+    """When cache_ttl is a non-numeric string (user typo, corrupt
+    settings file), get_cached must fall back to the 300 s default
+    rather than raising ValueError."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        mock_cache_dir.return_value = tmpdir
+        addon = MagicMock()
+        # ``int("")`` raises ValueError in the production path. The
+        # test covers the except-branch fallback.
+        addon.getSetting.return_value = "absolute nonsense"
+        mock_addon_mod.Addon.return_value = addon
+
+        # Write a fresh cache entry by hand so we can observe whether
+        # the fallback TTL (300 s) treats it as live.
+        fresh = {
+            "timestamp": time.time() - 60,  # 1 min old
+            "results": [{"title": "Fresh"}],
+        }
+        os.makedirs(tmpdir, exist_ok=True)
+        key_path = os.path.join(tmpdir, _cache_key("movie", "Fresh") + ".json")
+        with open(key_path, "w") as f:
+            json.dump(fresh, f)
+
+        cached = get_cached("movie", "Fresh")
+        assert (
+            cached is not None
+        ), "Fallback TTL of 300 s must still accept 1-min-old entry"
+        assert cached[0]["title"] == "Fresh"
+
+
+@patch("resources.lib.cache._get_cache_dir")
+def test_clear_cache_swallows_per_file_oserror(mock_cache_dir):
+    """clear_cache() must not raise if one of the files can't be
+    deleted (locked by Kodi, gone mid-loop, permissions). Other files
+    should still be processed."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        mock_cache_dir.return_value = tmpdir
+        # Seed two cache files.
+        for name in ("a.json", "b.json"):
+            with open(os.path.join(tmpdir, name), "w") as f:
+                f.write("{}")
+
+        # Force the first os.remove call to raise; the second must
+        # still land so b.json is deleted even though a.json "failed".
+        real_remove = os.remove
+        calls = {"n": 0}
+
+        def _sometimes_fail(path):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError("locked")
+            real_remove(path)
+
+        with patch.object(cache_module.os, "remove", side_effect=_sometimes_fail):
+            clear_cache()  # must not raise
+
+        remaining = sorted(os.listdir(tmpdir))
+        # Exactly one of the two files survives the partial failure.
+        assert len(remaining) == 1
