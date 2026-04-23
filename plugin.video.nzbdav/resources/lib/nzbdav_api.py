@@ -6,7 +6,7 @@
 import json
 import re
 import socket
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 
 import xbmc
@@ -174,12 +174,14 @@ def submit_nzb(nzb_url, nzb_name=""):
             xbmc.LOGERROR,
         )
         return None, {"status": e.code, "message": body}
-    except (
-        socket.timeout,
-        URLError,
-        json.JSONDecodeError,
-        Exception,
-    ) as e:  # pylint: disable=broad-except
+    except Exception as e:  # pylint: disable=broad-except
+        # ``Exception`` intentionally — the prior ``(socket.timeout, URLError,
+        # json.JSONDecodeError, Exception)`` tuple made the three named
+        # classes dead code because ``Exception`` is their base. This path
+        # is the last-chance safety net for an nzbdav submit, so catching
+        # the full family (including things we haven't anticipated) keeps
+        # the resolver from crashing while still letting caller-level
+        # queue/history probes retry.
         if _is_timeout_error(e):
             xbmc.log(
                 "NZB-DAV: Submit NZB client-side timeout after {}s — nzbdav "
@@ -528,9 +530,22 @@ def get_completed_names():
 
 
 def get_job_status(nzo_id):
+    """Poll the nzbdav queue for an in-flight NZB's current status.
+
+    Args:
+        nzo_id: SABnzbd-compatible job identifier returned by submit_nzb.
+
+    Returns:
+        A dict with keys ``status`` (e.g. "Queued", "Downloading",
+        "Fetching NZB", "Failed"), ``percentage`` (string, 0-100), and
+        ``filename`` when the slot is known, or ``None`` on any network
+        / parse / settings failure. The resolver's poll loop treats None
+        as "no data this tick" and re-polls, so transient failures do
+        not abort the resolve.
+    """
     try:
         base_url, api_key = _get_settings()
-    except Exception as e:
+    except Exception as e:  # pylint: disable=broad-except
         xbmc.log(
             "NZB-DAV: Failed to read nzbdav settings for status check: {}".format(e),
             xbmc.LOGERROR,
@@ -549,7 +564,12 @@ def get_job_status(nzo_id):
     try:
         response_text = _http_get(url, timeout=10)
         response = json.loads(response_text)
-    except (URLError, json.JSONDecodeError, Exception) as e:
+    except Exception as e:  # pylint: disable=broad-except
+        # ``Exception`` intentionally — the prior ``(URLError, json.JSONDecodeError,
+        # Exception)`` tuple was dead code (Exception subsumes the first two).
+        # Resolver polls this every second while a download is active; any
+        # crash here would kill the poll loop, so we log and return None
+        # so the caller treats the tick as "no data, try again".
         xbmc.log(
             "NZB-DAV: Job status request failed for nzo_id={}: {}".format(nzo_id, e),
             xbmc.LOGERROR,

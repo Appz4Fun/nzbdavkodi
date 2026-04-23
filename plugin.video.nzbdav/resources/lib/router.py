@@ -775,11 +775,22 @@ def _get_tmdb_poster(imdb_id):
                             xbmc.LOGDEBUG,
                         )
                         return poster
-        except Exception:
-            pass
+        except Exception as e:  # pylint: disable=broad-except
+            # Poster lookup is best-effort — the TMDBHelper panel already
+            # has its own artwork so a miss here is not user-visible. But
+            # silently swallowing with no log made this branch impossible
+            # to diagnose when the IMDb suggestion API changes shape.
+            xbmc.log(
+                "NZB-DAV: TMDB poster lookup failed for {}: {}".format(imdb_id, e),
+                xbmc.LOGDEBUG,
+            )
 
         return ""
-    except Exception:
+    except Exception as e:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: TMDB poster lookup aborted for {}: {}".format(imdb_id, e),
+            xbmc.LOGDEBUG,
+        )
         return ""
 
 

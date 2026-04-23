@@ -780,7 +780,12 @@ def _get_submit_timeout_seconds():
 
         raw = xbmcaddon.Addon().getSetting("submit_timeout")
         return int(raw) if raw else 120
-    except (ValueError, TypeError, Exception):  # pylint: disable=broad-except
+    except Exception:  # pylint: disable=broad-except
+        # xbmcaddon import failures, unexpected setting shapes, int() on
+        # a MagicMock in tests — all funnel to the documented default.
+        # ``Exception`` on its own (the previous ``(ValueError, TypeError,
+        # Exception)`` tuple was dead code — Exception subsumes the other
+        # two) keeps the safety net without the misleading tuple.
         return 120
 
 
