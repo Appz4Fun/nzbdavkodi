@@ -60,6 +60,12 @@ _RESOLVE_RUNTIME_ERRORS = (
 )
 
 
+# Per-setting warn suppression: we log the out-of-range clamp exactly once
+# per (setting_id, value) so a user with a typo'd setting doesn't see the
+# same warning spam on every play.
+_CLAMP_LOGGED = set()
+
+
 def _clamp_int_setting(setting_id, value, lo, hi):
     """Clamp an integer setting and log when user input was out of range."""
     clamped = value
@@ -68,12 +74,15 @@ def _clamp_int_setting(setting_id, value, lo, hi):
     elif value > hi:
         clamped = hi
     if clamped != value:
-        xbmc.log(
-            "NZB-DAV: Setting {}={} out of range [{}..{}]; clamping to {}".format(
-                setting_id, value, lo, hi, clamped
-            ),
-            xbmc.LOGWARNING,
-        )
+        key = (setting_id, value)
+        if key not in _CLAMP_LOGGED:
+            _CLAMP_LOGGED.add(key)
+            xbmc.log(
+                "NZB-DAV: Setting {}={} out of range [{}..{}]; clamping to {}".format(
+                    setting_id, value, lo, hi, clamped
+                ),
+                xbmc.LOGWARNING,
+            )
     return clamped
 
 
