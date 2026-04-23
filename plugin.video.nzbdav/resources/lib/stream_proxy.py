@@ -26,6 +26,7 @@ from collections import deque
 from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn as _ThreadingMixIn
+from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
@@ -512,6 +513,93 @@ def _would_trip_density_breaker(window, skip):
     trial = deque([item[:] for item in window])
     _record_density_window(trial, "zero_fill", skip)
     return _density_ratio(trial) > _DENSITY_BREAKER_ZERO_FILL_RATIO
+
+
+_UPSTREAM_REACHABILITY_UNREACHABLE_NETWORK = "unreachable_network"
+_UPSTREAM_REACHABILITY_HTTP_SERVER_ERROR = "http_5xx"
+_UPSTREAM_REACHABILITY_HTTP_CLIENT_ERROR = "http_4xx"
+_UPSTREAM_REACHABILITY_OTHER = "other"
+
+
+def _classify_upstream_error(error):
+    """Bucket a urlopen exception into a reachability category.
+
+    Returns one of:
+      * ``_UPSTREAM_REACHABILITY_UNREACHABLE_NETWORK`` — DNS / TCP-refused /
+        socket timeout / connection reset. Strong signal that nzbdav (or
+        the network path to it) is down, not that the stream itself is
+        bad. Worth surfacing to the user.
+      * ``_UPSTREAM_REACHABILITY_HTTP_SERVER_ERROR`` — HTTPError with
+        status 5xx. nzbdav is up but stressed/erroring.
+      * ``_UPSTREAM_REACHABILITY_HTTP_CLIENT_ERROR`` — HTTPError with
+        status 4xx. Auth or path issue, not an outage.
+      * ``_UPSTREAM_REACHABILITY_OTHER`` — any other OSError / ValueError
+        that doesn't fit the above.
+
+    The distinction matters because the stream-proxy's zero-fill /
+    skip-probe recovery can disguise a total upstream outage as a
+    "bad stream" to the user. Classifying lets us emit an actionable
+    notification instead of silently zero-filling the rest of the file.
+    """
+    if isinstance(error, HTTPError):
+        code = getattr(error, "code", 0) or 0
+        if 500 <= code < 600:
+            return _UPSTREAM_REACHABILITY_HTTP_SERVER_ERROR
+        if 400 <= code < 500:
+            return _UPSTREAM_REACHABILITY_HTTP_CLIENT_ERROR
+        return _UPSTREAM_REACHABILITY_OTHER
+    # URLError wraps the underlying reason (socket.gaierror, timeout, etc.)
+    if isinstance(error, URLError):
+        reason = getattr(error, "reason", None)
+        if isinstance(reason, (ConnectionError, _socket.timeout, TimeoutError)):
+            return _UPSTREAM_REACHABILITY_UNREACHABLE_NETWORK
+        if isinstance(reason, OSError):
+            return _UPSTREAM_REACHABILITY_UNREACHABLE_NETWORK
+    if isinstance(error, (ConnectionError, _socket.timeout, TimeoutError)):
+        return _UPSTREAM_REACHABILITY_UNREACHABLE_NETWORK
+    return _UPSTREAM_REACHABILITY_OTHER
+
+
+def _record_upstream_unreachable(server, ctx, error):
+    """Track an upstream-unreachable event on the session and fire a
+    one-shot user notification the first time it happens.
+
+    The handler that decides to zero-fill / retry / abort is unchanged —
+    this is purely a visibility layer so the user learns "nzbdav is
+    unreachable" instead of watching silent playback glitch through to
+    the end. Subsequent failures in the same session bump the counter
+    but stay silent to avoid spamming the UI during a prolonged outage.
+    """
+    context_lock = _get_server_context_lock(server)
+
+    def _update():
+        already_notified = bool(ctx.get("upstream_down_notified"))
+        count = int(ctx.get("upstream_unreachable_count", 0) or 0) + 1
+        ctx["upstream_unreachable_count"] = count
+        ctx["last_upstream_unreachable_at"] = time.time()
+        if already_notified:
+            return False
+        ctx["upstream_down_notified"] = True
+        return True
+
+    if context_lock is None:
+        should_notify = _update()
+    else:
+        with context_lock:
+            should_notify = _update()
+
+    if not should_notify:
+        return
+
+    xbmc.log(
+        "NZB-DAV: Upstream appears unreachable ({}); notifying user once "
+        "(reason=upstream_unreachable)".format(type(error).__name__),
+        xbmc.LOGERROR,
+    )
+    try:
+        _notify("NZB-DAV", "nzbdav unreachable — playback may glitch")
+    except (RuntimeError, OSError):
+        pass
 
 
 def _read_session_recovery_state(ctx):
@@ -2077,11 +2165,17 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 )
             )
         except (OSError, ValueError) as e:
+            category = _classify_upstream_error(e)
             xbmc.log(
                 "NZB-DAV: Proxy upstream open failed at byte {}: {} "
-                "(reason=upstream_open_failed)".format(start, e),
+                "(reason=upstream_open_failed category={})".format(start, e, category),
                 xbmc.LOGWARNING,
             )
+            if category in (
+                _UPSTREAM_REACHABILITY_UNREACHABLE_NETWORK,
+                _UPSTREAM_REACHABILITY_HTTP_SERVER_ERROR,
+            ):
+                _record_upstream_unreachable(self.server, ctx, e)
             return _UPSTREAM_RANGE_UPSTREAM_ERROR, 0
 
         try:

@@ -5605,3 +5605,179 @@ def test_range_caller_matrix_returns_416_for_malformed_ranges(
 
     handler.send_error.assert_called_once_with(416)
     handler.send_response.assert_not_called()
+
+
+# --- Upstream-reachability classification + unreachability notification ---
+
+
+def test_classify_upstream_error_maps_connection_errors_to_unreachable():
+    """ConnectionRefusedError / ConnectionResetError / socket.timeout /
+    TimeoutError are all "upstream is DOWN" signals, not "stream is bad"
+    signals. Must bucket into UNREACHABLE_NETWORK so the notification
+    layer fires."""
+    import socket
+
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_REACHABILITY_UNREACHABLE_NETWORK,
+        _classify_upstream_error,
+    )
+
+    assert (
+        _classify_upstream_error(ConnectionRefusedError("refused"))
+        == _UPSTREAM_REACHABILITY_UNREACHABLE_NETWORK
+    )
+    assert (
+        _classify_upstream_error(ConnectionResetError("reset"))
+        == _UPSTREAM_REACHABILITY_UNREACHABLE_NETWORK
+    )
+    assert (
+        _classify_upstream_error(socket.timeout("timed out"))
+        == _UPSTREAM_REACHABILITY_UNREACHABLE_NETWORK
+    )
+    assert (
+        _classify_upstream_error(TimeoutError("timed out"))
+        == _UPSTREAM_REACHABILITY_UNREACHABLE_NETWORK
+    )
+
+
+def test_classify_upstream_error_unwraps_urlerror_reason():
+    """urlopen wraps network failures in URLError; the useful signal
+    is ``err.reason``. Classifier must inspect .reason to decide
+    whether it's a "down" or "other" error."""
+    from urllib.error import URLError
+
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_REACHABILITY_UNREACHABLE_NETWORK,
+        _classify_upstream_error,
+    )
+
+    wrapped_refused = URLError(reason=ConnectionRefusedError("refused"))
+    assert (
+        _classify_upstream_error(wrapped_refused)
+        == _UPSTREAM_REACHABILITY_UNREACHABLE_NETWORK
+    )
+
+
+def test_classify_upstream_error_distinguishes_5xx_from_4xx():
+    """HTTPError 5xx → HTTP_SERVER_ERROR (nzbdav struggling), 4xx →
+    HTTP_CLIENT_ERROR (auth / path issue). Both are distinct from a
+    network-level outage because the server DID respond."""
+    from urllib.error import HTTPError
+
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_REACHABILITY_HTTP_CLIENT_ERROR,
+        _UPSTREAM_REACHABILITY_HTTP_SERVER_ERROR,
+        _classify_upstream_error,
+    )
+
+    err503 = HTTPError("http://x", 503, "Service Unavailable", {}, None)
+    assert _classify_upstream_error(err503) == _UPSTREAM_REACHABILITY_HTTP_SERVER_ERROR
+    err403 = HTTPError("http://x", 403, "Forbidden", {}, None)
+    assert _classify_upstream_error(err403) == _UPSTREAM_REACHABILITY_HTTP_CLIENT_ERROR
+
+
+def test_classify_upstream_error_other_for_value_errors():
+    """Generic ValueError (malformed response, etc.) doesn't count as
+    an unreachability signal; falls into OTHER so the notification
+    doesn't fire spuriously on parse bugs."""
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_REACHABILITY_OTHER,
+        _classify_upstream_error,
+    )
+
+    assert (
+        _classify_upstream_error(ValueError("malformed"))
+        == _UPSTREAM_REACHABILITY_OTHER
+    )
+
+
+def test_record_upstream_unreachable_fires_notification_once_per_session():
+    """First unreachability event in a session → one-shot notification.
+    Subsequent events in the same session → silent counter bump only,
+    so a prolonged outage doesn't spam the UI."""
+    from resources.lib.stream_proxy import _record_upstream_unreachable
+
+    ctx = {}
+    server = MagicMock()
+    # _get_server_context_lock returns None for a plain MagicMock without
+    # the right __dict__ shape; the helper gracefully degrades.
+
+    with patch("resources.lib.stream_proxy._notify") as mock_notify:
+        _record_upstream_unreachable(server, ctx, ConnectionRefusedError("1"))
+        _record_upstream_unreachable(server, ctx, ConnectionRefusedError("2"))
+        _record_upstream_unreachable(server, ctx, ConnectionRefusedError("3"))
+
+    mock_notify.assert_called_once()
+    assert ctx["upstream_unreachable_count"] == 3
+    assert ctx["upstream_down_notified"] is True
+    msg = mock_notify.call_args[0][1]
+    assert "nzbdav" in msg.lower() or "unreachable" in msg.lower()
+
+
+def test_record_upstream_unreachable_swallows_notify_failures():
+    """If Kodi's notification system isn't available (running under
+    pytest, service too early, etc.), _notify raises — must be swallowed
+    so the proxy keeps serving."""
+    from resources.lib.stream_proxy import _record_upstream_unreachable
+
+    ctx = {}
+    server = MagicMock()
+
+    with patch(
+        "resources.lib.stream_proxy._notify", side_effect=RuntimeError("no kodi")
+    ):
+        _record_upstream_unreachable(server, ctx, ConnectionRefusedError("x"))
+
+    # Counter still incremented; flag still set; no exception escaped.
+    assert ctx["upstream_unreachable_count"] == 1
+    assert ctx["upstream_down_notified"] is True
+
+
+def test_stream_upstream_range_records_unreachable_on_connection_refused():
+    """End-to-end: when urlopen raises ConnectionRefusedError inside
+    _stream_upstream_range, the session is marked upstream-unreachable
+    and a notification fires once."""
+    ctx = {
+        "remote_url": "http://nzbdav-down/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 1024,
+    }
+    handler = _make_handler_with_server(ctx)
+
+    with patch(
+        "resources.lib.stream_proxy.urlopen", side_effect=ConnectionRefusedError("no")
+    ), patch("resources.lib.stream_proxy._notify") as mock_notify:
+        result, written = handler._stream_upstream_range(ctx, 0, 1023)
+
+    assert result == "UPSTREAM_ERROR"
+    assert written == 0
+    assert ctx["upstream_unreachable_count"] == 1
+    mock_notify.assert_called_once()
+
+
+def test_stream_upstream_range_does_not_notify_on_4xx():
+    """HTTPError 404 means nzbdav is UP but the path is wrong. That
+    shouldn't trigger the "nzbdav unreachable" notification — it's a
+    stream-specific issue, not an outage."""
+    from urllib.error import HTTPError
+
+    ctx = {
+        "remote_url": "http://nzbdav/missing.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 1024,
+    }
+    handler = _make_handler_with_server(ctx)
+
+    err = HTTPError("http://x", 404, "Not Found", {}, None)
+    with patch("resources.lib.stream_proxy.urlopen", side_effect=err), patch(
+        "resources.lib.stream_proxy._notify"
+    ) as mock_notify:
+        handler._stream_upstream_range(ctx, 0, 1023)
+
+    mock_notify.assert_not_called()
+    assert (
+        "upstream_unreachable_count" not in ctx
+        or ctx["upstream_unreachable_count"] == 0
+    )
