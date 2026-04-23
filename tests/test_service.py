@@ -296,3 +296,123 @@ def test_service_main_loop_resets_failure_streak_on_good_tick():
         line for line in log_lines if "Unhandled exception in player.tick()" in line
     ]
     assert len(first_failure_lines) == 2
+
+
+def test_service_detects_dead_proxy_thread_and_restarts():
+    """If the proxy's serve_forever thread dies (unhandled exception in
+    socket accept loop, rare memory-pressure paths), every subsequent
+    /prepare call from the plugin hangs on ECONNREFUSED with no log
+    hint. main() polls proxy.is_alive() each tick and rebuilds the
+    proxy when the thread drops."""
+    from unittest.mock import MagicMock
+
+    import service
+
+    mock_monitor = MagicMock()
+    mock_monitor.abortRequested.side_effect = [False, False, False, True]
+    mock_monitor.waitForAbort.return_value = False
+
+    # First proxy simulates a dead thread on iteration #2.
+    dead_proxy = MagicMock()
+    dead_proxy.is_alive.side_effect = [True, False, False]
+    dead_proxy.port = 11111
+
+    live_proxy = MagicMock()
+    live_proxy.is_alive.return_value = True
+    live_proxy.port = 22222
+
+    proxies = iter([dead_proxy, live_proxy])
+
+    mock_player = MagicMock()
+    mock_home = MagicMock()
+
+    with patch("service.xbmc.Monitor", return_value=mock_monitor), patch(
+        "service.StreamProxy", side_effect=lambda: next(proxies)
+    ), patch("service.NzbdavPlayer", return_value=mock_player), patch(
+        "service._HOME_WINDOW", mock_home
+    ), patch(
+        "service.xbmc.log"
+    ) as mock_log:
+        service.main()
+
+    log_lines = [c.args[0] for c in mock_log.call_args_list]
+    assert any("Stream proxy thread is dead" in line for line in log_lines)
+    assert any("Stream proxy restarted on port 22222" in line for line in log_lines)
+    # The replacement proxy's port landed on the IPC property so plugin
+    # calls know where to find the new listener.
+    port_set_calls = [
+        c
+        for c in mock_home.setProperty.call_args_list
+        if c.args[0] == "nzbdav.proxy_port"
+    ]
+    assert any(c.args[1] == "22222" for c in port_set_calls)
+    # Player's proxy reference was updated so stop-callbacks go to the
+    # live proxy.
+    assert mock_player._proxy is live_proxy
+
+
+def test_service_logs_when_proxy_restart_fails():
+    """If the replacement proxy can't start either (port still stuck,
+    OS refusing bind), log the failure but keep the service loop alive
+    so the user can fix the underlying issue without reinstalling."""
+    from unittest.mock import MagicMock
+
+    import service
+
+    mock_monitor = MagicMock()
+    mock_monitor.abortRequested.side_effect = [False, False, True]
+    mock_monitor.waitForAbort.return_value = False
+
+    dead_proxy = MagicMock()
+    dead_proxy.is_alive.return_value = False
+    dead_proxy.port = 11111
+
+    replacement_proxy = MagicMock()
+    replacement_proxy.start.side_effect = OSError("Address already in use")
+    replacement_proxy.port = 0
+
+    proxies = iter([dead_proxy, replacement_proxy])
+    mock_home = MagicMock()
+
+    with patch("service.xbmc.Monitor", return_value=mock_monitor), patch(
+        "service.StreamProxy", side_effect=lambda: next(proxies)
+    ), patch("service.NzbdavPlayer", return_value=MagicMock()), patch(
+        "service._HOME_WINDOW", mock_home
+    ), patch(
+        "service.xbmc.log"
+    ) as mock_log:
+        service.main()
+
+    log_lines = [c.args[0] for c in mock_log.call_args_list]
+    assert any("Stream proxy restart failed" in line for line in log_lines)
+    # The stale port property was cleared when restart failed.
+    assert mock_home.clearProperty.called
+
+
+def test_stream_proxy_is_alive_returns_false_before_start():
+    """A freshly-constructed StreamProxy without start() called must
+    report is_alive()==False so the service's health check doesn't
+    mistake the initial idle state for a crash."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    proxy = StreamProxy()
+    assert proxy.is_alive() is False
+
+
+def test_stream_proxy_is_alive_tracks_thread_liveness():
+    """After start(), is_alive() reflects the underlying thread state.
+    Join the thread and the helper should flip to False."""
+    import time as _time
+
+    from resources.lib.stream_proxy import StreamProxy
+
+    proxy = StreamProxy()
+    proxy.start()
+    try:
+        # Give the thread a cycle to actually start serving.
+        _time.sleep(0.05)
+        assert proxy.is_alive() is True
+    finally:
+        proxy.stop()
+    # After stop(), the thread joined and is no longer alive.
+    assert proxy.is_alive() is False
