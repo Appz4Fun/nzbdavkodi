@@ -308,7 +308,6 @@ def test_clear_kodi_playback_state_deletes_tmdb_helper_url(mock_xbmc, tmp_path):
     possible. Regression test for ISSUE_REPORT.md C5.
     """
     import sqlite3
-    import sys
 
     mock_xbmc.Player.return_value.isPlayingVideo.return_value = False
     db = _build_fake_videos_db(tmp_path)
@@ -380,7 +379,6 @@ def test_clear_kodi_playback_state_deletes_own_plugin_url(mock_xbmc, tmp_path):
     Regression test for ISSUE_REPORT.md C5.
     """
     import sqlite3
-    import sys
 
     mock_xbmc.Player.return_value.isPlayingVideo.return_value = False
     db = _build_fake_videos_db(tmp_path)
@@ -438,7 +436,6 @@ def test_clear_kodi_playback_state_escapes_like_wildcards(mock_xbmc, tmp_path):
     arbitrary TMDBHelper rows. Regression test for ISSUE_REPORT.md M5 / C5.
     """
     import sqlite3
-    import sys
 
     mock_xbmc.Player.return_value.isPlayingVideo.return_value = False
     db = _build_fake_videos_db(tmp_path)

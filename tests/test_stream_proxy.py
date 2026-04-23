@@ -79,7 +79,6 @@ def test_is_safe_ffmpeg_cmd_rejects_empty_cmd():
 
 def _make_handler_with_server(ctx, range_header=None, current_byte_pos=0):
     """Create a _StreamHandler wired to a mock server for handler-level tests."""
-    import threading
 
     handler = _StreamHandler.__new__(_StreamHandler)
 
@@ -169,7 +168,6 @@ def test_parse_range_rejects_malformed_invariants(range_header, content_length):
 
 
 def test_validate_url_rejects_none():
-    import pytest
     from resources.lib.stream_proxy import _validate_url
 
     with pytest.raises(ValueError, match="None"):
@@ -177,7 +175,6 @@ def test_validate_url_rejects_none():
 
 
 def test_validate_url_rejects_ftp():
-    import pytest
     from resources.lib.stream_proxy import _validate_url
 
     with pytest.raises(ValueError):
@@ -861,7 +858,6 @@ def test_prepare_stream_force_remux_hls_fmp4_falls_back_when_capability_probe_fa
 
 
 def test_prepare_stream_rejects_invalid_scheme():
-    import pytest
     from resources.lib.stream_proxy import StreamProxy
 
     sp = StreamProxy.__new__(StreamProxy)
@@ -2189,7 +2185,7 @@ def test_serve_hls_playlist_fmp4_version_is_7():
     handler.send_error = MagicMock()
 
     captured = []
-    handler.wfile.write.side_effect = lambda b: captured.append(b)
+    handler.wfile.write.side_effect = captured.append
 
     handler._serve_hls_playlist(ctx)
 
@@ -2215,7 +2211,7 @@ def test_serve_hls_playlist_fmp4_contains_ext_x_map():
     handler.send_error = MagicMock()
 
     captured = []
-    handler.wfile.write.side_effect = lambda b: captured.append(b)
+    handler.wfile.write.side_effect = captured.append
 
     handler._serve_hls_playlist(ctx)
     body = b"".join(captured).decode("utf-8")
@@ -2240,7 +2236,7 @@ def test_serve_hls_playlist_fmp4_uses_m4s_extension():
     handler.send_error = MagicMock()
 
     captured = []
-    handler.wfile.write.side_effect = lambda b: captured.append(b)
+    handler.wfile.write.side_effect = captured.append
 
     handler._serve_hls_playlist(ctx)
     body = b"".join(captured).decode("utf-8")
@@ -2267,7 +2263,7 @@ def test_serve_hls_playlist_mpegts_version_is_still_3():
     handler.send_error = MagicMock()
 
     captured = []
-    handler.wfile.write.side_effect = lambda b: captured.append(b)
+    handler.wfile.write.side_effect = captured.append
 
     handler._serve_hls_playlist(ctx)
     body = b"".join(captured).decode("utf-8")
@@ -2293,7 +2289,7 @@ def test_serve_hls_playlist_mpegts_no_ext_x_map():
     handler.send_error = MagicMock()
 
     captured = []
-    handler.wfile.write.side_effect = lambda b: captured.append(b)
+    handler.wfile.write.side_effect = captured.append
 
     handler._serve_hls_playlist(ctx)
     body = b"".join(captured).decode("utf-8")
@@ -2318,7 +2314,7 @@ def test_serve_hls_playlist_mpegts_uses_ts_extension():
     handler.send_error = MagicMock()
 
     captured = []
-    handler.wfile.write.side_effect = lambda b: captured.append(b)
+    handler.wfile.write.side_effect = captured.append
 
     handler._serve_hls_playlist(ctx)
     body = b"".join(captured).decode("utf-8")
@@ -3485,7 +3481,6 @@ def test_hls_producer_prepare_raises_if_no_output_within_deadline(tmp_path):
     the runtime safety net for ffmpeg/source combos that spawn
     cleanly but never produce output (analysis hang, slow
     upstream, etc)."""
-    import pytest
     from resources.lib.stream_proxy import HlsProducer
 
     ctx = {
@@ -3520,7 +3515,6 @@ def test_hls_producer_prepare_raises_if_ffmpeg_dies_during_production_wait(
     producing init.mp4. prepare() must raise immediately on the
     next poll cycle, not wait for the full 30 s production
     deadline."""
-    import pytest
     from resources.lib.stream_proxy import HlsProducer
 
     ctx = {
@@ -3551,7 +3545,6 @@ def test_hls_producer_prepare_raises_if_ffmpeg_dies_during_production_wait(
 def test_hls_producer_prepare_raises_when_ffmpeg_exits_immediately(tmp_path):
     """fmp4 producer; Popen returns a mock whose poll() returns 1
     (exited). prepare() raises RuntimeError mentioning the exit code."""
-    import pytest
     from resources.lib.stream_proxy import HlsProducer
 
     ctx = {
@@ -3582,7 +3575,6 @@ def test_hls_producer_prepare_raises_when_popen_fails(tmp_path):
     """fmp4 producer; Popen raises OSError. The current
     _ensure_ffmpeg_headed_for swallows OSError and leaves _proc=None.
     prepare() should detect the None state and raise RuntimeError."""
-    import pytest
     from resources.lib.stream_proxy import HlsProducer
 
     ctx = {
@@ -4476,7 +4468,6 @@ def test_head_no_context_returns_404():
 
 def test_prepare_stream_uses_faststart_for_mp4():
     """prepare_stream returns faststart proxy for MP4 files."""
-    import threading
 
     from resources.lib.stream_proxy import StreamProxy
 
@@ -4526,7 +4517,6 @@ def test_prepare_stream_uses_faststart_for_mp4():
 
 def test_prepare_stream_direct_redirect_for_already_faststart():
     """Already-faststart MP4 returns remote URL directly (no proxy hop)."""
-    import threading
 
     from resources.lib.stream_proxy import StreamProxy
 

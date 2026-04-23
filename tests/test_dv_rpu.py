@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from resources.lib.dv_rpu import parse_rpu_payload, parse_unspec62_nalu
 
 FIXTURES = Path(__file__).parent / "fixtures" / "dovi"
@@ -40,8 +41,6 @@ def test_parse_unspec62_nalu_accepts_prefixed_payload():
 def test_parse_rejects_truncated_rpu():
     """RPU under the 7-byte minimum raises ValueError — size guard is the
     first line of defence before bit-stream parsing begins."""
-    import pytest
-    from resources.lib.dv_rpu import parse_rpu_payload
 
     with pytest.raises(ValueError):
         parse_rpu_payload(b"\x19\x08\x09")
@@ -50,8 +49,6 @@ def test_parse_rejects_truncated_rpu():
 def test_parse_rejects_wrong_rpu_prefix():
     """First byte after wrapper-stripping must be 0x19 (25). A malformed
     stream starting with something else is rejected."""
-    import pytest
-    from resources.lib.dv_rpu import parse_rpu_payload
 
     # 7+ bytes (passes length gate) but first byte 0x42, not 0x19.
     with pytest.raises(ValueError):
@@ -61,8 +58,6 @@ def test_parse_rejects_wrong_rpu_prefix():
 def test_parse_rejects_invalid_rpu_type():
     """rpu_type field (first 6 bits after prefix) must equal 2. A synthesized
     RPU with rpu_type=0 in bits 7..2 of the second byte raises."""
-    import pytest
-    from resources.lib.dv_rpu import parse_rpu_payload
 
     # \x19 prefix + byte with top-6-bits = 0 (rpu_type=0, not 2).
     with pytest.raises(ValueError):

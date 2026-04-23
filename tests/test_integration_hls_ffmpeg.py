@@ -1,6 +1,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 nzbdav contributors
 
+# pytest fixtures are referenced by name in both the fixture definition and
+# the test function's parameter list, which pylint W0621 flags as an outer-
+# scope redefinition. That is the documented pytest usage pattern; disable
+# the check file-wide here.
+# pylint: disable=redefined-outer-name
+
 """Real-ffmpeg integration tests for the fmp4 HLS producer.
 
 Why this exists
@@ -99,7 +105,7 @@ def _generate_test_mkv(path):
         "-shortest",
         path,
     ]
-    result = subprocess.run(cmd, capture_output=True)
+    result = subprocess.run(cmd, capture_output=True, check=False)
     if result.returncode != 0:
         raise RuntimeError(
             "test MKV generation failed: {}".format(

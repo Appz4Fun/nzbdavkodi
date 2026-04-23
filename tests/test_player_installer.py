@@ -165,6 +165,8 @@ def test_install_player_preserves_existing_file_on_matching_schema(
     mock_read_file.read.return_value = existing_contents
     mock_write_file = MagicMock()
 
+    # pylint: disable=keyword-arg-before-vararg
+    # `open(path, mode, *)` is the builtin signature we mirror.
     def _file_factory(path, mode="r", *a, **kw):
         return mock_read_file if mode == "r" else mock_write_file
 
@@ -195,6 +197,8 @@ def test_install_player_backs_up_and_overwrites_on_schema_mismatch(
     mock_read_file.read.return_value = existing_contents
     mock_write_file = MagicMock()
 
+    # pylint: disable=keyword-arg-before-vararg
+    # `open(path, mode, *)` is the builtin signature we mirror.
     def _file_factory(path, mode="r", *a, **kw):
         return mock_read_file if mode == "r" else mock_write_file
 

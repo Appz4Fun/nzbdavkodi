@@ -82,7 +82,6 @@ def test_addon_name_returns_fallback_when_addon_none():
     return the hardcoded fallback rather than raising AttributeError
     on a None.getAddonInfo call."""
     import xbmcaddon
-    from resources.lib.i18n import addon_name
 
     original = xbmcaddon.Addon
     try:
@@ -100,7 +99,6 @@ def test_string_returns_localized_value_when_kodi_provides_one():
     """When getLocalizedString returns a non-empty str, use it as-is
     rather than falling back to the bundled dict."""
     import xbmcaddon
-    from resources.lib.i18n import string
 
     xbmcaddon.Addon.return_value.getLocalizedString.return_value = "Localized!"
     try:
@@ -113,7 +111,6 @@ def test_string_falls_back_when_getLocalizedString_returns_non_string():
     """MagicMock / None / bytes from getLocalizedString must NOT be
     treated as a valid localization. Fall through to _FALLBACK_STRINGS."""
     import xbmcaddon
-    from resources.lib.i18n import string
 
     original = xbmcaddon.Addon.return_value.getLocalizedString.return_value
     try:
