@@ -729,99 +729,60 @@ def _get_tmdb_poster(imdb_id):
         return ""
 
 
-def _test_hydra_connection():
-    """
-    Check NZBHydra2 connectivity and notify the user of the result.
-    
-    Reads `hydra_url` and `hydra_api_key` from addon settings. If the URL is not configured, notifies "NZBHydra URL not configured" and returns. Otherwise it requests the Hydra caps endpoint at "{url}/api?apikey={api_key}&t=caps&o=xml". If the response contains "<caps>" or "<server" it notifies "NZBHydra connection OK". If the response is present but unexpected it notifies "NZBHydra: unexpected response". On exception it notifies "NZBHydra: {error}" with the error message truncated to 60 characters.
-    """
-    import xbmcaddon
+def _test_connection(label, url, test_url, ok_condition):
+    """Test a service connection and notify the user of the result.
 
+    If url is empty, notifies "<label> URL not configured". Otherwise
+    issues a GET to test_url, notifies "<label> connection OK" when
+    ok_condition(response) is True, "<label>: unexpected response" when
+    False, and "<label>: <error>" (truncated to 60 chars) on exception.
+    """
     from resources.lib.http_util import http_get, notify
+
+    if not url:
+        notify(_addon_name(), "{} URL not configured".format(label), 3000)
+        return
+    try:
+        response = http_get(test_url)
+        if ok_condition(response):
+            notify(_addon_name(), "{} connection OK".format(label), 3000)
+        else:
+            notify(_addon_name(), "{}: unexpected response".format(label), 5000)
+    except Exception as e:
+        notify(_addon_name(), "{}: {}".format(label, str(e)[:60]), 5000)
+
+
+def _test_hydra_connection():
+    """Test NZBHydra2 connection by hitting the caps endpoint."""
+    import xbmcaddon
 
     addon = xbmcaddon.Addon()
     url = addon.getSetting("hydra_url").rstrip("/")
     api_key = addon.getSetting("hydra_api_key")
-
-    if not url:
-        notify(_addon_name(), "NZBHydra URL not configured", 3000)
-        return
-
     test_url = "{}/api?apikey={}&t=caps&o=xml".format(url, api_key)
-    try:
-        response = http_get(test_url)
-        if "<caps>" in response or "<server" in response:
-            notify(_addon_name(), "NZBHydra connection OK", 3000)
-        else:
-            notify(_addon_name(), "NZBHydra: unexpected response", 5000)
-    except Exception as e:
-        notify(
-            _addon_name(),
-            "NZBHydra: {}".format(str(e)[:60]),
-            5000,
-        )
+    _test_connection("NZBHydra", url, test_url, lambda r: "<caps>" in r or "<server" in r)
 
 
 def _test_prowlarr_connection():
     """Test Prowlarr connection by hitting the indexer list endpoint."""
     import xbmcaddon
 
-    from resources.lib.http_util import http_get, notify
-
     addon = xbmcaddon.Addon()
     url = addon.getSetting("prowlarr_host").rstrip("/")
     api_key = addon.getSetting("prowlarr_api_key")
-
-    if not url:
-        notify(_addon_name(), "Prowlarr URL not configured", 3000)
-        return
-
     test_url = "{}/api/v1/indexer?apikey={}".format(url, api_key)
-    try:
-        response = http_get(test_url)
-        if "[" in response or "{" in response:
-            notify(_addon_name(), "Prowlarr connection OK", 3000)
-        else:
-            notify(_addon_name(), "Prowlarr: unexpected response", 5000)
-    except Exception as e:
-        notify(
-            _addon_name(),
-            "Prowlarr: {}".format(str(e)[:60]),
-            5000,
-        )
+    _test_connection("Prowlarr", url, test_url, lambda r: "[" in r or "{" in r)
 
 
 def _test_nzbdav_connection():
-    """
-    Check the nzbdav service connectivity by querying its version endpoint and notify the user of the result.
-    
-    Reads the add-on settings `nzbdav_url` and `nzbdav_api_key`. If the URL is not configured, posts a notification and returns. Otherwise it requests the nzbdav version endpoint; posts a success notification if the response contains the string "version", posts an "unexpected response" notification if not, and posts an error notification containing the first 60 characters of any exception message on failure.
-    """
+    """Test nzbdav connection by hitting the version endpoint."""
     import xbmcaddon
-
-    from resources.lib.http_util import http_get, notify
 
     addon = xbmcaddon.Addon()
     url = addon.getSetting("nzbdav_url").rstrip("/")
     api_key = addon.getSetting("nzbdav_api_key")
-
-    if not url:
-        notify(_addon_name(), "nzbdav URL not configured", 3000)
-        return
-
     test_url = "{}/api?mode=version&apikey={}&output=json".format(url, api_key)
-    try:
-        response = http_get(test_url)
-        if "version" in response:
-            notify(_addon_name(), "nzbdav connection OK", 3000)
-        else:
-            notify(_addon_name(), "nzbdav: unexpected response", 5000)
-    except Exception as e:
-        notify(
-            _addon_name(),
-            "nzbdav: {}".format(str(e)[:60]),
-            5000,
-        )
+    _test_connection("nzbdav", url, test_url, lambda r: "version" in r)
 
 
 def _handle_main_menu(handle):

@@ -4,8 +4,7 @@
 """Prowlarr Newznab API client."""
 
 import xml.etree.ElementTree as ET
-from urllib.error import URLError
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import xbmc
 
@@ -63,6 +62,14 @@ def _get_settings():
     return host, api_key, indexer_ids
 
 
+def _build_search_url(base_url, params, indexer_ids):
+    """Build a Prowlarr /api/v1/search URL with encoded params and indexer IDs."""
+    query = urlencode(params)
+    for idx_id in indexer_ids:
+        query += "&indexerIds={}".format(idx_id)
+    return "{}/api/v1/search?{}".format(base_url, query)
+
+
 def search_prowlarr(search_type, title, year="", imdb="", season="", episode=""):
     """
     Search Prowlarr for NZB results matching a movie or TV episode.
@@ -118,11 +125,7 @@ def search_prowlarr(search_type, title, year="", imdb="", season="", episode="")
         else:
             params["q"] = title
 
-    query = urlencode(params)
-    for idx_id in indexer_ids:
-        query += "&indexerIds={}".format(idx_id)
-
-    url = "{}/api/v1/search?{}".format(base_url, query)
+    url = _build_search_url(base_url, params, indexer_ids)
     from resources.lib.http_util import redact_url
 
     xbmc.log(
@@ -131,7 +134,7 @@ def search_prowlarr(search_type, title, year="", imdb="", season="", episode="")
 
     try:
         xml_text = _http_get(url)
-    except (URLError, Exception) as e:
+    except Exception as e:
         xbmc.log(
             "NZB-DAV: Prowlarr search request failed: {}".format(e), xbmc.LOGERROR
         )
@@ -151,16 +154,13 @@ def search_prowlarr(search_type, title, year="", imdb="", season="", episode="")
         )
         params.pop("imdbid", None)
         params["q"] = title
-        fallback_query = urlencode(params)
-        for idx_id in indexer_ids:
-            fallback_query += "&indexerIds={}".format(idx_id)
-        fallback_url = "{}/api/v1/search?{}".format(base_url, fallback_query)
+        fallback_url = _build_search_url(base_url, params, indexer_ids)
         try:
             xml_text = _http_get(fallback_url)
             results, parse_error = _parse_results_checked(xml_text)
             if parse_error:
                 return [], parse_error
-        except (URLError, Exception) as e:
+        except Exception as e:
             xbmc.log(
                 "NZB-DAV: Prowlarr title fallback failed: {}".format(e), xbmc.LOGERROR
             )
@@ -245,27 +245,22 @@ def _parse_results_checked(xml_text):
                     indexer = attr.get("value", "")
 
         if not indexer:
-            indexer = _get_text(item, "source") or ""
+            indexer = _get_text(item, "source")
         if not indexer:
             source_el = item.find("source")
             if source_el is not None:
                 indexer = source_el.get("url", "")
                 if indexer and "/" in indexer:
                     try:
-                        from urllib.parse import urlparse
-
                         indexer = urlparse(indexer).hostname or ""
                     except Exception:
                         indexer = ""
 
-        if not size:
-            enclosure = item.find("enclosure")
-            if enclosure is not None:
+        enclosure = item.find("enclosure")
+        if enclosure is not None:
+            if not size:
                 size = enclosure.get("length", "")
-
-        if not link:
-            enclosure = item.find("enclosure")
-            if enclosure is not None:
+            if not link:
                 link = enclosure.get("url", "")
 
         age = _calculate_age(pubdate) if pubdate else ""

@@ -12,19 +12,11 @@ import xbmc
 
 
 def _get_settings():
-    """
-    Load WebDAV-related addon settings.
-    
-    Returns:
-        dict: Mapping with keys:
-            - "nzbdav_url" (str): Base NZB/WebDAV URL with any trailing '/' removed.
-            - "username" (str): WebDAV username (may be empty).
-            - "password" (str): WebDAV password (may be empty).
-    """
     import xbmcaddon
 
     addon = xbmcaddon.Addon()
     return {
+        "webdav_url": addon.getSetting("webdav_url").rstrip("/"),
         "nzbdav_url": addon.getSetting("nzbdav_url").rstrip("/"),
         "username": addon.getSetting("webdav_username"),
         "password": addon.getSetting("webdav_password"),
@@ -57,31 +49,15 @@ def _http_head(url, username="", password=""):
 
 
 def build_webdav_url(filename):
-    """
-    Constructs a WebDAV URL for a file under the configured nzbdav base URL.
-    
-    Parameters:
-        filename (str): File name or relative path to append to the nzbdav base URL; characters will be URL-encoded.
-    
-    Returns:
-        str: Full URL to the file with the filename URL-encoded and appended to the configured nzbdav base.
-    """
     settings = _get_settings()
-    return "{}/{}".format(settings["nzbdav_url"], quote(filename, safe=""))
+    base = settings["webdav_url"] or settings["nzbdav_url"]
+    return "{}/{}".format(base, quote(filename, safe=""))
 
 
 def get_webdav_stream_url(filename):
-    """
-    Builds a WebDAV URL for a file on the configured nzbdav server and returns any HTTP auth headers required.
-    
-    Parameters:
-        filename (str): File name or relative path segment to append to the configured nzbdav base URL; the value is URL-quoted.
-    
-    Returns:
-        (str, dict): A tuple where the first element is the full URL to the file and the second is a dict of HTTP headers (contains an `Authorization` header when credentials are configured, otherwise empty).
-    """
     settings = _get_settings()
-    url = "{}/{}".format(settings["nzbdav_url"], quote(filename, safe=""))
+    base = settings["webdav_url"] or settings["nzbdav_url"]
+    url = "{}/{}".format(base, quote(filename, safe=""))
     headers = _build_auth_headers(settings["username"], settings["password"])
     return url, headers
 
@@ -185,17 +161,23 @@ def probe_webdav_reachable(monitor=None, max_retries=1, retry_delay=1):
 
 
 def find_video_file(folder_path, _depth=0):
-    """
-    Finds the largest video file in a WebDAV folder, searching the folder and up to two levels of subdirectories.
-    
-    Parameters:
-        folder_path (str): WebDAV folder path to scan (absolute or relative).
-    
+    """Browse a WebDAV folder and find the largest video file.
+
+    Args:
+        folder_path: WebDAV folder path to scan (may be absolute or relative).
+        _depth: Internal recursion depth counter (used to cap traversal).
+
     Returns:
-        str or None: The WebDAV href path of the largest video file found (typically an absolute server path beginning with "/"), or `None` if no video is found or an error occurs.
-    
-    Notes:
-        Searches for files with extensions: .mkv, .mp4, .avi, .m4v, .ts, .wmv, .mov. Recursion is limited to a total depth of three levels (the start folder plus two nested levels).
+        The WebDAV href path of the largest video file found, typically an
+        absolute server path beginning with "/", or None when no video is
+        located or an error occurs.
+
+    Side effects:
+        Reads WebDAV settings from Kodi via xbmcaddon.Addon().
+        Issues a PROPFIND request at the target path and, if no video is found
+        at that level, recurses into subdirectories up to two levels deep
+        (three total levels including the starting folder).
+        Logs discovered files, recursion steps, and errors to the Kodi log.
     """
     import xml.etree.ElementTree as ET
 
@@ -203,7 +185,7 @@ def find_video_file(folder_path, _depth=0):
         return None
 
     settings = _get_settings()
-    base = settings["nzbdav_url"]
+    base = settings["webdav_url"] or settings["nzbdav_url"]
     username = settings["username"]
     password = settings["password"]
 
@@ -214,10 +196,8 @@ def find_video_file(folder_path, _depth=0):
 
     req = Request(url, method="PROPFIND")
     req.add_header("Depth", "1")
-    if username:
-        credentials = "{}:{}".format(username, password)
-        encoded = base64.b64encode(credentials.encode("utf-8")).decode("utf-8")
-        req.add_header("Authorization", "Basic {}".format(encoded))
+    for header, value in _build_auth_headers(username, password).items():
+        req.add_header(header, value)
 
     VIDEO_EXTENSIONS = (".mkv", ".mp4", ".avi", ".m4v", ".ts", ".wmv", ".mov")
 
@@ -321,19 +301,15 @@ def find_video_file(folder_path, _depth=0):
 
 
 def get_webdav_stream_url_for_path(file_path):
-    """
-    Constructs a full stream URL and corresponding HTTP auth headers for a WebDAV file path.
-    
-    Parameters:
-        file_path (str): Full WebDAV path to the file (already URL-encoded, as returned by PROPFIND), including any leading slash.
-    
-    Returns:
-        tuple: `(url, headers)` where `url` is the absolute URL to the file built from the configured `nzbdav_url`, and `headers` is a dictionary of HTTP headers for authentication (empty if no credentials are configured).
+    """Build a stream URL and auth headers for a full WebDAV path.
+
+    Returns (url, headers_dict) where headers_dict may be empty if no auth.
     """
     settings = _get_settings()
 
     # file_path is already URL-encoded from PROPFIND
-    url = "{}{}".format(settings["nzbdav_url"], file_path)
+    base = settings["webdav_url"] or settings["nzbdav_url"]
+    url = "{}{}".format(base, file_path)
     headers = _build_auth_headers(settings["username"], settings["password"])
     return url, headers
 
@@ -369,10 +345,8 @@ def validate_stream(filename):
     password = settings["password"]
 
     req = Request(url, method="HEAD")
-    if username:
-        credentials = "{}:{}".format(username, password)
-        encoded = base64.b64encode(credentials.encode("utf-8")).decode("utf-8")
-        req.add_header("Authorization", "Basic {}".format(encoded))
+    for header, value in _build_auth_headers(username, password).items():
+        req.add_header(header, value)
     req.add_header("Range", "bytes=0-0")
 
     try:
