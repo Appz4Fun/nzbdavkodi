@@ -100,7 +100,22 @@ def calculate_age(pubdate_str):
 
 
 def format_size(size_bytes):
-    """Format byte size to human readable."""
+    """Return a human-readable byte-size string.
+
+    Args:
+        size_bytes: int or str representation of a byte count. Strings
+            are coerced via ``int()`` so Newznab-style size="1234567"
+            fields work without explicit conversion at every call
+            site. ``None`` / ``0`` / ``""`` all map to an empty
+            string — the caller renders "unknown size" in that slot.
+
+    Returns:
+        One of:
+        - ``""`` when ``size_bytes`` is falsy.
+        - ``"X.Y GB"`` when size >= 1 GiB (binary MiB/GiB units).
+        - ``"X.Y MB"`` when size >= 1 MiB.
+        - ``"N B"`` for anything smaller.
+    """
     if not size_bytes:
         return ""
     size_bytes = int(size_bytes)

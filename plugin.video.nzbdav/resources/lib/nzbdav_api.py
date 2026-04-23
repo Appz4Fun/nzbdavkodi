@@ -293,13 +293,18 @@ def cancel_job(nzo_id, timeout=3):
 
 
 def get_job_history(nzo_id):
-    """Check if a job is completed in nzbdav's history.
+    """Check if a job has landed in nzbdav's history.
 
-    Returns dict with: status, storage, name. None if not found.
+    Returns dict with keys ``status``, ``storage``, ``name``,
+    ``fail_message`` when the nzo_id is found, or ``None`` when it
+    hasn't appeared yet (or on any network / settings / parse error —
+    the resolver's poll loop treats None as "keep polling", so
+    transient failures don't abort the resolve).
     """
     try:
         base_url, api_key = _get_settings()
-    except Exception:
+    except Exception:  # pylint: disable=broad-except
+        xbmc.log("NZB-DAV: Failed to read settings for job history", xbmc.LOGDEBUG)
         return None
 
     params = {
@@ -313,7 +318,11 @@ def get_job_history(nzo_id):
     try:
         response_text = _http_get(url, timeout=10)
         response = json.loads(response_text)
-    except Exception:
+    except Exception as e:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: Job history request failed for nzo_id={}: {}".format(nzo_id, e),
+            xbmc.LOGDEBUG,
+        )
         return None
 
     slots = response.get("history", {}).get("slots", [])
