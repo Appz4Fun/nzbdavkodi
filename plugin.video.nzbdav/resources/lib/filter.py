@@ -400,7 +400,21 @@ def parse_title_metadata(title):
 
 
 def matches_filters(result, meta, settings):
-    """Check if a result passes all filter criteria."""
+    """True iff every configured filter accepts this result.
+
+    Args:
+        result: Indexer result dict with at least ``title`` and ``size``.
+        meta: Parsed-metadata dict produced by ``parse_title_metadata``
+            (``resolution``, ``hdr`` list, ``audio`` list, ``codec``,
+            ``languages`` list).
+        settings: Filter-settings dict produced by ``_get_filter_settings``
+            (label lists, CSV-keyword lists, size bounds).
+
+    Returns:
+        ``True`` when the result satisfies every enabled filter,
+        ``False`` the first time any filter excludes it. Pure function
+        — does not mutate any input.
+    """
     title_lower = result["title"].lower()
 
     if settings["resolutions"] and meta["resolution"]:
@@ -452,7 +466,15 @@ def matches_filters(result, meta, settings):
 
 
 def filter_results(results):
-    """Apply filters, sort, truncate. Returns (filtered, all_parsed)."""
+    """Apply filters, sort, truncate. Returns (filtered, all_parsed).
+
+    Side effect: mutates each input dict by attaching a ``_meta`` key
+    holding the parsed-title metadata. Callers that iterate ``results``
+    after this call will see the extra field. ``all_parsed`` is the
+    same list of dicts (with ``_meta`` populated) in sorted order;
+    ``filtered`` is the subset that passed every filter, truncated
+    to ``settings["max_results"]`` if that is non-zero.
+    """
     settings = _get_filter_settings()
 
     all_parsed = []
