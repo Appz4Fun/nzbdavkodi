@@ -178,7 +178,22 @@ class ResultsDialog(xbmcgui.WindowXMLDialog):
 
 
 def show_results_dialog(results, title="", year="", total_count=0):
-    """Show the results dialog and return the selected result dict, or None."""
+    """Show the full-screen results dialog and wait for the user pick.
+
+    Args:
+        results: List of filtered result dicts (must include
+            ``title``, ``size``, ``_meta`` per ``filter_results``).
+        title: Movie or show title for the dialog heading.
+        year: Release year (movies) or show year (episodes),
+            displayed beside the title.
+        total_count: Number of results before filtering, used to
+            render "Showing N of M" in the dialog header.
+
+    Returns:
+        The chosen result dict (same object reference from ``results``)
+        when the user picks one, or ``None`` when the user cancels the
+        dialog or no results are available.
+    """
     addon = xbmcaddon.Addon()
     addon_path = addon.getAddonInfo("path")
 
