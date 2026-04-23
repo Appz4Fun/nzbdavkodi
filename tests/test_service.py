@@ -214,3 +214,85 @@ def test_tick_waits_before_declaring_failure(mock_window):
     player.tick()
 
     assert player._state == PlaybackState.MONITORING
+
+
+def test_service_main_loop_absorbs_tick_exceptions():
+    """A crash inside ``player.tick()`` used to bubble up to main()'s
+    loop and kill the service, silently breaking every future stream.
+    The hardened main() wraps tick() so a single exception just logs
+    and the loop keeps spinning."""
+    from unittest.mock import MagicMock
+
+    import service
+
+    # monitor.abortRequested returns True on the 3rd call → 2 full loop
+    # iterations, each calling player.tick() once.
+    mock_monitor = MagicMock()
+    mock_monitor.abortRequested.side_effect = [False, False, True]
+    mock_monitor.waitForAbort.return_value = False
+
+    failing_player = MagicMock()
+    failing_player.tick.side_effect = RuntimeError("boom")
+
+    mock_proxy = MagicMock()
+    mock_proxy.port = 12345
+
+    with patch("service.xbmc.Monitor", return_value=mock_monitor), patch(
+        "service.StreamProxy", return_value=mock_proxy
+    ), patch("service.NzbdavPlayer", return_value=failing_player), patch(
+        "service.xbmc.log"
+    ) as mock_log, patch(
+        "service._HOME_WINDOW"
+    ):
+        service.main()
+
+    # Both tick() calls raised; service still reached the "stopped" log.
+    assert failing_player.tick.call_count == 2
+    log_lines = [c.args[0] for c in mock_log.call_args_list]
+    assert any("Service stopped" in line for line in log_lines)
+    # First failure gets its own ERROR line; second logs the streak counter.
+    assert any("Unhandled exception in player.tick()" in line for line in log_lines)
+    assert any("still failing" in line and "streak=2" in line for line in log_lines)
+
+
+def test_service_main_loop_resets_failure_streak_on_good_tick():
+    """One transient tick failure shouldn't remain in the 'streak' log
+    forever. After a successful tick, the streak counter resets so the
+    NEXT failure logs a full trace again."""
+    from unittest.mock import MagicMock
+
+    import service
+
+    mock_monitor = MagicMock()
+    mock_monitor.abortRequested.side_effect = [False, False, False, True]
+    mock_monitor.waitForAbort.return_value = False
+
+    tick_results = iter([RuntimeError("first"), None, RuntimeError("second")])
+
+    def _tick():
+        r = next(tick_results)
+        if isinstance(r, Exception):
+            raise r
+
+    intermittent_player = MagicMock()
+    intermittent_player.tick.side_effect = _tick
+
+    mock_proxy = MagicMock()
+    mock_proxy.port = 12345
+
+    with patch("service.xbmc.Monitor", return_value=mock_monitor), patch(
+        "service.StreamProxy", return_value=mock_proxy
+    ), patch("service.NzbdavPlayer", return_value=intermittent_player), patch(
+        "service.xbmc.log"
+    ) as mock_log, patch(
+        "service._HOME_WINDOW"
+    ):
+        service.main()
+
+    log_lines = [c.args[0] for c in mock_log.call_args_list]
+    # Two first-failure ERROR lines — one per streak (since the good
+    # tick between them resets the counter).
+    first_failure_lines = [
+        line for line in log_lines if "Unhandled exception in player.tick()" in line
+    ]
+    assert len(first_failure_lines) == 2

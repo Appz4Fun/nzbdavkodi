@@ -334,10 +334,37 @@ def main():
         xbmc.LOGINFO,
     )
 
+    # Track consecutive tick failures so we can escalate a chronic bug
+    # from "log once per tick" (flooding the log with the same trace) to
+    # a one-shot "service is unhealthy, please file an issue" warning.
+    consecutive_tick_failures = 0
+
     while not monitor.abortRequested():
         if monitor.waitForAbort(1):
             break
-        player.tick()
+        try:
+            player.tick()
+            consecutive_tick_failures = 0
+        except Exception as e:  # pylint: disable=broad-except
+            # A crash inside tick() used to kill the whole service,
+            # silently breaking all future streams until Kodi restart.
+            # Absorb it so the loop keeps running. Rate-limit the full
+            # trace to the first failure of a streak; subsequent
+            # failures log a single line with the streak counter so a
+            # chronic bug is visible without flooding the log.
+            consecutive_tick_failures += 1
+            if consecutive_tick_failures == 1:
+                xbmc.log(
+                    "NZB-DAV: Unhandled exception in player.tick(): {} "
+                    "(reason=tick_exception)".format(e),
+                    xbmc.LOGERROR,
+                )
+            else:
+                xbmc.log(
+                    "NZB-DAV: player.tick() still failing "
+                    "(streak={}, latest={})".format(consecutive_tick_failures, e),
+                    xbmc.LOGERROR,
+                )
 
     proxy.stop()
     _HOME_WINDOW.clearProperty(_PROP_PROXY_PORT)
