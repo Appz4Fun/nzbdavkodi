@@ -5937,3 +5937,100 @@ def test_retry_original_range_short_circuits_when_upstream_marked_down():
     assert current == 0
     mock_urlopen.assert_not_called()
     mock_sleep.assert_not_called()
+
+
+# --- ServiceProxyUnavailableError + prepare_stream_via_service wrapping ---
+
+
+def test_prepare_stream_via_service_raises_specific_error_on_connection_refused():
+    """When the loopback service port is stale / service crashed, the
+    raw ConnectionRefusedError is re-raised as the specific
+    ServiceProxyUnavailableError so the error-dialog layer can render
+    an actionable message."""
+    from resources.lib.stream_proxy import (
+        ServiceProxyUnavailableError,
+        prepare_stream_via_service,
+    )
+
+    with patch(
+        "resources.lib.stream_proxy.urlopen",
+        side_effect=ConnectionRefusedError("refused"),
+    ):
+        try:
+            prepare_stream_via_service(9999, "http://nzbdav/movie.mkv")
+        except ServiceProxyUnavailableError as err:
+            message = str(err)
+            assert "9999" in message
+            assert "unreachable" in message.lower()
+        else:
+            raise AssertionError("Expected ServiceProxyUnavailableError")
+
+
+def test_prepare_stream_via_service_raises_specific_error_on_url_error():
+    """URLError with a network-style .reason (wraps the same errno set
+    as a raw ConnectionError) must also yield ServiceProxyUnavailableError."""
+    from urllib.error import URLError
+
+    from resources.lib.stream_proxy import (
+        ServiceProxyUnavailableError,
+        prepare_stream_via_service,
+    )
+
+    wrapped = URLError(reason=ConnectionRefusedError("refused"))
+    with patch("resources.lib.stream_proxy.urlopen", side_effect=wrapped):
+        try:
+            prepare_stream_via_service(9999, "http://nzbdav/movie.mkv")
+        except ServiceProxyUnavailableError:
+            pass
+        else:
+            raise AssertionError("Expected ServiceProxyUnavailableError")
+
+
+def test_prepare_stream_via_service_passes_through_non_network_errors():
+    """URLError with a non-network .reason (e.g., ValueError from URL
+    parsing) must propagate as-is so the error-dialog layer can render
+    the specific failure — not mask it as "service unavailable"."""
+    from urllib.error import URLError
+
+    from resources.lib.stream_proxy import prepare_stream_via_service
+
+    wrapped = URLError(reason=ValueError("bad URL syntax"))
+    with patch("resources.lib.stream_proxy.urlopen", side_effect=wrapped):
+        try:
+            prepare_stream_via_service(9999, "http://nzbdav/movie.mkv")
+        except URLError as e:
+            assert isinstance(e.reason, ValueError)
+        else:
+            raise AssertionError("Expected URLError to propagate")
+
+
+def test_service_proxy_unavailable_error_is_oserror_subclass():
+    """ServiceProxyUnavailableError must be an OSError subclass so
+    resolver.py's ``except OSError`` (inside _RESOLVE_RUNTIME_ERRORS)
+    still catches it without a code change at the call site."""
+    from resources.lib.stream_proxy import ServiceProxyUnavailableError
+
+    assert issubclass(ServiceProxyUnavailableError, OSError)
+
+
+def test_prepare_stream_via_service_success_path_unchanged():
+    """Happy path: urlopen returns JSON with proxy_url, function
+    returns (proxy_url, rest_of_dict). The new error wrapping must
+    not interfere with the normal success flow."""
+    import json
+
+    from resources.lib.stream_proxy import prepare_stream_via_service
+
+    payload = json.dumps(
+        {"proxy_url": "http://127.0.0.1:9999/stream/abc", "remux": False}
+    ).encode()
+    resp = MagicMock()
+    resp.read.return_value = payload
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=False)
+
+    with patch("resources.lib.stream_proxy.urlopen", return_value=resp):
+        proxy_url, info = prepare_stream_via_service(9999, "http://nzbdav/movie.mkv")
+
+    assert proxy_url == "http://127.0.0.1:9999/stream/abc"
+    assert info == {"remux": False}
