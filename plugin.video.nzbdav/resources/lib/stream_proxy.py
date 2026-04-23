@@ -2156,7 +2156,22 @@ class _StreamHandler(BaseHTTPRequestHandler):
             )
 
     def _retry_original_range(self, ctx, start, end, contract_mode):
-        """Retry the still-unread upstream range before falling back to skip."""
+        """Retry the still-unread upstream range before falling back to skip.
+
+        Fast-fail when the session already knows upstream is down.
+        Same reasoning as ``_find_skip_offset``'s circuit breaker: the
+        retry ladder would otherwise sleep-and-retry through its entire
+        delay schedule against a known-failing upstream on every range,
+        turning a sustained outage into seconds of stall per seek.
+        """
+        if ctx.get("upstream_down_notified"):
+            xbmc.log(
+                "NZB-DAV: Retry ladder short-circuited (upstream marked down) "
+                "(reason=retry_ladder_circuit_breaker)",
+                xbmc.LOGINFO,
+            )
+            return _UPSTREAM_RANGE_UPSTREAM_ERROR, 0, start
+
         current = start
         total_written = 0
         last_result = _UPSTREAM_RANGE_UPSTREAM_ERROR

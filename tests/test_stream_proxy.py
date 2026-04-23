@@ -5912,3 +5912,28 @@ def test_find_skip_offset_probes_normally_when_flag_clear():
     # First skip size is 1 MB; probe succeeded.
     assert result == 1048576
     assert mock_urlopen.called
+
+
+def test_retry_original_range_short_circuits_when_upstream_marked_down():
+    """Retry ladder must bail out immediately when the session is
+    already flagged as upstream-down. Otherwise every seek during an
+    outage burns sum(_RANGE_RETRY_DELAYS) seconds retrying against a
+    known-failing upstream."""
+    ctx = {
+        "remote_url": "http://nzbdav-down/movie.mkv",
+        "auth_header": None,
+        "content_length": 2048,
+        "upstream_down_notified": True,
+    }
+    handler = _make_handler_with_server(ctx)
+
+    with patch("resources.lib.stream_proxy.urlopen") as mock_urlopen, patch(
+        "resources.lib.stream_proxy.time.sleep"
+    ) as mock_sleep:
+        result, written, current = handler._retry_original_range(ctx, 0, 1023, "warn")
+
+    assert result == "UPSTREAM_ERROR"
+    assert written == 0
+    assert current == 0
+    mock_urlopen.assert_not_called()
+    mock_sleep.assert_not_called()
