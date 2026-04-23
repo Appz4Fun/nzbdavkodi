@@ -653,3 +653,105 @@ def test_filter_results_returns_all_parsed(mock_settings):
     filtered, all_parsed = filter_results(results)
     assert len(filtered) == 1  # Only 1080p passes
     assert len(all_parsed) == 2  # Both have _meta attached
+
+
+# --- _get_filter_settings tests (direct coverage of the Kodi-settings reader) ---
+
+
+@patch("xbmcaddon.Addon")
+def test_get_filter_settings_collects_enabled_resolutions_and_codecs(mock_addon):
+    """When specific resolution / codec toggles are "true", the
+    corresponding labels show up in the returned lists; disabled
+    toggles don't leak through."""
+    from resources.lib.filter import _get_filter_settings
+
+    enabled = {
+        "filter_1080p": "true",
+        "filter_2160p": "true",
+        "filter_hevc": "true",
+        "filter_av1": "true",
+        "filter_dolby_vision": "true",
+        "filter_atmos": "true",
+        "filter_english": "true",
+    }
+    mock_addon.return_value.getSetting.side_effect = lambda k: enabled.get(k, "false")
+
+    settings = _get_filter_settings()
+
+    assert "1080p" in settings["resolutions"]
+    assert "2160p" in settings["resolutions"]
+    assert "720p" not in settings["resolutions"]
+    assert "x265/HEVC" in settings["codecs"]
+    assert "AV1" in settings["codecs"]
+    assert "x264/AVC" not in settings["codecs"]
+    assert "Dolby Vision" in settings["hdr"]
+    assert "HDR10" not in settings["hdr"]
+    assert "Atmos" in settings["audio"]
+    assert "DD" not in settings["audio"]
+    assert "English" in settings["languages"]
+    assert "Spanish" not in settings["languages"]
+
+
+@patch("xbmcaddon.Addon")
+def test_get_filter_settings_csv_fields_split_and_stripped(mock_addon):
+    """Comma-separated settings (exclude_keywords, release_group, etc.)
+    must be split on commas, whitespace trimmed, and empty entries
+    dropped."""
+    from resources.lib.filter import _get_filter_settings
+
+    raw = {
+        "filter_exclude_keywords": "CAM, HDCAM ,  ,TS",
+        "filter_require_keywords": "",
+        "filter_release_group": "GRP1,GRP2",
+        "filter_exclude_release_group": "  NUKED  , ",
+    }
+    mock_addon.return_value.getSetting.side_effect = lambda k: raw.get(k, "")
+
+    settings = _get_filter_settings()
+
+    assert settings["exclude_keywords"] == ["cam", "hdcam", "ts"]
+    assert settings["require_keywords"] == []
+    assert settings["release_group"] == ["grp1", "grp2"]
+    assert settings["exclude_release_group"] == ["nuked"]
+
+
+@patch("xbmcaddon.Addon")
+def test_get_filter_settings_int_fields_fall_back_on_non_numeric(mock_addon):
+    """Non-numeric strings for int-valued settings must fall back to the
+    documented defaults rather than raising ValueError."""
+    from resources.lib.filter import _get_filter_settings
+
+    raw = {
+        "filter_min_size": "not a number",
+        "filter_max_size": "",
+        "max_results": "",
+    }
+    mock_addon.return_value.getSetting.side_effect = lambda k: raw.get(k, "")
+
+    settings = _get_filter_settings()
+
+    assert settings["min_size"] == 0
+    assert settings["max_size"] == 0
+    # max_results default is 25 per _get_filter_settings
+    assert settings["max_results"] == 25
+
+
+@patch("xbmcaddon.Addon")
+def test_get_filter_settings_returns_empty_lists_when_nothing_enabled(mock_addon):
+    """All toggles "false" / unset must produce empty lists rather than
+    partial junk — this is the fresh-install shape."""
+    from resources.lib.filter import _get_filter_settings
+
+    mock_addon.return_value.getSetting.side_effect = lambda k: ""
+
+    settings = _get_filter_settings()
+
+    assert settings["resolutions"] == []
+    assert settings["hdr"] == []
+    assert settings["audio"] == []
+    assert settings["codecs"] == []
+    assert settings["languages"] == []
+    assert settings["exclude_keywords"] == []
+    assert settings["require_keywords"] == []
+    assert settings["release_group"] == []
+    assert settings["exclude_release_group"] == []
