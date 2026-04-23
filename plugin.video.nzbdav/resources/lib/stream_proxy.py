@@ -560,7 +560,7 @@ def _classify_upstream_error(error):
     return _UPSTREAM_REACHABILITY_OTHER
 
 
-def _record_upstream_recovered(server, ctx):
+def _record_upstream_recovered(server, ctx, observed_at=None):
     """Clear the session's unreachable flag once upstream bytes flow again.
 
     Paired with ``_record_upstream_unreachable``: after a prolonged
@@ -569,16 +569,36 @@ def _record_upstream_recovered(server, ctx):
     in the same session fire a fresh notification instead of staying
     silent under the "already notified" guard.
 
+    **Timestamp ordering** guards a concurrency race: with the
+    ThreadingHTTPServer, Thread A can be handling a successful
+    urlopen while Thread B is mid-failure on a different range
+    request. Without ordering, A's "cleared" update could stomp B's
+    "marked down" update (or vice versa), producing a silently-
+    latched or silently-cleared flag that didn't reflect the most
+    recent observation. Callers pass ``observed_at`` (the wall-clock
+    time at which they opened the socket); the helper only clears
+    the flag when that observation is NEWER than the most recent
+    recorded unreachable event. An older observation is dropped as
+    stale.
+
     Preserves ``upstream_unreachable_count`` as a running total for
     diagnostics — we only reset the one-shot notification gate.
     """
+    if observed_at is None:
+        observed_at = time.time()
     context_lock = _get_server_context_lock(server)
 
     def _update():
         if not ctx.get("upstream_down_notified"):
             return False
+        last_down = float(ctx.get("last_upstream_unreachable_at", 0) or 0)
+        # Drop stale success observations — a newer failure takes
+        # precedence. When timestamps tie (same millisecond), prefer
+        # success since that's the happy-path default.
+        if last_down > observed_at:
+            return False
         ctx["upstream_down_notified"] = False
-        ctx["upstream_last_recovered_at"] = time.time()
+        ctx["upstream_last_recovered_at"] = observed_at
         return True
 
     if context_lock is None:
@@ -2216,6 +2236,13 @@ class _StreamHandler(BaseHTTPRequestHandler):
         contract_mode = contract_mode or _get_strict_contract_mode()
         requested = end - start + 1
         written = 0
+        # Capture the observation timestamp BEFORE urlopen so we can pass
+        # it into the flag-clearing path below. Using a post-urlopen
+        # ``time.time()`` would race with a concurrent thread that
+        # recorded a failure between "we opened the socket" and "we're
+        # now processing the response" — ordering by the earlier
+        # timestamp is the conservative choice.
+        observed_at = time.time()
         try:
             # nosemgrep
             resp = (
@@ -2244,7 +2271,12 @@ class _StreamHandler(BaseHTTPRequestHandler):
         # from urlopen and caught in the except block above. ``server``
         # may be absent when a test constructs _StreamHandler.__new__
         # directly without wiring the server attribute; tolerate that.
-        _record_upstream_recovered(getattr(self, "server", None), ctx)
+        # observed_at lets the helper drop this "success" signal if a
+        # concurrent thread recorded a more-recent failure, preventing
+        # the notifier-flap race surfaced by the concurrency audit.
+        _record_upstream_recovered(
+            getattr(self, "server", None), ctx, observed_at=observed_at
+        )
 
         try:
             status = getattr(resp, "status", None) or resp.getcode()
