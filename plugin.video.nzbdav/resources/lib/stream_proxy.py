@@ -22,6 +22,7 @@ import tempfile
 import threading
 import time
 import uuid
+from collections import deque
 from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn as _ThreadingMixIn
@@ -473,7 +474,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
     @staticmethod
     def _start_stderr_drain(proc):
         """Drain ffmpeg stderr in a background thread to avoid pipe stalls."""
-        stderr_chunks = []
+        stderr_chunks = deque(maxlen=50)
 
         def _drain_stderr():
             try:
