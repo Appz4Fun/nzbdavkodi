@@ -6034,3 +6034,144 @@ def test_prepare_stream_via_service_success_path_unchanged():
 
     assert proxy_url == "http://127.0.0.1:9999/stream/abc"
     assert info == {"remux": False}
+
+
+# --- Mid-stream resilience: upstream flaps DOWN/UP/DOWN in one session ---
+
+
+def test_sequential_ranges_re_notify_when_upstream_flaps():
+    """End-to-end resilience across Kodi's range-by-range playback
+    pattern. Kodi issues Range A, then Range B as separate HTTP
+    requests. Upstream may be UP for A, DOWN for B, UP for C, DOWN
+    for D. Both outages must notify the user (self-healing between
+    them) — not stay silent after the first one latched the flag.
+    """
+    ctx = {
+        "remote_url": "http://flaky-nzbdav/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 4 * 1048576,
+    }
+    handler = _make_handler_with_server(ctx)
+
+    healthy_a = _mock_urlopen_response(
+        [b"A" * 1024],
+        headers={"Content-Range": "bytes 0-1023/4194304", "Content-Length": "1024"},
+    )
+    healthy_b = _mock_urlopen_response(
+        [b"B" * 1024],
+        headers={
+            "Content-Range": "bytes 2048-3071/4194304",
+            "Content-Length": "1024",
+        },
+    )
+    responses = iter(
+        [
+            healthy_a,  # Range A open succeeds — no notify, clears any stale flag.
+            ConnectionRefusedError("a-later"),  # Range B open fails → notify #1.
+            healthy_b,  # Range C open succeeds — flag self-heals.
+            ConnectionRefusedError("b-later"),  # Range D open fails → notify #2.
+        ]
+    )
+
+    def _dispatch(*_a, **_kw):
+        item = next(responses)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    with patch("resources.lib.stream_proxy.urlopen", side_effect=_dispatch), patch(
+        "resources.lib.stream_proxy._notify"
+    ) as mock_notify:
+        handler._stream_upstream_range(ctx, 0, 1023)
+        assert not ctx.get("upstream_down_notified")
+
+        handler._stream_upstream_range(ctx, 1024, 2047)
+        assert ctx.get("upstream_down_notified") is True
+
+        handler._stream_upstream_range(ctx, 2048, 3071)
+        assert ctx.get("upstream_down_notified") is False
+
+        handler._stream_upstream_range(ctx, 3072, 4095)
+        assert ctx.get("upstream_down_notified") is True
+
+    assert mock_notify.call_count == 2
+
+
+def test_serve_proxy_does_not_notify_when_upstream_always_healthy():
+    """Belt-and-braces: a completely healthy stream must produce ZERO
+    upstream-unreachable notifications. Guards against a false positive
+    where recovery_summary fires on a clean stream."""
+    import sys
+
+    ctx = {
+        "remote_url": "http://healthy/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 2 * 1048576,
+    }
+    handler = _make_handler_with_server(
+        ctx, range_header="bytes=0-{}".format(2 * 1048576 - 1)
+    )
+
+    payload = b"X" * (2 * 1048576)
+    response = _mock_urlopen_response([payload])
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = lambda key: ""
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch("resources.lib.stream_proxy.urlopen", return_value=response), patch(
+            "resources.lib.stream_proxy._notify"
+        ) as mock_notify:
+            handler._serve_proxy(ctx)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    mock_notify.assert_not_called()
+    assert _collect_written(handler) == payload
+    # Flag never latched — self-healing path also never needed to fire.
+    assert not ctx.get("upstream_down_notified")
+    assert ctx.get("upstream_unreachable_count", 0) == 0
+
+
+def test_serve_proxy_summary_log_includes_unreachable_counters():
+    """The final pass-through summary log line must include the new
+    upstream_unreachable / upstream_notified / session_* counters so
+    post-mortem grep-and-triage can see outage shape without
+    reconstructing the sequence from individual lines."""
+    import sys
+
+    ctx = {
+        "remote_url": "http://nzbdav/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 2 * 1048576,
+    }
+    handler = _make_handler_with_server(
+        ctx, range_header="bytes=0-{}".format(2 * 1048576 - 1)
+    )
+
+    response = _mock_urlopen_response([b"Y" * (2 * 1048576)])
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = lambda key: ""
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch("resources.lib.stream_proxy.urlopen", return_value=response), patch(
+            "resources.lib.stream_proxy.xbmc"
+        ) as mock_xbmc:
+            handler._serve_proxy(ctx)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    log_lines = [c.args[0] for c in mock_xbmc.log.call_args_list]
+    summary = next((line for line in log_lines if "Pass-through summary" in line), None)
+    assert summary is not None
+    # All new counters appear in the summary line.
+    assert "upstream_unreachable=" in summary
+    assert "upstream_notified=" in summary
+    assert "session_streamed=" in summary
+    assert "session_zero_fill=" in summary
