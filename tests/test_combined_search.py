@@ -11,12 +11,12 @@ from resources.lib.router import _search_all_providers
 def _make_result(title, link, indexer="TestIndexer"):
     """
     Create a standardized provider search result dictionary.
-    
+
     Parameters:
         title (str): Item title shown to the user.
         link (str): Unique download or detail URL for the item.
         indexer (str): Name of the provider/indexer; defaults to "TestIndexer".
-    
+
     Returns:
         dict: A provider search item with keys:
             - "title": given title
@@ -55,15 +55,19 @@ DUPLICATE_RESULT = _make_result(
 
 def _mock_addon(nzbhydra_enabled="true", prowlarr_enabled="false"):
     """
-    Create a MagicMock addon whose `getSetting` returns configured enabled/disabled values for NZBHydra and Prowlarr.
-    
+    Create a MagicMock addon whose `getSetting` returns configured
+    enabled/disabled values for NZBHydra and Prowlarr.
+
     Parameters:
-        nzbhydra_enabled (str): Value returned for the "nzbhydra_enabled" setting (expected "true" or "false").
-        prowlarr_enabled (str): Value returned for the "prowlarr_enabled" setting (expected "true" or "false").
-    
+        nzbhydra_enabled (str): Value returned for the "nzbhydra_enabled"
+            setting (expected "true" or "false").
+        prowlarr_enabled (str): Value returned for the "prowlarr_enabled"
+            setting (expected "true" or "false").
+
     Returns:
-        MagicMock: A mock addon with `getSetting(key)` returning the corresponding configured value for
-        "nzbhydra_enabled" and "prowlarr_enabled", and an empty string for any other keys.
+        MagicMock: A mock addon with `getSetting(key)` returning the
+            corresponding configured value for "nzbhydra_enabled" and
+            "prowlarr_enabled", and an empty string for any other keys.
     """
     addon = MagicMock()
     addon.getSetting.side_effect = lambda k: {
@@ -81,9 +85,12 @@ def _mock_addon(nzbhydra_enabled="true", prowlarr_enabled="false"):
 @patch("xbmcaddon.Addon")
 def test_both_providers_returns_combined_results(mock_addon, mock_prowlarr, mock_hydra):
     """
-    Verifies that when both NZBHydra and Prowlarr are enabled, the combined search returns results from both providers.
-    
-    Asserts that no error is returned, exactly two results are produced, and that one result contains the HYDRA link and the other contains the PROWLARR link.
+    Verifies that when both NZBHydra and Prowlarr are enabled, the combined
+    search returns results from both providers.
+
+    Asserts that no error is returned, exactly two results are produced, and
+    that one result contains the HYDRA link and the other contains the
+    PROWLARR link.
     """
     mock_addon.return_value = _mock_addon(
         nzbhydra_enabled="true", prowlarr_enabled="true"
@@ -133,9 +140,7 @@ def test_only_nzbhydra_enabled(mock_addon, mock_hydra):
     assert results[0]["link"] == HYDRA_RESULT["link"]
 
 
-@patch(
-    "resources.lib.prowlarr.search_prowlarr", return_value=([PROWLARR_RESULT], None)
-)
+@patch("resources.lib.prowlarr.search_prowlarr", return_value=([PROWLARR_RESULT], None))
 @patch("xbmcaddon.Addon")
 def test_only_prowlarr_enabled(mock_addon, mock_prowlarr):
     mock_addon.return_value = _mock_addon(
@@ -209,9 +214,7 @@ def test_prowlarr_fails_hydra_succeeds_returns_hydra_results(
     "resources.lib.prowlarr.search_prowlarr", return_value=([], "Prowlarr unavailable")
 )
 @patch("xbmcaddon.Addon")
-def test_all_providers_fail_returns_first_error(
-    mock_addon, mock_prowlarr, mock_hydra
-):
+def test_all_providers_fail_returns_first_error(mock_addon, mock_prowlarr, mock_hydra):
     mock_addon.return_value = _mock_addon(
         nzbhydra_enabled="true", prowlarr_enabled="true"
     )

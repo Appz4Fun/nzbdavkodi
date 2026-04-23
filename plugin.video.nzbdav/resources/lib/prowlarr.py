@@ -3,7 +3,7 @@
 
 """Prowlarr Newznab API client."""
 
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as ET  # nosec B405 — parsing trusted Prowlarr responses from user-configured local service
 from urllib.parse import urlencode, urlparse
 
 import xbmc
@@ -16,12 +16,13 @@ NEWZNAB_NS = "http://www.newznab.com/DTD/2010/feeds/attributes/"
 def _format_request_error(error):
     """
     Extract a concise message from an exception or error-like object.
-    
+
     Parameters:
         error: An exception or object that may have a `reason` attribute.
-    
+
     Returns:
-        str: The extracted message — `str(error.reason)` if `error.reason` is present and truthy, otherwise `str(error)`.
+        str: The extracted message — `str(error.reason)` if `error.reason`
+            is present and truthy, otherwise `str(error)`.
     """
     reason = getattr(error, "reason", None)
     if reason:
@@ -32,12 +33,14 @@ def _format_request_error(error):
 def _prowlarr_unavailable_error(error):
     """
     Format an error into a standardized "Prowlarr unavailable" message.
-    
+
     Parameters:
-        error (Exception|object): The error or response failure to report; its message or reason will be included.
-    
+        error (Exception|object): The error or response failure to report;
+            its message or reason will be included.
+
     Returns:
-        str: A message starting with "Prowlarr unavailable: " followed by the extracted error reason.
+        str: A message starting with "Prowlarr unavailable: " followed by
+            the extracted error reason.
     """
     return "Prowlarr unavailable: {}".format(_format_request_error(error))
 
@@ -45,12 +48,13 @@ def _prowlarr_unavailable_error(error):
 def _get_settings():
     """
     Load Prowlarr connection settings from the Kodi addon configuration.
-    
+
     Returns:
         tuple: (host, api_key, indexer_ids)
             - host: base URL for Prowlarr with any trailing '/' removed.
             - api_key: API key string (may be empty).
-            - indexer_ids: list of configured indexer ID strings; each ID is trimmed and empty entries are omitted.
+            - indexer_ids: list of configured indexer ID strings; each ID is
+                trimmed and empty entries are omitted.
     """
     import xbmcaddon
 
@@ -73,20 +77,23 @@ def _build_search_url(base_url, params, indexer_ids):
 def search_prowlarr(search_type, title, year="", imdb="", season="", episode=""):
     """
     Search Prowlarr for NZB results matching a movie or TV episode.
-    
+
     Parameters:
         search_type (str): "movie" or "episode".
         title (str): Movie or show title used when `imdb` is not provided.
-        year (str, optional): Release year; kept for API symmetry and not used by Prowlarr.
-        imdb (str, optional): IMDb ID (e.g., "tt0133093"); used in preference to `title` when present.
+        year (str, optional): Release year; kept for API symmetry and not
+            used by Prowlarr.
+        imdb (str, optional): IMDb ID (e.g., "tt0133093"); used in preference
+            to `title` when present.
         season (str, optional): Season number for TV searches.
         episode (str, optional): Episode number for TV searches.
-    
+
     Returns:
-        tuple: `(results, error_message)` where `results` is a list of dicts with keys:
-            `title`, `link`, `size`, `indexer`, `pubdate`, `age`; and `error_message` is
-            `None` on success or a short string describing the failure. Returns `([], None)`
-            when Prowlarr is enabled but no indexer IDs are configured.
+        tuple: `(results, error_message)` where `results` is a list of dicts
+            with keys `title`, `link`, `size`, `indexer`, `pubdate`, `age`;
+            and `error_message` is `None` on success or a short string
+            describing the failure. Returns `([], None)` when Prowlarr is
+            enabled but no indexer IDs are configured.
     """
     try:
         base_url, api_key, indexer_ids = _get_settings()
@@ -127,20 +134,14 @@ def search_prowlarr(search_type, title, year="", imdb="", season="", episode="")
 
     from resources.lib.http_util import redact_url
 
-    url = _build_search_url(host, api_key, params, indexer_ids)
     url = _build_search_url(base_url, params, indexer_ids)
-    from resources.lib.http_util import redact_url
 
-    xbmc.log(
-        "NZB-DAV: Prowlarr search URL: {}".format(redact_url(url)), xbmc.LOGDEBUG
-    )
+    xbmc.log("NZB-DAV: Prowlarr search URL: {}".format(redact_url(url)), xbmc.LOGDEBUG)
 
     try:
         xml_text = _http_get(url)
     except Exception as e:
-        xbmc.log(
-            "NZB-DAV: Prowlarr search request failed: {}".format(e), xbmc.LOGERROR
-        )
+        xbmc.log("NZB-DAV: Prowlarr search request failed: {}".format(e), xbmc.LOGERROR)
         return [], _prowlarr_unavailable_error(e)
 
     results, parse_error = _parse_results_checked(xml_text)
@@ -150,9 +151,8 @@ def search_prowlarr(search_type, title, year="", imdb="", season="", episode="")
     # Fallback: if IMDB search returned nothing, retry with title
     if not results and imdb and title:
         xbmc.log(
-            "NZB-DAV: Prowlarr: no results with imdbid={}, retrying with title '{}'".format(
-                imdb, title
-            ),
+            "NZB-DAV: Prowlarr: no results with imdbid={}, retrying with "
+            "title '{}'".format(imdb, title),
             xbmc.LOGINFO,
         )
         params.pop("imdbid", None)
@@ -179,10 +179,10 @@ def search_prowlarr(search_type, title, year="", imdb="", season="", episode="")
 def parse_results(xml_text):
     """
     Convert Newznab RSS/XML into a list of normalized result dictionaries.
-    
+
     Parameters:
         xml_text (str): The raw XML/RSS response from a Newznab-compatible indexer.
-    
+
     Returns:
         list[dict]: A list of result dictionaries. Each dictionary contains:
             - title (str): Item title or empty string.
@@ -190,7 +190,8 @@ def parse_results(xml_text):
             - size (str): Size in bytes as a string or empty string.
             - indexer (str): Name of the indexer/source or empty string.
             - pubdate (str): Original pubDate string or empty string.
-            - age (str): Human-readable age (e.g., "today", "1 day", "3 months") or empty string.
+            - age (str): Human-readable age (e.g., "today", "1 day",
+                "3 months") or empty string.
     """
     results, _ = _parse_results_checked(xml_text)
     return results
@@ -198,14 +199,15 @@ def parse_results(xml_text):
 
 def _parse_results_checked(xml_text):
     """
-    Parse a Prowlarr Newznab RSS XML response into a list of normalized result dictionaries.
-    
+    Parse a Prowlarr Newznab RSS XML response into a list of normalized
+    result dictionaries.
+
     Parses the provided RSS/XML text and extracts each <item> into a dict with keys:
     `title`, `link`, `size`, `indexer`, `pubdate`, and `age`. Attempts to read size
     and indexer information from Newznab `<attr>` elements, falls back to
     `<enclosure>` and `<source>` elements when available, and computes a human-
     readable `age` from `pubDate`.
-    
+
     Returns:
         results (list): List of dicts for each item. Each dict contains:
             - title (str): Item title (empty string if missing).
@@ -213,11 +215,13 @@ def _parse_results_checked(xml_text):
             - size (str): Size in bytes as reported or empty string.
             - indexer (str): Indexer/source name or hostname, or empty string.
             - pubdate (str): Original pubDate text or empty string.
-            - age (str): Human-readable age (e.g., "today", "3 days", "2 months") or empty string.
-        error_message (str or None): Error description when the XML is invalid or not an RSS feed; `None` on success.
+            - age (str): Human-readable age (e.g., "today", "3 days",
+                "2 months") or empty string.
+        error_message (str or None): Error description when the XML is
+            invalid or not an RSS feed; `None` on success.
     """
     try:
-        root = ET.fromstring(xml_text)
+        root = ET.fromstring(xml_text)  # nosec B314 — trusted Prowlarr response
     except ET.ParseError as e:
         xbmc.log(
             "NZB-DAV: Failed to parse Prowlarr XML response: {}".format(e),
@@ -285,13 +289,14 @@ def _parse_results_checked(xml_text):
 def _get_text(element, tag):
     """
     Return the text content of the first matching child element or an empty string.
-    
+
     Parameters:
         element (xml.etree.ElementTree.Element): Parent XML element to search within.
         tag (str): Tag name of the child element to find.
-    
+
     Returns:
-        str: The child element's text if present and non-empty, otherwise an empty string.
+        str: The child element's text if present and non-empty, otherwise
+            an empty string.
     """
     child = element.find(tag)
     if child is not None and child.text:
@@ -302,12 +307,14 @@ def _get_text(element, tag):
 def _calculate_age(pubdate_str):
     """
     Return a human-readable age string computed from an RFC 2822 date-time.
-    
+
     Parameters:
-        pubdate_str (str): RFC 2822 formatted date-time string (e.g., 'Mon, 02 Jan 2006 15:04:05 -0700').
-    
+        pubdate_str (str): RFC 2822 formatted date-time string
+            (e.g., 'Mon, 02 Jan 2006 15:04:05 -0700').
+
     Returns:
-        str: Age as 'today', '1 day', '<n> days', '1 month', '<n> months', or an empty string if the input cannot be parsed.
+        str: Age as 'today', '1 day', '<n> days', '1 month', '<n> months',
+            or an empty string if the input cannot be parsed.
     """
     from datetime import datetime, timezone
     from email.utils import parsedate_to_datetime

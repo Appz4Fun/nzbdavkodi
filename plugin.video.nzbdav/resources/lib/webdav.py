@@ -23,14 +23,18 @@ def _get_settings():
     }
 
 
-def _http_head(url, username="", password=""):
+def _http_head(
+    url, username="", password=""
+):  # nosec B107 — empty default = "no auth", not a real password
     req = Request(url, method="HEAD")
     if username:
         credentials = "{}:{}".format(username, password)
         encoded = base64.b64encode(credentials.encode("utf-8")).decode("utf-8")
         req.add_header("Authorization", "Basic {}".format(encoded))
     try:
-        with urlopen(req, timeout=10) as resp:
+        with urlopen(
+            req, timeout=10
+        ) as resp:  # nosec B310 nosemgrep — URL from user's configured WebDAV setting
             return resp.getcode()
     except HTTPError as e:
         return e.code
@@ -131,7 +135,7 @@ def find_video_file(folder_path, _depth=0):
         (three total levels including the starting folder).
         Logs discovered files, recursion steps, and errors to the Kodi log.
     """
-    import xml.etree.ElementTree as ET
+    import xml.etree.ElementTree as ET  # nosec B405 — parsing trusted WebDAV server response
 
     if _depth > 2:
         return None
@@ -154,7 +158,9 @@ def find_video_file(folder_path, _depth=0):
     VIDEO_EXTENSIONS = (".mkv", ".mp4", ".avi", ".m4v", ".ts", ".wmv", ".mov")
 
     try:
-        with urlopen(req, timeout=10) as resp:
+        with urlopen(
+            req, timeout=10
+        ) as resp:  # nosec B310 nosemgrep — URL from user's configured WebDAV setting
             body = resp.read().decode("utf-8", errors="replace")
 
         # Parse the PROPFIND XML response
@@ -284,46 +290,3 @@ def check_file_in_folder(folder_path):
     if video_path:
         return video_path, None
     return None, "not_found"
-
-
-def validate_stream(filename):
-    """Verify the WebDAV file supports range requests (seekable streaming).
-
-    Returns True if the stream supports seeking, False otherwise.
-    """
-    settings = _get_settings()
-    url = build_webdav_url(filename)
-    username = settings["username"]
-    password = settings["password"]
-
-    req = Request(url, method="HEAD")
-    for header, value in _build_auth_headers(username, password).items():
-        req.add_header(header, value)
-    req.add_header("Range", "bytes=0-0")
-
-    try:
-        with urlopen(req, timeout=10) as resp:
-            # 206 Partial Content means range requests are supported
-            # 200 OK means the server ignores range (still playable but no seeking)
-            status = resp.getcode()
-            accept_ranges = resp.headers.get("Accept-Ranges", "")
-            xbmc.log(
-                "NZB-DAV: Stream validation for '{}': "
-                "status={} Accept-Ranges={}".format(filename, status, accept_ranges),
-                xbmc.LOGDEBUG,
-            )
-            return status in (200, 206)
-    except HTTPError as e:
-        xbmc.log(
-            "NZB-DAV: Stream validation failed for '{}': HTTP {}".format(
-                filename, e.code
-            ),
-            xbmc.LOGERROR,
-        )
-        return e.code in (200, 206)
-    except Exception as e:
-        xbmc.log(
-            "NZB-DAV: Stream validation error for '{}': {}".format(filename, e),
-            xbmc.LOGERROR,
-        )
-        return False

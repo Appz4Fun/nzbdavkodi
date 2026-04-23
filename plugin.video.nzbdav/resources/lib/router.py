@@ -57,14 +57,19 @@ def _safe_resolve_handle(handle):
 
 def route(argv):
     """
-    Route a plugin invocation to the appropriate handler based on the plugin URL.
-    
-    Routes the incoming plugin call (provided as the Kodi `sys.argv` list) to handlers such as play, search, resolve, settings, install, cache clearing, provider tests, and the main menu. Action routes with side effects will be followed by a safe resolution call so Kodi does not hang.
-    
+    Route a plugin invocation to the appropriate handler based on the URL.
+
+    Routes the incoming plugin call (provided as the Kodi `sys.argv` list) to
+    handlers such as play, search, resolve, settings, install, cache clearing,
+    provider tests, and the main menu. Action routes with side effects will be
+    followed by a safe resolution call so Kodi does not hang.
+
     Parameters:
-        argv (list): The Kodi argv list for the plugin invocation. Expected elements:
-            - argv[0]: base plugin URL (e.g., "plugin://...") used to derive the route path
-            - argv[1]: numeric handle for Kodi plugin operations (converted to int)
+        argv (list): The Kodi argv list for the plugin invocation. Expected
+            elements:
+            - argv[0]: base plugin URL (e.g., "plugin://...") used to derive
+              the route path
+            - argv[1]: numeric handle for Kodi plugin operations (int)
             - argv[2] (optional): query string containing route parameters
     """
     base_url = argv[0]
@@ -147,8 +152,6 @@ def route(argv):
             _test_prowlarr_connection()
         elif path == "/test_nzbdav":
             _test_nzbdav_connection()
-        elif path == "/test_prowlarr":
-            _test_prowlarr_connection()
         else:
             _handle_main_menu(handle)
             return
@@ -176,7 +179,7 @@ def _clean_params(params):
 def _show_error_dialog(message):
     """
     Display a modal error dialog in Kodi with the add-on name as the dialog title.
-    
+
     Parameters:
         message (str): The error message to display.
     """
@@ -188,13 +191,19 @@ def _show_error_dialog(message):
 def _search_all_providers(search_type, title, year="", imdb="", season="", episode=""):
     """
     Search enabled indexer providers and return combined, deduplicated results.
-    
-    Searches configured providers (NZBHydra2 and/or Prowlarr), merges their results, and removes duplicate entries by `link`. If no providers are enabled, returns an explicit error message. If every enabled provider failed and produced no results, returns the first collected error.
-    
+
+    Searches configured providers (NZBHydra2 and/or Prowlarr), merges their
+    results, and removes duplicate entries by `link`. If no providers are
+    enabled, returns an explicit error message. If every enabled provider
+    failed and produced no results, returns the first collected error.
+
     Returns:
         tuple: (results, error_message)
-            results (list): Deduplicated list of result dictionaries returned by providers.
-            error_message (str or None): Error text when every enabled provider failed or when no providers are enabled; otherwise `None`.
+            results (list): Deduplicated list of result dictionaries returned
+                by providers.
+            error_message (str or None): Error text when every enabled
+                provider failed or when no providers are enabled; otherwise
+                `None`.
     """
     import xbmcaddon
 
@@ -204,7 +213,10 @@ def _search_all_providers(search_type, title, year="", imdb="", season="", episo
     prowlarr_enabled = addon.getSetting("prowlarr_enabled").lower() == "true"
 
     if not nzbhydra_enabled and not prowlarr_enabled:
-        return [], "No search providers enabled. Enable NZBHydra2 or Prowlarr in settings."
+        return (
+            [],
+            "No search providers enabled. Enable NZBHydra2 or Prowlarr in settings.",
+        )
 
     all_results = []
     errors = []
@@ -258,9 +270,11 @@ def _search_all_providers(search_type, title, year="", imdb="", season="", episo
 def _tag_available(results):
     """
     Mark result entries that already exist in nzbdav by setting the `_available` flag.
-    
+
     Parameters:
-        results (list[dict]): Iterable of result dictionaries; entries whose `"title"` matches a completed name in nzbdav will be modified in-place with `result["_available"] = True`.
+        results (list[dict]): Iterable of result dictionaries; entries whose
+            `"title"` matches a completed name in nzbdav will be modified
+            in-place with `result["_available"] = True`.
     """
     from resources.lib.nzbdav_api import get_completed_names
 
@@ -284,7 +298,9 @@ def _lookup_episode_info(imdb, tmdb_id=""):
 
         # Use IMDB suggestion API to get the show title
         url = "https://v2.sg.media-imdb.com/suggestion/t/{}.json".format(imdb)
-        with urlopen(url, timeout=5) as resp:  # nosec B310
+        with urlopen(
+            url, timeout=5
+        ) as resp:  # nosec B310 nosemgrep — IMDB suggestion API (trusted)
             data = json.loads(resp.read())
             results = data.get("d", [])
             if results:
@@ -305,13 +321,20 @@ def _lookup_episode_info(imdb, tmdb_id=""):
 
 def _handle_play(handle, params):
     """
-    Handle a play request from TMDBHelper by searching configured providers for matching NZB releases and resolving the chosen item for playback.
-    
-    Performs provider search (with caching), shows progress and results dialogs, applies filtering and optional auto-selection, and ultimately resolves the selected NZB via Kodi's resolver pipeline or marks the request as not resolved when cancelled or no selection is made.
-    
+    Handle a play request from TMDBHelper by searching configured providers
+    for matching NZB releases and resolving the chosen item for playback.
+
+    Performs provider search (with caching), shows progress and results
+    dialogs, applies filtering and optional auto-selection, and ultimately
+    resolves the selected NZB via Kodi's resolver pipeline or marks the
+    request as not resolved when cancelled or no selection is made.
+
     Parameters:
-        handle (int): Kodi plugin handle used to report a resolved URL or to end the request.
-        params (dict): Query parameters from the plugin URL (e.g., "type", "title", "year", "imdb", "season", "episode"); TMDBHelper may provide "_" placeholders which are normalized.
+        handle (int): Kodi plugin handle used to report a resolved URL or to
+            end the request.
+        params (dict): Query parameters from the plugin URL (e.g., "type",
+            "title", "year", "imdb", "season", "episode"); TMDBHelper may
+            provide "_" placeholders which are normalized.
     """
     import xbmcgui
     import xbmcplugin
@@ -512,13 +535,19 @@ def _handle_play(handle, params):
 
 def _handle_search(handle, params):
     """
-    Perform a provider search for the given query, display results in the full-screen results dialog, and handle selection or auto-resolve.
-    
-    Performs a cached search across enabled providers, applies filtering, optionally prompts to show unfiltered results, tags already-downloaded items, and either auto-resolves the best match or presents a results dialog for user selection. Ensures the plugin directory is ended to avoid Kodi hanging.
-    
+    Perform a provider search for the given query, display results in the
+    full-screen results dialog, and handle selection or auto-resolve.
+
+    Performs a cached search across enabled providers, applies filtering,
+    optionally prompts to show unfiltered results, tags already-downloaded
+    items, and either auto-resolves the best match or presents a results
+    dialog for user selection. Ensures the plugin directory is ended to avoid
+    Kodi hanging.
+
     Parameters:
         handle (int): Kodi plugin handle provided by the caller (sys.argv[1]).
-        params (dict): Route query parameters (e.g., keys: "type", "title", "year", "imdb", "season", "episode", "tmdb_id").
+        params (dict): Route query parameters (e.g., keys: "type", "title",
+            "year", "imdb", "season", "episode", "tmdb_id").
     """
     import xbmcaddon
     import xbmcplugin
@@ -717,7 +746,9 @@ def _get_tmdb_poster(imdb_id):
         # Fall back to a free poster service
         url = "https://v2.sg.media-imdb.com/suggestion/t/{}.json".format(imdb_id)
         try:
-            with urlopen(url, timeout=3) as resp:  # nosec B310
+            with urlopen(
+                url, timeout=3
+            ) as resp:  # nosec B310 nosemgrep — IMDB suggestion API (trusted)
                 data = json.loads(resp.read())
                 results = data.get("d", [])
                 if results and results[0].get("i"):
@@ -769,18 +800,9 @@ def _test_hydra_connection():
     url = addon.getSetting("hydra_url").rstrip("/")
     api_key = addon.getSetting("hydra_api_key")
     test_url = "{}/api?apikey={}&t=caps&o=xml".format(url, api_key)
-    _test_connection("NZBHydra", url, test_url, lambda r: "<caps>" in r or "<server" in r)
-
-
-def _test_prowlarr_connection():
-    """Test Prowlarr connection by hitting the indexer list endpoint."""
-    import xbmcaddon
-
-    addon = xbmcaddon.Addon()
-    url = addon.getSetting("prowlarr_host").rstrip("/")
-    api_key = addon.getSetting("prowlarr_api_key")
-    test_url = "{}/api/v1/indexer?apikey={}".format(url, api_key)
-    _test_connection("Prowlarr", url, test_url, lambda r: "[" in r or "{" in r)
+    _test_connection(
+        "NZBHydra", url, test_url, lambda r: "<caps>" in r or "<server" in r
+    )
 
 
 def _test_prowlarr_connection():

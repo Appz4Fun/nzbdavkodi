@@ -91,7 +91,9 @@ def _validate_stream_url(url, headers):
         for key, value in headers.items():
             req.add_header(key, value)
     try:
-        with urlopen(req, timeout=10) as resp:  # nosec B310
+        with urlopen(
+            req, timeout=10
+        ) as resp:  # nosec B310 nosemgrep — URL from user-configured stream
             return resp.getcode() == 206 or "bytes" in resp.headers.get(
                 "Accept-Ranges", ""
             )
@@ -615,7 +617,176 @@ def _existing_completed_stream(title):
     return get_webdav_stream_url_for_path(video_path)
 
 
-def _submit_nzb_with_retries(nzb_url, title, monitor, max_submit_retries=3):
+# UI pump cadence while submit_nzb is running on a background thread.
+# Short enough that the progress dialog looks live and the cancel button
+# is responsive; long enough that we're not burning CPU on the plugin
+# thread while waiting for a remote HTTP call.
+_SUBMIT_UI_PUMP_INTERVAL_SECONDS = 0.25
+
+
+def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
+    """Run ``submit_nzb`` off the plugin thread, pump the dialog, and
+    race a concurrent queue probe against the submit.
+
+    ``submit_nzb`` issues a synchronous HTTP request to ``/api?mode=addurl``
+    which on a big NZB routinely takes 30-120 s. Running it on the Kodi
+    plugin thread freezes the progress dialog. The fix is two-part:
+
+    1. ``submit_nzb`` runs in a daemon worker thread; the plugin thread
+       loops on ``monitor.waitForAbort`` at 250 ms cadence, advances the
+       dialog progress bar, and checks ``dialog.iscanceled`` every tick.
+    2. A second daemon thread concurrently probes nzbdav's queue via
+       ``find_queued_by_name`` and short-circuits as soon as the queue
+       entry for ``title`` appears — usually well before ``addurl``
+       replies.
+
+    Returns ``(nzo_id, None)`` on success (either by worker completion or
+    by queue adoption), or ``(None, error_dict)`` on cancel, shutdown,
+    or submit failure.
+    """
+    xbmc.log(
+        "NZB-DAV: _submit_nzb_with_ui_pump entered for '{}' "
+        "(threaded pump + concurrent queue probe)".format(title),
+        xbmc.LOGINFO,
+    )
+
+    submit_result = [None, None]
+    submit_done = threading.Event()
+
+    def _submit_worker():
+        try:
+            submit_result[0], submit_result[1] = submit_nzb(nzb_url, title)
+        except Exception as e:  # pylint: disable=broad-except
+            xbmc.log(
+                "NZB-DAV: submit_nzb worker raised: {}".format(e),
+                xbmc.LOGERROR,
+            )
+            submit_result[0], submit_result[1] = None, None
+        finally:
+            submit_done.set()
+
+    queue_hit = [None]
+    queue_stop = threading.Event()
+
+    def _queue_probe_worker():
+        # Short grace before the first probe — nzbdav needs a round-trip
+        # to fetch the .nzb before it can enqueue anything.
+        if queue_stop.wait(2.0):
+            return
+        while not queue_stop.is_set() and not submit_done.is_set():
+            try:
+                match = find_queued_by_name(title)
+            except Exception as e:  # pylint: disable=broad-except
+                xbmc.log(
+                    "NZB-DAV: concurrent queue probe raised: {}".format(e),
+                    xbmc.LOGWARNING,
+                )
+                match = None
+            if match and match.get("nzo_id"):
+                queue_hit[0] = match["nzo_id"]
+                return
+            if queue_stop.wait(2.0):
+                return
+
+    submit_t = threading.Thread(
+        target=_submit_worker, name="nzbdav-submit", daemon=True
+    )
+    probe_t = threading.Thread(
+        target=_queue_probe_worker, name="nzbdav-submit-probe", daemon=True
+    )
+    submit_t.start()
+    probe_t.start()
+
+    elapsed = 0.0
+    submit_msg = _string(30097)
+    try:
+        while not submit_done.is_set():
+            if queue_hit[0]:
+                xbmc.log(
+                    "NZB-DAV: Concurrent queue probe found '{}' under "
+                    "nzo_id={}; adopting without waiting for addurl "
+                    "response".format(title, queue_hit[0]),
+                    xbmc.LOGINFO,
+                )
+                return queue_hit[0], None
+            if dialog.iscanceled():
+                xbmc.log(
+                    "NZB-DAV: User cancelled during submit for '{}'".format(title),
+                    xbmc.LOGINFO,
+                )
+                return None, {"status": "cancelled", "message": ""}
+            if monitor.waitForAbort(_SUBMIT_UI_PUMP_INTERVAL_SECONDS):
+                return None, {"status": "shutdown", "message": ""}
+            elapsed += _SUBMIT_UI_PUMP_INTERVAL_SECONDS
+            pct = int((elapsed * 100) / max(_get_submit_timeout_seconds(), 1)) % 100
+            try:
+                dialog.update(
+                    pct,
+                    "{}\n{} ({}s)".format(submit_msg, title[:60], int(elapsed)),
+                )
+            except Exception:  # pylint: disable=broad-except
+                pass
+        # Race window re-check: prefer adopted nzo_id over a failed submit.
+        if queue_hit[0] and not submit_result[0]:
+            xbmc.log(
+                "NZB-DAV: Queue probe found '{}' under nzo_id={} just as "
+                "submit worker finished; preferring the adopted job over "
+                "the submit result".format(title, queue_hit[0]),
+                xbmc.LOGINFO,
+            )
+            return queue_hit[0], None
+        return submit_result[0], submit_result[1]
+    finally:
+        queue_stop.set()
+
+
+def _get_submit_timeout_seconds():
+    """Read submit_timeout setting; returns int or 120 on error."""
+    try:
+        import xbmcaddon
+
+        raw = xbmcaddon.Addon().getSetting("submit_timeout")
+        return int(raw) if raw else 120
+    except (ValueError, TypeError, Exception):  # pylint: disable=broad-except
+        return 120
+
+
+# After a submit timeout, how many times to poll nzbdav before giving up
+# on adoption and retrying the submit. 6 polls * 2 s = 12 s of total wait
+# — enough headroom for nzbdav to finish fetching/parsing a moderately
+# large NZB, short enough not to double the user's wait on a genuine
+# network failure.
+_SUBMIT_ADOPT_POLL_COUNT = 6
+_SUBMIT_ADOPT_POLL_INTERVAL_SECONDS = 2
+
+
+def _adopt_queued_or_completed_job(title, monitor):
+    """Return an existing nzbdav nzo_id for ``title`` if the submit we
+    just timed out on actually reached nzbdav.
+
+    After a client-side submit timeout, nzbdav may be:
+    - Still fetching/parsing the NZB (no queue entry yet)
+    - Processing it (queue entry exists under ``title``)
+    - Already done (history entry exists under ``title``)
+
+    Probes queue and history a handful of times on a short interval.
+    Returns the matching ``nzo_id`` on the first positive hit, ``None``
+    if nothing surfaces within the poll budget (caller retries submit).
+    """
+    for poll in range(_SUBMIT_ADOPT_POLL_COUNT):
+        queued = find_queued_by_name(title)
+        if queued and queued.get("nzo_id"):
+            return queued["nzo_id"]
+        completed = find_completed_by_name(title)
+        if completed and completed.get("nzo_id"):
+            return completed["nzo_id"]
+        if poll < _SUBMIT_ADOPT_POLL_COUNT - 1:
+            if monitor.waitForAbort(_SUBMIT_ADOPT_POLL_INTERVAL_SECONDS):
+                return None
+    return None
+
+
+def _submit_nzb_with_retries(nzb_url, title, dialog, monitor, max_submit_retries=3):
     """Submit an NZB with the existing retry and error-dialog behavior."""
     xbmc.log("NZB-DAV: Submitting NZB for '{}'".format(title), xbmc.LOGINFO)
     last_submit_error = None
@@ -628,7 +799,43 @@ def _submit_nzb_with_retries(nzb_url, title, monitor, max_submit_retries=3):
         if submit_error:
             last_submit_error = submit_error
             status = submit_error["status"]
-            if status in _TRANSIENT_HTTP_STATUSES:
+            if status in ("cancelled", "shutdown"):
+                # User hit cancel on the progress dialog or Kodi is
+                # shutting down. Stop immediately — no retry, no
+                # adoption, no error dialog.
+                xbmc.log(
+                    "NZB-DAV: Submit aborted ({}) for '{}'".format(status, title),
+                    xbmc.LOGINFO,
+                )
+                return None
+            if status == "timeout":
+                # Client-side timeout. nzbdav's /api?mode=addurl handler
+                # can take > 30 s on big NZBs (fetch + parse + enumerate)
+                # — longer than the default HTTP timeout. A timeout does
+                # NOT mean the submit failed. Probe the queue before
+                # retrying so we adopt the job nzbdav is already
+                # processing instead of double-submitting.
+                xbmc.log(
+                    "NZB-DAV: Submit attempt {}/{} timed out; probing nzbdav "
+                    "queue for '{}' before retrying".format(
+                        attempt, max_submit_retries, title
+                    ),
+                    xbmc.LOGWARNING,
+                )
+                adopted_nzo_id = _adopt_queued_or_completed_job(title, monitor)
+                if adopted_nzo_id:
+                    xbmc.log(
+                        "NZB-DAV: Adopted existing nzbdav job nzo_id={} for "
+                        "'{}' after submit timeout".format(adopted_nzo_id, title),
+                        xbmc.LOGINFO,
+                    )
+                    return adopted_nzo_id
+                xbmc.log(
+                    "NZB-DAV: '{}' not found in nzbdav queue or history "
+                    "after submit timeout; retrying".format(title),
+                    xbmc.LOGWARNING,
+                )
+            elif status in _TRANSIENT_HTTP_STATUSES:
                 xbmc.log(
                     "NZB-DAV: Submit attempt {}/{} hit transient HTTP {}: {}".format(
                         attempt, max_submit_retries, status, submit_error["message"]
@@ -858,7 +1065,7 @@ def _poll_until_ready(nzb_url, title, dialog, poll_interval, download_timeout):
         return existing_stream
 
     monitor = xbmc.Monitor()
-    nzo_id = _submit_nzb_with_retries(nzb_url, title, monitor)
+    nzo_id = _submit_nzb_with_retries(nzb_url, title, dialog, monitor)
     if not nzo_id:
         return None, None
 
