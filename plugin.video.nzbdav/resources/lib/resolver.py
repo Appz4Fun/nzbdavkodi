@@ -185,6 +185,7 @@ def _clear_kodi_playback_state(params=None):
       caught separately and logged at DEBUG; everything else is logged at
       WARNING so real problems surface in the Kodi log.
     """
+    import contextlib
     import sqlite3
 
     db_path = _locate_kodi_video_db()
@@ -192,19 +193,24 @@ def _clear_kodi_playback_state(params=None):
         return
 
     try:
-        with sqlite3.connect(db_path, timeout=2.0) as conn:
-            cur = conn.cursor()
-            target_ids = _collect_kodi_playback_target_ids(cur, params)
+        # ``sqlite3.connect`` as a context manager only commits/rolls-back;
+        # it does NOT call ``conn.close()``. Wrap in contextlib.closing
+        # so the connection's file descriptor is released deterministically
+        # instead of hanging on for GC — matters on every resolve() call.
+        with contextlib.closing(sqlite3.connect(db_path, timeout=2.0)) as conn:
+            with conn:
+                cur = conn.cursor()
+                target_ids = _collect_kodi_playback_target_ids(cur, params)
 
-            if not target_ids:
-                return
+                if not target_ids:
+                    return
 
-            # Narrowest possible mutation: only clear bookmark rows. The
-            # files/settings/streamdetails rows stay intact — Kodi will
-            # treat the file as "never resumed" on the next play, which is
-            # exactly the state we want.
-            for id_file in target_ids:
-                cur.execute("DELETE FROM bookmark WHERE idFile = ?", (id_file,))
+                # Narrowest possible mutation: only clear bookmark rows. The
+                # files/settings/streamdetails rows stay intact — Kodi will
+                # treat the file as "never resumed" on the next play, which is
+                # exactly the state we want.
+                for id_file in target_ids:
+                    cur.execute("DELETE FROM bookmark WHERE idFile = ?", (id_file,))
 
         xbmc.log(
             "NZB-DAV: Cleared bookmark for {} file(s)".format(len(target_ids)),
