@@ -210,9 +210,10 @@ def _http_range(url, start, end, auth_header=None):
     req.add_header("Range", "bytes={}-{}".format(start, end))
     if auth_header:
         req.add_header("Authorization", auth_header)
-    with urlopen(
+    # nosemgrep
+    with urlopen(  # nosec B310 — URL from user-configured WebDAV
         req, timeout=30
-    ) as resp:  # nosec B310 nosemgrep — URL from user-configured WebDAV
+    ) as resp:
         return resp.read()
 
 

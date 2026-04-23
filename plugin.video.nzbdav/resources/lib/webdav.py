@@ -32,9 +32,10 @@ def _http_head(
         encoded = base64.b64encode(credentials.encode("utf-8")).decode("utf-8")
         req.add_header("Authorization", "Basic {}".format(encoded))
     try:
-        with urlopen(
+        # nosemgrep
+        with urlopen(  # nosec B310 — URL from user's configured WebDAV setting
             req, timeout=10
-        ) as resp:  # nosec B310 nosemgrep — URL from user's configured WebDAV setting
+        ) as resp:
             return resp.getcode()
     except HTTPError as e:
         return e.code
@@ -181,9 +182,10 @@ def find_video_file(folder_path, _depth=0, _visited=None):
     VIDEO_EXTENSIONS = (".mkv", ".mp4", ".avi", ".m4v", ".ts", ".wmv", ".mov")
 
     try:
-        with urlopen(
+        # nosemgrep
+        with urlopen(  # nosec B310 — URL from user's configured WebDAV setting
             req, timeout=10
-        ) as resp:  # nosec B310 nosemgrep — URL from user's configured WebDAV setting
+        ) as resp:
             body = resp.read().decode("utf-8", errors="replace")
 
         # Parse the PROPFIND XML response with external entities disabled.

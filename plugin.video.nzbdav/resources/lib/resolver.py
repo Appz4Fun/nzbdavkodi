@@ -100,9 +100,10 @@ def _validate_stream_url(url, headers):
         for key, value in headers.items():
             req.add_header(key, value)
     try:
-        with urlopen(
+        # nosemgrep
+        with urlopen(  # nosec B310 — URL from user-configured stream
             req, timeout=10
-        ) as resp:  # nosec B310 nosemgrep — URL from user-configured stream
+        ) as resp:
             return resp.getcode() == 206 or "bytes" in resp.headers.get(
                 "Accept-Ranges", ""
             )
