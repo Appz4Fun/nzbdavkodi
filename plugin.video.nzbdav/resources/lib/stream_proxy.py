@@ -48,6 +48,7 @@ except (ImportError, ModuleNotFoundError):
     build_faststart_layout = None  # type: ignore[assignment]
     fetch_remote_mp4_layout = None  # type: ignore[assignment]
 
+from resources.lib.dv_source import probe_dolby_vision_source
 from resources.lib.http_util import notify as _notify
 
 # Singleton proxy instance
@@ -859,37 +860,6 @@ def _parse_ffmpeg_duration(stderr_text):
         + int(seconds)
         + int(frac) / (10 ** len(frac))
     )
-
-
-def _parse_ffmpeg_dv_profile(stderr_text):
-    """Parse the Dolby Vision profile from ffmpeg stderr output.
-
-    When the source video track carries a Dolby Vision configuration
-    record, ffmpeg prints it as stream side data in the header, e.g.::
-
-        Side data:
-          DOVI configuration record: version: 1.0, profile: 7, level: 6,
-          rpu flag: 1, el flag: 1, bl flag: 1, compatibility id: 0
-
-    Returns the integer profile (5, 7, 8, ...) if found, else None.
-
-    A ``None`` return covers both "no DV metadata" and "could not parse"
-    — callers should treat it as "assume the fmp4 path is safe" rather
-    than "definitely no DV". Only a confirmed profile 7 (dual-layer
-    FEL with base + enhancement layer + RPU) must be routed around
-    fmp4 HLS, because fmp4 has no standard way to carry two HEVC
-    layers in a single track.
-    """
-    match = re.search(
-        r"DOVI configuration record:[^\n]*?profile:\s*(\d+)",
-        stderr_text,
-    )
-    if not match:
-        return None
-    try:
-        return int(match.group(1))
-    except ValueError:
-        return None
 
 
 # Byte-offset delta used to distinguish a Kodi buffer-reconnect from a
@@ -3979,46 +3949,109 @@ class StreamProxy:
                         xbmc.LOGWARNING,
                     )
                 if use_fmp4:
-                    # Gate fmp4 HLS on DV profile. The original gate only
-                    # rejected profile 7 (dual-layer FEL) on the theory
-                    # that single-layer profiles 5 and 8 would pass
-                    # through fmp4 cleanly. 2026-04-15 testing on a DV
-                    # Profile 8 source (Evangelion.3.0+1.0.Thrice.Upon.a.
-                    # Time.2021.2160p.BluRay...DV.HDR.H.265) proved that
-                    # wrong: the CAMLCodec HW decoder opened with
-                    # ``DOVI: version 1.0, profile 8, el type 0``, ffmpeg
-                    # produced 14+ segments cleanly, but ``onAVStarted``
-                    # never fired and the addon's 30 s watchdog tripped
-                    # at 175 s. The HW decoder was stuck in init state
-                    # with partial YUV planes (half-green screen) and
-                    # Kodi froze trying to close the player.
+                    # Gate fmp4 HLS on DV profile via the pure-Python
+                    # source probe (dv_source.probe_dolby_vision_source)
+                    # that parses the first HEVC access unit and
+                    # extracts real RPU data to classify profile 5/7/8
+                    # and — for profile 7 — MEL vs FEL from the NLQ
+                    # fields.
                     #
-                    # Broadened the gate: ANY confirmed DV profile
-                    # routes to matroska. fmp4 HLS is reserved for
-                    # sources the probe reports as non-DV (or can't
-                    # read, in which case we assume non-DV because
-                    # genuinely unparseable headers are rare and the
-                    # cost of a wrong guess toward fmp4 is low now
-                    # that prepare() has the runtime production
-                    # watchdog to fall back anyway).
-                    dv_profile = self._probe_dv_profile(
-                        ffmpeg_path, remote_url, auth_header
-                    )
-                    if dv_profile is not None:
+                    # Routing matrix (2026-04-23):
+                    #   - profile 7 FEL: dual-layer, fmp4 can't carry
+                    #     both layers → matroska.
+                    #   - profile 8 / profile 5 / unknown: 2026-04-15
+                    #     testing on Evangelion 3.0+1.0 2160p DV P8
+                    #     showed the Amlogic CAMLCodec decoder hangs
+                    #     at onAVStarted even when ffmpeg produces
+                    #     clean fmp4 segments → matroska.
+                    #   - profile 7 MEL: ~2 Mbps of NLQ metadata
+                    #     (mapping coefficients, no second HEVC layer
+                    #     to reassemble) so it does not hit the
+                    #     CAMLCodec init path that tripped P8 →
+                    #     fmp4 HLS. If field testing shows MEL also
+                    #     hangs, tighten this branch to match P8.
+                    #   - non-DV: fmp4 HLS as requested.
+                    # Pass the real content-length so moov-at-tail MP4 files
+                    # can be located (the probe's default 1 MB ceiling only
+                    # finds moov-at-front layouts, silently regressing SDR
+                    # moov-at-tail MP4s off the fmp4 path).
+                    try:
+                        dv_result = probe_dolby_vision_source(
+                            remote_url,
+                            auth_header,
+                            file_size=content_length if content_length else None,
+                        )
+                    except Exception as exc:  # pylint: disable=broad-except
                         xbmc.log(
-                            "NZB-DAV: Source is Dolby Vision profile {}; "
-                            "fmp4 HLS does not decode DV on this Amlogic "
-                            "build — falling back to piped Matroska "
-                            "despite force_remux_mode=hls_fmp4".format(dv_profile),
+                            "NZB-DAV: DV probe crashed -- failing safe to "
+                            "matroska: {!r}".format(exc),
+                            xbmc.LOGWARNING,
+                        )
+                        from resources.lib.dv_source import DolbyVisionSourceResult
+
+                        dv_result = DolbyVisionSourceResult(
+                            "dv_unknown", "probe_crashed"
+                        )
+                    xbmc.log(
+                        "NZB-DAV: dv_probe classification={} reason={} "
+                        "profile={} el_type={}".format(
+                            dv_result.classification,
+                            dv_result.reason,
+                            dv_result.profile,
+                            dv_result.el_type,
+                        ),
+                        xbmc.LOGDEBUG,
+                    )
+                    if dv_result.classification == "dv_profile_7_fel":
+                        xbmc.log(
+                            "NZB-DAV: dv_route=matroska reason={} "
+                            "profile={} el_type={}".format(
+                                dv_result.reason,
+                                dv_result.profile,
+                                dv_result.el_type,
+                            ),
                             xbmc.LOGWARNING,
                         )
                         use_fmp4 = False
-                    else:
+                    elif (
+                        dv_result.classification == "dv_allowed_for_fmp4"
+                        and dv_result.profile == 7
+                        and dv_result.el_type == "MEL"
+                    ):
                         xbmc.log(
-                            "NZB-DAV: DV profile probe: none/unknown "
-                            "— proceeding with fmp4 HLS",
+                            "NZB-DAV: dv_route=fmp4 reason={} profile=7 "
+                            "el_type=MEL (experimental -- metadata-only EL "
+                            "does not exercise CAMLCodec dual-layer init)".format(
+                                dv_result.reason
+                            ),
+                            xbmc.LOGINFO,
+                        )
+                    elif dv_result.classification == "dv_allowed_for_fmp4":
+                        xbmc.log(
+                            "NZB-DAV: dv_route=matroska reason={} "
+                            "profile={} (non-P7 DV hangs CAMLCodec "
+                            "onAVStarted on fmp4 per 2026-04-15 "
+                            "testing)".format(dv_result.reason, dv_result.profile),
+                            xbmc.LOGWARNING,
+                        )
+                        use_fmp4 = False
+                    elif dv_result.classification == "non_dv":
+                        xbmc.log(
+                            "NZB-DAV: dv_route=fmp4 reason={}".format(dv_result.reason),
                             xbmc.LOGDEBUG,
                         )
+                    else:
+                        xbmc.log(
+                            "NZB-DAV: dv_route=matroska reason={} "
+                            "profile={} el_type={} (unknown DV state -- "
+                            "failing safe)".format(
+                                dv_result.reason,
+                                dv_result.profile,
+                                dv_result.el_type,
+                            ),
+                            xbmc.LOGWARNING,
+                        )
+                        use_fmp4 = False
                 if use_fmp4:
                     ctx = {
                         "remote_url": remote_url,
@@ -4206,10 +4239,12 @@ class StreamProxy:
 
     @staticmethod
     def _probe_ffmpeg_stderr(ffmpeg_path, input_url, parser, label, auth_args=None):
-        """Shared body of ``_probe_duration_ffmpeg`` and
-        ``_probe_dv_profile``. Spawns ``ffmpeg -v info -i <url> -f null
-        -`` and runs the parser against collected stderr under a
-        bounded reader thread + wall-clock deadline.
+        """Shared body of ``_probe_duration_ffmpeg`` (DV probing now uses
+        the pure-Python ``dv_source.probe_dolby_vision_source``, which
+        parses real RPU data instead of relying on ffmpeg's stderr).
+        Spawns ``ffmpeg -v info -i <url> -f null -`` and runs the parser
+        against collected stderr under a bounded reader thread +
+        wall-clock deadline.
 
         ``auth_args`` is an optional list of ffmpeg argv pieces (from
         ``_ffmpeg_auth_args``) that gets inserted before ``-i`` so the
@@ -4286,34 +4321,6 @@ class StreamProxy:
                 xbmc.LOGWARNING,
             )
         return result
-
-    @staticmethod
-    def _probe_dv_profile(ffmpeg_path, url, auth_header):
-        """Probe the Dolby Vision profile of the source stream.
-
-        Runs ``ffmpeg -i <url> -f null -`` under the same bounded
-        reader-thread + wall-clock deadline pattern as the duration
-        probe (via ``_probe_ffmpeg_stderr``), parsing the
-        ``DOVI configuration record`` line out of stderr. Returns the
-        profile integer (5, 7, 8, ...) or None.
-
-        None means either "no DV metadata present" or "probe could
-        not read the header" (including the deadline-exceeded case)
-        — both of which are safe defaults for the fmp4 HLS dispatch:
-        only a confirmed profile 7 (dual-layer FEL) has to be routed
-        away from fmp4, because fmp4 HLS cannot carry two HEVC
-        layers in one track and the EL would be silently dropped.
-        """
-        _validate_url(url)
-        # Pass auth via -headers (clean URL, no credential leak into
-        # ffmpeg.log on probe failure). See _ffmpeg_auth_args.
-        return StreamProxy._probe_ffmpeg_stderr(
-            ffmpeg_path,
-            url,
-            _parse_ffmpeg_dv_profile,
-            "DV profile",
-            auth_args=_ffmpeg_auth_args(auth_header),
-        )
 
     @staticmethod
     def _prepare_tempfile_faststart(ffmpeg_path, url, auth_header):
