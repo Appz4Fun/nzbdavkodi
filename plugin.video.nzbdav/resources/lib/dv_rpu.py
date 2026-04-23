@@ -4,11 +4,29 @@ Ports the minimal subset of quietvoid/dovi_tool needed to detect DV profile
 and distinguish profile 7 MEL from FEL by parsing the RPU header, mapping
 data, and NLQ data. No external dependencies.
 
-Reference:
+Reference (pinned):
     https://github.com/quietvoid/dovi_tool/tree/main/dolby_vision/src/rpu
+    Last cross-verified against upstream main @ commit
+    e7bef8d979a3a975a5eb6930c25e07e554cecee9 (2026-04-23).
+
+    When the upstream parser changes, re-run ``dovi_tool info --frame 0``
+    against ``tests/fixtures/dovi/*.bin`` and compare to
+    ``parse_rpu_payload()`` output. Any divergence means this port needs
+    updating; the fixtures are frozen and cannot drift.
+
+Edge cases worth knowing about:
+
+* ``use_prev_vdr_rpu_flag=True`` frames legitimately carry no NLQ data.
+  ``parse_rpu_payload`` returns ``DolbyVisionRpuInfo(profile=7, el_type=None)``
+  for them. Callers that sample only one frame may land on such a frame and
+  fail to classify MEL/FEL — the classifier is frame-local, but el_type is
+  not. Callers needing high-confidence classification should either probe
+  multiple frames or accept the el_type=None result as "profile known,
+  EL type unknown".
 """
 
 from dataclasses import dataclass
+from typing import Optional
 
 _NUM_COMPONENTS = 3
 _MMR_MAX_COEFFS = 7
@@ -18,7 +36,7 @@ _NLQ_NUM_PIVOTS = 2
 @dataclass
 class DolbyVisionRpuInfo:
     profile: int
-    el_type: str = None
+    el_type: Optional[str] = None
 
 
 class _BitReader:
@@ -53,6 +71,8 @@ class _BitReader:
         return (value + 1) // 2
 
     def read_var(self, bit_count):
+        # Alias for read_bits, preserved for grep parity with dovi_tool's
+        # `read_var` naming in rpu_data_mapping.rs / rpu_data_nlq.rs.
         return self.read_bits(bit_count)
 
 
@@ -189,8 +209,11 @@ def _parse_header(reader):
 
         if rpu_format & 0x700 == 0:
             bl_bit_depth_minus8 = reader.read_ue()
-            el_bit_depth_and_ext = reader.read_ue()
-            el_bit_depth_minus8 = el_bit_depth_and_ext & 0xFF
+            # dovi_tool splits this ue into the low 8 bits (el_bit_depth_minus8)
+            # and the next 8 bits (ext_mapping_idc). We only need the low
+            # 8 for MEL/FEL classification, so the upper bits are discarded.
+            el_bit_depth_minus8_raw = reader.read_ue()
+            el_bit_depth_minus8 = el_bit_depth_minus8_raw & 0xFF
             vdr_bit_depth_minus8 = reader.read_ue()
             reader.read_bit()  # spatial_resampling_filter_flag
             reader.read_bits(3)  # reserved_zero_3bits
@@ -344,7 +367,30 @@ def _parse_nlq(reader, header):
 
 
 def parse_rpu_payload(data):
-    """Parse a raw RPU byte stream and return the classification result."""
+    """Parse a raw RPU byte stream and return the classification result.
+
+    Args:
+        data: Raw RPU bytes, optionally prefixed with Annex-B start codes
+            (``00 00 00 01`` or ``00 00 01``), the HEVC UNSPEC62 NAL header
+            (``7c 01``), or a single-byte wrapper. Emulation prevention
+            ``0x03`` bytes are stripped before parsing.
+
+    Returns:
+        :class:`DolbyVisionRpuInfo` with the detected DV profile and, for
+        profile 7 with decodable NLQ, the ``MEL``/``FEL`` EL type. Non-P7
+        profiles or frames where ``use_prev_vdr_rpu_flag`` is set return
+        ``el_type=None``.
+
+    Raises:
+        ValueError: malformed RPU (bad prefix, truncated header, wrong
+            rpu_type, invalid coefficient_data_type).
+
+    Note:
+        If the polynomial mapping data uses linear interpolation, the RPU
+        is considered successfully profile-detected but NLQ parsing is
+        skipped — so MEL/FEL detection returns None for those (extremely
+        rare) frames, rather than raising.
+    """
     payload = _validated_rpu_payload(data)
     if not payload or payload[0] != 25:
         raise ValueError("Invalid RPU prefix")
@@ -357,7 +403,14 @@ def parse_rpu_payload(data):
     if profile != 7 or header.use_prev_vdr_rpu_flag:
         return DolbyVisionRpuInfo(profile=profile)
 
-    has_nlq = _parse_mapping(reader, header)
+    try:
+        has_nlq = _parse_mapping(reader, header)
+    except NotImplementedError:
+        # Polynomial linear interpolation isn't supported in dovi_tool either.
+        # Profile detection already succeeded — degrade gracefully to
+        # "profile known, EL type not classifiable".
+        return DolbyVisionRpuInfo(profile=profile)
+
     if not has_nlq:
         return DolbyVisionRpuInfo(profile=profile)
 
@@ -366,5 +419,10 @@ def parse_rpu_payload(data):
 
 
 def parse_unspec62_nalu(data):
-    """Parse an HEVC UNSPEC62 NAL unit payload (with or without outer wrappers)."""
+    """Parse an HEVC UNSPEC62 NAL unit payload (with or without outer wrappers).
+
+    Thin alias for :func:`parse_rpu_payload`; the wrapper-stripping logic
+    accepts both raw RPU bytes and bytes prefixed with the UNSPEC62 NAL
+    header, so callers can pass either shape.
+    """
     return parse_rpu_payload(data)
