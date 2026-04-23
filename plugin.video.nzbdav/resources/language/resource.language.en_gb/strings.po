@@ -513,3 +513,39 @@ msgstr "Piped Matroska (seek limited, DV-safe)"
 msgctxt "#30127"
 msgid "Fragmented MP4 HLS (full seek, DV-capable, experimental)"
 msgstr "Fragmented MP4 HLS (full seek, DV-capable, experimental)"
+
+msgctxt "#30128"
+msgid "Pass-through validation"
+msgstr "Pass-through validation"
+
+msgctxt "#30129"
+msgid "Strict upstream contract mode"
+msgstr "Strict upstream contract mode"
+
+msgctxt "#30130"
+msgid "Off"
+msgstr "Off"
+
+msgctxt "#30131"
+msgid "Warn only"
+msgstr "Warn only"
+
+msgctxt "#30132"
+msgid "Enforce"
+msgstr "Enforce"
+
+msgctxt "#30133"
+msgid "Enable density breaker"
+msgstr "Enable density breaker"
+
+msgctxt "#30134"
+msgid "Enable zero-fill budget"
+msgstr "Enable zero-fill budget"
+
+msgctxt "#30135"
+msgid "Enable retry ladder before skip probe"
+msgstr "Enable retry ladder before skip probe"
+
+msgctxt "#30136"
+msgid "Send 200 for no-range pass-through"
+msgstr "Send 200 for no-range pass-through"

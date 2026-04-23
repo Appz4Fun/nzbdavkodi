@@ -416,3 +416,47 @@ def test_range_cache_evicts_oldest():
     cache.put(100, b"b" * 10)  # triggers eviction of first entry
     assert cache.get(0, 15) is None
     assert cache.get(100, 110) == b"b" * 10
+
+
+def test_range_cache_survives_concurrent_put_get_churn():
+    import threading
+
+    from resources.lib.mp4_parser import RangeCache
+
+    cache = RangeCache(max_bytes=256)
+    errors = []
+
+    def worker(offset):
+        try:
+            payload = bytes([offset % 256]) * 32
+            for _ in range(50):
+                cache.put(offset, payload)
+                cached = cache.get(offset, offset + len(payload))
+                if cached not in (None, payload):
+                    errors.append((offset, cached))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(idx * 32,)) for idx in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+
+
+def test_range_cache_churn_keeps_recently_touched_entry_hot():
+    from resources.lib.mp4_parser import RangeCache
+
+    cache = RangeCache(max_bytes=96)
+    cache.put(0, b"a" * 32)
+    cache.put(32, b"b" * 32)
+    assert cache.get(0, 32) == b"a" * 32  # move first entry to MRU position
+    cache.put(64, b"c" * 32)
+    cache.put(96, b"d" * 32)  # eviction should drop the older "b" entry first
+
+    assert cache.get(0, 32) == b"a" * 32
+    assert cache.get(32, 64) is None
+    assert cache.get(64, 96) == b"c" * 32
+    assert cache.get(96, 128) == b"d" * 32
