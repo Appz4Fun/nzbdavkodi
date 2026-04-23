@@ -3,8 +3,12 @@
 
 """Mock Kodi modules for testing outside of Kodi."""
 
+import contextlib
 import sys
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 # Mock all xbmc* modules that Kodi provides at runtime
 for module_name in ["xbmc", "xbmcgui", "xbmcplugin", "xbmcaddon", "xbmcvfs"]:
@@ -55,3 +59,64 @@ sys.modules["xbmc"].Player = _FakePlayer
 sys.path.insert(0, "plugin.video.nzbdav")
 # Add resources/lib so PTT's internal imports resolve
 sys.path.insert(0, "plugin.video.nzbdav/resources/lib")
+
+
+@pytest.fixture
+def resolver_mocks():
+    """Patch the dependencies that nearly every resolver test needs.
+
+    Before this fixture, ``tests/test_resolver_errors.py`` stacked
+    6-13 ``@patch`` decorators per test function (plus the fiddly
+    argument-order that comes with decorator patching). Every test
+    also re-built the same ``DialogProgress`` / ``Monitor`` / time
+    scaffolding. This fixture consolidates the common set and
+    exposes the mocks as a namespace so tests can customize return
+    values without re-threading decorator arguments.
+
+    Defaults mirror the v0.6.20 lesson (pin ``time.time()`` to 0.0
+    so elapsed stays well under the download timeout) and the
+    1s-poll / 60s-timeout values used by almost every test.
+    """
+    with contextlib.ExitStack() as stack:
+        xbmc_mock = stack.enter_context(patch("resources.lib.resolver.xbmc"))
+        gui_mock = stack.enter_context(patch("resources.lib.resolver.xbmcgui"))
+        plugin_mock = stack.enter_context(patch("resources.lib.resolver.xbmcplugin"))
+        submit_mock = stack.enter_context(patch("resources.lib.resolver.submit_nzb"))
+        poll_mock = stack.enter_context(
+            patch("resources.lib.resolver._get_poll_settings")
+        )
+        status_mock = stack.enter_context(
+            patch("resources.lib.resolver.get_job_status")
+        )
+        history_mock = stack.enter_context(
+            patch("resources.lib.resolver.get_job_history")
+        )
+        time_mock = stack.enter_context(patch("resources.lib.resolver.time"))
+        probe_mock = stack.enter_context(
+            patch("resources.lib.resolver.probe_webdav_reachable")
+        )
+
+        dialog = MagicMock()
+        dialog.iscanceled.return_value = False
+        gui_mock.DialogProgress.return_value = dialog
+
+        monitor = MagicMock()
+        monitor.waitForAbort.return_value = False
+        xbmc_mock.Monitor.return_value = monitor
+
+        poll_mock.return_value = (1, 60)
+        time_mock.time.return_value = 0.0
+
+        yield SimpleNamespace(
+            xbmc=xbmc_mock,
+            gui=gui_mock,
+            plugin=plugin_mock,
+            submit=submit_mock,
+            poll=poll_mock,
+            status=status_mock,
+            history=history_mock,
+            time=time_mock,
+            probe=probe_mock,
+            dialog=dialog,
+            monitor=monitor,
+        )
