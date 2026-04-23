@@ -359,6 +359,17 @@ def test_route_test_nzbdav_resolves_handle(mock_test, mock_resolved):
 
 
 @patch("xbmcplugin.setResolvedUrl")
+@patch("resources.lib.router._test_prowlarr_connection")
+def test_route_test_prowlarr_resolves_handle(mock_test, mock_resolved):
+    """/test_prowlarr must resolve the handle after running."""
+    route(["plugin://plugin.video.nzbdav/test_prowlarr", "10", ""])
+    mock_test.assert_called_once()
+    assert mock_resolved.called
+    assert mock_resolved.call_args[0][0] == 10
+    assert mock_resolved.call_args[0][1] is False
+
+
+@patch("xbmcplugin.setResolvedUrl")
 def test_route_resolve_path_resolves_handle(mock_resolved):
     """/resolve must resolve the handle after running (regardless of handle value)."""
     fake_resolver = MagicMock(resolve_and_play=MagicMock())

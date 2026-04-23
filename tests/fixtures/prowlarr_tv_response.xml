@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2010/feeds/attributes/">
+    <channel>
+        <newznab:response offset="0" total="1"/>
+        <item>
+            <title>Breaking.Bad.S05E14.Ozymandias.1080p.BluRay.x265.DTS-HD.MA.5.1-NTb</title>
+            <guid isPermaLink="true">http://prowlarr:9696/1/api?t=get&amp;id=prowlarr-ghi789</guid>
+            <link>http://prowlarr:9696/1/api?t=get&amp;id=prowlarr-ghi789&amp;apikey=testkey</link>
+            <pubDate>Sat, 30 Mar 2026 08:00:00 +0000</pubDate>
+            <category>TV &gt; HD</category>
+            <enclosure url="http://prowlarr:9696/1/api?t=get&amp;id=prowlarr-ghi789&amp;apikey=testkey" length="4200000000" type="application/x-nzb"/>
+            <newznab:attr name="size" value="4200000000"/>
+            <newznab:attr name="category" value="5000"/>
+            <newznab:attr name="indexer" value="NZBgeek"/>
+        </item>
+    </channel>
+</rss>

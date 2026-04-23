@@ -501,3 +501,27 @@ msgstr "Force ffmpeg remux above (MB, 0=off)"
 msgctxt "#30124"
 msgid "nzbdav rejected the submission (HTTP {0}). Server message: {1}. Check nzbdav's logs for details."
 msgstr ""
+
+msgctxt "#30125"
+msgid "Enable NZBHydra2"
+msgstr "Enable NZBHydra2"
+
+msgctxt "#30126"
+msgid "Prowlarr"
+msgstr "Prowlarr"
+
+msgctxt "#30127"
+msgid "Enable Prowlarr"
+msgstr "Enable Prowlarr"
+
+msgctxt "#30128"
+msgid "Prowlarr URL"
+msgstr "Prowlarr URL"
+
+msgctxt "#30129"
+msgid "Test Prowlarr Connection"
+msgstr "Test Prowlarr Connection"
+
+msgctxt "#30130"
+msgid "Indexer IDs (comma-separated, empty = none)"
+msgstr "Indexer IDs (comma-separated, empty = none)"
