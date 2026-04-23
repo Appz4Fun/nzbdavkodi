@@ -6175,3 +6175,40 @@ def test_serve_proxy_summary_log_includes_unreachable_counters():
     assert "upstream_notified=" in summary
     assert "session_streamed=" in summary
     assert "session_zero_fill=" in summary
+
+
+def test_record_upstream_recovered_drops_stale_success_observations():
+    """Regression guard for the notifier-flap race surfaced by the
+    concurrency audit: Thread A sees a successful urlopen at time T_A;
+    Thread B sees a failure at time T_B > T_A on a different range
+    request. Both callbacks race for the same ctx. If A's "cleared"
+    update wins ordering-agnostic, the flag would latch False even
+    though B's more-recent failure is the truth.
+
+    Timestamp-ordered recovery: recovered() with an observed_at OLDER
+    than ``last_upstream_unreachable_at`` must be a no-op."""
+    from resources.lib.stream_proxy import (
+        _record_upstream_recovered,
+        _record_upstream_unreachable,
+    )
+
+    ctx = {}
+    server = MagicMock()
+
+    with patch("resources.lib.stream_proxy._notify"):
+        # Thread A opens socket at t=100. Before the socket actually
+        # connects, Thread B records a failure at t=200 from another
+        # range's doomed urlopen.
+        _record_upstream_unreachable(server, ctx, ConnectionRefusedError("B"))
+        # Forge the timestamp to simulate an ordering race.
+        ctx["last_upstream_unreachable_at"] = 200.0
+        assert ctx["upstream_down_notified"] is True
+
+        # Thread A's stale t=100 success observation arrives — must NOT
+        # clear the flag.
+        _record_upstream_recovered(server, ctx, observed_at=100.0)
+        assert ctx["upstream_down_notified"] is True
+
+        # A fresher success (t=300) DOES clear the flag.
+        _record_upstream_recovered(server, ctx, observed_at=300.0)
+        assert ctx["upstream_down_notified"] is False
