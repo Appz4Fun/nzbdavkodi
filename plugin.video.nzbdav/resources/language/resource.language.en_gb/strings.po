@@ -519,6 +519,16 @@ msgid "Prowlarr URL"
 msgstr "Prowlarr URL"
 
 msgctxt "#30129"
+msgid "Prowlarr API Key"
+msgstr "Prowlarr API Key"
+
+msgctxt "#30130"
+msgid "Prowlarr Indexer IDs (comma-separated)"
+msgstr "Prowlarr Indexer IDs (comma-separated)"
+
+msgctxt "#30131"
+msgid "Test Prowlarr Connection"
+msgstr "Test Prowlarr Connection"
 msgid "Test Prowlarr Connection"
 msgstr "Test Prowlarr Connection"
 

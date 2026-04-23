@@ -125,6 +125,9 @@ def search_prowlarr(search_type, title, year="", imdb="", season="", episode="")
         else:
             params["q"] = title
 
+    from resources.lib.http_util import redact_url
+
+    url = _build_search_url(host, api_key, params, indexer_ids)
     url = _build_search_url(base_url, params, indexer_ids)
     from resources.lib.http_util import redact_url
 
