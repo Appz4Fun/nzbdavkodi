@@ -56,7 +56,17 @@ def _safe_resolve_handle(handle):
 
 
 def route(argv):
-    """Main entry point called from addon.py with sys.argv."""
+    """
+    Route a plugin invocation to the appropriate handler based on the plugin URL.
+    
+    Routes the incoming plugin call (provided as the Kodi `sys.argv` list) to handlers such as play, search, resolve, settings, install, cache clearing, provider tests, and the main menu. Action routes with side effects will be followed by a safe resolution call so Kodi does not hang.
+    
+    Parameters:
+        argv (list): The Kodi argv list for the plugin invocation. Expected elements:
+            - argv[0]: base plugin URL (e.g., "plugin://...") used to derive the route path
+            - argv[1]: numeric handle for Kodi plugin operations (converted to int)
+            - argv[2] (optional): query string containing route parameters
+    """
     base_url = argv[0]
     handle = int(argv[1])
     query_string = argv[2] if len(argv) > 2 else ""
@@ -162,18 +172,27 @@ def _clean_params(params):
 
 
 def _show_error_dialog(message):
-    """Show a modal Kodi error dialog."""
+    """
+    Display a modal error dialog in Kodi with the add-on name as the dialog title.
+    
+    Parameters:
+        message (str): The error message to display.
+    """
     import xbmcgui
 
     xbmcgui.Dialog().ok(_addon_name(), message)
 
 
 def _search_all_providers(search_type, title, year="", imdb="", season="", episode=""):
-    """Search all enabled providers and return combined, deduplicated results.
-
-    Returns (results, error_message). error_message is None when at least one
-    provider returned results or no error occurred. An error is only returned
-    when every enabled provider failed and no results were collected.
+    """
+    Search enabled indexer providers and return combined, deduplicated results.
+    
+    Searches configured providers (NZBHydra2 and/or Prowlarr), merges their results, and removes duplicate entries by `link`. If no providers are enabled, returns an explicit error message. If every enabled provider failed and produced no results, returns the first collected error.
+    
+    Returns:
+        tuple: (results, error_message)
+            results (list): Deduplicated list of result dictionaries returned by providers.
+            error_message (str or None): Error text when every enabled provider failed or when no providers are enabled; otherwise `None`.
     """
     import xbmcaddon
 
@@ -235,7 +254,12 @@ def _search_all_providers(search_type, title, year="", imdb="", season="", episo
 
 
 def _tag_available(results):
-    """Tag results that are already downloaded in nzbdav with _available flag."""
+    """
+    Mark result entries that already exist in nzbdav by setting the `_available` flag.
+    
+    Parameters:
+        results (list[dict]): Iterable of result dictionaries; entries whose `"title"` matches a completed name in nzbdav will be modified in-place with `result["_available"] = True`.
+    """
     from resources.lib.nzbdav_api import get_completed_names
 
     completed = get_completed_names()
@@ -278,10 +302,14 @@ def _lookup_episode_info(imdb, tmdb_id=""):
 
 
 def _handle_play(handle, params):
-    """Called via plugin:// URL from TMDBHelper.
-
-    Searches NZBHydra, shows results dialog, then resolves the selected
-    NZB through Kodi's setResolvedUrl pipeline (no dummy.mp4 needed).
+    """
+    Handle a play request from TMDBHelper by searching configured providers for matching NZB releases and resolving the chosen item for playback.
+    
+    Performs provider search (with caching), shows progress and results dialogs, applies filtering and optional auto-selection, and ultimately resolves the selected NZB via Kodi's resolver pipeline or marks the request as not resolved when cancelled or no selection is made.
+    
+    Parameters:
+        handle (int): Kodi plugin handle used to report a resolved URL or to end the request.
+        params (dict): Query parameters from the plugin URL (e.g., "type", "title", "year", "imdb", "season", "episode"); TMDBHelper may provide "_" placeholders which are normalized.
     """
     import xbmcgui
     import xbmcplugin
@@ -481,7 +509,15 @@ def _handle_play(handle, params):
 
 
 def _handle_search(handle, params):
-    """Display search results using the custom full-screen dialog."""
+    """
+    Perform a provider search for the given query, display results in the full-screen results dialog, and handle selection or auto-resolve.
+    
+    Performs a cached search across enabled providers, applies filtering, optionally prompts to show unfiltered results, tags already-downloaded items, and either auto-resolves the best match or presents a results dialog for user selection. Ensures the plugin directory is ended to avoid Kodi hanging.
+    
+    Parameters:
+        handle (int): Kodi plugin handle provided by the caller (sys.argv[1]).
+        params (dict): Route query parameters (e.g., keys: "type", "title", "year", "imdb", "season", "episode", "tmdb_id").
+    """
     import xbmcaddon
     import xbmcplugin
 
@@ -694,7 +730,11 @@ def _get_tmdb_poster(imdb_id):
 
 
 def _test_hydra_connection():
-    """Test NZBHydra2 connection by hitting the caps endpoint."""
+    """
+    Check NZBHydra2 connectivity and notify the user of the result.
+    
+    Reads `hydra_url` and `hydra_api_key` from addon settings. If the URL is not configured, notifies "NZBHydra URL not configured" and returns. Otherwise it requests the Hydra caps endpoint at "{url}/api?apikey={api_key}&t=caps&o=xml". If the response contains "<caps>" or "<server" it notifies "NZBHydra connection OK". If the response is present but unexpected it notifies "NZBHydra: unexpected response". On exception it notifies "NZBHydra: {error}" with the error message truncated to 60 characters.
+    """
     import xbmcaddon
 
     from resources.lib.http_util import http_get, notify
@@ -752,7 +792,11 @@ def _test_prowlarr_connection():
 
 
 def _test_nzbdav_connection():
-    """Test nzbdav connection by hitting the version endpoint."""
+    """
+    Check the nzbdav service connectivity by querying its version endpoint and notify the user of the result.
+    
+    Reads the add-on settings `nzbdav_url` and `nzbdav_api_key`. If the URL is not configured, posts a notification and returns. Otherwise it requests the nzbdav version endpoint; posts a success notification if the response contains the string "version", posts an "unexpected response" notification if not, and posts an error notification containing the first 60 characters of any exception message on failure.
+    """
     import xbmcaddon
 
     from resources.lib.http_util import http_get, notify
