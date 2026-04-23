@@ -1063,6 +1063,37 @@ def test_prepare_stream_dv_unknown_falls_back_to_matroska():
     assert ctx["content_type"] == "video/x-matroska"
 
 
+def test_prepare_stream_probe_crash_falls_back_to_matroska():
+    """An unexpected exception from ``probe_dolby_vision_source`` (e.g.
+    http.client.InvalidURL, ssl.SSLError, UnicodeEncodeError) must be
+    caught at the integration point and degrade to matroska — it must NOT
+    kill prepare_stream, since that would leave Kodi without a resolved URL
+    and freeze playback startup."""
+    import sys
+
+    sp, _, original, duration_proc, huge = _make_fmp4_prepare_fixture()
+    try:
+        with patch(
+            "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
+        ), patch(
+            "resources.lib.stream_proxy._find_ffprobe", return_value=None
+        ), patch.object(
+            sp, "_get_content_length", return_value=huge
+        ), patch(
+            "resources.lib.stream_proxy.subprocess.Popen", return_value=duration_proc
+        ), patch(
+            "resources.lib.stream_proxy.probe_dolby_vision_source",
+            side_effect=RuntimeError("simulated probe crash"),
+        ):
+            sp.prepare_stream("http://host/p8-crash.mkv")
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    ctx = sp._server.stream_context
+    assert ctx.get("mode") != "hls"
+    assert ctx["content_type"] == "video/x-matroska"
+
+
 # ---------------------------------------------------------------------------
 # HlsProducer._build_cmd — fmp4 must emit -tag:v hvc1 for DV compatibility
 # ---------------------------------------------------------------------------

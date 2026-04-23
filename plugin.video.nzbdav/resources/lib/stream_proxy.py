@@ -3971,7 +3971,37 @@ class StreamProxy:
                     #     fmp4 HLS. If field testing shows MEL also
                     #     hangs, tighten this branch to match P8.
                     #   - non-DV: fmp4 HLS as requested.
-                    dv_result = probe_dolby_vision_source(remote_url, auth_header)
+                    # Pass the real content-length so moov-at-tail MP4 files
+                    # can be located (the probe's default 1 MB ceiling only
+                    # finds moov-at-front layouts, silently regressing SDR
+                    # moov-at-tail MP4s off the fmp4 path).
+                    try:
+                        dv_result = probe_dolby_vision_source(
+                            remote_url,
+                            auth_header,
+                            file_size=content_length if content_length else None,
+                        )
+                    except Exception as exc:  # pylint: disable=broad-except
+                        xbmc.log(
+                            "NZB-DAV: DV probe crashed -- failing safe to "
+                            "matroska: {!r}".format(exc),
+                            xbmc.LOGWARNING,
+                        )
+                        from resources.lib.dv_source import DolbyVisionSourceResult
+
+                        dv_result = DolbyVisionSourceResult(
+                            "dv_unknown", "probe_crashed"
+                        )
+                    xbmc.log(
+                        "NZB-DAV: dv_probe classification={} reason={} "
+                        "profile={} el_type={}".format(
+                            dv_result.classification,
+                            dv_result.reason,
+                            dv_result.profile,
+                            dv_result.el_type,
+                        ),
+                        xbmc.LOGDEBUG,
+                    )
                     if dv_result.classification == "dv_profile_7_fel":
                         xbmc.log(
                             "NZB-DAV: dv_route=matroska reason={} "
@@ -3990,7 +4020,7 @@ class StreamProxy:
                     ):
                         xbmc.log(
                             "NZB-DAV: dv_route=fmp4 reason={} profile=7 "
-                            "el_type=MEL (experimental — metadata-only EL "
+                            "el_type=MEL (experimental -- metadata-only EL "
                             "does not exercise CAMLCodec dual-layer init)".format(
                                 dv_result.reason
                             ),
@@ -4013,8 +4043,8 @@ class StreamProxy:
                     else:
                         xbmc.log(
                             "NZB-DAV: dv_route=matroska reason={} "
-                            "profile={} el_type={} (unknown DV state "
-                            "— failing safe)".format(
+                            "profile={} el_type={} (unknown DV state -- "
+                            "failing safe)".format(
                                 dv_result.reason,
                                 dv_result.profile,
                                 dv_result.el_type,
