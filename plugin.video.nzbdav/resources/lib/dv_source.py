@@ -324,8 +324,7 @@ def _iter_ebml(data, start=0, end=None):
         # cause IndexError in downstream iter calls.
         if payload_start > end:
             return
-        if payload_end > end:
-            payload_end = end
+        payload_end = min(payload_end, end)
         if payload_end <= offset:
             # Zero-sized or negative-progress element — refuse to loop.
             return
@@ -360,40 +359,52 @@ def _iter_block_frames(block_id, block, block_track, width):
 
 def _extract_mkv_first_sample(url, auth_header):
     data = _first_bytes(url, auth_header)
-    track_number = None
-
     for elem_id, payload_start, payload_end in _iter_ebml(data):
         if elem_id != _EBML_ID_SEGMENT:
             continue
-        segment = data[payload_start:payload_end]
-        for sub_id, sub_start, sub_end in _iter_ebml(segment):
-            if sub_id == _EBML_ID_TRACKS:
-                tracks = segment[sub_start:sub_end]
-                for track_id, track_start, track_end in _iter_ebml(tracks):
-                    if track_id != _EBML_ID_TRACK_ENTRY:
-                        continue
-                    entry = tracks[track_start:track_end]
-                    current_track = None
-                    codec_id = None
-                    for field_id, field_start, field_end in _iter_ebml(entry):
-                        if field_id == _EBML_ID_TRACK_NUMBER:
-                            # TrackNumber is an EBML unsigned int (big-endian).
-                            # Real DV muxes always use track 1 (one byte),
-                            # but decode properly to cover future 2+ byte cases.
-                            current_track = int.from_bytes(
-                                entry[field_start:field_end], "big"
-                            )
-                        elif field_id == _EBML_ID_CODEC_ID:
-                            codec_id = entry[field_start:field_end].decode(
-                                errors="ignore"
-                            )
-                    if codec_id == "V_MPEGH/ISO/HEVC":
-                        track_number = current_track
-            if sub_id == _EBML_ID_CLUSTER and track_number is not None:
-                cluster = segment[sub_start:sub_end]
-                frame = _extract_mkv_block_frame(cluster, track_number)
-                if frame is not None:
-                    return frame
+        frame = _extract_mkv_frame_from_segment(data[payload_start:payload_end])
+        if frame is not None:
+            return frame
+    return None
+
+
+def _extract_mkv_frame_from_segment(segment):
+    """Walk a Matroska Segment to find the first HEVC video frame.
+
+    Matroska allows Tracks and Cluster to appear in either order, so this
+    collects the HEVC track_number from Tracks while scanning, and returns
+    the first frame once both a HEVC track and a matching Cluster have
+    been seen.
+    """
+    track_number = None
+    for sub_id, sub_start, sub_end in _iter_ebml(segment):
+        if sub_id == _EBML_ID_TRACKS:
+            track_number = _find_hevc_track_number(segment[sub_start:sub_end])
+        elif sub_id == _EBML_ID_CLUSTER and track_number is not None:
+            frame = _extract_mkv_block_frame(segment[sub_start:sub_end], track_number)
+            if frame is not None:
+                return frame
+    return None
+
+
+def _find_hevc_track_number(tracks):
+    """Return the TrackNumber of the first V_MPEGH/ISO/HEVC track, or None."""
+    for track_id, track_start, track_end in _iter_ebml(tracks):
+        if track_id != _EBML_ID_TRACK_ENTRY:
+            continue
+        entry = tracks[track_start:track_end]
+        current_track = None
+        codec_id = None
+        for field_id, field_start, field_end in _iter_ebml(entry):
+            if field_id == _EBML_ID_TRACK_NUMBER:
+                # TrackNumber is an EBML unsigned int (big-endian). Real
+                # DV muxes always use track 1 (one byte), but decode
+                # properly to cover future 2+ byte cases.
+                current_track = int.from_bytes(entry[field_start:field_end], "big")
+            elif field_id == _EBML_ID_CODEC_ID:
+                codec_id = entry[field_start:field_end].decode(errors="ignore")
+        if codec_id == "V_MPEGH/ISO/HEVC":
+            return current_track
     return None
 
 

@@ -165,7 +165,7 @@ def test_neither_provider_enabled_returns_error(mock_addon):
 
     results, error = _search_all_providers("movie", "The Matrix")
 
-    assert results == []
+    assert not results
     assert error is not None
     assert "No search providers enabled" in error
 
@@ -221,5 +221,5 @@ def test_all_providers_fail_returns_first_error(mock_addon, mock_prowlarr, mock_
 
     results, error = _search_all_providers("movie", "The Matrix")
 
-    assert results == []
+    assert not results
     assert error == "NZBHydra unavailable"

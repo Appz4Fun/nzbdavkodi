@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Released | What it's about |
 |---|---|---|
+| **[1.0.3](#103--2026-04-23)** | 2026-04-23 | Hotfix: ffmpeg safety check no longer rejects -headers values with legitimate CR/LF — unblocks every auth'd force-remux stream that regressed in v1.0.0-pre-alpha/v1.0.1/v1.0.2 |
 | **[1.0.2](#102--2026-04-23)** | 2026-04-23 | Hotfix: find_video_file no longer rejects cross-origin PROPFIND hrefs — unblocks reverse-proxied nzbdav setups that regressed in v1.0.0-pre-alpha / v1.0.1 |
 | **[1.0.1](#101--2026-04-23)** | 2026-04-23 | Source-data Dolby Vision probe: pure-Python RPU parser replaces the ffmpeg-stderr probe, adds P7 MEL/FEL discrimination with a hybrid routing matrix that keeps the 2026-04-15 P8 matroska fix in place |
 | **[1.0.0-pre-alpha](#100-pre-alpha--2026-04-15)** | 2026-04-15 | Force-remux for 20 GB+ files (matroska default), self-healing fmp4 HLS opt-in (full random seek, DV-aware), threaded submit + queue adoption, real-ffmpeg integration tests, PROXY.md |
@@ -45,6 +46,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | **[0.1.0](#010--2026-04-05)** | 2026-04-05 | Initial release |
 
 > **Bolded** versions are either major features or recommended upgrades.
+
+---
+
+## [1.0.3] — 2026-04-23
+
+> **Hotfix for "Refusing to start unsafe ffmpeg command" HTTP 500 on every
+> auth'd force-remux stream.** `_is_safe_ffmpeg_cmd` (PR #83 security
+> hardening) banned CR/LF in every argv element, but the `-headers` value
+> that carries the `Authorization` header LEGITIMATELY contains `\r\n` as
+> the HTTP header separator required by ffmpeg's HTTP demuxer. v1.0.0-pre-
+> alpha through v1.0.2 therefore rejected every auth'd ffmpeg command with
+> "Refusing to start unsafe ffmpeg command", Kodi got an immediate HTTP 500
+> from the proxy, and the "Playback never started" watchdog tripped 30 s
+> later. Real users hitting force-remux (20 GB+ MKVs, every DV file) on
+> nzbdav with WebDAV auth hit this on every playback.
+>
+> The fix narrows the CR/LF ban to argv elements OTHER than the value
+> immediately following `-headers`. NUL is still rejected everywhere
+> (execve-level hazard), and CR/LF in URLs, input paths, or any other
+> argument is still rejected (those are real injection vectors). Only the
+> one argv position where ffmpeg legitimately expects CR/LF is exempted.
+
+**Fixed**
+- **`Refusing to start unsafe ffmpeg command` on every Authorization-
+  carrying force-remux stream** at `stream_proxy.py:1097-1125`. Added
+  regression tests at `tests/test_stream_proxy.py`
+  (`test_is_safe_ffmpeg_cmd_accepts_crlf_in_headers_value` and four
+  adjacent negative tests).
 
 ---
 

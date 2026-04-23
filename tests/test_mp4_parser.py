@@ -503,7 +503,7 @@ def test_range_cache_survives_concurrent_put_get_churn():
     for thread in threads:
         thread.join()
 
-    assert errors == []
+    assert not errors
 
 
 def test_range_cache_churn_keeps_recently_touched_entry_hot():

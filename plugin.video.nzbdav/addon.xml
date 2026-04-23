@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="plugin.video.nzbdav"
        name="NZB-DAV"
-       version="1.0.2"
+       version="1.0.3"
        provider-name="nzbdav">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
@@ -22,7 +22,10 @@
         <license>GPL-3.0-or-later</license>
         <source>https://github.com/xbmc4lyfe/nzbdavkodi</source>
         <website>https://xbmc4lyfe.github.io/nzbdavkodi/</website>
-        <news>v1.0.2
+        <news>v1.0.3
+- Hotfix: force-remux no longer 500s on every Authorization-carrying stream. _is_safe_ffmpeg_cmd in stream_proxy.py banned CR/LF in all argv elements, but the -headers argument LEGITIMATELY contains \r\n as the HTTP header separator required by ffmpeg's HTTP demuxer — v1.0.0-pre-alpha through v1.0.2 rejected every auth'd remux command with "Refusing to start unsafe ffmpeg command" and Kodi got an immediate HTTP 500. The check now exempts the single argv position that follows -headers; CR/LF in any other position (URL, input file, etc.) is still rejected. Regression test added.
+
+v1.0.2
 - Hotfix: find_video_file no longer rejects PROPFIND hrefs whose host differs from the configured WebDAV host. nzbdav legitimately returns its INTERNAL hostname (e.g. localhost:8080) in PROPFIND responses even when the client addresses it at a different public endpoint (e.g. 192.168.1.93:3000) — v1.0.0-pre-alpha and v1.0.1 broke those setups with repeated "Completed but no video found" retries until the resolve dialog gave up. The addon now trusts only the PATH portion of cross-origin hrefs; all follow-up requests still hit the configured WebDAV host, so an attacker cannot redirect us off-server.
 
 v1.0.1

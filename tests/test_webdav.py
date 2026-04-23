@@ -26,7 +26,7 @@ _SETTINGS_NO_AUTH = {
 
 
 def test_legacy_flat_webdav_helpers_are_retired():
-    import resources.lib.webdav as webdav
+    from resources.lib import webdav
 
     assert not hasattr(webdav, "build_webdav_url")
     assert not hasattr(webdav, "get_webdav_stream_url")
@@ -447,8 +447,8 @@ def test_build_auth_headers_empty_username_returns_empty_dict():
     """No username → no Authorization header. Matches ``if not username``."""
     from resources.lib.webdav import _build_auth_headers
 
-    assert _build_auth_headers("", "irrelevant") == {}
-    assert _build_auth_headers(None, "irrelevant") == {}
+    assert not _build_auth_headers("", "irrelevant")
+    assert not _build_auth_headers(None, "irrelevant")
 
 
 def test_build_auth_headers_encodes_basic_credentials():

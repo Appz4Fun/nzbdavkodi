@@ -1095,7 +1095,15 @@ class _StreamHandler(BaseHTTPRequestHandler):
 
     @staticmethod
     def _is_safe_ffmpeg_cmd(cmd):
-        """Validate command shape and executable before subprocess execution."""
+        """Validate command shape and executable before subprocess execution.
+
+        Rejects NUL in any argv element (execve-level hazard). Rejects CR/LF
+        in every argv element EXCEPT the value that follows ``-headers``,
+        which legitimately contains ``\\r\\n`` as the HTTP header separator
+        in ffmpeg's HTTP demuxer (see ``_ffmpeg_auth_args``). Without this
+        exemption the force-remux path 500s on every Authorization-carrying
+        stream (regression introduced in PR #83's security hardening).
+        """
         if not isinstance(cmd, (list, tuple)) or not cmd:
             return False
         if not all(isinstance(arg, str) for arg in cmd):
@@ -1104,9 +1112,13 @@ class _StreamHandler(BaseHTTPRequestHandler):
         exe_name = os.path.basename(exe).lower()
         if exe_name != "ffmpeg":
             return False
+        prev_arg = None
         for arg in cmd:
-            if "\x00" in arg or "\n" in arg or "\r" in arg:
+            if "\x00" in arg:
                 return False
+            if prev_arg != "-headers" and ("\n" in arg or "\r" in arg):
+                return False
+            prev_arg = arg
         return True
 
     @staticmethod

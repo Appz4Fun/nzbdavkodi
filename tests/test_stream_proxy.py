@@ -19,6 +19,64 @@ def _make_handler():
     return _StreamHandler.__new__(_StreamHandler)
 
 
+# ---------------------------------------------------------------------------
+# _StreamHandler._is_safe_ffmpeg_cmd — argv shape + CR/LF gating
+# ---------------------------------------------------------------------------
+
+
+def test_is_safe_ffmpeg_cmd_accepts_crlf_in_headers_value():
+    """The -headers argument LEGITIMATELY contains \\r\\n as the HTTP header
+    separator required by ffmpeg's HTTP demuxer. A blanket CR/LF ban across
+    all argv elements (as in v1.0.0-pre-alpha through v1.0.2) would 500 every
+    Authorization-carrying force-remux stream with "Refusing to start unsafe
+    ffmpeg command". Regression guard for the True Detective 2026-04-23
+    incident."""
+    cmd = [
+        "/usr/bin/ffmpeg",
+        "-headers",
+        "Authorization: Basic dXNlcjpwYXNz\r\n",
+        "-i",
+        "http://host/stream.mkv",
+        "-c",
+        "copy",
+        "-f",
+        "matroska",
+        "pipe:1",
+    ]
+    assert _StreamHandler._is_safe_ffmpeg_cmd(cmd) is True
+
+
+def test_is_safe_ffmpeg_cmd_rejects_crlf_in_url():
+    """CR/LF in a URL (or any non-``-headers`` argv element) is still an
+    injection attempt — the exemption is narrowly scoped to the single argv
+    position that follows ``-headers``."""
+    cmd = [
+        "/usr/bin/ffmpeg",
+        "-i",
+        "http://host/evil\r\nHost: attacker",
+        "-f",
+        "matroska",
+        "pipe:1",
+    ]
+    assert _StreamHandler._is_safe_ffmpeg_cmd(cmd) is False
+
+
+def test_is_safe_ffmpeg_cmd_rejects_null_byte_everywhere():
+    """NUL in any argv element is always rejected — execve-level hazard."""
+    cmd = ["/usr/bin/ffmpeg", "-headers", "Authorization: Basic \x00\r\n"]
+    assert _StreamHandler._is_safe_ffmpeg_cmd(cmd) is False
+
+
+def test_is_safe_ffmpeg_cmd_rejects_non_ffmpeg_exe():
+    """Only accept an executable literally named ffmpeg."""
+    assert _StreamHandler._is_safe_ffmpeg_cmd(["/usr/bin/rm", "-rf", "/"]) is False
+
+
+def test_is_safe_ffmpeg_cmd_rejects_empty_cmd():
+    assert _StreamHandler._is_safe_ffmpeg_cmd([]) is False
+    assert _StreamHandler._is_safe_ffmpeg_cmd(None) is False
+
+
 def _make_handler_with_server(ctx, range_header=None, current_byte_pos=0):
     """Create a _StreamHandler wired to a mock server for handler-level tests."""
     import threading
