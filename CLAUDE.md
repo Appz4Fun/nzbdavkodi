@@ -47,7 +47,7 @@ just dist-clean    # clean + remove dist/
 
 ## Key Patterns
 
-- **Lazy imports**: Kodi modules (xbmc, xbmcgui, etc.) are imported inside functions, not at module level, so tests can mock them via conftest.py
+- **Module-level Kodi imports + conftest pre-mock**: `import xbmc` / `import xbmcgui` / etc. happen at module top. Tests work because `tests/conftest.py` installs MagicMocks into `sys.modules["xbmc"]` (etc.) BEFORE any `resources.lib.*` is imported, so the module-level `import xbmc` binds to the mock. Individual tests then patch specific attributes via `@patch("resources.lib.<mod>.xbmc")`. A few spots use lazy imports inside functions — usually because the function is only reachable at Kodi runtime and the import is slow — but that is the exception, not the rule.
 - **Shared utilities**: `http_util.py` has `http_get()` and `notify()` -- don't duplicate HTTP or notification logic
 - **PTT vendored**: The ptt/ directory is a vendored copy of parse-torrent-title with `regex` replaced by `re` and `arrow` replaced by `datetime`. No pip packages required.
 - **Settings via Kodi API**: All config is in `resources/settings.xml` and read via `xbmcaddon.Addon().getSetting()`

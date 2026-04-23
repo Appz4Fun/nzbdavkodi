@@ -529,9 +529,51 @@ msgstr "Prowlarr Indexer IDs (comma-separated)"
 msgctxt "#30131"
 msgid "Test Prowlarr Connection"
 msgstr "Test Prowlarr Connection"
-msgid "Test Prowlarr Connection"
-msgstr "Test Prowlarr Connection"
 
-msgctxt "#30130"
-msgid "Indexer IDs (comma-separated, empty = none)"
-msgstr "Indexer IDs (comma-separated, empty = none)"
+msgctxt "#30140"
+msgid "Force remux output format"
+msgstr "Force remux output format"
+
+msgctxt "#30141"
+msgid "Piped Matroska (seek limited, DV-safe)"
+msgstr "Piped Matroska (seek limited, DV-safe)"
+
+msgctxt "#30142"
+msgid "Fragmented MP4 HLS (full seek, DV-capable, experimental)"
+msgstr "Fragmented MP4 HLS (full seek, DV-capable, experimental)"
+
+msgctxt "#30143"
+msgid "Pass-through validation"
+msgstr "Pass-through validation"
+
+msgctxt "#30144"
+msgid "Strict upstream contract mode"
+msgstr "Strict upstream contract mode"
+
+msgctxt "#30145"
+msgid "Off"
+msgstr "Off"
+
+msgctxt "#30146"
+msgid "Warn only"
+msgstr "Warn only"
+
+msgctxt "#30147"
+msgid "Enforce"
+msgstr "Enforce"
+
+msgctxt "#30148"
+msgid "Enable density breaker"
+msgstr "Enable density breaker"
+
+msgctxt "#30149"
+msgid "Enable zero-fill budget"
+msgstr "Enable zero-fill budget"
+
+msgctxt "#30150"
+msgid "Enable retry ladder before skip probe"
+msgstr "Enable retry ladder before skip probe"
+
+msgctxt "#30151"
+msgid "Send 200 for no-range pass-through"
+msgstr "Send 200 for no-range pass-through"
