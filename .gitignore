@@ -5,6 +5,10 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .venv*/
+.coverage
+.coverage.*
+htmlcov/
+uv.lock
 
 # Build
 dist/
@@ -23,9 +27,18 @@ plugin.video.nzbdav.zip
 
 # Project
 docs/superpowers/
+docs/memory/
 mockups/
 troubleshooting.md
 .worktrees/
+.tmp/
+
+# Per-developer tooling state (Claude Code / Superpowers / etc.)
+.claude/
+.superpowers/
+
+# Scratch / debug artifacts that end up at repo root
+MagicMock/
 
 # Build zips (versioned)
 plugin.video.nzbdav-*.zip
