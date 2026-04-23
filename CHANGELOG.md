@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Released | What it's about |
 |---|---|---|
+| **[Unreleased](#unreleased)** | — | Source-data Dolby Vision probe: pure-Python RPU parser replaces the ffmpeg-stderr probe, adds P7 MEL/FEL discrimination with a hybrid routing matrix that keeps the 2026-04-15 P8 matroska fix in place |
 | **[1.0.0-pre-alpha](#100-pre-alpha--2026-04-15)** | 2026-04-15 | Force-remux for 20 GB+ files (matroska default), self-healing fmp4 HLS opt-in (full random seek, DV-aware), threaded submit + queue adoption, real-ffmpeg integration tests, PROXY.md |
 | **[0.6.21](#0621--2026-04-13)** | 2026-04-13 | Stale-job cleanup + real nzbdav error messages on submit failure |
 | **[0.6.20](#0620--2026-04-13)** | 2026-04-13 | Resolve-loop: no UI freeze, no silent retry on bad WebDAV creds |
@@ -46,6 +47,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+> **Source-data Dolby Vision classifier.** The ffmpeg-stderr DV probe shipped
+> with `1.0.0-pre-alpha` is retired in favour of a pure-Python RPU parser
+> (`dv_rpu.py`) and remote container probe (`dv_source.py`) that reads real
+> RPU data out of MP4 / MKV files via HTTP range requests. For the first
+> time the addon can tell P7 MEL from P7 FEL, profile 8 from profile 5, and
+> no-DV-at-all from probe-couldn't-read — information the old stderr probe
+> could never produce. Routing uses a hybrid matrix that keeps the
+> 2026-04-15 P8 matroska fix in place while enabling the new P7 MEL → fmp4
+> capability (MEL is metadata-only EL and should not trip the CAMLCodec
+> dual-layer init path that hung on P8). Falls back to matroska on any
+> probe failure or unrecognised profile — no regression surface for content
+> that previously played.
+
+**Added**
+- **`plugin.video.nzbdav/resources/lib/dv_rpu.py`** — pure-Python Dolby
+  Vision RPU parser. Ports the minimum subset of `quietvoid/dovi_tool`
+  needed to detect profile (5/7/8) and classify profile 7 MEL vs FEL from
+  the NLQ fields. Includes a bit-stream reader, exp-Golomb unsigned/signed
+  decoders, full RPU header + mapping + NLQ parse, HEVC start-code
+  emulation-prevention byte stripping, and wrapper-format stripping
+  (Annex-B, UNSPEC62 NAL header, single-byte prefix). Cross-validated
+  bit-for-bit against dovi_tool run on three vendored fixtures (FEL orig,
+  MEL orig, profile 8). Pinned upstream commit in the module docstring so
+  drift is detectable.
+- **`plugin.video.nzbdav/resources/lib/dv_source.py`** — remote container
+  probe. Fetches only the bytes needed to locate the first HEVC access
+  unit in an MP4 (moov walk → stbl → stsz + stco/co64 → first chunk
+  offset → `_http_range`) or MKV (EBML walk → Segment → Tracks + Cluster
+  → SimpleBlock / BlockGroup → first video frame). Hands the extracted
+  sample to the RPU parser and returns a structured
+  `DolbyVisionSourceResult(classification, reason, profile, el_type)`.
+  Supports both `.mp4`/`.m4v` and `.mkv`; unsupported containers return
+  `dv_unknown` so the caller can fail safe. Handles 64-bit chunk offsets
+  (`co64`) for DV UHD files > 4 GiB, and refuses SimpleBlock lacing /
+  BlockGroup wrappers rather than producing garbage frame data.
+- **Size caps at every attacker-controlled I/O seam.** `_http_range` has a
+  16 MiB default read cap; `first_sample_size` is clamped to 16 MiB before
+  being used in a Range request. A malicious moov or an RFC-violating
+  server that returns 200 OK for a ranged request can no longer OOM
+  32-bit Kodi.
+- **DV routing matrix in `stream_proxy.prepare_stream`**. P7 FEL →
+  matroska, P7 MEL → fmp4, P8/P5/unknown → matroska, non-DV → fmp4.
+  Probe crashes are caught and degrade to the matroska path.
+- **Vendored DV RPU fixtures** at `tests/fixtures/dovi/` with a README
+  documenting the upstream commit SHA and the MIT license notice.
+- **Comprehensive tests** at `tests/test_dv_rpu.py` and
+  `tests/test_dv_source.py` — parser tests backed by real RPU fixtures,
+  container tests driving synthetic MP4/MKV through mocked urlopen.
+  Routing tests at `tests/test_stream_proxy.py` cover each cell of the
+  matrix.
+
+**Changed**
+- **DV routing in `stream_proxy.py`** now consumes a structured
+  `DolbyVisionSourceResult` instead of an integer profile. Latency drops
+  from ~5–10 s (ffmpeg subprocess spawn + analysis) to typically <1 s
+  (two to three HTTP Range requests totalling a few MiB). Content-Length
+  is now threaded through to the probe so moov-at-tail MP4 files are
+  probed correctly — previously the probe defaulted to a 1 MiB ceiling
+  that silently regressed SDR moov-at-tail MP4s off the fmp4 path.
+
+**Removed**
+- **`_parse_ffmpeg_dv_profile`** and **`_probe_dv_profile`** from
+  `stream_proxy.py`. Their role is fully subsumed by the pure-Python
+  source-RPU probe above.
+
+---
+
 ## [1.0.0-pre-alpha] — 2026-04-15
 
 > **First major rewrite milestone — tagged on the spike/hls-fmp4 branch as a pre-release before merging to main.** Big-file force-remux on by default, the fmp4 HLS spike landed and self-heals on failure, the submit pipeline stops freezing on slow nzbdav, the resolver hardens against typo'd settings, and `PROXY.md` documents the proxy subsystem end-to-end. 100 GB DV REMUXes now force-remux through ffmpeg instead of crashing 32-bit Kodi on pass-through, and the experimental fragmented-MP4 HLS branch (opt-in via Advanced settings) automatically falls back to the known-good piped-Matroska path before Kodi ever sees a broken URL when ffmpeg can't produce output. Verified on a CoreELEC ARM64 test box against multiple UHD remuxes — fmp4 HLS gives full random seek for non-DV-Profile-7 sources, matroska fallback covers the DV P7 case.
@@ -54,7 +124,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`Force remux output format` setting** (`force_remux_mode`) in Advanced. Default `matroska` (piped MKV, DV-safe, seek-limited and known-good on Amlogic). Experimental `hls_fmp4` produces an HLS VOD playlist with fragmented-MP4 segments for full random seek across multi-hundred-gigabyte sources. Gated by an automatic Dolby Vision profile 7 fallback (P7 dual-layer FEL has no fmp4 representation), an early-spawn `ffmpeg` validation, and a 30 s production-output watchdog — see "Runtime fmp4→matroska fallback" under **Changed**.
 - **`HlsProducer` class** in `stream_proxy.py`. Owns the long-lived ffmpeg subprocess for fmp4 HLS sessions: per-session working directory, seek-driven respawns with generation-bound segment completeness tracking, an init-file readiness gate, a session-wide stderr log reused across respawns (fixes a latent `stderr=PIPE` deadlock from the per-segment-spawn era), and a canonical-init-bytes cache that lets Kodi keep its `EXT-X-MAP` cache valid across seek respawns even though ffmpeg writes a slightly different `init.mp4` each time.
 - **HLS HTTP routes** in the stream handler: `/hls/<session>/playlist.m3u8`, `/hls/<session>/init.mp4`, `/hls/<session>/seg_NNNNNN.m4s`. Playlist emits `#EXT-X-VERSION:7` and `#EXT-X-MAP:URI="init.mp4"` when `hls_segment_format=fmp4`. Segment and init URLs enforce that the extension in the request path matches the session's configured segment format. The init handler serves the canonical-bytes cache, never the on-disk file, so a respawn-time overwrite race can't poison Kodi.
-- **Dolby Vision profile probe** (`_probe_dv_profile` + `_parse_ffmpeg_dv_profile`). Runs a short `ffmpeg -i ... -f null -` against the source, scans stderr for `DOVI configuration record: ... profile: N`, and gates the fmp4 dispatch: a confirmed profile 7 source (dual-layer FEL with BL+EL+RPU) routes to the matroska branch because fmp4 HLS cannot carry two HEVC layers in one track. Profiles 5/8 and unknown/None are allowed through fmp4.
+- **Dolby Vision profile probe** (historical). The initial `v1.0.0-pre-alpha` tag shipped with `_probe_dv_profile` + `_parse_ffmpeg_dv_profile`, a pair of helpers that ran `ffmpeg -i ... -f null -` against the source and scanned stderr for `DOVI configuration record: ... profile: N`. This pair has since been **retired** in favour of the pure-Python source-RPU probe (`dv_rpu.py` + `dv_source.probe_dolby_vision_source`) that parses the first HEVC access unit's RPU NAL directly — see the entry below for details. Later in the same pre-release cycle the routing gate was broadened so ANY confirmed DV profile routed to matroska (commit 3dce841), and that broadening was preserved when the source-RPU probe landed.
 - **`-tag:v hvc1`** on the fmp4 branch. HLS fmp4 spec mandates `hvc1` sample entry for HEVC (parameter sets in the sample description box, not inband), and Amlogic's HLS demuxer needs the right tag to locate `dvcC`/`dvvC` DV configuration records in the init segment. Metadata swap, not a re-encode.
 - **`-strict -2`** on the fmp4 branch. Required to enable TrueHD and DTS-HD MA in the MP4/fMP4 muxer on ffmpeg 6.x; without it ffmpeg refuses to write the init header at all on virtually every UHD REMUX.
 - **Runtime fmp4 → matroska self-healing fallback.** `HlsProducer.prepare()` now has TWO failure-detection windows in series: (1) a 500 ms argv-rejection poll catching "ffmpeg refuses my flags" failures, and (2) a 30 s production-output wait that polls the filesystem for `init.mp4` + `seg_000000.m4s` while watching ffmpeg liveness. If either window trips, prepare raises and the existing `_register_session` catch rewrites `ctx` to the matroska shape *before* the proxy URL goes back to Kodi. Every fmp4 bug we found on this branch — absolute-path init bug, `-strict -2` missing, analysis hang, runaway respawn loop — now recovers automatically to the known-good matroska path with no user-visible failure. Window 1 also handles the rc=0 early-completion case so synthetic short-source integration tests don't false-trip.
@@ -74,7 +144,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **fmp4 ffmpeg arguments switched to relative filenames + cwd.** `-hls_fmp4_init_filename` on ffmpeg 6.0.1 (CoreELEC build) rejects absolute paths with "Failed to open segment" / "No such file or directory" even when the parent directory exists and is writable. Fixed by passing bare relative names (`init.mp4`, `seg_%06d.m4s`, `ffmpeg_playlist.m3u8`) to ffmpeg and spawning the subprocess with `cwd=session_dir`. Reader-side code (segment_path, _init_file_complete, wait_for_init, the HTTP handlers) still uses absolute paths, so nothing on the disk-reading path changes.
 - **`_segment_complete`** in `HlsProducer` now records a `_spawn_time` at every ffmpeg `Popen` and verifies that any `seg_<n+1>.m4s` used as a "seg_n is done" signal was written by the current generation (mtime ≥ spawn_time). Without this, a stale `seg_<n+1>` left on disk from the backward-seek cache could make a half-written new `seg_<n>` look complete and produce a truncated response.
 - **`init.mp4` is no longer unlinked on respawn.** The canonical init bytes cache committed to serving the first generation's bytes on every Kodi request; whatever ffmpeg writes to the disk file on subsequent generations is irrelevant. Unlinking would just race the on-disk overwrite and momentarily fail `_init_file_complete` for no gain.
-- **HLS producer ffmpeg probes** (`_probe_duration_ffmpeg`, `_probe_dv_profile`) refactored to use a bounded reader thread + wall-clock deadline (`_PROBE_DEADLINE_SECONDS = 20`). The old probes did a synchronous `for line in proc.stderr` with no time guard; a stuck ffmpeg (slow upstream, analysis hang) would block the probe forever, eventually wedging the `prepare_stream_via_service` 60 s timeout and accumulating zombie ffmpeg processes. The new helper guarantees the probe terminates within its budget and kills the ffmpeg before returning.
+- **HLS producer ffmpeg duration probe** (`_probe_duration_ffmpeg`) refactored to use a bounded reader thread + wall-clock deadline (`_PROBE_DEADLINE_SECONDS = 20`). The old probe did a synchronous `for line in proc.stderr` with no time guard; a stuck ffmpeg (slow upstream, analysis hang) would block the probe forever, eventually wedging the `prepare_stream_via_service` 60 s timeout and accumulating zombie ffmpeg processes. The new helper guarantees the probe terminates within its budget and kills the ffmpeg before returning. The same pattern originally covered a DV-profile probe too; the DV probe has since been replaced with a pure-Python source-RPU parser (see below) that doesn't spawn ffmpeg at all.
 - **`prepare_stream`'s HLS dispatch** now requires `duration > 0`, not just `duration is not None`. A zero-duration probe previously built an HLS ctx that would 500 on the first playlist request.
 - **CI test matrix** moved from Python 3.8 to 3.9 + 3.12 after bumping `pytest` to `>=9.0.3` (CVE-2025-71176). The pylint job stays on Python 3.8 so addon source compatibility for the Kodi runtime target is still validated.
 - **README stream-proxy section** rewritten to describe all four serving tiers (direct redirect / virtual faststart / pass-through / force-remux) and both force-remux modes; links to the new `PROXY.md`.
@@ -85,7 +155,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Submit timeout misclassification.** `submit_nzb` now distinguishes `socket.timeout` (and `URLError(reason=socket.timeout(...))`) from other network errors and returns a structured `(None, {"status": "timeout"})` sentinel instead of the old `(None, None)` "retry freely" shape. The resolver runs a 12 s queue + history adoption probe on the sentinel and adopts the existing `nzo_id` if found, instead of retrying the submit and either bouncing as a duplicate or orphaning the in-progress job. Works on Python 3.8 (bare `socket.timeout`) and 3.10+ (where `socket.timeout` is an alias for `TimeoutError`).
 - **Submit running on the plugin thread.** `submit_nzb` no longer blocks the Kodi plugin thread for the full 120 s timeout window. The new `_submit_nzb_with_ui_pump` runs it in a daemon worker thread and pumps the dialog at 250 ms cadence so the cancel button is live, the message updates, and the user sees progress instead of a frozen "Submitting NZB..." dialog.
 - **Nondeterministic init.mp4 across seek respawns.** When ffmpeg respawns at a different `-ss` for a seek, the new `init.mp4` has a different `edts`/`elst` (edit list) box than the original — the codec config (`hvcC`/`mp4a`) is byte-identical, but Kodi caches `EXT-X-MAP` once per playlist, so segments produced after the respawn referenced an edit list the cached init doesn't know about and playback stalled or desynced. Fixed by caching the first generation's init bytes in `HlsProducer._canonical_init_bytes` and serving those bytes on every Kodi fetch regardless of what's on disk.
-- **fmp4 ffmpeg `_probe_dv_profile` running after `_probe_duration` could block indefinitely** on a stuck ffmpeg (slow upstream, analysis hang). Replaced both with a shared `_probe_ffmpeg_stderr` helper that uses a daemon reader thread + wall-clock deadline, killing the ffmpeg on match, byte budget, OR deadline expiry.
+- **fmp4 ffmpeg probe pair could block indefinitely** on a stuck ffmpeg (slow upstream, analysis hang). Initially fixed by the shared `_probe_ffmpeg_stderr` helper (daemon reader thread + wall-clock deadline, killing the ffmpeg on match, byte budget, OR deadline expiry). Later in the same pre-release cycle the DV-profile probe was retired entirely in favour of a pure-Python source-RPU parser that does HTTP range requests instead of spawning ffmpeg, removing this class of stuck-subprocess failure from the DV path altogether.
 - **`MagicMock/` directory leak** in unit test runs: `_archive_ffmpeg_log` was passing a mocked `xbmcvfs.translatePath()` return value straight to `os.makedirs`, creating a literal `"MagicMock"` directory in cwd. Now isinstance-checks the candidate before accepting it.
 - **fmp4 segments could be served before fully written** — the old `_segment_complete` could mistake a stale prior-generation `seg_n+1` for a current-generation completeness signal and return True while the new `seg_n` was still being written. Fixed by the per-generation mtime check (see Changed).
 - **`_clear_kodi_playback_state` no longer runs during active playback** — avoids contention with Kodi's own `MyVideos131.db` / `Textures13.db` vacuum, which was occasionally freezing the decoder during database-heavy sessions.
