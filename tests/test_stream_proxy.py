@@ -1828,27 +1828,19 @@ def test_prune_sessions_requires_context_lock_ownership():
 
 
 def _make_hls_handler(ctx, request_path):
-    """Construct a _StreamHandler for HLS path dispatch tests."""
-    import threading
+    """Construct a _StreamHandler for HLS path dispatch tests.
 
-    from resources.lib.stream_proxy import _StreamHandler
-
-    handler = _StreamHandler.__new__(_StreamHandler)
-    handler.server = MagicMock()
+    Delegates to ``_make_handler_with_server`` for the common mock
+    scaffolding (server mock, stream_context, ffmpeg_lock, response
+    helpers) and layers on the HLS-specific pieces: ``stream_sessions``
+    keyed by session id, ``handler.path``, and the ``connection`` mock
+    HLS needs for keep-alive logic.
+    """
+    handler = _make_handler_with_server(ctx)
     session_id = ctx.get("session_id", "abc123")
     handler.server.stream_sessions = {session_id: ctx}
-    handler.server.stream_context = ctx
-    handler.server.active_ffmpeg = None
-    handler.server.current_byte_pos = 0
-    handler.server.ffmpeg_lock = threading.Lock()
     handler.path = request_path
-    handler.headers = {}
-    handler.wfile = MagicMock()
     handler.connection = MagicMock()
-    handler.send_response = MagicMock()
-    handler.send_header = MagicMock()
-    handler.end_headers = MagicMock()
-    handler.send_error = MagicMock()
     return handler
 
 
