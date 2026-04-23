@@ -1593,8 +1593,18 @@ class _StreamHandler(BaseHTTPRequestHandler):
                         active_ffmpeg.wait()
                     except OSError:
                         pass
-                    ctx["active_ffmpeg"] = None
-                    self.server.active_ffmpeg = None
+                    # Compare-and-swap on BOTH storage locations. The prior
+                    # unconditional ``= None`` assignments raced with a
+                    # concurrent _start_remux_process on another handler
+                    # thread that had just written its own proc into
+                    # server.active_ffmpeg — we'd zero out that fresh
+                    # reference, leaving ``B`` streaming with no tracked
+                    # handle for later cleanup. Use the same ``is proc``
+                    # CAS pattern that _finish_remux uses.
+                    if ctx.get("active_ffmpeg") is active_ffmpeg:
+                        ctx["active_ffmpeg"] = None
+                    if getattr(self.server, "active_ffmpeg", None) is active_ffmpeg:
+                        self.server.active_ffmpeg = None
 
         return seek_seconds
 
