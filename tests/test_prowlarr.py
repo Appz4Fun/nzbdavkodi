@@ -209,3 +209,65 @@ def test_search_prowlarr_url_error_returns_error(mock_http, mock_settings):
     results, error = search_prowlarr("movie", "The Matrix")
     assert not results
     assert error == "Prowlarr unavailable: Connection refused"
+
+
+# --- parse_results fallback-path coverage (source text / source url hostname) ---
+
+
+def test_parse_results_falls_back_to_source_text_when_attr_missing():
+    """Prowlarr sometimes omits the Newznab indexer attr and puts the
+    indexer name in a ``<source>text</source>`` element. parse_results
+    must pick that up."""
+    xml_text = """<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2010/feeds/attributes/">
+<channel>
+<item>
+<title>Some.Release.2024.mkv</title>
+<link>http://prowlarr/dl/1</link>
+<pubDate>Mon, 01 Apr 2024 12:00:00 +0000</pubDate>
+<source>IndexerFromText</source>
+<newznab:attr name="size" value="4000000000" />
+</item>
+</channel>
+</rss>"""
+    results = parse_results(xml_text)
+    assert len(results) == 1
+    assert results[0]["indexer"] == "IndexerFromText"
+
+
+def test_parse_results_falls_back_to_source_url_hostname():
+    """No attr, no source text — just a ``<source url="..."/>`` element.
+    parse_results must extract the hostname as the indexer label."""
+    xml_text = """<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2010/feeds/attributes/">
+<channel>
+<item>
+<title>Some.Release.2024.mkv</title>
+<link>http://prowlarr/dl/2</link>
+<source url="https://hosted.example.org/api/rss" />
+<newznab:attr name="size" value="4000000000" />
+</item>
+</channel>
+</rss>"""
+    results = parse_results(xml_text)
+    assert len(results) == 1
+    assert results[0]["indexer"] == "hosted.example.org"
+
+
+def test_parse_results_enclosure_length_fills_in_when_attr_size_missing():
+    """When ``<newznab:attr name="size">`` is missing, the <enclosure>
+    ``length`` attribute provides the size — matches SABnzbd-compatible
+    fallback behavior."""
+    xml_text = """<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2010/feeds/attributes/">
+<channel>
+<item>
+<title>Movie.2024.mkv</title>
+<link>http://prowlarr/dl/3</link>
+<enclosure url="http://prowlarr/dl/3" length="987654321" type="application/x-nzb" />
+</item>
+</channel>
+</rss>"""
+    results = parse_results(xml_text)
+    assert len(results) == 1
+    assert results[0]["size"] == "987654321"
