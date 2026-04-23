@@ -2338,7 +2338,27 @@ class _StreamHandler(BaseHTTPRequestHandler):
         network blip) has a chance to come back before we declare the
         region unrecoverable. Returns the skip in bytes or None if the
         recovery budget is exhausted.
+
+        Fast-fail when the session already knows upstream is down:
+        ``_record_upstream_unreachable`` sets ``upstream_down_notified``
+        the first time an outage is detected, and the flag stays set
+        until a subsequent successful urlopen clears it via
+        ``_record_upstream_recovered``. While the flag is set, every
+        probe in this function would hit the same DNS/TCP failure and
+        burn the full 30 s recovery budget per byte-range request —
+        turning a single outage into 30 s of stall on every seek.
+        Short-circuit to None so the caller zero-fills immediately and
+        Kodi can abort cleanly instead of grinding through probes.
         """
+        if ctx.get("upstream_down_notified"):
+            xbmc.log(
+                "NZB-DAV: Skip-probe short-circuited (upstream marked down; "
+                "session will recover on next successful byte-range) "
+                "(reason=skip_probe_circuit_breaker)",
+                xbmc.LOGINFO,
+            )
+            return None
+
         start_time = time.time()
         for skip in _SKIP_PROBE_SIZES:
             target = failed_byte + skip

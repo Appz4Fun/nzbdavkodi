@@ -5862,3 +5862,53 @@ def test_stream_upstream_range_resets_flag_on_successful_response():
         # Second call succeeds — flag clears.
         handler._stream_upstream_range(ctx, 0, 1023)
         assert ctx["upstream_down_notified"] is False
+
+
+def test_find_skip_offset_short_circuits_when_upstream_marked_down():
+    """Once the session has seen an unreachable-network failure and
+    notified the user, _find_skip_offset must return None immediately
+    instead of spending the 30 s probe budget. Otherwise every byte
+    range during an outage wastes 30 s before zero-filling."""
+    from resources.lib.stream_proxy import _StreamHandler
+
+    ctx = {
+        "remote_url": "http://nzbdav-down/movie.mkv",
+        "auth_header": None,
+        "upstream_down_notified": True,
+    }
+
+    with patch("resources.lib.stream_proxy.urlopen") as mock_urlopen, patch(
+        "resources.lib.stream_proxy.time.sleep"
+    ) as mock_sleep:
+        result = _StreamHandler._find_skip_offset(ctx, failed_byte=0, range_end=1048575)
+
+    assert result is None
+    # Crucial: we didn't burn the probe budget. urlopen was never called
+    # and no sleep-between-retries happened.
+    mock_urlopen.assert_not_called()
+    mock_sleep.assert_not_called()
+
+
+def test_find_skip_offset_probes_normally_when_flag_clear():
+    """When upstream_down_notified is false (or missing), the regular
+    probe sequence runs. Verifies the short-circuit only fires under
+    the explicit "known down" condition."""
+    from resources.lib.stream_proxy import _StreamHandler
+
+    ctx = {
+        "remote_url": "http://nzbdav/movie.mkv",
+        "auth_header": None,
+    }
+
+    first_probe = _mock_urlopen_response([b"Y" * 64])
+
+    with patch(
+        "resources.lib.stream_proxy.urlopen", return_value=first_probe
+    ) as mock_urlopen, patch("resources.lib.stream_proxy.time.sleep"):
+        result = _StreamHandler._find_skip_offset(
+            ctx, failed_byte=0, range_end=10 * 1048576
+        )
+
+    # First skip size is 1 MB; probe succeeded.
+    assert result == 1048576
+    assert mock_urlopen.called
