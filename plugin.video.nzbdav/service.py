@@ -135,6 +135,21 @@ class NzbdavPlayer(xbmc.Player):
                 xbmc.LOGINFO,
             )
 
+    def _clear_stream_properties(self):
+        """Erase the IPC window properties for this stream.
+
+        Without this, ``nzbdav.stream_url`` and ``nzbdav.stream_title``
+        linger across sessions. A second play whose plugin call fails
+        before writing fresh properties would cause the service to pick
+        up the previous session's URL/title if ``nzbdav.active="true"``
+        is ever re-set by a stale/racing writer.
+        """
+        for prop in (_PROP_STREAM_URL, _PROP_STREAM_TITLE):
+            try:
+                _HOME_WINDOW.clearProperty(prop)
+            except _PLAYER_RUNTIME_ERRORS:
+                pass
+
     def onPlayBackStopped(self):
         """Mark stream inactive when user stops playback."""
         if self._state != PlaybackState.IDLE:
@@ -144,6 +159,7 @@ class NzbdavPlayer(xbmc.Player):
             )
             self._state = PlaybackState.IDLE
             self._cleanup_proxy_session()
+            self._clear_stream_properties()
 
     def onPlayBackEnded(self):
         """Mark stream inactive when playback finishes naturally."""
@@ -154,6 +170,7 @@ class NzbdavPlayer(xbmc.Player):
             )
             self._state = PlaybackState.IDLE
             self._cleanup_proxy_session()
+            self._clear_stream_properties()
 
     def onPlayBackError(self):
         """Transition to ERROR state. Dialogs are shown from tick().

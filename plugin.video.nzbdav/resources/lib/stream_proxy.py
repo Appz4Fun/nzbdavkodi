@@ -1603,9 +1603,28 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     "active_ffmpeg", getattr(self.server, "active_ffmpeg", None)
                 )
                 if active_ffmpeg:
+                    # kill()+wait() under the session lock could block
+                    # indefinitely if ffmpeg is stuck in uninterruptible
+                    # I/O against an unresponsive upstream — every other
+                    # thread touching this session would freeze with it.
+                    # Bound the reap to 2 s; if the child is still alive
+                    # after that, log and let the OS reap later. The
+                    # subsequent CAS (below) still points the ctx/server
+                    # fields away so the next request won't double-kill.
                     try:
                         active_ffmpeg.kill()
-                        active_ffmpeg.wait()
+                    except OSError:
+                        pass
+                    try:
+                        active_ffmpeg.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        xbmc.log(
+                            "NZB-DAV: Seek-kill ffmpeg pid={} did not exit "
+                            "within 2 s; leaking to OS reap".format(
+                                getattr(active_ffmpeg, "pid", "?")
+                            ),
+                            xbmc.LOGWARNING,
+                        )
                     except OSError:
                         pass
                     # Compare-and-swap on BOTH storage locations. The prior
@@ -2913,18 +2932,20 @@ class HlsProducer:
             if not need_restart:
                 return
 
-            # Stop the old ffmpeg if any.
+            # Stop the old ffmpeg if any. 2s wait (was 5s): concurrency
+            # audit flagged this as the worst-case hold time on the
+            # HlsProducer lock, which blocks every concurrent
+            # wait_for_segment / wait_for_init / close() call. 2s is
+            # enough for SIGKILL to land on a healthy child; on a
+            # genuinely stuck one we log + let the OS reap (unchanged
+            # behavior) rather than stalling the whole session.
             if proc is not None and proc.poll() is None:
                 try:
                     proc.kill()
-                    proc.wait(timeout=5)
+                    proc.wait(timeout=2)
                 except subprocess.TimeoutExpired:
-                    # SIGKILL was sent but the child didn't reap within 5 s
-                    # (uninterruptible I/O or a truly stuck process). The
-                    # OS will reap it eventually; log so the leak is
-                    # observable instead of silent.
                     xbmc.log(
-                        "NZB-DAV: HLS ffmpeg pid={} did not exit 5 s after kill; "
+                        "NZB-DAV: HLS ffmpeg pid={} did not exit 2 s after kill; "
                         "leaking for the OS to reap".format(getattr(proc, "pid", "?")),
                         xbmc.LOGWARNING,
                     )
