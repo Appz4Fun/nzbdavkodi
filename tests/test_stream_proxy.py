@@ -3,8 +3,11 @@
 
 """Unit tests for stream_proxy.py remux and range-serving logic."""
 
+import io
+import threading
 from unittest.mock import MagicMock, patch
 
+import pytest
 from resources.lib.stream_proxy import _StreamHandler
 
 # ---------------------------------------------------------------------------
@@ -39,6 +42,23 @@ def _make_handler_with_server(ctx, range_header=None, current_byte_pos=0):
     return handler
 
 
+def _make_prepare_post_handler(body=b"{}", content_length=None, path="/prepare"):
+    """Construct a minimal POST handler for /prepare tests."""
+    handler = _StreamHandler.__new__(_StreamHandler)
+    handler.path = path
+    handler.server = MagicMock()
+    handler.server.owner_proxy = MagicMock()
+    length = content_length if content_length is not None else len(body)
+    handler.headers = {"Content-Length": str(length)}
+    handler.rfile = io.BytesIO(body)
+    handler.wfile = MagicMock()
+    handler.send_response = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
+    handler.send_error = MagicMock()
+    return handler
+
+
 def test_parse_range_standard():
     h = _make_handler()
     assert h._parse_range("bytes=0-999", 10000) == (0, 999)
@@ -67,6 +87,22 @@ def test_parse_range_invalid():
 def test_parse_range_zero_start():
     h = _make_handler()
     assert h._parse_range("bytes=0-", 500) == (0, 499)
+
+
+@pytest.mark.parametrize(
+    ("range_header", "content_length"),
+    [
+        ("bytes=10-5", 1000),
+        ("bytes=-1001", 1000),
+        ("bytes=1000-", 1000),
+        ("bytes=1000-1001", 1000),
+        ("bytes=1-two", 1000),
+        ("bytes=0-1,2-3", 1000),
+    ],
+)
+def test_parse_range_rejects_malformed_invariants(range_header, content_length):
+    h = _make_handler()
+    assert h._parse_range(range_header, content_length) == (None, None)
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +227,43 @@ def test_stream_proxy_start_assigns_port():
         assert sp.port > 0
     finally:
         sp.stop()
+
+
+def test_stream_proxy_start_primes_ffmpeg_capabilities():
+    from resources.lib.stream_proxy import StreamProxy
+
+    with patch.object(
+        StreamProxy, "_refresh_ffmpeg_capabilities", return_value={}
+    ) as mock_refresh:
+        sp = StreamProxy()
+        sp.start()
+        try:
+            mock_refresh.assert_called_once_with()
+        finally:
+            sp.stop()
+
+
+def test_probe_hls_fmp4_capability_requires_required_flags():
+    from resources.lib.stream_proxy import StreamProxy
+
+    mock_proc = MagicMock()
+    mock_proc.communicate.return_value = (
+        b"  -hls_segment_type <string>\n  -hls_fmp4_init_filename <string>\n",
+        b"",
+    )
+
+    with patch("resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc):
+        assert StreamProxy._probe_hls_fmp4_capability("/usr/bin/ffmpeg") is True
+
+
+def test_probe_hls_fmp4_capability_rejects_missing_required_flags():
+    from resources.lib.stream_proxy import StreamProxy
+
+    mock_proc = MagicMock()
+    mock_proc.communicate.return_value = (b"  -hls_segment_type <string>\n", b"")
+
+    with patch("resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc):
+        assert StreamProxy._probe_hls_fmp4_capability("/usr/bin/ffmpeg") is False
 
 
 def test_stream_proxy_stop_idempotent():
@@ -416,6 +489,100 @@ def test_force_remux_threshold_default_is_nonzero():
     ), "Default threshold must remux 58 GB files (pass-through crashes)"
 
 
+@patch("resources.lib.stream_proxy.xbmc")
+def test_get_force_remux_threshold_clamps_negative_to_zero_and_logs(mock_xbmc):
+    import sys
+
+    from resources.lib.stream_proxy import _get_force_remux_threshold_bytes
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.return_value = "-1"
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        assert _get_force_remux_threshold_bytes() == 0
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    assert mock_xbmc.log.call_count == 1
+    assert "force_remux_threshold_mb" in mock_xbmc.log.call_args[0][0]
+
+
+@patch("resources.lib.stream_proxy.xbmc")
+def test_get_force_remux_threshold_clamps_typo_high_and_logs(mock_xbmc):
+    import sys
+
+    from resources.lib.stream_proxy import (
+        _FORCE_REMUX_THRESHOLD_MB_MAX,
+        _get_force_remux_threshold_bytes,
+    )
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.return_value = "999999999"
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        assert (
+            _get_force_remux_threshold_bytes()
+            == _FORCE_REMUX_THRESHOLD_MB_MAX * 1024 * 1024
+        )
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    assert mock_xbmc.log.call_count == 1
+    assert "force_remux_threshold_mb" in mock_xbmc.log.call_args[0][0]
+
+
+def test_get_force_remux_mode_default_returns_matroska():
+    """Unset / empty / '0' all return 'matroska'."""
+    import sys
+
+    from resources.lib.stream_proxy import _get_force_remux_mode
+
+    mock_addon = MagicMock()
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        for raw in ("", "0", None):
+            mock_addon.getSetting.return_value = raw
+            assert _get_force_remux_mode() == "matroska"
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+
+def test_get_force_remux_mode_hls_fmp4_on_one():
+    """Setting '1' returns 'hls_fmp4'."""
+    import sys
+
+    from resources.lib.stream_proxy import _get_force_remux_mode
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.return_value = "1"
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        assert _get_force_remux_mode() == "hls_fmp4"
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+
+def test_get_force_remux_mode_unknown_value_falls_back_to_matroska():
+    """Any other value safely falls back to matroska."""
+    import sys
+
+    from resources.lib.stream_proxy import _get_force_remux_mode
+
+    mock_addon = MagicMock()
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        for raw in ("2", "true", "garbage", "-1"):
+            mock_addon.getSetting.return_value = raw
+            assert _get_force_remux_mode() == "matroska"
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+
 def test_prepare_stream_force_remuxes_huge_mkv_with_default_threshold():
     """A 58 GB MKV must be force-remuxed even when the user leaves the
     threshold setting at its shipped default. Regression test for
@@ -462,6 +629,166 @@ def test_prepare_stream_force_remuxes_huge_mkv_with_default_threshold():
     assert ctx["total_bytes"] == huge
     assert ctx["duration_seconds"] == 8532.0
     assert ctx["seekable"] is True
+    assert ctx.get("hls_segment_format") is None
+
+
+def test_prepare_stream_force_remux_hls_fmp4_setting_produces_hls_ctx():
+    """With force_remux_mode=1 and a duration probe that succeeds,
+    prepare_stream builds an HLS fmp4 ctx instead of the matroska
+    ctx. Producer creation happens in _register_session (not tested
+    here) — this test only asserts the ctx shape that prepare_stream
+    hands to _register_session."""
+    import sys
+
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 9999
+
+    huge = 58 * 1024 * 1024 * 1024
+    mock_proc = MagicMock()
+    mock_proc.stderr = iter([b"  Duration: 02:22:12.00, start: 0.000000\n"])
+
+    mock_addon = MagicMock()
+
+    def get_setting(key):
+        if key == "force_remux_mode":
+            return "1"
+        if key == "force_remux_threshold_mb":
+            return ""
+        return ""
+
+    mock_addon.getSetting.side_effect = get_setting
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch(
+            "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
+        ), patch(
+            "resources.lib.stream_proxy._find_ffprobe", return_value=None
+        ), patch.object(
+            sp, "_get_content_length", return_value=huge
+        ), patch(
+            "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
+        ), patch.object(
+            StreamProxy, "_probe_dv_profile", return_value=None
+        ), patch(
+            "resources.lib.stream_proxy.HlsProducer"
+        ) as mock_producer_cls:
+            mock_producer_cls.return_value = MagicMock()
+            sp.prepare_stream("http://host/shawshank.mkv")
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    ctx = sp._server.stream_context
+    assert ctx["mode"] == "hls"
+    assert ctx["hls_segment_format"] == "fmp4"
+    assert ctx["content_type"] == "application/vnd.apple.mpegurl"
+    assert ctx["remux"] is True
+    assert ctx["total_bytes"] == huge
+    assert ctx["duration_seconds"] == 8532.0
+    assert ctx["seekable"] is True
+    assert ctx["ffmpeg_path"] == "/usr/bin/ffmpeg"
+
+
+def test_prepare_stream_force_remux_hls_fmp4_falls_back_when_duration_probe_fails():
+    """With force_remux_mode=1 but duration probing returning None,
+    prepare_stream falls back to the matroska ctx shape (not fmp4).
+    Rationale: fmp4 HLS needs duration for the playlist; without it,
+    the matroska branch is the safer default."""
+    import sys
+
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 9999
+
+    huge = 58 * 1024 * 1024 * 1024
+    mock_proc = MagicMock()
+    # No "Duration:" line in stderr — _probe_duration returns None.
+    mock_proc.stderr = iter([b"  Stream #0:0: Video: hevc\n"])
+
+    mock_addon = MagicMock()
+
+    def get_setting(key):
+        if key == "force_remux_mode":
+            return "1"
+        return ""
+
+    mock_addon.getSetting.side_effect = get_setting
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch(
+            "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
+        ), patch(
+            "resources.lib.stream_proxy._find_ffprobe", return_value=None
+        ), patch.object(
+            sp, "_get_content_length", return_value=huge
+        ), patch(
+            "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
+        ):
+            sp.prepare_stream("http://host/shawshank.mkv")
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    ctx = sp._server.stream_context
+    assert ctx.get("mode") != "hls"
+    assert ctx["content_type"] == "video/x-matroska"
+    assert ctx["remux"] is True
+
+
+def test_prepare_stream_force_remux_hls_fmp4_falls_back_when_capability_probe_fails():
+    """If the startup capability probe says this ffmpeg lacks fmp4 HLS
+    support, prepare_stream must not route into the HLS branch even when
+    the user opts into force_remux_mode=hls_fmp4."""
+    import sys
+
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._context_lock = threading.Lock()
+    sp.port = 9999
+    sp._ffmpeg_capabilities = {
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "hls_fmp4": False,
+    }
+
+    huge = 58 * 1024 * 1024 * 1024
+    mock_proc = MagicMock()
+    mock_proc.stderr = iter([b"  Duration: 02:22:12.00, start: 0.000000\n"])
+
+    mock_addon = MagicMock()
+
+    def get_setting(key):
+        if key == "force_remux_mode":
+            return "1"
+        return ""
+
+    mock_addon.getSetting.side_effect = get_setting
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch(
+            "resources.lib.stream_proxy._find_ffprobe", return_value=None
+        ), patch.object(sp, "_get_content_length", return_value=huge), patch(
+            "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
+        ), patch(
+            "resources.lib.stream_proxy.HlsProducer"
+        ) as mock_producer_cls:
+            sp.prepare_stream("http://host/shawshank.mkv")
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    mock_producer_cls.assert_not_called()
+    ctx = sp._server.stream_context
+    assert ctx.get("mode") != "hls"
+    assert ctx["content_type"] == "video/x-matroska"
 
 
 def test_prepare_stream_rejects_invalid_scheme():
@@ -475,6 +802,15 @@ def test_prepare_stream_rejects_invalid_scheme():
 
     with pytest.raises(ValueError):
         sp.prepare_stream("file:///etc/passwd")
+
+
+def test_do_post_rejects_prepare_bodies_over_64k():
+    handler = _make_prepare_post_handler(body=b"{}", content_length=65537)
+
+    handler.do_POST()
+
+    handler.send_error.assert_called_once_with(413)
+    handler.server.owner_proxy.prepare_stream.assert_not_called()
 
 
 def test_prepare_stream_uses_unique_session_urls():
@@ -552,6 +888,275 @@ def test_probe_duration_returns_none_on_n_a():
 
 
 # ---------------------------------------------------------------------------
+# _parse_ffmpeg_dv_profile
+# ---------------------------------------------------------------------------
+
+
+def test_parse_dv_profile_7_dual_layer():
+    from resources.lib.stream_proxy import _parse_ffmpeg_dv_profile
+
+    stderr = (
+        "  Stream #0:0(und): Video: hevc (Main 10) (hvc1 / 0x31637668), ...\n"
+        "    Side data:\n"
+        "      DOVI configuration record: version: 1.0, profile: 7, "
+        "level: 6, rpu flag: 1, el flag: 1, bl flag: 1, compatibility id: 0\n"
+    )
+    assert _parse_ffmpeg_dv_profile(stderr) == 7
+
+
+def test_parse_dv_profile_5_single_layer():
+    from resources.lib.stream_proxy import _parse_ffmpeg_dv_profile
+
+    stderr = (
+        "      DOVI configuration record: version: 1.0, profile: 5, "
+        "level: 6, rpu flag: 1, el flag: 0, bl flag: 1, compatibility id: 0\n"
+    )
+    assert _parse_ffmpeg_dv_profile(stderr) == 5
+
+
+def test_parse_dv_profile_8_compatible():
+    from resources.lib.stream_proxy import _parse_ffmpeg_dv_profile
+
+    stderr = (
+        "      DOVI configuration record: version: 1.0, profile: 8, "
+        "level: 6, rpu flag: 1, el flag: 0, bl flag: 1, compatibility id: 1\n"
+    )
+    assert _parse_ffmpeg_dv_profile(stderr) == 8
+
+
+def test_parse_dv_profile_returns_none_when_absent():
+    from resources.lib.stream_proxy import _parse_ffmpeg_dv_profile
+
+    stderr = (
+        "  Stream #0:0(und): Video: hevc (Main 10), yuv420p10le, "
+        "3840x2160 [SAR 1:1 DAR 16:9], 24 fps, 24 tbr, 1k tbn\n"
+        "  Stream #0:1(eng): Audio: truehd, 48000 Hz, 7.1, s32 (24 bit)\n"
+    )
+    assert _parse_ffmpeg_dv_profile(stderr) is None
+
+
+def test_parse_dv_profile_returns_none_on_malformed():
+    from resources.lib.stream_proxy import _parse_ffmpeg_dv_profile
+
+    stderr = "DOVI configuration record: version: 1.0, profile: not-a-number\n"
+    assert _parse_ffmpeg_dv_profile(stderr) is None
+
+
+# ---------------------------------------------------------------------------
+# StreamProxy.prepare_stream — DV profile gating for fmp4 HLS
+# ---------------------------------------------------------------------------
+
+
+def _make_fmp4_prepare_fixture(huge_size=58 * 1024 * 1024 * 1024):
+    """Build the StreamProxy instance and addon/settings mocks used by the
+    DV-profile gating tests. Returns (sp, mock_addon, original_addon,
+    duration_proc)."""
+    import sys
+
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 9999
+
+    duration_proc = MagicMock()
+    duration_proc.stderr = iter([b"  Duration: 02:22:12.00, start: 0.000000\n"])
+
+    mock_addon = MagicMock()
+
+    def get_setting(key):
+        if key == "force_remux_mode":
+            return "1"
+        if key == "force_remux_threshold_mb":
+            return ""
+        return ""
+
+    mock_addon.getSetting.side_effect = get_setting
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    return sp, mock_addon, original, duration_proc, huge_size
+
+
+def test_prepare_stream_dv_profile_7_falls_back_to_matroska():
+    """A confirmed Dolby Vision profile 7 source must NOT be served as
+    fmp4 HLS even when force_remux_mode=hls_fmp4. fmp4 HLS has no
+    standard way to carry the BL+EL+RPU dual-layer structure, so the
+    enhancement layer would be silently dropped and Amlogic's decoder
+    is known to stall on the result."""
+    import sys
+
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp, _, original, duration_proc, huge = _make_fmp4_prepare_fixture()
+    try:
+        with patch(
+            "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
+        ), patch(
+            "resources.lib.stream_proxy._find_ffprobe", return_value=None
+        ), patch.object(
+            sp, "_get_content_length", return_value=huge
+        ), patch(
+            "resources.lib.stream_proxy.subprocess.Popen", return_value=duration_proc
+        ), patch.object(
+            StreamProxy, "_probe_dv_profile", return_value=7
+        ):
+            sp.prepare_stream("http://host/dv-p7-remux.mkv")
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    ctx = sp._server.stream_context
+    assert ctx.get("mode") != "hls", "P7 must fall back off the fmp4 path"
+    assert ctx["content_type"] == "video/x-matroska"
+    assert ctx.get("hls_segment_format") is None
+
+
+def test_prepare_stream_dv_profile_5_falls_back_to_matroska():
+    """Profile 5 (single-layer IPTPQc2) falls back to matroska.
+
+    The original gate allowed P5/P8 through fmp4 on the theory that
+    only dual-layer P7 was broken, but 2026-04-15 testing against a
+    DV Profile 8 source on the Amlogic CoreELEC build proved the HW
+    decoder doesn't actually decode DV on the fmp4 path regardless
+    of profile — onAVStarted never fires, the YUV planes stay half-
+    green, and Kodi freezes on stop. The gate was broadened to
+    route ANY confirmed DV profile back to the matroska pipe."""
+    import sys
+
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp, _, original, duration_proc, huge = _make_fmp4_prepare_fixture()
+    try:
+        with patch(
+            "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
+        ), patch(
+            "resources.lib.stream_proxy._find_ffprobe", return_value=None
+        ), patch.object(
+            sp, "_get_content_length", return_value=huge
+        ), patch(
+            "resources.lib.stream_proxy.subprocess.Popen", return_value=duration_proc
+        ), patch.object(
+            StreamProxy, "_probe_dv_profile", return_value=5
+        ):
+            sp.prepare_stream("http://host/dv-p5-remux.mkv")
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    ctx = sp._server.stream_context
+    assert ctx.get("mode") != "hls"
+    assert ctx["content_type"] == "video/x-matroska"
+
+
+def test_prepare_stream_dv_profile_8_falls_back_to_matroska():
+    """Profile 8 (single-layer cross-compatible) falls back to matroska
+    for the same reason as P5 — the Amlogic fmp4 HW decoder path
+    doesn't decode DV regardless of single-layer vs dual-layer. See
+    the docstring on test_prepare_stream_dv_profile_5_falls_back_to
+    _matroska for the reproduction details."""
+    import sys
+
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp, _, original, duration_proc, huge = _make_fmp4_prepare_fixture()
+    try:
+        with patch(
+            "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
+        ), patch(
+            "resources.lib.stream_proxy._find_ffprobe", return_value=None
+        ), patch.object(
+            sp, "_get_content_length", return_value=huge
+        ), patch(
+            "resources.lib.stream_proxy.subprocess.Popen", return_value=duration_proc
+        ), patch.object(
+            StreamProxy, "_probe_dv_profile", return_value=8
+        ):
+            sp.prepare_stream("http://host/dv-p8-remux.mkv")
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    ctx = sp._server.stream_context
+    assert ctx.get("mode") != "hls"
+    assert ctx["content_type"] == "video/x-matroska"
+
+
+def test_prepare_stream_dv_probe_none_stays_on_fmp4():
+    """A None return from the DV probe (either 'no DV' or 'probe failed')
+    is treated as safe — fmp4 is allowed. Only a *confirmed* profile 7
+    triggers the matroska fallback."""
+    import sys
+
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp, _, original, duration_proc, huge = _make_fmp4_prepare_fixture()
+    try:
+        with patch(
+            "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
+        ), patch(
+            "resources.lib.stream_proxy._find_ffprobe", return_value=None
+        ), patch.object(
+            sp, "_get_content_length", return_value=huge
+        ), patch(
+            "resources.lib.stream_proxy.subprocess.Popen", return_value=duration_proc
+        ), patch.object(
+            StreamProxy, "_probe_dv_profile", return_value=None
+        ), patch(
+            "resources.lib.stream_proxy.HlsProducer"
+        ) as mock_producer_cls:
+            mock_producer_cls.return_value = MagicMock()
+            sp.prepare_stream("http://host/sdr-remux.mkv")
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    ctx = sp._server.stream_context
+    assert ctx["mode"] == "hls"
+    assert ctx["hls_segment_format"] == "fmp4"
+
+
+# ---------------------------------------------------------------------------
+# HlsProducer._build_cmd — fmp4 must emit -tag:v hvc1 for DV compatibility
+# ---------------------------------------------------------------------------
+
+
+def test_hls_producer_fmp4_cmd_emits_hvc1_tag():
+    """The fmp4 branch of _build_cmd must pass -tag:v hvc1 to ffmpeg.
+    HLS fmp4 spec requires the hvc1 sample entry for HEVC, and Amlogic's
+    HLS demuxer uses this tag to locate the dvcC/dvvC DV configuration
+    record in the init segment."""
+    from resources.lib.stream_proxy import HlsProducer
+
+    producer = HlsProducer.__new__(HlsProducer)
+    producer.ffmpeg_path = "/usr/bin/ffmpeg"
+    producer.remote_url = "http://host/movie.mkv"
+    producer.auth_header = None
+    producer.segment_format = "fmp4"
+    producer.segment_seconds = 30.0
+    producer.session_dir = "/tmp/nzbdav-hls/abc123"
+
+    cmd = producer._build_cmd(start_time=0.0, start_segment=0)
+    assert "-tag:v" in cmd
+    tag_idx = cmd.index("-tag:v")
+    assert cmd[tag_idx + 1] == "hvc1"
+
+
+def test_hls_producer_mpegts_cmd_omits_hvc1_tag():
+    """The mpegts branch does NOT pass -tag:v hvc1. The tag only makes
+    sense for fmp4; mpegts carries HEVC as raw NAL units and has no
+    sample entry."""
+    from resources.lib.stream_proxy import HlsProducer
+
+    producer = HlsProducer.__new__(HlsProducer)
+    producer.ffmpeg_path = "/usr/bin/ffmpeg"
+    producer.remote_url = "http://host/movie.mkv"
+    producer.auth_header = None
+    producer.segment_format = "mpegts"
+    producer.segment_seconds = 30.0
+    producer.session_dir = "/tmp/nzbdav-hls/abc123"
+
+    cmd = producer._build_cmd(start_time=0.0, start_segment=0)
+    assert "-tag:v" not in cmd
+
+
+# ---------------------------------------------------------------------------
 # StreamProxy.prepare_stream — duration probe for MP4
 # ---------------------------------------------------------------------------
 
@@ -624,6 +1229,36 @@ def test_probe_duration_prefers_ffprobe_when_available():
     assert "format=duration" in argv
 
 
+def test_probe_duration_ffprobe_uses_headers_for_auth():
+    import base64
+
+    from resources.lib.stream_proxy import StreamProxy
+
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate.return_value = (b"8552.576000\n", b"")
+    auth = "Basic " + base64.b64encode(b"user:pass").decode()
+
+    with patch(
+        "resources.lib.stream_proxy._find_ffprobe",
+        return_value="/usr/bin/ffprobe",
+    ), patch(
+        "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
+    ) as mock_popen:
+        duration = StreamProxy._probe_duration(
+            "/usr/bin/ffmpeg",
+            "http://host/shawshank.mkv",
+            auth,
+        )
+
+    assert duration == 8552.576
+    argv = mock_popen.call_args[0][0]
+    headers_idx = argv.index("-headers")
+    assert argv[headers_idx + 1] == "Authorization: {}\r\n".format(auth)
+    assert argv[-1] == "http://host/shawshank.mkv"
+    assert all("@host" not in part for part in argv)
+
+
 def test_probe_duration_ffprobe_returns_none_on_nonzero_exit():
     """A failing ffprobe (bad URL, auth failure, corrupt header) must return
     None so the caller can fall back to the ffmpeg-stderr path."""
@@ -688,6 +1323,70 @@ def test_probe_duration_ffmpeg_fallback_budget_handles_subtitle_wall():
         )
 
     assert duration == 2 * 3600 + 22 * 60 + 32.58
+
+
+def test_probe_duration_ffmpeg_fallback_uses_headers_for_auth():
+    import base64
+
+    from resources.lib.stream_proxy import StreamProxy
+
+    mock_proc = MagicMock()
+    mock_proc.stderr = iter([b"  Duration: 00:10:00.00, start: 0.000000\n"])
+    auth = "Basic " + base64.b64encode(b"user:pass").decode()
+
+    with patch(
+        "resources.lib.stream_proxy._find_ffprobe",
+        return_value=None,
+    ), patch(
+        "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
+    ) as mock_popen:
+        duration = StreamProxy._probe_duration(
+            "/usr/bin/ffmpeg",
+            "http://host/shawshank.mkv",
+            auth,
+        )
+
+    assert duration == 600.0
+    argv = mock_popen.call_args[0][0]
+    headers_idx = argv.index("-headers")
+    i_idx = argv.index("-i")
+    assert headers_idx < i_idx
+    assert argv[headers_idx + 1] == "Authorization: {}\r\n".format(auth)
+    assert argv[i_idx + 1] == "http://host/shawshank.mkv"
+    assert all("@host" not in part for part in argv)
+
+
+def test_prepare_tempfile_faststart_uses_headers_for_auth():
+    import base64
+    import os
+
+    from resources.lib.stream_proxy import StreamProxy
+
+    mock_proc = MagicMock()
+    mock_proc.communicate.return_value = (b"", b"")
+    mock_proc.returncode = 0
+    auth = "Basic " + base64.b64encode(b"user:pass").decode()
+
+    with patch(
+        "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
+    ) as mock_popen:
+        temp_path = StreamProxy._prepare_tempfile_faststart(
+            "/usr/bin/ffmpeg",
+            "http://host/film.mp4",
+            auth,
+        )
+
+    try:
+        argv = mock_popen.call_args[0][0]
+        headers_idx = argv.index("-headers")
+        i_idx = argv.index("-i")
+        assert headers_idx < i_idx
+        assert argv[headers_idx + 1] == "Authorization: {}\r\n".format(auth)
+        assert argv[i_idx + 1] == "http://host/film.mp4"
+        assert all("@host" not in part for part in argv)
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
 
 
 def test_prepare_stream_falls_back_to_non_seekable_on_probe_failure():
@@ -889,8 +1588,8 @@ def test_build_ffmpeg_cmd_no_seek_when_none():
     assert "-ss" not in cmd
 
 
-def test_build_ffmpeg_cmd_embeds_basic_auth():
-    """Basic auth header is embedded in the URL for ffmpeg."""
+def test_build_ffmpeg_cmd_passes_basic_auth_via_headers():
+    """Basic auth header must be passed via ffmpeg -headers, not URL userinfo."""
     import base64
 
     handler = _make_handler()
@@ -901,11 +1600,15 @@ def test_build_ffmpeg_cmd_embeds_basic_auth():
         "auth_header": auth,
     }
     cmd = handler._build_ffmpeg_cmd(ctx)
+    headers_idx = cmd.index("-headers")
     i_idx = cmd.index("-i")
-    assert "user:pass@host" in cmd[i_idx + 1]
+    assert headers_idx < i_idx
+    assert cmd[headers_idx + 1] == "Authorization: {}\r\n".format(auth)
+    assert cmd[i_idx + 1] == "http://host/film.mp4"
+    assert all("@host" not in part for part in cmd)
 
 
-def test_build_ffmpeg_cmd_encodes_reserved_auth_chars():
+def test_build_ffmpeg_cmd_keeps_url_clean_with_reserved_char_credentials():
     import base64
 
     handler = _make_handler()
@@ -916,8 +1619,11 @@ def test_build_ffmpeg_cmd_encodes_reserved_auth_chars():
         "auth_header": auth,
     }
     cmd = handler._build_ffmpeg_cmd(ctx)
+    headers_idx = cmd.index("-headers")
     i_idx = cmd.index("-i")
-    assert "user%40domain:pa%2Fss%3F%23word@host" in cmd[i_idx + 1]
+    assert cmd[headers_idx + 1] == "Authorization: {}\r\n".format(auth)
+    assert cmd[i_idx + 1] == "http://host/film.mp4"
+    assert all("@host" not in part for part in cmd)
 
 
 # ---------------------------------------------------------------------------
@@ -1102,6 +1808,20 @@ def test_clear_sessions_kills_all_ffmpegs():
     assert sp._server.stream_sessions == {}
 
 
+def test_prune_sessions_requires_context_lock_ownership():
+    """Debug guard: the locked helper must raise when called without the
+    proxy context lock held by the current thread."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_sessions = {}
+    sp._context_lock = threading.RLock()
+
+    with pytest.raises(AssertionError):
+        sp._prune_sessions_locked()
+
+
 # ---------------------------------------------------------------------------
 # HLS playlist / segment handlers
 # ---------------------------------------------------------------------------
@@ -1142,12 +1862,63 @@ def test_parse_hls_resource_playlist():
 
 
 def test_parse_hls_resource_segment():
+    """Regression (updated shape): a segment URL with the legacy
+    .ts extension parses to ('segment', N, 'ts')."""
     from resources.lib.stream_proxy import _StreamHandler
 
-    assert _StreamHandler._parse_hls_resource("/hls/abc/seg_42.ts") == (
-        "abc",
-        ("segment", 42),
-    )
+    result = _StreamHandler._parse_hls_resource("/hls/abc/seg_5.ts")
+    assert result == ("abc", ("segment", 5, "ts"))
+
+
+def test_parse_hls_resource_init_mp4_returns_init():
+    """/hls/<session>/init.mp4 parses to (session_id, 'init')."""
+    from resources.lib.stream_proxy import _StreamHandler
+
+    result = _StreamHandler._parse_hls_resource("/hls/abc123/init.mp4")
+    assert result == ("abc123", "init")
+
+
+def test_parse_hls_resource_segment_m4s_returns_extension():
+    """/hls/<s>/seg_5.m4s parses to (session_id, ('segment', 5, 'm4s'))."""
+    from resources.lib.stream_proxy import _StreamHandler
+
+    result = _StreamHandler._parse_hls_resource("/hls/abc123/seg_5.m4s")
+    assert result == ("abc123", ("segment", 5, "m4s"))
+
+
+def test_parse_hls_resource_segment_ts_returns_extension():
+    """/hls/<s>/seg_5.ts parses to (session_id, ('segment', 5, 'ts'))."""
+    from resources.lib.stream_proxy import _StreamHandler
+
+    result = _StreamHandler._parse_hls_resource("/hls/abc123/seg_5.ts")
+    assert result == ("abc123", ("segment", 5, "ts"))
+
+
+def test_parse_hls_resource_segment_padded_index_still_parses():
+    """Zero-padded segment indices still parse to the bare int plus
+    the extension — regression guard for the URL→int→disk path
+    lookup."""
+    from resources.lib.stream_proxy import _StreamHandler
+
+    result = _StreamHandler._parse_hls_resource("/hls/abc/seg_000005.ts")
+    assert result == ("abc", ("segment", 5, "ts"))
+
+
+def test_parse_hls_resource_rejects_wrong_init_filename():
+    """Anything other than exactly 'init.mp4' (e.g. 'not-init.mp4')
+    returns None."""
+    from resources.lib.stream_proxy import _StreamHandler
+
+    assert _StreamHandler._parse_hls_resource("/hls/abc/not-init.mp4") is None
+    assert _StreamHandler._parse_hls_resource("/hls/abc/init.ts") is None
+
+
+def test_parse_hls_resource_rejects_unknown_segment_extension():
+    """Unknown extensions on seg_ URIs return None."""
+    from resources.lib.stream_proxy import _StreamHandler
+
+    assert _StreamHandler._parse_hls_resource("/hls/abc/seg_5.mov") is None
+    assert _StreamHandler._parse_hls_resource("/hls/abc/seg_5.mp4") is None
 
 
 def test_parse_hls_resource_rejects_negative_segment():
@@ -1164,6 +1935,157 @@ def test_parse_hls_resource_rejects_malformed():
     assert _StreamHandler._parse_hls_resource("/hls/abc/unknown.txt") is None
     assert _StreamHandler._parse_hls_resource("/hls/abc/seg_abc.ts") is None
     assert _StreamHandler._parse_hls_resource("/stream/abc") is None
+
+
+def _make_hls_ctx_fmp4():
+    """Construct a minimal fmp4 HLS ctx with a MagicMock producer."""
+    return {
+        "mode": "hls",
+        "hls_segment_format": "fmp4",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_producer": MagicMock(),
+    }
+
+
+def _make_hls_ctx_mpegts():
+    """Construct a minimal mpegts HLS ctx with a MagicMock producer."""
+    return {
+        "mode": "hls",
+        "hls_segment_format": "mpegts",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_producer": MagicMock(),
+    }
+
+
+def _make_handler_for(path, ctx):
+    """Build a minimal _StreamHandler with an injected path and ctx.
+
+    Wires ``handler.server.stream_sessions`` so that
+    ``_get_stream_context`` resolves the ``/hls/<session_id>/...``
+    path back to ``ctx``. Assumes ``path`` is of the form
+    ``/hls/<session_id>/<resource>``.
+    """
+    from resources.lib.stream_proxy import _StreamHandler
+
+    handler = _StreamHandler.__new__(_StreamHandler)
+    handler.path = path
+    handler.server = MagicMock()
+    handler.server.stream_context = ctx
+    # Extract session id from /hls/<session>/... so _get_stream_context
+    # finds ctx in stream_sessions.
+    parts = path[len("/hls/") :].split("/", 1)
+    session_id = parts[0] if parts else "abc"
+    handler.server.stream_sessions = {session_id: ctx}
+    handler.headers = MagicMock()
+    handler.headers.get.return_value = None
+    handler.send_response = MagicMock()
+    handler.send_error = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
+    handler.wfile = MagicMock()
+    return handler
+
+
+def test_head_hls_init_returns_video_mp4():
+    """HEAD /hls/<s>/init.mp4 against an fmp4 ctx returns 200 +
+    Content-Type: video/mp4."""
+    handler = _make_handler_for("/hls/abc/init.mp4", _make_hls_ctx_fmp4())
+    handler.do_HEAD()
+    handler.send_response.assert_called_with(200)
+    ct_calls = [
+        call
+        for call in handler.send_header.call_args_list
+        if call.args[0] == "Content-Type"
+    ]
+    assert ct_calls
+    assert ct_calls[0].args[1] == "video/mp4"
+
+
+def test_head_hls_init_on_mpegts_ctx_returns_404():
+    """HEAD /hls/<s>/init.mp4 against an mpegts ctx is 404 (init is
+    only valid for fmp4 sessions)."""
+    handler = _make_handler_for("/hls/abc/init.mp4", _make_hls_ctx_mpegts())
+    handler.do_HEAD()
+    handler.send_error.assert_called_with(404)
+
+
+def test_head_hls_segment_fmp4_returns_video_mp4():
+    """HEAD /hls/<s>/seg_0.m4s against an fmp4 ctx returns video/mp4."""
+    handler = _make_handler_for("/hls/abc/seg_0.m4s", _make_hls_ctx_fmp4())
+    handler.do_HEAD()
+    handler.send_response.assert_called_with(200)
+    ct_calls = [
+        call
+        for call in handler.send_header.call_args_list
+        if call.args[0] == "Content-Type"
+    ]
+    assert ct_calls[0].args[1] == "video/mp4"
+
+
+def test_head_hls_segment_mpegts_returns_video_mp2t():
+    """Regression: HEAD /hls/<s>/seg_0.ts on an mpegts ctx returns
+    video/mp2t."""
+    handler = _make_handler_for("/hls/abc/seg_0.ts", _make_hls_ctx_mpegts())
+    handler.do_HEAD()
+    handler.send_response.assert_called_with(200)
+    ct_calls = [
+        call
+        for call in handler.send_header.call_args_list
+        if call.args[0] == "Content-Type"
+    ]
+    assert ct_calls[0].args[1] == "video/mp2t"
+
+
+def test_head_hls_ts_segment_on_fmp4_ctx_returns_404():
+    """Strict rejection: .ts URL on fmp4 session is 404."""
+    handler = _make_handler_for("/hls/abc/seg_0.ts", _make_hls_ctx_fmp4())
+    handler.do_HEAD()
+    handler.send_error.assert_called_with(404)
+
+
+def test_head_hls_m4s_segment_on_mpegts_ctx_returns_404():
+    """Strict rejection: .m4s URL on mpegts session is 404."""
+    handler = _make_handler_for("/hls/abc/seg_0.m4s", _make_hls_ctx_mpegts())
+    handler.do_HEAD()
+    handler.send_error.assert_called_with(404)
+
+
+def test_do_get_hls_init_on_mpegts_ctx_returns_404():
+    """GET /hls/<s>/init.mp4 on mpegts ctx is 404."""
+    handler = _make_handler_for("/hls/abc/init.mp4", _make_hls_ctx_mpegts())
+    handler.do_GET()
+    handler.send_error.assert_called_with(404)
+
+
+def test_do_get_hls_ts_segment_on_fmp4_ctx_returns_404():
+    """GET /hls/<s>/seg_0.ts on fmp4 ctx is 404."""
+    handler = _make_handler_for("/hls/abc/seg_0.ts", _make_hls_ctx_fmp4())
+    # Patch out serve methods so a stray dispatch would be visible
+    handler._serve_hls_playlist = MagicMock()
+    handler._serve_hls_segment = MagicMock()
+    handler.do_GET()
+    handler.send_error.assert_called_with(404)
+    handler._serve_hls_segment.assert_not_called()
+
+
+def test_do_get_hls_m4s_segment_on_mpegts_ctx_returns_404():
+    """GET /hls/<s>/seg_0.m4s on mpegts ctx is 404."""
+    handler = _make_handler_for("/hls/abc/seg_0.m4s", _make_hls_ctx_mpegts())
+    handler._serve_hls_segment = MagicMock()
+    handler.do_GET()
+    handler.send_error.assert_called_with(404)
+    handler._serve_hls_segment.assert_not_called()
+
+
+def test_do_get_hls_routes_init_to_serve_hls_init():
+    """GET /hls/<s>/init.mp4 on fmp4 ctx dispatches to
+    _serve_hls_init (added in Task 11)."""
+    handler = _make_handler_for("/hls/abc/init.mp4", _make_hls_ctx_fmp4())
+    handler._serve_hls_init = MagicMock()
+    handler.do_GET()
+    handler._serve_hls_init.assert_called_once()
 
 
 def test_serve_hls_playlist_shape():
@@ -1215,6 +2137,161 @@ def test_serve_hls_playlist_shape():
     # Sum of EXTINF values ≈ duration (allowing floating-point slop).
     durations = [float(line[len("#EXTINF:") : -1]) for line in extinf_lines]
     assert abs(sum(durations) - 8552.576) < 0.001
+
+
+def test_serve_hls_playlist_fmp4_version_is_7():
+    """fmp4 ctx emits #EXT-X-VERSION:7."""
+    from resources.lib.stream_proxy import _StreamHandler
+
+    ctx = {
+        "hls_segment_format": "fmp4",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+    }
+
+    handler = _StreamHandler.__new__(_StreamHandler)
+    handler.send_response = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
+    handler.wfile = MagicMock()
+    handler.send_error = MagicMock()
+
+    captured = []
+    handler.wfile.write.side_effect = lambda b: captured.append(b)
+
+    handler._serve_hls_playlist(ctx)
+
+    body = b"".join(captured).decode("utf-8")
+    assert "#EXT-X-VERSION:7" in body
+
+
+def test_serve_hls_playlist_fmp4_contains_ext_x_map():
+    """fmp4 ctx emits #EXT-X-MAP:URI='init.mp4'."""
+    from resources.lib.stream_proxy import _StreamHandler
+
+    ctx = {
+        "hls_segment_format": "fmp4",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+    }
+
+    handler = _StreamHandler.__new__(_StreamHandler)
+    handler.send_response = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
+    handler.wfile = MagicMock()
+    handler.send_error = MagicMock()
+
+    captured = []
+    handler.wfile.write.side_effect = lambda b: captured.append(b)
+
+    handler._serve_hls_playlist(ctx)
+    body = b"".join(captured).decode("utf-8")
+    assert '#EXT-X-MAP:URI="init.mp4"' in body
+
+
+def test_serve_hls_playlist_fmp4_uses_m4s_extension():
+    """fmp4 ctx segment URIs end in .m4s."""
+    from resources.lib.stream_proxy import _StreamHandler
+
+    ctx = {
+        "hls_segment_format": "fmp4",
+        "duration_seconds": 60.0,
+        "hls_segment_duration": 30.0,
+    }
+
+    handler = _StreamHandler.__new__(_StreamHandler)
+    handler.send_response = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
+    handler.wfile = MagicMock()
+    handler.send_error = MagicMock()
+
+    captured = []
+    handler.wfile.write.side_effect = lambda b: captured.append(b)
+
+    handler._serve_hls_playlist(ctx)
+    body = b"".join(captured).decode("utf-8")
+    assert "seg_0.m4s" in body
+    assert "seg_1.m4s" in body
+    assert ".ts" not in body
+
+
+def test_serve_hls_playlist_mpegts_version_is_still_3():
+    """mpegts ctx still emits #EXT-X-VERSION:3 (no changes)."""
+    from resources.lib.stream_proxy import _StreamHandler
+
+    ctx = {
+        "hls_segment_format": "mpegts",
+        "duration_seconds": 60.0,
+        "hls_segment_duration": 30.0,
+    }
+
+    handler = _StreamHandler.__new__(_StreamHandler)
+    handler.send_response = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
+    handler.wfile = MagicMock()
+    handler.send_error = MagicMock()
+
+    captured = []
+    handler.wfile.write.side_effect = lambda b: captured.append(b)
+
+    handler._serve_hls_playlist(ctx)
+    body = b"".join(captured).decode("utf-8")
+    assert "#EXT-X-VERSION:3" in body
+    assert "#EXT-X-VERSION:7" not in body
+
+
+def test_serve_hls_playlist_mpegts_no_ext_x_map():
+    """mpegts ctx must NOT emit #EXT-X-MAP."""
+    from resources.lib.stream_proxy import _StreamHandler
+
+    ctx = {
+        "hls_segment_format": "mpegts",
+        "duration_seconds": 60.0,
+        "hls_segment_duration": 30.0,
+    }
+
+    handler = _StreamHandler.__new__(_StreamHandler)
+    handler.send_response = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
+    handler.wfile = MagicMock()
+    handler.send_error = MagicMock()
+
+    captured = []
+    handler.wfile.write.side_effect = lambda b: captured.append(b)
+
+    handler._serve_hls_playlist(ctx)
+    body = b"".join(captured).decode("utf-8")
+    assert "#EXT-X-MAP" not in body
+
+
+def test_serve_hls_playlist_mpegts_uses_ts_extension():
+    """Regression: mpegts segment URIs still end in .ts."""
+    from resources.lib.stream_proxy import _StreamHandler
+
+    ctx = {
+        "hls_segment_format": "mpegts",
+        "duration_seconds": 60.0,
+        "hls_segment_duration": 30.0,
+    }
+
+    handler = _StreamHandler.__new__(_StreamHandler)
+    handler.send_response = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
+    handler.wfile = MagicMock()
+    handler.send_error = MagicMock()
+
+    captured = []
+    handler.wfile.write.side_effect = lambda b: captured.append(b)
+
+    handler._serve_hls_playlist(ctx)
+    body = b"".join(captured).decode("utf-8")
+    assert "seg_0.ts" in body
+    assert ".m4s" not in body
 
 
 def test_serve_hls_segment_reads_from_producer_file(tmp_path):
@@ -1277,6 +2354,170 @@ def test_serve_hls_segment_504_on_producer_timeout():
     handler._serve_hls_segment(ctx, 100)
 
     handler.send_error.assert_called_once_with(504)
+
+
+def test_serve_hls_init_serves_canonical_cached_bytes(tmp_path):
+    """_serve_hls_init serves the producer's canonical init bytes
+    cache — NOT the bytes currently on disk. On a seek respawn ffmpeg
+    rewrites init.mp4 with a different edit list; the canonical cache
+    guarantees every Kodi fetch returns the first generation's init
+    so the cached init stays compatible with later segments."""
+    import os as _os
+
+    from resources.lib.stream_proxy import _StreamHandler
+
+    init_path = _os.path.join(str(tmp_path), "init.mp4")
+    # Write STALE bytes to disk to prove the handler doesn't read them.
+    with open(init_path, "wb") as f:
+        f.write(b"STALE_DISK_BYTES")
+
+    producer = MagicMock()
+    producer.wait_for_init.return_value = init_path
+    producer._canonical_init_bytes = b"CANONICAL"
+    ctx = {
+        "hls_segment_format": "fmp4",
+        "hls_producer": producer,
+    }
+
+    handler = _StreamHandler.__new__(_StreamHandler)
+    handler.send_response = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
+    handler.wfile = MagicMock()
+    handler.send_error = MagicMock()
+
+    handler._serve_hls_init(ctx)
+
+    handler.send_response.assert_called_with(200)
+    ct_calls = [
+        call
+        for call in handler.send_header.call_args_list
+        if call.args[0] == "Content-Type"
+    ]
+    assert ct_calls[0].args[1] == "video/mp4"
+    cl_calls = [
+        call
+        for call in handler.send_header.call_args_list
+        if call.args[0] == "Content-Length"
+    ]
+    assert cl_calls[0].args[1] == str(len(b"CANONICAL"))
+    handler.wfile.write.assert_called_with(b"CANONICAL")
+
+
+def test_serve_hls_init_falls_back_to_disk_when_cache_missing(tmp_path):
+    """If the canonical cache hasn't been populated yet (very early
+    fetch before wait_for_init has actually observed a complete init),
+    the handler falls back to reading the on-disk init file. This is
+    a defensive path — in practice wait_for_init populates the cache
+    before returning a path, so the handler should always hit the
+    cache. Regression guard for the legacy behavior just in case."""
+    import os as _os
+
+    from resources.lib.stream_proxy import _StreamHandler
+
+    init_path = _os.path.join(str(tmp_path), "init.mp4")
+    with open(init_path, "wb") as f:
+        f.write(b"DISK_BYTES")
+
+    producer = MagicMock()
+    producer.wait_for_init.return_value = init_path
+    producer._canonical_init_bytes = None  # cache empty
+    ctx = {
+        "hls_segment_format": "fmp4",
+        "hls_producer": producer,
+    }
+
+    handler = _StreamHandler.__new__(_StreamHandler)
+    handler.send_response = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
+    handler.wfile = MagicMock()
+    handler.send_error = MagicMock()
+
+    handler._serve_hls_init(ctx)
+
+    handler.send_response.assert_called_with(200)
+    handler.wfile.write.assert_called_with(b"DISK_BYTES")
+
+
+def test_serve_hls_init_504_on_producer_timeout():
+    """If wait_for_init returns None (timeout), the handler sends 504."""
+    from resources.lib.stream_proxy import _StreamHandler
+
+    producer = MagicMock()
+    producer.wait_for_init.return_value = None
+    ctx = {
+        "hls_segment_format": "fmp4",
+        "hls_producer": producer,
+    }
+
+    handler = _StreamHandler.__new__(_StreamHandler)
+    handler.send_response = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
+    handler.wfile = MagicMock()
+    handler.send_error = MagicMock()
+
+    handler._serve_hls_init(ctx)
+    handler.send_error.assert_called_with(504)
+
+
+def test_serve_hls_init_500_when_producer_missing():
+    """If ctx has no hls_producer, handler sends 500."""
+    from resources.lib.stream_proxy import _StreamHandler
+
+    ctx = {"hls_segment_format": "fmp4"}  # no producer
+
+    handler = _StreamHandler.__new__(_StreamHandler)
+    handler.send_response = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
+    handler.wfile = MagicMock()
+    handler.send_error = MagicMock()
+
+    handler._serve_hls_init(ctx)
+    handler.send_error.assert_called_with(500)
+
+
+def test_serve_hls_segment_fmp4_ctx_uses_video_mp4_content_type(tmp_path):
+    """Regression guard: when ctx is fmp4, _serve_hls_segment must
+    set Content-Type: video/mp4 (NOT the legacy mpegts video/mp2t).
+    Without this, HEAD and GET would disagree on Content-Type for
+    fmp4 segments — flagged by the code reviewer of Tasks 9+10."""
+    import os as _os
+
+    from resources.lib.stream_proxy import _StreamHandler
+
+    seg_path = _os.path.join(str(tmp_path), "seg_000000.m4s")
+    with open(seg_path, "wb") as f:
+        f.write(b"FAKESEG")
+
+    producer = MagicMock()
+    producer.wait_for_segment.return_value = seg_path
+    producer.segment_path.return_value = seg_path
+    ctx = {
+        "hls_segment_format": "fmp4",
+        "hls_producer": producer,
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+    }
+
+    handler = _StreamHandler.__new__(_StreamHandler)
+    handler.send_response = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
+    handler.wfile = MagicMock()
+    handler.send_error = MagicMock()
+
+    handler._serve_hls_segment(ctx, 0)
+
+    ct_calls = [
+        call
+        for call in handler.send_header.call_args_list
+        if call.args[0] == "Content-Type"
+    ]
+    assert ct_calls, "Content-Type header was not set"
+    assert ct_calls[0].args[1] == "video/mp4"
 
 
 def test_build_hls_segment_cmd_includes_cold_start_flags():
@@ -1366,22 +2607,48 @@ def test_build_hls_segment_cmd_drops_subtitles():
     assert "-c:s" not in cmd
 
 
-def test_hls_segment_seconds_is_at_least_30():
-    """The segment duration must be large enough to hide ffmpeg's
-    cold-start time on the next segment.
+def test_build_hls_segment_cmd_passes_basic_auth_via_headers():
+    import base64
 
-    On the CoreELEC test box, each segment spawns a fresh ffmpeg
-    that takes ~10-15 s to open the remote 58 GB MKV, parse the
-    container, seek to the requested keyframe, and start emitting
-    MPEG-TS packets. If segment duration is shorter than cold
-    start, Kodi runs out of buffered data before the next segment
-    is ready, and playback caches continuously. 30 s gives Kodi
-    comfortable headroom. Regression test for the ``constant
-    caching`` report during Shawshank playback.
+    from resources.lib.stream_proxy import _StreamHandler
+
+    auth = "Basic " + base64.b64encode(b"user:pass").decode()
+    ctx = {
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": auth,
+    }
+    cmd = _StreamHandler._build_hls_segment_cmd(ctx, 100.0, 10.0)
+    headers_idx = cmd.index("-headers")
+    i_idx = cmd.index("-i")
+    assert headers_idx < i_idx
+    assert cmd[headers_idx + 1] == "Authorization: {}\r\n".format(auth)
+    assert cmd[i_idx + 1] == "http://host/film.mkv"
+    assert all("@host" not in part for part in cmd)
+
+
+def test_hls_segment_seconds_is_in_reasonable_range():
+    """Segment duration must match the HlsProducer architecture.
+
+    The ORIGINAL rationale for a 30 s minimum was that each segment
+    spawned a fresh ffmpeg with a 10-15 s cold-start cost to open
+    the remote huge MKV. That rationale is obsolete: HlsProducer
+    now runs ONE long-lived ffmpeg per session and writes segments
+    continuously, so cold-start is paid once per session (and once
+    more per seek respawn), not per segment.
+
+    The NEW constraint is on the other end: segments must be long
+    enough to contain at least one IDR (so ``-hls_time`` alignment
+    works), and short enough that the playlist's fixed-duration
+    EXTINF approximation of the real ffmpeg output doesn't drift
+    into visible seek misses or A/V desync. 6 s is the CMAF /
+    Apple HLS author guide default and matches typical UHD REMUX
+    GOP lengths. Anything under ~2 s is a bug; anything over
+    ~30 s reintroduces the drift problem.
     """
     from resources.lib.stream_proxy import _HLS_SEGMENT_SECONDS
 
-    assert _HLS_SEGMENT_SECONDS >= 30.0
+    assert 2.0 <= _HLS_SEGMENT_SECONDS <= 30.0
 
 
 def test_serve_hls_segment_out_of_range_404s():
@@ -1531,6 +2798,136 @@ def test_hls_producer_cmd_has_no_reset_timestamps(tmp_path):
     assert "-copyts" in cmd
 
 
+def test_hls_producer_fmp4_build_cmd_contains_hls_segment_type(tmp_path):
+    """fmp4 branch emits -f hls + -hls_segment_type fmp4 +
+    -hls_fmp4_init_filename, and has NO -f segment."""
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        cmd = producer._build_cmd(start_time=0.0, start_segment=0)
+        assert "-f" in cmd
+        hls_idx = cmd.index("-f")
+        assert cmd[hls_idx + 1] == "hls"
+        assert "-hls_segment_type" in cmd
+        seg_type_idx = cmd.index("-hls_segment_type")
+        assert cmd[seg_type_idx + 1] == "fmp4"
+        assert "-hls_fmp4_init_filename" in cmd
+        assert "-hls_playlist_type" in cmd
+        # Must NOT have the mpegts segment muxer
+        assert "segment" not in [
+            cmd[cmd.index("-f") + 1],
+        ]
+        assert "-segment_format" not in cmd
+    finally:
+        producer.close()
+
+
+def test_hls_producer_fmp4_build_cmd_uses_padded_filename_pattern(tmp_path):
+    """fmp4 hls_segment_filename uses the zero-padded seg_%06d.m4s
+    pattern to match the mpegts branch and keep parser lookups
+    consistent."""
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        cmd = producer._build_cmd(start_time=0.0, start_segment=0)
+        filename_idx = cmd.index("-hls_segment_filename")
+        seg_pattern = cmd[filename_idx + 1]
+        assert seg_pattern.endswith("seg_%06d.m4s")
+    finally:
+        producer.close()
+
+
+def test_hls_producer_fmp4_build_cmd_drops_subtitles(tmp_path):
+    """fmp4 branch uses -sn (subtitles dropped) — documented Non-Goal
+    regression guard."""
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        cmd = producer._build_cmd(start_time=0.0, start_segment=0)
+        assert "-sn" in cmd
+        assert "-c:s" not in cmd
+    finally:
+        producer.close()
+
+
+def test_hls_producer_mpegts_build_cmd_unchanged(tmp_path):
+    """Regression guard: mpegts branch still contains -f segment and
+    -segment_format mpegts (it's what existing linear-playback tests
+    assume)."""
+    producer = _make_producer(tmp_path)  # defaults to mpegts
+    try:
+        cmd = producer._build_cmd(start_time=0.0, start_segment=0)
+        assert "-f" in cmd
+        f_idx = cmd.index("-f")
+        assert cmd[f_idx + 1] == "segment"
+        assert "-segment_format" in cmd
+        fmt_idx = cmd.index("-segment_format")
+        assert cmd[fmt_idx + 1] == "mpegts"
+        # Must NOT have the fmp4 flags
+        assert "-hls_segment_type" not in cmd
+        assert "-hls_fmp4_init_filename" not in cmd
+    finally:
+        producer.close()
+
+
+def test_hls_producer_fmp4_segment_files_use_m4s_extension(tmp_path):
+    """segment_path(N) returns .m4s for fmp4 producers, .ts for mpegts."""
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx_fmp4 = {
+        "session_id": "sess_fmp4",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer_fmp4 = HlsProducer(ctx_fmp4, str(tmp_path))
+    try:
+        path = producer_fmp4.segment_path(5)
+        assert path.endswith("seg_000005.m4s")
+    finally:
+        producer_fmp4.close()
+
+    producer_ts = _make_producer(tmp_path)  # defaults to mpegts
+    try:
+        path = producer_ts.segment_path(5)
+        assert path.endswith("seg_000005.ts")
+    finally:
+        producer_ts.close()
+
+
 def test_hls_producer_starts_ffmpeg_when_no_file_exists(tmp_path):
     """If the requested segment doesn't exist on disk and no ffmpeg
     is running, the producer must spawn ffmpeg with -ss at the
@@ -1610,6 +3007,203 @@ def test_hls_producer_does_not_restart_on_small_forward_seek(tmp_path):
     alive_proc.kill.assert_not_called()
 
 
+def test_hls_producer_preserves_init_across_respawn(tmp_path):
+    """_ensure_ffmpeg_headed_for in fmp4 mode must NOT unlink
+    init.mp4 on respawn. The canonical init bytes cache in the
+    producer has already committed to serving the first generation's
+    init to every Kodi fetch, so whatever ffmpeg writes to the disk
+    file on subsequent generations is irrelevant. Unlinking would
+    just race the on-disk overwrite and momentarily fail the
+    _init_file_complete check for no gain. Regression guard for
+    the rewrite that added the canonical cache."""
+    import os as _os
+
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        init_path = _os.path.join(producer.session_dir, "init.mp4")
+        with open(init_path, "wb") as f:
+            f.write(b"GEN_0_INIT")
+
+        init_existed_at_spawn = {"value": None}
+        init_bytes_at_spawn = {"value": None}
+
+        def spy_popen(*args, **kwargs):
+            init_existed_at_spawn["value"] = _os.path.exists(init_path)
+            if init_existed_at_spawn["value"]:
+                with open(init_path, "rb") as f:
+                    init_bytes_at_spawn["value"] = f.read()
+            proc = MagicMock()
+            proc.poll.return_value = None
+            return proc
+
+        with patch(
+            "resources.lib.stream_proxy.subprocess.Popen",
+            side_effect=spy_popen,
+        ):
+            producer._ensure_ffmpeg_headed_for(40)
+
+        assert init_existed_at_spawn["value"] is True
+        assert init_bytes_at_spawn["value"] == b"GEN_0_INIT"
+    finally:
+        producer.close()
+
+
+def test_hls_producer_segment_complete_rejects_stale_prior_generation_segment(
+    tmp_path,
+):
+    """_segment_complete in fmp4 mode must NOT return True for a
+    segment file whose mtime predates the current ffmpeg generation's
+    spawn time, even if the mtime-stability fallback is satisfied.
+
+    Regression for H1 from the branch review: a backward seek can
+    leave a stale ``seg_n.m4s`` from a prior generation on disk
+    (mtime far in the past). The mtime-stability path's
+    ``(now - mtime) > 500ms`` check is trivially true for such a
+    file, and without the generation guard ``_segment_complete``
+    would return True. Kodi would then read that stale segment
+    against the canonical (current-generation) init.mp4 — different
+    edit list / timestamp base, decoder glitch or stall.
+    """
+    import os as _os
+    import time as _time
+
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess-stale",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 6.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        # Simulate a stale segment from a prior generation: write
+        # the file and backdate it well before the current spawn.
+        seg_path = producer.segment_path(40)
+        with open(seg_path, "wb") as f:
+            f.write(b"STALE_GEN_BYTES")
+        ancient_mtime = _time.time() - 3600  # 1 hour ago
+        _os.utime(seg_path, (ancient_mtime, ancient_mtime))
+        # Pretend ffmpeg respawned just now, AFTER the stale file
+        # was written. The current generation has not produced
+        # seg_40 yet.
+        producer._spawn_time = _time.time()
+
+        # _segment_complete(40) must return False — the stale file
+        # belongs to a prior generation and must not be served.
+        assert producer._segment_complete(40) is False
+
+        # Sanity check: a freshly-written file that postdates
+        # spawn_time should be considered complete via the mtime
+        # fallback once it's been stable.
+        with open(seg_path, "wb") as f:
+            f.write(b"NEW_GEN_BYTES")
+        # mtime is now — but we need it stable for 500 ms to trip
+        # the fallback. Backdate to spawn_time + small offset so
+        # mtime > spawn_time AND (now - mtime) > 500 ms.
+        fresh_mtime = producer._spawn_time + 0.001
+        _os.utime(seg_path, (fresh_mtime, fresh_mtime))
+        # Sleep just past the stable window.
+        _time.sleep(0.6)
+        assert producer._segment_complete(40) is True
+    finally:
+        producer.close()
+
+
+def test_hls_producer_unlinks_new_target_segment_before_respawn(tmp_path):
+    """_ensure_ffmpeg_headed_for in fmp4 mode unlinks
+    seg_<new_target>.m4s before Popen. OTHER stale segments at
+    different indices must still be present (regression guard for
+    the backward-seek cache)."""
+    import os as _os
+
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        target_path = _os.path.join(producer.session_dir, "seg_000040.m4s")
+        other_path = _os.path.join(producer.session_dir, "seg_000005.m4s")
+        with open(target_path, "wb") as f:
+            f.write(b"STALE TARGET")
+        with open(other_path, "wb") as f:
+            f.write(b"STALE OTHER")
+
+        target_existed_at_spawn = {"value": None}
+        other_existed_at_spawn = {"value": None}
+
+        def spy_popen(*args, **kwargs):
+            target_existed_at_spawn["value"] = _os.path.exists(target_path)
+            other_existed_at_spawn["value"] = _os.path.exists(other_path)
+            proc = MagicMock()
+            proc.poll.return_value = None
+            return proc
+
+        with patch(
+            "resources.lib.stream_proxy.subprocess.Popen",
+            side_effect=spy_popen,
+        ):
+            producer._ensure_ffmpeg_headed_for(40)
+
+        assert target_existed_at_spawn["value"] is False
+        assert other_existed_at_spawn["value"] is True
+    finally:
+        producer.close()
+
+
+def test_hls_producer_unlink_does_not_run_for_mpegts_branch(tmp_path):
+    """Regression guard: mpegts branch does NOT unlink anything
+    before spawn (preserves existing behavior)."""
+    import os as _os
+
+    producer = _make_producer(tmp_path)  # defaults to mpegts
+    try:
+        stale_path = _os.path.join(producer.session_dir, "seg_000040.ts")
+        with open(stale_path, "wb") as f:
+            f.write(b"STALE")
+
+        stale_existed_at_spawn = {"value": None}
+
+        def spy_popen(*args, **kwargs):
+            stale_existed_at_spawn["value"] = _os.path.exists(stale_path)
+            proc = MagicMock()
+            proc.poll.return_value = None
+            return proc
+
+        with patch(
+            "resources.lib.stream_proxy.subprocess.Popen",
+            side_effect=spy_popen,
+        ):
+            producer._ensure_ffmpeg_headed_for(40)
+
+        # mpegts branch must leave the stale file alone
+        assert stale_existed_at_spawn["value"] is True
+    finally:
+        producer.close()
+
+
 def test_hls_producer_close_kills_ffmpeg_and_removes_dir(tmp_path):
     """close() must kill ffmpeg and delete the session directory."""
     producer = _make_producer(tmp_path)
@@ -1629,6 +3223,726 @@ def test_hls_producer_close_kills_ffmpeg_and_removes_dir(tmp_path):
 
     alive_proc.kill.assert_called_once()
     assert not _os.path.exists(seg_dir)
+
+
+def test_hls_producer_opens_ffmpeg_log_in_init(tmp_path):
+    """HlsProducer.__init__ opens session_dir/ffmpeg.log for append
+    writes and stores it on self._ffmpeg_log."""
+    import os as _os
+
+    producer = _make_producer(tmp_path)
+    log_path = _os.path.join(producer.session_dir, "ffmpeg.log")
+    assert _os.path.exists(log_path)
+    assert hasattr(producer, "_ffmpeg_log")
+    assert not producer._ffmpeg_log.closed
+    producer.close()
+
+
+def test_hls_producer_init_ready_initialized_to_false(tmp_path):
+    """Fresh producer has _init_ready=False without any spawn.
+    Regression guard for AttributeError if _init_ready were only
+    assigned in the spawn path."""
+    producer = _make_producer(tmp_path)
+    assert hasattr(producer, "_init_ready")
+    assert producer._init_ready is False
+    producer.close()
+
+
+def test_hls_producer_defaults_segment_format_to_mpegts(tmp_path):
+    """When ctx does not set hls_segment_format, the producer defaults
+    to mpegts so existing callers keep their behavior."""
+    producer = _make_producer(tmp_path)
+    assert producer.segment_format == "mpegts"
+    producer.close()
+
+
+def test_hls_producer_reads_fmp4_segment_format_from_ctx(tmp_path):
+    """When ctx sets hls_segment_format=fmp4, the producer stores it."""
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    assert producer.segment_format == "fmp4"
+    producer.close()
+
+
+def test_hls_producer_close_closes_ffmpeg_log(tmp_path):
+    """close() closes the session-wide ffmpeg.log file handle."""
+    producer = _make_producer(tmp_path)
+    log_handle = producer._ffmpeg_log
+    producer.close()
+    assert log_handle.closed
+
+
+def test_hls_producer_spawns_ffmpeg_with_session_log_as_stderr(tmp_path):
+    """_ensure_ffmpeg_headed_for spawns ffmpeg with stderr=the
+    session-wide log handle, not subprocess.PIPE. Regression guard
+    for the deadlock bug."""
+    producer = _make_producer(tmp_path, duration=600.0, seg_dur=30.0)
+
+    mock_proc = MagicMock()
+    mock_proc.poll.return_value = None
+
+    with patch(
+        "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
+    ) as mock_popen:
+        producer._ensure_ffmpeg_headed_for(0)
+
+    assert mock_popen.called
+    _, kwargs = mock_popen.call_args
+    import subprocess as _sp
+
+    assert kwargs.get("stderr") is producer._ffmpeg_log
+    assert kwargs.get("stderr") is not _sp.PIPE
+    producer.close()
+
+
+def test_hls_producer_reuses_same_log_handle_across_restarts(tmp_path):
+    """Both ffmpeg spawns across a kill-and-restart receive the
+    same stderr object identity. Regression guard for the
+    file-descriptor leak."""
+    producer = _make_producer(tmp_path, duration=600.0, seg_dur=30.0)
+
+    spawn1_proc = MagicMock()
+    spawn1_proc.poll.return_value = None
+    spawn2_proc = MagicMock()
+    spawn2_proc.poll.return_value = None
+
+    with patch(
+        "resources.lib.stream_proxy.subprocess.Popen",
+        side_effect=[spawn1_proc, spawn2_proc],
+    ) as mock_popen:
+        producer._ensure_ffmpeg_headed_for(0)
+        # Now force a far-forward seek (triggers restart because
+        # 100 - 0 > 60).
+        producer._ensure_ffmpeg_headed_for(100)
+
+    assert mock_popen.call_count == 2
+    stderr1 = mock_popen.call_args_list[0].kwargs["stderr"]
+    stderr2 = mock_popen.call_args_list[1].kwargs["stderr"]
+    assert stderr1 is stderr2
+    assert stderr1 is producer._ffmpeg_log
+    producer.close()
+
+
+def test_hls_producer_concurrent_seek_respawn_starts_single_ffmpeg(tmp_path):
+    """Two simultaneous seek-driven respawn requests must not start two
+    ffmpeg processes for the same target segment."""
+    import time as _time
+
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        dead_proc = MagicMock()
+        dead_proc.poll.return_value = 1
+        producer._proc = dead_proc
+        producer._start_segment = 80
+
+        live_proc = MagicMock()
+        live_proc.poll.return_value = None
+        popen_calls = []
+
+        def fake_popen(*args, **kwargs):
+            popen_calls.append(args[0])
+            _time.sleep(0.05)
+            return live_proc
+
+        threads = [
+            threading.Thread(target=producer._ensure_ffmpeg_headed_for, args=(10,))
+            for _ in range(2)
+        ]
+        with patch(
+            "resources.lib.stream_proxy.subprocess.Popen",
+            side_effect=fake_popen,
+        ):
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+        assert len(popen_calls) == 1
+        assert producer._start_segment == 10
+    finally:
+        producer._proc = None
+        producer.close()
+
+
+def test_hls_producer_prepare_is_noop_for_mpegts(tmp_path):
+    """mpegts producers stay lazy — prepare() does not spawn."""
+    producer = _make_producer(tmp_path)  # defaults to mpegts
+    try:
+        with patch("resources.lib.stream_proxy.subprocess.Popen") as mock_popen:
+            producer.prepare()
+        assert not mock_popen.called
+    finally:
+        producer.close()
+
+
+def test_hls_producer_prepare_returns_when_init_and_first_segment_appear(
+    tmp_path,
+):
+    """fmp4 producer; Popen returns a mock whose poll() returns None
+    (alive). prepare() must wait for init.mp4 + seg_000000.m4s on
+    disk before returning. We simulate ffmpeg's output by writing
+    those files mid-prepare via a side-effect on Popen."""
+    import os as _os
+    import threading as _threading
+
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+
+        def write_files_after_delay():
+            # Drop the files into the session dir 100 ms after Popen
+            # to simulate ffmpeg producing its first output.
+            import time as _time
+
+            _time.sleep(0.1)
+            with open(_os.path.join(producer.session_dir, "init.mp4"), "wb") as f:
+                f.write(b"INIT")
+            with open(_os.path.join(producer.session_dir, "seg_000000.m4s"), "wb") as f:
+                f.write(b"SEG0")
+
+        def spy_popen(*args, **kwargs):
+            _threading.Thread(target=write_files_after_delay, daemon=True).start()
+            return mock_proc
+
+        with patch(
+            "resources.lib.stream_proxy.subprocess.Popen",
+            side_effect=spy_popen,
+        ):
+            producer.prepare()  # must not raise
+    finally:
+        producer.close()
+
+
+def test_hls_producer_prepare_raises_if_no_output_within_deadline(tmp_path):
+    """fmp4 producer; Popen returns an alive mock but no files ever
+    appear on disk. prepare() must raise after the production
+    deadline so _register_session falls back to matroska. This is
+    the runtime safety net for ffmpeg/source combos that spawn
+    cleanly but never produce output (analysis hang, slow
+    upstream, etc)."""
+    import pytest
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    # Shrink the deadline for the test so we don't sit for 30 s.
+    producer._PREPARE_PRODUCTION_TIMEOUT_SECONDS = 0.5
+    try:
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        with patch(
+            "resources.lib.stream_proxy.subprocess.Popen",
+            return_value=mock_proc,
+        ):
+            with pytest.raises(RuntimeError, match="did not produce"):
+                producer.prepare()
+    finally:
+        producer.close()
+
+
+def test_hls_producer_prepare_raises_if_ffmpeg_dies_during_production_wait(
+    tmp_path,
+):
+    """fmp4 producer; ffmpeg starts alive but exits non-zero before
+    producing init.mp4. prepare() must raise immediately on the
+    next poll cycle, not wait for the full 30 s production
+    deadline."""
+    import pytest
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        mock_proc = MagicMock()
+        # First few poll() calls return None (alive — passes the
+        # 500 ms argv-rejection window). Then return 1 (exited).
+        mock_proc.poll.side_effect = [None] * 12 + [1] * 100  # ~600 ms alive, then exit
+        with patch(
+            "resources.lib.stream_proxy.subprocess.Popen",
+            return_value=mock_proc,
+        ):
+            with pytest.raises(RuntimeError, match="exited with code"):
+                producer.prepare()
+    finally:
+        producer.close()
+
+
+def test_hls_producer_prepare_raises_when_ffmpeg_exits_immediately(tmp_path):
+    """fmp4 producer; Popen returns a mock whose poll() returns 1
+    (exited). prepare() raises RuntimeError mentioning the exit code."""
+    import pytest
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 1  # exited with non-zero
+        with patch(
+            "resources.lib.stream_proxy.subprocess.Popen",
+            return_value=mock_proc,
+        ):
+            with pytest.raises(RuntimeError, match="1"):
+                producer.prepare()
+    finally:
+        producer._proc = None  # avoid close() trying to kill the mock
+        producer.close()
+
+
+def test_hls_producer_prepare_raises_when_popen_fails(tmp_path):
+    """fmp4 producer; Popen raises OSError. The current
+    _ensure_ffmpeg_headed_for swallows OSError and leaves _proc=None.
+    prepare() should detect the None state and raise RuntimeError."""
+    import pytest
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        with patch(
+            "resources.lib.stream_proxy.subprocess.Popen",
+            side_effect=OSError("ffmpeg not found"),
+        ):
+            with pytest.raises(RuntimeError):
+                producer.prepare()
+    finally:
+        producer.close()
+
+
+def test_hls_producer_init_file_complete_requires_current_generation_segment(tmp_path):
+    """_init_file_complete binds to seg_<start_segment>.m4s, not 'any
+    segment'. Only init.mp4 on disk -> False. init + seg_000099.m4s
+    (wrong index) -> still False. init + seg_000100.m4s at the
+    current target -> True."""
+    import os as _os
+
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        # Simulate a restart target at 100
+        producer._start_segment = 100
+
+        assert producer._init_file_complete() is False  # nothing on disk
+
+        init_path = _os.path.join(producer.session_dir, "init.mp4")
+        with open(init_path, "wb") as f:
+            f.write(b"INIT")
+        assert producer._init_file_complete() is False  # no segment
+
+        wrong_seg = _os.path.join(producer.session_dir, "seg_000099.m4s")
+        with open(wrong_seg, "wb") as f:
+            f.write(b"WRONG")
+        assert producer._init_file_complete() is False  # wrong index
+
+        right_seg = _os.path.join(producer.session_dir, "seg_000100.m4s")
+        with open(right_seg, "wb") as f:
+            f.write(b"RIGHT")
+        assert producer._init_file_complete() is True
+    finally:
+        producer.close()
+
+
+def test_hls_producer_init_ready_ignores_stale_segments_from_prior_generation(tmp_path):
+    """Pre-seed init.mp4 + seg_000005.m4s from a prior generation.
+    Set _start_segment=100. _init_file_complete returns False —
+    the stale seg_000005 is not the current generation's first
+    segment. After creating seg_000100.m4s, it returns True."""
+    import os as _os
+
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        init_path = _os.path.join(producer.session_dir, "init.mp4")
+        with open(init_path, "wb") as f:
+            f.write(b"INIT FROM CURRENT GEN")
+        stale_seg = _os.path.join(producer.session_dir, "seg_000005.m4s")
+        with open(stale_seg, "wb") as f:
+            f.write(b"STALE")
+
+        producer._start_segment = 100
+        assert producer._init_file_complete() is False
+
+        fresh_seg = _os.path.join(producer.session_dir, "seg_000100.m4s")
+        with open(fresh_seg, "wb") as f:
+            f.write(b"FRESH")
+        assert producer._init_file_complete() is True
+    finally:
+        producer.close()
+
+
+def test_hls_producer_init_file_complete_does_not_use_mtime_window(tmp_path):
+    """An ancient-mtime init.mp4 alone (no matching current-generation
+    segment) never satisfies _init_file_complete. Regression guard
+    against reintroducing an mtime-stable window."""
+    import os as _os
+    import time as _time
+
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        init_path = _os.path.join(producer.session_dir, "init.mp4")
+        with open(init_path, "wb") as f:
+            f.write(b"INIT")
+        # Mtime 10 seconds ago
+        ancient = _time.time() - 10
+        _os.utime(init_path, (ancient, ancient))
+
+        producer._start_segment = 0
+        # No seg_000000.m4s -> False, regardless of mtime stability
+        assert producer._init_file_complete() is False
+    finally:
+        producer.close()
+
+
+def test_hls_producer_init_file_complete_returns_false_for_mpegts_ctx(tmp_path):
+    """mpegts producers never return True from _init_file_complete —
+    the method is fmp4-only."""
+    producer = _make_producer(tmp_path)  # mpegts
+    try:
+        assert producer._init_file_complete() is False
+    finally:
+        producer.close()
+
+
+def test_hls_producer_wait_for_init_returns_path_when_current_target_segment_exists(  # noqa: E501
+    tmp_path,
+):
+    """Producer at _start_segment=0 with init.mp4 and seg_000000.m4s
+    on disk. wait_for_init returns the init path."""
+    import os as _os
+
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        init_path = _os.path.join(producer.session_dir, "init.mp4")
+        seg_path = _os.path.join(producer.session_dir, "seg_000000.m4s")
+        with open(init_path, "wb") as f:
+            f.write(b"INIT")
+        with open(seg_path, "wb") as f:
+            f.write(b"SEG0")
+
+        # Patch Popen so no real ffmpeg is started. We expect
+        # wait_for_init to see the existing files and return
+        # without spawning.
+        with patch("resources.lib.stream_proxy.subprocess.Popen"):
+            result = producer.wait_for_init(timeout=2.0)
+
+        assert result == init_path
+    finally:
+        producer.close()
+
+
+def test_hls_producer_wait_for_init_returns_none_for_mpegts(tmp_path):
+    """mpegts producers short-circuit wait_for_init to None (there
+    is no init file)."""
+    producer = _make_producer(tmp_path)
+    try:
+        result = producer.wait_for_init(timeout=0.5)
+        assert result is None
+    finally:
+        producer.close()
+
+
+def test_hls_producer_wait_for_init_spawns_ffmpeg_when_not_running(tmp_path):
+    """Regression guard for the bootstrap deadlock bug. Before
+    wait_for_init, _proc is None. After wait_for_init (even on
+    timeout), Popen was called at least once."""
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None  # alive
+        with patch(
+            "resources.lib.stream_proxy.subprocess.Popen",
+            return_value=mock_proc,
+        ) as mock_popen:
+            producer.wait_for_init(timeout=0.5)
+        assert mock_popen.called
+    finally:
+        producer.close()
+
+
+def test_hls_producer_wait_for_init_does_not_rewind_live_producer(tmp_path):
+    """Regression guard for the rewind bug. If _proc is already alive
+    (simulating a running ffmpeg at seg 40), wait_for_init must NOT
+    call Popen again."""
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 3600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        # Pre-install a fake live proc
+        live_proc = MagicMock()
+        live_proc.poll.return_value = None  # alive
+        producer._proc = live_proc
+        producer._start_segment = 40
+
+        with patch("resources.lib.stream_proxy.subprocess.Popen") as mock_popen:
+            producer.wait_for_init(timeout=0.5)
+
+        assert not mock_popen.called
+        # start_segment must still be 40 — no rewind
+        assert producer._start_segment == 40
+    finally:
+        producer._proc = None  # avoid close() trying to kill the mock
+        producer.close()
+
+
+def test_hls_producer_wait_for_init_respawns_at_current_target_after_crash(tmp_path):
+    """If _proc is dead (poll() returns non-None) and
+    _start_segment=40, wait_for_init's respawn targets seg 40, not
+    0. Regression guard for a crashed-mid-seek producer being
+    accidentally rewound."""
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 3600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        dead_proc = MagicMock()
+        dead_proc.poll.return_value = 1  # exited
+        producer._proc = dead_proc
+        producer._start_segment = 40
+
+        new_proc = MagicMock()
+        new_proc.poll.return_value = None
+        with patch(
+            "resources.lib.stream_proxy.subprocess.Popen",
+            return_value=new_proc,
+        ) as mock_popen:
+            producer.wait_for_init(timeout=0.5)
+
+        assert mock_popen.called
+        args, _kwargs = mock_popen.call_args
+        cmd = args[0]
+        # The new -ss value should be 40 * 30.0 = 1200.0 seconds.
+        ss_idx = cmd.index("-ss")
+        assert float(cmd[ss_idx + 1]) == 1200.0
+        # And -start_number should be 40 (fmp4) or -segment_start_number
+        # should be 40 (mpegts). This producer is fmp4.
+        sn_idx = cmd.index("-start_number")
+        assert cmd[sn_idx + 1] == "40"
+    finally:
+        producer._proc = None
+        producer.close()
+
+
+def test_hls_producer_wait_for_init_returns_none_on_timeout(tmp_path):
+    """If no file ever appears, wait_for_init returns None within
+    the test timeout."""
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        with patch(
+            "resources.lib.stream_proxy.subprocess.Popen",
+            return_value=mock_proc,
+        ):
+            result = producer.wait_for_init(timeout=0.5)
+        assert result is None
+    finally:
+        producer.close()
+
+
+def test_hls_producer_wait_for_segment_zero_blocks_until_init_ready(tmp_path):
+    """In fmp4 mode, wait_for_segment(0) does not return even if
+    seg_000000.m4s exists on disk, until init.mp4 is also present
+    AND seg_<start_segment>.m4s exists (i.e. _init_file_complete
+    returns True)."""
+    import os as _os
+    import threading as _threading
+    import time as _time
+
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        # Pre-seed seg_000000.m4s WITHOUT init.mp4
+        seg_path = _os.path.join(producer.session_dir, "seg_000000.m4s")
+        with open(seg_path, "wb") as f:
+            f.write(b"SEG0")
+
+        # No init.mp4 on disk -> _init_file_complete returns False,
+        # so wait_for_segment should not return. Patch Popen so any
+        # ffmpeg start the loop triggers is a no-op.
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+
+        # Create init.mp4 (and re-create seg_000000.m4s, which the
+        # first ensure_ffmpeg_headed_for unlink will have wiped)
+        # halfway through the wait so the gate eventually opens.
+        def create_init_later():
+            _time.sleep(0.5)
+            init_path = _os.path.join(producer.session_dir, "init.mp4")
+            with open(init_path, "wb") as f:
+                f.write(b"INIT")
+            with open(seg_path, "wb") as f:
+                f.write(b"SEG0")
+
+        t = _threading.Thread(target=create_init_later, daemon=True)
+        t.start()
+        try:
+            with patch(
+                "resources.lib.stream_proxy.subprocess.Popen",
+                return_value=mock_proc,
+            ):
+                result = producer.wait_for_segment(0, timeout=3.0)
+        finally:
+            t.join()
+
+        assert result == seg_path
+    finally:
+        producer.close()
 
 
 def test_choose_hls_workdir_prefers_first_writable(tmp_path):
@@ -1714,6 +4028,303 @@ def test_register_session_hls_returns_playlist_url(tmp_path):
     assert producer is not None
     assert _os.path.isdir(producer.session_dir)
     assert producer.session_dir.startswith(str(tmp_path))
+
+
+def test_register_session_hls_producer_failure_rewrites_to_matroska():
+    """When HlsProducer.__init__ raises, _register_session rewrites
+    ctx in place to the matroska shape and returns a /stream/ URL
+    (not /hls/...)."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_sessions = {}
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 9999
+
+    ctx = {
+        "remote_url": "http://host/shawshank.mkv",
+        "auth_header": None,
+        "content_type": "application/vnd.apple.mpegurl",
+        "mode": "hls",
+        "remux": True,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "total_bytes": 58 * 1024 * 1024 * 1024,
+        "duration_seconds": 8532.0,
+        "seekable": True,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+
+    with patch(
+        "resources.lib.stream_proxy.HlsProducer",
+        side_effect=OSError("workdir not writable"),
+    ):
+        url = sp._register_session(ctx)
+
+    assert url.startswith("http://127.0.0.1:9999/stream/")
+    assert "/hls/" not in url
+    assert ctx.get("mode") is None
+    assert "hls_segment_format" not in ctx
+    assert "hls_producer" not in ctx
+    assert ctx["content_type"] == "video/x-matroska"
+    assert ctx["seekable"] is True
+
+
+def test_register_session_hls_producer_failure_preserves_duration_and_seekable():
+    """After the rewrite, duration_seconds and total_bytes are carried
+    over from the original fmp4 ctx and seekable is recomputed via
+    the matroska rule (duration not None AND total_bytes > 0)."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_sessions = {}
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 9999
+
+    ctx = {
+        "remote_url": "http://host/shawshank.mkv",
+        "auth_header": None,
+        "content_type": "application/vnd.apple.mpegurl",
+        "mode": "hls",
+        "remux": True,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "total_bytes": 123456789,
+        "duration_seconds": 600.0,
+        "seekable": True,
+        "hls_segment_format": "fmp4",
+    }
+
+    with patch(
+        "resources.lib.stream_proxy.HlsProducer",
+        side_effect=OSError("boom"),
+    ):
+        sp._register_session(ctx)
+
+    assert ctx["duration_seconds"] == 600.0
+    assert ctx["total_bytes"] == 123456789
+    assert ctx["seekable"] is True
+
+
+def test_register_session_catches_non_oserror_exceptions():
+    """HlsProducer.__init__ raising ValueError (or anything else)
+    still produces the matroska rewrite, not an unhandled exception.
+
+    Regression guard for the too-narrow except OSError in the
+    pre-spike code."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_sessions = {}
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 9999
+
+    ctx = {
+        "remote_url": "http://host/x.mkv",
+        "auth_header": None,
+        "content_type": "application/vnd.apple.mpegurl",
+        "mode": "hls",
+        "remux": True,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "total_bytes": 100,
+        "duration_seconds": 10.0,
+        "seekable": True,
+        "hls_segment_format": "fmp4",
+    }
+
+    with patch(
+        "resources.lib.stream_proxy.HlsProducer",
+        side_effect=ValueError("unexpected"),
+    ):
+        # Must NOT raise.
+        url = sp._register_session(ctx)
+
+    assert url.startswith("http://127.0.0.1:9999/stream/")
+    assert ctx.get("mode") is None
+
+
+def test_register_session_calls_producer_prepare():
+    """Happy path: _register_session calls producer.prepare() exactly
+    once after construction."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_sessions = {}
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 9999
+
+    ctx = {
+        "remote_url": "http://host/x.mkv",
+        "auth_header": None,
+        "content_type": "application/vnd.apple.mpegurl",
+        "mode": "hls",
+        "remux": True,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "total_bytes": 100,
+        "duration_seconds": 10.0,
+        "seekable": True,
+        "hls_segment_format": "fmp4",
+    }
+
+    producer_mock = MagicMock()
+    with patch("resources.lib.stream_proxy.HlsProducer", return_value=producer_mock):
+        sp._register_session(ctx)
+
+    producer_mock.prepare.assert_called_once_with()
+
+
+def test_register_session_prepare_failure_rewrites_to_matroska():
+    """If producer.prepare() raises (e.g. ffmpeg rejects fmp4 HLS),
+    _register_session rewrites ctx in-place to matroska and returns
+    a /stream/ URL. Regression guard for the spawn-time-validation
+    safety property — without this, a deployed ffmpeg build that
+    doesn't support fmp4 would surface as a 504 from
+    /hls/<sess>/init.mp4 AFTER the URL had already been returned to
+    Kodi."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_sessions = {}
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 9999
+
+    ctx = {
+        "remote_url": "http://host/x.mkv",
+        "auth_header": None,
+        "content_type": "application/vnd.apple.mpegurl",
+        "mode": "hls",
+        "remux": True,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "total_bytes": 100,
+        "duration_seconds": 10.0,
+        "seekable": True,
+        "hls_segment_format": "fmp4",
+    }
+
+    producer_mock = MagicMock()
+    producer_mock.prepare.side_effect = RuntimeError(
+        "ffmpeg exited immediately with code 1 — fmp4 HLS unsupported"
+    )
+    with patch("resources.lib.stream_proxy.HlsProducer", return_value=producer_mock):
+        url = sp._register_session(ctx)
+
+    assert url.startswith("http://127.0.0.1:9999/stream/")
+    assert "/hls/" not in url
+    assert ctx.get("mode") is None
+    assert ctx["content_type"] == "video/x-matroska"
+
+
+def test_register_session_hls_success_unchanged():
+    """Happy path regression: if HlsProducer.__init__ AND prepare
+    both succeed, the returned URL is the HLS URL and ctx keeps
+    mode=='hls' and hls_producer is set on the ctx."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_sessions = {}
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 9999
+
+    ctx = {
+        "remote_url": "http://host/x.mkv",
+        "auth_header": None,
+        "content_type": "application/vnd.apple.mpegurl",
+        "mode": "hls",
+        "remux": True,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "total_bytes": 100,
+        "duration_seconds": 10.0,
+        "seekable": True,
+        "hls_segment_format": "fmp4",
+    }
+
+    producer_mock = MagicMock()
+    # prepare is a no-op (MagicMock auto-returns None)
+    with patch("resources.lib.stream_proxy.HlsProducer", return_value=producer_mock):
+        url = sp._register_session(ctx)
+
+    assert "/hls/" in url
+    assert url.endswith("/playlist.m3u8")
+    assert ctx["mode"] == "hls"
+    assert ctx["hls_producer"] is producer_mock
+
+
+def test_register_session_prepare_failure_closes_partially_initialized_producer():
+    """Regression guard: when producer.prepare() raises, the
+    partially initialized producer is close()'d before the matroska
+    rewrite. Otherwise opt-in fmp4 plays against an unsupported
+    ffmpeg build orphan session_dir + ffmpeg.log every time."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_sessions = {}
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 9999
+
+    ctx = {
+        "remote_url": "http://host/x.mkv",
+        "auth_header": None,
+        "content_type": "application/vnd.apple.mpegurl",
+        "mode": "hls",
+        "remux": True,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "total_bytes": 100,
+        "duration_seconds": 10.0,
+        "seekable": True,
+        "hls_segment_format": "fmp4",
+    }
+
+    producer_mock = MagicMock()
+    producer_mock.prepare.side_effect = RuntimeError("ffmpeg exited immediately")
+    with patch("resources.lib.stream_proxy.HlsProducer", return_value=producer_mock):
+        url = sp._register_session(ctx)
+
+    producer_mock.close.assert_called_once_with()
+    assert url.startswith("http://127.0.0.1:9999/stream/")
+    assert ctx.get("mode") is None
+
+
+def test_register_session_init_failure_does_not_call_close_on_undefined_producer():
+    """Regression guard for the `producer = None` sentinel outside
+    the try block: when HlsProducer.__init__ itself raises, no
+    producer was ever constructed, so close() must not be called.
+    The rewrite still happens and no AttributeError is raised."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_sessions = {}
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 9999
+
+    ctx = {
+        "remote_url": "http://host/x.mkv",
+        "auth_header": None,
+        "content_type": "application/vnd.apple.mpegurl",
+        "mode": "hls",
+        "remux": True,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "total_bytes": 100,
+        "duration_seconds": 10.0,
+        "seekable": True,
+        "hls_segment_format": "fmp4",
+    }
+
+    with patch(
+        "resources.lib.stream_proxy.HlsProducer",
+        side_effect=OSError("workdir not writable"),
+    ):
+        # Must NOT raise AttributeError on a None producer.
+        url = sp._register_session(ctx)
+
+    assert url.startswith("http://127.0.0.1:9999/stream/")
+    assert ctx.get("mode") is None
 
 
 def test_serve_remux_matroska_keeps_accept_ranges_none():
@@ -1975,12 +4586,58 @@ def test_head_uses_session_path_context():
     assert ctx["last_access"] > 0
 
 
+def test_get_stream_context_updates_last_access_under_context_lock():
+    from types import SimpleNamespace
+
+    class _TrackingLock:
+        def __init__(self):
+            self.held = False
+
+        def __enter__(self):
+            self.held = True
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            self.held = False
+            return False
+
+    class _LockAwareContext(dict):
+        def __init__(self, *args, **kwargs):
+            self.lock = kwargs.pop("lock")
+            self.last_access_updates = []
+            super().__init__(*args, **kwargs)
+
+        def __setitem__(self, key, value):
+            if key == "last_access":
+                self.last_access_updates.append(self.lock.held)
+            super().__setitem__(key, value)
+
+    lock = _TrackingLock()
+    ctx = _LockAwareContext(
+        {
+            "remux": False,
+            "content_type": "video/mp4",
+            "content_length": 1000,
+        },
+        lock=lock,
+    )
+    handler = _make_handler_with_server(ctx=None)
+    handler.path = "/stream/session123"
+    handler.server.owner_proxy = SimpleNamespace(_context_lock=lock)
+    handler.server.stream_sessions = {"session123": ctx}
+
+    resolved = handler._get_stream_context()
+
+    assert resolved is ctx
+    assert ctx.last_access_updates == [True]
+
+
 # ---------------------------------------------------------------------------
 # _serve_proxy — pass-through with zero-fill recovery for missing articles
 # ---------------------------------------------------------------------------
 
 
-def _mock_urlopen_response(chunks, status=206):
+def _mock_urlopen_response(chunks, status=206, headers=None):
     """Build a mock urlopen-returned object with given byte chunks."""
     resp = MagicMock()
     resp.__enter__ = MagicMock(return_value=resp)
@@ -1989,6 +4646,10 @@ def _mock_urlopen_response(chunks, status=206):
     resp.read = MagicMock(side_effect=data)
     resp.status = status
     resp.getcode = MagicMock(return_value=status)
+    header_map = headers or {}
+    resp.headers.get = MagicMock(
+        side_effect=lambda key, default=None: header_map.get(key, default)
+    )
     resp.close = MagicMock()
     return resp
 
@@ -2021,6 +4682,31 @@ def test_serve_proxy_streams_happy_path():
 
     handler.send_response.assert_called_once_with(206)
     assert _collect_written(handler) == payload
+
+
+@patch("resources.lib.stream_proxy.xbmc")
+def test_serve_proxy_logs_terminal_summary_on_success(mock_xbmc):
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 2048,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-2047")
+
+    payload = b"A" * 2048
+    with patch(
+        "resources.lib.stream_proxy.urlopen",
+        return_value=_mock_urlopen_response([payload]),
+    ):
+        handler._serve_proxy(ctx)
+
+    logged = "\n".join(call.args[0] for call in mock_xbmc.log.call_args_list)
+    assert "Pass-through summary" in logged
+    assert "reason=complete" in logged
+    assert "streamed=2048" in logged
+    assert "zero_fill=0" in logged
+    assert "recoveries=0" in logged
 
 
 def test_serve_proxy_zero_fills_on_upstream_failure():
@@ -2059,6 +4745,52 @@ def test_serve_proxy_zero_fills_on_upstream_failure():
     # Bytes 1M..2M are zero-fill (skip of 1 MB after the 1 MB already served).
     assert written[1048576 : 2 * 1048576] == bytes(1048576)
     assert written[2 * 1048576 :] == resume_payload
+
+
+def test_serve_proxy_notifies_first_recovery_with_bytes_and_count():
+    import sys
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 20 * 1048576,
+    }
+    handler = _make_handler_with_server(
+        ctx, range_header="bytes=0-{}".format(20 * 1048576 - 1)
+    )
+
+    first_mb = b"X" * 1048576
+    initial = _mock_urlopen_response([first_mb])
+    probe_1mb = _mock_urlopen_response([b"Y" * 64])
+    resume_payload = b"Z" * (18 * 1048576)
+    resume = _mock_urlopen_response([resume_payload])
+    responses = iter([initial, probe_1mb, resume])
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = lambda key: {
+        "strict_contract_mode": "warn",
+        "density_breaker_enabled": "false",
+        "zero_fill_budget_enabled": "true",
+        "retry_ladder_enabled": "false",
+    }.get(key, "")
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch(
+            "resources.lib.stream_proxy.urlopen",
+            side_effect=lambda *a, **kw: next(responses),
+        ), patch("resources.lib.stream_proxy.time.sleep"), patch(
+            "resources.lib.stream_proxy._notify"
+        ) as mock_notify:
+            handler._serve_proxy(ctx)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    mock_notify.assert_called_once()
+    assert mock_notify.call_args[0][0] == "NZB-DAV"
+    assert "1048576" in mock_notify.call_args[0][1]
+    assert "1" in mock_notify.call_args[0][1]
 
 
 def test_serve_proxy_retries_probes_when_upstream_briefly_down():
@@ -2102,6 +4834,200 @@ def test_serve_proxy_retries_probes_when_upstream_briefly_down():
     assert written[2 * 1048576 :] == resume_payload
 
 
+def test_serve_proxy_debounces_recovery_notify_within_one_session():
+    import sys
+
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_OK,
+        _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE,
+    )
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 6 * 1048576,
+    }
+    handler = _make_handler_with_server(
+        ctx, range_header="bytes=0-{}".format(6 * 1048576 - 1)
+    )
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = lambda key: {
+        "strict_contract_mode": "warn",
+        "density_breaker_enabled": "false",
+        "zero_fill_budget_enabled": "true",
+        "retry_ladder_enabled": "false",
+    }.get(key, "")
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch.object(
+            handler,
+            "_stream_upstream_range",
+            side_effect=[
+                (_UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, 1048576),
+                (_UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, 1048576),
+                (_UPSTREAM_RANGE_OK, 2 * 1048576),
+            ],
+        ), patch.object(
+            handler, "_find_skip_offset", side_effect=[1048576, 1048576]
+        ), patch.object(
+            handler, "_write_zeros"
+        ), patch(
+            "resources.lib.stream_proxy._notify"
+        ) as mock_notify:
+            handler._serve_proxy(ctx)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    mock_notify.assert_called_once()
+
+
+def test_serve_proxy_retries_original_range_before_skip_probe():
+    import sys
+
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_OK,
+        _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE,
+        _UPSTREAM_RANGE_UPSTREAM_ERROR,
+    )
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 4096,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-4095")
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = lambda key: {
+        "strict_contract_mode": "warn",
+        "density_breaker_enabled": "false",
+        "zero_fill_budget_enabled": "true",
+        "retry_ladder_enabled": "true",
+    }.get(key, "")
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch.object(
+            handler,
+            "_stream_upstream_range",
+            side_effect=[
+                (_UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, 1024),
+                (_UPSTREAM_RANGE_UPSTREAM_ERROR, 0),
+                (_UPSTREAM_RANGE_OK, 3072),
+            ],
+        ) as mock_stream, patch.object(
+            handler, "_find_skip_offset"
+        ) as mock_find_skip_offset, patch(
+            "resources.lib.stream_proxy.time.sleep"
+        ) as mock_sleep:
+            handler._serve_proxy(ctx)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    assert mock_stream.call_count == 3
+    mock_find_skip_offset.assert_not_called()
+    assert [call.args[0] for call in mock_sleep.call_args_list] == [2, 4]
+
+
+def test_serve_proxy_falls_back_to_skip_probe_after_retry_ladder_exhausted():
+    import sys
+
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE,
+        _UPSTREAM_RANGE_UPSTREAM_ERROR,
+    )
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 4096,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-4095")
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = lambda key: {
+        "strict_contract_mode": "warn",
+        "density_breaker_enabled": "false",
+        "zero_fill_budget_enabled": "true",
+        "retry_ladder_enabled": "true",
+    }.get(key, "")
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch.object(
+            handler,
+            "_stream_upstream_range",
+            side_effect=[
+                (_UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, 1024),
+                (_UPSTREAM_RANGE_UPSTREAM_ERROR, 0),
+                (_UPSTREAM_RANGE_UPSTREAM_ERROR, 0),
+                (_UPSTREAM_RANGE_UPSTREAM_ERROR, 0),
+            ],
+        ), patch.object(
+            handler, "_find_skip_offset", return_value=None
+        ) as mock_find_skip_offset, patch.object(
+            handler, "_write_zeros"
+        ) as mock_write_zeros, patch(
+            "resources.lib.stream_proxy.time.sleep"
+        ) as mock_sleep:
+            handler._serve_proxy(ctx)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    mock_find_skip_offset.assert_called_once_with(ctx, 1024, 4095)
+    mock_write_zeros.assert_called_once_with(3072)
+    assert [call.args[0] for call in mock_sleep.call_args_list] == [2, 4, 8]
+
+
+def test_serve_proxy_retry_ladder_flag_skips_range_retries():
+    import sys
+
+    from resources.lib.stream_proxy import _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 4096,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-4095")
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = lambda key: {
+        "strict_contract_mode": "warn",
+        "density_breaker_enabled": "false",
+        "zero_fill_budget_enabled": "true",
+        "retry_ladder_enabled": "false",
+    }.get(key, "")
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch.object(
+            handler,
+            "_stream_upstream_range",
+            return_value=(_UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, 1024),
+        ) as mock_stream, patch.object(
+            handler, "_find_skip_offset", return_value=None
+        ) as mock_find_skip_offset, patch.object(
+            handler, "_write_zeros"
+        ) as mock_write_zeros, patch(
+            "resources.lib.stream_proxy.time.sleep"
+        ) as mock_sleep:
+            handler._serve_proxy(ctx)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    assert mock_stream.call_count == 1
+    mock_find_skip_offset.assert_called_once_with(ctx, 1024, 4095)
+    mock_write_zeros.assert_called_once_with(3072)
+    assert mock_sleep.call_count == 0
+
+
 def test_serve_proxy_zero_fills_remainder_when_recovery_exhausted():
     """All skip probes fail — zero-fill the rest of the committed response."""
     ctx = {
@@ -2140,6 +5066,345 @@ def test_serve_proxy_zero_fills_remainder_when_recovery_exhausted():
     assert written[512000:] == bytes(8 * 1048576 - 512000)
 
 
+@patch("resources.lib.stream_proxy.xbmc")
+def test_serve_proxy_logs_terminal_summary_on_recovery_exhausted(mock_xbmc):
+    from resources.lib.stream_proxy import _UPSTREAM_RANGE_UPSTREAM_ERROR
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 1024,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-1023")
+
+    with patch.object(
+        handler,
+        "_stream_upstream_range",
+        return_value=(_UPSTREAM_RANGE_UPSTREAM_ERROR, 256),
+    ), patch.object(handler, "_find_skip_offset", return_value=None), patch.object(
+        handler, "_write_zeros"
+    ) as mock_write_zeros:
+        handler._serve_proxy(ctx)
+
+    mock_write_zeros.assert_called_once_with(768)
+    logged = "\n".join(call.args[0] for call in mock_xbmc.log.call_args_list)
+    assert "Pass-through summary" in logged
+    assert "reason=recovery_exhausted" in logged
+    assert "streamed=256" in logged
+    assert "zero_fill=768" in logged
+
+
+@patch("resources.lib.stream_proxy.xbmc")
+def test_serve_proxy_aborts_when_session_zero_fill_ratio_exceeds_cap(mock_xbmc):
+    import sys
+
+    from resources.lib.stream_proxy import _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 4096,
+        "session_streamed_bytes": 4096,
+        "session_zero_fill_bytes": 0,
+        "session_recovery_count": 0,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-4095")
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = lambda key: {
+        "strict_contract_mode": "warn",
+        "density_breaker_enabled": "false",
+        "zero_fill_budget_enabled": "true",
+        "retry_ladder_enabled": "false",
+    }.get(key, "")
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch.object(
+            handler,
+            "_stream_upstream_range",
+            return_value=(_UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, 1024),
+        ), patch.object(handler, "_find_skip_offset", return_value=600), patch.object(
+            handler, "_write_zeros"
+        ) as mock_write_zeros, patch(
+            "resources.lib.stream_proxy._notify"
+        ) as mock_notify:
+            handler._serve_proxy(ctx)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    mock_write_zeros.assert_not_called()
+    mock_notify.assert_called_once()
+    logged = "\n".join(call.args[0] for call in mock_xbmc.log.call_args_list)
+    assert "reason=session_zero_fill_budget_exceeded" in logged
+
+
+def test_serve_proxy_zero_fill_budget_flag_disables_session_ratio_abort():
+    import sys
+
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_OK,
+        _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE,
+    )
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 4096,
+        "session_streamed_bytes": 4096,
+        "session_zero_fill_bytes": 0,
+        "session_recovery_count": 0,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-4095")
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = lambda key: {
+        "strict_contract_mode": "warn",
+        "density_breaker_enabled": "false",
+        "zero_fill_budget_enabled": "false",
+        "retry_ladder_enabled": "false",
+    }.get(key, "")
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch.object(
+            handler,
+            "_stream_upstream_range",
+            side_effect=[
+                (_UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, 1024),
+                (_UPSTREAM_RANGE_OK, 2472),
+            ],
+        ), patch.object(handler, "_find_skip_offset", return_value=600), patch.object(
+            handler, "_write_zeros"
+        ) as mock_write_zeros, patch(
+            "resources.lib.stream_proxy._notify"
+        ) as mock_notify:
+            handler._serve_proxy(ctx)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    mock_write_zeros.assert_called_once_with(600)
+    mock_notify.assert_called_once()
+
+
+def test_get_strict_contract_mode_maps_known_values_and_defaults_warn():
+    import sys
+
+    from resources.lib.stream_proxy import _get_strict_contract_mode
+
+    mock_addon = MagicMock()
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        cases = {
+            "": "warn",
+            None: "warn",
+            "0": "off",
+            "off": "off",
+            "1": "warn",
+            "warn": "warn",
+            "2": "enforce",
+            "enforce": "enforce",
+            "garbage": "warn",
+        }
+        for raw, expected in cases.items():
+            mock_addon.getSetting.return_value = raw
+            assert _get_strict_contract_mode() == expected
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+
+@patch("resources.lib.stream_proxy.xbmc")
+def test_stream_upstream_range_warn_mode_streams_on_soft_contract_mismatch(mock_xbmc):
+    import sys
+
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_PROTOCOL_MISMATCH,
+        _StreamHandler,
+    )
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_length": 2048,
+    }
+    handler = _StreamHandler.__new__(_StreamHandler)
+    handler.wfile = MagicMock()
+
+    payload = b"A" * 1024
+    response = _mock_urlopen_response(
+        [payload],
+        headers={
+            "Content-Range": "bytes 0-1023/2048",
+            "Content-Length": "2048",
+        },
+    )
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = lambda key: (
+        "warn" if key == "strict_contract_mode" else ""
+    )
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch("resources.lib.stream_proxy.urlopen", return_value=response):
+            result, written = handler._stream_upstream_range(ctx, 0, 1023)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    assert result == _UPSTREAM_RANGE_PROTOCOL_MISMATCH
+    assert written == len(payload)
+    assert _collect_written(handler) == payload
+    logged = "\n".join(call.args[0] for call in mock_xbmc.log.call_args_list)
+    assert "reason=protocol_mismatch" in logged
+
+
+@patch("resources.lib.stream_proxy.xbmc")
+def test_stream_upstream_range_enforce_mode_rejects_soft_contract_mismatch(mock_xbmc):
+    import sys
+
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_PROTOCOL_MISMATCH,
+        _StreamHandler,
+    )
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_length": 2048,
+    }
+    handler = _StreamHandler.__new__(_StreamHandler)
+    handler.wfile = MagicMock()
+
+    payload = b"A" * 1024
+    response = _mock_urlopen_response(
+        [payload],
+        headers={
+            "Content-Range": "bytes 0-1023/2048",
+            "Content-Length": "2048",
+        },
+    )
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = lambda key: (
+        "enforce" if key == "strict_contract_mode" else ""
+    )
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch("resources.lib.stream_proxy.urlopen", return_value=response):
+            result, written = handler._stream_upstream_range(ctx, 0, 1023)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    assert result == _UPSTREAM_RANGE_PROTOCOL_MISMATCH
+    assert written == 0
+    handler.wfile.write.assert_not_called()
+    logged = "\n".join(call.args[0] for call in mock_xbmc.log.call_args_list)
+    assert "reason=protocol_mismatch" in logged
+
+
+@patch("resources.lib.stream_proxy.xbmc")
+def test_stream_upstream_range_rejects_bad_content_range(mock_xbmc):
+    import sys
+
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_PROTOCOL_MISMATCH,
+        _StreamHandler,
+    )
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_length": 2048,
+    }
+    handler = _StreamHandler.__new__(_StreamHandler)
+    handler.wfile = MagicMock()
+
+    response = _mock_urlopen_response(
+        [b"A" * 1024],
+        headers={
+            "Content-Range": "bytes 256-1279/2048",
+            "Content-Length": "1024",
+        },
+    )
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = lambda key: (
+        "warn" if key == "strict_contract_mode" else ""
+    )
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch("resources.lib.stream_proxy.urlopen", return_value=response):
+            result, written = handler._stream_upstream_range(ctx, 0, 1023)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    assert result == _UPSTREAM_RANGE_PROTOCOL_MISMATCH
+    assert written == 0
+    handler.wfile.write.assert_not_called()
+    logged = "\n".join(call.args[0] for call in mock_xbmc.log.call_args_list)
+    assert "reason=protocol_mismatch" in logged
+    assert "Content-Range" in logged
+
+
+@patch("resources.lib.stream_proxy.xbmc")
+def test_serve_proxy_density_breaker_aborts_and_notifies_once(mock_xbmc):
+    import sys
+
+    from resources.lib.stream_proxy import _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 8 * 1048576,
+    }
+    handler = _make_handler_with_server(
+        ctx, range_header="bytes=0-{}".format(8 * 1048576 - 1)
+    )
+
+    def _get_setting(key):
+        if key == "strict_contract_mode":
+            return "warn"
+        if key == "density_breaker_enabled":
+            return "true"
+        if key == "zero_fill_budget_enabled":
+            return "false"
+        if key == "retry_ladder_enabled":
+            return "false"
+        return ""
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = _get_setting
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch.object(
+            handler,
+            "_stream_upstream_range",
+            return_value=(_UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, 1048576),
+        ), patch.object(
+            handler, "_find_skip_offset", return_value=2 * 1048576
+        ), patch.object(
+            handler, "_write_zeros"
+        ) as mock_write_zeros, patch(
+            "resources.lib.stream_proxy._notify"
+        ) as mock_notify:
+            handler._serve_proxy(ctx)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    mock_write_zeros.assert_not_called()
+    mock_notify.assert_called_once()
+    logged = "\n".join(call.args[0] for call in mock_xbmc.log.call_args_list)
+    assert "reason=density_breaker_tripped" in logged
+
+
 def test_serve_proxy_rejects_bad_range():
     """An unparseable Range header still returns 416 without emitting headers."""
     ctx = {
@@ -2151,6 +5416,135 @@ def test_serve_proxy_rejects_bad_range():
     handler = _make_handler_with_server(ctx, range_header="bytes=banana")
 
     handler._serve_proxy(ctx)
+
+    handler.send_error.assert_called_once_with(416)
+    handler.send_response.assert_not_called()
+
+
+def test_serve_proxy_no_range_defaults_to_206_partial_content():
+    from resources.lib.stream_proxy import _UPSTREAM_RANGE_OK
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 2048,
+    }
+    handler = _make_handler_with_server(ctx)
+
+    def fake_stream(_ctx, start, end, contract_mode=None):
+        handler.wfile.write(b"x" * (end - start + 1))
+        return _UPSTREAM_RANGE_OK, end - start + 1
+
+    with patch.object(
+        _StreamHandler, "_stream_upstream_range", side_effect=fake_stream
+    ):
+        handler._serve_proxy(ctx)
+
+    handler.send_response.assert_called_once_with(206)
+    handler.send_header.assert_any_call("Content-Length", "2048")
+    handler.send_header.assert_any_call("Content-Range", "bytes 0-2047/2048")
+
+
+def test_serve_proxy_no_range_can_send_200_without_content_range():
+    from resources.lib.stream_proxy import _UPSTREAM_RANGE_OK
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 2048,
+    }
+    handler = _make_handler_with_server(ctx)
+
+    def fake_stream(_ctx, start, end, contract_mode=None):
+        handler.wfile.write(b"x" * (end - start + 1))
+        return _UPSTREAM_RANGE_OK, end - start + 1
+
+    with patch(
+        "resources.lib.stream_proxy._get_addon_setting",
+        side_effect=lambda key: "true" if key == "send_200_no_range" else None,
+    ), patch.object(_StreamHandler, "_stream_upstream_range", side_effect=fake_stream):
+        handler._serve_proxy(ctx)
+
+    handler.send_response.assert_called_once_with(200)
+    header_names = [call.args[0] for call in handler.send_header.call_args_list]
+    assert "Content-Range" not in header_names
+
+
+@pytest.mark.parametrize(
+    ("factory", "call_name"),
+    [
+        (
+            lambda tmp_path: (
+                _make_handler_with_server(
+                    {
+                        "header_data": b"ftypmoov",
+                        "virtual_size": 4096,
+                        "payload_remote_start": 0,
+                        "payload_size": 4088,
+                        "remote_url": "http://host/movie.mp4",
+                    },
+                    range_header="bytes=9999-10000",
+                ),
+                "_serve_mp4_faststart",
+            ),
+            "faststart",
+        ),
+        (
+            lambda tmp_path: (
+                _make_handler_with_server(
+                    {
+                        "temp_path": str(tmp_path / "movie.mp4"),
+                        "content_length": 4096,
+                    },
+                    range_header="bytes=10-5",
+                ),
+                "_serve_temp_faststart",
+            ),
+            "temp_faststart",
+        ),
+        (
+            lambda tmp_path: (
+                _make_handler_with_server(
+                    {
+                        "ffmpeg_path": "/usr/bin/ffmpeg",
+                        "remote_url": "http://host/movie.mp4",
+                        "auth_header": None,
+                        "total_bytes": 4096,
+                        "seekable": True,
+                    },
+                    range_header="bytes=-9999",
+                ),
+                "_serve_remux",
+            ),
+            "remux",
+        ),
+        (
+            lambda tmp_path: (
+                _make_handler_with_server(
+                    {
+                        "remote_url": "http://host/movie.mkv",
+                        "auth_header": None,
+                        "content_type": "video/x-matroska",
+                        "content_length": 4096,
+                    },
+                    range_header="bytes=banana",
+                ),
+                "_serve_proxy",
+            ),
+            "pass_through",
+        ),
+    ],
+)
+def test_range_caller_matrix_returns_416_for_malformed_ranges(
+    tmp_path, factory, call_name
+):
+    handler, method_name = factory(tmp_path)
+    if call_name == "temp_faststart":
+        tmp_path.joinpath("movie.mp4").write_bytes(b"x" * 32)
+
+    getattr(handler, method_name)(handler.server.stream_context)
 
     handler.send_error.assert_called_once_with(416)
     handler.send_response.assert_not_called()

@@ -230,9 +230,20 @@ class NzbdavPlayer(xbmc.Player):
             return
 
         # Detect playback that never started (stream error, auth failure, etc.)
+        # The timeout has to comfortably exceed the worst-case
+        # proxy-side startup latency, which on the fmp4 HLS path is
+        # roughly: HlsProducer spawn (~0.1 s) + prepare() early-exit
+        # poll (~0.5 s) + ffmpeg analyzeduration (2 s, bumped from 0
+        # to fix DTS/TrueHD AV sync) + first init.mp4 + first segment
+        # write (~0.5 s) + Kodi HLS demuxer + decoder init (~1-3 s).
+        # That can land at 4-6 s on the test box even when everything
+        # is healthy. The previous 5 s threshold was tripping before
+        # Kodi could fire onAVStarted on the new fmp4 path. 30 s
+        # gives all the legitimate paths headroom while still
+        # catching genuinely dead streams within a reasonable window.
         if self._state == PlaybackState.MONITORING and not self._av_started:
             elapsed = time.time() - self._play_time
-            if elapsed > 5 and not self.isPlaying():
+            if elapsed > 30 and not self.isPlaying():
                 xbmc.log(
                     "NZB-DAV: Playback never started for '{}' after {:.0f}s".format(
                         self._title, elapsed

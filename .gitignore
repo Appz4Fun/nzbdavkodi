@@ -4,6 +4,7 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
+.venv*/
 
 # Build
 dist/
@@ -24,6 +25,7 @@ plugin.video.nzbdav.zip
 docs/superpowers/
 mockups/
 troubleshooting.md
+.worktrees/
 
 # Build zips (versioned)
 plugin.video.nzbdav-*.zip

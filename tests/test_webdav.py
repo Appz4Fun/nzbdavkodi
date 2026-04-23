@@ -3,13 +3,9 @@
 
 from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
-from urllib.parse import unquote
 
 from resources.lib.webdav import (
-    build_webdav_url,
-    check_file_available,
     find_video_file,
-    get_webdav_stream_url,
     get_webdav_stream_url_for_path,
     probe_webdav_reachable,
 )
@@ -27,93 +23,13 @@ _SETTINGS_NO_AUTH = {
 }
 
 
-@patch("resources.lib.webdav._get_settings")
-def test_build_webdav_url(mock_settings):
-    mock_settings.return_value = _SETTINGS_WITH_AUTH
-    url = build_webdav_url("The.Matrix.1999.2160p.mkv")
-    assert url.startswith("http://nzbdav:3000/")
-    assert "The.Matrix.1999.2160p.mkv" in url
+def test_legacy_flat_webdav_helpers_are_retired():
+    import resources.lib.webdav as webdav
 
-
-@patch("resources.lib.webdav._get_settings")
-@patch("resources.lib.webdav._http_head")
-def test_check_file_available_returns_true_on_200(mock_head, mock_settings):
-    mock_settings.return_value = _SETTINGS_WITH_AUTH
-    mock_head.return_value = 200
-    available = check_file_available("movie.mkv")
-    assert available is True
-
-
-@patch("resources.lib.webdav._get_settings")
-@patch("resources.lib.webdav._http_head")
-def test_check_file_available_returns_false_on_404(mock_head, mock_settings):
-    mock_settings.return_value = _SETTINGS_WITH_AUTH
-    mock_head.return_value = 404
-    available = check_file_available("movie.mkv")
-    assert available is False
-
-
-@patch("resources.lib.webdav._get_settings")
-@patch("resources.lib.webdav._http_head")
-def test_check_file_available_returns_false_on_error(mock_head, mock_settings):
-    mock_settings.return_value = _SETTINGS_WITH_AUTH
-    mock_head.side_effect = Exception("Connection refused")
-    available = check_file_available("movie.mkv")
-    assert available is False
-
-
-# --- URL encoding round-trip tests ---
-
-
-@patch("resources.lib.webdav._get_settings")
-def test_build_webdav_url_special_characters(mock_settings):
-    """Filenames with spaces and special chars should be URL-encoded."""
-    mock_settings.return_value = _SETTINGS_WITH_AUTH
-    filename = "Movie (2024) [1080p].mkv"
-    url = build_webdav_url(filename)
-    # The filename should be URL-encoded in the URL
-    assert "Movie" in url
-    # Verify the encoded filename can be decoded back
-    encoded_part = url.split("/")[-1]
-    assert unquote(encoded_part) == filename
-
-
-@patch("resources.lib.webdav._get_settings")
-def test_get_webdav_stream_url_with_auth(mock_settings):
-    """Stream URL should use Kodi pipe-separated auth header."""
-    mock_settings.return_value = _SETTINGS_WITH_AUTH
-    url, headers = get_webdav_stream_url("movie.mkv")
-    assert url == "http://nzbdav:3000/movie.mkv"
-    import base64
-
-    auth_part = headers["Authorization"].split("Basic ")[1]
-    assert base64.b64decode(auth_part).decode() == "user:pass"
-
-
-@patch("resources.lib.webdav._get_settings")
-def test_get_webdav_stream_url_without_auth(mock_settings):
-    """Stream URL without auth should be a plain URL with empty headers."""
-    mock_settings.return_value = _SETTINGS_NO_AUTH
-    url, headers = get_webdav_stream_url("movie.mkv")
-    assert url == "http://nzbdav:3000/movie.mkv"
-    assert not headers
-
-
-@patch("resources.lib.webdav._get_settings")
-def test_get_webdav_stream_url_special_chars_in_credentials(mock_settings):
-    """Credentials with special chars should be base64-encoded in auth header."""
-    import base64
-
-    mock_settings.return_value = {
-        "webdav_url": "",
-        "nzbdav_url": "http://nzbdav:3000",
-        "username": "user@domain",
-        "password": "p@ss:word",
-    }
-    url, headers = get_webdav_stream_url("movie.mkv")
-    assert url == "http://nzbdav:3000/movie.mkv"
-    auth_part = headers["Authorization"].split("Basic ")[1]
-    assert base64.b64decode(auth_part).decode() == "user@domain:p@ss:word"
+    assert not hasattr(webdav, "build_webdav_url")
+    assert not hasattr(webdav, "get_webdav_stream_url")
+    assert not hasattr(webdav, "check_file_available")
+    assert not hasattr(webdav, "validate_stream")
 
 
 # --- probe_webdav_reachable tests ---

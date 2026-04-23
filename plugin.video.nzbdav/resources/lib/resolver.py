@@ -18,6 +18,7 @@ from resources.lib.i18n import string as _string
 from resources.lib.nzbdav_api import (
     cancel_job,
     find_completed_by_name,
+    find_queued_by_name,
     get_job_history,
     get_job_status,
     submit_nzb,
@@ -29,6 +30,10 @@ from resources.lib.webdav import (
 )
 
 MAX_POLL_ITERATIONS = 720  # 1 hour at 5s interval
+_POLL_INTERVAL_MIN = 1
+_POLL_INTERVAL_MAX = 60
+_DOWNLOAD_TIMEOUT_MIN = 60
+_DOWNLOAD_TIMEOUT_MAX = 86400
 # HTTP status codes the submit retry loop treats as transient and worth
 # retrying. RFC 9110 explicitly calls 408 retry-friendly ("client may
 # assume the server closed the connection due to inactivity and retry").
@@ -53,6 +58,23 @@ _RESOLVE_RUNTIME_ERRORS = (
     TypeError,
     ValueError,
 )
+
+
+def _clamp_int_setting(setting_id, value, lo, hi):
+    """Clamp an integer setting and log when user input was out of range."""
+    clamped = value
+    if value < lo:
+        clamped = lo
+    elif value > hi:
+        clamped = hi
+    if clamped != value:
+        xbmc.log(
+            "NZB-DAV: Setting {}={} out of range [{}..{}]; clamping to {}".format(
+                setting_id, value, lo, hi, clamped
+            ),
+            xbmc.LOGWARNING,
+        )
+    return clamped
 
 
 def _validate_stream_url(url, headers):
@@ -460,19 +482,45 @@ def _get_poll_settings():
     addon = xbmcaddon.Addon()
     interval = int(addon.getSetting("poll_interval") or "5")
     timeout = int(addon.getSetting("download_timeout") or "3600")
+    interval = _clamp_int_setting(
+        "poll_interval", interval, _POLL_INTERVAL_MIN, _POLL_INTERVAL_MAX
+    )
+    timeout = _clamp_int_setting(
+        "download_timeout",
+        timeout,
+        _DOWNLOAD_TIMEOUT_MIN,
+        _DOWNLOAD_TIMEOUT_MAX,
+    )
     return interval, timeout
 
 
 def _storage_to_webdav_path(storage):
     """Convert nzbdav storage path to WebDAV content path.
 
-    /mnt/nzbdav/completed-symlinks/uncategorized/Name -> /content/uncategorized/Name/
+    Handles two server flavours that return different ``storage`` values
+    in their SABnzbd history:
+
+    * Upstream nzbdav (Node): returns a filesystem path like
+      ``/mnt/nzbdav/completed-symlinks/uncategorized/Name``. Strip the
+      mount prefix and re-root under ``/content/``.
+    * nzbdav-rs (Rust port): returns the WebDAV path directly, e.g.
+      ``/content/uncategorized/Name/`` or (no-category submit) just
+      ``/content/Name/``. Pass through as-is with trailing slash.
+
+    Fallback (unknown shape): take the last two path components as
+    ``{category}/{name}`` under ``/content/``. Good enough for
+    SABnzbd-style layouts we haven't seen yet.
     """
+    # nzbdav-rs already returns a /content/... path.
+    if storage.startswith("/content/"):
+        return storage.rstrip("/") + "/"
+
+    # Upstream nzbdav's completed-symlinks layout.
     prefix = "/mnt/nzbdav/completed-symlinks/"
     if storage.startswith(prefix):
         relative = storage[len(prefix) :]
     else:
-        # Fallback: use the last two path components (category/name)
+        # Fallback: use the last two path components (category/name).
         parts = storage.rstrip("/").split("/")
         relative = "/".join(parts[-2:]) if len(parts) >= 2 else parts[-1]
     return "/content/{}/".format(relative)
@@ -573,7 +621,7 @@ def _submit_nzb_with_retries(nzb_url, title, monitor, max_submit_retries=3):
     last_submit_error = None
 
     for attempt in range(1, max_submit_retries + 1):
-        nzo_id, submit_error = submit_nzb(nzb_url, title)
+        nzo_id, submit_error = _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor)
         if nzo_id:
             return nzo_id
 

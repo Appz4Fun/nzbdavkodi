@@ -5,6 +5,7 @@
 
 import json
 import re
+import socket
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 
@@ -13,7 +14,14 @@ import xbmcaddon
 
 from resources.lib.http_util import http_get as _http_get
 
-_DEFAULT_SUBMIT_TIMEOUT = 30
+# nzbdav's /api?mode=addurl handler fetches the .nzb from the indexer,
+# parses the XML, and enumerates segments before returning. On a big
+# REMUX this can routinely exceed 30 s — the previous default caused
+# client-side timeouts for submits that nzbdav had actually accepted
+# and was still processing. 120 s gives nzbdav real headroom while
+# remaining short enough that a truly unreachable backend still
+# surfaces in a reasonable time.
+_DEFAULT_SUBMIT_TIMEOUT = 120
 
 _HTML_TAG_RE = re.compile(r"<[^>]*>")
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -41,13 +49,59 @@ def _get_settings():
     return url, api_key
 
 
+# Hard min/max clamp for submit_timeout. The setting is exposed as
+# free-form text in the Kodi UI, so a typo can produce wildly wrong
+# values (we hit ``submit_timeout=300000`` once — 83 hours, which
+# would let a hung connection block the resolver effectively forever
+# before timing out). 5 s is the absolute minimum that still gives
+# nzbdav time to respond on a healthy LAN; 600 s (10 min) is the
+# absolute maximum that's compatible with the queue-adoption path
+# being effective.
+_SUBMIT_TIMEOUT_MIN = 5
+_SUBMIT_TIMEOUT_MAX = 600
+
+
+def _clamp_int_setting(value, lo, hi):
+    """Clamp an int setting value into [lo, hi]. Used to defend
+    against typo'd setting values cascading into pathological
+    behavior (hour-long timeouts, sub-MB threshold, etc.). Returns
+    ``value`` if already in range, otherwise the nearer bound."""
+    if value < lo:
+        return lo
+    if value > hi:
+        return hi
+    return value
+
+
 def _get_submit_timeout():
-    """Read the configurable submit timeout from settings, default 30s."""
+    """Read the configurable submit timeout from settings, default 120s.
+
+    Clamped to [_SUBMIT_TIMEOUT_MIN, _SUBMIT_TIMEOUT_MAX] so a typo
+    in the Kodi settings UI can't produce a 83-hour timeout."""
     try:
         raw = xbmcaddon.Addon().getSetting("submit_timeout")
-        return int(raw) if raw else _DEFAULT_SUBMIT_TIMEOUT
+        value = int(raw) if raw else _DEFAULT_SUBMIT_TIMEOUT
     except (ValueError, TypeError):
         return _DEFAULT_SUBMIT_TIMEOUT
+    return _clamp_int_setting(value, _SUBMIT_TIMEOUT_MIN, _SUBMIT_TIMEOUT_MAX)
+
+
+def _is_timeout_error(exc):
+    """True if ``exc`` is or wraps a socket/connection timeout.
+
+    Covers both shapes that ``urllib.request.urlopen(..., timeout=N)``
+    can raise: a bare ``socket.timeout`` (which is an alias for
+    ``TimeoutError`` on Python 3.10+) and a ``URLError`` whose
+    ``reason`` attribute is a timeout. Either counts as "client gave
+    up before the server responded" — we want those routed to the
+    queue-adoption path, not the generic retry path.
+    """
+    if isinstance(exc, socket.timeout):
+        return True
+    reason = getattr(exc, "reason", None)
+    if reason is not None and isinstance(reason, socket.timeout):
+        return True
+    return False
 
 
 def submit_nzb(nzb_url, nzb_name=""):
@@ -64,6 +118,14 @@ def submit_nzb(nzb_url, nzb_name=""):
           back as urllib.error.HTTPError): (None, {"status": int,
           "message": str}). The caller classifies by status code to
           decide retry vs surface.
+        - On **client-side timeout** (socket.timeout, or URLError
+          wrapping one): (None, {"status": "timeout", "message": str}).
+          A timeout does NOT mean the submit failed — nzbdav may well
+          have accepted the request and be processing it right now.
+          The caller should check nzbdav's queue / history for a job
+          matching ``nzb_name`` before retrying; a fresh submit would
+          risk either a duplicate rejection or orphaning the
+          in-progress job with a second nzo_id.
         - On non-HTTP errors (network unreachable, JSON decode failure,
           truthy-but-empty response, anything else): (None, None) —
           caller may retry.
@@ -113,10 +175,22 @@ def submit_nzb(nzb_url, nzb_name=""):
         )
         return None, {"status": e.code, "message": body}
     except (
+        socket.timeout,
         URLError,
         json.JSONDecodeError,
         Exception,
     ) as e:  # pylint: disable=broad-except
+        if _is_timeout_error(e):
+            xbmc.log(
+                "NZB-DAV: Submit NZB client-side timeout after {}s — nzbdav "
+                "may have accepted the submit anyway; caller will check "
+                "queue/history for '{}' before retrying".format(timeout, nzb_name),
+                xbmc.LOGWARNING,
+            )
+            return None, {
+                "status": "timeout",
+                "message": "Timed out after {}s".format(timeout),
+            }
         xbmc.log("NZB-DAV: Submit NZB request failed: {}".format(e), xbmc.LOGERROR)
         return None, None
     nzo_ids = response.get("nzo_ids")
@@ -316,6 +390,92 @@ def find_completed_by_name(name):
                     "storage": slot.get("storage", ""),
                     "name": slot.get("name", ""),
                     "nzo_id": slot.get("nzo_id", ""),
+                }
+    return None
+
+
+def find_queued_by_name(name):
+    """Search nzbdav's active queue for a job matching ``name``.
+
+    Used by the resolver's submit path to recover from a client-side
+    submit timeout: when Kodi times out on ``/api?mode=addurl`` but
+    nzbdav actually accepted and started processing the submit,
+    re-submitting would either bounce as a duplicate or orphan the
+    in-progress job with a second ``nzo_id``. Polling the queue for
+    the same ``nzbname`` lets the resolver adopt the existing job
+    instead.
+
+    Args:
+        name: The nzb name (matches the ``nzbname`` parameter passed
+            to ``submit_nzb``). nzbdav echoes this verbatim in queue
+            and history slots.
+
+    Returns:
+        Dict with ``nzo_id``, ``name``, ``status`` on a match, else
+        ``None``. ``None`` also covers every error path: missing
+        settings, network failure, malformed response. The caller
+        should treat ``None`` as "not yet in the queue, keep waiting
+        or retry the submit".
+
+    Side effects:
+        One HTTP GET to nzbdav /api?mode=queue with a short timeout
+        (10 s — this is a recovery-path probe, not the main submit).
+        No retries; the resolver calls this in a short loop after a
+        submit timeout and handles its own pacing.
+    """
+    try:
+        base_url, api_key = _get_settings()
+    except Exception:  # pylint: disable=broad-except
+        return None
+
+    params = {
+        "mode": "queue",
+        "apikey": api_key,
+        "output": "json",
+        "limit": 200,
+    }
+    url = "{}/api?{}".format(base_url, urlencode(params))
+
+    try:
+        response_text = _http_get(url, timeout=10)
+        response = json.loads(response_text)
+    except Exception as e:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: find_queued_by_name request failed: {}".format(e),
+            xbmc.LOGWARNING,
+        )
+        return None
+
+    slots = response.get("queue", {}).get("slots", [])
+    for slot in slots:
+        if slot.get("filename") == name or slot.get("nzo_id_name") == name:
+            xbmc.log(
+                "NZB-DAV: Found '{}' already in nzbdav queue with "
+                "nzo_id={}".format(name, slot.get("nzo_id")),
+                xbmc.LOGINFO,
+            )
+            return {
+                "nzo_id": slot.get("nzo_id", ""),
+                "name": name,
+                "status": slot.get("status", ""),
+            }
+    # Some nzbdav builds report the user-supplied nzbname under "filename"
+    # only after the fetch/parse phase finishes, so a freshly-submitted job
+    # may appear under a different slot key during the first few seconds.
+    # Fall back to a broader scan across any string-valued slot field.
+    for slot in slots:
+        for key in ("filename", "nzo_id_name", "name"):
+            if slot.get(key) == name:
+                xbmc.log(
+                    "NZB-DAV: Found '{}' in queue via {} (nzo_id={})".format(
+                        name, key, slot.get("nzo_id")
+                    ),
+                    xbmc.LOGINFO,
+                )
+                return {
+                    "nzo_id": slot.get("nzo_id", ""),
+                    "name": name,
+                    "status": slot.get("status", ""),
                 }
     return None
 
