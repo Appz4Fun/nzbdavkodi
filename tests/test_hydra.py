@@ -289,3 +289,74 @@ def test_search_hydra_returns_error_on_connection_failure(mock_http, mock_settin
     results, error = search_hydra("movie", "The Matrix")
     assert not results
     assert error == "NZBHydra unavailable: Connection refused"
+
+
+# --- _source_url_hostname + _resolve_indexer coverage ---
+
+
+def test_source_url_hostname_returns_empty_on_empty_input():
+    """Empty or None source URL → empty string, no parse attempt."""
+    from resources.lib.hydra import _source_url_hostname
+
+    assert _source_url_hostname("") == ""
+    assert _source_url_hostname(None) == ""
+
+
+def test_source_url_hostname_returns_input_when_not_url_shaped():
+    """Hydra sometimes puts a plain indexer name in <source url="...">
+    (no slash). Preserve it as the hostname fallback."""
+    from resources.lib.hydra import _source_url_hostname
+
+    assert _source_url_hostname("nzbfinder") == "nzbfinder"
+
+
+def test_source_url_hostname_extracts_host_from_url():
+    """A real URL yields its hostname, shorn of scheme / path."""
+    from resources.lib.hydra import _source_url_hostname
+
+    assert _source_url_hostname("https://nzb.example.com/path") == "nzb.example.com"
+
+
+def test_resolve_indexer_prefers_newznab_attr_over_source_element():
+    """When a Newznab <attr name="indexer"> was parsed, _resolve_indexer
+    returns it directly — no <source> fallback is consulted."""
+    import xml.etree.ElementTree as ET
+
+    from resources.lib.hydra import _resolve_indexer
+
+    item = ET.fromstring(
+        '<item><source>OtherSource</source><source url="https://ignored/" /></item>'
+    )
+    assert _resolve_indexer(item, "PreferredIndexer") == "PreferredIndexer"
+
+
+def test_resolve_indexer_falls_back_to_source_text():
+    """No Newznab attr → use the <source>text</source> body as the
+    display name."""
+    import xml.etree.ElementTree as ET
+
+    from resources.lib.hydra import _resolve_indexer
+
+    item = ET.fromstring("<item><source>FromSourceText</source></item>")
+    assert _resolve_indexer(item, "") == "FromSourceText"
+
+
+def test_resolve_indexer_falls_back_to_source_url_hostname():
+    """No Newznab attr, no source text → derive hostname from
+    <source url="..."/>."""
+    import xml.etree.ElementTree as ET
+
+    from resources.lib.hydra import _resolve_indexer
+
+    item = ET.fromstring('<item><source url="https://nzb.example.com/path" /></item>')
+    assert _resolve_indexer(item, "") == "nzb.example.com"
+
+
+def test_resolve_indexer_returns_empty_when_no_source_at_all():
+    """No attr, no <source> element at all → empty string."""
+    import xml.etree.ElementTree as ET
+
+    from resources.lib.hydra import _resolve_indexer
+
+    item = ET.fromstring("<item><title>No source info</title></item>")
+    assert _resolve_indexer(item, "") == ""
