@@ -1635,30 +1635,37 @@ class _StreamHandler(BaseHTTPRequestHandler):
         # guarantee before the main thread reads stderr_chunks.
         stderr_chunks, stderr_thread = self._start_stderr_drain(proc)
 
-        # Send response headers.
-        # Matroska-only response. Piped MKV has no Cues so advertising
-        # byte-range would only disable Kodi's cache-based fallback
-        # without enabling real seek. Stay on live-stream semantics;
-        # duration is still embedded in the MKV header so Kodi's
-        # progress bar is accurate.
-        self._send_close_response_headers(200, "video/x-matroska", "none")
-
-        # Give the socket a write timeout.  If Kodi stops consuming bytes
-        # without closing the TCP connection — which happens when Kodi's
-        # decoder is stalled by a long operation like a DB vacuum and the
-        # player enters limbo instead of firing onPlayBackStopped — the
-        # socket send buffer fills up and wfile.write() would block forever.
-        # A timeout here guarantees the loop eventually raises, runs the
-        # finally block, and kills ffmpeg instead of leaving a zombie.
-        try:
-            self.connection.settimeout(_REMUX_WRITE_TIMEOUT)
-        except (OSError, AttributeError):
-            pass
-
-        # Stream ffmpeg output to Kodi.  Duration is written into the MKV
-        # header by ffmpeg via -metadata DURATION= (see _build_ffmpeg_cmd).
+        # Everything from header-send through the streaming loop goes in
+        # a single try/finally that always runs _finish_remux. Previously
+        # _send_close_response_headers ran as a bare statement before the
+        # try block; if it raised (socket dead, client disconnected mid-
+        # handshake) ffmpeg + stderr thread leaked until garbage
+        # collection, potentially hundreds of MB of RSS under heavy load.
         total = 0
         try:
+            # Matroska-only response. Piped MKV has no Cues so advertising
+            # byte-range would only disable Kodi's cache-based fallback
+            # without enabling real seek. Stay on live-stream semantics;
+            # duration is still embedded in the MKV header so Kodi's
+            # progress bar is accurate.
+            self._send_close_response_headers(200, "video/x-matroska", "none")
+
+            # Give the socket a write timeout.  If Kodi stops consuming
+            # bytes without closing the TCP connection — which happens
+            # when Kodi's decoder is stalled by a long operation like a
+            # DB vacuum and the player enters limbo instead of firing
+            # onPlayBackStopped — the socket send buffer fills up and
+            # wfile.write() would block forever.  A timeout here
+            # guarantees the loop eventually raises, runs the finally
+            # block, and kills ffmpeg instead of leaving a zombie.
+            try:
+                self.connection.settimeout(_REMUX_WRITE_TIMEOUT)
+            except (OSError, AttributeError):
+                pass
+
+            # Stream ffmpeg output to Kodi.  Duration is written into the
+            # MKV header by ffmpeg via -metadata DURATION= (see
+            # _build_ffmpeg_cmd).
             total = self._stream_remux_output(ctx, proc, lock, requested_start)
         finally:
             self._finish_remux(ctx, proc, lock, stderr_chunks, stderr_thread, total)
@@ -1860,23 +1867,32 @@ class _StreamHandler(BaseHTTPRequestHandler):
         # Pick Content-Type based on session segment format so HEAD
         # and GET agree. fmp4 segments are video/mp4; legacy mpegts
         # segments are video/mp2t.
+        #
+        # Wrap everything from send_response through the read loop in
+        # ``with seg_file``. Previously the file was opened + fstat'd,
+        # THEN send_response/end_headers/settimeout ran as bare
+        # statements before the ``with`` block, so any exception from
+        # those header calls (socket dead, client gone) would leak the
+        # file descriptor. The surrounding ``with`` now guarantees
+        # close on every exit path, caught exception or re-raise.
         seg_fmt = ctx.get("hls_segment_format", "mpegts")
         content_type = "video/mp4" if seg_fmt == "fmp4" else "video/mp2t"
-        self.send_response(200)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(content_length))
-        self.send_header("Connection", "close")
-        self.close_connection = True
-        self.end_headers()
-
-        try:
-            self.connection.settimeout(_REMUX_WRITE_TIMEOUT)
-        except (OSError, AttributeError):
-            pass
 
         total = 0
         try:
             with seg_file as f:
+                self.send_response(200)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(content_length))
+                self.send_header("Connection", "close")
+                self.close_connection = True
+                self.end_headers()
+
+                try:
+                    self.connection.settimeout(_REMUX_WRITE_TIMEOUT)
+                except (OSError, AttributeError):
+                    pass
+
                 while True:
                     chunk = f.read(65536)
                     if not chunk:
