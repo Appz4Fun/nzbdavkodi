@@ -46,6 +46,11 @@ plugin.video.nzbdav-*.zip
 
 # dev docs
 devdocs
+#
+# Ignore any file or directory name that starts with "." or "-"
+.*
+-*
+!/.gitignore
 
 
 
