@@ -20,7 +20,19 @@ def redact_url(url):
 
 
 def http_get(url, timeout=15):
-    """Perform an HTTP GET and return the response body as text."""
+    """Perform an HTTP GET and return the response body as text.
+
+    Strict UTF-8 decode is deliberate: every caller (hydra, prowlarr,
+    nzbdav_api, router's connection tests) wraps this in a broad
+    exception handler, so a ``UnicodeDecodeError`` (a ValueError
+    subclass) is surfaced as a connection/parse failure rather than
+    silently producing garbled payloads that would fail further
+    downstream with a much less helpful error. Log / stderr paths
+    elsewhere in the codebase intentionally use ``errors="replace"``
+    — those are diagnostic and we'd rather keep partial context than
+    raise — but this function feeds parsers (XML/JSON/Newznab) where
+    silent corruption causes real bugs.
+    """
     req = Request(url)
     with urlopen(
         req, timeout=timeout
