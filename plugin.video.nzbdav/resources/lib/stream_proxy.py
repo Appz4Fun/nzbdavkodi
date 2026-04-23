@@ -4299,6 +4299,7 @@ class StreamProxy:
             ]
         )
 
+        proc = None
         try:
             xbmc.log("NZB-DAV: Temp-file faststart remux starting", xbmc.LOGINFO)
             proc = subprocess.Popen(
@@ -4315,8 +4316,36 @@ class StreamProxy:
                 return None
             if os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
                 return temp_path
+        except subprocess.TimeoutExpired as e:
+            # communicate() timing out does NOT kill the child. Without
+            # an explicit kill + reap, the ffmpeg process orphans and
+            # holds the output fd + the inbound HTTP socket, potentially
+            # for hours until something external notices. Kill + drain
+            # the pipe before the exception propagates; .communicate()
+            # on the already-killed proc is the documented reap idiom.
+            xbmc.log(
+                "NZB-DAV: Temp faststart timed out after 600s; killing ffmpeg "
+                "(reason=temp_faststart_timeout)",
+                xbmc.LOGWARNING,
+            )
+            try:
+                proc.kill()
+                proc.communicate(timeout=5)
+            except (OSError, subprocess.SubprocessError):
+                pass
+            _ = e  # keep linters quiet; exception detail already logged
         except (OSError, subprocess.SubprocessError) as e:
             xbmc.log("NZB-DAV: Temp faststart error: {}".format(e), xbmc.LOGWARNING)
+            # Non-timeout subprocess errors usually mean Popen itself
+            # failed or communicate() hit a pipe error. Still try to
+            # reap the child defensively — it's cheap when the proc
+            # already exited and essential when it didn't.
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.kill()
+                    proc.communicate(timeout=5)
+                except (OSError, subprocess.SubprocessError):
+                    pass
         if os.path.exists(temp_path):
             try:
                 os.remove(temp_path)
