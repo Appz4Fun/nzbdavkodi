@@ -98,12 +98,12 @@
 		<setting label="30118" type="lsep" />
 		<setting id="proxy_convert_subs" label="30119" type="bool" default="true" />
 		<setting id="force_remux_threshold_mb" label="30123" type="number" default="20000" />
-		<setting id="force_remux_mode" label="30125" type="enum" default="0" lvalues="30126|30127" />
-		<setting label="30128" type="lsep" />
-		<setting id="strict_contract_mode" label="30129" type="enum" default="1" lvalues="30130|30131|30132" />
-		<setting id="density_breaker_enabled" label="30133" type="bool" default="false" />
-		<setting id="zero_fill_budget_enabled" label="30134" type="bool" default="true" />
-		<setting id="retry_ladder_enabled" label="30135" type="bool" default="true" />
-		<setting id="send_200_no_range" label="30136" type="bool" default="false" />
+		<setting id="force_remux_mode" label="30140" type="enum" default="0" lvalues="30141|30142" />
+		<setting label="30143" type="lsep" />
+		<setting id="strict_contract_mode" label="30144" type="enum" default="1" lvalues="30145|30146|30147" />
+		<setting id="density_breaker_enabled" label="30148" type="bool" default="false" />
+		<setting id="zero_fill_budget_enabled" label="30149" type="bool" default="true" />
+		<setting id="retry_ladder_enabled" label="30150" type="bool" default="true" />
+		<setting id="send_200_no_range" label="30151" type="bool" default="false" />
 	</category>
 </settings>
