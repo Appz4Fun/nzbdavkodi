@@ -495,3 +495,176 @@ def test_handle_search_shows_hydra_errors_in_modal_dialog(
         "NZB-DAV", "NZBHydra unavailable"
     )
     mock_end.assert_called_once_with(1, succeeded=False)
+
+
+# --- _safe_resolve_handle boundary tests ---
+
+
+@patch("xbmcplugin.setResolvedUrl")
+@patch("xbmcgui.ListItem")
+def test_safe_resolve_handle_resolves_zero_handle(mock_listitem, mock_resolved):
+    """Handle 0 is a valid Kodi handle (first plugin invocation in a
+    session) — must resolve, not be skipped like -1."""
+    mock_listitem.return_value = "fake_listitem"
+    _safe_resolve_handle(0)
+    mock_resolved.assert_called_once_with(0, False, "fake_listitem")
+
+
+@patch("xbmcplugin.setResolvedUrl")
+def test_safe_resolve_handle_skips_arbitrary_negative_handle(mock_resolved):
+    """Any negative handle is treated as a RunPlugin-style no-handle
+    invocation. Guards against Kodi passing an unexpected sentinel."""
+    _safe_resolve_handle(-42)
+    mock_resolved.assert_not_called()
+
+
+# --- _handle_play direct coverage for happy path + edge cases ---
+
+
+def _install_progress_dialog_that_wont_cancel():
+    """Return a non-cancelling DialogProgress mock.
+
+    The global ``xbmcgui`` MagicMock returns MagicMock for every
+    attribute, so ``progress.iscanceled()`` normally evaluates truthy
+    and every ``_handle_play`` / ``_handle_search`` test would fall
+    into the cancelled-by-user branch before reaching the real code
+    under test. Calling this in each direct-handler test pins
+    iscanceled() to False."""
+    import xbmcgui
+
+    progress_instance = MagicMock()
+    progress_instance.iscanceled.return_value = False
+    xbmcgui.DialogProgress.return_value = progress_instance
+    return progress_instance
+
+
+def _stub_setting(value):
+    """Return a ``getSetting`` stub that returns ``value`` for every key.
+
+    Used inside ``@patch("xbmcaddon.Addon")`` blocks to give the addon a
+    predictable getSetting payload without mutating the global xbmcaddon
+    MagicMock (which would leak into later tests — notably
+    ``test_stream_proxy`` reads many settings with different expected
+    shapes and can't tolerate a one-size-fits-all override)."""
+    return lambda *args, **kwargs: value
+
+
+@patch("xbmcplugin.setResolvedUrl")
+@patch("xbmcgui.ListItem")
+@patch("resources.lib.http_util.notify")
+@patch("resources.lib.router._search_all_providers", return_value=([], None))
+@patch("resources.lib.cache.get_cached", return_value=None)
+def test_handle_play_notifies_when_no_results(
+    mock_cache, mock_search, mock_notify, mock_listitem, mock_resolved
+):
+    """When both cache and live search return zero results, _handle_play
+    must surface the 'no results' notification AND resolve the handle
+    (never leave Kodi hanging). Patches ``_search_all_providers`` rather
+    than ``hydra.search_hydra`` to sidestep the provider-enabled settings
+    lookup entirely."""
+    _install_progress_dialog_that_wont_cancel()
+    mock_listitem.return_value = "li"
+
+    _handle_play(3, {"type": "movie", "title": "Obscure Movie"})
+
+    assert mock_notify.called, "no-results path must notify the user"
+    mock_resolved.assert_called_once_with(3, False, "li")
+
+
+@patch("xbmcaddon.Addon")
+@patch("xbmcplugin.setResolvedUrl")
+@patch("xbmcgui.ListItem")
+@patch("resources.lib.results_dialog.show_results_dialog", return_value=None)
+@patch("resources.lib.filter.filter_results")
+@patch("resources.lib.router._search_all_providers")
+@patch("resources.lib.router._tag_available")
+@patch("resources.lib.cache.get_cached", return_value=None)
+def test_handle_play_resolves_handle_when_user_cancels_picker(
+    mock_cache,
+    mock_tag,
+    mock_search,
+    mock_filter,
+    mock_dialog,
+    mock_listitem,
+    mock_resolved,
+    mock_addon,
+):
+    """User cancels the results picker dialog → return selected=None.
+    _handle_play must call setResolvedUrl(False) so Kodi unblocks."""
+    _install_progress_dialog_that_wont_cancel()
+    # auto_select_best must be falsy so we land in the picker branch.
+    mock_addon.return_value.getSetting.side_effect = _stub_setting("false")
+
+    mock_listitem.return_value = "li"
+    results = [{"title": "Some.Release.mkv", "link": "http://hydra/nzb/1"}]
+    mock_search.return_value = (results, None)
+    mock_filter.return_value = (results, results)
+
+    _handle_play(4, {"type": "movie", "title": "The Matrix"})
+
+    mock_dialog.assert_called_once()
+    mock_resolved.assert_called_once_with(4, False, "li")
+
+
+@patch("xbmcaddon.Addon")
+@patch("xbmcplugin.setResolvedUrl")
+@patch("xbmcgui.ListItem")
+@patch("resources.lib.resolver.resolve")
+@patch("resources.lib.results_dialog.show_results_dialog")
+@patch("resources.lib.filter.filter_results")
+@patch("resources.lib.router._search_all_providers")
+@patch("resources.lib.router._tag_available")
+@patch("resources.lib.cache.get_cached", return_value=None)
+def test_handle_play_happy_path_invokes_resolve(
+    mock_cache,
+    mock_tag,
+    mock_search,
+    mock_filter,
+    mock_dialog,
+    mock_resolve,
+    mock_listitem,
+    mock_resolved,
+    mock_addon,
+):
+    """Happy path: search returns results, filter keeps them, user picks
+    one in the dialog → resolver.resolve() is invoked with the chosen
+    nzburl/title. This is the path every successful TMDBHelper click
+    takes and it wasn't directly covered before."""
+    _install_progress_dialog_that_wont_cancel()
+    mock_addon.return_value.getSetting.side_effect = _stub_setting("false")
+
+    mock_listitem.return_value = "li"
+    chosen = {"title": "Matrix.1999.mkv", "link": "http://hydra/nzb/x"}
+    results = [chosen]
+    mock_search.return_value = (results, None)
+    mock_filter.return_value = (results, results)
+    mock_dialog.return_value = chosen
+
+    _handle_play(5, {"type": "movie", "title": "The Matrix", "year": "1999"})
+
+    mock_resolve.assert_called_once()
+    args, _kwargs = mock_resolve.call_args
+    assert args[0] == 5
+    assert args[1]["nzburl"] == chosen["link"]
+    assert args[1]["title"] == chosen["title"]
+
+
+# --- _handle_search direct coverage for no-results path ---
+
+
+@patch("xbmcplugin.endOfDirectory")
+@patch("resources.lib.http_util.notify")
+@patch("resources.lib.router._search_all_providers", return_value=([], None))
+@patch("resources.lib.cache.get_cached", return_value=None)
+def test_handle_search_notifies_and_ends_directory_when_no_results(
+    mock_cache, mock_search, mock_notify, mock_end
+):
+    """_handle_search with empty results must both notify AND close the
+    directory listing via endOfDirectory — leaving it open hangs Kodi's
+    spinner indefinitely."""
+    _install_progress_dialog_that_wont_cancel()
+
+    _handle_search(6, {"type": "movie", "title": "Nonexistent Film"})
+
+    assert mock_notify.called
+    mock_end.assert_called_once_with(6, succeeded=False)
