@@ -3325,8 +3325,18 @@ class HlsProducer:
         # cross-reference with the kodi.log "session_id=..." lines.
         try:
             self._archive_ffmpeg_log()
-        except Exception:  # pylint: disable=broad-except
-            pass
+        except Exception as e:  # pylint: disable=broad-except
+            # _archive_ffmpeg_log's whole purpose is preserving the
+            # session log for post-mortem debugging. Swallowing its
+            # own failure silently defeats that goal — log at debug
+            # so the user can diagnose "why isn't my ffmpeg.log
+            # archived?" when it matters.
+            xbmc.log(
+                "NZB-DAV: Failed to archive ffmpeg.log for session {}: {}".format(
+                    getattr(self, "session_dir", "?"), e
+                ),
+                xbmc.LOGDEBUG,
+            )
         try:
             import shutil as _shutil
 
