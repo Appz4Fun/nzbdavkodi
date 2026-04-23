@@ -8,9 +8,14 @@ from resources.lib.router import (
     _clean_params,
     _format_info_line,
     _format_size,
+    _get_tmdb_poster,
     _handle_play,
     _handle_search,
     _safe_resolve_handle,
+    _test_connection,
+    _test_hydra_connection,
+    _test_nzbdav_connection,
+    _test_prowlarr_connection,
     parse_params,
     parse_route,
     route,
@@ -668,3 +673,179 @@ def test_handle_search_notifies_and_ends_directory_when_no_results(
 
     assert mock_notify.called
     mock_end.assert_called_once_with(6, succeeded=False)
+
+
+# --- _test_connection and per-provider connection tests ---
+
+
+@patch("resources.lib.http_util.notify")
+@patch("resources.lib.http_util.http_get")
+def test_test_connection_reports_ok_when_condition_true(mock_http_get, mock_notify):
+    """_test_connection notifies 'OK' when ok_condition(response) is True."""
+    mock_http_get.return_value = "<caps><server/></caps>"
+    _test_connection(
+        "NZBHydra",
+        "http://hydra:5076",
+        "http://hydra:5076/api?apikey=secret&t=caps",
+        lambda r: "<caps>" in r,
+    )
+    # Find the OK notify. notify() receives (heading, message, duration).
+    msgs = [c.args[1] for c in mock_notify.call_args_list]
+    assert any("OK" in m for m in msgs), msgs
+
+
+@patch("resources.lib.http_util.notify")
+@patch("resources.lib.http_util.http_get")
+def test_test_connection_reports_unexpected_when_condition_false(
+    mock_http_get, mock_notify
+):
+    """_test_connection notifies 'unexpected response' when ok_condition False."""
+    mock_http_get.return_value = "<html>login required</html>"
+    _test_connection(
+        "NZBHydra",
+        "http://hydra:5076",
+        "http://hydra:5076/api?apikey=secret&t=caps",
+        lambda r: "<caps>" in r,
+    )
+    msgs = [c.args[1] for c in mock_notify.call_args_list]
+    assert any("unexpected response" in m for m in msgs), msgs
+
+
+@patch("resources.lib.http_util.notify")
+def test_test_connection_bails_early_when_url_empty(mock_notify):
+    """Empty url should short-circuit to a 'not configured' notification
+    — never issue an HTTP request."""
+    _test_connection("Prowlarr", "", "http://example/api", lambda _r: True)
+    msgs = [c.args[1] for c in mock_notify.call_args_list]
+    assert any("not configured" in m for m in msgs), msgs
+
+
+@patch("resources.lib.http_util.notify")
+@patch("resources.lib.http_util.http_get")
+def test_test_connection_redacts_api_key_on_error(mock_http_get, mock_notify):
+    """Exception messages sometimes embed the full URL (with apikey).
+    _test_connection must redact the key before surfacing it."""
+
+    class _UrlLeakingError(Exception):
+        pass
+
+    test_url = "http://hydra:5076/api?apikey=SUPERSECRET123&t=caps"
+    mock_http_get.side_effect = _UrlLeakingError(
+        "HTTP 401 for url: {}".format(test_url)
+    )
+    _test_connection("NZBHydra", "http://hydra:5076", test_url, lambda _r: True)
+    msgs = [c.args[1] for c in mock_notify.call_args_list]
+    assert all("SUPERSECRET123" not in m for m in msgs), msgs
+
+
+@patch("resources.lib.router._test_connection")
+@patch("xbmcaddon.Addon")
+def test_test_hydra_connection_wires_caps_endpoint(mock_addon, mock_test):
+    """_test_hydra_connection builds the /api?t=caps URL and checks for
+    ``<caps>`` / ``<server`` in the response via _test_connection."""
+    mock_addon.return_value.getSetting.side_effect = lambda k: {
+        "hydra_url": "http://hydra:5076",
+        "hydra_api_key": "abc",
+    }.get(k, "")
+
+    _test_hydra_connection()
+
+    mock_test.assert_called_once()
+    label, url, test_url, ok_cond = mock_test.call_args[0]
+    assert label == "NZBHydra"
+    assert url == "http://hydra:5076"
+    assert "t=caps" in test_url
+    assert "apikey=abc" in test_url
+    # ok_cond accepts either <caps> or <server
+    assert ok_cond("<caps><server/></caps>") is True
+    assert ok_cond("<rss><channel/></rss>") is False
+
+
+@patch("resources.lib.router._test_connection")
+@patch("xbmcaddon.Addon")
+def test_test_nzbdav_connection_wires_version_endpoint(mock_addon, mock_test):
+    """_test_nzbdav_connection builds the SABnzbd-compatible mode=version
+    URL and checks the response contains the ``version`` key."""
+    mock_addon.return_value.getSetting.side_effect = lambda k: {
+        "nzbdav_url": "http://nzbdav:6789",
+        "nzbdav_api_key": "xyz",
+    }.get(k, "")
+
+    _test_nzbdav_connection()
+
+    mock_test.assert_called_once()
+    label, url, test_url, ok_cond = mock_test.call_args[0]
+    assert label == "nzbdav"
+    assert url == "http://nzbdav:6789"
+    assert "mode=version" in test_url
+    assert "apikey=xyz" in test_url
+    assert ok_cond('{"version": "1.0"}') is True
+    assert ok_cond("nope") is False
+
+
+@patch("resources.lib.http_util.notify")
+@patch("resources.lib.http_util.http_get")
+@patch("xbmcaddon.Addon")
+def test_test_prowlarr_connection_reports_ok(mock_addon, mock_http_get, mock_notify):
+    """_test_prowlarr_connection hits /api/v1/indexer and notifies OK when
+    the response looks JSON-shaped."""
+    mock_addon.return_value.getSetting.side_effect = lambda k: {
+        "prowlarr_host": "http://prowlarr:9696",
+        "prowlarr_api_key": "zzz",
+    }.get(k, "")
+    mock_http_get.return_value = '[{"id": 1}]'
+
+    _test_prowlarr_connection()
+
+    called_url = mock_http_get.call_args[0][0]
+    assert "/api/v1/indexer" in called_url
+    assert "apikey=zzz" in called_url
+    msgs = [c.args[1] for c in mock_notify.call_args_list]
+    assert any("OK" in m for m in msgs), msgs
+
+
+@patch("resources.lib.http_util.notify")
+@patch("xbmcaddon.Addon")
+def test_test_prowlarr_connection_bails_when_host_empty(mock_addon, mock_notify):
+    """No prowlarr_host → notify 'not configured' and return without HTTP."""
+    mock_addon.return_value.getSetting.side_effect = lambda k: ""
+
+    _test_prowlarr_connection()
+
+    msgs = [c.args[1] for c in mock_notify.call_args_list]
+    assert any("not configured" in m for m in msgs), msgs
+
+
+# --- _get_tmdb_poster tests ---
+
+
+def test_get_tmdb_poster_rejects_non_imdb_input():
+    """Non-IMDb strings (empty, numeric-only, malformed) must not trigger
+    a network call and must return ''."""
+    assert _get_tmdb_poster("") == ""
+    assert _get_tmdb_poster("not-an-id") == ""
+    assert _get_tmdb_poster("12345") == ""  # missing tt prefix
+
+
+@patch("urllib.request.urlopen")
+def test_get_tmdb_poster_returns_image_url_from_suggestion_api(mock_urlopen):
+    """A valid tt-prefixed imdb_id triggers a lookup; when the API
+    returns an imageUrl, _get_tmdb_poster returns it."""
+    resp = MagicMock()
+    resp.read.return_value = (
+        b'{"d": [{"i": {"imageUrl": "https://example.com/poster.jpg"}}]}'
+    )
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=False)
+    mock_urlopen.return_value = resp
+
+    url = _get_tmdb_poster("tt0133093")
+    assert url == "https://example.com/poster.jpg"
+
+
+@patch("urllib.request.urlopen")
+def test_get_tmdb_poster_returns_empty_on_api_error(mock_urlopen):
+    """Network failure must be swallowed and return '' — this runs on a
+    UI thread in settings and must never raise."""
+    mock_urlopen.side_effect = OSError("connection refused")
+    assert _get_tmdb_poster("tt0133093") == ""
