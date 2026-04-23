@@ -342,6 +342,44 @@ def main():
     while not monitor.abortRequested():
         if monitor.waitForAbort(1):
             break
+
+        # Proxy health check: the HTTP server runs in a daemon thread.
+        # If the serve_forever loop ever exits (unhandled exception,
+        # socket error, rare memory-pressure path), every subsequent
+        # /prepare call from the plugin side hangs on "connection
+        # refused" with no log hint and no recovery. Detect the dead
+        # thread and rebuild the proxy so streams keep working.
+        if not proxy.is_alive():
+            xbmc.log(
+                "NZB-DAV: Stream proxy thread is dead; restarting "
+                "(reason=proxy_thread_died)",
+                xbmc.LOGERROR,
+            )
+            try:
+                proxy.stop()
+            except Exception:  # pylint: disable=broad-except
+                pass
+            proxy = StreamProxy()
+            try:
+                proxy.start()
+            except Exception as e:  # pylint: disable=broad-except
+                xbmc.log(
+                    "NZB-DAV: Stream proxy restart failed: {} "
+                    "(reason=proxy_restart_failed)".format(e),
+                    xbmc.LOGERROR,
+                )
+                _HOME_WINDOW.clearProperty(_PROP_PROXY_PORT)
+            else:
+                _HOME_WINDOW.setProperty(_PROP_PROXY_PORT, str(proxy.port))
+                # The player holds a reference to the old proxy for
+                # cleanup calls from onPlayBackStopped; point it at the
+                # new one so the next stop() fires on the live proxy.
+                player._proxy = proxy  # pylint: disable=protected-access
+                xbmc.log(
+                    "NZB-DAV: Stream proxy restarted on port {}".format(proxy.port),
+                    xbmc.LOGINFO,
+                )
+
         try:
             player.tick()
             consecutive_tick_failures = 0

@@ -3371,6 +3371,25 @@ class StreamProxy:
             xbmc.LOGINFO,
         )
 
+    def is_alive(self):
+        """True iff the proxy's HTTP server thread is still serving.
+
+        Returns False when either:
+        - The proxy hasn't been started yet (``_thread`` is None).
+        - The serve_forever thread has exited for any reason —
+          normal stop(), or an unhandled exception in the socket
+          accept loop (rare but has happened historically on
+          memory-pressure paths).
+
+        The service loop polls this once a second and restarts the
+        proxy when it drops to False so a crashed listener doesn't
+        silently wedge every subsequent /prepare call.
+        """
+        thread = self._thread
+        if thread is None:
+            return False
+        return thread.is_alive()
+
     def stop(self):
         """Stop the proxy server.
 
