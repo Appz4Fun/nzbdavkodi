@@ -3196,10 +3196,20 @@ class StreamProxy:
         )
 
     def stop(self):
-        """Stop the proxy server."""
+        """Stop the proxy server.
+
+        ``TCPServer.shutdown()`` only signals ``serve_forever`` to exit;
+        it does NOT close the listening socket. Pair it with
+        ``server_close()`` so the socket file descriptor is released
+        immediately. Otherwise the listener lingers until Python's GC
+        runs, which surfaces as ``ResourceWarning: unclosed socket`` in
+        the test suite and (more importantly) holds the port across a
+        rapid stop/start cycle on the real service.
+        """
         self.clear_sessions()
         if self._server:
             self._server.shutdown()
+            self._server.server_close()
             self._server = None
         if self._thread:
             self._thread.join(timeout=5)
