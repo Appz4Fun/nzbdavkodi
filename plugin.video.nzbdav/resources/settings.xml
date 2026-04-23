@@ -10,6 +10,7 @@
 		<setting id="nzbdav_api_key" label="30003" type="text" default="" option="hidden" />
 		<setting label="30114" type="action" action="RunPlugin(plugin://plugin.video.nzbdav/test_nzbdav)" option="close" />
 		<setting label="30006" type="lsep" />
+		<setting id="webdav_url" label="30124" type="text" default="" />
 		<setting id="webdav_username" label="30008" type="text" default="" />
 		<setting id="webdav_password" label="30009" type="text" default="" option="hidden" />
 	</category>
@@ -89,6 +90,6 @@
 		<setting id="stream_retry_delay" label="30076" type="number" default="5" />
 		<setting label="30118" type="lsep" />
 		<setting id="proxy_convert_subs" label="30119" type="bool" default="true" />
-		<setting id="force_remux_threshold_mb" label="30123" type="number" default="0" />
+		<setting id="force_remux_threshold_mb" label="30123" type="number" default="20000" />
 	</category>
 </settings>

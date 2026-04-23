@@ -234,7 +234,12 @@ def _build_fake_videos_db(tmp_path):
 
 @patch("resources.lib.resolver.xbmc")
 def test_clear_kodi_playback_state_deletes_tmdb_helper_url(mock_xbmc, tmp_path):
-    """Clearing with tmdb_id deletes TMDBHelper URLs regardless of param order."""
+    """Clearing with tmdb_id deletes bookmarks for matching TMDBHelper URLs.
+
+    Only ``bookmark`` rows are removed; the ``files`` rows themselves must
+    stay intact so the mutation to Kodi's primary DB is as narrow as
+    possible. Regression test for ISSUE_REPORT.md C5.
+    """
     import sqlite3
     import sys
 
@@ -257,6 +262,12 @@ def test_clear_kodi_playback_state_deletes_tmdb_helper_url(mock_xbmc, tmp_path):
         cur.execute(
             "INSERT INTO bookmark (idFile, timeInSeconds) VALUES (?, 100.0)", (i,)
         )
+        cur.execute("INSERT INTO settings (idFile, ResumeTime) VALUES (?, 100)", (i,))
+        cur.execute(
+            "INSERT INTO streamdetails (idFile, iStreamType, strVideoCodec) "
+            "VALUES (?, 0, 'h264')",
+            (i,),
+        )
     conn.commit()
     conn.close()
 
@@ -272,21 +283,35 @@ def test_clear_kodi_playback_state_deletes_tmdb_helper_url(mock_xbmc, tmp_path):
 
     conn = sqlite3.connect(str(db))
     cur = conn.cursor()
+    # files rows must all still be present — we only touch bookmark.
     cur.execute("SELECT strFilename FROM files ORDER BY idFile")
     remaining = [row[0] for row in cur.fetchall()]
+    assert set(remaining) == set(
+        urls
+    ), "files table must not be mutated — only bookmark rows should be removed"
+    # settings / streamdetails rows must also be preserved.
+    cur.execute("SELECT COUNT(*) FROM settings")
+    assert cur.fetchone()[0] == len(urls), "settings table must not be mutated"
+    cur.execute("SELECT COUNT(*) FROM streamdetails")
+    assert cur.fetchone()[0] == len(urls), "streamdetails table must not be mutated"
+    # The two matching TMDBHelper URLs must have their bookmark rows gone;
+    # the 3891-id row and the unrelated nzbdav row must keep theirs.
+    cur.execute("SELECT idFile FROM bookmark ORDER BY idFile")
+    remaining_bookmarks = {row[0] for row in cur.fetchall()}
     conn.close()
-
-    # The two matching TMDBHelper URLs should be gone.
-    # 3891 (different id) and the unrelated nzbdav URL should remain.
-    assert urls[0] not in remaining
-    assert urls[1] not in remaining
-    assert urls[2] in remaining
-    assert urls[3] in remaining
+    assert 1 not in remaining_bookmarks, "bookmark for tmdb_id=389 (v1) should be gone"
+    assert 2 not in remaining_bookmarks, "bookmark for tmdb_id=389 (v2) should be gone"
+    assert 3 in remaining_bookmarks, "bookmark for tmdb_id=3891 should remain"
+    assert 4 in remaining_bookmarks, "bookmark for unrelated URL should remain"
 
 
 @patch("resources.lib.resolver.xbmc")
 def test_clear_kodi_playback_state_deletes_own_plugin_url(mock_xbmc, tmp_path):
-    """Clearing without tmdb_id still deletes our own plugin URL entry."""
+    """Clearing without tmdb_id deletes the bookmark for our own plugin URL.
+
+    The ``files`` row is preserved; only the ``bookmark`` row is removed.
+    Regression test for ISSUE_REPORT.md C5.
+    """
     import sqlite3
     import sys
 
@@ -299,6 +324,11 @@ def test_clear_kodi_playback_state_deletes_own_plugin_url(mock_xbmc, tmp_path):
         "INSERT INTO files (idFile, idPath, strFilename) VALUES (1, 1, ?)", (own_url,)
     )
     cur.execute("INSERT INTO bookmark (idFile, timeInSeconds) VALUES (1, 50.0)")
+    cur.execute("INSERT INTO settings (idFile, ResumeTime) VALUES (1, 50)")
+    cur.execute(
+        "INSERT INTO streamdetails (idFile, iStreamType, strVideoCodec) "
+        "VALUES (1, 0, 'h264')"
+    )
     conn.commit()
     conn.close()
 
@@ -321,10 +351,93 @@ def test_clear_kodi_playback_state_deletes_own_plugin_url(mock_xbmc, tmp_path):
     file_count = cur.fetchone()[0]
     cur.execute("SELECT COUNT(*) FROM bookmark")
     bookmark_count = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM settings")
+    settings_count = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM streamdetails")
+    streamdetails_count = cur.fetchone()[0]
     conn.close()
 
-    assert file_count == 0
-    assert bookmark_count == 0
+    assert file_count == 1, "files row must be preserved"
+    assert bookmark_count == 0, "bookmark row must be deleted"
+    assert settings_count == 1, "settings row must be preserved"
+    assert streamdetails_count == 1, "streamdetails row must be preserved"
+
+
+@patch("resources.lib.resolver.xbmc")
+def test_clear_kodi_playback_state_escapes_like_wildcards(mock_xbmc, tmp_path):
+    """tmdb_id containing LIKE wildcards must not match unrelated rows.
+
+    A raw LIKE pattern with % or _ in user-controlled tmdb_id would match
+    arbitrary TMDBHelper rows. Regression test for ISSUE_REPORT.md M5 / C5.
+    """
+    import sqlite3
+    import sys
+
+    mock_xbmc.Player.return_value.isPlayingVideo.return_value = False
+    db = _build_fake_videos_db(tmp_path)
+    conn = sqlite3.connect(str(db))
+    cur = conn.cursor()
+    tmdb_base = "plugin://plugin.video.themoviedb.helper/?info=play"
+    urls = [
+        tmdb_base + "&tmdb_id=12345",  # would match LIKE '%tmdb_id=%%'
+        tmdb_base + "&tmdb_id=99999",
+    ]
+    for i, url in enumerate(urls, start=1):
+        cur.execute(
+            "INSERT INTO files (idFile, idPath, strFilename) VALUES (?, 1, ?)",
+            (i, url),
+        )
+        cur.execute(
+            "INSERT INTO bookmark (idFile, timeInSeconds) VALUES (?, 100.0)", (i,)
+        )
+    conn.commit()
+    conn.close()
+
+    fake_argv = ["plugin://plugin.video.nzbdav/play", "1", "?tmdb_id=%"]
+    with patch("resources.lib.resolver.xbmcvfs") as mock_vfs:
+        mock_vfs.translatePath.return_value = str(tmp_path) + "/"
+        with patch.object(sys, "argv", fake_argv):
+            # tmdb_id='%' must not match any row.
+            _clear_kodi_playback_state({"tmdb_id": "%"})
+
+    conn = sqlite3.connect(str(db))
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM bookmark")
+    remaining = cur.fetchone()[0]
+    conn.close()
+    assert remaining == 2, (
+        "LIKE wildcard in tmdb_id must be escaped — "
+        "no unrelated bookmarks should be deleted"
+    )
+
+
+@patch("resources.lib.resolver.xbmc")
+def test_clear_kodi_playback_state_handles_db_busy(mock_xbmc, tmp_path):
+    """A sqlite3.OperationalError (DB locked) must be caught, not propagated."""
+    import sqlite3
+
+    mock_xbmc.Player.return_value.isPlayingVideo.return_value = False
+    db = _build_fake_videos_db(tmp_path)
+
+    # Hold an exclusive lock on the DB so our short-timeout connection
+    # hits OperationalError.
+    blocker = sqlite3.connect(str(db), isolation_level=None)
+    blocker_cur = blocker.cursor()
+    blocker_cur.execute("BEGIN EXCLUSIVE")
+    try:
+        with patch("resources.lib.resolver.xbmcvfs") as mock_vfs:
+            mock_vfs.translatePath.return_value = str(tmp_path) + "/"
+            # Should not raise.
+            _clear_kodi_playback_state({"tmdb_id": "1"})
+    finally:
+        blocker_cur.execute("ROLLBACK")
+        blocker.close()
+
+    # The DEBUG "DB busy" log line should have been emitted.
+    log_calls = [c[0][0] for c in mock_xbmc.log.call_args_list]
+    assert any(
+        "busy" in c.lower() for c in log_calls
+    ), "Expected a log entry mentioning the DB was busy"
 
 
 @patch("resources.lib.resolver.xbmc")
@@ -389,7 +502,7 @@ def test_resolve_success(
     mock_service_port,
 ):
     mock_poll.return_value = (2, 60)
-    mock_submit.return_value = "SABnzbd_nzo_abc123"
+    mock_submit.return_value = ("SABnzbd_nzo_abc123", None)
     mock_status.return_value = {"status": "Downloading", "percentage": "100"}
     mock_history.return_value = {
         "status": "Completed",
@@ -430,7 +543,7 @@ def test_resolve_submit_failure(
 ):
     """All submit retries fail — setResolvedUrl called with False."""
     mock_poll.return_value = (2, 60)
-    mock_submit.return_value = None
+    mock_submit.return_value = (None, None)
     mock_find_completed.return_value = None
     mock_xbmc.Monitor.return_value = MagicMock()
     mock_xbmc.Monitor.return_value.waitForAbort.return_value = False
@@ -461,7 +574,7 @@ def test_resolve_job_failed(
     mock_xbmc,
 ):
     mock_poll.return_value = (2, 60)
-    mock_submit.return_value = "SABnzbd_nzo_abc123"
+    mock_submit.return_value = ("SABnzbd_nzo_abc123", None)
     mock_status.return_value = {"status": "Failed", "percentage": "0"}
     mock_history.return_value = None
     mock_xbmc.Monitor.return_value = _make_monitor()
@@ -492,7 +605,7 @@ def test_resolve_user_cancels(
     mock_xbmc,
 ):
     mock_poll.return_value = (2, 60)
-    mock_submit.return_value = "SABnzbd_nzo_abc123"
+    mock_submit.return_value = ("SABnzbd_nzo_abc123", None)
     mock_status.return_value = {"status": "Downloading", "percentage": "50"}
     mock_history.return_value = None
     mock_xbmc.Monitor.return_value = _make_monitor()
@@ -539,7 +652,7 @@ def test_resolve_timeout(
 ):
     """Resolve should time out after download_timeout seconds."""
     mock_poll.return_value = (2, 5)  # 5 second timeout
-    mock_submit.return_value = "SABnzbd_nzo_abc123"
+    mock_submit.return_value = ("SABnzbd_nzo_abc123", None)
     mock_status.return_value = {"status": "Downloading", "percentage": "10"}
     mock_history.return_value = None
     mock_xbmc.Monitor.return_value = _make_monitor()
@@ -576,7 +689,7 @@ def test_resolve_deleted_status(
 ):
     """'Deleted' status should be treated as failure."""
     mock_poll.return_value = (2, 60)
-    mock_submit.return_value = "SABnzbd_nzo_abc123"
+    mock_submit.return_value = ("SABnzbd_nzo_abc123", None)
     mock_status.return_value = {"status": "Deleted", "percentage": "0"}
     mock_history.return_value = None
     mock_xbmc.Monitor.return_value = _make_monitor()
@@ -619,7 +732,7 @@ def test_resolve_url_encoded_special_characters(
     from urllib.parse import quote
 
     mock_poll.return_value = (2, 60)
-    mock_submit.return_value = "SABnzbd_nzo_xyz789"
+    mock_submit.return_value = ("SABnzbd_nzo_xyz789", None)
     mock_status.return_value = {"status": "Downloading", "percentage": "100"}
     mock_history.return_value = {
         "status": "Completed",
@@ -672,7 +785,7 @@ def test_resolve_poll_interval_respected(
     """resolve() calls monitor.waitForAbort with the configured poll_interval."""
     poll_interval = 7
     mock_poll.return_value = (poll_interval, 3600)
-    mock_submit.return_value = "SABnzbd_nzo_poll123"
+    mock_submit.return_value = ("SABnzbd_nzo_poll123", None)
     mock_status.return_value = {"status": "Downloading", "percentage": "50"}
     mock_history.return_value = None
 
@@ -717,7 +830,7 @@ def test_resolve_status_transitions_queued_to_downloading_to_completed(
 ):
     """resolve() handles Queued -> Downloading -> Completed via history."""
     mock_poll.return_value = (1, 3600)
-    mock_submit.return_value = "SABnzbd_nzo_trans456"
+    mock_submit.return_value = ("SABnzbd_nzo_trans456", None)
     mock_status.side_effect = [
         {"status": "Queued", "percentage": "0"},
         {"status": "Downloading", "percentage": "50"},
@@ -824,7 +937,7 @@ def test_resolve_max_iterations_safeguard(
     """Resolve loop exits after MAX_POLL_ITERATIONS even without timeout."""
     mock_poll.return_value = (0, 999999)  # Very long timeout, 0s interval
     mock_find.return_value = None
-    mock_submit.return_value = "SABnzbd_nzo_stuck"
+    mock_submit.return_value = ("SABnzbd_nzo_stuck", None)
     mock_status.return_value = {"status": "Queued", "percentage": "0"}
     mock_history.return_value = None
     mock_xbmc.Monitor.return_value = MagicMock()
@@ -869,7 +982,7 @@ def test_resolve_retries_submit_on_transient_failure(
     mock_poll.return_value = (2, 60)
     mock_find_completed.return_value = None
     # First call fails, second succeeds
-    mock_submit.side_effect = [None, "SABnzbd_nzo_retry123"]
+    mock_submit.side_effect = [(None, None), ("SABnzbd_nzo_retry123", None)]
     mock_status.return_value = {"status": "Downloading", "percentage": "100"}
     mock_history.return_value = {
         "status": "Completed",
@@ -923,7 +1036,7 @@ def test_poll_until_ready_success(
     mock_find_completed,
 ):
     """_poll_until_ready returns (url, headers) when download completes."""
-    mock_submit.return_value = "nzo_abc"
+    mock_submit.return_value = ("nzo_abc", None)
     mock_status.return_value = {"status": "Downloading", "percentage": "100"}
     mock_history.return_value = {
         "status": "Completed",
@@ -941,32 +1054,19 @@ def test_poll_until_ready_success(
     assert headers == {"Authorization": "x"}
 
 
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
-@patch("resources.lib.resolver.xbmcgui")
-@patch("resources.lib.resolver.submit_nzb", return_value=None)
-@patch("resources.lib.resolver.xbmc")
-def test_poll_until_ready_submit_failure(
-    mock_xbmc, mock_submit, mock_gui, mock_find_completed
-):
-    """_poll_until_ready returns (None, None) when all submit retries fail."""
-    mock_xbmc.Monitor.return_value = _make_monitor()
-
-    url, headers = _poll_until_ready(
-        "http://hydra/nzb", "movie", _make_dialog(), 2, 3600
-    )
-
-    assert url is None
-    assert headers is None
-    mock_gui.Dialog.return_value.ok.assert_called()
-
-
+@patch("resources.lib.resolver.cancel_job")
 @patch("resources.lib.resolver.find_completed_by_name", return_value=None)
 @patch("resources.lib.resolver.get_job_history", return_value=None)
 @patch("resources.lib.resolver.get_job_status")
-@patch("resources.lib.resolver.submit_nzb", return_value="nzo_xyz")
+@patch("resources.lib.resolver.submit_nzb", return_value=("nzo_xyz", None))
 @patch("resources.lib.resolver.xbmc")
 def test_poll_until_ready_user_cancel(
-    mock_xbmc, mock_submit, mock_status, mock_history, mock_find_completed
+    mock_xbmc,
+    mock_submit,
+    mock_status,
+    mock_history,
+    mock_find_completed,
+    mock_cancel_job,
 ):
     """_poll_until_ready returns (None, None) when the user cancels."""
     mock_status.return_value = {"status": "Downloading", "percentage": "50"}
@@ -979,11 +1079,12 @@ def test_poll_until_ready_user_cancel(
     assert headers is None
 
 
+@patch("resources.lib.resolver.cancel_job")
 @patch("resources.lib.resolver.find_completed_by_name", return_value=None)
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver.get_job_history", return_value=None)
 @patch("resources.lib.resolver.get_job_status")
-@patch("resources.lib.resolver.submit_nzb", return_value="nzo_xyz")
+@patch("resources.lib.resolver.submit_nzb", return_value=("nzo_xyz", None))
 @patch("resources.lib.resolver.time")
 @patch("resources.lib.resolver.xbmc")
 def test_poll_until_ready_timeout(
@@ -994,6 +1095,7 @@ def test_poll_until_ready_timeout(
     mock_history,
     mock_gui,
     mock_find_completed,
+    mock_cancel_job,
 ):
     """_poll_until_ready returns (None, None) and shows dialog on timeout."""
     mock_status.return_value = {"status": "Downloading", "percentage": "10"}
@@ -1011,7 +1113,7 @@ def test_poll_until_ready_timeout(
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver.get_job_history", return_value=None)
 @patch("resources.lib.resolver.get_job_status")
-@patch("resources.lib.resolver.submit_nzb", return_value="nzo_xyz")
+@patch("resources.lib.resolver.submit_nzb", return_value=("nzo_xyz", None))
 @patch("resources.lib.resolver.xbmc")
 def test_poll_until_ready_job_failed(
     mock_xbmc, mock_submit, mock_status, mock_history, mock_gui, mock_find_completed
@@ -1036,7 +1138,7 @@ def test_poll_until_ready_job_failed(
     return_value={"status": "Failed"},
 )
 @patch("resources.lib.resolver.get_job_status", return_value=None)
-@patch("resources.lib.resolver.submit_nzb", return_value="nzo_xyz")
+@patch("resources.lib.resolver.submit_nzb", return_value=("nzo_xyz", None))
 @patch("resources.lib.resolver.xbmc")
 def test_poll_until_ready_history_failed(
     mock_xbmc, mock_submit, mock_status, mock_history, mock_gui, mock_find_completed
@@ -1084,7 +1186,7 @@ def test_poll_until_ready_already_downloaded(
     },
 )
 @patch("resources.lib.resolver.get_job_status", return_value=None)
-@patch("resources.lib.resolver.submit_nzb", return_value="nzo_xyz")
+@patch("resources.lib.resolver.submit_nzb", return_value=("nzo_xyz", None))
 @patch("resources.lib.resolver.xbmc")
 def test_poll_until_ready_history_failed_shows_fail_message(
     mock_xbmc, mock_submit, mock_status, mock_history, mock_gui, mock_find_completed
@@ -1116,7 +1218,7 @@ def test_poll_until_ready_history_failed_shows_fail_message(
     },
 )
 @patch("resources.lib.resolver.get_job_status", return_value=None)
-@patch("resources.lib.resolver.submit_nzb", return_value="nzo_xyz")
+@patch("resources.lib.resolver.submit_nzb", return_value=("nzo_xyz", None))
 @patch("resources.lib.resolver.xbmc")
 def test_poll_until_ready_no_video_after_retries(
     mock_xbmc,
@@ -1137,3 +1239,322 @@ def test_poll_until_ready_no_video_after_retries(
     assert url is None
     assert headers is None
     mock_gui.Dialog.return_value.ok.assert_called_once()
+
+
+# --- HTTP error classification tests for the submit retry loop ---
+
+
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.submit_nzb")
+@patch("resources.lib.resolver.xbmc")
+def test_poll_until_ready_submit_http_500_no_retry(
+    mock_xbmc, mock_submit, mock_gui, mock_find_completed
+):
+    """When submit_nzb returns an HTTP 500 tuple, the retry loop must
+    NOT retry — it must show the dialog with the error body and abort
+    after a single submit attempt."""
+    mock_submit.return_value = (
+        None,
+        {"status": 500, "message": "Internal Server Error: duplicate nzo_id"},
+    )
+    mock_xbmc.Monitor.return_value = _make_monitor()
+
+    url, headers = _poll_until_ready(
+        "http://hydra/nzb", "movie", _make_dialog(), 2, 3600
+    )
+
+    assert url is None
+    assert headers is None
+    assert mock_submit.call_count == 1  # critically: NOT 3
+    mock_gui.Dialog.return_value.ok.assert_called_once()
+
+
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.submit_nzb")
+@patch("resources.lib.resolver.xbmc")
+def test_poll_until_ready_submit_http_502_retries_then_surfaces(
+    mock_xbmc, mock_submit, mock_gui, mock_find_completed
+):
+    """When submit_nzb returns HTTP 502 (transient gateway error), the
+    retry loop SHOULD retry up to 3x. After all retries exhaust, the
+    final dialog surfaces the actual error body, not the generic
+    'check your settings' string."""
+    mock_submit.return_value = (
+        None,
+        {"status": 502, "message": "Bad Gateway: upstream timeout"},
+    )
+    mock_xbmc.Monitor.return_value = _make_monitor()
+
+    url, headers = _poll_until_ready(
+        "http://hydra/nzb", "movie", _make_dialog(), 2, 3600
+    )
+
+    assert url is None
+    assert headers is None
+    assert mock_submit.call_count == 3  # all 3 retries attempted
+    mock_gui.Dialog.return_value.ok.assert_called_once()
+    # The dialog text should contain the 502 error body, not the
+    # generic string. Inspect the call args:
+    call_args_text = str(mock_gui.Dialog.return_value.ok.call_args)
+    assert "502" in call_args_text or "Bad Gateway" in call_args_text
+
+
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.submit_nzb")
+@patch("resources.lib.resolver.xbmc")
+def test_poll_until_ready_submit_http_400_no_retry(
+    mock_xbmc, mock_submit, mock_gui, mock_find_completed
+):
+    """4xx errors are also non-transient and skip the retry loop."""
+    mock_submit.return_value = (
+        None,
+        {"status": 400, "message": "Bad Request: malformed nzburl"},
+    )
+    mock_xbmc.Monitor.return_value = _make_monitor()
+
+    _poll_until_ready("http://hydra/nzb", "movie", _make_dialog(), 2, 3600)
+
+    assert mock_submit.call_count == 1
+    mock_gui.Dialog.return_value.ok.assert_called_once()
+
+
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.submit_nzb")
+@patch("resources.lib.resolver.xbmc")
+def test_poll_until_ready_submit_connection_error_still_retries(
+    mock_xbmc, mock_submit, mock_gui, mock_find_completed
+):
+    """(None, None) — non-HTTP transient — still retries 3x as before
+    and shows the generic dialog after exhausting."""
+    mock_submit.return_value = (None, None)
+    mock_xbmc.Monitor.return_value = _make_monitor()
+
+    _poll_until_ready("http://hydra/nzb", "movie", _make_dialog(), 2, 3600)
+
+    assert mock_submit.call_count == 3  # full retry loop
+    mock_gui.Dialog.return_value.ok.assert_called_once()
+
+
+# --- cleanup-on-abort tests (Group A) ---
+
+
+@patch("resources.lib.resolver.cancel_job")
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.time")
+@patch("resources.lib.resolver.get_job_history", return_value=None)
+@patch("resources.lib.resolver.get_job_status")
+@patch("resources.lib.resolver.submit_nzb", return_value=("nzo_xyz", None))
+@patch("resources.lib.resolver.xbmc")
+def test_poll_until_ready_cleanup_on_timeout(
+    mock_xbmc,
+    mock_submit,
+    mock_status,
+    mock_history,
+    mock_time,
+    mock_gui,
+    mock_find_completed,
+    mock_cancel_job,
+):
+    """When the download_timeout fires, _poll_until_ready must call
+    cancel_job(nzo_id) before returning."""
+    mock_status.return_value = {"status": "Downloading", "percentage": "10"}
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    mock_time.time.side_effect = [0.0, 700.0]  # forces elapsed >= 600s timeout
+
+    url, headers = _poll_until_ready(
+        "http://hydra/nzb", "movie", _make_dialog(), 2, 600
+    )
+
+    assert url is None
+    assert headers is None
+    mock_cancel_job.assert_called_once_with("nzo_xyz")
+
+
+@patch("resources.lib.resolver.cancel_job")
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.get_job_history", return_value=None)
+@patch("resources.lib.resolver.get_job_status")
+@patch("resources.lib.resolver.submit_nzb", return_value=("nzo_xyz", None))
+@patch("resources.lib.resolver.xbmc")
+def test_poll_until_ready_cleanup_on_user_cancel(
+    mock_xbmc,
+    mock_submit,
+    mock_status,
+    mock_history,
+    mock_gui,
+    mock_find_completed,
+    mock_cancel_job,
+):
+    """When the user cancels the resolve dialog, cancel_job must fire."""
+    mock_status.return_value = {"status": "Downloading", "percentage": "10"}
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    dialog = _make_dialog(canceled=True)
+
+    url, headers = _poll_until_ready("http://hydra/nzb", "movie", dialog, 2, 3600)
+
+    assert url is None
+    assert headers is None
+    mock_cancel_job.assert_called_once_with("nzo_xyz")
+
+
+@patch("resources.lib.resolver.cancel_job")
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.get_job_history", return_value=None)
+@patch("resources.lib.resolver.get_job_status")
+@patch("resources.lib.resolver.submit_nzb", return_value=("nzo_xyz", None))
+@patch("resources.lib.resolver.xbmc")
+def test_poll_until_ready_cleanup_on_kodi_shutdown(
+    mock_xbmc,
+    mock_submit,
+    mock_status,
+    mock_history,
+    mock_gui,
+    mock_find_completed,
+    mock_cancel_job,
+):
+    """When Kodi shutdown is signaled during the poll wait, cancel_job
+    must fire."""
+    mock_status.return_value = {"status": "Downloading", "percentage": "10"}
+    monitor = MagicMock()
+    # First waitForAbort returns False (initial poll wait), second returns True
+    # (Kodi shutdown signal)
+    monitor.waitForAbort.side_effect = [False, True]
+    mock_xbmc.Monitor.return_value = monitor
+
+    url, headers = _poll_until_ready(
+        "http://hydra/nzb", "movie", _make_dialog(), 2, 3600
+    )
+
+    assert url is None
+    assert headers is None
+    mock_cancel_job.assert_called_once_with("nzo_xyz")
+
+
+@patch("resources.lib.resolver.cancel_job")
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.MAX_POLL_ITERATIONS", 2)
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.get_job_history", return_value=None)
+@patch("resources.lib.resolver.get_job_status")
+@patch("resources.lib.resolver.submit_nzb", return_value=("nzo_xyz", None))
+@patch("resources.lib.resolver.xbmc")
+def test_poll_until_ready_cleanup_on_max_iterations(
+    mock_xbmc,
+    mock_submit,
+    mock_status,
+    mock_history,
+    mock_gui,
+    mock_find_completed,
+    mock_cancel_job,
+):
+    """When MAX_POLL_ITERATIONS is exceeded, cancel_job must fire.
+    The test patches MAX_POLL_ITERATIONS to a small value to make the
+    test fast."""
+    mock_status.return_value = {"status": "Downloading", "percentage": "10"}
+    mock_xbmc.Monitor.return_value = _make_monitor()
+
+    url, headers = _poll_until_ready(
+        "http://hydra/nzb", "movie", _make_dialog(), 2, 3600
+    )
+
+    assert url is None
+    assert headers is None
+    mock_cancel_job.assert_called_once_with("nzo_xyz")
+
+
+# --- negative cleanup tests (Group B — cleanup must NOT fire) ---
+
+
+@patch("resources.lib.resolver.cancel_job")
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.get_job_history", return_value=None)
+@patch("resources.lib.resolver.get_job_status")
+@patch("resources.lib.resolver.submit_nzb", return_value=("nzo_xyz", None))
+@patch("resources.lib.resolver.xbmc")
+def test_poll_until_ready_no_cleanup_on_job_failed_status(
+    mock_xbmc,
+    mock_submit,
+    mock_status,
+    mock_history,
+    mock_gui,
+    mock_find_completed,
+    mock_cancel_job,
+):
+    """When job_status returns Failed, the resolver aborts but does NOT
+    call cancel_job — Group B paths leave nzbdav's history alone."""
+    mock_status.return_value = {"status": "Failed", "percentage": "0"}
+    mock_xbmc.Monitor.return_value = _make_monitor()
+
+    _poll_until_ready("http://hydra/nzb", "movie", _make_dialog(), 2, 3600)
+
+    mock_cancel_job.assert_not_called()
+
+
+@patch("resources.lib.resolver.cancel_job")
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.xbmcgui")
+@patch(
+    "resources.lib.resolver.get_job_history",
+    return_value={"status": "Failed", "fail_message": "test failure"},
+)
+@patch("resources.lib.resolver.get_job_status", return_value=None)
+@patch("resources.lib.resolver.submit_nzb", return_value=("nzo_xyz", None))
+@patch("resources.lib.resolver.xbmc")
+def test_poll_until_ready_no_cleanup_on_history_failed(
+    mock_xbmc,
+    mock_submit,
+    mock_status,
+    mock_history,
+    mock_gui,
+    mock_find_completed,
+    mock_cancel_job,
+):
+    """When history reports Failed, the resolver aborts but does NOT
+    call cancel_job."""
+    mock_xbmc.Monitor.return_value = _make_monitor()
+
+    _poll_until_ready("http://hydra/nzb", "movie", _make_dialog(), 2, 3600)
+
+    mock_cancel_job.assert_not_called()
+
+
+@patch("resources.lib.resolver.cancel_job")
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.find_video_file", return_value=None)
+@patch(
+    "resources.lib.resolver.get_job_history",
+    return_value={
+        "status": "Completed",
+        "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/movie",
+    },
+)
+@patch("resources.lib.resolver.get_job_status", return_value=None)
+@patch("resources.lib.resolver.submit_nzb", return_value=("nzo_xyz", None))
+@patch("resources.lib.resolver.xbmc")
+def test_poll_until_ready_no_cleanup_on_completed_no_video(
+    mock_xbmc,
+    mock_submit,
+    mock_status,
+    mock_history,
+    mock_find_video,
+    mock_gui,
+    mock_find_completed,
+    mock_cancel_job,
+):
+    """When history reports Completed but find_video_file returns None
+    after max retries, the resolver aborts but does NOT call cancel_job
+    — the job actually completed, this is a WebDAV layer issue."""
+    mock_xbmc.Monitor.return_value = _make_monitor()
+
+    _poll_until_ready("http://hydra/nzb", "movie", _make_dialog(), 0, 3600)
+
+    mock_cancel_job.assert_not_called()

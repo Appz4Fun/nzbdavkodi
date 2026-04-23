@@ -10,6 +10,7 @@ from resources.lib.router import (
     _format_size,
     _handle_play,
     _handle_search,
+    _safe_resolve_handle,
     parse_params,
     parse_route,
     route,
@@ -212,6 +213,187 @@ def test_route_dispatches_to_install_player(mock_install):
     # checking the module-level mock
     # The simplest check: route didn't raise an exception
     assert True, "route() with /install_player should complete without error"
+
+
+# --- _safe_resolve_handle + action route handle-resolution tests ---
+#
+# Action routes (install_player, clear_cache, settings, configure_*,
+# test_hydra, test_nzbdav, resolve) are invoked from main-menu items with
+# isFolder=False. Kodi blocks the UI until setResolvedUrl is called on the
+# handle. These tests assert the route path always resolves the handle so
+# Kodi never hangs. Regression test for ISSUE_REPORT.md C1.
+
+
+@patch("xbmcplugin.setResolvedUrl")
+@patch("xbmcgui.ListItem")
+def test_safe_resolve_handle_resolves_positive_handle(mock_listitem, mock_resolved):
+    """_safe_resolve_handle should call setResolvedUrl for valid handles."""
+    mock_listitem.return_value = "fake_listitem"
+    _safe_resolve_handle(5)
+    mock_resolved.assert_called_once_with(5, False, "fake_listitem")
+
+
+@patch("xbmcplugin.setResolvedUrl")
+def test_safe_resolve_handle_skips_runplugin_handle(mock_resolved):
+    """_safe_resolve_handle should be a no-op for handle == -1 (RunPlugin)."""
+    _safe_resolve_handle(-1)
+    mock_resolved.assert_not_called()
+
+
+@patch("xbmcplugin.setResolvedUrl")
+@patch("resources.lib.router._handle_main_menu")
+def test_route_main_menu_does_not_call_safe_resolve(mock_menu, mock_resolved):
+    """Main-menu dispatch (directory) must not also call setResolvedUrl."""
+    route(["plugin://plugin.video.nzbdav/", "1", ""])
+    mock_menu.assert_called_once_with(1)
+    mock_resolved.assert_not_called()
+
+
+@patch("xbmcplugin.setResolvedUrl")
+@patch("resources.lib.router._handle_play")
+def test_route_play_does_not_call_safe_resolve(mock_play, mock_resolved):
+    """/play handles its own resolution — _safe_resolve_handle must not fire."""
+    route(["plugin://plugin.video.nzbdav/play", "1", "?type=movie&title=X"])
+    mock_play.assert_called_once()
+    mock_resolved.assert_not_called()
+
+
+@patch("xbmcplugin.setResolvedUrl")
+@patch("resources.lib.router._handle_search")
+def test_route_search_does_not_call_safe_resolve(mock_search, mock_resolved):
+    """/search handles its own resolution — _safe_resolve_handle must not fire."""
+    route(["plugin://plugin.video.nzbdav/search", "1", "?type=movie&title=X"])
+    mock_search.assert_called_once()
+    mock_resolved.assert_not_called()
+
+
+@patch("xbmcplugin.setResolvedUrl")
+def test_route_install_player_resolves_handle(mock_resolved):
+    """/install_player must resolve the handle after running."""
+    with patch.dict(
+        "sys.modules",
+        {"resources.lib.player_installer": MagicMock(install_player=MagicMock())},
+    ):
+        route(["plugin://plugin.video.nzbdav/install_player", "7", ""])
+    assert mock_resolved.called, "setResolvedUrl must be called for /install_player"
+    assert mock_resolved.call_args[0][0] == 7
+    assert mock_resolved.call_args[0][1] is False
+
+
+@patch("xbmcplugin.setResolvedUrl")
+@patch("resources.lib.http_util.notify")
+def test_route_clear_cache_resolves_handle(mock_notify, mock_resolved):
+    """/clear_cache must resolve the handle after running."""
+    with patch.dict(
+        "sys.modules",
+        {"resources.lib.cache": MagicMock(clear_cache=MagicMock())},
+    ):
+        route(["plugin://plugin.video.nzbdav/clear_cache", "2", ""])
+    assert mock_resolved.called, "setResolvedUrl must be called for /clear_cache"
+    assert mock_resolved.call_args[0][0] == 2
+    assert mock_resolved.call_args[0][1] is False
+
+
+@patch("xbmcplugin.setResolvedUrl")
+def test_route_settings_resolves_handle(mock_resolved):
+    """/settings must resolve the handle after openSettings returns."""
+    fake_addon = MagicMock()
+    with patch.dict("sys.modules", {"xbmcaddon": MagicMock(Addon=lambda: fake_addon)}):
+        route(["plugin://plugin.video.nzbdav/settings", "3", ""])
+    fake_addon.openSettings.assert_called_once()
+    assert mock_resolved.called, "setResolvedUrl must be called for /settings"
+    assert mock_resolved.call_args[0][0] == 3
+    assert mock_resolved.call_args[0][1] is False
+
+
+@patch("xbmcplugin.setResolvedUrl")
+def test_route_configure_preferred_groups_resolves_handle(mock_resolved):
+    """/configure_preferred_groups must resolve the handle after running."""
+    fake_filter = MagicMock(
+        configure_groups_dialog=MagicMock(),
+        DEFAULT_PREFERRED_GROUPS=[],
+    )
+    with patch.dict("sys.modules", {"resources.lib.filter": fake_filter}):
+        route(["plugin://plugin.video.nzbdav/configure_preferred_groups", "4", ""])
+    fake_filter.configure_groups_dialog.assert_called_once()
+    assert mock_resolved.called
+    assert mock_resolved.call_args[0][0] == 4
+    assert mock_resolved.call_args[0][1] is False
+
+
+@patch("xbmcplugin.setResolvedUrl")
+def test_route_configure_excluded_groups_resolves_handle(mock_resolved):
+    """/configure_excluded_groups must resolve the handle after running."""
+    fake_filter = MagicMock(
+        configure_groups_dialog=MagicMock(),
+        DEFAULT_EXCLUDED_GROUPS=[],
+    )
+    with patch.dict("sys.modules", {"resources.lib.filter": fake_filter}):
+        route(["plugin://plugin.video.nzbdav/configure_excluded_groups", "5", ""])
+    fake_filter.configure_groups_dialog.assert_called_once()
+    assert mock_resolved.called
+    assert mock_resolved.call_args[0][0] == 5
+    assert mock_resolved.call_args[0][1] is False
+
+
+@patch("xbmcplugin.setResolvedUrl")
+@patch("resources.lib.router._test_hydra_connection")
+def test_route_test_hydra_resolves_handle(mock_test, mock_resolved):
+    """/test_hydra must resolve the handle after running."""
+    route(["plugin://plugin.video.nzbdav/test_hydra", "6", ""])
+    mock_test.assert_called_once()
+    assert mock_resolved.called
+    assert mock_resolved.call_args[0][0] == 6
+    assert mock_resolved.call_args[0][1] is False
+
+
+@patch("xbmcplugin.setResolvedUrl")
+@patch("resources.lib.router._test_nzbdav_connection")
+def test_route_test_nzbdav_resolves_handle(mock_test, mock_resolved):
+    """/test_nzbdav must resolve the handle after running."""
+    route(["plugin://plugin.video.nzbdav/test_nzbdav", "8", ""])
+    mock_test.assert_called_once()
+    assert mock_resolved.called
+    assert mock_resolved.call_args[0][0] == 8
+    assert mock_resolved.call_args[0][1] is False
+
+
+@patch("xbmcplugin.setResolvedUrl")
+def test_route_resolve_path_resolves_handle(mock_resolved):
+    """/resolve must resolve the handle after running (regardless of handle value)."""
+    fake_resolver = MagicMock(resolve_and_play=MagicMock())
+    with patch.dict("sys.modules", {"resources.lib.resolver": fake_resolver}):
+        route(["plugin://plugin.video.nzbdav/resolve", "9", "?nzburl=x&title=y"])
+    fake_resolver.resolve_and_play.assert_called_once()
+    assert mock_resolved.called
+    assert mock_resolved.call_args[0][0] == 9
+    assert mock_resolved.call_args[0][1] is False
+
+
+@patch("xbmcplugin.setResolvedUrl")
+def test_route_resolve_path_with_runplugin_handle_does_not_call_resolved_url(
+    mock_resolved,
+):
+    """/resolve with handle=-1 (RunPlugin) must not call setResolvedUrl."""
+    fake_resolver = MagicMock(resolve_and_play=MagicMock())
+    with patch.dict("sys.modules", {"resources.lib.resolver": fake_resolver}):
+        route(["plugin://plugin.video.nzbdav/resolve", "-1", "?nzburl=x&title=y"])
+    fake_resolver.resolve_and_play.assert_called_once()
+    mock_resolved.assert_not_called()
+
+
+@patch("xbmcplugin.setResolvedUrl")
+def test_route_exception_in_action_route_still_resolves_handle(mock_resolved):
+    """If an action route raises, the handle must still be resolved."""
+    fake_resolver = MagicMock(resolve_and_play=MagicMock(side_effect=RuntimeError("x")))
+    with patch.dict("sys.modules", {"resources.lib.resolver": fake_resolver}):
+        try:
+            route(["plugin://plugin.video.nzbdav/resolve", "11", "?nzburl=a&title=b"])
+        except RuntimeError:
+            pass
+    assert mock_resolved.called, "Handle must be resolved even when the route raises"
+    assert mock_resolved.call_args[0][0] == 11
+    assert mock_resolved.call_args[0][1] is False
 
 
 # --- _format_info_line tests ---

@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Released | What it's about |
 |---|---|---|
+| **[0.6.21](#0621--2026-04-13)** | 2026-04-13 | Stale-job cleanup + real nzbdav error messages on submit failure |
+| **[0.6.20](#0620--2026-04-13)** | 2026-04-13 | Resolve-loop: no UI freeze, no silent retry on bad WebDAV creds |
 | **[0.6.19](#0619--2026-04-12)** | 2026-04-12 | README refresh + pylint CI fix |
 | **[0.6.18](#0618--2026-04-12)** | 2026-04-12 | Big MKVs play, seek, and self-heal. **Recommended upgrade.** |
 | [0.6.17](#0617--2026-04-12) | 2026-04-12 | Kill zombie ffmpeg after a stall |
@@ -40,6 +42,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | **[0.1.0](#010--2026-04-05)** | 2026-04-05 | Initial release |
 
 > **Bolded** versions are either major features or recommended upgrades.
+
+---
+
+## [0.6.21] — 2026-04-13
+
+> **Two `submit_nzb` lifecycle fixes.** The addon now tells nzbdav to cancel an in-flight job when it gives up on a download, so re-submitting the same NZB doesn't get blocked by stale duplicates. And when nzbdav rejects a submit, the dialog now shows the actual server message instead of a generic "check your settings" string.
+
+**Fixed**
+- Stale jobs in nzbdav's queue after the addon aborts. When `_poll_until_ready` gave up — download timeout, user-cancelled the resolve dialog, max poll iterations, or Kodi shutdown — it left the job sitting in nzbdav's queue indefinitely. The next attempt to play the same NZB would then hit nzbdav's duplicate-rejection path with HTTP 500. The addon now calls a new `cancel_job(nzo_id)` helper on every Group A abort path that issues a SABnzbd-compatible `mode=queue&name=delete` with a 3-second timeout, so the next submit lands on a clean queue. Group B paths (nzbdav itself reporting Failed/Completed) and any race where the job moves to history between polls deliberately leave history entries alone so users can still inspect what nzbdav reported in the web UI. (Audit finding L1.)
+- Generic dialog on submit failures hiding nzbdav's real error message. `submit_nzb` used to catch every error class (HTTPError, URLError, JSONDecodeError, anything else) the same way and return a bare `None`; the resolver's retry loop then attempted 3 submits before showing a generic "check nzbdav URL and API key" dialog. The function now catches `HTTPError` specifically, captures the response body via `e.read()` (HTML-stripped and whitespace-collapsed), and returns a `(None, {"status", "message"})` tuple. The retry loop classifies the error: HTTP 408/502/503/504 still retry as before (they're classically transient gateway issues — 408 is RFC 9110's "request timeout, please retry"), but HTTP 4xx and HTTP 500/501 short-circuit immediately and surface nzbdav's actual response message — retrying nzbdav's "duplicate" rejection won't make it not a duplicate. Connection errors and JSON decode failures continue to retry exactly as before.
+
+---
+
+## [0.6.20] — 2026-04-13
+
+> **Two resolve-loop fixes.** Kodi's UI no longer briefly freezes during resolve polling when nzbdav is momentarily unreachable, and an invalid WebDAV password now surfaces as the "Authentication failed" dialog within a poll iteration instead of being silently masked until the download timeout fires.
+
+**Fixed**
+- Brief UI freeze during resolve polling. The WebDAV retry delay used `time.sleep()` on Kodi's main thread, locking the UI and delaying shutdown. It now uses `xbmc.Monitor().waitForAbort()`, which yields to the Kodi event loop and unwinds immediately on shutdown. (Audit finding C4.)
+- Silent retry loop when WebDAV credentials are wrong. When nzbdav's queue and history APIs both returned no data, the addon probed the WebDAV server using the movie's human-readable title as a filename — which always returned 404, so an invalid-credentials failure never surfaced as the "Authentication failed" dialog and the resolve spinner would just run until the download timeout. The probe now HEADs the WebDAV content root, so a bad password produces the auth dialog within one poll iteration. Server 5xx and network-outage probes also now return accurate error codes in the logs, though those paths remain log-only in the resolver — adding dialogs for them is a separate follow-up. (Audit finding C3.)
 
 ---
 
@@ -389,6 +411,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.6.21]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.6.21
+[0.6.20]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.6.20
 [0.6.19]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.6.19
 [0.6.18]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.6.18
 [0.6.17]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.6.17

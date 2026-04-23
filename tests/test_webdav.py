@@ -8,10 +8,10 @@ from urllib.parse import unquote
 from resources.lib.webdav import (
     build_webdav_url,
     check_file_available,
-    check_file_available_with_retry,
     find_video_file,
     get_webdav_stream_url,
     get_webdav_stream_url_for_path,
+    probe_webdav_reachable,
 )
 
 _SETTINGS_WITH_AUTH = {
@@ -105,6 +105,7 @@ def test_get_webdav_stream_url_special_chars_in_credentials(mock_settings):
     import base64
 
     mock_settings.return_value = {
+        "webdav_url": "",
         "nzbdav_url": "http://nzbdav:3000",
         "username": "user@domain",
         "password": "p@ss:word",
@@ -115,52 +116,161 @@ def test_get_webdav_stream_url_special_chars_in_credentials(mock_settings):
     assert base64.b64decode(auth_part).decode() == "user@domain:p@ss:word"
 
 
-# --- check_file_available_with_retry tests ---
+# --- probe_webdav_reachable tests ---
 
 
 @patch("resources.lib.webdav._get_settings")
 @patch("resources.lib.webdav._http_head")
-def test_check_file_available_with_retry_success(mock_head, mock_settings):
+def test_probe_reachable_success_on_200(mock_head, mock_settings):
     mock_settings.return_value = _SETTINGS_WITH_AUTH
     mock_head.return_value = 200
-    available, error = check_file_available_with_retry("movie.mkv")
-    assert available is True
+    reachable, error = probe_webdav_reachable()
+    assert reachable is True
     assert error is None
 
 
 @patch("resources.lib.webdav._get_settings")
 @patch("resources.lib.webdav._http_head")
-def test_check_file_available_with_retry_auth_failed(mock_head, mock_settings):
+def test_probe_reachable_success_on_207(mock_head, mock_settings):
+    """207 Multi-Status is the canonical WebDAV success response."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    mock_head.return_value = 207
+    reachable, error = probe_webdav_reachable()
+    assert reachable is True
+    assert error is None
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav._http_head")
+def test_probe_reachable_treats_404_as_reachable(mock_head, mock_settings):
+    """Key behavior change from C3: a 404 on HEAD /content/ means the
+    server is up but doesn't route HEAD to the collection handler — it
+    must NOT be classified as an error."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    mock_head.return_value = 404
+    reachable, error = probe_webdav_reachable()
+    assert reachable is True
+    assert error is None
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav._http_head")
+def test_probe_reachable_treats_405_as_reachable(mock_head, mock_settings):
+    """405 Method Not Allowed on a collection is a common WebDAV quirk
+    and means the server is up."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    mock_head.return_value = 405
+    reachable, error = probe_webdav_reachable()
+    assert reachable is True
+    assert error is None
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav._http_head")
+def test_probe_reachable_auth_failed_401(mock_head, mock_settings):
     mock_settings.return_value = _SETTINGS_WITH_AUTH
     mock_head.return_value = 401
-    available, error = check_file_available_with_retry("movie.mkv")
-    assert available is False
+    reachable, error = probe_webdav_reachable()
+    assert reachable is False
     assert error == "auth_failed"
 
 
 @patch("resources.lib.webdav._get_settings")
 @patch("resources.lib.webdav._http_head")
-def test_check_file_available_with_retry_server_error(mock_head, mock_settings):
+def test_probe_reachable_auth_failed_403(mock_head, mock_settings):
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    mock_head.return_value = 403
+    reachable, error = probe_webdav_reachable()
+    assert reachable is False
+    assert error == "auth_failed"
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav._http_head")
+def test_probe_reachable_server_error_500(mock_head, mock_settings):
     mock_settings.return_value = _SETTINGS_WITH_AUTH
     mock_head.return_value = 500
-    available, error = check_file_available_with_retry("movie.mkv")
-    assert available is False
+    reachable, error = probe_webdav_reachable()
+    assert reachable is False
     assert error == "server_error"
 
 
 @patch("resources.lib.webdav._get_settings")
 @patch("resources.lib.webdav._http_head")
-def test_check_file_available_with_retry_retries_on_connection_error(
-    mock_head, mock_settings
-):
+def test_probe_reachable_retries_then_succeeds(mock_head, mock_settings):
     mock_settings.return_value = _SETTINGS_WITH_AUTH
-    mock_head.side_effect = [Exception("conn refused"), Exception("conn refused"), 200]
-    available, error = check_file_available_with_retry(
-        "movie.mkv", max_retries=3, retry_delay=0
+    mock_head.side_effect = [Exception("conn refused"), 200]
+    monitor = MagicMock()
+    monitor.waitForAbort.return_value = False
+    reachable, error = probe_webdav_reachable(
+        monitor=monitor, max_retries=3, retry_delay=0
     )
-    assert available is True
+    assert reachable is True
     assert error is None
+    assert mock_head.call_count == 2
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav._http_head")
+def test_probe_reachable_exhausts_retries(mock_head, mock_settings):
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    mock_head.side_effect = Exception("conn refused")
+    monitor = MagicMock()
+    monitor.waitForAbort.return_value = False
+    reachable, error = probe_webdav_reachable(
+        monitor=monitor, max_retries=2, retry_delay=0
+    )
+    assert reachable is False
+    assert error == "connection_error"
+    # max_retries=2 means 3 total attempts (1 initial + 2 retries).
     assert mock_head.call_count == 3
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav._http_head")
+def test_probe_reachable_waits_via_monitor(mock_head, mock_settings):
+    """Proves the C4 fix: the retry delay goes through
+    Monitor.waitForAbort, not time.sleep. Since the time import is
+    removed from webdav.py in Task 5, no separate 'time.sleep not
+    called' assertion is needed."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    mock_head.side_effect = [Exception("conn refused"), 200]
+    monitor = MagicMock()
+    monitor.waitForAbort.return_value = False
+    probe_webdav_reachable(monitor=monitor, max_retries=1, retry_delay=5)
+    monitor.waitForAbort.assert_called_once_with(5)
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav._http_head")
+def test_probe_reachable_aborts_on_shutdown_signal(mock_head, mock_settings):
+    """If waitForAbort returns True mid-retry, bail out immediately
+    instead of re-probing. This is the other half of the C4 fix —
+    cooperative shutdown."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    mock_head.side_effect = Exception("conn refused")
+    monitor = MagicMock()
+    monitor.waitForAbort.return_value = True
+    reachable, error = probe_webdav_reachable(
+        monitor=monitor, max_retries=3, retry_delay=0
+    )
+    assert reachable is False
+    assert error == "connection_error"
+    # Only the initial attempt ran; the retry was short-circuited by
+    # the shutdown signal.
+    assert mock_head.call_count == 1
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav._http_head")
+def test_probe_reachable_hits_content_root(mock_head, mock_settings):
+    """The probe URL must be {nzbdav_url}/content/ — the nzbdav content root.
+    Verifies the URL construction and the defense-in-depth rstrip."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    mock_head.return_value = 200
+    probe_webdav_reachable()
+    called_url = mock_head.call_args[0][0]
+    assert called_url == "http://nzbdav:3000/content/"
 
 
 # --- find_video_file tests ---

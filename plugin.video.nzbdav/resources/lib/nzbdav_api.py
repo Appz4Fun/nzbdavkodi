@@ -4,7 +4,8 @@
 """nzbdav SABnzbd-compatible API client."""
 
 import json
-from urllib.error import URLError
+import re
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 
 import xbmc
@@ -13,6 +14,24 @@ import xbmcaddon
 from resources.lib.http_util import http_get as _http_get
 
 _DEFAULT_SUBMIT_TIMEOUT = 30
+
+_HTML_TAG_RE = re.compile(r"<[^>]*>")
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _sanitize_server_message(raw):
+    """Sanitize a raw HTTP response body for display in a Kodi dialog.
+
+    Strips HTML tags (some servers return styled error pages), collapses
+    runs of whitespace to single spaces, and trims. Returns an empty
+    string if nothing meaningful remains. Caller is responsible for
+    truncation and the empty-fallback ("(no error message)").
+    """
+    if not raw:
+        return ""
+    cleaned = _HTML_TAG_RE.sub("", raw)
+    cleaned = _WHITESPACE_RE.sub(" ", cleaned).strip()
+    return cleaned
 
 
 def _get_settings():
@@ -39,9 +58,15 @@ def submit_nzb(nzb_url, nzb_name=""):
         nzb_name: Human-friendly title shown in nzbdav's queue/history.
 
     Returns:
-        The nzo_id string assigned by nzbdav when the request succeeds, or
-        None if settings are missing, the HTTP request fails, or the response
-        does not include an nzo_id.
+        Tuple of (nzo_id, error). At most one of the two is non-None:
+        - On success: (nzo_id_string, None)
+        - On structured HTTP error from nzbdav (any 4xx/5xx that comes
+          back as urllib.error.HTTPError): (None, {"status": int,
+          "message": str}). The caller classifies by status code to
+          decide retry vs surface.
+        - On non-HTTP errors (network unreachable, JSON decode failure,
+          truthy-but-empty response, anything else): (None, None) —
+          caller may retry.
 
     Side effects:
         Reads nzbdav settings from Kodi via xbmcaddon.Addon().
@@ -50,9 +75,9 @@ def submit_nzb(nzb_url, nzb_name=""):
     """
     try:
         base_url, api_key = _get_settings()
-    except Exception as e:
+    except Exception as e:  # pylint: disable=broad-except
         xbmc.log("NZB-DAV: Failed to read nzbdav settings: {}".format(e), xbmc.LOGERROR)
-        return None
+        return None, None
     params = {
         "mode": "addurl",
         "name": nzb_url,
@@ -71,9 +96,29 @@ def submit_nzb(nzb_url, nzb_name=""):
     try:
         response_text = _http_get(url, timeout=timeout)
         response = json.loads(response_text)
-    except (URLError, json.JSONDecodeError, Exception) as e:
+    except HTTPError as e:
+        # nzbdav returned a structured HTTP error (e.g. 500 on duplicate
+        # submit, 502/503/504 from upstream issues). Capture the body so
+        # the caller can either surface it or classify retries based on
+        # status code.
+        body = ""
+        try:
+            body = e.read().decode("utf-8", errors="replace")
+        except Exception:  # pylint: disable=broad-except
+            pass
+        body = _sanitize_server_message(body)[:500]
+        xbmc.log(
+            "NZB-DAV: Submit NZB got HTTP {} from nzbdav: {}".format(e.code, body),
+            xbmc.LOGERROR,
+        )
+        return None, {"status": e.code, "message": body}
+    except (
+        URLError,
+        json.JSONDecodeError,
+        Exception,
+    ) as e:  # pylint: disable=broad-except
         xbmc.log("NZB-DAV: Submit NZB request failed: {}".format(e), xbmc.LOGERROR)
-        return None
+        return None, None
     nzo_ids = response.get("nzo_ids")
     if response.get("status") and isinstance(nzo_ids, list) and nzo_ids and nzo_ids[0]:
         nzo_id = nzo_ids[0]
@@ -81,12 +126,91 @@ def submit_nzb(nzb_url, nzb_name=""):
             "NZB-DAV: NZB submitted successfully, nzo_id={}".format(nzo_id),
             xbmc.LOGINFO,
         )
-        return nzo_id
+        return nzo_id, None
     xbmc.log(
         "NZB-DAV: Submit NZB response had no nzo_ids: {}".format(response),
         xbmc.LOGERROR,
     )
-    return None
+    return None, None
+
+
+def cancel_job(nzo_id, timeout=3):
+    """Cancel an in-flight nzbdav job by removing it from the queue.
+
+    Issues a single SABnzbd-compatible queue DELETE
+    (mode=queue&name=delete&value=<nzo_id>). This is "cancel" semantics,
+    not "delete everywhere" — completed and failed jobs that have already
+    moved to nzbdav's history are deliberately left intact so the user
+    can still inspect failure history in nzbdav's web UI.
+
+    Args:
+        nzo_id: The nzbdav job identifier to cancel.
+        timeout: HTTP timeout in seconds. Defaults to 3 because this is
+            called from user-facing abort paths (cancel button, Kodi
+            shutdown) where waiting longer feels broken. A healthy
+            nzbdav responds in ~50ms; the 3s cap protects against
+            unreachable backends without blocking the UI thread for the
+            full network timeout.
+
+    Returns:
+        True if nzbdav reported the queue DELETE succeeded (job was
+        found in the active queue and removed). False otherwise — which
+        includes the legitimate "job not in queue anymore" case (it
+        either completed, failed, or was already manually cancelled).
+        Callers should treat False as a non-error: the next play
+        attempt's find_completed_by_name() check will pick up any job
+        that genuinely raced into history.
+
+    Side effects:
+        One HTTP GET to nzbdav /api with a bounded timeout. Logs
+        outcome at LOGINFO on success, LOGDEBUG on "not in queue"
+        (a normal race), LOGWARNING on network error.
+    """
+    try:
+        base_url, api_key = _get_settings()
+    except Exception as e:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: cancel_job failed to read settings: {}".format(e),
+            xbmc.LOGERROR,
+        )
+        return False
+
+    params = {
+        "mode": "queue",
+        "name": "delete",
+        "value": nzo_id,
+        "apikey": api_key,
+        "output": "json",
+    }
+    url = "{}/api?{}".format(base_url, urlencode(params))
+    from resources.lib.http_util import redact_url
+
+    xbmc.log(
+        "NZB-DAV: cancel_job URL (timeout={}s): {}".format(timeout, redact_url(url)),
+        xbmc.LOGDEBUG,
+    )
+    try:
+        response_text = _http_get(url, timeout=timeout)
+        response = json.loads(response_text)
+    except Exception as e:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: cancel_job network error for nzo_id={}: {}".format(nzo_id, e),
+            xbmc.LOGWARNING,
+        )
+        return False
+    if response.get("status") is True:
+        xbmc.log(
+            "NZB-DAV: cancel_job removed nzo_id={} from queue".format(nzo_id),
+            xbmc.LOGINFO,
+        )
+        return True
+    err = response.get("error", "unknown")
+    xbmc.log(
+        "NZB-DAV: cancel_job got status=false for nzo_id={} (job is no longer "
+        "in the active queue, may have completed/failed): {}".format(nzo_id, err),
+        xbmc.LOGDEBUG,
+    )
+    return False
 
 
 def get_job_history(nzo_id):
