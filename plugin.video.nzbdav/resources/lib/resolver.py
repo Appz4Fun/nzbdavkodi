@@ -42,6 +42,22 @@ _DOWNLOAD_TIMEOUT_MAX = 86400
 # stack rate-limit violations — if 429 ever becomes a real failure mode
 # we'll need backoff first.
 _TRANSIENT_HTTP_STATUSES = (408, 502, 503, 504)
+_DB_DISCOVERY_ERRORS = (
+    AttributeError,
+    ImportError,
+    OSError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+)
+_RESOLVE_RUNTIME_ERRORS = (
+    AttributeError,
+    KeyError,
+    OSError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+)
 
 
 def _clamp_int_setting(setting_id, value, lo, hi):
@@ -159,75 +175,14 @@ def _clear_kodi_playback_state(params=None):
     """
     import sqlite3
 
-    try:
-        # Skip DB access while something is playing to avoid contending
-        # with Kodi's internal vacuum (Textures13.db / MyVideos131.db)
-        # which can stall the decoder and freeze playback.
-        if xbmc.Player().isPlayingVideo():
-            xbmc.log(
-                "NZB-DAV: Skipping playback-state cleanup — video is playing",
-                xbmc.LOGDEBUG,
-            )
-            return
-
-        import glob
-        import os
-        import re
-        import sys
-
-        db_dir = xbmcvfs.translatePath("special://database/")
-        db_files = sorted(glob.glob(os.path.join(db_dir, "MyVideos*.db")))
-        if not db_files:
-            return
-        db_path = db_files[-1]
-    except Exception as e:
-        xbmc.log(
-            "NZB-DAV: Failed to locate MyVideos DB for bookmark cleanup: {}".format(e),
-            xbmc.LOGWARNING,
-        )
+    db_path = _locate_kodi_video_db()
+    if not db_path:
         return
-
-    # Escape LIKE wildcards so a tmdb_id containing %, _, or \ cannot
-    # match unrelated rows. Applied with ESCAPE '\\' on the LIKE clause.
-    def _like_escape(value):
-        return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     try:
         with sqlite3.connect(db_path, timeout=2.0) as conn:
             cur = conn.cursor()
-
-            target_ids = set()
-
-            # 1. Our own plugin URL — exact match
-            if sys.argv and len(sys.argv) >= 1:
-                own_url = sys.argv[0]
-                if len(sys.argv) > 2 and sys.argv[2]:
-                    own_url += sys.argv[2]
-                cur.execute(
-                    "SELECT idFile FROM files WHERE strFilename = ?", (own_url,)
-                )
-                for (id_file,) in cur.fetchall():
-                    target_ids.add(id_file)
-
-            # 2. TMDBHelper outer URL — match by tmdb_id (param order varies)
-            tmdb_id = (params or {}).get("tmdb_id", "")
-            if tmdb_id:
-                safe_tmdb_id = _like_escape(tmdb_id)
-                cur.execute(
-                    "SELECT idFile, strFilename FROM files "
-                    "WHERE strFilename LIKE ? ESCAPE '\\' "
-                    "AND strFilename LIKE ? ESCAPE '\\'",
-                    (
-                        "plugin://plugin.video.themoviedb.helper/%",
-                        "%tmdb_id=" + safe_tmdb_id + "%",
-                    ),
-                )
-                id_pattern = re.compile(
-                    r"tmdb_id=" + re.escape(tmdb_id) + r"(?:[^0-9]|$)"
-                )
-                for id_file, filename in cur.fetchall():
-                    if id_pattern.search(filename):
-                        target_ids.add(id_file)
+            target_ids = _collect_kodi_playback_target_ids(cur, params)
 
             if not target_ids:
                 return
@@ -255,6 +210,89 @@ def _clear_kodi_playback_state(params=None):
             "NZB-DAV: SQLite error during bookmark cleanup: {}".format(e),
             xbmc.LOGWARNING,
         )
+
+
+def _locate_kodi_video_db():
+    """Return the newest MyVideos DB path, or None when unavailable."""
+    try:
+        # Skip DB access while something is playing to avoid contending
+        # with Kodi's internal vacuum (Textures13.db / MyVideos131.db)
+        # which can stall the decoder and freeze playback.
+        if xbmc.Player().isPlayingVideo():
+            xbmc.log(
+                "NZB-DAV: Skipping playback-state cleanup — video is playing",
+                xbmc.LOGDEBUG,
+            )
+            return None
+
+        import glob
+        import os
+
+        db_dir = xbmcvfs.translatePath("special://database/")
+        db_files = sorted(glob.glob(os.path.join(db_dir, "MyVideos*.db")))
+    except _DB_DISCOVERY_ERRORS as error:
+        xbmc.log(
+            "NZB-DAV: Failed to locate MyVideos DB for bookmark cleanup: {}".format(
+                error
+            ),
+            xbmc.LOGWARNING,
+        )
+        return None
+
+    if not db_files:
+        return None
+    return db_files[-1]
+
+
+def _like_escape(value):
+    """Escape SQLite LIKE wildcards using ESCAPE '\\'."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _add_own_plugin_target_ids(cur, target_ids):
+    """Add bookmark targets for the current plugin URL."""
+    import sys
+
+    if not sys.argv:
+        return
+    own_url = sys.argv[0]
+    if len(sys.argv) > 2 and sys.argv[2]:
+        own_url += sys.argv[2]
+    cur.execute("SELECT idFile FROM files WHERE strFilename = ?", (own_url,))
+    for (id_file,) in cur.fetchall():
+        target_ids.add(id_file)
+
+
+def _add_tmdb_helper_target_ids(cur, target_ids, params):
+    """Add bookmark targets for matching TMDBHelper URLs."""
+    import re
+
+    tmdb_id = (params or {}).get("tmdb_id", "")
+    if not tmdb_id:
+        return
+
+    safe_tmdb_id = _like_escape(tmdb_id)
+    cur.execute(
+        "SELECT idFile, strFilename FROM files "
+        "WHERE strFilename LIKE ? ESCAPE '\\' "
+        "AND strFilename LIKE ? ESCAPE '\\'",
+        (
+            "plugin://plugin.video.themoviedb.helper/%",
+            "%tmdb_id=" + safe_tmdb_id + "%",
+        ),
+    )
+    id_pattern = re.compile(r"tmdb_id=" + re.escape(tmdb_id) + r"(?:[^0-9]|$)")
+    for id_file, filename in cur.fetchall():
+        if id_pattern.search(filename):
+            target_ids.add(id_file)
+
+
+def _collect_kodi_playback_target_ids(cur, params):
+    """Collect bookmark row ids that should be cleared for the next play."""
+    target_ids = set()
+    _add_own_plugin_target_ids(cur, target_ids)
+    _add_tmdb_helper_target_ids(cur, target_ids, params)
+    return target_ids
 
 
 def _url_path(url):
@@ -560,226 +598,251 @@ def _show_submit_error_dialog(submit_error):
     )
 
 
-# After a submit timeout, how many times to poll nzbdav before giving
-# up on adoption and retrying the submit. 6 polls * 2 s = 12 s of
-# total wait — enough headroom for nzbdav to finish fetching/parsing a
-# moderately large NZB, short enough not to double the user's wait on
-# a genuine network failure.
-_SUBMIT_ADOPT_POLL_COUNT = 6
-_SUBMIT_ADOPT_POLL_INTERVAL_SECONDS = 2
-
-# UI pump cadence while submit_nzb is running on a background thread.
-# Short enough that the progress dialog looks live and the cancel
-# button is responsive; long enough that we're not burning CPU on the
-# plugin thread while waiting for a remote HTTP call.
-_SUBMIT_UI_PUMP_INTERVAL_SECONDS = 0.25
-
-
-def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
-    """Run ``submit_nzb`` off the plugin thread, pump the dialog, and
-    race a concurrent queue probe against the submit.
-
-    submit_nzb issues a synchronous HTTP request to
-    ``/api?mode=addurl`` which on a big NZB routinely takes 30–120 s
-    (fetch the .nzb from the indexer, parse XML, enumerate
-    segments). Running that on the Kodi plugin thread freezes the
-    progress dialog for the duration; even with the dialog pump
-    fix, the user still waits for nzbdav to finish parsing before
-    polling can start.
-
-    The fix is two-part:
-
-    1. ``submit_nzb`` runs in a daemon worker thread. The plugin
-       thread loops on ``monitor.waitForAbort`` at 250 ms cadence,
-       advancing the dialog's progress bar and redrawing the
-       message, and checking ``dialog.iscanceled`` every tick.
-
-    2. A second daemon thread concurrently probes nzbdav's queue
-       via ``find_queued_by_name``. As soon as nzbdav has created a
-       queue entry for ``title`` — which typically happens seconds
-       after the submit arrives, well before ``addurl`` actually
-       replies — we adopt that ``nzo_id`` and return without
-       waiting for the worker. In the common case this makes the
-       "submitting" phase feel instant even when nzbdav's addurl
-       reply is slow.
-
-    Races:
-    - Queue probe wins: return ``(nzo_id, None)`` immediately. The
-      submit worker is left running; its submit is harmless if it
-      completes anyway (nzbdav sees the job already enqueued).
-    - Submit worker wins: return its result.
-    - User cancels: ``(None, {"status": "cancelled", ...})`` — the
-      caller bails out of the resolve.
-    - Kodi shutdown: ``(None, {"status": "shutdown", ...})``.
-
-    Side effects: spawns two daemon threads. Neither is joined on
-    cancel/shutdown; any orphaned in-flight submit is picked up by
-    the queue-adoption path on the next play attempt.
-    """
-    import threading
+def _existing_completed_stream(title):
+    """Return an already-downloaded stream URL when the title exists."""
+    existing = find_completed_by_name(title)
+    if not existing:
+        return None
 
     xbmc.log(
-        "NZB-DAV: _submit_nzb_with_ui_pump entered for '{}' "
-        "(threaded pump + concurrent queue probe)".format(title),
+        "NZB-DAV: '{}' already downloaded, streaming directly".format(title),
         xbmc.LOGINFO,
     )
+    webdav_folder = _storage_to_webdav_path(existing["storage"])
+    video_path = find_video_file(webdav_folder)
+    if not video_path:
+        return None
+    return get_webdav_stream_url_for_path(video_path)
 
-    submit_result = [None, None]
-    submit_done = threading.Event()
 
-    def _submit_worker():
-        try:
-            submit_result[0], submit_result[1] = submit_nzb(nzb_url, title)
-        except Exception as e:  # pylint: disable=broad-except
-            xbmc.log(
-                "NZB-DAV: submit_nzb worker raised: {}".format(e),
-                xbmc.LOGERROR,
-            )
-            submit_result[0], submit_result[1] = None, None
-        finally:
-            submit_done.set()
+def _submit_nzb_with_retries(nzb_url, title, monitor, max_submit_retries=3):
+    """Submit an NZB with the existing retry and error-dialog behavior."""
+    xbmc.log("NZB-DAV: Submitting NZB for '{}'".format(title), xbmc.LOGINFO)
+    last_submit_error = None
 
-    queue_hit = [None]  # nzo_id if the concurrent probe finds a match
-    queue_stop = threading.Event()
+    for attempt in range(1, max_submit_retries + 1):
+        nzo_id, submit_error = _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor)
+        if nzo_id:
+            return nzo_id
 
-    def _queue_probe_worker():
-        # Short grace before the first probe — nzbdav needs the
-        # network round-trip to fetch the .nzb before it can enqueue
-        # anything, so probing immediately just wastes an HTTP call
-        # against an empty queue.
-        if queue_stop.wait(2.0):
-            return
-        while not queue_stop.is_set() and not submit_done.is_set():
-            try:
-                match = find_queued_by_name(title)
-            except Exception as e:  # pylint: disable=broad-except
+        if submit_error:
+            last_submit_error = submit_error
+            status = submit_error["status"]
+            if status in _TRANSIENT_HTTP_STATUSES:
                 xbmc.log(
-                    "NZB-DAV: concurrent queue probe raised: {}".format(e),
+                    "NZB-DAV: Submit attempt {}/{} hit transient HTTP {}: {}".format(
+                        attempt, max_submit_retries, status, submit_error["message"]
+                    ),
                     xbmc.LOGWARNING,
                 )
-                match = None
-            if match and match.get("nzo_id"):
-                queue_hit[0] = match["nzo_id"]
-                return
-            # 2 s between probes — fast enough to feel responsive,
-            # slow enough not to hammer nzbdav while it's parsing.
-            if queue_stop.wait(2.0):
-                return
-
-    submit_t = threading.Thread(
-        target=_submit_worker, name="nzbdav-submit", daemon=True
-    )
-    probe_t = threading.Thread(
-        target=_queue_probe_worker, name="nzbdav-submit-probe", daemon=True
-    )
-    submit_t.start()
-    probe_t.start()
-
-    elapsed = 0.0
-    submit_msg = _string(30097)
-    try:
-        while not submit_done.is_set():
-            # Concurrent probe beat the worker — adopt and go.
-            if queue_hit[0]:
+            else:
                 xbmc.log(
-                    "NZB-DAV: Concurrent queue probe found '{}' under "
-                    "nzo_id={}; adopting without waiting for addurl "
-                    "response".format(title, queue_hit[0]),
-                    xbmc.LOGINFO,
+                    "NZB-DAV: Submit failed with HTTP {}, not retrying: {}".format(
+                        status, submit_error["message"]
+                    ),
+                    xbmc.LOGERROR,
                 )
-                return queue_hit[0], None
-            if dialog.iscanceled():
-                xbmc.log(
-                    "NZB-DAV: User cancelled during submit for '{}'".format(title),
-                    xbmc.LOGINFO,
-                )
-                return None, {"status": "cancelled", "message": ""}
-            if monitor.waitForAbort(_SUBMIT_UI_PUMP_INTERVAL_SECONDS):
-                return None, {"status": "shutdown", "message": ""}
-            elapsed += _SUBMIT_UI_PUMP_INTERVAL_SECONDS
-            # Indeterminate progress bar — DialogProgress has no true
-            # "pulse" mode on all Kodi skins, so we crawl 0 -> 99 over
-            # the submit timeout window and reset to 0 on each pass.
-            # The important thing is that the bar MOVES so the user
-            # sees the addon is alive.
-            pct = int((elapsed * 100) / max(_get_submit_timeout_seconds(), 1)) % 100
-            try:
-                dialog.update(
-                    pct,
-                    "{}\n{} ({}s)".format(submit_msg, title[:60], int(elapsed)),
-                )
-            except Exception:  # pylint: disable=broad-except
-                pass
-        # After submit_done fires, re-check queue_hit ONE more time
-        # before returning the submit worker's result. Race window:
-        # the queue probe might have found the job microseconds after
-        # the main loop's last check and microseconds before the
-        # submit worker set submit_done. Without this re-check, a
-        # submit failure (None, error) returned by the worker would
-        # win over a concurrent successful adoption — and the
-        # resolver would fall through to the retry path, double-
-        # submitting a job nzbdav already has. Prefer the adopted
-        # nzo_id whenever the probe found one.
-        if queue_hit[0] and not submit_result[0]:
-            xbmc.log(
-                "NZB-DAV: Queue probe found '{}' under nzo_id={} just as "
-                "submit worker finished; preferring the adopted job over "
-                "the submit result".format(title, queue_hit[0]),
-                xbmc.LOGINFO,
-            )
-            return queue_hit[0], None
-        return submit_result[0], submit_result[1]
-    finally:
-        queue_stop.set()
-
-
-def _get_submit_timeout_seconds():
-    """Read the same submit_timeout that nzbdav_api._get_submit_timeout
-    uses. Duplicated here so resolver.py doesn't need to import a
-    private name across module boundaries — keep them in sync if the
-    default changes. Returns the int timeout or 120 on error."""
-    try:
-        import xbmcaddon
-
-        raw = xbmcaddon.Addon().getSetting("submit_timeout")
-        return int(raw) if raw else 120
-    except (ValueError, TypeError, Exception):  # pylint: disable=broad-except
-        return 120
-
-
-def _adopt_queued_or_completed_job(title, monitor):
-    """Return an existing nzbdav nzo_id for ``title`` if the submit we
-    just timed out on actually reached nzbdav.
-
-    After a client-side submit timeout, nzbdav may be:
-    - Still fetching/parsing the NZB (no queue entry yet)
-    - Processing it (queue entry exists under ``title``)
-    - Already done (history entry exists under ``title``)
-
-    We probe the queue and history a handful of times on a short
-    interval. Returns the matching ``nzo_id`` on the first positive
-    hit, ``None`` if nothing surfaces within the poll budget (caller
-    should then retry the submit).
-
-    ``monitor.waitForAbort`` is used for the inter-poll sleep so Kodi
-    shutdown unwinds the loop immediately rather than stalling.
-    """
-    for poll in range(_SUBMIT_ADOPT_POLL_COUNT):
-        # Queue first — most common hit for big NZBs where the submit
-        # landed but the download hasn't completed in the timeout
-        # window.
-        queued = find_queued_by_name(title)
-        if queued and queued.get("nzo_id"):
-            return queued["nzo_id"]
-        # History second — covers the unusual case where a very small
-        # NZB actually completed during the submit-timeout window.
-        completed = find_completed_by_name(title)
-        if completed and completed.get("nzo_id"):
-            return completed["nzo_id"]
-        if poll < _SUBMIT_ADOPT_POLL_COUNT - 1:
-            if monitor.waitForAbort(_SUBMIT_ADOPT_POLL_INTERVAL_SECONDS):
+                _show_submit_error_dialog(submit_error)
                 return None
+        else:
+            xbmc.log(
+                "NZB-DAV: Submit attempt {}/{} failed for '{}'".format(
+                    attempt, max_submit_retries, title
+                ),
+                xbmc.LOGWARNING,
+            )
+
+        if attempt < max_submit_retries and monitor.waitForAbort(2):
+            return None
+
+    if last_submit_error:
+        xbmc.log(
+            "NZB-DAV: All {} submit attempts failed for '{}', "
+            "last HTTP {}: {}".format(
+                max_submit_retries,
+                title,
+                last_submit_error["status"],
+                last_submit_error["message"],
+            ),
+            xbmc.LOGERROR,
+        )
+        _show_submit_error_dialog(last_submit_error)
+        return None
+
+    xbmc.log(
+        "NZB-DAV: All {} submit attempts failed for '{}'. "
+        "Check nzbdav URL and API key in settings.".format(max_submit_retries, title),
+        xbmc.LOGERROR,
+    )
+    xbmcgui.Dialog().ok(_addon_name(), _string(30098))
     return None
+
+
+def _abort_poll_before_fetch(
+    iteration, elapsed, download_timeout, dialog, nzo_id, title
+):
+    """Handle the early-return poll abort conditions."""
+    if iteration > MAX_POLL_ITERATIONS:
+        xbmc.log(
+            "NZB-DAV: Max poll iterations ({}) reached for nzo_id={}".format(
+                MAX_POLL_ITERATIONS, nzo_id
+            ),
+            xbmc.LOGERROR,
+        )
+        xbmcgui.Dialog().ok(_addon_name(), _string(30099))
+        cancel_job(nzo_id)
+        return True
+
+    if elapsed >= download_timeout:
+        xbmc.log(
+            "NZB-DAV: Download timed out after {}s for nzo_id={} (title='{}'). "
+            "Check the nzbdav queue for stalled jobs or increase the "
+            "download timeout in addon settings.".format(int(elapsed), nzo_id, title),
+            xbmc.LOGERROR,
+        )
+        xbmcgui.Dialog().ok(_addon_name(), _fmt(30099, int(elapsed)))
+        cancel_job(nzo_id)
+        return True
+
+    if dialog.iscanceled():
+        xbmc.log(
+            "NZB-DAV: User cancelled resolve for nzo_id={}".format(nzo_id),
+            xbmc.LOGINFO,
+        )
+        cancel_job(nzo_id)
+        return True
+
+    return False
+
+
+def _status_dialog_message(status, percentage):
+    """Return the progress-dialog text for a queue status update."""
+    msg_id = _STATUS_MESSAGES.get(status)
+    if not msg_id:
+        return "Status: {}".format(status)
+    if msg_id == 30105:
+        return _fmt(msg_id, percentage)
+    return _string(msg_id)
+
+
+def _handle_job_status(job_status, nzo_id, dialog, last_status):
+    """Apply queue-status updates and detect terminal failed states."""
+    if not job_status:
+        return False, last_status
+
+    status = job_status.get("status", "Unknown")
+    percentage = job_status.get("percentage", "0")
+
+    if status != last_status:
+        xbmc.log(
+            "NZB-DAV: Job {} status changed: {} -> {}".format(
+                nzo_id, last_status, status
+            ),
+            xbmc.LOGINFO,
+        )
+        last_status = status
+
+    if status.lower() in ("failed", "deleted"):
+        xbmc.log(
+            "NZB-DAV: Job {} failed/deleted (status={})".format(nzo_id, status),
+            xbmc.LOGERROR,
+        )
+        xbmcgui.Dialog().ok(_addon_name(), _string(30100))
+        return True, last_status
+
+    progress = min(int(percentage or 0), 100)
+    dialog.update(progress, _status_dialog_message(status, percentage))
+    return False, last_status
+
+
+def _handle_history_result(history, title, no_video_retries, max_no_video_retries):
+    """Handle history-based completion and failure states."""
+    if not history:
+        return False, None, None, no_video_retries
+
+    if history["status"] == "Failed":
+        fail_msg = history.get("fail_message", "")
+        xbmc.log(
+            "NZB-DAV: Download failed for nzo_id={} (title='{}'): {}".format(
+                history.get("nzo_id", "unknown"), title, fail_msg or "unknown reason"
+            ),
+            xbmc.LOGERROR,
+        )
+        error_text = fail_msg if fail_msg else _string(30100)
+        xbmcgui.Dialog().ok(_addon_name(), error_text)
+        return True, None, None, no_video_retries
+
+    if history["status"] != "Completed":
+        return False, None, None, no_video_retries
+
+    storage = history["storage"]
+    webdav_folder = _storage_to_webdav_path(storage)
+    video_path = find_video_file(webdav_folder)
+    if video_path:
+        stream_url, stream_headers = get_webdav_stream_url_for_path(video_path)
+        xbmc.log(
+            "NZB-DAV: File available, streaming '{}' via WebDAV".format(video_path),
+            xbmc.LOGINFO,
+        )
+        if not _validate_stream_url(stream_url, stream_headers):
+            xbmc.log(
+                "NZB-DAV: Stream validation failed for '{}', "
+                "attempting playback anyway".format(video_path),
+                xbmc.LOGWARNING,
+            )
+        return True, stream_url, stream_headers, no_video_retries
+
+    no_video_retries += 1
+    if no_video_retries >= max_no_video_retries:
+        xbmc.log(
+            "NZB-DAV: Download completed but no video file found "
+            "at '{}' after {} attempts (storage='{}')".format(
+                webdav_folder, no_video_retries, storage
+            ),
+            xbmc.LOGERROR,
+        )
+        xbmcgui.Dialog().ok(_addon_name(), _string(30120))
+        return True, None, None, no_video_retries
+
+    xbmc.log(
+        "NZB-DAV: Completed but no video found at '{}', "
+        "retry {}/{} (storage='{}')...".format(
+            webdav_folder,
+            no_video_retries,
+            max_no_video_retries,
+            storage,
+        ),
+        xbmc.LOGWARNING,
+    )
+    return False, None, None, no_video_retries
+
+
+def _handle_webdav_error(nzo_id, webdav_error):
+    """Handle terminal WebDAV auth failures and retryable server errors."""
+    if webdav_error == "auth_failed":
+        xbmc.log(
+            "NZB-DAV: WebDAV authentication failed for nzo_id={}. "
+            "Check WebDAV username and password in addon settings.".format(nzo_id),
+            xbmc.LOGERROR,
+        )
+        xbmcgui.Dialog().ok(_addon_name(), _string(_ERROR_MESSAGES["auth_failed"]))
+        return True
+
+    if webdav_error == "server_error":
+        xbmc.log(
+            "NZB-DAV: WebDAV server error, will retry on next poll",
+            xbmc.LOGWARNING,
+        )
+    return False
+
+
+def _handle_resolve_exception(label, error, handle=None):
+    """Log and surface a non-fatal resolve error to Kodi."""
+    xbmc.log("NZB-DAV: Unexpected error in {}: {}".format(label, error), xbmc.LOGERROR)
+    xbmcgui.Dialog().ok(_addon_name(), "Error: {}".format(str(error)))
+    if handle is not None:
+        xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+        xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
 
 
 def _poll_until_ready(nzb_url, title, dialog, poll_interval, download_timeout):
@@ -790,144 +853,13 @@ def _poll_until_ready(nzb_url, title, dialog, poll_interval, download_timeout):
     notifications are issued inside this function; the caller only needs to
     decide what to do with the resulting stream URL.
     """
-    # Check if this title was already downloaded — skip re-downloading
-    existing = find_completed_by_name(title)
-    if existing:
-        xbmc.log(
-            "NZB-DAV: '{}' already downloaded, streaming directly".format(title),
-            xbmc.LOGINFO,
-        )
-        webdav_folder = _storage_to_webdav_path(existing["storage"])
-        video_path = find_video_file(webdav_folder)
-        if video_path:
-            return get_webdav_stream_url_for_path(video_path)
+    existing_stream = _existing_completed_stream(title)
+    if existing_stream is not None:
+        return existing_stream
 
-    xbmc.log("NZB-DAV: Submitting NZB for '{}'".format(title), xbmc.LOGINFO)
-    max_submit_retries = 3
-    nzo_id = None
-    last_submit_error = None  # tracks the most recent HTTP error during retries
     monitor = xbmc.Monitor()
-    for attempt in range(1, max_submit_retries + 1):
-        nzo_id, submit_error = _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor)
-        if nzo_id:
-            break
-
-        if submit_error:
-            last_submit_error = submit_error
-            status = submit_error["status"]
-            # User hit cancel on the progress dialog or Kodi is shutting
-            # down. Either way we stop immediately — no retry, no
-            # queue-adoption probe, no error dialog. The in-flight
-            # submit thread may still complete in the background; the
-            # queue-adoption path on the next play attempt will pick up
-            # anything that orphaned.
-            if status in ("cancelled", "shutdown"):
-                xbmc.log(
-                    "NZB-DAV: Submit aborted ({}) for '{}'".format(status, title),
-                    xbmc.LOGINFO,
-                )
-                return None, None
-            # Client-side timeout on submit. nzbdav's /api?mode=addurl
-            # handler can take > 30 s on big NZBs (fetch from indexer,
-            # parse XML, enumerate segments) — longer than the default
-            # HTTP timeout. A timeout does NOT mean the submit failed.
-            # Probing the queue before retrying lets us adopt the job
-            # nzbdav is already processing instead of either bouncing
-            # off the duplicate-rejection path or orphaning the
-            # in-progress job with a second nzo_id.
-            if status == "timeout":
-                xbmc.log(
-                    "NZB-DAV: Submit attempt {}/{} timed out; probing nzbdav "
-                    "queue for '{}' before retrying".format(
-                        attempt, max_submit_retries, title
-                    ),
-                    xbmc.LOGWARNING,
-                )
-                adopted_nzo_id = _adopt_queued_or_completed_job(title, monitor)
-                if adopted_nzo_id:
-                    nzo_id = adopted_nzo_id
-                    xbmc.log(
-                        "NZB-DAV: Adopted existing nzbdav job nzo_id={} for "
-                        "'{}' after submit timeout".format(adopted_nzo_id, title),
-                        xbmc.LOGINFO,
-                    )
-                    break
-                # Not in queue or history yet — fall through to retry
-                # below. Could mean nzbdav is still in the fetch/parse
-                # phase and hasn't created a queue entry, or the first
-                # submit actually failed at the network level. Retrying
-                # is the right call in both cases.
-                xbmc.log(
-                    "NZB-DAV: '{}' not found in nzbdav queue or history "
-                    "after submit timeout; retrying".format(title),
-                    xbmc.LOGWARNING,
-                )
-            elif status in _TRANSIENT_HTTP_STATUSES:
-                # Transient gateway/service issues — preserve the existing
-                # retry behavior. nzbdav restarting or its upstream proxy
-                # hiccupping is exactly the case retry was designed for.
-                xbmc.log(
-                    "NZB-DAV: Submit attempt {}/{} hit transient HTTP {}: {}".format(
-                        attempt, max_submit_retries, status, submit_error["message"]
-                    ),
-                    xbmc.LOGWARNING,
-                )
-                # fall through to the retry-wait below
-            else:
-                # Non-transient HTTP error: 4xx (bad apikey, malformed,
-                # conflict), 500/501 (definite server-side rejection —
-                # duplicate, internal error, not implemented), or any
-                # other unclassified 5xx. Retrying these is futile and
-                # just delays the diagnostic.
-                xbmc.log(
-                    "NZB-DAV: Submit failed with HTTP {}, not retrying: {}".format(
-                        status, submit_error["message"]
-                    ),
-                    xbmc.LOGERROR,
-                )
-                _show_submit_error_dialog(submit_error)
-                return None, None
-        else:
-            # (None, None) — non-HTTP transient (connection refused,
-            # JSON decode error, etc.). Retry as before.
-            xbmc.log(
-                "NZB-DAV: Submit attempt {}/{} failed for '{}'".format(
-                    attempt, max_submit_retries, title
-                ),
-                xbmc.LOGWARNING,
-            )
-
-        if attempt < max_submit_retries:
-            if monitor.waitForAbort(2):
-                return None, None
-
+    nzo_id = _submit_nzb_with_retries(nzb_url, title, monitor)
     if not nzo_id:
-        # Retries exhausted. If the last error we saw was a transient
-        # HTTP error (502/503/504), surface its actual body — that's
-        # more useful than the generic "check your settings" string.
-        # Otherwise (pure connection errors), fall back to the generic
-        # dialog.
-        if last_submit_error:
-            xbmc.log(
-                "NZB-DAV: All {} submit attempts failed for '{}', "
-                "last HTTP {}: {}".format(
-                    max_submit_retries,
-                    title,
-                    last_submit_error["status"],
-                    last_submit_error["message"],
-                ),
-                xbmc.LOGERROR,
-            )
-            _show_submit_error_dialog(last_submit_error)
-            return None, None
-        xbmc.log(
-            "NZB-DAV: All {} submit attempts failed for '{}'. "
-            "Check nzbdav URL and API key in settings.".format(
-                max_submit_retries, title
-            ),
-            xbmc.LOGERROR,
-        )
-        xbmcgui.Dialog().ok(_addon_name(), _string(30098))
         return None, None
 
     xbmc.log(
@@ -944,140 +876,31 @@ def _poll_until_ready(nzb_url, title, dialog, poll_interval, download_timeout):
 
     while True:
         iteration += 1
-        if iteration > MAX_POLL_ITERATIONS:
-            xbmc.log(
-                "NZB-DAV: Max poll iterations ({}) reached for nzo_id={}".format(
-                    MAX_POLL_ITERATIONS, nzo_id
-                ),
-                xbmc.LOGERROR,
-            )
-            xbmcgui.Dialog().ok(_addon_name(), _string(30099))
-            cancel_job(nzo_id)
-            return None, None
-
         elapsed = time.time() - start_time
-
-        if elapsed >= download_timeout:
-            xbmc.log(
-                "NZB-DAV: Download timed out after {}s for nzo_id={} (title='{}'). "
-                "Check the nzbdav queue for stalled jobs or increase the "
-                "download timeout in addon settings.".format(
-                    int(elapsed), nzo_id, title
-                ),
-                xbmc.LOGERROR,
-            )
-            xbmcgui.Dialog().ok(_addon_name(), _fmt(30099, int(elapsed)))
-            cancel_job(nzo_id)
-            return None, None
-
-        if dialog.iscanceled():
-            xbmc.log(
-                "NZB-DAV: User cancelled resolve for nzo_id={}".format(nzo_id),
-                xbmc.LOGINFO,
-            )
-            cancel_job(nzo_id)
+        if _abort_poll_before_fetch(
+            iteration, elapsed, download_timeout, dialog, nzo_id, title
+        ):
             return None, None
 
         job_status, history, webdav_error = _poll_once(nzo_id, title, monitor)
 
-        if job_status:
-            status = job_status.get("status", "Unknown")
-            percentage = job_status.get("percentage", "0")
-
-            if status != last_status:
-                xbmc.log(
-                    "NZB-DAV: Job {} status changed: {} -> {}".format(
-                        nzo_id, last_status, status
-                    ),
-                    xbmc.LOGINFO,
-                )
-                last_status = status
-
-            if status.lower() in ("failed", "deleted"):
-                xbmc.log(
-                    "NZB-DAV: Job {} failed/deleted (status={})".format(nzo_id, status),
-                    xbmc.LOGERROR,
-                )
-                xbmcgui.Dialog().ok(_addon_name(), _string(30100))
-                return None, None
-
-            msg_id = _STATUS_MESSAGES.get(status)
-            if not msg_id:
-                msg = "Status: {}".format(status)
-            elif msg_id == 30105:
-                msg = _fmt(msg_id, percentage)
-            else:
-                msg = _string(msg_id)
-            progress = min(int(percentage or 0), 100)
-            dialog.update(progress, msg)
-
-        # Check history for failed download
-        if history and history["status"] == "Failed":
-            fail_msg = history.get("fail_message", "")
-            xbmc.log(
-                "NZB-DAV: Download failed for nzo_id={} (title='{}'): {}".format(
-                    nzo_id, title, fail_msg or "unknown reason"
-                ),
-                xbmc.LOGERROR,
-            )
-            error_text = fail_msg if fail_msg else _string(30100)
-            xbmcgui.Dialog().ok(_addon_name(), error_text)
+        should_stop, last_status = _handle_job_status(
+            job_status, nzo_id, dialog, last_status
+        )
+        if should_stop:
             return None, None
 
-        # Check history for completed download
-        if history and history["status"] == "Completed":
-            storage = history["storage"]
-            webdav_folder = _storage_to_webdav_path(storage)
-            video_path = find_video_file(webdav_folder)
-            if video_path:
-                stream_url, stream_headers = get_webdav_stream_url_for_path(video_path)
-                xbmc.log(
-                    "NZB-DAV: File available, streaming '{}' via WebDAV".format(
-                        video_path
-                    ),
-                    xbmc.LOGINFO,
-                )
-
-                # Validate stream supports range requests before playback
-                if not _validate_stream_url(stream_url, stream_headers):
-                    xbmc.log(
-                        "NZB-DAV: Stream validation failed for '{}', "
-                        "attempting playback anyway".format(video_path),
-                        xbmc.LOGWARNING,
-                    )
-
-                return stream_url, stream_headers
-            else:
-                no_video_retries += 1
-                if no_video_retries >= max_no_video_retries:
-                    xbmc.log(
-                        "NZB-DAV: Download completed but no video file found "
-                        "at '{}' after {} attempts (storage='{}')".format(
-                            webdav_folder, no_video_retries, storage
-                        ),
-                        xbmc.LOGERROR,
-                    )
-                    xbmcgui.Dialog().ok(_addon_name(), _string(30120))
-                    return None, None
-                xbmc.log(
-                    "NZB-DAV: Completed but no video found at '{}', "
-                    "retry {}/{} (storage='{}')...".format(
-                        webdav_folder,
-                        no_video_retries,
-                        max_no_video_retries,
-                        storage,
-                    ),
-                    xbmc.LOGWARNING,
-                )
-
-        # Handle WebDAV error types
-        if webdav_error == "auth_failed":
-            xbmc.log(
-                "NZB-DAV: WebDAV authentication failed for nzo_id={}. "
-                "Check WebDAV username and password in addon settings.".format(nzo_id),
-                xbmc.LOGERROR,
+        should_stop, stream_url, stream_headers, no_video_retries = (
+            _handle_history_result(
+                history, title, no_video_retries, max_no_video_retries
             )
-            xbmcgui.Dialog().ok(_addon_name(), _string(_ERROR_MESSAGES["auth_failed"]))
+        )
+        if stream_url:
+            return stream_url, stream_headers
+        if should_stop:
+            return None, None
+
+        if _handle_webdav_error(nzo_id, webdav_error):
             # Deliberately NOT calling cancel_job here. The WebDAV auth
             # failure is an addon-side observation problem (the addon
             # can't read the file the job produced), not a job-side
@@ -1085,12 +908,6 @@ def _poll_until_ready(nzb_url, title, dialog, poll_interval, download_timeout):
             # cancelling it would be destructive — the user's nzbdav UI
             # would show a vanished download for no apparent reason.
             return None, None
-
-        if webdav_error == "server_error":
-            xbmc.log(
-                "NZB-DAV: WebDAV server error, will retry on next poll",
-                xbmc.LOGWARNING,
-            )
 
         if monitor.waitForAbort(poll_interval):
             # Kodi is shutting down
@@ -1130,11 +947,8 @@ def resolve(handle, params):
         else:
             xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
             xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
-    except Exception as e:
-        xbmc.log("NZB-DAV: Unexpected error in resolve: {}".format(e), xbmc.LOGERROR)
-        xbmcgui.Dialog().ok(_addon_name(), "Error: {}".format(str(e)))
-        xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
-        xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
+    except _RESOLVE_RUNTIME_ERRORS as error:
+        _handle_resolve_exception("resolve", error, handle=handle)
     finally:
         dialog.close()
 
@@ -1158,10 +972,7 @@ def resolve_and_play(nzb_url, title):
         if stream_url:
             _clear_kodi_playback_state()
             _play_via_proxy(stream_url, stream_headers)
-    except Exception as e:
-        xbmc.log(
-            "NZB-DAV: Unexpected error in resolve_and_play: {}".format(e), xbmc.LOGERROR
-        )
-        xbmcgui.Dialog().ok(_addon_name(), "Error: {}".format(str(e)))
+    except _RESOLVE_RUNTIME_ERRORS as error:
+        _handle_resolve_exception("resolve_and_play", error)
     finally:
         dialog.close()

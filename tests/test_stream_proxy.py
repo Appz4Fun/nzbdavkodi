@@ -3969,6 +3969,31 @@ def test_choose_hls_workdir_prefers_first_writable(tmp_path):
     assert _os.path.isdir(candidate_a)
 
 
+def test_choose_hls_workdir_fallback_is_not_predictable(tmp_path):
+    """Fallback workdir must not reuse a fixed shared temp path."""
+    import os as _os
+
+    from resources.lib.stream_proxy import _choose_hls_workdir
+
+    predictable = str(tmp_path / "nzbdav-hls")
+
+    with patch(
+        "resources.lib.stream_proxy._HLS_WORKDIR_CANDIDATES",
+        ("/missing-a", "/missing-b"),
+    ):
+        with patch("tempfile.gettempdir", return_value=str(tmp_path)):
+            with patch(
+                "resources.lib.stream_proxy._HLS_PRIVATE_TEMP_ROOT",
+                None,
+                create=True,
+            ):
+                chosen = _choose_hls_workdir()
+
+    assert chosen.startswith(str(tmp_path) + _os.sep)
+    assert chosen != predictable
+    assert _os.path.isdir(chosen)
+
+
 def test_register_session_hls_returns_playlist_url(tmp_path):
     """A force-remux / HLS session must register with a playlist URL
     and attach an HlsProducer pointing at the session's working

@@ -26,6 +26,13 @@ _PROP_ACTIVE = "nzbdav.active"
 _PROP_PROXY_PORT = "nzbdav.proxy_port"
 
 _HOME_WINDOW = xbmcgui.Window(10000)
+_PLAYER_RUNTIME_ERRORS = (
+    AttributeError,
+    OSError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+)
 
 
 class PlaybackState(Enum):
@@ -77,7 +84,7 @@ class NzbdavPlayer(xbmc.Player):
             return
         try:
             self._proxy.clear_sessions()
-        except Exception:  # noqa: BLE001 — proxy teardown must never crash the hook
+        except _PLAYER_RUNTIME_ERRORS:
             pass
 
     @staticmethod
@@ -169,7 +176,7 @@ class NzbdavPlayer(xbmc.Player):
         try:
             if self.isPlaying():
                 self._last_position = self.getTime()
-        except Exception:
+        except _PLAYER_RUNTIME_ERRORS:
             pass
 
     def _retry_playback(self, max_retries, retry_delay):
@@ -206,7 +213,7 @@ class NzbdavPlayer(xbmc.Player):
             try:
                 if self.isPlaying():
                     return True
-            except Exception:
+            except _PLAYER_RUNTIME_ERRORS:
                 pass
             if self._monitor.waitForAbort(0.5):
                 return False
