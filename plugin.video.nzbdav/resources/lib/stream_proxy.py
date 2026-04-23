@@ -1341,9 +1341,10 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     if ctx.get("auth_header"):
                         req.add_header("Authorization", ctx["auth_header"])
 
-                    with urlopen(
+                    # nosemgrep
+                    with urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
                         req, timeout=120
-                    ) as resp:  # nosec B310 nosemgrep — URL from user-configured nzbdav/WebDAV setting
+                    ) as resp:
                         while bytes_sent < length:
                             chunk = resp.read(1048576)  # 1 MB read buffer
                             if not chunk:
@@ -2069,9 +2070,12 @@ class _StreamHandler(BaseHTTPRequestHandler):
         requested = end - start + 1
         written = 0
         try:
-            resp = urlopen(
-                req, timeout=_UPSTREAM_OPEN_TIMEOUT
-            )  # nosec B310 nosemgrep — URL from user-configured nzbdav/WebDAV setting
+            # nosemgrep
+            resp = (
+                urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
+                    req, timeout=_UPSTREAM_OPEN_TIMEOUT
+                )
+            )
         except (OSError, ValueError) as e:
             xbmc.log(
                 "NZB-DAV: Proxy upstream open failed at byte {}: {} "
@@ -2212,7 +2216,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 if ctx.get("auth_header"):
                     req.add_header("Authorization", ctx["auth_header"])
                 try:
-                    with urlopen(  # nosec B310 nosemgrep
+                    # nosemgrep
+                    with urlopen(  # nosec B310 — URL from user-configured stream
                         req, timeout=_SKIP_PROBE_TIMEOUT
                     ) as resp:
                         status = getattr(resp, "status", None) or resp.getcode()
@@ -4067,9 +4072,10 @@ class StreamProxy:
         if auth_header:
             req.add_header("Authorization", auth_header)
         try:
-            with urlopen(
+            # nosemgrep
+            with urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
                 req, timeout=10
-            ) as resp:  # nosec B310 nosemgrep — URL from user-configured nzbdav/WebDAV setting
+            ) as resp:
                 return int(resp.headers.get("Content-Length", 0))
         except (OSError, ValueError):
             pass
@@ -4078,9 +4084,10 @@ class StreamProxy:
             req.add_header("Range", "bytes=-1")
             if auth_header:
                 req.add_header("Authorization", auth_header)
-            with urlopen(
+            # nosemgrep
+            with urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
                 req, timeout=10
-            ) as resp:  # nosec B310 nosemgrep — URL from user-configured nzbdav/WebDAV setting
+            ) as resp:
                 cr = resp.headers.get("Content-Range", "")
                 return int(cr.split("/")[1]) if "/" in cr else 0
         except (OSError, ValueError):
@@ -4123,9 +4130,10 @@ def prepare_stream_via_service(port, remote_url, auth_header=None):
     data = json.dumps({"remote_url": remote_url, "auth_header": auth_header})
     req = Request(url, data=data.encode(), method="POST")
     req.add_header("Content-Type", "application/json")
-    with urlopen(
+    # nosemgrep
+    with urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
         req, timeout=60
-    ) as resp:  # nosec B310 nosemgrep — URL from user-configured nzbdav/WebDAV setting
+    ) as resp:
         result = json.loads(resp.read())
         proxy_url = result.pop("proxy_url")
         return proxy_url, result

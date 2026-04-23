@@ -34,9 +34,10 @@ def http_get(url, timeout=15):
     silent corruption causes real bugs.
     """
     req = Request(url)
-    with urlopen(
+    # nosemgrep
+    with urlopen(  # nosec B310 — URL validated by caller (nzbdav/hydra/prowlarr config)
         req, timeout=timeout
-    ) as resp:  # nosec B310 nosemgrep — URL validated by caller (nzbdav/hydra/prowlarr config)
+    ) as resp:
         return resp.read().decode("utf-8")
 
 
