@@ -302,7 +302,27 @@ def main():
     # when Kodi's CPythonInvoker destroys the interpreter after the script
     # exits, so the proxy must live here instead.
     proxy = StreamProxy()
-    proxy.start()
+    try:
+        proxy.start()
+    except Exception as e:  # pylint: disable=broad-except
+        # Socket bind failure (port in use), permission error, or any other
+        # startup exception. Without this guard the service dies silently
+        # and every plugin-side /prepare call hangs on "connection refused"
+        # with no hint in the log. Surface it clearly, clear the port
+        # property so plugin callers fall back quickly, and keep the service
+        # alive so the user can fix the config and trigger a re-run.
+        xbmc.log(
+            "NZB-DAV: Service failed to start stream proxy: {}".format(e),
+            xbmc.LOGERROR,
+        )
+        _HOME_WINDOW.clearProperty(_PROP_PROXY_PORT)
+        # Idle-loop until Kodi shuts down so the service process stays alive;
+        # otherwise Kodi keeps restarting us every few seconds and spams the
+        # log with the same start failure.
+        while not monitor.abortRequested():
+            if monitor.waitForAbort(5):
+                break
+        return
     _HOME_WINDOW.setProperty(_PROP_PROXY_PORT, str(proxy.port))
 
     # Pass the proxy to the player so stop/end callbacks can tear down

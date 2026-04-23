@@ -45,8 +45,31 @@ def install_player():
     )
     try:
         real_path = xbmcvfs.translatePath(TMDBHELPER_PLAYER_PATH)
+
+        # Defensive check: the resolved real_path must sit under the Kodi
+        # profile's addon_data directory. If special:// resolution is ever
+        # hijacked (symlink, environment override, Kodi mis-config) we'd
+        # otherwise happily write nzbdav.json anywhere on disk.
+        profile_root = xbmcvfs.translatePath("special://profile/addon_data/")
+        if not os.path.realpath(real_path).startswith(os.path.realpath(profile_root)):
+            xbmc.log(
+                "NZB-DAV: Refusing to install player outside addon_data "
+                "(resolved {} from {})".format(real_path, TMDBHELPER_PLAYER_PATH),
+                xbmc.LOGERROR,
+            )
+            _notify(_addon_name(), _fmt(30095, "TMDBHelper"))
+            return
+
         if not xbmcvfs.exists(real_path):
-            xbmcvfs.mkdirs(real_path)
+            if not xbmcvfs.mkdirs(real_path):
+                xbmc.log(
+                    "NZB-DAV: Failed to create TMDBHelper player directory {}".format(
+                        real_path
+                    ),
+                    xbmc.LOGERROR,
+                )
+                _notify(_addon_name(), _fmt(30095, "TMDBHelper"))
+                return
 
         file_path = os.path.join(real_path, "nzbdav.json")
         f = xbmcvfs.File(file_path, "w")

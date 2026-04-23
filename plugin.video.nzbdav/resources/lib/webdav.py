@@ -267,18 +267,27 @@ def get_webdav_stream_url_for_path(file_path):
 
     # file_path is already URL-encoded from PROPFIND
     base = settings["webdav_url"] or settings["nzbdav_url"]
-    url = "{}{}".format(base, file_path)
+    # Normalize base/file-path boundary so we never produce "host" + "path"
+    # (missing slash) or "host//" + "/path" (double slash). The PROPFIND
+    # response is *supposed* to hand us an absolute path with a leading
+    # slash, but nothing enforces that on the server side.
+    url = "{}/{}".format(base.rstrip("/"), file_path.lstrip("/"))
     headers = _build_auth_headers(settings["username"], settings["password"])
     return url, headers
 
 
 def _build_auth_headers(username, password):
     """Build HTTP Basic Auth headers dict. Returns empty dict if no auth."""
-    if username:
-        credentials = "{}:{}".format(username, password)
-        encoded = base64.b64encode(credentials.encode("utf-8")).decode("utf-8")
-        return {"Authorization": "Basic {}".format(encoded)}
-    return {}
+    if not username:
+        return {}
+    # RFC 7617 forbids CR/LF in Basic-auth credentials; some servers silently
+    # split on them (header injection). Drop them defensively so a setting
+    # with a stray newline can't corrupt the Authorization header.
+    safe_user = username.replace("\r", "").replace("\n", "")
+    safe_pass = (password or "").replace("\r", "").replace("\n", "")
+    credentials = "{}:{}".format(safe_user, safe_pass)
+    encoded = base64.b64encode(credentials.encode("utf-8")).decode("utf-8")
+    return {"Authorization": "Basic {}".format(encoded)}
 
 
 def check_file_in_folder(folder_path):

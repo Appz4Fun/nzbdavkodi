@@ -48,21 +48,35 @@ _FALLBACK_STRINGS = {
 
 
 def addon():
-    """Return the active addon instance."""
-    return xbmcaddon.Addon()
+    """Return the active addon instance, or None if Kodi isn't fully up yet.
+
+    Early in service startup, `xbmcaddon.Addon()` can raise RuntimeError
+    ("unknown addon id") because the plugin subsystem hasn't finished
+    registering us. Return None so callers fall through to their fallback
+    instead of crashing the service entry point.
+    """
+    try:
+        return xbmcaddon.Addon()
+    except RuntimeError:
+        return None
 
 
 def addon_name():
     """Return the localized addon name from addon metadata."""
-    name = addon().getAddonInfo("name")
+    a = addon()
+    if a is None:
+        return _FALLBACK_NAME
+    name = a.getAddonInfo("name")
     return name if isinstance(name, str) and name else _FALLBACK_NAME
 
 
 def string(msg_id):
     """Return a localized string by numeric id."""
-    value = addon().getLocalizedString(msg_id)
-    if isinstance(value, str) and value:
-        return value
+    a = addon()
+    if a is not None:
+        value = a.getLocalizedString(msg_id)
+        if isinstance(value, str) and value:
+            return value
     return _FALLBACK_STRINGS.get(msg_id, "")
 
 
