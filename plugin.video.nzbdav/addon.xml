@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="plugin.video.nzbdav"
        name="NZB-DAV"
-       version="1.0.0-pre-alpha"
+       version="1.0.1"
        provider-name="nzbdav">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
@@ -22,7 +22,16 @@
         <license>GPL-3.0-or-later</license>
         <source>https://github.com/xbmc4lyfe/nzbdavkodi</source>
         <website>https://xbmc4lyfe.github.io/nzbdavkodi/</website>
-        <news>v1.0.0-pre-alpha
+        <news>v1.0.1
+- Retire the ffmpeg-stderr Dolby Vision probe; replace with a pure-Python RPU parser (resources/lib/dv_rpu.py) + remote container probe (resources/lib/dv_source.py) that reads real RPU data from MP4/MKV files via HTTP range requests. The new probe can tell P7 MEL from P7 FEL, distinguish profile 8 from profile 5, and report no-DV-at-all from probe-couldn't-read — information the old stderr probe could not produce.
+- Hybrid DV routing matrix: P7 FEL + P8 + P5 + dv_unknown route to matroska (preserves the 2026-04-15 CAMLCodec fix for P8 fmp4 hangs); P7 MEL and non-DV route to fmp4 HLS. MEL is metadata-only EL so it does not exercise the CAMLCodec dual-layer init path that tripped P8; if field testing shows MEL also hangs, tighten the gate in stream_proxy.py to match P8.
+- Size caps at every attacker-controlled I/O seam. _http_range has a 16 MiB default read cap; stsz first_sample_size is clamped to 16 MiB before use as a Range upper bound. A malicious moov or an RFC-violating WebDAV server can no longer OOM 32-bit Kodi.
+- co64 support for MP4 chunk offsets > 4 GiB. Real DV UHD remuxes > 4 GiB use co64 instead of stco; the probe now tries stco first and falls back to co64.
+- MKV robustness: refuse SimpleBlock lacing (bail rather than read lace-count as a NAL length), walk BlockGroup (0xA0) + Block (0xA1) wrappers too, clamp EBML child payload to parent end.
+- Auth header CR/LF stripping; stream_proxy wraps the DV probe call in a try/except that falls back to matroska on any probe crash rather than killing prepare_stream.
+- 657 unit tests pass (up from 497 in 1.0.0-pre-alpha); real-ffmpeg integration test still green.
+
+v1.0.0-pre-alpha
 - Big-file force-remux is now ON by default (force_remux_threshold_mb 0 -> 20000 MB). 100 GB DV REMUXes no longer crash 32-bit Kodi's CFileCache on pass-through.
 - New experimental fmp4 HLS force-remux mode (Advanced -> Force remux output format). Gives full random seek across multi-hundred-gigabyte sources for non-DV-Profile-7 content. Self-healing: any ffmpeg startup failure auto-rewrites the session to the known-good piped-Matroska path BEFORE Kodi sees a broken URL.
 - Submit dialog stops freezing on slow nzbdav. submit_nzb runs in a background thread with the dialog pumping every 250 ms (cancel button live, message updates), AND a concurrent queue probe adopts the new nzo_id as soon as nzbdav has enqueued the job — usually 4-8 s instead of waiting for the full /api?mode=addurl reply.
