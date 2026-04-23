@@ -2144,13 +2144,19 @@ class _StreamHandler(BaseHTTPRequestHandler):
         finally:
             xbmc.log(
                 "NZB-DAV: Pass-through summary reason={} range={}-{} "
-                "streamed={} zero_fill={} recoveries={}".format(
+                "streamed={} zero_fill={} recoveries={} "
+                "upstream_unreachable={} upstream_notified={} "
+                "session_streamed={} session_zero_fill={}".format(
                     terminal_reason,
                     start,
                     end,
                     total_streamed,
                     total_skipped,
                     recovery_count,
+                    ctx.get("upstream_unreachable_count", 0),
+                    bool(ctx.get("upstream_down_notified")),
+                    ctx.get("session_streamed_bytes", 0),
+                    ctx.get("session_zero_fill_bytes", 0),
                 ),
                 xbmc.LOGINFO if terminal_reason == "complete" else xbmc.LOGWARNING,
             )
