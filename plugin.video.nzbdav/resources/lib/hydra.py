@@ -9,7 +9,18 @@ from xml.etree import ElementTree as element_tree
 
 import xbmc
 
-from resources.lib.http_util import http_get as _http_get
+from resources.lib.http_util import (
+    calculate_age as _calculate_age,
+)
+from resources.lib.http_util import (
+    format_request_error as _format_request_error,
+)
+from resources.lib.http_util import (
+    get_xml_text as _get_text,
+)
+from resources.lib.http_util import (
+    http_get as _http_get,
+)
 
 NEWZNAB_NS = "http://www.newznab.com/DTD/2010/feeds/attributes/"
 _HYDRA_REQUEST_ERRORS = (
@@ -23,12 +34,9 @@ _SOURCE_URL_ERRORS = (AttributeError, TypeError, ValueError)
 _PUBDATE_ERRORS = (OverflowError, TypeError, ValueError)
 
 
-def _format_request_error(error):
-    """Return a user-facing request error without urllib wrapper noise."""
-    reason = getattr(error, "reason", None)
-    if reason:
-        return str(reason)
-    return str(error)
+# _format_request_error, _get_text, _calculate_age imported from
+# resources.lib.http_util above; definitions removed to eliminate
+# hydra.py ↔ prowlarr.py duplication.
 
 
 def _hydra_unavailable_error(error):
@@ -240,33 +248,4 @@ def _parse_results_checked(xml_text):
     return [_build_result(item) for item in root.iter("item")], None
 
 
-def _get_text(element, tag):
-    """Get text content of a child element."""
-    child = element.find(tag)
-    if child is not None and child.text:
-        return child.text
-    return ""
-
-
-def _calculate_age(pubdate_str):
-    """Calculate human-readable age from an RFC 2822 date string."""
-    from datetime import datetime, timezone
-    from email.utils import parsedate_to_datetime
-
-    try:
-        pub = parsedate_to_datetime(pubdate_str)
-        now = datetime.now(timezone.utc)
-        delta = now - pub
-        days = delta.days
-        if days == 0:
-            return "today"
-        if days == 1:
-            return "1 day"
-        if days < 30:
-            return "{} days".format(days)
-        months = days // 30
-        if months == 1:
-            return "1 month"
-        return "{} months".format(months)
-    except _PUBDATE_ERRORS:
-        return ""
+# _get_text and _calculate_age imported from resources.lib.http_util.
