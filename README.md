@@ -222,7 +222,8 @@ With **Auto-select best match** enabled, the dialog is skipped and the top resul
 
 ### Prerequisites
 
-- Python 3.8+
+- Python 3.10+ for local test tooling
+- Kodi addon runtime remains Python 3.8+
 - [just](https://github.com/casey/just) (command runner)
 
 ### Commands
@@ -274,7 +275,7 @@ scripts/
 repo/
   repository.nzbdav/     # Repository addon (points to GitHub Pages)
 .github/workflows/
-  ci.yml                 # Test + lint on push/PR (Python 3.8/3.10/3.12)
+  ci.yml                 # Test + lint on push/PR (Python 3.10/3.12)
   release.yml            # Build + deploy on version tags
   pylint.yml             # Pylint analysis
   codacy.yml             # Codacy security scan

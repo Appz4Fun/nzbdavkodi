@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2010/feeds/attributes/">
+    <channel>
+        <newznab:response offset="0" total="2"/>
+        <item>
+            <title>The.Matrix.1999.2160p.UHD.BluRay.REMUX.HDR.HEVC.DTS-HD.MA.7.1-GROUP</title>
+            <guid isPermaLink="true">http://prowlarr:9696/1/api?t=get&amp;id=prowlarr-abc123</guid>
+            <link>http://prowlarr:9696/1/api?t=get&amp;id=prowlarr-abc123&amp;apikey=testkey</link>
+            <pubDate>Mon, 01 Apr 2026 12:00:00 +0000</pubDate>
+            <category>Movies &gt; UHD</category>
+            <enclosure url="http://prowlarr:9696/1/api?t=get&amp;id=prowlarr-abc123&amp;apikey=testkey" length="45000000000" type="application/x-nzb"/>
+            <newznab:attr name="size" value="45000000000"/>
+            <newznab:attr name="category" value="2000"/>
+            <newznab:attr name="indexer" value="NZBgeek"/>
+        </item>
+        <item>
+            <title>The.Matrix.1999.1080p.BluRay.x264.DTS-FGT</title>
+            <guid isPermaLink="true">http://prowlarr:9696/2/api?t=get&amp;id=prowlarr-def456</guid>
+            <link>http://prowlarr:9696/2/api?t=get&amp;id=prowlarr-def456&amp;apikey=testkey</link>
+            <pubDate>Sun, 31 Mar 2026 10:00:00 +0000</pubDate>
+            <category>Movies &gt; HD</category>
+            <enclosure url="http://prowlarr:9696/2/api?t=get&amp;id=prowlarr-def456&amp;apikey=testkey" length="8500000000" type="application/x-nzb"/>
+            <newznab:attr name="size" value="8500000000"/>
+            <newznab:attr name="category" value="2000"/>
+            <newznab:attr name="indexer" value="DrunkenSlug"/>
+        </item>
+    </channel>
+</rss>
