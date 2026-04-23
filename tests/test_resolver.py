@@ -1,12 +1,18 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 nzbdav contributors
 
+import sys
 from unittest.mock import MagicMock, patch
 
 from resources.lib.resolver import (
+    _DOWNLOAD_TIMEOUT_MAX,
+    _DOWNLOAD_TIMEOUT_MIN,
+    _POLL_INTERVAL_MAX,
+    _POLL_INTERVAL_MIN,
     MAX_POLL_ITERATIONS,
     _cache_bust_url,
     _clear_kodi_playback_state,
+    _get_poll_settings,
     _make_playable_listitem,
     _play_direct,
     _play_via_proxy,
@@ -121,6 +127,52 @@ def test_cache_bust_url_preserves_existing_query():
     """If the URL already has a query string, append with &."""
     out = _cache_bust_url("http://webdav/movie.mkv?foo=bar")
     assert "?foo=bar&nzbdav_play=" in out
+
+
+@patch("resources.lib.resolver.xbmc")
+def test_get_poll_settings_clamps_too_low_and_logs(mock_xbmc):
+    mock_addon = MagicMock()
+
+    def get_setting(key):
+        return {
+            "poll_interval": "0",
+            "download_timeout": "1",
+        }[key]
+
+    mock_addon.getSetting.side_effect = get_setting
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        assert _get_poll_settings() == (_POLL_INTERVAL_MIN, _DOWNLOAD_TIMEOUT_MIN)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    logged = "\n".join(call.args[0] for call in mock_xbmc.log.call_args_list)
+    assert "poll_interval" in logged
+    assert "download_timeout" in logged
+
+
+@patch("resources.lib.resolver.xbmc")
+def test_get_poll_settings_clamps_typo_high_and_logs(mock_xbmc):
+    mock_addon = MagicMock()
+
+    def get_setting(key):
+        return {
+            "poll_interval": "6000",
+            "download_timeout": "999999",
+        }[key]
+
+    mock_addon.getSetting.side_effect = get_setting
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        assert _get_poll_settings() == (_POLL_INTERVAL_MAX, _DOWNLOAD_TIMEOUT_MAX)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    logged = "\n".join(call.args[0] for call in mock_xbmc.log.call_args_list)
+    assert "poll_interval" in logged
+    assert "download_timeout" in logged
 
 
 # --- proxy-routing tests ---

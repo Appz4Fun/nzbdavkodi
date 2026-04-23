@@ -30,6 +30,10 @@ from resources.lib.webdav import (
 )
 
 MAX_POLL_ITERATIONS = 720  # 1 hour at 5s interval
+_POLL_INTERVAL_MIN = 1
+_POLL_INTERVAL_MAX = 60
+_DOWNLOAD_TIMEOUT_MIN = 60
+_DOWNLOAD_TIMEOUT_MAX = 86400
 # HTTP status codes the submit retry loop treats as transient and worth
 # retrying. RFC 9110 explicitly calls 408 retry-friendly ("client may
 # assume the server closed the connection due to inactivity and retry").
@@ -38,6 +42,23 @@ MAX_POLL_ITERATIONS = 720  # 1 hour at 5s interval
 # stack rate-limit violations — if 429 ever becomes a real failure mode
 # we'll need backoff first.
 _TRANSIENT_HTTP_STATUSES = (408, 502, 503, 504)
+
+
+def _clamp_int_setting(setting_id, value, lo, hi):
+    """Clamp an integer setting and log when user input was out of range."""
+    clamped = value
+    if value < lo:
+        clamped = lo
+    elif value > hi:
+        clamped = hi
+    if clamped != value:
+        xbmc.log(
+            "NZB-DAV: Setting {}={} out of range [{}..{}]; clamping to {}".format(
+                setting_id, value, lo, hi, clamped
+            ),
+            xbmc.LOGWARNING,
+        )
+    return clamped
 
 
 def _validate_stream_url(url, headers):
@@ -423,6 +444,15 @@ def _get_poll_settings():
     addon = xbmcaddon.Addon()
     interval = int(addon.getSetting("poll_interval") or "5")
     timeout = int(addon.getSetting("download_timeout") or "3600")
+    interval = _clamp_int_setting(
+        "poll_interval", interval, _POLL_INTERVAL_MIN, _POLL_INTERVAL_MAX
+    )
+    timeout = _clamp_int_setting(
+        "download_timeout",
+        timeout,
+        _DOWNLOAD_TIMEOUT_MIN,
+        _DOWNLOAD_TIMEOUT_MAX,
+    )
     return interval, timeout
 
 
