@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="plugin.video.nzbdav"
        name="NZB-DAV"
-       version="1.0.1"
+       version="1.0.2"
        provider-name="nzbdav">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
@@ -22,7 +22,10 @@
         <license>GPL-3.0-or-later</license>
         <source>https://github.com/xbmc4lyfe/nzbdavkodi</source>
         <website>https://xbmc4lyfe.github.io/nzbdavkodi/</website>
-        <news>v1.0.1
+        <news>v1.0.2
+- Hotfix: find_video_file no longer rejects PROPFIND hrefs whose host differs from the configured WebDAV host. nzbdav legitimately returns its INTERNAL hostname (e.g. localhost:8080) in PROPFIND responses even when the client addresses it at a different public endpoint (e.g. 192.168.1.93:3000) — v1.0.0-pre-alpha and v1.0.1 broke those setups with repeated "Completed but no video found" retries until the resolve dialog gave up. The addon now trusts only the PATH portion of cross-origin hrefs; all follow-up requests still hit the configured WebDAV host, so an attacker cannot redirect us off-server.
+
+v1.0.1
 - Retire the ffmpeg-stderr Dolby Vision probe; replace with a pure-Python RPU parser (resources/lib/dv_rpu.py) + remote container probe (resources/lib/dv_source.py) that reads real RPU data from MP4/MKV files via HTTP range requests. The new probe can tell P7 MEL from P7 FEL, distinguish profile 8 from profile 5, and report no-DV-at-all from probe-couldn't-read — information the old stderr probe could not produce.
 - Hybrid DV routing matrix: P7 FEL + P8 + P5 + dv_unknown route to matroska (preserves the 2026-04-15 CAMLCodec fix for P8 fmp4 hangs); P7 MEL and non-DV route to fmp4 HLS. MEL is metadata-only EL so it does not exercise the CAMLCodec dual-layer init path that tripped P8; if field testing shows MEL also hangs, tighten the gate in stream_proxy.py to match P8.
 - Size caps at every attacker-controlled I/O seam. _http_range has a 16 MiB default read cap; stsz first_sample_size is clamped to 16 MiB before use as a Range upper bound. A malicious moov or an RFC-violating WebDAV server can no longer OOM 32-bit Kodi.

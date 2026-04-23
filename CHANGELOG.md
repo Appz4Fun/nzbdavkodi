@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Released | What it's about |
 |---|---|---|
+| **[1.0.2](#102--2026-04-23)** | 2026-04-23 | Hotfix: find_video_file no longer rejects cross-origin PROPFIND hrefs — unblocks reverse-proxied nzbdav setups that regressed in v1.0.0-pre-alpha / v1.0.1 |
 | **[1.0.1](#101--2026-04-23)** | 2026-04-23 | Source-data Dolby Vision probe: pure-Python RPU parser replaces the ffmpeg-stderr probe, adds P7 MEL/FEL discrimination with a hybrid routing matrix that keeps the 2026-04-15 P8 matroska fix in place |
 | **[1.0.0-pre-alpha](#100-pre-alpha--2026-04-15)** | 2026-04-15 | Force-remux for 20 GB+ files (matroska default), self-healing fmp4 HLS opt-in (full random seek, DV-aware), threaded submit + queue adoption, real-ffmpeg integration tests, PROXY.md |
 | **[0.6.21](#0621--2026-04-13)** | 2026-04-13 | Stale-job cleanup + real nzbdav error messages on submit failure |
@@ -44,6 +45,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | **[0.1.0](#010--2026-04-05)** | 2026-04-05 | Initial release |
 
 > **Bolded** versions are either major features or recommended upgrades.
+
+---
+
+## [1.0.2] — 2026-04-23
+
+> **Hotfix for `Completed but no video found` on reverse-proxied nzbdav
+> setups.** `v1.0.0-pre-alpha` added a cross-origin host check on every
+> PROPFIND href inside `find_video_file`. nzbdav legitimately returns its
+> INTERNAL hostname (e.g. `http://localhost:8080/…`) in href values even
+> when the client addresses it at a different public endpoint (e.g.
+> `http://192.168.1.93:3000`), so the check rejected every href on host
+> mismatch and the video-find loop exhausted its 5 retries with no
+> candidate file. Real users with `nzbdav_url=http://192.168.1.93:3000`
+> and nzbdav's internal `localhost:8080` hit this on every playback.
+>
+> The fix: when the href host doesn't match the client-configured host,
+> trust the PATH portion but ignore the host. All follow-up requests
+> still go to the configured WebDAV host, so the original security goal
+> — preventing an attacker-controlled server from redirecting us to a
+> different host — is preserved without breaking real-world setups.
+
+**Fixed**
+- **Cross-origin PROPFIND href regression** at `webdav.py:239-267` from
+  PR #83's security hardening. The fully-qualified-href host check now
+  logs a `LOGDEBUG` note and uses the href's path portion instead of
+  rejecting the entire response. Regression test added at
+  `tests/test_webdav.py` (`test_find_video_file_accepts_cross_origin_href_path`).
 
 ---
 
