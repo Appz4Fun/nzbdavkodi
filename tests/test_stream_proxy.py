@@ -5781,3 +5781,84 @@ def test_stream_upstream_range_does_not_notify_on_4xx():
         "upstream_unreachable_count" not in ctx
         or ctx["upstream_unreachable_count"] == 0
     )
+
+
+def test_record_upstream_recovered_clears_notified_flag():
+    """After a successful urlopen, the session's "upstream_down_notified"
+    gate must reset so a LATER outage in the same session can fire a
+    fresh notification. Otherwise a brief outage would forever silence
+    all subsequent outage warnings in that session."""
+    from resources.lib.stream_proxy import (
+        _record_upstream_recovered,
+        _record_upstream_unreachable,
+    )
+
+    ctx = {}
+    server = MagicMock()
+
+    with patch("resources.lib.stream_proxy._notify") as mock_notify:
+        # First outage → notification fires.
+        _record_upstream_unreachable(server, ctx, ConnectionRefusedError("1"))
+        assert ctx["upstream_down_notified"] is True
+
+        # Upstream recovers → flag clears, counter preserved.
+        _record_upstream_recovered(server, ctx)
+        assert ctx["upstream_down_notified"] is False
+        assert ctx["upstream_unreachable_count"] == 1
+
+        # Second outage in same session → NEW notification fires.
+        _record_upstream_unreachable(server, ctx, ConnectionRefusedError("2"))
+        assert ctx["upstream_down_notified"] is True
+
+    assert mock_notify.call_count == 2
+
+
+def test_record_upstream_recovered_is_noop_when_never_notified():
+    """If the session never tripped the notification gate, recovered()
+    should do nothing — no log spam, no state churn."""
+    from resources.lib.stream_proxy import _record_upstream_recovered
+
+    ctx = {}
+    server = MagicMock()
+
+    _record_upstream_recovered(server, ctx)
+
+    assert "upstream_down_notified" not in ctx
+    assert "upstream_last_recovered_at" not in ctx
+
+
+def test_stream_upstream_range_resets_flag_on_successful_response():
+    """End-to-end self-healing: urlopen fails once (sets the flag), then
+    succeeds — flag must be cleared so a later failure fires a fresh
+    notification."""
+    ctx = {
+        "remote_url": "http://nzbdav/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 2048,
+    }
+    handler = _make_handler_with_server(ctx)
+
+    good_response = _mock_urlopen_response(
+        [b"A" * 1024],
+        headers={"Content-Range": "bytes 0-1023/2048", "Content-Length": "1024"},
+    )
+
+    call_count = {"n": 0}
+
+    def _side_effect(*_a, **_kw):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise ConnectionRefusedError("transient")
+        return good_response
+
+    with patch("resources.lib.stream_proxy.urlopen", side_effect=_side_effect), patch(
+        "resources.lib.stream_proxy._notify"
+    ):
+        # First call trips the flag.
+        handler._stream_upstream_range(ctx, 0, 1023)
+        assert ctx["upstream_down_notified"] is True
+
+        # Second call succeeds — flag clears.
+        handler._stream_upstream_range(ctx, 0, 1023)
+        assert ctx["upstream_down_notified"] is False
