@@ -267,6 +267,9 @@ def cancel_job(nzo_id, timeout=3):
         response_text = _http_get(url, timeout=timeout)
         response = json.loads(response_text)
     except Exception as e:  # pylint: disable=broad-except
+        # cancel_job is a "make the mess go away" path — anything that
+        # prevents the cancel from reaching nzbdav should just get logged
+        # and swallowed so the caller doesn't cascade into error dialogs.
         xbmc.log(
             "NZB-DAV: cancel_job network error for nzo_id={}: {}".format(nzo_id, e),
             xbmc.LOGWARNING,

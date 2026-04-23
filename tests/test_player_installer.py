@@ -28,9 +28,15 @@ def test_install_player_writes_file(mock_vfs, mock_notify):
 
     install_player()
 
-    mock_vfs.File.assert_called_once()
-    call_args = mock_vfs.File.call_args[0]
-    assert "nzbdav.json" in call_args[0]
+    # Installer may read the existing file first (schema-version check) and
+    # then write. Assert the write happened and that each File call was
+    # against nzbdav.json.
+    assert mock_vfs.File.call_count >= 1
+    write_calls = [
+        c for c in mock_vfs.File.call_args_list if len(c[0]) >= 2 and c[0][1] == "w"
+    ]
+    assert len(write_calls) == 1
+    assert "nzbdav.json" in write_calls[0][0][0]
     mock_file.write.assert_called_once()
     mock_notify.assert_called()
 
