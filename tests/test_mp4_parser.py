@@ -166,6 +166,66 @@ def test_rewrite_stco_overflow_returns_none():
     assert result is None  # overflow — caller should use fallback
 
 
+def test_rewrite_stco_delta_crosses_4gb_boundary_returns_none():
+    """Modest offsets + a 4 GB+ delta must fail cleanly so callers
+    fall back to co64 / MKV remux. Mirrors the real-world case of a
+    stream >4 GB whose original moov was authored with stco and we're
+    now relocating it past the 4 GB mark."""
+    from resources.lib.mp4_parser import rewrite_moov_offsets
+
+    # Offsets are tiny (original mdat started at 1 KB), but the delta
+    # itself crosses 2^32. Every single offset, post-rewrite, lands
+    # above 2^32 → overflow on the first entry.
+    stco_body = struct.pack(">I", 0) + struct.pack(">I", 2)
+    stco_body += struct.pack(">II", 1024, 2048)
+    stco = struct.pack(">I", 8 + len(stco_body)) + b"stco" + stco_body
+
+    stbl = struct.pack(">I", 8 + len(stco)) + b"stbl" + stco
+    minf = struct.pack(">I", 8 + len(stbl)) + b"minf" + stbl
+    mdia = struct.pack(">I", 8 + len(minf)) + b"mdia" + minf
+    trak = struct.pack(">I", 8 + len(mdia)) + b"trak" + mdia
+    moov = struct.pack(">I", 8 + len(trak)) + b"moov" + trak
+
+    # 4.5 GB delta — larger than the entire addressable stco range.
+    delta_over_4gb = 4_500_000_000
+    assert rewrite_moov_offsets(moov, delta_over_4gb) is None
+
+
+def test_rewrite_co64_delta_crosses_4gb_boundary_succeeds():
+    """co64 must handle a >4 GB delta cleanly — the whole point of the
+    64-bit variant is that faststart on multi-GB files works. Catches
+    the regression where someone swaps the pack/unpack format to ``>I``
+    or introduces an accidental 32-bit mask in ``_rewrite_co64``."""
+    from resources.lib.mp4_parser import rewrite_moov_offsets
+
+    # Original offsets straddle the 4 GB boundary.
+    o1_orig = 3_000_000_000  # <2^32
+    o2_orig = 5_000_000_000  # >2^32
+    co64_body = struct.pack(">I", 0) + struct.pack(">I", 2)
+    co64_body += struct.pack(">QQ", o1_orig, o2_orig)
+    co64 = struct.pack(">I", 8 + len(co64_body)) + b"co64" + co64_body
+
+    stbl = struct.pack(">I", 8 + len(co64)) + b"stbl" + co64
+    minf = struct.pack(">I", 8 + len(stbl)) + b"minf" + stbl
+    mdia = struct.pack(">I", 8 + len(minf)) + b"mdia" + minf
+    trak = struct.pack(">I", 8 + len(mdia)) + b"trak" + mdia
+    moov = struct.pack(">I", 8 + len(trak)) + b"moov" + trak
+
+    delta_over_4gb = 4_500_000_000
+    result = rewrite_moov_offsets(moov, delta_over_4gb)
+    assert result is not None, "co64 rewrite returned None for a valid >4 GB delta"
+
+    co64_start = result.index(b"co64")
+    off_start = co64_start + 4 + 4 + 4
+    o1_new = struct.unpack_from(">Q", result, off_start)[0]
+    o2_new = struct.unpack_from(">Q", result, off_start + 8)[0]
+    assert o1_new == o1_orig + delta_over_4gb
+    assert o2_new == o2_orig + delta_over_4gb
+    # Sanity: both new offsets live well above the 32-bit ceiling.
+    assert o1_new > 0xFFFFFFFF
+    assert o2_new > 0xFFFFFFFF
+
+
 def _make_mock_response(data, status=200, headers=None):
     """Create a mock HTTP response."""
     resp = MagicMock()
