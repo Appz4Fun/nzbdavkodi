@@ -8,8 +8,8 @@ falls back to matroska so the proxy never shows Kodi a stream it can't
 decode, while profile 8 / profile 5 / non-DV / profile 7 MEL stay on fmp4.
 """
 
-from dataclasses import dataclass
 import struct
+from dataclasses import dataclass
 from urllib.request import Request, urlopen
 
 from resources.lib.dv_rpu import parse_unspec62_nalu

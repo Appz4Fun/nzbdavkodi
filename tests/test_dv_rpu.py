@@ -2,7 +2,6 @@ from pathlib import Path
 
 from resources.lib.dv_rpu import parse_rpu_payload, parse_unspec62_nalu
 
-
 FIXTURES = Path(__file__).parent / "fixtures" / "dovi"
 
 

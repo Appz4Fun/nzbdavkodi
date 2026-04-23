@@ -10,7 +10,6 @@ Reference:
 
 from dataclasses import dataclass
 
-
 _NUM_COMPONENTS = 3
 _MMR_MAX_COEFFS = 7
 _NLQ_NUM_PIVOTS = 2
@@ -76,7 +75,11 @@ class _RpuHeader:
         if self.vdr_rpu_profile == 0:
             return 5 if self.bl_video_full_range_flag else 0
         if self.vdr_rpu_profile == 1:
-            if self.el_spatial_resampling_filter_flag and not self.disable_residual_flag:
+            dual_layer = (
+                self.el_spatial_resampling_filter_flag
+                and not self.disable_residual_flag
+            )
+            if dual_layer:
                 return 7 if self.vdr_bit_depth_minus8 == 4 else 4
             return 8
         return 0

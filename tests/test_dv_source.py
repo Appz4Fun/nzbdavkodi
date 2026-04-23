@@ -22,7 +22,9 @@ def _sample_entry_with_hvcc():
 def _minimal_mp4(sample_bytes):
     ftyp = _box(b"ftyp", b"isom" + b"\x00\x00\x02\x00" + b"isomiso2")
     stsd = _fullbox(b"stsd", struct.pack(">I", 1) + _sample_entry_with_hvcc())
-    stsz = _fullbox(b"stsz", struct.pack(">II", 0, 1) + struct.pack(">I", len(sample_bytes)))
+    stsz = _fullbox(
+        b"stsz", struct.pack(">II", 0, 1) + struct.pack(">I", len(sample_bytes))
+    )
     stsc = _fullbox(b"stsc", struct.pack(">I", 1) + struct.pack(">III", 1, 1, 1))
     stco_placeholder = _fullbox(b"stco", struct.pack(">I", 1) + struct.pack(">I", 0))
     stbl = _box(b"stbl", stsd + stsz + stsc + stco_placeholder)
@@ -134,16 +136,14 @@ def _simpleblock(track_number, payload):
 
 def _minimal_mkv(sample_bytes):
     codec_id = _elm(b"\x86", b"V_MPEGH/ISO/HEVC")
-    codec_private = _elm(b"\x63\xA2", b"\x01" + b"\x00" * 21)
-    track_number = _elm(b"\xD7", b"\x01")
+    codec_private = _elm(b"\x63\xa2", b"\x01" + b"\x00" * 21)
+    track_number = _elm(b"\xd7", b"\x01")
     track_type = _elm(b"\x83", b"\x01")
-    track_entry = _elm(b"\xAE", track_number + track_type + codec_id + codec_private)
-    tracks = _elm(b"\x16\x54\xAE\x6B", track_entry)
-    cluster = _elm(
-        b"\x1F\x43\xB6\x75", _elm(b"\xA3", _simpleblock(1, sample_bytes))
-    )
+    track_entry = _elm(b"\xae", track_number + track_type + codec_id + codec_private)
+    tracks = _elm(b"\x16\x54\xae\x6b", track_entry)
+    cluster = _elm(b"\x1f\x43\xb6\x75", _elm(b"\xa3", _simpleblock(1, sample_bytes)))
     segment = _elm(b"\x18\x53\x80\x67", tracks + cluster)
-    ebml = _elm(b"\x1A\x45\xDF\xA3", b"\x42\x86\x81\x01")
+    ebml = _elm(b"\x1a\x45\xdf\xa3", b"\x42\x86\x81\x01")
     return ebml + segment
 
 
