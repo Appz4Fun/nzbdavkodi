@@ -116,12 +116,15 @@ def probe_webdav_reachable(monitor=None, max_retries=1, retry_delay=1):
     return False, "connection_error"
 
 
-def find_video_file(folder_path, _depth=0):
+def find_video_file(folder_path, _depth=0, _visited=None):
     """Browse a WebDAV folder and find the largest video file.
 
     Args:
         folder_path: WebDAV folder path to scan (may be absolute or relative).
         _depth: Internal recursion depth counter (used to cap traversal).
+        _visited: Internal set of already-scanned paths; catches a hostile
+            or misconfigured server that returns its parent (or itself) as
+            a child and would otherwise recurse until the depth cap.
 
     Returns:
         The WebDAV href path of the largest video file found, typically an
@@ -139,6 +142,17 @@ def find_video_file(folder_path, _depth=0):
 
     if _depth > 2:
         return None
+
+    if _visited is None:
+        _visited = set()
+    normalized = (folder_path or "").rstrip("/")
+    if normalized in _visited:
+        xbmc.log(
+            "NZB-DAV: Skipping already-visited WebDAV folder '{}'".format(folder_path),
+            xbmc.LOGDEBUG,
+        )
+        return None
+    _visited.add(normalized)
 
     settings = _get_settings()
     base = settings["webdav_url"] or settings["nzbdav_url"]
@@ -188,8 +202,19 @@ def find_video_file(folder_path, _depth=0):
 
             try:
                 parsed_href_obj = urlparse(href_text)
-                # For relative paths (no scheme), use href_text as the path directly
-                if parsed_href_obj.scheme:
+                # Reject protocol-relative URLs ("//host/path") unless they
+                # match the configured server; urlparse().scheme is empty
+                # for these and we'd otherwise treat them as a path.
+                if href_text.startswith("//"):
+                    base_host = urlparse(url).netloc
+                    if parsed_href_obj.netloc != base_host:
+                        xbmc.log(
+                            "NZB-DAV: Rejecting cross-host href '{}'".format(href_text),
+                            xbmc.LOGWARNING,
+                        )
+                        continue
+                    href_path = parsed_href_obj.path
+                elif parsed_href_obj.scheme:
                     href_path = parsed_href_obj.path
                 else:
                     href_path = href_text
@@ -243,7 +268,7 @@ def find_video_file(folder_path, _depth=0):
                 ),
                 xbmc.LOGDEBUG,
             )
-            result = find_video_file(subdir, _depth + 1)
+            result = find_video_file(subdir, _depth + 1, _visited)
             if result:
                 return result
 

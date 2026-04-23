@@ -877,6 +877,11 @@ def _submit_nzb_with_retries(nzb_url, title, dialog, monitor, max_submit_retries
             )
 
         if attempt < max_submit_retries and monitor.waitForAbort(2):
+            xbmc.log(
+                "NZB-DAV: Kodi shutdown during submit retry backoff "
+                "(attempt {}/{}) for '{}'".format(attempt, max_submit_retries, title),
+                xbmc.LOGINFO,
+            )
             return None
 
     if last_submit_error:
