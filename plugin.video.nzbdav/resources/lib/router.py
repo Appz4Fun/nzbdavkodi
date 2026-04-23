@@ -147,6 +147,8 @@ def route(argv):
             _test_prowlarr_connection()
         elif path == "/test_nzbdav":
             _test_nzbdav_connection()
+        elif path == "/test_prowlarr":
+            _test_prowlarr_connection()
         else:
             _handle_main_menu(handle)
             return
@@ -772,6 +774,35 @@ def _test_prowlarr_connection():
     api_key = addon.getSetting("prowlarr_api_key")
     test_url = "{}/api/v1/indexer?apikey={}".format(url, api_key)
     _test_connection("Prowlarr", url, test_url, lambda r: "[" in r or "{" in r)
+
+
+def _test_prowlarr_connection():
+    """Test Prowlarr connection by hitting the indexer endpoint."""
+    import xbmcaddon
+
+    from resources.lib.http_util import http_get, notify
+
+    addon = xbmcaddon.Addon()
+    host = addon.getSetting("prowlarr_host").rstrip("/")
+    api_key = addon.getSetting("prowlarr_api_key")
+
+    if not host:
+        notify(_addon_name(), "Prowlarr URL not configured", 3000)
+        return
+
+    test_url = "{}/api/v1/indexer?apikey={}".format(host, api_key)
+    try:
+        response = http_get(test_url)
+        if "[" in response or "{" in response:
+            notify(_addon_name(), "Prowlarr connection OK", 3000)
+        else:
+            notify(_addon_name(), "Prowlarr: unexpected response", 5000)
+    except Exception as e:
+        notify(
+            _addon_name(),
+            "Prowlarr: {}".format(str(e)[:60]),
+            5000,
+        )
 
 
 def _test_nzbdav_connection():
