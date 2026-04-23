@@ -347,7 +347,11 @@ def find_completed_by_name(name):
     """
     try:
         base_url, api_key = _get_settings()
-    except Exception:
+    except Exception as e:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: Settings read failed in find_completed_by_name: {}".format(e),
+            xbmc.LOGDEBUG,
+        )
         return None
 
     # Extract a short search term from the name (first few words)
@@ -365,7 +369,11 @@ def find_completed_by_name(name):
     try:
         response_text = _http_get(url, timeout=10)
         response = json.loads(response_text)
-    except Exception:
+    except Exception as e:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: History search request failed for '{}': {}".format(name, e),
+            xbmc.LOGDEBUG,
+        )
         return None
 
     slots = response.get("history", {}).get("slots", [])
@@ -389,7 +397,11 @@ def find_completed_by_name(name):
         try:
             response_text = _http_get(url, timeout=10)
             response = json.loads(response_text)
-        except Exception:
+        except Exception as e:  # pylint: disable=broad-except
+            xbmc.log(
+                "NZB-DAV: History fallback request failed for '{}': {}".format(name, e),
+                xbmc.LOGDEBUG,
+            )
             return None
 
         slots = response.get("history", {}).get("slots", [])
@@ -509,7 +521,11 @@ def get_completed_names():
     """
     try:
         base_url, api_key = _get_settings()
-    except Exception:
+    except Exception as e:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: Settings read failed in get_completed_names: {}".format(e),
+            xbmc.LOGDEBUG,
+        )
         return set()
 
     params = {
@@ -523,7 +539,11 @@ def get_completed_names():
     try:
         response_text = _http_get(url, timeout=10)
         response = json.loads(response_text)
-    except Exception:
+    except Exception as e:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: get_completed_names request failed: {}".format(e),
+            xbmc.LOGDEBUG,
+        )
         return set()
 
     slots = response.get("history", {}).get("slots", [])
