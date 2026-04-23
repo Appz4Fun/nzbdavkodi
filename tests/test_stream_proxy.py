@@ -380,10 +380,19 @@ def test_prepare_stream_forces_remux_for_large_mkv():
     mock_proc = MagicMock()
     mock_proc.stderr = iter([b"  Duration: 01:00:00.00, start: 0.000000\n"])
 
+    # Pin the force-remux threshold below the test file size. Previously
+    # this test relied on the xbmcaddon MagicMock returning an int-like
+    # MagicMock that int() turned into ``1`` (= 1 MB threshold); once the
+    # conftest started seeding ``getSetting`` with realistic ``""``
+    # defaults, the threshold fell back to _DEFAULT_FORCE_REMUX_THRESHOLD_MB
+    # (20 GB) and the 15 GB file no longer tripped remux. Patch the
+    # threshold getter directly so the assertion targets prepare_stream's
+    # routing logic, not its setting-parsing.
     with patch(
         "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
-    ), patch(
-        "resources.lib.stream_proxy._find_ffprobe", return_value=None
+    ), patch("resources.lib.stream_proxy._find_ffprobe", return_value=None), patch(
+        "resources.lib.stream_proxy._get_force_remux_threshold_bytes",
+        return_value=1 * 1024 * 1024,
     ), patch.object(
         sp, "_get_content_length", return_value=huge
     ), patch(
@@ -4702,7 +4711,17 @@ def test_serve_proxy_logs_terminal_summary_on_success(mock_xbmc):
 
 
 def test_serve_proxy_zero_fills_on_upstream_failure():
-    """Upstream cuts out mid-stream — proxy probes, zero-fills, resumes."""
+    """Upstream cuts out mid-stream — proxy probes, zero-fills, resumes.
+
+    Pins ``retry_ladder_enabled`` OFF because this test was written to
+    assert the classic single-retry zero-fill path. Once the global
+    xbmcaddon mock started returning realistic "" defaults, the retry
+    ladder default of True kicked in and changed the recovery shape;
+    the explicit setting keeps the test targeted at the zero-fill
+    branch it was designed to exercise.
+    """
+    import sys
+
     ctx = {
         "remote_url": "http://host/movie.mkv",
         "auth_header": None,
@@ -4725,11 +4744,20 @@ def test_serve_proxy_zero_fills_on_upstream_failure():
 
     responses = iter([initial, probe_1mb, resume])
 
-    with patch(
-        "resources.lib.stream_proxy.urlopen",
-        side_effect=lambda *a, **kw: next(responses),
-    ), patch("resources.lib.stream_proxy.time.sleep"):
-        handler._serve_proxy(ctx)
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = lambda key: {
+        "retry_ladder_enabled": "false",
+    }.get(key, "")
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch(
+            "resources.lib.stream_proxy.urlopen",
+            side_effect=lambda *a, **kw: next(responses),
+        ), patch("resources.lib.stream_proxy.time.sleep"):
+            handler._serve_proxy(ctx)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
 
     written = _collect_written(handler)
     assert len(written) == 20 * 1048576
@@ -4787,6 +4815,8 @@ def test_serve_proxy_notifies_first_recovery_with_bytes_and_count():
 
 def test_serve_proxy_retries_probes_when_upstream_briefly_down():
     """If all early probes fail fast, retry with backoff before giving up."""
+    import sys
+
     ctx = {
         "remote_url": "http://host/movie.mkv",
         "auth_header": None,
@@ -4812,11 +4842,30 @@ def test_serve_proxy_retries_probes_when_upstream_briefly_down():
 
     responses = iter([initial, probe_refused_1, probe_refused_2, probe_success, resume])
 
-    with patch(
-        "resources.lib.stream_proxy.urlopen",
-        side_effect=lambda *a, **kw: next(responses),
-    ), patch("resources.lib.stream_proxy.time.sleep") as mock_sleep:
-        handler._serve_proxy(ctx)
+    # Pin the recovery-related settings that realistic conftest defaults
+    # now turn on:
+    #   * retry_ladder_enabled=false so probe-backoff is the recovery
+    #     path under test, not the retry ladder intercepting first.
+    #   * zero_fill_budget_enabled=false so the session isn't aborted
+    #     by the zero-fill-ratio budget check after the first recovery.
+    # Pre-conftest-default the global xbmcaddon MagicMock accidentally
+    # disabled both; making them explicit keeps the test scoped to the
+    # probe retry behavior it was written for.
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = lambda key: {
+        "retry_ladder_enabled": "false",
+        "zero_fill_budget_enabled": "false",
+    }.get(key, "")
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch(
+            "resources.lib.stream_proxy.urlopen",
+            side_effect=lambda *a, **kw: next(responses),
+        ), patch("resources.lib.stream_proxy.time.sleep") as mock_sleep:
+            handler._serve_proxy(ctx)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
 
     # sleep was called at least twice (between retry attempts).
     assert mock_sleep.call_count >= 2
@@ -5060,6 +5109,8 @@ def test_serve_proxy_zero_fills_remainder_when_recovery_exhausted():
 
 @patch("resources.lib.stream_proxy.xbmc")
 def test_serve_proxy_logs_terminal_summary_on_recovery_exhausted(mock_xbmc):
+    import sys
+
     from resources.lib.stream_proxy import _UPSTREAM_RANGE_UPSTREAM_ERROR
 
     ctx = {
@@ -5070,14 +5121,28 @@ def test_serve_proxy_logs_terminal_summary_on_recovery_exhausted(mock_xbmc):
     }
     handler = _make_handler_with_server(ctx, range_header="bytes=0-1023")
 
-    with patch.object(
-        handler,
-        "_stream_upstream_range",
-        return_value=(_UPSTREAM_RANGE_UPSTREAM_ERROR, 256),
-    ), patch.object(handler, "_find_skip_offset", return_value=None), patch.object(
-        handler, "_write_zeros"
-    ) as mock_write_zeros:
-        handler._serve_proxy(ctx)
+    # Pin retry_ladder_enabled OFF — the test targets the skip-probe
+    # exhaustion path, not the retry ladder. With the realistic ""
+    # settings defaults from conftest, retry_ladder_enabled defaults
+    # to True and _retry_original_range would intercept the upstream
+    # error before the _find_skip_offset=None branch fires.
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = lambda key: {
+        "retry_ladder_enabled": "false",
+    }.get(key, "")
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch.object(
+            handler,
+            "_stream_upstream_range",
+            return_value=(_UPSTREAM_RANGE_UPSTREAM_ERROR, 256),
+        ), patch.object(handler, "_find_skip_offset", return_value=None), patch.object(
+            handler, "_write_zeros"
+        ) as mock_write_zeros:
+            handler._serve_proxy(ctx)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
 
     mock_write_zeros.assert_called_once_with(768)
     logged = "\n".join(call.args[0] for call in mock_xbmc.log.call_args_list)

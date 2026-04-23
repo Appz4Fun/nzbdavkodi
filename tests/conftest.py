@@ -14,6 +14,42 @@ import pytest
 for module_name in ["xbmc", "xbmcgui", "xbmcplugin", "xbmcaddon", "xbmcvfs"]:
     sys.modules[module_name] = MagicMock()
 
+
+# Install realistic defaults on the xbmcaddon MagicMock. Without these,
+# ``xbmcaddon.Addon().getSetting("anything")`` returns a MagicMock —
+# which makes ``getSetting("enabled").lower() == "true"`` produce
+# MagicMock comparisons (always False), hiding bugs in production
+# paths that depend on real string-valued settings.
+#
+# Keeping ``Addon`` itself as a MagicMock preserves every test pattern
+# that relies on ``.return_value`` / ``.return_value.getSetting.return_value``
+# (used in test_nzbdav_api, test_stream_proxy, test_router, test_i18n).
+# We only seed the leaf methods with str defaults so unstubbed code
+# sees real-looking values.
+def _install_addon_defaults():
+    xbmcaddon_mod = sys.modules["xbmcaddon"]
+    # Addon() always returns the same MagicMock (stable identity), and
+    # per-leaf defaults apply until a specific test overrides them.
+    addon_instance = xbmcaddon_mod.Addon.return_value
+    addon_instance.getSetting.return_value = ""
+    addon_instance.getLocalizedString.return_value = ""
+
+    _fake_info = {
+        "id": "plugin.video.nzbdav",
+        "name": "NZB-DAV",
+        "version": "0.0.0",
+        "path": "",
+        "profile": "",
+    }
+
+    def _fake_addon_info(key, *_args, **_kwargs):
+        return _fake_info.get(key, "")
+
+    addon_instance.getAddonInfo.side_effect = _fake_addon_info
+
+
+_install_addon_defaults()
+
 # xbmc.Player must be a real class so that subclassing works correctly
 # (MagicMock subclasses swallow attribute assignments in __init__)
 
