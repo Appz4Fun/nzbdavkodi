@@ -9,11 +9,13 @@ from resources.lib.prowlarr import parse_results, search_prowlarr
 
 def _load_fixture(name):
     """
-    Load and return the text contents of a fixture file located in the module's "fixtures" directory.
-    
+    Load and return the text contents of a fixture file located in the
+    module's "fixtures" directory.
+
     Parameters:
-        name (str): Filename of the fixture within the "fixtures" directory (relative to this file).
-    
+        name (str): Filename of the fixture within the "fixtures" directory
+            (relative to this file).
+
     Returns:
         str: The fixture file's contents as a string.
     """
@@ -27,9 +29,12 @@ def _load_fixture(name):
 
 def test_parse_results_movie():
     """
-    Verifies that parse_results correctly parses a Prowlarr movie RSS fixture into expected result entries.
-    
-    Asserts the function returns two results and that the first result contains the expected title, a link containing "prowlarr", a size of "45000000000", an indexer of "NZBgeek", and a present `pubdate` field.
+    Verifies that parse_results correctly parses a Prowlarr movie RSS fixture
+    into expected result entries.
+
+    Asserts the function returns two results and that the first result
+    contains the expected title, a link containing "prowlarr", a size of
+    "45000000000", an indexer of "NZBgeek", and a present `pubdate` field.
     """
     xml_text = _load_fixture("prowlarr_movie_response.xml")
     results = parse_results(xml_text)
@@ -47,7 +52,7 @@ def test_parse_results_movie():
 def test_parse_results_tv():
     """
     Verify parse_results extracts expected fields from a Prowlarr TV RSS response.
-    
+
     Asserts that the parser returns exactly one result and that the result's
     `title` and `size` match the expected values from the `prowlarr_tv_response.xml`
     fixture.
@@ -184,9 +189,7 @@ def test_search_prowlarr_imdb_fallback_to_title(mock_http, mock_settings):
         _load_fixture("prowlarr_movie_response.xml"),
     ]
 
-    results, error = search_prowlarr(
-        "movie", "The Matrix", imdb="tt0133093"
-    )
+    results, error = search_prowlarr("movie", "The Matrix", imdb="tt0133093")
     assert error is None
     assert len(results) == 2
     assert mock_http.call_count == 2

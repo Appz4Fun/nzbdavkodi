@@ -22,7 +22,9 @@ def redact_url(url):
 def http_get(url, timeout=15):
     """Perform an HTTP GET and return the response body as text."""
     req = Request(url)
-    with urlopen(req, timeout=timeout) as resp:
+    with urlopen(
+        req, timeout=timeout
+    ) as resp:  # nosec B310 nosemgrep — URL validated by caller (nzbdav/hydra/prowlarr config)
         return resp.read().decode("utf-8")
 
 

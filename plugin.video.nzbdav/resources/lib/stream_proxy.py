@@ -214,8 +214,9 @@ def _get_private_hls_temp_root():
             return cached
 
         temp_root = tempfile.mkdtemp(prefix="nzbdav-hls-")
+        # 0o700 is restrictive (user-only); semgrep rule is a false positive.
         try:
-            os.chmod(temp_root, 0o700)
+            os.chmod(temp_root, 0o700)  # nosemgrep
         except OSError:
             pass
 
@@ -243,7 +244,6 @@ def _choose_hls_workdir():
             continue
         return base
     return _get_private_hls_temp_root()
-
 
 
 def _find_ffmpeg():
@@ -306,6 +306,32 @@ def _get_addon_setting(setting_id, default=None):
     except _KODI_SETTING_ERRORS:
         return default
     return default if value is None else value
+
+
+def _clamp_int_setting(setting_id, value, lo, hi):
+    """Clamp an integer setting and log when user input was out of range."""
+    clamped = value
+    if value < lo:
+        clamped = lo
+    elif value > hi:
+        clamped = hi
+    if clamped != value:
+        xbmc.log(
+            "NZB-DAV: Setting {}={} out of range [{}..{}]; clamping to {}".format(
+                setting_id, value, lo, hi, clamped
+            ),
+            xbmc.LOGWARNING,
+        )
+    return clamped
+
+
+def _get_server_context_lock(server):
+    """Return the proxy's context lock when the handler is attached to one."""
+    server_state = getattr(server, "__dict__", None)
+    if not isinstance(server_state, dict):
+        return None
+    owner_proxy = server_state.get("owner_proxy")
+    return getattr(owner_proxy, "_context_lock", None)
 
 
 def _get_force_remux_threshold_bytes():
@@ -1308,7 +1334,9 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     if ctx.get("auth_header"):
                         req.add_header("Authorization", ctx["auth_header"])
 
-                    with urlopen(req, timeout=120) as resp:  # nosec B310
+                    with urlopen(
+                        req, timeout=120
+                    ) as resp:  # nosec B310 nosemgrep — URL from user-configured nzbdav/WebDAV setting
                         while bytes_sent < length:
                             chunk = resp.read(1048576)  # 1 MB read buffer
                             if not chunk:
@@ -2015,7 +2043,9 @@ class _StreamHandler(BaseHTTPRequestHandler):
         requested = end - start + 1
         written = 0
         try:
-            resp = urlopen(req, timeout=_UPSTREAM_OPEN_TIMEOUT)  # nosec B310
+            resp = urlopen(
+                req, timeout=_UPSTREAM_OPEN_TIMEOUT
+            )  # nosec B310 nosemgrep — URL from user-configured nzbdav/WebDAV setting
         except (OSError, ValueError) as e:
             xbmc.log(
                 "NZB-DAV: Proxy upstream open failed at byte {}: {} "
@@ -2156,9 +2186,9 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 if ctx.get("auth_header"):
                     req.add_header("Authorization", ctx["auth_header"])
                 try:
-                    with urlopen(
+                    with urlopen(  # nosec B310 nosemgrep
                         req, timeout=_SKIP_PROBE_TIMEOUT
-                    ) as resp:  # nosec B310
+                    ) as resp:
                         status = getattr(resp, "status", None) or resp.getcode()
                         if status in (200, 206):
                             resp.read(64)
@@ -3000,7 +3030,7 @@ class HlsProducer:
         except Exception:  # pylint: disable=broad-except
             pass
         if not archive_dir:
-            archive_dir = "/tmp/nzbdav-hls-logs"
+            archive_dir = os.path.join(tempfile.gettempdir(), "nzbdav-hls-logs")
         try:
             os.makedirs(archive_dir, exist_ok=True)
         except OSError:
@@ -3765,8 +3795,6 @@ class StreamProxy:
         with ``_embed_auth_in_url`` should leave this None; new
         callers should prefer the ``-headers`` form.
         """
-        import threading
-
         cmd = [ffmpeg_path, "-v", "info"]
         if auth_args:
             cmd.extend(auth_args)
@@ -3936,7 +3964,9 @@ class StreamProxy:
         if auth_header:
             req.add_header("Authorization", auth_header)
         try:
-            with urlopen(req, timeout=10) as resp:  # nosec B310
+            with urlopen(
+                req, timeout=10
+            ) as resp:  # nosec B310 nosemgrep — URL from user-configured nzbdav/WebDAV setting
                 return int(resp.headers.get("Content-Length", 0))
         except (OSError, ValueError):
             pass
@@ -3945,7 +3975,9 @@ class StreamProxy:
             req.add_header("Range", "bytes=-1")
             if auth_header:
                 req.add_header("Authorization", auth_header)
-            with urlopen(req, timeout=10) as resp:  # nosec B310
+            with urlopen(
+                req, timeout=10
+            ) as resp:  # nosec B310 nosemgrep — URL from user-configured nzbdav/WebDAV setting
                 cr = resp.headers.get("Content-Range", "")
                 return int(cr.split("/")[1]) if "/" in cr else 0
         except (OSError, ValueError):
@@ -3988,7 +4020,9 @@ def prepare_stream_via_service(port, remote_url, auth_header=None):
     data = json.dumps({"remote_url": remote_url, "auth_header": auth_header})
     req = Request(url, data=data.encode(), method="POST")
     req.add_header("Content-Type", "application/json")
-    with urlopen(req, timeout=60) as resp:  # nosec B310
+    with urlopen(
+        req, timeout=60
+    ) as resp:  # nosec B310 nosemgrep — URL from user-configured nzbdav/WebDAV setting
         result = json.loads(resp.read())
         proxy_url = result.pop("proxy_url")
         return proxy_url, result
