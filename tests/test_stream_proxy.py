@@ -244,7 +244,11 @@ def test_prepare_stream_remuxes_mp4_when_ffmpeg_available():
 
     with patch(
         "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
-    ), patch.object(sp, "_get_content_length", return_value=5000000000), patch(
+    ), patch(
+        "resources.lib.stream_proxy._find_ffprobe", return_value=None
+    ), patch.object(
+        sp, "_get_content_length", return_value=5000000000
+    ), patch(
         "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
     ), patch(
         "resources.lib.stream_proxy.fetch_remote_mp4_layout", return_value=None
@@ -283,7 +287,15 @@ def test_prepare_stream_proxies_mkv():
 def test_prepare_stream_forces_remux_for_large_mkv():
     """Large MKV above threshold must route through ffmpeg remux so Kodi
     never sees a >4 GB Content-Length — the pass-through path overflows on
-    32-bit Kodi builds with `Open - Unhandled exception`."""
+    32-bit Kodi builds with `Open - Unhandled exception`.
+
+    Output is piped Matroska via the standard remux path, the same
+    shape used by the MP4 Tier 3 fallback. An earlier iteration routed
+    large files through an HLS VOD playlist for proper random-access
+    seek, but Dolby Vision HEVC RPU metadata breaks across HLS segment
+    boundaries on Amlogic hardware. HLS machinery stays in-tree for a
+    future DV-aware router.
+    """
     from resources.lib.stream_proxy import StreamProxy
 
     sp = StreamProxy.__new__(StreamProxy)
@@ -297,20 +309,27 @@ def test_prepare_stream_forces_remux_for_large_mkv():
 
     with patch(
         "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
-    ), patch.object(sp, "_get_content_length", return_value=huge), patch(
+    ), patch(
+        "resources.lib.stream_proxy._find_ffprobe", return_value=None
+    ), patch.object(
+        sp, "_get_content_length", return_value=huge
+    ), patch(
         "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
     ):
-        sp.prepare_stream("http://host/film.mkv")
+        url, info = sp.prepare_stream("http://host/film.mkv")
 
     ctx = sp._server.stream_context
     assert ctx["remux"] is True
+    assert ctx.get("mode") != "hls"
     assert ctx["content_type"] == "video/x-matroska"
     assert ctx["total_bytes"] == huge
     assert ctx["duration_seconds"] == 3600.0
     assert ctx["seekable"] is True
-    # Pass-through content_length must NOT be set — the MKV response MUST
-    # be streamed with no Content-Length so Kodi can't overflow on it.
-    assert "content_length" not in ctx
+    assert ctx["ffmpeg_path"] == "/usr/bin/ffmpeg"
+    # Pass-through /stream/ URL, not an HLS playlist.
+    assert url.startswith("http://127.0.0.1:9999/stream/")
+    assert "/hls/" not in url
+    assert info["seekable"] is True
 
 
 def test_prepare_stream_large_mkv_falls_back_without_ffmpeg():
@@ -362,6 +381,87 @@ def test_prepare_stream_respects_disabled_threshold():
     ctx = sp._server.stream_context
     assert ctx["remux"] is False
     assert ctx["content_length"] == huge
+
+
+def test_force_remux_threshold_default_is_nonzero():
+    """The shipped default must force-remux large MKVs on 32-bit Kodi.
+
+    When the user hasn't set the setting (empty string or unset), the
+    default must be high enough that a 12 GB MKV still goes pass-through
+    (preserving native seek / zero-fill recovery on medium files) but
+    low enough that a 58 GB REMUX is remuxed through ffmpeg before
+    Kodi's 32-bit cache overflows. Regression test for the Shawshank
+    replay crash documented in memory/project_32bit_kodi_largefile_limit.md.
+    """
+    import sys
+
+    from resources.lib.stream_proxy import _get_force_remux_threshold_bytes
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.return_value = ""
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        threshold = _get_force_remux_threshold_bytes()
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    # 12 GB: pass-through tested clean on CoreELEC — must NOT be remuxed.
+    assert (
+        threshold > 12 * 1024 * 1024 * 1024
+    ), "Default threshold must not remux 12 GB MKVs (pass-through works)"
+    # 58 GB: known-bad on 32-bit Kodi — must be remuxed.
+    assert (
+        threshold < 58 * 1024 * 1024 * 1024
+    ), "Default threshold must remux 58 GB files (pass-through crashes)"
+
+
+def test_prepare_stream_force_remuxes_huge_mkv_with_default_threshold():
+    """A 58 GB MKV must be force-remuxed even when the user leaves the
+    threshold setting at its shipped default. Regression test for
+    memory/project_32bit_kodi_largefile_limit.md — pass-through of huge
+    MKVs crashes 32-bit Kodi with `Open - Unhandled exception`."""
+    import sys
+
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 9999
+
+    huge = 58 * 1024 * 1024 * 1024  # 58 GB, matches Shawshank REMUX
+    mock_proc = MagicMock()
+    mock_proc.stderr = iter([b"  Duration: 02:22:12.00, start: 0.000000\n"])
+
+    mock_addon = MagicMock()
+    # Empty string — user left the setting at its default.
+    mock_addon.getSetting.return_value = ""
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch(
+            "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
+        ), patch(
+            "resources.lib.stream_proxy._find_ffprobe", return_value=None
+        ), patch.object(
+            sp, "_get_content_length", return_value=huge
+        ), patch(
+            "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
+        ):
+            sp.prepare_stream("http://host/shawshank.mkv")
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    ctx = sp._server.stream_context
+    assert (
+        ctx["remux"] is True
+    ), "58 GB MKV must be force-remuxed with the default threshold"
+    assert ctx.get("mode") != "hls"
+    assert ctx["content_type"] == "video/x-matroska"
+    assert ctx["total_bytes"] == huge
+    assert ctx["duration_seconds"] == 8532.0
+    assert ctx["seekable"] is True
 
 
 def test_prepare_stream_rejects_invalid_scheme():
@@ -474,7 +574,11 @@ def test_prepare_stream_probes_duration_for_mp4():
     auth = "Basic " + base64.b64encode(b"user:pass").decode()
     with patch(
         "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
-    ), patch.object(sp, "_get_content_length", return_value=5000000000), patch(
+    ), patch(
+        "resources.lib.stream_proxy._find_ffprobe", return_value=None
+    ), patch.object(
+        sp, "_get_content_length", return_value=5000000000
+    ), patch(
         "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
     ), patch(
         "resources.lib.stream_proxy.fetch_remote_mp4_layout", return_value=None
@@ -490,6 +594,102 @@ def test_prepare_stream_probes_duration_for_mp4():
     assert ctx["seekable"] is True
 
 
+def test_probe_duration_prefers_ffprobe_when_available():
+    """When ffprobe is on the system, _probe_duration must use it instead of
+    parsing ffmpeg stderr — ffmpeg's per-stream warnings can push Duration
+    past any reasonable stderr budget on files with many subtitle streams."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate.return_value = (b"8552.576000\n", b"")
+
+    with patch(
+        "resources.lib.stream_proxy._find_ffprobe",
+        return_value="/usr/bin/ffprobe",
+    ), patch(
+        "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
+    ) as mock_popen:
+        duration = StreamProxy._probe_duration(
+            "/usr/bin/ffmpeg",
+            "http://host/shawshank.mkv",
+            None,
+        )
+
+    assert duration == 8552.576
+    # ffprobe must have been invoked — check the argv passed to Popen.
+    assert mock_popen.called
+    argv = mock_popen.call_args[0][0]
+    assert argv[0] == "/usr/bin/ffprobe"
+    assert "format=duration" in argv
+
+
+def test_probe_duration_ffprobe_returns_none_on_nonzero_exit():
+    """A failing ffprobe (bad URL, auth failure, corrupt header) must return
+    None so the caller can fall back to the ffmpeg-stderr path."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    mock_proc = MagicMock()
+    mock_proc.returncode = 1
+    mock_proc.communicate.return_value = (b"", b"error\n")
+
+    with patch(
+        "resources.lib.stream_proxy._find_ffprobe",
+        return_value="/usr/bin/ffprobe",
+    ), patch("resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc):
+        result = StreamProxy._probe_duration_ffprobe(
+            "/usr/bin/ffprobe", "http://host/bad.mkv"
+        )
+
+    assert result is None
+
+
+def test_probe_duration_ffmpeg_fallback_budget_handles_subtitle_wall():
+    """Regression test for the Shawshank 30+ subtitle stream bug.
+
+    When ffprobe isn't available, the ffmpeg-stderr fallback must have a
+    budget large enough to read through ~30 `Could not find codec parameters
+    for stream N (Subtitle: hdmv_pgs_subtitle)` lines before the `Duration:`
+    line shows up. The original 8 KB budget truncated well before the
+    header finished printing on these files.
+    """
+    from resources.lib.stream_proxy import StreamProxy
+
+    # Build a realistic ffmpeg stderr stream: banner + 60 subtitle warnings
+    # + the Duration line. Each subtitle warning is ~221 bytes (matches the
+    # Shawshank probe output seen live), so 60 × 221 ≈ 13 KB — well above
+    # the original 8 KB budget, forcing the larger budget path to be taken.
+    banner = (
+        b"ffmpeg version 6.0.1 Copyright (c) 2000-2023 the FFmpeg developers\n"
+        b"  libavutil      58.  2.100 / 58.  2.100\n"
+        b"  libavcodec     60.  3.100 / 60.  3.100\n"
+    )
+    subtitle_warning = (
+        b"[matroska,webm @ 0x4a55220] Could not find codec parameters for stream "
+        b"N (Subtitle: hdmv_pgs_subtitle (pgssub)): unspecified size\n"
+        b"Consider increasing the value for the 'analyzeduration' (0) and "
+        b"'probesize' (5000000) options\n"
+    )
+    warnings_wall = subtitle_warning * 60
+    duration_line = b"  Duration: 02:22:32.58, start: 0.000000\n"
+    stderr_stream = banner + warnings_wall + duration_line
+    total_pre_duration = len(banner) + len(warnings_wall)
+    assert (
+        total_pre_duration > 8192
+    ), "test setup error: pre-Duration bytes must exceed the old 8 KB budget"
+
+    # Feed it to the fallback as a line-by-line iterator.
+    mock_proc = MagicMock()
+    mock_proc.stderr = iter(stderr_stream.splitlines(keepends=True))
+
+    with patch("resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc):
+        duration = StreamProxy._probe_duration_ffmpeg(
+            "/usr/bin/ffmpeg", "http://host/shawshank.mkv"
+        )
+
+    assert duration == 2 * 3600 + 22 * 60 + 32.58
+
+
 def test_prepare_stream_falls_back_to_non_seekable_on_probe_failure():
     from resources.lib.stream_proxy import StreamProxy
 
@@ -503,7 +703,11 @@ def test_prepare_stream_falls_back_to_non_seekable_on_probe_failure():
 
     with patch(
         "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
-    ), patch.object(sp, "_get_content_length", return_value=5000000000), patch(
+    ), patch(
+        "resources.lib.stream_proxy._find_ffprobe", return_value=None
+    ), patch.object(
+        sp, "_get_content_length", return_value=5000000000
+    ), patch(
         "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
     ), patch(
         "resources.lib.stream_proxy.fetch_remote_mp4_layout", return_value=None
@@ -624,6 +828,53 @@ def test_build_ffmpeg_cmd_includes_seek():
     i_idx = cmd.index("-i")
     assert ss_idx < i_idx
     assert cmd[ss_idx + 1] == "3600.500"
+
+
+def test_build_ffmpeg_cmd_mpegts_output_format():
+    """output_format='mpegts' emits MPEG-TS with subs dropped.
+
+    Regression test for the Shawshank seek bug. Piped MKV has no Cues;
+    MPEG-TS is the format we switched to so Kodi can do real seeks via
+    byte-range restart of ffmpeg with `-ss`.
+    """
+    handler = _make_handler()
+    ctx = {
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "output_format": "mpegts",
+    }
+    cmd = handler._build_ffmpeg_cmd(ctx)
+    # MPEG-TS format selector present, matroska absent.
+    f_idx = cmd.index("-f")
+    assert cmd[f_idx + 1] == "mpegts"
+    assert "matroska" not in cmd
+    # Subtitles explicitly dropped — MPEG-TS can't carry PGS/HDMV, and
+    # ffmpeg can't transcode those, so `-sn` is the only safe choice.
+    assert "-sn" in cmd
+    # No subtitle mapping or -c:s for the TS path.
+    assert "0:s?" not in cmd
+    assert "-c:s" not in cmd
+    # No -metadata DURATION — MPEG-TS has no container-level duration
+    # field for ffmpeg to write, so don't bother.
+    assert "-metadata" not in cmd
+
+
+def test_build_ffmpeg_cmd_mpegts_includes_seek():
+    """Seek flag must apply to the MPEG-TS path too."""
+    handler = _make_handler()
+    ctx = {
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "output_format": "mpegts",
+        "duration_seconds": 8552.576,
+    }
+    cmd = handler._build_ffmpeg_cmd(ctx, seek_seconds=4276.288)
+    ss_idx = cmd.index("-ss")
+    i_idx = cmd.index("-i")
+    assert ss_idx < i_idx
+    assert cmd[ss_idx + 1] == "4276.288"
 
 
 def test_build_ffmpeg_cmd_no_seek_when_none():
@@ -849,6 +1100,657 @@ def test_clear_sessions_kills_all_ffmpegs():
     proc_a.kill.assert_called_once()
     proc_b.kill.assert_called_once()
     assert sp._server.stream_sessions == {}
+
+
+# ---------------------------------------------------------------------------
+# HLS playlist / segment handlers
+# ---------------------------------------------------------------------------
+
+
+def _make_hls_handler(ctx, request_path):
+    """Construct a _StreamHandler for HLS path dispatch tests."""
+    import threading
+
+    from resources.lib.stream_proxy import _StreamHandler
+
+    handler = _StreamHandler.__new__(_StreamHandler)
+    handler.server = MagicMock()
+    session_id = ctx.get("session_id", "abc123")
+    handler.server.stream_sessions = {session_id: ctx}
+    handler.server.stream_context = ctx
+    handler.server.active_ffmpeg = None
+    handler.server.current_byte_pos = 0
+    handler.server.ffmpeg_lock = threading.Lock()
+    handler.path = request_path
+    handler.headers = {}
+    handler.wfile = MagicMock()
+    handler.connection = MagicMock()
+    handler.send_response = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
+    handler.send_error = MagicMock()
+    return handler
+
+
+def test_parse_hls_resource_playlist():
+    from resources.lib.stream_proxy import _StreamHandler
+
+    assert _StreamHandler._parse_hls_resource("/hls/abc/playlist.m3u8") == (
+        "abc",
+        "playlist",
+    )
+
+
+def test_parse_hls_resource_segment():
+    from resources.lib.stream_proxy import _StreamHandler
+
+    assert _StreamHandler._parse_hls_resource("/hls/abc/seg_42.ts") == (
+        "abc",
+        ("segment", 42),
+    )
+
+
+def test_parse_hls_resource_rejects_negative_segment():
+    from resources.lib.stream_proxy import _StreamHandler
+
+    assert _StreamHandler._parse_hls_resource("/hls/abc/seg_-1.ts") is None
+
+
+def test_parse_hls_resource_rejects_malformed():
+    from resources.lib.stream_proxy import _StreamHandler
+
+    assert _StreamHandler._parse_hls_resource("/hls/") is None
+    assert _StreamHandler._parse_hls_resource("/hls/abc") is None
+    assert _StreamHandler._parse_hls_resource("/hls/abc/unknown.txt") is None
+    assert _StreamHandler._parse_hls_resource("/hls/abc/seg_abc.ts") is None
+    assert _StreamHandler._parse_hls_resource("/stream/abc") is None
+
+
+def test_serve_hls_playlist_shape():
+    """Playlist must be a valid HLS VOD m3u8 with one segment per
+    ``#EXTINF`` block. The segment durations must sum to the total
+    source duration (modulo floating point slop) so Kodi's seek bar
+    shows the correct total time.
+    """
+    ctx = {
+        "session_id": "sess1",
+        "mode": "hls",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 8552.576,
+        "hls_segment_duration": 10.0,
+        "total_bytes": 58339952712,
+    }
+
+    handler = _make_hls_handler(ctx, "/hls/sess1/playlist.m3u8")
+    handler._serve_hls_playlist(ctx)
+
+    handler.send_response.assert_called_once_with(200)
+    header_calls = {
+        call.args[0]: call.args[1] for call in handler.send_header.call_args_list
+    }
+    assert header_calls["Content-Type"] == "application/vnd.apple.mpegurl"
+    # The playlist body was written in a single write call.
+    assert handler.wfile.write.called
+    body = handler.wfile.write.call_args[0][0].decode("utf-8")
+    assert body.startswith("#EXTM3U\n")
+    assert "#EXT-X-PLAYLIST-TYPE:VOD" in body
+    assert "#EXT-X-ENDLIST" in body
+
+    # 8552.576 / 10.0 = 856 segments (ceil). Verify the count.
+    extinf_lines = [line for line in body.splitlines() if line.startswith("#EXTINF:")]
+    assert len(extinf_lines) == 856, "expected ceil(duration/10) segments"
+
+    # Segment URIs should be relative and sequential.
+    seg_uris = [
+        line
+        for line in body.splitlines()
+        if line.startswith("seg_") and line.endswith(".ts")
+    ]
+    assert len(seg_uris) == 856
+    assert seg_uris[0] == "seg_0.ts"
+    assert seg_uris[-1] == "seg_855.ts"
+
+    # Sum of EXTINF values ≈ duration (allowing floating-point slop).
+    durations = [float(line[len("#EXTINF:") : -1]) for line in extinf_lines]
+    assert abs(sum(durations) - 8552.576) < 0.001
+
+
+def test_serve_hls_segment_reads_from_producer_file(tmp_path):
+    """The segment handler reads ``hls_producer.wait_for_segment``'s
+    returned file path and streams it back with ``Content-Length``,
+    not chunked. The producer owns ffmpeg; the handler is just a file
+    server for already-produced .ts files.
+    """
+    seg_file = tmp_path / "seg_000100.ts"
+    seg_file.write_bytes(b"TSDATA" * 1000)  # 6000 bytes of dummy payload
+
+    producer = MagicMock()
+    producer.wait_for_segment.return_value = str(seg_file)
+
+    ctx = {
+        "session_id": "sess1",
+        "mode": "hls",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 8552.576,
+        "hls_segment_duration": 10.0,
+        "total_bytes": 58339952712,
+        "hls_producer": producer,
+    }
+
+    handler = _make_hls_handler(ctx, "/hls/sess1/seg_100.ts")
+    handler._serve_hls_segment(ctx, 100)
+
+    producer.wait_for_segment.assert_called_once_with(100)
+    handler.send_response.assert_called_once_with(200)
+    header_calls = {
+        call.args[0]: call.args[1] for call in handler.send_header.call_args_list
+    }
+    assert header_calls["Content-Type"] == "video/mp2t"
+    assert header_calls["Content-Length"] == "6000"
+    # All the bytes must have been written to wfile.
+    written = b"".join(call.args[0] for call in handler.wfile.write.call_args_list)
+    assert written == b"TSDATA" * 1000
+
+
+def test_serve_hls_segment_504_on_producer_timeout():
+    """If ``wait_for_segment`` returns None (timeout) the handler
+    responds 504 Gateway Timeout instead of hanging indefinitely."""
+    producer = MagicMock()
+    producer.wait_for_segment.return_value = None
+
+    ctx = {
+        "session_id": "sess1",
+        "mode": "hls",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 8552.576,
+        "hls_segment_duration": 10.0,
+        "total_bytes": 58339952712,
+        "hls_producer": producer,
+    }
+    handler = _make_hls_handler(ctx, "/hls/sess1/seg_100.ts")
+    handler._serve_hls_segment(ctx, 100)
+
+    handler.send_error.assert_called_once_with(504)
+
+
+def test_build_hls_segment_cmd_includes_cold_start_flags():
+    """The HLS segment ffmpeg command must carry the three input-side
+    flags that keep cold start fast on large remote MKVs with many
+    subtitle streams: ``-probesize``, ``-analyzeduration``, and
+    ``-fflags +fastseek``. All three MUST appear before ``-i`` since
+    they are input options.
+
+    ``-probesize`` must be large enough to enumerate every subtitle
+    track — 32 KB was too small on files with 32 sub tracks, which
+    made Kodi's subtitle menu empty.
+    """
+    from resources.lib.stream_proxy import _StreamHandler
+
+    ctx = {
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+    }
+    cmd = _StreamHandler._build_hls_segment_cmd(ctx, 100.0, 10.0)
+
+    i_idx = cmd.index("-i")
+
+    ps_idx = cmd.index("-probesize")
+    assert ps_idx < i_idx
+    # 1 MB is the smallest tested value that enumerates all 32
+    # subtitle tracks on the Shawshank REMUX.
+    assert cmd[ps_idx + 1] == "1048576"
+
+    ad_idx = cmd.index("-analyzeduration")
+    assert ad_idx < i_idx
+    assert cmd[ad_idx + 1] == "0"
+
+    fflags_idx = cmd.index("-fflags")
+    assert fflags_idx < i_idx
+    assert cmd[fflags_idx + 1] == "+fastseek"
+
+
+def test_build_hls_segment_cmd_drops_copyts():
+    """``-copyts`` must not be on the HLS segment command.
+
+    With ``-copyts`` set, ``-ss`` snaps to keyframes whose source PTS
+    values are carried verbatim into the output. Adjacent segments
+    produce overlapping source PTS ranges because keyframe snapping
+    doesn't align to segment boundaries (seg 99 ends at ~999 s, seg
+    100 starts at ~998 s from an earlier keyframe). The Amlogic HW
+    decoder logs ``CAMLCodec::GetNextDequeuedBuffer: current pts <=
+    last pts`` and replays a few frames of audio, which sounds like
+    someone saying a word twice mid-dialogue. Regression test.
+    """
+    from resources.lib.stream_proxy import _StreamHandler
+
+    ctx = {
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+    }
+    cmd = _StreamHandler._build_hls_segment_cmd(ctx, 100.0, 10.0)
+    assert "-copyts" not in cmd
+    assert "-muxdelay" not in cmd
+    assert "-muxpreload" not in cmd
+
+
+def test_build_hls_segment_cmd_drops_subtitles():
+    """Subtitles must be dropped with ``-sn``, not mapped.
+
+    An earlier iteration tried ``-map 0:s? -c:s copy`` to pass PGS
+    subtitles through MPEG-TS, but ffmpeg's mpegts muxer wraps PGS
+    as a ``private data stream`` that Kodi's MPEG-TS demuxer
+    rejects on probe (``Playback failed``). PGS codec parameter
+    detection also requires a multi-minute analyze window
+    incompatible with the tight probe budget we need for fast
+    segment cold start. Regression test for the ``Playback failed``
+    dialog on Shawshank after the subs-pass-through attempt.
+    """
+    from resources.lib.stream_proxy import _StreamHandler
+
+    ctx = {
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+    }
+    cmd = _StreamHandler._build_hls_segment_cmd(ctx, 100.0, 10.0)
+    assert "-sn" in cmd
+    assert "0:s?" not in cmd
+    assert "-c:s" not in cmd
+
+
+def test_hls_segment_seconds_is_at_least_30():
+    """The segment duration must be large enough to hide ffmpeg's
+    cold-start time on the next segment.
+
+    On the CoreELEC test box, each segment spawns a fresh ffmpeg
+    that takes ~10-15 s to open the remote 58 GB MKV, parse the
+    container, seek to the requested keyframe, and start emitting
+    MPEG-TS packets. If segment duration is shorter than cold
+    start, Kodi runs out of buffered data before the next segment
+    is ready, and playback caches continuously. 30 s gives Kodi
+    comfortable headroom. Regression test for the ``constant
+    caching`` report during Shawshank playback.
+    """
+    from resources.lib.stream_proxy import _HLS_SEGMENT_SECONDS
+
+    assert _HLS_SEGMENT_SECONDS >= 30.0
+
+
+def test_serve_hls_segment_out_of_range_404s():
+    """Requesting a segment past the end returns 404 — producer is
+    never consulted for a segment that doesn't exist in the playlist."""
+    producer = MagicMock()
+
+    ctx = {
+        "session_id": "sess1",
+        "mode": "hls",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 100.0,
+        "hls_segment_duration": 10.0,
+        "total_bytes": 1000000,
+        "hls_producer": producer,
+    }
+
+    handler = _make_hls_handler(ctx, "/hls/sess1/seg_99.ts")
+    handler._serve_hls_segment(ctx, 99)
+
+    handler.send_error.assert_called_once_with(404)
+    producer.wait_for_segment.assert_not_called()
+
+
+def test_do_get_routes_hls_paths():
+    """do_GET must route /hls/<session>/... through _handle_hls rather
+    than the default /stream/ handler."""
+    ctx = {
+        "session_id": "xyz789",
+        "mode": "hls",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 100.0,
+        "hls_segment_duration": 10.0,
+        "total_bytes": 1000000,
+    }
+
+    handler = _make_hls_handler(ctx, "/hls/xyz789/playlist.m3u8")
+
+    with patch.object(handler, "_serve_hls_playlist") as mock_serve:
+        handler.do_GET()
+
+    mock_serve.assert_called_once()
+
+
+def test_do_get_hls_rejects_non_hls_mode_session():
+    """A legitimate session that is NOT in hls mode must not be exposed
+    via /hls/ paths. Forces playlist requests for non-HLS sessions to 404
+    so a misconfigured client can't accidentally crash the proxy."""
+    ctx = {
+        "session_id": "xyz789",
+        "mode": "legacy",  # not hls
+        "remote_url": "http://host/film.mp4",
+        "auth_header": None,
+        "duration_seconds": 100.0,
+        "total_bytes": 1000000,
+    }
+
+    handler = _make_hls_handler(ctx, "/hls/xyz789/playlist.m3u8")
+
+    with patch.object(handler, "_serve_hls_playlist") as mock_serve:
+        handler.do_GET()
+
+    mock_serve.assert_not_called()
+    handler.send_error.assert_called_once_with(404)
+
+
+def _make_producer(tmp_path, duration=600.0, seg_dur=30.0):
+    """Construct an HlsProducer pointed at a temp working directory."""
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": duration,
+        "hls_segment_duration": seg_dur,
+    }
+    return HlsProducer(ctx, str(tmp_path))
+
+
+def test_hls_producer_serves_existing_complete_segment(tmp_path):
+    """If seg_N.ts AND seg_N+1.ts both already exist on disk,
+    wait_for_segment returns immediately without touching ffmpeg.
+    Regression guard for "seek back to an already-produced segment"."""
+    producer = _make_producer(tmp_path)
+    seg_dir = producer.session_dir
+    # Simulate ffmpeg having already written segments 5 and 6.
+    import os as _os
+
+    with open(_os.path.join(seg_dir, "seg_000005.ts"), "wb") as f:
+        f.write(b"five")
+    with open(_os.path.join(seg_dir, "seg_000006.ts"), "wb") as f:
+        f.write(b"six")
+
+    with patch("resources.lib.stream_proxy.subprocess.Popen") as mock_popen:
+        result = producer.wait_for_segment(5, timeout=2.0)
+
+    assert result == _os.path.join(seg_dir, "seg_000005.ts")
+    mock_popen.assert_not_called()
+
+
+def test_hls_producer_detects_mtime_stable_final_segment(tmp_path):
+    """A final segment with no successor file is considered complete
+    once its mtime has been stable longer than the stability window."""
+    producer = _make_producer(tmp_path)
+    seg_dir = producer.session_dir
+    import os as _os
+    import time as _time
+
+    final_path = _os.path.join(seg_dir, "seg_000019.ts")
+    with open(final_path, "wb") as f:
+        f.write(b"final")
+    # Force mtime into the past so the stability check passes immediately.
+    old = _time.time() - 60
+    _os.utime(final_path, (old, old))
+
+    # Mark this segment as the terminal one so the producer's
+    # "proc-exited" branch isn't triggered.
+    with patch("resources.lib.stream_proxy.subprocess.Popen") as mock_popen:
+        result = producer.wait_for_segment(19, timeout=2.0)
+
+    assert result == final_path
+    mock_popen.assert_not_called()
+
+
+def test_hls_producer_cmd_has_no_reset_timestamps(tmp_path):
+    """The persistent ffmpeg must NOT pass -reset_timestamps 1.
+
+    With -reset_timestamps the segment muxer normalizes each output
+    segment's PTS to near-zero. Kodi's Amlogic HW decoder treats the
+    resulting per-segment resets as non-monotonic PTS, flags ``messy
+    timestamps``, and eventually stalls with
+    ``CAMLCodec::GetPicture: decoder timeout - elf:[5021ms]`` errors
+    until playback freezes. Regression guard for the 2026-04-13
+    Shawshank playback freeze.
+    """
+    producer = _make_producer(tmp_path, duration=600.0, seg_dur=30.0)
+    cmd = producer._build_cmd(start_time=0.0, start_segment=0)
+    assert "-reset_timestamps" not in cmd
+    # -copyts must be present so that on a seek-restart the new
+    # ffmpeg's output PTS continues from the source-time position.
+    assert "-copyts" in cmd
+
+
+def test_hls_producer_starts_ffmpeg_when_no_file_exists(tmp_path):
+    """If the requested segment doesn't exist on disk and no ffmpeg
+    is running, the producer must spawn ffmpeg with -ss at the
+    segment's start time and -segment_start_number matching the
+    segment index."""
+    producer = _make_producer(tmp_path, duration=600.0, seg_dur=30.0)
+
+    mock_proc = MagicMock()
+    mock_proc.poll.return_value = None  # simulated running ffmpeg
+
+    with patch(
+        "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
+    ) as mock_popen:
+        # Short timeout — we expect the timeout to expire because the
+        # mocked ffmpeg never writes files. We're asserting ON the
+        # spawn call, not on the return value.
+        producer.wait_for_segment(3, timeout=0.5)
+
+    mock_popen.assert_called()
+    cmd = mock_popen.call_args[0][0]
+    ss_idx = cmd.index("-ss")
+    start_num_idx = cmd.index("-segment_start_number")
+    # Segment 3 at 30 s each → -ss 90.000
+    assert cmd[ss_idx + 1] == "90.000"
+    assert cmd[start_num_idx + 1] == "3"
+    # Segment muxer, MPEG-TS format.
+    f_idx = cmd.index("-f")
+    assert cmd[f_idx + 1] == "segment"
+    sf_idx = cmd.index("-segment_format")
+    assert cmd[sf_idx + 1] == "mpegts"
+    # Output template must land in the producer's session dir.
+    assert cmd[-1].startswith(producer.session_dir)
+    assert cmd[-1].endswith("seg_%06d.ts")
+
+
+def test_hls_producer_restarts_ffmpeg_on_backward_seek(tmp_path):
+    """If ffmpeg is running at segment N but seg M < N is requested,
+    the producer kills the current ffmpeg and starts a new one aimed
+    at segment M."""
+    producer = _make_producer(tmp_path)
+
+    old_proc = MagicMock()
+    old_proc.poll.return_value = None  # alive
+    producer._proc = old_proc
+    producer._start_segment = 50
+
+    new_proc = MagicMock()
+    new_proc.poll.return_value = None
+
+    with patch(
+        "resources.lib.stream_proxy.subprocess.Popen", return_value=new_proc
+    ) as mock_popen:
+        producer.wait_for_segment(10, timeout=0.3)
+
+    old_proc.kill.assert_called_once()
+    mock_popen.assert_called()
+    cmd = mock_popen.call_args[0][0]
+    ss_idx = cmd.index("-ss")
+    assert cmd[ss_idx + 1] == "300.000"  # 10 * 30 s
+
+
+def test_hls_producer_does_not_restart_on_small_forward_seek(tmp_path):
+    """If ffmpeg is running at segment N and seg N+5 is requested
+    (small forward jump), the producer does NOT restart — it waits
+    for ffmpeg to naturally produce the segment."""
+    producer = _make_producer(tmp_path)
+
+    alive_proc = MagicMock()
+    alive_proc.poll.return_value = None
+    producer._proc = alive_proc
+    producer._start_segment = 10
+
+    with patch("resources.lib.stream_proxy.subprocess.Popen") as mock_popen:
+        producer.wait_for_segment(12, timeout=0.3)
+
+    mock_popen.assert_not_called()
+    alive_proc.kill.assert_not_called()
+
+
+def test_hls_producer_close_kills_ffmpeg_and_removes_dir(tmp_path):
+    """close() must kill ffmpeg and delete the session directory."""
+    producer = _make_producer(tmp_path)
+    seg_dir = producer.session_dir
+    import os as _os
+
+    # Drop a bogus file so we can verify the directory is removed.
+    with open(_os.path.join(seg_dir, "seg_000000.ts"), "wb") as f:
+        f.write(b"x")
+    assert _os.path.isdir(seg_dir)
+
+    alive_proc = MagicMock()
+    alive_proc.poll.return_value = None
+    producer._proc = alive_proc
+
+    producer.close()
+
+    alive_proc.kill.assert_called_once()
+    assert not _os.path.exists(seg_dir)
+
+
+def test_choose_hls_workdir_prefers_first_writable(tmp_path):
+    """_choose_hls_workdir walks its candidate list in order and
+    returns the first candidate whose parent is writable."""
+    from resources.lib.stream_proxy import _choose_hls_workdir
+
+    parent_a = tmp_path / "parent_a"
+    parent_b = tmp_path / "parent_b"
+    parent_a.mkdir()
+    parent_b.mkdir()
+    candidate_a = str(parent_a / "nzbdav-hls")
+    candidate_b = str(parent_b / "nzbdav-hls")
+
+    with patch(
+        "resources.lib.stream_proxy._HLS_WORKDIR_CANDIDATES",
+        (candidate_a, candidate_b),
+    ):
+        chosen = _choose_hls_workdir()
+
+    assert chosen == candidate_a
+    import os as _os
+
+    assert _os.path.isdir(candidate_a)
+
+
+def test_choose_hls_workdir_fallback_is_not_predictable(tmp_path):
+    """Fallback workdir must not reuse a fixed shared temp path."""
+    import os as _os
+
+    from resources.lib.stream_proxy import _choose_hls_workdir
+
+    predictable = str(tmp_path / "nzbdav-hls")
+
+    with patch(
+        "resources.lib.stream_proxy._HLS_WORKDIR_CANDIDATES",
+        ("/missing-a", "/missing-b"),
+    ):
+        with patch("tempfile.gettempdir", return_value=str(tmp_path)):
+            with patch(
+                "resources.lib.stream_proxy._HLS_PRIVATE_TEMP_ROOT",
+                None,
+                create=True,
+            ):
+                chosen = _choose_hls_workdir()
+
+    assert chosen.startswith(str(tmp_path) + _os.sep)
+    assert chosen != predictable
+    assert _os.path.isdir(chosen)
+
+
+def test_register_session_hls_returns_playlist_url(tmp_path):
+    """A force-remux / HLS session must register with a playlist URL
+    and attach an HlsProducer pointing at the session's working
+    directory on disk."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 12345
+
+    ctx = {
+        "mode": "hls",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 60.0,
+        "hls_segment_duration": 30.0,
+    }
+    import os as _os
+
+    with patch(
+        "resources.lib.stream_proxy._choose_hls_workdir",
+        return_value=str(tmp_path),
+    ):
+        url = sp._register_session(ctx)
+
+    assert url.startswith("http://127.0.0.1:12345/hls/")
+    assert url.endswith("/playlist.m3u8")
+    # Producer was attached and pointed at a per-session directory.
+    producer = ctx.get("hls_producer")
+    assert producer is not None
+    assert _os.path.isdir(producer.session_dir)
+    assert producer.session_dir.startswith(str(tmp_path))
+
+
+def test_serve_remux_matroska_keeps_accept_ranges_none():
+    """The MP4-fallback matroska path must keep `Accept-Ranges: none`.
+
+    Piped MKV has no Cues, so advertising bytes would disable Kodi's
+    cache-based seek fallback without enabling real seek. Only the
+    mpegts path flips to `Accept-Ranges: bytes`.
+    """
+    ctx = {
+        "remote_url": "http://host/film.mp4",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "content_type": "video/x-matroska",
+        # No output_format set → defaults to "matroska"
+        "total_bytes": 5 * 1024 * 1024 * 1024,
+        "duration_seconds": 3600.0,
+        "seekable": True,
+        "remux": True,
+    }
+
+    handler = _make_handler_with_server(ctx)
+
+    mock_proc = MagicMock()
+    mock_proc.stdout.read.return_value = b""
+    mock_proc.stderr.read.return_value = b""
+
+    with patch("resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc):
+        handler._serve_remux(ctx)
+
+    handler.send_response.assert_called_once_with(200)
+    header_calls = {
+        call.args[0]: call.args[1] for call in handler.send_header.call_args_list
+    }
+    assert header_calls["Accept-Ranges"] == "none"
+    assert header_calls["Content-Type"] == "video/x-matroska"
+    assert "Content-Length" not in header_calls
 
 
 def test_serve_remux_non_seekable_no_ss():

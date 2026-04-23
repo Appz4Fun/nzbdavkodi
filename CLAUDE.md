@@ -40,7 +40,7 @@ just dist-clean    # clean + remove dist/
 
 ## CI/CD
 
-- **CI** runs on every push to main and PRs: tests across Python 3.8/3.10/3.12, ruff, black
+- **CI** runs on every push to main and PRs: tests across Python 3.10/3.12, ruff, black
 - **Release** triggers on `v*` tags: runs tests, verifies addon.xml version matches tag, builds zip, creates GitHub Release, deploys Kodi repo to GitHub Pages
 - **Kodi repo** served at `https://xbmc4lyfe.github.io/nzbdavkodi/`
 - To release: bump version in `addon.xml`, commit, `git tag v0.X.0 && git push origin main v0.X.0`
@@ -55,6 +55,7 @@ just dist-clean    # clean + remove dist/
 ## Gotchas
 
 - **Python 3.8 minimum**: No walrus operators, match statements, or str.removeprefix. Target platform is CoreELEC on ARM64.
+- **Test tooling is Python 3.10+**: `pytest>=9.0.3` is required to clear `GHSA-6w46-j5rx-g56g`, so local `just test` and CI no longer run under Python 3.8.
 - **No C extensions**: Everything must be pure Python (no compiled .so files). That's why we replaced `regex` with `re`.
 - **PTT regex patterns**: Some PTT patterns use features that produce FutureWarning with newer Python. Escape `[` inside character classes.
 - **setResolvedUrl**: MUST be called on ALL paths (success with True, failure with False) or Kodi hangs waiting for resolution.

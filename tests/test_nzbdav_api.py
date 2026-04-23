@@ -3,10 +3,13 @@
 
 import json
 from unittest.mock import patch
+from urllib.error import URLError
 
 from resources.lib.nzbdav_api import (
     _DEFAULT_SUBMIT_TIMEOUT,
     _get_submit_timeout,
+    _sanitize_server_message,
+    cancel_job,
     get_completed_names,
     get_job_history,
     get_job_status,
@@ -21,10 +24,11 @@ def test_submit_nzb_returns_nzo_id(mock_http, mock_settings):
     mock_http.return_value = json.dumps(
         {"status": True, "nzo_ids": ["SABnzbd_nzo_abc123"]}
     )
-    nzo_id = submit_nzb(
+    nzo_id, error = submit_nzb(
         "http://hydra:5076/getnzb/abc123?apikey=testkey", "The.Matrix.1999"
     )
     assert nzo_id == "SABnzbd_nzo_abc123"
+    assert error is None
     call_url = mock_http.call_args[0][0]
     assert "mode=addurl" in call_url
     assert "apikey=testkey" in call_url
@@ -70,8 +74,9 @@ def test_get_submit_timeout_falls_back_on_garbage(mock_xbmcaddon):
 def test_submit_nzb_failure_returns_none(mock_http, mock_settings):
     mock_settings.return_value = ("http://nzbdav:3000", "testkey")
     mock_http.return_value = json.dumps({"status": False, "nzo_ids": []})
-    nzo_id = submit_nzb("http://hydra:5076/getnzb/abc123", "The.Matrix")
+    nzo_id, error = submit_nzb("http://hydra:5076/getnzb/abc123", "The.Matrix")
     assert nzo_id is None
+    assert error is None
 
 
 @patch("resources.lib.nzbdav_api._get_settings")
@@ -79,8 +84,9 @@ def test_submit_nzb_failure_returns_none(mock_http, mock_settings):
 def test_submit_nzb_connection_error(mock_http, mock_settings):
     mock_settings.return_value = ("http://nzbdav:3000", "testkey")
     mock_http.side_effect = Exception("Connection refused")
-    nzo_id = submit_nzb("http://hydra:5076/getnzb/abc123", "The.Matrix")
+    nzo_id, error = submit_nzb("http://hydra:5076/getnzb/abc123", "The.Matrix")
     assert nzo_id is None
+    assert error is None
 
 
 @patch("resources.lib.nzbdav_api._get_settings")
@@ -136,10 +142,11 @@ def test_submit_nzb_special_characters_in_name(mock_http, mock_settings):
         {"status": True, "nzo_ids": ["SABnzbd_nzo_special99"]}
     )
     nzb_name = "Spider-Man: No Way Home (2021) 1080p BluRay & extras"
-    nzo_id = submit_nzb("http://hydra:5076/getnzb/special", nzb_name)
+    nzo_id, error = submit_nzb("http://hydra:5076/getnzb/special", nzb_name)
     assert (
         nzo_id == "SABnzbd_nzo_special99"
     ), "submit_nzb should return nzo_id even when name has special characters"
+    assert error is None
     call_url = mock_http.call_args[0][0]
     assert "mode=addurl" in call_url, "URL should contain addurl mode"
     # The name should appear URL-encoded somewhere in the request
@@ -279,15 +286,15 @@ def test_submit_nzb_handles_malformed_response(mock_http, mock_settings):
     mock_settings.return_value = ("http://nzbdav:3333", "testkey")
     # status false with null nzo_id
     mock_http.return_value = '{"status": false, "nzo_ids": [null]}'
-    assert submit_nzb("http://nzb/test.nzb", "test") is None
+    assert submit_nzb("http://nzb/test.nzb", "test") == (None, None)
 
     # empty nzo_ids list
     mock_http.return_value = '{"status": true, "nzo_ids": []}'
-    assert submit_nzb("http://nzb/test.nzb", "test") is None
+    assert submit_nzb("http://nzb/test.nzb", "test") == (None, None)
 
     # missing nzo_ids entirely
     mock_http.return_value = '{"status": true}'
-    assert submit_nzb("http://nzb/test.nzb", "test") is None
+    assert submit_nzb("http://nzb/test.nzb", "test") == (None, None)
 
 
 @patch("resources.lib.nzbdav_api._get_settings")
@@ -353,3 +360,282 @@ def test_get_completed_names_returns_empty_on_error(mock_http, mock_settings):
     mock_http.side_effect = Exception("Connection refused")
     names = get_completed_names()
     assert names == set()
+
+
+# --- _sanitize_server_message tests ---
+
+
+def test_sanitize_empty_string():
+    assert _sanitize_server_message("") == ""
+
+
+def test_sanitize_none():
+    """Defensive: don't crash when passed None (e.g., from a missing body)."""
+    assert _sanitize_server_message(None) == ""
+
+
+def test_sanitize_plain_text():
+    assert _sanitize_server_message("  hello world  ") == "hello world"
+
+
+def test_sanitize_strips_html_tags():
+    assert _sanitize_server_message("<b>bold</b> text") == "bold text"
+
+
+def test_sanitize_collapses_whitespace():
+    assert _sanitize_server_message("a\n\nb\t\tc") == "a b c"
+
+
+def test_sanitize_handles_nested_tags():
+    assert _sanitize_server_message("<div><p>x</p></div>") == "x"
+
+
+def test_sanitize_returns_empty_when_only_whitespace():
+    assert _sanitize_server_message("   \n\t  ") == ""
+
+
+# --- cancel_job tests ---
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_cancel_job_succeeds_on_queue(mock_http, mock_settings):
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.return_value = '{"status":true,"error":null}'
+
+    result = cancel_job("nzo_xyz")
+
+    assert result is True
+    assert mock_http.call_count == 1
+    called_url = mock_http.call_args[0][0]
+    assert "mode=queue" in called_url
+    assert "name=delete" in called_url
+    assert "value=nzo_xyz" in called_url
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_cancel_job_returns_false_when_not_in_queue(mock_http, mock_settings):
+    """When nzbdav reports the job isn't in the queue (e.g. it raced into
+    history before our cleanup ran), cancel_job returns False but does
+    NOT treat it as an error — this is the normal race case."""
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.return_value = '{"status":false,"error":"Unrecognized Guid format."}'
+
+    result = cancel_job("nzo_xyz")
+
+    assert result is False
+    assert mock_http.call_count == 1
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_cancel_job_returns_false_on_network_error(mock_http, mock_settings):
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.side_effect = Exception("connection refused")
+
+    result = cancel_job("nzo_xyz")
+
+    assert result is False
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_cancel_job_returns_false_on_settings_error(mock_http, mock_settings):
+    mock_settings.side_effect = Exception("settings unavailable")
+
+    result = cancel_job("nzo_xyz")
+
+    assert result is False
+    assert mock_http.call_count == 0  # _http_get never called
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_cancel_job_uses_default_3s_timeout(mock_http, mock_settings):
+    """The default timeout is 3 seconds — short enough to feel responsive
+    on user cancel and Kodi shutdown."""
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.return_value = '{"status":true}'
+
+    cancel_job("nzo_xyz")
+
+    # _http_get is called with timeout=3 as a keyword argument
+    assert mock_http.call_args.kwargs["timeout"] == 3
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_cancel_job_respects_custom_timeout(mock_http, mock_settings):
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.return_value = '{"status":true}'
+
+    cancel_job("nzo_xyz", timeout=10)
+
+    assert mock_http.call_args.kwargs["timeout"] == 10
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_cancel_job_does_not_touch_history(mock_http, mock_settings):
+    """cancel_job is queue-only by design. The spec deliberately does
+    NOT call mode=history&name=delete because erasing history on a
+    race-into-terminal-state would contradict the Group B 'preserve
+    failure history' rationale."""
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.return_value = '{"status":true}'
+
+    cancel_job("nzo_xyz")
+
+    # Exactly one call (queue), not two (queue + history)
+    assert mock_http.call_count == 1
+    called_url = mock_http.call_args[0][0]
+    assert "mode=queue" in called_url
+    assert "mode=history" not in called_url
+
+
+# --- submit_nzb HTTPError capture tests ---
+
+
+def _make_http_error(code, body):
+    """Helper to construct an HTTPError with a readable body."""
+    from io import BytesIO
+    from urllib.error import HTTPError as _HE
+
+    return _HE(
+        url="http://nzbdav/api",
+        code=code,
+        msg="Error",
+        hdrs={},
+        fp=BytesIO(body),
+    )
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_submit_nzb_captures_http_500_body(mock_http, mock_settings):
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.side_effect = _make_http_error(500, b"Internal Server Error: duplicate")
+
+    nzo_id, error = submit_nzb("http://hydra/nzb", "Test")
+
+    assert nzo_id is None
+    assert error == {
+        "status": 500,
+        "message": "Internal Server Error: duplicate",
+    }
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_submit_nzb_captures_http_502_body(mock_http, mock_settings):
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.side_effect = _make_http_error(502, b"Bad Gateway")
+
+    nzo_id, error = submit_nzb("http://hydra/nzb", "Test")
+
+    assert nzo_id is None
+    assert error == {"status": 502, "message": "Bad Gateway"}
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_submit_nzb_captures_http_404_body(mock_http, mock_settings):
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.side_effect = _make_http_error(404, b"Not Found")
+
+    nzo_id, error = submit_nzb("http://hydra/nzb", "Test")
+
+    assert nzo_id is None
+    assert error == {"status": 404, "message": "Not Found"}
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_submit_nzb_truncates_huge_body(mock_http, mock_settings):
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    huge = b"X" * 1000
+    mock_http.side_effect = _make_http_error(500, huge)
+
+    nzo_id, error = submit_nzb("http://hydra/nzb", "Test")
+
+    assert nzo_id is None
+    assert error is not None
+    assert len(error["message"]) == 500
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_submit_nzb_handles_undecodable_body(mock_http, mock_settings):
+    """Bytes that fail strict UTF-8 decode must not crash submit_nzb;
+    they should decode via errors='replace' and still return a tuple."""
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.side_effect = _make_http_error(500, b"\xff\xfe error")
+
+    nzo_id, error = submit_nzb("http://hydra/nzb", "Test")
+
+    assert nzo_id is None
+    assert error is not None
+    assert error["status"] == 500
+    assert "error" in error["message"]
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_submit_nzb_sanitizes_html_in_body(mock_http, mock_settings):
+    """Some servers return styled HTML error pages — strip the tags
+    before we put the message in a Kodi dialog."""
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.side_effect = _make_http_error(
+        500, b"<html><body><h1>Error</h1><p>duplicate nzo_id</p></body></html>"
+    )
+
+    nzo_id, error = submit_nzb("http://hydra/nzb", "Test")
+
+    assert nzo_id is None
+    assert "<h1>" not in error["message"]
+    assert "<p>" not in error["message"]
+    assert "Error" in error["message"]
+    assert "duplicate nzo_id" in error["message"]
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_submit_nzb_collapses_whitespace_in_body(mock_http, mock_settings):
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.side_effect = _make_http_error(500, b"line1\n\n  line2\t\tline3")
+
+    nzo_id, error = submit_nzb("http://hydra/nzb", "Test")
+
+    assert error["message"] == "line1 line2 line3"
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_submit_nzb_returns_none_none_on_url_error(mock_http, mock_settings):
+    """URLError (not HTTPError) is the transient connection-refused case.
+    Returns (None, None), NOT (None, error_dict)."""
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.side_effect = URLError("connection refused")
+
+    result = submit_nzb("http://hydra/nzb", "Test")
+
+    assert result == (None, None)
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_submit_nzb_http_error_caught_before_url_error(mock_http, mock_settings):
+    """HTTPError is a subclass of URLError. The except clauses must be
+    ordered correctly — HTTPError before URLError — or every HTTP error
+    would be caught by the broad URLError clause and returned as
+    (None, None) instead of the (None, error_dict) tuple. This test
+    guards against that subtle bug."""
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.side_effect = _make_http_error(500, b"duplicate")
+
+    nzo_id, error = submit_nzb("http://hydra/nzb", "Test")
+
+    # If the broad URLError clause had matched first, error would be None
+    assert error is not None
+    assert error["status"] == 500
