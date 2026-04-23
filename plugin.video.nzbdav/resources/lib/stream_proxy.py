@@ -560,6 +560,41 @@ def _classify_upstream_error(error):
     return _UPSTREAM_REACHABILITY_OTHER
 
 
+def _record_upstream_recovered(server, ctx):
+    """Clear the session's unreachable flag once upstream bytes flow again.
+
+    Paired with ``_record_upstream_unreachable``: after a prolonged
+    outage notification has fired, a subsequent successful upstream
+    read means nzbdav is back. Clearing the flag lets a LATER outage
+    in the same session fire a fresh notification instead of staying
+    silent under the "already notified" guard.
+
+    Preserves ``upstream_unreachable_count`` as a running total for
+    diagnostics — we only reset the one-shot notification gate.
+    """
+    context_lock = _get_server_context_lock(server)
+
+    def _update():
+        if not ctx.get("upstream_down_notified"):
+            return False
+        ctx["upstream_down_notified"] = False
+        ctx["upstream_last_recovered_at"] = time.time()
+        return True
+
+    if context_lock is None:
+        cleared = _update()
+    else:
+        with context_lock:
+            cleared = _update()
+
+    if cleared:
+        xbmc.log(
+            "NZB-DAV: Upstream reachable again after outage "
+            "(reason=upstream_recovered)",
+            xbmc.LOGINFO,
+        )
+
+
 def _record_upstream_unreachable(server, ctx, error):
     """Track an upstream-unreachable event on the session and fire a
     one-shot user notification the first time it happens.
@@ -569,6 +604,9 @@ def _record_upstream_unreachable(server, ctx, error):
     unreachable" instead of watching silent playback glitch through to
     the end. Subsequent failures in the same session bump the counter
     but stay silent to avoid spamming the UI during a prolonged outage.
+    Pair with ``_record_upstream_recovered`` so a later outage in the
+    same session can fire a fresh notification instead of remaining
+    silent behind the "already notified" guard.
     """
     context_lock = _get_server_context_lock(server)
 
@@ -2177,6 +2215,15 @@ class _StreamHandler(BaseHTTPRequestHandler):
             ):
                 _record_upstream_unreachable(self.server, ctx, e)
             return _UPSTREAM_RANGE_UPSTREAM_ERROR, 0
+
+        # urlopen returned without raising → nzbdav responded with a
+        # 2xx/3xx status. Clear the session's "upstream down" flag so a
+        # subsequent outage in the same session can fire a fresh
+        # notification. 4xx/5xx never reaches here — HTTPError is raised
+        # from urlopen and caught in the except block above. ``server``
+        # may be absent when a test constructs _StreamHandler.__new__
+        # directly without wiring the server attribute; tolerate that.
+        _record_upstream_recovered(getattr(self, "server", None), ctx)
 
         try:
             status = getattr(resp, "status", None) or resp.getcode()
