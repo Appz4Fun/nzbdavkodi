@@ -39,6 +39,7 @@ troubleshooting.md
 
 # Scratch / debug artifacts that end up at repo root
 MagicMock/
+junk/
 
 # Build zips (versioned)
 plugin.video.nzbdav-*.zip
