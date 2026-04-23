@@ -196,10 +196,8 @@ def find_video_file(folder_path, _depth=0):
 
     req = Request(url, method="PROPFIND")
     req.add_header("Depth", "1")
-    if username:
-        credentials = "{}:{}".format(username, password)
-        encoded = base64.b64encode(credentials.encode("utf-8")).decode("utf-8")
-        req.add_header("Authorization", "Basic {}".format(encoded))
+    for header, value in _build_auth_headers(username, password).items():
+        req.add_header(header, value)
 
     VIDEO_EXTENSIONS = (".mkv", ".mp4", ".avi", ".m4v", ".ts", ".wmv", ".mov")
 
@@ -347,10 +345,8 @@ def validate_stream(filename):
     password = settings["password"]
 
     req = Request(url, method="HEAD")
-    if username:
-        credentials = "{}:{}".format(username, password)
-        encoded = base64.b64encode(credentials.encode("utf-8")).decode("utf-8")
-        req.add_header("Authorization", "Basic {}".format(encoded))
+    for header, value in _build_auth_headers(username, password).items():
+        req.add_header(header, value)
     req.add_header("Range", "bytes=0-0")
 
     try:

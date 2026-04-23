@@ -18,9 +18,11 @@ import shutil
 import socket as _socket
 import struct
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
+from collections import deque
 from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn as _ThreadingMixIn
@@ -50,6 +52,8 @@ from resources.lib.http_util import notify as _notify
 # Singleton proxy instance
 _proxy = None
 _proxy_lock = threading.Lock()
+_HLS_PRIVATE_TEMP_ROOT = None
+_HLS_PRIVATE_TEMP_ROOT_LOCK = threading.Lock()
 _MAX_STREAM_SESSIONS = 8
 _SESSION_TTL_SECONDS = 6 * 3600
 _PARSE_ERRORS = (
@@ -59,6 +63,22 @@ _PARSE_ERRORS = (
     KeyError,
     struct.error,
     HTTPException,
+)
+_KODI_SETTING_ERRORS = (
+    AttributeError,
+    ImportError,
+    OSError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+)
+_HLS_CLOSE_ERRORS = (
+    AttributeError,
+    OSError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+    subprocess.SubprocessError,
 )
 
 # Common ffmpeg paths on CoreELEC / LibreELEC
@@ -130,11 +150,12 @@ _HLS_SEGMENT_SECONDS = 30.0
 # session (~5 GB per 30 minutes at typical 4K REMUX bitrates). Each
 # session gets its own subdirectory which is rm -rf'd on cleanup.
 # Candidate paths in order — first one that exists + is writable wins.
+# If none are available, fall back to a private mkdtemp() directory
+# instead of a fixed shared /tmp path.
 _HLS_WORKDIR_CANDIDATES = (
     "/var/media/CACHE_DRIVE/nzbdav-hls",
     "/var/media/STORAGE/nzbdav-hls",
     "/storage/nzbdav-hls",
-    "/tmp/nzbdav-hls",
 )
 
 # How long to wait for a segment file to appear on disk before
@@ -147,13 +168,32 @@ _HLS_SEGMENT_WAIT_SECONDS = 90.0
 _HLS_SEGMENT_MTIME_STABLE_MS = 500
 
 
+def _get_private_hls_temp_root():
+    """Return a reusable private temp root for HLS work files."""
+    global _HLS_PRIVATE_TEMP_ROOT  # pylint: disable=global-statement
+
+    with _HLS_PRIVATE_TEMP_ROOT_LOCK:
+        cached = _HLS_PRIVATE_TEMP_ROOT
+        if cached and os.path.isdir(cached) and os.access(cached, os.W_OK):
+            return cached
+
+        temp_root = tempfile.mkdtemp(prefix="nzbdav-hls-")
+        try:
+            os.chmod(temp_root, 0o700)
+        except OSError:
+            pass
+
+        _HLS_PRIVATE_TEMP_ROOT = temp_root
+        return temp_root
+
+
 def _choose_hls_workdir():
     """Return a writable base directory for HLS session working files.
 
     Walks the candidate list in order and returns the first entry
     whose parent exists, is writable, and has enough free space.
-    Creates the leaf directory if missing. Falls back to /tmp as a
-    last resort.
+    Creates the leaf directory if missing. Falls back to a private
+    temp directory as a last resort.
     """
     for base in _HLS_WORKDIR_CANDIDATES:
         parent = os.path.dirname(base) or "/"
@@ -166,15 +206,8 @@ def _choose_hls_workdir():
         except OSError:
             continue
         return base
-    # Fallback: OS temp dir (usually /tmp)
-    import tempfile
+    return _get_private_hls_temp_root()
 
-    fallback = os.path.join(tempfile.gettempdir(), "nzbdav-hls")
-    try:
-        os.makedirs(fallback, exist_ok=True)
-    except OSError:
-        pass
-    return fallback
 
 
 def _find_ffmpeg():
@@ -221,14 +254,20 @@ def _find_ffprobe():
 _DEFAULT_FORCE_REMUX_THRESHOLD_MB = 20000
 
 
-def _get_force_remux_threshold_bytes():
-    """Return the remux-force threshold in bytes, or 0 to disable."""
+def _get_addon_setting(setting_id, default=None):
+    """Best-effort Kodi addon setting lookup safe for tests and CLI."""
     try:
         import xbmcaddon
 
-        raw = xbmcaddon.Addon().getSetting("force_remux_threshold_mb")
-    except Exception:  # noqa: BLE001 — Kodi module may not exist
-        raw = None
+        value = xbmcaddon.Addon().getSetting(setting_id)
+    except _KODI_SETTING_ERRORS:
+        return default
+    return default if value is None else value
+
+
+def _get_force_remux_threshold_bytes():
+    """Return the remux-force threshold in bytes, or 0 to disable."""
+    raw = _get_addon_setting("force_remux_threshold_mb")
     try:
         mb = int(raw) if raw not in (None, "") else _DEFAULT_FORCE_REMUX_THRESHOLD_MB
     except (TypeError, ValueError):
@@ -323,6 +362,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
     """HTTP handler that remuxes MP4 to MKV or proxies other formats."""
 
     protocol_version = "HTTP/1.1"
+    close_connection = False
 
     def log_message(self, fmt, *args):  # pylint: disable=arguments-differ
         xbmc.log("NZB-DAV: Proxy: {}".format(fmt % args), xbmc.LOGDEBUG)
@@ -391,6 +431,173 @@ class _StreamHandler(BaseHTTPRequestHandler):
     def _ctx_lock(ctx, server):
         """Get the remux lock for this stream context."""
         return ctx.get("ffmpeg_lock") or getattr(server, "ffmpeg_lock")
+
+    def _send_close_response_headers(self, status_code, content_type, accept_ranges):
+        """Send a streaming response that explicitly closes the socket."""
+        self.send_response(status_code)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Accept-Ranges", accept_ranges)
+        self.send_header("Connection", "close")
+        self.close_connection = True
+        self.end_headers()
+
+    def _start_remux_process(self, ctx, requested_start, seek_seconds):
+        """Launch ffmpeg for a remux response and register it on the session."""
+        cmd = self._build_ffmpeg_cmd(ctx, seek_seconds=seek_seconds)
+        if not self._is_safe_ffmpeg_cmd(cmd):
+            xbmc.log("NZB-DAV: Refusing to start unsafe ffmpeg command", xbmc.LOGERROR)
+            _notify_error("Failed to start ffmpeg")
+            self.send_error(500)
+            return None, None
+        xbmc.log(
+            "NZB-DAV: Remuxing to MKV (seek={})".format(seek_seconds),
+            xbmc.LOGINFO,
+        )
+        try:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False
+            )
+        except OSError as error:
+            xbmc.log("NZB-DAV: Failed to start ffmpeg: {}".format(error), xbmc.LOGERROR)
+            _notify_error("Failed to start ffmpeg")
+            self.send_error(500)
+            return None, None
+
+        lock = self._ctx_lock(ctx, self.server)
+        with lock:
+            ctx["active_ffmpeg"] = proc
+            ctx["current_byte_pos"] = requested_start
+            self.server.active_ffmpeg = proc
+            self.server.current_byte_pos = requested_start
+        return proc, lock
+
+    @staticmethod
+    def _start_stderr_drain(proc):
+        """Drain ffmpeg stderr in a background thread to avoid pipe stalls."""
+        stderr_chunks = deque(maxlen=50)
+
+        def _drain_stderr():
+            try:
+                while True:
+                    data = proc.stderr.read(4096)
+                    if not data:
+                        break
+                    stderr_chunks.append(data)
+            except (OSError, ValueError):
+                pass
+
+        stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
+        stderr_thread.start()
+        return stderr_chunks, stderr_thread
+
+    def _update_current_byte_pos(self, ctx, lock, current_pos):
+        """Keep session and server byte positions in sync while remuxing."""
+        with lock:
+            ctx["current_byte_pos"] = current_pos
+            self.server.current_byte_pos = current_pos
+
+    def _stream_remux_output(self, ctx, proc, lock, requested_start):
+        """Copy ffmpeg stdout to Kodi until EOF or client disconnect."""
+        total = 0
+        try:
+            while True:
+                chunk = proc.stdout.read(65536)
+                if not chunk:
+                    return total
+                self.wfile.write(chunk)
+                total += len(chunk)
+                self._update_current_byte_pos(ctx, lock, requested_start + total)
+        except (BrokenPipeError, ConnectionResetError, _socket.timeout):
+            xbmc.log(
+                "NZB-DAV: Remux client disconnected after {} MB".format(
+                    total // 1048576
+                ),
+                xbmc.LOGDEBUG,
+            )
+            return total
+
+    def _finish_remux(self, ctx, proc, lock, stderr_chunks, stderr_thread, total):
+        """Tear down ffmpeg and emit completion logs for a remux request."""
+        try:
+            proc.kill()
+            proc.wait()
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
+
+        with lock:
+            if ctx.get("active_ffmpeg") is proc:
+                ctx["active_ffmpeg"] = None
+            if self.server.active_ffmpeg is proc:
+                self.server.active_ffmpeg = None
+
+        stderr_thread.join(timeout=5)
+        stderr = b"".join(stderr_chunks).decode(errors="replace")
+        if stderr.strip():
+            xbmc.log("NZB-DAV: ffmpeg: {}".format(stderr[:300]), xbmc.LOGDEBUG)
+        xbmc.log(
+            "NZB-DAV: Remux done: {} MB sent".format(total // 1048576),
+            xbmc.LOGINFO,
+        )
+
+    @staticmethod
+    def _is_safe_ffmpeg_cmd(cmd):
+        """Validate command shape and executable before subprocess execution."""
+        if not isinstance(cmd, (list, tuple)) or not cmd:
+            return False
+        if not all(isinstance(arg, str) for arg in cmd):
+            return False
+        exe = cmd[0]
+        exe_name = os.path.basename(exe).lower()
+        if exe_name != "ffmpeg":
+            return False
+        for arg in cmd:
+            if "\x00" in arg or "\n" in arg or "\r" in arg:
+                return False
+        return True
+
+    @staticmethod
+    def _append_mpegts_output_args(cmd):
+        """Append ffmpeg output args for the MPEG-TS remux path."""
+        cmd.extend(
+            [
+                "-sn",
+                "-f",
+                "mpegts",
+                "-fflags",
+                "+genpts",
+                "-mpegts_copyts",
+                "1",
+                "pipe:1",
+            ]
+        )
+        return cmd
+
+    @staticmethod
+    def _append_subtitle_args(cmd, input_url):
+        """Append subtitle mapping flags for MKV remux output."""
+        if _get_addon_setting("proxy_convert_subs") == "false":
+            return
+        src_is_mkv = input_url.split("?", 1)[0].lower().endswith(".mkv")
+        sub_codec = "copy" if src_is_mkv else "srt"
+        cmd.extend(["-map", "0:s?", "-c:s", sub_codec])
+
+    @staticmethod
+    def _append_duration_metadata(cmd, duration_secs, seek_seconds):
+        """Append a DURATION tag so Kodi gets a finite timeline."""
+        if duration_secs is None:
+            return
+        remaining = duration_secs
+        if seek_seconds is not None and seek_seconds > 0:
+            remaining = max(0, duration_secs - seek_seconds)
+        hours = int(remaining // 3600)
+        mins = int((remaining % 3600) // 60)
+        secs = remaining % 60
+        cmd.extend(
+            [
+                "-metadata",
+                "DURATION={:02d}:{:02d}:{:06.3f}".format(hours, mins, secs),
+            ]
+        )
 
     def do_POST(self):
         """Handle POST /prepare — plugin sends stream config via HTTP."""
@@ -528,8 +735,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
             return
         self.send_error(404)
 
-    @staticmethod
-    def _build_ffmpeg_cmd(ctx, seek_seconds=None):
+    def _build_ffmpeg_cmd(self, ctx, seek_seconds=None):
         """Build the ffmpeg remux command list.
 
         Output format is driven by ``ctx["output_format"]``:
@@ -576,59 +782,21 @@ class _StreamHandler(BaseHTTPRequestHandler):
             # bitmap subs, and ffmpeg can't transcode between those. Drop
             # subtitles entirely for the TS path — simpler, robust, and
             # external .srt files still work via Kodi's own loader.
-            cmd.extend(["-sn"])
-            cmd.extend(
-                [
-                    "-f",
-                    "mpegts",
-                    # +genpts rebuilds timestamps when the source's are
-                    # missing or invalid (common on seek-from-middle). The
-                    # TS muxer already flushes per-packet so no need for
-                    # flush_packets.
-                    "-fflags",
-                    "+genpts",
-                    "-mpegts_copyts",
-                    "1",
-                    "pipe:1",
-                ]
-            )
-            return cmd
+            return self._append_mpegts_output_args(cmd)
 
         # Subtitle handling (toggleable via setting).
         # For MP4 input we convert text subs (mov_text/TX3G) to SRT so MKV
         # output is more compatible.  For MKV input we must use `copy` —
         # PGS/DVD/HDMV bitmap subs can't be re-encoded to SRT and would
         # abort the remux; ASS/SSA/SRT all copy fine into MKV anyway.
-        try:
-            import xbmcaddon
-
-            convert_subs = xbmcaddon.Addon().getSetting("proxy_convert_subs")
-            if convert_subs != "false":
-                src_is_mkv = input_url.split("?", 1)[0].lower().endswith(".mkv")
-                sub_codec = "copy" if src_is_mkv else "srt"
-                cmd.extend(["-map", "0:s?", "-c:s", sub_codec])
-        except Exception:  # noqa: BLE001 — Kodi module may not exist
-            pass  # outside Kodi context (tests), skip subtitle setting
+        self._append_subtitle_args(cmd, input_url)
 
         # Write duration into MKV Segment Info so Kodi knows the total
         # length.  Without this, piped MKV has no Duration element and
         # Kodi treats the stream as live (no progress bar, no seeking,
         # no pause).  -metadata DURATION= makes ffmpeg's matroska muxer
         # write the Duration element in the header.
-        duration_secs = ctx.get("duration_seconds")
-        if duration_secs is not None:
-            remaining = duration_secs
-            if seek_seconds is not None and seek_seconds > 0:
-                remaining = max(0, duration_secs - seek_seconds)
-            hours = int(remaining // 3600)
-            mins = int((remaining % 3600) // 60)
-            secs = remaining % 60
-            cmd.extend(
-                [
-                    "-metadata",
-                    "DURATION={:02d}:{:02d}:{:06.3f}".format(hours, mins, secs),
-                ]
-            )
+        self._append_duration_metadata(cmd, ctx.get("duration_seconds"), seek_seconds)
 
         cmd.extend(
             [
@@ -834,29 +1002,9 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 requested_start = parsed[0]
 
         seek_seconds = self._resolve_seek(ctx, requested_start, total_bytes)
-
-        cmd = self._build_ffmpeg_cmd(ctx, seek_seconds=seek_seconds)
-        xbmc.log(
-            "NZB-DAV: Remuxing to MKV (seek={})".format(seek_seconds),
-            xbmc.LOGINFO,
-        )
-
-        try:
-            proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False
-            )
-        except OSError as e:
-            xbmc.log("NZB-DAV: Failed to start ffmpeg: {}".format(e), xbmc.LOGERROR)
-            _notify_error("Failed to start ffmpeg")
-            self.send_error(500)
+        proc, lock = self._start_remux_process(ctx, requested_start, seek_seconds)
+        if proc is None:
             return
-
-        lock = self._ctx_lock(ctx, self.server)
-        with lock:
-            ctx["active_ffmpeg"] = proc
-            ctx["current_byte_pos"] = requested_start
-            self.server.active_ffmpeg = proc
-            self.server.current_byte_pos = requested_start
 
         # Drain stderr in a background thread to prevent ffmpeg from blocking
         # when the stderr pipe buffer fills up (~64KB).  Without this, ffmpeg
@@ -865,21 +1013,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
         # Thread safety: list.append() is atomic under CPython's GIL, and
         # stderr_thread.join() in the finally block provides a happens-before
         # guarantee before the main thread reads stderr_chunks.
-        stderr_chunks = []
-
-        def _drain_stderr():
-            try:
-                while True:
-                    data = proc.stderr.read(4096)
-                    if not data:
-                        break
-                    stderr_chunks.append(data)
-            except (OSError, ValueError):
-                pass
-
-        stderr_thread = threading.Thread(target=_drain_stderr)
-        stderr_thread.daemon = True
-        stderr_thread.start()
+        stderr_chunks, stderr_thread = self._start_stderr_drain(proc)
 
         # Send response headers.
         # Matroska-only response. Piped MKV has no Cues so advertising
@@ -887,12 +1021,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
         # without enabling real seek. Stay on live-stream semantics;
         # duration is still embedded in the MKV header so Kodi's
         # progress bar is accurate.
-        self.send_response(200)
-        self.send_header("Content-Type", "video/x-matroska")
-        self.send_header("Accept-Ranges", "none")
-        self.send_header("Connection", "close")
-        self.close_connection = True  # pylint: disable=attribute-defined-outside-init
-        self.end_headers()
+        self._send_close_response_headers(200, "video/x-matroska", "none")
 
         # Give the socket a write timeout.  If Kodi stops consuming bytes
         # without closing the TCP connection — which happens when Kodi's
@@ -910,39 +1039,9 @@ class _StreamHandler(BaseHTTPRequestHandler):
         # header by ffmpeg via -metadata DURATION= (see _build_ffmpeg_cmd).
         total = 0
         try:
-            while True:
-                chunk = proc.stdout.read(65536)
-                if not chunk:
-                    break
-                self.wfile.write(chunk)
-                total += len(chunk)
-                with lock:
-                    current_pos = requested_start + total
-                    ctx["current_byte_pos"] = current_pos
-                    self.server.current_byte_pos = current_pos
-        except (BrokenPipeError, ConnectionResetError, _socket.timeout):
-            xbmc.log(
-                "NZB-DAV: Remux client disconnected after {} MB".format(
-                    total // 1048576
-                ),
-                xbmc.LOGDEBUG,
-            )
+            total = self._stream_remux_output(ctx, proc, lock, requested_start)
         finally:
-            proc.kill()
-            proc.wait()
-            with lock:
-                if ctx.get("active_ffmpeg") is proc:
-                    ctx["active_ffmpeg"] = None
-                if self.server.active_ffmpeg is proc:
-                    self.server.active_ffmpeg = None
-            stderr_thread.join(timeout=5)
-            stderr = b"".join(stderr_chunks).decode(errors="replace")
-            if stderr.strip():
-                xbmc.log("NZB-DAV: ffmpeg: {}".format(stderr[:300]), xbmc.LOGDEBUG)
-            xbmc.log(
-                "NZB-DAV: Remux done: {} MB sent".format(total // 1048576),
-                xbmc.LOGINFO,
-            )
+            self._finish_remux(ctx, proc, lock, stderr_chunks, stderr_thread, total)
 
     # ------------------------------------------------------------------
     # HLS playlist/segment handlers
@@ -965,8 +1064,6 @@ class _StreamHandler(BaseHTTPRequestHandler):
         if duration <= 0 or seg_dur <= 0:
             self.send_error(500)
             return
-
-        import math
 
         total_segs = int(math.ceil(duration / seg_dur))
         target = int(math.ceil(seg_dur))
@@ -992,7 +1089,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/vnd.apple.mpegurl")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Connection", "close")
-        self.close_connection = True  # pylint: disable=attribute-defined-outside-init
+        self.close_connection = True
         self.end_headers()
         try:
             self.wfile.write(body)
@@ -1052,7 +1149,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "video/mp2t")
         self.send_header("Content-Length", str(content_length))
         self.send_header("Connection", "close")
-        self.close_connection = True  # pylint: disable=attribute-defined-outside-init
+        self.close_connection = True
         self.end_headers()
 
         try:
@@ -1178,7 +1275,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
         # response's.  So we also set self.close_connection = True to
         # actually tear down the socket after handle() returns.
         self.send_header("Connection", "close")
-        self.close_connection = True  # pylint: disable=attribute-defined-outside-init
+        self.close_connection = True
         self.end_headers()
 
         # Write timeout so a stalled Kodi (DB vacuum, audio sync error, etc.)
@@ -1286,7 +1383,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
             except OSError:
                 pass
 
-    def _find_skip_offset(self, ctx, failed_byte, range_end):
+    @staticmethod
+    def _find_skip_offset(ctx, failed_byte, range_end):
         """Probe forward to find a skip size past a bad article region.
 
         Tries progressively larger skips and confirms upstream can serve a
@@ -1745,7 +1843,7 @@ class StreamProxy:
         if hls_producer is not None:
             try:
                 hls_producer.close()
-            except Exception as e:  # noqa: BLE001
+            except _HLS_CLOSE_ERRORS as e:
                 xbmc.log(
                     "NZB-DAV: HLS producer close failed: {}".format(e),
                     xbmc.LOGWARNING,
@@ -2163,8 +2261,6 @@ class StreamProxy:
     @staticmethod
     def _prepare_tempfile_faststart(ffmpeg_path, url, auth_header):
         """Remux MP4 with faststart to a temp file. Returns path or None."""
-        import tempfile
-
         if not ffmpeg_path:
             return None
 
@@ -2264,7 +2360,7 @@ def get_service_proxy_port():
         home = xbmcgui.Window(10000)
         port_str = home.getProperty("nzbdav.proxy_port")
         return int(port_str) if port_str else 0
-    except Exception:  # noqa: BLE001 — Kodi module may not exist
+    except _KODI_SETTING_ERRORS:
         return 0
 
 
