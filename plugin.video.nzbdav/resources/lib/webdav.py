@@ -192,7 +192,7 @@ def find_video_file(folder_path, _depth=0, _visited=None):
         # the same effect for XXE prevention. Use the expat target builder
         # so a hostile WebDAV server can't coerce us into reading local
         # files via an external entity reference.
-        _xml_parser = ET.XMLParser()
+        _xml_parser = ET.XMLParser()  # nosec B314 — entities disabled below
         try:
             _xml_parser.parser.DefaultHandler = lambda _d: None
             _xml_parser.parser.ExternalEntityRefHandler = lambda *_: False

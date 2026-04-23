@@ -228,10 +228,32 @@ def _build_result(item):
     }
 
 
+def _build_xxe_safe_parser():
+    """Return an ElementTree XMLParser with external entities disabled.
+
+    ``xml.etree.ElementTree`` doesn't expose a ``resolve_entities=False``
+    knob directly, but the underlying expat parser can be told to
+    ignore DefaultHandler output and reject ExternalEntityRef callbacks.
+    A hostile NZBHydra2 instance (compromised, MITM'd, or simply
+    misbehaving) could otherwise coerce us into reading arbitrary
+    local files via an XXE payload. Mirrors webdav.py's WebDAV
+    PROPFIND parser for defense in depth.
+    """
+    parser = element_tree.XMLParser()  # nosec B314 — entities disabled below
+    try:
+        parser.parser.DefaultHandler = lambda _d: None
+        parser.parser.ExternalEntityRefHandler = lambda *_: False
+    except AttributeError:  # pragma: no cover — non-expat parser backend
+        pass
+    return parser
+
+
 def _parse_results_checked(xml_text):
     """Parse Newznab XML and return (results, error_message)."""
     try:
-        root = element_tree.fromstring(xml_text)
+        root = element_tree.fromstring(
+            xml_text, parser=_build_xxe_safe_parser()
+        )  # nosec B314 — entities disabled in _build_xxe_safe_parser
     except element_tree.ParseError as error:
         xbmc.log(
             "NZB-DAV: Failed to parse Hydra XML response: {}".format(error),
