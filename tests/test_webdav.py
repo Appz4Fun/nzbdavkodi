@@ -391,3 +391,76 @@ def test_find_video_file_handles_relative_href(mock_urlopen, mock_settings):
     assert path is not None
     assert path.endswith(".mkv")
     assert "Relative.Movie.2024" in path
+
+
+# --- _build_auth_headers + check_file_in_folder coverage ---
+
+
+def test_build_auth_headers_empty_username_returns_empty_dict():
+    """No username → no Authorization header. Matches ``if not username``."""
+    from resources.lib.webdav import _build_auth_headers
+
+    assert _build_auth_headers("", "irrelevant") == {}
+    assert _build_auth_headers(None, "irrelevant") == {}
+
+
+def test_build_auth_headers_encodes_basic_credentials():
+    """With a username, emit a proper ``Basic <base64>`` header."""
+    import base64
+
+    from resources.lib.webdav import _build_auth_headers
+
+    h = _build_auth_headers("alice", "s3cret")
+    assert "Authorization" in h
+    scheme, _, token = h["Authorization"].partition(" ")
+    assert scheme == "Basic"
+    assert base64.b64decode(token).decode() == "alice:s3cret"
+
+
+def test_build_auth_headers_strips_cr_lf_to_prevent_header_injection():
+    """CR/LF in credentials would let a hostile setting split the
+    Authorization header. The helper must strip them defensively."""
+    import base64
+
+    from resources.lib.webdav import _build_auth_headers
+
+    h = _build_auth_headers("alice\r\n X-Injected: yes", "s3cret\r\n")
+    token = h["Authorization"].partition(" ")[2]
+    decoded = base64.b64decode(token).decode()
+    assert "\r" not in decoded
+    assert "\n" not in decoded
+    assert decoded == "alice X-Injected: yes:s3cret"
+
+
+def test_build_auth_headers_handles_none_password():
+    """Some settings serialize empty password as None rather than ''.
+    Must not raise AttributeError on .replace()."""
+    from resources.lib.webdav import _build_auth_headers
+
+    h = _build_auth_headers("alice", None)
+    assert "Authorization" in h
+
+
+@patch("resources.lib.webdav.find_video_file")
+def test_check_file_in_folder_returns_path_on_hit(mock_find):
+    """check_file_in_folder forwards find_video_file's result on success."""
+    from resources.lib.webdav import check_file_in_folder
+
+    mock_find.return_value = "/content/Movie/movie.mkv"
+
+    path, err = check_file_in_folder("/content/Movie/")
+    assert path == "/content/Movie/movie.mkv"
+    assert err is None
+
+
+@patch("resources.lib.webdav.find_video_file")
+def test_check_file_in_folder_returns_not_found_when_missing(mock_find):
+    """When find_video_file returns None, surface a ``not_found`` error
+    tag so the caller can distinguish from a reachability failure."""
+    from resources.lib.webdav import check_file_in_folder
+
+    mock_find.return_value = None
+
+    path, err = check_file_in_folder("/content/Missing/")
+    assert path is None
+    assert err == "not_found"
