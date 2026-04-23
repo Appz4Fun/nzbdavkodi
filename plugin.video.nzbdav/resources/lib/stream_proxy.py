@@ -752,9 +752,24 @@ def _maybe_notify_recovery_summary(
 
 
 def _validate_url(url):
-    """Reject URLs with unexpected schemes to prevent command injection."""
+    """Reject URLs that could inject into downstream argv / HTTP framing.
+
+    The URL eventually lands as a ``-i`` / ``-headers`` argument to
+    ffmpeg, and as the path of an outgoing HTTP request. Two guards:
+
+    - **Scheme allow-list**: only ``http://`` / ``https://`` accepted.
+      Catches ``file://``, ``ftp://``, and the junk a local process
+      might POST to our loopback proxy.
+    - **Control-char reject**: any byte below 0x20 (CR, LF, NUL, tab,
+      etc.) in the URL string is rejected. Without this, a URL with an
+      embedded ``\\r\\n`` could inject an HTTP header into ffmpeg's
+      outbound request, and a URL with ``\\n`` in an ffmpeg ``-i``
+      could be mis-parsed as a separate argv entry on older ffmpeg.
+    """
     if not url or not url.startswith(("http://", "https://")):
         raise ValueError("Invalid URL scheme: {}".format(repr(url)[:30]))
+    if any(ord(c) < 0x20 for c in url):
+        raise ValueError("URL contains control characters: {}".format(repr(url)[:60]))
 
 
 def _notify_error(message):

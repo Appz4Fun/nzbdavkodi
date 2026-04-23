@@ -3,20 +3,72 @@
 
 """Shared HTTP and Kodi utility functions."""
 
+import re
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
+# Match common credential-style query parameter names. Covers the usual
+# suspects: ``apikey``, ``api_key``, ``auth``, ``token``, ``password``,
+# ``secret``. Matched case-insensitively against the param name itself,
+# not the value.
+_REDACT_PARAM_NAMES = frozenset(
+    {"apikey", "api_key", "auth", "token", "password", "passwd", "secret"}
+)
+
+# Pattern to catch apikey=... embedded in free-form strings (HTTP error
+# bodies, exception messages). Used by redact_text() for the cases where
+# a full URL parse isn't practical.
+_EMBEDDED_CRED_RE = re.compile(
+    r"(apikey|api_key|token|auth|password|passwd|secret)=([^&\s\"'<>]+)",
+    re.IGNORECASE,
+)
+
 
 def redact_url(url):
-    """Redact API keys from URLs for safe logging."""
-    parts = urlsplit(url)
-    query = [
-        (k, "REDACTED" if k.lower() == "apikey" else v)
-        for k, v in parse_qsl(parts.query, keep_blank_values=True)
-    ]
+    """Redact API keys and other credential-style params from URLs for safe logging.
+
+    Handles two shapes callers pass:
+    - Plain URLs where the key is a direct query parameter.
+    - Embedded URLs: a query value that is itself a URL containing a
+      credential query (e.g. ``/api?mode=addurl&name=http://hydra/getnzb/
+      abc?apikey=SECRET``). The outer ``name=`` value gets recursively
+      redacted so the inner ``apikey=`` doesn't leak.
+
+    Unknown / malformed URLs round-trip unchanged.
+    """
+    try:
+        parts = urlsplit(url)
+    except (ValueError, TypeError):
+        return url
+    query = []
+    for k, v in parse_qsl(parts.query, keep_blank_values=True):
+        if k.lower() in _REDACT_PARAM_NAMES:
+            query.append((k, "REDACTED"))
+            continue
+        # Redact recursively if the value itself looks like a URL with
+        # credentials. Guards against the common "submit this URL to
+        # nzbdav" shape where the embedded URL carries an indexer apikey.
+        if v and "://" in v and "=" in v:
+            query.append((k, redact_url(v)))
+        else:
+            query.append((k, v))
     return urlunsplit(
         (parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment)
     )
+
+
+def redact_text(text):
+    """Redact apikey-style tokens from free-form text (error bodies, logs).
+
+    ``redact_url`` requires a parseable URL. Use this helper when the
+    payload is a string that might embed credentials — upstream HTTP
+    error pages, exception messages, etc. Replaces each matched
+    ``<key>=<value>`` pair with ``<key>=REDACTED`` so the structure of
+    the surrounding text is preserved.
+    """
+    if not text:
+        return text
+    return _EMBEDDED_CRED_RE.sub(lambda m: "{}=REDACTED".format(m.group(1)), str(text))
 
 
 def http_get(url, timeout=15):

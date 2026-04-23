@@ -126,7 +126,7 @@ def probe_webdav_reachable(monitor=None, max_retries=1, retry_delay=1):
     return False, "connection_error"
 
 
-def find_video_file(folder_path, _depth=0, _visited=None):
+def find_video_file(folder_path, _depth=0, _visited=None, _already_encoded=False):
     """Browse a WebDAV folder and find the largest video file.
 
     Args:
@@ -135,6 +135,11 @@ def find_video_file(folder_path, _depth=0, _visited=None):
         _visited: Internal set of already-scanned paths; catches a hostile
             or misconfigured server that returns its parent (or itself) as
             a child and would otherwise recurse until the depth cap.
+        _already_encoded: Internal flag set by the recursive call when the
+            supplied ``folder_path`` came from a PROPFIND ``<D:href>`` (which
+            the server already URL-encoded for us). Without this, recursive
+            descents double-encode ``%20`` → ``%2520`` and every subdirectory
+            lookup 404s.
 
     Returns:
         The WebDAV href path of the largest video file found, typically an
@@ -169,7 +174,14 @@ def find_video_file(folder_path, _depth=0, _visited=None):
     username = settings["username"]
     password = settings["password"]
 
-    encoded_path = quote(folder_path, safe="/")
+    # Recursive calls pass hrefs that the PROPFIND response already
+    # URL-encoded for us (e.g. "My%20Show"). Re-running quote() on that
+    # would turn ``%`` into ``%25``, 404'ing every subdirectory probe.
+    # Top-level callers pass a raw path which needs encoding.
+    if _already_encoded:
+        encoded_path = folder_path
+    else:
+        encoded_path = quote(folder_path, safe="/")
     url = "{}/{}".format(base.rstrip("/"), encoded_path.lstrip("/"))
     if not url.endswith("/"):
         url += "/"
@@ -226,11 +238,11 @@ def find_video_file(folder_path, _depth=0, _visited=None):
 
             try:
                 parsed_href_obj = urlparse(href_text)
+                base_host = urlparse(url).netloc
                 # Reject protocol-relative URLs ("//host/path") unless they
                 # match the configured server; urlparse().scheme is empty
                 # for these and we'd otherwise treat them as a path.
                 if href_text.startswith("//"):
-                    base_host = urlparse(url).netloc
                     if parsed_href_obj.netloc != base_host:
                         xbmc.log(
                             "NZB-DAV: Rejecting cross-host href '{}'".format(href_text),
@@ -239,6 +251,19 @@ def find_video_file(folder_path, _depth=0, _visited=None):
                         continue
                     href_path = parsed_href_obj.path
                 elif parsed_href_obj.scheme:
+                    # Fully-qualified href like "http://evil/x". Previously we
+                    # extracted .path and trusted it, letting a hostile or
+                    # MITM'd WebDAV server redirect recursion to arbitrary
+                    # paths on our configured host. Require the host to match
+                    # the host we PROPFIND'd, otherwise refuse the href.
+                    if parsed_href_obj.netloc != base_host:
+                        xbmc.log(
+                            "NZB-DAV: Rejecting cross-origin href '{}'".format(
+                                href_text
+                            ),
+                            xbmc.LOGWARNING,
+                        )
+                        continue
                     href_path = parsed_href_obj.path
                 else:
                     href_path = href_text
@@ -300,7 +325,12 @@ def find_video_file(folder_path, _depth=0, _visited=None):
                 ),
                 xbmc.LOGDEBUG,
             )
-            result = find_video_file(subdir, _depth + 1, _visited)
+            # subdir came from a PROPFIND href, which is already URL-encoded.
+            # Mark it so the recursive call skips the top-level ``quote()``
+            # and doesn't double-encode ``%20`` into ``%2520``.
+            result = find_video_file(
+                subdir, _depth + 1, _visited, _already_encoded=True
+            )
             if result:
                 return result
 

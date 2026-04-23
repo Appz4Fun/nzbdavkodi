@@ -500,6 +500,42 @@ def filter_results(results):
     return filtered, all_parsed
 
 
+def _pubdate_sort_key(result):
+    """Return a sortable datetime-derived key for RFC-822 pubdate.
+
+    Sorting results by raw ``r.get("pubdate", "")`` gives LEXICOGRAPHIC
+    order over strings like ``"Mon, 02 Jan 2006 15:04:05 GMT"`` — which
+    puts "Fri" < "Mon" < "Sun" < "Tue" chronologically wrong. Parse to
+    a timestamp instead. Unparseable values sort at the epoch so
+    malformed entries don't crash and don't jump to the top under
+    descending sort.
+    """
+    from email.utils import parsedate_to_datetime
+
+    raw = result.get("pubdate", "") or ""
+    if not raw:
+        return 0.0
+    try:
+        return parsedate_to_datetime(raw).timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+
+
+def _size_sort_key(result):
+    """Return an int-valued size key, tolerating malformed size fields.
+
+    Indexers occasionally return non-numeric ``size`` values (e.g. when
+    the NZB's file list omitted byte totals). Previously ``int(...)``
+    would crash the entire sort on a single bad entry. Return 0 for
+    anything non-parseable so the rest of the list still sorts cleanly.
+    """
+    raw = result.get("size", 0)
+    try:
+        return int(raw or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _sort_results(results, settings):
     """Sort results by configured sort order, with preferred groups boosted.
 
@@ -578,18 +614,18 @@ def _sort_results(results, settings):
     elif sort_order == 2:
         return sorted(
             results,
-            key=lambda r: int(r.get("size", 0) or 0),
+            key=_size_sort_key,
         )
     elif sort_order == 3:
         return sorted(
             results,
-            key=lambda r: r.get("pubdate", ""),
+            key=_pubdate_sort_key,
             reverse=True,
         )
     elif sort_order == 4:
         return sorted(
             results,
-            key=lambda r: r.get("pubdate", ""),
+            key=_pubdate_sort_key,
         )
     else:
         # Relevance: resolution > HDR > preferred group > audio > size

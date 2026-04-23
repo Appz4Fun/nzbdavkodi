@@ -956,7 +956,9 @@ def _abort_poll_before_fetch(
             ),
             xbmc.LOGERROR,
         )
-        xbmcgui.Dialog().ok(_addon_name(), _string(30099))
+        # _fmt not _string: 30099 is "Download timed out after {} seconds"
+        # — using _string() would render the literal "{}" to the user.
+        xbmcgui.Dialog().ok(_addon_name(), _fmt(30099, int(elapsed)))
         cancel_job(nzo_id)
         return True
 
