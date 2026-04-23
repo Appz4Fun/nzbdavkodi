@@ -3,6 +3,7 @@
 
 """URL routing for plugin:// calls from Kodi / TMDBHelper."""
 
+import re
 from urllib.parse import parse_qs, urlparse
 
 import xbmc
@@ -11,6 +12,10 @@ from resources.lib.http_util import format_size as _format_size
 from resources.lib.i18n import addon_name as _addon_name
 from resources.lib.i18n import fmt as _fmt
 from resources.lib.i18n import string as _string
+
+# IMDB IDs are always `tt` + 7–9 digits. Reject anything else before making
+# outbound HTTP calls to IMDB's suggestion API.
+_IMDB_ID_RE = re.compile(r"^tt\d{7,9}$")
 
 
 def parse_route(url):
@@ -105,9 +110,12 @@ def route(argv):
         if path == "/resolve":
             from resources.lib.resolver import resolve_and_play
 
+            # Normalize TMDBHelper "_" placeholders to empty strings so the
+            # resolver sees `""`, not the literal `"_"`.
+            clean = _clean_params(params)
             resolve_and_play(
-                params.get("nzburl", ""),
-                params.get("title", ""),
+                clean.get("nzburl", ""),
+                clean.get("title", ""),
             )
         elif path == "/install_player":
             from resources.lib.player_installer import install_player
@@ -255,10 +263,13 @@ def _search_all_providers(search_type, title, year="", imdb="", season="", episo
     deduped = []
     for result in all_results:
         key = result.get("link", "")
-        if key and key in seen_links:
+        if not key:
+            # No link → no way to play this result. Dropping is better
+            # than presenting a dead entry in the selection dialog.
             continue
-        if key:
-            seen_links.add(key)
+        if key in seen_links:
+            continue
+        seen_links.add(key)
         deduped.append(result)
 
     if not deduped and errors:
@@ -292,6 +303,9 @@ def _lookup_episode_info(imdb, tmdb_id=""):
     Used when TMDBHelper passes only IMDB ID without season/episode
     (e.g., from calendar widgets).
     """
+    # Reject non-IMDB input before hitting the network.
+    if not imdb or not _IMDB_ID_RE.match(imdb):
+        return None
     try:
         import json
         from urllib.request import urlopen
@@ -378,12 +392,6 @@ def _handle_play(handle, params):
             il_s = xbmc.getInfoLabel(s_label)
             il_e = xbmc.getInfoLabel(e_label)
             il_t = xbmc.getInfoLabel(t_label)
-            xbmc.log(
-                "NZB-DAV: InfoLabel [{}]: S='{}' E='{}' T='{}'".format(
-                    src_name, il_s, il_e, il_t
-                ),
-                xbmc.LOGDEBUG,
-            )
             if il_s and il_s not in ("", "-1", "0"):
                 season = season or il_s
             if il_e and il_e not in ("", "-1", "0"):
@@ -391,6 +399,8 @@ def _handle_play(handle, params):
             if il_t and not title:
                 title = il_t
             if season and episode:
+                # Only log the winning source; logging every probed source
+                # in the success path made a noisy 4-line log entry per play.
                 xbmc.log(
                     "NZB-DAV: InfoLabel resolved: '{}' S{}E{} (from {})".format(
                         title, season, episode, src_name
@@ -738,6 +748,8 @@ def _format_info_line(item):
 
 def _get_tmdb_poster(imdb_id):
     """Fetch poster URL from TMDB using an IMDb ID. Returns empty string on failure."""
+    if not imdb_id or not _IMDB_ID_RE.match(imdb_id):
+        return ""
     try:
         import json
         from urllib.request import urlopen

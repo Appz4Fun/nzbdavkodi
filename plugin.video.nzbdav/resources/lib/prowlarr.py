@@ -67,10 +67,16 @@ def _get_settings():
 
 
 def _build_search_url(base_url, params, indexer_ids):
-    """Build a Prowlarr /api/v1/search URL with encoded params and indexer IDs."""
-    query = urlencode(params)
+    """Build a Prowlarr /api/v1/search URL with encoded params and indexer IDs.
+
+    All values — including each repeated ``indexerIds`` — go through
+    ``urlencode(doseq=True)`` so indexer IDs with URL-special characters
+    (``&``, ``=``, ``%``, space) can't corrupt the query string.
+    """
+    combined = list(params.items())
     for idx_id in indexer_ids:
-        query += "&indexerIds={}".format(idx_id)
+        combined.append(("indexerIds", idx_id))
+    query = urlencode(combined, doseq=True)
     return "{}/api/v1/search?{}".format(base_url, query)
 
 
@@ -334,5 +340,5 @@ def _calculate_age(pubdate_str):
         if months == 1:
             return "1 month"
         return "{} months".format(months)
-    except Exception:
+    except (OverflowError, TypeError, ValueError):
         return ""

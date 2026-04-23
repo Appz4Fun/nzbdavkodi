@@ -306,7 +306,7 @@ def get_job_history(nzo_id):
     url = "{}/api?{}".format(base_url, urlencode(params))
 
     try:
-        response_text = _http_get(url)
+        response_text = _http_get(url, timeout=10)
         response = json.loads(response_text)
     except Exception:
         return None
@@ -349,7 +349,7 @@ def find_completed_by_name(name):
     url = "{}/api?{}".format(base_url, urlencode(params))
 
     try:
-        response_text = _http_get(url)
+        response_text = _http_get(url, timeout=10)
         response = json.loads(response_text)
     except Exception:
         return None
@@ -373,7 +373,7 @@ def find_completed_by_name(name):
         params.pop("search")
         url = "{}/api?{}".format(base_url, urlencode(params))
         try:
-            response_text = _http_get(url)
+            response_text = _http_get(url, timeout=10)
             response = json.loads(response_text)
         except Exception:
             return None
@@ -507,7 +507,7 @@ def get_completed_names():
     url = "{}/api?{}".format(base_url, urlencode(params))
 
     try:
-        response_text = _http_get(url)
+        response_text = _http_get(url, timeout=10)
         response = json.loads(response_text)
     except Exception:
         return set()
@@ -544,7 +544,7 @@ def get_job_status(nzo_id):
 
     xbmc.log("NZB-DAV: Job status URL: {}".format(redact_url(url)), xbmc.LOGDEBUG)
     try:
-        response_text = _http_get(url)
+        response_text = _http_get(url, timeout=10)
         response = json.loads(response_text)
     except (URLError, json.JSONDecodeError, Exception) as e:
         xbmc.log(

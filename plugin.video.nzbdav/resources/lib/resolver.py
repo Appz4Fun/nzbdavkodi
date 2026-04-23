@@ -564,8 +564,10 @@ def _poll_once(nzo_id, title, monitor):
     def check_history():
         history_status[0] = get_job_history(nzo_id)
 
-    t1 = threading.Thread(target=check_queue)
-    t2 = threading.Thread(target=check_history)
+    # daemon=True so a stalled worker thread doesn't block the plugin
+    # interpreter from exiting on Kodi shutdown.
+    t1 = threading.Thread(target=check_queue, daemon=True)
+    t2 = threading.Thread(target=check_history, daemon=True)
     t1.start()
     t2.start()
     t1.join(timeout=10)
@@ -697,7 +699,11 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
     submit_t.start()
     probe_t.start()
 
-    elapsed = 0.0
+    # Anchor elapsed to wall-clock via time.monotonic() instead of
+    # accumulating _SUBMIT_UI_PUMP_INTERVAL_SECONDS per loop; the per-loop
+    # accumulation under-reports on slow skins because dialog.update()
+    # itself can block for tens of milliseconds.
+    loop_start = time.monotonic()
     submit_msg = _string(30097)
     try:
         while not submit_done.is_set():
@@ -717,7 +723,7 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
                 return None, {"status": "cancelled", "message": ""}
             if monitor.waitForAbort(_SUBMIT_UI_PUMP_INTERVAL_SECONDS):
                 return None, {"status": "shutdown", "message": ""}
-            elapsed += _SUBMIT_UI_PUMP_INTERVAL_SECONDS
+            elapsed = time.monotonic() - loop_start
             pct = int((elapsed * 100) / max(_get_submit_timeout_seconds(), 1)) % 100
             try:
                 dialog.update(
@@ -737,7 +743,18 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
             return queue_hit[0], None
         return submit_result[0], submit_result[1]
     finally:
+        # Signal the probe worker to exit its wait loop, then give both
+        # daemon threads a brief join window so we don't leave two
+        # background HTTP calls running when the plugin script exits.
+        # Both threads are daemon=True, so a hang here can't block
+        # interpreter shutdown — the join timeout caps recovery time
+        # on an uncooperative upstream.
         queue_stop.set()
+        for t in (submit_t, probe_t):
+            try:
+                t.join(timeout=1)
+            except RuntimeError:
+                pass
 
 
 def _get_submit_timeout_seconds():

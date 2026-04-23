@@ -423,6 +423,13 @@ def _classify_contract_mismatch(
     expected_length = end - start + 1
     expected_range = _expected_content_range(start, end, total)
     is_full_object = start == 0 and end == total - 1
+    # HTTP/1.1 (RFC 9110) permits optional leading/trailing whitespace in
+    # header values. Strip so an upstream that emits "Content-Length: 1024 "
+    # (trailing space) doesn't get flagged as a protocol mismatch.
+    if isinstance(content_range, str):
+        content_range = content_range.strip()
+    if isinstance(content_length, str):
+        content_length = content_length.strip()
     problems = []
     hard = False
 
@@ -2191,7 +2198,20 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     ) as resp:
                         status = getattr(resp, "status", None) or resp.getcode()
                         if status in (200, 206):
-                            resp.read(64)
+                            # Validate the probe actually returned bytes —
+                            # an upstream that 206s with an empty body would
+                            # otherwise be accepted as recovered, sending
+                            # the main loop straight back into the same
+                            # bad region on the next range read.
+                            body = resp.read(64)
+                            if not body:
+                                xbmc.log(
+                                    "NZB-DAV: Probe at +{} bytes returned "
+                                    "status={} but empty body; treating as "
+                                    "probe failure".format(skip, status),
+                                    xbmc.LOGWARNING,
+                                )
+                                continue
                             elapsed = time.time() - start_time
                             xbmc.log(
                                 "NZB-DAV: Probe succeeded at +{} bytes after "
@@ -2595,6 +2615,16 @@ class HlsProducer:
                 try:
                     proc.kill()
                     proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    # SIGKILL was sent but the child didn't reap within 5 s
+                    # (uninterruptible I/O or a truly stuck process). The
+                    # OS will reap it eventually; log so the leak is
+                    # observable instead of silent.
+                    xbmc.log(
+                        "NZB-DAV: HLS ffmpeg pid={} did not exit 5 s after kill; "
+                        "leaking for the OS to reap".format(getattr(proc, "pid", "?")),
+                        xbmc.LOGWARNING,
+                    )
                 except (OSError, subprocess.SubprocessError):
                     pass
             self._proc = None
@@ -2636,6 +2666,16 @@ class HlsProducer:
                 xbmc.LOGINFO,
             )
             try:
+                # Set _spawn_time + _start_segment BEFORE Popen so a
+                # concurrent _segment_complete() can't observe a stale
+                # _spawn_time of 0 between the Popen return and the
+                # assignment (which would accept a freshly-unlinked
+                # segment from the previous generation as complete).
+                # time.time() is a few ns; the tiny skew where
+                # _spawn_time is slightly before the actual spawn is
+                # harmless for the stale-segment guard.
+                self._start_segment = seg_n
+                self._spawn_time = time.time()
                 # cwd=session_dir is REQUIRED for fmp4 mode: ffmpeg
                 # 6.0.1 on CoreELEC rejects absolute paths for
                 # ``-hls_fmp4_init_filename``, so _build_cmd passes
@@ -2651,8 +2691,6 @@ class HlsProducer:
                     shell=False,
                     cwd=self.session_dir,
                 )
-                self._start_segment = seg_n
-                self._spawn_time = time.time()
             except OSError as e:
                 xbmc.log(
                     "NZB-DAV: HLS producer ffmpeg spawn failed: {}".format(e),
@@ -2978,6 +3016,14 @@ class HlsProducer:
             try:
                 proc.kill()
                 proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                xbmc.log(
+                    "NZB-DAV: HlsProducer.close: ffmpeg pid={} did not exit "
+                    "5 s after kill; leaking for the OS to reap".format(
+                        getattr(proc, "pid", "?")
+                    ),
+                    xbmc.LOGWARNING,
+                )
             except (OSError, subprocess.SubprocessError):
                 pass
         try:
@@ -3208,7 +3254,13 @@ class StreamProxy:
                 stdout, stderr = output
             except subprocess.TimeoutExpired:
                 proc.kill()
-                stdout, stderr = proc.communicate()
+                # Bound the post-kill drain: if the kill itself hangs
+                # (uninterruptible I/O) we don't want service startup to
+                # wedge indefinitely waiting on ffmpeg.
+                try:
+                    stdout, stderr = proc.communicate(timeout=1)
+                except subprocess.TimeoutExpired:
+                    stdout, stderr = b"", b""
                 xbmc.log(
                     "NZB-DAV: ffmpeg capability probe timed out for {}".format(
                         ffmpeg_path
