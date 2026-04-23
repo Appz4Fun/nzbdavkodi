@@ -69,7 +69,16 @@ def probe_webdav_reachable(monitor=None, max_retries=1, retry_delay=1):
     """
     settings = _get_settings()
     base = settings["webdav_url"] or settings["nzbdav_url"]
-    url = "{}/content/".format(base.rstrip("/"))
+    # Allow differently-routed nzbdav instances to override the content
+    # root; default to "content" which matches the standard nzbdav layout.
+    try:
+        import xbmcaddon
+
+        raw = xbmcaddon.Addon().getSetting("webdav_content_root")
+        content_root = raw.strip("/") if isinstance(raw, str) and raw else "content"
+    except Exception:  # pylint: disable=broad-except
+        content_root = "content"
+    url = "{}/{}/".format(base.rstrip("/"), content_root or "content")
     mon = monitor or xbmc.Monitor()
 
     attempt = 0
@@ -259,7 +268,15 @@ def find_video_file(folder_path, _depth=0, _visited=None):
                 try:
                     size = int(size_el.text.strip())
                 except ValueError:
-                    pass
+                    # Malformed getcontentlength body — log so a server
+                    # bug doesn't silently cause every file to be
+                    # reported as size 0 (and thus never selected as
+                    # "largest").
+                    xbmc.log(
+                        "NZB-DAV: Non-numeric getcontentlength '{}' for "
+                        "href '{}'; treating as 0".format(size_el.text[:40], href_path),
+                        xbmc.LOGWARNING,
+                    )
 
             if size > best_size:
                 best_size = size

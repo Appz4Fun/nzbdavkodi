@@ -789,7 +789,7 @@ def _test_connection(label, url, test_url, ok_condition):
     ok_condition(response) is True, "<label>: unexpected response" when
     False, and "<label>: <error>" (truncated to 60 chars) on exception.
     """
-    from resources.lib.http_util import http_get, notify
+    from resources.lib.http_util import http_get, notify, redact_url
 
     if not url:
         notify(_addon_name(), "{} URL not configured".format(label), 3000)
@@ -801,7 +801,11 @@ def _test_connection(label, url, test_url, ok_condition):
         else:
             notify(_addon_name(), "{}: unexpected response".format(label), 5000)
     except Exception as e:
-        notify(_addon_name(), "{}: {}".format(label, str(e)[:60]), 5000)
+        # urllib exceptions often embed the full URL (with apikey!) in
+        # str(e). Strip the URL to a redacted form before notifying or
+        # logging so keys don't leak.
+        err_msg = str(e).replace(test_url, redact_url(test_url))
+        notify(_addon_name(), "{}: {}".format(label, err_msg[:60]), 5000)
 
 
 def _test_hydra_connection():
