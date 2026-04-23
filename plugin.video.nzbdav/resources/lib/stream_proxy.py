@@ -2472,10 +2472,34 @@ class HlsProducer:
         init_path = os.path.join(self.session_dir, "init.mp4")
         if not os.path.exists(init_path):
             return False
-        # Reading self._start_segment without the lock is safe:
-        # int reads are atomic under the GIL, and a stale read
-        # is benign — the next poll iteration converges on the
-        # fresh value.
+        # Deliberately reading self._start_segment WITHOUT self._lock.
+        #
+        # Why it's safe today:
+        #   * CPython stores Python ints as PyObject*; assignment is a
+        #     single pointer store and reads of that pointer are atomic
+        #     under the GIL. A reader never sees a half-written int.
+        #   * The caller (``wait_for_init`` / poll loop) tolerates a
+        #     stale read: if ``_start_segment`` has just advanced, the
+        #     stale value points at a segment path that already exists
+        #     on disk (the previous target) — returning True early is
+        #     correct because init.mp4 is complete in both generations.
+        #     If we read the stale value and return False, the next
+        #     poll cycle (~50 ms later) reads the fresh value.
+        #   * Holding self._lock here would serialize the polling reader
+        #     against the respawn writer and defeat the purpose of the
+        #     fast-path existence check.
+        #
+        # Why future refactors should revisit this:
+        #   * If this module ever runs under a no-GIL interpreter (PEP
+        #     703) or switches to asyncio with thread-pool executors,
+        #     the "atomic int read" assumption weakens.
+        #   * If ``_start_segment`` ever grows into a tuple / object
+        #     (e.g. (generation_id, seg_n)), the read is no longer
+        #     atomic and a reader can see a torn value.
+        #   * Drop-in mitigation when that day comes: replace the bare
+        #     int with a ``threading.Event`` that the respawn path
+        #     sets() after publishing the new ``_start_segment``, and
+        #     have this method wait() on the event before reading.
         first_seg_path = os.path.join(
             self.session_dir,
             "seg_{:06d}.m4s".format(self._start_segment),
