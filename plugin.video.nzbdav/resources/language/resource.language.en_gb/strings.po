@@ -523,5 +523,5 @@ msgid "Test Prowlarr Connection"
 msgstr "Test Prowlarr Connection"
 
 msgctxt "#30130"
-msgid "Indexer IDs (comma-separated, empty = all)"
-msgstr "Indexer IDs (comma-separated, empty = all)"
+msgid "Indexer IDs (comma-separated, empty = none)"
+msgstr "Indexer IDs (comma-separated, empty = none)"
