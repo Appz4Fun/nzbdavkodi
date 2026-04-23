@@ -265,7 +265,11 @@ def _parse_results_checked(xml_text):
                 if indexer and "/" in indexer:
                     try:
                         indexer = urlparse(indexer).hostname or ""
-                    except Exception:
+                    except (ValueError, AttributeError):
+                        # Narrow from bare Exception — urlparse only
+                        # raises these for shape-mismatch input. A
+                        # broader catch would hide real bugs in
+                        # callers that pass unexpected types.
                         indexer = ""
 
         enclosure = item.find("enclosure")

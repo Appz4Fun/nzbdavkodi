@@ -746,8 +746,17 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
                     pct,
                     "{}\n{} ({}s)".format(submit_msg, title[:60], int(elapsed)),
                 )
-            except Exception:  # pylint: disable=broad-except
-                pass
+            except Exception as e:  # pylint: disable=broad-except
+                # DialogProgress.update can fail if the user closed the
+                # dialog between our isPlaying poll and the update call;
+                # also fails when the xbmcgui MagicMock doesn't accept
+                # the call shape in some tests. Best-effort — log at
+                # debug so a real bug in Kodi's UI layer is still
+                # diagnosable without spamming the log on every tick.
+                xbmc.log(
+                    "NZB-DAV: progress dialog update failed: {}".format(e),
+                    xbmc.LOGDEBUG,
+                )
         # Race window re-check: prefer adopted nzo_id over a failed submit.
         if queue_hit[0] and not submit_result[0]:
             xbmc.log(
@@ -769,8 +778,16 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
         for t in (submit_t, probe_t):
             try:
                 t.join(timeout=1)
-            except RuntimeError:
-                pass
+            except RuntimeError as e:
+                # Thread.join raises RuntimeError if the thread wasn't
+                # started or if join is called on the current thread.
+                # Both are best-effort cleanup paths here (threads are
+                # daemon=True so they die with the interpreter anyway)
+                # but log at debug so a real misuse surfaces.
+                xbmc.log(
+                    "NZB-DAV: Resolver worker join failed: {}".format(e),
+                    xbmc.LOGDEBUG,
+                )
 
 
 def _get_submit_timeout_seconds():
