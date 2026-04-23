@@ -393,6 +393,53 @@ def test_find_video_file_handles_relative_href(mock_urlopen, mock_settings):
     assert "Relative.Movie.2024" in path
 
 
+_PROPFIND_CROSS_ORIGIN_HREFS = """<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>http://localhost:8080/content/uncategorized/Greyhound/</D:href>
+    <D:propstat>
+      <D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>http://localhost:8080/content/uncategorized/Greyhound/Greyhound.mkv</D:href>
+    <D:propstat>
+      <D:prop>
+        <D:getcontentlength>80000000000</D:getcontentlength>
+        <D:resourcetype/>
+      </D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+</D:multistatus>"""
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_accepts_cross_origin_href_path(mock_urlopen, mock_settings):
+    """nzbdav legitimately returns its INTERNAL hostname (e.g. localhost:8080)
+    in PROPFIND hrefs even when the client addresses it via a different public
+    endpoint (e.g. 192.168.1.93:3000). The client must trust the href's PATH
+    portion while ignoring the host — follow-up requests still go to the
+    configured WebDAV host, so there's no off-server redirect risk.
+
+    Regression guard for the Greyhound 2026-04-23 incident where v1.0.0-pre-
+    alpha / v1.0.1 rejected every href on host mismatch and repeatedly logged
+    "Completed but no video found" until the resolve dialog gave up."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH  # nzbdav_url = nzbdav:3000
+    mock_resp = MagicMock()
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    mock_resp.read.return_value = _PROPFIND_CROSS_ORIGIN_HREFS.encode("utf-8")
+    mock_urlopen.return_value = mock_resp
+
+    path = find_video_file("/content/uncategorized/Greyhound/")
+    assert path is not None, "cross-origin href must not cause 'no video found'"
+    assert path.endswith(".mkv")
+    assert "Greyhound" in path
+
+
 # --- _build_auth_headers + check_file_in_folder coverage ---
 
 

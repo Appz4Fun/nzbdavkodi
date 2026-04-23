@@ -239,31 +239,31 @@ def find_video_file(folder_path, _depth=0, _visited=None, _already_encoded=False
             try:
                 parsed_href_obj = urlparse(href_text)
                 base_host = urlparse(url).netloc
-                # Reject protocol-relative URLs ("//host/path") unless they
-                # match the configured server; urlparse().scheme is empty
-                # for these and we'd otherwise treat them as a path.
+                # Handle cross-host hrefs. nzbdav legitimately returns its
+                # INTERNAL hostname in PROPFIND hrefs (e.g. localhost:8080)
+                # while we address it at the configured public endpoint
+                # (e.g. 192.168.1.93:3000). Trust only the PATH portion of
+                # the href — all follow-up requests hit the configured
+                # WebDAV host anyway, so an attacker-controlled href host
+                # cannot redirect us off-server. Previously we rejected the
+                # entire href on host mismatch, which broke real users with
+                # reverse-proxied nzbdav setups ("Completed but no video
+                # found").
                 if href_text.startswith("//"):
                     if parsed_href_obj.netloc != base_host:
                         xbmc.log(
-                            "NZB-DAV: Rejecting cross-host href '{}'".format(href_text),
-                            xbmc.LOGWARNING,
+                            "NZB-DAV: cross-host href '{}' — using path "
+                            "portion only".format(href_text),
+                            xbmc.LOGDEBUG,
                         )
-                        continue
                     href_path = parsed_href_obj.path
                 elif parsed_href_obj.scheme:
-                    # Fully-qualified href like "http://evil/x". Previously we
-                    # extracted .path and trusted it, letting a hostile or
-                    # MITM'd WebDAV server redirect recursion to arbitrary
-                    # paths on our configured host. Require the host to match
-                    # the host we PROPFIND'd, otherwise refuse the href.
                     if parsed_href_obj.netloc != base_host:
                         xbmc.log(
-                            "NZB-DAV: Rejecting cross-origin href '{}'".format(
-                                href_text
-                            ),
-                            xbmc.LOGWARNING,
+                            "NZB-DAV: cross-origin href '{}' — using path "
+                            "portion only".format(href_text),
+                            xbmc.LOGDEBUG,
                         )
-                        continue
                     href_path = parsed_href_obj.path
                 else:
                     href_path = href_text
