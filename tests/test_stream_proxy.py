@@ -681,13 +681,15 @@ def test_prepare_stream_force_remux_hls_fmp4_setting_produces_hls_ctx():
             sp, "_get_content_length", return_value=huge
         ), patch(
             "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
-        ), patch.object(
-            StreamProxy, "_probe_dv_profile", return_value=None
-        ), patch(
-            "resources.lib.stream_proxy.HlsProducer"
-        ) as mock_producer_cls:
-            mock_producer_cls.return_value = MagicMock()
-            sp.prepare_stream("http://host/shawshank.mkv")
+        ):
+            from resources.lib.dv_source import DolbyVisionSourceResult
+
+            with patch(
+                "resources.lib.stream_proxy.probe_dolby_vision_source",
+                return_value=DolbyVisionSourceResult("non_dv", "no_rpu_nal_found"),
+            ), patch("resources.lib.stream_proxy.HlsProducer") as mock_producer_cls:
+                mock_producer_cls.return_value = MagicMock()
+                sp.prepare_stream("http://host/shawshank.mkv")
     finally:
         sys.modules["xbmcaddon"].Addon.return_value = original
 
@@ -897,62 +899,11 @@ def test_probe_duration_returns_none_on_n_a():
 
 
 # ---------------------------------------------------------------------------
-# _parse_ffmpeg_dv_profile
-# ---------------------------------------------------------------------------
-
-
-def test_parse_dv_profile_7_dual_layer():
-    from resources.lib.stream_proxy import _parse_ffmpeg_dv_profile
-
-    stderr = (
-        "  Stream #0:0(und): Video: hevc (Main 10) (hvc1 / 0x31637668), ...\n"
-        "    Side data:\n"
-        "      DOVI configuration record: version: 1.0, profile: 7, "
-        "level: 6, rpu flag: 1, el flag: 1, bl flag: 1, compatibility id: 0\n"
-    )
-    assert _parse_ffmpeg_dv_profile(stderr) == 7
-
-
-def test_parse_dv_profile_5_single_layer():
-    from resources.lib.stream_proxy import _parse_ffmpeg_dv_profile
-
-    stderr = (
-        "      DOVI configuration record: version: 1.0, profile: 5, "
-        "level: 6, rpu flag: 1, el flag: 0, bl flag: 1, compatibility id: 0\n"
-    )
-    assert _parse_ffmpeg_dv_profile(stderr) == 5
-
-
-def test_parse_dv_profile_8_compatible():
-    from resources.lib.stream_proxy import _parse_ffmpeg_dv_profile
-
-    stderr = (
-        "      DOVI configuration record: version: 1.0, profile: 8, "
-        "level: 6, rpu flag: 1, el flag: 0, bl flag: 1, compatibility id: 1\n"
-    )
-    assert _parse_ffmpeg_dv_profile(stderr) == 8
-
-
-def test_parse_dv_profile_returns_none_when_absent():
-    from resources.lib.stream_proxy import _parse_ffmpeg_dv_profile
-
-    stderr = (
-        "  Stream #0:0(und): Video: hevc (Main 10), yuv420p10le, "
-        "3840x2160 [SAR 1:1 DAR 16:9], 24 fps, 24 tbr, 1k tbn\n"
-        "  Stream #0:1(eng): Audio: truehd, 48000 Hz, 7.1, s32 (24 bit)\n"
-    )
-    assert _parse_ffmpeg_dv_profile(stderr) is None
-
-
-def test_parse_dv_profile_returns_none_on_malformed():
-    from resources.lib.stream_proxy import _parse_ffmpeg_dv_profile
-
-    stderr = "DOVI configuration record: version: 1.0, profile: not-a-number\n"
-    assert _parse_ffmpeg_dv_profile(stderr) is None
-
-
-# ---------------------------------------------------------------------------
-# StreamProxy.prepare_stream — DV profile gating for fmp4 HLS
+# StreamProxy.prepare_stream — DV source-RPU gating for fmp4 HLS.
+# The old _parse_ffmpeg_dv_profile / _probe_dv_profile pair has been
+# retired in favour of the structured dv_source.probe_dolby_vision_source
+# result, which parses real RPU data to classify non-DV, non-P7 DV,
+# and P7 MEL vs FEL.
 # ---------------------------------------------------------------------------
 
 
@@ -987,138 +938,160 @@ def _make_fmp4_prepare_fixture(huge_size=58 * 1024 * 1024 * 1024):
     return sp, mock_addon, original, duration_proc, huge_size
 
 
-def test_prepare_stream_dv_profile_7_falls_back_to_matroska():
-    """A confirmed Dolby Vision profile 7 source must NOT be served as
-    fmp4 HLS even when force_remux_mode=hls_fmp4. fmp4 HLS has no
-    standard way to carry the BL+EL+RPU dual-layer structure, so the
-    enhancement layer would be silently dropped and Amlogic's decoder
-    is known to stall on the result."""
-    import sys
+def _dv_result(classification, reason, profile=None, el_type=None):
+    from resources.lib.dv_source import DolbyVisionSourceResult
 
-    from resources.lib.stream_proxy import StreamProxy
+    return DolbyVisionSourceResult(classification, reason, profile, el_type)
+
+
+def _run_prepare_with_dv(dv_result, url, patch_hls=False):
+    """Drive prepare_stream with the structured DV probe stubbed to a result.
+    Returns the stream_context dict for the caller to assert on."""
+    import sys
 
     sp, _, original, duration_proc, huge = _make_fmp4_prepare_fixture()
     try:
-        with patch(
-            "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
-        ), patch(
-            "resources.lib.stream_proxy._find_ffprobe", return_value=None
-        ), patch.object(
-            sp, "_get_content_length", return_value=huge
-        ), patch(
-            "resources.lib.stream_proxy.subprocess.Popen", return_value=duration_proc
-        ), patch.object(
-            StreamProxy, "_probe_dv_profile", return_value=7
-        ):
-            sp.prepare_stream("http://host/dv-p7-remux.mkv")
+        stack = (
+            patch(
+                "resources.lib.stream_proxy._find_ffmpeg",
+                return_value="/usr/bin/ffmpeg",
+            ),
+            patch("resources.lib.stream_proxy._find_ffprobe", return_value=None),
+            patch.object(sp, "_get_content_length", return_value=huge),
+            patch(
+                "resources.lib.stream_proxy.subprocess.Popen",
+                return_value=duration_proc,
+            ),
+            patch(
+                "resources.lib.stream_proxy.probe_dolby_vision_source",
+                return_value=dv_result,
+            ),
+        )
+        if patch_hls:
+            with stack[0], stack[1], stack[2], stack[3], stack[4], patch(
+                "resources.lib.stream_proxy.HlsProducer"
+            ) as mock_producer_cls:
+                mock_producer_cls.return_value = MagicMock()
+                sp.prepare_stream(url)
+        else:
+            with stack[0], stack[1], stack[2], stack[3], stack[4]:
+                sp.prepare_stream(url)
     finally:
         sys.modules["xbmcaddon"].Addon.return_value = original
-
-    ctx = sp._server.stream_context
-    assert ctx.get("mode") != "hls", "P7 must fall back off the fmp4 path"
-    assert ctx["content_type"] == "video/x-matroska"
-    assert ctx.get("hls_segment_format") is None
+    return sp._server.stream_context
 
 
-def test_prepare_stream_dv_profile_5_falls_back_to_matroska():
-    """Profile 5 (single-layer IPTPQc2) falls back to matroska.
-
-    The original gate allowed P5/P8 through fmp4 on the theory that
-    only dual-layer P7 was broken, but 2026-04-15 testing against a
-    DV Profile 8 source on the Amlogic CoreELEC build proved the HW
-    decoder doesn't actually decode DV on the fmp4 path regardless
-    of profile — onAVStarted never fires, the YUV planes stay half-
-    green, and Kodi freezes on stop. The gate was broadened to
-    route ANY confirmed DV profile back to the matroska pipe."""
-    import sys
-
-    from resources.lib.stream_proxy import StreamProxy
-
-    sp, _, original, duration_proc, huge = _make_fmp4_prepare_fixture()
-    try:
-        with patch(
-            "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
-        ), patch(
-            "resources.lib.stream_proxy._find_ffprobe", return_value=None
-        ), patch.object(
-            sp, "_get_content_length", return_value=huge
-        ), patch(
-            "resources.lib.stream_proxy.subprocess.Popen", return_value=duration_proc
-        ), patch.object(
-            StreamProxy, "_probe_dv_profile", return_value=5
-        ):
-            sp.prepare_stream("http://host/dv-p5-remux.mkv")
-    finally:
-        sys.modules["xbmcaddon"].Addon.return_value = original
-
-    ctx = sp._server.stream_context
+def test_prepare_stream_p7_fel_falls_back_to_matroska():
+    """Dual-layer profile 7 FEL must route to matroska. fmp4 HLS cannot
+    carry both HEVC layers; the EL would be silently dropped and Amlogic's
+    CAMLCodec stalls when asked to decode half a dual-layer stream."""
+    ctx = _run_prepare_with_dv(
+        _dv_result("dv_profile_7_fel", "p7_fel", profile=7, el_type="FEL"),
+        url="http://host/dv-p7-fel.mkv",
+    )
     assert ctx.get("mode") != "hls"
     assert ctx["content_type"] == "video/x-matroska"
 
 
-def test_prepare_stream_dv_profile_8_falls_back_to_matroska():
-    """Profile 8 (single-layer cross-compatible) falls back to matroska
-    for the same reason as P5 — the Amlogic fmp4 HW decoder path
-    doesn't decode DV regardless of single-layer vs dual-layer. See
-    the docstring on test_prepare_stream_dv_profile_5_falls_back_to
-    _matroska for the reproduction details."""
-    import sys
-
-    from resources.lib.stream_proxy import StreamProxy
-
-    sp, _, original, duration_proc, huge = _make_fmp4_prepare_fixture()
-    try:
-        with patch(
-            "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
-        ), patch(
-            "resources.lib.stream_proxy._find_ffprobe", return_value=None
-        ), patch.object(
-            sp, "_get_content_length", return_value=huge
-        ), patch(
-            "resources.lib.stream_proxy.subprocess.Popen", return_value=duration_proc
-        ), patch.object(
-            StreamProxy, "_probe_dv_profile", return_value=8
-        ):
-            sp.prepare_stream("http://host/dv-p8-remux.mkv")
-    finally:
-        sys.modules["xbmcaddon"].Addon.return_value = original
-
-    ctx = sp._server.stream_context
-    assert ctx.get("mode") != "hls"
-    assert ctx["content_type"] == "video/x-matroska"
-
-
-def test_prepare_stream_dv_probe_none_stays_on_fmp4():
-    """A None return from the DV probe (either 'no DV' or 'probe failed')
-    is treated as safe — fmp4 is allowed. Only a *confirmed* profile 7
-    triggers the matroska fallback."""
-    import sys
-
-    from resources.lib.stream_proxy import StreamProxy
-
-    sp, _, original, duration_proc, huge = _make_fmp4_prepare_fixture()
-    try:
-        with patch(
-            "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
-        ), patch(
-            "resources.lib.stream_proxy._find_ffprobe", return_value=None
-        ), patch.object(
-            sp, "_get_content_length", return_value=huge
-        ), patch(
-            "resources.lib.stream_proxy.subprocess.Popen", return_value=duration_proc
-        ), patch.object(
-            StreamProxy, "_probe_dv_profile", return_value=None
-        ), patch(
-            "resources.lib.stream_proxy.HlsProducer"
-        ) as mock_producer_cls:
-            mock_producer_cls.return_value = MagicMock()
-            sp.prepare_stream("http://host/sdr-remux.mkv")
-    finally:
-        sys.modules["xbmcaddon"].Addon.return_value = original
-
-    ctx = sp._server.stream_context
+def test_prepare_stream_p7_mel_stays_on_fmp4():
+    """Profile 7 MEL is a metadata-only enhancement layer (~2 Mbps of NLQ
+    coefficients, no second HEVC layer to reassemble). This does NOT hit
+    the CAMLCodec dual-layer init path that tripped profile 8 on 2026-04-15,
+    so MEL is allowed through fmp4 HLS for full random seek across large
+    sources. If field testing shows MEL also hangs, tighten to match p8."""
+    ctx = _run_prepare_with_dv(
+        _dv_result("dv_allowed_for_fmp4", "p7_mel", profile=7, el_type="MEL"),
+        url="http://host/dv-p7-mel.mkv",
+        patch_hls=True,
+    )
     assert ctx["mode"] == "hls"
     assert ctx["hls_segment_format"] == "fmp4"
+
+
+def test_prepare_stream_profile8_falls_back_to_matroska():
+    """Profile 8 routes to matroska. 2026-04-15 testing on the Evangelion
+    3.0+1.0 UHD (DV P8) proved the Amlogic CAMLCodec hangs at onAVStarted
+    when fed fmp4 HLS segments from a DV source, even though ffmpeg produces
+    the segments cleanly. Differs from the plan's 2026-04-21 proposal,
+    which would have routed p8 through fmp4 — the plan pre-dated the
+    3dce841 broadening fix and would have regressed production."""
+    ctx = _run_prepare_with_dv(
+        _dv_result("dv_allowed_for_fmp4", "non_p7_dv_profile", profile=8),
+        url="http://host/dv-p8.mkv",
+    )
+    assert ctx.get("mode") != "hls"
+    assert ctx["content_type"] == "video/x-matroska"
+
+
+def test_prepare_stream_profile5_falls_back_to_matroska():
+    """Profile 5 (single-layer IPTPQc2) is conservatively grouped with
+    profile 8 — the 2026-04-15 CAMLCodec hang was observed on a single-
+    layer DV source, so other single-layer DV profiles are assumed to
+    share the defect until proven otherwise on the real device."""
+    ctx = _run_prepare_with_dv(
+        _dv_result("dv_allowed_for_fmp4", "non_p7_dv_profile", profile=5),
+        url="http://host/dv-p5.mkv",
+    )
+    assert ctx.get("mode") != "hls"
+    assert ctx["content_type"] == "video/x-matroska"
+
+
+def test_prepare_stream_non_dv_stays_on_fmp4():
+    """A source with no DV metadata at all routes to fmp4 HLS as requested
+    by force_remux_mode=hls_fmp4. This is the unambiguous happy path."""
+    ctx = _run_prepare_with_dv(
+        _dv_result("non_dv", "no_rpu_nal_found"),
+        url="http://host/sdr-remux.mkv",
+        patch_hls=True,
+    )
+    assert ctx["mode"] == "hls"
+    assert ctx["hls_segment_format"] == "fmp4"
+
+
+def test_prepare_stream_dv_unknown_falls_back_to_matroska():
+    """When the probe can't read the source — truncated header, unsupported
+    container, parse failure — fail safe to matroska. This is stricter than
+    the old ffmpeg-stderr probe (which treated None/unknown as 'assume non-
+    DV and proceed'); with source-data parsing now available, an unknown
+    result genuinely means we can't read the file and shouldn't gamble on
+    the fmp4 path."""
+    ctx = _run_prepare_with_dv(
+        _dv_result("dv_unknown", "mkv_sample_extraction_failed"),
+        url="http://host/unknown-dv.mkv",
+    )
+    assert ctx.get("mode") != "hls"
+    assert ctx["content_type"] == "video/x-matroska"
+
+
+def test_prepare_stream_probe_crash_falls_back_to_matroska():
+    """An unexpected exception from ``probe_dolby_vision_source`` (e.g.
+    http.client.InvalidURL, ssl.SSLError, UnicodeEncodeError) must be
+    caught at the integration point and degrade to matroska — it must NOT
+    kill prepare_stream, since that would leave Kodi without a resolved URL
+    and freeze playback startup."""
+    import sys
+
+    sp, _, original, duration_proc, huge = _make_fmp4_prepare_fixture()
+    try:
+        with patch(
+            "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
+        ), patch(
+            "resources.lib.stream_proxy._find_ffprobe", return_value=None
+        ), patch.object(
+            sp, "_get_content_length", return_value=huge
+        ), patch(
+            "resources.lib.stream_proxy.subprocess.Popen", return_value=duration_proc
+        ), patch(
+            "resources.lib.stream_proxy.probe_dolby_vision_source",
+            side_effect=RuntimeError("simulated probe crash"),
+        ):
+            sp.prepare_stream("http://host/p8-crash.mkv")
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    ctx = sp._server.stream_context
+    assert ctx.get("mode") != "hls"
+    assert ctx["content_type"] == "video/x-matroska"
 
 
 # ---------------------------------------------------------------------------
