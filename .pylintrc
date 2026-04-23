@@ -1,6 +1,9 @@
 [MAIN]
-# Ignore vendored PTT library
-ignore-paths=plugin.video.nzbdav/resources/lib/ptt
+# Ignore vendored PTT library + local dev scripts (on-device smoke test
+# helpers, throwaway repro scripts) that aren't part of the shipped addon.
+ignore-paths=
+    plugin.video.nzbdav/resources/lib/ptt,
+    dev/
 
 [MESSAGES CONTROL]
 disable=

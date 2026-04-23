@@ -78,13 +78,13 @@ def test_parse_results_empty():
 
 def test_parse_results_invalid_xml_returns_empty():
     results = parse_results("<html>not xml")
-    assert results == []
+    assert not results
 
 
 def test_parse_results_non_rss_root_returns_empty():
     xml_text = '<?xml version="1.0"?><response><error code="100"/></response>'
     results = parse_results(xml_text)
-    assert results == []
+    assert not results
 
 
 # --- search_prowlarr URL-building tests ---
@@ -171,7 +171,7 @@ def test_search_prowlarr_no_indexer_ids_returns_empty_without_error():
     with patch("resources.lib.prowlarr._get_settings") as mock_settings:
         mock_settings.return_value = ("http://prowlarr:9696", "testkey", [])
         results, error = search_prowlarr("movie", "The Matrix")
-    assert results == []
+    assert not results
     assert error is None
 
 
