@@ -162,13 +162,18 @@ def submit_nzb(nzb_url, nzb_name=""):
         # nzbdav returned a structured HTTP error (e.g. 500 on duplicate
         # submit, 502/503/504 from upstream issues). Capture the body so
         # the caller can either surface it or classify retries based on
-        # status code.
+        # status code. Redact apikey-style tokens: nzbdav's error pages
+        # sometimes echo the failing URL (which carried the indexer's
+        # apikey) back to the client, which then goes into a Kodi dialog
+        # visible to anyone reading the screen / logs.
+        from resources.lib.http_util import redact_text
+
         body = ""
         try:
             body = e.read().decode("utf-8", errors="replace")
         except Exception:  # pylint: disable=broad-except
             pass
-        body = _sanitize_server_message(body)[:500]
+        body = redact_text(_sanitize_server_message(body))[:500]
         xbmc.log(
             "NZB-DAV: Submit NZB got HTTP {} from nzbdav: {}".format(e.code, body),
             xbmc.LOGERROR,

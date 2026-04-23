@@ -24,12 +24,28 @@ def _get_cache_dir():
 
 
 def _cache_key(search_type, title, year="", imdb="", season="", episode=""):
-    """Generate a filesystem-safe cache key."""
+    """Generate a filesystem-safe, collision-resistant cache key.
+
+    Previous implementation collapsed non-alphanumeric characters to ``_``
+    and truncated at 200 chars. That meant "Spider-Man: No Way Home" and
+    "Spider_Man_ No Way Home" collapsed to the same filename, and any two
+    distinct titles sharing a 200-char prefix aliased to the same cache
+    file. Stale results would be served across searches.
+
+    Switch to SHA-1 of the joined parts: deterministic, 40-char hex
+    filename, no collisions in practice. Prefix the ``search_type`` so
+    a glance at the cache dir still shows which bucket a file belongs
+    to; the readable ``_make_legible_slug`` tail is cosmetic.
+    """
+    import hashlib
+
     parts = [search_type, title, year, imdb, season, episode]
-    key = "_".join(str(p) for p in parts if p)
-    # Sanitize for filesystem
-    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in key)
-    return safe[:200]  # Limit length
+    joined = "\x1f".join(
+        str(p) for p in parts
+    )  # unit-separator — can't appear in inputs
+    digest = hashlib.sha1(joined.encode("utf-8")).hexdigest()
+    legible = "".join(c if c.isalnum() or c in "-_" else "_" for c in title)[:40]
+    return "{}_{}_{}".format(search_type, legible or "untitled", digest)
 
 
 def get_cached(search_type, title, **kwargs):
