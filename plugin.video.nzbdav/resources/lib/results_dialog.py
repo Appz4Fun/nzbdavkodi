@@ -165,6 +165,12 @@ class ResultsDialog(xbmcgui.WindowXMLDialog):
         elif action_id in (ACTION_PREVIOUS_MENU, ACTION_NAV_BACK):
             self.selected_index = -1
             self.close()
+        elif action_id == ACTION_CONTEXT_MENU:
+            # Close the picker on right-click / "i" button; treat as cancel
+            # rather than a no-op so the user isn't trapped if they don't
+            # want any of the presented results.
+            self.selected_index = -1
+            self.close()
 
     def get_selected_index(self):
         """Return the index of the selected result, or -1 if cancelled."""

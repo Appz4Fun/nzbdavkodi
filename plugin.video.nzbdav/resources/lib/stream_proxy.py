@@ -1681,11 +1681,30 @@ class _StreamHandler(BaseHTTPRequestHandler):
             self.send_error(504)
             return
 
+        # Open the segment file FIRST, then read its size via fstat(). A
+        # previous version did getsize() → send_header → open(), which
+        # opened a TOCTOU window: a respawn-driven unlink between
+        # getsize() and open() would leave the handler advertising a
+        # size that no longer exists. Holding the fd from the open
+        # pins the underlying inode even if the dir entry is later
+        # unlinked, so Content-Length stays in sync with what we read.
         try:
-            content_length = os.path.getsize(segment_path)
+            seg_file = open(
+                segment_path, "rb"
+            )  # noqa: SIM115 — closed in finally below
         except OSError as e:
             xbmc.log(
-                "NZB-DAV: HLS seg {} stat failed: {}".format(seg_n, e),
+                "NZB-DAV: HLS seg {} open failed: {}".format(seg_n, e),
+                xbmc.LOGERROR,
+            )
+            self.send_error(500)
+            return
+        try:
+            content_length = os.fstat(seg_file.fileno()).st_size
+        except OSError as e:
+            seg_file.close()
+            xbmc.log(
+                "NZB-DAV: HLS seg {} fstat failed: {}".format(seg_n, e),
                 xbmc.LOGERROR,
             )
             self.send_error(500)
@@ -1710,7 +1729,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
 
         total = 0
         try:
-            with open(segment_path, "rb") as f:
+            with seg_file as f:
                 while True:
                     chunk = f.read(65536)
                     if not chunk:
@@ -2676,6 +2695,14 @@ class HlsProducer:
                 # harmless for the stale-segment guard.
                 self._start_segment = seg_n
                 self._spawn_time = time.time()
+                # If close() previously ran and closed self._ffmpeg_log,
+                # or any other caller closed it, reopen it before spawning
+                # so the new ffmpeg doesn't inherit a closed fd and swallow
+                # all its stderr into OSError on the first write.
+                if self._ffmpeg_log.closed:
+                    self._ffmpeg_log = open(  # noqa: SIM115 — closed in close()
+                        self._ffmpeg_log_path, "ab", buffering=0
+                    )
                 # cwd=session_dir is REQUIRED for fmp4 mode: ffmpeg
                 # 6.0.1 on CoreELEC rejects absolute paths for
                 # ``-hls_fmp4_init_filename``, so _build_cmd passes

@@ -30,7 +30,13 @@ def test_parse_title_metadata_movie():
         "The.Matrix.1999.2160p.BluRay.REMUX.HEVC.DTS-HD.MA.7.1-GROUP"
     )
     assert meta["resolution"] == "2160p"
-    assert meta["codec"] in ("hevc", "HEVC", "x265/HEVC")
+    # Codec is a PTT-derived string; accept any normalized form that
+    # identifies HEVC/h265 so a PTT upgrade that renames the token doesn't
+    # break this test.
+    codec_lower = meta["codec"].lower()
+    assert (
+        "hevc" in codec_lower or "265" in codec_lower
+    ), "expected HEVC/x265 codec, got {!r}".format(meta["codec"])
     assert meta["group"] == "GROUP"
 
 

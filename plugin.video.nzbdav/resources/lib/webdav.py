@@ -177,8 +177,21 @@ def find_video_file(folder_path, _depth=0, _visited=None):
         ) as resp:  # nosec B310 nosemgrep — URL from user's configured WebDAV setting
             body = resp.read().decode("utf-8", errors="replace")
 
-        # Parse the PROPFIND XML response
-        root = ET.fromstring(body)  # nosec B314 — trusted WebDAV server response
+        # Parse the PROPFIND XML response with external entities disabled.
+        # Python's stdlib XMLParser doesn't accept resolve_entities as a
+        # kwarg, but calling expat to disable external DTD loading has
+        # the same effect for XXE prevention. Use the expat target builder
+        # so a hostile WebDAV server can't coerce us into reading local
+        # files via an external entity reference.
+        _xml_parser = ET.XMLParser()
+        try:
+            _xml_parser.parser.DefaultHandler = lambda _d: None
+            _xml_parser.parser.ExternalEntityRefHandler = lambda *_: False
+        except AttributeError:  # pragma: no cover — non-expat parser backend
+            pass
+        root = ET.fromstring(
+            body, parser=_xml_parser
+        )  # nosec B314 — trusted WebDAV server response; entities disabled above
         ns = {"D": "DAV:"}
 
         best_file = None
