@@ -8,26 +8,25 @@ from urllib.parse import urlencode, urlparse
 
 import xbmc
 
-from resources.lib.http_util import http_get as _http_get
+from resources.lib.http_util import (
+    calculate_age as _calculate_age,
+)
+from resources.lib.http_util import (
+    format_request_error as _format_request_error,
+)
+from resources.lib.http_util import (
+    get_xml_text as _get_text,
+)
+from resources.lib.http_util import (
+    http_get as _http_get,
+)
 
 NEWZNAB_NS = "http://www.newznab.com/DTD/2010/feeds/attributes/"
 
 
-def _format_request_error(error):
-    """
-    Extract a concise message from an exception or error-like object.
-
-    Parameters:
-        error: An exception or object that may have a `reason` attribute.
-
-    Returns:
-        str: The extracted message — `str(error.reason)` if `error.reason`
-            is present and truthy, otherwise `str(error)`.
-    """
-    reason = getattr(error, "reason", None)
-    if reason:
-        return str(reason)
-    return str(error)
+# _format_request_error, _get_text, _calculate_age imported from
+# resources.lib.http_util above; definitions removed to eliminate
+# hydra.py ↔ prowlarr.py duplication.
 
 
 def _prowlarr_unavailable_error(error):
@@ -292,53 +291,4 @@ def _parse_results_checked(xml_text):
     return results, None
 
 
-def _get_text(element, tag):
-    """
-    Return the text content of the first matching child element or an empty string.
-
-    Parameters:
-        element (xml.etree.ElementTree.Element): Parent XML element to search within.
-        tag (str): Tag name of the child element to find.
-
-    Returns:
-        str: The child element's text if present and non-empty, otherwise
-            an empty string.
-    """
-    child = element.find(tag)
-    if child is not None and child.text:
-        return child.text
-    return ""
-
-
-def _calculate_age(pubdate_str):
-    """
-    Return a human-readable age string computed from an RFC 2822 date-time.
-
-    Parameters:
-        pubdate_str (str): RFC 2822 formatted date-time string
-            (e.g., 'Mon, 02 Jan 2006 15:04:05 -0700').
-
-    Returns:
-        str: Age as 'today', '1 day', '<n> days', '1 month', '<n> months',
-            or an empty string if the input cannot be parsed.
-    """
-    from datetime import datetime, timezone
-    from email.utils import parsedate_to_datetime
-
-    try:
-        pub = parsedate_to_datetime(pubdate_str)
-        now = datetime.now(timezone.utc)
-        delta = now - pub
-        days = delta.days
-        if days == 0:
-            return "today"
-        if days == 1:
-            return "1 day"
-        if days < 30:
-            return "{} days".format(days)
-        months = days // 30
-        if months == 1:
-            return "1 month"
-        return "{} months".format(months)
-    except (OverflowError, TypeError, ValueError):
-        return ""
+# _get_text and _calculate_age imported from resources.lib.http_util.
