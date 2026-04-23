@@ -21,6 +21,7 @@ import subprocess
 import threading
 import time
 import uuid
+from collections import deque
 from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn as _ThreadingMixIn
@@ -100,12 +101,29 @@ _MAX_RECOVERY_SECONDS = 30
 # Cap zero-filled bytes per response to prevent runaway silent playback when
 # an NZB is mostly corrupt. 64 MB ≈ several seconds of 4K REMUX video.
 _MAX_TOTAL_ZERO_FILL = 67108864
+# Density breaker: abort if the recent recovery window becomes mostly synthetic
+# data instead of real upstream bytes.
+_DENSITY_BREAKER_WINDOW_BYTES = 16 * 1024 * 1024
+_DENSITY_BREAKER_ZERO_FILL_RATIO = 0.5
 # Chunk size for reading from the upstream HTTP response in _serve_proxy.
 # Kept small (64 KB) because on 32-bit Kodi the address space is ~3 GB and
 # Kodi's CFileCache can reserve up to ~1.5 GB on its own. A 1 MB read
 # buffer has been observed to hit MemoryError when a second proxy
 # connection opens during Kodi's CCurlFile reconnect-on-error recovery.
 _UPSTREAM_READ_CHUNK = 65536
+
+_STRICT_CONTRACT_MODE_OFF = "off"
+_STRICT_CONTRACT_MODE_WARN = "warn"
+_STRICT_CONTRACT_MODE_ENFORCE = "enforce"
+
+_UPSTREAM_RANGE_OK = "OK"
+_UPSTREAM_RANGE_SHORT_READ_RECOVERABLE = "SHORT_READ_RECOVERABLE"
+_UPSTREAM_RANGE_PROTOCOL_MISMATCH = "PROTOCOL_MISMATCH"
+_UPSTREAM_RANGE_UPSTREAM_ERROR = "UPSTREAM_ERROR"
+
+_SESSION_ZERO_FILL_RATIO_MAX = 0.05
+_RECOVERY_NOTIFY_DEBOUNCE_SECONDS = 60.0
+_RANGE_RETRY_DELAYS = (2, 4, 8)
 
 # Shared zero buffer reused across all pass-through responses.
 _ZERO_FILL_BUFFER = bytes(65536)
@@ -238,21 +256,62 @@ def _find_ffprobe():
 # set `force_remux_threshold_mb` in the addon settings to raise the bar
 # further (or to 0 to disable entirely and restore pure pass-through).
 _DEFAULT_FORCE_REMUX_THRESHOLD_MB = 20000
+_FORCE_REMUX_THRESHOLD_MB_MAX = 1048576
+_PREPARE_REQUEST_MAX_BYTES = 64 * 1024
+_FFMPEG_CAPABILITY_PROBE_TIMEOUT = 5
+_FMP4_HLS_CAPABILITY_MARKERS = (
+    "-hls_segment_type",
+    "-hls_fmp4_init_filename",
+)
+
+
+def _clamp_int_setting(setting_id, value, lo, hi):
+    """Clamp an integer setting and log when user input was out of range."""
+    clamped = value
+    if value < lo:
+        clamped = lo
+    elif value > hi:
+        clamped = hi
+    if clamped != value:
+        xbmc.log(
+            "NZB-DAV: Setting {}={} out of range [{}..{}]; clamping to {}".format(
+                setting_id, value, lo, hi, clamped
+            ),
+            xbmc.LOGWARNING,
+        )
+    return clamped
+
+
+def _get_addon_setting(setting_id):
+    """Best-effort addon setting lookup for proxy feature flags."""
+    try:
+        import xbmcaddon
+
+        return xbmcaddon.Addon().getSetting(setting_id)
+    except Exception:  # noqa: BLE001 — Kodi module may not exist
+        return None
+
+
+def _get_server_context_lock(server):
+    """Return the proxy's context lock when the handler is attached to one."""
+    server_state = getattr(server, "__dict__", None)
+    if not isinstance(server_state, dict):
+        return None
+    owner_proxy = server_state.get("owner_proxy")
+    return getattr(owner_proxy, "_context_lock", None)
 
 
 def _get_force_remux_threshold_bytes():
     """Return the remux-force threshold in bytes, or 0 to disable."""
-    try:
-        import xbmcaddon
-
-        raw = xbmcaddon.Addon().getSetting("force_remux_threshold_mb")
-    except Exception:  # noqa: BLE001 — Kodi module may not exist
-        raw = None
+    raw = _get_addon_setting("force_remux_threshold_mb")
     try:
         mb = int(raw) if raw not in (None, "") else _DEFAULT_FORCE_REMUX_THRESHOLD_MB
     except (TypeError, ValueError):
         mb = _DEFAULT_FORCE_REMUX_THRESHOLD_MB
-    if mb <= 0:
+    mb = _clamp_int_setting(
+        "force_remux_threshold_mb", mb, 0, _FORCE_REMUX_THRESHOLD_MB_MAX
+    )
+    if mb == 0:
         return 0
     return mb * 1024 * 1024
 
@@ -264,13 +323,246 @@ def _get_force_remux_mode():
     '1' -> 'hls_fmp4' (experimental, DV-capable).
     Any other value -> 'matroska' (safe fall-through).
     """
-    try:
-        import xbmcaddon
-
-        raw = xbmcaddon.Addon().getSetting("force_remux_mode")
-    except Exception:  # noqa: BLE001 — Kodi module may not exist
+    raw = _get_addon_setting("force_remux_mode")
+    if raw is None:
         return "matroska"
     return "hls_fmp4" if raw == "1" else "matroska"
+
+
+def _get_strict_contract_mode():
+    """Return off/warn/enforce for upstream response validation."""
+    raw = _get_addon_setting("strict_contract_mode")
+    key = str(raw).strip().lower() if raw is not None else ""
+    mapping = {
+        "0": _STRICT_CONTRACT_MODE_OFF,
+        _STRICT_CONTRACT_MODE_OFF: _STRICT_CONTRACT_MODE_OFF,
+        "1": _STRICT_CONTRACT_MODE_WARN,
+        _STRICT_CONTRACT_MODE_WARN: _STRICT_CONTRACT_MODE_WARN,
+        "2": _STRICT_CONTRACT_MODE_ENFORCE,
+        _STRICT_CONTRACT_MODE_ENFORCE: _STRICT_CONTRACT_MODE_ENFORCE,
+    }
+    return mapping.get(key, _STRICT_CONTRACT_MODE_WARN)
+
+
+def _get_bool_setting(setting_id, default=False):
+    """Return a Kodi bool-like setting with a safe default."""
+    raw = _get_addon_setting(setting_id)
+    if raw in (None, ""):
+        return default
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _density_breaker_enabled(contract_mode=None):
+    """Return True when the recovery density breaker should run."""
+    mode = contract_mode or _get_strict_contract_mode()
+    if mode == _STRICT_CONTRACT_MODE_OFF:
+        return False
+    return _get_bool_setting("density_breaker_enabled", default=False)
+
+
+def _zero_fill_budget_enabled():
+    return _get_bool_setting("zero_fill_budget_enabled", default=True)
+
+
+def _retry_ladder_enabled():
+    return _get_bool_setting("retry_ladder_enabled", default=True)
+
+
+def _send_200_no_range_enabled():
+    return _get_bool_setting("send_200_no_range", default=False)
+
+
+def _expected_content_range(start, end, content_length):
+    return "bytes {}-{}/{}".format(start, end, content_length)
+
+
+def _get_header(resp, name):
+    headers = getattr(resp, "headers", None)
+    if headers is None:
+        return None
+    return headers.get(name)
+
+
+def _classify_contract_mismatch(
+    status, content_range, content_length, start, end, total
+):
+    """Classify upstream header contract issues as hard or soft mismatches."""
+    expected_length = end - start + 1
+    expected_range = _expected_content_range(start, end, total)
+    is_full_object = start == 0 and end == total - 1
+    problems = []
+    hard = False
+
+    if status != 206:
+        problems.append("status={} expected=206".format(status))
+        if not (status == 200 and is_full_object):
+            hard = True
+
+    if status == 206:
+        if content_range in (None, ""):
+            problems.append(
+                "Content-Range missing expected={!r}".format(expected_range)
+            )
+        elif content_range != expected_range:
+            problems.append(
+                "Content-Range={!r} expected={!r}".format(content_range, expected_range)
+            )
+            hard = True
+    elif (
+        status != 206
+        and content_range not in (None, "")
+        and content_range != expected_range
+    ):
+        problems.append(
+            "Content-Range={!r} expected={!r}".format(content_range, expected_range)
+        )
+        if not (status == 200 and is_full_object):
+            hard = True
+
+    if content_length != str(expected_length):
+        problems.append(
+            "Content-Length={!r} expected={!r}".format(
+                content_length, str(expected_length)
+            )
+        )
+
+    if not problems:
+        return None, False
+    return "; ".join(problems), hard
+
+
+def _log_contract_mismatch(start, end, status, content_range, content_length, detail):
+    xbmc.log(
+        "NZB-DAV: Upstream contract mismatch for {}-{} status={} "
+        "Content-Range={!r} Content-Length={!r} detail={} "
+        "(reason=protocol_mismatch)".format(
+            start, end, status, content_range, content_length, detail
+        ),
+        xbmc.LOGWARNING,
+    )
+
+
+def _record_density_window(window, kind, count):
+    """Track recent forward progress vs. zero-fill bytes in a fixed window."""
+    if count <= 0:
+        return
+    window.append([kind, count])
+    total = sum(item[1] for item in window)
+    while total > _DENSITY_BREAKER_WINDOW_BYTES and window:
+        overflow = total - _DENSITY_BREAKER_WINDOW_BYTES
+        head = window[0]
+        trim = min(head[1], overflow)
+        head[1] -= trim
+        total -= trim
+        if head[1] == 0:
+            window.popleft()
+
+
+def _density_ratio(window):
+    total = sum(item[1] for item in window)
+    if total <= 0:
+        return 0.0
+    zero_fill = sum(item[1] for item in window if item[0] == "zero_fill")
+    return float(zero_fill) / float(total)
+
+
+def _would_trip_density_breaker(window, skip):
+    if skip <= 0:
+        return False
+    trial = deque([item[:] for item in window])
+    _record_density_window(trial, "zero_fill", skip)
+    return _density_ratio(trial) > _DENSITY_BREAKER_ZERO_FILL_RATIO
+
+
+def _read_session_recovery_state(ctx):
+    return {
+        "streamed": int(ctx.get("session_streamed_bytes", 0) or 0),
+        "zero_fill": int(ctx.get("session_zero_fill_bytes", 0) or 0),
+        "recoveries": int(ctx.get("session_recovery_count", 0) or 0),
+        "last_notify": float(ctx.get("last_recovery_notify_at", 0) or 0),
+    }
+
+
+def _update_session_recovery_state(server, ctx, streamed=0, zero_fill=0, recoveries=0):
+    """Apply session-level recovery counters under the proxy context lock."""
+    context_lock = _get_server_context_lock(server)
+
+    def _update():
+        state = _read_session_recovery_state(ctx)
+        state["streamed"] += streamed
+        state["zero_fill"] += zero_fill
+        state["recoveries"] += recoveries
+        ctx["session_streamed_bytes"] = state["streamed"]
+        ctx["session_zero_fill_bytes"] = state["zero_fill"]
+        ctx["session_recovery_count"] = state["recoveries"]
+        return state
+
+    if context_lock is None:
+        return _update()
+    with context_lock:
+        return _update()
+
+
+def _project_session_zero_fill_ratio(
+    server, ctx, extra_zero_fill=0, extra_recoveries=0
+):
+    """Return the projected session zero-fill ratio if another gap is skipped."""
+    context_lock = _get_server_context_lock(server)
+
+    def _project():
+        state = _read_session_recovery_state(ctx)
+        projected_zero_fill = state["zero_fill"] + extra_zero_fill
+        projected_recoveries = state["recoveries"] + extra_recoveries
+        denominator = max(
+            int(ctx.get("content_length", 0) or 0),
+            state["streamed"] + projected_zero_fill,
+        )
+        ratio = float(projected_zero_fill) / float(denominator or 1)
+        return projected_zero_fill, projected_recoveries, ratio
+
+    if context_lock is None:
+        return _project()
+    with context_lock:
+        return _project()
+
+
+def _maybe_notify_recovery_summary(
+    server, ctx, zero_fill_bytes=None, recovery_count=None
+):
+    """Send a debounced recovery summary notification for this session."""
+    context_lock = _get_server_context_lock(server)
+    now = time.time()
+
+    def _prepare():
+        state = _read_session_recovery_state(ctx)
+        skipped = state["zero_fill"] if zero_fill_bytes is None else zero_fill_bytes
+        recoveries = state["recoveries"] if recovery_count is None else recovery_count
+        if recoveries <= 0:
+            return None
+        if state["last_notify"] and (
+            now - state["last_notify"] < _RECOVERY_NOTIFY_DEBOUNCE_SECONDS
+        ):
+            return None
+        ctx["last_recovery_notify_at"] = now
+        return skipped, recoveries
+
+    if context_lock is None:
+        payload = _prepare()
+    else:
+        with context_lock:
+            payload = _prepare()
+
+    if payload is None:
+        return False
+    skipped, recoveries = payload
+    try:
+        _notify(
+            "NZB-DAV",
+            "Skipped {} bytes across {} recoveries".format(skipped, recoveries),
+        )
+    except (RuntimeError, OSError):
+        return False
+    return True
 
 
 def _validate_url(url):
@@ -440,8 +732,12 @@ class _StreamHandler(BaseHTTPRequestHandler):
         """
         raw_path = getattr(self, "path", "/stream")
         path = raw_path.split("?", 1)[0]
+        context_lock = _get_server_context_lock(getattr(self, "server", None))
         if path in ("", "/stream"):
-            return getattr(self.server, "stream_context", None)
+            if context_lock is None:
+                return getattr(self.server, "stream_context", None)
+            with context_lock:
+                return getattr(self.server, "stream_context", None)
 
         session_id = None
         if path.startswith("/stream/"):
@@ -456,11 +752,19 @@ class _StreamHandler(BaseHTTPRequestHandler):
         else:
             return None
 
-        sessions = getattr(self.server, "stream_sessions", {})
-        ctx = sessions.get(session_id)
-        if ctx is not None:
-            ctx["last_access"] = time.time()
-        return ctx
+        if context_lock is None:
+            sessions = getattr(self.server, "stream_sessions", {})
+            ctx = sessions.get(session_id)
+            if ctx is not None:
+                ctx["last_access"] = time.time()
+            return ctx
+
+        with context_lock:
+            sessions = getattr(self.server, "stream_sessions", {})
+            ctx = sessions.get(session_id)
+            if ctx is not None:
+                ctx["last_access"] = time.time()
+            return ctx
 
     @staticmethod
     def _parse_hls_resource(path):
@@ -517,7 +821,17 @@ class _StreamHandler(BaseHTTPRequestHandler):
         if self.path.split("?", 1)[0] != "/prepare":
             self.send_error(404)
             return
-        length = int(self.headers.get("Content-Length", 0))
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except (TypeError, ValueError):
+            self.send_error(400)
+            return
+        if length < 0:
+            self.send_error(400)
+            return
+        if length > _PREPARE_REQUEST_MAX_BYTES:
+            self.send_error(413)
+            return
         body = self.rfile.read(length) if length else b""
         try:
             data = json.loads(body)
@@ -692,7 +1006,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
         ffmpeg = ctx["ffmpeg_path"]
         input_url = ctx["remote_url"]
         _validate_url(input_url)
-        input_url = _embed_auth_in_url(input_url, ctx.get("auth_header"))
+        auth_args = _ffmpeg_auth_args(ctx.get("auth_header"))
         output_format = ctx.get("output_format", "matroska")
 
         cmd = [ffmpeg]
@@ -706,6 +1020,12 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 "1",
                 "-reconnect_streamed",
                 "1",
+            ]
+        )
+        if auth_args:
+            cmd.extend(auth_args)
+        cmd.extend(
+            [
                 "-i",
                 input_url,
                 "-map",
@@ -976,9 +1296,12 @@ class _StreamHandler(BaseHTTPRequestHandler):
         range_header = self.headers.get("Range")
         requested_start = 0
         if range_header:
-            parsed = self._parse_range(range_header, total_bytes or 1)
-            if parsed[0] is not None:
-                requested_start = parsed[0]
+            requested_start, _requested_end = self._parse_range(
+                range_header, total_bytes or 1
+            )
+            if requested_start is None:
+                self.send_error(416)
+                return
 
         seek_seconds = self._resolve_seek(ctx, requested_start, total_bytes)
 
@@ -1324,8 +1647,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
         ffmpeg = ctx["ffmpeg_path"]
         input_url = ctx["remote_url"]
         _validate_url(input_url)
-        input_url = _embed_auth_in_url(input_url, ctx.get("auth_header"))
-        return [
+        auth_args = _ffmpeg_auth_args(ctx.get("auth_header"))
+        cmd = [
             ffmpeg,
             "-v",
             "warning",
@@ -1343,21 +1666,28 @@ class _StreamHandler(BaseHTTPRequestHandler):
             "1",
             "-reconnect_streamed",
             "1",
-            "-i",
-            input_url,
-            "-map",
-            "0:v:0",
-            "-map",
-            "0:a",
-            "-c:v",
-            "copy",
-            "-c:a",
-            "copy",
-            "-sn",
-            "-f",
-            "mpegts",
-            "pipe:1",
         ]
+        if auth_args:
+            cmd.extend(auth_args)
+        cmd.extend(
+            [
+                "-i",
+                input_url,
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "copy",
+                "-sn",
+                "-f",
+                "mpegts",
+                "pipe:1",
+            ]
+        )
+        return cmd
 
     def _serve_proxy(self, ctx):
         """Proxy range requests to remote with missing-article recovery.
@@ -1382,13 +1712,15 @@ class _StreamHandler(BaseHTTPRequestHandler):
             start, end = 0, content_length - 1
 
         total_bytes = end - start + 1
-        self.send_response(206)
+        no_range_status = range_header is None and _send_200_no_range_enabled()
+        self.send_response(200 if no_range_status else 206)
         self.send_header("Content-Type", ctx["content_type"])
         self.send_header("Content-Length", str(total_bytes))
         self.send_header("Accept-Ranges", "bytes")
-        self.send_header(
-            "Content-Range", "bytes {}-{}/{}".format(start, end, content_length)
-        )
+        if not no_range_status:
+            self.send_header(
+                "Content-Range", "bytes {}-{}/{}".format(start, end, content_length)
+            )
         # Force Connection: close on pass-through.  Kodi's CCurlFile opens a
         # fresh TCP connection on every seek / retry, so keep-alive provides
         # no benefit here.  But when Kodi reconnects after a CCurlFile error,
@@ -1418,36 +1750,139 @@ class _StreamHandler(BaseHTTPRequestHandler):
             pass
 
         current = start
+        total_streamed = 0
         total_skipped = 0
+        recovery_count = 0
+        terminal_reason = "complete"
+        contract_mode = _get_strict_contract_mode()
+        density_breaker_enabled = _density_breaker_enabled(contract_mode)
+        zero_fill_budget_enabled = _zero_fill_budget_enabled()
+        retry_ladder_enabled = _retry_ladder_enabled()
+        density_window = deque()
 
         try:
             while current <= end:
-                written = self._stream_upstream_range(ctx, current, end)
+                result, written = self._stream_upstream_range(
+                    ctx, current, end, contract_mode=contract_mode
+                )
+                total_streamed += written
+                _update_session_recovery_state(self.server, ctx, streamed=written)
+                _record_density_window(density_window, "progress", written)
                 current += written
                 if current > end:
                     return
 
+                if retry_ladder_enabled and result in (
+                    _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE,
+                    _UPSTREAM_RANGE_UPSTREAM_ERROR,
+                ):
+                    (
+                        result,
+                        retry_written,
+                        current,
+                    ) = self._retry_original_range(ctx, current, end, contract_mode)
+                    total_streamed += retry_written
+                    _update_session_recovery_state(
+                        self.server, ctx, streamed=retry_written
+                    )
+                    _record_density_window(density_window, "progress", retry_written)
+                    if current > end:
+                        return
+
                 remaining = end - current + 1
                 skip = self._find_skip_offset(ctx, current, end)
 
-                if skip is None or total_skipped + skip > _MAX_TOTAL_ZERO_FILL:
+                if skip is None or (
+                    zero_fill_budget_enabled
+                    and total_skipped + skip > _MAX_TOTAL_ZERO_FILL
+                ):
+                    terminal_reason = "recovery_exhausted"
                     xbmc.log(
                         "NZB-DAV: Zero-fill recovery exhausted at byte {} "
-                        "(filling remaining {} bytes)".format(current, remaining),
+                        "(filling remaining {} bytes, reason={})".format(
+                            current, remaining, terminal_reason
+                        ),
                         xbmc.LOGERROR,
                     )
                     self._write_zeros(remaining)
+                    total_skipped += remaining
                     return
+
+                if density_breaker_enabled and _would_trip_density_breaker(
+                    density_window, skip
+                ):
+                    terminal_reason = "density_breaker_tripped"
+                    xbmc.log(
+                        "NZB-DAV: Recovery density breaker tripped at byte {} "
+                        "(result={}, skip={}, ratio={:.2f}, reason={})".format(
+                            current,
+                            result,
+                            skip,
+                            _density_ratio(density_window),
+                            terminal_reason,
+                        ),
+                        xbmc.LOGWARNING,
+                    )
+                    try:
+                        _notify(
+                            "NZB-DAV",
+                            "Stream aborted after repeated zero-fill recovery",
+                        )
+                    except (RuntimeError, OSError):
+                        pass
+                    return
+
+                projected_zero_fill = None
+                projected_recoveries = None
+                projected_ratio = None
+                if zero_fill_budget_enabled:
+                    (
+                        projected_zero_fill,
+                        projected_recoveries,
+                        projected_ratio,
+                    ) = _project_session_zero_fill_ratio(
+                        self.server, ctx, extra_zero_fill=skip, extra_recoveries=1
+                    )
+                    if projected_ratio > _SESSION_ZERO_FILL_RATIO_MAX:
+                        terminal_reason = "session_zero_fill_budget_exceeded"
+                        xbmc.log(
+                            "NZB-DAV: Session zero-fill budget exceeded at byte {} "
+                            "(projected_ratio={:.3f}, skipped={}, recoveries={}, "
+                            "reason={})".format(
+                                current,
+                                projected_ratio,
+                                projected_zero_fill,
+                                projected_recoveries,
+                                terminal_reason,
+                            ),
+                            xbmc.LOGWARNING,
+                        )
+                        _maybe_notify_recovery_summary(
+                            self.server,
+                            ctx,
+                            zero_fill_bytes=projected_zero_fill,
+                            recovery_count=projected_recoveries,
+                        )
+                        return
 
                 self._write_zeros(skip)
                 total_skipped += skip
+                recovery_count += 1
                 current += skip
+                _record_density_window(density_window, "zero_fill", skip)
+                _update_session_recovery_state(
+                    self.server, ctx, zero_fill=skip, recoveries=1
+                )
+                _maybe_notify_recovery_summary(self.server, ctx)
                 xbmc.log(
                     "NZB-DAV: Zero-filled {} bytes at offset {} to skip bad "
-                    "usenet articles".format(skip, current - skip),
+                    "usenet articles (reason=zero_fill_resume)".format(
+                        skip, current - skip
+                    ),
                     xbmc.LOGWARNING,
                 )
         except (BrokenPipeError, ConnectionResetError, _socket.timeout):
+            terminal_reason = "client_disconnected"
             # socket.timeout means Kodi stopped reading from us for longer
             # than _REMUX_WRITE_TIMEOUT — usually a long DB vacuum or the
             # decoder otherwise stalling.  Unwind the handler and let
@@ -1455,34 +1890,103 @@ class _StreamHandler(BaseHTTPRequestHandler):
             # reconnect if it still wants bytes.
             xbmc.log(
                 "NZB-DAV: Pass-through write aborted at byte {} "
-                "(client stalled or disconnected)".format(current),
+                "(client stalled or disconnected, reason={})".format(
+                    current, terminal_reason
+                ),
                 xbmc.LOGWARNING,
             )
+        finally:
+            xbmc.log(
+                "NZB-DAV: Pass-through summary reason={} range={}-{} "
+                "streamed={} zero_fill={} recoveries={}".format(
+                    terminal_reason,
+                    start,
+                    end,
+                    total_streamed,
+                    total_skipped,
+                    recovery_count,
+                ),
+                xbmc.LOGINFO if terminal_reason == "complete" else xbmc.LOGWARNING,
+            )
 
-    def _stream_upstream_range(self, ctx, start, end):
+    def _retry_original_range(self, ctx, start, end, contract_mode):
+        """Retry the still-unread upstream range before falling back to skip."""
+        current = start
+        total_written = 0
+        last_result = _UPSTREAM_RANGE_UPSTREAM_ERROR
+
+        for delay in _RANGE_RETRY_DELAYS:
+            time.sleep(delay)
+            result, written = self._stream_upstream_range(
+                ctx, current, end, contract_mode=contract_mode
+            )
+            total_written += written
+            current += written
+            last_result = result
+            if current > end:
+                return result, total_written, current
+            if result not in (
+                _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE,
+                _UPSTREAM_RANGE_UPSTREAM_ERROR,
+            ):
+                return result, total_written, current
+
+        return last_result, total_written, current
+
+    def _stream_upstream_range(self, ctx, start, end, contract_mode=None):
         """Stream bytes from upstream to the client.
 
-        Returns the count of bytes successfully written to the client.
-        A short return indicates upstream failed or went silent; the caller
-        is responsible for recovery. BrokenPipeError / ConnectionResetError
-        propagate out so the caller can abort cleanly.
+        Returns ``(result_enum, written_bytes)`` where ``result_enum`` is one
+        of OK / SHORT_READ_RECOVERABLE / PROTOCOL_MISMATCH / UPSTREAM_ERROR.
+        BrokenPipeError / ConnectionResetError propagate out so the caller can
+        abort cleanly.
         """
         req = Request(ctx["remote_url"])
         req.add_header("Range", "bytes={}-{}".format(start, end))
         if ctx.get("auth_header"):
             req.add_header("Authorization", ctx["auth_header"])
 
+        contract_mode = contract_mode or _get_strict_contract_mode()
+        requested = end - start + 1
         written = 0
         try:
             resp = urlopen(req, timeout=_UPSTREAM_OPEN_TIMEOUT)  # nosec B310
         except (OSError, ValueError) as e:
             xbmc.log(
-                "NZB-DAV: Proxy upstream open failed at byte {}: {}".format(start, e),
+                "NZB-DAV: Proxy upstream open failed at byte {}: {} "
+                "(reason=upstream_open_failed)".format(start, e),
                 xbmc.LOGWARNING,
             )
-            return 0
+            return _UPSTREAM_RANGE_UPSTREAM_ERROR, 0
 
         try:
+            status = getattr(resp, "status", None) or resp.getcode()
+            content_range = _get_header(resp, "Content-Range")
+            content_length = _get_header(resp, "Content-Length")
+            mismatch_detail = None
+            hard_mismatch = False
+
+            if contract_mode != _STRICT_CONTRACT_MODE_OFF:
+                mismatch_detail, hard_mismatch = _classify_contract_mismatch(
+                    status,
+                    content_range,
+                    content_length,
+                    start,
+                    end,
+                    ctx["content_length"],
+                )
+                if mismatch_detail:
+                    _log_contract_mismatch(
+                        start,
+                        end,
+                        status,
+                        content_range,
+                        content_length,
+                        mismatch_detail,
+                    )
+                    if contract_mode == _STRICT_CONTRACT_MODE_ENFORCE or hard_mismatch:
+                        return _UPSTREAM_RANGE_PROTOCOL_MISMATCH, 0
+
             while True:
                 try:
                     # 64 KB chunks — on 32-bit Kodi the whole process has
@@ -1497,12 +2001,59 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     xbmc.log(
                         "NZB-DAV: Proxy upstream read failed at byte {}: {}".format(
                             start + written, e
+                        )
+                        + " (reason=upstream_read_failed)",
+                        xbmc.LOGWARNING,
+                    )
+                    if written:
+                        xbmc.log(
+                            "NZB-DAV: Upstream short read for {}-{} wrote={} "
+                            "status={} Content-Range={!r} Content-Length={!r} "
+                            "(reason=short_read_recoverable)".format(
+                                start,
+                                end,
+                                written,
+                                status,
+                                content_range,
+                                content_length,
+                            ),
+                            xbmc.LOGWARNING,
+                        )
+                        return _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, written
+                    return _UPSTREAM_RANGE_UPSTREAM_ERROR, 0
+                if not chunk:
+                    if written == requested:
+                        if mismatch_detail:
+                            return _UPSTREAM_RANGE_PROTOCOL_MISMATCH, written
+                        return _UPSTREAM_RANGE_OK, written
+                    xbmc.log(
+                        "NZB-DAV: Upstream short read for {}-{} wrote={} "
+                        "expected={} status={} Content-Range={!r} "
+                        "Content-Length={!r} (reason=short_read_recoverable)".format(
+                            start,
+                            end,
+                            written,
+                            requested,
+                            status,
+                            content_range,
+                            content_length,
                         ),
                         xbmc.LOGWARNING,
                     )
-                    return written
-                if not chunk:
-                    return written
+                    return _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, written
+                remaining = requested - written
+                if len(chunk) > remaining:
+                    chunk = chunk[:remaining]
+                    mismatch_detail = mismatch_detail or "read beyond requested range"
+                    if contract_mode != _STRICT_CONTRACT_MODE_OFF:
+                        _log_contract_mismatch(
+                            start,
+                            end,
+                            status,
+                            content_range,
+                            content_length,
+                            mismatch_detail,
+                        )
                 self.wfile.write(chunk)
                 written += len(chunk)
         finally:
@@ -1574,13 +2125,29 @@ class _StreamHandler(BaseHTTPRequestHandler):
     def _parse_range(range_header, content_length):
         """Parse Range header, return (start, end) or (None, None)."""
         try:
-            range_spec = range_header.replace("bytes=", "")
+            if content_length <= 0:
+                return None, None
+            if not isinstance(range_header, str) or not range_header.startswith(
+                "bytes="
+            ):
+                return None, None
+            range_spec = range_header[len("bytes=") :].strip()
+            if "," in range_spec or "-" not in range_spec:
+                return None, None
             if range_spec.startswith("-"):
                 suffix = int(range_spec[1:])
+                if suffix <= 0 or suffix > content_length:
+                    return None, None
                 return content_length - suffix, content_length - 1
-            parts = range_spec.split("-")
-            start = int(parts[0])
-            end = int(parts[1]) if parts[1] else content_length - 1
+            start_text, end_text = range_spec.split("-", 1)
+            if not start_text:
+                return None, None
+            start = int(start_text)
+            if start < 0 or start >= content_length:
+                return None, None
+            end = int(end_text) if end_text else content_length - 1
+            if end < start:
+                return None, None
             return start, min(end, content_length - 1)
         except (ValueError, IndexError):
             return None, None
@@ -2413,13 +2980,15 @@ class StreamProxy:
         self._server = None
         self._thread = None
         self.port = 0
-        self._context_lock = threading.Lock()
+        self._context_lock = threading.RLock()
+        self._ffmpeg_capabilities = None
 
     def start(self):
         """Start the proxy server on a random port."""
         self._server = _ThreadedHTTPServer(("127.0.0.1", 0), _StreamHandler)
         self._server.owner_proxy = self
         self.port = self._server.server_address[1]
+        self._refresh_ffmpeg_capabilities()
         self._thread = threading.Thread(target=self._server.serve_forever)
         self._thread.daemon = True
         self._thread.start()
@@ -2523,6 +3092,85 @@ class StreamProxy:
                     xbmc.LOGWARNING,
                 )
 
+    @staticmethod
+    def _probe_hls_fmp4_capability(ffmpeg_path):
+        """Return True when ffmpeg exposes the HLS fMP4 muxer flags we use."""
+        if not ffmpeg_path:
+            return False
+        cmd = [ffmpeg_path, "-hide_banner", "-h", "muxer=hls"]
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                shell=False,
+            )
+            try:
+                output = proc.communicate(timeout=_FFMPEG_CAPABILITY_PROBE_TIMEOUT)
+                if not isinstance(output, (tuple, list)) or len(output) != 2:
+                    raise ValueError("invalid ffmpeg capability probe output")
+                stdout, stderr = output
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                stdout, stderr = proc.communicate()
+                xbmc.log(
+                    "NZB-DAV: ffmpeg capability probe timed out for {}".format(
+                        ffmpeg_path
+                    ),
+                    xbmc.LOGWARNING,
+                )
+                return False
+        except (OSError, ValueError, subprocess.SubprocessError) as e:
+            xbmc.log(
+                "NZB-DAV: ffmpeg capability probe failed for {}: {}".format(
+                    ffmpeg_path, e
+                ),
+                xbmc.LOGWARNING,
+            )
+            return False
+
+        output = ((stdout or b"") + b"\n" + (stderr or b"")).decode(
+            "utf-8", errors="ignore"
+        )
+        supported = all(marker in output for marker in _FMP4_HLS_CAPABILITY_MARKERS)
+        xbmc.log(
+            "NZB-DAV: ffmpeg fmp4 HLS capability {} ({})".format(
+                "present" if supported else "absent", ffmpeg_path
+            ),
+            xbmc.LOGINFO if supported else xbmc.LOGWARNING,
+        )
+        return supported
+
+    def _refresh_ffmpeg_capabilities(self):
+        """Discover ffmpeg once so service-start logs show the active muxers."""
+        ffmpeg_path = _find_ffmpeg()
+        capabilities = {
+            "ffmpeg_path": ffmpeg_path,
+            "hls_fmp4": self._probe_hls_fmp4_capability(ffmpeg_path),
+        }
+        self._ffmpeg_capabilities = capabilities
+        return capabilities
+
+    def _get_ffmpeg_capabilities(self):
+        """Return cached ffmpeg capabilities, probing lazily if needed."""
+        capabilities = getattr(self, "_ffmpeg_capabilities", None)
+        if isinstance(capabilities, dict):
+            return capabilities
+        ffmpeg_path = _find_ffmpeg()
+        return {
+            "ffmpeg_path": ffmpeg_path,
+            "hls_fmp4": bool(ffmpeg_path),
+        }
+
+    def _assert_context_lock_owned(self):
+        """Best-effort debug guard for helpers that require _context_lock."""
+        if not __debug__:
+            return
+        context_lock = getattr(self, "_context_lock", None)
+        is_owned = getattr(context_lock, "_is_owned", None)
+        if callable(is_owned) and not is_owned():
+            raise AssertionError("_prune_sessions_locked requires _context_lock")
+
     def _register_session(self, ctx):
         """Store a per-stream context and return its unique proxy URL.
 
@@ -2608,6 +3256,7 @@ class StreamProxy:
 
     def _prune_sessions_locked(self, keep_session=None):
         """Drop expired sessions and cap the total number retained."""
+        self._assert_context_lock_owned()
         sessions = getattr(self._server, "stream_sessions", {})
         now = time.time()
 
@@ -2707,7 +3356,7 @@ class StreamProxy:
                 # Skip for large files (>4GB) — temp remux would take too long
                 # and would time out the prepare_stream_via_service call.
                 _TEMP_FASTSTART_MAX = 4 * 1073741824  # 4 GB
-                ffmpeg_path = _find_ffmpeg()
+                ffmpeg_path = self._get_ffmpeg_capabilities().get("ffmpeg_path")
                 if content_length > _TEMP_FASTSTART_MAX:
                     xbmc.log(
                         "NZB-DAV: File too large for temp-file faststart "
@@ -2773,7 +3422,8 @@ class StreamProxy:
             content_length = self._get_content_length(remote_url, auth_header)
             threshold = _get_force_remux_threshold_bytes()
             needs_remux = bool(threshold) and content_length >= threshold
-            ffmpeg_path = _find_ffmpeg() if needs_remux else None
+            ffmpeg_caps = self._get_ffmpeg_capabilities() if needs_remux else {}
+            ffmpeg_path = ffmpeg_caps.get("ffmpeg_path")
             if ffmpeg_path:
                 # 32-bit Kodi builds (Amlogic CoreELEC and similar) throw
                 # `Open - Unhandled exception` on pass-through HTTP when the
@@ -2797,9 +3447,18 @@ class StreamProxy:
                 duration = self._probe_duration(ffmpeg_path, remote_url, auth_header)
                 use_fmp4 = (
                     _get_force_remux_mode() == "hls_fmp4"
+                    and ffmpeg_caps.get("hls_fmp4", False)
                     and duration is not None
                     and duration > 0
                 )
+                if _get_force_remux_mode() == "hls_fmp4" and not ffmpeg_caps.get(
+                    "hls_fmp4", False
+                ):
+                    xbmc.log(
+                        "NZB-DAV: ffmpeg lacks required fmp4 HLS flags; "
+                        "falling back to piped Matroska",
+                        xbmc.LOGWARNING,
+                    )
                 if use_fmp4:
                     # Gate fmp4 HLS on DV profile. The original gate only
                     # rejected profile 7 (dual-layer FEL) on the theory
@@ -2943,35 +3602,44 @@ class StreamProxy:
             ffmpeg_path: Path to the ffmpeg binary. Used by the fallback
                 path and as the starting point for ffprobe discovery.
             url: Remote HTTP URL to probe.
-            auth_header: Optional Basic auth header; embedded into the
-                URL for the child process.
+            auth_header: Optional Basic auth header; passed to the child
+                process via ``-headers`` so the input URL stays clean.
         """
         _validate_url(url)
-        input_url = _embed_auth_in_url(url, auth_header)
+        auth_args = _ffmpeg_auth_args(auth_header)
 
         ffprobe_path = _find_ffprobe()
         if ffprobe_path:
-            result = StreamProxy._probe_duration_ffprobe(ffprobe_path, input_url)
+            result = StreamProxy._probe_duration_ffprobe(
+                ffprobe_path, url, auth_args=auth_args
+            )
             if result is not None:
                 return result
 
-        return StreamProxy._probe_duration_ffmpeg(ffmpeg_path, input_url)
+        return StreamProxy._probe_duration_ffmpeg(ffmpeg_path, url, auth_args=auth_args)
 
     @staticmethod
-    def _probe_duration_ffprobe(ffprobe_path, input_url):
+    def _probe_duration_ffprobe(ffprobe_path, input_url, auth_args=None):
         """Run ffprobe to get duration. Returns seconds or None."""
         try:
-            proc = subprocess.Popen(
+            cmd = [
+                ffprobe_path,
+                "-v",
+                "error",
+            ]
+            if auth_args:
+                cmd.extend(auth_args)
+            cmd.extend(
                 [
-                    ffprobe_path,
-                    "-v",
-                    "error",
                     "-show_entries",
                     "format=duration",
                     "-of",
                     "default=nokey=1:noprint_wrappers=1",
                     input_url,
-                ],
+                ]
+            )
+            proc = subprocess.Popen(
+                cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 shell=False,
@@ -2997,7 +3665,7 @@ class StreamProxy:
             return None
 
     @staticmethod
-    def _probe_duration_ffmpeg(ffmpeg_path, input_url):
+    def _probe_duration_ffmpeg(ffmpeg_path, input_url, auth_args=None):
         """Parse Duration out of ``ffmpeg -i`` stderr. Returns seconds or None.
 
         Uses the bounded-reader-thread pattern: a daemon thread reads
@@ -3010,7 +3678,11 @@ class StreamProxy:
         deadline — the ffmpeg process is killed before returning.
         """
         return StreamProxy._probe_ffmpeg_stderr(
-            ffmpeg_path, input_url, _parse_ffmpeg_duration, "Duration"
+            ffmpeg_path,
+            input_url,
+            _parse_ffmpeg_duration,
+            "Duration",
+            auth_args=auth_args,
         )
 
     @staticmethod
@@ -3135,7 +3807,7 @@ class StreamProxy:
             return None
 
         _validate_url(url)
-        input_url = _embed_auth_in_url(url, auth_header)
+        auth_args = _ffmpeg_auth_args(auth_header)
         fd, temp_path = tempfile.mkstemp(
             prefix="nzbdav_faststart_",
             suffix=".mp4",
@@ -3151,16 +3823,22 @@ class StreamProxy:
             "1",
             "-reconnect_streamed",
             "1",
-            "-i",
-            input_url,
-            "-map",
-            "0",
-            "-c",
-            "copy",
-            "-movflags",
-            "+faststart",
-            temp_path,
         ]
+        if auth_args:
+            cmd.extend(auth_args)
+        cmd.extend(
+            [
+                "-i",
+                url,
+                "-map",
+                "0",
+                "-c",
+                "copy",
+                "-movflags",
+                "+faststart",
+                temp_path,
+            ]
+        )
 
         try:
             xbmc.log("NZB-DAV: Temp-file faststart remux starting", xbmc.LOGINFO)

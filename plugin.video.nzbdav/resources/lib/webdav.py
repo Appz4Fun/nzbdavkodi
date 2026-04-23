@@ -36,54 +36,6 @@ def _http_head(url, username="", password=""):
         return e.code
 
 
-# LEGACY (2026-04-13): The four helpers below — build_webdav_url,
-# get_webdav_stream_url, check_file_available, and validate_stream —
-# encode the flat `{base}/{filename}` URL pattern that drove audit
-# finding C3. None of them have production callers; the real production
-# paths use `/content/...` via get_webdav_stream_url_for_path and
-# find_video_file. Do NOT use these for new probes or new playback
-# wiring — they are kept only because the C3/C4 fix spec deliberately
-# scoped their removal to a follow-up change. See
-# docs/superpowers/specs/2026-04-12-c3-c4-webdav-probe-fix-design.md
-# (Out of Scope section) for the retirement plan.
-
-
-def build_webdav_url(filename):
-    settings = _get_settings()
-    base = settings["webdav_url"] or settings["nzbdav_url"]
-    return "{}/{}".format(base, quote(filename, safe=""))
-
-
-def get_webdav_stream_url(filename):
-    settings = _get_settings()
-    base = settings["webdav_url"] or settings["nzbdav_url"]
-    url = "{}/{}".format(base, quote(filename, safe=""))
-    headers = _build_auth_headers(settings["username"], settings["password"])
-    return url, headers
-
-
-def check_file_available(filename):
-    settings = _get_settings()
-    url = build_webdav_url(filename)
-    xbmc.log("NZB-DAV: WebDAV check URL: {}".format(url), xbmc.LOGDEBUG)
-    try:
-        status = _http_head(url, settings["username"], settings["password"])
-        available = status == 200
-        xbmc.log(
-            "NZB-DAV: WebDAV check '{}': status={} available={}".format(
-                filename, status, available
-            ),
-            xbmc.LOGDEBUG,
-        )
-        return available
-    except Exception as e:
-        xbmc.log(
-            "NZB-DAV: WebDAV check failed for '{}': {}".format(filename, e),
-            xbmc.LOGERROR,
-        )
-        return False
-
-
 def probe_webdav_reachable(monitor=None, max_retries=1, retry_delay=1):
     """Probe WebDAV reachability and classify any error.
 
@@ -334,48 +286,3 @@ def check_file_in_folder(folder_path):
     if video_path:
         return video_path, None
     return None, "not_found"
-
-
-def validate_stream(filename):
-    """Verify the WebDAV file supports range requests (seekable streaming).
-
-    Returns True if the stream supports seeking, False otherwise.
-    """
-    settings = _get_settings()
-    url = build_webdav_url(filename)
-    username = settings["username"]
-    password = settings["password"]
-
-    req = Request(url, method="HEAD")
-    if username:
-        credentials = "{}:{}".format(username, password)
-        encoded = base64.b64encode(credentials.encode("utf-8")).decode("utf-8")
-        req.add_header("Authorization", "Basic {}".format(encoded))
-    req.add_header("Range", "bytes=0-0")
-
-    try:
-        with urlopen(req, timeout=10) as resp:
-            # 206 Partial Content means range requests are supported
-            # 200 OK means the server ignores range (still playable but no seeking)
-            status = resp.getcode()
-            accept_ranges = resp.headers.get("Accept-Ranges", "")
-            xbmc.log(
-                "NZB-DAV: Stream validation for '{}': "
-                "status={} Accept-Ranges={}".format(filename, status, accept_ranges),
-                xbmc.LOGDEBUG,
-            )
-            return status in (200, 206)
-    except HTTPError as e:
-        xbmc.log(
-            "NZB-DAV: Stream validation failed for '{}': HTTP {}".format(
-                filename, e.code
-            ),
-            xbmc.LOGERROR,
-        )
-        return e.code in (200, 206)
-    except Exception as e:
-        xbmc.log(
-            "NZB-DAV: Stream validation error for '{}': {}".format(filename, e),
-            xbmc.LOGERROR,
-        )
-        return False
