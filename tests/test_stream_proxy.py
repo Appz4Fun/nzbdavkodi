@@ -3,8 +3,11 @@
 
 """Unit tests for stream_proxy.py remux and range-serving logic."""
 
+import io
+import threading
 from unittest.mock import MagicMock, patch
 
+import pytest
 from resources.lib.stream_proxy import _StreamHandler
 
 # ---------------------------------------------------------------------------
@@ -39,6 +42,23 @@ def _make_handler_with_server(ctx, range_header=None, current_byte_pos=0):
     return handler
 
 
+def _make_prepare_post_handler(body=b"{}", content_length=None, path="/prepare"):
+    """Construct a minimal POST handler for /prepare tests."""
+    handler = _StreamHandler.__new__(_StreamHandler)
+    handler.path = path
+    handler.server = MagicMock()
+    handler.server.owner_proxy = MagicMock()
+    length = content_length if content_length is not None else len(body)
+    handler.headers = {"Content-Length": str(length)}
+    handler.rfile = io.BytesIO(body)
+    handler.wfile = MagicMock()
+    handler.send_response = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
+    handler.send_error = MagicMock()
+    return handler
+
+
 def test_parse_range_standard():
     h = _make_handler()
     assert h._parse_range("bytes=0-999", 10000) == (0, 999)
@@ -67,6 +87,22 @@ def test_parse_range_invalid():
 def test_parse_range_zero_start():
     h = _make_handler()
     assert h._parse_range("bytes=0-", 500) == (0, 499)
+
+
+@pytest.mark.parametrize(
+    ("range_header", "content_length"),
+    [
+        ("bytes=10-5", 1000),
+        ("bytes=-1001", 1000),
+        ("bytes=1000-", 1000),
+        ("bytes=1000-1001", 1000),
+        ("bytes=1-two", 1000),
+        ("bytes=0-1,2-3", 1000),
+    ],
+)
+def test_parse_range_rejects_malformed_invariants(range_header, content_length):
+    h = _make_handler()
+    assert h._parse_range(range_header, content_length) == (None, None)
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +227,43 @@ def test_stream_proxy_start_assigns_port():
         assert sp.port > 0
     finally:
         sp.stop()
+
+
+def test_stream_proxy_start_primes_ffmpeg_capabilities():
+    from resources.lib.stream_proxy import StreamProxy
+
+    with patch.object(
+        StreamProxy, "_refresh_ffmpeg_capabilities", return_value={}
+    ) as mock_refresh:
+        sp = StreamProxy()
+        sp.start()
+        try:
+            mock_refresh.assert_called_once_with()
+        finally:
+            sp.stop()
+
+
+def test_probe_hls_fmp4_capability_requires_required_flags():
+    from resources.lib.stream_proxy import StreamProxy
+
+    mock_proc = MagicMock()
+    mock_proc.communicate.return_value = (
+        b"  -hls_segment_type <string>\n  -hls_fmp4_init_filename <string>\n",
+        b"",
+    )
+
+    with patch("resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc):
+        assert StreamProxy._probe_hls_fmp4_capability("/usr/bin/ffmpeg") is True
+
+
+def test_probe_hls_fmp4_capability_rejects_missing_required_flags():
+    from resources.lib.stream_proxy import StreamProxy
+
+    mock_proc = MagicMock()
+    mock_proc.communicate.return_value = (b"  -hls_segment_type <string>\n", b"")
+
+    with patch("resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc):
+        assert StreamProxy._probe_hls_fmp4_capability("/usr/bin/ffmpeg") is False
 
 
 def test_stream_proxy_stop_idempotent():
@@ -416,6 +489,50 @@ def test_force_remux_threshold_default_is_nonzero():
     ), "Default threshold must remux 58 GB files (pass-through crashes)"
 
 
+@patch("resources.lib.stream_proxy.xbmc")
+def test_get_force_remux_threshold_clamps_negative_to_zero_and_logs(mock_xbmc):
+    import sys
+
+    from resources.lib.stream_proxy import _get_force_remux_threshold_bytes
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.return_value = "-1"
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        assert _get_force_remux_threshold_bytes() == 0
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    assert mock_xbmc.log.call_count == 1
+    assert "force_remux_threshold_mb" in mock_xbmc.log.call_args[0][0]
+
+
+@patch("resources.lib.stream_proxy.xbmc")
+def test_get_force_remux_threshold_clamps_typo_high_and_logs(mock_xbmc):
+    import sys
+
+    from resources.lib.stream_proxy import (
+        _FORCE_REMUX_THRESHOLD_MB_MAX,
+        _get_force_remux_threshold_bytes,
+    )
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.return_value = "999999999"
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        assert (
+            _get_force_remux_threshold_bytes()
+            == _FORCE_REMUX_THRESHOLD_MB_MAX * 1024 * 1024
+        )
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    assert mock_xbmc.log.call_count == 1
+    assert "force_remux_threshold_mb" in mock_xbmc.log.call_args[0][0]
+
+
 def test_get_force_remux_mode_default_returns_matroska():
     """Unset / empty / '0' all return 'matroska'."""
     import sys
@@ -625,6 +742,55 @@ def test_prepare_stream_force_remux_hls_fmp4_falls_back_when_duration_probe_fail
     assert ctx["remux"] is True
 
 
+def test_prepare_stream_force_remux_hls_fmp4_falls_back_when_capability_probe_fails():
+    """If the startup capability probe says this ffmpeg lacks fmp4 HLS
+    support, prepare_stream must not route into the HLS branch even when
+    the user opts into force_remux_mode=hls_fmp4."""
+    import sys
+
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._context_lock = threading.Lock()
+    sp.port = 9999
+    sp._ffmpeg_capabilities = {
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "hls_fmp4": False,
+    }
+
+    huge = 58 * 1024 * 1024 * 1024
+    mock_proc = MagicMock()
+    mock_proc.stderr = iter([b"  Duration: 02:22:12.00, start: 0.000000\n"])
+
+    mock_addon = MagicMock()
+
+    def get_setting(key):
+        if key == "force_remux_mode":
+            return "1"
+        return ""
+
+    mock_addon.getSetting.side_effect = get_setting
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch(
+            "resources.lib.stream_proxy._find_ffprobe", return_value=None
+        ), patch.object(sp, "_get_content_length", return_value=huge), patch(
+            "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
+        ), patch(
+            "resources.lib.stream_proxy.HlsProducer"
+        ) as mock_producer_cls:
+            sp.prepare_stream("http://host/shawshank.mkv")
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    mock_producer_cls.assert_not_called()
+    ctx = sp._server.stream_context
+    assert ctx.get("mode") != "hls"
+    assert ctx["content_type"] == "video/x-matroska"
+
+
 def test_prepare_stream_rejects_invalid_scheme():
     import pytest
     from resources.lib.stream_proxy import StreamProxy
@@ -636,6 +802,15 @@ def test_prepare_stream_rejects_invalid_scheme():
 
     with pytest.raises(ValueError):
         sp.prepare_stream("file:///etc/passwd")
+
+
+def test_do_post_rejects_prepare_bodies_over_64k():
+    handler = _make_prepare_post_handler(body=b"{}", content_length=65537)
+
+    handler.do_POST()
+
+    handler.send_error.assert_called_once_with(413)
+    handler.server.owner_proxy.prepare_stream.assert_not_called()
 
 
 def test_prepare_stream_uses_unique_session_urls():
@@ -1054,6 +1229,36 @@ def test_probe_duration_prefers_ffprobe_when_available():
     assert "format=duration" in argv
 
 
+def test_probe_duration_ffprobe_uses_headers_for_auth():
+    import base64
+
+    from resources.lib.stream_proxy import StreamProxy
+
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate.return_value = (b"8552.576000\n", b"")
+    auth = "Basic " + base64.b64encode(b"user:pass").decode()
+
+    with patch(
+        "resources.lib.stream_proxy._find_ffprobe",
+        return_value="/usr/bin/ffprobe",
+    ), patch(
+        "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
+    ) as mock_popen:
+        duration = StreamProxy._probe_duration(
+            "/usr/bin/ffmpeg",
+            "http://host/shawshank.mkv",
+            auth,
+        )
+
+    assert duration == 8552.576
+    argv = mock_popen.call_args[0][0]
+    headers_idx = argv.index("-headers")
+    assert argv[headers_idx + 1] == "Authorization: {}\r\n".format(auth)
+    assert argv[-1] == "http://host/shawshank.mkv"
+    assert all("@host" not in part for part in argv)
+
+
 def test_probe_duration_ffprobe_returns_none_on_nonzero_exit():
     """A failing ffprobe (bad URL, auth failure, corrupt header) must return
     None so the caller can fall back to the ffmpeg-stderr path."""
@@ -1118,6 +1323,70 @@ def test_probe_duration_ffmpeg_fallback_budget_handles_subtitle_wall():
         )
 
     assert duration == 2 * 3600 + 22 * 60 + 32.58
+
+
+def test_probe_duration_ffmpeg_fallback_uses_headers_for_auth():
+    import base64
+
+    from resources.lib.stream_proxy import StreamProxy
+
+    mock_proc = MagicMock()
+    mock_proc.stderr = iter([b"  Duration: 00:10:00.00, start: 0.000000\n"])
+    auth = "Basic " + base64.b64encode(b"user:pass").decode()
+
+    with patch(
+        "resources.lib.stream_proxy._find_ffprobe",
+        return_value=None,
+    ), patch(
+        "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
+    ) as mock_popen:
+        duration = StreamProxy._probe_duration(
+            "/usr/bin/ffmpeg",
+            "http://host/shawshank.mkv",
+            auth,
+        )
+
+    assert duration == 600.0
+    argv = mock_popen.call_args[0][0]
+    headers_idx = argv.index("-headers")
+    i_idx = argv.index("-i")
+    assert headers_idx < i_idx
+    assert argv[headers_idx + 1] == "Authorization: {}\r\n".format(auth)
+    assert argv[i_idx + 1] == "http://host/shawshank.mkv"
+    assert all("@host" not in part for part in argv)
+
+
+def test_prepare_tempfile_faststart_uses_headers_for_auth():
+    import base64
+    import os
+
+    from resources.lib.stream_proxy import StreamProxy
+
+    mock_proc = MagicMock()
+    mock_proc.communicate.return_value = (b"", b"")
+    mock_proc.returncode = 0
+    auth = "Basic " + base64.b64encode(b"user:pass").decode()
+
+    with patch(
+        "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
+    ) as mock_popen:
+        temp_path = StreamProxy._prepare_tempfile_faststart(
+            "/usr/bin/ffmpeg",
+            "http://host/film.mp4",
+            auth,
+        )
+
+    try:
+        argv = mock_popen.call_args[0][0]
+        headers_idx = argv.index("-headers")
+        i_idx = argv.index("-i")
+        assert headers_idx < i_idx
+        assert argv[headers_idx + 1] == "Authorization: {}\r\n".format(auth)
+        assert argv[i_idx + 1] == "http://host/film.mp4"
+        assert all("@host" not in part for part in argv)
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
 
 
 def test_prepare_stream_falls_back_to_non_seekable_on_probe_failure():
@@ -1319,8 +1588,8 @@ def test_build_ffmpeg_cmd_no_seek_when_none():
     assert "-ss" not in cmd
 
 
-def test_build_ffmpeg_cmd_embeds_basic_auth():
-    """Basic auth header is embedded in the URL for ffmpeg."""
+def test_build_ffmpeg_cmd_passes_basic_auth_via_headers():
+    """Basic auth header must be passed via ffmpeg -headers, not URL userinfo."""
     import base64
 
     handler = _make_handler()
@@ -1331,11 +1600,15 @@ def test_build_ffmpeg_cmd_embeds_basic_auth():
         "auth_header": auth,
     }
     cmd = handler._build_ffmpeg_cmd(ctx)
+    headers_idx = cmd.index("-headers")
     i_idx = cmd.index("-i")
-    assert "user:pass@host" in cmd[i_idx + 1]
+    assert headers_idx < i_idx
+    assert cmd[headers_idx + 1] == "Authorization: {}\r\n".format(auth)
+    assert cmd[i_idx + 1] == "http://host/film.mp4"
+    assert all("@host" not in part for part in cmd)
 
 
-def test_build_ffmpeg_cmd_encodes_reserved_auth_chars():
+def test_build_ffmpeg_cmd_keeps_url_clean_with_reserved_char_credentials():
     import base64
 
     handler = _make_handler()
@@ -1346,8 +1619,11 @@ def test_build_ffmpeg_cmd_encodes_reserved_auth_chars():
         "auth_header": auth,
     }
     cmd = handler._build_ffmpeg_cmd(ctx)
+    headers_idx = cmd.index("-headers")
     i_idx = cmd.index("-i")
-    assert "user%40domain:pa%2Fss%3F%23word@host" in cmd[i_idx + 1]
+    assert cmd[headers_idx + 1] == "Authorization: {}\r\n".format(auth)
+    assert cmd[i_idx + 1] == "http://host/film.mp4"
+    assert all("@host" not in part for part in cmd)
 
 
 # ---------------------------------------------------------------------------
@@ -1530,6 +1806,20 @@ def test_clear_sessions_kills_all_ffmpegs():
     proc_a.kill.assert_called_once()
     proc_b.kill.assert_called_once()
     assert sp._server.stream_sessions == {}
+
+
+def test_prune_sessions_requires_context_lock_ownership():
+    """Debug guard: the locked helper must raise when called without the
+    proxy context lock held by the current thread."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_sessions = {}
+    sp._context_lock = threading.RLock()
+
+    with pytest.raises(AssertionError):
+        sp._prune_sessions_locked()
 
 
 # ---------------------------------------------------------------------------
@@ -2317,6 +2607,26 @@ def test_build_hls_segment_cmd_drops_subtitles():
     assert "-c:s" not in cmd
 
 
+def test_build_hls_segment_cmd_passes_basic_auth_via_headers():
+    import base64
+
+    from resources.lib.stream_proxy import _StreamHandler
+
+    auth = "Basic " + base64.b64encode(b"user:pass").decode()
+    ctx = {
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": auth,
+    }
+    cmd = _StreamHandler._build_hls_segment_cmd(ctx, 100.0, 10.0)
+    headers_idx = cmd.index("-headers")
+    i_idx = cmd.index("-i")
+    assert headers_idx < i_idx
+    assert cmd[headers_idx + 1] == "Authorization: {}\r\n".format(auth)
+    assert cmd[i_idx + 1] == "http://host/film.mkv"
+    assert all("@host" not in part for part in cmd)
+
+
 def test_hls_segment_seconds_is_in_reasonable_range():
     """Segment duration must match the HlsProducer architecture.
 
@@ -3021,6 +3331,58 @@ def test_hls_producer_reuses_same_log_handle_across_restarts(tmp_path):
     assert stderr1 is stderr2
     assert stderr1 is producer._ffmpeg_log
     producer.close()
+
+
+def test_hls_producer_concurrent_seek_respawn_starts_single_ffmpeg(tmp_path):
+    """Two simultaneous seek-driven respawn requests must not start two
+    ffmpeg processes for the same target segment."""
+    import time as _time
+
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        dead_proc = MagicMock()
+        dead_proc.poll.return_value = 1
+        producer._proc = dead_proc
+        producer._start_segment = 80
+
+        live_proc = MagicMock()
+        live_proc.poll.return_value = None
+        popen_calls = []
+
+        def fake_popen(*args, **kwargs):
+            popen_calls.append(args[0])
+            _time.sleep(0.05)
+            return live_proc
+
+        threads = [
+            threading.Thread(target=producer._ensure_ffmpeg_headed_for, args=(10,))
+            for _ in range(2)
+        ]
+        with patch(
+            "resources.lib.stream_proxy.subprocess.Popen",
+            side_effect=fake_popen,
+        ):
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+        assert len(popen_calls) == 1
+        assert producer._start_segment == 10
+    finally:
+        producer._proc = None
+        producer.close()
 
 
 def test_hls_producer_prepare_is_noop_for_mpegts(tmp_path):
@@ -4199,12 +4561,58 @@ def test_head_uses_session_path_context():
     assert ctx["last_access"] > 0
 
 
+def test_get_stream_context_updates_last_access_under_context_lock():
+    from types import SimpleNamespace
+
+    class _TrackingLock:
+        def __init__(self):
+            self.held = False
+
+        def __enter__(self):
+            self.held = True
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            self.held = False
+            return False
+
+    class _LockAwareContext(dict):
+        def __init__(self, *args, **kwargs):
+            self.lock = kwargs.pop("lock")
+            self.last_access_updates = []
+            super().__init__(*args, **kwargs)
+
+        def __setitem__(self, key, value):
+            if key == "last_access":
+                self.last_access_updates.append(self.lock.held)
+            super().__setitem__(key, value)
+
+    lock = _TrackingLock()
+    ctx = _LockAwareContext(
+        {
+            "remux": False,
+            "content_type": "video/mp4",
+            "content_length": 1000,
+        },
+        lock=lock,
+    )
+    handler = _make_handler_with_server(ctx=None)
+    handler.path = "/stream/session123"
+    handler.server.owner_proxy = SimpleNamespace(_context_lock=lock)
+    handler.server.stream_sessions = {"session123": ctx}
+
+    resolved = handler._get_stream_context()
+
+    assert resolved is ctx
+    assert ctx.last_access_updates == [True]
+
+
 # ---------------------------------------------------------------------------
 # _serve_proxy — pass-through with zero-fill recovery for missing articles
 # ---------------------------------------------------------------------------
 
 
-def _mock_urlopen_response(chunks, status=206):
+def _mock_urlopen_response(chunks, status=206, headers=None):
     """Build a mock urlopen-returned object with given byte chunks."""
     resp = MagicMock()
     resp.__enter__ = MagicMock(return_value=resp)
@@ -4213,6 +4621,10 @@ def _mock_urlopen_response(chunks, status=206):
     resp.read = MagicMock(side_effect=data)
     resp.status = status
     resp.getcode = MagicMock(return_value=status)
+    header_map = headers or {}
+    resp.headers.get = MagicMock(
+        side_effect=lambda key, default=None: header_map.get(key, default)
+    )
     resp.close = MagicMock()
     return resp
 
@@ -4245,6 +4657,31 @@ def test_serve_proxy_streams_happy_path():
 
     handler.send_response.assert_called_once_with(206)
     assert _collect_written(handler) == payload
+
+
+@patch("resources.lib.stream_proxy.xbmc")
+def test_serve_proxy_logs_terminal_summary_on_success(mock_xbmc):
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 2048,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-2047")
+
+    payload = b"A" * 2048
+    with patch(
+        "resources.lib.stream_proxy.urlopen",
+        return_value=_mock_urlopen_response([payload]),
+    ):
+        handler._serve_proxy(ctx)
+
+    logged = "\n".join(call.args[0] for call in mock_xbmc.log.call_args_list)
+    assert "Pass-through summary" in logged
+    assert "reason=complete" in logged
+    assert "streamed=2048" in logged
+    assert "zero_fill=0" in logged
+    assert "recoveries=0" in logged
 
 
 def test_serve_proxy_zero_fills_on_upstream_failure():
@@ -4283,6 +4720,52 @@ def test_serve_proxy_zero_fills_on_upstream_failure():
     # Bytes 1M..2M are zero-fill (skip of 1 MB after the 1 MB already served).
     assert written[1048576 : 2 * 1048576] == bytes(1048576)
     assert written[2 * 1048576 :] == resume_payload
+
+
+def test_serve_proxy_notifies_first_recovery_with_bytes_and_count():
+    import sys
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 20 * 1048576,
+    }
+    handler = _make_handler_with_server(
+        ctx, range_header="bytes=0-{}".format(20 * 1048576 - 1)
+    )
+
+    first_mb = b"X" * 1048576
+    initial = _mock_urlopen_response([first_mb])
+    probe_1mb = _mock_urlopen_response([b"Y" * 64])
+    resume_payload = b"Z" * (18 * 1048576)
+    resume = _mock_urlopen_response([resume_payload])
+    responses = iter([initial, probe_1mb, resume])
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = lambda key: {
+        "strict_contract_mode": "warn",
+        "density_breaker_enabled": "false",
+        "zero_fill_budget_enabled": "true",
+        "retry_ladder_enabled": "false",
+    }.get(key, "")
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch(
+            "resources.lib.stream_proxy.urlopen",
+            side_effect=lambda *a, **kw: next(responses),
+        ), patch("resources.lib.stream_proxy.time.sleep"), patch(
+            "resources.lib.stream_proxy._notify"
+        ) as mock_notify:
+            handler._serve_proxy(ctx)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    mock_notify.assert_called_once()
+    assert mock_notify.call_args[0][0] == "NZB-DAV"
+    assert "1048576" in mock_notify.call_args[0][1]
+    assert "1" in mock_notify.call_args[0][1]
 
 
 def test_serve_proxy_retries_probes_when_upstream_briefly_down():
@@ -4326,6 +4809,200 @@ def test_serve_proxy_retries_probes_when_upstream_briefly_down():
     assert written[2 * 1048576 :] == resume_payload
 
 
+def test_serve_proxy_debounces_recovery_notify_within_one_session():
+    import sys
+
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_OK,
+        _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE,
+    )
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 6 * 1048576,
+    }
+    handler = _make_handler_with_server(
+        ctx, range_header="bytes=0-{}".format(6 * 1048576 - 1)
+    )
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = lambda key: {
+        "strict_contract_mode": "warn",
+        "density_breaker_enabled": "false",
+        "zero_fill_budget_enabled": "true",
+        "retry_ladder_enabled": "false",
+    }.get(key, "")
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch.object(
+            handler,
+            "_stream_upstream_range",
+            side_effect=[
+                (_UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, 1048576),
+                (_UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, 1048576),
+                (_UPSTREAM_RANGE_OK, 2 * 1048576),
+            ],
+        ), patch.object(
+            handler, "_find_skip_offset", side_effect=[1048576, 1048576]
+        ), patch.object(
+            handler, "_write_zeros"
+        ), patch(
+            "resources.lib.stream_proxy._notify"
+        ) as mock_notify:
+            handler._serve_proxy(ctx)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    mock_notify.assert_called_once()
+
+
+def test_serve_proxy_retries_original_range_before_skip_probe():
+    import sys
+
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_OK,
+        _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE,
+        _UPSTREAM_RANGE_UPSTREAM_ERROR,
+    )
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 4096,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-4095")
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = lambda key: {
+        "strict_contract_mode": "warn",
+        "density_breaker_enabled": "false",
+        "zero_fill_budget_enabled": "true",
+        "retry_ladder_enabled": "true",
+    }.get(key, "")
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch.object(
+            handler,
+            "_stream_upstream_range",
+            side_effect=[
+                (_UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, 1024),
+                (_UPSTREAM_RANGE_UPSTREAM_ERROR, 0),
+                (_UPSTREAM_RANGE_OK, 3072),
+            ],
+        ) as mock_stream, patch.object(
+            handler, "_find_skip_offset"
+        ) as mock_find_skip_offset, patch(
+            "resources.lib.stream_proxy.time.sleep"
+        ) as mock_sleep:
+            handler._serve_proxy(ctx)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    assert mock_stream.call_count == 3
+    mock_find_skip_offset.assert_not_called()
+    assert [call.args[0] for call in mock_sleep.call_args_list] == [2, 4]
+
+
+def test_serve_proxy_falls_back_to_skip_probe_after_retry_ladder_exhausted():
+    import sys
+
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE,
+        _UPSTREAM_RANGE_UPSTREAM_ERROR,
+    )
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 4096,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-4095")
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = lambda key: {
+        "strict_contract_mode": "warn",
+        "density_breaker_enabled": "false",
+        "zero_fill_budget_enabled": "true",
+        "retry_ladder_enabled": "true",
+    }.get(key, "")
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch.object(
+            handler,
+            "_stream_upstream_range",
+            side_effect=[
+                (_UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, 1024),
+                (_UPSTREAM_RANGE_UPSTREAM_ERROR, 0),
+                (_UPSTREAM_RANGE_UPSTREAM_ERROR, 0),
+                (_UPSTREAM_RANGE_UPSTREAM_ERROR, 0),
+            ],
+        ), patch.object(
+            handler, "_find_skip_offset", return_value=None
+        ) as mock_find_skip_offset, patch.object(
+            handler, "_write_zeros"
+        ) as mock_write_zeros, patch(
+            "resources.lib.stream_proxy.time.sleep"
+        ) as mock_sleep:
+            handler._serve_proxy(ctx)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    mock_find_skip_offset.assert_called_once_with(ctx, 1024, 4095)
+    mock_write_zeros.assert_called_once_with(3072)
+    assert [call.args[0] for call in mock_sleep.call_args_list] == [2, 4, 8]
+
+
+def test_serve_proxy_retry_ladder_flag_skips_range_retries():
+    import sys
+
+    from resources.lib.stream_proxy import _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 4096,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-4095")
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = lambda key: {
+        "strict_contract_mode": "warn",
+        "density_breaker_enabled": "false",
+        "zero_fill_budget_enabled": "true",
+        "retry_ladder_enabled": "false",
+    }.get(key, "")
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch.object(
+            handler,
+            "_stream_upstream_range",
+            return_value=(_UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, 1024),
+        ) as mock_stream, patch.object(
+            handler, "_find_skip_offset", return_value=None
+        ) as mock_find_skip_offset, patch.object(
+            handler, "_write_zeros"
+        ) as mock_write_zeros, patch(
+            "resources.lib.stream_proxy.time.sleep"
+        ) as mock_sleep:
+            handler._serve_proxy(ctx)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    assert mock_stream.call_count == 1
+    mock_find_skip_offset.assert_called_once_with(ctx, 1024, 4095)
+    mock_write_zeros.assert_called_once_with(3072)
+    assert mock_sleep.call_count == 0
+
+
 def test_serve_proxy_zero_fills_remainder_when_recovery_exhausted():
     """All skip probes fail — zero-fill the rest of the committed response."""
     ctx = {
@@ -4364,6 +5041,345 @@ def test_serve_proxy_zero_fills_remainder_when_recovery_exhausted():
     assert written[512000:] == bytes(8 * 1048576 - 512000)
 
 
+@patch("resources.lib.stream_proxy.xbmc")
+def test_serve_proxy_logs_terminal_summary_on_recovery_exhausted(mock_xbmc):
+    from resources.lib.stream_proxy import _UPSTREAM_RANGE_UPSTREAM_ERROR
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 1024,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-1023")
+
+    with patch.object(
+        handler,
+        "_stream_upstream_range",
+        return_value=(_UPSTREAM_RANGE_UPSTREAM_ERROR, 256),
+    ), patch.object(handler, "_find_skip_offset", return_value=None), patch.object(
+        handler, "_write_zeros"
+    ) as mock_write_zeros:
+        handler._serve_proxy(ctx)
+
+    mock_write_zeros.assert_called_once_with(768)
+    logged = "\n".join(call.args[0] for call in mock_xbmc.log.call_args_list)
+    assert "Pass-through summary" in logged
+    assert "reason=recovery_exhausted" in logged
+    assert "streamed=256" in logged
+    assert "zero_fill=768" in logged
+
+
+@patch("resources.lib.stream_proxy.xbmc")
+def test_serve_proxy_aborts_when_session_zero_fill_ratio_exceeds_cap(mock_xbmc):
+    import sys
+
+    from resources.lib.stream_proxy import _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 4096,
+        "session_streamed_bytes": 4096,
+        "session_zero_fill_bytes": 0,
+        "session_recovery_count": 0,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-4095")
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = lambda key: {
+        "strict_contract_mode": "warn",
+        "density_breaker_enabled": "false",
+        "zero_fill_budget_enabled": "true",
+        "retry_ladder_enabled": "false",
+    }.get(key, "")
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch.object(
+            handler,
+            "_stream_upstream_range",
+            return_value=(_UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, 1024),
+        ), patch.object(handler, "_find_skip_offset", return_value=600), patch.object(
+            handler, "_write_zeros"
+        ) as mock_write_zeros, patch(
+            "resources.lib.stream_proxy._notify"
+        ) as mock_notify:
+            handler._serve_proxy(ctx)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    mock_write_zeros.assert_not_called()
+    mock_notify.assert_called_once()
+    logged = "\n".join(call.args[0] for call in mock_xbmc.log.call_args_list)
+    assert "reason=session_zero_fill_budget_exceeded" in logged
+
+
+def test_serve_proxy_zero_fill_budget_flag_disables_session_ratio_abort():
+    import sys
+
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_OK,
+        _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE,
+    )
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 4096,
+        "session_streamed_bytes": 4096,
+        "session_zero_fill_bytes": 0,
+        "session_recovery_count": 0,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-4095")
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = lambda key: {
+        "strict_contract_mode": "warn",
+        "density_breaker_enabled": "false",
+        "zero_fill_budget_enabled": "false",
+        "retry_ladder_enabled": "false",
+    }.get(key, "")
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch.object(
+            handler,
+            "_stream_upstream_range",
+            side_effect=[
+                (_UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, 1024),
+                (_UPSTREAM_RANGE_OK, 2472),
+            ],
+        ), patch.object(handler, "_find_skip_offset", return_value=600), patch.object(
+            handler, "_write_zeros"
+        ) as mock_write_zeros, patch(
+            "resources.lib.stream_proxy._notify"
+        ) as mock_notify:
+            handler._serve_proxy(ctx)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    mock_write_zeros.assert_called_once_with(600)
+    mock_notify.assert_called_once()
+
+
+def test_get_strict_contract_mode_maps_known_values_and_defaults_warn():
+    import sys
+
+    from resources.lib.stream_proxy import _get_strict_contract_mode
+
+    mock_addon = MagicMock()
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        cases = {
+            "": "warn",
+            None: "warn",
+            "0": "off",
+            "off": "off",
+            "1": "warn",
+            "warn": "warn",
+            "2": "enforce",
+            "enforce": "enforce",
+            "garbage": "warn",
+        }
+        for raw, expected in cases.items():
+            mock_addon.getSetting.return_value = raw
+            assert _get_strict_contract_mode() == expected
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+
+@patch("resources.lib.stream_proxy.xbmc")
+def test_stream_upstream_range_warn_mode_streams_on_soft_contract_mismatch(mock_xbmc):
+    import sys
+
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_PROTOCOL_MISMATCH,
+        _StreamHandler,
+    )
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_length": 2048,
+    }
+    handler = _StreamHandler.__new__(_StreamHandler)
+    handler.wfile = MagicMock()
+
+    payload = b"A" * 1024
+    response = _mock_urlopen_response(
+        [payload],
+        headers={
+            "Content-Range": "bytes 0-1023/2048",
+            "Content-Length": "2048",
+        },
+    )
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = lambda key: (
+        "warn" if key == "strict_contract_mode" else ""
+    )
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch("resources.lib.stream_proxy.urlopen", return_value=response):
+            result, written = handler._stream_upstream_range(ctx, 0, 1023)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    assert result == _UPSTREAM_RANGE_PROTOCOL_MISMATCH
+    assert written == len(payload)
+    assert _collect_written(handler) == payload
+    logged = "\n".join(call.args[0] for call in mock_xbmc.log.call_args_list)
+    assert "reason=protocol_mismatch" in logged
+
+
+@patch("resources.lib.stream_proxy.xbmc")
+def test_stream_upstream_range_enforce_mode_rejects_soft_contract_mismatch(mock_xbmc):
+    import sys
+
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_PROTOCOL_MISMATCH,
+        _StreamHandler,
+    )
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_length": 2048,
+    }
+    handler = _StreamHandler.__new__(_StreamHandler)
+    handler.wfile = MagicMock()
+
+    payload = b"A" * 1024
+    response = _mock_urlopen_response(
+        [payload],
+        headers={
+            "Content-Range": "bytes 0-1023/2048",
+            "Content-Length": "2048",
+        },
+    )
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = lambda key: (
+        "enforce" if key == "strict_contract_mode" else ""
+    )
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch("resources.lib.stream_proxy.urlopen", return_value=response):
+            result, written = handler._stream_upstream_range(ctx, 0, 1023)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    assert result == _UPSTREAM_RANGE_PROTOCOL_MISMATCH
+    assert written == 0
+    handler.wfile.write.assert_not_called()
+    logged = "\n".join(call.args[0] for call in mock_xbmc.log.call_args_list)
+    assert "reason=protocol_mismatch" in logged
+
+
+@patch("resources.lib.stream_proxy.xbmc")
+def test_stream_upstream_range_rejects_bad_content_range(mock_xbmc):
+    import sys
+
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_PROTOCOL_MISMATCH,
+        _StreamHandler,
+    )
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_length": 2048,
+    }
+    handler = _StreamHandler.__new__(_StreamHandler)
+    handler.wfile = MagicMock()
+
+    response = _mock_urlopen_response(
+        [b"A" * 1024],
+        headers={
+            "Content-Range": "bytes 256-1279/2048",
+            "Content-Length": "1024",
+        },
+    )
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = lambda key: (
+        "warn" if key == "strict_contract_mode" else ""
+    )
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch("resources.lib.stream_proxy.urlopen", return_value=response):
+            result, written = handler._stream_upstream_range(ctx, 0, 1023)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    assert result == _UPSTREAM_RANGE_PROTOCOL_MISMATCH
+    assert written == 0
+    handler.wfile.write.assert_not_called()
+    logged = "\n".join(call.args[0] for call in mock_xbmc.log.call_args_list)
+    assert "reason=protocol_mismatch" in logged
+    assert "Content-Range" in logged
+
+
+@patch("resources.lib.stream_proxy.xbmc")
+def test_serve_proxy_density_breaker_aborts_and_notifies_once(mock_xbmc):
+    import sys
+
+    from resources.lib.stream_proxy import _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 8 * 1048576,
+    }
+    handler = _make_handler_with_server(
+        ctx, range_header="bytes=0-{}".format(8 * 1048576 - 1)
+    )
+
+    def _get_setting(key):
+        if key == "strict_contract_mode":
+            return "warn"
+        if key == "density_breaker_enabled":
+            return "true"
+        if key == "zero_fill_budget_enabled":
+            return "false"
+        if key == "retry_ladder_enabled":
+            return "false"
+        return ""
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = _get_setting
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch.object(
+            handler,
+            "_stream_upstream_range",
+            return_value=(_UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, 1048576),
+        ), patch.object(
+            handler, "_find_skip_offset", return_value=2 * 1048576
+        ), patch.object(
+            handler, "_write_zeros"
+        ) as mock_write_zeros, patch(
+            "resources.lib.stream_proxy._notify"
+        ) as mock_notify:
+            handler._serve_proxy(ctx)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    mock_write_zeros.assert_not_called()
+    mock_notify.assert_called_once()
+    logged = "\n".join(call.args[0] for call in mock_xbmc.log.call_args_list)
+    assert "reason=density_breaker_tripped" in logged
+
+
 def test_serve_proxy_rejects_bad_range():
     """An unparseable Range header still returns 416 without emitting headers."""
     ctx = {
@@ -4375,6 +5391,135 @@ def test_serve_proxy_rejects_bad_range():
     handler = _make_handler_with_server(ctx, range_header="bytes=banana")
 
     handler._serve_proxy(ctx)
+
+    handler.send_error.assert_called_once_with(416)
+    handler.send_response.assert_not_called()
+
+
+def test_serve_proxy_no_range_defaults_to_206_partial_content():
+    from resources.lib.stream_proxy import _UPSTREAM_RANGE_OK
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 2048,
+    }
+    handler = _make_handler_with_server(ctx)
+
+    def fake_stream(_ctx, start, end, contract_mode=None):
+        handler.wfile.write(b"x" * (end - start + 1))
+        return _UPSTREAM_RANGE_OK, end - start + 1
+
+    with patch.object(
+        _StreamHandler, "_stream_upstream_range", side_effect=fake_stream
+    ):
+        handler._serve_proxy(ctx)
+
+    handler.send_response.assert_called_once_with(206)
+    handler.send_header.assert_any_call("Content-Length", "2048")
+    handler.send_header.assert_any_call("Content-Range", "bytes 0-2047/2048")
+
+
+def test_serve_proxy_no_range_can_send_200_without_content_range():
+    from resources.lib.stream_proxy import _UPSTREAM_RANGE_OK
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 2048,
+    }
+    handler = _make_handler_with_server(ctx)
+
+    def fake_stream(_ctx, start, end, contract_mode=None):
+        handler.wfile.write(b"x" * (end - start + 1))
+        return _UPSTREAM_RANGE_OK, end - start + 1
+
+    with patch(
+        "resources.lib.stream_proxy._get_addon_setting",
+        side_effect=lambda key: "true" if key == "send_200_no_range" else None,
+    ), patch.object(_StreamHandler, "_stream_upstream_range", side_effect=fake_stream):
+        handler._serve_proxy(ctx)
+
+    handler.send_response.assert_called_once_with(200)
+    header_names = [call.args[0] for call in handler.send_header.call_args_list]
+    assert "Content-Range" not in header_names
+
+
+@pytest.mark.parametrize(
+    ("factory", "call_name"),
+    [
+        (
+            lambda tmp_path: (
+                _make_handler_with_server(
+                    {
+                        "header_data": b"ftypmoov",
+                        "virtual_size": 4096,
+                        "payload_remote_start": 0,
+                        "payload_size": 4088,
+                        "remote_url": "http://host/movie.mp4",
+                    },
+                    range_header="bytes=9999-10000",
+                ),
+                "_serve_mp4_faststart",
+            ),
+            "faststart",
+        ),
+        (
+            lambda tmp_path: (
+                _make_handler_with_server(
+                    {
+                        "temp_path": str(tmp_path / "movie.mp4"),
+                        "content_length": 4096,
+                    },
+                    range_header="bytes=10-5",
+                ),
+                "_serve_temp_faststart",
+            ),
+            "temp_faststart",
+        ),
+        (
+            lambda tmp_path: (
+                _make_handler_with_server(
+                    {
+                        "ffmpeg_path": "/usr/bin/ffmpeg",
+                        "remote_url": "http://host/movie.mp4",
+                        "auth_header": None,
+                        "total_bytes": 4096,
+                        "seekable": True,
+                    },
+                    range_header="bytes=-9999",
+                ),
+                "_serve_remux",
+            ),
+            "remux",
+        ),
+        (
+            lambda tmp_path: (
+                _make_handler_with_server(
+                    {
+                        "remote_url": "http://host/movie.mkv",
+                        "auth_header": None,
+                        "content_type": "video/x-matroska",
+                        "content_length": 4096,
+                    },
+                    range_header="bytes=banana",
+                ),
+                "_serve_proxy",
+            ),
+            "pass_through",
+        ),
+    ],
+)
+def test_range_caller_matrix_returns_416_for_malformed_ranges(
+    tmp_path, factory, call_name
+):
+    handler, method_name = factory(tmp_path)
+    if call_name == "temp_faststart":
+        tmp_path.joinpath("movie.mp4").write_bytes(b"x" * 32)
+
+    getattr(handler, method_name)(handler.server.stream_context)
 
     handler.send_error.assert_called_once_with(416)
     handler.send_response.assert_not_called()
