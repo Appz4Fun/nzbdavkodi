@@ -145,7 +145,7 @@ def search_prowlarr(search_type, title, year="", imdb="", season="", episode="")
     xbmc.log("NZB-DAV: Prowlarr search URL: {}".format(redact_url(url)), xbmc.LOGDEBUG)
 
     try:
-        xml_text = _http_get(url)
+        xml_text = _http_get(url, timeout=15)
     except Exception as e:
         xbmc.log("NZB-DAV: Prowlarr search request failed: {}".format(e), xbmc.LOGERROR)
         return [], _prowlarr_unavailable_error(e)
@@ -165,7 +165,7 @@ def search_prowlarr(search_type, title, year="", imdb="", season="", episode="")
         params["q"] = title
         fallback_url = _build_search_url(base_url, params, indexer_ids)
         try:
-            xml_text = _http_get(fallback_url)
+            xml_text = _http_get(fallback_url, timeout=15)
             results, parse_error = _parse_results_checked(xml_text)
             if parse_error:
                 return [], parse_error

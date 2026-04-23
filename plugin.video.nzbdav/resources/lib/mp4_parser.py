@@ -112,6 +112,10 @@ def _rewrite_stco(data, body_start, body_end, delta):
             break
         old = struct.unpack_from(">I", data, pos)[0]
         new_val = old + delta
+        # Python ints don't overflow, so the only real check is against the
+        # uint32 ceiling. A negative delta that would push below 0 also
+        # matters though — struct.pack_into >I on a negative int would
+        # raise, so guard explicitly.
         if new_val > _MAX_STCO_OFFSET or new_val < 0:
             return False
         struct.pack_into(">I", data, pos, new_val)
@@ -448,7 +452,12 @@ class RangeCache:
     def get(self, start, end):
         """Return bytes for [start, end) if fully cached, else None."""
         with self._lock:
-            for entry_start, entry_data in self._entries.items():
+            # Snapshot items before iterating — we may mutate _entries
+            # inside the loop (del + re-insert for LRU ordering), and
+            # some OrderedDict implementations raise RuntimeError on
+            # concurrent structure change even from the same thread.
+            items = list(self._entries.items())
+            for entry_start, entry_data in items:
                 entry_end = entry_start + len(entry_data)
                 if entry_start <= start and end <= entry_end:
                     # Move to end (most recent) — re-insert instead of

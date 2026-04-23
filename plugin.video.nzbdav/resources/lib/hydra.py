@@ -48,7 +48,7 @@ def _get_settings():
 def _fetch_hydra_xml(url, error_prefix):
     """Fetch XML from Hydra and normalize network/runtime failures."""
     try:
-        return _http_get(url), None
+        return _http_get(url, timeout=15), None
     except (URLError,) + _HYDRA_REQUEST_ERRORS as error:
         xbmc.log("NZB-DAV: {}: {}".format(error_prefix, error), xbmc.LOGERROR)
         return None, _hydra_unavailable_error(error)
