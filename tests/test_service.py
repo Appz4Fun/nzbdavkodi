@@ -174,13 +174,17 @@ def test_tick_skips_retry_when_disabled(mock_window):
 def test_tick_shows_dialog_when_playback_never_started(
     mock_window, mock_xbmc, mock_gui
 ):
-    """tick() shows error dialog when AV never starts within timeout."""
+    """tick() shows error dialog when AV never starts within timeout.
+
+    Threshold is 30 s now (raised from 5 s) to give the fmp4 HLS
+    path enough headroom for HlsProducer spawn + ffmpeg
+    analyzeduration + Kodi demuxer init."""
     mock_window.getProperty.return_value = ""
 
     player = NzbdavPlayer()
     player._state = PlaybackState.MONITORING
     player._av_started = False
-    player._play_time = time.time() - 10  # 10 seconds ago
+    player._play_time = time.time() - 60  # well past the 30 s threshold
     player._title = "Shutter.Island.mkv"
     player.isPlaying = lambda: False
 
@@ -193,13 +197,19 @@ def test_tick_shows_dialog_when_playback_never_started(
 
 @patch("service._HOME_WINDOW")
 def test_tick_waits_before_declaring_failure(mock_window):
-    """tick() does not show error within the 5-second grace period."""
+    """tick() does not show error within the 30-second grace period.
+
+    With the threshold raised from 5 s to 30 s for fmp4 HLS startup
+    headroom, the legitimate proxy-side init path (ffmpeg analyze +
+    init.mp4 + decoder bring-up) consistently takes 4-8 s on a slow
+    box. A play_time 10 s in the past must not trigger the
+    never-started dialog."""
     mock_window.getProperty.return_value = ""
 
     player = NzbdavPlayer()
     player._state = PlaybackState.MONITORING
     player._av_started = False
-    player._play_time = time.time() - 2  # only 2 seconds ago
+    player._play_time = time.time() - 10  # well under the 30 s threshold
 
     player.tick()
 

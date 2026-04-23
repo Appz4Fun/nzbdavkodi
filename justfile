@@ -1,12 +1,22 @@
 # NZB-DAV Kodi Addon
 
-# Run all tests
+# Run all tests (excluding integration tests that require a real ffmpeg)
 test:
-    python3 -m pytest tests/ -v --tb=short
+    python3 -m pytest tests/ -v --tb=short -m "not integration"
 
 # Run tests with coverage
 test-verbose:
-    python3 -m pytest tests/ -v --tb=long
+    python3 -m pytest tests/ -v --tb=long -m "not integration"
+
+# Run integration tests against a real ffmpeg binary. Spawns the
+# actual fmp4 HLS producer pipeline against a tiny test MKV
+# generated on the fly via ffmpeg lavfi sources, validates that
+# init.mp4 + segments are produced and well-formed. Catches every
+# class of bug we've hit on this spike (absolute path, -strict -2,
+# analyzeduration, delay_moov, codec frame size) at PR time. Skips
+# automatically if no ffmpeg is on PATH.
+test-integration:
+    python3 -m pytest tests/ -v --tb=long -m integration
 
 # Lint the codebase
 lint:
