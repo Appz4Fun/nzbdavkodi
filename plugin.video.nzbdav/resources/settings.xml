@@ -2,9 +2,16 @@
 <settings>
 	<category label="30000">
 		<setting label="30001" type="lsep" />
+		<setting id="nzbhydra_enabled" label="30125" type="bool" default="true" />
 		<setting id="hydra_url" label="30002" type="text" default="http://localhost:5076" />
 		<setting id="hydra_api_key" label="30003" type="text" default="" option="hidden" />
 		<setting label="30113" type="action" action="RunPlugin(plugin://plugin.video.nzbdav/test_hydra)" option="close" />
+		<setting label="30126" type="lsep" />
+		<setting id="prowlarr_enabled" label="30127" type="bool" default="false" />
+		<setting id="prowlarr_host" label="30128" type="text" default="http://localhost:9696" />
+		<setting id="prowlarr_api_key" label="30003" type="text" default="" option="hidden" />
+		<setting label="30129" type="action" action="RunPlugin(plugin://plugin.video.nzbdav/test_prowlarr)" option="close" />
+		<setting id="prowlarr_indexer_ids" label="30130" type="text" default="" />
 		<setting label="30004" type="lsep" />
 		<setting id="nzbdav_url" label="30005" type="text" default="http://localhost:3000" />
 		<setting id="nzbdav_api_key" label="30003" type="text" default="" option="hidden" />

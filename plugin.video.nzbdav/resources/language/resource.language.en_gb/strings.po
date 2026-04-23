@@ -503,49 +503,35 @@ msgid "nzbdav rejected the submission (HTTP {0}). Server message: {1}. Check nzb
 msgstr ""
 
 msgctxt "#30125"
-msgid "Force remux output format"
-msgstr "Force remux output format"
+msgid "Enable NZBHydra2"
+msgstr "Enable NZBHydra2"
 
 msgctxt "#30126"
-msgid "Piped Matroska (seek limited, DV-safe)"
-msgstr "Piped Matroska (seek limited, DV-safe)"
+msgid "Prowlarr"
+msgstr "Prowlarr"
 
 msgctxt "#30127"
-msgid "Fragmented MP4 HLS (full seek, DV-capable, experimental)"
-msgstr "Fragmented MP4 HLS (full seek, DV-capable, experimental)"
+msgid "Enable Prowlarr"
+msgstr "Enable Prowlarr"
 
 msgctxt "#30128"
-msgid "Pass-through validation"
-msgstr "Pass-through validation"
+msgid "Prowlarr URL"
+msgstr "Prowlarr URL"
 
 msgctxt "#30129"
-msgid "Strict upstream contract mode"
-msgstr "Strict upstream contract mode"
+msgid "Prowlarr API Key"
+msgstr "Prowlarr API Key"
 
 msgctxt "#30130"
-msgid "Off"
-msgstr "Off"
+msgid "Prowlarr Indexer IDs (comma-separated)"
+msgstr "Prowlarr Indexer IDs (comma-separated)"
 
 msgctxt "#30131"
-msgid "Warn only"
-msgstr "Warn only"
+msgid "Test Prowlarr Connection"
+msgstr "Test Prowlarr Connection"
+msgid "Test Prowlarr Connection"
+msgstr "Test Prowlarr Connection"
 
-msgctxt "#30132"
-msgid "Enforce"
-msgstr "Enforce"
-
-msgctxt "#30133"
-msgid "Enable density breaker"
-msgstr "Enable density breaker"
-
-msgctxt "#30134"
-msgid "Enable zero-fill budget"
-msgstr "Enable zero-fill budget"
-
-msgctxt "#30135"
-msgid "Enable retry ladder before skip probe"
-msgstr "Enable retry ladder before skip probe"
-
-msgctxt "#30136"
-msgid "Send 200 for no-range pass-through"
-msgstr "Send 200 for no-range pass-through"
+msgctxt "#30130"
+msgid "Indexer IDs (comma-separated, empty = none)"
+msgstr "Indexer IDs (comma-separated, empty = none)"

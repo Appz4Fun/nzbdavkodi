@@ -56,7 +56,17 @@ def _safe_resolve_handle(handle):
 
 
 def route(argv):
-    """Main entry point called from addon.py with sys.argv."""
+    """
+    Route a plugin invocation to the appropriate handler based on the plugin URL.
+    
+    Routes the incoming plugin call (provided as the Kodi `sys.argv` list) to handlers such as play, search, resolve, settings, install, cache clearing, provider tests, and the main menu. Action routes with side effects will be followed by a safe resolution call so Kodi does not hang.
+    
+    Parameters:
+        argv (list): The Kodi argv list for the plugin invocation. Expected elements:
+            - argv[0]: base plugin URL (e.g., "plugin://...") used to derive the route path
+            - argv[1]: numeric handle for Kodi plugin operations (converted to int)
+            - argv[2] (optional): query string containing route parameters
+    """
     base_url = argv[0]
     handle = int(argv[1])
     query_string = argv[2] if len(argv) > 2 else ""
@@ -133,8 +143,12 @@ def route(argv):
             )
         elif path == "/test_hydra":
             _test_hydra_connection()
+        elif path == "/test_prowlarr":
+            _test_prowlarr_connection()
         elif path == "/test_nzbdav":
             _test_nzbdav_connection()
+        elif path == "/test_prowlarr":
+            _test_prowlarr_connection()
         else:
             _handle_main_menu(handle)
             return
@@ -160,14 +174,94 @@ def _clean_params(params):
 
 
 def _show_error_dialog(message):
-    """Show a modal Kodi error dialog."""
+    """
+    Display a modal error dialog in Kodi with the add-on name as the dialog title.
+    
+    Parameters:
+        message (str): The error message to display.
+    """
     import xbmcgui
 
     xbmcgui.Dialog().ok(_addon_name(), message)
 
 
+def _search_all_providers(search_type, title, year="", imdb="", season="", episode=""):
+    """
+    Search enabled indexer providers and return combined, deduplicated results.
+    
+    Searches configured providers (NZBHydra2 and/or Prowlarr), merges their results, and removes duplicate entries by `link`. If no providers are enabled, returns an explicit error message. If every enabled provider failed and produced no results, returns the first collected error.
+    
+    Returns:
+        tuple: (results, error_message)
+            results (list): Deduplicated list of result dictionaries returned by providers.
+            error_message (str or None): Error text when every enabled provider failed or when no providers are enabled; otherwise `None`.
+    """
+    import xbmcaddon
+
+    addon = xbmcaddon.Addon()
+    nzbhydra_raw = addon.getSetting("nzbhydra_enabled")
+    nzbhydra_enabled = nzbhydra_raw.lower() != "false"
+    prowlarr_enabled = addon.getSetting("prowlarr_enabled").lower() == "true"
+
+    if not nzbhydra_enabled and not prowlarr_enabled:
+        return [], "No search providers enabled. Enable NZBHydra2 or Prowlarr in settings."
+
+    all_results = []
+    errors = []
+
+    if nzbhydra_enabled:
+        from resources.lib.hydra import search_hydra
+
+        hydra_results, hydra_error = search_hydra(
+            search_type, title, year=year, imdb=imdb, season=season, episode=episode
+        )
+        if hydra_error:
+            xbmc.log(
+                "NZB-DAV: NZBHydra2 search error: {}".format(hydra_error),
+                xbmc.LOGWARNING,
+            )
+            errors.append(hydra_error)
+        else:
+            all_results.extend(hydra_results)
+
+    if prowlarr_enabled:
+        from resources.lib.prowlarr import search_prowlarr
+
+        prowlarr_results, prowlarr_error = search_prowlarr(
+            search_type, title, year=year, imdb=imdb, season=season, episode=episode
+        )
+        if prowlarr_error:
+            xbmc.log(
+                "NZB-DAV: Prowlarr search error: {}".format(prowlarr_error),
+                xbmc.LOGWARNING,
+            )
+            errors.append(prowlarr_error)
+        else:
+            all_results.extend(prowlarr_results)
+
+    seen_links = set()
+    deduped = []
+    for result in all_results:
+        key = result.get("link", "")
+        if key and key in seen_links:
+            continue
+        if key:
+            seen_links.add(key)
+        deduped.append(result)
+
+    if not deduped and errors:
+        return [], errors[0]
+
+    return deduped, None
+
+
 def _tag_available(results):
-    """Tag results that are already downloaded in nzbdav with _available flag."""
+    """
+    Mark result entries that already exist in nzbdav by setting the `_available` flag.
+    
+    Parameters:
+        results (list[dict]): Iterable of result dictionaries; entries whose `"title"` matches a completed name in nzbdav will be modified in-place with `result["_available"] = True`.
+    """
     from resources.lib.nzbdav_api import get_completed_names
 
     completed = get_completed_names()
@@ -210,17 +304,20 @@ def _lookup_episode_info(imdb, tmdb_id=""):
 
 
 def _handle_play(handle, params):
-    """Called via plugin:// URL from TMDBHelper.
-
-    Searches NZBHydra, shows results dialog, then resolves the selected
-    NZB through Kodi's setResolvedUrl pipeline (no dummy.mp4 needed).
+    """
+    Handle a play request from TMDBHelper by searching configured providers for matching NZB releases and resolving the chosen item for playback.
+    
+    Performs provider search (with caching), shows progress and results dialogs, applies filtering and optional auto-selection, and ultimately resolves the selected NZB via Kodi's resolver pipeline or marks the request as not resolved when cancelled or no selection is made.
+    
+    Parameters:
+        handle (int): Kodi plugin handle used to report a resolved URL or to end the request.
+        params (dict): Query parameters from the plugin URL (e.g., "type", "title", "year", "imdb", "season", "episode"); TMDBHelper may provide "_" placeholders which are normalized.
     """
     import xbmcgui
     import xbmcplugin
 
     from resources.lib.cache import get_cached, set_cached
     from resources.lib.http_util import notify
-    from resources.lib.hydra import search_hydra
 
     params = _clean_params(params)
     search_type = params.get("type", "movie")
@@ -302,15 +399,15 @@ def _handle_play(handle, params):
     if results is None:
         progress.update(30, _string(30084))
         xbmc.log(
-            "NZB-DAV: Search stage: querying NZBHydra for '{}'".format(title),
+            "NZB-DAV: Search stage: querying providers for '{}'".format(title),
             xbmc.LOGDEBUG,
         )
-        results, search_error = search_hydra(
+        results, search_error = _search_all_providers(
             search_type, title, year=year, imdb=imdb, season=season, episode=episode
         )
         if search_error:
             xbmc.log(
-                "NZB-DAV: Search stage: NZBHydra error — {}".format(search_error),
+                "NZB-DAV: Search stage: provider error — {}".format(search_error),
                 xbmc.LOGWARNING,
             )
             progress.close()
@@ -414,13 +511,20 @@ def _handle_play(handle, params):
 
 
 def _handle_search(handle, params):
-    """Display search results using the custom full-screen dialog."""
+    """
+    Perform a provider search for the given query, display results in the full-screen results dialog, and handle selection or auto-resolve.
+    
+    Performs a cached search across enabled providers, applies filtering, optionally prompts to show unfiltered results, tags already-downloaded items, and either auto-resolves the best match or presents a results dialog for user selection. Ensures the plugin directory is ended to avoid Kodi hanging.
+    
+    Parameters:
+        handle (int): Kodi plugin handle provided by the caller (sys.argv[1]).
+        params (dict): Route query parameters (e.g., keys: "type", "title", "year", "imdb", "season", "episode", "tmdb_id").
+    """
     import xbmcaddon
     import xbmcplugin
 
     from resources.lib.cache import get_cached, set_cached
     from resources.lib.filter import filter_results
-    from resources.lib.hydra import search_hydra
 
     params = _clean_params(params)
     search_type = params.get("type", "movie")
@@ -448,15 +552,15 @@ def _handle_search(handle, params):
     results = get_cached(search_type, title, **cache_kwargs)
     if results is None:
         xbmc.log(
-            "NZB-DAV: Search stage: querying NZBHydra for '{}'".format(title),
+            "NZB-DAV: Search stage: querying providers for '{}'".format(title),
             xbmc.LOGDEBUG,
         )
-        results, search_error = search_hydra(
+        results, search_error = _search_all_providers(
             search_type, title, year=year, imdb=imdb, season=season, episode=episode
         )
         if search_error:
             xbmc.log(
-                "NZB-DAV: Search stage: NZBHydra error — {}".format(search_error),
+                "NZB-DAV: Search stage: provider error — {}".format(search_error),
                 xbmc.LOGWARNING,
             )
             _show_error_dialog(search_error)
@@ -634,31 +738,76 @@ def _get_tmdb_poster(imdb_id):
         return ""
 
 
+def _test_connection(label, url, test_url, ok_condition):
+    """Test a service connection and notify the user of the result.
+
+    If url is empty, notifies "<label> URL not configured". Otherwise
+    issues a GET to test_url, notifies "<label> connection OK" when
+    ok_condition(response) is True, "<label>: unexpected response" when
+    False, and "<label>: <error>" (truncated to 60 chars) on exception.
+    """
+    from resources.lib.http_util import http_get, notify
+
+    if not url:
+        notify(_addon_name(), "{} URL not configured".format(label), 3000)
+        return
+    try:
+        response = http_get(test_url)
+        if ok_condition(response):
+            notify(_addon_name(), "{} connection OK".format(label), 3000)
+        else:
+            notify(_addon_name(), "{}: unexpected response".format(label), 5000)
+    except Exception as e:
+        notify(_addon_name(), "{}: {}".format(label, str(e)[:60]), 5000)
+
+
 def _test_hydra_connection():
     """Test NZBHydra2 connection by hitting the caps endpoint."""
+    import xbmcaddon
+
+    addon = xbmcaddon.Addon()
+    url = addon.getSetting("hydra_url").rstrip("/")
+    api_key = addon.getSetting("hydra_api_key")
+    test_url = "{}/api?apikey={}&t=caps&o=xml".format(url, api_key)
+    _test_connection("NZBHydra", url, test_url, lambda r: "<caps>" in r or "<server" in r)
+
+
+def _test_prowlarr_connection():
+    """Test Prowlarr connection by hitting the indexer list endpoint."""
+    import xbmcaddon
+
+    addon = xbmcaddon.Addon()
+    url = addon.getSetting("prowlarr_host").rstrip("/")
+    api_key = addon.getSetting("prowlarr_api_key")
+    test_url = "{}/api/v1/indexer?apikey={}".format(url, api_key)
+    _test_connection("Prowlarr", url, test_url, lambda r: "[" in r or "{" in r)
+
+
+def _test_prowlarr_connection():
+    """Test Prowlarr connection by hitting the indexer endpoint."""
     import xbmcaddon
 
     from resources.lib.http_util import http_get, notify
 
     addon = xbmcaddon.Addon()
-    url = addon.getSetting("hydra_url").rstrip("/")
-    api_key = addon.getSetting("hydra_api_key")
+    host = addon.getSetting("prowlarr_host").rstrip("/")
+    api_key = addon.getSetting("prowlarr_api_key")
 
-    if not url:
-        notify(_addon_name(), "NZBHydra URL not configured", 3000)
+    if not host:
+        notify(_addon_name(), "Prowlarr URL not configured", 3000)
         return
 
-    test_url = "{}/api?apikey={}&t=caps&o=xml".format(url, api_key)
+    test_url = "{}/api/v1/indexer?apikey={}".format(host, api_key)
     try:
         response = http_get(test_url)
-        if "<caps>" in response or "<server" in response:
-            notify(_addon_name(), "NZBHydra connection OK", 3000)
+        if "[" in response or "{" in response:
+            notify(_addon_name(), "Prowlarr connection OK", 3000)
         else:
-            notify(_addon_name(), "NZBHydra: unexpected response", 5000)
+            notify(_addon_name(), "Prowlarr: unexpected response", 5000)
     except Exception as e:
         notify(
             _addon_name(),
-            "NZBHydra: {}".format(str(e)[:60]),
+            "Prowlarr: {}".format(str(e)[:60]),
             5000,
         )
 
@@ -667,29 +816,11 @@ def _test_nzbdav_connection():
     """Test nzbdav connection by hitting the version endpoint."""
     import xbmcaddon
 
-    from resources.lib.http_util import http_get, notify
-
     addon = xbmcaddon.Addon()
     url = addon.getSetting("nzbdav_url").rstrip("/")
     api_key = addon.getSetting("nzbdav_api_key")
-
-    if not url:
-        notify(_addon_name(), "nzbdav URL not configured", 3000)
-        return
-
     test_url = "{}/api?mode=version&apikey={}&output=json".format(url, api_key)
-    try:
-        response = http_get(test_url)
-        if "version" in response:
-            notify(_addon_name(), "nzbdav connection OK", 3000)
-        else:
-            notify(_addon_name(), "nzbdav: unexpected response", 5000)
-    except Exception as e:
-        notify(
-            _addon_name(),
-            "nzbdav: {}".format(str(e)[:60]),
-            5000,
-        )
+    _test_connection("nzbdav", url, test_url, lambda r: "version" in r)
 
 
 def _handle_main_menu(handle):

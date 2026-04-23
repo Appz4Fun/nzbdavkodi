@@ -11,14 +11,12 @@ from resources.lib.webdav import (
 )
 
 _SETTINGS_WITH_AUTH = {
-    "webdav_url": "",
     "nzbdav_url": "http://nzbdav:3000",
     "username": "user",
     "password": "pass",
 }
 
 _SETTINGS_NO_AUTH = {
-    "webdav_url": "",
     "nzbdav_url": "http://nzbdav:3000",
     "username": "",
     "password": "",
