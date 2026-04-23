@@ -114,3 +114,70 @@ def test_probe_mp4_without_rpu_is_non_dv():
 
     assert result.classification == "non_dv"
     assert result.reason == "no_rpu_nal_found"
+
+
+def _vint(value):
+    if value < 0x7F:
+        return bytes([0x80 | value])
+    if value < 0x3FFF:
+        return bytes([0x40 | (value >> 8), value & 0xFF])
+    raise ValueError("fixture value too large")
+
+
+def _elm(elem_id, payload):
+    return elem_id + _vint(len(payload)) + payload
+
+
+def _simpleblock(track_number, payload):
+    return _vint(track_number) + struct.pack(">hB", 0, 0) + payload
+
+
+def _minimal_mkv(sample_bytes):
+    codec_id = _elm(b"\x86", b"V_MPEGH/ISO/HEVC")
+    codec_private = _elm(b"\x63\xA2", b"\x01" + b"\x00" * 21)
+    track_number = _elm(b"\xD7", b"\x01")
+    track_type = _elm(b"\x83", b"\x01")
+    track_entry = _elm(b"\xAE", track_number + track_type + codec_id + codec_private)
+    tracks = _elm(b"\x16\x54\xAE\x6B", track_entry)
+    cluster = _elm(
+        b"\x1F\x43\xB6\x75", _elm(b"\xA3", _simpleblock(1, sample_bytes))
+    )
+    segment = _elm(b"\x18\x53\x80\x67", tracks + cluster)
+    ebml = _elm(b"\x1A\x45\xDF\xA3", b"\x42\x86\x81\x01")
+    return ebml + segment
+
+
+def test_probe_mkv_profile7_mel_from_first_block():
+    from pathlib import Path
+
+    rpu = Path("tests/fixtures/dovi/mel_orig.bin").read_bytes()
+    nal = b"\x7c\x01" + rpu
+    sample = struct.pack(">I", len(nal)) + nal
+    mkv = _minimal_mkv(sample)
+
+    mock = _mock_urlopen_from_file(mkv)
+    with patch("resources.lib.dv_source.urlopen", side_effect=mock):
+        result = probe_dolby_vision_source("http://host/file.mkv", auth_header=None)
+
+    assert result.classification == "dv_allowed_for_fmp4"
+    assert result.reason == "p7_mel"
+    assert result.profile == 7
+    assert result.el_type == "MEL"
+
+
+def test_probe_mkv_profile7_fel_from_first_block():
+    from pathlib import Path
+
+    rpu = Path("tests/fixtures/dovi/fel_orig.bin").read_bytes()
+    nal = b"\x7c\x01" + rpu
+    sample = struct.pack(">I", len(nal)) + nal
+    mkv = _minimal_mkv(sample)
+
+    mock = _mock_urlopen_from_file(mkv)
+    with patch("resources.lib.dv_source.urlopen", side_effect=mock):
+        result = probe_dolby_vision_source("http://host/file.mkv", auth_header=None)
+
+    assert result.classification == "dv_profile_7_fel"
+    assert result.reason == "p7_fel"
+    assert result.profile == 7
+    assert result.el_type == "FEL"

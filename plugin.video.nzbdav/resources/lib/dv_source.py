@@ -183,6 +183,107 @@ def _probe_mp4(url, auth_header, file_size=None):
     return _classify_parsed_rpu(info)
 
 
+def _vint_width(first_byte):
+    mask = 0x80
+    width = 1
+    while width <= 8 and not (first_byte & mask):
+        mask >>= 1
+        width += 1
+    return width, mask
+
+
+def _read_vint_size(data, offset):
+    """Read an EBML variable-length size. Strips the length-descriptor bit."""
+    width, mask = _vint_width(data[offset])
+    value = data[offset] & (mask - 1)
+    for i in range(1, width):
+        value = (value << 8) | data[offset + i]
+    return value, width
+
+
+def _read_element_id(data, offset):
+    """Read an EBML Element ID. Keeps the length-descriptor bit as part of the ID."""
+    width, _ = _vint_width(data[offset])
+    value = 0
+    for i in range(width):
+        value = (value << 8) | data[offset + i]
+    return value, width
+
+
+def _iter_ebml(data, start=0, end=None):
+    if end is None:
+        end = len(data)
+    offset = start
+    while offset < end:
+        elem_id, id_len = _read_element_id(data, offset)
+        size, size_len = _read_vint_size(data, offset + id_len)
+        payload_start = offset + id_len + size_len
+        payload_end = payload_start + size
+        yield elem_id, payload_start, payload_end
+        offset = payload_end
+
+
+def _first_bytes(url, auth_header, size=2 * 1024 * 1024):
+    return _http_range(url, 0, size - 1, auth_header)
+
+
+def _extract_mkv_first_sample(url, auth_header):
+    data = _first_bytes(url, auth_header)
+    track_number = None
+
+    for elem_id, payload_start, payload_end in _iter_ebml(data):
+        if elem_id != 0x18538067:  # Segment
+            continue
+        segment = data[payload_start:payload_end]
+        for sub_id, sub_start, sub_end in _iter_ebml(segment):
+            if sub_id == 0x1654AE6B:  # Tracks
+                tracks = segment[sub_start:sub_end]
+                for track_id, track_start, track_end in _iter_ebml(tracks):
+                    if track_id != 0xAE:
+                        continue
+                    entry = tracks[track_start:track_end]
+                    current_track = None
+                    codec_id = None
+                    for field_id, field_start, field_end in _iter_ebml(entry):
+                        if field_id == 0xD7:
+                            current_track = entry[field_start]
+                        elif field_id == 0x86:
+                            codec_id = entry[field_start:field_end].decode(
+                                errors="ignore"
+                            )
+                    if codec_id == "V_MPEGH/ISO/HEVC":
+                        track_number = current_track
+            if sub_id == 0x1F43B675 and track_number is not None:  # Cluster
+                cluster = segment[sub_start:sub_end]
+                for block_id, block_start, block_end in _iter_ebml(cluster):
+                    if block_id != 0xA3:  # SimpleBlock
+                        continue
+                    block = cluster[block_start:block_end]
+                    parsed_track, width = _read_vint_size(block, 0)
+                    if parsed_track != track_number:
+                        continue
+                    # SimpleBlock: track(vint) + timecode(2) + flags(1) + frame data
+                    return block[width + 3 :]
+    return None
+
+
+def _probe_mkv(url, auth_header):
+    try:
+        sample = _extract_mkv_first_sample(url, auth_header)
+    except (OSError, ValueError, IndexError, struct.error):
+        return DolbyVisionSourceResult("dv_unknown", "mkv_sample_extraction_failed")
+    if not sample:
+        return DolbyVisionSourceResult("dv_unknown", "mkv_sample_extraction_failed")
+    nal = _find_unspec62_nal(sample)
+    if nal is None:
+        return DolbyVisionSourceResult("non_dv", "no_rpu_nal_found")
+    try:
+        info = parse_unspec62_nalu(nal)
+    except (ValueError, IndexError):
+        return DolbyVisionSourceResult("dv_unknown", "rpu_parse_failed")
+    return _classify_parsed_rpu(info)
+
+
 def probe_dolby_vision_source(url, auth_header=None, file_size=None):
     """Probe a remote MP4 or MKV URL and classify its Dolby Vision source.
 
@@ -196,4 +297,6 @@ def probe_dolby_vision_source(url, auth_header=None, file_size=None):
     lower = url.split("?", 1)[0].lower()
     if lower.endswith((".mp4", ".m4v")):
         return _probe_mp4(url, auth_header, file_size=file_size)
+    if lower.endswith(".mkv"):
+        return _probe_mkv(url, auth_header)
     return DolbyVisionSourceResult("dv_unknown", "unsupported_container")
