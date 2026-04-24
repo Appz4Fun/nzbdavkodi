@@ -77,7 +77,7 @@ Only the remaining work. Completed implementation belongs in `DONE.md`.
 
 | Pri | Item | Est | Depends | Plan |
 |---|---|---|---|---|
-| P0 | Install `plugin.video.nzbdav-1.0.0-pre-alpha.zip` on the CoreELEC box via Kodi → Add-ons → Install from zip (zip already at `/storage/` on the box) | ~2 min wall | — | §F.1 step 3 |
+| P0 | Install `plugin.video.nzbdav-1.0.3.zip` on the CoreELEC box via Kodi → Add-ons → Install from zip (zip staged at `/storage/` on the box; built from HEAD = v1.0.3 addon.xml + 5 unreleased commits `be8ff0b..HEAD`, covering the cache=0 probe/gate/dialog line) | ~2 min wall | — | §F.1 step 3 |
 | P0 | Run CoreELEC smoke validation on a clean-article release (2 h, four seeks, audio sync check) | ~2 h wall | zip installed | §F.1 |
 | P1 | Validate `send_200_no_range=ON` on CoreELEC before ever enabling that flag | ~1 h wall | smoke passed | §F.2 |
 | P2 | Start and track the ≥1 week observability soak post-merge | 7+ days wall | smoke passed | §F.3 |
@@ -129,7 +129,7 @@ PR-1 is merged on `main` locally and pushed to `origin/main` (2026-04-22). Integ
 #### A.4.1 Current rollout posture
 
 - PR-1 is merged onto `main` as `16e7122` and pushed to `origin/main` (2026-04-22).
-- Addon zip `plugin.video.nzbdav-1.0.0-pre-alpha.zip` built and staged at `root@coreelec.local:/storage/` ready to install via Kodi's "Install from zip" UI.
+- Addon zip `plugin.video.nzbdav-1.0.3.zip` built and staged at `root@coreelec.local:/storage/` ready to install via Kodi's "Install from zip" UI. Built from HEAD; contains v1.0.3 tagged addon.xml plus 5 unreleased commits (`be8ff0b..HEAD` — pylint cleanup, TODO consolidation, passthrough+HLS AC-3 respawn, the cache=0 probe/gate, and the first-play dialog). The smoke validates that line, not the unmodified v1.0.3 tag.
 - `just lint` + `just test` verified green on the merged state (670 passed).
 - Defaults shipping with PR-1:
   - `strict_contract_mode = warn` (three values: `off` / `warn` / `enforce`; default shipped is `warn`)
@@ -1002,7 +1002,12 @@ applied, full benefit not yet realized.**
    without persisting state across Kodi runs. Relevant code:
    `resources/lib/cache_prompt.py`.
 
-5. ⏸ Update `README.md` / `AGENTS.md` with the cache=0 instruction.
+5. ✅ Update `README.md` / `AGENTS.md` with the cache=0 instruction.
+   AGENTS.md now has a "Pass-through mode (optional, recommended for
+   large files)" section between the Stream Proxy deep-dive and
+   Requirements, with the same `<cache><memorysize>0</memorysize></cache>`
+   snippet the first-play dialog shows. `README.md` is a one-line stub
+   pointing at AGENTS.md, so no separate edit was needed.
 
 6. ⏸ Integration test: verify pass-through + Kodi seek works on
    Uncut Gems 90 GB file after `<memorysize>0</memorysize>` is set.

@@ -47,6 +47,24 @@ If ffmpeg isn't installed, the proxy degrades gracefully to pass-through or dire
 
 > **Architecture deep-dive:** [`TODO.md` Part C](TODO.md#part-c--stream-proxy-architecture-reference-proxymd) documents the full session lifecycle, how the proxy interacts with `resolver.py` / `service.py` / `router.py` / `mp4_parser.py`, the HLS producer internals, and where to look when debugging playback failures. (The former standalone `PROXY.md` was consolidated into `TODO.md` on 2026-04-24.)
 
+### Pass-through mode (optional, recommended for large files)
+
+By default, files above the force-remux threshold (20 GB) stream through ffmpeg so 32-bit Kodi's `CFileCache` cannot overflow on the source byte count. You can skip the remux and get pure byte pass-through with full random seek by disabling Kodi's memory cache.
+
+Create or edit `special://profile/advancedsettings.xml` (on CoreELEC: `/storage/.kodi/userdata/advancedsettings.xml`) and merge in:
+
+```xml
+<advancedsettings>
+  <cache>
+    <memorysize>0</memorysize>
+  </cache>
+</advancedsettings>
+```
+
+Restart Kodi for the change to take effect. The addon probes this file and only takes the pass-through path when `memorysize` is `0`; without it, force-remux remains the safe default so large MKVs will not hit the CFileCache overflow.
+
+The addon surfaces this same snippet in a one-off dialog the first time force-remux fires on a large file — you do not have to return to this doc to set it up.
+
 ## Requirements
 
 | Component | Description |
