@@ -105,5 +105,7 @@
 		<setting id="zero_fill_budget_enabled" label="30149" type="bool" default="true" />
 		<setting id="retry_ladder_enabled" label="30150" type="bool" default="true" />
 		<setting id="send_200_no_range" label="30151" type="bool" default="false" />
+		<setting id="cache_warning_shown" type="bool" default="false" visible="false" />
+		<setting id="cache_dialog_dismissed" type="bool" default="false" visible="false" />
 	</category>
 </settings>

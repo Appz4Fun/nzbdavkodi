@@ -50,6 +50,7 @@ except (ImportError, ModuleNotFoundError):
 
 from resources.lib.dv_source import probe_dolby_vision_source
 from resources.lib.http_util import notify as _notify
+from resources.lib.kodi_advancedsettings import has_cache_memorysize_zero  # noqa: E402
 
 # Singleton proxy instance
 _proxy = None
@@ -3945,15 +3946,26 @@ class StreamProxy:
                 # Only safe on 32-bit Kodi when CFileCache is bypassed
                 # (advancedsettings.xml: <cache><memorysize>0</memorysize>
                 # </cache>) — otherwise large MKVs trip the uint32
-                # seek-delta truncation in FileCache.cpp:375.
-                xbmc.log(
-                    "NZB-DAV: force_remux_mode=passthrough -- skipping "
-                    "force-remux for {}B file (requires advancedsettings.xml "
-                    "<cache><memorysize>0</memorysize></cache> on 32-bit "
-                    "Kodi)".format(content_length),
-                    xbmc.LOGWARNING,
-                )
-                needs_remux = False
+                # seek-delta truncation in FileCache.cpp:375. Gate on the
+                # probe so a misconfigured user can't shoot themselves in
+                # the foot: if cache=0 is missing, fall through to the
+                # matroska remux path regardless of the setting.
+                if has_cache_memorysize_zero():
+                    xbmc.log(
+                        "NZB-DAV: force_remux_mode=passthrough -- skipping "
+                        "force-remux for {}B file (advancedsettings.xml "
+                        "cache=0 confirmed)".format(content_length),
+                        xbmc.LOGINFO,
+                    )
+                    needs_remux = False
+                else:
+                    xbmc.log(
+                        "NZB-DAV: force_remux_mode=passthrough requested but "
+                        "advancedsettings.xml <cache><memorysize>0</memorysize>"
+                        "</cache> is missing -- falling back to matroska for "
+                        "{}B file".format(content_length),
+                        xbmc.LOGWARNING,
+                    )
             ffmpeg_caps = self._get_ffmpeg_capabilities() if needs_remux else {}
             ffmpeg_path = ffmpeg_caps.get("ffmpeg_path")
             if ffmpeg_path:

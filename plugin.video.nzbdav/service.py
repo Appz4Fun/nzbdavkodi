@@ -17,6 +17,9 @@ import xbmc  # noqa: E402
 import xbmcaddon  # noqa: E402
 import xbmcgui  # noqa: E402
 from resources.lib.http_util import notify as _notify  # noqa: E402
+from resources.lib.kodi_advancedsettings import (  # noqa: E402
+    has_cache_memorysize_zero,
+)
 from resources.lib.stream_proxy import StreamProxy  # noqa: E402
 
 # Window property keys for IPC between plugin and service
@@ -334,6 +337,49 @@ class NzbdavPlayer(xbmc.Player):
             self._state = PlaybackState.IDLE
 
 
+def check_cache_warning(state):
+    """Surface a one-shot notification when the user selected
+    ``force_remux_mode=passthrough`` but has not applied the
+    ``<cache><memorysize>0</memorysize></cache>`` advancedsettings.xml
+    change that the passthrough path requires on 32-bit Kodi.
+
+    Called on every service tick. ``state`` is a dict the caller owns
+    that retains the last-seen ``force_remux_mode`` between ticks; when
+    the user changes the mode, ``cache_warning_shown`` is reset so a
+    subsequent matroska→passthrough toggle re-fires the warning.
+
+    No-op when mode != passthrough, when the warning has already been
+    shown for the current mode, or when cache=0 is present.
+    """
+    addon = xbmcaddon.Addon()
+    mode = addon.getSetting("force_remux_mode")
+
+    if mode != state.get("last_mode"):
+        state["last_mode"] = mode
+        try:
+            addon.setSetting("cache_warning_shown", "false")
+        except _PLAYER_RUNTIME_ERRORS:
+            pass
+
+    if mode != "2":
+        return
+    if addon.getSetting("cache_warning_shown").lower() == "true":
+        return
+    if has_cache_memorysize_zero():
+        return
+
+    _notify(
+        "NZB-DAV",
+        "Passthrough mode: advancedsettings.xml cache=0 missing — "
+        "falling back to matroska",
+        10000,
+    )
+    try:
+        addon.setSetting("cache_warning_shown", "true")
+    except _PLAYER_RUNTIME_ERRORS:
+        pass
+
+
 def main():
     """Service entry point — runs for the lifetime of Kodi."""
     monitor = xbmc.Monitor()
@@ -380,6 +426,13 @@ def main():
     # a one-shot "service is unhealthy, please file an issue" warning.
     consecutive_tick_failures = 0
 
+    # State dict for check_cache_warning: retains the last-seen
+    # force_remux_mode so a user toggle resets the "already notified"
+    # flag and lets the warning re-fire.
+    cache_warn_state = {
+        "last_mode": xbmcaddon.Addon().getSetting("force_remux_mode"),
+    }
+
     while not monitor.abortRequested():
         if monitor.waitForAbort(1):
             break
@@ -420,6 +473,15 @@ def main():
                     "NZB-DAV: Stream proxy restarted on port {}".format(proxy.port),
                     xbmc.LOGINFO,
                 )
+
+        try:
+            check_cache_warning(cache_warn_state)
+        except Exception as e:  # pylint: disable=broad-except
+            # Never let a settings-read glitch take down the service loop.
+            xbmc.log(
+                "NZB-DAV: cache warning check failed: {}".format(e),
+                xbmc.LOGERROR,
+            )
 
         try:
             player.tick()

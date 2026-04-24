@@ -6,7 +6,7 @@
 import time
 from unittest.mock import MagicMock, patch
 
-from service import NzbdavPlayer, PlaybackState
+from service import NzbdavPlayer, PlaybackState, check_cache_warning
 
 
 @patch("service._HOME_WINDOW")
@@ -454,3 +454,137 @@ def test_stream_proxy_is_alive_tracks_thread_liveness():
         proxy.stop()
     # After stop(), the thread joined and is no longer alive.
     assert proxy.is_alive() is False
+
+
+def _make_cache_warning_addon(mode, cache_warning_shown="false"):
+    """Build a MagicMock Addon whose getSetting honors the two settings
+    check_cache_warning reads."""
+    addon = MagicMock()
+    values = {
+        "force_remux_mode": mode,
+        "cache_warning_shown": cache_warning_shown,
+    }
+    addon.getSetting.side_effect = lambda key: values.get(key, "")
+    return addon
+
+
+@patch("service._notify")
+@patch("service.has_cache_memorysize_zero")
+@patch("service.xbmcaddon")
+def test_cache_warning_fires_when_passthrough_and_no_cache(
+    mock_xbmcaddon, mock_has_cache, mock_notify
+):
+    """Passthrough mode + cache not set + not yet warned = notify once
+    and persist cache_warning_shown=true so we don't re-notify on the
+    next tick."""
+    addon = _make_cache_warning_addon(mode="2", cache_warning_shown="false")
+    mock_xbmcaddon.Addon.return_value = addon
+    mock_has_cache.return_value = False
+
+    state = {"last_mode": "2"}
+    check_cache_warning(state)
+
+    mock_notify.assert_called_once()
+    # cache_warning_shown flipped to "true" so subsequent ticks skip
+    addon.setSetting.assert_any_call("cache_warning_shown", "true")
+
+
+@patch("service._notify")
+@patch("service.has_cache_memorysize_zero")
+@patch("service.xbmcaddon")
+def test_cache_warning_skipped_when_already_shown(
+    mock_xbmcaddon, mock_has_cache, mock_notify
+):
+    """Once cache_warning_shown=true, the notification does NOT fire
+    again on subsequent ticks until the user changes force_remux_mode."""
+    addon = _make_cache_warning_addon(mode="2", cache_warning_shown="true")
+    mock_xbmcaddon.Addon.return_value = addon
+    mock_has_cache.return_value = False
+
+    state = {"last_mode": "2"}
+    check_cache_warning(state)
+
+    mock_notify.assert_not_called()
+
+
+@patch("service._notify")
+@patch("service.has_cache_memorysize_zero")
+@patch("service.xbmcaddon")
+def test_cache_warning_skipped_when_mode_is_matroska(
+    mock_xbmcaddon, mock_has_cache, mock_notify
+):
+    """When force_remux_mode=0 (matroska) there is nothing to warn
+    about — the passthrough gate isn't engaged."""
+    addon = _make_cache_warning_addon(mode="0", cache_warning_shown="false")
+    mock_xbmcaddon.Addon.return_value = addon
+    mock_has_cache.return_value = False
+
+    state = {"last_mode": "0"}
+    check_cache_warning(state)
+
+    mock_notify.assert_not_called()
+
+
+@patch("service._notify")
+@patch("service.has_cache_memorysize_zero")
+@patch("service.xbmcaddon")
+def test_cache_warning_skipped_when_cache_is_set(
+    mock_xbmcaddon, mock_has_cache, mock_notify
+):
+    """When the user has cache=0 applied, passthrough is safe so the
+    notification is irrelevant."""
+    addon = _make_cache_warning_addon(mode="2", cache_warning_shown="false")
+    mock_xbmcaddon.Addon.return_value = addon
+    mock_has_cache.return_value = True
+
+    state = {"last_mode": "2"}
+    check_cache_warning(state)
+
+    mock_notify.assert_not_called()
+
+
+@patch("service._notify")
+@patch("service.has_cache_memorysize_zero")
+@patch("service.xbmcaddon")
+def test_cache_warning_resets_flag_when_mode_changes(
+    mock_xbmcaddon, mock_has_cache, mock_notify
+):
+    """A mode transition (e.g. matroska -> passthrough) resets the
+    cache_warning_shown flag so the next passthrough selection
+    re-fires the warning. Without this reset, a user who toggles back
+    and forth would never see the warning after the first time."""
+    addon = _make_cache_warning_addon(mode="2", cache_warning_shown="true")
+    mock_xbmcaddon.Addon.return_value = addon
+    mock_has_cache.return_value = False
+
+    # Last tick saw mode="0" (matroska); now we see "2" (passthrough).
+    state = {"last_mode": "0"}
+
+    # getSetting("cache_warning_shown") returns "true" initially, but
+    # after the reset the check proceeds as if unnotified.
+    # Simulate by flipping the return value after setSetting is called
+    # with ("cache_warning_shown", "false").
+    flipped = {"done": False}
+
+    def set_setting(key, value):
+        if key == "cache_warning_shown" and value == "false":
+            flipped["done"] = True
+
+    addon.setSetting.side_effect = set_setting
+
+    def get_setting(key):
+        if key == "cache_warning_shown":
+            return "false" if flipped["done"] else "true"
+        if key == "force_remux_mode":
+            return "2"
+        return ""
+
+    addon.getSetting.side_effect = get_setting
+
+    check_cache_warning(state)
+
+    # last_mode updated to the new value
+    assert state["last_mode"] == "2"
+    # reset to false, then notification fires and sets it back to true
+    addon.setSetting.assert_any_call("cache_warning_shown", "false")
+    mock_notify.assert_called_once()

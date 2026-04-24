@@ -714,11 +714,9 @@ def test_prepare_stream_force_remuxes_huge_mkv_with_default_threshold():
 
 def test_prepare_stream_passthrough_mode_skips_force_remux_for_huge_mkv():
     """force_remux_mode=2 (passthrough) bypasses the force-remux tier
-    even on a huge MKV. The resulting ctx is the direct pass-through
-    shape (remux=False, mode is unset, content_type=video/x-matroska,
-    content_length set). Only safe when the user has bypassed
-    32-bit Kodi's CFileCache via advancedsettings.xml — the addon
-    logs a WARNING reminding them, but does not gate on it."""
+    even on a huge MKV *when* advancedsettings.xml cache=0 is present.
+    The resulting ctx is the direct pass-through shape (remux=False,
+    content_type=video/x-matroska, content_length set)."""
     import sys
 
     from resources.lib.stream_proxy import StreamProxy
@@ -743,7 +741,9 @@ def test_prepare_stream_passthrough_mode_skips_force_remux_for_huge_mkv():
     try:
         with patch(
             "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
-        ), patch.object(sp, "_get_content_length", return_value=huge):
+        ), patch.object(sp, "_get_content_length", return_value=huge), patch(
+            "resources.lib.stream_proxy.has_cache_memorysize_zero", return_value=True
+        ):
             sp.prepare_stream("http://host/wasteman.mkv")
     finally:
         sys.modules["xbmcaddon"].Addon.return_value = original
@@ -756,6 +756,57 @@ def test_prepare_stream_passthrough_mode_skips_force_remux_for_huge_mkv():
     assert ctx.get("hls_segment_format") is None
     # ffmpeg_path should NOT be in the ctx — pass-through doesn't need it.
     assert "ffmpeg_path" not in ctx
+
+
+def test_prepare_stream_passthrough_falls_back_to_matroska_when_cache_not_set():
+    """force_remux_mode=2 (passthrough) BUT advancedsettings.xml cache=0
+    is missing — the gate in prepare_stream detects this and falls
+    through to the matroska remux path regardless of the setting.
+    Without this gate a misconfigured user's large MKV would crash on
+    32-bit Kodi (FileCache.cpp:375 uint32 seek-delta truncation)."""
+    import sys
+
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 9999
+
+    huge = 58 * 1024 * 1024 * 1024  # 58 GB
+
+    mock_addon = MagicMock()
+
+    def get_setting(key):
+        if key == "force_remux_mode":
+            return "2"
+        return ""
+
+    mock_addon.getSetting.side_effect = get_setting
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch(
+            "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
+        ), patch.object(sp, "_get_content_length", return_value=huge), patch(
+            "resources.lib.stream_proxy.has_cache_memorysize_zero", return_value=False
+        ), patch.object(
+            sp, "_probe_duration", return_value=8000.0
+        ), patch.object(
+            sp,
+            "_get_ffmpeg_capabilities",
+            return_value={"ffmpeg_path": "/usr/bin/ffmpeg", "hls_fmp4": False},
+        ):
+            sp.prepare_stream("http://host/wasteman.mkv")
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    ctx = sp._server.stream_context
+    assert (
+        ctx["remux"] is True
+    ), "gate must force remux when passthrough selected but cache=0 missing"
+    assert ctx.get("mode") != "hls", "fmp4 disabled in this test — matroska expected"
+    assert ctx["ffmpeg_path"] == "/usr/bin/ffmpeg"
 
 
 def test_prepare_stream_force_remux_hls_fmp4_setting_produces_hls_ctx():

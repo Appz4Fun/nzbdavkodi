@@ -962,13 +962,24 @@ applied, full benefit not yet realized.**
    (requires advancedsettings.xml cache=0)" added to the existing
    "Force remux output format" enum.
 
-3. ⏸ **Auto-detection of advancedsettings.xml** (not yet implemented):
-   on addon start, read `/storage/.kodi/userdata/advancedsettings.xml`
-   and look for `<memorysize>0</memorysize>`. If present, default the
-   passthrough mode on. If absent, default to matroska AND surface a
-   one-shot notification: *"For best DV scrub experience, add
-   `<cache><memorysize>0</memorysize></cache>` to your
-   advancedsettings.xml — see `TODO.md` §D.2.3."*
+3. ✅ **Auto-detection of advancedsettings.xml**: on every service
+   tick, read `special://profile/advancedsettings.xml` and check for
+   `<cache><memorysize>0</memorysize></cache>`. Behavior is
+   **gate, don't enable** — the setting is not changed behind the
+   user's back:
+   - If present, passthrough runs as configured.
+   - If absent, the runtime gate in `stream_proxy.py::prepare_stream`
+     falls back to matroska regardless of the user's
+     `force_remux_mode` selection, so a misconfigured user cannot
+     crash 32-bit Kodi on a large MKV.
+   - A one-shot notification fires on the service tick:
+     *"Passthrough mode: advancedsettings.xml cache=0 missing —
+     falling back to matroska."* The `cache_warning_shown` flag is
+     reset whenever `force_remux_mode` changes, so a
+     matroska→passthrough toggle re-fires the warning. Relevant code:
+     `resources/lib/kodi_advancedsettings.py`,
+     `service.check_cache_warning`, stream_proxy gate at
+     `prepare_stream()`.
 
 4. ⏸ **First-play dialog** (not yet implemented):
    > "NZB-DAV can play this 58 GB file in pass-through mode with full
