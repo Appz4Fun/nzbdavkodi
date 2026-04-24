@@ -27,23 +27,7 @@ These items are intentionally **not** part of the completed archive — they sti
 
 > **Relevance:** skim only when merging or reviewing the 20-agent-review remediation. This Part is a historical fix-verification record, not an action list.
 
-All P0, P1, P2, and P3 findings from the 20-agent review are fixed and verified in commit `4103f5d`. 643 → 657 tests pass; lint clean on Python 3.10/3.12 CI matrix.
-
-### E.1 Fix verification
-
-| Tier | Count | Status |
-|---|---|---|
-| **P0 — merge-blockers** | 4/4 | ✅ fixed, covered by tests |
-| **P1 — major** | 5/5 | ✅ fixed, covered by tests + docs |
-| **P2 — important** | 9/9 | ✅ fixed or documented |
-| **P3 — minor/nit** | 12/12 | ✅ fixed or intentional (P3.11) |
-| **P4 — test coverage** | 14/18 | ✅ production-path tests all landed |
-
-#### E.1.1 What was added to the test suite
-
-- `tests/test_dv_rpu.py` — truncated RPU, wrong prefix, invalid rpu_type, emulation-prevention, polynomial linear-interp graceful-degradation.
-- `tests/test_dv_source.py` — co64 chunk offsets, 4 GiB stsz clamp, SimpleBlock lacing refusal, BlockGroup/Block extraction, network error, unsupported extension, size-cap at `resp.read`, auth CRLF strip.
-- `tests/test_stream_proxy.py` — probe-crash → matroska regression guard.
+All P0, P1, P2, and P3 findings from the 20-agent review are fixed and verified in commit `4103f5d`. 643 → 657 tests pass; lint clean on Python 3.10/3.12 CI matrix. The deferred-items list that follows is still active and worth skimming.
 
 ### E.2 Deferred (require upstream material we don't have or large synthesis work)
 

@@ -106,43 +106,11 @@ Dolby Vision source-level fixes in `../piXBMC` and `../piCoreElec` are tracked i
 
 ### A.3 Completed Work Archive
 
-`DONE.md` is now the archive for the completed proxy remediation work:
-
-- completed P0 / P1 / P4 / P5 implementation
-- review / adjudication state that has already landed
-- verification evidence from the verified worktree branch
-- key file list and diff summary
-
-Integration status:
-
-- main workspace branch: `main`
-- PR-1 commit: `0111a39` (`feat(proxy): PR-1 reliability + security baseline (P0/P1/P4/P5)`)
-- PR-1 merge commit: `16e7122` on `main`
-- `codex/proxy-pr1-range` branch and its worktree were removed post-merge.
-
-PR-1 is merged on `main` locally and pushed to `origin/main` (2026-04-22). Integration is complete; the next gate is CoreELEC smoke validation.
+See `DONE.md` for the post-merge archive. PR-1 is merged on `main` as `16e7122` (2026-04-22); the next gate is CoreELEC smoke validation per §A.1.
 
 ---
 
 ### A.4 Remaining Integration & Rollout Gates
-
-#### A.4.1 Current rollout posture
-
-- PR-1 is merged onto `main` as `16e7122` and pushed to `origin/main` (2026-04-22).
-- Addon zip `plugin.video.nzbdav-1.0.0-pre-alpha.zip` built and staged at `root@coreelec.local:/storage/` ready to install via Kodi's "Install from zip" UI.
-- `just lint` + `just test` verified green on the merged state (670 passed).
-- Defaults shipping with PR-1:
-  - `strict_contract_mode = warn` (three values: `off` / `warn` / `enforce`; default shipped is `warn`)
-  - `density_breaker_enabled = false`
-  - `retry_ladder_enabled = true`
-  - `zero_fill_budget_enabled = true`
-  - `send_200_no_range = false`
-
-#### A.4.2 Required pre-ship validation
-
-- CoreELEC smoke on a clean-article release.
-- CoreELEC validation of `send_200_no_range=ON` before that flag is ever enabled in the field.
-- Confirm no unexpected rejection patterns while `strict_contract_mode=warn`.
 
 #### A.4.3 Post-merge soak gates
 
