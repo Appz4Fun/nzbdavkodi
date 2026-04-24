@@ -948,15 +948,23 @@ See §D.3 for the consolidated matrix. Notable additional citations:
 ONCE the cache=0 advancedsettings.xml change is also applied. Pass-through
 alone, without the cache change, is *worse* than force-remux (per §D.1.A).**
 
-**Status as of 2026-04-23 evening: addon-side shipped, user-side not yet
-applied, full benefit not yet realized.**
+**Status as of 2026-04-24: addon-side Phase 1 fully shipped — probe
+(step 3), runtime gate (step 3), first-play dialog (step 4), and doc
+update (step 5) all landed in commits `624fe93`, `0e4b946`, `3ee019b`,
+and `1600b06`. Step 6 (hands-on integration test on the 58 GB / 90 GB
+file with `<memorysize>0</memorysize>` actually applied) is the only
+remaining item and requires the CoreELEC box; zip staged at
+`/storage/plugin.video.nzbdav-1.0.3.zip`.**
 
-1. ✅ shipped but unsafe until steps 3 & 4 land. `stream_proxy.py`: extend `force_remux_mode` setting with value `2`
+1. ✅ `stream_proxy.py`: extend `force_remux_mode` setting with value `2`
    = `passthrough`. When set, the routing in `prepare_stream()`
    short-circuits the force-remux tier even on huge MKVs and serves
    bytes directly via `_serve_proxy` with full Content-Length +
    Accept-Ranges. Logged as `force_remux_mode=passthrough` warning so
-   users see a reminder of the cache=0 prerequisite.
+   users see a reminder of the cache=0 prerequisite. Safe to flip with
+   or without the user having applied cache=0: step 3's gate forces a
+   matroska fallback + notification when `<memorysize>0</memorysize>`
+   is missing, so a misconfigured user cannot crash 32-bit Kodi.
 
 2. ✅ `settings.xml`: dropdown value `30152` "Direct pass-through
    (requires advancedsettings.xml cache=0)" added to the existing
@@ -1014,10 +1022,12 @@ applied, full benefit not yet realized.**
    (Pre-cache test on 2026-04-23 confirmed the **failure** mode:
    every scrub > 4 GB returns `streamed=0`.)
 
-**Important sequencing**: do not enable `force_remux_mode=2` for users
-who haven't applied the cache=0 change. The current dropdown lets them
-shoot themselves in the foot — the auto-detection in step 3 should
-gate it.
+**Sequencing (resolved)**: `force_remux_mode=2` is safe to surface in
+the dropdown now that step 3's auto-detection gates it — a user who
+flips passthrough without applying cache=0 gets a matroska fallback +
+one-shot notification, not a crash. Step 4's first-play dialog guides
+them to the cache=0 snippet without requiring them to find the doc
+themselves.
 
 #### D.5.2 Phase 2 — fmp4 flag cleanup
 
@@ -1232,14 +1242,14 @@ The five source playbooks merged into Part F:
 
 #### F.1.2 Setup
 
-- Box: `root@coreelec.local`, 32-bit Kodi on Amlogic AM6B.
-- Build: `just release` → `plugin.video.nzbdav.zip`.
+- Box: `root@coreelec.local`, 32-bit Kodi on Amlogic AM6B. SSH alias `coreelec` (→ `192.168.1.73`) is in `~/.ssh/config`; prefer that over `coreelec.local` because the mDNS hostname does not have a matching `known_hosts` entry and will fail host-key verification.
+- Build: `just release` → `./plugin.video.nzbdav-<version>.zip` (emits at repo root, not `dist/`; filename carries the `addon.xml` version — current HEAD → `plugin.video.nzbdav-1.0.3.zip`).
 - Pick a release with **low article-dead rate** — reference a recent Trakt top-10 popular movie submitted to nzbdav within the last 48 h. Avoid anything older than 30 days (higher article decay).
 
 #### F.1.3 Steps
 
 1. `just release` on the merged branch.
-2. `scp dist/plugin.video.nzbdav.zip root@coreelec.local:/storage/`.
+2. `scp ./plugin.video.nzbdav-<version>.zip coreelec:/storage/` (using the ssh-config alias).
 3. Install via Kodi Add-ons → Install from zip file.
 4. Restart the addon via the main menu if needed. **Ask permission before `systemctl restart kodi`** — per `memory/feedback_no_kodi_restart_without_permission.md`.
 5. Trigger playback via TMDBHelper → "Play with NZB-DAV" on the chosen title.
