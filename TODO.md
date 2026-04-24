@@ -45,16 +45,13 @@
 
 ## Part A — Outstanding Proxy Rollout Work (`TODO.md`)
 
-**Remaining proxy work only.**
-
-Completed, verified proxy implementation work moved to `DONE.md`.
-Dolby Vision / PANI source work lives in Part B of this file (originally a standalone `TODO_PANI.md`).
+**Remaining proxy work only.** Completed work is in `git log` — PR-1 merge `16e7122` (2026-04-22), 20-agent review remediation `4103f5d`. Dolby Vision / PANI source work lives in Part B of this file (originally a standalone `TODO_PANI.md`).
 
 ---
 
 ### A.1 Active Worklist
 
-Only the remaining work. Completed implementation belongs in `DONE.md`.
+Only the remaining work. Completed implementation belongs in `git log`.
 
 | Pri | Item | Est | Depends | Plan |
 |---|---|---|---|---|
@@ -82,12 +79,6 @@ Only the remaining work. Completed implementation belongs in `DONE.md`.
 ### A.2 Out-of-Scope: DV Work
 
 Dolby Vision source-level fixes in `../piXBMC` and `../piCoreElec` are tracked in Part B of this file. They are intentionally separate from the proxy rollout and validation work here.
-
----
-
-### A.3 Completed Work Archive
-
-See `DONE.md` for the post-merge archive. PR-1 is merged on `main` as `16e7122` (2026-04-22); the next gate is CoreELEC smoke validation per §A.1.
 
 ---
 
@@ -166,8 +157,7 @@ Query the health endpoint during `_handle_play` / `_handle_search`, then down-ra
 
 #### Planning
 
-- `DONE.md` — completed proxy implementation archive
-- `TODO.md` — this file; single source of truth for outstanding work + architecture + DV plan + fix-verification history + rollout playbooks (Parts A–F)
+- `TODO.md` — single source of truth for outstanding work + architecture + DV plan + fix-verification history + rollout playbooks (Parts A–F). Completed work lives in `git log`.
 - §F.1 — CoreELEC smoke playbook (formerly `junk/plans/REMAINING_COREELEC_SMOKE.md`)
 - §F.2 — `send_200_no_range=ON` validation playbook (formerly `junk/plans/REMAINING_SEND_200_VALIDATION.md`)
 - §F.3 — observability soak playbook + decision gates (formerly `junk/plans/REMAINING_OBSERVABILITY_SOAK.md`)
@@ -190,10 +180,9 @@ Query the health endpoint during `_handle_play` / `_handle_search`, then down-ra
 
 ### A.8 Maintenance Conventions
 
-- Put completed, verified proxy work in `DONE.md`, not `TODO.md`.
-- Keep this file (`TODO.md`) as the single source of truth for outstanding integration, rollout, gated epic work, stream-proxy architecture reference, DV plan, and fix-verification history. New work goes under the appropriate Part.
-- Do not re-fork content into standalone files (the five source docs `docs/TODO.md`, `docs/TODO_PANI.md`, `PROXY.md`, `DV.md`, `docs/BUG2.MD` were consolidated here on 2026-04-24 and removed from the tree).
-- Do not recreate `DV_FIX.md`, `PLAN_FIX_PROXY.md`, `TODO_ALLEN_ASAP.md`, `plans/PROXY_REMEDIATION.md`, `plans/PROXY_EXECUTION.md`, or `plans/PROXY_ADJUDICATION.md`. Their content is preserved in `DONE.md` (completed work) and `git log`.
+- Keep `TODO.md` as the single source of truth for outstanding integration, rollout, gated epic work, stream-proxy architecture reference, DV plan, and fix-verification history. Completed work goes to `git log`, not a secondary archive file.
+- Do not re-fork content into standalone files (the five source docs `docs/TODO.md`, `docs/TODO_PANI.md`, `PROXY.md`, `DV.md`, `docs/BUG2.MD` were consolidated here on 2026-04-24 and removed from the tree; `DONE.md` was merged back into this file on the same round).
+- Do not recreate `DV_FIX.md`, `PLAN_FIX_PROXY.md`, `TODO_ALLEN_ASAP.md`, `plans/PROXY_REMEDIATION.md`, `plans/PROXY_EXECUTION.md`, or `plans/PROXY_ADJUDICATION.md`. Their content is preserved in `git log`.
 - No artifact paths in `/tmp`.
 
 ---
@@ -1074,11 +1063,20 @@ log to once-per-session.
 
 ---
 
-## Part E — Fix Verification Record
+## Part E — Fix Verification Record (`BUG2.MD`)
 
-> **Moved to `DONE.md`**
->
-> See [DONE.md](DONE.md#part-e--fix-verification-record-bug2md) for the historical fix-verification record.
+> **Relevance:** skim only when merging or reviewing the 20-agent-review remediation. This Part is a historical fix-verification record, not an action list.
+
+All P0, P1, P2, and P3 findings from the 20-agent review are fixed and verified in commit `4103f5d`. 643 → 657 tests pass; lint clean on Python 3.10/3.12 CI matrix. The deferred-items list that follows is still active and worth skimming.
+
+### E.2 Deferred (require upstream material we don't have or large synthesis work)
+
+These are **nice-to-have** additional coverage; none block merge.
+
+1. **Profile 5 RPU fixture** — upstream `quietvoid/dovi_tool` doesn't ship one. We have mocked routing coverage for P5 but not a real P5 RPU parser test. Would require either a public DV P5 sample clip or a hand-crafted synthesis.
+2. **`coefficient_data_type == 1` test** — the alternative fixed-point encoding branch. No real-world fixture exercises it; all three vendored dovi_tool fixtures use `coefficient_data_type == 0`. See §D.4.1 for the on-device dovi_tool preprocessing approach that would generate a test corpus covering both encoding types.
+3. **`use_prev_vdr_rpu_flag=True` test** — rare mid-stream frame type; requires hand-synthesizing an RPU with the flag set. The edge-case behavior is now documented in the `dv_rpu.py` module docstring (P2.8).
+4. **Real open-source DV clip + dovi_tool cross-check CI harness** — a `@pytest.mark.integration` test that compares `dv_rpu.parse_rpu_payload` output against live `dovi_tool info --frame 0` output. Would guard against upstream drift, but is out of scope for this PR.
 
 ---
 
@@ -1189,7 +1187,7 @@ Attach the full `kodi.log` to a new issue. Do NOT flip any flags (`strict_contra
 
 #### F.2.6 Decision
 
-- **If green across both runs:** the flag is safe to ship default-ON in a follow-up PR. Update the default in `resources/settings.xml` and move the decision to `DONE.md`.
+- **If green across both runs:** the flag is safe to ship default-ON in a follow-up PR. Update the default in `resources/settings.xml` and record the decision in the commit message.
 - **If any regression in Run B:** the flag stays default-OFF. Open an issue tagging the specific regression observed and defer.
 
 ---
@@ -1253,7 +1251,7 @@ Record results inline in this section before making decisions.
   - [ ] `density_breaker_enabled` → keep OFF | flip default ON
   - [ ] start Article-Health epic (§A.5) — go / no-go
   - [ ] start NNTP-tuning epic (§A.6) — go / no-go
-- Move the completed decisions to `DONE.md`.
+- Record completed decisions in the commit message that flips them.
 
 ---
 
