@@ -1,45 +1,59 @@
-# TODO.md — Consolidated Roadmap, Architecture & DV Plan
+# TODO — NZB-DAV Kodi Addon
 
-> **Single source of truth.** Originally merged on 2026-04-23 from five
-> separate docs; last updated 2026-04-24 after a 100-principal-engineer
-> review pass. The five source files were collapsed into this single
-> file and removed from the tree:
->
-> - `docs/TODO.md` — proxy rollout worklist (now Part A)
-> - `docs/TODO_PANI.md` — Dolby Vision source-fix plan for `../piXBMC` and `../piCoreElec` (now Part B)
-> - `PROXY.md` — stream proxy architecture reference (now Part C)
-> - `DV.md` — Dolby Vision seek/scrub synthesis from 10 parallel research agents (now Part D)
-> - `docs/BUG2.MD` — P0/P1/P2/P3 fix verification record (now Part E)
->
-> Edit this file directly. Do not re-fork sections into separate files;
-> add new work under the appropriate Part (or create a Part F if nothing
-> fits).
+Single source of truth for outstanding integration, rollout, gated epic work, stream-proxy architecture reference, DV plan, and fix-verification history. Completed work lives in `git log`.
 
-### Glossary (acronyms used below)
+## Status at a glance
 
-- **DV** — Dolby Vision
-- **RPU** — Dolby Vision Reference Processing Unit (NAL UNSPEC62 payload)
-- **P5 / P7 / P8** — DV profiles (5 = HEVC+RPU single-layer; 7 = dual-layer BL+EL+RPU; 8.1 = cross-compatible single-layer)
-- **FEL / MEL** — P7 Full/Minimal Enhancement Layer variants
-- **HEVC** — H.265 video codec
-- **CMAF** — Common Media Application Format (fragmented MP4 delivery)
-- **ISA** — `inputstream.adaptive` Kodi addon
-- **CAMLCodec** — CoreELEC Amlogic hardware codec interface
-- **nzbdav** / **nzbdav-rs** — upstream WebDAV + SABnzbd-compat backend
-- **PTT** — parse-torrent-title (vendored in `resources/lib/ptt/`)
-- **R9** — `avdvplus` CoreELEC build revision 9 (2026-03-23)
+| | |
+|---|---|
+| **Next action** | Install the staged zip on the CoreELEC box and run the §F.1 smoke. |
+| **Blocked on** | CoreELEC smoke pass — gates §F.2, §F.3, and the §A.4/§A.5 epics. |
+| **Active priority** | P0: §F.1 smoke. P1: §F.2 `send_200_no_range` validation. P2: §F.3 soak. |
+| **Last reviewed** | 2026-04-24 |
 
----
+Jump to: **[§A.1 Active Worklist](#a1-active-worklist)** · [Part F Playbooks](#part-f--rollout-playbooks) · [Glossary](#glossary)
 
 ## Table of Contents
 
-- [Glossary](#glossary-acronyms-used-below)
-- Part A: [Outstanding Proxy Rollout Work](#part-a--outstanding-proxy-rollout-work-todomd)
-- Part B: [PANI/CoreELEC Dolby Vision Source Fix](#part-b--panicoreelec-dolby-vision-source-fix-todo_panimd)
-- Part C: [Stream Proxy Architecture Reference](#part-c--stream-proxy-architecture-reference-proxymd)
-- Part D: [Dolby Vision Seek & Scrub Plan](#part-d--dolby-vision-seek--scrub-plan-dvmd)
-- Part E: [Fix Verification Record — 20-Agent Review](#part-e--fix-verification-record-bug2md)
-- Part F: [Rollout Playbooks](#part-f--rollout-playbooks)
+| Part | Contents | When to read |
+|---|---|---|
+| [A](#part-a--outstanding-proxy-rollout-work-todomd) | Outstanding proxy rollout work | Always — this is the worklist |
+| [B](#part-b--panicoreelec-dolby-vision-source-fix-todo_panimd) | PANI/CoreELEC Dolby Vision source fix | When touching `../piXBMC` or `../piCoreElec` C++ |
+| [C](#part-c--stream-proxy-architecture-reference) | Stream proxy architecture pointer | When debugging proxy behaviour |
+| [D](#part-d--dolby-vision-seek--scrub-plan-dvmd) | Dolby Vision seek/scrub plan | When implementing seek or DV routing |
+| [E](#part-e--fix-verification-record-bug2md) | Fix verification record (BUG2.MD) | When reviewing 20-agent remediation |
+| [F](#part-f--rollout-playbooks) | Rollout playbooks (smoke, send_200, soak) | When executing a §A.1 P0/P1/P2 task |
+
+## Glossary
+
+| Term | Meaning |
+|---|---|
+| **DV** | Dolby Vision |
+| **RPU** | Dolby Vision Reference Processing Unit (NAL UNSPEC62 payload) |
+| **P5 / P7 / P8** | DV profiles — 5 = HEVC+RPU single-layer; 7 = dual-layer BL+EL+RPU; 8.1 = cross-compatible single-layer |
+| **FEL / MEL** | P7 Full / Minimal Enhancement Layer variants |
+| **HEVC** | H.265 video codec |
+| **CMAF** | Common Media Application Format (fragmented MP4 delivery) |
+| **ISA** | `inputstream.adaptive` Kodi addon |
+| **CAMLCodec** | CoreELEC Amlogic hardware codec interface |
+| **nzbdav** / **nzbdav-rs** | upstream WebDAV + SABnzbd-compat backend |
+| **PTT** | parse-torrent-title (vendored in `resources/lib/ptt/`) |
+| **R9** | `avdvplus` CoreELEC build revision 9 (2026-03-23) |
+
+<details>
+<summary>Consolidation history — click to expand</summary>
+
+Originally merged on 2026-04-23 from five separate docs; last updated 2026-04-24 after a 100-principal-engineer review pass. The five source files were collapsed into this single file and removed from the tree:
+
+- `docs/TODO.md` — proxy rollout worklist (now Part A)
+- `docs/TODO_PANI.md` — Dolby Vision source-fix plan for `../piXBMC` and `../piCoreElec` (now Part B)
+- `PROXY.md` — stream proxy architecture reference (now Part C)
+- `DV.md` — Dolby Vision seek/scrub synthesis from 10 parallel research agents (now Part D)
+- `docs/BUG2.MD` — P0/P1/P2/P3 fix verification record (now Part E)
+
+Edit this file directly. Do not re-fork sections into separate files; add new work under the appropriate Part (or create a Part G if nothing fits).
+
+</details>
 
 ---
 
@@ -54,20 +68,18 @@
 Only the remaining work. Completed implementation belongs in `git log`.
 
 | Pri | Item | Est | Depends | Plan |
-|---|---|---|---|---|
-| P0 | Install `plugin.video.nzbdav-1.0.0-pre-alpha.zip` on the CoreELEC box via Kodi → Add-ons → Install from zip (zip already at `/storage/` on the box) | ~2 min wall | — | §F.1 step 3 |
-| P0 | Run CoreELEC smoke validation on a clean-article release (2 h, four seeks, audio sync check) | ~2 h wall | zip installed | §F.1 |
-| P1 | Validate `send_200_no_range=ON` on CoreELEC before ever enabling that flag | ~1 h wall | smoke passed | §F.2 |
-| P2 | Start and track the ≥1 week observability soak post-merge | 7+ days wall | smoke passed | §F.3 |
-| P2 | Decide whether to flip `strict_contract_mode` from `warn` to `enforce` | ~10 min wall | soak complete | §F.3.5 (exit criteria) |
-| P2 | Decide whether to enable `density_breaker_enabled` | ~10 min wall | soak complete | §F.3.5 (exit criteria) |
-
-
+|:---:|---|:---:|:---:|:---:|
+| **P0** | Install `plugin.video.nzbdav-1.0.0-pre-alpha.zip` on the CoreELEC box via Kodi → Add-ons → Install from zip (zip already at `/storage/` on the box) | ~2 min | — | §F.1 step 3 |
+| **P0** | Run CoreELEC smoke validation on a clean-article release (2 h, four seeks, audio sync check) | ~2 h | zip installed | §F.1 |
+| **P1** | Validate `send_200_no_range=ON` on CoreELEC before ever enabling that flag | ~1 h | smoke passed | §F.2 |
+| **P2** | Start and track the ≥1 week observability soak post-merge | 7+ days | smoke passed | §F.3 |
+| **P2** | Decide whether to flip `strict_contract_mode` from `warn` to `enforce` | ~10 min | soak complete | §F.3.5 |
+| **P2** | Decide whether to enable `density_breaker_enabled` | ~10 min | soak complete | §F.3.5 |
 
 #### Gated
 
-- Article-health filter epic (§A.5) stays blocked until the post-merge observability soak completes.
-- nzbdav-rs NNTP retry / timeout tuning epic (§A.6) uses the same gate as §A.5.
+- Article-health filter epic (§A.4) stays blocked until the post-merge observability soak completes.
+- nzbdav-rs NNTP retry / timeout tuning epic (§A.5) uses the same gate as §A.4.
 
 #### Housekeeping
 
@@ -82,23 +94,23 @@ Dolby Vision source-level fixes in `../piXBMC` and `../piCoreElec` are tracked i
 
 ---
 
-### A.4 Remaining Integration & Rollout Gates
+### A.3 Remaining Integration & Rollout Gates
 
-#### A.4.3 Post-merge soak gates
+#### A.3.1 Post-merge soak gates
 
 - Collect ≥1 week of observability data before considering:
   - `strict_contract_mode = enforce`
   - `density_breaker_enabled = true`
-  - starting §A.5 or §A.6
+  - starting §A.4 or §A.5
 
-#### A.4.4 Still-manual acceptance items
+#### A.3.2 Still-manual acceptance items
 
 - The PR-2 acceptance gate comparing zero-fill behavior on a synthetic short-read fixture remains a manual regression run, not an automated unit test.
 - CoreELEC hardware validation is still the deciding signal for `send_200_no_range`.
 
 ---
 
-### A.5 Epic — Article-Health Pre-Submit Filter
+### A.4 Epic — Article-Health Pre-Submit Filter
 
 **Status:** gated epic. Do not start until entry criteria are satisfied.
 
@@ -128,7 +140,7 @@ Query the health endpoint during `_handle_play` / `_handle_search`, then down-ra
 
 ---
 
-### A.6 Epic — nzbdav-rs NNTP Retry / Timeout Tuning
+### A.5 Epic — nzbdav-rs NNTP Retry / Timeout Tuning
 
 **Status:** gated epic. Do not start until entry criteria are satisfied.
 
@@ -153,7 +165,7 @@ Query the health endpoint during `_handle_play` / `_handle_search`, then down-ra
 
 ---
 
-### A.7 Artifact Inventory
+### A.6 Artifact Inventory
 
 #### Planning
 
@@ -161,8 +173,8 @@ Query the health endpoint during `_handle_play` / `_handle_search`, then down-ra
 - §F.1 — CoreELEC smoke playbook (formerly `junk/plans/REMAINING_COREELEC_SMOKE.md`)
 - §F.2 — `send_200_no_range=ON` validation playbook (formerly `junk/plans/REMAINING_SEND_200_VALIDATION.md`)
 - §F.3 — observability soak playbook + decision gates (formerly `junk/plans/REMAINING_OBSERVABILITY_SOAK.md`)
-- §A.5 — gated Article-Health epic (formerly `junk/plans/PROXY_EPIC_ARTICLE_HEALTH.md`)
-- §A.6 — gated NNTP-tuning epic (formerly `junk/plans/PROXY_EPIC_NNTP_TUNING.md`)
+- §A.4 — gated Article-Health epic (formerly `junk/plans/PROXY_EPIC_ARTICLE_HEALTH.md`)
+- §A.5 — gated NNTP-tuning epic (formerly `junk/plans/PROXY_EPIC_NNTP_TUNING.md`)
 
 #### Proxy source
 
@@ -178,7 +190,7 @@ Query the health endpoint during `_handle_play` / `_handle_search`, then down-ra
 
 ---
 
-### A.8 Maintenance Conventions
+### A.7 Maintenance Conventions
 
 - Keep `TODO.md` as the single source of truth for outstanding integration, rollout, gated epic work, stream-proxy architecture reference, DV plan, and fix-verification history. Completed work goes to `git log`, not a secondary archive file.
 - Do not re-fork content into standalone files (the five source docs `docs/TODO.md`, `docs/TODO_PANI.md`, `PROXY.md`, `DV.md`, `docs/BUG2.MD` were consolidated here on 2026-04-24 and removed from the tree; `DONE.md` was merged back into this file on the same round).
@@ -190,6 +202,9 @@ Query the health endpoint during `_handle_play` / `_handle_search`, then down-ra
 ## Part B — PANI/CoreELEC Dolby Vision Source Fix (`TODO_PANI.md`)
 
 > **Relevance:** skip this Part unless you are touching `../piXBMC` or `../piCoreElec` C++ source. This is the upstream HEVC `hvcC → AnnexB` conversion fix track; it is intentionally separate from the addon-side proxy work in Part A and the addon-side DV routing in Part D.
+
+<details>
+<summary><b>Expand Part B — source-level DV remediation plan for piXBMC / piCoreElec</b></summary>
 
 TODO for fixing Dolby Vision playback issues in the PANI/CoreELEC codebases:
 
@@ -381,6 +396,8 @@ Keep these. They are still useful for the post-build validation path in step 6.
   [../piCoreElec/projects/Amlogic-ce/devices/Amlogic-ne/patches/kodi](../piCoreElec/projects/Amlogic-ce/devices/Amlogic-ne/patches/kodi)
 - `../piXBMC` already contains the Dolby Vision conversion machinery and metadata plumbing, so this work is patching an existing DV-aware converter, not adding DV support from scratch.
 
+</details>
+
 ---
 
 ## Part C — Stream Proxy Architecture Reference
@@ -394,6 +411,9 @@ Keep these. They are still useful for the post-build validation path in step 6.
 ## Part D — Dolby Vision Seek & Scrub Plan (`DV.md`)
 
 > **Relevance:** read this Part if you are implementing or debugging seek/scrub behavior on 32-bit Kodi, or routing Dolby Vision profiles through the addon. §D.1 is the exec summary; §D.2 is the root-cause diagnosis of the `CFileCache` truncation bug; §D.5 is the phased implementation plan; §D.8 lists addon bugs surfaced by live testing.
+
+<details>
+<summary><b>Expand Part D — full DV seek/scrub synthesis, matrix, agent findings, implementation plan, and citations</b></summary>
 
 **Synthesized from 10 parallel research agents — 2026-04-23**
 
@@ -1061,6 +1081,8 @@ log to once-per-session.
 - [Dolby ISOBMFF DV spec (Dec 2017)](https://professional.dolby.com/siteassets/content-creation/dolby-vision-for-content-creators/dolby_vision_bitstreams_within_the_iso_base_media_file_format_dec2017.pdf)
 - [Dolby KB — How to signal DV in ISOBMFF](https://professionalsupport.dolby.com/s/article/How-to-signal-Dolby-Vision-in-ISOBMFF-format-AKA-mp4-container)
 
+</details>
+
 ---
 
 ## Part E — Fix Verification Record (`BUG2.MD`)
@@ -1089,8 +1111,8 @@ The five source playbooks merged into Part F:
 - `junk/plans/REMAINING_COREELEC_SMOKE.md` — now §F.1
 - `junk/plans/REMAINING_SEND_200_VALIDATION.md` — now §F.2
 - `junk/plans/REMAINING_OBSERVABILITY_SOAK.md` — now §F.3
-- `junk/plans/PROXY_EPIC_ARTICLE_HEALTH.md` — already captured verbatim in §A.5 (pointer here only)
-- `junk/plans/PROXY_EPIC_NNTP_TUNING.md` — already captured verbatim in §A.6 (pointer here only)
+- `junk/plans/PROXY_EPIC_ARTICLE_HEALTH.md` — already captured verbatim in §A.4 (pointer here only)
+- `junk/plans/PROXY_EPIC_NNTP_TUNING.md` — already captured verbatim in §A.5 (pointer here only)
 
 ---
 
@@ -1200,7 +1222,7 @@ Attach the full `kodi.log` to a new issue. Do NOT flip any flags (`strict_contra
 
 - whether to flip `density_breaker_enabled` default-ON
 - whether to flip `strict_contract_mode` from `warn` to `enforce`
-- threshold calibration for the Article-Health epic (§A.5)
+- threshold calibration for the Article-Health epic (§A.4)
 
 Without this data, every remaining flag-flip and epic-kickoff decision is a guess.
 
@@ -1239,7 +1261,7 @@ Note: if those exact log tokens don't exist in the PR-1 code, adjust greps to ma
 Record results inline in this section before making decisions.
 
 1. **Zero-fill distribution.** 90th percentile bytes-per-session? If > 10 MB, a significant fraction of streams would hit the per-session cap.
-2. **Reason-code mix.** Dominant cause of recoveries? Informs whether the retry ladder (P1.5) or upstream-side work (§A.6) is the better next lever.
+2. **Reason-code mix.** Dominant cause of recoveries? Informs whether the retry ladder (P1.5) or upstream-side work (§A.5) is the better next lever.
 3. **strict_contract warn counts.** If 0 across 7 days → flip to `enforce` is safe. If > 0 → investigate each case before flipping.
 4. **density_would_trip counts.** If 0 across 7 days → flip default-ON is safe. If > 0 → inspect the cases: are they bad releases the breaker SHOULD catch, or false positives?
 
@@ -1249,22 +1271,18 @@ Record results inline in this section before making decisions.
 - Decisions recorded on:
   - [ ] `strict_contract_mode` → keep `warn` | flip to `enforce`
   - [ ] `density_breaker_enabled` → keep OFF | flip default ON
-  - [ ] start Article-Health epic (§A.5) — go / no-go
-  - [ ] start NNTP-tuning epic (§A.6) — go / no-go
+  - [ ] start Article-Health epic (§A.4) — go / no-go
+  - [ ] start NNTP-tuning epic (§A.5) — go / no-go
 - Record completed decisions in the commit message that flips them.
 
 ---
 
-### F.4 Gated epics — see §A.5 and §A.6
+### F.4 Gated epics — see §A.4 and §A.5
 
-The two `PROXY_EPIC_*.md` one-pagers (`ARTICLE_HEALTH`, `NNTP_TUNING`) are already reproduced verbatim in §A.5 and §A.6 respectively. No duplicate copy maintained here — edit §A.5 / §A.6 directly when those epics move forward.
+The two `PROXY_EPIC_*.md` one-pagers (`ARTICLE_HEALTH`, `NNTP_TUNING`) are already reproduced verbatim in §A.4 and §A.5 respectively. No duplicate copy maintained here — edit §A.4 / §A.5 directly when those epics move forward.
 
 ---
 
-*End of TODO.md. Source files `docs/TODO.md`, `docs/TODO_PANI.md`,
-`PROXY.md`, `DV.md`, `docs/BUG2.MD`, and the five `junk/plans/*.md`
-playbooks were removed from the tree on 2026-04-24 after this
-consolidation; `git log` retains their full history if an older
-snapshot is needed.
-Last reviewed: 2026-04-24 (100-principal-engineer parallel review pass
-+ Part F rollout-playbook consolidation).*
+> **End of TODO.md.** Source files `docs/TODO.md`, `docs/TODO_PANI.md`, `PROXY.md`, `DV.md`, `docs/BUG2.MD`, and the five `junk/plans/*.md` playbooks were removed from the tree on 2026-04-24 after this consolidation; `git log` retains their full history if an older snapshot is needed.
+>
+> **Last reviewed:** 2026-04-24 (100-principal-engineer parallel review pass + Part F rollout-playbook consolidation).
