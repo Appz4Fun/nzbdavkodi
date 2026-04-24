@@ -62,6 +62,21 @@ Verified diff footprint on the worktree branch at archive time:
 - Added HLS producer respawn-during-seek concurrency coverage.
 - Added DV-on-matroska-fallback dispatch coverage.
 
+### 2.5 DV Seek Plan Phase 1 — CFileCache-off pass-through
+
+Addon-side components of TODO.md §D.5.1. Ships the quick-win pass-through tier for 32-bit Kodi's 4 GB seek-delta bug with a runtime gate + first-play dialog so users who have not applied `<memorysize>0</memorysize>` cannot crash Kodi.
+
+- `stream_proxy.py`: added `force_remux_mode=2` (passthrough). Short-circuits the force-remux tier on huge MKVs and serves bytes 1:1 via `_serve_proxy` with full Content-Length + Accept-Ranges.
+- `settings.xml`: dropdown value `30152` "Direct pass-through (requires advancedsettings.xml cache=0)".
+- `kodi_advancedsettings.has_cache_memorysize_zero()`: read-only probe of `special://profile/advancedsettings.xml` for `<cache><memorysize>0</memorysize></cache>`. Never writes.
+- Runtime gate in `stream_proxy.prepare_stream()`: if passthrough is selected but cache=0 is absent, fall back to matroska and fire a one-shot warning notification. A misconfigured user cannot crash 32-bit Kodi.
+- `cache_prompt.maybe_show_cache_prompt`: first-large-file-play dialog (`Dialog.yesnocustom` with Show instructions / Not now / Never ask). Show instructions opens a textviewer with the XML snippet; addon never writes `advancedsettings.xml`. Session dedup via `nzbdav.cache_dialog.shown_this_session` window property, persistent dismissal via `cache_dialog_dismissed` setting.
+- `AGENTS.md`: added "Pass-through mode (optional, recommended for large files)" section with the same snippet the dialog shows.
+
+Relevant commits: `eefb400`, `624fe93`, `0e4b946`, `3ee019b`, `1600b06`.
+
+Remaining hands-on work lives in TODO.md §D.5.1 step 6 (integration test on the 58 GB / 90 GB file with cache=0 actually applied on the CoreELEC box).
+
 ---
 
 ## 3. Key Files Changed

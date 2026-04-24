@@ -77,7 +77,7 @@ Only the remaining work. Completed implementation belongs in `DONE.md`.
 
 | Pri | Item | Est | Depends | Plan |
 |---|---|---|---|---|
-| P0 | Install `plugin.video.nzbdav-1.0.3.zip` on the CoreELEC box via Kodi → Add-ons → Install from zip (zip staged at `/storage/` on the box; built from HEAD = v1.0.3 addon.xml + 5 unreleased commits `be8ff0b..HEAD`, covering the cache=0 probe/gate/dialog line) | ~2 min wall | — | §F.1 step 3 |
+| P0 | Install `plugin.video.nzbdav-1.0.3.zip` on the CoreELEC box via Kodi → Add-ons → Install from zip (already at `/storage/`, built from HEAD) | ~2 min wall | — | §F.1 step 3 |
 | P0 | Run CoreELEC smoke validation on a clean-article release (2 h, four seeks, audio sync check) | ~2 h wall | zip installed | §F.1 |
 | P1 | Validate `send_200_no_range=ON` on CoreELEC before ever enabling that flag | ~1 h wall | smoke passed | §F.2 |
 | P2 | Start and track the ≥1 week observability soak post-merge | 7+ days wall | smoke passed | §F.3 |
@@ -129,7 +129,7 @@ PR-1 is merged on `main` locally and pushed to `origin/main` (2026-04-22). Integ
 #### A.4.1 Current rollout posture
 
 - PR-1 is merged onto `main` as `16e7122` and pushed to `origin/main` (2026-04-22).
-- Addon zip `plugin.video.nzbdav-1.0.3.zip` built and staged at `root@coreelec.local:/storage/` ready to install via Kodi's "Install from zip" UI. Built from HEAD; contains v1.0.3 tagged addon.xml plus 5 unreleased commits (`be8ff0b..HEAD` — pylint cleanup, TODO consolidation, passthrough+HLS AC-3 respawn, the cache=0 probe/gate, and the first-play dialog). The smoke validates that line, not the unmodified v1.0.3 tag.
+- Addon zip `plugin.video.nzbdav-1.0.3.zip` staged at `coreelec:/storage/`. Built from HEAD (addon.xml v1.0.3 plus the post-tag cache=0 / passthrough commits in `be8ff0b..HEAD`); smoke validates HEAD, not the tag.
 - `just lint` + `just test` verified green on the merged state (670 passed).
 - Defaults shipping with PR-1:
   - `strict_contract_mode = warn` (three values: `off` / `warn` / `enforce`; default shipped is `warn`)
@@ -948,86 +948,19 @@ See §D.3 for the consolidated matrix. Notable additional citations:
 ONCE the cache=0 advancedsettings.xml change is also applied. Pass-through
 alone, without the cache change, is *worse* than force-remux (per §D.1.A).**
 
-**Status as of 2026-04-24: addon-side Phase 1 fully shipped — probe
-(step 3), runtime gate (step 3), first-play dialog (step 4), and doc
-update (step 5) all landed in commits `624fe93`, `0e4b946`, `3ee019b`,
-and `1600b06`. Step 6 (hands-on integration test on the 58 GB / 90 GB
-file with `<memorysize>0</memorysize>` actually applied) is the only
-remaining item and requires the CoreELEC box; zip staged at
-`/storage/plugin.video.nzbdav-1.0.3.zip`.**
+**Status (2026-04-24):** addon-side components all shipped — see
+`DONE.md` §2.5 for the passthrough mode, `advancedsettings.xml` probe,
+runtime gate, first-play dialog, and doc update. Only the hands-on
+integration test remains. Zip `plugin.video.nzbdav-1.0.3.zip` is
+staged at `coreelec:/storage/` ready to install.
 
-1. ✅ `stream_proxy.py`: extend `force_remux_mode` setting with value `2`
-   = `passthrough`. When set, the routing in `prepare_stream()`
-   short-circuits the force-remux tier even on huge MKVs and serves
-   bytes directly via `_serve_proxy` with full Content-Length +
-   Accept-Ranges. Logged as `force_remux_mode=passthrough` warning so
-   users see a reminder of the cache=0 prerequisite. Safe to flip with
-   or without the user having applied cache=0: step 3's gate forces a
-   matroska fallback + notification when `<memorysize>0</memorysize>`
-   is missing, so a misconfigured user cannot crash 32-bit Kodi.
+1–5. ✅ Shipped. See `DONE.md` §2.5.
 
-2. ✅ `settings.xml`: dropdown value `30152` "Direct pass-through
-   (requires advancedsettings.xml cache=0)" added to the existing
-   "Force remux output format" enum.
-
-3. ✅ **Auto-detection of advancedsettings.xml**: on every service
-   tick, read `special://profile/advancedsettings.xml` and check for
-   `<cache><memorysize>0</memorysize></cache>`. Behavior is
-   **gate, don't enable** — the setting is not changed behind the
-   user's back:
-   - If present, passthrough runs as configured.
-   - If absent, the runtime gate in `stream_proxy.py::prepare_stream`
-     falls back to matroska regardless of the user's
-     `force_remux_mode` selection, so a misconfigured user cannot
-     crash 32-bit Kodi on a large MKV.
-   - A one-shot notification fires on the service tick:
-     *"Passthrough mode: advancedsettings.xml cache=0 missing —
-     falling back to matroska."* The `cache_warning_shown` flag is
-     reset whenever `force_remux_mode` changes, so a
-     matroska→passthrough toggle re-fires the warning. Relevant code:
-     `resources/lib/kodi_advancedsettings.py`,
-     `service.check_cache_warning`, stream_proxy gate at
-     `prepare_stream()`.
-
-4. ✅ **First-play dialog**: in `resolver.py`, after
-   `prepare_stream_via_service` returns, call
-   `cache_prompt.maybe_show_cache_prompt(stream_info)`. If
-   `stream_info["remux"]` is True (file large enough that
-   force-remux triggered) and advancedsettings cache=0 is missing,
-   a 3-button `Dialog.yesnocustom` is surfaced:
-   - **Show instructions**: opens a second dialog (`Dialog.textviewer`)
-     containing the XML snippet to paste. The addon never writes to
-     `advancedsettings.xml` — merging arbitrary `<advancedsettings>`
-     XML risks clobbering existing `<video>` / `<network>` /
-     `<videodatabase>` entries, so the user pastes the snippet
-     themselves.
-   - **Not now**: session-only dismissal.
-   - **Never ask**: persistent dismissal via `cache_dialog_dismissed`.
-
-   Per-session dedup is tracked via the
-   `nzbdav.cache_dialog.shown_this_session` window property, which
-   Kodi auto-clears on restart, so "once per session" is enforced
-   without persisting state across Kodi runs. Relevant code:
-   `resources/lib/cache_prompt.py`.
-
-5. ✅ Update `README.md` / `AGENTS.md` with the cache=0 instruction.
-   AGENTS.md now has a "Pass-through mode (optional, recommended for
-   large files)" section between the Stream Proxy deep-dive and
-   Requirements, with the same `<cache><memorysize>0</memorysize></cache>`
-   snippet the first-play dialog shows. `README.md` is a one-line stub
-   pointing at AGENTS.md, so no separate edit was needed.
-
-6. ⏸ Integration test: verify pass-through + Kodi seek works on
-   Uncut Gems 90 GB file after `<memorysize>0</memorysize>` is set.
+6. ⏸ Integration test: verify pass-through + Kodi seek works on the
+   90 GB Uncut Gems file after `<memorysize>0</memorysize>` is set.
    (Pre-cache test on 2026-04-23 confirmed the **failure** mode:
-   every scrub > 4 GB returns `streamed=0`.)
-
-**Sequencing (resolved)**: `force_remux_mode=2` is safe to surface in
-the dropdown now that step 3's auto-detection gates it — a user who
-flips passthrough without applying cache=0 gets a matroska fallback +
-one-shot notification, not a crash. Step 4's first-play dialog guides
-them to the cache=0 snippet without requiring them to find the doc
-themselves.
+   every scrub > 4 GB returns `streamed=0`. Step 6 re-runs the same
+   scrub against cache=0 to confirm the fix.)
 
 #### D.5.2 Phase 2 — fmp4 flag cleanup
 
