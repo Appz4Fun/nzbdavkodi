@@ -34,31 +34,12 @@
 ## Table of Contents
 
 - [Glossary](#glossary-acronyms-used-below)
-- [§0 Master Action Checklist](#0-master-action-checklist)
 - Part A: [Outstanding Proxy Rollout Work](#part-a--outstanding-proxy-rollout-work-todomd)
 - Part B: [PANI/CoreELEC Dolby Vision Source Fix](#part-b--panicoreelec-dolby-vision-source-fix-todo_panimd)
 - Part C: [Stream Proxy Architecture Reference](#part-c--stream-proxy-architecture-reference-proxymd)
 - Part D: [Dolby Vision Seek & Scrub Plan](#part-d--dolby-vision-seek--scrub-plan-dvmd)
 - Part E: [Fix Verification Record — 20-Agent Review](#part-e--fix-verification-record-bug2md)
 - Part F: [Rollout Playbooks](#part-f--rollout-playbooks)
-
----
-
-## 0. Master Action Checklist
-
-This section has been collapsed to avoid duplicating items from the authoritative lists in §A.1 (Proxy Rollout Worklist) and §D.5 (Implementation plan).
-
-### Critical dependencies
-### P0 — Do first (unblocks field validation)
-### P1 — Addon fixes surfaced by live testing
-### P1 — Passthrough UX gates (prevent the footgun)
-### P2 — Post-merge observability & flag gates
-### P2 — fmp4 flag cleanup (Phase 2 of DV plan)
-### P3 — PANI/CoreELEC source-fix track (separate from addon)
-### P3 — DV seek plan, Phase 3 and 4 (gated on Phase 1–2)
-### P3 — Security / tech debt
-### Gated epics (do not start until soak entry criteria are met)
-### Open questions (needed decisions, not tasks)
 
 ---
 
