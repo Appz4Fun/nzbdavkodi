@@ -947,10 +947,8 @@ See §D.3 for the consolidated matrix. Notable additional citations:
 ONCE the cache=0 advancedsettings.xml change is also applied. Pass-through
 alone, without the cache change, is *worse* than force-remux (per §D.1.A).**
 
-Addon-side shipped (`DONE.md` §2.5). Step 6 remaining:
-
-6. ⏸ Integration test: verify pass-through + Kodi seek works on the
-   90 GB Uncut Gems file after `<memorysize>0</memorysize>` is set.
+6. ⏸ Integration test: verify pass-through + Kodi seek works on
+   Uncut Gems 90 GB file after `<memorysize>0</memorysize>` is set.
    (Pre-cache test on 2026-04-23 confirmed the **failure** mode:
    every scrub > 4 GB returns `streamed=0`.)
 
@@ -1168,13 +1166,13 @@ The five source playbooks merged into Part F:
 #### F.1.2 Setup
 
 - Box: `root@coreelec.local`, 32-bit Kodi on Amlogic AM6B.
-- Build: `just release` → `./plugin.video.nzbdav-<version>.zip` at repo root.
+- Build: `just release` → `plugin.video.nzbdav.zip`.
 - Pick a release with **low article-dead rate** — reference a recent Trakt top-10 popular movie submitted to nzbdav within the last 48 h. Avoid anything older than 30 days (higher article decay).
 
 #### F.1.3 Steps
 
 1. `just release` on the merged branch.
-2. `scp ./plugin.video.nzbdav-<version>.zip coreelec:/storage/`.
+2. `scp dist/plugin.video.nzbdav.zip root@coreelec.local:/storage/`.
 3. Install via Kodi Add-ons → Install from zip file.
 4. Restart the addon via the main menu if needed. **Ask permission before `systemctl restart kodi`** — per `memory/feedback_no_kodi_restart_without_permission.md`.
 5. Trigger playback via TMDBHelper → "Play with NZB-DAV" on the chosen title.
