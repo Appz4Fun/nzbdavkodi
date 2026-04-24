@@ -45,7 +45,7 @@ The proxy picks one of four paths based on the container and file size:
 
 If ffmpeg isn't installed, the proxy degrades gracefully to pass-through or direct redirect.
 
-> **Architecture deep-dive:** [PROXY.md](PROXY.md) documents the full session lifecycle, how the proxy interacts with `resolver.py` / `service.py` / `router.py` / `mp4_parser.py`, the HLS producer internals, and where to look when debugging playback failures.
+> **Architecture deep-dive:** [`TODO.md` Part C](TODO.md#part-c--stream-proxy-architecture-reference-proxymd) documents the full session lifecycle, how the proxy interacts with `resolver.py` / `service.py` / `router.py` / `mp4_parser.py`, the HLS producer internals, and where to look when debugging playback failures. (The former standalone `PROXY.md` was consolidated into `TODO.md` on 2026-04-24.)
 
 ## Requirements
 
@@ -290,7 +290,7 @@ tests/
   conftest.py                       # Kodi module mocks
   test_*.py                         # 496 unit tests
   test_integration_hls_ffmpeg.py    # 2 integration tests (real ffmpeg, opt-in)
-PROXY.md                            # Stream proxy architecture deep-dive
+TODO.md                             # Consolidated roadmap + architecture (Parts A–E)
 ```
 
 ### Releasing

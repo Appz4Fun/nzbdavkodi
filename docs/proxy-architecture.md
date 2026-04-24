@@ -1,27 +1,27 @@
-# Stream Proxy Architecture
+## Part C — Stream Proxy Architecture Reference (`PROXY.md`)
 
-> **Status:** This document reflects the proxy as of `v1.0.0-pre-alpha` (tagged on `spike/hls-fmp4`). The fmp4 HLS branch (Tier 3.4.2) is opt-in via `force_remux_mode=hls_fmp4` and the runtime self-healing fallback to matroska is the safety net. The other three tiers (direct redirect, virtual MP4 faststart, MKV pass-through) are unchanged from main.
+> **Status:** This reference reflects the proxy as of `v1.0.0-pre-alpha` (tagged on `spike/hls-fmp4`). The fmp4 HLS branch (Tier 3.4.2) is opt-in via `force_remux_mode=hls_fmp4` and the runtime self-healing fallback to matroska is the safety net. The other three tiers (direct redirect, virtual MP4 faststart, MKV pass-through) are unchanged from main.
 
-This document describes the local HTTP proxy that sits between Kodi's player and nzbdav's WebDAV server. Start here if you are touching any code in `plugin.video.nzbdav/resources/lib/stream_proxy.py` — or if you are trying to work out why a particular file plays the way it does.
+This part describes the local HTTP proxy that sits between Kodi's player and nzbdav's WebDAV server. Start here if you are touching any code in `plugin.video.nzbdav/resources/lib/stream_proxy.py` — or if you are trying to work out why a particular file plays the way it does.
 
-Companion document to `README.md`. The README covers user-facing behavior; this file covers the internals.
+Companion document to `README.md`. The README covers user-facing behavior; this section covers the internals.
 
 ---
 
-## 1. Why a proxy at all?
+### C.1 Why a proxy at all?
 
 The proxy exists to solve four distinct problems that Kodi's native input streams can't handle on the target deployment (Kodi 21 Omega on 32-bit CoreELEC ARM):
 
 1. **`PROPFIND` on the parent directory.** When Kodi 21 opens an HTTP URL whose path looks like a file, `CCurlFile` issues a `PROPFIND` against the parent directory first. On nzbdav's WebDAV endpoint, this triggers a recursive directory scan that either times out or throws `Open - Unhandled exception`. Routing the URL through a localhost HTTP server that only answers `GET`/`HEAD` cuts the `PROPFIND` path entirely. This is the original reason the proxy was introduced (see CHANGELOG v0.6.14).
 2. **MP4 `moov` atom at the tail.** Fresh REMUX rips often have the `moov` box after `mdat`. Kodi's MP4 demuxer cannot play these without downloading the whole file first. The proxy solves this in pure Python by parsing the atom tree over ranged HTTP fetches and serving a "virtual faststart" MP4 where the `moov` has been moved to the front and the chunk offsets rewritten.
-3. **32-bit Kodi and large files.** On 32-bit CoreELEC builds (the deployment this addon is tuned for), Kodi's `CFileCache` layer has a signed 32-bit offset somewhere in its cache bookkeeping. Pass-through of any file whose advertised `Content-Length` exceeds ~4 GB crashes playback open with `Open - Unhandled exception`. The proxy hides the true size behind a force-remux path that streams an unsized ffmpeg pipe, so Kodi never sees the overflowing number. See `memory/project_32bit_kodi_largefile_limit.md` for the detailed diagnosis.
-4. **Missing Usenet articles.** nzbdav returns HTTP errors when a requested byte range hits unrecoverable articles. Kodi's native input stream treats that as fatal. The proxy catches upstream errors mid-response, probes forward to find the next readable offset, writes zero bytes across the gap, and keeps streaming. See §5.3.
+3. **32-bit Kodi and large files.** On 32-bit CoreELEC builds (the deployment this addon is tuned for), Kodi's `CFileCache` layer has a signed 32-bit offset somewhere in its cache bookkeeping. Pass-through of any file whose advertised `Content-Length` exceeds ~4 GB crashes playback open with `Open - Unhandled exception`. The proxy hides the true size behind a force-remux path that streams an unsized ffmpeg pipe, so Kodi never sees the overflowing number. See `memory/project_32bit_kodi_largefile_limit.md` and §D.2 for the detailed diagnosis — §D.2 also covers the `advancedsettings.xml` bypass that obviates force-remux.
+4. **Missing Usenet articles.** nzbdav returns HTTP errors when a requested byte range hits unrecoverable articles. Kodi's native input stream treats that as fatal. The proxy catches upstream errors mid-response, probes forward to find the next readable offset, writes zero bytes across the gap, and keeps streaming. See §C.5.3.
 
 Everything else the proxy does is in service of one of those four.
 
 ---
 
-## 2. Components and files
+### C.2 Components and files
 
 The proxy is not a single file. It is a subsystem that threads through most of the `resources/lib/` tree. This table shows who owns what and how the pieces connect.
 
@@ -47,11 +47,11 @@ Inside `stream_proxy.py` the main classes are:
 
 ---
 
-## 3. Session lifecycle
+### C.3 Session lifecycle
 
 A single play is one session. The lifecycle below is the same for every tier — only the handler dispatch at step 5 differs.
 
-```
+```text
 ┌────────────────┐                                          ┌──────────────────┐
 │ router.py      │                                          │ service.py       │
 │ /resolve route │                                          │ StreamProxy      │
@@ -107,11 +107,11 @@ Key invariants:
 
 ---
 
-## 4. Tier selection
+### C.4 Tier selection
 
 `StreamProxy.prepare_stream(remote_url, auth_header)` picks exactly one of four serving paths based on the file's container and size. The decision tree:
 
-```
+```text
 prepare_stream(remote_url, auth_header)
 │
 ├── Is the URL's path suffix .mp4 / .m4v?
@@ -149,23 +149,25 @@ prepare_stream(remote_url, auth_header)
 │                                                                              to matroska)
 ```
 
-### Settings that influence the decision
+#### C.4.1 Settings that influence the decision
 
 | Setting | Default | Where read | Effect |
 |---|---|---|---|
-| `force_remux_threshold_mb` | `20000` (20 GB) | `_get_force_remux_threshold_bytes` | Non-MP4 files at or above this size take the force-remux branch. `0` disables force remux entirely (files stream pass-through regardless of size). The 20 GB default is the breakpoint below which 32-bit Kodi has been observed to handle pass-through cleanly (12 GB tested) but above which it crashes (58 GB reproduces). |
-| `force_remux_mode` | `matroska` | `_get_force_remux_mode` | Picks the shape of the force-remux output. `matroska` (empty / `0` / default) pipes an unsized MKV with `-c copy`. `hls_fmp4` (setting value `1`) switches to fragmented-MP4 HLS via `HlsProducer`. The fmp4 branch is opt-in and experimental. |
+| `force_remux_threshold_mb` | `20000` (20 GB), bounds `[0..1048576]` MB (1 TB cap) | `_get_force_remux_threshold_bytes` | Non-MP4 files at or above this size take the force-remux branch. `0` disables force remux entirely (files stream pass-through regardless of size). Values above `1048576` clamp silently (see §D.8.2). The 20 GB default is the breakpoint below which 32-bit Kodi has been observed to handle pass-through cleanly (12 GB tested) but above which it crashes (58 GB reproduces). |
+| `force_remux_mode` | `matroska` | `_get_force_remux_mode` | Picks the shape of the force-remux output. `matroska` (empty / `0` / default) pipes an unsized MKV with `-c copy`. `hls_fmp4` (setting value `1`) switches to fragmented-MP4 HLS via `HlsProducer`. `passthrough` (value `2`) skips force remux entirely and requires `advancedsettings.xml` cache=0. The fmp4 branch is opt-in and experimental. |
 | `proxy_convert_subs` | `true` | `_build_ffmpeg_cmd` | For MP4 → MKV remux, converts `mov_text`/`TX3G` to `srt`. MKV sources always use `-c:s copy` to avoid aborting on PGS/HDMV/DVD bitmap subs. |
+
+Reliability/contract flags (`strict_contract_mode`, `density_breaker_enabled`, `retry_ladder_enabled`, `zero_fill_budget_enabled`, `send_200_no_range`) influence pass-through behavior rather than tier selection; their PR-1 defaults are listed in §A.4.1, and `strict_contract_mode`'s ENFORCE edge case is documented in §D.8.1.
 
 ---
 
-## 5. The four serving paths
+### C.5 The four serving paths
 
-### 5.1 Tier 0: direct MP4 redirect (`_serve_direct` or return upstream URL)
+#### C.5.1 Tier 0: direct MP4 redirect (`_serve_direct` or return upstream URL)
 
 If the file is already faststart (moov before mdat), the proxy gets out of the way. `prepare_stream` returns the remote WebDAV URL itself instead of a local proxy URL, and Kodi seeks/plays it natively. This is the fastest tier — no process mediation, no extra sockets. The tradeoff is that Kodi's `PROPFIND` risk comes back, so this tier is only used for MP4 inputs where the parent-directory scan has been verified safe (nzbdav's WebDAV server handles `PROPFIND` on file paths cleanly enough that direct playback works for files that are already faststart-shaped).
 
-### 5.2 Tier 1: virtual MP4 faststart (`_serve_mp4_faststart`)
+#### C.5.2 Tier 1: virtual MP4 faststart (`_serve_mp4_faststart`)
 
 When the moov is at the tail, `mp4_parser.py` reads the atom tree over ranged HTTP fetches:
 
@@ -185,7 +187,7 @@ This tier produces a valid MP4 byte stream that Kodi can seek natively — no ff
 
 If parsing fails — unusual box structure, unsupported `co64` edge case, or the file is > 4 GB (which would blow the tempfile tier's time budget) — `prepare_stream` falls through to the ffmpeg tempfile remux path (writes an faststart-shaped MP4 to `/tmp`, serves it as a static file) or, if ffmpeg is missing, to the matroska pipe path.
 
-### 5.3 Tier 2: pass-through with zero-fill recovery (`_serve_proxy`)
+#### C.5.3 Tier 2: pass-through with zero-fill recovery (`_serve_proxy`)
 
 For MKV, WebM, TS, and other non-MP4 containers at or below the force-remux threshold, the proxy does the simplest possible thing: it forwards Kodi's `Range` request to the upstream WebDAV URL and streams the response back byte-for-byte.
 
@@ -207,11 +209,11 @@ Pass-through also handles:
 - **`Connection: close` on every response.** Forces stale handler threads to unwind when Kodi reconnects instead of piling up on a keep-alive socket.
 - **`Content-Type` from the file suffix.** `video/x-matroska` for `.mkv`, `video/webm` for `.webm`, `video/mp2t` for `.ts`, etc.
 
-### 5.4 Tier 3: force remux
+#### C.5.4 Tier 3: force remux
 
 Used when the file is larger than `force_remux_threshold_mb` MB and non-MP4. Two shapes, driven by `force_remux_mode`:
 
-#### 5.4.1 Matroska pipe (default)
+##### C.5.4.1 Matroska pipe (default)
 
 `_serve_remux` spawns `ffmpeg -i <upstream> -c copy -f matroska pipe:1` and streams stdout straight to Kodi with no `Content-Length`. Because the response size is unknown, Kodi treats the stream as "live" — which sidesteps the 32-bit `CFileCache` offset overflow — but also means seek is approximate. On a seek, `_serve_remux` kills the running ffmpeg and respawns with `-ss TARGET`; Kodi re-requests from byte 0 of the new process and gets a stream starting at the seeked-to keyframe.
 
@@ -224,13 +226,13 @@ Key properties:
 
 This is the known-good path for every huge file scenario that has been tested on the target device. Dolby Vision HEVC + TrueHD/Atmos 100 GB REMUXes play through this branch.
 
-#### 5.4.2 Fragmented MP4 HLS (experimental, opt-in)
+##### C.5.4.2 Fragmented MP4 HLS (experimental, opt-in)
 
 `force_remux_mode=hls_fmp4` switches to an HLS VOD playlist backed by fragmented MP4 segments. The motivation is full random seek (the matroska pipe path is seek-approximate because each seek costs an ffmpeg respawn); the tradeoff is that HLS fmp4 on the Amlogic hardware decoder has not been proven stable for all content types.
 
 Pipeline:
 
-```
+```text
 prepare_stream
   └── ctx with content_type = application/vnd.apple.mpegurl,
              mode = "hls",
@@ -247,6 +249,8 @@ prepare_stream
                               (late-binding fallback)
 ```
 
+###### C.5.4.2.a HTTP routes
+
 HTTP routes exposed for an HLS session:
 
 | Route | Handler | Purpose |
@@ -254,6 +258,8 @@ HTTP routes exposed for an HLS session:
 | `GET /hls/<session>/playlist.m3u8` | `_serve_hls_playlist` | VOD playlist with `#EXT-X-VERSION:7`, `#EXT-X-MAP:URI="init.mp4"` (fmp4 only), one `#EXTINF`/segment URI per `seg_%06d.m4s`, and `#EXT-X-ENDLIST`. |
 | `GET /hls/<session>/init.mp4` | `_serve_hls_init` | Reads `HlsProducer.wait_for_init()` (which gates on the init file being fully written by the current ffmpeg generation) and serves the bytes with `Content-Type: video/mp4`. |
 | `GET /hls/<session>/seg_NNNNNN.m4s` | `_serve_hls_segment` | Reads `HlsProducer.wait_for_segment(seg_n)` which blocks until the segment is complete, then serves the bytes with `Content-Type: video/mp4`. |
+
+###### C.5.4.2.b ffmpeg lifecycle (`HlsProducer`)
 
 `HlsProducer` manages the ffmpeg lifecycle:
 
@@ -269,15 +275,17 @@ HTTP routes exposed for an HLS session:
   - **P8 / P5 / any other confirmed DV** → matroska. The 2026-04-15 Evangelion P8 test proved the Amlogic fmp4 DV path hangs at `onAVStarted` regardless of single-layer vs dual-layer.
   - **non-DV** → fmp4 (the happy path — the probe confirmed no UNSPEC62 NAL in the first sample).
   - **dv_unknown** (probe crash, unsupported container, truncated RPU) → matroska. Fail safe.
-  
+
   The classifier runs on the service worker thread, so a 2–3-range HTTP probe typically adds <1 s to `prepare_stream` (a net **improvement** over the retired ffmpeg-stderr probe, which needed 5–10 s to spawn + analyse). A probe crash is caught at the call site and degrades to `dv_unknown` → matroska.
 - **Late-binding matroska fallback.** `HlsProducer.prepare()` spawns ffmpeg immediately and polls 500 ms for early exit. If the deployed ffmpeg build rejects `-hls_segment_type fmp4`, `_register_session` catches the exception, calls `producer.close()` (best effort), and rewrites `ctx` in place to the matroska shape — all before returning the URL to Kodi. This guarantees that a bad ffmpeg build never hands Kodi a dead HLS URL.
 
-Working directory selection: `_choose_hls_workdir` walks a candidate list (`/var/media/CACHE_DRIVE/nzbdav-hls`, `/var/media/STORAGE/nzbdav-hls`, `/storage/nzbdav-hls`, `/tmp/nzbdav-hls`) and picks the first writable entry with enough free space. Each session gets its own subdirectory, which is `rm -rf`'d on session cleanup.
+###### C.5.4.2.c Working directory selection
+
+`_choose_hls_workdir` walks a candidate list (`/var/media/CACHE_DRIVE/nzbdav-hls`, `/var/media/STORAGE/nzbdav-hls`, `/storage/nzbdav-hls`, `/tmp/nzbdav-hls`) and picks the first writable entry with enough free space. Each session gets its own subdirectory, which is `rm -rf`'d on session cleanup.
 
 ---
 
-## 6. Known constraints and gotchas
+### C.6 Known constraints and gotchas
 
 - **Kodi is single-stream.** The proxy does not need to multiplex sessions. `clear_sessions()` on every new `prepare_stream` is correct, not a limitation.
 - **32-bit CoreELEC is the design target.** Several defaults (64 KB read chunks, 20 GB force-remux threshold, `Connection: close`) exist specifically because of the 32-bit address-space and `CFileCache` overflow behavior. 64-bit Kodi users could relax these, but the code is tuned for the worst case.
@@ -289,7 +297,7 @@ Working directory selection: `_choose_hls_workdir` walks a candidate list (`/var
 
 ---
 
-## 7. Adding a new tier
+### C.7 Adding a new tier
 
 If you want to add a fifth serving path:
 
@@ -306,7 +314,7 @@ If you want to add a fifth serving path:
 
 ---
 
-## 8. Where to look when debugging
+### C.8 Where to look when debugging
 
 | Symptom | First place to look |
 |---|---|
@@ -317,12 +325,15 @@ If you want to add a fifth serving path:
 | HLS session hangs at "buffering" | `wait_for_segment` or `wait_for_init` timing out. Check `ffmpeg.log` for the session — is ffmpeg alive? Is it producing segments? Is `_init_ready` ever getting set? |
 | Seek freezes on matroska pipe | Expected — the pipe path kills and respawns ffmpeg on seek, and the first few seconds after a respawn are unavoidable cold-start latency. If it never recovers, check for a zombie ffmpeg from a previous session (should have been killed by `clear_sessions`; if not, that's a lifecycle bug). |
 | DV HEVC stalls on hls_fmp4 | Expected — this is why `force_remux_mode` defaults to `matroska`. Profile 7 is explicitly routed around fmp4; P5/P8 may still stall. Switch `force_remux_mode` back to matroska (the default). |
+| Every scrub past 4 GB returns `streamed=0` | 32-bit CFileCache seek-delta truncation (`FileCache.cpp:375`). Fix: `<cache><memorysize>0</memorysize></cache>` in `advancedsettings.xml`. See Part D §D.2. |
 
 ---
 
-## 9. Related memory and documentation
+### C.9 Related memory and documentation
 
 - `memory/project_32bit_kodi_largefile_limit.md` — full diagnosis of the 32-bit `CFileCache` overflow behavior.
 - `memory/reference_test_device.md` — deployment target specifics (UGOOS AM6B CoreELEC, 32-bit Kodi binary on 64-bit kernel, WebDAV backend, `advancedsettings.xml`).
 - `CHANGELOG.md` and `plugin.video.nzbdav/changelog.txt` — user-facing release notes including every proxy behavior change.
 - `CLAUDE.md` — project layout, test commands, release workflow, Python 3.8 compatibility constraint.
+
+---

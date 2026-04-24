@@ -18,7 +18,7 @@ The background service (`service.py`) runs a `StreamProxy` HTTP server that remu
 ## Commands
 
 ```bash
-just test          # Run all 247 tests (~2s)
+just test          # Run all 670 tests (~2s)
 just lint          # ruff + black check
 just lint-fix      # Auto-fix lint issues
 just release       # Build plugin.video.nzbdav.zip
