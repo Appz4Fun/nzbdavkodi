@@ -392,6 +392,7 @@ def _play_direct(handle, stream_url, stream_headers):
     The proxy picks the right mode per file: MP4 gets Tier 1-3 faststart or
     MKV remux; MKV/AVI/other get a range-capable pass-through.
     """
+    from resources.lib.cache_prompt import maybe_show_cache_prompt
     from resources.lib.stream_proxy import (
         get_service_proxy_port,
         prepare_stream_via_service,
@@ -422,6 +423,8 @@ def _play_direct(handle, stream_url, stream_headers):
             home.setProperty("nzbdav.stream_title", stream_url.rsplit("/", 1)[-1])
             home.setProperty("nzbdav.active", "true")
             return
+
+        maybe_show_cache_prompt(stream_info)
 
         li = xbmcgui.ListItem(path=proxy_url)
         li.setContentLookup(False)
@@ -457,6 +460,7 @@ def _play_via_proxy(stream_url, stream_headers):
     Routes everything through the service proxy for the same reasons as
     _play_direct — see that function's docstring.
     """
+    from resources.lib.cache_prompt import maybe_show_cache_prompt
     from resources.lib.stream_proxy import (
         get_service_proxy_port,
         prepare_stream_via_service,
@@ -481,6 +485,8 @@ def _play_via_proxy(stream_url, stream_headers):
             li = _make_playable_listitem(bust_url, stream_headers)
             xbmc.Player().play(li.getPath(), li)
             return
+
+        maybe_show_cache_prompt(stream_info)
 
         li = xbmcgui.ListItem(path=proxy_url)
         li.setContentLookup(False)

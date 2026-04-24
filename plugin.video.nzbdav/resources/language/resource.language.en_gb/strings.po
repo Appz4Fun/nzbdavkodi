@@ -581,3 +581,31 @@ msgstr "Send 200 for no-range pass-through"
 msgctxt "#30152"
 msgid "Direct pass-through (requires advancedsettings.xml cache=0)"
 msgstr "Direct pass-through (requires advancedsettings.xml cache=0)"
+
+msgctxt "#30153"
+msgid "This {0:.0f} GB file can play in pass-through mode with full seek if advancedsettings.xml has <cache><memorysize>0</memorysize></cache>. Without it, force-remux is used and seek is bounded."
+msgstr "This {0:.0f} GB file can play in pass-through mode with full seek if advancedsettings.xml has <cache><memorysize>0</memorysize></cache>. Without it, force-remux is used and seek is bounded."
+
+msgctxt "#30154"
+msgid "This file can play in pass-through mode with full seek if advancedsettings.xml has <cache><memorysize>0</memorysize></cache>. Without it, force-remux is used and seek is bounded."
+msgstr "This file can play in pass-through mode with full seek if advancedsettings.xml has <cache><memorysize>0</memorysize></cache>. Without it, force-remux is used and seek is bounded."
+
+msgctxt "#30155"
+msgid "Never ask"
+msgstr "Never ask"
+
+msgctxt "#30156"
+msgid "Not now"
+msgstr "Not now"
+
+msgctxt "#30157"
+msgid "Show instructions"
+msgstr "Show instructions"
+
+msgctxt "#30158"
+msgid "advancedsettings.xml setup"
+msgstr "advancedsettings.xml setup"
+
+msgctxt "#30159"
+msgid "Create or edit the file:\n  special://profile/advancedsettings.xml\n(on CoreELEC: /storage/.kodi/userdata/advancedsettings.xml)\n\nAdd this content (merging with any existing <advancedsettings> entries):\n\n<advancedsettings>\n  <cache>\n    <memorysize>0</memorysize>\n  </cache>\n</advancedsettings>\n\nRestart Kodi for the change to take effect."
+msgstr "Create or edit the file:\n  special://profile/advancedsettings.xml\n(on CoreELEC: /storage/.kodi/userdata/advancedsettings.xml)\n\nAdd this content (merging with any existing <advancedsettings> entries):\n\n<advancedsettings>\n  <cache>\n    <memorysize>0</memorysize>\n  </cache>\n</advancedsettings>\n\nRestart Kodi for the change to take effect."

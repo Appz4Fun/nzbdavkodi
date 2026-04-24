@@ -981,10 +981,26 @@ applied, full benefit not yet realized.**
      `service.check_cache_warning`, stream_proxy gate at
      `prepare_stream()`.
 
-4. ⏸ **First-play dialog** (not yet implemented):
-   > "NZB-DAV can play this 58 GB file in pass-through mode with full
-   > seek, but requires `<memorysize>0</memorysize>` in your
-   > advancedsettings.xml. Add it now? [Yes / Not now / Never ask]"
+4. ✅ **First-play dialog**: in `resolver.py`, after
+   `prepare_stream_via_service` returns, call
+   `cache_prompt.maybe_show_cache_prompt(stream_info)`. If
+   `stream_info["remux"]` is True (file large enough that
+   force-remux triggered) and advancedsettings cache=0 is missing,
+   a 3-button `Dialog.yesnocustom` is surfaced:
+   - **Show instructions**: opens a second dialog (`Dialog.textviewer`)
+     containing the XML snippet to paste. The addon never writes to
+     `advancedsettings.xml` — merging arbitrary `<advancedsettings>`
+     XML risks clobbering existing `<video>` / `<network>` /
+     `<videodatabase>` entries, so the user pastes the snippet
+     themselves.
+   - **Not now**: session-only dismissal.
+   - **Never ask**: persistent dismissal via `cache_dialog_dismissed`.
+
+   Per-session dedup is tracked via the
+   `nzbdav.cache_dialog.shown_this_session` window property, which
+   Kodi auto-clears on restart, so "once per session" is enforced
+   without persisting state across Kodi runs. Relevant code:
+   `resources/lib/cache_prompt.py`.
 
 5. ⏸ Update `README.md` / `AGENTS.md` with the cache=0 instruction.
 
