@@ -77,7 +77,7 @@ Only the remaining work. Completed implementation belongs in `DONE.md`.
 
 | Pri | Item | Est | Depends | Plan |
 |---|---|---|---|---|
-| P0 | Install `plugin.video.nzbdav-1.0.3.zip` on the CoreELEC box via Kodi → Add-ons → Install from zip (already at `/storage/`) | ~2 min wall | — | §F.1 step 3 |
+| P0 | Install `plugin.video.nzbdav-1.0.3.zip` on the CoreELEC box via Kodi → Add-ons → Install from zip | ~2 min wall | — | §F.1 step 3 |
 | P0 | Run CoreELEC smoke validation on a clean-article release (2 h, four seeks, audio sync check) | ~2 h wall | zip installed | §F.1 |
 | P1 | Validate `send_200_no_range=ON` on CoreELEC before ever enabling that flag | ~1 h wall | smoke passed | §F.2 |
 | P2 | Start and track the ≥1 week observability soak post-merge | 7+ days wall | smoke passed | §F.3 |
@@ -947,8 +947,7 @@ See §D.3 for the consolidated matrix. Notable additional citations:
 ONCE the cache=0 advancedsettings.xml change is also applied. Pass-through
 alone, without the cache change, is *worse* than force-remux (per §D.1.A).**
 
-**Status (2026-04-24):** addon-side shipped (see `DONE.md` §2.5);
-only step 6 remains.
+Addon-side shipped (`DONE.md` §2.5). Step 6 remaining:
 
 6. ⏸ Integration test: verify pass-through + Kodi seek works on the
    90 GB Uncut Gems file after `<memorysize>0</memorysize>` is set.
@@ -1168,7 +1167,7 @@ The five source playbooks merged into Part F:
 
 #### F.1.2 Setup
 
-- Box: `root@coreelec.local` (or the `coreelec` alias from `~/.ssh/config` if mDNS host-key verification fails), 32-bit Kodi on Amlogic AM6B.
+- Box: `root@coreelec.local`, 32-bit Kodi on Amlogic AM6B.
 - Build: `just release` → `./plugin.video.nzbdav-<version>.zip` at repo root.
 - Pick a release with **low article-dead rate** — reference a recent Trakt top-10 popular movie submitted to nzbdav within the last 48 h. Avoid anything older than 30 days (higher article decay).
 
