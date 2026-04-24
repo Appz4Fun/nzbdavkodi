@@ -631,7 +631,7 @@ def test_get_force_remux_mode_hls_fmp4_on_one():
 
 
 def test_get_force_remux_mode_unknown_value_falls_back_to_matroska():
-    """Any other value safely falls back to matroska."""
+    """Any unrecognized value safely falls back to matroska."""
     import sys
 
     from resources.lib.stream_proxy import _get_force_remux_mode
@@ -640,9 +640,25 @@ def test_get_force_remux_mode_unknown_value_falls_back_to_matroska():
     original = sys.modules["xbmcaddon"].Addon.return_value
     sys.modules["xbmcaddon"].Addon.return_value = mock_addon
     try:
-        for raw in ("2", "true", "garbage", "-1"):
+        for raw in ("true", "garbage", "-1", "3"):
             mock_addon.getSetting.return_value = raw
             assert _get_force_remux_mode() == "matroska"
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+
+def test_get_force_remux_mode_passthrough_on_two():
+    """Setting '2' returns 'passthrough' (CFileCache-bypass mode)."""
+    import sys
+
+    from resources.lib.stream_proxy import _get_force_remux_mode
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.return_value = "2"
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        assert _get_force_remux_mode() == "passthrough"
     finally:
         sys.modules["xbmcaddon"].Addon.return_value = original
 
@@ -694,6 +710,52 @@ def test_prepare_stream_force_remuxes_huge_mkv_with_default_threshold():
     assert ctx["duration_seconds"] == 8532.0
     assert ctx["seekable"] is True
     assert ctx.get("hls_segment_format") is None
+
+
+def test_prepare_stream_passthrough_mode_skips_force_remux_for_huge_mkv():
+    """force_remux_mode=2 (passthrough) bypasses the force-remux tier
+    even on a huge MKV. The resulting ctx is the direct pass-through
+    shape (remux=False, mode is unset, content_type=video/x-matroska,
+    content_length set). Only safe when the user has bypassed
+    32-bit Kodi's CFileCache via advancedsettings.xml — the addon
+    logs a WARNING reminding them, but does not gate on it."""
+    import sys
+
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 9999
+
+    huge = 58 * 1024 * 1024 * 1024  # 58 GB
+
+    mock_addon = MagicMock()
+
+    def get_setting(key):
+        if key == "force_remux_mode":
+            return "2"
+        return ""
+
+    mock_addon.getSetting.side_effect = get_setting
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch(
+            "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
+        ), patch.object(sp, "_get_content_length", return_value=huge):
+            sp.prepare_stream("http://host/wasteman.mkv")
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    ctx = sp._server.stream_context
+    assert ctx["remux"] is False, "passthrough mode must skip the force-remux tier"
+    assert ctx.get("mode") != "hls"
+    assert ctx["content_type"] == "video/x-matroska"
+    assert ctx["content_length"] == huge
+    assert ctx.get("hls_segment_format") is None
+    # ffmpeg_path should NOT be in the ctx — pass-through doesn't need it.
+    assert "ffmpeg_path" not in ctx
 
 
 def test_prepare_stream_force_remux_hls_fmp4_setting_produces_hls_ctx():
@@ -1077,6 +1139,46 @@ def test_prepare_stream_profile8_falls_back_to_matroska():
     assert ctx["content_type"] == "video/x-matroska"
 
 
+def test_prepare_stream_profile8_stays_off_hls_even_if_hls_setup_would_succeed():
+    """Profile 8 must be rejected BEFORE HlsProducer setup.
+
+    The plain profile8 test above can false-green if a bad routing change still
+    builds an HLS ctx but HlsProducer.prepare() happens to fail and rewrite the
+    session back to matroska. Patch HlsProducer to succeed so this test pins the
+    actual routing decision, not the fallback path.
+    """
+    import sys
+
+    sp, _, original, duration_proc, huge = _make_fmp4_prepare_fixture()
+    try:
+        with patch(
+            "resources.lib.stream_proxy._find_ffmpeg",
+            return_value="/usr/bin/ffmpeg",
+        ), patch(
+            "resources.lib.stream_proxy._find_ffprobe", return_value=None
+        ), patch.object(
+            sp, "_get_content_length", return_value=huge
+        ), patch(
+            "resources.lib.stream_proxy.subprocess.Popen", return_value=duration_proc
+        ), patch(
+            "resources.lib.stream_proxy.probe_dolby_vision_source",
+            return_value=_dv_result(
+                "dv_allowed_for_fmp4", "non_p7_dv_profile", profile=8
+            ),
+        ), patch(
+            "resources.lib.stream_proxy.HlsProducer"
+        ) as mock_producer_cls:
+            mock_producer_cls.return_value = MagicMock()
+            sp.prepare_stream("http://host/dv-p8.mkv")
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    ctx = sp._server.stream_context
+    mock_producer_cls.assert_not_called()
+    assert ctx.get("mode") != "hls"
+    assert ctx["content_type"] == "video/x-matroska"
+
+
 def test_prepare_stream_profile5_falls_back_to_matroska():
     """Profile 5 (single-layer IPTPQc2) is conservatively grouped with
     profile 8 — the 2026-04-15 CAMLCodec hang was observed on a single-
@@ -1086,6 +1188,40 @@ def test_prepare_stream_profile5_falls_back_to_matroska():
         _dv_result("dv_allowed_for_fmp4", "non_p7_dv_profile", profile=5),
         url="http://host/dv-p5.mkv",
     )
+    assert ctx.get("mode") != "hls"
+    assert ctx["content_type"] == "video/x-matroska"
+
+
+def test_prepare_stream_profile5_stays_off_hls_even_if_hls_setup_would_succeed():
+    """Profile 5 shares the same "reject before HLS setup" contract as p8."""
+    import sys
+
+    sp, _, original, duration_proc, huge = _make_fmp4_prepare_fixture()
+    try:
+        with patch(
+            "resources.lib.stream_proxy._find_ffmpeg",
+            return_value="/usr/bin/ffmpeg",
+        ), patch(
+            "resources.lib.stream_proxy._find_ffprobe", return_value=None
+        ), patch.object(
+            sp, "_get_content_length", return_value=huge
+        ), patch(
+            "resources.lib.stream_proxy.subprocess.Popen", return_value=duration_proc
+        ), patch(
+            "resources.lib.stream_proxy.probe_dolby_vision_source",
+            return_value=_dv_result(
+                "dv_allowed_for_fmp4", "non_p7_dv_profile", profile=5
+            ),
+        ), patch(
+            "resources.lib.stream_proxy.HlsProducer"
+        ) as mock_producer_cls:
+            mock_producer_cls.return_value = MagicMock()
+            sp.prepare_stream("http://host/dv-p5.mkv")
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    ctx = sp._server.stream_context
+    mock_producer_cls.assert_not_called()
     assert ctx.get("mode") != "hls"
     assert ctx["content_type"] == "video/x-matroska"
 
@@ -2904,6 +3040,32 @@ def test_hls_producer_fmp4_build_cmd_drops_subtitles(tmp_path):
         cmd = producer._build_cmd(start_time=0.0, start_segment=0)
         assert "-sn" in cmd
         assert "-c:s" not in cmd
+    finally:
+        producer.close()
+
+
+def test_hls_producer_fmp4_build_cmd_adds_delay_moov(tmp_path):
+    """Non-zero-start fmp4 respawns need ``-movflags +delay_moov``.
+
+    Without it, ffmpeg can refuse to write the init/moov on certain AC-3-backed
+    seek respawns, yielding empty output files and a dead seek on CoreELEC.
+    """
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        cmd = producer._build_cmd(start_time=300.0, start_segment=10)
+        movflags_idx = cmd.index("-movflags")
+        assert cmd[movflags_idx + 1] == "+delay_moov"
     finally:
         producer.close()
 

@@ -352,16 +352,25 @@ def _get_force_remux_threshold_bytes():
 
 
 def _get_force_remux_mode():
-    """Return 'matroska' or 'hls_fmp4' for the force-remux branch.
+    """Return 'matroska', 'hls_fmp4', or 'passthrough' for the force-remux
+    branch.
 
     Empty string, unset, or '0' -> 'matroska' (default, control path).
     '1' -> 'hls_fmp4' (experimental, DV-capable).
+    '2' -> 'passthrough' (skip remux, serve WebDAV bytes directly with
+           Content-Length + Accept-Ranges: bytes; relies on the user
+           bypassing 32-bit Kodi's CFileCache via
+           `<cache><memorysize>0</memorysize></cache>` in
+           advancedsettings.xml — without that, large MKVs will hit the
+           uint32 seek-delta truncation bug in FileCache.cpp:375).
     Any other value -> 'matroska' (safe fall-through).
     """
     raw = _get_addon_setting("force_remux_mode")
-    if raw is None:
-        return "matroska"
-    return "hls_fmp4" if raw == "1" else "matroska"
+    if raw == "1":
+        return "hls_fmp4"
+    if raw == "2":
+        return "passthrough"
+    return "matroska"
 
 
 def _get_strict_contract_mode():
@@ -3140,6 +3149,13 @@ class HlsProducer:
             # Machinist (TrueHD) — failed without -strict, succeeded
             # with it.
             cmd.extend(["-strict", "-2"])
+            # ``-movflags +delay_moov`` defers moov-box generation until
+            # the muxer has seen at least one frame from every track. On
+            # AC-3-backed seek respawns (start_time>0, start_segment>0)
+            # ffmpeg can otherwise refuse with
+            # "Cannot write moov atom before AC3 packets" and produce
+            # zero-byte init/segment files, killing the seek silently.
+            cmd.extend(["-movflags", "+delay_moov"])
             # Force the HLS-spec sample entry tag on the video track.
             # fMP4 HLS mandates ``hvc1`` for HEVC (parameter sets in the
             # sample description box, not inband), and Amlogic's HLS
@@ -3923,6 +3939,21 @@ class StreamProxy:
             content_length = self._get_content_length(remote_url, auth_header)
             threshold = _get_force_remux_threshold_bytes()
             needs_remux = bool(threshold) and content_length >= threshold
+            if needs_remux and _get_force_remux_mode() == "passthrough":
+                # User opted out of force-remux: serve WebDAV bytes directly
+                # with full Content-Length + Accept-Ranges via _serve_proxy.
+                # Only safe on 32-bit Kodi when CFileCache is bypassed
+                # (advancedsettings.xml: <cache><memorysize>0</memorysize>
+                # </cache>) — otherwise large MKVs trip the uint32
+                # seek-delta truncation in FileCache.cpp:375.
+                xbmc.log(
+                    "NZB-DAV: force_remux_mode=passthrough -- skipping "
+                    "force-remux for {}B file (requires advancedsettings.xml "
+                    "<cache><memorysize>0</memorysize></cache> on 32-bit "
+                    "Kodi)".format(content_length),
+                    xbmc.LOGWARNING,
+                )
+                needs_remux = False
             ffmpeg_caps = self._get_ffmpeg_capabilities() if needs_remux else {}
             ffmpeg_path = ffmpeg_caps.get("ffmpeg_path")
             if ffmpeg_path:

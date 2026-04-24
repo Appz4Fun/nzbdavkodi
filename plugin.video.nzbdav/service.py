@@ -188,6 +188,30 @@ class NzbdavPlayer(xbmc.Player):
                 xbmc.LOGERROR,
             )
 
+    def onPlayBackSeek(self, time, seek_offset):
+        """Capture the new seek target immediately for retry resume.
+
+        A seek can fail before the 1 Hz service tick gets a chance to refresh
+        ``_last_position`` via ``getTime()``. Without this callback the retry
+        path falls back to the older saved position and appears to "jump
+        backwards" after a failed seek.
+        """
+        if self._state not in (PlaybackState.MONITORING, PlaybackState.ERROR):
+            return
+        try:
+            self._last_position = max(0.0, float(time))
+        except (TypeError, ValueError):
+            self._save_position()
+            return
+        xbmc.log(
+            "NZB-DAV: Playback seek for '{}' -> {:.0f}s (offset={:.0f}s)".format(
+                self._title,
+                self._last_position,
+                float(seek_offset),
+            ),
+            xbmc.LOGINFO,
+        )
+
     def _save_position(self):
         """Save current playback position for resume on retry."""
         try:

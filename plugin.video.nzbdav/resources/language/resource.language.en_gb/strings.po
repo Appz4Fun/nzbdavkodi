@@ -577,3 +577,7 @@ msgstr "Enable retry ladder before skip probe"
 msgctxt "#30151"
 msgid "Send 200 for no-range pass-through"
 msgstr "Send 200 for no-range pass-through"
+
+msgctxt "#30152"
+msgid "Direct pass-through (requires advancedsettings.xml cache=0)"
+msgstr "Direct pass-through (requires advancedsettings.xml cache=0)"

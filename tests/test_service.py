@@ -4,7 +4,7 @@
 """Tests for the NZB-DAV background service."""
 
 import time
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from service import NzbdavPlayer, PlaybackState
 
@@ -121,6 +121,44 @@ def test_on_playback_error_ignored_when_inactive():
     player.onPlayBackError()
 
     assert player._state == PlaybackState.IDLE
+
+
+def test_on_playback_seek_updates_retry_resume_position():
+    """A failed seek must retry from the seek target, not the last tick.
+
+    Real repro from CoreELEC: seeking ~30 minutes into a movie failed
+    before the 1 Hz service tick refreshed ``_last_position``, so the
+    auto-retry jumped back to an older saved point (~1 minute).
+    """
+    player = NzbdavPlayer()
+    player._state = PlaybackState.MONITORING
+    player._last_position = 60.0
+
+    player.onPlayBackSeek(1800, 1740)
+
+    assert player._last_position == 1800.0
+
+
+@patch("service.xbmcgui")
+def test_retry_playback_uses_latest_seek_position(mock_gui):
+    """Retry must pass the latest seek target through StartOffset."""
+    player = NzbdavPlayer()
+    player._state = PlaybackState.MONITORING
+    player._stream_url = "http://127.0.0.1:57800/stream"
+    player._title = "The.Equalizer.mkv"
+    player._last_position = 60.0
+    player._monitor = MagicMock()
+    player._monitor.waitForAbort.return_value = False
+    player.play = MagicMock()
+    player.isPlaying = MagicMock(return_value=True)
+
+    player.onPlayBackSeek(1800, 1740)
+    ok = player._retry_playback(max_retries=3, retry_delay=0)
+
+    assert ok is True
+    mock_gui.ListItem.return_value.setProperty.assert_called_once_with(
+        "StartOffset", "1800.0"
+    )
 
 
 @patch("service._HOME_WINDOW")
