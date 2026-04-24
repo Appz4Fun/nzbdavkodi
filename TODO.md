@@ -129,7 +129,6 @@ PR-1 is merged on `main` locally and pushed to `origin/main` (2026-04-22). Integ
 #### A.4.1 Current rollout posture
 
 - PR-1 is merged onto `main` as `16e7122` and pushed to `origin/main` (2026-04-22).
-- Addon zip `plugin.video.nzbdav-1.0.3.zip` staged at `coreelec:/storage/`. Built from HEAD (addon.xml v1.0.3 plus the post-tag cache=0 / passthrough commits in `be8ff0b..HEAD`); smoke validates HEAD, not the tag.
 - `just lint` + `just test` verified green on the merged state (670 passed).
 - Defaults shipping with PR-1:
   - `strict_contract_mode = warn` (three values: `off` / `warn` / `enforce`; default shipped is `warn`)
@@ -959,8 +958,7 @@ staged at `coreelec:/storage/` ready to install.
 6. ⏸ Integration test: verify pass-through + Kodi seek works on the
    90 GB Uncut Gems file after `<memorysize>0</memorysize>` is set.
    (Pre-cache test on 2026-04-23 confirmed the **failure** mode:
-   every scrub > 4 GB returns `streamed=0`. Step 6 re-runs the same
-   scrub against cache=0 to confirm the fix.)
+   every scrub > 4 GB returns `streamed=0`.)
 
 #### D.5.2 Phase 2 — fmp4 flag cleanup
 
