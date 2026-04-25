@@ -2,6 +2,7 @@ pub mod art;
 pub mod credits;
 pub mod dimensions;
 pub mod movie;
+pub mod person;
 pub mod tv;
 
 use anyhow::{Context, Result};
