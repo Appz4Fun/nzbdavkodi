@@ -20,9 +20,10 @@ pub fn write_image(conn: &Connection, parent_id: &str, art_type: &str, img: &Ima
         _ => None,
     };
     let rating_scaled = img.vote_average.map(|r| (r * 100.0).round() as i64);
-    conn.execute(
+    conn.prepare_cached(
         "INSERT OR IGNORE INTO art (aspect_ratio, quality, iso_language, iso_country, icon, type, extension, rating, votes, parent_id)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+    )?.execute(
         params![
             aspect_bucket,
             quality,
