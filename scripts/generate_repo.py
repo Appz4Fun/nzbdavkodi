@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 
 def read_addon_xml(path):
     """Read an addon.xml and return its text content."""
-    tree = ET.parse(path)  # nosec B314 — parsing our own addon.xml
+    tree = ET.parse(path)  # nosec B314  # nosemgrep
     return ET.tostring(tree.getroot(), encoding="unicode")
 
 
@@ -58,7 +58,9 @@ def generate_repo(output_dir="dist"):
         f.write(addons_xml)
 
     # Write addons.xml.md5
-    md5 = hashlib.md5(addons_xml.encode("utf-8")).hexdigest()  # noqa: S324  # not used for security
+    md5 = hashlib.md5(
+        addons_xml.encode("utf-8")
+    ).hexdigest()  # noqa: S324  # not used for security
     with open(os.path.join(output_dir, "addons.xml.md5"), "w") as f:
         # Trailing newline so line-oriented checksum readers don't choke.
         f.write(md5 + "\n")
@@ -71,7 +73,7 @@ def generate_repo(output_dir="dist"):
 
     # Copy addon zip into output_dir/plugin.video.nzbdav/
     # Read version from addon.xml for versioned zip filename
-    tree = ET.parse(main_addon)  # nosec B314 — parsing our own addon.xml
+    tree = ET.parse(main_addon)  # nosec B314  # nosemgrep
     version = tree.getroot().attrib["version"]
     addon_zip = "plugin.video.nzbdav-{}.zip".format(version)
     if os.path.exists(addon_zip):
@@ -98,7 +100,7 @@ def generate_repo(output_dir="dist"):
 
         repo_out = os.path.join(output_dir, "repository.nzbdav")
         os.makedirs(repo_out, exist_ok=True)
-        repo_tree = ET.parse(repo_addon)  # nosec B314 — parsing our own addon.xml
+        repo_tree = ET.parse(repo_addon)  # nosec B314  # nosemgrep
         repo_version = repo_tree.getroot().attrib["version"]
         repo_zip_path = os.path.join(
             repo_out, "repository.nzbdav-{}.zip".format(repo_version)

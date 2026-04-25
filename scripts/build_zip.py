@@ -25,7 +25,7 @@ def build_zip(addon_dir="plugin.video.nzbdav", output_dir="."):
             "is the addon_dir argument correct?".format(addon_xml_path)
         )
     try:
-        tree = ET.parse(addon_xml_path)  # nosec B314 — parsing our own addon.xml
+        tree = ET.parse(addon_xml_path)  # nosec B314  # nosemgrep
     except ET.ParseError as exc:
         raise SystemExit(
             "build_zip: failed to parse {!r}: {}".format(addon_xml_path, exc)

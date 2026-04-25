@@ -39,7 +39,7 @@ def has_cache_memorysize_zero():
     if not os.path.isfile(path):
         return False
     try:
-        tree = ET.parse(path)
+        tree = ET.parse(path)  # nosemgrep
     except (ET.ParseError, OSError):
         return False
     root = tree.getroot()

@@ -23,6 +23,7 @@ Usage:
 Env vars are accepted for every flag:
     NZBDAV_URL, NZBDAV_API_KEY, WEBDAV_URL, WEBDAV_USER, WEBDAV_PASS
 """
+
 from __future__ import annotations
 
 import argparse
@@ -35,7 +36,7 @@ from functools import partial
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from unittest.mock import MagicMock
-from urllib.parse import quote, urlparse, urlunparse
+from urllib.parse import quote
 
 ROOT = Path(__file__).resolve().parent.parent
 ADDON = ROOT / "plugin.video.nzbdav"
@@ -105,28 +106,21 @@ def _serve_nzb(nzb_path: Path) -> tuple[HTTPServer, str]:
     srv = HTTPServer(("0.0.0.0", 0), handler)  # nosec B104 — dev only
     port = srv.server_address[1]
     threading.Thread(target=srv.serve_forever, daemon=True).start()
-    url = "http://{}:{}/{}".format(
-        _detect_host_gateway(), port, quote(nzb_path.name)
-    )
+    url = "http://{}:{}/{}".format(_detect_host_gateway(), port, quote(nzb_path.name))
     return srv, url
-
-
-def _vlc_url(stream_url: str, user: str, password: str) -> str:
-    """Embed Basic creds into the URL for a copy-pasteable VLC command."""
-    if not user:
-        return stream_url
-    parsed = urlparse(stream_url)
-    netloc = "{}:{}@{}".format(quote(user, safe=""), quote(password, safe=""), parsed.netloc)
-    return urlunparse(parsed._replace(netloc=netloc))
 
 
 def _main():
     ap = argparse.ArgumentParser(
         description="Drive the addon's real submit/poll/resolve path against nzbdav."
     )
-    ap.add_argument("nzb", nargs="?", help="Path to local .nzb (served via a local HTTP server)")
+    ap.add_argument(
+        "nzb", nargs="?", help="Path to local .nzb (served via a local HTTP server)"
+    )
     ap.add_argument("--nzb-url", help="URL of an NZB (alternative to positional file)")
-    ap.add_argument("--title", default=None, help="Job name (default: derived from NZB filename)")
+    ap.add_argument(
+        "--title", default=None, help="Job name (default: derived from NZB filename)"
+    )
     ap.add_argument(
         "--nzbdav-url",
         default=os.environ.get("NZBDAV_URL", "http://localhost:8180"),
@@ -153,7 +147,9 @@ def _main():
         help="nzbdav web UI > Settings > WebDAV > Password",
     )
     ap.add_argument("--poll-interval", type=int, default=5)
-    ap.add_argument("--timeout", type=int, default=1800, help="Overall poll timeout (s)")
+    ap.add_argument(
+        "--timeout", type=int, default=1800, help="Overall poll timeout (s)"
+    )
     args = ap.parse_args()
 
     if not args.nzb and not args.nzb_url:
@@ -231,23 +227,24 @@ def _main():
             _log("resolving video under {}".format(folder))
             video_path = find_video_file(folder)
             if not video_path:
-                _log("completed but no playable file found at {}".format(folder), level=3)
+                _log(
+                    "completed but no playable file found at {}".format(folder), level=3
+                )
                 sys.exit(1)
             url, headers = get_webdav_stream_url_for_path(video_path)
-            vlc = _vlc_url(url, args.webdav_user, args.webdav_pass)
             print("\n=== STREAM READY ===")
             print("webdav file: {}".format(video_path))
             print("stream url : {}".format(url))
             if headers:
-                print("auth header: {}".format(headers.get("Authorization", "")))
+                print("auth header: <redacted>")
             print("\nplay in vlc:")
-            print('  vlc "{}"'.format(vlc))
-            print("\nor with auth header:")
-            print(
-                '  vlc --http-user "{}" --http-password "{}" "{}"'.format(
-                    args.webdav_user, args.webdav_pass, url
+            print('  vlc "{}"'.format(url))
+            if args.webdav_user:
+                print(
+                    "\nIf WebDAV auth is enabled, pass the username/password "
+                    "from your shell or password manager instead of logging "
+                    "them here."
                 )
-            )
             return
 
         if hist and hist.get("status") == "Failed":
