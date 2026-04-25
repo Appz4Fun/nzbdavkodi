@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="plugin.video.nzbdav"
        name="NZB-DAV"
-       version="1.0.3"
+       version="1.0.4"
        provider-name="nzbdav">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
@@ -22,7 +22,18 @@
         <license>GPL-3.0-or-later</license>
         <source>https://github.com/xbmc4lyfe/nzbdavkodi</source>
         <website>https://xbmc4lyfe.github.io/nzbdavkodi/</website>
-        <news>v1.0.3
+        <news>v1.0.4
+- Fix the playback wedge from a slow-trickle upstream. When a Usenet article fetch took >25s (under the 30s per-read socket timeout), bytes dripped in below playable rate, Kodi's CFileCache underran, audio stalled, and subsequent seeks did NOT trigger a fresh range request — the player just sat at "Seeking" forever with no caching message. The pass-through proxy now samples bytes-per-second over a 20s rolling window and closes the response when video throughput drops below 100 KB/s, forcing Kodi's CCurlFile to reconnect. Gated to video/* content types so legitimate audio streams aren't false-killed every 20s.
+- Improve proxy seek performance, most visible on multi-hundred-gigabyte files where the previous implementation stalled briefly while restarting the upstream connection.
+- Fix Prowlarr "Test Connection" button label so the success/failure dialog correctly identifies which indexer was tested when both NZBHydra2 and Prowlarr are configured.
+- Hash search/proxy cache keys with sha256. Existing cache entries are regenerated transparently on next access — no user action required.
+- Credential redaction sweep: API keys, bearer tokens, OAuth tokens, basic-auth passwords, and session cookies in URLs / exception messages / formatted errors are now redacted before they hit the log. Closes the H2-tier of the §H.2 audit pass.
+- Tighten path-traversal and SSRF guards across the addon's HTTP surface (closes remaining §H.2-high audit findings + trailing scanner alerts).
+- TMDBHelper player JSON now writes via xbmcvfs with a verified write-result; a disk-full or permission failure on the addon-data directory is surfaced as an install-error notification instead of silently leaving a half-written file.
+- Service watchdog clears all three nzbdav.* window properties (active, stream_url, stream_title) on tick, so a pre-empted playback can never leave a stale stream URL or title visible to the next play.
+- "Playback never started" notification is now a non-modal toast (5s) rather than a blocking modal — the previous Dialog().ok() blocked the service tick thread while the user dismissed it.
+
+v1.0.3
 - Hotfix: force-remux no longer 500s on every Authorization-carrying stream. _is_safe_ffmpeg_cmd in stream_proxy.py banned CR/LF in all argv elements, but the -headers argument LEGITIMATELY contains \r\n as the HTTP header separator required by ffmpeg's HTTP demuxer — v1.0.0-pre-alpha through v1.0.2 rejected every auth'd remux command with "Refusing to start unsafe ffmpeg command" and Kodi got an immediate HTTP 500. The check now exempts the single argv position that follows -headers; CR/LF in any other position (URL, input file, etc.) is still rejected. Regression test added.
 
 v1.0.2

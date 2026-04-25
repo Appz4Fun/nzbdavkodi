@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Released | What it's about |
 |---|---|---|
+| **[1.0.4](#104--2026-04-25)** | 2026-04-25 | Pass-through stall watchdog (closes the slow-trickle wedge where seek doesn't unstick), proxy seek perf, sha256 cache keys, credential redaction sweep, Prowlarr UI label fix, §H.2 audit closure batch |
 | **[1.0.3](#103--2026-04-23)** | 2026-04-23 | Hotfix: ffmpeg safety check no longer rejects -headers values with legitimate CR/LF — unblocks every auth'd force-remux stream that regressed in v1.0.0-pre-alpha/v1.0.1/v1.0.2 |
 | **[1.0.2](#102--2026-04-23)** | 2026-04-23 | Hotfix: find_video_file no longer rejects cross-origin PROPFIND hrefs — unblocks reverse-proxied nzbdav setups that regressed in v1.0.0-pre-alpha / v1.0.1 |
 | **[1.0.1](#101--2026-04-23)** | 2026-04-23 | Source-data Dolby Vision probe: pure-Python RPU parser replaces the ffmpeg-stderr probe, adds P7 MEL/FEL discrimination with a hybrid routing matrix that keeps the 2026-04-15 P8 matroska fix in place |
@@ -46,6 +47,136 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | **[0.1.0](#010--2026-04-05)** | 2026-04-05 | Initial release |
 
 > **Bolded** versions are either major features or recommended upgrades.
+
+---
+
+## [1.0.4] — 2026-04-25
+
+> **Pass-through stall watchdog closes the playback wedge.** Live triage on
+> the CoreELEC test box on 2026-04-25 produced a complete repro: a 4K HDR
+> HEVC MKV (6.88 GB) played fine for 14 minutes via the pass-through proxy,
+> then the upstream WebDAV started delivering tiny chunks every ~25 s. Each
+> chunk arrived under the 30 s per-read socket timeout, so neither
+> `_UPSTREAM_OPEN_TIMEOUT` nor Kodi's own watchdog ever fired — bytes
+> dripped in below playable rate, `CVideoPlayerAudio::Process - stream
+> stalled` logged 33 s later, and a user-issued seek-back-1min was logged
+> in `service.py` but **no follow-up Pass-through entry** ever appeared in
+> kodi.log: Kodi's CFileCache had marked the source as still "open" and
+> never issued a fresh range request. The fix samples bytes-per-second
+> over a 20 s rolling window and closes the response when rate drops below
+> 100 KB/s — Kodi's CCurlFile sees EOF and reconnects. Gated to `video/*`
+> content types so a 64 kbps audio stream (~8 KB/s) isn't false-killed
+> every 20 s.
+>
+> Also rolls up a batch of §H.2 audit closures (high-severity credential
+> leakage in error log paths, hardened SSRF guards, TMDBHelper installer
+> write-result verification), the Prowlarr Test Connection label fix, the
+> sha256 cache-key migration (transparent regen on next access), and an
+> internal CI hardening pass (Pylint W0108/W0621, all workflow actions
+> SHA-pinned to immutable digests, deprecated returntocorp/semgrep-action
+> retired in favour of the digest-pinned semgrep/semgrep Docker image).
+
+**Added**
+- **`_passthrough_watchdog_applies(ctx)` helper** in `stream_proxy.py` —
+  encodes the policy "throughput watchdog runs only when the response is
+  serving a `video/*` content type" as a tiny, separately-testable
+  function. Avoids the fragile invariant where the watchdog placement
+  inside `_stream_upstream_range` happens to be passthrough-only by
+  call-graph today; future refactors that add a remux-mode caller would
+  silently start killing slow remux startup unless the gate is explicit.
+- **`_PASSTHROUGH_MIN_THROUGHPUT_BPS = 102400` and
+  `_PASSTHROUGH_THROUGHPUT_WINDOW_SECONDS = 20.0`** constants in
+  `stream_proxy.py`. 100 KB/s is well below any video bit rate that
+  needs streaming (slowest video is ~1 Mbps = 125 KB/s) and well above
+  realistic audio rates (a 64 kbps MP3 is 8 KB/s).
+- **Per-session ctx keys** `passthrough_window_t0`,
+  `passthrough_window_bytes`, `passthrough_stall_detected`,
+  `passthrough_stall_bps`, `passthrough_stall_window_seconds` —
+  bookkeeping for the rolling-window throughput sampler. The flag
+  `passthrough_stall_detected` is set immediately before the
+  `_socket.timeout` raise so the existing `_serve_proxy` exception
+  handler can distinguish stall-induced unwind from a genuine Kodi
+  disconnect and emit `terminal_reason=passthrough_stall` in the
+  summary log instead of the generic `client_disconnected`.
+- **Four watchdog tests** at `tests/test_stream_proxy.py`:
+  `_aborts_on_low_throughput` (1 KB/s trickle → stall fires, log line
+  names passthrough_stall not client_disconnected),
+  `_resets_after_a_fast_burst` (3 MB at the 22 s mark clears threshold
+  → window resets, no stall), `_skips_audio_streams` (same trickle
+  pattern under audio/mpeg → watchdog never engages), and
+  `_returns_true_only_for_video` (case-insensitive video/*; excludes
+  audio/, application/octet-stream, empty, None, missing key).
+
+**Fixed**
+- **Pass-through stall wedge** at
+  `plugin.video.nzbdav/resources/lib/stream_proxy.py:2604-2640` (the
+  read loop in `_stream_upstream_range`) and `:2337-2374` (the
+  `(BrokenPipeError, ConnectionResetError, _socket.timeout)` handler in
+  `_serve_proxy` that now branches on `ctx.get("passthrough_stall_detected")`).
+  Repro evidence at TODO.md §D.1 ("Other live-testing surprises") plus
+  the kodi.log timeline pasted into the v1.0.4 commit message.
+- **Improve proxy seek performance**. The stream proxy's seek-path code
+  was reworked for lower latency on backseek and chapter jumps; effect
+  is most visible on multi-hundred-gigabyte files where the previous
+  implementation stalled briefly while restarting the upstream
+  connection.
+- **Prowlarr "Test Connection" button** in the addon settings now shows
+  the right label in the success/failure dialog when both NZBHydra2 and
+  Prowlarr indexers are configured. Previously the dialog identified
+  the wrong indexer when only Prowlarr was being tested.
+- **TMDBHelper player JSON installer** now writes via `xbmcvfs.File`
+  and verifies the return value of `.write()`; a disk-full or
+  permission failure on `special://profile/addon_data/.../players/`
+  used to leave a half-written `nzbdav.json` and silently log
+  "successfully installed". A failed write now surfaces as an install
+  notification with the failure reason. Closes §H.2-L23.
+- **Service watchdog window-property cleanup** at `service.py:_check_active`
+  now clears all three `nzbdav.*` window properties (`active`,
+  `stream_url`, `stream_title`) on tick, not just `nzbdav.active`. A
+  pre-empted playback can no longer leave a stale stream URL or title
+  visible to the next play. Closes §H.2-L29.
+- **`Playback never started` notification** is now a non-modal toast
+  (5 s, via `_notify`) instead of a blocking `Dialog().ok()` modal.
+  The previous modal blocked the service tick thread while the user
+  dismissed it, and a stuck modal could prevent shutdown cleanup.
+  Closes §H.2-H8.
+
+**Changed**
+- **Search and proxy cache keys** are now sha256 of their canonical
+  content instead of the previous lossy fingerprint. Existing cache
+  entries are silently regenerated on next access — transparent to
+  the user, no settings changed, no manual cache-clear needed. Removes
+  a class of cache-collision false-hits that were shipping the wrong
+  results when two distinct queries happened to fingerprint the same
+  way.
+- **Credential redaction in error logs**. API keys, bearer tokens,
+  OAuth tokens, basic-auth passwords, session cookies, and any
+  `*token*`/`*secret*`/`*password*`/`*key*` query parameter are now
+  redacted by a shared helper before any exception message,
+  format-string interpolation, or `xbmc.log` call. Closes the
+  H2-tier of the §H.2 audit pass — previously a wrapped exception's
+  `repr()` was leaking the apikey through error-formatting helpers
+  that bypassed the existing `redact_url` path.
+- **Path-traversal and SSRF guards** tightened across the addon's
+  HTTP surface. Closes remaining §H.2-high audit findings and the
+  trailing scanner alerts that landed under the §H.4 sweep.
+- **Internal: pylint hygiene + CI hardening.** Pylint W0108
+  (unnecessary-lambda) and W0621 (redefined-outer-name) cleanups in
+  tests so the Python 3.8 pylint CI matrix returns 10/10 instead of
+  9.99/10 with exit code 4. Every workflow action under
+  `.github/workflows/` is now SHA-pinned to an immutable commit
+  digest; the deprecated `returntocorp/semgrep-action` was retired
+  in favour of running `semgrep/semgrep` CLI from a digest-pinned
+  Docker image. CI security posture is now consistent across every
+  workflow file.
+
+**Security**
+- §H.2-H credential-leakage findings closed (see "Credential redaction
+  in error logs" above and the §H.2 cluster in TODO.md Part H).
+- §H.4 scanner-alert sweep closed (path-traversal / SSRF guards above).
+- §H.2-L23 TMDBHelper installer disk-full path closed.
+- All `.github/workflows/` actions SHA-pinned (no remaining floating
+  `@v1` / `@v6` references on third-party actions).
 
 ---
 
@@ -588,6 +719,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[1.0.4]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v1.0.4
+[1.0.3]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v1.0.3
+[1.0.2]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v1.0.2
+[1.0.1]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v1.0.1
+[1.0.0-pre-alpha]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v1.0.0-pre-alpha
 [0.6.21]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.6.21
 [0.6.20]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.6.20
 [0.6.19]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.6.19
