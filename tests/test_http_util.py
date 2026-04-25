@@ -88,3 +88,44 @@ def test_redact_url_preserves_url_without_apikey():
     url = "http://example.com/api?mode=history&limit=200"
     result = redact_url(url)
     assert result == url
+
+
+def test_redact_url_hides_extended_credential_keys():
+    """TODO.md §H.2-H2c: the redaction set covers more than just apikey.
+    `key`, `access_token`, `bearer`, `session`, `sessionid`, `password`,
+    `passwd`, `token`, `auth`, `secret` should all be redacted."""
+    for keyword in (
+        "key",
+        "access_token",
+        "bearer",
+        "session",
+        "sessionid",
+        "password",
+        "passwd",
+        "token",
+        "auth",
+        "secret",
+    ):
+        url = "http://example.com/api?{}=secretval123".format(keyword)
+        result = redact_url(url)
+        assert "secretval123" not in result, "leaked secret for {}".format(keyword)
+        assert "{}=REDACTED".format(keyword) in result
+
+
+def test_redact_url_hides_userinfo_password():
+    """TODO.md §H.2-H2d: `user:password@host` userinfo in the netloc
+    must be redacted before logging. Strip the password half but
+    preserve the username so logs are still useful."""
+    url = "http://alice:supersecret@host.example.com/path?q=v"
+    result = redact_url(url)
+    assert "supersecret" not in result
+    assert "alice:REDACTED@host.example.com" in result
+
+
+def test_redact_url_preserves_userinfo_without_password():
+    """If the userinfo half has no password (just a username), don't
+    invent a `:REDACTED` that wasn't there."""
+    url = "http://alice@host.example.com/path"
+    result = redact_url(url)
+    assert "REDACTED" not in result
+    assert "alice@host.example.com" in result

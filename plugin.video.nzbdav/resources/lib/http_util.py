@@ -12,14 +12,32 @@ from urllib.request import Request, urlopen
 # ``secret``. Matched case-insensitively against the param name itself,
 # not the value.
 _REDACT_PARAM_NAMES = frozenset(
-    {"apikey", "api_key", "auth", "token", "password", "passwd", "secret"}
+    {
+        "apikey",
+        "api_key",
+        "auth",
+        "token",
+        "password",
+        "passwd",
+        "secret",
+        # Extended set per TODO.md §H.2-H2c. `key` (without prefix) is
+        # used by some Newznab-style indexers; `access_token` covers
+        # OAuth-style callbacks; `bearer` covers Authorization header
+        # values that get spliced into URLs by mistake.
+        "key",
+        "access_token",
+        "bearer",
+        "session",
+        "sessionid",
+    }
 )
 
 # Pattern to catch apikey=... embedded in free-form strings (HTTP error
 # bodies, exception messages). Used by redact_text() for the cases where
 # a full URL parse isn't practical.
 _EMBEDDED_CRED_RE = re.compile(
-    r"(apikey|api_key|token|auth|password|passwd|secret)=([^&\s\"'<>]+)",
+    r"(apikey|api_key|access_token|token|bearer|auth|password|passwd|secret"
+    r"|sessionid|session|key)=([^&\s\"'<>]+)",
     re.IGNORECASE,
 )
 
@@ -52,8 +70,21 @@ def redact_url(url):
             query.append((k, redact_url(v)))
         else:
             query.append((k, v))
+    # Redact `user:password@host` userinfo in the netloc — Basic-auth-in-URL
+    # is a real shape some users hand-paste into settings (and that the
+    # WebDAV stack used to accept). Strip the password half before
+    # logging. TODO.md §H.2-H2d.
+    netloc = parts.netloc
+    if netloc and "@" in netloc:
+        userinfo, _, host = netloc.rpartition("@")
+        if ":" in userinfo:
+            user, _, _ = userinfo.partition(":")
+            netloc = "{}:REDACTED@{}".format(user, host)
+        else:
+            # No `:password` half — userinfo is just a username.
+            netloc = "{}@{}".format(userinfo, host)
     return urlunsplit(
-        (parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment)
+        (parts.scheme, netloc, parts.path, urlencode(query), parts.fragment)
     )
 
 

@@ -99,12 +99,28 @@ def scan_top_level_boxes(data):
 _MAX_STCO_OFFSET = 0xFFFFFFFF  # 2^32 - 1
 
 
+def _bounded_chunk_count(count, body_start, body_end, entry_size):
+    """Bound a stco/co64 entry count by the actual box body size.
+
+    The on-wire `count` field is an attacker-controlled uint32. A
+    `count = 0xFFFFFFFF` would otherwise produce a 4-billion-iteration
+    loop in `_rewrite_stco` / `_rewrite_co64`, hanging the proxy.
+    Clamp to whatever the box body can actually fit, plus return the
+    clamped value so the caller doesn't have to recompute.
+    Closes TODO.md §H.2-H3a.
+    """
+    body_remaining = max(0, body_end - (body_start + 8))  # 4 ver+flags + 4 count
+    max_entries = body_remaining // entry_size
+    return min(count, max_entries)
+
+
 def _rewrite_stco(data, body_start, body_end, delta):
     """Rewrite 32-bit chunk offsets in an stco box. Returns False on overflow."""
     count_off = body_start + 4  # skip version+flags
     if count_off + 4 > body_end:
         return True
     count = struct.unpack_from(">I", data, count_off)[0]
+    count = _bounded_chunk_count(count, body_start, body_end, 4)
     entry_off = count_off + 4
     for i in range(count):
         pos = entry_off + i * 4
@@ -135,6 +151,8 @@ def _rewrite_co64(data, body_start, body_end, delta):
     if count_off + 4 > body_end:
         return False
     count = struct.unpack_from(">I", data, count_off)[0]
+    # Clamp to the actual body size — same DoS guard as _rewrite_stco.
+    count = _bounded_chunk_count(count, body_start, body_end, 8)
     entry_off = count_off + 4
     for i in range(count):
         pos = entry_off + i * 8
