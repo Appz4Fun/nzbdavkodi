@@ -156,7 +156,15 @@ def _cache_bust_url(url):
     Appending a unique query parameter gives Kodi a unique cache key each
     time. nzbdav ignores unknown query parameters on file requests.
     """
-    separator = "&" if "?" in url else "?"
+    # Insert the cache-buster BEFORE any `#fragment`. Otherwise the
+    # `?nzbdav_play=N` ends up after the fragment marker and the
+    # server never sees it (fragments are client-side only) — defeating
+    # the cache-bust intent. Closes TODO.md §H.2-L4.
+    if "#" in url:
+        base, fragment = url.split("#", 1)
+    else:
+        base, fragment = url, ""
+    separator = "&" if "?" in base else "?"
     # Use nanosecond precision (3.7+) so rapid replays don't collide on
     # platforms whose `time.time()` clock is coarser than 1 ms (e.g. older
     # CoreELEC kernels with HZ=100). Falls back to ms*1000 if the function
@@ -166,7 +174,8 @@ def _cache_bust_url(url):
         if hasattr(time, "time_ns")
         else int(time.time() * 1000) * 1_000_000
     )
-    return "{}{}nzbdav_play={}".format(url, separator, counter)
+    rebuilt = "{}{}nzbdav_play={}".format(base, separator, counter)
+    return rebuilt + ("#" + fragment if fragment else "")
 
 
 def _clear_kodi_playback_state(params=None):
