@@ -21,14 +21,20 @@ pub fn write_image(conn: &Connection, parent_id: &str, art_type: &str, img: &Ima
     };
     let rating_scaled = img.vote_average.map(|r| (r * 100.0).round() as i64);
     conn.prepare_cached(
-        "INSERT OR IGNORE INTO art (aspect_ratio, quality, iso_language, iso_country, icon, type, extension, rating, votes, parent_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        "INSERT INTO art (aspect_ratio, quality, iso_language, iso_country, icon, type, extension, rating, votes, parent_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+         ON CONFLICT(icon, type, parent_id) DO UPDATE SET
+             quality   = COALESCE(excluded.quality,   quality),
+             rating    = COALESCE(excluded.rating,    rating),
+             votes     = COALESCE(excluded.votes,     votes),
+             iso_language = COALESCE(excluded.iso_language, iso_language),
+             iso_country  = COALESCE(excluded.iso_country,  iso_country)",
     )?.execute(
         params![
             aspect_bucket,
             quality,
             img.iso_639_1.as_deref(),
-            img.iso_3166_1.as_deref(),  // C6: TMDB returns iso_3166_1 on poster/logo images
+            img.iso_3166_1.as_deref(),
             &img.file_path,
             art_type,
             extension,

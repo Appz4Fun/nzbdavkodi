@@ -13,6 +13,13 @@ use crate::cache::{movie, tv, person, collection, open_writer};
 use crate::id::TmdbType;
 use crate::state::{QueueItem, StateDb};
 
+pub struct RequeueItem {
+    pub tmdb_id: i64,
+    pub tmdb_type: TmdbType,
+    pub depth: i64,
+    pub popularity: f64,
+}
+
 const MAX_DEPTH: i64 = 5;
 
 pub struct WriteJob {
@@ -91,10 +98,10 @@ pub async fn run(
     let client = TmdbClient::new(api_key)?;
     let sem = Arc::new(Semaphore::new(concurrency));
     let (tx, mut rx) = mpsc::channel::<WriteJob>(200);
+    let (requeue_tx, mut requeue_rx) = mpsc::channel::<RequeueItem>(200);
 
     const MEGA_TX_SIZE: usize = 200;
 
-    // Spawn dedicated writer task (blocking — SQLite is synchronous)
     let writer_handle = {
         let item_details_path = item_details_path.clone();
         let state_path_for_writer = state_path.clone();
@@ -107,10 +114,15 @@ pub async fn run(
             let mut total_write_ms = 0u64;
             let mut total_state_ms = 0u64;
 
-            // Block on first item, then eagerly drain up to MEGA_TX_SIZE.
-            // Clippy suggests while_let but that misses the try_recv fill-up.
             #[allow(clippy::while_let_loop)]
             loop {
+                // Drain requeue items between batches
+                while let Ok(rq) = requeue_rx.try_recv() {
+                    if let Err(e) = state.enqueue_child(rq.tmdb_id, rq.tmdb_type, rq.depth, rq.popularity) {
+                        error!("requeue failed for {:?} {}: {:?}", rq.tmdb_type, rq.tmdb_id, e);
+                    }
+                }
+
                 match rx.blocking_recv() {
                     Some(job) => batch.push(job),
                     None => break,
@@ -122,10 +134,9 @@ pub async fn run(
                     }
                 }
 
-                // Mega-transaction: write all items in one tx, with per-type timing
                 let t0 = std::time::Instant::now();
                 let tx = writer.transaction()?;
-                let mut type_ms: [u64; 4] = [0; 4]; // movie, tv, person, collection
+                let mut type_ms: [u64; 4] = [0; 4];
                 for job in &batch {
                     let ti = std::time::Instant::now();
                     let (idx, res) = match &job.payload {
@@ -140,13 +151,10 @@ pub async fn run(
                     }
                 }
                 tx.commit()?;
-                // Checkpoint WAL between batches — keeps it from growing to GB size.
-                // PASSIVE is non-blocking; won't stall if Kodi has active readers.
                 crate::cache::checkpoint_passive(&writer);
                 let write_ms = t0.elapsed().as_millis() as u64;
                 total_write_ms += write_ms;
 
-                // Mega-batch state updates: ONE transaction for all items' visit + enqueue
                 let t1 = std::time::Instant::now();
                 let state_items: Vec<crate::state::ChildBatch<'_>> = batch.iter()
                     .map(|job| {
@@ -173,12 +181,19 @@ pub async fn run(
                 }
                 batch.clear();
             }
+
+            // Final drain of requeue items
+            while let Ok(rq) = requeue_rx.try_recv() {
+                if let Err(e) = state.enqueue_child(rq.tmdb_id, rq.tmdb_type, rq.depth, rq.popularity) {
+                    error!("requeue failed for {:?} {}: {:?}", rq.tmdb_type, rq.tmdb_id, e);
+                }
+            }
+
             info!("writer task exiting, total written={}", written);
             Ok(())
         })
     };
 
-    // Main loop: pop batches from state.db and dispatch async fetcher tasks
     let mut state = StateDb::open(&state_path)?;
     loop {
         let batch = state.pop_batch(batch_size)?;
@@ -198,6 +213,7 @@ pub async fn run(
             let permit = sem.clone().acquire_owned().await?;
             let client = client.clone();
             let tx = tx.clone();
+            let requeue_tx = requeue_tx.clone();
             tokio::spawn(async move {
                 let _permit = permit;
                 let payload = match item.tmdb_type {
@@ -209,15 +225,27 @@ pub async fn run(
                 match payload {
                     Ok(p) => {
                         let children = extract_children(&p);
-                        let _ = tx.send(WriteJob { item, payload: p, children }).await;
+                        if tx.send(WriteJob { item: item.clone(), payload: p, children }).await.is_err() {
+                            warn!("writer channel closed, requeuing {:?} {}", item.tmdb_type, item.tmdb_id);
+                            let _ = requeue_tx.send(RequeueItem {
+                                tmdb_id: item.tmdb_id, tmdb_type: item.tmdb_type,
+                                depth: item.depth, popularity: item.popularity,
+                            }).await;
+                        }
                     }
-                    Err(e) => warn!("fetch failed for {:?} {}: {:?}", item.tmdb_type, item.tmdb_id, e),
+                    Err(e) => {
+                        warn!("fetch failed for {:?} {}: {:?}", item.tmdb_type, item.tmdb_id, e);
+                        let _ = requeue_tx.send(RequeueItem {
+                            tmdb_id: item.tmdb_id, tmdb_type: item.tmdb_type,
+                            depth: item.depth, popularity: item.popularity,
+                        }).await;
+                    }
                 }
             });
         }
     }
-    // Drop the sender so the writer task's recv loop exits
     drop(tx);
+    drop(requeue_tx);
     writer_handle.await??;
     Ok(())
 }

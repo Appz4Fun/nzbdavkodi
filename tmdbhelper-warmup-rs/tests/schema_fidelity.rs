@@ -26,9 +26,6 @@ use std::collections::HashSet;
 const TARGET_TMDB_ID: i64 = 687163;
 const FIXTURE_PATH: &str = "tests/fixtures/tmdbhelper-warmed-movie-687163.sql";
 
-/// Read all rows from a query as a set of formatted strings.
-/// Each string is "col1=val1|col2=val2|..." for one row.
-/// Uses HashSet so order within the result set doesn't matter.
 fn row_set(conn: &Connection, sql: &str) -> HashSet<String> {
     let mut stmt = conn.prepare(sql).unwrap_or_else(|e| panic!("prepare '{}': {}", sql, e));
     let names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
@@ -49,10 +46,14 @@ fn row_set(conn: &Connection, sql: &str) -> HashSet<String> {
 
 #[tokio::test]
 async fn rust_writes_match_tmdbhelper_for_movie() {
-    // --- Step 1: Warm via Rust path into a scratch DB ---------------------------------
+    let key = match option_env!("TMDB_API_KEY") {
+        Some(k) => k,
+        None => { eprintln!("TMDB_API_KEY not set, skipping"); return; }
+    };
+
     let (_conn, scratch_path) = common::scratch_db();
     let mut writer = open_writer(&scratch_path).unwrap();
-    let client = TmdbClient::new("a07324c669cac4d96789197134ce272b".into()).unwrap();
+    let client = TmdbClient::new(key.into()).unwrap();
     let m = client.get_movie(TARGET_TMDB_ID).await.expect("TMDB fetch");
     {
         let tx = writer.transaction().unwrap();
@@ -60,10 +61,6 @@ async fn rust_writes_match_tmdbhelper_for_movie() {
         tx.commit().unwrap();
     }
 
-    // --- Step 2: Load TMDBHelper snapshot into a separate scratch DB ------------------
-    // The fixture SQL was dumped from the live ItemDetails.db on coreelec.local on 2026-04-24.
-    // It contains only INSERTs for movie.687163 rows.
-    // We apply it to a fresh schema-cloned DB so it can be queried identically.
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let fixture_path = format!("{}/{}", manifest_dir, FIXTURE_PATH);
     let snapshot_sql = std::fs::read_to_string(&fixture_path)
@@ -78,15 +75,9 @@ async fn rust_writes_match_tmdbhelper_for_movie() {
     snap.execute_batch("PRAGMA foreign_keys=ON;")
         .expect("re-enable fk");
 
-    // --- Step 3: Compare table by table -----------------------------------------------
     let target_id = format!("movie.{}", TARGET_TMDB_ID);
     let mut diffs: Vec<String> = Vec::new();
 
-    // --- movie table ------------------------------------------------------------------
-    // Excluded columns:
-    //   - rating, popularity: REAL stored as float; Python repr may differ from Rust's,
-    //     and TMDB updates these values frequently (acceptable drift)
-    //   - votes: TMDB vote_count changes continuously — always differs between snapshot and live
     {
         let sql = format!(
             "SELECT id, tmdb_id, year, title, originaltitle, duration, tagline, premiered, status \
@@ -98,10 +89,6 @@ async fn rust_writes_match_tmdbhelper_for_movie() {
         check_diff("movie (excl. rating/popularity/votes)", &rust_rows, &tmdb_rows, 0, &mut diffs);
     }
 
-    // --- baseitem table ---------------------------------------------------------------
-    // Excluded columns:
-    //   - expiry: timestamp-based, always differs
-    //   - language: TMDBHelper stores user locale ("en-US"); we store movie original_language ("en")
     {
         let sql = format!(
             "SELECT id, mediatype, datalevel, fanart_tv, translation \
@@ -113,7 +100,6 @@ async fn rust_writes_match_tmdbhelper_for_movie() {
         check_diff("baseitem (excl. expiry, language)", &rust_rows, &tmdb_rows, 0, &mut diffs);
     }
 
-    // --- genre table ------------------------------------------------------------------
     {
         let sql = format!(
             "SELECT name, tmdb_id, parent_id FROM genre WHERE parent_id='{}' ORDER BY tmdb_id",
@@ -124,7 +110,6 @@ async fn rust_writes_match_tmdbhelper_for_movie() {
         check_diff("genre", &rust_rows, &tmdb_rows, 0, &mut diffs);
     }
 
-    // --- language table ---------------------------------------------------------------
     {
         let sql = format!(
             "SELECT iso_language, parent_id FROM language WHERE parent_id='{}' ORDER BY iso_language",
@@ -135,7 +120,6 @@ async fn rust_writes_match_tmdbhelper_for_movie() {
         check_diff("language", &rust_rows, &tmdb_rows, 0, &mut diffs);
     }
 
-    // --- country table ----------------------------------------------------------------
     {
         let sql = format!(
             "SELECT iso_country, parent_id FROM country WHERE parent_id='{}' ORDER BY iso_country",
@@ -146,14 +130,6 @@ async fn rust_writes_match_tmdbhelper_for_movie() {
         check_diff("country", &rust_rows, &tmdb_rows, 0, &mut diffs);
     }
 
-    // --- art table --------------------------------------------------------------------
-    // After fixes C1 (aspect_ratio bucket), C2 (quality megapixel rank), C3 (rating*100 int),
-    // C6 (iso_3166_1 from ImageRef), structural art rows should match well.
-    // Excluded columns:
-    //   - rating, votes: TMDB image vote counts change continuously — always differs between
-    //     snapshot (e.g., rating=578) and live fetch (rating=579). Comparing structural
-    //     identity (which images exist with what dimensions/language) is what matters for Kodi UI.
-    // Allow a small tolerance for TMDB data drift (new images added since snapshot).
     {
         let sql = format!(
             "SELECT aspect_ratio, quality, iso_language, iso_country, icon, type, extension \
@@ -162,14 +138,9 @@ async fn rust_writes_match_tmdbhelper_for_movie() {
         );
         let rust_rows = row_set(&writer, &sql);
         let tmdb_rows = row_set(&snap, &sql);
-        // Allow up to 5 extra rows in Rust (TMDB may have added images since snapshot);
-        // allow up to 5 extra in TMDBHelper (images removed from TMDB since snapshot).
         check_diff("art (excl. rating/votes)", &rust_rows, &tmdb_rows, 5, &mut diffs);
     }
 
-    // --- castmember table -------------------------------------------------------------
-    // TMDB data drift: new cast members may be added or existing ones updated.
-    // Allow up to 5 extra rows in Rust.
     {
         let sql = format!(
             "SELECT tmdb_id, role, ordering, appearances, guest \
@@ -181,9 +152,6 @@ async fn rust_writes_match_tmdbhelper_for_movie() {
         check_diff("castmember", &rust_rows, &tmdb_rows, 5, &mut diffs);
     }
 
-    // --- crewmember table -------------------------------------------------------------
-    // TMDB data drift: crew can change significantly (363 in snapshot).
-    // Allow up to 10 extra rows in Rust.
     {
         let sql = format!(
             "SELECT tmdb_id, role, department, appearances \
@@ -195,14 +163,6 @@ async fn rust_writes_match_tmdbhelper_for_movie() {
         check_diff("crewmember", &rust_rows, &tmdb_rows, 10, &mut diffs);
     }
 
-    // --- unique_id table --------------------------------------------------------------
-    // Known divergences:
-    //   - Rust writes key="tmdb" with the string tmdb_id; TMDBHelper does NOT write this
-    //     (TMDBHelper derives the tmdb_id from the item id "movie.687163" itself).
-    //     Acceptable: our tmdb key is harmless metadata redundancy.
-    //   - TMDBHelper writes facebook/instagram/twitter keys from external_ids.
-    //     We intentionally skip these — they're not used by any TMDBHelper playback UI.
-    // So: allow 1 extra in Rust (our "tmdb" key), allow ≤3 extra in TMDBHelper (social IDs).
     {
         let sql = format!(
             "SELECT key, value, parent_id FROM unique_id WHERE parent_id='{}' ORDER BY key",
@@ -210,8 +170,6 @@ async fn rust_writes_match_tmdbhelper_for_movie() {
         );
         let rust_rows = row_set(&writer, &sql);
         let tmdb_rows = row_set(&snap, &sql);
-        // Pin the known asymmetric extras so a future bug (e.g., wrong key written) can't
-        // hide inside the threshold. The extras MUST be exactly: our 'tmdb' key, their socials.
         let only_in_rust: Vec<&String> = rust_rows.difference(&tmdb_rows).collect();
         let only_in_tmdb: Vec<&String> = tmdb_rows.difference(&rust_rows).collect();
         assert!(
@@ -231,10 +189,6 @@ async fn rust_writes_match_tmdbhelper_for_movie() {
         check_diff_asymmetric("unique_id", &rust_rows, &tmdb_rows, 1, 3, &mut diffs);
     }
 
-    // --- video table ------------------------------------------------------------------
-    // Videos can change frequently (new trailers/featurettes added).
-    // Allow up to 15 extra rows in Rust (new videos since snapshot).
-    // Rows only in TMDBHelper (deleted videos) — allow up to 5.
     {
         let sql = format!(
             "SELECT name, iso_country, iso_language, release_date, key, path, content \
@@ -246,14 +200,6 @@ async fn rust_writes_match_tmdbhelper_for_movie() {
         check_diff_asymmetric("video", &rust_rows, &tmdb_rows, 15, 5, &mut diffs);
     }
 
-    // --- certification table ----------------------------------------------------------
-    // Known divergences:
-    //   - TMDBHelper may write extra rows from a second request pass (with language=en-US
-    //     region filter), producing both iso_language=Null and iso_language='en' variants
-    //     for the same country+date+type. The UNIQUE constraint deduplicates within the
-    //     same pass, but two passes can yield +1-3 extra rows.
-    //   - New countries may be added to TMDB between snapshot and live fetch.
-    // Allow up to 5 extra in either direction.
     {
         let sql = format!(
             "SELECT name, iso_country, iso_language, release_date, release_type \
@@ -265,7 +211,6 @@ async fn rust_writes_match_tmdbhelper_for_movie() {
         check_diff("certification", &rust_rows, &tmdb_rows, 5, &mut diffs);
     }
 
-    // --- Final report -----------------------------------------------------------------
     if !diffs.is_empty() {
         panic!(
             "\n\n=== SCHEMA FIDELITY DIFFS (movie.{}) ===\n{}\n\n\
@@ -279,7 +224,6 @@ async fn rust_writes_match_tmdbhelper_for_movie() {
     println!("PASS: all compared tables match within acceptable thresholds");
 }
 
-/// Compare two row sets. If the diff exceeds `max_extra_either_side` in either direction, record a diff.
 fn check_diff(
     table: &str,
     rust: &HashSet<String>,
@@ -290,7 +234,6 @@ fn check_diff(
     check_diff_asymmetric(table, rust, tmdb, max_extra_either_side, max_extra_either_side, diffs);
 }
 
-/// Compare two row sets with separate thresholds for each direction.
 fn check_diff_asymmetric(
     table: &str,
     rust: &HashSet<String>,

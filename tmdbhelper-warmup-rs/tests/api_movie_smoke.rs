@@ -2,7 +2,11 @@ use warmup_rs::api::TmdbClient;
 
 #[tokio::test]
 async fn fight_club_fetch_full() {
-    let client = TmdbClient::new("a07324c669cac4d96789197134ce272b".into()).unwrap();
+    let key = match option_env!("TMDB_API_KEY") {
+        Some(k) => k,
+        None => { eprintln!("TMDB_API_KEY not set, skipping"); return; }
+    };
+    let client = TmdbClient::new(key.into()).unwrap();
     let m = client.get_movie(550).await.expect("fight club fetch");
     assert_eq!(m.id, 550);
     assert_eq!(m.title.as_deref(), Some("Fight Club"));

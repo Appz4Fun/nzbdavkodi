@@ -7,11 +7,12 @@ use crate::id;
 pub fn write_collection(conn: &Connection, c: &CollectionResponse) -> Result<()> {
     let item_id = id::build_item_id(id::TmdbType::Collection, c.id);
     let expiry = default_expiry();
+    let has_translations = c.translations.as_ref().is_some_and(|t| !t.translations.is_empty());
 
     conn.execute(
         "INSERT OR REPLACE INTO baseitem (id, mediatype, expiry, datalevel, fanart_tv, translation, language)
-         VALUES (?1, 'set', ?2, ?3, 0, 0, NULL)",
-        params![&item_id, expiry, DATALEVEL_FULL],
+         VALUES (?1, 'set', ?2, ?3, 0, ?4, NULL)",
+        params![&item_id, expiry, DATALEVEL_FULL, has_translations as i64],
     )?;
     conn.execute(
         "INSERT OR REPLACE INTO collection (id, tmdb_id, plot, title) VALUES (?1, ?2, ?3, ?4)",
@@ -31,10 +32,21 @@ pub fn write_collection(conn: &Connection, c: &CollectionResponse) -> Result<()>
         for img in &images.backdrops { art::write_image(conn, &item_id, "backdrops", img)?; }
     }
 
-    // belongs: link each part movie to this collection
+    if let Some(tl) = &c.translations {
+        for t in &tl.translations {
+            let plot = t.data.as_ref().and_then(|d| d.overview.as_deref());
+            let title = t.data.as_ref().and_then(|d| d.title.as_deref().or(d.name.as_deref()));
+            let tagline = t.data.as_ref().and_then(|d| d.tagline.as_deref());
+            conn.execute(
+                "INSERT OR IGNORE INTO translation (iso_country, iso_language, plot, title, tagline, parent_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![t.iso_3166_1.as_deref(), t.iso_639_1.as_deref(), plot, title, tagline, &item_id],
+            )?;
+        }
+    }
+
     for part in &c.parts {
         let part_item = id::build_item_id(id::TmdbType::Movie, part.id);
-        // Insert stub baseitem if missing
         conn.execute(
             "INSERT OR IGNORE INTO baseitem (id, mediatype, expiry, datalevel, fanart_tv, translation, language)
              VALUES (?1, 'movie', ?2, 0, 0, 0, NULL)",

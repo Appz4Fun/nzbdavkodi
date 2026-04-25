@@ -1,7 +1,7 @@
 use anyhow::Result;
 use rusqlite::{params, Connection};
 use crate::api::types_tv::{TvResponse, SeasonStub};
-use crate::cache::{art, credits, dimensions, default_expiry, DATALEVEL_FULL};
+use crate::cache::{art, credits, dimensions, default_expiry};
 use crate::id;
 
 pub fn write_tv(conn: &Connection, t: &TvResponse) -> Result<()> {
@@ -12,11 +12,13 @@ pub fn write_tv(conn: &Connection, t: &TvResponse) -> Result<()> {
     let next_id = t.next_episode_to_air.as_ref().map(|e| id::build_episode_id(t.id, e.season_number, e.episode_number));
     let last_id = t.last_episode_to_air.as_ref().map(|e| id::build_episode_id(t.id, e.season_number, e.episode_number));
 
-    // baseitem with translation=1 (we fetch translations) — same convention as movie writer
+    // datalevel=3 (partial): TV writer doesn't yet cache content_ratings, episode_groups,
+    // providers, or translations, so we mark partial so TMDBHelper re-fetches the rest.
+    const TV_DATALEVEL: i64 = 3;
     conn.execute(
         "INSERT OR REPLACE INTO baseitem (id, mediatype, expiry, datalevel, fanart_tv, translation, language)
          VALUES (?1, 'tvshow', ?2, ?3, 0, 1, ?4)",
-        params![&item_id, expiry, DATALEVEL_FULL, t.original_language.as_deref()],
+        params![&item_id, expiry, TV_DATALEVEL, t.original_language.as_deref()],
     )?;
 
     conn.execute(
@@ -35,7 +37,8 @@ pub fn write_tv(conn: &Connection, t: &TvResponse) -> Result<()> {
 
     let tmdb_rating_int = t.vote_average.map(|r| (r * 10.0).round() as i64);
     conn.execute(
-        "INSERT OR REPLACE INTO ratings (id, tmdb_rating, tmdb_votes, expiry) VALUES (?1, ?2, ?3, ?4)",
+        "INSERT INTO ratings (id, tmdb_rating, tmdb_votes, expiry) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(id) DO UPDATE SET tmdb_rating=excluded.tmdb_rating, tmdb_votes=excluded.tmdb_votes, expiry=excluded.expiry",
         params![&item_id, tmdb_rating_int, t.vote_count, expiry],
     )?;
 
@@ -94,12 +97,12 @@ fn write_season_stub(conn: &Connection, tv_id: i64, s: &SeasonStub, expiry: i64)
     let year: Option<i64> = s.air_date.as_deref().and_then(|d| d.get(0..4).and_then(|y| y.parse().ok()));
 
     conn.execute(
-        "INSERT OR REPLACE INTO baseitem (id, mediatype, expiry, datalevel, fanart_tv, translation, language)
+        "INSERT OR IGNORE INTO baseitem (id, mediatype, expiry, datalevel, fanart_tv, translation, language)
          VALUES (?1, 'season', ?2, 1, 0, 0, NULL)",
         params![&season_id, expiry],
     )?;
     conn.execute(
-        "INSERT OR REPLACE INTO season (id, season, year, plot, title, premiered, tvshow_id)
+        "INSERT OR IGNORE INTO season (id, season, year, plot, title, premiered, tvshow_id)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![&season_id, s.season_number, year, s.overview.as_deref(), s.name.as_deref(), s.air_date.as_deref(), &tv_item_id],
     )?;

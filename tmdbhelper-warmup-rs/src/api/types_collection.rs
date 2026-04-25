@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use crate::api::types_movie::Images;
+use crate::api::types_movie::{Images, TranslationList};
 
 #[derive(Debug, Deserialize)]
 pub struct CollectionResponse {
@@ -10,6 +10,7 @@ pub struct CollectionResponse {
     pub backdrop_path: Option<String>,
     #[serde(default)] pub parts: Vec<CollectionPart>,
     pub images: Option<Images>,
+    pub translations: Option<TranslationList>,
 }
 
 #[derive(Debug, Deserialize)]

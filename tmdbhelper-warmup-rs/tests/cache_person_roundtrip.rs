@@ -5,7 +5,11 @@ use warmup_rs::cache::{person, open_writer};
 
 #[tokio::test]
 async fn warm_brad_pitt() {
-    let client = TmdbClient::new("a07324c669cac4d96789197134ce272b".into()).unwrap();
+    let key = match option_env!("TMDB_API_KEY") {
+        Some(k) => k,
+        None => { eprintln!("TMDB_API_KEY not set, skipping"); return; }
+    };
+    let client = TmdbClient::new(key.into()).unwrap();
     let p = client.get_person(287).await.expect("brad pitt fetch");
 
     let (_h, path) = common::scratch_db();

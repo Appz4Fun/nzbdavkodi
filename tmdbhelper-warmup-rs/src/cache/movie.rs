@@ -38,7 +38,8 @@ pub fn write_movie(conn: &Connection, m: &MovieResponse) -> Result<()> {
     // 3. ratings
     let tmdb_rating_int = m.vote_average.map(|r| (r * 10.0).round() as i64);
     conn.execute(
-        "INSERT OR REPLACE INTO ratings (id, tmdb_rating, tmdb_votes, expiry) VALUES (?1, ?2, ?3, ?4)",
+        "INSERT INTO ratings (id, tmdb_rating, tmdb_votes, expiry) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(id) DO UPDATE SET tmdb_rating=excluded.tmdb_rating, tmdb_votes=excluded.tmdb_votes, expiry=excluded.expiry",
         params![&item_id, tmdb_rating_int, m.vote_count, expiry],
     )?;
 
@@ -170,14 +171,16 @@ pub fn write_movie(conn: &Connection, m: &MovieResponse) -> Result<()> {
 
     // 14. watch providers — availability column reflects the actual kind so TMDBHelper's
     // "Where to watch" UI distinguishes streaming (flatrate) from buy/rent/free/ads.
+    // TMDBHelper priority: flatrate > free > ads > rent > buy (best availability wins).
+    // INSERT OR IGNORE means first-inserted wins, so iterate in priority order.
     if let Some(wpr) = &m.watch_providers {
         for (country, providers) in &wpr.results {
             for (kind_name, kind) in [
                 ("flatrate", &providers.flatrate),
-                ("buy", &providers.buy),
-                ("rent", &providers.rent),
                 ("free", &providers.free),
                 ("ads", &providers.ads),
+                ("rent", &providers.rent),
+                ("buy", &providers.buy),
             ] {
                 for p in kind.iter() {
                     dimensions::upsert_service(conn, p.provider_id, &p.provider_name, p.logo_path.as_deref(), p.display_priority)?;

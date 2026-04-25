@@ -35,6 +35,7 @@ impl TextureDb {
                 lastusetime TEXT
              );
              CREATE UNIQUE INDEX IF NOT EXISTS idxTexture ON texture(url);
+             CREATE UNIQUE INDEX IF NOT EXISTS idxSizeUnique ON sizes(idtexture, size);
              CREATE INDEX IF NOT EXISTS idxSize ON sizes(idtexture, size);",
         )?;
         Ok(Self { conn })
@@ -63,9 +64,11 @@ impl TextureDb {
             "SELECT id FROM texture WHERE url=?1",
         )?.query_row(params![url], |r| r.get(0))?;
 
-        self.conn.prepare_cached(
-            "INSERT OR IGNORE INTO sizes (idtexture, size, width, height, usecount, lastusetime) VALUES (?1, 1, ?2, ?3, 1, ?4)",
-        )?.execute(params![id, width, height, &now])?;
+        if width > 0 || height > 0 {
+            self.conn.prepare_cached(
+                "INSERT OR REPLACE INTO sizes (idtexture, size, width, height, usecount, lastusetime) VALUES (?1, 1, ?2, ?3, 1, ?4)",
+            )?.execute(params![id, width, height, &now])?;
+        }
 
         Ok(id)
     }
@@ -86,15 +89,17 @@ impl TextureDb {
                 "SELECT id FROM texture WHERE url=?1",
             )?;
             let mut ins_size = tx.prepare_cached(
-                "INSERT OR IGNORE INTO sizes (idtexture, size, width, height, usecount, lastusetime) VALUES (?1, 1, ?2, ?3, 1, ?4)",
+                "INSERT OR REPLACE INTO sizes (idtexture, size, width, height, usecount, lastusetime) VALUES (?1, 1, ?2, ?3, 1, ?4)",
             )?;
 
             for (url, cached_url, w, h) in items {
                 if ins_tex.execute(params![url, cached_url, &now])? > 0 {
                     count += 1;
                 }
-                let id: i64 = sel_id.query_row(params![url], |r| r.get(0))?;
-                ins_size.execute(params![id, w, h, &now])?;
+                if *w > 0 || *h > 0 {
+                    let id: i64 = sel_id.query_row(params![url], |r| r.get(0))?;
+                    ins_size.execute(params![id, w, h, &now])?;
+                }
             }
         }
 

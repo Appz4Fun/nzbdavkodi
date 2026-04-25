@@ -78,7 +78,12 @@ impl TmdbClient {
                 return Err(anyhow!("tmdb 404 for {}", base_url));
             }
             if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
-                let backoff = Duration::from_millis(500 * (1 << attempt));
+                let base_backoff = Duration::from_millis(500 * (1 << attempt));
+                let retry_after = resp.headers().get("retry-after")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .map(Duration::from_secs);
+                let backoff = retry_after.map_or(base_backoff, |ra| ra.max(base_backoff));
                 warn!("tmdb {} for {}, retry {} in {:?}", status, base_url, attempt + 1, backoff);
                 tokio::time::sleep(backoff).await;
                 continue;

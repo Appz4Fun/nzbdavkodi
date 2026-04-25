@@ -46,6 +46,16 @@ impl StateDb {
              PRAGMA busy_timeout=120000;
              PRAGMA cache_size=-65536;",
         )?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS queue (
+                 tmdb_id INTEGER, tmdb_type TEXT, depth INTEGER,
+                 popularity REAL DEFAULT 0.0, enqueued_at REAL,
+                 PRIMARY KEY (tmdb_id, tmdb_type));
+             CREATE TABLE IF NOT EXISTS visited (
+                 tmdb_id INTEGER, tmdb_type TEXT, visited_at REAL,
+                 result TEXT NOT NULL DEFAULT 'ok',
+                 PRIMARY KEY (tmdb_id, tmdb_type));",
+        )?;
         Ok(Self { conn })
     }
 
@@ -54,6 +64,7 @@ impl StateDb {
     pub fn pop_batch(&mut self, limit: usize) -> Result<Vec<QueueItem>> {
         let tx = self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let mut items = Vec::new();
+        let mut raw_types = Vec::new();
         {
             let mut stmt = tx.prepare(
                 "SELECT tmdb_id, tmdb_type, depth, popularity FROM queue
@@ -67,13 +78,14 @@ impl StateDb {
                 let (id, type_s, depth, pop) = row?;
                 if let Some(t) = type_from_str(&type_s) {
                     items.push(QueueItem { tmdb_id: id, tmdb_type: t, depth, popularity: pop });
+                    raw_types.push(type_s);
                 }
             }
         }
-        for item in &items {
+        for (i, item) in items.iter().enumerate() {
             tx.execute(
                 "DELETE FROM queue WHERE tmdb_id=?1 AND tmdb_type=?2",
-                params![item.tmdb_id, type_to_str(item.tmdb_type)],
+                params![item.tmdb_id, &raw_types[i]],
             )?;
         }
         tx.commit()?;
@@ -142,11 +154,16 @@ impl StateDb {
     ) -> Result<()> {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
         let tx = self.conn.transaction()?;
-        for (tmdb_id, tmdb_type, children, child_depth) in items {
+        // Phase 1: mark ALL parents visited first, so children that overlap with
+        // other parents in this batch won't be re-enqueued
+        for (tmdb_id, tmdb_type, _children, _child_depth) in items {
             tx.execute(
                 "INSERT OR REPLACE INTO visited (tmdb_id, tmdb_type, visited_at, result) VALUES (?1, ?2, ?3, 'ok')",
                 params![*tmdb_id, type_to_str(*tmdb_type), now],
             )?;
+        }
+        // Phase 2: enqueue children, skipping those already visited
+        for (_tmdb_id, _tmdb_type, children, child_depth) in items {
             for (cid, ctype, pop) in *children {
                 let already: i64 = tx.query_row(
                     "SELECT COUNT(*) FROM visited WHERE tmdb_id=?1 AND tmdb_type=?2",

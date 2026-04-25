@@ -12,14 +12,14 @@ struct Args {
           default_value = "/storage/.kodi/userdata/addon_data/plugin.video.themoviedb.helper/database_07/ItemDetails.db")]
     item_details_db: PathBuf,
 
-    #[arg(long, env = "WARMUP_TMDB_API_KEY", default_value = "a07324c669cac4d96789197134ce272b")]
+    #[arg(long, env = "WARMUP_TMDB_API_KEY")]
     tmdb_api_key: String,
 
-    #[arg(long, env = "WARMUP_CONCURRENCY", default_value_t = 40)]
-    concurrency: usize,
+    #[arg(long, env = "WARMUP_CONCURRENCY", default_value_t = 40, value_parser = clap::value_parser!(u64).range(1..))]
+    concurrency: u64,
 
-    #[arg(long, env = "WARMUP_BATCH_SIZE", default_value_t = 200)]
-    batch_size: usize,
+    #[arg(long, env = "WARMUP_BATCH_SIZE", default_value_t = 200, value_parser = clap::value_parser!(u64).range(1..))]
+    batch_size: u64,
 
     #[arg(long, env = "WARMUP_MODE", default_value = "metadata")]
     mode: String,
@@ -39,17 +39,19 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let args = Args::parse();
+    let concurrency = args.concurrency as usize;
+    let batch_size = args.batch_size as usize;
     info!("warmup-rs starting mode={} concurrency={} batch={}",
-          args.mode, args.concurrency, args.batch_size);
+          args.mode, concurrency, batch_size);
 
     match args.mode.as_str() {
         "metadata" => {
             info!("metadata mode: state={} target={}", args.state_db.display(), args.item_details_db.display());
-            warmup_rs::worker::run(args.state_db, args.item_details_db, args.tmdb_api_key, args.concurrency, args.batch_size).await?;
+            warmup_rs::worker::run(args.state_db, args.item_details_db, args.tmdb_api_key, concurrency, batch_size).await?;
         }
         "images" => {
             info!("images mode: textures={} thumbnails={}", args.textures_db.display(), args.thumbnails_dir.display());
-            warmup_rs::images::run(args.item_details_db, args.textures_db, args.thumbnails_dir, args.concurrency).await?;
+            warmup_rs::images::run(args.item_details_db, args.textures_db, args.thumbnails_dir, concurrency).await?;
         }
         "smoke" => {
             let _ = rusqlite::Connection::open_in_memory()?;

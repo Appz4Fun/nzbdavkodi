@@ -5,7 +5,11 @@ use warmup_rs::cache::{movie, open_writer};
 
 #[tokio::test]
 async fn warm_fight_club_writes_expected_rows() {
-    let client = TmdbClient::new("a07324c669cac4d96789197134ce272b".into()).unwrap();
+    let key = match option_env!("TMDB_API_KEY") {
+        Some(k) => k,
+        None => { eprintln!("TMDB_API_KEY not set, skipping"); return; }
+    };
+    let client = TmdbClient::new(key.into()).unwrap();
     let m = client.get_movie(550).await.expect("fetch");
 
     let (_conn, path) = common::scratch_db();

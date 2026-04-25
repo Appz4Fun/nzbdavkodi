@@ -2,9 +2,11 @@ pub mod texture_db;
 pub mod texture_hash;
 
 use anyhow::{Context, Result};
+use reqwest::StatusCode;
 use rusqlite::{Connection, OpenFlags};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{mpsc, Semaphore};
 use tracing::{error, info, warn};
 
@@ -18,6 +20,12 @@ struct DownloadResult {
     art_type: String,
     cached_filename: String,
     bytes: Vec<u8>,
+}
+
+struct RegisterOnly {
+    path: String,
+    art_type: String,
+    cached_filename: String,
 }
 
 fn parse_jpeg_dimensions(data: &[u8]) -> Option<(u32, u32)> {
@@ -106,6 +114,7 @@ pub async fn run(
 
     let sem = Arc::new(Semaphore::new(concurrency));
     let (tx, mut rx) = mpsc::channel::<DownloadResult>(200);
+    let (reg_tx, mut reg_rx) = mpsc::channel::<RegisterOnly>(200);
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
@@ -121,9 +130,31 @@ pub async fn run(
             let mut batch: Vec<(String, String, u32, u32)> = Vec::with_capacity(200);
             let mut written = 0u64;
             let mut bytes_total = 0u64;
+            let mut registered = 0u64;
             let start = std::time::Instant::now();
 
             const BATCH_SIZE: usize = 200;
+
+            // Drain register-only items first (existing files missing from DB)
+            while let Ok(reg) = reg_rx.try_recv() {
+                let file_path = thumbnails_dir.join(&reg.cached_filename);
+                let data = match std::fs::read(&file_path) {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+                let (w, h) = parse_image_dimensions(&data);
+                let variants = texture_hash::url_variants(&reg.path, &reg.art_type);
+                for url in &variants {
+                    batch.push((url.clone(), reg.cached_filename.clone(), w, h));
+                }
+                if batch.len() >= BATCH_SIZE {
+                    if let Err(e) = db.insert_texture_batch(&batch) {
+                        error!("texture reg batch insert failed: {:?}", e);
+                    }
+                    batch.clear();
+                }
+                registered += 1;
+            }
 
             #[allow(clippy::while_let_loop)]
             loop {
@@ -131,6 +162,21 @@ pub async fn run(
                     Some(dl) => dl,
                     None => break,
                 };
+
+                // Also drain any pending register-only items
+                while let Ok(reg) = reg_rx.try_recv() {
+                    let file_path = thumbnails_dir.join(&reg.cached_filename);
+                    let data = match std::fs::read(&file_path) {
+                        Ok(d) => d,
+                        Err(_) => continue,
+                    };
+                    let (w, h) = parse_image_dimensions(&data);
+                    let variants = texture_hash::url_variants(&reg.path, &reg.art_type);
+                    for url in &variants {
+                        batch.push((url.clone(), reg.cached_filename.clone(), w, h));
+                    }
+                    registered += 1;
+                }
 
                 let file_path = thumbnails_dir.join(&dl.cached_filename);
                 if let Some(parent) = file_path.parent() {
@@ -168,10 +214,25 @@ pub async fn run(
                     let rate = written as f64 / elapsed;
                     let mb = bytes_total as f64 / (1024.0 * 1024.0);
                     info!(
-                        "images: written={} rate={:.1}/s disk={:.0}MB",
-                        written, rate, mb
+                        "images: written={} registered={} rate={:.1}/s disk={:.0}MB",
+                        written, registered, rate, mb
                     );
                 }
+            }
+
+            // Drain remaining register-only items
+            while let Ok(reg) = reg_rx.try_recv() {
+                let file_path = thumbnails_dir.join(&reg.cached_filename);
+                let data = match std::fs::read(&file_path) {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+                let (w, h) = parse_image_dimensions(&data);
+                let variants = texture_hash::url_variants(&reg.path, &reg.art_type);
+                for url in &variants {
+                    batch.push((url.clone(), reg.cached_filename.clone(), w, h));
+                }
+                registered += 1;
             }
 
             if !batch.is_empty() {
@@ -183,8 +244,9 @@ pub async fn run(
             let elapsed = start.elapsed().as_secs_f64().max(1.0);
             let mb = bytes_total as f64 / (1024.0 * 1024.0);
             info!(
-                "image writer done: total={} rate={:.1}/s disk={:.0}MB",
+                "image writer done: total={} registered={} rate={:.1}/s disk={:.0}MB",
                 written,
+                registered,
                 written as f64 / elapsed,
                 mb
             );
@@ -195,6 +257,10 @@ pub async fn run(
     let mut dispatched = 0u64;
     let mut skipped = 0u64;
 
+    // Open texture DB for skip checks (separate connection from writer)
+    let tex_check_path = textures_db_path.clone();
+    let tex_check = tokio::task::spawn_blocking(move || texture_db::TextureDb::open(&tex_check_path)).await??;
+
     for row in &art_rows {
         let ext = row.path.rsplit('.').next().unwrap_or("jpg");
         let download_url = texture_hash::download_url(&row.path, &row.art_type);
@@ -202,6 +268,19 @@ pub async fn run(
 
         let file_path = thumbnails_dir.join(&cached_filename);
         if file_path.exists() {
+            // File exists: check if at least one URL variant is registered in the DB
+            let variants = texture_hash::url_variants(&row.path, &row.art_type);
+            let any_registered = variants.iter().any(|u| tex_check.is_cached(u));
+            if any_registered {
+                skipped += 1;
+                continue;
+            }
+            // File on disk but missing DB rows — queue for re-registration
+            let _ = reg_tx.try_send(RegisterOnly {
+                path: row.path.clone(),
+                art_type: row.art_type.clone(),
+                cached_filename: cached_filename.clone(),
+            });
             skipped += 1;
             continue;
         }
@@ -215,12 +294,22 @@ pub async fn run(
         let cf = cached_filename.clone();
         tokio::spawn(async move {
             let _permit = permit;
-            match client.get(&url).send().await {
-                Ok(resp) => {
-                    if !resp.status().is_success() {
-                        warn!("image fetch {} -> {}", url, resp.status());
+            for attempt in 0u32..3 {
+                let resp = match client.get(&url).send().await {
+                    Ok(r) => r,
+                    Err(e) if e.is_timeout() || e.is_connect() || e.is_request() => {
+                        let backoff = Duration::from_millis(500 * (1 << attempt));
+                        warn!("image transport error {}, retry {} in {:?}: {}", url, attempt + 1, backoff, e);
+                        tokio::time::sleep(backoff).await;
+                        continue;
+                    }
+                    Err(e) => {
+                        warn!("image fetch {}: {:?}", url, e);
                         return;
                     }
+                };
+                let status = resp.status();
+                if status.is_success() {
                     match resp.bytes().await {
                         Ok(bytes) => {
                             let _ = tx
@@ -234,12 +323,29 @@ pub async fn run(
                         }
                         Err(e) => warn!("image read body {}: {:?}", url, e),
                     }
+                    return;
                 }
-                Err(e) => warn!("image fetch {}: {:?}", url, e),
+                if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+                    let base_backoff = Duration::from_millis(500 * (1 << attempt));
+                    let retry_after = resp.headers().get("retry-after")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .map(Duration::from_secs);
+                    let backoff = retry_after.map_or(base_backoff, |ra| ra.max(base_backoff));
+                    warn!("image {} for {}, retry {} in {:?}", status, url, attempt + 1, backoff);
+                    tokio::time::sleep(backoff).await;
+                    continue;
+                }
+                warn!("image fetch {} -> {}", url, status);
+                return;
             }
+            warn!("image retries exhausted for {}", url);
         });
 
         dispatched += 1;
+        if dispatched.is_multiple_of(10000) {
+            info!("image dispatch progress: dispatched={} skipped={}", dispatched, skipped);
+        }
     }
 
     info!(
@@ -248,6 +354,7 @@ pub async fn run(
     );
 
     drop(tx);
+    drop(reg_tx);
     writer_handle.await??;
     Ok(())
 }
