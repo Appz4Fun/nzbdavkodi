@@ -107,5 +107,10 @@
 		<setting id="send_200_no_range" label="30151" type="bool" default="false" />
 		<setting id="cache_warning_shown" type="bool" default="false" visible="false" />
 		<setting id="cache_dialog_dismissed" type="bool" default="false" visible="false" />
+		<!-- Power-user override: nzbdav content-root path segment (default "content").
+		     Hidden because the standard nzbdav layout uses "content" and this only
+		     matters for users with a non-standard reverse-proxy mount. Read by
+		     webdav.probe_webdav_reachable. -->
+		<setting id="webdav_content_root" type="text" default="" visible="false" />
 	</category>
 </settings>

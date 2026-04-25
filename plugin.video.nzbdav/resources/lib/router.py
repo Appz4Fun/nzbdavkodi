@@ -83,8 +83,27 @@ def route(argv):
             - argv[1]: numeric handle for Kodi plugin operations (int)
             - argv[2] (optional): query string containing route parameters
     """
+    # argv length and the handle's numericness are both contractually
+    # provided by Kodi, but a misconfigured shortcut / external launcher
+    # could violate that and the unhandled IndexError / ValueError used
+    # to escape `route()` with no setResolvedUrl, hanging Kodi. Surface
+    # both as a logged early-return instead. Closes TODO.md §H.3.
+    if len(argv) < 2:
+        xbmc.log(
+            "NZB-DAV: route() called with argv shorter than 2: {!r}".format(argv),
+            xbmc.LOGERROR,
+        )
+        return
     base_url = argv[0]
-    handle = int(argv[1])
+    try:
+        handle = int(argv[1])
+    except (TypeError, ValueError):
+        xbmc.log(
+            "NZB-DAV: route() got non-numeric handle argv[1]={!r}; "
+            "skipping this invocation".format(argv[1]),
+            xbmc.LOGERROR,
+        )
+        return
     query_string = argv[2] if len(argv) > 2 else ""
 
     path = parse_route(base_url)

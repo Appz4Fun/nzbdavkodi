@@ -57,7 +57,18 @@ def install_player():
         # hijacked (symlink, environment override, Kodi mis-config) we'd
         # otherwise happily write nzbdav.json anywhere on disk.
         profile_root = xbmcvfs.translatePath("special://profile/addon_data/")
-        if not os.path.realpath(real_path).startswith(os.path.realpath(profile_root)):
+        # Use os.path.commonpath so a sibling like
+        # `/.../addon_data_evil/...` doesn't pass the prefix check just
+        # because its name happens to start with `addon_data`. Closes
+        # TODO.md §H.3.
+        real_resolved = os.path.realpath(real_path)
+        profile_resolved = os.path.realpath(profile_root)
+        try:
+            common = os.path.commonpath([real_resolved, profile_resolved])
+        except ValueError:
+            # Different drive on Windows — definitely not inside profile_root.
+            common = ""
+        if common != profile_resolved:
             xbmc.log(
                 "NZB-DAV: Refusing to install player outside addon_data "
                 "(resolved {} from {})".format(real_path, TMDBHELPER_PLAYER_PATH),

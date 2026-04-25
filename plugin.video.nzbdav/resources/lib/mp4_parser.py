@@ -123,18 +123,26 @@ def _rewrite_stco(data, body_start, body_end, delta):
 
 
 def _rewrite_co64(data, body_start, body_end, delta):
-    """Rewrite 64-bit chunk offsets in a co64 box."""
+    """Rewrite 64-bit chunk offsets in a co64 box.
+
+    Returns True on success, False if the box is structurally invalid
+    (truncated header). Mirrors the `_rewrite_stco` contract — the
+    earlier silent-success behavior meant a malformed co64 made the
+    whole rewrite report success while leaving offsets unchanged for
+    that track. Closes TODO.md §H.3.
+    """
     count_off = body_start + 4
     if count_off + 4 > body_end:
-        return
+        return False
     count = struct.unpack_from(">I", data, count_off)[0]
     entry_off = count_off + 4
     for i in range(count):
         pos = entry_off + i * 8
         if pos + 8 > body_end:
-            break
+            return False
         old = struct.unpack_from(">Q", data, pos)[0]
         struct.pack_into(">Q", data, pos, old + delta)
+    return True
 
 
 def _rewrite_offsets_recursive(data, delta):
@@ -162,7 +170,8 @@ def _rewrite_offsets_recursive(data, delta):
             if not _rewrite_stco(data, body_start, body_end, delta):
                 return False
         elif box_type == b"co64":
-            _rewrite_co64(data, body_start, body_end, delta)
+            if not _rewrite_co64(data, body_start, body_end, delta):
+                return False
         elif box_type in _CONTAINERS:
             child_data = data[body_start:body_end]
             if not _rewrite_offsets_recursive(child_data, delta):

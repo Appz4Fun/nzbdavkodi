@@ -362,15 +362,21 @@ def parse_title_metadata(title):
         raw_res = parsed.get("resolution", "") or ""
         resolution = _RESOLUTION_MAP.get(raw_res, raw_res)
 
+        # Dedup HDR / audio lists. PTT can return duplicates when a release
+        # name mentions the same token twice (e.g. "Atmos.TrueHD.Atmos");
+        # the duplicates broke combo-rank logic that uses set-membership +
+        # list-position cues (Atmos+TrueHD combo, language filter). Use a
+        # dict-as-ordered-set to preserve PTT's first-occurrence order.
+        # Closes TODO.md §H.3.
         raw_hdr = parsed.get("hdr", [])
         if isinstance(raw_hdr, str):
             raw_hdr = [raw_hdr]
-        hdr_list = [_HDR_MAP.get(h, h) for h in raw_hdr if h]
+        hdr_list = list(dict.fromkeys(_HDR_MAP.get(h, h) for h in raw_hdr if h))
 
         raw_audio = parsed.get("audio", [])
         if isinstance(raw_audio, str):
             raw_audio = [raw_audio]
-        audio_list = [_AUDIO_MAP.get(a, a) for a in raw_audio if a]
+        audio_list = list(dict.fromkeys(_AUDIO_MAP.get(a, a) for a in raw_audio if a))
 
         raw_codec = parsed.get("codec", "") or ""
         codec = _CODEC_MAP.get(raw_codec, raw_codec)
@@ -378,6 +384,7 @@ def parse_title_metadata(title):
         raw_langs = parsed.get("languages", [])
         if isinstance(raw_langs, str):
             raw_langs = [raw_langs]
+        raw_langs = list(dict.fromkeys(raw_langs))  # dedup, preserve order
 
         group = parsed.get("group", "") or ""
         quality = parsed.get("quality", "") or ""

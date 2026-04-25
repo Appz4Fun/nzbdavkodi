@@ -1085,6 +1085,22 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 xbmc.LOGDEBUG,
             )
             return total
+        except (OSError, ValueError) as exc:
+            # ffmpeg crash or its stdout pipe getting closed under us
+            # raises OSError (BadFileDescriptor) or ValueError (operation
+            # on closed file). The previous narrow catch let those escape
+            # into the request handler, leaving Kodi waiting on an open
+            # response while ffmpeg was already a zombie. Treat the same
+            # as a client disconnect for stream-cleanup purposes; the
+            # request handler's finally block will reap the proc.
+            # TODO.md §H.3 (proc.stdout.read() too narrow) + ffmpeg-
+            # mid-stream-crash scenario.
+            xbmc.log(
+                "NZB-DAV: Remux ffmpeg pipe failed after {} MB: {!r} "
+                "(reason=ffmpeg_pipe_closed)".format(total // 1048576, exc),
+                xbmc.LOGWARNING,
+            )
+            return total
 
     def _finish_remux(self, ctx, proc, lock, stderr_chunks, stderr_thread, total):
         """Tear down ffmpeg and emit completion logs for a remux request."""
@@ -3031,8 +3047,13 @@ class HlsProducer:
                 # to place them in the session directory. mpegts mode
                 # still passes absolute segment paths and tolerates
                 # either cwd, so setting cwd unconditionally is safe.
+                # stdin=DEVNULL so the child doesn't inherit the parent
+                # stdin (TODO.md §H.3 Low — "ffmpeg Popen omits
+                # stdin=DEVNULL"). Harmless on Kodi but tidies the
+                # under-a-terminal case.
                 self._proc = subprocess.Popen(
                     cmd,
+                    stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=self._ffmpeg_log,
                     shell=False,

@@ -81,5 +81,31 @@ def string(msg_id):
 
 
 def fmt(msg_id, *args, **kwargs):
-    """Format a localized string with arguments."""
-    return string(msg_id).format(*args, **kwargs)
+    """Format a localized string with arguments.
+
+    Wrapped in try/except (TODO.md §H.3): if the localized template's
+    placeholder count is wrong (e.g. translator dropped a `{1}`) or the
+    caller supplies the wrong number of args, we'd otherwise raise
+    IndexError / KeyError out of every dialog and notification site.
+    Fall back to the raw template plus a stringified arg list so the
+    user still gets something useful, and log the underlying mismatch
+    so the bad string can be fixed.
+    """
+    template = string(msg_id)
+    try:
+        return template.format(*args, **kwargs)
+    except (IndexError, KeyError, ValueError) as exc:
+        try:
+            import xbmc
+
+            xbmc.log(
+                "NZB-DAV: i18n.fmt({}) format failure ({}); "
+                "args={!r} kwargs={!r}".format(msg_id, exc, args, kwargs),
+                xbmc.LOGWARNING,
+            )
+        except Exception:  # pylint: disable=broad-except
+            pass
+        suffix = (
+            " ({})".format(", ".join(repr(a) for a in args)) if args or kwargs else ""
+        )
+        return template + suffix

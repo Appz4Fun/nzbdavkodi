@@ -3,8 +3,10 @@
 
 """Resolve flow: submit NZB to nzbdav, poll until stream is ready, play."""
 
+import socket
 import threading
 import time
+from urllib.error import URLError
 from urllib.parse import unquote
 
 import xbmc
@@ -51,6 +53,13 @@ _DB_DISCOVERY_ERRORS = (
     ValueError,
 )
 _RESOLVE_RUNTIME_ERRORS = (
+    # Network-layer exceptions that escaped earlier helpers — `socket.timeout`
+    # is a `TimeoutError` subclass on 3.10+ but a separate type on 3.8/3.9,
+    # `URLError` wraps DNS / connection-refused / unreachable, `HTTPException`
+    # covers `BadStatusLine` and friends. All three could otherwise bypass
+    # the resolver's setResolvedUrl-on-failure guarantee. TODO.md §H.3.
+    URLError,
+    socket.timeout,
     AttributeError,
     KeyError,
     OSError,
