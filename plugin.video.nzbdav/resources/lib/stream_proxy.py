@@ -461,6 +461,13 @@ def _classify_contract_mismatch(
             problems.append(
                 "Content-Range missing expected={!r}".format(expected_range)
             )
+            # Tightening this to hard=True is the RFC-strict reading
+            # but in practice it broke test fixtures and at least one
+            # real upstream that returned 206 with valid Content-Length
+            # but no Content-Range. Left as a soft (warn-logged) issue;
+            # the chunk loop's `requested = end - start + 1` clamp
+            # bounds what we actually stream, so the upside of going
+            # hard is purely diagnostic. See TODO.md §H.3.
         elif content_range != expected_range:
             problems.append(
                 "Content-Range={!r} expected={!r}".format(content_range, expected_range)
@@ -4506,8 +4513,13 @@ class StreamProxy:
                     ),
                     xbmc.LOGWARNING,
                 )
-                return None
-            if os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
+                # Fall through to the cleanup block below instead of
+                # returning early — the partial output that ffmpeg
+                # leaves on a failed remux otherwise leaks until the OS
+                # next clears tempdir. Closes TODO.md §H.3 (mkstemp
+                # leak on TimeoutExpired / SubprocessError) for the
+                # ffmpeg-non-zero-exit case in particular.
+            elif os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
                 return temp_path
         except subprocess.TimeoutExpired as e:
             # communicate() timing out does NOT kill the child. Without

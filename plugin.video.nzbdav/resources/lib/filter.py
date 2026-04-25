@@ -495,15 +495,21 @@ def matches_filters(result, meta, settings):
     ]:
         return False
 
-    if result.get("size"):
-        try:
-            size_mb = int(result["size"]) / 1048576
-        except (ValueError, TypeError):
-            size_mb = 0
-        if settings["min_size"] > 0 and size_mb < settings["min_size"]:
-            return False
-        if settings["max_size"] > 0 and size_mb > settings["max_size"]:
-            return False
+    # Size filter: a 0-byte / missing-size placeholder result used to
+    # skip both bounds because `if result.get("size"):` is falsy for
+    # "0" and "". That let unparseable / placeholder rows slip past
+    # min_size when the user wanted to filter them out. Now: reach the
+    # size check unconditionally; treat unparseable size as 0 MB so a
+    # min_size>0 filter rejects it. Closes TODO.md §H.3.
+    raw_size = result.get("size", "")
+    try:
+        size_mb = int(raw_size) / 1048576 if raw_size not in (None, "") else 0
+    except (ValueError, TypeError):
+        size_mb = 0
+    if settings["min_size"] > 0 and size_mb < settings["min_size"]:
+        return False
+    if settings["max_size"] > 0 and size_mb > settings["max_size"]:
+        return False
 
     return True
 
