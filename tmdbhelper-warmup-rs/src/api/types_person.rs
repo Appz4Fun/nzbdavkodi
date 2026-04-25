@@ -19,4 +19,19 @@ pub struct PersonResponse {
     pub images: Option<Images>,
     pub external_ids: Option<ExternalIds>,
     pub translations: Option<TranslationList>,
+    pub combined_credits: Option<CombinedCredits>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct CombinedCredits {
+    #[serde(default)]
+    pub cast: Vec<CombinedCreditEntry>,
+    #[serde(default)]
+    pub crew: Vec<CombinedCreditEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CombinedCreditEntry {
+    pub id: i64,
+    pub media_type: Option<String>,
 }

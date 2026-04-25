@@ -60,10 +60,17 @@ fn extract_children(payload: &WritePayload) -> Vec<(i64, TmdbType, f64)> {
                 for r in &rec.results { children.push((r.id, TmdbType::Tv, 0.0)); }
             }
         }
-        WritePayload::Person(_p) => {
-            // Person's combined_credits would enqueue movies/TV they appeared in.
-            // We skip this for now — the queue already has those from seeds + movie/TV discovery.
-            // Future: add combined_credits extraction if deeper crawl is needed.
+        WritePayload::Person(p) => {
+            if let Some(cc) = &p.combined_credits {
+                for entry in cc.cast.iter().chain(cc.crew.iter()) {
+                    let t = match entry.media_type.as_deref() {
+                        Some("movie") => TmdbType::Movie,
+                        Some("tv") => TmdbType::Tv,
+                        _ => continue,
+                    };
+                    children.push((entry.id, t, 0.0));
+                }
+            }
         }
         WritePayload::Collection(c) => {
             for part in &c.parts {
