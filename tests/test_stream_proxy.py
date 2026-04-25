@@ -6494,7 +6494,9 @@ def test_stream_upstream_range_warn_mode_streams_on_soft_contract_mismatch(mock_
     finally:
         sys.modules["xbmcaddon"].Addon.return_value = original
 
-    assert result == _UPSTREAM_RANGE_PROTOCOL_MISMATCH
+    from resources.lib.stream_proxy import _UPSTREAM_RANGE_OK
+
+    assert result == _UPSTREAM_RANGE_OK
     assert written == len(payload)
     assert _collect_written(handler) == payload
     logged = "\n".join(call.args[0] for call in mock_xbmc.log.call_args_list)
@@ -6545,7 +6547,9 @@ def test_stream_upstream_range_enforce_streams_soft_contract_mismatch(mock_xbmc)
     finally:
         sys.modules["xbmcaddon"].Addon.return_value = original
 
-    assert result == _UPSTREAM_RANGE_PROTOCOL_MISMATCH
+    from resources.lib.stream_proxy import _UPSTREAM_RANGE_OK
+
+    assert result == _UPSTREAM_RANGE_OK
     assert written == len(payload)
     assert _collect_written(handler) == payload
     logged = "\n".join(call.args[0] for call in mock_xbmc.log.call_args_list)

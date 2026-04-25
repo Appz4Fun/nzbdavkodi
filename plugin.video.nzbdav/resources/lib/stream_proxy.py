@@ -535,8 +535,10 @@ def _classify_contract_mismatch(
     hard = False
 
     if status != 206:
-        problems.append("status={} expected=206".format(status))
-        if not (status == 200 and is_full_object):
+        if status == 200 and is_full_object:
+            pass
+        else:
+            problems.append("status={} expected=206".format(status))
             hard = True
 
     if status == 206:
@@ -561,10 +563,12 @@ def _classify_contract_mismatch(
         and content_range not in (None, "")
         and content_range != expected_range
     ):
-        problems.append(
-            "Content-Range={!r} expected={!r}".format(content_range, expected_range)
-        )
         if not (status == 200 and is_full_object):
+            problems.append(
+                "Content-Range={!r} expected={!r}".format(
+                    content_range, expected_range
+                )
+            )
             hard = True
 
     if content_length != str(expected_length):
@@ -2800,7 +2804,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     return _UPSTREAM_RANGE_UPSTREAM_ERROR, 0
                 if not chunk:
                     if written == requested:
-                        if mismatch_detail:
+                        if mismatch_detail and hard_mismatch:
                             return _UPSTREAM_RANGE_PROTOCOL_MISMATCH, written
                         return _UPSTREAM_RANGE_OK, written
                     xbmc.log(
