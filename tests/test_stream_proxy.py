@@ -764,6 +764,45 @@ def test_prepare_stream_passthrough_mode_skips_force_remux_for_huge_mkv():
     assert "ffmpeg_path" not in ctx
 
 
+def test_prepare_stream_default_mode_uses_passthrough_when_cache_zero():
+    """When cache=0 is verified, the default large-file route should use
+    byte pass-through instead of piped Matroska so Kodi can use source Cues for
+    fast 5-minute and 15-minute seeks."""
+    import sys
+
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._context_lock = threading.Lock()
+    sp.port = 9999
+
+    huge = 58 * 1024 * 1024 * 1024
+    mock_addon = MagicMock()
+    mock_addon.getSetting.return_value = ""
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch.object(sp, "_get_content_length", return_value=huge), patch.object(
+            sp,
+            "_get_ffmpeg_capabilities",
+            return_value={"ffmpeg_path": "/usr/bin/ffmpeg", "hls_fmp4": False},
+        ) as mock_caps, patch.object(sp, "_probe_duration", return_value=8000.0), patch(
+            "resources.lib.stream_proxy.has_cache_memorysize_zero",
+            return_value=True,
+        ):
+            sp.prepare_stream("http://host/movie.mkv")
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    ctx = sp._server.stream_context
+    assert ctx["remux"] is False
+    assert ctx["content_type"] == "video/x-matroska"
+    assert ctx["content_length"] == huge
+    assert "ffmpeg_path" not in ctx
+    mock_caps.assert_not_called()
+
+
 def test_prepare_stream_passthrough_falls_back_to_matroska_when_cache_not_set():
     """force_remux_mode=2 (passthrough) BUT advancedsettings.xml cache=0
     is missing — the gate in prepare_stream detects this and falls
@@ -3181,7 +3220,46 @@ def test_hls_producer_fmp4_build_cmd_adds_delay_moov(tmp_path):
     try:
         cmd = producer._build_cmd(start_time=300.0, start_segment=10)
         movflags_idx = cmd.index("-movflags")
-        assert cmd[movflags_idx + 1] == "+delay_moov"
+        assert "+delay_moov" in cmd[movflags_idx + 1]
+    finally:
+        producer.close()
+
+
+def test_hls_producer_fmp4_build_cmd_uses_seek_stable_fragment_flags(tmp_path):
+    """fMP4 seek respawns should use timestamp and fragment flags that keep
+    init/fragment metadata stable across 5-minute and 15-minute jumps."""
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess1",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 6.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        cmd = producer._build_cmd(start_time=300.0, start_segment=50)
+        assert "-start_at_zero" in cmd
+        assert cmd[cmd.index("-avoid_negative_ts") + 1] == "make_zero"
+        assert cmd[cmd.index("-flags") + 1] == "+bitexact"
+        fflags_values = [
+            cmd[index + 1] for index, value in enumerate(cmd) if value == "-fflags"
+        ]
+        assert "+bitexact+flush_packets" in fflags_values
+
+        movflags = cmd[cmd.index("-movflags") + 1]
+        for flag in (
+            "+frag_custom",
+            "+dash",
+            "+delay_moov",
+            "+separate_moof",
+            "+default_base_moof",
+            "+omit_tfhd_offset",
+        ):
+            assert flag in movflags
     finally:
         producer.close()
 
@@ -3311,6 +3389,34 @@ def test_hls_producer_does_not_restart_on_small_forward_seek(tmp_path):
 
     mock_popen.assert_not_called()
     alive_proc.kill.assert_not_called()
+
+
+def test_hls_producer_restarts_ffmpeg_on_five_minute_forward_seek(tmp_path):
+    """With 6-second fMP4 segments, a 5-minute skip is 50 segments ahead.
+    Waiting for the existing ffmpeg to produce those segments makes seeking
+    feel stalled; the producer should respawn at the requested segment."""
+    producer = _make_producer(tmp_path, duration=7200.0, seg_dur=6.0)
+
+    alive_proc = MagicMock()
+    alive_proc.poll.return_value = None
+    producer._proc = alive_proc
+    producer._start_segment = 10
+
+    new_proc = MagicMock()
+    new_proc.poll.return_value = None
+
+    with patch(
+        "resources.lib.stream_proxy.subprocess.Popen", return_value=new_proc
+    ) as mock_popen:
+        producer.wait_for_segment(60, timeout=0.1)
+
+    alive_proc.kill.assert_called_once()
+    mock_popen.assert_called()
+    cmd = mock_popen.call_args[0][0]
+    ss_idx = cmd.index("-ss")
+    start_num_idx = cmd.index("-segment_start_number")
+    assert cmd[ss_idx + 1] == "360.000"
+    assert cmd[start_num_idx + 1] == "60"
 
 
 def test_hls_producer_preserves_init_across_respawn(tmp_path):
@@ -4691,6 +4797,38 @@ def test_serve_remux_non_seekable_no_ss():
 
     cmd = mock_popen.call_args[0][0]
     assert "-ss" not in cmd
+
+
+def test_resolve_seek_does_not_wait_for_old_ffmpeg_before_respawn():
+    """A seek should not spend up to 2 seconds waiting for the old ffmpeg to
+    reap before the replacement process can be spawned."""
+    ctx = {
+        "remote_url": "http://host/film.mp4",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "total_bytes": 1000000000,
+        "duration_seconds": 3600.0,
+        "seekable": True,
+        "remux": True,
+    }
+    active_proc = MagicMock()
+    active_proc.wait.side_effect = AssertionError("sync wait")
+    ctx["active_ffmpeg"] = active_proc
+
+    handler = _make_handler_with_server(ctx, current_byte_pos=0)
+    handler.server.active_ffmpeg = active_proc
+
+    with patch("resources.lib.stream_proxy.threading.Thread") as mock_thread:
+        thread = MagicMock()
+        mock_thread.return_value = thread
+        seek_seconds = handler._resolve_seek(ctx, 500000000, 1000000000)
+
+    assert seek_seconds == 1800.0
+    active_proc.kill.assert_called_once()
+    active_proc.wait.assert_not_called()
+    thread.start.assert_called_once()
+    assert ctx["active_ffmpeg"] is None
+    assert handler.server.active_ffmpeg is None
 
 
 # ---------------------------------------------------------------------------

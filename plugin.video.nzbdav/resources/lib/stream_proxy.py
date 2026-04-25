@@ -203,6 +203,12 @@ _REMUX_WRITE_TIMEOUT = 60
 # guide recommended default.
 _HLS_SEGMENT_SECONDS = 6.0
 
+# If an HLS segment request is more than this many segments ahead of the live
+# ffmpeg producer, restart at the requested segment instead of waiting for
+# ffmpeg to naturally catch up. With 6 s segments this keeps 5-minute and
+# 15-minute skips from waiting on dozens of intermediate segments.
+_HLS_FORWARD_WAIT_SEGMENTS = 2
+
 # Disk-backed HLS session working directory. Must be on a filesystem
 # with enough free space for the full remuxed output of any active
 # session (~5 GB per 30 minutes at typical 4K REMUX bitrates). Each
@@ -944,6 +950,25 @@ def _parse_ffmpeg_duration(stderr_text):
         + int(seconds)
         + (int(frac) / (10 ** len(frac)) if frac else 0)
     )
+
+
+def _reap_process_async(proc, label):
+    """Wait for a killed child process in the background."""
+
+    def _reap():
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            xbmc.log(
+                "NZB-DAV: {} pid={} did not exit within 2 s; "
+                "leaking to OS reap".format(label, getattr(proc, "pid", "?")),
+                xbmc.LOGWARNING,
+            )
+        except OSError:
+            pass
+
+    thread = threading.Thread(target=_reap, daemon=True)
+    thread.start()
 
 
 # Byte-offset delta used to distinguish a Kodi buffer-reconnect from a
@@ -1742,30 +1767,16 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     "active_ffmpeg", getattr(self.server, "active_ffmpeg", None)
                 )
                 if active_ffmpeg:
-                    # kill()+wait() under the session lock could block
-                    # indefinitely if ffmpeg is stuck in uninterruptible
-                    # I/O against an unresponsive upstream — every other
-                    # thread touching this session would freeze with it.
-                    # Bound the reap to 2 s; if the child is still alive
-                    # after that, log and let the OS reap later. The
-                    # subsequent CAS (below) still points the ctx/server
-                    # fields away so the next request won't double-kill.
+                    # kill() is cheap, but wait(timeout=2) under the session
+                    # lock adds visible latency to every seek. Send the signal
+                    # now, clear the tracked handle below, and reap the old
+                    # child on a daemon thread while the replacement ffmpeg
+                    # can spawn immediately.
                     try:
                         active_ffmpeg.kill()
                     except OSError:
                         pass
-                    try:
-                        active_ffmpeg.wait(timeout=2)
-                    except subprocess.TimeoutExpired:
-                        xbmc.log(
-                            "NZB-DAV: Seek-kill ffmpeg pid={} did not exit "
-                            "within 2 s; leaking to OS reap".format(
-                                getattr(active_ffmpeg, "pid", "?")
-                            ),
-                            xbmc.LOGWARNING,
-                        )
-                    except OSError:
-                        pass
+                    _reap_process_async(active_ffmpeg, "Seek-kill ffmpeg")
                     # Compare-and-swap on BOTH storage locations. The prior
                     # unconditional ``= None`` assignments raced with a
                     # concurrent _start_remux_process on another handler
@@ -3168,10 +3179,10 @@ class HlsProducer:
                 # before that means the user seeked backward.
                 if seg_n < self._start_segment:
                     need_restart = True
-                elif seg_n - self._start_segment > 60:
-                    # Very far forward: a 30-minute jump while ffmpeg is
-                    # near the beginning. Cheaper to restart at the
-                    # target than to stream through.
+                elif seg_n - self._start_segment > _HLS_FORWARD_WAIT_SEGMENTS:
+                    # Forward seek beyond the near-future buffer window.
+                    # Cheaper to restart at the target than to make Kodi wait
+                    # while ffmpeg writes every intermediate segment.
                     need_restart = True
 
             if not need_restart:
@@ -3408,13 +3419,33 @@ class HlsProducer:
             # Machinist (TrueHD) — failed without -strict, succeeded
             # with it.
             cmd.extend(["-strict", "-2"])
-            # ``-movflags +delay_moov`` defers moov-box generation until
-            # the muxer has seen at least one frame from every track. On
-            # AC-3-backed seek respawns (start_time>0, start_segment>0)
-            # ffmpeg can otherwise refuse with
-            # "Cannot write moov atom before AC3 packets" and produce
-            # zero-byte init/segment files, killing the seek silently.
-            cmd.extend(["-movflags", "+delay_moov"])
+            # Timestamp and fragment flags for seek-respawn stability:
+            # -start_at_zero pairs with -copyts so seeked output starts from
+            # a deterministic timeline, while avoid_negative_ts prevents
+            # pre-roll from surfacing as negative fragment timestamps.
+            # bitexact strips volatile muxer metadata, and the CMAF-style
+            # movflags keep fragments self-relative across respawns. Do not
+            # enable hls delete_segments here; this proxy owns segment
+            # retention and may serve recently-produced files during a
+            # reconnect or backward seek.
+            cmd.extend(
+                [
+                    "-start_at_zero",
+                    "-avoid_negative_ts",
+                    "make_zero",
+                    "-fflags",
+                    "+bitexact+flush_packets",
+                    "-flags",
+                    "+bitexact",
+                ]
+            )
+            cmd.extend(
+                [
+                    "-movflags",
+                    "+frag_custom+dash+delay_moov+separate_moof"
+                    "+default_base_moof+omit_tfhd_offset",
+                ]
+            )
             # Force the HLS-spec sample entry tag on the video track.
             # fMP4 HLS mandates ``hvc1`` for HEVC (parameter sets in the
             # sample description box, not inband), and Amlogic's HLS
@@ -3440,7 +3471,7 @@ class HlsProducer:
                     "-hls_playlist_type",
                     "vod",
                     "-hls_flags",
-                    "independent_segments",
+                    "independent_segments+omit_endlist",
                     "-start_number",
                     str(start_segment),
                     playlist_path,
@@ -4238,25 +4269,23 @@ class StreamProxy:
             content_length = self._get_content_length(remote_url, auth_header)
             threshold = _get_force_remux_threshold_bytes()
             needs_remux = bool(threshold) and content_length >= threshold
-            if needs_remux and _get_force_remux_mode() == "passthrough":
-                # User opted out of force-remux: serve WebDAV bytes directly
-                # with full Content-Length + Accept-Ranges via _serve_proxy.
-                # Only safe on 32-bit Kodi when CFileCache is bypassed
-                # (advancedsettings.xml: <cache><memorysize>0</memorysize>
-                # </cache>) — otherwise large MKVs trip the uint32
-                # seek-delta truncation in FileCache.cpp:375. Gate on the
-                # probe so a misconfigured user can't shoot themselves in
-                # the foot: if cache=0 is missing, fall through to the
-                # matroska remux path regardless of the setting.
-                if has_cache_memorysize_zero():
+            force_mode = _get_force_remux_mode()
+            if needs_remux:
+                cache_zero = has_cache_memorysize_zero()
+                if cache_zero and force_mode in ("matroska", "passthrough"):
                     xbmc.log(
-                        "NZB-DAV: force_remux_mode=passthrough -- skipping "
-                        "force-remux for {}B file (advancedsettings.xml "
-                        "cache=0 confirmed)".format(content_length),
+                        "NZB-DAV: advancedsettings.xml cache=0 confirmed; "
+                        "using pass-through for {}B file (force_remux_mode={})".format(
+                            content_length, force_mode
+                        ),
                         xbmc.LOGINFO,
                     )
                     needs_remux = False
-                else:
+                elif force_mode == "passthrough":
+                    # User opted out of force-remux, but pass-through is only
+                    # safe on 32-bit Kodi when CFileCache is bypassed. Fall
+                    # through to Matroska rather than exposing a large
+                    # Content-Length to Kodi's uint32 seek-delta bug.
                     xbmc.log(
                         "NZB-DAV: force_remux_mode=passthrough requested but "
                         "advancedsettings.xml <cache><memorysize>0</memorysize>"
@@ -4288,14 +4317,12 @@ class StreamProxy:
                 #   Kodi is unproven in the field.
                 duration = self._probe_duration(ffmpeg_path, remote_url, auth_header)
                 use_fmp4 = (
-                    _get_force_remux_mode() == "hls_fmp4"
+                    force_mode == "hls_fmp4"
                     and ffmpeg_caps.get("hls_fmp4", False)
                     and duration is not None
                     and duration > 0
                 )
-                if _get_force_remux_mode() == "hls_fmp4" and not ffmpeg_caps.get(
-                    "hls_fmp4", False
-                ):
+                if force_mode == "hls_fmp4" and not ffmpeg_caps.get("hls_fmp4", False):
                     xbmc.log(
                         "NZB-DAV: ffmpeg lacks required fmp4 HLS flags; "
                         "falling back to piped Matroska",
