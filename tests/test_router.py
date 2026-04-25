@@ -226,7 +226,8 @@ def test_route_dispatches_to_install_player(mock_install):
 # test_hydra, test_nzbdav, resolve) are invoked from main-menu items with
 # isFolder=False. Kodi blocks the UI until setResolvedUrl is called on the
 # handle. These tests assert the route path always resolves the handle so
-# Kodi never hangs. Regression test for ISSUE_REPORT.md C1.
+# Kodi never hangs. Regression test for TODO.md §H.2 C1 (was ISSUE_REPORT.md
+# C1 before audit-file merge on 2026-04-24).
 
 
 @patch("xbmcplugin.setResolvedUrl")

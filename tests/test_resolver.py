@@ -305,7 +305,7 @@ def test_clear_kodi_playback_state_deletes_tmdb_helper_url(mock_xbmc, tmp_path):
 
     Only ``bookmark`` rows are removed; the ``files`` rows themselves must
     stay intact so the mutation to Kodi's primary DB is as narrow as
-    possible. Regression test for ISSUE_REPORT.md C5.
+    possible. Regression test for TODO.md §H.2 C5 (was ISSUE_REPORT.md C5 before merge).
     """
     import sqlite3
 
@@ -376,7 +376,7 @@ def test_clear_kodi_playback_state_deletes_own_plugin_url(mock_xbmc, tmp_path):
     """Clearing without tmdb_id deletes the bookmark for our own plugin URL.
 
     The ``files`` row is preserved; only the ``bookmark`` row is removed.
-    Regression test for ISSUE_REPORT.md C5.
+    Regression test for TODO.md §H.2 C5 (was ISSUE_REPORT.md C5 before merge).
     """
     import sqlite3
 
@@ -433,7 +433,8 @@ def test_clear_kodi_playback_state_escapes_like_wildcards(mock_xbmc, tmp_path):
     """tmdb_id containing LIKE wildcards must not match unrelated rows.
 
     A raw LIKE pattern with % or _ in user-controlled tmdb_id would match
-    arbitrary TMDBHelper rows. Regression test for ISSUE_REPORT.md M5 / C5.
+    arbitrary TMDBHelper rows. Regression test for TODO.md §H.2 M5 / C5
+    (was ISSUE_REPORT.md M5 / C5 before audit-file merge on 2026-04-24).
     """
     import sqlite3
 
