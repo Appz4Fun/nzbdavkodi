@@ -4,6 +4,7 @@
 from unittest.mock import MagicMock, patch
 
 from resources.lib.results_dialog import (
+    _AVAILABLE_LABEL,
     _format_date,
     _format_size,
     _lang_short,
@@ -29,6 +30,11 @@ def _make_result(**overrides):
     }
     base.update(overrides)
     return base
+
+
+def test_available_label_is_ascii_for_skin_compatibility():
+    assert _AVAILABLE_LABEL == "DL"
+    assert _AVAILABLE_LABEL.isascii()
 
 
 # ---------------------------------------------------------------------------

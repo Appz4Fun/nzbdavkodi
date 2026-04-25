@@ -46,6 +46,7 @@ def _c(text, color):
 # Row backgrounds for alternating stripes
 _BG_A = "FF0C0C10"
 _BG_B = "FF141417"
+_AVAILABLE_LABEL = "DL"
 
 ACTION_SELECT = 7
 ACTION_PREVIOUS_MENU = 10
@@ -138,7 +139,7 @@ class ResultsDialog(xbmcgui.WindowXMLDialog):
 
             # Already downloaded indicator
             if result.get("_available"):
-                li.setProperty("available", _c("\u26a1", "FF00FF88"))
+                li.setProperty("available", _c(_AVAILABLE_LABEL, "FF00FF88"))
 
             # Alternating row background
             li.setProperty("row_bg", _BG_A if i % 2 == 0 else _BG_B)

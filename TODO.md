@@ -1474,18 +1474,9 @@ Most of the original seven findings closed: `clear_sessions` does snapshot-then-
 ##### L26. Hardcoded English in retry `notify()` calls
 **File:** `playback_monitor.py:88-92`, `155-157`
 
-##### L27. `http_get` no status check; non-UTF-8 raises `UnicodeDecodeError`
-**File:** `http_util.py:24-26`
-
-##### L28. No User-Agent; some Cloudflare-protected upstreams 403 `Python-urllib/...`
-**File:** `http_util.py:24`
-
 ##### L30. Second `xbmc.Monitor()` instance unnecessary
 **File:** `service.py:78`
 
-
-##### L32. Unicode lightning bolt without fallback — may not render on all Kodi skins
-**File:** `results_dialog.py:141`
 
 ##### L36. Playlist cleared after `setResolvedUrl` — could interfere with queued items
 **File:** `resolver.py:662-663`, `679-680`, `684-685`

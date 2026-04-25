@@ -20,6 +20,49 @@ def test_http_get_returns_decoded_response(mock_urlopen):
 
 
 @patch("resources.lib.http_util.urlopen")
+def test_http_get_sends_user_agent(mock_urlopen):
+    """http_get should identify itself instead of using urllib's default UA."""
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = b"ok"
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    mock_urlopen.return_value = mock_resp
+
+    http_get("http://example.com/api")
+
+    request = mock_urlopen.call_args[0][0]
+    assert request.get_header("User-agent") == "NZB-DAV Kodi Addon"
+
+
+@patch("resources.lib.http_util.urlopen")
+def test_http_get_rejects_non_success_status_without_http_error(mock_urlopen):
+    """If a custom opener returns a response object for 5xx, reject it."""
+    import pytest
+
+    mock_resp = MagicMock()
+    mock_resp.getcode.return_value = 503
+    mock_resp.read.return_value = b"unavailable"
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    mock_urlopen.return_value = mock_resp
+
+    with pytest.raises(OSError, match="HTTP status 503"):
+        http_get("http://example.com/api")
+
+
+@patch("resources.lib.http_util.urlopen")
+def test_http_get_replaces_invalid_utf8(mock_urlopen):
+    """Bad upstream bytes should not escape as UnicodeDecodeError."""
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = b"ok\xff"
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    mock_urlopen.return_value = mock_resp
+
+    assert http_get("http://example.com/api") == "ok\ufffd"
+
+
+@patch("resources.lib.http_util.urlopen")
 def test_http_get_passes_timeout(mock_urlopen):
     """http_get should forward the timeout argument to urlopen."""
     mock_resp = MagicMock()
