@@ -42,8 +42,9 @@ impl StateDb {
             .with_context(|| format!("open state {}", path.display()))?;
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
-             PRAGMA synchronous=NORMAL;
-             PRAGMA busy_timeout=10000;",
+             PRAGMA synchronous=OFF;
+             PRAGMA busy_timeout=120000;
+             PRAGMA cache_size=-65536;",
         )?;
         Ok(Self { conn })
     }
