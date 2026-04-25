@@ -1180,7 +1180,12 @@ def _poll_until_ready(nzb_url, title, dialog, poll_interval, download_timeout):
         ),
         xbmc.LOGINFO,
     )
-    start_time = time.time()
+    # Monotonic clock for elapsed-time tracking — wall-clock NTP jumps
+    # would otherwise either prematurely abort the poll loop (backward
+    # jump) or stretch the configured download_timeout indefinitely
+    # (forward jump). Initial submit timestamp stays on time.time() above
+    # since it's logged for human consumption, not arithmetic.
+    start_time = time.monotonic()
     last_status = None
     iteration = 0
     no_video_retries = 0
@@ -1188,7 +1193,7 @@ def _poll_until_ready(nzb_url, title, dialog, poll_interval, download_timeout):
 
     while True:
         iteration += 1
-        elapsed = time.time() - start_time
+        elapsed = time.monotonic() - start_time
         if _abort_poll_before_fetch(
             iteration, elapsed, download_timeout, dialog, nzo_id, title
         ):

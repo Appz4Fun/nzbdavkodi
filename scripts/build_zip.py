@@ -12,12 +12,31 @@ import zipfile
 def build_zip(addon_dir="plugin.video.nzbdav", output_dir="."):
     addon_id = os.path.basename(addon_dir)
 
-    # Read version from addon.xml for versioned zip filename
+    # Read version from addon.xml for versioned zip filename. Surface
+    # actionable errors instead of letting the raw ET / KeyError stack
+    # trace escape — these are the two failure modes that actually happen
+    # in practice (mistyped path, in-progress addon.xml edit).
     import xml.etree.ElementTree as ET
 
     addon_xml_path = os.path.join(addon_dir, "addon.xml")
-    tree = ET.parse(addon_xml_path)  # nosec B314 — parsing our own addon.xml
-    version = tree.getroot().attrib["version"]
+    if not os.path.isfile(addon_xml_path):
+        raise SystemExit(
+            "build_zip: addon.xml not found at {!r}; "
+            "is the addon_dir argument correct?".format(addon_xml_path)
+        )
+    try:
+        tree = ET.parse(addon_xml_path)  # nosec B314 — parsing our own addon.xml
+    except ET.ParseError as exc:
+        raise SystemExit(
+            "build_zip: failed to parse {!r}: {}".format(addon_xml_path, exc)
+        )
+    root = tree.getroot()
+    version = root.attrib.get("version")
+    if not version:
+        raise SystemExit(
+            "build_zip: {!r} has no `version` attribute on the root "
+            "<addon> element; can't build a versioned zip name.".format(addon_xml_path)
+        )
     zip_path = os.path.join(output_dir, "{}-{}.zip".format(addon_id, version))
 
     skip_dirs = {"__pycache__", ".pytest_cache"}

@@ -22,6 +22,13 @@ jobs:
     timeout-minutes: 10
     strategy:
       matrix:
+        # The addon's runtime floor is Python 3.8 (CoreELEC ARM64), but the
+        # test toolchain requires pytest>=9.0.3 to clear GHSA-6w46-j5rx-g56g,
+        # which dropped support for 3.8/3.9. The 3.8 syntax surface is
+        # validated by the separate `pylint.yml` workflow (it runs pylint on
+        # every .py file under Python 3.8, so walrus / match / removeprefix
+        # regressions get caught there). The 3.10 entry here is the lowest
+        # version pytest 9 supports; 3.12 is the released-stable target.
         python-version: ["3.10", "3.12"]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

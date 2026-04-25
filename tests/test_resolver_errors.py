@@ -34,7 +34,19 @@ def test_resolve_times_out_gracefully(resolver_mocks):
     resolver_mocks.history.return_value = None
     resolver_mocks.probe.return_value = (False, "connection_error")
     # Override the pinned time so the timeout branch actually fires.
+    # resolver uses time.monotonic for elapsed; first call is the poll
+    # start and returns 0.0, subsequent calls return 6.0 to push elapsed
+    # past the 5 s timeout. A fixed list exhausts because submit helpers
+    # also call monotonic.
     resolver_mocks.time.time.side_effect = [0.0, 6.0]
+
+    _mono_calls = [0]
+
+    def _fake_monotonic():
+        _mono_calls[0] += 1
+        return 0.0 if _mono_calls[0] <= 1 else 6.0
+
+    resolver_mocks.time.monotonic.side_effect = _fake_monotonic
 
     resolve(1, {"nzburl": "http://hydra/getnzb/timeout", "title": "timeout.mkv"})
 

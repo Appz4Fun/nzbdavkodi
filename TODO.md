@@ -1251,11 +1251,11 @@ Grep targets. Counts matter more than details.
 |---|---|---|
 | session count | `Stream summary` | how many streams happened |
 | bytes zero-filled | `zero_fill_bytes=` | per-session recovery volume |
-| reason code mix | `reason=` | `UPSTREAM_OPEN_TIMEOUT` vs `SHORT_BODY` vs `PROTOCOL_MISMATCH` vs `BUDGET_EXHAUSTED` |
-| strict-contract `warn` lines | `strict_contract warn` | would-have-been-rejected count at `warn` setting |
-| density breaker would-trip | `density_would_trip` | dry-run count (breaker is OFF by default) |
+| reason code mix | `reason=` | `upstream_open_failed` vs `short_read_recoverable` vs `protocol_mismatch` vs `session_zero_fill_budget_exceeded` vs `recovery_exhausted` vs `density_breaker_tripped` vs `client_disconnected` (see `stream_proxy.py` `reason=` log lines for the canonical taxonomy) |
+| strict-contract warn lines | `strict_contract_mismatch` | logged-but-tolerated mismatch count |
+| density breaker trips | `density_breaker_tripped` | terminal-line count when the breaker fires |
 
-Note: if those exact log tokens don't exist in the PR-1 code, adjust greps to match actual format. The principle is one-line grep + daily count.
+Tokens above are the actual lowercase strings emitted by the proxy.
 
 #### F.3.4 Analysis after 7 days
 

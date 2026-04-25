@@ -142,6 +142,11 @@ def resolver_mocks():
 
         poll_mock.return_value = (1, 60)
         time_mock.time.return_value = 0.0
+        # resolver._poll_until_ready uses time.monotonic for elapsed-time
+        # tracking. Default to 0.0 so tests that don't override it stay
+        # below the timeout; tests that need a stale clock override
+        # `resolver_mocks.time.monotonic.side_effect`.
+        time_mock.monotonic.return_value = 0.0
 
         yield SimpleNamespace(
             xbmc=xbmc_mock,

@@ -351,37 +351,73 @@ def parse_title_metadata(title):
         if fallback.get("resolution") or fallback.get("codec"):
             parsed = fallback
 
-    raw_res = parsed.get("resolution", "") or ""
-    resolution = _RESOLUTION_MAP.get(raw_res, raw_res)
+    # The normalization block below assumes PTT returned typed data
+    # matching its documented contract: strings for resolution/codec/group/
+    # year, lists (or strings) for hdr/audio/languages/channels. If the
+    # vendored PTT drifts from that contract (or a custom transformer
+    # returns e.g. a dict for hdr), the comprehensions below explode with
+    # TypeError. Catch that so a single bad release name doesn't kill the
+    # whole search; fall back to the regex-only metadata extractor.
+    try:
+        raw_res = parsed.get("resolution", "") or ""
+        resolution = _RESOLUTION_MAP.get(raw_res, raw_res)
 
-    raw_hdr = parsed.get("hdr", [])
-    if isinstance(raw_hdr, str):
-        raw_hdr = [raw_hdr]
-    hdr_list = [_HDR_MAP.get(h, h) for h in raw_hdr if h]
+        raw_hdr = parsed.get("hdr", [])
+        if isinstance(raw_hdr, str):
+            raw_hdr = [raw_hdr]
+        hdr_list = [_HDR_MAP.get(h, h) for h in raw_hdr if h]
 
-    raw_audio = parsed.get("audio", [])
-    if isinstance(raw_audio, str):
-        raw_audio = [raw_audio]
-    audio_list = [_AUDIO_MAP.get(a, a) for a in raw_audio if a]
+        raw_audio = parsed.get("audio", [])
+        if isinstance(raw_audio, str):
+            raw_audio = [raw_audio]
+        audio_list = [_AUDIO_MAP.get(a, a) for a in raw_audio if a]
 
-    raw_codec = parsed.get("codec", "") or ""
-    codec = _CODEC_MAP.get(raw_codec, raw_codec)
+        raw_codec = parsed.get("codec", "") or ""
+        codec = _CODEC_MAP.get(raw_codec, raw_codec)
 
-    raw_langs = parsed.get("languages", [])
-    if isinstance(raw_langs, str):
-        raw_langs = [raw_langs]
+        raw_langs = parsed.get("languages", [])
+        if isinstance(raw_langs, str):
+            raw_langs = [raw_langs]
 
-    group = parsed.get("group", "") or ""
-    quality = parsed.get("quality", "") or ""
-    edition = parsed.get("edition", "") or ""
-    year = parsed.get("year", 0) or 0
-    upscaled = bool(parsed.get("upscaled", False))
-    container = parsed.get("container", "") or ""
+        group = parsed.get("group", "") or ""
+        quality = parsed.get("quality", "") or ""
+        edition = parsed.get("edition", "") or ""
+        year = parsed.get("year", 0) or 0
+        upscaled = bool(parsed.get("upscaled", False))
+        container = parsed.get("container", "") or ""
 
-    raw_channels = parsed.get("channels", [])
-    if isinstance(raw_channels, str):
-        raw_channels = [raw_channels]
-    channels = raw_channels[0] if raw_channels else ""
+        raw_channels = parsed.get("channels", [])
+        if isinstance(raw_channels, str):
+            raw_channels = [raw_channels]
+        channels = raw_channels[0] if raw_channels else ""
+    except (TypeError, AttributeError, KeyError) as e:
+        xbmc.log(
+            "NZB-DAV: PTT metadata normalisation failed for '{}': {}; "
+            "falling back to regex parse".format(title, e),
+            xbmc.LOGWARNING,
+        )
+        parsed = _fallback_parse(title)
+        raw_res = parsed.get("resolution", "") or ""
+        resolution = _RESOLUTION_MAP.get(raw_res, raw_res)
+        raw_hdr = parsed.get("hdr", []) or []
+        if isinstance(raw_hdr, str):
+            raw_hdr = [raw_hdr]
+        hdr_list = [_HDR_MAP.get(h, h) for h in raw_hdr if isinstance(h, str)]
+        raw_audio = parsed.get("audio", []) or []
+        if isinstance(raw_audio, str):
+            raw_audio = [raw_audio]
+        audio_list = [_AUDIO_MAP.get(a, a) for a in raw_audio if isinstance(a, str)]
+        codec = _CODEC_MAP.get(parsed.get("codec", ""), parsed.get("codec", ""))
+        raw_langs = parsed.get("languages", []) or []
+        if isinstance(raw_langs, str):
+            raw_langs = [raw_langs]
+        group = parsed.get("group", "") or ""
+        quality = parsed.get("quality", "") or ""
+        edition = parsed.get("edition", "") or ""
+        year = parsed.get("year", 0) or 0
+        upscaled = bool(parsed.get("upscaled", False))
+        container = parsed.get("container", "") or ""
+        channels = ""
 
     return {
         "resolution": resolution,

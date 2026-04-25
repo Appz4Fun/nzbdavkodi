@@ -844,6 +844,17 @@ def test_resolve_timeout(
 
     # Simulate time passing beyond timeout
     mock_time.time.side_effect = [0.0, 10.0]
+    # _poll_until_ready uses time.monotonic for elapsed-time tracking;
+    # `_submit_nzb_with_ui_pump` and other helpers also call monotonic, so
+    # a fixed side_effect list exhausts. First call returns 0.0 (poll
+    # start), subsequent calls return 10.0 to force the timeout branch.
+    _mono_calls = [0]
+
+    def _fake_monotonic():
+        _mono_calls[0] += 1
+        return 0.0 if _mono_calls[0] <= 1 else 10.0
+
+    mock_time.monotonic.side_effect = _fake_monotonic
 
     resolve(1, {"nzburl": "http://hydra/getnzb/abc", "title": "movie.mkv"})
 
@@ -1288,6 +1299,17 @@ def test_poll_until_ready_timeout(
     mock_status.return_value = {"status": "Downloading", "percentage": "10"}
     mock_xbmc.Monitor.return_value = _make_monitor()
     mock_time.time.side_effect = [0.0, 10.0]
+    # _poll_until_ready uses time.monotonic for elapsed-time tracking;
+    # `_submit_nzb_with_ui_pump` and other helpers also call monotonic, so
+    # a fixed side_effect list exhausts. First call returns 0.0 (poll
+    # start), subsequent calls return 10.0 to force the timeout branch.
+    _mono_calls = [0]
+
+    def _fake_monotonic():
+        _mono_calls[0] += 1
+        return 0.0 if _mono_calls[0] <= 1 else 10.0
+
+    mock_time.monotonic.side_effect = _fake_monotonic
 
     url, headers = _poll_until_ready("http://hydra/nzb", "movie", _make_dialog(), 2, 5)
 
@@ -1551,7 +1573,19 @@ def test_poll_until_ready_cleanup_on_timeout(
     cancel_job(nzo_id) before returning."""
     mock_status.return_value = {"status": "Downloading", "percentage": "10"}
     mock_xbmc.Monitor.return_value = _make_monitor()
-    mock_time.time.side_effect = [0.0, 700.0]  # forces elapsed >= 600s timeout
+    mock_time.time.side_effect = [0.0, 700.0]  # wall-clock log timestamp
+
+    # resolver uses time.monotonic for elapsed; first call returns 0.0
+    # (poll start), subsequent calls return 700.0 to force the timeout
+    # branch. A fixed side_effect list exhausts because submit helpers
+    # also call monotonic.
+    _mono_calls = [0]
+
+    def _fake_monotonic():
+        _mono_calls[0] += 1
+        return 0.0 if _mono_calls[0] <= 1 else 700.0
+
+    mock_time.monotonic.side_effect = _fake_monotonic
 
     url, headers = _poll_until_ready(
         "http://hydra/nzb", "movie", _make_dialog(), 2, 600

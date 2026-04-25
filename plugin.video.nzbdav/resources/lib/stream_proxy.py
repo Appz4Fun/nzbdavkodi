@@ -2478,7 +2478,10 @@ class _StreamHandler(BaseHTTPRequestHandler):
             )
             return None
 
-        start_time = time.time()
+        # Use monotonic for elapsed-time tracking — wall-clock NTP jumps
+        # would otherwise either prematurely abort recovery (backward
+        # jump) or stretch the deadline indefinitely (forward jump).
+        start_time = time.monotonic()
         for skip in _SKIP_PROBE_SIZES:
             target = failed_byte + skip
             if target > range_end:
@@ -2487,7 +2490,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
 
             delays = (0,) + _PROBE_RETRY_DELAYS
             for delay in delays:
-                if time.time() - start_time >= _MAX_RECOVERY_SECONDS:
+                if time.monotonic() - start_time >= _MAX_RECOVERY_SECONDS:
                     return None
                 if delay:
                     time.sleep(delay)
@@ -2516,7 +2519,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
                                     xbmc.LOGWARNING,
                                 )
                                 continue
-                            elapsed = time.time() - start_time
+                            elapsed = time.monotonic() - start_time
                             xbmc.log(
                                 "NZB-DAV: Probe succeeded at +{} bytes after "
                                 "{:.1f}s".format(skip, elapsed),
@@ -2685,6 +2688,12 @@ class HlsProducer:
         can make this return True while the new seg_n is still
         being written.
         """
+        # Snapshot _spawn_time under the lock so a concurrent respawn
+        # can't update it between our two checks below. The atomic
+        # getattr-after-lock pattern guarantees we compare every mtime
+        # against a single consistent generation boundary.
+        with self._lock:
+            spawn_time = self._spawn_time
         path = self.segment_path(seg_n)
         if not os.path.exists(path):
             return False
@@ -2698,7 +2707,7 @@ class HlsProducer:
                 except OSError:
                     pass
                 else:
-                    if next_mtime < self._spawn_time:
+                    if next_mtime < spawn_time:
                         # Stale segment from a prior generation —
                         # ignore it and fall through to mtime check.
                         pass
@@ -2723,7 +2732,7 @@ class HlsProducer:
         # demuxer either glitches or stalls when it tries to splice
         # them. The "next segment exists" branch above already has
         # this guard; this is the matching guard for the mtime path.
-        if self.segment_format == "fmp4" and mtime < self._spawn_time:
+        if self.segment_format == "fmp4" and mtime < spawn_time:
             return False
         if (time.time() - mtime) * 1000.0 > _HLS_SEGMENT_MTIME_STABLE_MS:
             return True
@@ -4259,11 +4268,19 @@ class StreamProxy:
                     input_url,
                 ]
             )
+            # text=True + explicit utf-8 + errors="replace" decodes ffprobe
+            # output upfront instead of relying on the after-the-fact
+            # `.decode(errors="replace")` further down. Same effect on the
+            # happy path, but invalid byte sequences are handled at the
+            # subprocess seam rather than leaving raw bytes lying around.
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 shell=False,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
             )
             try:
                 stdout, _ = proc.communicate(timeout=30)
@@ -4274,7 +4291,7 @@ class StreamProxy:
                 return None
             if proc.returncode != 0:
                 return None
-            text = stdout.decode(errors="replace").strip()
+            text = stdout.strip() if stdout else ""
             if not text:
                 return None
             try:
