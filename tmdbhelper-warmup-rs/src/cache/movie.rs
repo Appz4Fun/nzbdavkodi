@@ -101,9 +101,10 @@ pub fn write_movie(conn: &mut Connection, m: &MovieResponse) -> Result<()> {
         params![m.id.to_string(), &item_id],
     )?;
 
-    // 11. videos (trailers etc)
+    // 11. videos (trailers etc) — TMDBHelper filters to YouTube only (mappings.py:607)
     if let Some(vlist) = &m.videos {
         for v in &vlist.results {
+            if v.site != "YouTube" { continue; }
             let path = format!("plugin://plugin.video.youtube/play/?video_id={}", v.key);
             tx.execute(
                 "INSERT OR IGNORE INTO video (name, iso_country, iso_language, release_date, key, path, content, parent_id)
@@ -147,15 +148,22 @@ pub fn write_movie(conn: &mut Connection, m: &MovieResponse) -> Result<()> {
         }
     }
 
-    // 14. watch providers (all countries — TMDBHelper's behavior is region-filtered, but we store all)
+    // 14. watch providers — availability column reflects the actual kind so TMDBHelper's
+    // "Where to watch" UI distinguishes streaming (flatrate) from buy/rent/free/ads.
     if let Some(wpr) = &m.watch_providers {
         for (country, providers) in &wpr.results {
-            for kind in [&providers.flatrate, &providers.buy, &providers.rent, &providers.free, &providers.ads] {
+            for (kind_name, kind) in [
+                ("flatrate", &providers.flatrate),
+                ("buy", &providers.buy),
+                ("rent", &providers.rent),
+                ("free", &providers.free),
+                ("ads", &providers.ads),
+            ] {
                 for p in kind.iter() {
                     dimensions::upsert_service(&tx, p.provider_id, &p.provider_name, p.logo_path.as_deref(), p.display_priority)?;
                     tx.execute(
                         "INSERT OR IGNORE INTO provider (tmdb_id, availability, iso_country, parent_id) VALUES (?1, ?2, ?3, ?4)",
-                        params![p.provider_id, "flatrate", country, &item_id],
+                        params![p.provider_id, kind_name, country, &item_id],
                     )?;
                 }
             }
