@@ -18,10 +18,11 @@ test-verbose:
 test-integration:
     python3 -m pytest tests/ -v --tb=long -m integration
 
-# Lint the codebase
+# Lint the codebase (matches GitHub CI: ruff + black + pylint)
 lint:
     ruff check plugin.video.nzbdav/ tests/ --exclude="plugin.video.nzbdav/resources/lib/ptt/"
     black --check plugin.video.nzbdav/ tests/ --exclude="ptt/"
+    pylint $(git ls-files '*.py')
 
 # Auto-fix lint issues
 lint-fix:

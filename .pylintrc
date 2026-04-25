@@ -1,4 +1,9 @@
 [MAIN]
+# Enforce Python 3.8 rules even when pylint runs on a newer interpreter.
+# CI runs pylint under Python 3.8 directly; this lets `just lint` catch
+# the same syntax-floor issues (walrus, match, str.removeprefix) on a
+# developer's modern Python without needing a separate 3.8 install.
+py-version=3.8
 # Ignore vendored PTT library + local dev scripts (on-device smoke test
 # helpers, throwaway repro scripts) that aren't part of the shipped addon.
 ignore-paths=
