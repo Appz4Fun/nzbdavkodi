@@ -22,10 +22,10 @@ pub struct WriteJob {
 }
 
 pub enum WritePayload {
-    Movie(MovieResponse),
-    Tv(TvResponse),
-    Person(PersonResponse),
-    Collection(CollectionResponse),
+    Movie(Box<MovieResponse>),
+    Tv(Box<TvResponse>),
+    Person(Box<PersonResponse>),
+    Collection(Box<CollectionResponse>),
 }
 
 /// Extract child (tmdb_id, type, popularity) tuples from a fetched response.
@@ -100,17 +100,18 @@ pub async fn run(
             let mut total_write_ms = 0u64;
             let mut total_state_ms = 0u64;
 
+            // Block on first item, then eagerly drain up to MEGA_TX_SIZE.
+            // Clippy suggests while_let but that misses the try_recv fill-up.
+            #[allow(clippy::while_let_loop)]
             loop {
-                // Drain the channel into a batch
                 match rx.blocking_recv() {
                     Some(job) => batch.push(job),
-                    None => break, // channel closed
+                    None => break,
                 }
-                // Try to fill the batch without blocking
                 while batch.len() < MEGA_TX_SIZE {
                     match rx.try_recv() {
                         Ok(job) => batch.push(job),
-                        Err(_) => break, // channel empty or closed
+                        Err(_) => break,
                     }
                 }
 
@@ -121,10 +122,10 @@ pub async fn run(
                 for job in &batch {
                     let ti = std::time::Instant::now();
                     let (idx, res) = match &job.payload {
-                        WritePayload::Movie(m) => (0, movie::write_movie(&tx, m)),
-                        WritePayload::Tv(t) => (1, tv::write_tv(&tx, t)),
-                        WritePayload::Person(p) => (2, person::write_person(&tx, p)),
-                        WritePayload::Collection(c) => (3, collection::write_collection(&tx, c)),
+                        WritePayload::Movie(m) => (0, movie::write_movie(&tx, m.as_ref())),
+                        WritePayload::Tv(t) => (1, tv::write_tv(&tx, t.as_ref())),
+                        WritePayload::Person(p) => (2, person::write_person(&tx, p.as_ref())),
+                        WritePayload::Collection(c) => (3, collection::write_collection(&tx, c.as_ref())),
                     };
                     type_ms[idx] += ti.elapsed().as_millis() as u64;
                     if let Err(e) = res {
@@ -140,9 +141,9 @@ pub async fn run(
 
                 // Mega-batch state updates: ONE transaction for all items' visit + enqueue
                 let t1 = std::time::Instant::now();
-                let state_items: Vec<(i64, TmdbType, &[(i64, TmdbType, f64)], i64)> = batch.iter()
+                let state_items: Vec<crate::state::ChildBatch<'_>> = batch.iter()
                     .map(|job| {
-                        let children: &[(i64, TmdbType, f64)] = if job.item.depth + 1 <= MAX_DEPTH { &job.children[..] } else { &[] };
+                        let children: &[(i64, TmdbType, f64)] = if job.item.depth < MAX_DEPTH { &job.children[..] } else { &[] };
                         (job.item.tmdb_id, job.item.tmdb_type, children, job.item.depth + 1)
                     })
                     .collect();
@@ -193,10 +194,10 @@ pub async fn run(
             tokio::spawn(async move {
                 let _permit = permit;
                 let payload = match item.tmdb_type {
-                    TmdbType::Movie => client.get_movie(item.tmdb_id).await.map(WritePayload::Movie),
-                    TmdbType::Tv => client.get_tv(item.tmdb_id).await.map(WritePayload::Tv),
-                    TmdbType::Person => client.get_person(item.tmdb_id).await.map(WritePayload::Person),
-                    TmdbType::Collection => client.get_collection(item.tmdb_id).await.map(WritePayload::Collection),
+                    TmdbType::Movie => client.get_movie(item.tmdb_id).await.map(|r| WritePayload::Movie(Box::new(r))),
+                    TmdbType::Tv => client.get_tv(item.tmdb_id).await.map(|r| WritePayload::Tv(Box::new(r))),
+                    TmdbType::Person => client.get_person(item.tmdb_id).await.map(|r| WritePayload::Person(Box::new(r))),
+                    TmdbType::Collection => client.get_collection(item.tmdb_id).await.map(|r| WritePayload::Collection(Box::new(r))),
                 };
                 match payload {
                     Ok(p) => {

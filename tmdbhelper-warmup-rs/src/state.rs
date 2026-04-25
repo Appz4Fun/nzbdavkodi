@@ -3,6 +3,8 @@ use rusqlite::{params, Connection, OpenFlags};
 use std::path::Path;
 use crate::id::TmdbType;
 
+pub type ChildBatch<'a> = (i64, TmdbType, &'a [(i64, TmdbType, f64)], i64);
+
 pub struct StateDb {
     conn: Connection,
 }
@@ -135,7 +137,7 @@ impl StateDb {
     /// commits per batch. This collapses them to 1.
     pub fn visit_and_enqueue_multi(
         &mut self,
-        items: &[(i64, TmdbType, &[(i64, TmdbType, f64)], i64)], // (tmdb_id, type, children, child_depth)
+        items: &[ChildBatch<'_>],
     ) -> Result<()> {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
         let tx = self.conn.transaction()?;
