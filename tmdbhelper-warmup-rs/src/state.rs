@@ -130,6 +130,35 @@ impl StateDb {
         Ok(())
     }
 
+    /// Mega-batch: visit + enqueue children for MULTIPLE items in ONE transaction.
+    /// At 7/s with 20 items/batch, the old per-item tx pattern still costs 20 WAL
+    /// commits per batch. This collapses them to 1.
+    pub fn visit_and_enqueue_multi(
+        &mut self,
+        items: &[(i64, TmdbType, &[(i64, TmdbType, f64)], i64)], // (tmdb_id, type, children, child_depth)
+    ) -> Result<()> {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
+        let tx = self.conn.transaction()?;
+        for (tmdb_id, tmdb_type, children, child_depth) in items {
+            tx.execute(
+                "INSERT OR REPLACE INTO visited (tmdb_id, tmdb_type, visited_at, result) VALUES (?1, ?2, ?3, 'ok')",
+                params![*tmdb_id, type_to_str(*tmdb_type), now],
+            )?;
+            for (cid, ctype, pop) in *children {
+                let already: i64 = tx.query_row(
+                    "SELECT COUNT(*) FROM visited WHERE tmdb_id=?1 AND tmdb_type=?2",
+                    params![*cid, type_to_str(*ctype)], |r| r.get(0))?;
+                if already > 0 { continue; }
+                tx.execute(
+                    "INSERT OR IGNORE INTO queue (tmdb_id, tmdb_type, depth, popularity, enqueued_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![*cid, type_to_str(*ctype), *child_depth, *pop, now],
+                )?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn queue_size(&self) -> Result<i64> {
         Ok(self.conn.query_row("SELECT COUNT(*) FROM queue", [], |r| r.get(0))?)
     }

@@ -132,14 +132,16 @@ pub async fn run(
                 let write_ms = t0.elapsed().as_millis() as u64;
                 total_write_ms += write_ms;
 
-                // Batch state updates (visit + enqueue children)
+                // Mega-batch state updates: ONE transaction for all items' visit + enqueue
                 let t1 = std::time::Instant::now();
-                for job in &batch {
-                    let item = &job.item;
-                    let children = if item.depth + 1 <= MAX_DEPTH { &job.children[..] } else { &[] };
-                    if let Err(e) = state.visit_and_enqueue_batch(item.tmdb_id, item.tmdb_type, children, item.depth + 1) {
-                        error!("state batch failed for {:?} {}: {:?}", item.tmdb_type, item.tmdb_id, e);
-                    }
+                let state_items: Vec<(i64, TmdbType, &[(i64, TmdbType, f64)], i64)> = batch.iter()
+                    .map(|job| {
+                        let children: &[(i64, TmdbType, f64)] = if job.item.depth + 1 <= MAX_DEPTH { &job.children[..] } else { &[] };
+                        (job.item.tmdb_id, job.item.tmdb_type, children, job.item.depth + 1)
+                    })
+                    .collect();
+                if let Err(e) = state.visit_and_enqueue_multi(&state_items) {
+                    error!("state mega-batch failed: {:?}", e);
                 }
                 let state_ms = t1.elapsed().as_millis() as u64;
                 total_state_ms += state_ms;
