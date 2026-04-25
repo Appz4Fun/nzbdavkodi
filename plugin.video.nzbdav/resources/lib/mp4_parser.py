@@ -254,6 +254,9 @@ _MAX_MOOV_SIZE = 50 * 1048576  # 50 MB — safety cap for moov fetch
 
 def _http_range(url, start, end, auth_header=None):
     """Fetch a byte range from a URL. Returns bytes."""
+    if start < 0 or end < start:
+        raise ValueError("invalid range {}-{}".format(start, end))
+    expected_len = end - start + 1
     req = Request(url)
     req.add_header("User-Agent", HTTP_USER_AGENT)
     req.add_header("Range", "bytes={}-{}".format(start, end))
@@ -263,16 +266,48 @@ def _http_range(url, start, end, auth_header=None):
     with urlopen(  # nosec B310 — URL from user-configured WebDAV
         req, timeout=30
     ) as resp:
-        return resp.read()
+        status = getattr(resp, "status", None)
+        if not isinstance(status, int):
+            getcode = getattr(resp, "getcode", None)
+            status = getcode() if callable(getcode) else 206
+        if status != 206:
+            raise ValueError("range request returned status {}".format(status))
+        content_range = getattr(resp, "headers", {}).get("Content-Range")
+        if content_range:
+            expected = "bytes {}-{}/".format(start, end)
+            if not str(content_range).strip().startswith(expected):
+                raise ValueError(
+                    "Content-Range {!r} does not match bytes {}-{}".format(
+                        content_range, start, end
+                    )
+                )
+        data = resp.read(expected_len + 1)
+        if len(data) != expected_len:
+            raise ValueError(
+                "range request returned {} bytes, expected {}".format(
+                    len(data), expected_len
+                )
+            )
+        return data
 
 
 def _fetch_and_validate_moov(url, moov_offset, moov_size, auth_header):
     """Fetch a moov box and validate it. Returns bytes or None."""
     if moov_size > _MAX_MOOV_SIZE or moov_size < 8:
         return None
-    moov_data = _http_range(url, moov_offset, moov_offset + moov_size - 1, auth_header)
+    try:
+        moov_data = _http_range(
+            url, moov_offset, moov_offset + moov_size - 1, auth_header
+        )
+    except (OSError, ValueError):
+        return None
     verify = read_box_header(moov_data, 0)
-    if verify is None or verify[0] != b"moov":
+    if (
+        len(moov_data) != moov_size
+        or verify is None
+        or verify[0] != b"moov"
+        or verify[2] != moov_size
+    ):
         return None
     return moov_data
 
@@ -296,7 +331,12 @@ def _find_moov_after_mdat(url, file_size, mdat_offset, mdat_size, auth_header):
     mdat_end = mdat_offset + mdat_size
     if mdat_end >= file_size:
         return None
-    probe = _http_range(url, mdat_end, min(mdat_end + 15, file_size - 1), auth_header)
+    try:
+        probe = _http_range(
+            url, mdat_end, min(mdat_end + 15, file_size - 1), auth_header
+        )
+    except (OSError, ValueError):
+        return None
     hdr = read_box_header(probe, 0)
     if hdr is None or hdr[0] != b"moov":
         return None
@@ -311,7 +351,10 @@ def _find_moov_by_tail_probe(url, file_size, auth_header):
     tail_probe_size = _TAIL_PROBE_SIZE
     while tail_probe_size <= _TAIL_PROBE_MAX:
         tail_start = max(0, file_size - tail_probe_size)
-        tail_data = _http_range(url, tail_start, file_size - 1, auth_header)
+        try:
+            tail_data = _http_range(url, tail_start, file_size - 1, auth_header)
+        except (OSError, ValueError):
+            return None
         tail_layout = scan_top_level_boxes(tail_data)
 
         if tail_layout["moov_offset"] >= 0:
@@ -346,7 +389,10 @@ def fetch_remote_mp4_layout(url, file_size, auth_header=None):
         return None
     # 1. Fetch the first 64KB to find ftyp and check for moov-at-front
     head_size = min(_HEAD_PROBE_SIZE, file_size)
-    head_data = _http_range(url, 0, head_size - 1, auth_header)
+    try:
+        head_data = _http_range(url, 0, head_size - 1, auth_header)
+    except (OSError, ValueError):
+        return None
     head_layout = scan_top_level_boxes(head_data)
 
     ftyp_data = b""

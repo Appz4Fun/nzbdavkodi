@@ -383,7 +383,13 @@ def _apply_proxy_mime(li, stream_url, stream_info):
             "NZB-DAV: Playing via remux proxy: {}".format(proxy_url),
             xbmc.LOGINFO,
         )
-        li.setMimeType("video/x-matroska")
+        if (
+            stream_info.get("mode") == "hls"
+            or stream_info.get("content_type") == "application/vnd.apple.mpegurl"
+        ):
+            li.setMimeType("application/vnd.apple.mpegurl")
+        else:
+            li.setMimeType("video/x-matroska")
         duration = stream_info.get("duration_seconds")
         if duration:
             info_tag = li.getVideoInfoTag()

@@ -114,7 +114,9 @@ def test_probe_mp4_profile8_from_first_sample():
     with patch("resources.lib.dv_source.urlopen", side_effect=mock), patch(
         "resources.lib.mp4_parser.urlopen", side_effect=mock
     ):
-        result = probe_dolby_vision_source("http://host/file.mp4", auth_header=None)
+        result = probe_dolby_vision_source(
+            "http://host/file.mp4", auth_header=None, file_size=len(mp4)
+        )
 
     assert result.classification == "dv_allowed_for_fmp4"
     assert result.reason == "non_p7_dv_profile"
@@ -130,7 +132,9 @@ def test_probe_mp4_without_rpu_is_non_dv():
     with patch("resources.lib.dv_source.urlopen", side_effect=mock), patch(
         "resources.lib.mp4_parser.urlopen", side_effect=mock
     ):
-        result = probe_dolby_vision_source("http://host/file.mp4", auth_header=None)
+        result = probe_dolby_vision_source(
+            "http://host/file.mp4", auth_header=None, file_size=len(mp4)
+        )
 
     assert result.classification == "non_dv"
     assert result.reason == "no_rpu_nal_found"
@@ -245,7 +249,9 @@ def test_probe_mp4_with_co64_chunk_offsets():
     with patch("resources.lib.dv_source.urlopen", side_effect=mock), patch(
         "resources.lib.mp4_parser.urlopen", side_effect=mock
     ):
-        result = probe_dolby_vision_source("http://host/big.mp4", auth_header=None)
+        result = probe_dolby_vision_source(
+            "http://host/big.mp4", auth_header=None, file_size=len(mp4)
+        )
 
     assert result.classification == "dv_allowed_for_fmp4"
     assert result.profile == 8
@@ -274,7 +280,9 @@ def test_probe_mp4_clamps_unreasonable_first_sample_size():
     with patch("resources.lib.dv_source.urlopen", side_effect=mock), patch(
         "resources.lib.mp4_parser.urlopen", side_effect=mock
     ):
-        result = probe_dolby_vision_source("http://host/evil.mp4", auth_header=None)
+        result = probe_dolby_vision_source(
+            "http://host/evil.mp4", auth_header=None, file_size=len(mp4)
+        )
 
     assert result.classification == "dv_unknown"
     assert result.reason == "mp4_sample_extraction_failed"

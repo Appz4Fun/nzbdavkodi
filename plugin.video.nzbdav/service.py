@@ -28,6 +28,7 @@ _PROP_STREAM_URL = "nzbdav.stream_url"
 _PROP_STREAM_TITLE = "nzbdav.stream_title"
 _PROP_ACTIVE = "nzbdav.active"
 _PROP_PROXY_PORT = "nzbdav.proxy_port"
+_PROP_PROXY_TOKEN = "nzbdav.proxy_token"
 
 _HOME_WINDOW = xbmcgui.Window(10000)
 _PLAYER_RUNTIME_ERRORS = (
@@ -388,6 +389,7 @@ class NzbdavPlayer(xbmc.Player):
 
                 _notify(_addon_name(), _s(30121), 8000)
                 xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
+                self._cleanup_proxy_session()
                 with self._state_lock:
                     self._state = PlaybackState.IDLE
                 return
@@ -483,7 +485,12 @@ def main():
     # this service's first tick to immediately enter MONITORING with the
     # prior session's stream metadata. Drop them on entry so the new
     # service starts from a clean slate. TODO.md §H.2-M34.
-    for stale_prop in (_PROP_ACTIVE, _PROP_STREAM_URL, _PROP_STREAM_TITLE):
+    for stale_prop in (
+        _PROP_ACTIVE,
+        _PROP_STREAM_URL,
+        _PROP_STREAM_TITLE,
+        _PROP_PROXY_TOKEN,
+    ):
         try:
             _HOME_WINDOW.clearProperty(stale_prop)
         except Exception:  # noqa: BLE001 — best-effort, never block startup
@@ -508,6 +515,7 @@ def main():
             xbmc.LOGERROR,
         )
         _HOME_WINDOW.clearProperty(_PROP_PROXY_PORT)
+        _HOME_WINDOW.clearProperty(_PROP_PROXY_TOKEN)
         # Idle-loop until Kodi shuts down so the service process stays alive;
         # otherwise Kodi keeps restarting us every few seconds and spams the
         # log with the same start failure.
@@ -516,6 +524,7 @@ def main():
                 break
         return
     _HOME_WINDOW.setProperty(_PROP_PROXY_PORT, str(proxy.port))
+    _HOME_WINDOW.setProperty(_PROP_PROXY_TOKEN, proxy.prepare_token)
 
     # Pass the proxy to the player so stop/end callbacks can tear down
     # active remux ffmpeg processes immediately instead of leaving them
@@ -575,8 +584,10 @@ def main():
                     xbmc.LOGERROR,
                 )
                 _HOME_WINDOW.clearProperty(_PROP_PROXY_PORT)
+                _HOME_WINDOW.clearProperty(_PROP_PROXY_TOKEN)
             else:
                 _HOME_WINDOW.setProperty(_PROP_PROXY_PORT, str(proxy.port))
+                _HOME_WINDOW.setProperty(_PROP_PROXY_TOKEN, proxy.prepare_token)
                 # The player holds a reference to the old proxy for
                 # cleanup calls from onPlayBackStopped; point it at the
                 # new one so the next stop() fires on the live proxy.
@@ -634,6 +645,7 @@ def main():
             xbmc.LOGWARNING,
         )
     _HOME_WINDOW.clearProperty(_PROP_PROXY_PORT)
+    _HOME_WINDOW.clearProperty(_PROP_PROXY_TOKEN)
     xbmc.log("NZB-DAV: Service stopped", xbmc.LOGINFO)
 
 

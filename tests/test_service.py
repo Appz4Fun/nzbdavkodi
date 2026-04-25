@@ -244,6 +244,27 @@ def test_tick_notifies_when_playback_never_started(mock_window, mock_xbmc, mock_
     mock_xbmc.PlayList.return_value.clear.assert_called_once()
 
 
+@patch("service._notify")
+@patch("service.xbmc")
+@patch("service._HOME_WINDOW")
+def test_tick_cleans_proxy_when_playback_never_started(
+    mock_window, mock_xbmc, mock_notify
+):
+    mock_window.getProperty.return_value = ""
+    proxy = MagicMock()
+
+    player = NzbdavPlayer(proxy=proxy)
+    player._state = PlaybackState.MONITORING
+    player._av_started = False
+    player._play_time = time.monotonic() - 60
+    player._title = "Dead.Start.mkv"
+    player.isPlaying = lambda: False
+
+    player.tick()
+
+    proxy.clear_sessions.assert_called_once()
+
+
 @patch("service._HOME_WINDOW")
 def test_tick_waits_before_declaring_failure(mock_window):
     """tick() does not show error within the 30-second grace period.

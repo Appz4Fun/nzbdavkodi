@@ -302,6 +302,45 @@ def test_play_direct_mkv_sets_matroska_mime_on_passthrough(
 
 @patch("resources.lib.stream_proxy.prepare_stream_via_service")
 @patch("resources.lib.stream_proxy.get_service_proxy_port")
+@patch("resources.lib.resolver.xbmcplugin")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.xbmc")
+def test_play_direct_hls_proxy_sets_playlist_mime(
+    mock_xbmc, mock_gui, mock_plugin, mock_get_port, mock_prepare
+):
+    mock_get_port.return_value = 57800
+    mock_prepare.return_value = (
+        "http://127.0.0.1:57800/hls/abc/playlist.m3u8",
+        {
+            "remux": True,
+            "faststart": False,
+            "direct": False,
+            "mode": "hls",
+            "content_type": "application/vnd.apple.mpegurl",
+        },
+    )
+    listitem = MagicMock()
+    mock_gui.ListItem.return_value = listitem
+
+    _play_direct(1, "http://webdav:8080/content/movie/movie.mkv", None)
+
+    listitem.setMimeType.assert_called_with("application/vnd.apple.mpegurl")
+
+
+def test_apply_proxy_mime_matroska_remux_still_sets_matroska():
+    from resources.lib.resolver import _apply_proxy_mime
+
+    li = MagicMock()
+    li.getPath.return_value = "http://127.0.0.1:57800/stream/abc"
+    stream_info = {"remux": True, "content_type": "video/x-matroska"}
+
+    _apply_proxy_mime(li, "http://webdav/movie.mkv", stream_info)
+
+    li.setMimeType.assert_called_with("video/x-matroska")
+
+
+@patch("resources.lib.stream_proxy.prepare_stream_via_service")
+@patch("resources.lib.stream_proxy.get_service_proxy_port")
 @patch("resources.lib.resolver.xbmc")
 def test_play_via_proxy_routes_mkv_through_proxy(
     mock_xbmc, mock_get_port, mock_prepare

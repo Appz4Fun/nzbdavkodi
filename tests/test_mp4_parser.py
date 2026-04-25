@@ -6,6 +6,8 @@
 import struct
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 def _request_header(req, name):
     return {key.lower(): value for key, value in req.header_items()}.get(name.lower())
@@ -230,10 +232,11 @@ def test_rewrite_co64_delta_crosses_4gb_boundary_succeeds():
     assert o2_new > 0xFFFFFFFF
 
 
-def _make_mock_response(data, status=200, headers=None):
+def _make_mock_response(data, status=206, headers=None):
     """Create a mock HTTP response."""
     resp = MagicMock()
     resp.read.return_value = data
+    resp.status = status
     resp.getcode.return_value = status
     resp.headers = headers or {}
     resp.__enter__ = MagicMock(return_value=resp)
@@ -321,6 +324,9 @@ def test_http_range_sends_addon_user_agent():
     from resources.lib.mp4_parser import _http_range
 
     resp = MagicMock()
+    resp.status = 206
+    resp.getcode.return_value = 206
+    resp.headers = {}
     resp.read.return_value = b"abcd"
     resp.__enter__ = MagicMock(return_value=resp)
     resp.__exit__ = MagicMock(return_value=False)
@@ -330,6 +336,96 @@ def test_http_range_sends_addon_user_agent():
 
     req = mocked.call_args[0][0]
     assert _request_header(req, "User-Agent") == "NZB-DAV Kodi Addon"
+
+
+def test_http_range_rejects_200_without_reading_body():
+    from resources.lib.mp4_parser import _http_range
+
+    resp = MagicMock()
+    resp.status = 200
+    resp.getcode.return_value = 200
+    resp.read.side_effect = AssertionError("body should not be consumed")
+    resp.headers = {}
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=False)
+
+    with patch("resources.lib.mp4_parser.urlopen", return_value=resp):
+        with pytest.raises(ValueError, match="range"):
+            _http_range("http://host/file.mp4", 0, 3)
+
+
+def test_http_range_rejects_wrong_content_range():
+    from resources.lib.mp4_parser import _http_range
+
+    resp = _make_mock_response(
+        b"abcd",
+        status=206,
+        headers={"Content-Range": "bytes 10-13/100"},
+    )
+
+    with patch("resources.lib.mp4_parser.urlopen", return_value=resp):
+        with pytest.raises(ValueError, match="Content-Range"):
+            _http_range("http://host/file.mp4", 0, 3)
+
+
+def test_fetch_remote_mp4_layout_rejects_truncated_moov_body():
+    from resources.lib.mp4_parser import fetch_remote_mp4_layout
+
+    ftyp = struct.pack(">I", 32) + b"ftyp" + b"\x00" * 24
+    mdat = struct.pack(">I", 200) + b"mdat" + b"\x00" * 192
+    moov_header_only = struct.pack(">I", 100) + b"moov"
+    full_size = 332
+
+    def mock_urlopen(req, timeout=None):
+        range_header = req.get_header("Range") or ""
+        parts = range_header.replace("bytes=", "").split("-")
+        start = int(parts[0])
+        end = int(parts[1]) if parts[1] else full_size - 1
+        if start == 0:
+            body = ftyp + mdat
+        elif start == len(ftyp) + len(mdat):
+            body = moov_header_only
+        else:
+            body = b"\x00" * (end - start + 1)
+        return _make_mock_response(
+            body[: end - start + 1],
+            status=206,
+            headers={"Content-Range": "bytes {}-{}/{}".format(start, end, full_size)},
+        )
+
+    with patch("resources.lib.mp4_parser.urlopen", side_effect=mock_urlopen):
+        assert fetch_remote_mp4_layout("http://host/file.mp4", full_size) is None
+
+
+def test_fetch_remote_mp4_layout_rejects_moov_size_mismatch():
+    from resources.lib.mp4_parser import fetch_remote_mp4_layout
+
+    ftyp = struct.pack(">I", 32) + b"ftyp" + b"\x00" * 24
+    mdat = struct.pack(">I", 200) + b"mdat" + b"\x00" * 192
+    # Tail scan declares a 100-byte moov, but the fetched box says 80.
+    tail_moov = struct.pack(">I", 100) + b"moov" + b"\x00" * 92
+    fetched_moov = struct.pack(">I", 80) + b"moov" + b"\x00" * 92
+    full_size = len(ftyp) + len(mdat) + len(tail_moov)
+
+    def mock_urlopen(req, timeout=None):
+        range_header = req.get_header("Range") or ""
+        parts = range_header.replace("bytes=", "").split("-")
+        start = int(parts[0])
+        end = int(parts[1]) if parts[1] else full_size - 1
+        if start == 0:
+            body = ftyp + mdat
+        elif end == full_size - 1:
+            body = tail_moov
+        else:
+            body = fetched_moov
+        return _make_mock_response(
+            body[: end - start + 1],
+            status=206,
+            headers={"Content-Range": "bytes {}-{}/{}".format(start, end, full_size)},
+        )
+
+    with patch("resources.lib.mp4_parser.urlopen", side_effect=mock_urlopen):
+        assert fetch_remote_mp4_layout("http://host/file.mp4", full_size) is None
 
 
 def test_fetch_remote_mp4_layout_rejects_negative_file_size():

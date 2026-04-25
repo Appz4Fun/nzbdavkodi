@@ -14,6 +14,7 @@ WebDAV server with proper 206 responses.
 import math
 import os
 import re
+import select as _select
 import shutil
 import socket as _socket
 import struct
@@ -189,6 +190,9 @@ _ZERO_FILL_BUFFER = bytes(65536)
 # producing output into the void.  60s comfortably exceeds any normal
 # buffering stall on a healthy client while still bounding zombie lifetime.
 _REMUX_WRITE_TIMEOUT = 60
+_REMUX_STDOUT_IDLE_TIMEOUT = 30.0
+_PREPARE_TOKEN_HEADER = "X-NZBDAV-Token"
+_PROP_PROXY_TOKEN = "nzbdav.proxy_token"
 
 # HLS segment length. Shorter segments (6 s) minimize the playlist-
 # vs-actual drift that breaks seek accuracy and A/V sync on the fmp4
@@ -266,7 +270,12 @@ def _get_private_hls_temp_root():
         return temp_root
 
 
-def _choose_hls_workdir():
+def _disk_free_bytes(path):
+    usage = shutil.disk_usage(path)
+    return getattr(usage, "free", usage[2])
+
+
+def _choose_hls_workdir(required_bytes=0):
     """Return a writable base directory for HLS session working files.
 
     Walks the candidate list in order and returns the first entry
@@ -284,8 +293,27 @@ def _choose_hls_workdir():
             os.makedirs(base, exist_ok=True)
         except OSError:
             continue
+        if required_bytes:
+            try:
+                if _disk_free_bytes(base) < required_bytes:
+                    continue
+            except OSError:
+                continue
         return base
-    return _get_private_hls_temp_root()
+    fallback = _get_private_hls_temp_root()
+    if required_bytes:
+        try:
+            if _disk_free_bytes(fallback) < required_bytes:
+                raise OSError(
+                    "No HLS workdir has at least {} bytes free space".format(
+                        required_bytes
+                    )
+                )
+        except OSError as error:
+            raise OSError(
+                "No HLS workdir has at least {} bytes free space".format(required_bytes)
+            ) from error
+    return fallback
 
 
 def _find_ffmpeg():
@@ -329,7 +357,7 @@ def _find_ffprobe():
 # genuinely huge files get remuxed.  Users who see false positives can
 # set `force_remux_threshold_mb` in the addon settings to raise the bar
 # further (or to 0 to disable entirely and restore pure pass-through).
-_DEFAULT_FORCE_REMUX_THRESHOLD_MB = 20000
+_DEFAULT_FORCE_REMUX_THRESHOLD_MB = 15000
 # Clamp ceiling for force_remux_threshold_mb. Set just below 2^53 so any
 # JSON-safe int the user enters survives without triggering the
 # "out of range" warning every play. Realistic "I want this off" values
@@ -477,6 +505,7 @@ def _add_request_headers(req, auth_header=None):
     """Apply standard proxy outbound headers to a urllib Request."""
     req.add_header("User-Agent", HTTP_USER_AGENT)
     if auth_header:
+        auth_header = _validate_auth_header(auth_header)
         req.add_header("Authorization", auth_header)
     return req
 
@@ -859,6 +888,17 @@ def _validate_url(url):
         raise ValueError("URL contains control characters: {}".format(repr(url)[:60]))
 
 
+def _validate_auth_header(auth_header):
+    """Validate an Authorization header value before forwarding it."""
+    if auth_header in (None, ""):
+        return None
+    if not isinstance(auth_header, str):
+        raise ValueError("Authorization header must be a string")
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in auth_header):
+        raise ValueError("Authorization header contains control characters")
+    return auth_header
+
+
 def _extract_session_id_from_proxy_url(proxy_url):
     """Pull the session id back out of a `/stream/<id>` or `/hls/<id>/...` URL.
 
@@ -948,7 +988,8 @@ def _ffmpeg_auth_args(auth_header):
     """
     if not auth_header:
         return []
-    if not isinstance(auth_header, str):
+    auth_header = _validate_auth_header(auth_header)
+    if not auth_header:
         return []
     return ["-headers", "Authorization: {}\r\n".format(auth_header)]
 
@@ -1211,7 +1252,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     ),
                     xbmc.LOGWARNING,
                 )
-                return existing, lock
+                self.send_error(409)
+                return None, None
             ctx["active_ffmpeg"] = proc
             ctx["current_byte_pos"] = requested_start
             self.server.active_ffmpeg = proc
@@ -1243,18 +1285,37 @@ class _StreamHandler(BaseHTTPRequestHandler):
             ctx["current_byte_pos"] = current_pos
             self.server.current_byte_pos = current_pos
 
+    @staticmethod
+    def _read_remux_stdout(proc):
+        """Read ffmpeg stdout with an idle guard for real pipe fds."""
+        stdout = proc.stdout
+        fileno = getattr(stdout, "fileno", None)
+        if callable(fileno):
+            try:
+                fd = fileno()
+                ready, _, _ = _select.select([fd], [], [], _REMUX_STDOUT_IDLE_TIMEOUT)
+            except (OSError, TypeError, ValueError):
+                return stdout.read(65536)
+            if not ready:
+                if proc.poll() is not None:
+                    return b""
+                raise _socket.timeout("ffmpeg stdout idle")
+        return stdout.read(65536)
+
     def _stream_remux_output(self, ctx, proc, lock, requested_start):
         """Copy ffmpeg stdout to Kodi until EOF or client disconnect."""
         total = 0
         try:
             while True:
-                chunk = proc.stdout.read(65536)
+                chunk = self._read_remux_stdout(proc)
                 if not chunk:
                     return total
                 self.wfile.write(chunk)
                 total += len(chunk)
                 self._update_current_byte_pos(ctx, lock, requested_start + total)
-        except (BrokenPipeError, ConnectionResetError, _socket.timeout):
+        except (BrokenPipeError, ConnectionResetError, _socket.timeout) as exc:
+            if isinstance(exc, _socket.timeout):
+                ctx["remux_stdout_idle_detected"] = True
             xbmc.log(
                 "NZB-DAV: Remux client disconnected after {} MB".format(
                     total // 1048576
@@ -1329,7 +1390,12 @@ class _StreamHandler(BaseHTTPRequestHandler):
         for arg in cmd:
             if "\x00" in arg:
                 return False
-            if prev_arg != "-headers" and ("\n" in arg or "\r" in arg):
+            if prev_arg == "-headers":
+                if not arg.endswith("\r\n"):
+                    return False
+                if "\n" in arg[:-2] or "\r" in arg[:-2]:
+                    return False
+            elif "\n" in arg or "\r" in arg:
                 return False
             prev_arg = arg
         return True
@@ -1385,6 +1451,11 @@ class _StreamHandler(BaseHTTPRequestHandler):
         if self.path.split("?", 1)[0] != "/prepare":
             self.send_error(404)
             return
+        expected_token = getattr(self.server, "prepare_token", "")
+        supplied_token = self.headers.get(_PREPARE_TOKEN_HEADER)
+        if expected_token and supplied_token != expected_token:
+            self.send_error(403)
+            return
         try:
             length = int(self.headers.get("Content-Length", 0))
         except (TypeError, ValueError):
@@ -1402,10 +1473,18 @@ class _StreamHandler(BaseHTTPRequestHandler):
         except (ValueError, KeyError):
             self.send_error(400)
             return
+        if not isinstance(data, dict):
+            self.send_error(400)
+            return
 
         remote_url = data.get("remote_url", "")
         auth_header = data.get("auth_header")
         if not remote_url:
+            self.send_error(400)
+            return
+        try:
+            auth_header = _validate_auth_header(auth_header)
+        except ValueError:
             self.send_error(400)
             return
 
@@ -1728,7 +1807,11 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     # connection overhead that causes slow seeking.
                     payload_offset = pos - header_len
                     remote_pos = payload_remote_start + payload_offset
-                    remote_end = payload_remote_start + payload_size - 1
+                    payload_remaining = length - bytes_sent
+                    remote_end = min(
+                        payload_remote_start + payload_size - 1,
+                        remote_pos + payload_remaining - 1,
+                    )
 
                     req = Request(ctx["remote_url"])
                     _add_request_headers(req, ctx.get("auth_header"))
@@ -1744,6 +1827,9 @@ class _StreamHandler(BaseHTTPRequestHandler):
                             chunk = resp.read(1048576)  # 1 MB read buffer
                             if not chunk:
                                 break
+                            remaining = length - bytes_sent
+                            if len(chunk) > remaining:
+                                chunk = chunk[:remaining]
                             self.wfile.write(chunk)
                             bytes_sent += len(chunk)
                             pos += len(chunk)
@@ -1809,12 +1895,9 @@ class _StreamHandler(BaseHTTPRequestHandler):
 
         Returns the seek offset in seconds, or None.
         """
-        duration = ctx.get("duration_seconds")
         seekable = ctx.get("seekable", False)
 
         seek_seconds = None
-        if seekable and duration is not None and total_bytes and requested_start > 0:
-            seek_seconds = (requested_start / total_bytes) * duration
 
         lock = self._ctx_lock(ctx, self.server)
         with lock:
@@ -1822,7 +1905,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 "current_byte_pos", getattr(self.server, "current_byte_pos", 0)
             )
             is_seek = (
-                seekable
+                seek_seconds is not None
+                and seekable
                 and requested_start > 0
                 and _is_seek_request(current_pos, requested_start)
             )
@@ -1957,6 +2041,25 @@ class _StreamHandler(BaseHTTPRequestHandler):
         segment_format (m4s vs ts), unpadded so they're readable in
         Kodi's logs — the URL parser absorbs leading zeros either way.
         """
+        producer = ctx.get("hls_producer")
+        if producer is not None:
+            generated_playlist_body = getattr(producer, "generated_playlist_body", None)
+            body = (
+                generated_playlist_body() if callable(generated_playlist_body) else None
+            )
+            if isinstance(body, bytes) and body:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/vnd.apple.mpegurl")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Connection", "close")
+                self.close_connection = True
+                self.end_headers()
+                try:
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                return
+
         duration = ctx.get("duration_seconds") or 0.0
         seg_dur = ctx.get("hls_segment_duration", _HLS_SEGMENT_SECONDS)
         if duration <= 0 or seg_dur <= 0:
@@ -2367,15 +2470,18 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     and total_skipped + skip > _MAX_TOTAL_ZERO_FILL
                 ):
                     terminal_reason = "recovery_exhausted"
+                    detail = (
+                        "no readable probe"
+                        if skip is None
+                        else "zero-fill budget exceeded"
+                    )
                     xbmc.log(
-                        "NZB-DAV: Zero-fill recovery exhausted at byte {} "
-                        "(filling remaining {} bytes, reason={})".format(
-                            current, remaining, terminal_reason
+                        "NZB-DAV: Zero-fill recovery exhausted at byte {}; "
+                        "closing with {} bytes unread ({}, reason={})".format(
+                            current, remaining, detail, terminal_reason
                         ),
                         xbmc.LOGERROR,
                     )
-                    self._write_zeros(remaining)
-                    total_skipped += remaining
                     return
 
                 if density_breaker_enabled and _would_trip_density_breaker(
@@ -2915,10 +3021,12 @@ class _ThreadedHTTPServer(_ThreadingMixIn, HTTPServer):
     def __init__(self, *args, **kwargs):
         self.stream_context = None
         self.stream_sessions = {}
+        self.pending_stream_contexts = {}
         self.active_ffmpeg = None
         self.current_byte_pos = 0
         self.ffmpeg_lock = threading.Lock()
         self.owner_proxy = None
+        self.prepare_token = ""
         super().__init__(*args, **kwargs)
 
 
@@ -3005,6 +3113,27 @@ class HlsProducer:
         ext = "m4s" if self.segment_format == "fmp4" else "ts"
         return os.path.join(self.session_dir, "seg_{:06d}.{}".format(seg_n, ext))
 
+    def playlist_path(self):
+        """Return the ffmpeg-generated playlist path for fMP4 HLS."""
+        return os.path.join(self.session_dir, "ffmpeg_playlist.m3u8")
+
+    def generated_playlist_body(self):
+        """Return ffmpeg's playlist with proxy-friendly segment names."""
+        path = self.playlist_path()
+        try:
+            with open(path, "r", encoding="utf-8") as playlist_file:
+                text = playlist_file.read()
+        except OSError:
+            return None
+        if "#EXTINF:" not in text:
+            return None
+
+        def _normalize_segment(match):
+            return "seg_{}.{}".format(int(match.group(1)), match.group(2))
+
+        text = re.sub(r"seg_0*(\d+)\.(m4s|ts)", _normalize_segment, text)
+        return text.encode("utf-8")
+
     def _segment_complete(self, seg_n):
         """True if seg_n.ts exists and is no longer being written.
 
@@ -3063,6 +3192,13 @@ class HlsProducer:
         # them. The "next segment exists" branch above already has
         # this guard; this is the matching guard for the mtime path.
         if self.segment_format == "fmp4" and mtime < spawn_time:
+            return False
+        if self.segment_format == "fmp4":
+            if seg_n >= self.total_segments - 1:
+                with self._lock:
+                    proc = self._proc
+                if proc is not None and proc.poll() is not None:
+                    return True
             return False
         if (time.time() - mtime) * 1000.0 > _HLS_SEGMENT_MTIME_STABLE_MS:
             return True
@@ -3856,12 +3992,15 @@ class StreamProxy:
         self._thread = None
         self.port = 0
         self._context_lock = threading.RLock()
+        self._prepare_lock = threading.RLock()
+        self.prepare_token = uuid.uuid4().hex
         self._ffmpeg_capabilities = None
 
     def start(self):
         """Start the proxy server on a random port."""
         self._server = _ThreadedHTTPServer(("127.0.0.1", 0), _StreamHandler)
         self._server.owner_proxy = self
+        self._server.prepare_token = self.prepare_token
         self.port = self._server.server_address[1]
         self._refresh_ffmpeg_capabilities()
         self._thread = threading.Thread(target=self._server.serve_forever)
@@ -3926,10 +4065,19 @@ class StreamProxy:
             return
         with self._context_lock:
             sessions = list(getattr(self._server, "stream_sessions", {}).values())
+            pending = list(
+                getattr(self._server, "pending_stream_contexts", {}).values()
+            )
             self._server.stream_sessions = {}
+            self._server.pending_stream_contexts = {}
             self._server.stream_context = None
             self._server.active_ffmpeg = None
-        for ctx in sessions:
+        seen = set()
+        for ctx in sessions + pending:
+            marker = id(ctx)
+            if marker in seen:
+                continue
+            seen.add(marker)
             self._cleanup_session_or_defer(ctx)
 
     def cleanup_session_by_id(self, session_id):
@@ -4140,18 +4288,30 @@ class StreamProxy:
         ctx["_cleanup_started"] = False
 
         if ctx.get("mode") == "hls":
-            workdir = _choose_hls_workdir()
+            with self._context_lock:
+                pending = getattr(self._server, "pending_stream_contexts", None)
+                if not isinstance(pending, dict):
+                    pending = {}
+                    self._server.pending_stream_contexts = pending
+                pending[session_id] = ctx
+            workdir = _choose_hls_workdir(ctx.get("total_bytes", 0) or 0)
             producer = None
             try:
                 producer = HlsProducer(ctx, workdir)
+                ctx["hls_producer"] = producer
                 # Eager spawn-time validation: catches ffmpeg builds
                 # that reject -hls_segment_type fmp4 BEFORE the HLS
                 # URL is returned to Kodi, so the matroska fallback
                 # below actually fires for the most likely failure
                 # mode. No-op for mpegts (lazy spawn).
                 producer.prepare()
-                ctx["hls_producer"] = producer
             except Exception as e:  # noqa: BLE001 — fall back either way
+                if ctx.get("_cleanup_started"):
+                    with self._context_lock:
+                        pending = getattr(self._server, "pending_stream_contexts", {})
+                        if isinstance(pending, dict):
+                            pending.pop(session_id, None)
+                    raise RuntimeError("HLS prepare was cancelled") from e
                 xbmc.log(
                     "NZB-DAV: HLS producer setup failed ({}), "
                     "rewriting session to matroska fallback".format(e),
@@ -4185,6 +4345,13 @@ class StreamProxy:
                     ctx.get("duration_seconds") is not None
                     and ctx.get("total_bytes", 0) > 0
                 )
+            finally:
+                with self._context_lock:
+                    pending = getattr(self._server, "pending_stream_contexts", {})
+                    if isinstance(pending, dict):
+                        pending.pop(session_id, None)
+            if ctx.get("_cleanup_started"):
+                raise RuntimeError("HLS prepare was cancelled")
 
         with self._context_lock:
             if not isinstance(getattr(self._server, "stream_sessions", None), dict):
@@ -4255,6 +4422,7 @@ class StreamProxy:
         faststart, and virtual_size.
         """
         _validate_url(remote_url)
+        auth_header = _validate_auth_header(auth_header)
         # Tear down any previous session before starting a new one. Kodi only
         # ever plays one stream at a time, so anything still in the table is
         # garbage from a prior play — possibly with a zombie ffmpeg attached
@@ -4309,6 +4477,7 @@ class StreamProxy:
                     "remux": False,
                     "faststart": False,
                     "direct": True,
+                    "content_type": "video/mp4",
                 }
                 return remote_url, stream_info
             else:
@@ -4650,6 +4819,8 @@ class StreamProxy:
             ),
             "remux": ctx.get("remux", False),
             "faststart": ctx.get("faststart", False),
+            "mode": ctx.get("mode"),
+            "content_type": ctx.get("content_type"),
         }
         return local_url, stream_info
 
@@ -5018,6 +5189,17 @@ def get_service_proxy_port():
         return 0
 
 
+def get_service_proxy_token():
+    """Get the loopback /prepare token from the background service."""
+    try:
+        import xbmcgui
+
+        home = xbmcgui.Window(10000)
+        return home.getProperty(_PROP_PROXY_TOKEN) or ""
+    except _KODI_SETTING_ERRORS:
+        return ""
+
+
 class ServiceProxyUnavailableError(OSError):
     """Raised when the NZB-DAV background service's proxy is unreachable.
 
@@ -5030,7 +5212,7 @@ class ServiceProxyUnavailableError(OSError):
     """
 
 
-def prepare_stream_via_service(port, remote_url, auth_header=None):
+def prepare_stream_via_service(port, remote_url, auth_header=None, prepare_token=None):
     """Ask the service's proxy to prepare a stream.
 
     Returns (proxy_url, stream_info) where stream_info contains
@@ -5044,10 +5226,15 @@ def prepare_stream_via_service(port, remote_url, auth_header=None):
     import json
 
     url = "http://127.0.0.1:{}/prepare".format(port)
+    auth_header = _validate_auth_header(auth_header)
     data = json.dumps({"remote_url": remote_url, "auth_header": auth_header})
     req = Request(url, data=data.encode(), method="POST")
     req.add_header("User-Agent", HTTP_USER_AGENT)
     req.add_header("Content-Type", "application/json")
+    if prepare_token is None:
+        prepare_token = get_service_proxy_token()
+    if prepare_token:
+        req.add_header(_PREPARE_TOKEN_HEADER, prepare_token)
     try:
         # nosemgrep
         with urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting

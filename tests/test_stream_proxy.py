@@ -102,14 +102,23 @@ def _make_handler_with_server(ctx, range_header=None, current_byte_pos=0):
     return handler
 
 
-def _make_prepare_post_handler(body=b"{}", content_length=None, path="/prepare"):
+def _make_prepare_post_handler(
+    body=b"{}",
+    content_length=None,
+    path="/prepare",
+    prepare_token="test-token",
+    supplied_token="test-token",
+):
     """Construct a minimal POST handler for /prepare tests."""
     handler = _StreamHandler.__new__(_StreamHandler)
     handler.path = path
     handler.server = MagicMock()
     handler.server.owner_proxy = MagicMock()
+    handler.server.prepare_token = prepare_token
     length = content_length if content_length is not None else len(body)
     handler.headers = {"Content-Length": str(length)}
+    if supplied_token is not None:
+        handler.headers["X-NZBDAV-Token"] = supplied_token
     handler.rfile = io.BytesIO(body)
     handler.wfile = MagicMock()
     handler.send_response = MagicMock()
@@ -807,6 +816,43 @@ def test_prepare_stream_force_remuxes_huge_mkv_with_default_threshold():
     assert ctx.get("hls_segment_format") is None
 
 
+def test_prepare_stream_force_remuxes_documented_15_8_gib_crash_size():
+    """Default threshold must cover the reproduced 15.8 GiB crash case."""
+    import sys
+
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._context_lock = threading.Lock()
+    sp.port = 9999
+
+    known_bad = int(15.8 * 1024 * 1024 * 1024)
+    mock_proc = MagicMock()
+    mock_proc.stderr = iter([b"  Duration: 01:00:00.00, start: 0.000000\n"])
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.return_value = ""
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch(
+            "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
+        ), patch(
+            "resources.lib.stream_proxy._find_ffprobe", return_value=None
+        ), patch.object(
+            sp, "_get_content_length", return_value=known_bad
+        ), patch(
+            "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
+        ):
+            sp.prepare_stream("http://host/mayor-of-kingstown.mkv")
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    assert sp._server.stream_context["remux"] is True
+    assert sp._server.stream_context["total_bytes"] == known_bad
+
+
 def test_prepare_stream_passthrough_mode_skips_force_remux_for_huge_mkv():
     """force_remux_mode=2 (passthrough) bypasses the force-remux tier
     even on a huge MKV *when* advancedsettings.xml cache=0 is present.
@@ -1133,6 +1179,41 @@ def test_do_post_returns_500_on_unhandled_prepare_error():
     handler.do_POST()
 
     handler.send_error.assert_called_once_with(500)
+
+
+def test_do_post_rejects_missing_prepare_token():
+    body = json.dumps({"remote_url": "http://host/movie.mkv"}).encode()
+    handler = _make_prepare_post_handler(body=body, supplied_token=None)
+
+    handler.do_POST()
+
+    handler.send_error.assert_called_once_with(403)
+    handler.server.owner_proxy.prepare_stream.assert_not_called()
+
+
+def test_do_post_rejects_bad_prepare_token():
+    body = json.dumps({"remote_url": "http://host/movie.mkv"}).encode()
+    handler = _make_prepare_post_handler(body=body, supplied_token="wrong")
+
+    handler.do_POST()
+
+    handler.send_error.assert_called_once_with(403)
+    handler.server.owner_proxy.prepare_stream.assert_not_called()
+
+
+def test_do_post_rejects_auth_header_control_chars():
+    body = json.dumps(
+        {
+            "remote_url": "http://host/movie.mkv",
+            "auth_header": "Basic abc\r\nX-Injected: yes",
+        }
+    ).encode()
+    handler = _make_prepare_post_handler(body=body)
+
+    handler.do_POST()
+
+    handler.send_error.assert_called_once_with(400)
+    handler.server.owner_proxy.prepare_stream.assert_not_called()
 
 
 def test_prepare_stream_uses_unique_session_urls():
@@ -2078,9 +2159,8 @@ def test_build_ffmpeg_cmd_keeps_url_clean_with_reserved_char_credentials():
 # ---------------------------------------------------------------------------
 
 
-def test_serve_remux_continuation_seeks_to_position():
-    """A continuation request (within threshold of current pos) must still
-    seek ffmpeg to the requested byte position, not restart from byte 0."""
+def test_serve_remux_continuation_does_not_map_output_byte_to_time():
+    """Continuation ranges must not become guessed source timestamps."""
     ctx = {
         "remote_url": "http://host/film.mp4",
         "auth_header": None,
@@ -2106,15 +2186,11 @@ def test_serve_remux_continuation_seeks_to_position():
         handler._serve_remux(ctx)
 
     cmd = mock_popen.call_args[0][0]
-    assert "-ss" in cmd, "Continuation should use -ss to resume at position"
-    ss_idx = cmd.index("-ss")
-    seek_val = float(cmd[ss_idx + 1])
-    # 500000000 / 10000000000 * 7200 = 360.0 seconds
-    assert abs(seek_val - 360.0) < 0.1
+    assert "-ss" not in cmd
 
 
-def test_serve_remux_explicit_seek_kills_existing():
-    """An explicit seek (large jump) kills the existing ffmpeg process."""
+def test_serve_remux_explicit_seek_does_not_guess_time_from_byte_offset():
+    """Piped remux ranges are output bytes, not a source time map."""
     ctx = {
         "remote_url": "http://host/film.mp4",
         "auth_header": None,
@@ -2135,11 +2211,69 @@ def test_serve_remux_explicit_seek_kills_existing():
     mock_proc.stdout.read.return_value = b""
     mock_proc.stderr.read.return_value = b""
 
-    with patch("resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc):
+    with patch(
+        "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
+    ) as mock_popen:
         handler._serve_remux(ctx)
 
-    old_proc.kill.assert_called_once()
-    old_proc.wait.assert_called_once()
+    old_proc.kill.assert_not_called()
+    old_proc.wait.assert_not_called()
+    cmd = mock_popen.call_args[0][0]
+    assert "-ss" not in cmd
+
+
+def test_start_remux_process_rejects_duplicate_owner_without_returning_winner():
+    """The losing duplicate request must not stream/finish the winner proc."""
+    ctx = {
+        "remote_url": "http://host/film.mp4",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "active_ffmpeg": None,
+        "total_bytes": 10000000000,
+        "duration_seconds": 7200.0,
+        "seekable": True,
+        "remux": True,
+    }
+    handler = _make_handler_with_server(ctx)
+    lock = threading.Lock()
+    ctx["ffmpeg_lock"] = lock
+    winner = MagicMock()
+    winner.poll.return_value = None
+    duplicate = MagicMock()
+    duplicate.poll.return_value = None
+    ctx["active_ffmpeg"] = winner
+
+    with patch("resources.lib.stream_proxy.subprocess.Popen", return_value=duplicate):
+        proc, returned_lock = handler._start_remux_process(ctx, 0, None)
+
+    assert proc is None
+    assert returned_lock is None
+    duplicate.kill.assert_called_once()
+    winner.kill.assert_not_called()
+    handler.send_error.assert_called_once()
+
+
+def test_serve_remux_duplicate_does_not_finish_winner():
+    from resources.lib.stream_proxy import _StreamHandler
+
+    ctx = {
+        "remote_url": "http://host/film.mp4",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "active_ffmpeg": MagicMock(),
+        "total_bytes": 10000000000,
+        "duration_seconds": 7200.0,
+        "seekable": True,
+        "remux": True,
+    }
+    handler = _make_handler_with_server(ctx)
+
+    with patch.object(
+        _StreamHandler, "_start_remux_process", return_value=(None, None)
+    ), patch.object(handler, "_finish_remux") as mock_finish:
+        handler._serve_remux(ctx)
+
+    mock_finish.assert_not_called()
 
 
 def test_serve_remux_write_timeout_exits_loop():
@@ -2174,6 +2308,41 @@ def test_serve_remux_write_timeout_exits_loop():
     # ffmpeg MUST be killed on timeout — otherwise it leaks
     mock_proc.kill.assert_called()
     mock_proc.wait.assert_called()
+
+
+def test_serve_remux_stdout_idle_timeout_kills_ffmpeg():
+    import os
+
+    ctx = {
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "total_bytes": 15 * 1024 * 1024 * 1024,
+        "duration_seconds": 3600.0,
+        "seekable": True,
+        "remux": True,
+    }
+    handler = _make_handler_with_server(ctx)
+    read_fd, write_fd = os.pipe()
+    try:
+        stdout = os.fdopen(read_fd, "rb", buffering=0)
+        read_fd = None
+        mock_proc = MagicMock()
+        mock_proc.stdout = stdout
+        mock_proc.stderr.read.return_value = b""
+        mock_proc.poll.return_value = None
+
+        with patch(
+            "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
+        ), patch("resources.lib.stream_proxy._REMUX_STDOUT_IDLE_TIMEOUT", 0.01):
+            handler._serve_remux(ctx)
+    finally:
+        if read_fd is not None:
+            os.close(read_fd)
+        os.close(write_fd)
+
+    mock_proc.kill.assert_called()
+    assert ctx["remux_stdout_idle_detected"] is True
 
 
 def test_finish_remux_uses_bounded_wait_after_kill():
@@ -2623,6 +2792,48 @@ def test_serve_hls_playlist_shape():
     # Sum of EXTINF values ≈ duration (allowing floating-point slop).
     durations = [float(line[len("#EXTINF:") : -1]) for line in extinf_lines]
     assert abs(sum(durations) - 8552.576) < 0.001
+
+
+def test_serve_hls_playlist_prefers_generated_ffmpeg_durations(tmp_path):
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess-generated",
+        "mode": "hls",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 60.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+        "total_bytes": 1000000,
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        with open(producer.playlist_path(), "w", encoding="utf-8") as f:
+            f.write(
+                "#EXTM3U\n"
+                "#EXT-X-VERSION:7\n"
+                "#EXT-X-TARGETDURATION:34\n"
+                '#EXT-X-MAP:URI="init.mp4"\n'
+                "#EXTINF:33.366000,\n"
+                "seg_000000.m4s\n"
+                "#EXTINF:26.634000,\n"
+                "seg_000001.m4s\n"
+                "#EXT-X-ENDLIST\n"
+            )
+        ctx["hls_producer"] = producer
+        handler = _make_hls_handler(ctx, "/hls/sess-generated/playlist.m3u8")
+
+        handler._serve_hls_playlist(ctx)
+
+        body = handler.wfile.write.call_args[0][0].decode("utf-8")
+        assert "#EXTINF:33.366000," in body
+        assert "#EXTINF:26.634000," in body
+        assert "seg_0.m4s" in body
+        assert "seg_000000.m4s" not in body
+    finally:
+        producer.close()
 
 
 def test_serve_hls_playlist_fmp4_version_is_7():
@@ -3687,18 +3898,82 @@ def test_hls_producer_segment_complete_rejects_stale_prior_generation_segment(
         assert producer._segment_complete(40) is False
 
         # Sanity check: a freshly-written file that postdates
-        # spawn_time should be considered complete via the mtime
-        # fallback once it's been stable.
+        # spawn_time should be considered complete once the next
+        # segment proves ffmpeg moved on. fMP4 live segments no
+        # longer trust mtime stability alone.
         with open(seg_path, "wb") as f:
             f.write(b"NEW_GEN_BYTES")
-        # mtime is now — but we need it stable for 500 ms to trip
-        # the fallback. Backdate to spawn_time + small offset so
-        # mtime > spawn_time AND (now - mtime) > 500 ms.
         fresh_mtime = producer._spawn_time + 0.001
         _os.utime(seg_path, (fresh_mtime, fresh_mtime))
-        # Sleep just past the stable window.
-        _time.sleep(0.6)
+        next_path = producer.segment_path(41)
+        with open(next_path, "wb") as f:
+            f.write(b"NEXT_GEN_BYTES")
+        _os.utime(next_path, (fresh_mtime, fresh_mtime))
         assert producer._segment_complete(40) is True
+    finally:
+        producer.close()
+
+
+def test_hls_producer_fmp4_live_segment_requires_next_segment_signal(tmp_path):
+    import os as _os
+    import time as _time
+
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess-live",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        proc = MagicMock()
+        proc.poll.return_value = None
+        producer._proc = proc
+        producer._spawn_time = _time.time() - 10
+        seg_path = producer.segment_path(3)
+        with open(seg_path, "wb") as f:
+            f.write(b"PARTIAL")
+        old_mtime = _time.time() - 5
+        _os.utime(seg_path, (old_mtime, old_mtime))
+
+        assert producer._segment_complete(3) is False
+    finally:
+        producer.close()
+
+
+def test_hls_producer_fmp4_final_segment_complete_after_ffmpeg_exit(tmp_path):
+    import os as _os
+    import time as _time
+
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess-final",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 60.0,
+        "hls_segment_duration": 30.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        proc = MagicMock()
+        proc.poll.return_value = 0
+        producer._proc = proc
+        producer._spawn_time = _time.time() - 10
+        seg_path = producer.segment_path(1)
+        with open(seg_path, "wb") as f:
+            f.write(b"FINAL")
+        old_mtime = _time.time() - 5
+        _os.utime(seg_path, (old_mtime, old_mtime))
+
+        assert producer._segment_complete(1) is True
     finally:
         producer.close()
 
@@ -4503,6 +4778,8 @@ def test_hls_producer_wait_for_segment_zero_blocks_until_init_ready(tmp_path):
                 f.write(b"INIT")
             with open(seg_path, "wb") as f:
                 f.write(b"SEG0")
+            with open(_os.path.join(producer.session_dir, "seg_000001.m4s"), "wb") as f:
+                f.write(b"SEG1")
 
         t = _threading.Thread(target=create_init_later, daemon=True)
         t.start()
@@ -4542,6 +4819,50 @@ def test_choose_hls_workdir_prefers_first_writable(tmp_path):
     import os as _os
 
     assert _os.path.isdir(candidate_a)
+
+
+def test_choose_hls_workdir_skips_candidate_without_required_free_space(tmp_path):
+    from resources.lib.stream_proxy import _choose_hls_workdir
+
+    parent_a = tmp_path / "parent_a"
+    parent_b = tmp_path / "parent_b"
+    parent_a.mkdir()
+    parent_b.mkdir()
+    candidate_a = str(parent_a / "nzbdav-hls")
+    candidate_b = str(parent_b / "nzbdav-hls")
+
+    def fake_disk_usage(path):
+        free = 512 if str(path).startswith(str(parent_a)) else 4096
+        return (8192, 8192 - free, free)
+
+    with patch(
+        "resources.lib.stream_proxy._HLS_WORKDIR_CANDIDATES",
+        (candidate_a, candidate_b),
+    ), patch(
+        "resources.lib.stream_proxy.shutil.disk_usage",
+        side_effect=fake_disk_usage,
+    ):
+        chosen = _choose_hls_workdir(required_bytes=1024)
+
+    assert chosen == candidate_b
+
+
+def test_choose_hls_workdir_raises_when_no_candidate_has_required_space(tmp_path):
+    from resources.lib.stream_proxy import _choose_hls_workdir
+
+    parent_a = tmp_path / "parent_a"
+    parent_a.mkdir()
+    candidate_a = str(parent_a / "nzbdav-hls")
+
+    with patch(
+        "resources.lib.stream_proxy._HLS_WORKDIR_CANDIDATES",
+        (candidate_a,),
+    ), patch(
+        "resources.lib.stream_proxy.shutil.disk_usage",
+        return_value=(8192, 7680, 512),
+    ):
+        with pytest.raises(OSError, match="free space"):
+            _choose_hls_workdir(required_bytes=1024)
 
 
 def test_choose_hls_workdir_fallback_is_not_predictable(tmp_path):
@@ -4865,6 +5186,48 @@ def test_register_session_prepare_failure_closes_partially_initialized_producer(
     assert ctx.get("mode") is None
 
 
+def test_clear_sessions_closes_pending_hls_producer_during_prepare(tmp_path):
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_context = None
+    sp._server.stream_sessions = {}
+    sp._server.pending_stream_contexts = {}
+    sp._context_lock = threading.RLock()
+    sp.port = 9999
+
+    ctx = {
+        "remote_url": "http://host/x.mkv",
+        "auth_header": None,
+        "content_type": "application/vnd.apple.mpegurl",
+        "mode": "hls",
+        "remux": True,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "total_bytes": 100,
+        "duration_seconds": 10.0,
+        "seekable": True,
+        "hls_segment_format": "fmp4",
+    }
+
+    producer_mock = MagicMock()
+    closed_during_prepare = {"value": None}
+
+    def prepare_side_effect():
+        sp.clear_sessions()
+        closed_during_prepare["value"] = producer_mock.close.called
+        raise RuntimeError("prepare interrupted")
+
+    producer_mock.prepare.side_effect = prepare_side_effect
+    with patch(
+        "resources.lib.stream_proxy._choose_hls_workdir", return_value=str(tmp_path)
+    ), patch("resources.lib.stream_proxy.HlsProducer", return_value=producer_mock):
+        with pytest.raises(RuntimeError, match="cancelled"):
+            sp._register_session(ctx)
+
+    assert closed_during_prepare["value"] is True
+
+
 def test_register_session_init_failure_does_not_call_close_on_undefined_producer():
     """Regression guard for the `producer = None` sentinel outside
     the try block: when HlsProducer.__init__ itself raises, no
@@ -4967,8 +5330,7 @@ def test_serve_remux_non_seekable_no_ss():
 
 
 def test_resolve_seek_does_not_wait_for_old_ffmpeg_before_respawn():
-    """A seek should not spend up to 2 seconds waiting for the old ffmpeg to
-    reap before the replacement process can be spawned."""
+    """Piped remux cannot map output byte offsets to source timestamps."""
     ctx = {
         "remote_url": "http://host/film.mp4",
         "auth_header": None,
@@ -4990,12 +5352,12 @@ def test_resolve_seek_does_not_wait_for_old_ffmpeg_before_respawn():
         mock_thread.return_value = thread
         seek_seconds = handler._resolve_seek(ctx, 500000000, 1000000000)
 
-    assert seek_seconds == 1800.0
-    active_proc.kill.assert_called_once()
+    assert seek_seconds is None
+    active_proc.kill.assert_not_called()
     active_proc.wait.assert_not_called()
-    thread.start.assert_called_once()
-    assert ctx["active_ffmpeg"] is None
-    assert handler.server.active_ffmpeg is None
+    thread.start.assert_not_called()
+    assert ctx["active_ffmpeg"] is active_proc
+    assert handler.server.active_ffmpeg is active_proc
 
 
 # ---------------------------------------------------------------------------
@@ -5171,8 +5533,29 @@ def test_faststart_proxy_error_notifies_user():
         handler._serve_mp4_faststart(ctx)
 
     mock_notify.assert_called_once()
-    assert mock_notify.call_args[0][0] == "NZB-DAV"
-    assert "Connection reset" in mock_notify.call_args[0][1]
+
+
+def test_faststart_proxy_clamps_payload_to_requested_virtual_range():
+    ctx = {
+        "remote_url": "http://host/movie.mp4",
+        "auth_header": None,
+        "faststart": True,
+        "header_data": b"H" * 100,
+        "virtual_size": 1000,
+        "payload_remote_start": 5000,
+        "payload_remote_end": 5899,
+        "payload_size": 900,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=120-219")
+    upstream = _mock_urlopen_response([b"P" * 512])
+
+    with patch("resources.lib.stream_proxy.urlopen", return_value=upstream) as mocked:
+        handler._serve_mp4_faststart(ctx)
+
+    assert _collect_written(handler) == b"P" * 100
+    req = mocked.call_args[0][0]
+    assert _request_header(req, "Range") == "bytes=5020-5119"
+    handler.send_header.assert_any_call("Content-Length", "100")
 
 
 def test_head_uses_session_path_context():
@@ -5823,7 +6206,7 @@ def test_serve_proxy_falls_back_to_skip_probe_after_retry_ladder_exhausted():
         sys.modules["xbmcaddon"].Addon.return_value = original
 
     mock_find_skip_offset.assert_called_once_with(ctx, 1024, 4095)
-    mock_write_zeros.assert_called_once_with(3072)
+    mock_write_zeros.assert_not_called()
     assert [call.args[0] for call in mock_sleep.call_args_list] == [2, 4, 8]
 
 
@@ -5867,12 +6250,12 @@ def test_serve_proxy_retry_ladder_flag_skips_range_retries():
 
     assert mock_stream.call_count == 1
     mock_find_skip_offset.assert_called_once_with(ctx, 1024, 4095)
-    mock_write_zeros.assert_called_once_with(3072)
+    mock_write_zeros.assert_not_called()
     assert mock_sleep.call_count == 0
 
 
-def test_serve_proxy_zero_fills_remainder_when_recovery_exhausted():
-    """All skip probes fail — zero-fill the rest of the committed response."""
+def test_serve_proxy_closes_without_zero_filling_remainder_when_recovery_exhausted():
+    """All skip probes fail — close instead of fabricating the whole response."""
     ctx = {
         "remote_url": "http://host/movie.mkv",
         "auth_header": None,
@@ -5903,10 +6286,7 @@ def test_serve_proxy_zero_fills_remainder_when_recovery_exhausted():
         handler._serve_proxy(ctx)
 
     written = _collect_written(handler)
-    assert len(written) == 8 * 1048576
-    assert written[:512000] == first_chunk
-    # Everything after the real bytes is zero-filled.
-    assert written[512000:] == bytes(8 * 1048576 - 512000)
+    assert written == first_chunk
 
 
 @patch("resources.lib.stream_proxy.xbmc")
@@ -5946,12 +6326,12 @@ def test_serve_proxy_logs_terminal_summary_on_recovery_exhausted(mock_xbmc):
     finally:
         sys.modules["xbmcaddon"].Addon.return_value = original
 
-    mock_write_zeros.assert_called_once_with(768)
+    mock_write_zeros.assert_not_called()
     logged = "\n".join(call.args[0] for call in mock_xbmc.log.call_args_list)
     assert "Pass-through summary" in logged
     assert "reason=recovery_exhausted" in logged
     assert "streamed=256" in logged
-    assert "zero_fill=768" in logged
+    assert "zero_fill=0" in logged
 
 
 @patch("resources.lib.stream_proxy.xbmc")
@@ -6895,6 +7275,28 @@ def test_prepare_stream_via_service_success_path_unchanged():
 
     assert proxy_url == "http://127.0.0.1:9999/stream/abc"
     assert info == {"remux": False}
+
+
+def test_prepare_stream_via_service_sends_prepare_token_header():
+    import json
+
+    from resources.lib.stream_proxy import prepare_stream_via_service
+
+    payload = json.dumps(
+        {"proxy_url": "http://127.0.0.1:9999/stream/abc", "remux": False}
+    ).encode()
+    resp = MagicMock()
+    resp.read.return_value = payload
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=False)
+
+    with patch("resources.lib.stream_proxy.urlopen", return_value=resp) as mocked:
+        prepare_stream_via_service(
+            9999, "http://nzbdav/movie.mkv", prepare_token="secret-token"
+        )
+
+    req = mocked.call_args[0][0]
+    assert _request_header(req, "X-NZBDAV-Token") == "secret-token"
 
 
 # --- Mid-stream resilience: upstream flaps DOWN/UP/DOWN in one session ---
