@@ -214,6 +214,18 @@ pub async fn run(
             continue;
         }
 
+        const MIN_FREE_BYTES: u64 = 10 * 1024 * 1024 * 1024;
+        let free = fs2::available_space(&thumbnails_dir).unwrap_or(u64::MAX);
+        if free < MIN_FREE_BYTES {
+            info!(
+                "image cycle skipped: {}MB free < {}MB minimum, sleeping 5 minutes",
+                free / (1024 * 1024),
+                MIN_FREE_BYTES / (1024 * 1024)
+            );
+            tokio::time::sleep(Duration::from_secs(300)).await;
+            continue;
+        }
+
         let cached_urls = tokio::task::spawn_blocking({
             let p = textures_db_path.clone();
             move || -> Result<HashSet<String>> {
