@@ -180,6 +180,13 @@ def _rewrite_offsets_recursive(data, delta):
         box_type, header_size, total_size = parsed
         if total_size < 8:
             break
+        # Bounds-check the box: a malformed file could declare a box
+        # whose total_size extends past the parent's buffer end. Without
+        # this guard, the slice at line 194 (child_data = data[body_start:body_end])
+        # silently truncates and the recursive walker walks into adjacent
+        # bytes, corrupting unrelated boxes' offsets. Closes §H.2-H3c.
+        if offset + total_size > len(data):
+            break
 
         body_start = offset + header_size
         body_end = offset + total_size
