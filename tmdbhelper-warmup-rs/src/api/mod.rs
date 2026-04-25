@@ -60,7 +60,16 @@ impl TmdbClient {
             base_url, self.api_key, append
         );
         for attempt in 0..3 {
-            let resp = self.client.get(&url).send().await.context("send request")?;
+            let resp = match self.client.get(&url).send().await {
+                Ok(r) => r,
+                Err(e) if e.is_timeout() || e.is_connect() || e.is_request() => {
+                    let backoff = Duration::from_millis(500 * (1 << attempt));
+                    warn!("tmdb transport error for {}, retry {} in {:?}: {}", base_url, attempt + 1, backoff, e);
+                    tokio::time::sleep(backoff).await;
+                    continue;
+                }
+                Err(e) => return Err(e).context("send request"),
+            };
             let status = resp.status();
             if status.is_success() {
                 return resp.json::<T>().await.with_context(|| format!("decode JSON from {}", base_url));
