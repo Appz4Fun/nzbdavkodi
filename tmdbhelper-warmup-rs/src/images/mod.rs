@@ -88,31 +88,6 @@ pub async fn run(
     thumbnails_dir: PathBuf,
     concurrency: usize,
 ) -> Result<()> {
-    let art_rows = tokio::task::spawn_blocking({
-        let p = item_details_path.clone();
-        move || -> Result<Vec<ArtRow>> {
-            let conn = Connection::open_with_flags(&p, OpenFlags::SQLITE_OPEN_READ_ONLY)
-                .with_context(|| format!("open ItemDetails.db {}", p.display()))?;
-            let mut stmt = conn.prepare("SELECT DISTINCT icon, type FROM art")?;
-            let rows = stmt
-                .query_map([], |r| {
-                    Ok(ArtRow {
-                        path: r.get(0)?,
-                        art_type: r.get(1)?,
-                    })
-                })?
-                .filter_map(|r| r.ok())
-                .collect();
-            Ok(rows)
-        }
-    })
-    .await??;
-
-    info!("image prefetch: {} distinct art rows from ItemDetails.db", art_rows.len());
-    if art_rows.is_empty() {
-        return Ok(());
-    }
-
     let sem = Arc::new(Semaphore::new(concurrency));
     let (tx, mut rx) = mpsc::channel::<DownloadResult>(200);
     let (reg_tx, mut reg_rx) = mpsc::channel::<RegisterOnly>(200);
@@ -123,6 +98,7 @@ pub async fn run(
         .build()
         .context("build image http client")?;
 
+    #[allow(unused_variables)]
     let writer_handle = {
         let textures_db_path = textures_db_path.clone();
         let thumbnails_dir = thumbnails_dir.clone();
@@ -136,35 +112,8 @@ pub async fn run(
 
             const BATCH_SIZE: usize = 200;
 
-            // Drain register-only items first (existing files missing from DB)
-            while let Ok(reg) = reg_rx.try_recv() {
-                let file_path = thumbnails_dir.join(&reg.cached_filename);
-                let data = match std::fs::read(&file_path) {
-                    Ok(d) => d,
-                    Err(_) => continue,
-                };
-                let (w, h) = parse_image_dimensions(&data);
-                let variants = texture_hash::url_variants(&reg.path, &reg.art_type);
-                for url in &variants {
-                    batch.push((url.clone(), reg.cached_filename.clone(), w, h));
-                }
-                if batch.len() >= BATCH_SIZE {
-                    if let Err(e) = db.insert_texture_batch(&batch) {
-                        error!("texture reg batch insert failed: {:?}", e);
-                    }
-                    batch.clear();
-                }
-                registered += 1;
-            }
-
             #[allow(clippy::while_let_loop)]
             loop {
-                let dl = match rx.blocking_recv() {
-                    Some(dl) => dl,
-                    None => break,
-                };
-
-                // Also drain any pending register-only items
                 while let Ok(reg) = reg_rx.try_recv() {
                     let file_path = thumbnails_dir.join(&reg.cached_filename);
                     let data = match std::fs::read(&file_path) {
@@ -176,8 +125,19 @@ pub async fn run(
                     for url in &variants {
                         batch.push((url.clone(), reg.cached_filename.clone(), w, h));
                     }
+                    if batch.len() >= BATCH_SIZE {
+                        if let Err(e) = db.insert_texture_batch(&batch) {
+                            error!("texture reg batch insert failed: {:?}", e);
+                        }
+                        batch.clear();
+                    }
                     registered += 1;
                 }
+
+                let dl = match rx.blocking_recv() {
+                    Some(dl) => dl,
+                    None => break,
+                };
 
                 let file_path = thumbnails_dir.join(&dl.cached_filename);
                 if let Some(parent) = file_path.parent() {
@@ -194,12 +154,7 @@ pub async fn run(
 
                 let variants = texture_hash::url_variants(&dl.path, &dl.art_type);
                 for url in &variants {
-                    batch.push((
-                        url.clone(),
-                        dl.cached_filename.clone(),
-                        w,
-                        h,
-                    ));
+                    batch.push((url.clone(), dl.cached_filename.clone(), w, h));
                 }
 
                 if batch.len() >= BATCH_SIZE {
@@ -221,164 +176,177 @@ pub async fn run(
                 }
             }
 
-            // Drain remaining register-only items
-            while let Ok(reg) = reg_rx.try_recv() {
-                let file_path = thumbnails_dir.join(&reg.cached_filename);
-                let data = match std::fs::read(&file_path) {
-                    Ok(d) => d,
-                    Err(_) => continue,
-                };
-                let (w, h) = parse_image_dimensions(&data);
-                let variants = texture_hash::url_variants(&reg.path, &reg.art_type);
-                for url in &variants {
-                    batch.push((url.clone(), reg.cached_filename.clone(), w, h));
-                }
-                registered += 1;
-            }
-
             if !batch.is_empty() {
                 if let Err(e) = db.insert_texture_batch(&batch) {
                     error!("texture final batch insert failed: {:?}", e);
                 }
             }
-
-            let elapsed = start.elapsed().as_secs_f64().max(1.0);
-            let mb = bytes_total as f64 / (1024.0 * 1024.0);
-            info!(
-                "image writer done: total={} registered={} rate={:.1}/s disk={:.0}MB",
-                written,
-                registered,
-                written as f64 / elapsed,
-                mb
-            );
+            info!("image writer exiting, total written={} registered={}", written, registered);
             Ok(())
         })
     };
 
-    let mut dispatched = 0u64;
-    let mut skipped = 0u64;
-
-    // Preload cached URLs from texture DB into HashSet for O(1) lookups
-    let tex_check_path = textures_db_path.clone();
-    let cached_urls: HashSet<String> = tokio::task::spawn_blocking(move || -> Result<HashSet<String>> {
-        let db = texture_db::TextureDb::open(&tex_check_path)?;
-        db.load_all_cached_urls()
-    }).await??;
-    info!("image skip cache: {} URLs loaded from Textures DB", cached_urls.len());
-
-    // Preload existing thumbnail filenames for O(1) file-existence checks
-    let existing_files: HashSet<String> = tokio::task::spawn_blocking({
-        let dir = thumbnails_dir.clone();
-        move || -> HashSet<String> {
-            let mut set = HashSet::new();
-            let Ok(entries) = std::fs::read_dir(&dir) else { return set };
-            for subdir in entries.filter_map(|e| e.ok()) {
-                if !subdir.file_type().map_or(false, |t| t.is_dir()) { continue; }
-                let prefix = subdir.file_name().to_string_lossy().to_string();
-                let Ok(files) = std::fs::read_dir(subdir.path()) else { continue };
-                for file in files.filter_map(|e| e.ok()) {
-                    let name = file.file_name().to_string_lossy().to_string();
-                    set.insert(format!("{}/{}", prefix, name));
-                }
+    loop {
+        let art_rows = tokio::task::spawn_blocking({
+            let p = item_details_path.clone();
+            move || -> Result<Vec<ArtRow>> {
+                let conn = Connection::open_with_flags(&p, OpenFlags::SQLITE_OPEN_READ_ONLY)
+                    .with_context(|| format!("open ItemDetails.db {}", p.display()))?;
+                let mut stmt = conn.prepare("SELECT DISTINCT icon, type FROM art")?;
+                let rows = stmt
+                    .query_map([], |r| {
+                        Ok(ArtRow {
+                            path: r.get(0)?,
+                            art_type: r.get(1)?,
+                        })
+                    })?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                Ok(rows)
             }
-            set
-        }
-    }).await?;
-    info!("image skip cache: {} files found on disk", existing_files.len());
+        })
+        .await??;
 
-    for row in &art_rows {
-        let ext = row.path.rsplit('.').next().unwrap_or("jpg");
-        let download_url = texture_hash::download_url(&row.path, &row.art_type);
-        let cached_filename = texture_hash::cached_filename(&download_url, ext);
-
-        if existing_files.contains(&cached_filename) {
-            let variants = texture_hash::url_variants(&row.path, &row.art_type);
-            let any_registered = variants.iter().any(|u| cached_urls.contains(u));
-            if any_registered {
-                skipped += 1;
-                continue;
-            }
-            let _ = reg_tx.try_send(RegisterOnly {
-                path: row.path.clone(),
-                art_type: row.art_type.clone(),
-                cached_filename: cached_filename.clone(),
-            });
-            skipped += 1;
+        info!("image cycle: {} art rows from ItemDetails.db", art_rows.len());
+        if art_rows.is_empty() {
+            info!("no art rows, sleeping 5 minutes");
+            tokio::time::sleep(Duration::from_secs(300)).await;
             continue;
         }
 
-        let permit = sem.clone().acquire_owned().await?;
-        let client = client.clone();
-        let tx = tx.clone();
-        let path = row.path.clone();
-        let art_type = row.art_type.clone();
-        let url = download_url.clone();
-        let cf = cached_filename.clone();
-        tokio::spawn(async move {
-            let _permit = permit;
-            for attempt in 0u32..3 {
-                let resp = match client.get(&url).send().await {
-                    Ok(r) => r,
-                    Err(e) if e.is_timeout() || e.is_connect() || e.is_request() => {
-                        let backoff = Duration::from_millis(500 * (1 << attempt));
-                        warn!("image transport error {}, retry {} in {:?}: {}", url, attempt + 1, backoff, e);
+        let cached_urls = tokio::task::spawn_blocking({
+            let p = textures_db_path.clone();
+            move || -> Result<HashSet<String>> {
+                let db = texture_db::TextureDb::open(&p)?;
+                db.load_all_cached_urls()
+            }
+        }).await??;
+        info!("image skip cache: {} cached URLs", cached_urls.len());
+
+        let existing_files = tokio::task::spawn_blocking({
+            let dir = thumbnails_dir.clone();
+            move || -> HashSet<String> {
+                let mut set = HashSet::new();
+                let Ok(entries) = std::fs::read_dir(&dir) else { return set };
+                for subdir in entries.filter_map(|e| e.ok()) {
+                    if !subdir.file_type().map_or(false, |t| t.is_dir()) { continue; }
+                    let prefix = subdir.file_name().to_string_lossy().to_string();
+                    let Ok(files) = std::fs::read_dir(subdir.path()) else { continue };
+                    for file in files.filter_map(|e| e.ok()) {
+                        let name = file.file_name().to_string_lossy().to_string();
+                        set.insert(format!("{}/{}", prefix, name));
+                    }
+                }
+                set
+            }
+        }).await?;
+        info!("image skip cache: {} files on disk", existing_files.len());
+
+        let mut dispatched = 0u64;
+        let mut skipped = 0u64;
+
+        for row in &art_rows {
+            let ext = row.path.rsplit('.').next().unwrap_or("jpg");
+            let download_url = texture_hash::download_url(&row.path, &row.art_type);
+            let cached_filename = texture_hash::cached_filename(&download_url, ext);
+
+            if existing_files.contains(&cached_filename) {
+                let variants = texture_hash::url_variants(&row.path, &row.art_type);
+                let any_registered = variants.iter().any(|u| cached_urls.contains(u));
+                if any_registered {
+                    skipped += 1;
+                    continue;
+                }
+                let _ = reg_tx.try_send(RegisterOnly {
+                    path: row.path.clone(),
+                    art_type: row.art_type.clone(),
+                    cached_filename: cached_filename.clone(),
+                });
+                skipped += 1;
+                continue;
+            }
+
+            let permit = sem.clone().acquire_owned().await?;
+            let client = client.clone();
+            let tx = tx.clone();
+            let path = row.path.clone();
+            let art_type = row.art_type.clone();
+            let url = download_url.clone();
+            let cf = cached_filename.clone();
+            tokio::spawn(async move {
+                let _permit = permit;
+                for attempt in 0u32..3 {
+                    let resp = match client.get(&url).send().await {
+                        Ok(r) => r,
+                        Err(e) if e.is_timeout() || e.is_connect() || e.is_request() => {
+                            let backoff = Duration::from_millis(500 * (1 << attempt));
+                            warn!("image transport error {}, retry {} in {:?}: {}", url, attempt + 1, backoff, e);
+                            tokio::time::sleep(backoff).await;
+                            continue;
+                        }
+                        Err(e) => {
+                            warn!("image fetch {}: {:?}", url, e);
+                            return;
+                        }
+                    };
+                    let status = resp.status();
+                    if status.is_success() {
+                        match resp.bytes().await {
+                            Ok(bytes) => {
+                                let _ = tx
+                                    .send(DownloadResult {
+                                        path,
+                                        art_type,
+                                        cached_filename: cf,
+                                        bytes: bytes.to_vec(),
+                                    })
+                                    .await;
+                            }
+                            Err(e) => warn!("image read body {}: {:?}", url, e),
+                        }
+                        return;
+                    }
+                    if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+                        let base_backoff = Duration::from_millis(500 * (1 << attempt));
+                        let retry_after = resp.headers().get("retry-after")
+                            .and_then(|v| v.to_str().ok())
+                            .and_then(|s| s.parse::<u64>().ok())
+                            .map(Duration::from_secs);
+                        let backoff = retry_after.map_or(base_backoff, |ra| ra.max(base_backoff));
+                        warn!("image {} for {}, retry {} in {:?}", status, url, attempt + 1, backoff);
                         tokio::time::sleep(backoff).await;
                         continue;
                     }
-                    Err(e) => {
-                        warn!("image fetch {}: {:?}", url, e);
-                        return;
-                    }
-                };
-                let status = resp.status();
-                if status.is_success() {
-                    match resp.bytes().await {
-                        Ok(bytes) => {
-                            let _ = tx
-                                .send(DownloadResult {
-                                    path,
-                                    art_type,
-                                    cached_filename: cf,
-                                    bytes: bytes.to_vec(),
-                                })
-                                .await;
-                        }
-                        Err(e) => warn!("image read body {}: {:?}", url, e),
-                    }
+                    warn!("image fetch {} -> {}", url, status);
                     return;
                 }
-                if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
-                    let base_backoff = Duration::from_millis(500 * (1 << attempt));
-                    let retry_after = resp.headers().get("retry-after")
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|s| s.parse::<u64>().ok())
-                        .map(Duration::from_secs);
-                    let backoff = retry_after.map_or(base_backoff, |ra| ra.max(base_backoff));
-                    warn!("image {} for {}, retry {} in {:?}", status, url, attempt + 1, backoff);
-                    tokio::time::sleep(backoff).await;
-                    continue;
-                }
-                warn!("image fetch {} -> {}", url, status);
-                return;
-            }
-            warn!("image retries exhausted for {}", url);
-        });
+                warn!("image retries exhausted for {}", url);
+            });
 
-        dispatched += 1;
-        if dispatched.is_multiple_of(10000) {
-            info!("image dispatch progress: dispatched={} skipped={}", dispatched, skipped);
+            dispatched += 1;
+            if dispatched.is_multiple_of(10000) {
+                info!("image dispatch progress: dispatched={} skipped={}", dispatched, skipped);
+            }
         }
+
+        // Wait for all in-flight downloads to complete
+        let drain = sem.acquire_many(concurrency as u32).await?;
+        drop(drain);
+
+        info!(
+            "image cycle complete: dispatched={} skipped={}, sleeping 5 minutes",
+            dispatched, skipped
+        );
+        tokio::time::sleep(Duration::from_secs(300)).await;
     }
 
-    info!(
-        "image dispatch complete: dispatched={} skipped={} (already on disk)",
-        dispatched, skipped
-    );
-
-    drop(tx);
-    drop(reg_tx);
-    writer_handle.await??;
-    Ok(())
+    #[allow(unreachable_code)]
+    {
+        drop(tx);
+        drop(reg_tx);
+        writer_handle.await??;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
