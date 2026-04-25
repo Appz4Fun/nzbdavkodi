@@ -15,7 +15,7 @@ struct Args {
     #[arg(long, env = "WARMUP_TMDB_API_KEY", default_value = "a07324c669cac4d96789197134ce272b")]
     tmdb_api_key: String,
 
-    #[arg(long, env = "WARMUP_CONCURRENCY", default_value_t = 20)]
+    #[arg(long, env = "WARMUP_CONCURRENCY", default_value_t = 40)]
     concurrency: usize,
 
     #[arg(long, env = "WARMUP_BATCH_SIZE", default_value_t = 200)]
