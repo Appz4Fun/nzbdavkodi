@@ -80,7 +80,7 @@ impl StateDb {
     pub fn mark_visited(&mut self, tmdb_id: i64, tmdb_type: TmdbType) -> Result<()> {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
         self.conn.execute(
-            "INSERT OR REPLACE INTO visited (tmdb_id, tmdb_type, visited_at) VALUES (?1, ?2, ?3)",
+            "INSERT OR REPLACE INTO visited (tmdb_id, tmdb_type, visited_at, result) VALUES (?1, ?2, ?3, 'ok')",
             params![tmdb_id, type_to_str(tmdb_type), now],
         )?;
         Ok(())

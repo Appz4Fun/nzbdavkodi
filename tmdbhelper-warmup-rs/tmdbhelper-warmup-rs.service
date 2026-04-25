@@ -1,0 +1,24 @@
+[Unit]
+Description=TMDBHelper cache warmup driver (Rust)
+After=kodi.service network-online.target
+Wants=network-online.target
+RequiresMountsFor=/var/media/CACHE_DRIVE
+
+[Service]
+Type=simple
+ExecStartPre=-/usr/bin/sqlite3 /storage/.kodi/userdata/addon_data/plugin.video.themoviedb.helper/database_07/ItemDetails.db "PRAGMA wal_checkpoint(PASSIVE);"
+ExecStart=/storage/tmdb/warmup-rs
+Environment=RUST_LOG=warmup_rs=info,warn
+Restart=on-failure
+RestartSec=60
+Nice=10
+IOSchedulingClass=2
+IOSchedulingPriority=7
+KillSignal=SIGTERM
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tmdbhelper-warmup-rs
+
+[Install]
+WantedBy=multi-user.target
