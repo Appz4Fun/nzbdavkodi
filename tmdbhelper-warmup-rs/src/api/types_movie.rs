@@ -34,6 +34,7 @@ pub struct MovieResponse {
     pub keywords: Option<KeywordList>,
     pub similar: Option<RelatedList>,
     pub recommendations: Option<RelatedList>,
+    // TMDB returns this sub-resource under the literal key "watch/providers".
     #[serde(rename = "watch/providers")]
     pub watch_providers: Option<WatchProviderRoot>,
 }
@@ -200,6 +201,7 @@ pub struct TranslationData {
     pub overview: Option<String>,
     pub runtime: Option<i64>,
     pub tagline: Option<String>,
+    // `title` for movies, `name` for TV/person — TMDB never returns both.
     pub title: Option<String>,
     pub name: Option<String>,
     pub biography: Option<String>,

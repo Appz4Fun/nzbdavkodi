@@ -12,4 +12,8 @@ async fn fight_club_fetch_full() {
     assert!(credits.crew.iter().any(|c| c.job.as_deref() == Some("Director")), "expected Director in crew");
     let images = m.images.expect("images present");
     assert!(!images.backdrops.is_empty(), "expected backdrops");
+    assert_eq!(m.imdb_id.as_deref(), Some("tt0137523"), "imdb_id field deserialized");
+    let ext = m.external_ids.expect("external_ids present");
+    assert_eq!(ext.imdb_id.as_deref(), Some("tt0137523"), "external_ids.imdb_id deserialized");
+    assert!(m.belongs_to_collection.is_none(), "Fight Club is not in a collection");
 }
