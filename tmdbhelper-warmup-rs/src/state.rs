@@ -179,6 +179,21 @@ impl StateDb {
         Ok(())
     }
 
+    pub fn requeue_expired(&mut self, max_age_days: i64) -> Result<i64> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
+        let cutoff = now - (max_age_days as f64 * 86400.0);
+        let tx = self.conn.transaction()?;
+        let count = tx.execute(
+            "INSERT OR IGNORE INTO queue (tmdb_id, tmdb_type, depth, popularity, enqueued_at)
+             SELECT tmdb_id, tmdb_type, 0, 0.0, ?1 FROM visited WHERE visited_at < ?2",
+            params![now, cutoff],
+        )?;
+        tx.execute("DELETE FROM visited WHERE visited_at < ?1", params![cutoff])?;
+        tx.commit()?;
+        Ok(count as i64)
+    }
+
     pub fn queue_size(&self) -> Result<i64> {
         Ok(self.conn.query_row("SELECT COUNT(*) FROM queue", [], |r| r.get(0))?)
     }

@@ -11,6 +11,7 @@ use crate::api::types_person::PersonResponse;
 use crate::api::types_collection::CollectionResponse;
 use crate::cache::{movie, tv, person, collection, open_writer};
 use crate::id::TmdbType;
+use crate::seed;
 use crate::state::{QueueItem, StateDb};
 
 pub struct RequeueItem {
@@ -102,6 +103,7 @@ pub async fn run(
 
     const MEGA_TX_SIZE: usize = 200;
 
+    #[allow(unused_variables)]
     let writer_handle = {
         let item_details_path = item_details_path.clone();
         let state_path_for_writer = state_path.clone();
@@ -198,14 +200,21 @@ pub async fn run(
     loop {
         let batch = state.pop_batch(batch_size)?;
         if batch.is_empty() {
-            info!("queue empty, sleeping 60s before re-check");
-            drop(state);
-            tokio::time::sleep(Duration::from_secs(60)).await;
-            state = StateDb::open(&state_path)?;
+            info!("queue empty, running seeder");
+            let seeds = seed::fetch_seeds(&client).await.unwrap_or_default();
+            info!("seeder returned {} items", seeds.len());
+
+            let requeued = state.requeue_expired(30)?;
+            info!("requeued {} expired items", requeued);
+
+            for s in &seeds {
+                state.enqueue_child(s.tmdb_id, s.tmdb_type, 0, s.popularity)?;
+            }
+
             let new_size = state.queue_size()?;
             if new_size == 0 {
-                info!("queue still empty after 60s, shutting down");
-                break;
+                info!("no new items after seeding, sleeping 1 hour");
+                tokio::time::sleep(Duration::from_secs(3600)).await;
             }
             continue;
         }
@@ -244,8 +253,11 @@ pub async fn run(
             });
         }
     }
-    drop(tx);
-    drop(requeue_tx);
-    writer_handle.await??;
-    Ok(())
+    #[allow(unreachable_code)]
+    {
+        drop(tx);
+        drop(requeue_tx);
+        writer_handle.await??;
+        Ok(())
+    }
 }

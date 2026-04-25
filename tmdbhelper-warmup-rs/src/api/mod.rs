@@ -5,8 +5,22 @@ pub mod types_collection;
 
 use anyhow::{anyhow, Context, Result};
 use reqwest::{Client, StatusCode};
+use serde::Deserialize;
 use std::time::Duration;
 use tracing::warn;
+
+#[derive(Deserialize)]
+pub struct ListResponse {
+    pub results: Vec<ListItem>,
+    pub total_pages: Option<u32>,
+}
+
+#[derive(Deserialize)]
+pub struct ListItem {
+    pub id: i64,
+    pub media_type: Option<String>,
+    pub popularity: Option<f64>,
+}
 
 const TMDB_BASE: &str = "https://api.themoviedb.org/3";
 const APPEND_MOVIE: &str = "images,videos,credits,external_ids,release_dates,translations,keywords,similar,recommendations,watch/providers";
@@ -50,6 +64,39 @@ impl TmdbClient {
 
     pub async fn get_collection(&self, id: i64) -> Result<types_collection::CollectionResponse> {
         self.get_json(&format!("{}/collection/{}", TMDB_BASE, id), APPEND_COLLECTION).await
+    }
+
+    pub async fn get_list(&self, path: &str, page: u32) -> Result<ListResponse> {
+        let url = format!("{}/{}?api_key={}&page={}", TMDB_BASE, path, self.api_key, page);
+        for attempt in 0..3 {
+            let resp = match self.client.get(&url).send().await {
+                Ok(r) => r,
+                Err(e) if e.is_timeout() || e.is_connect() || e.is_request() => {
+                    let backoff = Duration::from_millis(500 * (1 << attempt));
+                    warn!("tmdb list transport error for {}, retry {} in {:?}: {}", path, attempt + 1, backoff, e);
+                    tokio::time::sleep(backoff).await;
+                    continue;
+                }
+                Err(e) => return Err(e).context("send list request"),
+            };
+            let status = resp.status();
+            if status.is_success() {
+                return resp.json::<ListResponse>().await.with_context(|| format!("decode list JSON from {}", path));
+            }
+            if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+                let base_backoff = Duration::from_millis(500 * (1 << attempt));
+                let retry_after = resp.headers().get("retry-after")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .map(Duration::from_secs);
+                let backoff = retry_after.map_or(base_backoff, |ra| ra.max(base_backoff));
+                warn!("tmdb {} for list {}, retry {} in {:?}", status, path, attempt + 1, backoff);
+                tokio::time::sleep(backoff).await;
+                continue;
+            }
+            return Err(anyhow!("tmdb {} for list {}", status, path));
+        }
+        Err(anyhow!("tmdb list retries exhausted for {}", path))
     }
 
     async fn get_json<T: serde::de::DeserializeOwned>(&self, base_url: &str, append: &str) -> Result<T> {
