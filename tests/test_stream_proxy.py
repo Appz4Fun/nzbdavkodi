@@ -6903,8 +6903,6 @@ def test_classify_upstream_error_distinguishes_5xx_from_4xx():
     """HTTPError 5xx → HTTP_SERVER_ERROR (nzbdav struggling), 4xx →
     HTTP_CLIENT_ERROR (auth / path issue). Both are distinct from a
     network-level outage because the server DID respond."""
-    from urllib.error import HTTPError
-
     from resources.lib.stream_proxy import (
         _UPSTREAM_REACHABILITY_HTTP_CLIENT_ERROR,
         _UPSTREAM_REACHABILITY_HTTP_SERVER_ERROR,
@@ -7001,8 +6999,6 @@ def test_stream_upstream_range_does_not_notify_on_4xx():
     """HTTPError 404 means nzbdav is UP but the path is wrong. That
     shouldn't trigger the "nzbdav unreachable" notification — it's a
     stream-specific issue, not an outage."""
-    from urllib.error import HTTPError
-
     ctx = {
         "remote_url": "http://nzbdav/missing.mkv",
         "auth_header": None,
@@ -7258,8 +7254,6 @@ def test_prepare_stream_via_service_success_path_unchanged():
     """Happy path: urlopen returns JSON with proxy_url, function
     returns (proxy_url, rest_of_dict). The new error wrapping must
     not interfere with the normal success flow."""
-    import json
-
     from resources.lib.stream_proxy import prepare_stream_via_service
 
     payload = json.dumps(
@@ -7278,8 +7272,6 @@ def test_prepare_stream_via_service_success_path_unchanged():
 
 
 def test_prepare_stream_via_service_sends_prepare_token_header():
-    import json
-
     from resources.lib.stream_proxy import prepare_stream_via_service
 
     payload = json.dumps(

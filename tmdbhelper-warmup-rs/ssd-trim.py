@@ -14,7 +14,6 @@ import os
 import re
 import struct
 import subprocess
-import sys
 import syslog
 import time
 
@@ -108,7 +107,7 @@ def trim_ranges(ranges, total_sectors):
         while lba_count > 0:
             chunk = min(lba_count, MAX_UNMAP_LBA)
             cmd = [SG_UNMAP, f"--lba={lba_start}", f"--num={chunk}", "--force", DEV]
-            r = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            r = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=False)
             if r.returncode != 0:
                 errors += 1
                 break
@@ -143,7 +142,7 @@ def freeze_disk():
     subprocess.run(["sync"], check=False)
     time.sleep(1)
     r = subprocess.run(["mount", "-o", "remount,ro", MOUNT_POINT],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, check=False)
     if r.returncode != 0:
         print(f"WARNING: remount ro failed: {r.stderr.strip()}")
         print("Falling back to SIGSTOP on warmup-rs processes")
