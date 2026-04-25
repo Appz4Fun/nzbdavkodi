@@ -299,6 +299,91 @@ def test_fetch_moov_already_faststart():
     assert layout["moov_before_mdat"] is True
 
 
+def test_fetch_remote_mp4_layout_rejects_zero_file_size():
+    """TODO.md §H.2-H3f: a zero-byte file would otherwise produce
+    `Range: bytes=0--1` (head_size = min(_HEAD_PROBE_SIZE, 0) = 0,
+    end = -1) — bail out before any HTTP call."""
+    from resources.lib.mp4_parser import fetch_remote_mp4_layout
+
+    with patch("resources.lib.mp4_parser.urlopen") as mock_urlopen:
+        layout = fetch_remote_mp4_layout("http://host/file.mp4", 0, auth_header=None)
+
+    assert layout is None
+    # No network call should be issued for an empty file.
+    assert mock_urlopen.call_count == 0
+
+
+def test_fetch_remote_mp4_layout_rejects_negative_file_size():
+    """TODO.md §H.2-H3f: callers occasionally pass file_size = -1 from
+    a failed Content-Length parse. Treat as empty rather than firing a
+    bytes=0--2 range request."""
+    from resources.lib.mp4_parser import fetch_remote_mp4_layout
+
+    with patch("resources.lib.mp4_parser.urlopen") as mock_urlopen:
+        layout = fetch_remote_mp4_layout("http://host/file.mp4", -1, auth_header=None)
+
+    assert layout is None
+    assert mock_urlopen.call_count == 0
+
+
+def test_fetch_remote_mp4_layout_rejects_overlapping_moov_mdat():
+    """TODO.md §H.2-H3e: a tail probe can land inside an mdat that's
+    larger than the head probe shows; if the bytes there happen to
+    parse as a `moov` header we'd serve mdat content as moov on the
+    fast-start path, with corrupt offsets. Overlap check rejects the
+    layout instead of trying to use it.
+
+    Construction: head probe sees ftyp + mdat(declared 950). The byte
+    at mdat_end is non-moov, so `_find_moov_after_mdat` returns None.
+    The tail probe then returns a synthetic buffer whose first bytes
+    parse as a moov box at absolute offset 100 — well inside the
+    declared mdat range (32..982).
+    """
+    import struct
+
+    from resources.lib.mp4_parser import fetch_remote_mp4_layout
+
+    file_size = 1000
+    ftyp = struct.pack(">I", 32) + b"ftyp" + b"\x00" * 24
+    # mdat declares size 950 — body extends to 982.
+    mdat_header = struct.pack(">I", 950) + b"mdat"
+    head_payload = ftyp + mdat_header + b"\x00" * (file_size - len(ftyp) - 8)
+
+    # Synthetic tail buffer that scan_top_level_boxes parses as a moov
+    # at offset 0. tail_start = 1000 - 512 = 488, but scan_top_level_boxes
+    # finds moov at relative offset 0 → moov_abs = 488. That's inside
+    # mdat's declared range (32..982).
+    fake_moov = struct.pack(">I", 60) + b"moov" + b"\x00" * 52
+    # Pad the tail to >= 60 bytes so scan_top_level_boxes can read the
+    # full moov box; rest is irrelevant.
+    tail_payload = fake_moov + b"\x00" * 452
+
+    def mock_urlopen(req, timeout=None):
+        rng = req.get_header("Range") or ""
+        parts = rng.replace("bytes=", "").split("-")
+        start = int(parts[0])
+        end = int(parts[1]) if parts[1] else file_size - 1
+
+        # Head probe: 0..(file_size-1) — return our crafted head with
+        # the lying mdat. This is also where _find_moov_after_mdat
+        # probes (at byte 982) — return non-moov bytes there.
+        if start == 0:
+            return _make_mock_response(head_payload[: end + 1])
+        # Tail probe: returns the fake-moov payload.
+        if start >= 488 and end == file_size - 1:
+            return _make_mock_response(tail_payload[: end - start + 1])
+        # _find_moov_after_mdat probes around byte 982 (mdat_end) for
+        # a moov header; return zeros to fail that check.
+        return _make_mock_response(b"\x00" * (end - start + 1))
+
+    with patch("resources.lib.mp4_parser.urlopen", side_effect=mock_urlopen):
+        layout = fetch_remote_mp4_layout(
+            "http://host/file.mp4", file_size, auth_header=None
+        )
+
+    assert layout is None, "overlapping moov/mdat layout must be rejected"
+
+
 def test_build_faststart_layout_moov_at_end():
     """Build virtual faststart layout with rewritten offsets."""
     from resources.lib.mp4_parser import build_faststart_layout

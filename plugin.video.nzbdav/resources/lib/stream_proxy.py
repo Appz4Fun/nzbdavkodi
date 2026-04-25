@@ -50,6 +50,7 @@ except (ImportError, ModuleNotFoundError):
 
 from resources.lib.dv_source import probe_dolby_vision_source
 from resources.lib.http_util import notify as _notify
+from resources.lib.http_util import redact_text as _redact_text
 from resources.lib.kodi_advancedsettings import has_cache_memorysize_zero  # noqa: E402
 
 # Singleton proxy instance
@@ -805,6 +806,28 @@ def _validate_url(url):
         raise ValueError("URL contains control characters: {}".format(repr(url)[:60]))
 
 
+def _extract_session_id_from_proxy_url(proxy_url):
+    """Pull the session id back out of a `/stream/<id>` or `/hls/<id>/...` URL.
+
+    Used by the orphan-session cleanup path on /prepare write-failure.
+    Returns the session id string or None if the URL doesn't match the
+    expected proxy-URL shapes.
+    """
+    if not proxy_url:
+        return None
+    try:
+        path = urlsplit(proxy_url).path
+    except (TypeError, ValueError):
+        return None
+    if path.startswith("/stream/"):
+        rest = path[len("/stream/") :]
+        return rest.split("/", 1)[0] or None
+    if path.startswith("/hls/"):
+        rest = path[len("/hls/") :]
+        return rest.split("/", 1)[0] or None
+    return None
+
+
 def _notify_error(message):
     """Best-effort notification helper safe to call from proxy threads."""
     try:
@@ -1028,7 +1051,19 @@ class _StreamHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _start_remux_process(self, ctx, requested_start, seek_seconds):
-        """Launch ffmpeg for a remux response and register it on the session."""
+        """Launch ffmpeg for a remux response and register it on the session.
+
+        Uses a CAS-style guard against the H1d race: two concurrent
+        range requests on the same session can both pass the
+        "no active ffmpeg" check in `_resolve_seek` and reach the
+        spawn line below. Whichever thread reaches the lock-protected
+        store last would otherwise orphan the other thread's ffmpeg
+        process (still running, no one tracking it for cleanup). We
+        instead snapshot the current ctx["active_ffmpeg"] under the
+        lock before storing; if a winner is already present we kill
+        our just-spawned proc and pretend the winner's spawn is ours.
+        Closes TODO.md §H.2-H1d.
+        """
         cmd = self._build_ffmpeg_cmd(ctx, seek_seconds=seek_seconds)
         if not self._is_safe_ffmpeg_cmd(cmd):
             xbmc.log("NZB-DAV: Refusing to start unsafe ffmpeg command", xbmc.LOGERROR)
@@ -1051,6 +1086,26 @@ class _StreamHandler(BaseHTTPRequestHandler):
 
         lock = self._ctx_lock(ctx, self.server)
         with lock:
+            existing = ctx.get("active_ffmpeg")
+            if existing is not None and existing.poll() is None:
+                # Another thread won the race. Kill our orphan.
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+                try:
+                    proc.wait(timeout=2)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
+                xbmc.log(
+                    "NZB-DAV: CAS-killed duplicate ffmpeg pid={} "
+                    "(winner pid={})".format(
+                        getattr(proc, "pid", "?"),
+                        getattr(existing, "pid", "?"),
+                    ),
+                    xbmc.LOGWARNING,
+                )
+                return existing, lock
             ctx["active_ffmpeg"] = proc
             ctx["current_byte_pos"] = requested_start
             self.server.active_ffmpeg = proc
@@ -1261,8 +1316,29 @@ class _StreamHandler(BaseHTTPRequestHandler):
         result.update(stream_info)
         resp = json.dumps(result).encode()
         self.send_header("Content-Length", str(len(resp)))
-        self.end_headers()
-        self.wfile.write(resp)
+        try:
+            self.end_headers()
+            self.wfile.write(resp)
+        except (BrokenPipeError, ConnectionResetError, OSError) as e:
+            # Plugin client gave up before we finished — most likely the
+            # 60 s urlopen timeout in ``prepare_stream_via_service``
+            # firing while a slow ``_prepare_tempfile_faststart`` remux
+            # was still running server-side. The session is now an
+            # orphan: there is no client URL holder and the tempfile
+            # would otherwise survive until the next play (`clear_sessions`)
+            # or the 6-hour TTL prune. Tear it down immediately so disk
+            # use stays bounded by what's actually being watched.
+            # Closes TODO.md §H.2-H12.
+            session_id = _extract_session_id_from_proxy_url(proxy_url)
+            if session_id is not None:
+                proxy.cleanup_session_by_id(session_id)
+            xbmc.log(
+                "NZB-DAV: /prepare client disconnected before response "
+                "write; cleaned up session={} (reason={})".format(
+                    session_id, e.__class__.__name__
+                ),
+                xbmc.LOGINFO,
+            )
 
     def do_HEAD(self):
         """Respond to HEAD with content metadata (type, length, ranges)."""
@@ -3618,6 +3694,27 @@ class StreamProxy:
         for ctx in sessions:
             self._cleanup_session(ctx)
 
+    def cleanup_session_by_id(self, session_id):
+        """Tear down a single session by id, cleanup outside the lock.
+
+        Used by the /prepare write-failure path when the plugin client
+        disconnects before the response is delivered (e.g. 60 s urlopen
+        timeout firing during a slow tempfile-faststart remux). Without
+        this, the session lingers until the next ``prepare_stream`` call
+        runs ``clear_sessions``, or the 6-hour TTL prune fires —
+        meaning a tempfile from a give-up'd play could occupy disk for
+        hours. Closes TODO.md §H.2-H12.
+        """
+        if not self._server or not session_id:
+            return
+        with self._context_lock:
+            sessions = getattr(self._server, "stream_sessions", {})
+            ctx = sessions.pop(session_id, None)
+            if ctx is not None and getattr(self._server, "stream_context", None) is ctx:
+                self._server.stream_context = None
+        if ctx is not None:
+            self._cleanup_session(ctx)
+
     @staticmethod
     def _try_faststart_layout(remote_url, content_length, auth_header):
         """Attempt virtual moov-relocation for an MP4.
@@ -3842,7 +3939,11 @@ class StreamProxy:
                 self._server.stream_sessions = {}
             self._server.stream_context = ctx
             self._server.stream_sessions[session_id] = ctx
-            self._prune_sessions_locked(keep_session=session_id)
+            evicted = self._prune_sessions_locked(keep_session=session_id)
+        # Cleanup outside the lock — `_cleanup_session` does proc.kill +
+        # proc.wait, which on a stuck ffmpeg can block other lock waiters.
+        for evicted_ctx in evicted:
+            self._cleanup_session(evicted_ctx)
 
         if ctx.get("mode") == "hls":
             return "http://127.0.0.1:{}/hls/{}/playlist.m3u8".format(
@@ -3851,10 +3952,18 @@ class StreamProxy:
         return "http://127.0.0.1:{}/stream/{}".format(self.port, session_id)
 
     def _prune_sessions_locked(self, keep_session=None):
-        """Drop expired sessions and cap the total number retained."""
+        """Drop expired sessions and cap the total number retained.
+
+        Returns the list of evicted ctx dicts so the *caller* can do the
+        actual `_cleanup_session(ctx)` work OUTSIDE `_context_lock`. The
+        cleanup path runs `proc.kill()` + `proc.wait()` and on a stuck
+        ffmpeg can block long enough to wedge any other thread waiting
+        on `_context_lock`. Closes TODO.md §H.2-H1e.
+        """
         self._assert_context_lock_owned()
         sessions = getattr(self._server, "stream_sessions", {})
         now = time.time()
+        evicted = []
 
         expired = [
             session_id
@@ -3866,7 +3975,7 @@ class StreamProxy:
         for session_id in expired:
             ctx = sessions.pop(session_id, None)
             if ctx is not None:
-                self._cleanup_session(ctx)
+                evicted.append(ctx)
 
         while len(sessions) > _MAX_STREAM_SESSIONS:
             removable = sorted(
@@ -3882,7 +3991,9 @@ class StreamProxy:
             _, session_id = removable[0]
             ctx = sessions.pop(session_id, None)
             if ctx is not None:
-                self._cleanup_session(ctx)
+                evicted.append(ctx)
+
+        return evicted
 
     def prepare_stream(self, remote_url, auth_header=None):
         """Set up proxy for a new stream.
@@ -4427,8 +4538,16 @@ class StreamProxy:
                         return
                     if len(collected[0]) > budget:
                         return
-            except Exception:  # pylint: disable=broad-except
-                pass
+            except Exception as exc:  # pylint: disable=broad-except
+                # Log the failure mode rather than swallowing silently —
+                # a stderr decode error or pipe close that hides a real
+                # probe failure used to surface as duration=None with no
+                # diagnostic in kodi.log. Closes TODO.md §H.3 silent
+                # stderr-reader failure.
+                xbmc.log(
+                    "NZB-DAV: {} probe stderr-reader failed: {}".format(label, exc),
+                    xbmc.LOGWARNING,
+                )
             finally:
                 done.set()
 
@@ -4452,6 +4571,16 @@ class StreamProxy:
             proc.wait(timeout=5)
         except (subprocess.TimeoutExpired, OSError):
             pass
+
+        # Join the reader thread now that the proc is dead — its EOF on
+        # stderr is the loop-exit condition, so once kill() takes effect
+        # the thread should terminate within milliseconds. Joining here
+        # (with a small timeout safety net) prevents probe threads from
+        # accumulating in long-running services that probe a lot, e.g. a
+        # search session that prepares many candidate streams.
+        # daemon=True still covers the pathological case where stderr
+        # never EOFs. Closes TODO.md §H.3 probe-reader thread leak.
+        reader.join(timeout=2)
 
         result = parser(collected[0])
         if result is None and len(collected[0]) > budget:
@@ -4511,9 +4640,13 @@ class StreamProxy:
             )
             _, stderr = proc.communicate(timeout=600)  # 10 min timeout
             if proc.returncode != 0:
+                # ffmpeg error messages routinely echo the full input
+                # URL, including embedded basic-auth (legacy callers)
+                # and apikey=... query strings. Strip those before they
+                # land in kodi.log. Closes TODO.md §H.2-H2b.
                 xbmc.log(
                     "NZB-DAV: Temp faststart failed: {}".format(
-                        stderr.decode(errors="replace")[:300]
+                        _redact_text(stderr.decode(errors="replace")[:300])
                     ),
                     xbmc.LOGWARNING,
                 )

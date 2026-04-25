@@ -33,6 +33,38 @@ def test_http_get_passes_timeout(mock_urlopen):
     assert kwargs.get("timeout") == 30
 
 
+@patch("resources.lib.http_util.urlopen")
+def test_http_get_rejects_non_http_schemes(mock_urlopen):
+    """TODO.md §H.2-H14: http_get must reject file:// / ftp:// schemes
+    so a misconfigured URL setting can't read /etc/passwd via urllib's
+    default opener. urlopen should never be invoked for these."""
+    import pytest
+
+    for bad_url in (
+        "file:///etc/passwd",
+        "ftp://anonymous@example.com/etc/passwd",
+        "gopher://example.com/",
+        "data:text/plain,hello",
+    ):
+        with pytest.raises(ValueError):
+            http_get(bad_url)
+    assert mock_urlopen.call_count == 0
+
+
+@patch("resources.lib.http_util.urlopen")
+def test_http_get_accepts_http_and_https(mock_urlopen):
+    """The scheme guard must not break the legitimate http/https paths."""
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = b"ok"
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    mock_urlopen.return_value = mock_resp
+
+    assert http_get("http://example.com/api") == "ok"
+    assert http_get("https://example.com/api") == "ok"
+    assert mock_urlopen.call_count == 2
+
+
 def test_notify_does_not_crash():
     """notify should call xbmc.executebuiltin without error."""
     notify("Test", "Message", 3000)

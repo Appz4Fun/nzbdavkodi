@@ -289,22 +289,29 @@ def _get_filter_settings():
         ],
     )
 
+    # ISO 639-1 codes match PTT's `parsed["languages"]` output (lowercase
+    # two-letter codes). The UI labels would have been more readable in
+    # the settings collection, but `matches_filters` does a direct
+    # ``lang in settings["languages"]`` membership check against PTT
+    # output — comparing "en" against "English" never matched, so any
+    # enabled language filter rejected every result. Closes
+    # TODO.md §H.2-H11.
     languages = _collect_enabled(
         addon,
         [
-            ("filter_english", "English"),
-            ("filter_spanish", "Spanish"),
-            ("filter_french", "French"),
-            ("filter_german", "German"),
-            ("filter_italian", "Italian"),
-            ("filter_portuguese", "Portuguese"),
-            ("filter_dutch", "Dutch"),
-            ("filter_russian", "Russian"),
-            ("filter_japanese", "Japanese"),
-            ("filter_korean", "Korean"),
-            ("filter_chinese", "Chinese"),
-            ("filter_arabic", "Arabic"),
-            ("filter_hindi", "Hindi"),
+            ("filter_english", "en"),
+            ("filter_spanish", "es"),
+            ("filter_french", "fr"),
+            ("filter_german", "de"),
+            ("filter_italian", "it"),
+            ("filter_portuguese", "pt"),
+            ("filter_dutch", "nl"),
+            ("filter_russian", "ru"),
+            ("filter_japanese", "ja"),
+            ("filter_korean", "ko"),
+            ("filter_chinese", "zh"),
+            ("filter_arabic", "ar"),
+            ("filter_hindi", "hi"),
         ],
     )
 

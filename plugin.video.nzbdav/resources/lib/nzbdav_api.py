@@ -13,6 +13,7 @@ import xbmc
 import xbmcaddon
 
 from resources.lib.http_util import http_get as _http_get
+from resources.lib.http_util import redact_text as _redact_text
 
 # nzbdav's /api?mode=addurl handler fetches the .nzb from the indexer,
 # parses the XML, and enumerates segments before returning. On a big
@@ -154,7 +155,10 @@ def submit_nzb(nzb_url, nzb_name=""):
     try:
         base_url, api_key = _get_settings()
     except Exception as e:  # pylint: disable=broad-except
-        xbmc.log("NZB-DAV: Failed to read nzbdav settings: {}".format(e), xbmc.LOGERROR)
+        xbmc.log(
+            "NZB-DAV: Failed to read nzbdav settings: {}".format(_redact_text(str(e))),
+            xbmc.LOGERROR,
+        )
         return None, None
     params = {
         "mode": "addurl",
@@ -285,7 +289,9 @@ def cancel_job(nzo_id, timeout=3):
         base_url, api_key = _get_settings()
     except Exception as e:  # pylint: disable=broad-except
         xbmc.log(
-            "NZB-DAV: cancel_job failed to read settings: {}".format(e),
+            "NZB-DAV: cancel_job failed to read settings: {}".format(
+                _redact_text(str(e))
+            ),
             xbmc.LOGERROR,
         )
         return False
@@ -312,7 +318,9 @@ def cancel_job(nzo_id, timeout=3):
         # prevents the cancel from reaching nzbdav should just get logged
         # and swallowed so the caller doesn't cascade into error dialogs.
         xbmc.log(
-            "NZB-DAV: cancel_job network error for nzo_id={}: {}".format(nzo_id, e),
+            "NZB-DAV: cancel_job network error for nzo_id={}: {}".format(
+                nzo_id, _redact_text(str(e))
+            ),
             xbmc.LOGWARNING,
         )
         return False
@@ -363,7 +371,9 @@ def get_job_history(nzo_id):
         response = _coerce_response_dict(json.loads(response_text))
     except Exception as e:  # pylint: disable=broad-except
         xbmc.log(
-            "NZB-DAV: Job history request failed for nzo_id={}: {}".format(nzo_id, e),
+            "NZB-DAV: Job history request failed for nzo_id={}: {}".format(
+                nzo_id, _redact_text(str(e))
+            ),
             xbmc.LOGDEBUG,
         )
         return None
@@ -392,7 +402,9 @@ def find_completed_by_name(name):
         base_url, api_key = _get_settings()
     except Exception as e:  # pylint: disable=broad-except
         xbmc.log(
-            "NZB-DAV: Settings read failed in find_completed_by_name: {}".format(e),
+            "NZB-DAV: Settings read failed in find_completed_by_name: {}".format(
+                _redact_text(str(e))
+            ),
             xbmc.LOGDEBUG,
         )
         return None
@@ -414,7 +426,9 @@ def find_completed_by_name(name):
         response = _coerce_response_dict(json.loads(response_text))
     except Exception as e:  # pylint: disable=broad-except
         xbmc.log(
-            "NZB-DAV: History search request failed for '{}': {}".format(name, e),
+            "NZB-DAV: History search request failed for '{}': {}".format(
+                name, _redact_text(str(e))
+            ),
             xbmc.LOGDEBUG,
         )
         return None
@@ -442,7 +456,9 @@ def find_completed_by_name(name):
             response = _coerce_response_dict(json.loads(response_text))
         except Exception as e:  # pylint: disable=broad-except
             xbmc.log(
-                "NZB-DAV: History fallback request failed for '{}': {}".format(name, e),
+                "NZB-DAV: History fallback request failed for '{}': {}".format(
+                    name, _redact_text(str(e))
+                ),
                 xbmc.LOGDEBUG,
             )
             return None
@@ -510,7 +526,9 @@ def find_queued_by_name(name):
         response = _coerce_response_dict(json.loads(response_text))
     except Exception as e:  # pylint: disable=broad-except
         xbmc.log(
-            "NZB-DAV: find_queued_by_name request failed: {}".format(e),
+            "NZB-DAV: find_queued_by_name request failed: {}".format(
+                _redact_text(str(e))
+            ),
             xbmc.LOGWARNING,
         )
         return None
@@ -566,7 +584,9 @@ def get_completed_names():
         base_url, api_key = _get_settings()
     except Exception as e:  # pylint: disable=broad-except
         xbmc.log(
-            "NZB-DAV: Settings read failed in get_completed_names: {}".format(e),
+            "NZB-DAV: Settings read failed in get_completed_names: {}".format(
+                _redact_text(str(e))
+            ),
             xbmc.LOGDEBUG,
         )
         return set()
@@ -643,7 +663,9 @@ def get_job_status(nzo_id):
         # crash here would kill the poll loop, so we log and return None
         # so the caller treats the tick as "no data, try again".
         xbmc.log(
-            "NZB-DAV: Job status request failed for nzo_id={}: {}".format(nzo_id, e),
+            "NZB-DAV: Job status request failed for nzo_id={}: {}".format(
+                nzo_id, _redact_text(str(e))
+            ),
             xbmc.LOGERROR,
         )
         return None

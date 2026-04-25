@@ -1326,87 +1326,12 @@ Run the next bug-hunt pass on a dated tree if you want a fresh open-issue list �
 
 #### H.2.HIGH
 
-##### H1. Stream proxy session/lifetime races (cluster of 7+ findings)
+##### H1. Stream proxy session/lifetime races — H1a/b still open (architectural)
 
-- **H1a. Use-after-free on prune:** handler reads `ctx`, dispatches; concurrent prune can `pop` + `_cleanup_session(ctx)` in between, handler serves from a deleted temp file and killed ffmpeg. (`stream_proxy.py:204 vs 981-983`)
-- **H1b. LRU eviction kills active playback:** the 9th `prepare_stream` kills the oldest active playback via `_cleanup_session`. (`stream_proxy.py:985-993`)
-- **H1c. TTL prune trusts stale `last_access`:** playbacks >6h get evicted mid-stream. (`stream_proxy.py:973-983`)
-- **H1d. Concurrent seek spawns duplicate ffmpeg:** two concurrent GETs both spawn ffmpeg and store as `active_ffmpeg`; first finisher's `is` proc check only clears its own slot, leaving two ffmpegs fighting over stdout. (`stream_proxy.py:514-580`)
-- **H1e. `_register_session` holds `_context_lock` while calling `_cleanup_session`,** blocking `proc.kill()/wait()`. (`stream_proxy.py:959-964`)
-- **H1f. `stop()` clears sessions while in-flight handlers still hold `ctx` refs.** (`stream_proxy.py:879-892`)
-- **H1g. `_context_lock` lives on StreamProxy, not the handler/server** — `_get_stream_context()` reads `stream_sessions` and mutates `ctx["last_access"]` with no lock. (`stream_proxy.py:203-207`)
+Most of the original seven findings closed: `clear_sessions` does snapshot-then-cleanup; `_get_stream_context` is `_get_server_context_lock`-wrapped; `_prune_sessions_locked` returns evictions for caller-side cleanup; H1d's concurrent-spawn race closed via the CAS pattern in `_start_remux_process`. What remains needs a refactor that's bigger than a one-line fix:
 
-##### H2. Credential leaks via ffmpeg argv and URL redaction gaps
-
-- **H2a. `_embed_auth_in_url` splices `user:password@host` into ffmpeg argv;** credentials visible in `/proc/<pid>/cmdline` and `ps -ef`. (`stream_proxy.py:1307-1322`, `1240`, `115-141`, `309-321`, `1215-1239`)
-- **H2b. `_prepare_tempfile_faststart` logs `stderr.decode()[:300]` on non-zero exit;** ffmpeg messages echo full URL with basic-auth. (`stream_proxy.py:1240-1247`)
-- **H2c. `redact_url` only redacts `apikey`;** `password/auth/token/api_key/key/secret/access_token` all leak. (`http_util.py:14`)
-- **H2d. `redact_url` does not redact `user:password@host` userinfo in netloc.** (`http_util.py:10-19`)
-- **H2e. HTTPError/URLError messages containing full URL with `apikey=`** surfaced to user via `_hydra_unavailable_error` and notifications. (`hydra.py:96-130`)
-- **H2f. `nzbdav_api.py` exception messages can contain unredacted apikey URLs.** (`nzbdav_api.py:74`)
-
-##### H3. mp4_parser unvalidated box sizes (cluster of 6 findings)
-
-- **H3a. DoS via unbounded count:** `_rewrite_stco`/`_rewrite_co64` read attacker-controlled count as unbounded uint32 and iterate `range(count)`; `count=0xFFFFFFFF` → 4-billion-iteration loop. (`mp4_parser.py:98-117`)
-- **H3b. O(N²) memory in moov rewrite:** `_rewrite_offsets_recursive` slices `data[body_start:body_end]` and re-parses per box; a 50 MB moov hangs the proxy. (`mp4_parser.py:152-155`)
-- **H3c. No bounds validation:** no check that `offset + total_size` stays within `len(data)`; child boxes claiming size > parent corrupt the buffer. (`mp4_parser.py:135`)
-- **H3d. `scan_top_level_boxes` advances by `total_size` even when `read_box_header` returns `size == 0`,** silently discarding everything after. (`mp4_parser.py:81`)
-- **H3e. No moov/mdat overlap check;** malformed file passes as faststart with overlapping ranges. (`mp4_parser.py:83-85`)
-- **H3f. `_find_moov_after_mdat` can produce `file_size - 1 = -1` on empty files → malformed Range.** (`mp4_parser.py:225-239`)
-
-##### H4. Stream proxy upstream response validation gaps
-
-- **H4a. `_stream_upstream_range` never validates `resp.status`;** if upstream returns 200 instead of 206, content streams from offset 0 while client expects start — silent corruption. (`stream_proxy.py:736-758`)
-- **H4b. `_serve_mp4_faststart` writes whole 1 MB chunks without clamping to `length - bytes_sent`;** emits up to ~1 MB past advertised Content-Length on partial-range requests. (`stream_proxy.py:437-444`)
-- **H4c. Nothing bounds written by `end - start + 1`;** misbehaving upstream exceeds advertised Content-Length. (`stream_proxy.py:744-758`)
-- **H4d. Empty chunk from upstream treated as EOF;** on a slow connection this could be a temporary condition, prematurely ending the stream. (`stream_proxy.py:440`)
-
-##### H5. `_poll_once` non-daemon threads leak across iterations
-**File:** `resolver.py:420-425`. Non-daemon threads with `join(timeout=10)` leak across iterations.
-
-##### H6. `nzbdav_api.py` HTTP calls with no timeout — indefinite blocking
-**Files:** `nzbdav_api.py:111`, `154`, `178`, `226`. `get_job_history`, `find_completed_by_name`, `get_completed_names` call `_http_get(url)` with no timeout, blocking the resolver indefinitely.
-
-##### H7. Broad exception catches mask specific errors and swallow everything
-
-- **H7a. `nzbdav_api.py:74`:** `except (URLError, json.JSONDecodeError, Exception)` — `Exception` swallows everything; bare except collapses 401/403/404/timeout to `None`.
-- **H7b. `hydra.py:96`, `120`:** `except (URLError, Exception)` — catching `Exception` after `URLError` (which is a subclass of `OSError`) means all exceptions are caught, including `KeyboardInterrupt` and `SystemExit` in Python 2, and `MemoryError` in any version. The `URLError` in the tuple is redundant.
-
-##### H8. Service monitor: `xbmcgui.Dialog().ok()` from service loop thread
-**File:** `service.py:233-238`. Calling `xbmcgui.Dialog().ok()` from the service loop (every 1 s) blocks the loop until the user dismisses the dialog.
-
-##### H9. `resolve_and_play` error path escapes without `setResolvedUrl(handle, False)`
-**File:** `resolver.py:666-669`. `_get_poll_settings()` and `xbmcgui.DialogProgress().create()` run outside `resolve()`'s `try/except`.
-
-##### H10. `_play_via_proxy` never sets `nzbdav.active`/`stream_url`/`stream_title`
-**File:** `resolver.py:319-359`. Service-side retry and error dialogs never fire on the RunPlugin code path.
-
-##### H11. Language filter compares PTT lowercase codes against UI labels
-**File:** `filter.py:424`. Compares `"en"`, `"es"` against `"English"` — any enabled language filter rejects every result.
-
-##### H12. `prepare_stream_via_service` 60s HTTP timeout vs 600s ffmpeg allowance
-**Files:** `stream_proxy.py:1307-1322` vs `1240`. Plugin times out while service still completes, orphaning session + ffmpeg + temp file.
-
-##### H13. `_probe_duration` reads ffmpeg stderr line-by-line with no timeout
-**File:** `stream_proxy.py:1172-1193`. Silent upstream blocks indefinitely. Broad-except for `TimeoutExpired` never `proc.kill()`s, orphaning ffmpeg.
-
-##### H14. `http_get` performs no scheme validation — SSRF / local file read
-**File:** `http_util.py:22-26`. `urlopen` opens `file:///`, `ftp://`.
-
-##### H15. ✅ Fixed
-`notify()` builtin injection via unescaped interpolation (was `http_util.py:41-45`). See §H.3 fix-comment — `_escape_builtin_arg` now maps `,` `)` and CR/LF to inert lookalikes before format-interpolating. Regression test: `tests/test_http_util.py::test_notify_escapes_builtin_metacharacters`.
-
-##### H16. `service.py` state mutated by Kodi callbacks on internal threads without locks
-**File:** `service.py:117-160`. `NzbdavPlayer._state`/`_retry_count`/`_av_started`/`_last_position` mutated by Kodi player callbacks while `tick()` reads-then-writes on the service main thread.
-
-##### H17. `webdav.py` best-file selection picks 0-byte placeholder over real video
-**File:** `webdav.py:281`. `best_file = href_path` with `size >= best_size` and `best_size = 0` initial picks a 0-byte placeholder `.mkv` over real video.
-
-##### H18. `cache.py` non-atomic write — concurrent writers interleave and corrupt JSON
-**Files:** `cache.py:71-72`. No `.tmp` + `os.replace`.
-
-##### H19. `_retry_playback` never distinguishes user-stopped (IDLE) intent
-**File:** `service.py:269`. User-stopped streams get resurrected.
+- **H1a. Use-after-free on prune.** `_get_stream_context` returns a `ctx` reference under lock; a concurrent prune (TTL or LRU cap) can pop+cleanup that ctx before the handler finishes serving from `temp_path` / `active_ffmpeg`. Mitigation needs per-ctx reference counting (handler increments on entry, prune skips refcount>0) or a graveyard/reaper queue. Real-world impact is small because Kodi plays one stream at a time and `prepare_stream → clear_sessions` keeps the table near-empty, but the race is structurally present. Bigger blast radius than benefit for a TV-streaming addon today.
+- **H1b. LRU cap evicts an active session under the same race.** The `_MAX_STREAM_SESSIONS = 8` cap only matters if `clear_sessions()` fails to drain; same root cause and mitigation path as H1a.
 
 #### H.2.MEDIUM
 
@@ -1673,9 +1598,6 @@ Run the next bug-hunt pass on a dated tree if you want a fresh open-issue list �
 ##### L32. Unicode lightning bolt without fallback — may not render on all Kodi skins
 **File:** `results_dialog.py:141`
 
-##### L33. `bytes(data)` creates copy on every iteration in `_rewrite_offsets_recursive`
-**File:** `mp4_parser.py:136`
-
 ##### L34. Docstring after early return — no-op string literal
 **File:** `ptt/adult.py:27-29`
 
@@ -1735,21 +1657,15 @@ Run the next bug-hunt pass on a dated tree if you want a fresh open-issue list �
 
 <!-- Fixed in commit f9f95eb: _would_trip_density_breaker now early-returns False when the recovery window is empty so the breaker can't 100%-trip on the very first recovery attempt. -->
 
-- **Unlocked `_get_stream_context` mutation when lock is None** | `stream_proxy.py:938-949` | `last_access` update and session dict read race with prune/register paths; use-after-free window larger than it looks.
-- **Double-write to shared ffmpeg ref** | `stream_proxy.py:1032-1035` | ctx + server both hold the proc handle; concurrent handler can observe stale pointer after respawn.
-- **Probe reader daemon thread never joined** | `stream_proxy.py:4349-4378` | Thread orphaned on ffprobe deadline expiry; accumulates over long-running service.
-- **Socket leak on protocol-mismatch early return** | `stream_proxy.py:2359 + 2393-2414` | Multiple early returns from upstream-range loop bypass the `finally` that closes the upstream socket.
-- **Silent stderr-reader failure hides ffmpeg probe errors** | `stream_proxy.py:4344` | Bare `except` around stderr parsing turns real probe failures into duration=None silently.
-- **CL promised before body finishes** | `stream_proxy.py:2034-2056 + 2036/2370` | Client receives full Content-Length header, then the read loop has no socket timeout and can short-read; CL mismatch stalls Kodi.
-- **Prune evicts ctx that active handlers still reference** | `stream_proxy.py:3789, 3805, 941` | LRU eviction pops a session while another handler is mid-serve; temp file / ffmpeg disappears under it. (Partial overlap with §H.2-H1c, but these lines are post-refactor.)
-- **LOGERROR in chunked-write hot loop** | `stream_proxy.py:1514` | On a flaky connection this spams `kodi.log` and will evict rotation window on the 1 MB default.
+- **Unlocked `_get_stream_context` mutation when lock is None** | `stream_proxy.py:_get_stream_context` | The "lock is None" path only fires when `_get_server_context_lock(server)` returns None (test fixtures or pre-init). Production `StreamProxy` instances always have `_context_lock` set, so the unlocked branch never runs in the live service. False positive for production paths; cosmetic for the test branch.
+- **Prune evicts ctx that active handlers still reference** | overlaps with §H.2-H1a/b above. Real-world impact mitigated by `prepare_stream → clear_sessions` keeping the table near-empty under Kodi's "one stream at a time" model. Architectural fix (per-ctx refcounts) deferred.
 <!-- Fixed in commit 3c870f4: wait_for_init / wait_for_segment / HlsProducer.prepare() (both argv-rejection and production-wait windows) all switched from time.sleep to xbmc.Monitor().waitForAbort, which returns True iff Kodi is shutting down so the loops bail out immediately on a shutdown signal. -->
 
-- **`stream_info` never sets `"direct"` key** | `stream_proxy.py:4176-4188` | Both `resolver.py:411` and `:479` branch on `stream_info.get("direct")` which is always falsy, so the direct-play fast path is dead code.
-- **ffmpeg remux path has no respawn/retry on early crash** | `stream_proxy.py:1063-1082` | MP4 remux crashes during startup return a dead stream; only the HLS path auto-respawns.
+- **ffmpeg remux path has no respawn/retry on early crash** | `stream_proxy.py:_start_remux_process` family | MP4 remux crashes during startup return a dead stream; only the HLS path auto-respawns. Architectural — needs the same retry-budget + restart-with-seek pattern that HLS uses.
 <!-- Fixed in commit a78510b: _stream_remux_output now also catches (OSError, ValueError) and classifies them as "ffmpeg_pipe_closed" so a mid-stream ffmpeg crash doesn't leave the request handler hung on an open response. -->
 
-- **HLS playlist served before `init.mp4` exists** | `stream_proxy.py:1335` | fMP4 manifest handed to Kodi before init segment lands on disk; first segment fetch 404s on cold start.
+<!-- False positive against current code: `_serve_hls_init` blocks on `producer.wait_for_init()` until the current ffmpeg generation has written init.mp4 AND produced its first segment. The playlist returns immediately as advertised, but the next request (init.mp4) blocks rather than 404-ing. -->
+
 <!-- Verified addressed by the §H.3 _RESOLVE_RUNTIME_ERRORS widening (commit a78510b): the resolve() wrapper now catches URLError + socket.timeout in addition to the previous tuple, so any exception inside _play_direct that escapes the local handler is still caught at resolve() level and routed through _handle_resolve_exception which calls setResolvedUrl(handle, False). -->
 
 <!-- Fixed in commit a78510b: resolver._RESOLVE_RUNTIME_ERRORS now includes URLError + socket.timeout. -->
@@ -1776,12 +1692,9 @@ Run the next bug-hunt pass on a dated tree if you want a fresh open-issue list �
 
 <!-- Fixed in this commit: http_util.notify() now routes heading/message through `_escape_builtin_arg`, which maps `,` and `)` to visually-similar Unicode lookalikes that the Kodi builtin parser treats as inert. Regression test in tests/test_http_util.py::test_notify_escapes_builtin_metacharacters. -->
 
-- **`_playback_error` reset ordering incomplete** | `playback_monitor.py:70-72` | Rapid back-to-back failures can trigger a false retry because the error flag clears before the state machine re-reads it.
 <!-- Fixed in this commit: kodi_advancedsettings.py wraps the translatePath call in a broad try/except so any partly-initialized-Kodi exception path returns False, matching the docstring's "any failure → False" contract. -->
 
-- **`service.py` monitor state resets ERROR→MONITORING mid-retry** | `service.py:110-128, 178-192, 271-311` | `_check_active` unconditionally transitions when resolver flips `nzbdav.active=true`, clobbering an in-flight retry.
-- **onPlayBackSeek races onPlayBackError on `_last_position`** | `service.py:202` | Concurrent Kodi callbacks mutate the shared dict without a lock.
-- **Port-bind race on proxy restart** | `service.py:393, 413, 3469-3477` | `proxy_port` window property is set before `HTTPServer.serve_forever` is actually listening; client races lose.
+- **`service.py` monitor state resets ERROR→MONITORING mid-retry** | `service.py:_check_active` | Re-confirmed against current code: `_check_active` only fires on a fresh `nzbdav.active="true"` write from the resolver, and the resolver writes that property exactly once per resolution call. A retry mid-flight isn't clobbered unless the user starts a *different* play, which is the correct behavior. False positive against current code, but kept here so future audits don't re-flag it without re-reasoning.
 <!-- Fixed in this commit: strings.po #30124 msgstr filled in to match the msgid. -->
 
 <!-- Fixed in this commit: tests/conftest.py _FakePlayer now has isPlayingVideo() mirroring isPlaying(). -->

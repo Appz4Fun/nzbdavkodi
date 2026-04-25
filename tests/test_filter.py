@@ -688,8 +688,10 @@ def test_get_filter_settings_collects_enabled_resolutions_and_codecs(mock_addon)
     assert "HDR10" not in settings["hdr"]
     assert "Atmos" in settings["audio"]
     assert "DD" not in settings["audio"]
-    assert "English" in settings["languages"]
-    assert "Spanish" not in settings["languages"]
+    # Languages are stored as ISO 639-1 codes (matching PTT's output)
+    # rather than UI labels — see TODO.md §H.2-H11.
+    assert "en" in settings["languages"]
+    assert "es" not in settings["languages"]
 
 
 @patch("xbmcaddon.Addon")

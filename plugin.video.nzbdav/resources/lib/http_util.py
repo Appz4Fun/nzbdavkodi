@@ -102,6 +102,9 @@ def redact_text(text):
     return _EMBEDDED_CRED_RE.sub(lambda m: "{}=REDACTED".format(m.group(1)), str(text))
 
 
+_ALLOWED_HTTP_SCHEMES = frozenset({"http", "https"})
+
+
 def http_get(url, timeout=15):
     """Perform an HTTP GET and return the response body as text.
 
@@ -115,10 +118,18 @@ def http_get(url, timeout=15):
     — those are diagnostic and we'd rather keep partial context than
     raise — but this function feeds parsers (XML/JSON/Newznab) where
     silent corruption causes real bugs.
+
+    Raises ``ValueError`` for URLs whose scheme isn't ``http`` /
+    ``https``. urllib's default opener happily handles ``file://`` and
+    ``ftp://`` and would otherwise return ``/etc/passwd`` if a user
+    pasted that into a URL setting field.
     """
+    scheme = urlsplit(url).scheme.lower()
+    if scheme not in _ALLOWED_HTTP_SCHEMES:
+        raise ValueError("unsupported URL scheme: {!r}".format(scheme))
     req = Request(url)
     # nosemgrep
-    with urlopen(  # nosec B310 — URL validated by caller (nzbdav/hydra/prowlarr config)
+    with urlopen(  # nosec B310 — scheme allowlist enforced above
         req, timeout=timeout
     ) as resp:
         return resp.read().decode("utf-8")
@@ -131,12 +142,17 @@ def format_request_error(error):
     """Return a user-facing HTTP request error without urllib wrapper noise.
 
     Shared between hydra.py and prowlarr.py so both indexer clients surface
-    the same error text for the same underlying failure.
+    the same error text for the same underlying failure. Output is run
+    through ``redact_text`` because some urllib error shapes (notably
+    ``URLError`` wrapping a socket error and the rare ``HTTPError`` with
+    a URL-bearing reason) can echo the failing URL — which embeds the
+    indexer's ``apikey=...`` query — into a string that then surfaces
+    to the user via ``Dialog().notification()``. TODO.md §H.2-H2e/H2f.
     """
     reason = getattr(error, "reason", None)
     if reason:
-        return str(reason)
-    return str(error)
+        return redact_text(str(reason))
+    return redact_text(str(error))
 
 
 def get_xml_text(element, tag):

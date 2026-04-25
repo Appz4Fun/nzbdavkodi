@@ -17,13 +17,19 @@ from urllib.request import Request, urlopen
 def read_box_header(data, offset):
     """Read an MP4 box header at the given offset.
 
+    Accepts any buffer (bytes, bytearray, memoryview) and always returns
+    box_type as immutable, hashable ``bytes`` so callers can use it in
+    ``set`` / ``dict`` lookups regardless of the input buffer's type.
+    Closes TODO.md §H.2-H3b — eliminates per-call ``bytes(data)`` full
+    buffer copies that the recursive walker used to do just to make box
+    types hashable.
+
     Returns (box_type, header_size, total_size) or None if not enough data.
-    box_type is a 4-byte bytes object (e.g. b'ftyp').
     """
     if offset + 8 > len(data):
         return None
     size = struct.unpack_from(">I", data, offset)[0]
-    box_type = data[offset + 4 : offset + 8]
+    box_type = bytes(data[offset + 4 : offset + 8])
     header_size = 8
     if size == 1:
         # Extended 64-bit size.
@@ -163,29 +169,39 @@ def _rewrite_co64(data, body_start, body_end, delta):
     return True
 
 
-def _rewrite_offsets_recursive(data, delta):
+_CONTAINER_BOXES = frozenset(
+    {b"moov", b"trak", b"mdia", b"minf", b"stbl", b"edts", b"udta"}
+)
+
+
+def _rewrite_offsets_recursive(data, delta, start=0, end=None):
     """Walk MP4 box tree, rewriting stco/co64 chunk offsets by delta.
 
-    Operates on a mutable bytearray in-place. Walks container boxes
-    (moov, trak, mdia, minf, stbl, edts) recursively.
+    Operates on a mutable bytearray in-place using ``[start, end)``
+    bounds rather than slicing a child buffer per container box. The
+    previous slice-and-assign-back pattern was O(N²) in moov size — at
+    each container level the body bytes were copied out, recursed into,
+    then copied back, which on a deeply-nested 50 MB moov hung the
+    proxy. Closes TODO.md §H.2-H3b.
 
     Returns True on success, False if stco overflow detected.
     """
-    _CONTAINERS = {b"moov", b"trak", b"mdia", b"minf", b"stbl", b"edts", b"udta"}
-    offset = 0
-    while offset + 8 <= len(data):
-        parsed = read_box_header(bytes(data), offset)
+    if end is None:
+        end = len(data)
+    offset = start
+    while offset + 8 <= end:
+        parsed = read_box_header(data, offset)
         if parsed is None:
             break
         box_type, header_size, total_size = parsed
         if total_size < 8:
             break
-        # Bounds-check the box: a malformed file could declare a box
-        # whose total_size extends past the parent's buffer end. Without
-        # this guard, the slice at line 194 (child_data = data[body_start:body_end])
-        # silently truncates and the recursive walker walks into adjacent
-        # bytes, corrupting unrelated boxes' offsets. Closes §H.2-H3c.
-        if offset + total_size > len(data):
+        # Bounds-check the box against the current parent's end (not the
+        # whole buffer). A malformed file could declare a child whose
+        # ``total_size`` extends past the parent container; without this
+        # guard the walker would read sibling boxes' bytes as if they
+        # were children. Closes TODO.md §H.2-H3c.
+        if offset + total_size > end:
             break
 
         body_start = offset + header_size
@@ -197,11 +213,9 @@ def _rewrite_offsets_recursive(data, delta):
         elif box_type == b"co64":
             if not _rewrite_co64(data, body_start, body_end, delta):
                 return False
-        elif box_type in _CONTAINERS:
-            child_data = data[body_start:body_end]
-            if not _rewrite_offsets_recursive(child_data, delta):
+        elif box_type in _CONTAINER_BOXES:
+            if not _rewrite_offsets_recursive(data, delta, body_start, body_end):
                 return False
-            data[body_start:body_end] = child_data
 
         offset += total_size
 
@@ -221,14 +235,12 @@ def rewrite_moov_offsets(moov_bytes, delta):
         (caller should fall back to temp-file faststart or MKV remux).
     """
     data = bytearray(moov_bytes)
-    parsed = read_box_header(bytes(data), 0)
+    parsed = read_box_header(data, 0)
     if parsed is None:
         return None
     _, header_size, _ = parsed
-    child_data = data[header_size:]
-    if not _rewrite_offsets_recursive(child_data, delta):
+    if not _rewrite_offsets_recursive(data, delta, header_size, len(data)):
         return None
-    data[header_size:] = child_data
     return bytes(data)
 
 
@@ -325,6 +337,10 @@ def fetch_remote_mp4_layout(url, file_size, auth_header=None):
         Dict with keys: ftyp_data, ftyp_end, moov_data, mdat_offset,
         original_moov_offset, moov_before_mdat. Or None on failure.
     """
+    # Reject empty/negative file sizes before they turn into malformed
+    # ``Range: bytes=0--1`` headers downstream. Closes TODO.md §H.2-H3f.
+    if file_size <= 0:
+        return None
     # 1. Fetch the first 64KB to find ftyp and check for moov-at-front
     head_size = min(_HEAD_PROBE_SIZE, file_size)
     head_data = _http_range(url, 0, head_size - 1, auth_header)
@@ -369,6 +385,19 @@ def fetch_remote_mp4_layout(url, file_size, auth_header=None):
         return None
 
     moov_abs_offset, moov_size = result
+
+    # Validate moov range doesn't overlap mdat. ``_find_moov_after_mdat``
+    # places moov at ``mdat_offset + mdat_size`` so it's safe by
+    # construction, but the tail-probe fallback could discover a forged
+    # ``moov`` header inside mdat content. Faststart layout would then
+    # serve mdat bytes as if they were moov, with corrupt offsets.
+    # Closes TODO.md §H.2-H3e.
+    if mdat_offset >= 0 and head_layout["mdat_size"] > 0:
+        mdat_end = mdat_offset + head_layout["mdat_size"]
+        moov_end = moov_abs_offset + moov_size
+        if moov_abs_offset < mdat_end and mdat_offset < moov_end:
+            return None
+
     moov_data = _fetch_and_validate_moov(url, moov_abs_offset, moov_size, auth_header)
     if moov_data is None:
         return None

@@ -486,6 +486,14 @@ def _play_via_proxy(stream_url, stream_headers):
 
     Routes everything through the service proxy for the same reasons as
     _play_direct — see that function's docstring.
+
+    Each play branch also sets ``nzbdav.stream_url`` /
+    ``nzbdav.stream_title`` / ``nzbdav.active`` on the Home window
+    (window 10000). The service-side playback monitor (``service.py``)
+    polls these to drive its retry / error-dialog state machine; the
+    RunPlugin entrypoint used to skip them so a stream that died
+    mid-playback never triggered the retry path. Closes
+    TODO.md §H.2-H10.
     """
     from resources.lib.cache_prompt import maybe_show_cache_prompt
     from resources.lib.stream_proxy import (
@@ -496,6 +504,9 @@ def _play_via_proxy(stream_url, stream_headers):
     auth_header = None
     if stream_headers and "Authorization" in stream_headers:
         auth_header = stream_headers["Authorization"]
+
+    home = xbmcgui.Window(10000)
+    title = stream_url.rsplit("/", 1)[-1]
 
     service_port = get_service_proxy_port()
     if service_port:
@@ -510,6 +521,10 @@ def _play_via_proxy(stream_url, stream_headers):
             )
             bust_url = _cache_bust_url(stream_url)
             li = _make_playable_listitem(bust_url, stream_headers)
+            play_url = _build_play_url(bust_url, stream_headers)
+            home.setProperty("nzbdav.stream_url", play_url)
+            home.setProperty("nzbdav.stream_title", title)
+            home.setProperty("nzbdav.active", "true")
             xbmc.Player().play(li.getPath(), li)
             return
 
@@ -518,12 +533,19 @@ def _play_via_proxy(stream_url, stream_headers):
         li = xbmcgui.ListItem(path=proxy_url)
         li.setContentLookup(False)
         _apply_proxy_mime(li, stream_url, stream_info)
+        home.setProperty("nzbdav.stream_url", proxy_url)
+        home.setProperty("nzbdav.stream_title", title)
+        home.setProperty("nzbdav.active", "true")
         xbmc.Player().play(proxy_url, li)
         return
 
     bust_url = _cache_bust_url(stream_url)
     li = _make_playable_listitem(bust_url, stream_headers)
+    play_url = _build_play_url(bust_url, stream_headers)
     xbmc.log("NZB-DAV: Playing direct (no proxy): {}".format(stream_url), xbmc.LOGINFO)
+    home.setProperty("nzbdav.stream_url", play_url)
+    home.setProperty("nzbdav.stream_title", title)
+    home.setProperty("nzbdav.active", "true")
     xbmc.Player().play(li.getPath(), li)
 
 
@@ -1257,6 +1279,14 @@ def resolve(handle, params):
     Decodes parameters, polls until the stream is ready, then calls
     setResolvedUrl() — True on success, False on any failure — so Kodi
     always receives a resolution response and does not hang.
+
+    Settings reads and the DialogProgress create call live inside the
+    try block so that an exception from either still ends with
+    `setResolvedUrl(handle, False)`. Without this, an unexpected raise
+    from `_get_poll_settings()` (corrupt addon settings) or
+    `dialog.create()` (rare Kodi UI failure) escaped before the try
+    started and Kodi hung indefinitely waiting on resolve. Closes
+    TODO.md §H.2-H9.
     """
     nzb_url = unquote(params.get("nzburl", ""))
     title = unquote(params.get("title", ""))
@@ -1267,12 +1297,12 @@ def resolve(handle, params):
         xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
         return
 
-    poll_interval, download_timeout = _get_poll_settings()
-
-    dialog = xbmcgui.DialogProgress()
-    dialog.create(_addon_name(), _string(30097))
-
+    dialog = None
     try:
+        poll_interval, download_timeout = _get_poll_settings()
+        dialog = xbmcgui.DialogProgress()
+        dialog.create(_addon_name(), _string(30097))
+
         stream_url, stream_headers = _poll_until_ready(
             nzb_url, title, dialog, poll_interval, download_timeout
         )
@@ -1285,7 +1315,8 @@ def resolve(handle, params):
     except _RESOLVE_RUNTIME_ERRORS as error:
         _handle_resolve_exception("resolve", error, handle=handle)
     finally:
-        dialog.close()
+        if dialog is not None:
+            dialog.close()
 
 
 def resolve_and_play(nzb_url, title, params=None):
@@ -1300,13 +1331,18 @@ def resolve_and_play(nzb_url, title, params=None):
     can scrub the matching TMDBHelper bookmark row. Without it, the
     bookmark survives and the next replay of the same title resumes
     from the broken-stream offset (TODO.md §H.3).
+
+    Settings reads and `dialog.create()` live inside the try block so
+    a raise from either still routes through `_handle_resolve_exception`
+    and lets the user see a notification rather than silently no-op'ing
+    on the RunPlugin path. Same fix as `resolve()` — TODO.md §H.2-H9.
     """
-    poll_interval, download_timeout = _get_poll_settings()
-
-    dialog = xbmcgui.DialogProgress()
-    dialog.create(_addon_name(), _string(30097))
-
+    dialog = None
     try:
+        poll_interval, download_timeout = _get_poll_settings()
+        dialog = xbmcgui.DialogProgress()
+        dialog.create(_addon_name(), _string(30097))
+
         stream_url, stream_headers = _poll_until_ready(
             nzb_url, title, dialog, poll_interval, download_timeout
         )
@@ -1316,4 +1352,5 @@ def resolve_and_play(nzb_url, title, params=None):
     except _RESOLVE_RUNTIME_ERRORS as error:
         _handle_resolve_exception("resolve_and_play", error)
     finally:
-        dialog.close()
+        if dialog is not None:
+            dialog.close()

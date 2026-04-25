@@ -5,6 +5,7 @@
 
 import os
 import sys
+import threading
 from enum import Enum
 
 # Add resources/lib/ to sys.path (same as addon.py)
@@ -66,6 +67,17 @@ class NzbdavPlayer(xbmc.Player):
 
     def __init__(self, proxy=None):
         super().__init__()
+        # ``_state_lock`` serializes read-then-write transitions on the
+        # state fields below. Kodi player callbacks (onPlayBackStopped /
+        # Ended / Error / AVStarted / Seek) execute on internal Kodi
+        # threads while ``tick()`` runs on the service main thread; the
+        # GIL makes individual attribute writes atomic but does NOT
+        # protect "if state == X: state = Y" sequences. Without the lock
+        # a callback could flip state between tick's check and tick's
+        # write, e.g. user-stop racing into a retry attempt.
+        # ``RLock`` so tick → _retry_playback → onAVStarted on the same
+        # thread doesn't self-deadlock. Closes TODO.md §H.2-H16.
+        self._state_lock = threading.RLock()
         self._state = PlaybackState.IDLE
         self._stream_url = ""
         self._title = ""
@@ -112,7 +124,9 @@ class NzbdavPlayer(xbmc.Player):
         import time
 
         active = _HOME_WINDOW.getProperty(_PROP_ACTIVE)
-        if active == "true":
+        if active != "true":
+            return
+        with self._state_lock:
             self._stream_url = _HOME_WINDOW.getProperty(_PROP_STREAM_URL)
             self._title = _HOME_WINDOW.getProperty(_PROP_STREAM_TITLE)
             self._state = PlaybackState.MONITORING
@@ -120,23 +134,27 @@ class NzbdavPlayer(xbmc.Player):
             self._last_position = 0.0
             self._av_started = False
             self._play_time = time.time()
-            # Clear the signal so we don't re-trigger
-            _HOME_WINDOW.clearProperty(_PROP_ACTIVE)
-            xbmc.log(
-                "NZB-DAV: Service monitoring stream '{}'".format(self._title),
-                xbmc.LOGINFO,
-            )
+            title = self._title
+        # Clear the signal so we don't re-trigger
+        _HOME_WINDOW.clearProperty(_PROP_ACTIVE)
+        xbmc.log(
+            "NZB-DAV: Service monitoring stream '{}'".format(title),
+            xbmc.LOGINFO,
+        )
 
     def onAVStarted(self):
         """Reset retry state when playback begins successfully."""
-        if self._state in (PlaybackState.MONITORING, PlaybackState.ERROR):
+        with self._state_lock:
+            if self._state not in (PlaybackState.MONITORING, PlaybackState.ERROR):
+                return
             self._retry_count = 0
             self._av_started = True
             self._state = PlaybackState.MONITORING
-            xbmc.log(
-                "NZB-DAV: Playback started for '{}'".format(self._title),
-                xbmc.LOGINFO,
-            )
+            title = self._title
+        xbmc.log(
+            "NZB-DAV: Playback started for '{}'".format(title),
+            xbmc.LOGINFO,
+        )
 
     def _clear_stream_properties(self):
         """Erase the IPC window properties for this stream.
@@ -155,25 +173,35 @@ class NzbdavPlayer(xbmc.Player):
 
     def onPlayBackStopped(self):
         """Mark stream inactive when user stops playback."""
-        if self._state != PlaybackState.IDLE:
-            xbmc.log(
-                "NZB-DAV: Playback stopped for '{}'".format(self._title),
-                xbmc.LOGINFO,
-            )
+        with self._state_lock:
+            if self._state == PlaybackState.IDLE:
+                return
             self._state = PlaybackState.IDLE
-            self._cleanup_proxy_session()
-            self._clear_stream_properties()
+            title = self._title
+        # Cleanup outside the lock — `_cleanup_proxy_session` calls
+        # `proxy.clear_sessions()` which kills ffmpeg processes; that
+        # must not run while a Kodi callback thread holds the lock or
+        # the service tick will block waiting for ffmpeg to exit.
+        xbmc.log(
+            "NZB-DAV: Playback stopped for '{}'".format(title),
+            xbmc.LOGINFO,
+        )
+        self._cleanup_proxy_session()
+        self._clear_stream_properties()
 
     def onPlayBackEnded(self):
         """Mark stream inactive when playback finishes naturally."""
-        if self._state != PlaybackState.IDLE:
-            xbmc.log(
-                "NZB-DAV: Playback completed for '{}'".format(self._title),
-                xbmc.LOGINFO,
-            )
+        with self._state_lock:
+            if self._state == PlaybackState.IDLE:
+                return
             self._state = PlaybackState.IDLE
-            self._cleanup_proxy_session()
-            self._clear_stream_properties()
+            title = self._title
+        xbmc.log(
+            "NZB-DAV: Playback completed for '{}'".format(title),
+            xbmc.LOGINFO,
+        )
+        self._cleanup_proxy_session()
+        self._clear_stream_properties()
 
     def onPlayBackError(self):
         """Transition to ERROR state. Dialogs are shown from tick().
@@ -182,14 +210,16 @@ class NzbdavPlayer(xbmc.Player):
         here could deadlock or freeze the UI. So we only set the state flag
         and let tick() handle user notification on the service loop thread.
         """
-        if self._state == PlaybackState.MONITORING:
+        with self._state_lock:
+            if self._state != PlaybackState.MONITORING:
+                return
             self._state = PlaybackState.ERROR
-            xbmc.log(
-                "NZB-DAV: Playback error for '{}' (retry {})".format(
-                    self._title, self._retry_count
-                ),
-                xbmc.LOGERROR,
-            )
+            title = self._title
+            retry_count = self._retry_count
+        xbmc.log(
+            "NZB-DAV: Playback error for '{}' (retry {})".format(title, retry_count),
+            xbmc.LOGERROR,
+        )
 
     def onPlayBackSeek(self, time, seek_offset):
         """Capture the new seek target immediately for retry resume.
@@ -199,17 +229,24 @@ class NzbdavPlayer(xbmc.Player):
         path falls back to the older saved position and appears to "jump
         backwards" after a failed seek.
         """
-        if self._state not in (PlaybackState.MONITORING, PlaybackState.ERROR):
-            return
-        try:
-            self._last_position = max(0.0, float(time))
-        except (TypeError, ValueError):
+        with self._state_lock:
+            if self._state not in (PlaybackState.MONITORING, PlaybackState.ERROR):
+                return
+            try:
+                self._last_position = max(0.0, float(time))
+            except (TypeError, ValueError):
+                pos_failed = True
+            else:
+                pos_failed = False
+            title = self._title
+            position = self._last_position
+        if pos_failed:
             self._save_position()
             return
         xbmc.log(
             "NZB-DAV: Playback seek for '{}' -> {:.0f}s (offset={:.0f}s)".format(
-                self._title,
-                self._last_position,
+                title,
+                position,
                 float(seek_offset),
             ),
             xbmc.LOGINFO,
@@ -219,40 +256,51 @@ class NzbdavPlayer(xbmc.Player):
         """Save current playback position for resume on retry."""
         try:
             if self.isPlaying():
-                self._last_position = self.getTime()
+                position = self.getTime()
+            else:
+                return
         except _PLAYER_RUNTIME_ERRORS:
-            pass
+            return
+        with self._state_lock:
+            self._last_position = position
 
     def _retry_playback(self, max_retries, retry_delay):
         """Attempt to resume playback from last known position."""
-        self._retry_count += 1
-        self._state = PlaybackState.MONITORING
+        with self._state_lock:
+            self._retry_count += 1
+            self._state = PlaybackState.MONITORING
+            title = self._title
+            stream_url = self._stream_url
+            position = self._last_position
+            retry_count = self._retry_count
 
         xbmc.log(
             "NZB-DAV: Retrying '{}' from {:.0f}s ({}/{})".format(
-                self._title,
-                self._last_position,
-                self._retry_count,
+                title,
+                position,
+                retry_count,
                 max_retries,
             ),
             xbmc.LOGINFO,
         )
         _notify(
             "NZB-DAV",
-            "Reconnecting ({}/{})...".format(self._retry_count, max_retries),
+            "Reconnecting ({}/{})...".format(retry_count, max_retries),
             5000,
         )
 
         if self._monitor.waitForAbort(retry_delay):
             return False
 
-        li = xbmcgui.ListItem(path=self._stream_url)
-        li.setProperty("StartOffset", str(self._last_position))
-        self.play(self._stream_url, li)
+        li = xbmcgui.ListItem(path=stream_url)
+        li.setProperty("StartOffset", str(position))
+        self.play(stream_url, li)
 
         # Wait for playback to start or fail (10s timeout)
         for _ in range(20):
-            if self._state in (PlaybackState.IDLE, PlaybackState.ERROR):
+            with self._state_lock:
+                state = self._state
+            if state in (PlaybackState.IDLE, PlaybackState.ERROR):
                 break
             try:
                 if self.isPlaying():
@@ -262,15 +310,25 @@ class NzbdavPlayer(xbmc.Player):
             if self._monitor.waitForAbort(0.5):
                 return False
 
-        return self._state != PlaybackState.ERROR
+        with self._state_lock:
+            return self._state != PlaybackState.ERROR
 
     def tick(self):
-        """Called each service loop iteration. Handle retries if needed."""
+        """Called each service loop iteration. Handle retries if needed.
+
+        State reads are all done under ``_state_lock`` so a Kodi
+        callback (player thread) can't flip state mid-tick. The lock
+        is released around long-running calls (``_save_position``,
+        ``_retry_playback``) — those re-acquire internally as needed.
+        Closes TODO.md §H.2-H16.
+        """
         import time
 
         self._check_active()
 
-        if self._state == PlaybackState.IDLE:
+        with self._state_lock:
+            state = self._state
+        if state == PlaybackState.IDLE:
             return
 
         # Detect playback that never started (stream error, auth failure, etc.)
@@ -285,29 +343,49 @@ class NzbdavPlayer(xbmc.Player):
         # Kodi could fire onAVStarted on the new fmp4 path. 30 s
         # gives all the legitimate paths headroom while still
         # catching genuinely dead streams within a reasonable window.
-        if self._state == PlaybackState.MONITORING and not self._av_started:
-            elapsed = time.time() - self._play_time
+        # The three error paths below used to call ``xbmcgui.Dialog().ok()``
+        # which is a *modal* dialog — it blocks the calling thread until
+        # the user dismisses it. The service tick runs at ~1 Hz, so a
+        # modal here meant the entire monitor loop (heartbeat, abort
+        # detection, state transitions) was wedged for as long as the
+        # user was away from the TV. Switched to ``_notify`` (a toast via
+        # ``xbmc.executebuiltin("Notification(...)")``) which is
+        # fire-and-forget. Each path still logs the underlying error
+        # at ``LOGERROR``, so a user investigating later via kodi.log
+        # gets the same context that the modal would have shown.
+        # Closes TODO.md §H.2-H8.
+        with self._state_lock:
+            in_startup_grace = (
+                self._state == PlaybackState.MONITORING and not self._av_started
+            )
+            play_time = self._play_time
+            title = self._title
+
+        if in_startup_grace:
+            elapsed = time.time() - play_time
             if elapsed > 30 and not self.isPlaying():
                 xbmc.log(
                     "NZB-DAV: Playback never started for '{}' after {:.0f}s".format(
-                        self._title, elapsed
+                        title, elapsed
                     ),
                     xbmc.LOGERROR,
                 )
                 from resources.lib.i18n import addon_name as _addon_name
                 from resources.lib.i18n import string as _s
 
-                xbmcgui.Dialog().ok(
-                    _addon_name(),
-                    _s(30121),
-                )
+                _notify(_addon_name(), _s(30121), 8000)
                 xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
-                self._state = PlaybackState.IDLE
+                with self._state_lock:
+                    self._state = PlaybackState.IDLE
                 return
 
         self._save_position()
 
-        if self._state != PlaybackState.ERROR:
+        with self._state_lock:
+            state = self._state
+            retry_count = self._retry_count
+            title = self._title
+        if state != PlaybackState.ERROR:
             return
 
         enabled, max_retries, retry_delay = self._read_settings()
@@ -315,26 +393,27 @@ class NzbdavPlayer(xbmc.Player):
             from resources.lib.i18n import addon_name as _addon_name
             from resources.lib.i18n import string as _s
 
-            xbmcgui.Dialog().ok(_addon_name(), _s(30115))
-            self._state = PlaybackState.IDLE
+            _notify(_addon_name(), _s(30115), 8000)
+            with self._state_lock:
+                self._state = PlaybackState.IDLE
             return
 
-        if self._retry_count >= max_retries:
+        if retry_count >= max_retries:
             xbmc.log(
-                "NZB-DAV: Max retries ({}) reached for '{}'".format(
-                    max_retries, self._title
-                ),
+                "NZB-DAV: Max retries ({}) reached for '{}'".format(max_retries, title),
                 xbmc.LOGERROR,
             )
             from resources.lib.i18n import addon_name as _addon_name
             from resources.lib.i18n import fmt as _f
 
-            xbmcgui.Dialog().ok(_addon_name(), _f(30116, max_retries))
-            self._state = PlaybackState.IDLE
+            _notify(_addon_name(), _f(30116, max_retries), 8000)
+            with self._state_lock:
+                self._state = PlaybackState.IDLE
             return
 
         if not self._retry_playback(max_retries, retry_delay):
-            self._state = PlaybackState.IDLE
+            with self._state_lock:
+                self._state = PlaybackState.IDLE
 
 
 def check_cache_warning(state):
