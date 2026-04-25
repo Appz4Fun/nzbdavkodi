@@ -50,6 +50,40 @@ def _install_addon_defaults():
 
 _install_addon_defaults()
 
+
+def _install_monitor_defaults():
+    """Seed `xbmc.Monitor().waitForAbort()` so it returns ``False``.
+
+    Without this, the default MagicMock return is itself a MagicMock,
+    which is truthy when evaluated as a bool. Production code uses
+    ``if xbmc.Monitor().waitForAbort(0.25): return None`` to detect
+    Kodi shutdown — a truthy MagicMock causes every loop to think Kodi
+    is shutting down and bail out on iteration 1, breaking unrelated
+    HLS/poll/probe tests. Tests that need to simulate an abort can
+    override the leaf return per-test.
+    """
+    xbmc_mod = sys.modules["xbmc"]
+    # Side-effect (not just return_value) so the mock actually waits for
+    # the requested duration. Production code reads `waitForAbort(0.05)`
+    # as "sleep up to 50 ms", and tests like the HlsProducer prepare
+    # argv-rejection window depend on that timing window for ffmpeg
+    # crashes to be detected at the right poll cycle. Without the real
+    # sleep, the loop iterates microseconds-fast and the argv window
+    # closes before the test's mocked ffmpeg has a chance to "die" at
+    # the expected iteration.
+    import time as _real_time
+
+    def _waitForAbort(timeout=0.0):
+        if timeout and timeout > 0:
+            _real_time.sleep(timeout)
+        return False
+
+    xbmc_mod.Monitor.return_value.waitForAbort.side_effect = _waitForAbort
+    xbmc_mod.Monitor.return_value.abortRequested.return_value = False
+
+
+_install_monitor_defaults()
+
 # xbmc.Player must be a real class so that subclassing works correctly
 # (MagicMock subclasses swallow attribute assignments in __init__)
 

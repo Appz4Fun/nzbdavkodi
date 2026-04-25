@@ -1739,23 +1739,31 @@ The two `PROXY_EPIC_*.md` one-pagers (`ARTICLE_HEALTH`, `NNTP_TUNING`) are alrea
 - **`HlsProducer.prepare()` production loop uses `time.sleep(0.25)`** | `stream_proxy.py:3297-3332` | Same shutdown-block issue; service can't exit cleanly during HLS warmup.
 - **`stream_info` never sets `"direct"` key** | `stream_proxy.py:4176-4188` | Both `resolver.py:411` and `:479` branch on `stream_info.get("direct")` which is always falsy, so the direct-play fast path is dead code.
 - **ffmpeg remux path has no respawn/retry on early crash** | `stream_proxy.py:1063-1082` | MP4 remux crashes during startup return a dead stream; only the HLS path auto-respawns.
-- **ffmpeg stdout read catches too narrow a set** | `stream_proxy.py:1068` | `proc.stdout.read(65536)` raising OSError/ValueError on ffmpeg crash escapes the only-BrokenPipe/ConnectionReset handler.
+<!-- Fixed in commit a78510b: _stream_remux_output now also catches (OSError, ValueError) and classifies them as "ffmpeg_pipe_closed" so a mid-stream ffmpeg crash doesn't leave the request handler hung on an open response. -->
+
 - **HLS playlist served before `init.mp4` exists** | `stream_proxy.py:1335` | fMP4 manifest handed to Kodi before init segment lands on disk; first segment fetch 404s on cold start.
 - **`_play_direct` missing `setResolvedUrl` on exception path** | `resolver.py:407-410` | Exception inside the direct-play branch leaves the handle unresolved, Kodi spins.
-- **`_RESOLVE_RUNTIME_ERRORS` tuple too narrow** | `resolver.py:53-60, 1225-1226` | Unhandled exception types (e.g. `socket.timeout`, `URLError`) escape the wrapper, bypass `setResolvedUrl(handle, False)`.
+<!-- Fixed in commit a78510b: resolver._RESOLVE_RUNTIME_ERRORS now includes URLError + socket.timeout. -->
+
 - **`xbmcaddon.Addon()` per-tick cost in hot loops** | `resolver.py:804`, `service.py:354,433`, `stream_proxy.py:308` | Constructing the Addon object every 250 ms (resolver) or every service tick (service) is wasteful; cache once per call site.
 - **/resolve route falls through to `setResolvedUrl(False)` after `resolve_and_play` starts playback** | `router.py:110-119, 174` | Missing `return` after `resolve_and_play`; the trailing `_safe_resolve_handle` kills the handle that resolver already claimed.
-- **`int(argv[1])` crashes on malformed handle** | `router.py:80-81` | No length / numeric validation; ValueError bubbles out of `route()` with no `setResolvedUrl`.
-- **`_handle_search` has no try/except wrapper** | `router.py:547-699` | Any exception inside `show_results_dialog`/`filter_results` leaves Kodi hanging on the empty directory.
-- **`webdav_content_root` read but not declared in settings.xml** | `webdav.py:78` | Ghost setting — users can't set it from the UI, and any typo means `getSetting` returns `""` and the fallback kicks in silently.
+<!-- Fixed in commit a78510b: router.py route() now validates argv length + tries int(argv[1]) defensively. -->
+<!-- False positive (verified against current code): _handle_search IS wrapped — it sits inside the `try:` at route() line 128 and the matching `except Exception as e:` at the end of route(). -->
+
+<!-- Fixed in commit a78510b: settings.xml now declares webdav_content_root as a hidden power-user setting (default ""), with a comment explaining the rationale. -->
+
 <!-- Fixed in this commit: hydra.py:97 now wraps int(max_results) in try/except + clamps to [1..100]. -->
 
 <!-- Fixed in this commit: hydra.py:_fetch_hydra_xml + nzbdav_api.py submit error path + prowlarr.py search error paths now route exception str() through redact_text() before logging. The broader §H.2-H2c gap (redact_url only covers `apikey=`, not `password/auth/token/api_key/key/secret/access_token`) is still open. -->
 
-- **Audio/HDR/language lists not deduplicated** | `filter.py:360,365,391-400,593-600` | Duplicate tokens from PTT break Atmos+TrueHD combo ranking and language filters.
-- **`_rewrite_co64` return value not checked** | `mp4_parser.py:165` | `_rewrite_co64` returns None implicitly; loop ignores it. Low practical impact (64-bit offsets don't overflow) but inconsistent with `_rewrite_stco` contract.
-- **Payload range returns exclusive endpoint** | `mp4_parser.py:414, 420` | `payload_remote_end` is exclusive but HTTP Range headers expect inclusive; off-by-one at the tail of payload-only fetches.
-- **`player_installer.py` profile-root prefix check missing trailing slash** | `player_installer.py:60` | `addon_data` prefix of `addon_data_evil` passes the `startswith` check — sibling-dir traversal.
+<!-- Fixed in commit a78510b: filter.parse_title_metadata now wraps hdr/audio/language list construction in `list(dict.fromkeys(...))` to dedup while preserving order. -->
+
+<!-- Fixed in commit a78510b: _rewrite_co64 now returns bool matching _rewrite_stco's contract; the recursive walker propagates failure on truncated co64 boxes. -->
+
+<!-- False positive (verified): mp4_parser docstring at line 383 explicitly says "payload_remote_end: last byte + 1 in original file" and all downstream consumers use it as exclusive (payload_size = end - start, virtual_size = header + payload_size). No off-by-one in the call chain. -->
+
+<!-- Fixed in commit a78510b: player_installer now uses os.path.commonpath instead of startswith, so sibling directories (`addon_data_evil`) can't pass the prefix check. -->
+
 <!-- Fixed in this commit: http_util.notify() now routes heading/message through `_escape_builtin_arg`, which maps `,` and `)` to visually-similar Unicode lookalikes that the Kodi builtin parser treats as inert. Regression test in tests/test_http_util.py::test_notify_escapes_builtin_metacharacters. -->
 
 - **`_playback_error` reset ordering incomplete** | `playback_monitor.py:70-72` | Rapid back-to-back failures can trigger a false retry because the error flag clears before the state machine re-reads it.
@@ -1780,7 +1788,8 @@ The two `PROXY_EPIC_*.md` one-pagers (`ARTICLE_HEALTH`, `NNTP_TUNING`) are alrea
 - **Session counter keys rely on `.get` fallback** | `stream_proxy.py` ctx-init paths | `session_streamed_bytes` / `session_zero_fill_bytes` / `session_recovery_count` not explicitly zeroed; any logger that hits `ctx[key]` direct raises KeyError.
 - **`_HLS_PRIVATE_TEMP_ROOT` persists across service respawns** | `stream_proxy.py:58, 212-226` | Stale path reused, with prior session's init files still in place.
 - **Module-level `_proxy` singleton never reset** | `stream_proxy.py:4589-4594` | Service reload can keep the old object alive alongside a new one.
-- **HTTPServer created without SO_REUSEADDR** | `stream_proxy.py:3502-3520` | TIME_WAIT on TCP-FIN blocks fast port rebind after restart.
+<!-- False positive (verified): _ThreadedHTTPServer at stream_proxy.py:2598 sets `allow_reuse_address = True` on the class, which is the stdlib's documented way to set SO_REUSEADDR on an HTTPServer subclass. -->
+
 - **`clear_sessions` doesn't join ffmpeg threads** | `stream_proxy.py:3535-3541` | New StreamProxy spawns while child procs from the old one still draining stderr.
 - **`stderr_thread.join(timeout=5)` too short** | `stream_proxy.py:1097` | Slow stderr drain leaves the thread leaking past the join.
 - **Missing CL treated as hard mismatch** | `stream_proxy.py:474` | Comparing `None` against `str(expected)` classifies every missing CL as a hard strict-contract violation.
@@ -1804,16 +1813,19 @@ The two `PROXY_EPIC_*.md` one-pagers (`ARTICLE_HEALTH`, `NNTP_TUNING`) are alrea
 - **Initial moov probe limited to 16 bytes** | `mp4_parser.py:250` | Extended-size box headers (size=1 + uint64 largesize) exceed 16 bytes; probe fails on uncommon containers.
 - **`schema_version` missing from generated player JSON** | `player_installer.py:30 + generated nzbdav.json` | Constant has it, write path skips it — future TMDBHelper versions that gate on schema_version refuse to load.
 - **`tmdb_id` missing from `play_movie` URL template** | `player_installer.py:32-33 + generated nzbdav.json` | `_clear_kodi_playback_state` needs the tmdb_id to match the TMDBHelper bookmark row.
-- **`_save_position` bare except masks `isPlaying()` RuntimeError** | `playback_monitor.py:65-68` | Real Kodi lifecycle errors lost in the noise.
+<!-- False positive (verified): _save_position lives in service.py now (playback_monitor.py was deleted in an earlier refactor). Current code at service.py:218-224 catches a typed _PLAYER_RUNTIME_ERRORS tuple, not bare Exception. -->
+
 - **Session dedup window-property read vs write race** | `cache_prompt.py:68` | Two concurrent plays could show the cache-prompt dialog twice.
-- **`i18n.fmt()` has no error handler** | `i18n.py:85` | Wrong placeholder count in strings.po raises IndexError and crashes the caller.
+<!-- Fixed in commit a78510b: i18n.fmt now wraps str.format in try/except (IndexError, KeyError, ValueError); falls back to the raw template plus stringified args and logs the mismatch. -->
+
 - **Stale cache entries outlive a lowered TTL** | `cache.py:51-79` | User shortens cache_ttl but old entries honour their original expiry.
 - **`submit_timeout` default mismatch** | `settings.xml:91 = 30 vs nzbdav_api.py:24 = 120` | User-facing default disagrees with the fallback the code uses when the setting is unset.
 
 #### H.3.Low
 
 - **`prepare()` argv loop uses `time.sleep(0.05)`** | `stream_proxy.py:3272-3286` | 50 ms sleep is short enough to not block shutdown noticeably, but it's inconsistent with the `Monitor.waitForAbort` convention.
-- **ffmpeg Popen omits `stdin=DEVNULL`** | `stream_proxy.py:3011-3017` | Child inherits parent stdin; harmless on Kodi but noisy under a terminal.
+<!-- Fixed in commit a78510b: HlsProducer ffmpeg Popen now passes stdin=subprocess.DEVNULL. -->
+
 - **Bare except around `proxy_convert_subs` setting read** | `stream_proxy.py:1154` | Subtitle setting silently ignored on any unexpected error.
 - **`-map 0:s?` discards subtitle language metadata** | `stream_proxy.py:1152-1158` | Output SRT has no track language; works but a papercut.
 - **`size` kept as raw string in hydra XML** | `hydra.py:224 + filter.py:457` | `int(result["size"])` can raise on malformed `<size>` element; wrap or pre-validate.

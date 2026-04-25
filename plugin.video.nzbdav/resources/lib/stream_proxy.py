@@ -2887,7 +2887,12 @@ class HlsProducer:
             if self._init_file_complete():
                 self._init_ready = True
                 return init_path
-            time.sleep(0.25)
+            # Use Monitor.waitForAbort instead of bare time.sleep so a
+            # Kodi shutdown during HLS warmup unblocks immediately.
+            # waitForAbort returns True iff Kodi is shutting down — bail
+            # out early in that case. TODO.md §H.3.
+            if xbmc.Monitor().waitForAbort(0.25):
+                return None
         return None
 
     def wait_for_segment(self, seg_n, timeout=_HLS_SEGMENT_WAIT_SECONDS):
@@ -2918,13 +2923,17 @@ class HlsProducer:
                     self._init_ready = True
                 else:
                     self._ensure_ffmpeg_headed_for(seg_n)
-                    time.sleep(0.25)
+                    if xbmc.Monitor().waitForAbort(0.25):
+                        return None
                     continue
             if self._segment_complete(seg_n):
                 return self.segment_path(seg_n)
             # Do we need to (re)start ffmpeg to eventually reach seg_n?
             self._ensure_ffmpeg_headed_for(seg_n)
-            time.sleep(0.25)
+            # Monitor.waitForAbort instead of time.sleep so a Kodi shutdown
+            # during HLS segment wait unblocks immediately. TODO.md §H.3.
+            if xbmc.Monitor().waitForAbort(0.25):
+                return None
         return None
 
     def _ensure_ffmpeg_headed_for(self, seg_n):
@@ -3327,7 +3336,11 @@ class HlsProducer:
                     )
                 early_exit = True
                 break
-            time.sleep(0.05)
+            # Monitor.waitForAbort instead of bare time.sleep so a Kodi
+            # shutdown during HLS warmup unblocks the prepare argv-loop
+            # immediately. TODO.md §H.3.
+            if xbmc.Monitor().waitForAbort(0.05):
+                raise RuntimeError("Kodi abort requested during HLS prepare")
 
         # Window 2: wait for actual output production. Polls the
         # file system for init.mp4 + the first segment, AND watches
@@ -3373,7 +3386,8 @@ class HlsProducer:
                     )
                 early_exit = True
                 continue
-            time.sleep(0.25)
+            if xbmc.Monitor().waitForAbort(0.25):
+                raise RuntimeError("Kodi abort requested during HLS prepare")
         raise RuntimeError(
             "ffmpeg did not produce init.mp4 + seg_000000.m4s within "
             "{:.0f}s — check ffmpeg.log".format(
