@@ -114,21 +114,27 @@ pub async fn run(
                     }
                 }
 
-                // Mega-transaction: write all items in one tx
+                // Mega-transaction: write all items in one tx, with per-type timing
                 let t0 = std::time::Instant::now();
                 let tx = writer.transaction()?;
+                let mut type_ms: [u64; 4] = [0; 4]; // movie, tv, person, collection
                 for job in &batch {
-                    let res = match &job.payload {
-                        WritePayload::Movie(m) => movie::write_movie(&tx, m),
-                        WritePayload::Tv(t) => tv::write_tv(&tx, t),
-                        WritePayload::Person(p) => person::write_person(&tx, p),
-                        WritePayload::Collection(c) => collection::write_collection(&tx, c),
+                    let ti = std::time::Instant::now();
+                    let (idx, res) = match &job.payload {
+                        WritePayload::Movie(m) => (0, movie::write_movie(&tx, m)),
+                        WritePayload::Tv(t) => (1, tv::write_tv(&tx, t)),
+                        WritePayload::Person(p) => (2, person::write_person(&tx, p)),
+                        WritePayload::Collection(c) => (3, collection::write_collection(&tx, c)),
                     };
+                    type_ms[idx] += ti.elapsed().as_millis() as u64;
                     if let Err(e) = res {
                         error!("write failed for {:?} {}: {:?}", job.item.tmdb_type, job.item.tmdb_id, e);
                     }
                 }
                 tx.commit()?;
+                // Checkpoint WAL between batches — keeps it from growing to GB size.
+                // PASSIVE is non-blocking; won't stall if Kodi has active readers.
+                crate::cache::checkpoint_passive(&writer);
                 let write_ms = t0.elapsed().as_millis() as u64;
                 total_write_ms += write_ms;
 
