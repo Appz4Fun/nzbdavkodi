@@ -24,6 +24,7 @@ Jump to: **[§A.1 Active Worklist](#a1-active-worklist)** · [Part F Playbooks](
 | [E](#part-e--fix-verification-record-bug2md) | Fix verification record (BUG2.MD) | When reviewing 20-agent remediation |
 | [F](#part-f--rollout-playbooks) | Rollout playbooks (smoke, send_200, soak) | When executing a §A.1 P0/P1/P2 task |
 | [H](#part-h--static-analysis-audit-trail) | Static-analysis audit trail (was `ISSUE_REPORT.md`, `QA_SCAN_20260424.md`, `BUGS3.md`) | When triaging audit findings or planning a fix |
+| [I](#part-i--developer-tooling-gaps) | Developer tooling gaps (CI parity, Python 3.8 verification, multi-version testing) | When considering build/test infrastructure improvements |
 
 ## Glossary
 
@@ -1608,6 +1609,47 @@ Most of the original seven findings closed earlier: `clear_sessions` does snapsh
 - **`tests/test_stream_proxy.py` repeats the same mock-Addon save/restore 34×** | `tests/test_stream_proxy.py` | Refactor opportunity, not a bug. Deferred — touching 34 tests is high-blast-radius for low-value cleanup.
 - **`_canonical_init_bytes` read/write ABA** | `stream_proxy.py:1813,2828` | Mitigated by GIL today; the agent flagged this as "not future-proof under sub-interpreters / no-GIL" rather than a present-day bug. Not fixed.
 - **PTT vendored, returned-dict shape never asserted** | `plugin.video.nzbdav/resources/lib/ptt/` vs `filter.py` | `filter.py` `parse_title_metadata` now wraps the normalisation block in `try/except (TypeError, AttributeError, KeyError)`, which gives runtime tolerance even when PTT drifts — but no formal contract assertion was added. Defensive-only, deferred.
+
+---
+
+## Part I — Developer Tooling Gaps
+
+Captures CI checks not reproducible in the local `just` recipes. Added 2026-04-25 after a CI/local parity audit. The audit fixed the highest-impact gap (pylint, see commit `d832361`); the items below are the remaining gaps that were too costly to close in-line.
+
+### I.1 Multi-version pytest matrix (Python 3.10 + 3.12)
+
+**Gap:** GitHub `ci.yml` runs pytest on Python 3.10 AND 3.12; `just test` runs once on whatever interpreter is on PATH. Cross-version test failures (e.g. a behavior that depends on a stdlib change between 3.10 and 3.12) only surface in CI.
+
+**Why deferred:** Adding `tox` or `pyenv`-shim infrastructure is a moderate lift (config, doc updates, CI integration to keep the source of truth). Failures of this class are rare; we have not hit one.
+
+**If we want to close it:** add a `tox.ini` with `[testenv:py310]` / `[testenv:py312]` envs reusing `requirements-test.txt`, then `just test-matrix: tox` recipe. Alternative: a parametrized just recipe that loops over `python3.10` and `python3.12` if both are on PATH. Lighter weight, no config.
+
+### I.2 True Python 3.8 runtime verification
+
+**Gap:** CI's pylint job runs under Python 3.8 (the addon's runtime floor on CoreELEC ARM64). Locally, pylint runs with `py-version=3.8` set in `.pylintrc` (see commit `d832361`), which catches *syntax* and *known-feature* regressions (walrus, match, `str.removeprefix`). It does NOT catch runtime stdlib differences — e.g. accidentally using `functools.cached_property` features added in 3.9+, or a typing form that parses but errors at import time.
+
+**Why deferred:** Closing this requires a real Python 3.8 install plus a venv with `pylint` installed under it, or a Docker-based check. Both add tooling complexity for a low-incidence class of bug — pylint's `py-version` covers ~95% of 3.8-isms in practice.
+
+**If we want to close it:** install Python 3.8 via `pyenv install 3.8.18`, create `.venv-py38/`, `pip install pylint`, then a `just lint-py38` recipe that runs `.venv-py38/bin/pylint $(git ls-files '*.py')`. Or a Docker oneliner: `docker run --rm -v "$PWD":/src -w /src python:3.8 sh -c 'pip install pylint && pylint $(git ls-files "*.py")'`.
+
+### I.3 Build-script smoke (Pages workflow parity)
+
+**Gap:** GitHub `pages.yml` runs `python3 scripts/build_zip.py` and `python3 scripts/generate_repo.py` on every push to main. `just ci` (= `lint test`) does NOT exercise either — `just release` and `just repo` do, but they're not part of the default CI loop. If a build script breaks (refactor, new dep, etc.), the first signal is a red Pages run.
+
+**Why deferred:** Adding `release` to `just ci` works but pollutes the working tree with `plugin.video.nzbdav-*.zip`. Less invasive variant — `just ci-full: lint test release` — adds maintenance overhead for a script that's stable in practice.
+
+**If we want to close it:** simplest is `ci-full: lint test release` in the justfile. Or a build-only smoke that imports the scripts and asserts on metadata without producing a zip artifact.
+
+### I.4 Out of scope (informational)
+
+These CI workflows DO NOT block builds and so are not reproducibility gaps:
+
+- **Bandit** — `bandit.yml:41` uses `--exit-zero`. Findings post to the security tab as SARIF; never fails CI.
+- **Semgrep** — `semgrep.yml:44` uses `semgrep scan` (not `semgrep ci`) because there's no `SEMGREP_APP_TOKEN`. Same SARIF-only behavior.
+- **CodeQL Advanced** — analyzes for the security tab; doesn't fail on findings.
+- **Dependency review** — PR-only, GitHub Actions context only.
+
+If any of these are flipped to gating in the future, they'd belong here.
 
 ---
 
