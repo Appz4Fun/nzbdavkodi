@@ -27,7 +27,7 @@ pub fn open_writer(path: &Path) -> Result<Connection> {
          PRAGMA synchronous=NORMAL;
          PRAGMA busy_timeout=120000;
          PRAGMA foreign_keys=ON;
-         PRAGMA cache_size=-131072;
+         PRAGMA cache_size=-262144;
          PRAGMA mmap_size=268435456;
          PRAGMA wal_autocheckpoint=1000;",
     )?;
