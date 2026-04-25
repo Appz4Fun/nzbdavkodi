@@ -90,7 +90,7 @@ def test_notify_escapes_builtin_metacharacters():
 
     captured = []
     saved = sys.modules["xbmc"].executebuiltin
-    sys.modules["xbmc"].executebuiltin = lambda cmd: captured.append(cmd)
+    sys.modules["xbmc"].executebuiltin = captured.append
     try:
         notify("Header, with ),; tricks", "Body, also ); evil", 3000)
     finally:

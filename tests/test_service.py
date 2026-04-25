@@ -74,8 +74,6 @@ def test_on_playback_stopped_deactivates():
 def test_on_playback_stopped_tears_down_proxy_session():
     """onPlayBackStopped must call proxy.clear_sessions() so ffmpeg
     remux processes don't linger after the user presses stop."""
-    from unittest.mock import MagicMock
-
     proxy = MagicMock()
     player = NzbdavPlayer(proxy=proxy)
     player._state = PlaybackState.MONITORING
@@ -87,8 +85,6 @@ def test_on_playback_stopped_tears_down_proxy_session():
 
 def test_on_playback_ended_tears_down_proxy_session():
     """Natural end-of-playback must also release the proxy session."""
-    from unittest.mock import MagicMock
-
     proxy = MagicMock()
     player = NzbdavPlayer(proxy=proxy)
     player._state = PlaybackState.MONITORING
@@ -102,8 +98,6 @@ def test_playback_stop_hook_survives_proxy_errors():
     """A misbehaving proxy must not crash the Kodi player callback —
     xbmc.Player callbacks run on Kodi's thread and an uncaught exception
     can destabilize the whole addon service."""
-    from unittest.mock import MagicMock
-
     proxy = MagicMock()
     proxy.clear_sessions.side_effect = RuntimeError("boom")
     player = NzbdavPlayer(proxy=proxy)
@@ -276,8 +270,6 @@ def test_service_main_loop_absorbs_tick_exceptions():
     loop and kill the service, silently breaking every future stream.
     The hardened main() wraps tick() so a single exception just logs
     and the loop keeps spinning."""
-    from unittest.mock import MagicMock
-
     import service
 
     # monitor.abortRequested returns True on the 3rd call → 2 full loop
@@ -314,8 +306,6 @@ def test_service_main_loop_resets_failure_streak_on_good_tick():
     """One transient tick failure shouldn't remain in the 'streak' log
     forever. After a successful tick, the streak counter resets so the
     NEXT failure logs a full trace again."""
-    from unittest.mock import MagicMock
-
     import service
 
     mock_monitor = MagicMock()
@@ -359,8 +349,6 @@ def test_service_detects_dead_proxy_thread_and_restarts():
     /prepare call from the plugin hangs on ECONNREFUSED with no log
     hint. main() polls proxy.is_alive() each tick and rebuilds the
     proxy when the thread drops."""
-    from unittest.mock import MagicMock
-
     import service
 
     mock_monitor = MagicMock()
@@ -410,8 +398,6 @@ def test_service_logs_when_proxy_restart_fails():
     """If the replacement proxy can't start either (port still stuck,
     OS refusing bind), log the failure but keep the service loop alive
     so the user can fix the underlying issue without reinstalling."""
-    from unittest.mock import MagicMock
-
     import service
 
     mock_monitor = MagicMock()

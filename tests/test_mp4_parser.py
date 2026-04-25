@@ -339,8 +339,6 @@ def test_fetch_remote_mp4_layout_rejects_overlapping_moov_mdat():
     parse as a moov box at absolute offset 100 — well inside the
     declared mdat range (32..982).
     """
-    import struct
-
     from resources.lib.mp4_parser import fetch_remote_mp4_layout
 
     file_size = 1000
