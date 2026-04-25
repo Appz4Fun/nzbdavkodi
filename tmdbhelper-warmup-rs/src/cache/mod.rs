@@ -1,4 +1,7 @@
+pub mod art;
+pub mod credits;
 pub mod dimensions;
+pub mod movie;
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags};
