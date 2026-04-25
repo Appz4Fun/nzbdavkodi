@@ -25,7 +25,7 @@ pub fn open_writer(path: &Path) -> Result<Connection> {
     conn.execute_batch(
         "PRAGMA journal_mode=WAL;
          PRAGMA synchronous=NORMAL;
-         PRAGMA busy_timeout=30000;
+         PRAGMA busy_timeout=120000;
          PRAGMA foreign_keys=ON;
          PRAGMA cache_size=-131072;
          PRAGMA mmap_size=268435456;

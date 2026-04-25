@@ -83,9 +83,9 @@ pub async fn run(
 ) -> Result<()> {
     let client = TmdbClient::new(api_key)?;
     let sem = Arc::new(Semaphore::new(concurrency));
-    let (tx, mut rx) = mpsc::channel::<WriteJob>(concurrency * 2);
+    let (tx, mut rx) = mpsc::channel::<WriteJob>(200);
 
-    const MEGA_TX_SIZE: usize = 50;
+    const MEGA_TX_SIZE: usize = 200;
 
     // Spawn dedicated writer task (blocking — SQLite is synchronous)
     let writer_handle = {
