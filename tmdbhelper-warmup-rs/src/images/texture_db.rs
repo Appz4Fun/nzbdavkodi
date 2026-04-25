@@ -20,7 +20,13 @@ impl TextureDb {
              PRAGMA busy_timeout=30000;",
         )?;
         conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS texture (
+            "CREATE TABLE IF NOT EXISTS version (
+                idVersion INTEGER,
+                iCompressCount INTEGER
+             );
+             INSERT OR IGNORE INTO version (idVersion, iCompressCount)
+                SELECT 13, 0 WHERE NOT EXISTS (SELECT 1 FROM version);
+             CREATE TABLE IF NOT EXISTS texture (
                 id INTEGER PRIMARY KEY,
                 url TEXT,
                 cachedurl TEXT,
