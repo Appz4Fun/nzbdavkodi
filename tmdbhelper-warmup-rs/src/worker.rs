@@ -85,6 +85,8 @@ pub async fn run(
     let sem = Arc::new(Semaphore::new(concurrency));
     let (tx, mut rx) = mpsc::channel::<WriteJob>(concurrency * 2);
 
+    const MEGA_TX_SIZE: usize = 50;
+
     // Spawn dedicated writer task (blocking — SQLite is synchronous)
     let writer_handle = {
         let item_details_path = item_details_path.clone();
@@ -92,36 +94,68 @@ pub async fn run(
         tokio::task::spawn_blocking(move || -> Result<()> {
             let mut writer = open_writer(&item_details_path)?;
             let mut state = StateDb::open(&state_path_for_writer)?;
+            let mut batch: Vec<WriteJob> = Vec::with_capacity(MEGA_TX_SIZE);
             let mut written = 0u64;
             let start = std::time::Instant::now();
-            while let Some(job) = rx.blocking_recv() {
-                let item = job.item;
-                let res = match job.payload {
-                    WritePayload::Movie(m) => movie::write_movie(&mut writer, &m),
-                    WritePayload::Tv(t) => tv::write_tv(&mut writer, &t),
-                    WritePayload::Person(p) => person::write_person(&mut writer, &p),
-                    WritePayload::Collection(c) => collection::write_collection(&mut writer, &c),
-                };
-                match res {
-                    Ok(_) => {
-                        // Batch visit + child-enqueue in ONE transaction.
-                        // Un-batched auto-commits on a USB HDD cost ~10ms each;
-                        // 100 children = 1 second wasted. One tx = ~50ms.
-                        let children = if item.depth + 1 <= MAX_DEPTH { &job.children[..] } else { &[] };
-                        if let Err(e) = state.visit_and_enqueue_batch(item.tmdb_id, item.tmdb_type, children, item.depth + 1) {
-                            error!("state batch failed for {:?} {}: {:?}", item.tmdb_type, item.tmdb_id, e);
-                        }
-                        written += 1;
-                        if written % 100 == 0 {
-                            let elapsed = start.elapsed().as_secs_f64().max(1.0);
-                            let rate = written as f64 / elapsed;
-                            let qsize = state.queue_size().unwrap_or(0);
-                            let vcount = state.visited_count().unwrap_or(0);
-                            info!("written={} visited={} queue={} rate={:.1}/s", written, vcount, qsize, rate);
-                        }
-                    }
-                    Err(e) => error!("write failed for {:?} {}: {:?}", item.tmdb_type, item.tmdb_id, e),
+            let mut total_write_ms = 0u64;
+            let mut total_state_ms = 0u64;
+
+            loop {
+                // Drain the channel into a batch
+                match rx.blocking_recv() {
+                    Some(job) => batch.push(job),
+                    None => break, // channel closed
                 }
+                // Try to fill the batch without blocking
+                while batch.len() < MEGA_TX_SIZE {
+                    match rx.try_recv() {
+                        Ok(job) => batch.push(job),
+                        Err(_) => break, // channel empty or closed
+                    }
+                }
+
+                // Mega-transaction: write all items in one tx
+                let t0 = std::time::Instant::now();
+                let tx = writer.transaction()?;
+                for job in &batch {
+                    let res = match &job.payload {
+                        WritePayload::Movie(m) => movie::write_movie(&tx, m),
+                        WritePayload::Tv(t) => tv::write_tv(&tx, t),
+                        WritePayload::Person(p) => person::write_person(&tx, p),
+                        WritePayload::Collection(c) => collection::write_collection(&tx, c),
+                    };
+                    if let Err(e) = res {
+                        error!("write failed for {:?} {}: {:?}", job.item.tmdb_type, job.item.tmdb_id, e);
+                    }
+                }
+                tx.commit()?;
+                let write_ms = t0.elapsed().as_millis() as u64;
+                total_write_ms += write_ms;
+
+                // Batch state updates (visit + enqueue children)
+                let t1 = std::time::Instant::now();
+                for job in &batch {
+                    let item = &job.item;
+                    let children = if item.depth + 1 <= MAX_DEPTH { &job.children[..] } else { &[] };
+                    if let Err(e) = state.visit_and_enqueue_batch(item.tmdb_id, item.tmdb_type, children, item.depth + 1) {
+                        error!("state batch failed for {:?} {}: {:?}", item.tmdb_type, item.tmdb_id, e);
+                    }
+                }
+                let state_ms = t1.elapsed().as_millis() as u64;
+                total_state_ms += state_ms;
+
+                written += batch.len() as u64;
+                if written % 100 < batch.len() as u64 || written == batch.len() as u64 {
+                    let elapsed = start.elapsed().as_secs_f64().max(1.0);
+                    let rate = written as f64 / elapsed;
+                    let qsize = state.queue_size().unwrap_or(0);
+                    let vcount = state.visited_count().unwrap_or(0);
+                    let avg_write = if written > 0 { total_write_ms / written } else { 0 };
+                    let avg_state = if written > 0 { total_state_ms / written } else { 0 };
+                    info!("written={} visited={} queue={} rate={:.1}/s batch={} avg_write={}ms avg_state={}ms",
+                          written, vcount, qsize, rate, batch.len(), avg_write, avg_state);
+                }
+                batch.clear();
             }
             info!("writer task exiting, total written={}", written);
             Ok(())

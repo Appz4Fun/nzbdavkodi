@@ -10,7 +10,9 @@ async fn warm_fight_club_writes_expected_rows() {
 
     let (_conn, path) = common::scratch_db();
     let mut writer = open_writer(&path).unwrap();
-    movie::write_movie(&mut writer, &m).expect("write");
+    let tx = writer.transaction().unwrap();
+    movie::write_movie(&tx, &m).expect("write");
+    tx.commit().unwrap();
 
     let title: String = writer.query_row("SELECT title FROM movie WHERE tmdb_id=550", [], |r| r.get(0)).unwrap();
     assert_eq!(title, "Fight Club");

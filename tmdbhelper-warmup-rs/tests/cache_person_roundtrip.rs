@@ -10,7 +10,9 @@ async fn warm_brad_pitt() {
 
     let (_h, path) = common::scratch_db();
     let mut writer = open_writer(&path).unwrap();
-    person::write_person(&mut writer, &p).expect("write");
+    let tx = writer.transaction().unwrap();
+    person::write_person(&tx, &p).expect("write");
+    tx.commit().unwrap();
 
     let name: String = writer.query_row("SELECT name FROM person WHERE tmdb_id=287", [], |r| r.get(0)).unwrap();
     assert_eq!(name, "Brad Pitt");

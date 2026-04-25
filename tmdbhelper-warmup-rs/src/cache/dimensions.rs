@@ -1,9 +1,9 @@
 use anyhow::Result;
-use rusqlite::{params, Transaction};
+use rusqlite::{params, Connection};
 
 /// languages(name TEXT, english_name TEXT, iso_language TEXT PRIMARY KEY)
-pub fn upsert_language(tx: &Transaction, iso: &str, name: &str, english_name: &str) -> Result<()> {
-    tx.execute(
+pub fn upsert_language(conn: &Connection, iso: &str, name: &str, english_name: &str) -> Result<()> {
+    conn.execute(
         "INSERT OR IGNORE INTO languages (iso_language, name, english_name) VALUES (?1, ?2, ?3)",
         params![iso, name, english_name],
     )?;
@@ -11,8 +11,8 @@ pub fn upsert_language(tx: &Transaction, iso: &str, name: &str, english_name: &s
 }
 
 /// countries(name TEXT, iso_country TEXT PRIMARY KEY)
-pub fn upsert_country(tx: &Transaction, iso: &str, name: &str) -> Result<()> {
-    tx.execute(
+pub fn upsert_country(conn: &Connection, iso: &str, name: &str) -> Result<()> {
+    conn.execute(
         "INSERT OR IGNORE INTO countries (iso_country, name) VALUES (?1, ?2)",
         params![iso, name],
     )?;
@@ -20,8 +20,8 @@ pub fn upsert_country(tx: &Transaction, iso: &str, name: &str) -> Result<()> {
 }
 
 /// company(tmdb_id INTEGER PRIMARY KEY, name TEXT, logo TEXT, country TEXT)
-pub fn upsert_company(tx: &Transaction, tmdb_id: i64, name: &str, logo: Option<&str>, country: Option<&str>) -> Result<()> {
-    tx.execute(
+pub fn upsert_company(conn: &Connection, tmdb_id: i64, name: &str, logo: Option<&str>, country: Option<&str>) -> Result<()> {
+    conn.execute(
         "INSERT OR IGNORE INTO company (tmdb_id, name, logo, country) VALUES (?1, ?2, ?3, ?4)",
         params![tmdb_id, name, logo, country],
     )?;
@@ -29,8 +29,8 @@ pub fn upsert_company(tx: &Transaction, tmdb_id: i64, name: &str, logo: Option<&
 }
 
 /// broadcaster(tmdb_id INTEGER PRIMARY KEY, name TEXT, logo TEXT, country TEXT)
-pub fn upsert_broadcaster(tx: &Transaction, tmdb_id: i64, name: &str, logo: Option<&str>, country: Option<&str>) -> Result<()> {
-    tx.execute(
+pub fn upsert_broadcaster(conn: &Connection, tmdb_id: i64, name: &str, logo: Option<&str>, country: Option<&str>) -> Result<()> {
+    conn.execute(
         "INSERT OR IGNORE INTO broadcaster (tmdb_id, name, logo, country) VALUES (?1, ?2, ?3, ?4)",
         params![tmdb_id, name, logo, country],
     )?;
@@ -38,8 +38,8 @@ pub fn upsert_broadcaster(tx: &Transaction, tmdb_id: i64, name: &str, logo: Opti
 }
 
 /// service(tmdb_id INTEGER PRIMARY KEY, display_priority INTEGER, name TEXT, logo TEXT)
-pub fn upsert_service(tx: &Transaction, provider_id: i64, name: &str, logo: Option<&str>, display_priority: Option<i64>) -> Result<()> {
-    tx.execute(
+pub fn upsert_service(conn: &Connection, provider_id: i64, name: &str, logo: Option<&str>, display_priority: Option<i64>) -> Result<()> {
+    conn.execute(
         "INSERT OR IGNORE INTO service (tmdb_id, name, logo, display_priority) VALUES (?1, ?2, ?3, ?4)",
         params![provider_id, name, logo, display_priority],
     )?;

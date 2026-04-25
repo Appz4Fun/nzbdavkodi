@@ -10,7 +10,9 @@ async fn warm_lord_of_the_rings_collection() {
 
     let (_h, path) = common::scratch_db();
     let mut writer = open_writer(&path).unwrap();
-    collection::write_collection(&mut writer, &c).expect("write");
+    let tx = writer.transaction().unwrap();
+    collection::write_collection(&tx, &c).expect("write");
+    tx.commit().unwrap();
 
     let title: String = writer.query_row("SELECT title FROM collection WHERE tmdb_id=119", [], |r| r.get(0)).unwrap();
     assert!(title.contains("Lord of the Rings"), "got: {}", title);

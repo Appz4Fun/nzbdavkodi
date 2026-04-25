@@ -1,5 +1,5 @@
 use anyhow::Result;
-use rusqlite::{params, Transaction};
+use rusqlite::{params, Connection};
 use crate::api::types_movie::ImageRef;
 
 /// art(aspect_ratio INTEGER, quality INTEGER, iso_language TEXT, iso_country TEXT,
@@ -12,7 +12,7 @@ use crate::api::types_movie::ImageRef;
 /// - `aspect_ratio` is bucketed 1-5 (poster/square/thumb/landscape/wide), not raw
 /// - `quality` is megapixel rank `(width * height) / 200000`, not raw width
 /// - `rating` is `vote_average * 100` integer, not raw 0-10 float
-pub fn write_image(tx: &Transaction, parent_id: &str, art_type: &str, img: &ImageRef) -> Result<()> {
+pub fn write_image(conn: &Connection, parent_id: &str, art_type: &str, img: &ImageRef) -> Result<()> {
     let extension = img.file_path.rsplit('.').next().unwrap_or("jpg");
     let aspect_bucket = aspect_ratio_bucket(img.aspect_ratio);
     let quality = match (img.width, img.height) {
@@ -20,7 +20,7 @@ pub fn write_image(tx: &Transaction, parent_id: &str, art_type: &str, img: &Imag
         _ => None,
     };
     let rating_scaled = img.vote_average.map(|r| (r * 100.0).round() as i64);
-    tx.execute(
+    conn.execute(
         "INSERT OR IGNORE INTO art (aspect_ratio, quality, iso_language, iso_country, icon, type, extension, rating, votes, parent_id)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![

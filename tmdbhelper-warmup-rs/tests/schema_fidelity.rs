@@ -54,7 +54,11 @@ async fn rust_writes_match_tmdbhelper_for_movie() {
     let mut writer = open_writer(&scratch_path).unwrap();
     let client = TmdbClient::new("a07324c669cac4d96789197134ce272b".into()).unwrap();
     let m = client.get_movie(TARGET_TMDB_ID).await.expect("TMDB fetch");
-    movie::write_movie(&mut writer, &m).expect("write_movie");
+    {
+        let tx = writer.transaction().unwrap();
+        movie::write_movie(&tx, &m).expect("write_movie");
+        tx.commit().unwrap();
+    }
 
     // --- Step 2: Load TMDBHelper snapshot into a separate scratch DB ------------------
     // The fixture SQL was dumped from the live ItemDetails.db on coreelec.local on 2026-04-24.

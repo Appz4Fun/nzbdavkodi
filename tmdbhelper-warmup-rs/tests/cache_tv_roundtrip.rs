@@ -10,7 +10,9 @@ async fn warm_breaking_bad_writes_expected_rows() {
 
     let (_h, path) = common::scratch_db();
     let mut writer = open_writer(&path).unwrap();
-    tv::write_tv(&mut writer, &t).expect("write");
+    let tx = writer.transaction().unwrap();
+    tv::write_tv(&tx, &t).expect("write");
+    tx.commit().unwrap();
 
     let title: String = writer.query_row("SELECT title FROM tvshow WHERE tmdb_id=1396", [], |r| r.get(0)).unwrap();
     assert_eq!(title, "Breaking Bad");

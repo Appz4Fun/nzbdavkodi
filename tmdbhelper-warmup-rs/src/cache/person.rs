@@ -5,25 +5,23 @@ use crate::api::types_person::PersonResponse;
 use crate::cache::{art, default_expiry, DATALEVEL_FULL};
 use crate::id;
 
-pub fn write_person(conn: &mut Connection, p: &PersonResponse) -> Result<()> {
+pub fn write_person(conn: &Connection, p: &PersonResponse) -> Result<()> {
     let item_id = id::build_item_id(id::TmdbType::Person, p.id);
     let expiry = default_expiry();
     let aka_joined = p.also_known_as.as_ref().map(|v| v.join("|"));
-
-    let tx = conn.transaction()?;
 
     // 1. baseitem (must come first — children FK to it)
     // translation=0: person translations are not written; TMDBHelper queries person directly by tmdb_id.
     // fanart_tv=0: persons have no fanart.tv entries.
     // language=NULL: persons have no primary language concept.
-    tx.execute(
+    conn.execute(
         "INSERT OR REPLACE INTO baseitem (id, mediatype, expiry, datalevel, fanart_tv, translation, language)
          VALUES (?1, 'person', ?2, ?3, 0, 0, NULL)",
         params![&item_id, expiry, DATALEVEL_FULL],
     )?;
 
     // 2. person row — 11 columns match schema exactly
-    tx.execute(
+    conn.execute(
         "INSERT OR REPLACE INTO person (id, tmdb_id, name, known_for_department, gender, biography, birthday, deathday, also_known_as, place_of_birth, popularity)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
@@ -46,28 +44,27 @@ pub fn write_person(conn: &mut Connection, p: &PersonResponse) -> Result<()> {
             vote_average: None,
             vote_count: None,
         };
-        art::write_image(&tx, &item_id, "profiles", &img)?;
+        art::write_image(conn, &item_id, "profiles", &img)?;
     }
     if let Some(images) = &p.images {
         for img in &images.profiles {
-            art::write_image(&tx, &item_id, "profiles", img)?;
+            art::write_image(conn, &item_id, "profiles", img)?;
         }
     }
 
     // 4. external_ids → unique_id
     if let Some(ext) = &p.external_ids {
         if let Some(imdb) = &ext.imdb_id {
-            tx.execute(
+            conn.execute(
                 "INSERT OR IGNORE INTO unique_id (key, value, parent_id) VALUES ('imdb', ?1, ?2)",
                 params![imdb, &item_id],
             )?;
         }
     }
-    tx.execute(
+    conn.execute(
         "INSERT OR IGNORE INTO unique_id (key, value, parent_id) VALUES ('tmdb', ?1, ?2)",
         params![p.id.to_string(), &item_id],
     )?;
 
-    tx.commit()?;
     Ok(())
 }
