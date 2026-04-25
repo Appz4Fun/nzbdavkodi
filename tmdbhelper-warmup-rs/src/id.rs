@@ -72,7 +72,18 @@ mod tests {
     }
 
     #[test]
-    fn mediatype_collection_is_set() {
+    fn mediatype_strings_match_tmdbhelper_baseitem_enum() {
+        assert_eq!(TmdbType::Movie.mediatype(), "movie");
+        assert_eq!(TmdbType::Tv.mediatype(), "tvshow");
+        assert_eq!(TmdbType::Person.mediatype(), "person");
         assert_eq!(TmdbType::Collection.mediatype(), "set");
+    }
+
+    #[test]
+    fn id_prefix_strings_match_baseitem_id_format() {
+        assert_eq!(TmdbType::Movie.id_prefix(), "movie");
+        assert_eq!(TmdbType::Tv.id_prefix(), "tv");
+        assert_eq!(TmdbType::Person.id_prefix(), "person");
+        assert_eq!(TmdbType::Collection.id_prefix(), "set");
     }
 }
