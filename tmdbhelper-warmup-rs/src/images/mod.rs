@@ -4,6 +4,7 @@ pub mod texture_hash;
 use anyhow::{Context, Result};
 use reqwest::StatusCode;
 use rusqlite::{Connection, OpenFlags};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -257,25 +258,46 @@ pub async fn run(
     let mut dispatched = 0u64;
     let mut skipped = 0u64;
 
-    // Open texture DB for skip checks (separate connection from writer)
+    // Preload cached URLs from texture DB into HashSet for O(1) lookups
     let tex_check_path = textures_db_path.clone();
-    let tex_check = tokio::task::spawn_blocking(move || texture_db::TextureDb::open(&tex_check_path)).await??;
+    let cached_urls: HashSet<String> = tokio::task::spawn_blocking(move || -> Result<HashSet<String>> {
+        let db = texture_db::TextureDb::open(&tex_check_path)?;
+        db.load_all_cached_urls()
+    }).await??;
+    info!("image skip cache: {} URLs loaded from Textures DB", cached_urls.len());
+
+    // Preload existing thumbnail filenames for O(1) file-existence checks
+    let existing_files: HashSet<String> = tokio::task::spawn_blocking({
+        let dir = thumbnails_dir.clone();
+        move || -> HashSet<String> {
+            let mut set = HashSet::new();
+            let Ok(entries) = std::fs::read_dir(&dir) else { return set };
+            for subdir in entries.filter_map(|e| e.ok()) {
+                if !subdir.file_type().map_or(false, |t| t.is_dir()) { continue; }
+                let prefix = subdir.file_name().to_string_lossy().to_string();
+                let Ok(files) = std::fs::read_dir(subdir.path()) else { continue };
+                for file in files.filter_map(|e| e.ok()) {
+                    let name = file.file_name().to_string_lossy().to_string();
+                    set.insert(format!("{}/{}", prefix, name));
+                }
+            }
+            set
+        }
+    }).await?;
+    info!("image skip cache: {} files found on disk", existing_files.len());
 
     for row in &art_rows {
         let ext = row.path.rsplit('.').next().unwrap_or("jpg");
         let download_url = texture_hash::download_url(&row.path, &row.art_type);
         let cached_filename = texture_hash::cached_filename(&download_url, ext);
 
-        let file_path = thumbnails_dir.join(&cached_filename);
-        if file_path.exists() {
-            // File exists: check if at least one URL variant is registered in the DB
+        if existing_files.contains(&cached_filename) {
             let variants = texture_hash::url_variants(&row.path, &row.art_type);
-            let any_registered = variants.iter().any(|u| tex_check.is_cached(u));
+            let any_registered = variants.iter().any(|u| cached_urls.contains(u));
             if any_registered {
                 skipped += 1;
                 continue;
             }
-            // File on disk but missing DB rows — queue for re-registration
             let _ = reg_tx.try_send(RegisterOnly {
                 path: row.path.clone(),
                 art_type: row.art_type.clone(),

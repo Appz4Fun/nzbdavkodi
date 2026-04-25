@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OpenFlags};
+use std::collections::HashSet;
 use std::path::Path;
 
 pub struct TextureDb {
@@ -45,6 +46,15 @@ impl TextureDb {
             .prepare_cached("SELECT 1 FROM texture WHERE url=?1 LIMIT 1")
             .and_then(|mut s| s.query_row(params![url], |_| Ok(())))
             .is_ok()
+    }
+
+    pub fn load_all_cached_urls(&self) -> Result<HashSet<String>> {
+        let mut stmt = self.conn.prepare("SELECT url FROM texture")?;
+        let urls = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(urls)
     }
 
     pub fn insert_texture(
