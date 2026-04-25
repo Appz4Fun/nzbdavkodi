@@ -23,13 +23,22 @@ jobs:
     name: Scan
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Both returntocorp/semgrep-action and semgrep/semgrep-action are
+    # archived ("Use https://github.com/semgrep/semgrep instead"), so we
+    # run the official Semgrep CLI from its Docker image directly. Pinned
+    # by manifest-list digest — sha256 is immutable, unlike a moving tag.
+    # Bump manually (or via Dependabot if it adds container-image support
+    # to the github-actions ecosystem) by querying Docker Hub for the
+    # current `latest` tag's digest.
+    container:
+      image: semgrep/semgrep@sha256:7810f1d7884974ab6dda7bef8f4a2c8e165ea2142fd8260515d380e4f1407263 # 1.160.0
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - uses: returntocorp/semgrep-action@713efdd345f3035192eaa63f56867b88e63e4e5d
-        with:
-          publishToken: ${{ secrets.SEMGREP_APP_TOKEN }}
-          generateSarif: "1"
+      - name: Run Semgrep
+        run: semgrep ci --sarif --output=semgrep.sarif
+        env:
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
 
       - name: Upload SARIF file
         uses: github/codeql-action/upload-sarif@95e58e9a2cdfd71adc6e0353d5c52f41a045d225 # v4
