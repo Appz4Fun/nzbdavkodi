@@ -778,10 +778,14 @@ def _fallback_parse(title):
         result["channels"] = m.group(1)
 
     # Year
+    # Range chosen broadly enough that this isn't a time bomb the next
+    # time we forget to bump it (TODO.md §H.2-M44 was the previous
+    # bump — 2030 turned out to be too tight). 2100 is well past any
+    # plausible release window for content this addon would index.
     m = re.search(r"[. (](\d{4})[. )]", t)
     if m:
         yr = int(m.group(1))
-        if 1920 <= yr <= 2030:
+        if 1920 <= yr <= 2100:
             result["year"] = yr
 
     # Upscaled

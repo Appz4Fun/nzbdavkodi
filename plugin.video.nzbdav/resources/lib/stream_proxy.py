@@ -4679,7 +4679,25 @@ def get_proxy():
     """Get or create the singleton stream proxy."""
     global _proxy
     with _proxy_lock:
-        if _proxy is None:
+        if _proxy is None or not _proxy.is_alive():
+            # Reset the singleton if a previous instance died (e.g. service
+            # was restarted, the prior thread crashed). Without this, every
+            # subsequent get_proxy() returns a stale handle whose
+            # serve_forever loop has already exited and clients get
+            # connection-refused errors with no diagnostic. TODO.md §H.3.
             _proxy = StreamProxy()
             _proxy.start()
         return _proxy
+
+
+def reset_proxy_singleton():
+    """Drop the module-level proxy reference (safe to call after stop()).
+
+    Used by service shutdown / restart paths so the next ``get_proxy()``
+    call constructs a fresh instance instead of returning the stopped
+    singleton. Safe under the proxy lock so no concurrent
+    ``get_proxy()`` can observe the half-cleared state.
+    """
+    global _proxy
+    with _proxy_lock:
+        _proxy = None

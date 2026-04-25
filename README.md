@@ -235,7 +235,7 @@ When sorted by relevance, results are ranked by priority:
 |---------|-------------|---------|
 | Poll interval | Seconds between status checks | 5 |
 | Download timeout | Max wait time in seconds | 3600 |
-| Submit timeout | Max wait for nzbdav submit-NZB API to respond (seconds) | 30 |
+| Submit timeout | Max wait for nzbdav submit-NZB API to respond (seconds) | 120 |
 
 ### Search Cache
 
