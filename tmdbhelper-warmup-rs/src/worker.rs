@@ -20,7 +20,7 @@ pub struct RequeueItem {
     pub popularity: f64,
 }
 
-const MAX_DEPTH: i64 = 5;
+const MAX_DEPTH: i64 = 2;
 
 pub struct WriteJob {
     pub item: QueueItem,

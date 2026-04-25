@@ -34,8 +34,7 @@ impl TextureDb {
                 usecount INTEGER,
                 lastusetime TEXT
              );
-             CREATE UNIQUE INDEX IF NOT EXISTS idxTexture ON texture(url);
-             CREATE UNIQUE INDEX IF NOT EXISTS idxSizeUnique ON sizes(idtexture, size);
+             CREATE INDEX IF NOT EXISTS idxTexture ON texture(url);
              CREATE INDEX IF NOT EXISTS idxSize ON sizes(idtexture, size);",
         )?;
         Ok(Self { conn })
