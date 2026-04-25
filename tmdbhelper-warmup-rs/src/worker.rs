@@ -13,7 +13,7 @@ use crate::cache::{movie, tv, person, collection, open_writer};
 use crate::id::TmdbType;
 use crate::state::{QueueItem, StateDb};
 
-const MAX_DEPTH: i64 = 2;
+const MAX_DEPTH: i64 = 5;
 
 pub struct WriteJob {
     pub item: QueueItem,
