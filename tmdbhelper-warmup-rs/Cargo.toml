@@ -1,0 +1,31 @@
+[package]
+name = "warmup-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Direct-write TMDBHelper cache warmer (bypasses Kodi plugin layer)"
+license = "GPL-3.0-or-later"
+
+[[bin]]
+name = "warmup-rs"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1.41", features = ["rt-multi-thread", "macros", "signal", "sync", "time", "fs"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip", "http2"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive", "env"] }
+anyhow = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+futures = "0.3"
+tokio-util = { version = "0.7", features = ["rt"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
