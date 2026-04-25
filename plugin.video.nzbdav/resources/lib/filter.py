@@ -684,9 +684,12 @@ def _fallback_parse(title):
     hdr = []
     if re.search(r"(?i)\b(dv|dovi|dolby[. ]?vision)\b", t):
         hdr.append("DV")
-    if re.search(r"(?i)\bhdr10\+|hdr10plus\b", t):
+    # HDR10+ alternation needs both branches anchored to a leading word
+    # boundary so we don't pick up substrings inside another token.
+    if re.search(r"(?i)\b(hdr10\+|hdr10plus)\b", t):
         hdr.append("HDR10+")
-    elif re.search(r"(?i)\bhdr10?\b", t):
+    # `hdr10` without the optional `0` would match `hdr1`; require the digit.
+    elif re.search(r"(?i)\bhdr10\b", t):
         hdr.append("HDR10")
     if re.search(r"(?i)\bhlg\b", t):
         hdr.append("HLG")

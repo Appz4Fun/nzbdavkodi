@@ -207,14 +207,21 @@ def _extract_mp4_first_sample(url, file_size, auth_header):
     if stsz is None:
         return None
 
-    _, stsz_body_start, _ = stsz
+    _, stsz_body_start, stsz_body_end = stsz
     # stsz body: 4 bytes version+flags, 4 bytes sample_size, 4 bytes
     # sample_count, then (if sample_size==0) sample_count × 4-byte entries.
+    # Each unpack must verify the read fits inside the stsz body, otherwise
+    # a malformed moov could make struct read into adjacent box bytes
+    # (or off the end of the buffer entirely).
+    if stsz_body_end - stsz_body_start < 12:
+        return None
     sample_size = struct.unpack_from(">I", moov, stsz_body_start + 4)[0]
     sample_count = struct.unpack_from(">I", moov, stsz_body_start + 8)[0]
     if sample_count < 1:
         return None
     if sample_size == 0:
+        if stsz_body_end - stsz_body_start < 16:
+            return None
         first_sample_size = struct.unpack_from(">I", moov, stsz_body_start + 12)[0]
     else:
         first_sample_size = sample_size
@@ -267,7 +274,7 @@ def _probe_mp4(url, auth_header, file_size=None):
         return DolbyVisionSourceResult("non_dv", "no_rpu_nal_found")
     try:
         info = parse_unspec62_nalu(nal)
-    except (ValueError, IndexError, NotImplementedError) as exc:
+    except (ValueError, IndexError, NotImplementedError, UnicodeDecodeError) as exc:
         _log_debug("DV probe RPU parse failed: {!r}".format(exc))
         return DolbyVisionSourceResult("dv_unknown", "rpu_parse_failed")
     return _classify_parsed_rpu(info)
@@ -453,7 +460,7 @@ def _probe_mkv(url, auth_header):
         return DolbyVisionSourceResult("non_dv", "no_rpu_nal_found")
     try:
         info = parse_unspec62_nalu(nal)
-    except (ValueError, IndexError, NotImplementedError) as exc:
+    except (ValueError, IndexError, NotImplementedError, UnicodeDecodeError) as exc:
         _log_debug("DV probe RPU parse failed: {!r}".format(exc))
         return DolbyVisionSourceResult("dv_unknown", "rpu_parse_failed")
     return _classify_parsed_rpu(info)
@@ -478,7 +485,9 @@ def probe_dolby_vision_source(url, auth_header=None, file_size=None):
         ``"dv_unknown"``. Never raises on I/O or parse errors — failures
         degrade to ``dv_unknown`` so the caller can fail safe to matroska.
     """
-    lower = url.split("?", 1)[0].lower()
+    # Strip query string AND fragment so a URL like ``foo.mkv#.mp4`` is
+    # classified by the real path component, not the fragment label.
+    lower = url.split("?", 1)[0].split("#", 1)[0].lower()
     if lower.endswith((".mp4", ".m4v")):
         return _probe_mp4(url, auth_header, file_size=file_size)
     if lower.endswith(".mkv"):

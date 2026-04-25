@@ -27,6 +27,22 @@ _HTML_TAG_RE = re.compile(r"<[^>]*>")
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
+def _coerce_response_dict(response):
+    """Return ``response`` if it's a dict, else an empty dict.
+
+    nzbdav's SABnzbd-compatible API documents object responses, but a
+    misconfigured proxy / error page / truncated body can produce a JSON
+    array, ``null``, or scalar. Without this normalization, every
+    ``response.get(...)`` chain that follows ``json.loads`` raises
+    ``AttributeError`` on those inputs and crashes the caller. Treating
+    non-dict JSON as "no useful payload" lets the existing fallback
+    branches (`response.get("status")`, etc.) handle it as the absence
+    of the expected fields, which is what they were already designed to
+    do for missing keys.
+    """
+    return response if isinstance(response, dict) else {}
+
+
 def _sanitize_server_message(raw):
     """Sanitize a raw HTTP response body for display in a Kodi dialog.
 
@@ -157,7 +173,7 @@ def submit_nzb(nzb_url, nzb_name=""):
     )
     try:
         response_text = _http_get(url, timeout=timeout)
-        response = json.loads(response_text)
+        response = _coerce_response_dict(json.loads(response_text))
     except HTTPError as e:
         # nzbdav returned a structured HTTP error (e.g. 500 on duplicate
         # submit, 502/503/504 from upstream issues). Capture the body so
@@ -208,11 +224,21 @@ def submit_nzb(nzb_url, nzb_name=""):
             xbmc.LOGINFO,
         )
         return nzo_id, None
+    # Distinguish "nzbdav saw the request but rejected the NZB" from
+    # "request never reached nzbdav". The former returns a 200 with
+    # status=false (e.g. empty / truncated / password-only NZB) and is
+    # NOT retryable — the caller should surface a specific error
+    # immediately. The latter (network failure, timeout) is already
+    # handled in the except branches above.
+    error_msg = response.get("error") if isinstance(response, dict) else None
     xbmc.log(
-        "NZB-DAV: Submit NZB response had no nzo_ids: {}".format(response),
+        "NZB-DAV: Submit NZB rejected by nzbdav: {}".format(response),
         xbmc.LOGERROR,
     )
-    return None, None
+    return None, {
+        "status": "rejected",
+        "message": str(error_msg) if error_msg else "nzbdav rejected the NZB",
+    }
 
 
 def cancel_job(nzo_id, timeout=3):
@@ -272,7 +298,7 @@ def cancel_job(nzo_id, timeout=3):
     )
     try:
         response_text = _http_get(url, timeout=timeout)
-        response = json.loads(response_text)
+        response = _coerce_response_dict(json.loads(response_text))
     except Exception as e:  # pylint: disable=broad-except
         # cancel_job is a "make the mess go away" path — anything that
         # prevents the cancel from reaching nzbdav should just get logged
@@ -322,7 +348,7 @@ def get_job_history(nzo_id):
 
     try:
         response_text = _http_get(url, timeout=10)
-        response = json.loads(response_text)
+        response = _coerce_response_dict(json.loads(response_text))
     except Exception as e:  # pylint: disable=broad-except
         xbmc.log(
             "NZB-DAV: Job history request failed for nzo_id={}: {}".format(nzo_id, e),
@@ -373,7 +399,7 @@ def find_completed_by_name(name):
 
     try:
         response_text = _http_get(url, timeout=10)
-        response = json.loads(response_text)
+        response = _coerce_response_dict(json.loads(response_text))
     except Exception as e:  # pylint: disable=broad-except
         xbmc.log(
             "NZB-DAV: History search request failed for '{}': {}".format(name, e),
@@ -401,7 +427,7 @@ def find_completed_by_name(name):
         url = "{}/api?{}".format(base_url, urlencode(params))
         try:
             response_text = _http_get(url, timeout=10)
-            response = json.loads(response_text)
+            response = _coerce_response_dict(json.loads(response_text))
         except Exception as e:  # pylint: disable=broad-except
             xbmc.log(
                 "NZB-DAV: History fallback request failed for '{}': {}".format(name, e),
@@ -469,7 +495,7 @@ def find_queued_by_name(name):
 
     try:
         response_text = _http_get(url, timeout=10)
-        response = json.loads(response_text)
+        response = _coerce_response_dict(json.loads(response_text))
     except Exception as e:  # pylint: disable=broad-except
         xbmc.log(
             "NZB-DAV: find_queued_by_name request failed: {}".format(e),
@@ -543,7 +569,7 @@ def get_completed_names():
 
     try:
         response_text = _http_get(url, timeout=10)
-        response = json.loads(response_text)
+        response = _coerce_response_dict(json.loads(response_text))
     except Exception as e:  # pylint: disable=broad-except
         xbmc.log(
             "NZB-DAV: get_completed_names request failed: {}".format(e),
@@ -597,7 +623,7 @@ def get_job_status(nzo_id):
     xbmc.log("NZB-DAV: Job status URL: {}".format(redact_url(url)), xbmc.LOGDEBUG)
     try:
         response_text = _http_get(url, timeout=10)
-        response = json.loads(response_text)
+        response = _coerce_response_dict(json.loads(response_text))
     except Exception as e:  # pylint: disable=broad-except
         # ``Exception`` intentionally — the prior ``(URLError, json.JSONDecodeError,
         # Exception)`` tuple was dead code (Exception subsumes the first two).

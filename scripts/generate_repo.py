@@ -60,7 +60,8 @@ def generate_repo(output_dir="dist"):
     # Write addons.xml.md5
     md5 = hashlib.md5(addons_xml.encode("utf-8")).hexdigest()  # noqa: S324  # not used for security
     with open(os.path.join(output_dir, "addons.xml.md5"), "w") as f:
-        f.write(md5)
+        # Trailing newline so line-oriented checksum readers don't choke.
+        f.write(md5 + "\n")
 
     print(
         "Generated {} ({} addons, md5: {})".format(

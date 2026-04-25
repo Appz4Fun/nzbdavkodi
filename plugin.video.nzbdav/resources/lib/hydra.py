@@ -173,10 +173,25 @@ def _source_url_hostname(source_url):
 
 
 def _parse_newznab_attrs(item):
-    """Return (size, indexer) from Newznab attributes on an item."""
+    """Return (size, indexer) from Newznab attributes on an item.
+
+    The hardcoded ``{NEWZNAB_NS}attr`` lookup misses RSS variants that use
+    a different default namespace, no namespace at all, or a custom
+    Newznab URI. Iterate every descendant and match by local-name so spec
+    drift between NZBHydra2 versions doesn't silently zero out
+    ``size``/``indexer`` columns.
+    """
     size = ""
     indexer = ""
-    for attr in item.iter("{%s}attr" % NEWZNAB_NS):
+    for attr in item.iter():
+        # `tag` is either ``"{ns}local"`` (namespaced) or ``"local"``
+        # (unqualified). We only care about the local-name == "attr".
+        tag = attr.tag
+        if not isinstance(tag, str):
+            continue
+        local = tag.rsplit("}", 1)[-1]
+        if local != "attr":
+            continue
         name = attr.get("name", "")
         if name == "size":
             size = attr.get("value", "")

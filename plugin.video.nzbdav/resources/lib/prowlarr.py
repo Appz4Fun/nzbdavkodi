@@ -24,6 +24,25 @@ from resources.lib.http_util import (
 NEWZNAB_NS = "http://www.newznab.com/DTD/2010/feeds/attributes/"
 
 
+def _build_xxe_safe_parser():
+    """Return an ElementTree XMLParser with external entities disabled.
+
+    Mirrors ``hydra._build_xxe_safe_parser``. ``xml.etree.ElementTree`` does
+    not expose a ``resolve_entities=False`` knob, but the underlying expat
+    parser can be told to ignore DefaultHandler output and reject
+    ExternalEntityRef callbacks. A hostile or compromised Prowlarr instance
+    could otherwise coerce us into reading arbitrary local files via an XXE
+    payload — same threat model as the NZBHydra2 path, kept on parity here.
+    """
+    parser = ET.XMLParser()  # nosec B314 — entities disabled below
+    try:
+        parser.parser.DefaultHandler = lambda _d: None
+        parser.parser.ExternalEntityRefHandler = lambda *_: False
+    except AttributeError:  # pragma: no cover — non-expat parser backend
+        pass
+    return parser
+
+
 # _format_request_error, _get_text, _calculate_age imported from
 # resources.lib.http_util above; definitions removed to eliminate
 # hydra.py ↔ prowlarr.py duplication.
@@ -137,7 +156,7 @@ def search_prowlarr(search_type, title, year="", imdb="", season="", episode="")
         else:
             params["q"] = title
 
-    from resources.lib.http_util import redact_url
+    from resources.lib.http_util import redact_text, redact_url
 
     url = _build_search_url(base_url, params, indexer_ids)
 
@@ -146,7 +165,13 @@ def search_prowlarr(search_type, title, year="", imdb="", season="", episode="")
     try:
         xml_text = _http_get(url, timeout=15)
     except Exception as e:
-        xbmc.log("NZB-DAV: Prowlarr search request failed: {}".format(e), xbmc.LOGERROR)
+        # Redact: HTTPError / URLError str() can echo back the failing URL
+        # (which embeds the apikey query param). Mirrors the redaction
+        # already in nzbdav_api's submit error path.
+        xbmc.log(
+            "NZB-DAV: Prowlarr search request failed: {}".format(redact_text(str(e))),
+            xbmc.LOGERROR,
+        )
         return [], _prowlarr_unavailable_error(e)
 
     results, parse_error = _parse_results_checked(xml_text)
@@ -170,7 +195,10 @@ def search_prowlarr(search_type, title, year="", imdb="", season="", episode="")
                 return [], parse_error
         except Exception as e:
             xbmc.log(
-                "NZB-DAV: Prowlarr title fallback failed: {}".format(e), xbmc.LOGERROR
+                "NZB-DAV: Prowlarr title fallback failed: {}".format(
+                    redact_text(str(e))
+                ),
+                xbmc.LOGERROR,
             )
             return [], _prowlarr_unavailable_error(e)
 
@@ -226,7 +254,9 @@ def _parse_results_checked(xml_text):
             invalid or not an RSS feed; `None` on success.
     """
     try:
-        root = ET.fromstring(xml_text)  # nosec B314 — trusted Prowlarr response
+        root = ET.fromstring(
+            xml_text, parser=_build_xxe_safe_parser()
+        )  # nosec B314 — entities disabled in _build_xxe_safe_parser
     except ET.ParseError as e:
         xbmc.log(
             "NZB-DAV: Failed to parse Prowlarr XML response: {}".format(e),

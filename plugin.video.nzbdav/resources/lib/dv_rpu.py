@@ -40,12 +40,28 @@ class DolbyVisionRpuInfo:
 
 
 class _BitReader:
+    # `read_ue` reads a leading-zero-then-one Exp-Golomb prefix. A truncated
+    # or adversarial payload could yield a stream of zeros that never
+    # terminates; this caps the prefix length so the loop can't run away.
+    # The H.265 spec uses up to ue(31) (32-bit values) so this is an order
+    # of magnitude above any legitimate input.
+    _MAX_UE_PREFIX_BITS = 64
+
     def __init__(self, data):
         self.data = data
         self.bit_pos = 0
 
     def read_bit(self):
         byte_index = self.bit_pos // 8
+        if byte_index >= len(self.data):
+            # Truncated payload — caller (`parse_unspec62_nalu`) wraps
+            # ValueError into a soft "could not parse" return, so a raw
+            # IndexError must not escape here.
+            raise ValueError(
+                "RPU bitstream truncated at bit {} (data is {} bytes)".format(
+                    self.bit_pos, len(self.data)
+                )
+            )
         bit_index = 7 - (self.bit_pos % 8)
         self.bit_pos += 1
         return (self.data[byte_index] >> bit_index) & 1
@@ -60,6 +76,11 @@ class _BitReader:
         zeros = 0
         while self.read_bit() == 0:
             zeros += 1
+            if zeros > self._MAX_UE_PREFIX_BITS:
+                raise ValueError(
+                    "RPU ue(v) prefix exceeded {} bits — payload likely "
+                    "truncated or malformed".format(self._MAX_UE_PREFIX_BITS)
+                )
         if zeros == 0:
             return 0
         return (1 << zeros) - 1 + self.read_bits(zeros)

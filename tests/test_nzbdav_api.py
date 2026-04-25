@@ -95,12 +95,17 @@ def test_get_submit_timeout_clamps_too_low(mock_xbmcaddon):
 
 @patch("resources.lib.nzbdav_api._get_settings")
 @patch("resources.lib.nzbdav_api._http_get")
-def test_submit_nzb_failure_returns_none(mock_http, mock_settings):
+def test_submit_nzb_failure_returns_rejected_error(mock_http, mock_settings):
+    """nzbdav 200 + status=false (e.g. empty / truncated NZB) is now
+    surfaced as a structured ``rejected`` error so the resolver can show
+    the user the real reason instead of silently retrying.
+    """
     mock_settings.return_value = ("http://nzbdav:3000", "testkey")
     mock_http.return_value = json.dumps({"status": False, "nzo_ids": []})
     nzo_id, error = submit_nzb("http://hydra:5076/getnzb/abc123", "The.Matrix")
     assert nzo_id is None
-    assert error is None
+    assert error is not None
+    assert error["status"] == "rejected"
 
 
 @patch("resources.lib.nzbdav_api._get_settings")
@@ -435,19 +440,21 @@ def test_get_job_history_connection_error(mock_http, mock_settings):
 @patch("resources.lib.nzbdav_api._get_settings")
 @patch("resources.lib.nzbdav_api._http_get")
 def test_submit_nzb_handles_malformed_response(mock_http, mock_settings):
-    """submit_nzb handles malformed API responses gracefully."""
+    """submit_nzb handles malformed API responses gracefully and surfaces
+    the rejection as a structured error (so the resolver doesn't loop
+    retrying)."""
     mock_settings.return_value = ("http://nzbdav:3333", "testkey")
-    # status false with null nzo_id
-    mock_http.return_value = '{"status": false, "nzo_ids": [null]}'
-    assert submit_nzb("http://nzb/test.nzb", "test") == (None, None)
-
-    # empty nzo_ids list
-    mock_http.return_value = '{"status": true, "nzo_ids": []}'
-    assert submit_nzb("http://nzb/test.nzb", "test") == (None, None)
-
-    # missing nzo_ids entirely
-    mock_http.return_value = '{"status": true}'
-    assert submit_nzb("http://nzb/test.nzb", "test") == (None, None)
+    for body in (
+        '{"status": false, "nzo_ids": [null]}',  # status false, null nzo_id
+        '{"status": true, "nzo_ids": []}',  # empty nzo_ids list
+        '{"status": true}',  # missing nzo_ids entirely
+    ):
+        mock_http.return_value = body
+        nzo_id, error = submit_nzb("http://nzb/test.nzb", "test")
+        assert nzo_id is None, "expected None nzo_id for body {!r}".format(body)
+        assert (
+            error is not None and error["status"] == "rejected"
+        ), "expected rejected error for body {!r}".format(body)
 
 
 @patch("resources.lib.nzbdav_api._get_settings")
@@ -792,3 +799,38 @@ def test_submit_nzb_http_error_caught_before_url_error(mock_http, mock_settings)
     # If the broad URLError clause had matched first, error would be None
     assert error is not None
     assert error["status"] == 500
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_get_job_status_handles_non_dict_json_array(mock_http, mock_settings):
+    """nzbdav misbehaviour: a malformed proxy / 5xx error page may return a
+    JSON array (or null / scalar) instead of an object. The chained
+    ``response.get(...)`` helpers must not crash with AttributeError —
+    treat non-dict JSON as the absence of the expected fields.
+    """
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.return_value = json.dumps([])  # array, not dict
+
+    # Should return None (status not found) instead of raising.
+    assert get_job_status("nzo_xyz") is None
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_get_job_history_handles_null_json(mock_http, mock_settings):
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.return_value = "null"  # parses to Python None
+
+    assert get_job_history("nzo_xyz") is None
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_cancel_job_handles_scalar_json(mock_http, mock_settings):
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.return_value = json.dumps("error")  # scalar string
+
+    # cancel_job should treat a scalar response as "not status: True"
+    # and return False without raising.
+    assert cancel_job("nzo_xyz") is False

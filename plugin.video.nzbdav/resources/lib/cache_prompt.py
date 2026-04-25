@@ -85,21 +85,50 @@ def maybe_show_cache_prompt(stream_info):
     size_gb = total_bytes / (1024.0**3) if total_bytes else 0.0
     message = _f(30153, size_gb) if size_gb else _s(30154)
 
-    result = xbmcgui.Dialog().yesnocustom(
-        _addon_name(),
-        message,
-        _s(30155),  # custom label: Never ask
-        _s(30156),  # no label: Not now
-        _s(30157),  # yes label: Show instructions
-    )
+    # Dialog().yesnocustom can raise RuntimeError on Kodi lifecycle issues
+    # (e.g. shutdown, no display). The session-shown flag was already set
+    # above, so a raised exception would silence all future prompts in
+    # this session — which is acceptable, but we still want a log line so
+    # the failure isn't completely invisible.
+    try:
+        result = xbmcgui.Dialog().yesnocustom(
+            _addon_name(),
+            message,
+            _s(30155),  # custom label: Never ask
+            _s(30156),  # no label: Not now
+            _s(30157),  # yes label: Show instructions
+        )
+    except RuntimeError as exc:
+        try:
+            import xbmc
+
+            xbmc.log(
+                "NZB-DAV: cache_prompt dialog suppressed: {!r}".format(exc),
+                xbmc.LOGWARNING,
+            )
+        except Exception:  # pylint: disable=broad-except
+            pass
+        return
 
     if result == _DLG_SHOW_INSTRUCTIONS:
         _show_instructions_dialog()
     elif result == _DLG_NEVER_ASK:
         try:
             addon.setSetting("cache_dialog_dismissed", "true")
-        except _SUPPRESSED_EXCEPTIONS:
-            pass
+        except _SUPPRESSED_EXCEPTIONS as exc:
+            # Failed to persist "Never ask" — the dialog will return next
+            # session. Surface that to the log so the user has a clue why
+            # they're seeing it again, without crashing the resolve flow.
+            try:
+                import xbmc
+
+                xbmc.log(
+                    "NZB-DAV: cache_prompt failed to persist 'Never ask' "
+                    "(setting=cache_dialog_dismissed): {!r}".format(exc),
+                    xbmc.LOGWARNING,
+                )
+            except Exception:  # pylint: disable=broad-except
+                pass
     # _DLG_NOT_NOW (0) or cancelled (-1): session flag already set
 
 

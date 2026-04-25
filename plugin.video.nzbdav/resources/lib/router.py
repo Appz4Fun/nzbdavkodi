@@ -216,6 +216,10 @@ def _search_all_providers(search_type, title, year="", imdb="", season="", episo
     import xbmcaddon
 
     addon = xbmcaddon.Addon()
+    # NZBHydra2 defaults ON (settings.xml default="true"), Prowlarr defaults
+    # OFF (default="false"). The two getSetting checks below are the
+    # default-preserving forms of those defaults — empty/unset reads to True
+    # for nzbhydra and False for prowlarr.
     nzbhydra_raw = addon.getSetting("nzbhydra_enabled")
     nzbhydra_enabled = nzbhydra_raw.lower() != "false"
     prowlarr_enabled = addon.getSetting("prowlarr_enabled").lower() == "true"

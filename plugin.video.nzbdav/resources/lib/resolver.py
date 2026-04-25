@@ -148,7 +148,16 @@ def _cache_bust_url(url):
     time. nzbdav ignores unknown query parameters on file requests.
     """
     separator = "&" if "?" in url else "?"
-    return "{}{}nzbdav_play={}".format(url, separator, int(time.time() * 1000))
+    # Use nanosecond precision (3.7+) so rapid replays don't collide on
+    # platforms whose `time.time()` clock is coarser than 1 ms (e.g. older
+    # CoreELEC kernels with HZ=100). Falls back to ms*1000 if the function
+    # is unavailable.
+    counter = (
+        time.time_ns()
+        if hasattr(time, "time_ns")
+        else int(time.time() * 1000) * 1_000_000
+    )
+    return "{}{}nzbdav_play={}".format(url, separator, counter)
 
 
 def _clear_kodi_playback_state(params=None):
@@ -903,7 +912,35 @@ def _submit_nzb_with_retries(nzb_url, title, dialog, monitor, max_submit_retries
                     ),
                     xbmc.LOGWARNING,
                 )
+            elif status == "rejected":
+                # nzbdav explicitly rejected the NZB (empty / truncated /
+                # password-only / unparseable). Not retryable — surface the
+                # specific message immediately instead of looping 3× and
+                # showing a generic failure.
+                xbmc.log(
+                    "NZB-DAV: nzbdav rejected the NZB for '{}': {}".format(
+                        title, submit_error["message"]
+                    ),
+                    xbmc.LOGERROR,
+                )
+                _show_submit_error_dialog(submit_error)
+                return None
             else:
+                # Non-transient HTTP error (often 500 "duplicate nzo_id").
+                # Before surfacing the error to the user, probe the queue:
+                # if the job is already running, attach to it. This covers
+                # the race where a concurrent submit (e.g. retried play of
+                # the same title) beat us to nzbdav.
+                adopted_nzo_id = _adopt_queued_or_completed_job(title, monitor)
+                if adopted_nzo_id:
+                    xbmc.log(
+                        "NZB-DAV: Adopted existing nzbdav job nzo_id={} for "
+                        "'{}' after HTTP {} rejection".format(
+                            adopted_nzo_id, title, status
+                        ),
+                        xbmc.LOGINFO,
+                    )
+                    return adopted_nzo_id
                 xbmc.log(
                     "NZB-DAV: Submit failed with HTTP {}, not retrying: {}".format(
                         status, submit_error["message"]
