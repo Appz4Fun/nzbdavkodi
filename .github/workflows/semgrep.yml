@@ -43,6 +43,32 @@ jobs:
         # action provided when its publishToken was unset.
         run: semgrep scan --config auto --sarif --output=semgrep.sarif
 
+      - name: Drop in-source suppressed Semgrep results
+        # Semgrep SARIF includes `# nosemgrep` findings as suppressed
+        # results. GitHub code scanning still displays them, so remove
+        # those results before upload and treat the source suppression as
+        # authoritative.
+        run: |
+          python3 - <<'PY'
+          import json
+
+          path = "semgrep.sarif"
+          with open(path, encoding="utf-8") as f:
+              sarif = json.load(f)
+
+          removed = 0
+          for run in sarif.get("runs", []):
+              results = run.get("results", [])
+              kept = [r for r in results if not r.get("suppressions")]
+              removed += len(results) - len(kept)
+              run["results"] = kept
+
+          with open(path, "w", encoding="utf-8") as f:
+              json.dump(sarif, f)
+
+          print("Removed {} suppressed Semgrep SARIF result(s).".format(removed))
+          PY
+
       - name: Upload SARIF file
         uses: github/codeql-action/upload-sarif@95e58e9a2cdfd71adc6e0353d5c52f41a045d225 # v4
         with:

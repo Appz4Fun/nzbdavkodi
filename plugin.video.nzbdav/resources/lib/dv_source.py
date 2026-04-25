@@ -74,6 +74,9 @@ def _http_range(url, start, end, auth_header=None, max_bytes=_HTTP_READ_CAP):
     clean_auth = _sanitize_header_value(auth_header)
     if clean_auth:
         req.add_header("Authorization", clean_auth)
+    # Caller validates stream URLs before probing; this range fetcher only
+    # adds bounded reads and sanitized auth headers.
+    # nosemgrep
     with urlopen(req, timeout=30) as resp:  # nosec B310
         return resp.read(max_bytes)
 

@@ -4445,22 +4445,14 @@ class StreamProxy:
                     input_url,
                 ]
             )
-            # text=True + explicit utf-8 + errors="replace" decodes ffprobe
-            # output upfront instead of relying on the after-the-fact
-            # `.decode(errors="replace")` further down. Same effect on the
-            # happy path, but invalid byte sequences are handled at the
-            # subprocess seam rather than leaving raw bytes lying around.
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 shell=False,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
             )
             try:
-                stdout, _ = proc.communicate(timeout=30)
+                stdout_bytes, _ = proc.communicate(timeout=30)
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait()
@@ -4468,7 +4460,7 @@ class StreamProxy:
                 return None
             if proc.returncode != 0:
                 return None
-            text = stdout.strip() if stdout else ""
+            text = stdout_bytes.decode("utf-8", "replace").strip()
             if not text:
                 return None
             try:
