@@ -104,12 +104,12 @@ pub async fn run(
                 };
                 match res {
                     Ok(_) => {
-                        state.mark_visited(item.tmdb_id, item.tmdb_type).ok();
-                        // Enqueue children at depth+1 if within MAX_DEPTH
-                        if item.depth + 1 <= MAX_DEPTH {
-                            for (cid, ctype, pop) in &job.children {
-                                state.enqueue_child(*cid, *ctype, item.depth + 1, *pop).ok();
-                            }
+                        // Batch visit + child-enqueue in ONE transaction.
+                        // Un-batched auto-commits on a USB HDD cost ~10ms each;
+                        // 100 children = 1 second wasted. One tx = ~50ms.
+                        let children = if item.depth + 1 <= MAX_DEPTH { &job.children[..] } else { &[] };
+                        if let Err(e) = state.visit_and_enqueue_batch(item.tmdb_id, item.tmdb_type, children, item.depth + 1) {
+                            error!("state batch failed for {:?} {}: {:?}", item.tmdb_type, item.tmdb_id, e);
                         }
                         written += 1;
                         if written % 100 == 0 {

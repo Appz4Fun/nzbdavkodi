@@ -9,6 +9,7 @@ fn make_state_schema(path: &std::path::Path) {
                             enqueued_at REAL, PRIMARY KEY(tmdb_id, tmdb_type));
         CREATE INDEX idx_queue_priority ON queue(depth ASC, popularity DESC);
         CREATE TABLE visited (tmdb_id INTEGER, tmdb_type TEXT, visited_at REAL,
+                              result TEXT NOT NULL DEFAULT 'ok',
                               PRIMARY KEY(tmdb_id, tmdb_type));
     ").unwrap();
 }

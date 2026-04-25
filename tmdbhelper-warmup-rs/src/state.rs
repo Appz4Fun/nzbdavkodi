@@ -88,16 +88,45 @@ impl StateDb {
 
     pub fn enqueue_child(&mut self, tmdb_id: i64, tmdb_type: TmdbType, depth: i64, popularity: f64) -> Result<()> {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
-        // Skip if already visited
         let visited: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM visited WHERE tmdb_id=?1 AND tmdb_type=?2",
             params![tmdb_id, type_to_str(tmdb_type)], |r| r.get(0))?;
         if visited > 0 { return Ok(()); }
-
         self.conn.execute(
             "INSERT OR IGNORE INTO queue (tmdb_id, tmdb_type, depth, popularity, enqueued_at) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![tmdb_id, type_to_str(tmdb_type), depth, popularity, now],
         )?;
+        Ok(())
+    }
+
+    /// Batch-enqueue children + mark one item visited in a SINGLE transaction.
+    /// This is critical for throughput: un-batched auto-commits on a USB HDD
+    /// cost ~10ms each, so 100 children × 2 ops = ~2 seconds. One transaction
+    /// collapses that to ~50ms (one WAL commit).
+    pub fn visit_and_enqueue_batch(
+        &mut self,
+        tmdb_id: i64,
+        tmdb_type: TmdbType,
+        children: &[(i64, TmdbType, f64)],
+        child_depth: i64,
+    ) -> Result<()> {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "INSERT OR REPLACE INTO visited (tmdb_id, tmdb_type, visited_at, result) VALUES (?1, ?2, ?3, 'ok')",
+            params![tmdb_id, type_to_str(tmdb_type), now],
+        )?;
+        for (cid, ctype, pop) in children {
+            let already: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM visited WHERE tmdb_id=?1 AND tmdb_type=?2",
+                params![*cid, type_to_str(*ctype)], |r| r.get(0))?;
+            if already > 0 { continue; }
+            tx.execute(
+                "INSERT OR IGNORE INTO queue (tmdb_id, tmdb_type, depth, popularity, enqueued_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![*cid, type_to_str(*ctype), child_depth, *pop, now],
+            )?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
