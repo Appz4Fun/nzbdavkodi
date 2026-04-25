@@ -143,7 +143,11 @@ def set_cached(search_type, title, results, **kwargs):
 
 def _cache_file_size(path):
     """Return allocated bytes for cache eviction, falling back to logical size."""
-    stat = os.stat(path)
+    return _cache_size_from_stat(os.stat(path))
+
+
+def _cache_size_from_stat(stat):
+    """Return allocated bytes from a stat result, falling back to logical size."""
     blocks = getattr(stat, "st_blocks", None)
     if isinstance(blocks, int) and blocks > 0:
         return blocks * 512
@@ -154,38 +158,42 @@ def _evict_oldest():
     """Delete oldest cache files until size and entry-count limits are met."""
     cache_dir = _get_cache_dir()
     try:
-        files = [
-            os.path.join(cache_dir, f)
-            for f in os.listdir(cache_dir)
-            if f.endswith(".json")
-        ]
         total = 0
-        live_files = []
-        for path in files:
+        entries = []
+        for f in os.listdir(cache_dir):
+            if not f.endswith(".json"):
+                continue
+            path = os.path.join(cache_dir, f)
             try:
-                total += _cache_file_size(path)
-                live_files.append(path)
+                stat = os.stat(path)
             except OSError:
-                pass
-        files = live_files
-        if total <= MAX_CACHE_SIZE_BYTES and len(files) <= MAX_CACHE_ENTRY_COUNT:
+                continue
+            size = _cache_size_from_stat(stat)
+            total += size
+            entries.append((getattr(stat, "st_mtime", 0), path, size))
+
+        if total <= MAX_CACHE_SIZE_BYTES and len(entries) <= MAX_CACHE_ENTRY_COUNT:
             return
         # Sort by mtime ascending (oldest first)
-        files.sort(key=os.path.getmtime)
-        while files and (
-            total > MAX_CACHE_SIZE_BYTES or len(files) > MAX_CACHE_ENTRY_COUNT
+        entries.sort(key=lambda entry: entry[0])
+        current_count = len(entries)
+        while entries and (
+            total > MAX_CACHE_SIZE_BYTES or current_count > MAX_CACHE_ENTRY_COUNT
         ):
-            path = files.pop(0)
+            _mtime, path, size = entries.pop(0)
             try:
-                size = _cache_file_size(path)
                 os.remove(path)
-                total -= size
-                xbmc.log(
-                    "NZB-DAV: Cache evicted '{}'".format(os.path.basename(path)),
-                    xbmc.LOGDEBUG,
-                )
             except OSError:
-                pass
+                if not os.path.exists(path):
+                    total -= size
+                    current_count -= 1
+                continue
+            total -= size
+            current_count -= 1
+            xbmc.log(
+                "NZB-DAV: Cache evicted '{}'".format(os.path.basename(path)),
+                xbmc.LOGDEBUG,
+            )
     except OSError:
         pass
 

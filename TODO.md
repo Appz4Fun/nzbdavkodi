@@ -1399,9 +1399,6 @@ Most of the original seven findings closed earlier: `clear_sessions` does snapsh
 ##### [x] M39. `install_player()` unconditionally overwrites `nzbdav.json`; hand-edits lost
 **File:** `player_installer.py:51-54` — stale: current installer preserves same-schema files and backs up before overwriting schema mismatches; covered by player-installer regression tests. (verified 2026-04-25)
 
-##### M43. `clear_cache()` / `_evict_oldest()` race condition
-**File:** `cache.py:91-108` — Total size computed, then files deleted; another thread/process could modify files in between.
-
 ##### [x] M46. `validate_stream` dead code: `e.code in (200, 206)` in `HTTPError` branch — stale; legacy helper is retired (verified 2026-04-25)
 **File:** `webdav.py:386` — `HTTPError` is only raised for 4xx/5xx; 200/206 never raise it. (Cosmetic — dead code that never fires; flagged for cleanup but doesn't affect behavior.)
 
@@ -1575,7 +1572,6 @@ Most of the original seven findings closed earlier: `clear_sessions` does snapsh
 
 - **Reused string IDs for different UI contexts** | `settings.xml:7,12,17 (#30003), 70-73 (#30054/30055)` | Translators see one string, addon shows it in two unrelated spots; cosmetic today, painful when one caller wants a context-specific phrasing.
 - [x] **No max-entry count in cache** | `cache.py:14` | Added `MAX_CACHE_ENTRY_COUNT` and oldest-entry eviction when count exceeds the cap. (2026-04-25)
-- **TOCTOU on cache eviction size sum** | `cache.py:129` | Concurrent writes between `getsize` calls make the eviction decision off; low impact on single-service usage.
 - **Several timing-based tests use `time.sleep`** | `tests/test_cache.py:65`, `tests/test_integration_hls_ffmpeg.py`, `tests/test_stream_proxy.py:3362`, others | CI flakes under load; prefer monotonic fakes.
 
 </details>

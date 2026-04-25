@@ -298,6 +298,40 @@ def test_cache_evicts_using_allocated_block_size(mock_cache_dir):
 
 
 @patch("resources.lib.cache._get_cache_dir")
+def test_cache_eviction_continues_when_file_disappears_before_sort(mock_cache_dir):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        mock_cache_dir.return_value = tmpdir
+        old_path = os.path.join(tmpdir, "old.json")
+        new_path = os.path.join(tmpdir, "new.json")
+        for path, mtime in ((old_path, 1000), (new_path, 1001)):
+            with open(path, "w") as f:
+                json.dump({"timestamp": time.time(), "results": ["x" * 200]}, f)
+            os.utime(path, (mtime, mtime))
+
+        FakeStat = namedtuple("FakeStat", "st_size st_blocks st_mtime")
+        stats = {
+            old_path: FakeStat(st_size=10, st_blocks=8, st_mtime=1000),
+            new_path: FakeStat(st_size=10, st_blocks=8, st_mtime=1001),
+        }
+        stat_calls = {old_path: 0, new_path: 0}
+        real_remove = os.remove
+
+        def _fake_stat(path):
+            stat_calls[path] += 1
+            if path == old_path and stat_calls[path] > 1:
+                real_remove(old_path)
+                raise FileNotFoundError(path)
+            return stats[path]
+
+        with patch.object(cache_module.os, "stat", side_effect=_fake_stat):
+            with patch.object(cache_module, "MAX_CACHE_SIZE_BYTES", 1):
+                _evict_oldest()
+
+        remaining = sorted(f for f in os.listdir(tmpdir) if f.endswith(".json"))
+        assert remaining == []
+
+
+@patch("resources.lib.cache._get_cache_dir")
 @patch("resources.lib.cache.xbmcaddon")
 def test_get_cached_falls_back_to_300s_when_ttl_setting_unparseable(
     mock_addon_mod, mock_cache_dir

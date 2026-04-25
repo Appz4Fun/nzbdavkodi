@@ -1660,15 +1660,11 @@ def test_poll_until_ready_submit_connection_error_still_retries(
 @patch("resources.lib.resolver.find_completed_by_name", return_value=None)
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver.time")
-@patch("resources.lib.resolver.get_job_history", return_value=None)
-@patch("resources.lib.resolver.get_job_status")
-@patch("resources.lib.resolver.submit_nzb", return_value=("nzo_xyz", None))
+@patch("resources.lib.resolver._submit_nzb_with_retries", return_value="nzo_xyz")
 @patch("resources.lib.resolver.xbmc")
 def test_poll_until_ready_cleanup_on_timeout(
     mock_xbmc,
     mock_submit,
-    mock_status,
-    mock_history,
     mock_time,
     mock_gui,
     mock_find_completed,
@@ -1676,21 +1672,8 @@ def test_poll_until_ready_cleanup_on_timeout(
 ):
     """When the download_timeout fires, _poll_until_ready must call
     cancel_job(nzo_id) before returning."""
-    mock_status.return_value = {"status": "Downloading", "percentage": "10"}
     mock_xbmc.Monitor.return_value = _make_monitor()
-    mock_time.time.side_effect = [0.0, 700.0]  # wall-clock log timestamp
-
-    # resolver uses time.monotonic for elapsed; first call returns 0.0
-    # (poll start), subsequent calls return 700.0 to force the timeout
-    # branch. A fixed side_effect list exhausts because submit helpers
-    # also call monotonic.
-    _mono_calls = [0]
-
-    def _fake_monotonic():
-        _mono_calls[0] += 1
-        return 0.0 if _mono_calls[0] <= 1 else 700.0
-
-    mock_time.monotonic.side_effect = _fake_monotonic
+    mock_time.monotonic.side_effect = [0.0, 700.0]
 
     url, headers = _poll_until_ready(
         "http://hydra/nzb", "movie", _make_dialog(), 2, 600
