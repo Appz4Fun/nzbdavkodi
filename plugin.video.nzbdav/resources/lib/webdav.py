@@ -79,7 +79,9 @@ def probe_webdav_reachable(monitor=None, max_retries=1, retry_delay=1):
         content_root = raw.strip("/") if isinstance(raw, str) and raw else "content"
     except Exception:  # pylint: disable=broad-except
         content_root = "content"
-    url = "{}/{}/".format(base.rstrip("/"), content_root or "content")
+    # `content_root` is guaranteed non-empty by the branches above, so the
+    # earlier trailing `or "content"` was dead code (closes §H.3 Low).
+    url = "{}/{}/".format(base.rstrip("/"), content_root)
     mon = monitor or xbmc.Monitor()
 
     attempt = 0

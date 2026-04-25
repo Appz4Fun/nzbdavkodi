@@ -1279,12 +1279,18 @@ def resolve(handle, params):
         dialog.close()
 
 
-def resolve_and_play(nzb_url, title):
+def resolve_and_play(nzb_url, title, params=None):
     """Handle direct execution (executebuiltin://RunPlugin calls).
 
     Polls until the stream is ready, then plays via xbmc.Player().
     Unlike resolve(), there is no plugin handle so setResolvedUrl() is not
     called; playback simply does not start on failure.
+
+    ``params`` (optional) carries the original plugin URL params dict
+    (tmdb_id, imdb, season, episode, etc.) so `_clear_kodi_playback_state`
+    can scrub the matching TMDBHelper bookmark row. Without it, the
+    bookmark survives and the next replay of the same title resumes
+    from the broken-stream offset (TODO.md §H.3).
     """
     poll_interval, download_timeout = _get_poll_settings()
 
@@ -1296,7 +1302,7 @@ def resolve_and_play(nzb_url, title):
             nzb_url, title, dialog, poll_interval, download_timeout
         )
         if stream_url:
-            _clear_kodi_playback_state()
+            _clear_kodi_playback_state(params)
             _play_via_proxy(stream_url, stream_headers)
     except _RESOLVE_RUNTIME_ERRORS as error:
         _handle_resolve_exception("resolve_and_play", error)

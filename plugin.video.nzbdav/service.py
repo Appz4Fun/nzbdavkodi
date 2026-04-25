@@ -451,8 +451,15 @@ def main():
             )
             try:
                 proxy.stop()
-            except Exception:  # pylint: disable=broad-except
-                pass
+            except Exception as e:  # pylint: disable=broad-except
+                # Logged at LOGWARNING (not LOGERROR) because we're about
+                # to spawn a fresh proxy anyway — the stop failure is
+                # diagnostic-only, not user-actionable. Closes §H.3.
+                xbmc.log(
+                    "NZB-DAV: proxy.stop() raised during restart "
+                    "(continuing): {!r}".format(e),
+                    xbmc.LOGWARNING,
+                )
             proxy = StreamProxy()
             try:
                 proxy.start()

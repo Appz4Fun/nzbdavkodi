@@ -138,9 +138,14 @@ def route(argv):
             # Normalize TMDBHelper "_" placeholders to empty strings so the
             # resolver sees `""`, not the literal `"_"`.
             clean = _clean_params(params)
+            # Pass `clean` so resolve_and_play can clear the matching
+            # TMDBHelper bookmark row (keyed by tmdb_id+title) when
+            # playback starts. Without it, replays resume from a stale
+            # offset. TODO.md §H.3.
             resolve_and_play(
                 clean.get("nzburl", ""),
                 clean.get("title", ""),
+                params=clean,
             )
         elif path == "/install_player":
             from resources.lib.player_installer import install_player

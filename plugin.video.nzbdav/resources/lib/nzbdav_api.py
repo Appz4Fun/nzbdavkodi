@@ -316,7 +316,11 @@ def cancel_job(nzo_id, timeout=3):
             xbmc.LOGWARNING,
         )
         return False
-    if response.get("status") is True:
+    # Truthy match (not `is True` identity) — submit_nzb's success branch
+    # uses the same loose check, and at least one nzbdav build returns
+    # status="ok" (string) instead of the documented JSON `true`. Closes
+    # the §H.3 cancel/submit-asymmetric finding.
+    if response.get("status"):
         xbmc.log(
             "NZB-DAV: cancel_job removed nzo_id={} from queue".format(nzo_id),
             xbmc.LOGINFO,

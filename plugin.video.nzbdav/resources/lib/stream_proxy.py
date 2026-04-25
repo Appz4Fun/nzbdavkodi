@@ -527,6 +527,15 @@ def _density_ratio(window):
 def _would_trip_density_breaker(window, skip):
     if skip <= 0:
         return False
+    # An empty recovery window means "no progress samples yet" — most
+    # commonly, the very first range read failed before any bytes were
+    # streamed. Returning True here would 100%-trip the breaker on the
+    # very first recovery attempt and abort the stream before any
+    # genuine recovery had a chance to land. Require at least one
+    # progress sample before letting the breaker fire. Closes
+    # TODO.md §H.3 ("density breaker trips on empty recovery window").
+    if not window:
+        return False
     trial = deque([item[:] for item in window])
     _record_density_window(trial, "zero_fill", skip)
     return _density_ratio(trial) > _DENSITY_BREAKER_ZERO_FILL_RATIO
