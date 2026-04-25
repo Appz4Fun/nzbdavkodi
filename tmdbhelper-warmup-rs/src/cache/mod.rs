@@ -1,4 +1,5 @@
 pub mod art;
+pub mod collection;
 pub mod credits;
 pub mod dimensions;
 pub mod movie;

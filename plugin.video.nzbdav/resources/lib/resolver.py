@@ -435,6 +435,13 @@ def _play_direct(handle, stream_url, stream_headers):
             service_port, stream_url, auth_header
         )
 
+        # Window properties go DOWN before ``setResolvedUrl`` so the
+        # service-side playback monitor sees them the instant Kodi
+        # transitions into playback. ``setResolvedUrl`` is what triggers
+        # Kodi to actually start the player; if the service's 1 Hz tick
+        # fired between resolve-and-property writes, it would miss the
+        # session entirely until the next tick. TODO.md §H.2-M47.
+        home = xbmcgui.Window(10000)
         if stream_info.get("direct"):
             xbmc.log(
                 "NZB-DAV: MP4 already faststart, direct play: {}".format(stream_url),
@@ -442,13 +449,11 @@ def _play_direct(handle, stream_url, stream_headers):
             )
             bust_url = _cache_bust_url(stream_url)
             li = _make_playable_listitem(bust_url, stream_headers)
-            xbmcplugin.setResolvedUrl(handle, True, li)
-
-            home = xbmcgui.Window(10000)
             play_url = _build_play_url(bust_url, stream_headers)
             home.setProperty("nzbdav.stream_url", play_url)
             home.setProperty("nzbdav.stream_title", stream_url.rsplit("/", 1)[-1])
             home.setProperty("nzbdav.active", "true")
+            xbmcplugin.setResolvedUrl(handle, True, li)
             return
 
         maybe_show_cache_prompt(stream_info)
@@ -457,12 +462,10 @@ def _play_direct(handle, stream_url, stream_headers):
         li.setContentLookup(False)
         _apply_proxy_mime(li, stream_url, stream_info)
 
-        xbmcplugin.setResolvedUrl(handle, True, li)
-
-        home = xbmcgui.Window(10000)
         home.setProperty("nzbdav.stream_url", proxy_url)
         home.setProperty("nzbdav.stream_title", stream_url.rsplit("/", 1)[-1])
         home.setProperty("nzbdav.active", "true")
+        xbmcplugin.setResolvedUrl(handle, True, li)
         return
 
     bust_url = _cache_bust_url(stream_url)
@@ -473,12 +476,11 @@ def _play_direct(handle, stream_url, stream_headers):
     )
 
     li = _make_playable_listitem(bust_url, stream_headers)
-    xbmcplugin.setResolvedUrl(handle, True, li)
-
     home = xbmcgui.Window(10000)
     home.setProperty("nzbdav.stream_url", play_url)
     home.setProperty("nzbdav.stream_title", stream_url.rsplit("/", 1)[-1])
     home.setProperty("nzbdav.active", "true")
+    xbmcplugin.setResolvedUrl(handle, True, li)
 
 
 def _play_via_proxy(stream_url, stream_headers):
@@ -1108,11 +1110,21 @@ def _handle_job_status(job_status, nzo_id, dialog, last_status):
 
 
 def _handle_history_result(history, title, no_video_retries, max_no_video_retries):
-    """Handle history-based completion and failure states."""
+    """Handle history-based completion and failure states.
+
+    Use ``.get(...)`` for ``status`` and ``storage`` instead of bracket
+    access. ``not history`` filters out None and empty dicts, but a
+    history row with the keys *omitted* (server bug, partial response)
+    would still pass that guard and KeyError on subscript access. The
+    KeyError used to surface as a generic resolver crash; now a missing
+    field falls through to the "not Completed" branch which returns
+    cleanly. TODO.md §H.2-M41.
+    """
     if not history:
         return False, None, None, no_video_retries
 
-    if history["status"] == "Failed":
+    status = history.get("status")
+    if status == "Failed":
         fail_msg = history.get("fail_message", "")
         xbmc.log(
             "NZB-DAV: Download failed for nzo_id={} (title='{}'): {}".format(
@@ -1124,10 +1136,12 @@ def _handle_history_result(history, title, no_video_retries, max_no_video_retrie
         xbmcgui.Dialog().ok(_addon_name(), error_text)
         return True, None, None, no_video_retries
 
-    if history["status"] != "Completed":
+    if status != "Completed":
         return False, None, None, no_video_retries
 
-    storage = history["storage"]
+    storage = history.get("storage")
+    if not storage:
+        return False, None, None, no_video_retries
     webdav_folder = _storage_to_webdav_path(storage)
     video_path = find_video_file(webdav_folder)
     if video_path:

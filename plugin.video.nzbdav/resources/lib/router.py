@@ -427,9 +427,12 @@ def _handle_play(handle, params):
             il_s = xbmc.getInfoLabel(s_label)
             il_e = xbmc.getInfoLabel(e_label)
             il_t = xbmc.getInfoLabel(t_label)
-            if il_s and il_s not in ("", "-1", "0"):
+            # "0" is a real season (specials) and episode (pilot/E0)
+            # value — only "" / "-1" mean Kodi has no selection. The
+            # previous filter dropped specials entirely. TODO.md §H.2-M30.
+            if il_s and il_s not in ("", "-1"):
                 season = season or il_s
-            if il_e and il_e not in ("", "-1", "0"):
+            if il_e and il_e not in ("", "-1"):
                 episode = episode or il_e
             if il_t and not title:
                 title = il_t
@@ -849,9 +852,13 @@ def _test_connection(label, url, test_url, ok_condition):
             notify(_addon_name(), "{}: unexpected response".format(label), 5000)
     except Exception as e:
         # urllib exceptions often embed the full URL (with apikey!) in
-        # str(e). Strip the URL to a redacted form before notifying or
-        # logging so keys don't leak.
+        # str(e). The verbatim-URL substitution catches the most common
+        # case; ``redact_text`` handles the residue (apikey embedded in
+        # an error phrase, percent-encoded variants, etc.) — TODO.md §H.2-M31.
+        from resources.lib.http_util import redact_text
+
         err_msg = str(e).replace(test_url, redact_url(test_url))
+        err_msg = redact_text(err_msg)
         notify(_addon_name(), "{}: {}".format(label, err_msg[:60]), 5000)
 
 
@@ -890,9 +897,17 @@ def _test_prowlarr_connection():
         else:
             notify(_addon_name(), "Prowlarr: unexpected response", 5000)
     except Exception as e:
+        # Mirror the redaction the shared `_test_connection` helper uses:
+        # urllib exception strings can embed the full URL (with apikey),
+        # so substitute the redacted form and run through `redact_text`
+        # for any other apikey/secret patterns. TODO.md §H.2-M31.
+        from resources.lib.http_util import redact_text, redact_url
+
+        err_msg = str(e).replace(test_url, redact_url(test_url))
+        err_msg = redact_text(err_msg)
         notify(
             _addon_name(),
-            "Prowlarr: {}".format(str(e)[:60]),
+            "Prowlarr: {}".format(err_msg[:60]),
             5000,
         )
 

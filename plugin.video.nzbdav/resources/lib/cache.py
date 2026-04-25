@@ -68,7 +68,7 @@ def get_cached(search_type, title, **kwargs):
         return None
 
     try:
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         if time.time() - data.get("timestamp", 0) > cache_ttl:
             return None
@@ -101,7 +101,7 @@ def set_cached(search_type, title, results, **kwargs):
         # or the new file, never a half-written JSON blob that would
         # JSONDecodeError.
         tmp_path = path + ".tmp"
-        with open(tmp_path, "w") as f:
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(data, f)
         os.replace(tmp_path, path)
         xbmc.log(
@@ -149,9 +149,22 @@ def _evict_oldest():
 
 
 def clear_cache():
-    """Delete all cached results."""
+    """Delete all cached results.
+
+    Tolerate a missing cache directory — `clear_cache` is exposed via
+    the addon's settings menu and a user can hit it on a fresh install
+    where the directory was never created. The previous unguarded
+    ``os.listdir`` raised FileNotFoundError that bubbled up to the
+    settings handler. TODO.md §H.2-M42.
+    """
     cache_dir = _get_cache_dir()
-    for f in os.listdir(cache_dir):
+    try:
+        entries = os.listdir(cache_dir)
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+    for f in entries:
         if f.endswith(".json"):
             try:
                 os.remove(os.path.join(cache_dir, f))

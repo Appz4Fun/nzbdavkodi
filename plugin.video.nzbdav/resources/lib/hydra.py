@@ -300,7 +300,15 @@ def _parse_results_checked(xml_text):
         )
         return [], "NZBHydra returned an invalid response: expected RSS feed"
 
-    return [_build_result(item) for item in root.iter("item")], None
+    # Scope to <channel><item> rather than `root.iter("item")` so a
+    # nested <item> inside e.g. an <atom:link> extension element doesn't
+    # get picked up as a search result. Newznab feeds put <item>s in
+    # <channel> by spec; falling back to root.iter for malformed feeds
+    # used to silently include junk results. TODO.md §H.2-M21.
+    items = []
+    for channel in root.findall("channel"):
+        items.extend(channel.findall("item"))
+    return [_build_result(item) for item in items], None
 
 
 # _get_text and _calculate_age imported from resources.lib.http_util.

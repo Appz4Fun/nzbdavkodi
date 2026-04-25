@@ -2372,8 +2372,15 @@ class _StreamHandler(BaseHTTPRequestHandler):
         total_written = 0
         last_result = _UPSTREAM_RANGE_UPSTREAM_ERROR
 
+        # ``waitForAbort`` instead of ``time.sleep`` so a Kodi shutdown
+        # signal during the retry-ladder backoff aborts the wait and
+        # returns immediately. The previous ``time.sleep`` would block
+        # the handler for the full delay even after Kodi started
+        # tearing down. TODO.md §H.2-M14.
+        monitor = xbmc.Monitor()
         for delay in _RANGE_RETRY_DELAYS:
-            time.sleep(delay)
+            if monitor.waitForAbort(delay):
+                return last_result, total_written, current
             result, written = self._stream_upstream_range(
                 ctx, current, end, contract_mode=contract_mode
             )
@@ -2601,11 +2608,15 @@ class _StreamHandler(BaseHTTPRequestHandler):
             probe_end = min(target + 1023, range_end)
 
             delays = (0,) + _PROBE_RETRY_DELAYS
+            probe_monitor = xbmc.Monitor()
             for delay in delays:
                 if time.monotonic() - start_time >= _MAX_RECOVERY_SECONDS:
                     return None
-                if delay:
-                    time.sleep(delay)
+                # waitForAbort yields the same backoff as time.sleep but
+                # returns True (and aborts the loop) when Kodi is
+                # shutting down. TODO.md §H.2-M14.
+                if delay and probe_monitor.waitForAbort(delay):
+                    return None
                 req = Request(ctx["remote_url"])
                 req.add_header("Range", "bytes={}-{}".format(target, probe_end))
                 if ctx.get("auth_header"):

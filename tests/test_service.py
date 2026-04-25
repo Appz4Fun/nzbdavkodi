@@ -225,7 +225,10 @@ def test_tick_notifies_when_playback_never_started(mock_window, mock_xbmc, mock_
     player = NzbdavPlayer()
     player._state = PlaybackState.MONITORING
     player._av_started = False
-    player._play_time = time.time() - 60  # well past the 30 s threshold
+    # Switched from time.time() to time.monotonic() per TODO.md §H.2-M35
+    # (NTP-jump-resistant). Test must mirror that or the diff > 30 s
+    # against monotonic-now never fires.
+    player._play_time = time.monotonic() - 60  # well past the 30 s threshold
     player._title = "Shutter.Island.mkv"
     player.isPlaying = lambda: False
 

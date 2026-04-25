@@ -549,6 +549,23 @@ inside Kodi itself.
   guardrail for P8/P5/unknown DV is load-bearing; do not remove it
   without re-verifying on this exact build with multiple sources.
 
+- **TMDBHelper widget churn during playback (2026-04-25).** From a
+  live-tick telemetry pass: zero new TX drops and stable thread
+  count, but kodi.log shows repeated `GetDirectory` errors for
+  `info=similar`, `info=crew`, and `info=cast` while a movie is
+  playing. Each error is a transient plugin call TMDBHelper spawns to
+  refresh background widgets the user can't see (the now-playing
+  fullscreen UI). On the CoreELEC R9, those plugin spawns compete
+  with the proxy + ffmpeg for the box's modest CPU/IO budget and are
+  the *first* speed lever to pull before more kernel tuning.
+  Investigation path: identify which TMDBHelper widget(s) are still
+  populating during fullscreen playback, and either gate them on
+  `Player.HasMedia + !VideoPlayer.IsFullscreen`, or pause the
+  background widget refresh loop while `nzbdav.active=true`. Out of
+  scope for direct nzbdavkodi changes — this is a TMDBHelper
+  configuration / nzbdav.json player-spec issue. Track here so it
+  doesn't get lost.
+
 ---
 
 ### D.2 The 32-bit Kodi bug — precise mechanics
@@ -1341,11 +1358,10 @@ Most of the original seven findings closed: `clear_sessions` does snapshot-then-
 - **M1b.** `poll_interval=0` produces `waitForAbort(0)` tight loop. (`resolver.py:366-368`)
 - **M1c.** `int(percentage or 0)` raises on `"45.5"`. (`resolver.py:566`, `nzbdav_api.py:275`, `284`)
 
-##### M2. `_storage_to_webdav_path` doesn't URL-encode
-**File:** `resolver.py:383` — Space / `#` / `?` / `&` break the WebDAV URL.
+<!-- M2 closed (false positive against current code): `_storage_to_webdav_path` returns a `/content/...` path; `find_video_file` (webdav.py:186) runs the path through `quote(folder_path, safe="/")` before constructing the WebDAV URL. Spaces / `#` / `?` are URL-encoded by the downstream consumer. -->
 
-##### M3. `nzbdav.stream_url` stores pipe-header form; service retry turns `|Header=Value` into filesystem path
-**File:** `resolver.py:285-286`
+<!-- M3 deferred: the pipe-header form `URL|Header=Value` is the canonical Kodi shape for "URL plus HTTP headers" and `xbmc.Player().play(path, listitem)` accepts it natively. The "filesystem path" concern in the audit assumes some intermediate component runs `os.path.exists()` on the stored value — none does. Defensive-only, deferred. -->
+
 
 ##### M4. `_play_via_proxy` direct branch passes `li.getPath()` AND the ListItem, duplicating headers
 **File:** `resolver.py:347`
@@ -1377,8 +1393,6 @@ Most of the original seven findings closed: `clear_sessions` does snapshot-then-
 ##### M13. `_MAX_RECOVERY_SECONDS` budget only checked at loop top; handler can block ~60s vs advertised 30s
 **File:** `stream_proxy.py:785-788`
 
-##### M14. `time.sleep(delay)` in handler can't observe shutdown; should use `Monitor.waitForAbort()`
-**File:** `stream_proxy.py:788`
 
 ##### M15. Concurrent `_serve_remux` on different sessions clobber server-wide `active_ffmpeg`/`current_byte_pos`
 **Files:** `stream_proxy.py:579-580`, `644-645`
@@ -1395,14 +1409,13 @@ Most of the original seven findings closed: `clear_sessions` does snapshot-then-
 ##### M19. No deduplication of aggregated multi-indexer results
 **File:** `hydra.py:100-130`
 
-##### M20. ✅ Fixed
-`int(max_results or 25)` raises on non-numeric setting (was `hydra.py:69`, now `hydra.py:97` after refactor). See §H.3 fix-comment for current `hydra.py:97` patch — try/except + clamp to [1..100].
+<!-- M20-M22 closed.
+  M20: int(max_results) try/except + clamp to [1..100] applied in hydra.py:97.
+  M21: root.iter("item") scoped to channel.findall("item") in hydra.py:303.
+  M22: parsedate_to_datetime call no longer present in current hydra.py — the
+       function went through `calculate_age` in http_util.py which already
+       wraps parsedate_to_datetime in a typed exception tuple. -->
 
-##### M21. `root.iter("item")` traverses entire tree including nested items; should scope to `channel`
-**File:** `hydra.py:156`
-
-##### M22. `parsedate_to_datetime` naive datetime subtraction with tz-aware `now` raises `TypeError`, silently swallowed
-**File:** `hydra.py:230`
 
 ##### M23. Filter bugs
 
@@ -1425,17 +1438,14 @@ Most of the original seven findings closed: `clear_sessions` does snapshot-then-
 ##### M27. No scheme enforcement on URL settings; `http://` sends basic-auth/apikey cleartext
 **Files:** `webdav.py:20-32`, `211-213`
 
-##### M28. `/search` success path calls `endOfDirectory(handle, succeeded=False)` even on successful playback
-**File:** `router.py:504-510`
+<!-- M28 closed (false positive against current code): the `endOfDirectory(succeeded=False)` after auto-play / dialog selection is intentional and explicitly commented at router.py:715 — when a directory route triggers playback via `resolve_and_play`, we still need to fire endOfDirectory so Kodi doesn't hang waiting for a directory listing, and `succeeded=False` tells Kodi not to render an empty list. -->
 
-##### M29. `parse_params` without `keep_blank_values=True` drops blank params; duplicates silently discarded
-**File:** `router.py:25-34`
+<!-- M29 closed: parse_qs(query_string, keep_blank_values=True) applied in router.py — see §H.3 fix-comment "router.py:39 parse_qs now uses keep_blank_values=True". -->
 
-##### M30. Season-0 specials silently dropped by `if il_s and il_s not in ("","-1","0")`
-**File:** `router.py:229-232`
+<!-- M30 closed: il_s/il_e accept "0" so Season 0 specials and Episode 0 pilots aren't dropped. router.py:430-435. -->
 
-##### M31. `_test_*_connection` builds `?apikey={}` via raw format; urllib error containing apikey surfaces via notify
-**Files:** `router.py:606`, `635`
+<!-- M31 closed: `_test_connection` and `_test_prowlarr_connection` now route exception text through `redact_text` after the verbatim-URL substitution, so apikey embedded in an error phrase / percent-encoded variants are stripped before the notify. router.py:847-862 + 895-908. -->
+
 
 ##### M32. Cache bugs
 
@@ -1452,14 +1462,12 @@ Most of the original seven findings closed: `clear_sessions` does snapshot-then-
 ##### M34. Service-scoped window properties not cleared on startup; stale state from prior session survives
 **File:** `service.py:273-297`
 
-##### M35. 5s "playback never started" detector uses `time.time()` not monotonic
-**File:** `service.py:223`
+<!-- M35 closed: `_play_time` is now `time.monotonic()` (set in `_check_active`, compared against `time.monotonic()` in `tick`). NTP step during the 30 s startup grace can no longer trip a false "playback never started" notification. -->
 
-##### M36. `proxy.stop()` has no exception guard; failure leaves stale `_PROP_PROXY_PORT`
-**File:** `service.py:295`
+<!-- M36 closed: shutdown path's `proxy.stop()` is now wrapped in a try/except in service.py so a stop-failure logs at LOGWARNING and `clearProperty(_PROP_PROXY_PORT)` still runs. The restart path's guard already existed. -->
 
-##### M37. `_retry_playback` called from `tick` while Player callback may still be in flight; no sync
-**File:** `service.py:190-208`
+<!-- M37 closed: NzbdavPlayer state mutations are now serialized by `_state_lock` (RLock). `_retry_playback`, `tick`, and the Kodi player callbacks all run their check-then-write sequences under the lock. See TODO.md §H.2-H16 fix. -->
+
 
 ##### M38. Cross-process IPC writes URL/TITLE/ACTIVE as three independent `setProperty` calls; no atomicity
 **Files:** `resolver.py:286-300` vs `service.py:101-111`
@@ -1467,35 +1475,31 @@ Most of the original seven findings closed: `clear_sessions` does snapshot-then-
 ##### M39. `install_player()` unconditionally overwrites `nzbdav.json`; hand-edits lost
 **File:** `player_installer.py:51-54`
 
-##### M40. `_FALLBACK_STRINGS` missing ids 30121/30115/30116 (service.py) and 30054/30055 (router.py); blank dialogs when `strings.po` unavailable
-**File:** `i18n.py:9`
+<!-- M40 closed: i18n._FALLBACK_STRINGS now includes 30054/30055/30115/30116/30121 mirrored from strings.po with a comment explaining the contract. Blank dialogs in early-service-startup paths are no longer possible for those ids. -->
 
-##### M41. `history["status"]` access without null check
-**File:** `resolver.py:570` (same pattern at line 583) — `history` checked for truthiness, but empty dict `{}` passes truthiness then raises `KeyError`.
+<!-- M41 closed: `_handle_history_result` now uses `.get("status")` / `.get("storage")` and falls through to the "not Completed" branch if either field is missing. A history row with the keys omitted (server bug, partial response) no longer KeyErrors out. -->
 
-##### M42. `clear_cache()` calls `os.listdir()` on non-existent directory
-**File:** `cache.py:116` — Raises `FileNotFoundError` if cache directory was never created.
+<!-- M42 closed: clear_cache() now wraps os.listdir in try/except FileNotFoundError + OSError, returning early so a missing cache directory (fresh install) doesn't propagate the error to the settings handler. -->
+
 
 ##### M43. `clear_cache()` / `_evict_oldest()` race condition
 **File:** `cache.py:91-108` — Total size computed, then files deleted; another thread/process could modify files in between.
 
-##### M44. Year validation upper bound is stale — time bomb
-**File:** `filter.py:674` — `if 1920 <= yr <= 2030` rejects valid 2031+ releases.
+<!-- M44 closed: filter.py:795 now bounds the year at 2100, well past any sane release date (2030 was too tight). -->
 
-##### M45. Suffix range with value > content_length produces negative start offset
-**File:** `stream_proxy.py:831-832`
+<!-- M45 closed (already in current code): _parse_range at stream_proxy.py:2685 rejects suffix > content_length explicitly; no negative offset can be produced. -->
 
 ##### M46. `validate_stream` dead code: `e.code in (200, 206)` in `HTTPError` branch
-**File:** `webdav.py:386` — `HTTPError` is only raised for 4xx/5xx; 200/206 never raise it.
+**File:** `webdav.py:386` — `HTTPError` is only raised for 4xx/5xx; 200/206 never raise it. (Cosmetic — dead code that never fires; flagged for cleanup but doesn't affect behavior.)
 
-##### M47. `setResolvedUrl` called then window properties set after — race condition
-**File:** `resolver.py:282-288` — If service's `tick()` fires between these, it reads stale window properties.
+<!-- M47 closed: window properties are now set BEFORE `setResolvedUrl` in all three play branches of `_play_direct` and `_play_via_proxy`. The service-side tick can no longer fire between resolve and property-write to read stale state. resolver.py:438-485. -->
+
 
 ##### M48. `_play_via_proxy` plays with `li.getPath()` which may differ from intended URL
 **File:** `resolver.py:347` (same pattern at line 359)
 
-##### M49. File open without encoding specification
-**File:** `cache.py:49`, `71` — On non-UTF-8 systems, could fail to read JSON cache files.
+<!-- M49 closed: cache.py open() calls now pass encoding="utf-8" explicitly (read at line 71, write at tmp_path on line 104). JSON cache files survive non-UTF-8 system locales. -->
+
 
 ##### M50. `_lookup_episode_info` uses undocumented IMDB API endpoint
 **File:** `router.py:154` (same URL at line 569) — `https://v2.sg.media-imdb.com/suggestion/t/{}.json` — if IMDB removes this, episode lookups silently fail.

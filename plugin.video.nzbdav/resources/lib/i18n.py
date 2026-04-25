@@ -38,7 +38,19 @@ _FALLBACK_STRINGS = {
     30110: "{} sources found",
     30111: "Sorted by relevance",
     30112: "Showing {} of {} sources after filters",
+    # 30115/30116/30121 are surfaced from the service-side retry/error
+    # handler when strings.po hasn't been loaded yet (early in service
+    # startup). Without these, the user saw a blank notification body.
+    # 30054/30055 are settings-context-menu labels used by router.py.
+    # All five are duplicated here from
+    # `resources/language/resource.language.en_gb/strings.po` so any
+    # future translator change there should be mirrored here too. TODO.md §H.2-M40.
+    30054: "Configure Preferred Groups...",
+    30055: "Configure Excluded Groups...",
+    30115: "Stream failed. Try an MKV version or check nzbdav server.",
+    30116: "Stream failed after {} retries. Try a different source.",
     30120: "Completed but no video file found on WebDAV",
+    30121: ("Playback failed to start. The stream may be unavailable or corrupted."),
     30122: "NZB submit timeout (seconds)",
     30124: (
         "nzbdav rejected the submission (HTTP {0}). "

@@ -133,7 +133,12 @@ class NzbdavPlayer(xbmc.Player):
             self._retry_count = 0
             self._last_position = 0.0
             self._av_started = False
-            self._play_time = time.time()
+            # ``time.monotonic()`` rather than ``time.time()`` so an NTP
+            # step that lands during the 30 s startup grace can't trip a
+            # false "playback never started" notification. Compared
+            # against ``time.monotonic()`` in tick() below.
+            # TODO.md §H.2-M35.
+            self._play_time = time.monotonic()
             title = self._title
         # Clear the signal so we don't re-trigger
         _HOME_WINDOW.clearProperty(_PROP_ACTIVE)
@@ -362,7 +367,7 @@ class NzbdavPlayer(xbmc.Player):
             title = self._title
 
         if in_startup_grace:
-            elapsed = time.time() - play_time
+            elapsed = time.monotonic() - play_time
             if elapsed > 30 and not self.isPlaying():
                 xbmc.log(
                     "NZB-DAV: Playback never started for '{}' after {:.0f}s".format(
@@ -593,7 +598,20 @@ def main():
                     xbmc.LOGERROR,
                 )
 
-    proxy.stop()
+    # Guard the shutdown stop the same way the restart path does.
+    # Without the guard, an exception in `proxy.stop()` (socket already
+    # closed, thread join timeout, etc.) would skip the
+    # `clearProperty(_PROP_PROXY_PORT)` line and leave a stale port
+    # visible to the next service launch — clients would then connect
+    # to a dead port. TODO.md §H.2-M36.
+    try:
+        proxy.stop()
+    except Exception as e:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: proxy.stop() raised during shutdown "
+            "(continuing): {!r}".format(e),
+            xbmc.LOGWARNING,
+        )
     _HOME_WINDOW.clearProperty(_PROP_PROXY_PORT)
     xbmc.log("NZB-DAV: Service stopped", xbmc.LOGINFO)
 
