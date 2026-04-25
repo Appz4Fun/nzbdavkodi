@@ -803,8 +803,9 @@ def _fallback_parse(title):
     if re.search(r"(?i)\bupscale[d]?\b", t):
         result["upscaled"] = True
 
-    # Group (last segment after hyphen)
-    m = re.search(r"-([A-Za-z0-9]+)(?:\.[a-z]{2,4})?$", title)
+    # Group (last segment after hyphen). Scene groups can contain hyphens and
+    # underscores, e.g. GROUP-NAME or GROUP_NAME.
+    m = re.search(r"-([A-Za-z0-9][A-Za-z0-9_-]*)(?:\.[a-z]{2,4})?$", title)
     if m:
         result["group"] = m.group(1)
 

@@ -856,6 +856,15 @@ def test_get_job_history_handles_null_json(mock_http, mock_settings):
 
 @patch("resources.lib.nzbdav_api._get_settings")
 @patch("resources.lib.nzbdav_api._http_get")
+def test_get_job_history_handles_null_history_section(mock_http, mock_settings):
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.return_value = json.dumps({"history": None})
+
+    assert get_job_history("nzo_xyz") is None
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
 def test_cancel_job_handles_scalar_json(mock_http, mock_settings):
     mock_settings.return_value = ("http://nzbdav:3000", "testkey")
     mock_http.return_value = json.dumps("error")  # scalar string

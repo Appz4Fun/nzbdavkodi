@@ -905,7 +905,7 @@ def _parse_ffmpeg_duration(stderr_text):
 
     Returns duration in seconds as a float, or None if not found.
     """
-    match = re.search(r"Duration:\s*(\d+):(\d+):(\d+)\.(\d+)", stderr_text)
+    match = re.search(r"Duration:\s*(\d+):(\d+):(\d+)(?:\.(\d+))?", stderr_text)
     if not match:
         return None
     hours, minutes, seconds, frac = match.groups()
@@ -913,7 +913,7 @@ def _parse_ffmpeg_duration(stderr_text):
         int(hours) * 3600
         + int(minutes) * 60
         + int(seconds)
-        + int(frac) / (10 ** len(frac))
+        + (int(frac) / (10 ** len(frac)) if frac else 0)
     )
 
 

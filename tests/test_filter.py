@@ -91,6 +91,20 @@ def test_parse_title_metadata_dots_and_dashes():
     assert meta["resolution"] == "1080p"
 
 
+def test_parse_title_metadata_fallback_preserves_hyphenated_release_group():
+    with patch("resources.lib.ptt.parse_title", return_value={}):
+        meta = parse_title_metadata("Movie.2024.1080p.WEB-DL.x264-GROUP-NAME")
+
+    assert meta["group"] == "GROUP-NAME"
+
+
+def test_parse_title_metadata_fallback_preserves_underscored_release_group():
+    with patch("resources.lib.ptt.parse_title", return_value={}):
+        meta = parse_title_metadata("Movie.2024.1080p.WEB-DL.x264-GROUP_NAME")
+
+    assert meta["group"] == "GROUP_NAME"
+
+
 # --- Full search->filter pipeline with real PTT ---
 
 

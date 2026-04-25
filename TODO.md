@@ -1435,8 +1435,8 @@ Most of the original seven findings closed: `clear_sessions` does snapshot-then-
 ##### L9. Concurrent legacy-fallback clients collide on shared `ctx`
 **File:** `stream_proxy.py:194-195`
 
-##### L10. `_parse_ffmpeg_duration` requires fractional seconds; localized builds without them disable seek
-**File:** `stream_proxy.py:144-158`
+##### [x] L10. `_parse_ffmpeg_duration` requires fractional seconds; localized builds without them disable seek — fixed 2026-04-25
+**File:** `stream_proxy.py:144-158` — duration parsing now accepts both `HH:MM:SS.xx` and `HH:MM:SS`; covered by `test_probe_duration_parses_whole_seconds_without_fraction`.
 
 ##### L11. `RangeCache` instantiated per session but never read; dead code
 **File:** `stream_proxy.py:1031`
@@ -1456,17 +1456,17 @@ Most of the original seven findings closed: `clear_sessions` does snapshot-then-
 ##### L16. `{:.1f}.format(None)` in `_resolve_seek` fragile if duration unset
 **File:** `stream_proxy.py:525-530`
 
-##### L17. `.get("history", {}).get("slots", [])` breaks on `"history": null`
-**File:** `nzbdav_api.py:116+`
+##### [x] L17. `.get("history", {}).get("slots", [])` breaks on `"history": null` — fixed 2026-04-25
+**File:** `nzbdav_api.py:116+` — SABnzbd queue/history slot extraction now tolerates null/scalar section bodies; covered by `test_get_job_history_handles_null_history_section`.
 
 ##### L18. Fallback HDR regex maps bare "HDR" to HDR10 but could be HLG
 **File:** `filter.py:631`
 
-##### L19. Fallback group regex truncates groups with hyphens or underscores
-**File:** `filter.py:682`
+##### [x] L19. Fallback group regex truncates groups with hyphens or underscores — fixed 2026-04-25
+**File:** `filter.py:682` — fallback parser now preserves scene groups like `GROUP-NAME` and `GROUP_NAME`; covered by dedicated parser regressions.
 
-##### L20. Size kept as raw string; `int(size)` crashes on malformed attr
-**File:** `hydra.py:174-186`
+##### [x] L20. Size kept as raw string; `int(size)` crashes on malformed attr — stale duplicate, verified 2026-04-25
+**File:** `hydra.py:174-186` — Hydra still preserves indexer size as a string, while filter/sort paths coerce malformed values safely; covered by malformed-size filter and sort tests.
 
 ##### L22. Hardcoded English in connection-test `notify()` calls
 **Files:** `router.py:603`, `610`, `612`, `614`, `632`, `639`, `641`, `643`

@@ -1058,6 +1058,13 @@ def test_probe_duration_parses_minutes_only():
     assert _parse_ffmpeg_duration(stderr) == 150.0
 
 
+def test_probe_duration_parses_whole_seconds_without_fraction():
+    from resources.lib.stream_proxy import _parse_ffmpeg_duration
+
+    stderr = "  Duration: 00:02:30, start: 0.000000\n"
+    assert _parse_ffmpeg_duration(stderr) == 150.0
+
+
 def test_probe_duration_returns_none_on_missing():
     from resources.lib.stream_proxy import _parse_ffmpeg_duration
 

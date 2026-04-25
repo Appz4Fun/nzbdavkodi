@@ -44,6 +44,15 @@ def _coerce_response_dict(response):
     return response if isinstance(response, dict) else {}
 
 
+def _response_slots(response, section_name):
+    """Return SABnzbd ``slots`` from a response section, tolerating bad shapes."""
+    section = response.get(section_name, {})
+    if not isinstance(section, dict):
+        return []
+    slots = section.get("slots", [])
+    return slots if isinstance(slots, list) else []
+
+
 def _sanitize_server_message(raw):
     """Sanitize a raw HTTP response body for display in a Kodi dialog.
 
@@ -378,7 +387,7 @@ def get_job_history(nzo_id):
         )
         return None
 
-    slots = response.get("history", {}).get("slots", [])
+    slots = _response_slots(response, "history")
     for slot in slots:
         if slot.get("nzo_id") == nzo_id:
             return {
@@ -433,7 +442,7 @@ def find_completed_by_name(name):
         )
         return None
 
-    slots = response.get("history", {}).get("slots", [])
+    slots = _response_slots(response, "history")
     for slot in slots:
         if slot.get("name") == name and slot.get("status") == "Completed":
             xbmc.log(
@@ -463,7 +472,7 @@ def find_completed_by_name(name):
             )
             return None
 
-        slots = response.get("history", {}).get("slots", [])
+        slots = _response_slots(response, "history")
         for slot in slots:
             if slot.get("name") == name and slot.get("status") == "Completed":
                 xbmc.log(
@@ -533,7 +542,7 @@ def find_queued_by_name(name):
         )
         return None
 
-    slots = response.get("queue", {}).get("slots", [])
+    slots = _response_slots(response, "queue")
     for slot in slots:
         if slot.get("filename") == name or slot.get("nzo_id_name") == name:
             xbmc.log(
@@ -609,7 +618,7 @@ def get_completed_names():
         )
         return set()
 
-    slots = response.get("history", {}).get("slots", [])
+    slots = _response_slots(response, "history")
     names = set()
     for slot in slots:
         if slot.get("status") == "Completed" and slot.get("name"):
@@ -669,7 +678,7 @@ def get_job_status(nzo_id):
             xbmc.LOGERROR,
         )
         return None
-    slots = response.get("queue", {}).get("slots", [])
+    slots = _response_slots(response, "queue")
     for slot in slots:
         if slot.get("nzo_id") == nzo_id:
             status = slot.get("status", "Unknown")
