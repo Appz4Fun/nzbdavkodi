@@ -140,8 +140,16 @@ class NzbdavPlayer(xbmc.Player):
             # TODO.md §H.2-M35.
             self._play_time = time.monotonic()
             title = self._title
-        # Clear the signal so we don't re-trigger
-        _HOME_WINDOW.clearProperty(_PROP_ACTIVE)
+        # Clear all three properties — not just ACTIVE — so a future
+        # second resolver call that fails before re-writing them
+        # (network blip, _play_via_proxy crash) doesn't leak the prior
+        # session's URL/title into the next monitor cycle. The values we
+        # need are now snapshotted onto self.* fields. TODO.md §H.2-L29.
+        for prop in (_PROP_ACTIVE, _PROP_STREAM_URL, _PROP_STREAM_TITLE):
+            try:
+                _HOME_WINDOW.clearProperty(prop)
+            except _PLAYER_RUNTIME_ERRORS:
+                pass
         xbmc.log(
             "NZB-DAV: Service monitoring stream '{}'".format(title),
             xbmc.LOGINFO,
@@ -467,6 +475,19 @@ def check_cache_warning(state):
 def main():
     """Service entry point — runs for the lifetime of Kodi."""
     monitor = xbmc.Monitor()
+
+    # Clear any nzbdav.* IPC window properties left behind by a previous
+    # service that didn't shut down cleanly (Kodi crash, force-stop, etc).
+    # Window 10000 (Home) properties survive across the Kodi restart that
+    # kills the service, so a stale `nzbdav.active="true"` would cause
+    # this service's first tick to immediately enter MONITORING with the
+    # prior session's stream metadata. Drop them on entry so the new
+    # service starts from a clean slate. TODO.md §H.2-M34.
+    for stale_prop in (_PROP_ACTIVE, _PROP_STREAM_URL, _PROP_STREAM_TITLE):
+        try:
+            _HOME_WINDOW.clearProperty(stale_prop)
+        except Exception:  # noqa: BLE001 — best-effort, never block startup
+            pass
 
     # Start the stream proxy in this long-lived service process.
     # Plugin scripts are short-lived — their daemon threads get killed

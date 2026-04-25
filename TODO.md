@@ -417,7 +417,7 @@ Keep these. They are still useful for the post-build validation path in step 6.
 
 ## Part D — Dolby Vision Seek & Scrub Plan (`DV.md`)
 
-> **Relevance:** read this Part if you are implementing or debugging seek/scrub behavior on 32-bit Kodi, or routing Dolby Vision profiles through the addon. §D.1 is the exec summary; §D.2 is the root-cause diagnosis of the `CFileCache` truncation bug; §D.5 is the phased implementation plan; §D.8 lists addon bugs surfaced by live testing.
+> **Relevance:** read this Part if you are implementing or debugging seek/scrub behavior on 32-bit Kodi, or routing Dolby Vision profiles through the addon. §D.1 is the exec summary; §D.2 is the root-cause diagnosis of the `CFileCache` truncation bug; §D.5 is the phased implementation plan.
 
 <details>
 <summary><b>Expand Part D — full DV seek/scrub synthesis, matrix, agent findings, implementation plan, and citations</b></summary>
@@ -1006,53 +1006,7 @@ after a 3-5 min on-device convert.**
 
 ---
 
-### D.8 Addon bugs surfaced by live testing (2026-04-23)
-
-These are addon-side issues found while validating the §D.2 hypothesis.
-None block scrub; all are paper cuts that make pass-through harder to
-adopt.
-
-#### D.8.1 ENFORCE strict-contract-mode escalates soft mismatches ✅ fixed
-
-**Where**: `stream_proxy.py:2358`
-
-The classifier (`_classify_contract_mismatch`) returns `(detail, hard)`
-distinguishing hard mismatches (e.g. 206 with wrong Content-Range —
-silent corruption if streamed) from soft ones (e.g. status 200 + valid
-Content-Range covering the full object, which nzbdav legitimately does
-for `Range: bytes=0-`). The condition was `ENFORCE or hard_mismatch`,
-which made ENFORCE reject every mismatch — soft included — killing
-pass-through playback at byte 0 with `Recovery density breaker tripped`.
-
-Fix: tightened the rejection branch to `if hard_mismatch:` only. Hard
-mismatches now reject regardless of mode (since serving wrong bytes is
-silent corruption), and soft mismatches stream while still being logged
-under WARN/ENFORCE. The setting now means "Off / log soft mismatches /
-log all mismatches" rather than "Off / log soft / reject everything".
-Test coverage flipped accordingly — `test_stream_upstream_range_enforce_streams_soft_contract_mismatch`
-(streams soft) and `test_stream_upstream_range_enforce_mode_rejects_hard_contract_mismatch`
-(rejects hard) replace the old `enforce_mode_rejects_soft` test.
-
-#### D.8.2 Threshold clamping is silently wrong ✅ fixed
-
-**Where**: `stream_proxy.py:294` (`_FORCE_REMUX_THRESHOLD_MB_MAX`)
-
-A user-set `force_remux_threshold_mb=20000000` (intent: 20 TB =
-effectively-unlimited) used to clamp to 1,048,576 MB (1 TB). At 1 TB, no
-realistic file ever trips force-remux, which is fine — but the warning
-log "Setting force_remux_threshold_mb=20000000 out of range [0..1048576];
-clamping to 1048576" fired on *every play*.
-
-Fix: raised the cap to `(1 << 53) - 1` (the JSON-safe int ceiling, ~9 PB
-in MB units). Realistic "effectively-unlimited" inputs survive without
-triggering the clamp warning every play. Inputs above that ceiling are
-genuine user error and still log loudly on first hit. The matching
-`test_get_force_remux_threshold_clamps_typo_high_and_logs` test was
-updated to use a value above the new ceiling.
-
----
-
-### D.9 Citations
+### D.8 Citations
 
 #### Kodi source
 
@@ -1324,7 +1278,7 @@ The two `PROXY_EPIC_*.md` one-pagers (`ARTICLE_HEALTH`, `NNTP_TUNING`) are alrea
 
 **Severity legend.** **C** = Critical, **H** = High, **M** = Medium, **L** = Low. All severities are agent-assigned on static-analysis confidence and have not been re-triaged against live workloads. Treat them as triage hints, not bug priorities.
 
-**Status (2026-04-24 cleanup pass).** A multi-batch surgical sweep (commits `283a7e9`, `06a047a`, `0ae903f`, `70908b6`, `a78510b`, `3c870f4`, `73806c0`, `f9f95eb`, plus the next commit) closed roughly 35 §H findings outright and verified another ~15 as false positives or stale references (cited line numbers had drifted, or the agent misread the exception-handling layer above the line). Each cleared bullet is now an inline HTML comment recording which commit fixed it (or why it was marked stale) with a brief verification note, so future audit passes don't re-flag the same items. What's left to act on is concentrated in three buckets:
+**Status (2026-04-25 cleanup pass).** Multiple surgical sweeps across April closed the bulk of §H findings and verified the rest as false positives. As of this pass the per-item fix annotations are stripped — what's listed below is the current open set; anything not listed has been closed in code or marked stale and removed for clarity. What's left to act on is concentrated in three buckets:
 
 - **§H.4 still-open architectural** — three High items (auth_header rotation, stream_context per-server-singleton, conftest module-level mock teardown) that need design before code.
 - **§H.3 architectural / coordination** — items like the prune-vs-handler race, HlsProducer.prepare race, _retry_original_range boundary update, queue-adoption nzo_id race, _ensure_ffmpeg_headed_for lock duration, force-quit nzo_id orphan, ffmpeg-respawn-on-MP4-remux-crash. Each touches concurrency contracts that surgical fixes can't safely change without reproducer + soak.
@@ -1358,13 +1312,8 @@ Most of the original seven findings closed: `clear_sessions` does snapshot-then-
 - **M1b.** `poll_interval=0` produces `waitForAbort(0)` tight loop. (`resolver.py:366-368`)
 - **M1c.** `int(percentage or 0)` raises on `"45.5"`. (`resolver.py:566`, `nzbdav_api.py:275`, `284`)
 
-<!-- M2 closed (false positive against current code): `_storage_to_webdav_path` returns a `/content/...` path; `find_video_file` (webdav.py:186) runs the path through `quote(folder_path, safe="/")` before constructing the WebDAV URL. Spaces / `#` / `?` are URL-encoded by the downstream consumer. -->
-
 <!-- M3 deferred: the pipe-header form `URL|Header=Value` is the canonical Kodi shape for "URL plus HTTP headers" and `xbmc.Player().play(path, listitem)` accepts it natively. The "filesystem path" concern in the audit assumes some intermediate component runs `os.path.exists()` on the stored value — none does. Defensive-only, deferred. -->
 
-
-##### M4. `_play_via_proxy` direct branch passes `li.getPath()` AND the ListItem, duplicating headers
-**File:** `resolver.py:347`
 
 ##### M5. LIKE pattern with `%`/`_` in user-controlled `tmdb_id` matches unintended rows
 **File:** `resolver.py:141-149`
@@ -1393,18 +1342,13 @@ Most of the original seven findings closed: `clear_sessions` does snapshot-then-
 ##### M13. `_MAX_RECOVERY_SECONDS` budget only checked at loop top; handler can block ~60s vs advertised 30s
 **File:** `stream_proxy.py:785-788`
 
-
 ##### M15. Concurrent `_serve_remux` on different sessions clobber server-wide `active_ffmpeg`/`current_byte_pos`
 **Files:** `stream_proxy.py:579-580`, `644-645`
 
 ##### M16. `_resolve_seek` holds per-ctx `ffmpeg_lock` across `kill()+wait()`; chunk loop stalls
 **File:** `stream_proxy.py:514-541`
 
-##### M17. `_get_settings` `.rstrip("/")` on `None`; no non-empty validation
-**File:** `nzbdav_api.py:20-22`
 
-##### M18. `search_term = name.split(".")[0]` keeps only the first dot-segment
-**File:** `nzbdav_api.py:142`
 
 ##### M19. No deduplication of aggregated multi-indexer results
 **File:** `hydra.py:100-130`
@@ -1415,7 +1359,6 @@ Most of the original seven findings closed: `clear_sessions` does snapshot-then-
   M22: parsedate_to_datetime call no longer present in current hydra.py — the
        function went through `calculate_age` in http_util.py which already
        wraps parsedate_to_datetime in a typed exception tuple. -->
-
 
 ##### M23. Filter bugs
 
@@ -1435,17 +1378,6 @@ Most of the original seven findings closed: `clear_sessions` does snapshot-then-
 ##### M26. `request_path` encoded vs decoded hrefs cause recursive PROPFIND until `_depth > 2`
 **File:** `webdav.py:262`
 
-##### M27. No scheme enforcement on URL settings; `http://` sends basic-auth/apikey cleartext
-**Files:** `webdav.py:20-32`, `211-213`
-
-<!-- M28 closed (false positive against current code): the `endOfDirectory(succeeded=False)` after auto-play / dialog selection is intentional and explicitly commented at router.py:715 — when a directory route triggers playback via `resolve_and_play`, we still need to fire endOfDirectory so Kodi doesn't hang waiting for a directory listing, and `succeeded=False` tells Kodi not to render an empty list. -->
-
-<!-- M29 closed: parse_qs(query_string, keep_blank_values=True) applied in router.py — see §H.3 fix-comment "router.py:39 parse_qs now uses keep_blank_values=True". -->
-
-<!-- M30 closed: il_s/il_e accept "0" so Season 0 specials and Episode 0 pilots aren't dropped. router.py:430-435. -->
-
-<!-- M31 closed: `_test_connection` and `_test_prowlarr_connection` now route exception text through `redact_text` after the verbatim-URL substitution, so apikey embedded in an error phrase / percent-encoded variants are stripped before the notify. router.py:847-862 + 895-908. -->
-
 
 ##### M32. Cache bugs
 
@@ -1459,15 +1391,6 @@ Most of the original seven findings closed: `clear_sessions` does snapshot-then-
 ##### M33. `proxy.start()` → immediate `setProperty(port)` with no bind-complete guarantee
 **File:** `service.py:282-284`
 
-##### M34. Service-scoped window properties not cleared on startup; stale state from prior session survives
-**File:** `service.py:273-297`
-
-<!-- M35 closed: `_play_time` is now `time.monotonic()` (set in `_check_active`, compared against `time.monotonic()` in `tick`). NTP step during the 30 s startup grace can no longer trip a false "playback never started" notification. -->
-
-<!-- M36 closed: shutdown path's `proxy.stop()` is now wrapped in a try/except in service.py so a stop-failure logs at LOGWARNING and `clearProperty(_PROP_PROXY_PORT)` still runs. The restart path's guard already existed. -->
-
-<!-- M37 closed: NzbdavPlayer state mutations are now serialized by `_state_lock` (RLock). `_retry_playback`, `tick`, and the Kodi player callbacks all run their check-then-write sequences under the lock. See TODO.md §H.2-H16 fix. -->
-
 
 ##### M38. Cross-process IPC writes URL/TITLE/ACTIVE as three independent `setProperty` calls; no atomicity
 **Files:** `resolver.py:286-300` vs `service.py:101-111`
@@ -1475,30 +1398,11 @@ Most of the original seven findings closed: `clear_sessions` does snapshot-then-
 ##### M39. `install_player()` unconditionally overwrites `nzbdav.json`; hand-edits lost
 **File:** `player_installer.py:51-54`
 
-<!-- M40 closed: i18n._FALLBACK_STRINGS now includes 30054/30055/30115/30116/30121 mirrored from strings.po with a comment explaining the contract. Blank dialogs in early-service-startup paths are no longer possible for those ids. -->
-
-<!-- M41 closed: `_handle_history_result` now uses `.get("status")` / `.get("storage")` and falls through to the "not Completed" branch if either field is missing. A history row with the keys omitted (server bug, partial response) no longer KeyErrors out. -->
-
-<!-- M42 closed: clear_cache() now wraps os.listdir in try/except FileNotFoundError + OSError, returning early so a missing cache directory (fresh install) doesn't propagate the error to the settings handler. -->
-
-
 ##### M43. `clear_cache()` / `_evict_oldest()` race condition
 **File:** `cache.py:91-108` — Total size computed, then files deleted; another thread/process could modify files in between.
 
-<!-- M44 closed: filter.py:795 now bounds the year at 2100, well past any sane release date (2030 was too tight). -->
-
-<!-- M45 closed (already in current code): _parse_range at stream_proxy.py:2685 rejects suffix > content_length explicitly; no negative offset can be produced. -->
-
 ##### M46. `validate_stream` dead code: `e.code in (200, 206)` in `HTTPError` branch
 **File:** `webdav.py:386` — `HTTPError` is only raised for 4xx/5xx; 200/206 never raise it. (Cosmetic — dead code that never fires; flagged for cleanup but doesn't affect behavior.)
-
-<!-- M47 closed: window properties are now set BEFORE `setResolvedUrl` in all three play branches of `_play_direct` and `_play_via_proxy`. The service-side tick can no longer fire between resolve and property-write to read stale state. resolver.py:438-485. -->
-
-
-##### M48. `_play_via_proxy` plays with `li.getPath()` which may differ from intended URL
-**File:** `resolver.py:347` (same pattern at line 359)
-
-<!-- M49 closed: cache.py open() calls now pass encoding="utf-8" explicitly (read at line 71, write at tmp_path on line 104). JSON cache files survive non-UTF-8 system locales. -->
 
 
 ##### M50. `_lookup_episode_info` uses undocumented IMDB API endpoint
@@ -1515,8 +1419,6 @@ Most of the original seven findings closed: `clear_sessions` does snapshot-then-
 ##### L3. `history["storage"]` bare key access raises `KeyError` on partial responses
 **File:** `resolver.py:584`
 
-##### L4. `_cache_bust_url` appends query after fragment, invisible to servers on `#`-bearing URLs
-**File:** `resolver.py:91`
 
 ##### L5. `_apply_proxy_mime()` only sets duration on remux; pass-through/faststart branches skip it
 **File:** `resolver.py:218-227`
@@ -1566,20 +1468,8 @@ Most of the original seven findings closed: `clear_sessions` does snapshot-then-
 ##### L20. Size kept as raw string; `int(size)` crashes on malformed attr
 **File:** `hydra.py:174-186`
 
-##### L21. `int(argv[1])` raises if Kodi calls script entry without numeric handle
-**File:** `router.py:39-41`
-
 ##### L22. Hardcoded English in connection-test `notify()` calls
 **Files:** `router.py:603`, `610`, `612`, `614`, `632`, `639`, `641`, `643`
-
-##### L23. `f.write()` return value not checked; partial writes reported as success
-**File:** `player_installer.py:52`
-
-##### L24. `os.makedirs` without `exist_ok=True` races with concurrent first-call
-**File:** `cache.py:22`
-
-##### L25. `fmt()` calls `str.format` with no `try/except`; crashes on missing string
-**File:** `i18n.py:67`
 
 ##### L26. Hardcoded English in retry `notify()` calls
 **File:** `playback_monitor.py:88-92`, `155-157`
@@ -1590,29 +1480,15 @@ Most of the original seven findings closed: `clear_sessions` does snapshot-then-
 ##### L28. No User-Agent; some Cloudflare-protected upstreams 403 `Python-urllib/...`
 **File:** `http_util.py:24`
 
-##### L29. `_check_active()` clears only `_PROP_ACTIVE`; stale URL/title persist
-**File:** `service.py:111`
-
 ##### L30. Second `xbmc.Monitor()` instance unnecessary
 **File:** `service.py:78`
 
-##### L31. `sys.path.insert` without dedup check
-**File:** `addon.py:11`
 
 ##### L32. Unicode lightning bolt without fallback — may not render on all Kodi skins
 **File:** `results_dialog.py:141`
 
-##### L34. Docstring after early return — no-op string literal
-**File:** `ptt/adult.py:27-29`
-
-##### L35. Mutable default argument `extend_options(options: Dict[str, Any] = {})`
-**File:** `ptt/parse.py:92`, `ptt/handlers.py`
-
 ##### L36. Playlist cleared after `setResolvedUrl` — could interfere with queued items
 **File:** `resolver.py:662-663`, `679-680`, `684-685`
-
-##### L37. Redundant empty string check `if not path or path == ""`
-**File:** `router.py:20-21`
 
 ##### L38. WebDAV error type only set when both queue and history are `None`
 **File:** `resolver.py:429`
@@ -1659,104 +1535,41 @@ Most of the original seven findings closed: `clear_sessions` does snapshot-then-
 
 #### H.3.High
 
-<!-- Fixed in commit f9f95eb: _would_trip_density_breaker now early-returns False when the recovery window is empty so the breaker can't 100%-trip on the very first recovery attempt. -->
-
 - **Unlocked `_get_stream_context` mutation when lock is None** | `stream_proxy.py:_get_stream_context` | The "lock is None" path only fires when `_get_server_context_lock(server)` returns None (test fixtures or pre-init). Production `StreamProxy` instances always have `_context_lock` set, so the unlocked branch never runs in the live service. False positive for production paths; cosmetic for the test branch.
 - **Prune evicts ctx that active handlers still reference** | overlaps with §H.2-H1a/b above. Real-world impact mitigated by `prepare_stream → clear_sessions` keeping the table near-empty under Kodi's "one stream at a time" model. Architectural fix (per-ctx refcounts) deferred.
-<!-- Fixed in commit 3c870f4: wait_for_init / wait_for_segment / HlsProducer.prepare() (both argv-rejection and production-wait windows) all switched from time.sleep to xbmc.Monitor().waitForAbort, which returns True iff Kodi is shutting down so the loops bail out immediately on a shutdown signal. -->
 
 - **ffmpeg remux path has no respawn/retry on early crash** | `stream_proxy.py:_start_remux_process` family | MP4 remux crashes during startup return a dead stream; only the HLS path auto-respawns. Architectural — needs the same retry-budget + restart-with-seek pattern that HLS uses.
-<!-- Fixed in commit a78510b: _stream_remux_output now also catches (OSError, ValueError) and classifies them as "ffmpeg_pipe_closed" so a mid-stream ffmpeg crash doesn't leave the request handler hung on an open response. -->
-
-<!-- False positive against current code: `_serve_hls_init` blocks on `producer.wait_for_init()` until the current ffmpeg generation has written init.mp4 AND produced its first segment. The playlist returns immediately as advertised, but the next request (init.mp4) blocks rather than 404-ing. -->
-
-<!-- Verified addressed by the §H.3 _RESOLVE_RUNTIME_ERRORS widening (commit a78510b): the resolve() wrapper now catches URLError + socket.timeout in addition to the previous tuple, so any exception inside _play_direct that escapes the local handler is still caught at resolve() level and routed through _handle_resolve_exception which calls setResolvedUrl(handle, False). -->
-
-<!-- Fixed in commit a78510b: resolver._RESOLVE_RUNTIME_ERRORS now includes URLError + socket.timeout. -->
 
 - **`xbmcaddon.Addon()` per-tick cost in hot loops** | `resolver.py:804`, `service.py:354,433`, `stream_proxy.py:308` | Constructing the Addon object every 250 ms (resolver) or every service tick (service) is wasteful; cache once per call site.
-<!-- Verified against live source 2026-04-24: router.py /resolve branch now sits inside the action-route try block which falls through to _safe_resolve_handle by design (the resolver+player path completes before that, and _safe_resolve_handle is a no-op if Kodi has already received a resolution signal). The agent's claim about the trailing call killing playback is stale — this exact behaviour was reworked when the action-route try/except landed. -->
-
-<!-- Fixed in commit a78510b: router.py route() now validates argv length + tries int(argv[1]) defensively. -->
-<!-- False positive (verified against current code): _handle_search IS wrapped — it sits inside the `try:` at route() line 128 and the matching `except Exception as e:` at the end of route(). -->
-
-<!-- Fixed in commit a78510b: settings.xml now declares webdav_content_root as a hidden power-user setting (default ""), with a comment explaining the rationale. -->
-
-<!-- Fixed in this commit: hydra.py:97 now wraps int(max_results) in try/except + clamps to [1..100]. -->
-
-<!-- Fixed in this commit: hydra.py:_fetch_hydra_xml + nzbdav_api.py submit error path + prowlarr.py search error paths now route exception str() through redact_text() before logging. The broader §H.2-H2c gap (redact_url only covers `apikey=`, not `password/auth/token/api_key/key/secret/access_token`) is still open. -->
-
-<!-- Fixed in commit a78510b: filter.parse_title_metadata now wraps hdr/audio/language list construction in `list(dict.fromkeys(...))` to dedup while preserving order. -->
-
-<!-- Fixed in commit a78510b: _rewrite_co64 now returns bool matching _rewrite_stco's contract; the recursive walker propagates failure on truncated co64 boxes. -->
-
-<!-- False positive (verified): mp4_parser docstring at line 383 explicitly says "payload_remote_end: last byte + 1 in original file" and all downstream consumers use it as exclusive (payload_size = end - start, virtual_size = header + payload_size). No off-by-one in the call chain. -->
-
-<!-- Fixed in commit a78510b: player_installer now uses os.path.commonpath instead of startswith, so sibling directories (`addon_data_evil`) can't pass the prefix check. -->
-
-<!-- Fixed in this commit: http_util.notify() now routes heading/message through `_escape_builtin_arg`, which maps `,` and `)` to visually-similar Unicode lookalikes that the Kodi builtin parser treats as inert. Regression test in tests/test_http_util.py::test_notify_escapes_builtin_metacharacters. -->
-
-<!-- Fixed in this commit: kodi_advancedsettings.py wraps the translatePath call in a broad try/except so any partly-initialized-Kodi exception path returns False, matching the docstring's "any failure → False" contract. -->
 
 - **`service.py` monitor state resets ERROR→MONITORING mid-retry** | `service.py:_check_active` | Re-confirmed against current code: `_check_active` only fires on a fresh `nzbdav.active="true"` write from the resolver, and the resolver writes that property exactly once per resolution call. A retry mid-flight isn't clobbered unless the user starts a *different* play, which is the correct behavior. False positive against current code, but kept here so future audits don't re-flag it without re-reasoning.
-<!-- Fixed in this commit: strings.po #30124 msgstr filled in to match the msgid. -->
-
-<!-- Fixed in this commit: tests/conftest.py _FakePlayer now has isPlayingVideo() mirroring isPlaying(). -->
-
 
 #### H.3.Medium
 
 - **`HlsProducer.prepare()` early-exit vs file-existence check ordering** | `stream_proxy.py:3305-3331` | Race with ffmpeg flush window — the file-exists check can pass while the final moof is still in stderr buffer.
 - **`_register_session_locked` TOCTOU vs `_get_stream_context` read** | `stream_proxy.py:3763-3766` | Server-state init is not atomic with the session-dict read in the other path.
-<!-- Deferred: lowering this requires field-validating that nzbdav doesn't have legitimate slow-response patterns under load that 120s currently absorbs. The earlier monotonic switch + recovery deadline (commit 0ae903f) means this no longer compounds with NTP jumps. -->
 
 - **`_retry_original_range` retries same boundaries** | `stream_proxy.py:2236-2273` | Retry after partial write doesn't advance `start`; repeats bytes the client already has.
-<!-- Fixed in commit f9f95eb: ffmpeg-non-zero-exit path now falls through to the cleanup block (was previously `return None` which leaked the partial output). The TimeoutExpired and SubprocessError branches already cleaned up. -->
-
-<!-- False positive (verified): the temp file is owned by session lifetime and cleaned up in `_cleanup_session`, not per-request. A retry would need it. -->
-
-<!-- False positive (verified): every consumer of these counter keys uses `ctx.get(key, 0)` — none use bracket access. Implicit init via .get fallback is the intentional contract, not a bug. -->
 
 - **`_HLS_PRIVATE_TEMP_ROOT` persists across service respawns** | `stream_proxy.py:58, 212-226` | Stale path reused, with prior session's init files still in place.
 - **Module-level `_proxy` singleton never reset** | `stream_proxy.py:4589-4594` | Service reload can keep the old object alive alongside a new one.
-<!-- False positive (verified): _ThreadedHTTPServer at stream_proxy.py:2598 sets `allow_reuse_address = True` on the class, which is the stdlib's documented way to set SO_REUSEADDR on an HTTPServer subclass. -->
 
 - **`clear_sessions` doesn't join ffmpeg threads** | `stream_proxy.py:3535-3541` | New StreamProxy spawns while child procs from the old one still draining stderr.
-<!-- Fixed in commit f9f95eb (next commit): stderr_thread.join timeout raised from 5s to 30s. ffmpeg has already exited at this point; the drain thread just flushes the pipe buffer — 30s is plenty for slow-disk verbose-stderr flushes. -->
-
-<!-- False positive (verified): the Content-Length block at line 480 appends to `problems` but does NOT set hard=True. Missing CL is correctly classified as soft (warn) in current code; the agent's claim was backwards. -->
-
-<!-- Investigated and reverted: tightening to hard=True broke 7 happy-path test fixtures that mock urlopen without Content-Range, plus there are real upstreams that 206 with valid Content-Length but no Content-Range. Left as soft-warn with a comment in `_classify_contract_mismatch` explaining the trade-off — the chunk-loop's `requested = end - start + 1` clamp bounds what actually streams, so going hard is purely diagnostic. -->
 
 - **ENOSPC not distinguished from generic OSError** | `stream_proxy.py:4388, 1561` | User gets a generic failure notification; no actionable "disk full" message.
 - **`_ensure_ffmpeg_headed_for` holds lock across `proc.wait(timeout=2)`** | `stream_proxy.py:2903-3023` | Concurrent segment requests serialize behind the 2 s wait.
-<!-- Fixed in commit 73806c0: resolve_and_play now accepts an optional `params` dict and forwards it to _clear_kodi_playback_state(params); router.py /resolve passes `clean` (the cleaned params dict). -->
 
 - **Dialog.update exception can skip thread joins** | `resolver.py:730` | If `dialog.update` raises, `submit_t`/`probe_t` never join; threads leak.
 - **`while-True` poll loop lacks hard iteration cap (mitigated)** | `resolver.py:1152` | `MAX_POLL_ITERATIONS=720` caps it today; still worth asserting.
 - **Queue-adoption nzo_id returned before submit worker completes** | `resolver.py:710, 739` | If backend assigns a different id for the same NZB, downstream poll targets the wrong job.
 - **`_poll_once` join-timeout paths don't cancel upstream job** | `resolver.py:595-602` | Abandoned poll leaves nzbdav still downloading.
 - **Force-quit during submit orphans nzbdav job** | `resolver.py:1136` | No cross-session nzo_id persistence; the queue entry stays.
-<!-- Fixed in commit 73806c0: service.py proxy.stop() restart path now logs the swallowed exception at LOGWARNING with the exception detail, instead of `pass`-ing silently. The respawn still proceeds — the diagnostic log is the only change. -->
-
-<!-- False positive (verified): both initial start (service.py:405) and restart (service.py:465) already call _HOME_WINDOW.clearProperty(_PROP_PROXY_PORT) on the failure path. -->
-
-<!-- Fixed in this commit: router.py:39 parse_qs now uses keep_blank_values=True so empty params survive (Kodi plugin URLs don't repeat keys, so duplicate-drop is benign and now visible to anyone iterating parsed.items()). -->
-
-<!-- Fixed in commit 73806c0: cancel_job changed `is True` identity check to truthy `if response.get("status"):` so an nzbdav build returning `"ok"` (string) still completes the cancel. -->
 
 - **Silent body-read exception during error reporting** | `nzbdav_api.py:174` | Exception inside the error-reporting branch masks the real malformed response.
-<!-- Fixed in commit f9f95eb: filter.matches_filters now reaches the size bounds check unconditionally; unparseable / missing sizes default to 0 so a `min_size > 0` setting correctly rejects placeholder rows. -->
 
 - **Metadata filters short-circuit on empty parse** | `filter.py:418-440` | Releases that PTT can't parse bypass resolution/audio/HDR filters instead of being rejected.
-<!-- False positive (verified): extended-size MP4 box headers are 8-byte standard + 8-byte largesize = exactly 16 bytes total. The probe at `mp4_parser.py:259` fetches mdat_end..mdat_end+15 inclusive = 16 bytes, which is exactly enough. -->
-
-<!-- Both false positives (verified): PLAYER_JSON at player_installer.py:25-41 contains `schema_version` AND `tmdb_id={tmdb_id}` query params for both play_movie and play_episode. The install path serializes the entire dict via json.dumps(PLAYER_JSON, indent=4) so both fields are in the generated file. -->
-
-<!-- False positive (verified): _save_position lives in service.py now (playback_monitor.py was deleted in an earlier refactor). Current code at service.py:218-224 catches a typed _PLAYER_RUNTIME_ERRORS tuple, not bare Exception. -->
 
 - **Session dedup window-property read vs write race** | `cache_prompt.py:68` | Two concurrent plays could show the cache-prompt dialog twice.
-<!-- Fixed in commit a78510b: i18n.fmt now wraps str.format in try/except (IndexError, KeyError, ValueError); falls back to the raw template plus stringified args and logs the mismatch. -->
 
 - **Stale cache entries outlive a lowered TTL** | `cache.py:51-79` | User shortens cache_ttl but old entries honour their original expiry.
 - **`submit_timeout` default mismatch** | `settings.xml:91 = 30 vs nzbdav_api.py:24 = 120` | User-facing default disagrees with the fallback the code uses when the setting is unset.
@@ -1764,13 +1577,9 @@ Most of the original seven findings closed: `clear_sessions` does snapshot-then-
 #### H.3.Low
 
 - **`prepare()` argv loop uses `time.sleep(0.05)`** | `stream_proxy.py:3272-3286` | 50 ms sleep is short enough to not block shutdown noticeably, but it's inconsistent with the `Monitor.waitForAbort` convention.
-<!-- Fixed in commit a78510b: HlsProducer ffmpeg Popen now passes stdin=subprocess.DEVNULL. -->
-
-<!-- False positive (verified): the read goes through `_get_addon_setting` (stream_proxy.py:309) which uses a typed `_KODI_SETTING_ERRORS` exception tuple, not a bare except. -->
 
 - **`-map 0:s?` discards subtitle language metadata** | `stream_proxy.py:1152-1158` | Output SRT has no track language; works but a papercut.
 - **`size` kept as raw string in hydra XML** | `hydra.py:224 + filter.py:457` | `int(result["size"])` can raise on malformed `<size>` element; wrap or pre-validate.
-<!-- Fixed in commit 73806c0: removed the unreachable trailing `or "content"` from the URL builder; `content_root` is guaranteed non-empty by the branches above. -->
 
 - **Reused string IDs for different UI contexts** | `settings.xml:7,12,17 (#30003), 70-73 (#30054/30055)` | Translators see one string, addon shows it in two unrelated spots; cosmetic today, painful when one caller wants a context-specific phrasing.
 - **No max-entry count in cache** | `cache.py:14` | Only a size cap — small-entry workloads can blow up entry count without hitting the size limit.

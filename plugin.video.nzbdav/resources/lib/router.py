@@ -22,7 +22,7 @@ def parse_route(url):
     """Extract the path from a plugin:// URL."""
     parsed = urlparse(url)
     path = parsed.path
-    if not path or path == "":
+    if not path:
         path = "/"
     return path
 

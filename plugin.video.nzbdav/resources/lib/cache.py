@@ -18,8 +18,10 @@ def _get_cache_dir():
     addon = xbmcaddon.Addon()
     profile = xbmcvfs.translatePath(addon.getAddonInfo("profile"))
     cache_dir = os.path.join(profile, "cache")
-    if not os.path.exists(cache_dir):
-        os.makedirs(cache_dir)
+    # `exist_ok=True` rather than the exists-then-makedirs pattern, which
+    # races a concurrent first-call: two callers can both observe "not
+    # exists" and the second hits FileExistsError. TODO.md §H.2-L24.
+    os.makedirs(cache_dir, exist_ok=True)
     return cache_dir
 
 

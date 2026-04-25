@@ -129,7 +129,16 @@ def install_player():
 
         f = xbmcvfs.File(file_path, "w")
         try:
-            f.write(player_content)
+            # xbmcvfs.File.write returns False on disk-full / permission
+            # failure rather than raising; without this check the install
+            # path used to log "successfully" and toast a success
+            # notification on a partial write. TODO.md §H.2-L23.
+            wrote = f.write(player_content)
+            if wrote is False:
+                raise OSError(
+                    "xbmcvfs.File.write returned False "
+                    "(disk-full or permission failure)"
+                )
             xbmc.log("NZB-DAV: Player installed successfully", xbmc.LOGINFO)
             _notify(_addon_name(), _fmt(30094, "TMDBHelper"))
         finally:

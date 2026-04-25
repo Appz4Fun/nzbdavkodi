@@ -11,7 +11,13 @@ from service import NzbdavPlayer, PlaybackState, check_cache_warning
 
 @patch("service._HOME_WINDOW")
 def test_check_active_reads_window_properties(mock_window):
-    """Service picks up stream info from window properties."""
+    """Service picks up stream info from window properties.
+
+    All three of nzbdav.active / stream_url / stream_title are cleared
+    after the values are snapshotted onto the player instance — see
+    TODO.md §H.2-L29 for why we don't leave URL/title around after
+    consumption.
+    """
     mock_window.getProperty.side_effect = lambda key: {
         "nzbdav.active": "true",
         "nzbdav.stream_url": "http://127.0.0.1:57800/stream",
@@ -24,7 +30,12 @@ def test_check_active_reads_window_properties(mock_window):
     assert player._state == PlaybackState.MONITORING
     assert player._stream_url == "http://127.0.0.1:57800/stream"
     assert player._title == "movie.mkv"
-    mock_window.clearProperty.assert_called_once_with("nzbdav.active")
+    cleared_keys = {call.args[0] for call in mock_window.clearProperty.call_args_list}
+    assert cleared_keys == {
+        "nzbdav.active",
+        "nzbdav.stream_url",
+        "nzbdav.stream_title",
+    }
 
 
 @patch("service._HOME_WINDOW")
