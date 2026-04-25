@@ -1132,7 +1132,11 @@ class _StreamHandler(BaseHTTPRequestHandler):
             if self.server.active_ffmpeg is proc:
                 self.server.active_ffmpeg = None
 
-        stderr_thread.join(timeout=5)
+        # 30 s join window. ffmpeg has already exited at this point;
+        # the drain thread just has to flush whatever's still in the
+        # pipe buffer. 5 s was tight on slow disks during a verbose
+        # warning-level stderr flush. TODO.md §H.3.
+        stderr_thread.join(timeout=30)
         stderr = b"".join(stderr_chunks).decode(errors="replace")
         if stderr.strip():
             xbmc.log("NZB-DAV: ffmpeg: {}".format(stderr[:300]), xbmc.LOGDEBUG)

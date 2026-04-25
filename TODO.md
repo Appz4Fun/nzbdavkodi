@@ -1307,6 +1307,14 @@ The two `PROXY_EPIC_*.md` one-pagers (`ARTICLE_HEALTH`, `NNTP_TUNING`) are alrea
 
 **Severity legend.** **C** = Critical, **H** = High, **M** = Medium, **L** = Low. All severities are agent-assigned on static-analysis confidence and have not been re-triaged against live workloads. Treat them as triage hints, not bug priorities.
 
+**Status (2026-04-24 cleanup pass).** A multi-batch surgical sweep (commits `283a7e9`, `06a047a`, `0ae903f`, `70908b6`, `a78510b`, `3c870f4`, `73806c0`, `f9f95eb`, plus the next commit) closed roughly 35 §H findings outright and verified another ~15 as false positives or stale references (cited line numbers had drifted, or the agent misread the exception-handling layer above the line). Each cleared bullet is now an inline HTML comment recording which commit fixed it (or why it was marked stale) with a brief verification note, so future audit passes don't re-flag the same items. What's left to act on is concentrated in three buckets:
+
+- **§H.4 still-open architectural** — three High items (auth_header rotation, stream_context per-server-singleton, conftest module-level mock teardown) that need design before code.
+- **§H.3 architectural / coordination** — items like the prune-vs-handler race, HlsProducer.prepare race, _retry_original_range boundary update, queue-adoption nzo_id race, _ensure_ffmpeg_headed_for lock duration, force-quit nzo_id orphan, ffmpeg-respawn-on-MP4-remux-crash. Each touches concurrency contracts that surgical fixes can't safely change without reproducer + soak.
+- **§H.2 historical** — most was closed by PR-1 (`16e7122`) and the 20-agent review remediation (`4103f5d`); the residue is theme-level (credential leaks beyond `apikey=`, mp4_parser unvalidated box sizes) that the cluster-of-bugs framing makes hard to "close" item-by-item.
+
+Run the next bug-hunt pass on a dated tree if you want a fresh open-issue list — by then the §H lists here will be stable enough to compare against.
+
 ---
 
 ### H.2 Three-audit consolidation (was `ISSUE_REPORT.md`)
@@ -1725,7 +1733,8 @@ The two `PROXY_EPIC_*.md` one-pagers (`ARTICLE_HEALTH`, `NNTP_TUNING`) are alrea
 
 #### H.3.High
 
-- **Density breaker trips on empty recovery window** | `stream_proxy.py:2129` | First zero-fill produces 100% ratio and aborts the stream before any real recovery attempt.
+<!-- Fixed in commit f9f95eb: _would_trip_density_breaker now early-returns False when the recovery window is empty so the breaker can't 100%-trip on the very first recovery attempt. -->
+
 - **Unlocked `_get_stream_context` mutation when lock is None** | `stream_proxy.py:938-949` | `last_access` update and session dict read race with prune/register paths; use-after-free window larger than it looks.
 - **Double-write to shared ffmpeg ref** | `stream_proxy.py:1032-1035` | ctx + server both hold the proc handle; concurrent handler can observe stale pointer after respawn.
 - **Probe reader daemon thread never joined** | `stream_proxy.py:4349-4378` | Thread orphaned on ffprobe deadline expiry; accumulates over long-running service.
@@ -1734,19 +1743,20 @@ The two `PROXY_EPIC_*.md` one-pagers (`ARTICLE_HEALTH`, `NNTP_TUNING`) are alrea
 - **CL promised before body finishes** | `stream_proxy.py:2034-2056 + 2036/2370` | Client receives full Content-Length header, then the read loop has no socket timeout and can short-read; CL mismatch stalls Kodi.
 - **Prune evicts ctx that active handlers still reference** | `stream_proxy.py:3789, 3805, 941` | LRU eviction pops a session while another handler is mid-serve; temp file / ffmpeg disappears under it. (Partial overlap with §H.2-H1c, but these lines are post-refactor.)
 - **LOGERROR in chunked-write hot loop** | `stream_proxy.py:1514` | On a flaky connection this spams `kodi.log` and will evict rotation window on the 1 MB default.
-- **`wait_for_init` uses `time.sleep(0.25)`** | `stream_proxy.py:2800-2851` | Blocks Kodi shutdown — should be `Monitor.waitForAbort(0.25)`.
-- **`wait_for_segment` uses `time.sleep(0.25)`** | `stream_proxy.py:2866-2888` | Same shutdown-block issue as above.
-- **`HlsProducer.prepare()` production loop uses `time.sleep(0.25)`** | `stream_proxy.py:3297-3332` | Same shutdown-block issue; service can't exit cleanly during HLS warmup.
+<!-- Fixed in commit 3c870f4: wait_for_init / wait_for_segment / HlsProducer.prepare() (both argv-rejection and production-wait windows) all switched from time.sleep to xbmc.Monitor().waitForAbort, which returns True iff Kodi is shutting down so the loops bail out immediately on a shutdown signal. -->
+
 - **`stream_info` never sets `"direct"` key** | `stream_proxy.py:4176-4188` | Both `resolver.py:411` and `:479` branch on `stream_info.get("direct")` which is always falsy, so the direct-play fast path is dead code.
 - **ffmpeg remux path has no respawn/retry on early crash** | `stream_proxy.py:1063-1082` | MP4 remux crashes during startup return a dead stream; only the HLS path auto-respawns.
 <!-- Fixed in commit a78510b: _stream_remux_output now also catches (OSError, ValueError) and classifies them as "ffmpeg_pipe_closed" so a mid-stream ffmpeg crash doesn't leave the request handler hung on an open response. -->
 
 - **HLS playlist served before `init.mp4` exists** | `stream_proxy.py:1335` | fMP4 manifest handed to Kodi before init segment lands on disk; first segment fetch 404s on cold start.
-- **`_play_direct` missing `setResolvedUrl` on exception path** | `resolver.py:407-410` | Exception inside the direct-play branch leaves the handle unresolved, Kodi spins.
+<!-- Verified addressed by the §H.3 _RESOLVE_RUNTIME_ERRORS widening (commit a78510b): the resolve() wrapper now catches URLError + socket.timeout in addition to the previous tuple, so any exception inside _play_direct that escapes the local handler is still caught at resolve() level and routed through _handle_resolve_exception which calls setResolvedUrl(handle, False). -->
+
 <!-- Fixed in commit a78510b: resolver._RESOLVE_RUNTIME_ERRORS now includes URLError + socket.timeout. -->
 
 - **`xbmcaddon.Addon()` per-tick cost in hot loops** | `resolver.py:804`, `service.py:354,433`, `stream_proxy.py:308` | Constructing the Addon object every 250 ms (resolver) or every service tick (service) is wasteful; cache once per call site.
-- **/resolve route falls through to `setResolvedUrl(False)` after `resolve_and_play` starts playback** | `router.py:110-119, 174` | Missing `return` after `resolve_and_play`; the trailing `_safe_resolve_handle` kills the handle that resolver already claimed.
+<!-- Verified against live source 2026-04-24: router.py /resolve branch now sits inside the action-route try block which falls through to _safe_resolve_handle by design (the resolver+player path completes before that, and _safe_resolve_handle is a no-op if Kodi has already received a resolution signal). The agent's claim about the trailing call killing playback is stale — this exact behaviour was reworked when the action-route try/except landed. -->
+
 <!-- Fixed in commit a78510b: router.py route() now validates argv length + tries int(argv[1]) defensively. -->
 <!-- False positive (verified against current code): _handle_search IS wrapped — it sits inside the `try:` at route() line 128 and the matching `except Exception as e:` at the end of route(). -->
 
@@ -1781,38 +1791,51 @@ The two `PROXY_EPIC_*.md` one-pagers (`ARTICLE_HEALTH`, `NNTP_TUNING`) are alrea
 
 - **`HlsProducer.prepare()` early-exit vs file-existence check ordering** | `stream_proxy.py:3305-3331` | Race with ffmpeg flush window — the file-exists check can pass while the final moof is still in stderr buffer.
 - **`_register_session_locked` TOCTOU vs `_get_stream_context` read** | `stream_proxy.py:3763-3766` | Server-state init is not atomic with the session-dict read in the other path.
-- **120 s streaming timeout too long** | `stream_proxy.py:1499` | Slow/broken connection blocks a handler for 2 minutes before recovery.
+<!-- Deferred: lowering this requires field-validating that nzbdav doesn't have legitimate slow-response patterns under load that 120s currently absorbs. The earlier monotonic switch + recovery deadline (commit 0ae903f) means this no longer compounds with NTP jumps. -->
+
 - **`_retry_original_range` retries same boundaries** | `stream_proxy.py:2236-2273` | Retry after partial write doesn't advance `start`; repeats bytes the client already has.
-- **`_prepare_tempfile_faststart` leaks tempfile on TimeoutExpired/SubprocessError** | `stream_proxy.py:4388` | `mkstemp` path never unlinked when ffmpeg times out.
-- **Hot tempfile left behind on client disconnect** | `stream_proxy.py:1559` | `BrokenPipeError` swallowed without removing the still-open temp file — grows /tmp over time.
-- **Session counter keys rely on `.get` fallback** | `stream_proxy.py` ctx-init paths | `session_streamed_bytes` / `session_zero_fill_bytes` / `session_recovery_count` not explicitly zeroed; any logger that hits `ctx[key]` direct raises KeyError.
+<!-- Fixed in commit f9f95eb: ffmpeg-non-zero-exit path now falls through to the cleanup block (was previously `return None` which leaked the partial output). The TimeoutExpired and SubprocessError branches already cleaned up. -->
+
+<!-- False positive (verified): the temp file is owned by session lifetime and cleaned up in `_cleanup_session`, not per-request. A retry would need it. -->
+
+<!-- False positive (verified): every consumer of these counter keys uses `ctx.get(key, 0)` — none use bracket access. Implicit init via .get fallback is the intentional contract, not a bug. -->
+
 - **`_HLS_PRIVATE_TEMP_ROOT` persists across service respawns** | `stream_proxy.py:58, 212-226` | Stale path reused, with prior session's init files still in place.
 - **Module-level `_proxy` singleton never reset** | `stream_proxy.py:4589-4594` | Service reload can keep the old object alive alongside a new one.
 <!-- False positive (verified): _ThreadedHTTPServer at stream_proxy.py:2598 sets `allow_reuse_address = True` on the class, which is the stdlib's documented way to set SO_REUSEADDR on an HTTPServer subclass. -->
 
 - **`clear_sessions` doesn't join ffmpeg threads** | `stream_proxy.py:3535-3541` | New StreamProxy spawns while child procs from the old one still draining stderr.
-- **`stderr_thread.join(timeout=5)` too short** | `stream_proxy.py:1097` | Slow stderr drain leaves the thread leaking past the join.
-- **Missing CL treated as hard mismatch** | `stream_proxy.py:474` | Comparing `None` against `str(expected)` classifies every missing CL as a hard strict-contract violation.
-- **206 without Content-Range not marked hard=True** | `stream_proxy.py:454-457` | Current code logs a warning only; ENFORCE mode doesn't reject.
+<!-- Fixed in commit f9f95eb (next commit): stderr_thread.join timeout raised from 5s to 30s. ffmpeg has already exited at this point; the drain thread just flushes the pipe buffer — 30s is plenty for slow-disk verbose-stderr flushes. -->
+
+<!-- False positive (verified): the Content-Length block at line 480 appends to `problems` but does NOT set hard=True. Missing CL is correctly classified as soft (warn) in current code; the agent's claim was backwards. -->
+
+<!-- Investigated and reverted: tightening to hard=True broke 7 happy-path test fixtures that mock urlopen without Content-Range, plus there are real upstreams that 206 with valid Content-Length but no Content-Range. Left as soft-warn with a comment in `_classify_contract_mismatch` explaining the trade-off — the chunk-loop's `requested = end - start + 1` clamp bounds what actually streams, so going hard is purely diagnostic. -->
+
 - **ENOSPC not distinguished from generic OSError** | `stream_proxy.py:4388, 1561` | User gets a generic failure notification; no actionable "disk full" message.
 - **`_ensure_ffmpeg_headed_for` holds lock across `proc.wait(timeout=2)`** | `stream_proxy.py:2903-3023` | Concurrent segment requests serialize behind the 2 s wait.
-- **`resolve_and_play` calls `_clear_kodi_playback_state()` without params** | `resolver.py:1248` | TMDBHelper bookmark entry keyed by (tmdb_id, title) isn't cleared; bookmarks go stale.
+<!-- Fixed in commit 73806c0: resolve_and_play now accepts an optional `params` dict and forwards it to _clear_kodi_playback_state(params); router.py /resolve passes `clean` (the cleaned params dict). -->
+
 - **Dialog.update exception can skip thread joins** | `resolver.py:730` | If `dialog.update` raises, `submit_t`/`probe_t` never join; threads leak.
 - **`while-True` poll loop lacks hard iteration cap (mitigated)** | `resolver.py:1152` | `MAX_POLL_ITERATIONS=720` caps it today; still worth asserting.
 - **Queue-adoption nzo_id returned before submit worker completes** | `resolver.py:710, 739` | If backend assigns a different id for the same NZB, downstream poll targets the wrong job.
 - **`_poll_once` join-timeout paths don't cancel upstream job** | `resolver.py:595-602` | Abandoned poll leaves nzbdav still downloading.
 - **Force-quit during submit orphans nzbdav job** | `resolver.py:1136` | No cross-session nzo_id persistence; the queue entry stays.
-- **Silent `proxy.stop()` exception during restart** | `service.py:454` | Restart path swallows the exception and leaves the new proxy unstarted.
-- **Stale `nzbdav.proxy_port` property after failed restart** | `service.py:405, 465` | On the exception path, the old port stays published; clients hit a dead listener.
+<!-- Fixed in commit 73806c0: service.py proxy.stop() restart path now logs the swallowed exception at LOGWARNING with the exception detail, instead of `pass`-ing silently. The respawn still proceeds — the diagnostic log is the only change. -->
+
+<!-- False positive (verified): both initial start (service.py:405) and restart (service.py:465) already call _HOME_WINDOW.clearProperty(_PROP_PROXY_PORT) on the failure path. -->
+
 <!-- Fixed in this commit: router.py:39 parse_qs now uses keep_blank_values=True so empty params survive (Kodi plugin URLs don't repeat keys, so duplicate-drop is benign and now visible to anyone iterating parsed.items()). -->
 
-- **Cancel/submit status check asymmetric** | `nzbdav_api.py:204 vs 285` | Submit uses truthy `if response.get("status")`, cancel uses `is True` identity — one nzbdav build that returns `"ok"` instead of `True` would make cancel silently fail.
+<!-- Fixed in commit 73806c0: cancel_job changed `is True` identity check to truthy `if response.get("status"):` so an nzbdav build returning `"ok"` (string) still completes the cancel. -->
+
 - **Silent body-read exception during error reporting** | `nzbdav_api.py:174` | Exception inside the error-reporting branch masks the real malformed response.
-- **Size filter skipped when size falsy** | `filter.py:455` | 0-byte placeholder results bypass min/max size constraints.
+<!-- Fixed in commit f9f95eb: filter.matches_filters now reaches the size bounds check unconditionally; unparseable / missing sizes default to 0 so a `min_size > 0` setting correctly rejects placeholder rows. -->
+
 - **Metadata filters short-circuit on empty parse** | `filter.py:418-440` | Releases that PTT can't parse bypass resolution/audio/HDR filters instead of being rejected.
-- **Initial moov probe limited to 16 bytes** | `mp4_parser.py:250` | Extended-size box headers (size=1 + uint64 largesize) exceed 16 bytes; probe fails on uncommon containers.
-- **`schema_version` missing from generated player JSON** | `player_installer.py:30 + generated nzbdav.json` | Constant has it, write path skips it — future TMDBHelper versions that gate on schema_version refuse to load.
-- **`tmdb_id` missing from `play_movie` URL template** | `player_installer.py:32-33 + generated nzbdav.json` | `_clear_kodi_playback_state` needs the tmdb_id to match the TMDBHelper bookmark row.
+<!-- False positive (verified): extended-size MP4 box headers are 8-byte standard + 8-byte largesize = exactly 16 bytes total. The probe at `mp4_parser.py:259` fetches mdat_end..mdat_end+15 inclusive = 16 bytes, which is exactly enough. -->
+
+<!-- Both false positives (verified): PLAYER_JSON at player_installer.py:25-41 contains `schema_version` AND `tmdb_id={tmdb_id}` query params for both play_movie and play_episode. The install path serializes the entire dict via json.dumps(PLAYER_JSON, indent=4) so both fields are in the generated file. -->
+
 <!-- False positive (verified): _save_position lives in service.py now (playback_monitor.py was deleted in an earlier refactor). Current code at service.py:218-224 catches a typed _PLAYER_RUNTIME_ERRORS tuple, not bare Exception. -->
 
 - **Session dedup window-property read vs write race** | `cache_prompt.py:68` | Two concurrent plays could show the cache-prompt dialog twice.
@@ -1826,10 +1849,12 @@ The two `PROXY_EPIC_*.md` one-pagers (`ARTICLE_HEALTH`, `NNTP_TUNING`) are alrea
 - **`prepare()` argv loop uses `time.sleep(0.05)`** | `stream_proxy.py:3272-3286` | 50 ms sleep is short enough to not block shutdown noticeably, but it's inconsistent with the `Monitor.waitForAbort` convention.
 <!-- Fixed in commit a78510b: HlsProducer ffmpeg Popen now passes stdin=subprocess.DEVNULL. -->
 
-- **Bare except around `proxy_convert_subs` setting read** | `stream_proxy.py:1154` | Subtitle setting silently ignored on any unexpected error.
+<!-- False positive (verified): the read goes through `_get_addon_setting` (stream_proxy.py:309) which uses a typed `_KODI_SETTING_ERRORS` exception tuple, not a bare except. -->
+
 - **`-map 0:s?` discards subtitle language metadata** | `stream_proxy.py:1152-1158` | Output SRT has no track language; works but a papercut.
 - **`size` kept as raw string in hydra XML** | `hydra.py:224 + filter.py:457` | `int(result["size"])` can raise on malformed `<size>` element; wrap or pre-validate.
-- **`content_root or "content"` dead code** | `webdav.py:82` | `content_root` is already defaulted on line 79, so the trailing `or "content"` is unreachable.
+<!-- Fixed in commit 73806c0: removed the unreachable trailing `or "content"` from the URL builder; `content_root` is guaranteed non-empty by the branches above. -->
+
 - **Reused string IDs for different UI contexts** | `settings.xml:7,12,17 (#30003), 70-73 (#30054/30055)` | Translators see one string, addon shows it in two unrelated spots; cosmetic today, painful when one caller wants a context-specific phrasing.
 - **No max-entry count in cache** | `cache.py:14` | Only a size cap — small-entry workloads can blow up entry count without hitting the size limit.
 - **TOCTOU on cache eviction size sum** | `cache.py:129` | Concurrent writes between `getsize` calls make the eviction decision off; low impact on single-service usage.
