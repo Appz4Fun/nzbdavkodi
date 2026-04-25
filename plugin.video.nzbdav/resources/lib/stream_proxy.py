@@ -128,6 +128,35 @@ _MAX_TOTAL_ZERO_FILL = 67108864
 # data instead of real upstream bytes.
 _DENSITY_BREAKER_WINDOW_BYTES = 16 * 1024 * 1024
 _DENSITY_BREAKER_ZERO_FILL_RATIO = 0.5
+# Throughput stall watchdog (pass-through, video only). When the proxy→Kodi
+# byte rate falls below this threshold over the rolling window, the response
+# is closed so Kodi's CCurlFile reconnects with a fresh upstream fetch.
+# Without this, a slow-trickle upstream — e.g. a Usenet article fetch that
+# takes 60+ seconds — keeps delivering chunks under the per-read socket
+# timeout (_UPSTREAM_OPEN_TIMEOUT, 30 s), so neither the urlopen-level
+# timeout nor Kodi's own watchdog ever fires. Bytes drip in below playable
+# rate, Kodi's CFileCache underruns, audio stalls, and the player wedges in
+# a state where subsequent seeks don't trigger a fresh range request
+# (CFileCache considers the source still "open"). 100 KB/s is well under
+# any video bit rate that needs streaming (the slowest video is ~1 Mbps =
+# 125 KB/s) but well ABOVE realistic audio rates (a 64 kbps MP3 is 8 KB/s),
+# which is why the watchdog is gated on a video content type — otherwise a
+# slow-but-legitimate audio stream would get rotated every 20 s.
+_PASSTHROUGH_MIN_THROUGHPUT_BPS = 102400
+_PASSTHROUGH_THROUGHPUT_WINDOW_SECONDS = 20.0
+
+
+def _passthrough_watchdog_applies(ctx):
+    """True if the throughput watchdog should monitor this stream.
+
+    Only video gets the watchdog — audio bit rates legitimately fall under
+    the 100 KB/s floor (a 64 kbps MP3 is 8 KB/s). Surfaced as a helper so
+    the caller is short and the policy is testable in isolation.
+    """
+    content_type = (ctx.get("content_type") or "").lower()
+    return content_type.startswith("video/")
+
+
 # Chunk size for reading from the upstream HTTP response in _serve_proxy.
 # Kept small (64 KB) because on 32-bit Kodi the address space is ~3 GB and
 # Kodi's CFileCache can reserve up to ~1.5 GB on its own. A 1 MB read
@@ -2195,6 +2224,12 @@ class _StreamHandler(BaseHTTPRequestHandler):
         zero_fill_budget_enabled = _zero_fill_budget_enabled()
         retry_ladder_enabled = _retry_ladder_enabled()
         density_window = deque()
+        # Reset the throughput watchdog window per request. ctx may be reused
+        # across requests for the same session, so explicit re-init avoids
+        # stale state from a prior wedge polluting the current sample.
+        ctx["passthrough_window_t0"] = time.monotonic()
+        ctx["passthrough_window_bytes"] = 0
+        ctx["passthrough_stall_detected"] = False
 
         try:
             while current <= end:
@@ -2318,19 +2353,41 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     xbmc.LOGWARNING,
                 )
         except (BrokenPipeError, ConnectionResetError, _socket.timeout):
-            terminal_reason = "client_disconnected"
-            # socket.timeout means Kodi stopped reading from us for longer
-            # than _REMUX_WRITE_TIMEOUT — usually a long DB vacuum or the
-            # decoder otherwise stalling.  Unwind the handler and let
-            # BaseHTTPServer tear down the socket; Kodi's CCurlFile will
-            # reconnect if it still wants bytes.
-            xbmc.log(
-                "NZB-DAV: Pass-through write aborted at byte {} "
-                "(client stalled or disconnected, reason={})".format(
-                    current, terminal_reason
-                ),
-                xbmc.LOGWARNING,
-            )
+            # socket.timeout has TWO causes here:
+            #   1. Kodi stopped reading from us for longer than
+            #      _REMUX_WRITE_TIMEOUT (DB vacuum, decoder stall) — surfaces
+            #      as terminal_reason="client_disconnected".
+            #   2. The throughput watchdog detected upstream-driven trickle
+            #      that Kodi can't keep up with — surfaces as
+            #      terminal_reason="passthrough_stall". The
+            #      ``passthrough_stall_detected`` ctx flag is set right
+            #      before the raise so we can tell them apart here.
+            # Either way we unwind the handler and let BaseHTTPServer tear
+            # down the socket; Kodi's CCurlFile will reconnect if it still
+            # wants bytes.
+            if ctx.get("passthrough_stall_detected"):
+                terminal_reason = "passthrough_stall"
+                xbmc.log(
+                    "NZB-DAV: Pass-through stall at byte {} "
+                    "(rate={:.0f} B/s over {:.1f}s; threshold={} B/s) — "
+                    "closing to force Kodi reconnect (reason={})".format(
+                        current,
+                        ctx.get("passthrough_stall_bps", 0.0),
+                        ctx.get("passthrough_stall_window_seconds", 0.0),
+                        _PASSTHROUGH_MIN_THROUGHPUT_BPS,
+                        terminal_reason,
+                    ),
+                    xbmc.LOGWARNING,
+                )
+            else:
+                terminal_reason = "client_disconnected"
+                xbmc.log(
+                    "NZB-DAV: Pass-through write aborted at byte {} "
+                    "(client stalled or disconnected, reason={})".format(
+                        current, terminal_reason
+                    ),
+                    xbmc.LOGWARNING,
+                )
         finally:
             xbmc.log(
                 "NZB-DAV: Pass-through summary reason={} range={}-{} "
@@ -2560,6 +2617,47 @@ class _StreamHandler(BaseHTTPRequestHandler):
                         )
                 self.wfile.write(chunk)
                 written += len(chunk)
+                # Throughput watchdog: only sampled inside the read loop
+                # because that's where bytes-in-flight matches what Kodi
+                # actually sees. A separate check at the _serve_proxy level
+                # would mis-attribute zero-fill bytes as real progress.
+                # Skip entirely on non-video streams — audio bit rates are
+                # legitimately below the 100 KB/s floor.
+                if _passthrough_watchdog_applies(ctx):
+                    # Self-initialize so tests that call this method
+                    # directly still work; _serve_proxy resets per request
+                    # to avoid carry-over. Use an explicit `in` check
+                    # rather than ctx.setdefault(..., time.monotonic())
+                    # because the latter evaluates time.monotonic() every
+                    # iteration even when the key exists — wasted clock
+                    # reads on the hot per-chunk path AND non-deterministic
+                    # for tests that mock time.monotonic with a finite
+                    # side_effect list.
+                    if "passthrough_window_t0" not in ctx:
+                        ctx["passthrough_window_t0"] = time.monotonic()
+                    ctx["passthrough_window_bytes"] = ctx.get(
+                        "passthrough_window_bytes", 0
+                    ) + len(chunk)
+                    window_elapsed = time.monotonic() - ctx["passthrough_window_t0"]
+                    if window_elapsed >= _PASSTHROUGH_THROUGHPUT_WINDOW_SECONDS:
+                        bps = ctx["passthrough_window_bytes"] / window_elapsed
+                        if bps < _PASSTHROUGH_MIN_THROUGHPUT_BPS:
+                            # Mark before raising so the _serve_proxy handler
+                            # can distinguish stall-induced unwind from a
+                            # real Kodi disconnect. socket.timeout is an
+                            # OSError subclass, so it bypasses the inner
+                            # read-loop except (which would otherwise
+                            # mis-classify it as upstream short read) and
+                            # propagates to the outer handler.
+                            ctx["passthrough_stall_detected"] = True
+                            ctx["passthrough_stall_bps"] = bps
+                            ctx["passthrough_stall_window_seconds"] = window_elapsed
+                            raise _socket.timeout(
+                                "passthrough throughput stall: "
+                                "{:.0f} B/s over {:.1f}s".format(bps, window_elapsed)
+                            )
+                        ctx["passthrough_window_t0"] = time.monotonic()
+                        ctx["passthrough_window_bytes"] = 0
         finally:
             try:
                 resp.close()

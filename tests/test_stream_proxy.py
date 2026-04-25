@@ -4985,6 +4985,158 @@ def test_serve_proxy_streams_happy_path():
 
 
 @patch("resources.lib.stream_proxy.xbmc")
+def test_serve_proxy_stall_watchdog_aborts_on_low_throughput(mock_xbmc):
+    """Trickle upstream forces a clean disconnect so Kodi reconnects.
+
+    Repro of the wedge seen on the CoreELEC test box (2026-04-25): a slow
+    upstream delivers tiny chunks under the per-read socket timeout, so
+    neither urlopen nor Kodi's own timeout fires. Bytes drip in below
+    playable rate, Kodi's CFileCache underruns, audio stalls, and the
+    player wedges in a state where subsequent seeks don't trigger a fresh
+    range request. The watchdog samples bytes-per-second over a rolling
+    window and raises socket.timeout when the rate falls below the
+    threshold, forcing _serve_proxy's existing handler to unwind the
+    response cleanly under terminal_reason='passthrough_stall'.
+    """
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 1048576,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-1048575")
+
+    # Two 1KB chunks. With monotonic returning 100, 105, 125 the second
+    # chunk's window check sees 25s of elapsed time and 2048 bytes —
+    # ~82 B/s, well below the 102400 B/s threshold.
+    chunks = [b"A" * 1024, b"B" * 1024]
+    monotonic_returns = iter([100.0, 105.0, 125.0])
+
+    with patch(
+        "resources.lib.stream_proxy.time.monotonic",
+        side_effect=lambda: next(monotonic_returns),
+    ), patch(
+        "resources.lib.stream_proxy.urlopen",
+        return_value=_mock_urlopen_response(chunks),
+    ):
+        handler._serve_proxy(ctx)
+
+    # Both chunks made it to Kodi before the watchdog fired (the check
+    # runs after wfile.write, so chunk 2 is delivered then triggers).
+    assert _collect_written(handler) == b"A" * 1024 + b"B" * 1024
+    assert ctx["passthrough_stall_detected"] is True
+    # Sanity-check the recorded metrics for the log line.
+    assert ctx["passthrough_stall_window_seconds"] == pytest.approx(25.0)
+    assert ctx["passthrough_stall_bps"] == pytest.approx(2048 / 25.0)
+    # Verify the terminal log line names passthrough_stall, not the
+    # generic client_disconnected — operators reading kodi.log need to
+    # tell the two failure modes apart.
+    logged = "\n".join(call.args[0] for call in mock_xbmc.log.call_args_list)
+    assert "reason=passthrough_stall" in logged
+    assert "Pass-through stall" in logged
+    assert "client stalled or disconnected" not in logged
+
+
+def test_serve_proxy_stall_watchdog_resets_after_a_fast_burst():
+    """A bursty upstream that catches up before the window closes is fine.
+
+    Without the window-reset on a successful sample, even a single slow
+    sample would leave the watchdog primed forever — a genuine 3 MB burst
+    after a quiet 22 s would still fail the next check 20 s later because
+    the rolling counter never zeros out.
+    """
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 3 * 1048576,
+    }
+    handler = _make_handler_with_server(
+        ctx, range_header="bytes=0-{}".format(3 * 1048576 - 1)
+    )
+
+    # One 3 MB chunk arrives at t=22s. bps = 3 MB / 22 s ≈ 143 KB/s, above
+    # the 100 KB/s threshold → check passes and window resets.
+    chunks = [b"X" * (3 * 1048576)]
+    # Three monotonic calls:
+    #   100.0 — _serve_proxy init
+    #   122.0 — post-chunk window_elapsed = 22 (check fires, passes)
+    #   122.0 — window reset to "now"
+    # Pad with extra values in case any uncovered path samples again.
+    monotonic_returns = iter([100.0, 122.0, 122.0, 999.0, 999.0])
+
+    with patch(
+        "resources.lib.stream_proxy.time.monotonic",
+        side_effect=lambda: next(monotonic_returns),
+    ), patch(
+        "resources.lib.stream_proxy.urlopen",
+        return_value=_mock_urlopen_response(chunks),
+    ):
+        handler._serve_proxy(ctx)
+
+    assert ctx.get("passthrough_stall_detected", False) is False
+    # Window was reset after the chunk's check passed.
+    assert ctx["passthrough_window_bytes"] == 0
+
+
+def test_serve_proxy_stall_watchdog_skips_audio_streams():
+    """A 64 kbps MP3 (~8 KB/s) sits below the watchdog floor by design.
+
+    Without content-type gating, every legitimate audio stream would be
+    rotated every 20 s — a regression from the existing pre-watchdog
+    behaviour. The fix gates on a video/* content type so audio bypasses
+    the check entirely.
+    """
+    ctx = {
+        "remote_url": "http://host/song.mp3",
+        "auth_header": None,
+        "content_type": "audio/mpeg",
+        "content_length": 2048,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-2047")
+
+    # Same trickle pattern that would trip the video watchdog: tiny chunks,
+    # large elapsed time. For audio, the watchdog skip means time.monotonic
+    # is only called once (during _serve_proxy init); use a constant lambda
+    # so the test doesn't break if some unrelated path samples it later.
+    chunks = [b"A" * 1024, b"B" * 1024]
+
+    with patch(
+        "resources.lib.stream_proxy.time.monotonic",
+        side_effect=lambda: 100.0,
+    ), patch(
+        "resources.lib.stream_proxy.urlopen",
+        return_value=_mock_urlopen_response(chunks),
+    ):
+        handler._serve_proxy(ctx)
+
+    assert ctx.get("passthrough_stall_detected", False) is False
+    # Both chunks delivered cleanly; the watchdog never engaged so the
+    # passthrough_window_bytes counter never advanced past zero.
+    assert _collect_written(handler) == b"A" * 1024 + b"B" * 1024
+    assert ctx.get("passthrough_window_bytes", 0) == 0
+
+
+def test_passthrough_watchdog_applies_returns_true_only_for_video():
+    """Tight assertion on the gate function so policy changes are
+    deliberate — adding image/* or application/octet-stream would need
+    an explicit test update instead of slipping in.
+    """
+    from resources.lib.stream_proxy import _passthrough_watchdog_applies
+
+    assert _passthrough_watchdog_applies({"content_type": "video/x-matroska"})
+    assert _passthrough_watchdog_applies({"content_type": "video/mp4"})
+    assert _passthrough_watchdog_applies({"content_type": "VIDEO/MP4"})
+    assert not _passthrough_watchdog_applies({"content_type": "audio/mpeg"})
+    assert not _passthrough_watchdog_applies(
+        {"content_type": "application/octet-stream"}
+    )
+    assert not _passthrough_watchdog_applies({"content_type": ""})
+    assert not _passthrough_watchdog_applies({"content_type": None})
+    assert not _passthrough_watchdog_applies({})
+
+
+@patch("resources.lib.stream_proxy.xbmc")
 def test_serve_proxy_logs_terminal_summary_on_success(mock_xbmc):
     ctx = {
         "remote_url": "http://host/movie.mkv",
