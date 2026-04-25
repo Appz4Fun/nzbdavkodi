@@ -12,6 +12,7 @@ import xbmcaddon
 import xbmcvfs
 
 MAX_CACHE_SIZE_BYTES = 52428800  # 50MB
+MAX_CACHE_ENTRY_COUNT = 1000
 
 
 def _get_cache_dir():
@@ -72,11 +73,32 @@ def get_cached(search_type, title, **kwargs):
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        if time.time() - data.get("timestamp", 0) > cache_ttl:
+        timestamp = data.get("timestamp")
+        if not isinstance(timestamp, (int, float)):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
             return None
+        if time.time() - timestamp > cache_ttl:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            return None
+        try:
+            os.utime(path, None)
+        except OSError:
+            pass
         xbmc.log("NZB-DAV: Cache hit for '{}'".format(title), xbmc.LOGDEBUG)
         return data.get("results", [])
-    except (json.JSONDecodeError, OSError):
+    except json.JSONDecodeError:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return None
+    except OSError:
         return None
 
 
@@ -119,8 +141,17 @@ def set_cached(search_type, title, results, **kwargs):
     _evict_oldest()
 
 
+def _cache_file_size(path):
+    """Return allocated bytes for cache eviction, falling back to logical size."""
+    stat = os.stat(path)
+    blocks = getattr(stat, "st_blocks", None)
+    if isinstance(blocks, int) and blocks > 0:
+        return blocks * 512
+    return stat.st_size
+
+
 def _evict_oldest():
-    """Delete oldest cache files until total size is under MAX_CACHE_SIZE_BYTES."""
+    """Delete oldest cache files until size and entry-count limits are met."""
     cache_dir = _get_cache_dir()
     try:
         files = [
@@ -128,16 +159,25 @@ def _evict_oldest():
             for f in os.listdir(cache_dir)
             if f.endswith(".json")
         ]
-        total = sum(os.path.getsize(p) for p in files if os.path.exists(p))
-        if total <= MAX_CACHE_SIZE_BYTES:
+        total = 0
+        live_files = []
+        for path in files:
+            try:
+                total += _cache_file_size(path)
+                live_files.append(path)
+            except OSError:
+                pass
+        files = live_files
+        if total <= MAX_CACHE_SIZE_BYTES and len(files) <= MAX_CACHE_ENTRY_COUNT:
             return
         # Sort by mtime ascending (oldest first)
         files.sort(key=os.path.getmtime)
-        for path in files:
-            if total <= MAX_CACHE_SIZE_BYTES:
-                break
+        while files and (
+            total > MAX_CACHE_SIZE_BYTES or len(files) > MAX_CACHE_ENTRY_COUNT
+        ):
+            path = files.pop(0)
             try:
-                size = os.path.getsize(path)
+                size = _cache_file_size(path)
                 os.remove(path)
                 total -= size
                 xbmc.log(

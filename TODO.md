@@ -90,7 +90,7 @@ Only the remaining work. Completed implementation belongs in `git log`.
 
 #### Housekeeping
 
-- [ ] Delete or archive `scripts/review-prompts/proxy-review.md` if it is no longer needed after integration. (Updated to reusable template on 2026-04-22; keep if any `REMAINING_*.md` or `PROXY_EPIC_*.md` will be reviewed.)
+- [x] Deleted stale `scripts/review-prompts/proxy-review.md` after confirming no `REMAINING_*.md` or `PROXY_EPIC_*.md` review targets remain in the tree. (2026-04-25)
 - [x] Obsolete proxy planning mirrors removed (`plans/PROXY_REMEDIATION.md`, `plans/PROXY_EXECUTION.md`, `plans/PROXY_ADJUDICATION.md`).
 
 ---
@@ -1308,21 +1308,21 @@ Most of the original seven findings closed: `clear_sessions` does snapshot-then-
 
 ##### M1. Poll/timeout configuration bugs
 
-- **M1a.** `MAX_POLL_ITERATIONS = 720` hard-codes 5s cadence; `poll_interval=1` caps total wait at ~720s instead of 3600s. (`resolver.py:30`, `505`)
-- **M1b.** `poll_interval=0` produces `waitForAbort(0)` tight loop. (`resolver.py:366-368`)
-- **M1c.** `int(percentage or 0)` raises on `"45.5"`. (`resolver.py:566`, `nzbdav_api.py:275`, `284`)
+- [x] **M1a.** `MAX_POLL_ITERATIONS = 720` hard-codes 5s cadence; `poll_interval=1` caps total wait at ~720s instead of 3600s. Fixed by deriving the cap from the maximum supported timeout and minimum supported poll interval. (2026-04-25)
+- [x] **M1b.** `poll_interval=0` produces `waitForAbort(0)` tight loop. Already fixed by `_get_poll_settings()` clamping to the 1s minimum; covered by `test_get_poll_settings_clamps_too_low_and_logs`. (verified 2026-04-25)
+- [x] **M1c.** `int(percentage or 0)` raised on `"45.5"`. Fixed in `resolver.py` by coercing via `float()` with bounds; no remaining `int(percentage...)` path in `nzbdav_api.py`. (2026-04-25)
 
 <!-- M3 deferred: the pipe-header form `URL|Header=Value` is the canonical Kodi shape for "URL plus HTTP headers" and `xbmc.Player().play(path, listitem)` accepts it natively. The "filesystem path" concern in the audit assumes some intermediate component runs `os.path.exists()` on the stored value — none does. Defensive-only, deferred. -->
 
 
-##### M5. LIKE pattern with `%`/`_` in user-controlled `tmdb_id` matches unintended rows
-**File:** `resolver.py:141-149`
+##### [x] M5. LIKE pattern with `%`/`_` in user-controlled `tmdb_id` matches unintended rows
+**File:** `resolver.py:141-149` — stale: `_like_escape()` escapes SQLite LIKE wildcards and TMDBHelper URL matching uses `ESCAPE '\'`; covered by `test_clear_kodi_playback_state_escapes_like_wildcards`. (verified 2026-04-25)
 
-##### M6. `sys.argv[0]` used as plugin URL for DB cleanup — stale in `resolve_and_play()` service context
-**File:** `resolver.py:130-133`
+##### [x] M6. `sys.argv[0]` used as plugin URL for DB cleanup — stale in `resolve_and_play()` service context
+**File:** `resolver.py:130-133` — `/resolve` already passed cleaned params; `/search` auto-select and picker branches now pass the same cleaned TMDB params into `resolve_and_play()` so bookmark cleanup does not depend on service-context `sys.argv`. Covered by router regression tests. (2026-04-25)
 
-##### M7. ffmpeg process leak on `TimeoutExpired` in `_prepare_tempfile_faststart`
-**File:** `stream_proxy.py:1240-1252`
+##### [x] M7. ffmpeg process leak on `TimeoutExpired` in `_prepare_tempfile_faststart` — fixed/verified
+**File:** `stream_proxy.py:1240-1252` — `communicate(timeout=600)` timeout now kills and reaps ffmpeg, then removes the partial tempfile; covered by `test_prepare_tempfile_faststart_timeout_kills_and_removes_tempfile`. (verified 2026-04-25)
 
 ##### M8. `urlopen(timeout=120)` has no per-read timeout
 **File:** `stream_proxy.py:437`
@@ -1330,8 +1330,8 @@ Most of the original seven findings closed: `clear_sessions` does snapshot-then-
 ##### M9. Request abandonment: small range → fetch whole tail → break mid-stream
 **File:** `stream_proxy.py:430-437` — Small repeated ranges thrash upstream.
 
-##### M10. `_probe_duration` stdout=PIPE never read; muxer banner can deadlock
-**File:** `stream_proxy.py:1163-1168`
+##### [x] M10. `_probe_duration` stdout=PIPE never read; muxer banner can deadlock
+**File:** `stream_proxy.py:1163-1168` — ffmpeg duration fallback now discards stdout with `DEVNULL` while the bounded stderr reader parses the banner; covered by `test_probe_duration_ffmpeg_discards_stdout`. (2026-04-25)
 
 ##### M11. `_register_session` unconditionally overwrites `self._server.stream_context`; legacy `/stream` clients rebind
 **File:** `stream_proxy.py:962`
@@ -1350,8 +1350,8 @@ Most of the original seven findings closed: `clear_sessions` does snapshot-then-
 
 
 
-##### M19. No deduplication of aggregated multi-indexer results
-**File:** `hydra.py:100-130`
+##### [x] M19. No deduplication of aggregated multi-indexer results
+**File:** `router.py:_search_all_providers` — stale: combined provider results are deduplicated by playable `link`; covered by `test_both_providers_deduplicates_by_link`. (verified 2026-04-25)
 
 <!-- M20-M22 closed.
   M20: int(max_results) try/except + clamp to [1..100] applied in hydra.py:97.
@@ -1362,31 +1362,31 @@ Most of the original seven findings closed: `clear_sessions` does snapshot-then-
 
 ##### M23. Filter bugs
 
-- **M23a.** "Filtered N→M" count computed after `max_results` truncation; user-visible count wrong. (`filter.py:474`)
-- **M23b.** min/max size unit mismatch (MB vs GB). (`filter.py:443`)
-- **M23c.** Size filter skipped when size is falsy; 0-byte results bypass constraints. (`filter.py:441`)
+- [x] **M23a.** "Filtered N→M" count computed after `max_results` truncation; user-visible count wrong. Fixed by logging matched count before truncation and showing the displayed count separately. (2026-04-25)
+- [x] **M23b.** min/max size unit mismatch (MB vs GB). Current code treats indexer bytes as MB for settings comparison; covered by `test_filter_size_range`. (verified 2026-04-25)
+- [x] **M23c.** Size filter skipped when size is falsy; 0-byte results bypass constraints. Current code checks size unconditionally and treats missing/unparseable size as 0 MB; covered by zero/empty/None size tests. (verified 2026-04-25)
 - **M23d.** All metadata filters short-circuit on empty parsed metadata; unparseable releases bypass quality filters. (`filter.py:406`)
-- **M23e.** Preferred/include `release_group` setting is never enforced as a hard filter; only exclude list is checked. (`filter.py:436`)
-- **M23f.** Redundant `.lower()` in list comprehension — `settings["exclude_release_group"]` is already lowercased at line 327. (`filter.py:436-438`)
+- [x] **M23e.** Preferred/include `release_group` setting is never enforced as a hard filter; only exclude list is checked. Verified as behavior-by-design: README documents preferred release groups as "boosted to top" while excluded groups are removed; `test_filter_preferred_release_group_boosted` covers the intended boost behavior. (verified 2026-04-25)
+- [x] **M23f.** Redundant `.lower()` in list comprehension — `settings["exclude_release_group"]` is already lowercased at line 327. Removed the redundant per-filter lowercasing while keeping the settings-reader lowercase contract covered by tests. (2026-04-25)
 
-##### M24. WebDAV silent fallback to `nzbdav_url` hits wrong server with WebDAV creds
-**File:** `webdav.py:316-327`
+##### [x] M24. WebDAV silent fallback to `nzbdav_url` hits wrong server with WebDAV creds
+**File:** `webdav.py:316-327` — false positive against current documented behavior: settings text explicitly says "WebDAV URL (leave empty to use nzbdav URL)", and fallback URL construction is covered by WebDAV tests. (verified 2026-04-25)
 
 ##### M25. `find_video_file` catches all; 401/403/5xx all collapse to "not found"
 **File:** `webdav.py:174`
 
-##### M26. `request_path` encoded vs decoded hrefs cause recursive PROPFIND until `_depth > 2`
-**File:** `webdav.py:262`
+##### [x] M26. `request_path` encoded vs decoded hrefs cause recursive PROPFIND until `_depth > 2`
+**File:** `webdav.py:262` — recursive PROPFIND hrefs are tracked as already URL-encoded to avoid `%20` → `%2520` double-encoding; regression test added. (verified 2026-04-25)
 
 
 ##### M32. Cache bugs
 
-- **M32a.** Size accounting uses logical file size not block size; 2-10x over the 50 MB limit possible. (`cache.py:91`)
-- **M32b.** LRU by mtime but `get_cached` never utimes; it's oldest-written, not LRU. (`cache.py:95`)
-- **M32c.** TOCTOU on `exists → open → load`; concurrent writers race. (`cache.py:45-50`)
-- **M32d.** Corrupt cache missing timestamp treated expired but never deleted. (`cache.py:51`)
-- **M32e.** `_cache_key` truncates to 200 chars after sanitizing; distinct queries with same prefix collide. (`cache.py:32`)
-- **M32f.** Sanitization lossy: `"Foo Bar"`, `"Foo-Bar"`, `"Foo.Bar"`, `"Foo:Bar"`, `"Foo/Bar"` all map to the same key. (`cache.py:31`)
+- [x] **M32a.** Size accounting uses logical file size not block size; 2-10x over the 50 MB limit possible. Cache eviction now uses allocated blocks (`st_blocks * 512`) when available and falls back to logical size; regression test added. (2026-04-25)
+- [x] **M32b.** LRU by mtime but `get_cached` never utimes; it's oldest-written, not LRU. Fixed by refreshing mtime on cache hit. (2026-04-25)
+- [x] **M32c.** TOCTOU on `exists → open → load`; concurrent writers race. `set_cached()` already writes via temp file + `os.replace()`, and `get_cached()` tolerates the file disappearing after `exists`; regression test added for the disappearing-file read path. (verified 2026-04-25)
+- [x] **M32d.** Corrupt cache missing timestamp treated expired but never deleted. Fixed by deleting malformed or expired entries on read. (2026-04-25)
+- [x] **M32e.** `_cache_key` truncates to 200 chars after sanitizing; distinct queries with same prefix collide. Already fixed by SHA-1 key suffix; regression test added. (verified 2026-04-25)
+- [x] **M32f.** Sanitization lossy: `"Foo Bar"`, `"Foo-Bar"`, `"Foo.Bar"`, `"Foo:Bar"`, `"Foo/Bar"` all map to the same key. Already fixed by SHA-1 key suffix; regression test added. (verified 2026-04-25)
 
 ##### M33. `proxy.start()` → immediate `setProperty(port)` with no bind-complete guarantee
 **File:** `service.py:282-284`
@@ -1395,13 +1395,13 @@ Most of the original seven findings closed: `clear_sessions` does snapshot-then-
 ##### M38. Cross-process IPC writes URL/TITLE/ACTIVE as three independent `setProperty` calls; no atomicity
 **Files:** `resolver.py:286-300` vs `service.py:101-111`
 
-##### M39. `install_player()` unconditionally overwrites `nzbdav.json`; hand-edits lost
-**File:** `player_installer.py:51-54`
+##### [x] M39. `install_player()` unconditionally overwrites `nzbdav.json`; hand-edits lost
+**File:** `player_installer.py:51-54` — stale: current installer preserves same-schema files and backs up before overwriting schema mismatches; covered by player-installer regression tests. (verified 2026-04-25)
 
 ##### M43. `clear_cache()` / `_evict_oldest()` race condition
 **File:** `cache.py:91-108` — Total size computed, then files deleted; another thread/process could modify files in between.
 
-##### M46. `validate_stream` dead code: `e.code in (200, 206)` in `HTTPError` branch
+##### [x] M46. `validate_stream` dead code: `e.code in (200, 206)` in `HTTPError` branch — stale; legacy helper is retired (verified 2026-04-25)
 **File:** `webdav.py:386` — `HTTPError` is only raised for 4xx/5xx; 200/206 never raise it. (Cosmetic — dead code that never fires; flagged for cleanup but doesn't affect behavior.)
 
 
@@ -1410,13 +1410,13 @@ Most of the original seven findings closed: `clear_sessions` does snapshot-then-
 
 #### H.2.LOW
 
-##### L1. User-cancel never DELETEs `nzo_id`; cancelled jobs accumulate in queue
+##### [x] L1. User-cancel never DELETEs `nzo_id`; cancelled jobs accumulate in queue — already fixed and covered by cleanup-on-cancel tests (verified 2026-04-25)
 **File:** `resolver.py:529-534`
 
-##### L2. `_validate_stream_url` doesn't catch `http.client.HTTPException` subclasses
+##### [x] L2. `_validate_stream_url` didn't catch `http.client.HTTPException` subclasses — fixed 2026-04-25
 **File:** `resolver.py:51`
 
-##### L3. `history["storage"]` bare key access raises `KeyError` on partial responses
+##### [x] L3. `history["storage"]` bare key access raised `KeyError` on partial responses — fixed 2026-04-25
 **File:** `resolver.py:584`
 
 
@@ -1531,7 +1531,7 @@ Most of the original seven findings closed: `clear_sessions` does snapshot-then-
 
 #### H.3.Critical
 
-- **Raw exception strings surfaced in Kodi dialog** | `resolver.py:1117` | `_handle_resolve_exception` feeds `str(error)` into `xbmcgui.Dialog().ok`; URL/apikey text inside upstream error messages reaches the TV screen.
+- [x] **Raw exception strings surfaced in Kodi dialog** | `resolver.py:1117` | `_handle_resolve_exception` now redacts credential-like tokens before logging or showing the Kodi dialog. (2026-04-25)
 
 #### H.3.High
 
@@ -1542,7 +1542,7 @@ Most of the original seven findings closed: `clear_sessions` does snapshot-then-
 
 - **`xbmcaddon.Addon()` per-tick cost in hot loops** | `resolver.py:804`, `service.py:354,433`, `stream_proxy.py:308` | Constructing the Addon object every 250 ms (resolver) or every service tick (service) is wasteful; cache once per call site.
 
-- **`service.py` monitor state resets ERROR→MONITORING mid-retry** | `service.py:_check_active` | Re-confirmed against current code: `_check_active` only fires on a fresh `nzbdav.active="true"` write from the resolver, and the resolver writes that property exactly once per resolution call. A retry mid-flight isn't clobbered unless the user starts a *different* play, which is the correct behavior. False positive against current code, but kept here so future audits don't re-flag it without re-reasoning.
+- [x] **`service.py` monitor state resets ERROR→MONITORING mid-retry** | `service.py:_check_active` | False positive against current code: `_check_active` only fires on a fresh `nzbdav.active="true"` write from the resolver, and the resolver writes that property exactly once per resolution call. A retry mid-flight isn't clobbered unless the user starts a different play, which is correct behavior. (verified 2026-04-25)
 
 #### H.3.Medium
 
@@ -1560,29 +1560,29 @@ Most of the original seven findings closed: `clear_sessions` does snapshot-then-
 - **`_ensure_ffmpeg_headed_for` holds lock across `proc.wait(timeout=2)`** | `stream_proxy.py:2903-3023` | Concurrent segment requests serialize behind the 2 s wait.
 
 - **Dialog.update exception can skip thread joins** | `resolver.py:730` | If `dialog.update` raises, `submit_t`/`probe_t` never join; threads leak.
-- **`while-True` poll loop lacks hard iteration cap (mitigated)** | `resolver.py:1152` | `MAX_POLL_ITERATIONS=720` caps it today; still worth asserting.
+- [x] **`while-True` poll loop lacks hard iteration cap (mitigated)** | `resolver.py:1152` | The poll loop has a hard cap sized to the configured timeout bounds, with tests for both the cap contract and the cleanup-on-cap path. (2026-04-25)
 - **Queue-adoption nzo_id returned before submit worker completes** | `resolver.py:710, 739` | If backend assigns a different id for the same NZB, downstream poll targets the wrong job.
 - **`_poll_once` join-timeout paths don't cancel upstream job** | `resolver.py:595-602` | Abandoned poll leaves nzbdav still downloading.
 - **Force-quit during submit orphans nzbdav job** | `resolver.py:1136` | No cross-session nzo_id persistence; the queue entry stays.
 
-- **Silent body-read exception during error reporting** | `nzbdav_api.py:174` | Exception inside the error-reporting branch masks the real malformed response.
+- [x] **Silent body-read exception during error reporting** | `nzbdav_api.py:174` | Body-read exceptions are caught and the original HTTP status still returns as an error dict; covered by `test_submit_nzb_http_error_body_read_failure_returns_error_dict`. (verified 2026-04-25)
 
 - **Metadata filters short-circuit on empty parse** | `filter.py:418-440` | Releases that PTT can't parse bypass resolution/audio/HDR filters instead of being rejected.
 
 - **Session dedup window-property read vs write race** | `cache_prompt.py:68` | Two concurrent plays could show the cache-prompt dialog twice.
 
-- **Stale cache entries outlive a lowered TTL** | `cache.py:51-79` | User shortens cache_ttl but old entries honour their original expiry.
-- **`submit_timeout` default mismatch** | `settings.xml:91 = 30 vs nzbdav_api.py:24 = 120` | User-facing default disagrees with the fallback the code uses when the setting is unset.
+- [x] **Stale cache entries outlive a lowered TTL** | `cache.py:51-79` | `get_cached()` now applies the current TTL on every read and deletes expired entries; regression test added. (2026-04-25)
+- [x] **`submit_timeout` default mismatch** | `settings.xml:91 = 30 vs nzbdav_api.py:24 = 120` | Current settings default is `120`, matching `_DEFAULT_SUBMIT_TIMEOUT`; existing tests cover the fallback. (verified 2026-04-25)
 
 #### H.3.Low
 
-- **`prepare()` argv loop uses `time.sleep(0.05)`** | `stream_proxy.py:3272-3286` | 50 ms sleep is short enough to not block shutdown noticeably, but it's inconsistent with the `Monitor.waitForAbort` convention.
+- [x] **`prepare()` argv loop uses `time.sleep(0.05)`** | `stream_proxy.py:3272-3286` | Stale: the prepare argv loop now uses `xbmc.Monitor().waitForAbort(0.05)` and aborts immediately on Kodi shutdown. (verified 2026-04-25)
 
 - **`-map 0:s?` discards subtitle language metadata** | `stream_proxy.py:1152-1158` | Output SRT has no track language; works but a papercut.
-- **`size` kept as raw string in hydra XML** | `hydra.py:224 + filter.py:457` | `int(result["size"])` can raise on malformed `<size>` element; wrap or pre-validate.
+- [x] **`size` kept as raw string in hydra XML** | `hydra.py:224 + filter.py:457` | Malformed size values no longer crash relevance or largest-first sorting; filter paths already coerce invalid sizes to 0. (2026-04-25)
 
 - **Reused string IDs for different UI contexts** | `settings.xml:7,12,17 (#30003), 70-73 (#30054/30055)` | Translators see one string, addon shows it in two unrelated spots; cosmetic today, painful when one caller wants a context-specific phrasing.
-- **No max-entry count in cache** | `cache.py:14` | Only a size cap — small-entry workloads can blow up entry count without hitting the size limit.
+- [x] **No max-entry count in cache** | `cache.py:14` | Added `MAX_CACHE_ENTRY_COUNT` and oldest-entry eviction when count exceeds the cap. (2026-04-25)
 - **TOCTOU on cache eviction size sum** | `cache.py:129` | Concurrent writes between `getsize` calls make the eviction decision off; low impact on single-service usage.
 - **Several timing-based tests use `time.sleep`** | `tests/test_cache.py:65`, `tests/test_integration_hls_ffmpeg.py`, `tests/test_stream_proxy.py:3362`, others | CI flakes under load; prefer monotonic fakes.
 

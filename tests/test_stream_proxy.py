@@ -4,6 +4,7 @@
 """Unit tests for stream_proxy.py remux and range-serving logic."""
 
 import io
+import subprocess
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -1553,6 +1554,23 @@ def test_probe_duration_ffmpeg_fallback_budget_handles_subtitle_wall():
     assert duration == 2 * 3600 + 22 * 60 + 32.58
 
 
+def test_probe_duration_ffmpeg_discards_stdout():
+    from resources.lib.stream_proxy import StreamProxy
+
+    mock_proc = MagicMock()
+    mock_proc.stderr = iter([b"  Duration: 00:10:00.00, start: 0.000000\n"])
+
+    with patch(
+        "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
+    ) as mock_popen:
+        duration = StreamProxy._probe_duration_ffmpeg(
+            "/usr/bin/ffmpeg", "http://host/movie.mkv"
+        )
+
+    assert duration == 600.0
+    assert mock_popen.call_args.kwargs["stdout"] is subprocess.DEVNULL
+
+
 def test_probe_duration_ffmpeg_fallback_uses_headers_for_auth():
     import base64
 
@@ -1615,6 +1633,41 @@ def test_prepare_tempfile_faststart_uses_headers_for_auth():
     finally:
         if temp_path and os.path.exists(temp_path):
             os.remove(temp_path)
+
+
+def test_prepare_tempfile_faststart_timeout_kills_and_removes_tempfile():
+    import os
+
+    from resources.lib import stream_proxy
+    from resources.lib.stream_proxy import StreamProxy
+
+    mock_proc = MagicMock()
+    mock_proc.communicate.side_effect = [
+        subprocess.TimeoutExpired(cmd=["ffmpeg"], timeout=600),
+        (b"", b""),
+    ]
+    created = []
+    real_mkstemp = stream_proxy.tempfile.mkstemp
+
+    def _mkstemp(*args, **kwargs):
+        fd, path = real_mkstemp(*args, **kwargs)
+        created.append(path)
+        return fd, path
+
+    with patch(
+        "resources.lib.stream_proxy.tempfile.mkstemp", side_effect=_mkstemp
+    ), patch("resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc):
+        temp_path = StreamProxy._prepare_tempfile_faststart(
+            "/usr/bin/ffmpeg",
+            "http://host/film.mp4",
+            None,
+        )
+
+    assert temp_path is None
+    mock_proc.kill.assert_called_once()
+    assert mock_proc.communicate.call_count == 2
+    assert created
+    assert not os.path.exists(created[0])
 
 
 def test_prepare_stream_falls_back_to_non_seekable_on_probe_failure():

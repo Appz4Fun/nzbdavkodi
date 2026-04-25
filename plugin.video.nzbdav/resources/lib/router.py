@@ -707,7 +707,7 @@ def _handle_search(handle, params):
         best = filtered[0]
         from resources.lib.resolver import resolve_and_play
 
-        resolve_and_play(best["link"], best["title"])
+        resolve_and_play(best["link"], best["title"], params=params)
         # Same hang class as C1 (router.py): /search is a directory
         # route, so Kodi blocks until endOfDirectory fires. Without
         # this, the auto-select branch returned silently and Kodi
@@ -730,7 +730,7 @@ def _handle_search(handle, params):
     if selected:
         from resources.lib.resolver import resolve_and_play
 
-        resolve_and_play(selected["link"], selected["title"])
+        resolve_and_play(selected["link"], selected["title"], params=params)
 
     # Must end the directory or Kodi hangs
     xbmcplugin.endOfDirectory(handle, succeeded=False)

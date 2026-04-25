@@ -770,6 +770,35 @@ def test_submit_nzb_collapses_whitespace_in_body(mock_http, mock_settings):
     assert error["message"] == "line1 line2 line3"
 
 
+def test_submit_nzb_http_error_body_read_failure_returns_error_dict():
+    """A broken server/proxy body stream must not mask the HTTP status."""
+    from urllib.error import HTTPError
+
+    class BrokenBody:
+        def read(self):
+            raise OSError("socket closed")
+
+        def close(self):
+            pass
+
+    err = HTTPError(
+        url="http://nzbdav/api",
+        code=500,
+        msg="Error",
+        hdrs={},
+        fp=BrokenBody(),
+    )
+
+    with patch(
+        "resources.lib.nzbdav_api._get_settings",
+        return_value=("http://nzbdav:3000", "testkey"),
+    ), patch("resources.lib.nzbdav_api._http_get", side_effect=err):
+        nzo_id, error = submit_nzb("http://hydra/nzb", "Test")
+
+    assert nzo_id is None
+    assert error == {"status": 500, "message": ""}
+
+
 @patch("resources.lib.nzbdav_api._get_settings")
 @patch("resources.lib.nzbdav_api._http_get")
 def test_submit_nzb_returns_none_none_on_url_error(mock_http, mock_settings):

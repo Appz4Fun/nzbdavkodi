@@ -676,6 +676,103 @@ def test_handle_search_notifies_and_ends_directory_when_no_results(
     mock_end.assert_called_once_with(6, succeeded=False)
 
 
+@patch("xbmcaddon.Addon")
+@patch("xbmcplugin.endOfDirectory")
+@patch("resources.lib.resolver.resolve_and_play")
+@patch("resources.lib.filter.filter_results")
+@patch("resources.lib.router._search_all_providers")
+@patch("resources.lib.cache.set_cached")
+@patch("resources.lib.cache.get_cached", return_value=None)
+def test_handle_search_auto_select_passes_clean_params_to_resolver(
+    mock_cache,
+    mock_set_cache,
+    mock_search,
+    mock_filter,
+    mock_resolve_and_play,
+    mock_end,
+    mock_addon,
+):
+    """Search auto-select must preserve TMDB metadata for bookmark cleanup."""
+    _install_progress_dialog_that_wont_cancel()
+    mock_addon.return_value.getSetting.side_effect = _stub_setting("true")
+    chosen = {"title": "Matrix.1999.mkv", "link": "http://hydra/nzb/x"}
+    mock_search.return_value = ([chosen], None)
+    mock_filter.return_value = ([chosen], [chosen])
+
+    _handle_search(
+        7,
+        {
+            "type": "movie",
+            "title": "The Matrix",
+            "year": "_",
+            "tmdb_id": "603",
+        },
+    )
+
+    mock_resolve_and_play.assert_called_once_with(
+        chosen["link"],
+        chosen["title"],
+        params={
+            "type": "movie",
+            "title": "The Matrix",
+            "year": "",
+            "tmdb_id": "603",
+        },
+    )
+    mock_end.assert_called_once_with(7, succeeded=False)
+
+
+@patch("xbmcaddon.Addon")
+@patch("xbmcplugin.endOfDirectory")
+@patch("resources.lib.resolver.resolve_and_play")
+@patch("resources.lib.results_dialog.show_results_dialog")
+@patch("resources.lib.filter.filter_results")
+@patch("resources.lib.router._search_all_providers")
+@patch("resources.lib.router._tag_available")
+@patch("resources.lib.cache.set_cached")
+@patch("resources.lib.cache.get_cached", return_value=None)
+def test_handle_search_picker_passes_clean_params_to_resolver(
+    mock_cache,
+    mock_set_cache,
+    mock_tag,
+    mock_search,
+    mock_filter,
+    mock_dialog,
+    mock_resolve_and_play,
+    mock_end,
+    mock_addon,
+):
+    """Manual result selection must preserve TMDB metadata for cleanup too."""
+    _install_progress_dialog_that_wont_cancel()
+    mock_addon.return_value.getSetting.side_effect = _stub_setting("false")
+    chosen = {"title": "Matrix.1999.mkv", "link": "http://hydra/nzb/x"}
+    mock_search.return_value = ([chosen], None)
+    mock_filter.return_value = ([chosen], [chosen])
+    mock_dialog.return_value = chosen
+
+    _handle_search(
+        8,
+        {
+            "type": "movie",
+            "title": "The Matrix",
+            "year": "_",
+            "tmdb_id": "603",
+        },
+    )
+
+    mock_resolve_and_play.assert_called_once_with(
+        chosen["link"],
+        chosen["title"],
+        params={
+            "type": "movie",
+            "title": "The Matrix",
+            "year": "",
+            "tmdb_id": "603",
+        },
+    )
+    mock_end.assert_called_once_with(8, succeeded=False)
+
+
 # --- _test_connection and per-provider connection tests ---
 
 

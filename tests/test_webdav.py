@@ -393,6 +393,63 @@ def test_find_video_file_handles_relative_href(mock_urlopen, mock_settings):
     assert "Relative.Movie.2024" in path
 
 
+_PROPFIND_ENCODED_PARENT = """<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/content/uncategorized/Parent%20Movie/</D:href>
+    <D:propstat>
+      <D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/content/uncategorized/Parent%20Movie/Disc%201/</D:href>
+    <D:propstat>
+      <D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+</D:multistatus>"""
+
+_PROPFIND_ENCODED_CHILD = """<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/content/uncategorized/Parent%20Movie/Disc%201/Parent.Movie.mkv</D:href>
+    <D:propstat>
+      <D:prop>
+        <D:getcontentlength>1234</D:getcontentlength>
+        <D:resourcetype/>
+      </D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+</D:multistatus>"""
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_recurses_without_double_encoding_href(
+    mock_urlopen, mock_settings
+):
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    parent_resp = MagicMock()
+    parent_resp.__enter__ = lambda s: s
+    parent_resp.__exit__ = MagicMock(return_value=False)
+    parent_resp.read.return_value = _PROPFIND_ENCODED_PARENT.encode("utf-8")
+    child_resp = MagicMock()
+    child_resp.__enter__ = lambda s: s
+    child_resp.__exit__ = MagicMock(return_value=False)
+    child_resp.read.return_value = _PROPFIND_ENCODED_CHILD.encode("utf-8")
+    mock_urlopen.side_effect = [parent_resp, child_resp]
+
+    path = find_video_file("/content/uncategorized/Parent Movie/")
+
+    assert path == "/content/uncategorized/Parent%20Movie/Disc%201/Parent.Movie.mkv"
+    second_url = mock_urlopen.call_args_list[1][0][0].full_url
+    assert "Disc%201" in second_url
+    assert "%2520" not in second_url
+
+
 _PROPFIND_CROSS_ORIGIN_HREFS = """<?xml version="1.0" encoding="utf-8"?>
 <D:multistatus xmlns:D="DAV:">
   <D:response>

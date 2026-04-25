@@ -3,6 +3,7 @@
 
 """Resolve flow: submit NZB to nzbdav, poll until stream is ready, play."""
 
+import http.client
 import socket
 import threading
 import time
@@ -31,11 +32,11 @@ from resources.lib.webdav import (
     probe_webdav_reachable,
 )
 
-MAX_POLL_ITERATIONS = 720  # 1 hour at 5s interval
 _POLL_INTERVAL_MIN = 1
 _POLL_INTERVAL_MAX = 60
 _DOWNLOAD_TIMEOUT_MIN = 60
 _DOWNLOAD_TIMEOUT_MAX = 86400
+MAX_POLL_ITERATIONS = _DOWNLOAD_TIMEOUT_MAX // _POLL_INTERVAL_MIN
 # HTTP status codes the submit retry loop treats as transient and worth
 # retrying. RFC 9110 explicitly calls 408 retry-friendly ("client may
 # assume the server closed the connection due to inactivity and retry").
@@ -116,7 +117,7 @@ def _validate_stream_url(url, headers):
             return resp.getcode() == 206 or "bytes" in resp.headers.get(
                 "Accept-Ranges", ""
             )
-    except (OSError, ValueError):
+    except (OSError, ValueError, http.client.HTTPException):
         return False
 
 
@@ -685,7 +686,14 @@ def _existing_completed_stream(title):
         "NZB-DAV: '{}' already downloaded, streaming directly".format(title),
         xbmc.LOGINFO,
     )
-    webdav_folder = _storage_to_webdav_path(existing["storage"])
+    storage = existing.get("storage")
+    if not storage:
+        xbmc.log(
+            "NZB-DAV: Completed history row for '{}' has no storage path".format(title),
+            xbmc.LOGWARNING,
+        )
+        return None
+    webdav_folder = _storage_to_webdav_path(storage)
     video_path = find_video_file(webdav_folder)
     if not video_path:
         return None
@@ -1104,7 +1112,11 @@ def _handle_job_status(job_status, nzo_id, dialog, last_status):
         xbmcgui.Dialog().ok(_addon_name(), _string(30100))
         return True, last_status
 
-    progress = min(int(percentage or 0), 100)
+    try:
+        progress = int(float(percentage or 0))
+    except (TypeError, ValueError):
+        progress = 0
+    progress = max(0, min(progress, 100))
     dialog.update(progress, _status_dialog_message(status, percentage))
     return False, last_status
 
@@ -1204,8 +1216,13 @@ def _handle_webdav_error(nzo_id, webdav_error):
 
 def _handle_resolve_exception(label, error, handle=None):
     """Log and surface a non-fatal resolve error to Kodi."""
-    xbmc.log("NZB-DAV: Unexpected error in {}: {}".format(label, error), xbmc.LOGERROR)
-    xbmcgui.Dialog().ok(_addon_name(), "Error: {}".format(str(error)))
+    from resources.lib.http_util import redact_text
+
+    message = redact_text(str(error))
+    xbmc.log(
+        "NZB-DAV: Unexpected error in {}: {}".format(label, message), xbmc.LOGERROR
+    )
+    xbmcgui.Dialog().ok(_addon_name(), "Error: {}".format(message))
     if handle is not None:
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
         xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()

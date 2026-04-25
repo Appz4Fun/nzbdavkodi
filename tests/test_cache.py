@@ -34,6 +34,16 @@ def test_cache_key_length_limited():
     assert len(key) <= 200
 
 
+def test_cache_key_distinguishes_titles_that_sanitize_the_same():
+    assert _cache_key("movie", "Foo Bar") != _cache_key("movie", "Foo-Bar")
+    assert _cache_key("movie", "Foo.Bar") != _cache_key("movie", "Foo/Bar")
+
+
+def test_cache_key_distinguishes_long_titles_with_same_prefix():
+    prefix = "A" * 250
+    assert _cache_key("movie", prefix + "one") != _cache_key("movie", prefix + "two")
+
+
 @patch("resources.lib.cache._get_cache_dir")
 @patch("resources.lib.cache.xbmcaddon")
 def test_set_and_get_cached(mock_addon_mod, mock_cache_dir):
@@ -127,6 +137,82 @@ def test_cache_read_handles_corrupted_json(mock_addon_mod, mock_cache_dir):
 
 
 @patch("resources.lib.cache._get_cache_dir")
+@patch("resources.lib.cache.xbmcaddon")
+def test_get_cached_handles_file_removed_after_exists(mock_addon_mod, mock_cache_dir):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        mock_cache_dir.return_value = tmpdir
+        addon = MagicMock()
+        addon.getSetting.return_value = "300"
+        mock_addon_mod.Addon.return_value = addon
+
+        with patch.object(cache_module.os.path, "exists", return_value=True), patch(
+            "builtins.open", side_effect=FileNotFoundError
+        ):
+            assert get_cached("movie", "Race") is None
+
+
+@patch("resources.lib.cache._get_cache_dir")
+@patch("resources.lib.cache.xbmcaddon")
+def test_get_cached_deletes_entry_missing_timestamp(mock_addon_mod, mock_cache_dir):
+    """A malformed cache entry with no timestamp is unusable and should
+    be removed instead of left behind for every later read to re-check."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        mock_cache_dir.return_value = tmpdir
+        addon = MagicMock()
+        addon.getSetting.return_value = "300"
+        mock_addon_mod.Addon.return_value = addon
+
+        cache_path = os.path.join(tmpdir, _cache_key("movie", "Bad") + ".json")
+        with open(cache_path, "w") as f:
+            json.dump({"results": [{"title": "Bad"}]}, f)
+
+        assert get_cached("movie", "Bad") is None
+        assert not os.path.exists(cache_path)
+
+
+@patch("resources.lib.cache._get_cache_dir")
+@patch("resources.lib.cache.xbmcaddon")
+def test_get_cached_refreshes_mtime_on_hit(mock_addon_mod, mock_cache_dir):
+    """Cache eviction is mtime-based, so a hit must refresh mtime for
+    the cache to behave like LRU instead of oldest-written."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        mock_cache_dir.return_value = tmpdir
+        addon = MagicMock()
+        addon.getSetting.return_value = "300"
+        mock_addon_mod.Addon.return_value = addon
+
+        cache_path = os.path.join(tmpdir, _cache_key("movie", "Fresh") + ".json")
+        with open(cache_path, "w") as f:
+            json.dump({"timestamp": time.time(), "results": [{"title": "Fresh"}]}, f)
+        os.utime(cache_path, (1000, 1000))
+
+        assert get_cached("movie", "Fresh") == [{"title": "Fresh"}]
+        assert os.path.getmtime(cache_path) > 1000
+
+
+@patch("resources.lib.cache._get_cache_dir")
+@patch("resources.lib.cache.xbmcaddon")
+def test_get_cached_respects_current_lower_ttl_for_existing_entry(
+    mock_addon_mod, mock_cache_dir
+):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        mock_cache_dir.return_value = tmpdir
+        addon = MagicMock()
+        addon.getSetting.return_value = "300"
+        mock_addon_mod.Addon.return_value = addon
+
+        cache_path = os.path.join(tmpdir, _cache_key("movie", "Old") + ".json")
+        with open(cache_path, "w") as f:
+            json.dump(
+                {"timestamp": time.time() - 600, "results": [{"title": "Old"}]},
+                f,
+            )
+
+        assert get_cached("movie", "Old") is None
+        assert not os.path.exists(cache_path)
+
+
+@patch("resources.lib.cache._get_cache_dir")
 def test_cache_evicts_oldest_when_over_limit(mock_cache_dir):
     """Cache should evict oldest files when total size exceeds limit."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -146,8 +232,9 @@ def test_cache_evicts_oldest_when_over_limit(mock_cache_dir):
         # Confirm all three files exist
         assert len([f for f in os.listdir(tmpdir) if f.endswith(".json")]) == 3
 
-        # Set the limit to fit exactly one file so the two oldest get evicted.
-        single_size = os.path.getsize(file_paths[0])
+        # Set the limit to fit exactly one allocated file so the two
+        # oldest get evicted.
+        single_size = cache_module._cache_file_size(file_paths[0])
         limit = single_size + 1
 
         with patch.object(cache_module, "MAX_CACHE_SIZE_BYTES", limit):
@@ -158,6 +245,59 @@ def test_cache_evicts_oldest_when_over_limit(mock_cache_dir):
         assert len(remaining) < 3
         # The newest file (test_2.json, highest mtime) should still be present
         assert "test_2.json" in remaining
+
+
+@patch("resources.lib.cache._get_cache_dir")
+def test_cache_evicts_oldest_when_over_entry_limit(mock_cache_dir):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        mock_cache_dir.return_value = tmpdir
+
+        for i in range(3):
+            path = os.path.join(tmpdir, "test_{}.json".format(i))
+            with open(path, "w") as f:
+                json.dump({"timestamp": time.time(), "results": []}, f)
+            os.utime(path, (1000 + i, 1000 + i))
+
+        with patch.object(cache_module, "MAX_CACHE_ENTRY_COUNT", 2, create=True):
+            _evict_oldest()
+
+        remaining = sorted(f for f in os.listdir(tmpdir) if f.endswith(".json"))
+        assert remaining == ["test_1.json", "test_2.json"]
+
+
+@patch("resources.lib.cache._get_cache_dir")
+def test_cache_evicts_using_allocated_block_size(mock_cache_dir):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        mock_cache_dir.return_value = tmpdir
+        old_path = os.path.join(tmpdir, "old.json")
+        new_path = os.path.join(tmpdir, "new.json")
+        for path in (old_path, new_path):
+            with open(path, "w") as f:
+                json.dump({"timestamp": time.time(), "results": []}, f)
+
+        class FakeStat:
+            def __init__(self, size, blocks, mtime):
+                self.st_size = size
+                self.st_blocks = blocks
+                self.st_mtime = mtime
+
+        stats = {
+            old_path: FakeStat(size=10, blocks=1000, mtime=1000),
+            new_path: FakeStat(size=10, blocks=1, mtime=1001),
+        }
+
+        def _fake_stat(path):
+            return stats[path]
+
+        with patch.object(
+            cache_module.os, "stat", side_effect=_fake_stat
+        ), patch.object(cache_module, "MAX_CACHE_SIZE_BYTES", 4096), patch.object(
+            cache_module, "MAX_CACHE_ENTRY_COUNT", 1000
+        ):
+            _evict_oldest()
+
+        remaining = sorted(f for f in os.listdir(tmpdir) if f.endswith(".json"))
+        assert remaining == ["new.json"]
 
 
 @patch("resources.lib.cache._get_cache_dir")

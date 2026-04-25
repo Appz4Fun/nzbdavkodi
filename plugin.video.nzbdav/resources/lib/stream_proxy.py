@@ -3799,7 +3799,7 @@ class StreamProxy:
         try:
             proc = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 shell=False,
             )
@@ -4524,7 +4524,7 @@ class StreamProxy:
         try:
             proc = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 shell=False,
             )

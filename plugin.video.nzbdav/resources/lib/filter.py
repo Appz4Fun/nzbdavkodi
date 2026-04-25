@@ -497,9 +497,7 @@ def matches_filters(result, meta, settings):
         if kw not in title_lower:
             return False
 
-    if meta["group"] and meta["group"].lower() in [
-        g.lower() for g in settings["exclude_release_group"]
-    ]:
+    if meta["group"] and meta["group"].lower() in settings["exclude_release_group"]:
         return False
 
     # Size filter: a 0-byte / missing-size placeholder result used to
@@ -545,14 +543,20 @@ def filter_results(results):
     filtered = _sort_results(filtered, settings)
     all_parsed = _sort_results(all_parsed, settings)
 
+    matched_count = len(filtered)
     max_results = settings["max_results"]
     if max_results > 0:
         filtered = filtered[:max_results]
 
-    xbmc.log(
-        "NZB-DAV: Filtered {} -> {} results".format(len(all_parsed), len(filtered)),
-        xbmc.LOGDEBUG,
-    )
+    if len(filtered) < matched_count:
+        message = "NZB-DAV: Filtered {} -> {} results (showing {})".format(
+            len(all_parsed), matched_count, len(filtered)
+        )
+    else:
+        message = "NZB-DAV: Filtered {} -> {} results".format(
+            len(all_parsed), len(filtered)
+        )
+    xbmc.log(message, xbmc.LOGDEBUG)
     return filtered, all_parsed
 
 
@@ -658,14 +662,14 @@ def _sort_results(results, settings):
             audio_rank = 10
 
         # 5. Size (larger = better, negate for ascending sort)
-        size = -int(r.get("size", 0) or 0)
+        size = -_size_sort_key(r)
 
         return (res_rank, hdr_rank, is_preferred, audio_rank, size)
 
     if sort_order == 1:
         return sorted(
             results,
-            key=lambda r: -int(r.get("size", 0) or 0),
+            key=lambda r: -_size_sort_key(r),
         )
     elif sort_order == 2:
         return sorted(

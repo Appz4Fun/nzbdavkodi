@@ -12,12 +12,16 @@ from resources.lib.resolver import (
     MAX_POLL_ITERATIONS,
     _cache_bust_url,
     _clear_kodi_playback_state,
+    _existing_completed_stream,
     _get_poll_settings,
+    _handle_job_status,
+    _handle_resolve_exception,
     _make_playable_listitem,
     _play_direct,
     _play_via_proxy,
     _poll_until_ready,
     _storage_to_webdav_path,
+    _validate_stream_url,
     resolve,
     resolve_and_play,
 )
@@ -35,6 +39,10 @@ def _make_monitor(abort_after=None):
 
 
 # --- _storage_to_webdav_path tests ---
+
+
+def test_max_poll_iterations_covers_max_timeout_at_min_interval():
+    assert MAX_POLL_ITERATIONS >= _DOWNLOAD_TIMEOUT_MAX // _POLL_INTERVAL_MIN
 
 
 def test_storage_to_webdav_path_standard():
@@ -110,6 +118,15 @@ def test_make_playable_listitem_detects_mime_with_fragment(mock_xbmc, mock_gui):
     mock_li.setMimeType.assert_called_with("video/mp4")
 
 
+@patch("urllib.request.urlopen")
+def test_validate_stream_url_catches_http_protocol_exception(mock_urlopen):
+    from http.client import BadStatusLine
+
+    mock_urlopen.side_effect = BadStatusLine("bad status line")
+
+    assert _validate_stream_url("http://webdav/movie.mkv", {}) is False
+
+
 def test_cache_bust_url_appends_query_param_and_is_unique():
     """Each call should produce a distinct query param so Kodi sees a new URL."""
     import time
@@ -173,6 +190,53 @@ def test_get_poll_settings_clamps_typo_high_and_logs(mock_xbmc):
     logged = "\n".join(call.args[0] for call in mock_xbmc.log.call_args_list)
     assert "poll_interval" in logged
     assert "download_timeout" in logged
+
+
+def test_handle_job_status_accepts_fractional_percentage():
+    dialog = MagicMock()
+
+    should_stop, last_status = _handle_job_status(
+        {"status": "Downloading", "percentage": "45.5"},
+        "nzo_fractional",
+        dialog,
+        None,
+    )
+
+    assert should_stop is False
+    assert last_status == "Downloading"
+    dialog.update.assert_called_once()
+    assert dialog.update.call_args[0][0] == 45
+
+
+@patch("resources.lib.resolver.find_video_file")
+@patch("resources.lib.resolver.find_completed_by_name")
+def test_existing_completed_stream_ignores_partial_history_row(
+    mock_find_completed, mock_find_video
+):
+    mock_find_completed.return_value = {"status": "Completed"}
+
+    assert _existing_completed_stream("movie.mkv") is None
+    mock_find_video.assert_not_called()
+
+
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.xbmc")
+def test_handle_resolve_exception_redacts_credentials_in_log_and_dialog(
+    mock_xbmc, mock_gui
+):
+    error = RuntimeError(
+        "failed URL http://nzbdav/api?apikey=supersecret&password=hunter2"
+    )
+
+    _handle_resolve_exception("resolve", error)
+
+    dialog_text = mock_gui.Dialog.return_value.ok.call_args.args[1]
+    log_text = "\n".join(call.args[0] for call in mock_xbmc.log.call_args_list)
+    assert "supersecret" not in dialog_text
+    assert "hunter2" not in dialog_text
+    assert "supersecret" not in log_text
+    assert "hunter2" not in log_text
+    assert "apikey=REDACTED" in dialog_text
 
 
 # --- proxy-routing tests ---
@@ -1146,11 +1210,12 @@ def test_resolve_max_iterations_safeguard(
     dialog.iscanceled.return_value = False
     mock_gui.DialogProgress.return_value = dialog
 
-    resolve(1, {"nzburl": "http://hydra/getnzb/stuck", "title": "stuck.mkv"})
+    with patch("resources.lib.resolver.MAX_POLL_ITERATIONS", 2):
+        resolve(1, {"nzburl": "http://hydra/getnzb/stuck", "title": "stuck.mkv"})
 
     mock_plugin.setResolvedUrl.assert_called_once()
     assert mock_plugin.setResolvedUrl.call_args[0][1] is False
-    assert mock_status.call_count <= MAX_POLL_ITERATIONS
+    assert mock_status.call_count <= 2
 
 
 @patch("resources.lib.resolver.find_completed_by_name")

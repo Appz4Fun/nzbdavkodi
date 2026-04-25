@@ -125,7 +125,7 @@ def test_filter_pipeline_realistic_titles(mock_settings):
         "exclude_keywords": ["cam"],
         "require_keywords": [],
         "release_group": [],
-        "exclude_release_group": ["YIFY"],
+        "exclude_release_group": ["yify"],
         "min_size": 0,
         "max_size": 0,
         "sort_order": 0,
@@ -320,7 +320,7 @@ def test_filter_exclude_release_group(mock_settings):
         "exclude_keywords": [],
         "require_keywords": [],
         "release_group": [],
-        "exclude_release_group": ["YIFY"],
+        "exclude_release_group": ["yify"],
         "min_size": 0,
         "max_size": 0,
         "sort_order": 0,
@@ -407,6 +407,21 @@ def test_sort_by_size_largest_first():
     assert sorted_r[0]["title"] == "Large"
 
 
+def test_sort_by_size_largest_first_tolerates_malformed_size():
+    results = [
+        _make_result("Bad", size="unknown"),
+        _make_result("Large", size="9000000000"),
+    ]
+    for r in results:
+        r["_meta"] = parse_title_metadata(r["title"])
+    settings = _all_pass_settings()
+    settings["sort_order"] = 1
+
+    sorted_r = _sort_results(results, settings)
+
+    assert [r["title"] for r in sorted_r] == ["Large", "Bad"]
+
+
 def test_sort_by_size_smallest_first():
     results = [
         _make_result("Large", size="9000000000"),
@@ -418,6 +433,21 @@ def test_sort_by_size_smallest_first():
     settings["sort_order"] = 2
     sorted_r = _sort_results(results, settings)
     assert sorted_r[0]["title"] == "Small"
+
+
+def test_sort_relevance_tolerates_malformed_size():
+    results = [
+        _make_result("Movie.2024.1080p.H264-GRP", size="not-a-number"),
+        _make_result("Movie.2024.1080p.H264-GRP", size="1000000000"),
+    ]
+    for r in results:
+        r["_meta"] = parse_title_metadata(r["title"])
+    settings = _all_pass_settings()
+    settings["sort_order"] = 0
+
+    sorted_r = _sort_results(results, settings)
+
+    assert len(sorted_r) == 2
 
 
 def test_sort_relevance_preserves_order():
@@ -653,6 +683,39 @@ def test_filter_results_returns_all_parsed(mock_settings):
     filtered, all_parsed = filter_results(results)
     assert len(filtered) == 1  # Only 1080p passes
     assert len(all_parsed) == 2  # Both have _meta attached
+
+
+@patch("resources.lib.filter.xbmc")
+@patch("resources.lib.filter._get_filter_settings")
+def test_filter_results_log_counts_before_max_results_truncation(
+    mock_settings, mock_xbmc
+):
+    mock_settings.return_value = {
+        "resolutions": [],
+        "hdr": [],
+        "audio": [],
+        "codecs": [],
+        "languages": [],
+        "exclude_keywords": [],
+        "require_keywords": [],
+        "release_group": [],
+        "exclude_release_group": [],
+        "min_size": 0,
+        "max_size": 0,
+        "sort_order": 0,
+        "max_results": 1,
+    }
+    results = [
+        {"title": "Movie.2024.1080p.BluRay.x264-GRP", "size": "5000000000"},
+        {"title": "Other.2024.1080p.BluRay.x264-GRP", "size": "3000000000"},
+    ]
+
+    filtered, all_parsed = filter_results(results)
+
+    assert len(filtered) == 1
+    assert len(all_parsed) == 2
+    logged = "\n".join(call.args[0] for call in mock_xbmc.log.call_args_list)
+    assert "Filtered 2 -> 2 results (showing 1)" in logged
 
 
 # --- _get_filter_settings tests (direct coverage of the Kodi-settings reader) ---
