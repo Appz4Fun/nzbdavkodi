@@ -27,7 +27,7 @@ pub fn write_image(tx: &Transaction, parent_id: &str, art_type: &str, img: &Imag
             aspect_bucket,
             quality,
             img.iso_639_1.as_deref(),
-            None::<&str>,
+            img.iso_3166_1.as_deref(),  // C6: TMDB returns iso_3166_1 on poster/logo images
             &img.file_path,
             art_type,
             extension,

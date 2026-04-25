@@ -13,9 +13,14 @@ pub fn write_movie(conn: &mut Connection, m: &MovieResponse) -> Result<()> {
     let tx = conn.transaction()?;
 
     // 1. baseitem (must come first — children FK to it)
+    // translation=1: we fetch translations (step 12), matching TMDBHelper's flag.
+    // fanart_tv=0: we do not fetch fanart.tv images; TMDBHelper only sets this when fanart.tv is enabled.
+    // language: TMDBHelper stores the user's locale (e.g. "en-US"); we store the movie's original_language.
+    // NOTE: TMDBHelper actually stores the user locale ("en-US") not the movie's original_language.
+    // Using original_language here is a known acceptable divergence — the column is used for UI locale, not content.
     tx.execute(
         "INSERT OR REPLACE INTO baseitem (id, mediatype, expiry, datalevel, fanart_tv, translation, language)
-         VALUES (?1, 'movie', ?2, ?3, 0, 0, ?4)",
+         VALUES (?1, 'movie', ?2, ?3, 0, 1, ?4)",
         params![&item_id, expiry, DATALEVEL_FULL, m.original_language.as_deref()],
     )?;
 
@@ -129,18 +134,35 @@ pub fn write_movie(conn: &mut Connection, m: &MovieResponse) -> Result<()> {
     }
 
     // 13. release certifications
+    // TMDBHelper (mappings.py:155): converts release type integer to string enum,
+    // and normalises empty strings to NULL via get_blanks_none().
+    // release_type map: {1:'Premiere', 2:'Limited', 3:'Theatrical', 4:'Digital', 5:'Physical', 6:'TV'}
+    const RELEASE_TYPE_NAMES: [Option<&str>; 7] = [
+        None,                  // 0 — unused
+        Some("Premiere"),      // 1
+        Some("Limited"),       // 2
+        Some("Theatrical"),    // 3
+        Some("Digital"),       // 4
+        Some("Physical"),      // 5
+        Some("TV"),            // 6
+    ];
     if let Some(rdl) = &m.release_dates {
         for country in &rdl.results {
             for rd in &country.release_dates {
+                // get_blanks_none: empty string → NULL
+                let cert_name = rd.certification.as_deref().filter(|s| !s.is_empty());
+                let cert_lang = rd.iso_639_1.as_deref().filter(|s| !s.is_empty());
+                let release_type_str = rd.type_
+                    .and_then(|t| RELEASE_TYPE_NAMES.get(t as usize).copied().flatten());
                 tx.execute(
                     "INSERT OR IGNORE INTO certification (name, iso_country, iso_language, release_date, release_type, parent_id)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                     params![
-                        rd.certification.as_deref(),
+                        cert_name,
                         &country.iso_3166_1,
-                        rd.iso_639_1.as_deref(),
+                        cert_lang,
                         rd.release_date.as_deref(),
-                        rd.type_.map(|t| t.to_string()),
+                        release_type_str,
                         &item_id,
                     ],
                 )?;

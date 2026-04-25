@@ -53,7 +53,12 @@ impl TmdbClient {
     }
 
     async fn get_json<T: serde::de::DeserializeOwned>(&self, base_url: &str, append: &str) -> Result<T> {
-        let url = format!("{}?api_key={}&append_to_response={}", base_url, self.api_key, append);
+        // include_image_language=en,null matches TMDBHelper default (English + language-neutral images).
+        // include_video_language=en,null likewise fetches English + languageless trailers.
+        let url = format!(
+            "{}?api_key={}&append_to_response={}&include_image_language=en,null&include_video_language=en,null",
+            base_url, self.api_key, append
+        );
         for attempt in 0..3 {
             let resp = self.client.get(&url).send().await.context("send request")?;
             let status = resp.status();

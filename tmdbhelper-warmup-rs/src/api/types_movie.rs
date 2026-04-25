@@ -93,6 +93,8 @@ pub struct ImageRef {
     pub file_path: String,
     pub aspect_ratio: Option<f64>,
     pub iso_639_1: Option<String>,
+    /// TMDB returns iso_3166_1 on poster/logo images (e.g. "US"); null for backdrops.
+    pub iso_3166_1: Option<String>,
     pub width: Option<i64>,
     pub height: Option<i64>,
     pub vote_average: Option<f64>,
