@@ -206,6 +206,24 @@ async fn rust_writes_match_tmdbhelper_for_movie() {
         );
         let rust_rows = row_set(&writer, &sql);
         let tmdb_rows = row_set(&snap, &sql);
+        // Pin the known asymmetric extras so a future bug (e.g., wrong key written) can't
+        // hide inside the threshold. The extras MUST be exactly: our 'tmdb' key, their socials.
+        let only_in_rust: Vec<&String> = rust_rows.difference(&tmdb_rows).collect();
+        let only_in_tmdb: Vec<&String> = tmdb_rows.difference(&rust_rows).collect();
+        assert!(
+            only_in_rust.iter().all(|r| r.contains("key=Text(\"tmdb\")")),
+            "unique_id only_in_rust must be the 'tmdb' key only, got: {:?}",
+            only_in_rust
+        );
+        assert!(
+            only_in_tmdb.iter().all(|r| {
+                r.contains("key=Text(\"facebook\")")
+                    || r.contains("key=Text(\"instagram\")")
+                    || r.contains("key=Text(\"twitter\")")
+            }),
+            "unique_id only_in_tmdb must be social keys only, got: {:?}",
+            only_in_tmdb
+        );
         check_diff_asymmetric("unique_id", &rust_rows, &tmdb_rows, 1, 3, &mut diffs);
     }
 

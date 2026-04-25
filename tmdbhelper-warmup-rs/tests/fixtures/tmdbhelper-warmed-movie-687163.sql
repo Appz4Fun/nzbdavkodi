@@ -1,3 +1,11 @@
+-- Snapshot of TMDBHelper-written rows for movie 687163 (Project Hail Mary).
+-- Captured from root@coreelec.local on 2026-04-25 via:
+--   sqlite3 ~/.kodi/userdata/addon_data/plugin.video.themoviedb.helper/database_07/ItemDetails.db \
+--     ".dump baseitem movie ratings genre castmember crewmember art unique_id translation language country studio video certification" \
+--     | grep -E "movie\.687163"
+-- To regenerate (after TMDBHelper schema changes):
+--   1. Pick a fully-warmed movie: SELECT m.tmdb_id, m.title FROM movie m JOIN baseitem b ON m.id=b.id WHERE b.datalevel=5 ORDER BY m.popularity DESC LIMIT 5;
+--   2. Re-run the dump above with the new tmdb_id, update TARGET_TMDB_ID + FIXTURE_NAME in tests/schema_fidelity.rs.
 INSERT INTO baseitem VALUES('movie.687163','movie',1779394831,5,0,1,'en-US');
 INSERT INTO movie VALUES('movie.687163',687163,2026,'Science teacher Ryland Grace wakes up on a spaceship light years from home with no recollection of who he is or how he got there. As his memory returns, he begins to uncover his mission: solve the riddle of the mysterious substance causing the sun to die out. He must call on his scientific knowledge and unorthodox ideas to save everything on Earth from extinction… but an unexpected friendship means he may not have to do it alone.','Project Hail Mary','Project Hail Mary',9420,'Believe in the Hail Mary.','2026-03-15','Released',8.226000000000000867,1609,243.405300000000011);
 INSERT INTO ratings VALUES('movie.687163',NULL,82,1609,84,207175,94,96,7131,390,367,23,NULL,'certified',77,86,8271,NULL,NULL,NULL,NULL,'1 win & 1 nomination total',NULL,NULL,0,0,1,1,0,0,1777413383);
