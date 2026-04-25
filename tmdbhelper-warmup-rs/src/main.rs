@@ -21,8 +21,14 @@ struct Args {
     #[arg(long, env = "WARMUP_BATCH_SIZE", default_value_t = 200)]
     batch_size: usize,
 
-    #[arg(long)]
-    smoke: bool,
+    #[arg(long, env = "WARMUP_MODE", default_value = "metadata")]
+    mode: String,
+
+    #[arg(long, env = "WARMUP_TEXTURES_DB", default_value = "/var/media/CACHE_DRIVE/tmdb/Textures13.db")]
+    textures_db: PathBuf,
+
+    #[arg(long, env = "WARMUP_THUMBNAILS_DIR", default_value = "/var/media/CACHE_DRIVE/tmdb/Thumbnails")]
+    thumbnails_dir: PathBuf,
 }
 
 #[tokio::main]
@@ -33,16 +39,26 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let args = Args::parse();
-    info!("warmup-rs starting concurrency={} batch={} state={} target={}",
-          args.concurrency, args.batch_size, args.state_db.display(), args.item_details_db.display());
+    info!("warmup-rs starting mode={} concurrency={} batch={}",
+          args.mode, args.concurrency, args.batch_size);
 
-    if args.smoke {
-        let _ = rusqlite::Connection::open_in_memory()?;
-        let _ = reqwest::Client::builder().build()?;
-        info!("smoke ok: rusqlite={}", rusqlite::version());
-        return Ok(());
+    match args.mode.as_str() {
+        "metadata" => {
+            info!("metadata mode: state={} target={}", args.state_db.display(), args.item_details_db.display());
+            warmup_rs::worker::run(args.state_db, args.item_details_db, args.tmdb_api_key, args.concurrency, args.batch_size).await?;
+        }
+        "images" => {
+            info!("images mode: textures={} thumbnails={}", args.textures_db.display(), args.thumbnails_dir.display());
+            warmup_rs::images::run(args.item_details_db, args.textures_db, args.thumbnails_dir, args.concurrency).await?;
+        }
+        "smoke" => {
+            let _ = rusqlite::Connection::open_in_memory()?;
+            let _ = reqwest::Client::builder().build()?;
+            info!("smoke ok: rusqlite={}", rusqlite::version());
+        }
+        other => {
+            anyhow::bail!("unknown mode '{}', expected: metadata, images, smoke", other);
+        }
     }
-
-    warmup_rs::worker::run(args.state_db, args.item_details_db, args.tmdb_api_key, args.concurrency, args.batch_size).await?;
     Ok(())
 }
