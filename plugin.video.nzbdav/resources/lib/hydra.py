@@ -58,7 +58,16 @@ def _fetch_hydra_xml(url, error_prefix):
     try:
         return _http_get(url, timeout=15), None
     except (URLError,) + _HYDRA_REQUEST_ERRORS as error:
-        xbmc.log("NZB-DAV: {}: {}".format(error_prefix, error), xbmc.LOGERROR)
+        # HTTPError/URLError str() can echo the failing URL (which embeds
+        # the indexer's apikey query param) back into the log. Redact
+        # before logging — same defense as the prowlarr fallback path.
+        # TODO.md §H.2-H2e / §H.3.
+        from resources.lib.http_util import redact_text
+
+        xbmc.log(
+            "NZB-DAV: {}: {}".format(error_prefix, redact_text(str(error))),
+            xbmc.LOGERROR,
+        )
         return None, _hydra_unavailable_error(error)
 
 
@@ -94,7 +103,16 @@ def search_hydra(search_type, title, year="", imdb="", season="", episode=""):
 
     import xbmcaddon
 
-    max_results = int(xbmcaddon.Addon().getSetting("max_results") or 25)
+    # `max_results` is exposed via Kodi's number input but the addon also
+    # ships with old user profiles that may have the setting as a non-
+    # numeric string (legacy text input, hand-edited XML). Guard the int
+    # conversion + clamp to a sensible range — TODO.md §H.2-M20 / §H.3.
+    raw_max = xbmcaddon.Addon().getSetting("max_results")
+    try:
+        max_results = int(raw_max) if raw_max not in (None, "") else 25
+    except (TypeError, ValueError):
+        max_results = 25
+    max_results = max(1, min(max_results, 100))
     params = {"apikey": api_key, "o": "xml", "limit": max_results}
 
     if search_type == "episode":

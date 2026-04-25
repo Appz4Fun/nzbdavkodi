@@ -214,7 +214,15 @@ def submit_nzb(nzb_url, nzb_name=""):
                 "status": "timeout",
                 "message": "Timed out after {}s".format(timeout),
             }
-        xbmc.log("NZB-DAV: Submit NZB request failed: {}".format(e), xbmc.LOGERROR)
+        # Redact: HTTPError / URLError str() can echo the failing URL
+        # (which embeds the indexer apikey) into the log. Same defense as
+        # the prowlarr / hydra fetch paths. TODO.md §H.2-H2f / §H.3.
+        from resources.lib.http_util import redact_text
+
+        xbmc.log(
+            "NZB-DAV: Submit NZB request failed: {}".format(redact_text(str(e))),
+            xbmc.LOGERROR,
+        )
         return None, None
     nzo_ids = response.get("nzo_ids")
     if response.get("status") and isinstance(nzo_ids, list) and nzo_ids and nzo_ids[0]:

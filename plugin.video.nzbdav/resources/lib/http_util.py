@@ -178,8 +178,40 @@ def format_size(size_bytes):
     return "{} B".format(size_bytes)
 
 
+def _escape_builtin_arg(text):
+    """Sanitize a string for inclusion in an `xbmc.executebuiltin` argument.
+
+    Kodi's builtin parser splits arguments on top-level commas and treats
+    parentheses as call-grouping; an unredacted `,` or `)` in `heading`
+    or `message` would let an upstream-controlled string break out of the
+    Notification call and inject arbitrary builtin invocations. The
+    reduction below maps the two structural metacharacters to visually-
+    similar Unicode lookalikes so the user-visible text stays legible
+    while the parser sees only inert characters. Newlines are also
+    flattened to spaces because some Kodi builds let an embedded newline
+    terminate the builtin and run the next line as code.
+
+    See TODO.md §H.2-H15 / §H.3 for the original audit finding.
+    """
+    if text is None:
+        return ""
+    return (
+        str(text)
+        .replace(",", "،")  # Arabic comma U+060C — visually similar, parser-inert
+        .replace(")", "❩")  # medium right parenthesis ornament U+2769
+        .replace("\n", " ")
+        .replace("\r", " ")
+    )
+
+
 def notify(heading, message, duration=5000):
     """Show a Kodi notification."""
     import xbmc
 
-    xbmc.executebuiltin("Notification({}, {}, {})".format(heading, message, duration))
+    xbmc.executebuiltin(
+        "Notification({}, {}, {})".format(
+            _escape_builtin_arg(heading),
+            _escape_builtin_arg(message),
+            int(duration) if isinstance(duration, (int, float)) else 5000,
+        )
+    )

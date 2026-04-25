@@ -500,7 +500,7 @@ msgstr "Force ffmpeg remux above (MB, 0=off)"
 
 msgctxt "#30124"
 msgid "nzbdav rejected the submission (HTTP {0}). Server message: {1}. Check nzbdav's logs for details."
-msgstr ""
+msgstr "nzbdav rejected the submission (HTTP {0}). Server message: {1}. Check nzbdav's logs for details."
 
 msgctxt "#30125"
 msgid "Enable NZBHydra2"

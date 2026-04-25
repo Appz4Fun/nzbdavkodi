@@ -379,6 +379,95 @@ TODO.md                             # Consolidated roadmap + architecture (Parts
 | Architecture | ARM64 (aarch64), x86_64 |
 | Dependencies | None -- all vendored, no pip required |
 
+---
+
+## Extras
+
+### TMDBHelper cache warmup (CoreELEC systemd service)
+
+Optional companion: a Python service that drives TMDBHelper to pre-fetch metadata + images for ~100,000 popular movies, TV shows, and people, so browsing TMDBHelper is snappy with no wait spinners. Lives in [`tmdbhelper-warmup/`](tmdbhelper-warmup/) and is **independent of the addon** — uninstalling the warmup never affects playback.
+
+**What it does** (and why each piece exists):
+
+- Drives TMDBHelper via Kodi's JSON-RPC `Files.GetDirectory` against `plugin://plugin.video.themoviedb.helper/` URLs. This invokes TMDBHelper's normal fetch + cache code path, so the cache it produces is in whatever format your installed TMDBHelper version expects — no schema reverse-engineering, no version-fragile assumptions.
+- Seeds in parallel from three sources: Trakt user lists (your watchlist / collection / history via TMDBHelper's saved OAuth token), Trakt's public popular/trending endpoints, and TMDB's daily ID export files (~50K movies + 20K TV + 30K people, ranked by popularity). The TMDB exports are streamed and processed via a heap-based top-N so memory stays under 25 MB regardless of the input size (the person export alone has ~4.7M records).
+- Crawls each seed and 2 hops out (similar items, cast filmographies, crew, collections), with a SQLite priority queue ordered by popularity so the most-likely-browsed items get warmed first.
+- Periodically truncates TMDBHelper's own `ItemDetails.db-wal` (every 5 minutes) so it doesn't balloon to 100+ MB and slow down the addon's reads.
+- Logs through Python's `logging` module to journald with proper severity levels (`INFO` for milestones, `WARNING` for per-item failures, `ERROR` only for script-level breakage). One milestone line per 100 items processed or per 5 minutes — sparse enough to keep the journal small over months.
+
+**Requirements:**
+
+- CoreELEC (or any systemd-based distro) on the same box as Kodi.
+- Python 3.10+ (CoreELEC ships 3.13).
+- `sqlite3` CLI on the box.
+- TMDBHelper 6.x installed and configured (Trakt login optional but adds personal seeds).
+- A writable disk location with ~1 GB free (the `state.db` queue + visited tracking grows over months; image cache lives in TMDBHelper's own addon_data dir).
+
+**Install:**
+
+The example below assumes a CACHE_DRIVE-style mount at `/var/media/CACHE_DRIVE`. Adjust the script destination path to wherever you have writable storage with headroom; if you change it, also update the `ExecStart` line in the service file.
+
+```bash
+# 1. Copy the script files to the box (run from repo root).
+ssh root@coreelec.local 'mkdir -p /var/media/CACHE_DRIVE/tmdb/scriptcache/runs'
+scp tmdbhelper-warmup/*.py root@coreelec.local:/var/media/CACHE_DRIVE/tmdb/scriptcache/
+
+# 2. Drop the systemd unit in CoreELEC's persistent system.d/ (survives OS updates).
+scp tmdbhelper-warmup/tmdbhelper-warmup.service \
+    root@coreelec.local:/storage/.config/system.d/
+
+# 3. Sanity-check the script can talk to Kodi BEFORE enabling the service.
+ssh root@coreelec.local 'python3 /var/media/CACHE_DRIVE/tmdb/scriptcache/warmup.py --ping'
+# Expected: "kodi ping: OK". If FAIL, check /storage/.kodi/userdata/guisettings.xml for
+# the webserver username/password and update the constants in warmup.py / kodi_client.py.
+
+# 4. Enable + start the service.
+ssh root@coreelec.local '
+  systemctl daemon-reload
+  systemctl enable tmdbhelper-warmup
+  systemctl start tmdbhelper-warmup
+  systemctl status tmdbhelper-warmup --no-pager
+'
+```
+
+**Operate:**
+
+```bash
+# Live log tail (Ctrl-C to detach without affecting the service).
+ssh root@coreelec.local 'journalctl -u tmdbhelper-warmup -f'
+
+# Recent activity snapshot.
+ssh root@coreelec.local 'journalctl -u tmdbhelper-warmup --since "1 hour ago"'
+
+# Stop gracefully (script flushes state.db, runs final maintenance, exits clean).
+ssh root@coreelec.local 'systemctl stop tmdbhelper-warmup'
+
+# Resume — script picks up exactly where it left off, no re-seeding.
+ssh root@coreelec.local 'systemctl start tmdbhelper-warmup'
+
+# Pause without stopping the service (the file-based STOP signal). The crawl
+# exits cleanly within ~2s of the touch; the service stays "active" but the
+# python process exits 0 and Restart=on-failure does NOT restart it.
+ssh root@coreelec.local 'touch /var/media/CACHE_DRIVE/tmdb/scriptcache/STOP'
+
+# Disable autostart entirely.
+ssh root@coreelec.local 'systemctl disable tmdbhelper-warmup'
+
+# Wipe state and re-seed from scratch (rare; loses all crawl progress).
+ssh root@coreelec.local '
+  systemctl stop tmdbhelper-warmup
+  rm /var/media/CACHE_DRIVE/tmdb/scriptcache/state.db*
+  systemctl start tmdbhelper-warmup
+'
+```
+
+**Notes:**
+
+- The service intentionally does not run as `low-priority/idle` — `Nice=10` + `IOSchedulingClass=2 IOSchedulingPriority=7` instead, so the crawl yields to Kodi UI but does not get fully starved.
+- Throughput is bounded at ~0.3 items/sec by TMDBHelper's server-side serialization of plugin URL invocations. Total crawl time at full fan-out is **multiple weeks** — the design assumes the service runs continuously and is restart-safe across reboots.
+- Each `ExecStartPre` step is intentional: the first `cat ... > /dev/null` pulls TMDBHelper's ~200 MB SQLite into the OS page cache so its first read is RAM-fast; the second `sqlite3 ... PRAGMA wal_checkpoint(PASSIVE)` truncates any residual WAL from the previous Kodi session.
+- The script never restarts Kodi. If JSON-RPC is unreachable, it polls and waits up to 5 minutes per try, then exits with a non-zero status so systemd's `Restart=on-failure` retries after 60 s.
+
 ## License
 
 GPLv3 -- see [LICENSE](LICENSE) for details.

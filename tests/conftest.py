@@ -71,6 +71,14 @@ class _FakePlayer:
     def isPlaying(self):
         return self._is_playing
 
+    def isPlayingVideo(self):
+        # resolver.py:239 calls isPlayingVideo() during the "wait for
+        # Kodi to actually start the video" handshake. _FakePlayer
+        # previously only exposed isPlaying(), so any test that hit
+        # _FakePlayer directly (instead of patching xbmc.Player) would
+        # AttributeError. Mirror isPlaying for parity. TODO.md §H.3.
+        return self._is_playing
+
     def getTime(self):
         return self._time
 

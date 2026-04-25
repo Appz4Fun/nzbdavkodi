@@ -26,7 +26,16 @@ def has_cache_memorysize_zero():
     treat False as "the user has not opted in" and gate the passthrough
     mode accordingly.
     """
-    path = xbmcvfs.translatePath("special://profile/advancedsettings.xml")
+    # The docstring above promises "any failure path returns False"; that
+    # only holds if translatePath itself can't escape this function. In
+    # tests / CLI use xbmcvfs is a MagicMock and translatePath should be
+    # safe, but in a partly-initialized Kodi environment translatePath
+    # has been observed raising RuntimeError. Treat any exception the
+    # same as "missing file" → False. See TODO.md §H.3.
+    try:
+        path = xbmcvfs.translatePath("special://profile/advancedsettings.xml")
+    except Exception:  # pylint: disable=broad-except
+        return False
     if not os.path.isfile(path):
         return False
     try:

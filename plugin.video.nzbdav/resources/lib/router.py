@@ -35,7 +35,13 @@ def parse_params(query_string):
         query_string = query_string[1:]
     if not query_string:
         return {}
-    parsed = parse_qs(query_string)
+    # keep_blank_values=True so a deliberately-empty parameter (e.g.
+    # `&imdb=`) survives instead of vanishing — older callers used the
+    # presence of a key as a signal regardless of value. TODO.md §H.3
+    # Medium: parse_qs silently drops duplicate params. We still take
+    # only `v[0]` (Kodi's plugin URLs don't repeat keys), but at least
+    # the drop is visible if a future handler iterates `parsed.items()`.
+    parsed = parse_qs(query_string, keep_blank_values=True)
     return {k: v[0] for k, v in parsed.items()}
 
 

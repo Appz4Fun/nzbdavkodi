@@ -43,6 +43,36 @@ def test_notify_default_duration_does_not_crash():
     notify("Heading", "Body")
 
 
+def test_notify_escapes_builtin_metacharacters():
+    """notify must not let a `,` or `)` in heading/message break out of
+    the Notification(...) builtin call. TODO.md §H.2-H15 / §H.3 fix.
+
+    The previous implementation interpolated the upstream-controlled
+    text directly into the executebuiltin string, so an apikey-bearing
+    error like "HTTP 401, key=abc)" would terminate the Notification
+    call early and let the rest run as a separate builtin. The escape
+    maps the two structural metacharacters to visually-similar Unicode
+    that the Kodi parser treats as inert characters.
+    """
+    import sys
+
+    captured = []
+    saved = sys.modules["xbmc"].executebuiltin
+    sys.modules["xbmc"].executebuiltin = lambda cmd: captured.append(cmd)
+    try:
+        notify("Header, with ),; tricks", "Body, also ); evil", 3000)
+    finally:
+        sys.modules["xbmc"].executebuiltin = saved
+
+    assert len(captured) == 1
+    cmd = captured[0]
+    # The injected commas/parens from heading/message are gone.
+    assert "Header, with " not in cmd
+    assert "Body, also );" not in cmd
+    # And the escaped lookalikes are present in their stead.
+    assert "،" in cmd or "❩" in cmd
+
+
 def test_redact_url_hides_apikey():
     """redact_url should replace apikey values with ***."""
     url = "http://hydra:5076/api?apikey=secretkey123&t=movie&imdbid=tt1234567"

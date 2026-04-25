@@ -1385,8 +1385,8 @@ The two `PROXY_EPIC_*.md` one-pagers (`ARTICLE_HEALTH`, `NNTP_TUNING`) are alrea
 ##### H14. `http_get` performs no scheme validation — SSRF / local file read
 **File:** `http_util.py:22-26`. `urlopen` opens `file:///`, `ftp://`.
 
-##### H15. `notify()` builtin injection via unescaped interpolation
-**File:** `http_util.py:41-45`. `executebuiltin` with no escaping; `,` or `)` in upstream messages allows builtin injection.
+##### H15. ✅ Fixed
+`notify()` builtin injection via unescaped interpolation (was `http_util.py:41-45`). See §H.3 fix-comment — `_escape_builtin_arg` now maps `,` `)` and CR/LF to inert lookalikes before format-interpolating. Regression test: `tests/test_http_util.py::test_notify_escapes_builtin_metacharacters`.
 
 ##### H16. `service.py` state mutated by Kodi callbacks on internal threads without locks
 **File:** `service.py:117-160`. `NzbdavPlayer._state`/`_retry_count`/`_av_started`/`_last_position` mutated by Kodi player callbacks while `tick()` reads-then-writes on the service main thread.
@@ -1462,8 +1462,8 @@ The two `PROXY_EPIC_*.md` one-pagers (`ARTICLE_HEALTH`, `NNTP_TUNING`) are alrea
 ##### M19. No deduplication of aggregated multi-indexer results
 **File:** `hydra.py:100-130`
 
-##### M20. `int(max_results or 25)` raises on non-numeric setting
-**File:** `hydra.py:69`
+##### M20. ✅ Fixed
+`int(max_results or 25)` raises on non-numeric setting (was `hydra.py:69`, now `hydra.py:97` after refactor). See §H.3 fix-comment for current `hydra.py:97` patch — try/except + clamp to [1..100].
 
 ##### M21. `root.iter("item")` traverses entire tree including nested items; should scope to `channel`
 **File:** `hydra.py:156`
@@ -1748,20 +1748,26 @@ The two `PROXY_EPIC_*.md` one-pagers (`ARTICLE_HEALTH`, `NNTP_TUNING`) are alrea
 - **`int(argv[1])` crashes on malformed handle** | `router.py:80-81` | No length / numeric validation; ValueError bubbles out of `route()` with no `setResolvedUrl`.
 - **`_handle_search` has no try/except wrapper** | `router.py:547-699` | Any exception inside `show_results_dialog`/`filter_results` leaves Kodi hanging on the empty directory.
 - **`webdav_content_root` read but not declared in settings.xml** | `webdav.py:78` | Ghost setting — users can't set it from the UI, and any typo means `getSetting` returns `""` and the fallback kicks in silently.
-- **`int(getSetting("max_results") or 25)` unhandled ValueError** | `hydra.py:97` | Non-numeric setting value crashes the search with no user message. (Also listed as §H.2-M20; re-logged here because no fix has shipped.)
-- **HTTPError/URLError messages logged unredacted** | `hydra.py:61`, `nzbdav_api.py:201`, `prowlarr.py:149` | URL substring with `apikey=` or basic-auth inside the exception text survives into `kodi.log`. (Theme overlap with §H.2-H2e/H2f; specific lines new.)
+<!-- Fixed in this commit: hydra.py:97 now wraps int(max_results) in try/except + clamps to [1..100]. -->
+
+<!-- Fixed in this commit: hydra.py:_fetch_hydra_xml + nzbdav_api.py submit error path + prowlarr.py search error paths now route exception str() through redact_text() before logging. The broader §H.2-H2c gap (redact_url only covers `apikey=`, not `password/auth/token/api_key/key/secret/access_token`) is still open. -->
+
 - **Audio/HDR/language lists not deduplicated** | `filter.py:360,365,391-400,593-600` | Duplicate tokens from PTT break Atmos+TrueHD combo ranking and language filters.
 - **`_rewrite_co64` return value not checked** | `mp4_parser.py:165` | `_rewrite_co64` returns None implicitly; loop ignores it. Low practical impact (64-bit offsets don't overflow) but inconsistent with `_rewrite_stco` contract.
 - **Payload range returns exclusive endpoint** | `mp4_parser.py:414, 420` | `payload_remote_end` is exclusive but HTTP Range headers expect inclusive; off-by-one at the tail of payload-only fetches.
 - **`player_installer.py` profile-root prefix check missing trailing slash** | `player_installer.py:60` | `addon_data` prefix of `addon_data_evil` passes the `startswith` check — sibling-dir traversal.
-- **`notify()` interpolates into `xbmc.executebuiltin` unescaped** | `http_util.py:185` | Any `)` or `,` inside heading/message breaks out of the builtin args; untrusted exception text reaches this path. (Exact dup of §H.2-H15 — re-logged here because no fix has shipped.)
+<!-- Fixed in this commit: http_util.notify() now routes heading/message through `_escape_builtin_arg`, which maps `,` and `)` to visually-similar Unicode lookalikes that the Kodi builtin parser treats as inert. Regression test in tests/test_http_util.py::test_notify_escapes_builtin_metacharacters. -->
+
 - **`_playback_error` reset ordering incomplete** | `playback_monitor.py:70-72` | Rapid back-to-back failures can trigger a false retry because the error flag clears before the state machine re-reads it.
-- **`kodi_advancedsettings.has_cache_memorysize_zero` violates docstring contract** | `kodi_advancedsettings.py:29` | `xbmcvfs.translatePath()` call is outside the try/except so an unexpected exception propagates; docstring promises "any failure → False".
+<!-- Fixed in this commit: kodi_advancedsettings.py wraps the translatePath call in a broad try/except so any partly-initialized-Kodi exception path returns False, matching the docstring's "any failure → False" contract. -->
+
 - **`service.py` monitor state resets ERROR→MONITORING mid-retry** | `service.py:110-128, 178-192, 271-311` | `_check_active` unconditionally transitions when resolver flips `nzbdav.active=true`, clobbering an in-flight retry.
 - **onPlayBackSeek races onPlayBackError on `_last_position`** | `service.py:202` | Concurrent Kodi callbacks mutate the shared dict without a lock.
 - **Port-bind race on proxy restart** | `service.py:393, 413, 3469-3477` | `proxy_port` window property is set before `HTTPServer.serve_forever` is actually listening; client races lose.
-- **Empty placeholder for string #30124** | `strings.po:503` | `msgstr ""` with format placeholders — `fmt()` raises IndexError at call site when strings.po loads.
-- **`conftest._FakePlayer` lacks `isPlayingVideo`** | `tests/conftest.py:57-89` | `resolver.py:239` calls `isPlayingVideo()`; any integration test that substitutes the real fake would AttributeError.
+<!-- Fixed in this commit: strings.po #30124 msgstr filled in to match the msgid. -->
+
+<!-- Fixed in this commit: tests/conftest.py _FakePlayer now has isPlayingVideo() mirroring isPlaying(). -->
+
 
 #### H.3.Medium
 
@@ -1789,7 +1795,8 @@ The two `PROXY_EPIC_*.md` one-pagers (`ARTICLE_HEALTH`, `NNTP_TUNING`) are alrea
 - **Force-quit during submit orphans nzbdav job** | `resolver.py:1136` | No cross-session nzo_id persistence; the queue entry stays.
 - **Silent `proxy.stop()` exception during restart** | `service.py:454` | Restart path swallows the exception and leaves the new proxy unstarted.
 - **Stale `nzbdav.proxy_port` property after failed restart** | `service.py:405, 465` | On the exception path, the old port stays published; clients hit a dead listener.
-- **`parse_qs` silently drops duplicate params** | `router.py:39` | `keep_blank_values` not set; blank params and second occurrences vanish with no log.
+<!-- Fixed in this commit: router.py:39 parse_qs now uses keep_blank_values=True so empty params survive (Kodi plugin URLs don't repeat keys, so duplicate-drop is benign and now visible to anyone iterating parsed.items()). -->
+
 - **Cancel/submit status check asymmetric** | `nzbdav_api.py:204 vs 285` | Submit uses truthy `if response.get("status")`, cancel uses `is True` identity — one nzbdav build that returns `"ok"` instead of `True` would make cancel silently fail.
 - **Silent body-read exception during error reporting** | `nzbdav_api.py:174` | Exception inside the error-reporting branch masks the real malformed response.
 - **Size filter skipped when size falsy** | `filter.py:455` | 0-byte placeholder results bypass min/max size constraints.
