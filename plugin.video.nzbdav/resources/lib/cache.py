@@ -35,7 +35,7 @@ def _cache_key(search_type, title, year="", imdb="", season="", episode=""):
     distinct titles sharing a 200-char prefix aliased to the same cache
     file. Stale results would be served across searches.
 
-    Switch to SHA-1 of the joined parts: deterministic, 40-char hex
+    Switch to SHA-256 of the joined parts: deterministic, 64-char hex
     filename, no collisions in practice. Prefix the ``search_type`` so
     a glance at the cache dir still shows which bucket a file belongs
     to; the readable ``_make_legible_slug`` tail is cosmetic.
@@ -46,7 +46,7 @@ def _cache_key(search_type, title, year="", imdb="", season="", episode=""):
     joined = "\x1f".join(
         str(p) for p in parts
     )  # unit-separator — can't appear in inputs
-    digest = hashlib.sha1(joined.encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(joined.encode("utf-8")).hexdigest()
     legible = "".join(c if c.isalnum() or c in "-_" else "_" for c in title)[:40]
     return "{}_{}_{}".format(search_type, legible or "untitled", digest)
 
