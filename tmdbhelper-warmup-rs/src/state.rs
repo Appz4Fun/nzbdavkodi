@@ -52,7 +52,7 @@ impl StateDb {
     /// Pop a batch of pending items, ordered by (depth ASC, popularity DESC).
     /// Removed from queue atomically. Caller must mark visited or re-enqueue on failure.
     pub fn pop_batch(&mut self, limit: usize) -> Result<Vec<QueueItem>> {
-        let tx = self.conn.transaction()?;
+        let tx = self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let mut items = Vec::new();
         {
             let mut stmt = tx.prepare(
