@@ -581,8 +581,13 @@ def test_get_force_remux_threshold_clamps_typo_high_and_logs(mock_xbmc):
         _get_force_remux_threshold_bytes,
     )
 
+    # Use a value above the JSON-safe-int ceiling so the clamp+log fires.
+    # The cap was raised to (1 << 53) - 1 so realistic "effectively unlimited"
+    # inputs (e.g. 20 TB = 20_000_000 MB) no longer get clamped on every
+    # play — only obviously-bogus values trigger the warning.
+    typo = (1 << 53) + 1
     mock_addon = MagicMock()
-    mock_addon.getSetting.return_value = "999999999"
+    mock_addon.getSetting.return_value = str(typo)
     original = sys.modules["xbmcaddon"].Addon.return_value
     sys.modules["xbmcaddon"].Addon.return_value = mock_addon
     try:
@@ -5554,7 +5559,13 @@ def test_stream_upstream_range_warn_mode_streams_on_soft_contract_mismatch(mock_
 
 
 @patch("resources.lib.stream_proxy.xbmc")
-def test_stream_upstream_range_enforce_mode_rejects_soft_contract_mismatch(mock_xbmc):
+def test_stream_upstream_range_enforce_streams_soft_contract_mismatch(mock_xbmc):
+    """Per TODO.md §D.8.1: ENFORCE must respect the hard/soft distinction
+    the classifier already returns. A soft mismatch (e.g. nzbdav's 206
+    with a Content-Length covering the full object instead of the requested
+    range) is logged but must not abort the stream — the previous
+    "ENFORCE rejects everything" behavior killed playback at byte 0.
+    """
     import sys
 
     from resources.lib.stream_proxy import (
@@ -5576,6 +5587,59 @@ def test_stream_upstream_range_enforce_mode_rejects_soft_contract_mismatch(mock_
         headers={
             "Content-Range": "bytes 0-1023/2048",
             "Content-Length": "2048",
+        },
+    )
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = lambda key: (
+        "enforce" if key == "strict_contract_mode" else ""
+    )
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch("resources.lib.stream_proxy.urlopen", return_value=response):
+            result, written = handler._stream_upstream_range(ctx, 0, 1023)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    assert result == _UPSTREAM_RANGE_PROTOCOL_MISMATCH
+    assert written == len(payload)
+    assert _collect_written(handler) == payload
+    logged = "\n".join(call.args[0] for call in mock_xbmc.log.call_args_list)
+    assert "reason=protocol_mismatch" in logged
+
+
+@patch("resources.lib.stream_proxy.xbmc")
+def test_stream_upstream_range_enforce_mode_rejects_hard_contract_mismatch(mock_xbmc):
+    """Companion to the soft-mismatch test: ENFORCE must still abort on a
+    HARD mismatch (e.g. 206 with a Content-Range that doesn't match the
+    request). hard_mismatch is what `_classify_contract_mismatch` flags
+    for genuine protocol violations, and ENFORCE is the level where we
+    refuse to stream wrong bytes to Kodi.
+    """
+    import sys
+
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_PROTOCOL_MISMATCH,
+        _StreamHandler,
+    )
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_length": 2048,
+    }
+    handler = _StreamHandler.__new__(_StreamHandler)
+    handler.wfile = MagicMock()
+
+    response = _mock_urlopen_response(
+        [b"A" * 1024],
+        headers={
+            # Hard mismatch: 206 with wrong Content-Range (we asked for 0-1023,
+            # upstream reports 256-1279). _classify_contract_mismatch flags
+            # this with hard=True at line 462.
+            "Content-Range": "bytes 256-1279/2048",
+            "Content-Length": "1024",
         },
     )
 

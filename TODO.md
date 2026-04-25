@@ -988,42 +988,43 @@ These are addon-side issues found while validating the §D.2 hypothesis.
 None block scrub; all are paper cuts that make pass-through harder to
 adopt.
 
-#### D.8.1 ENFORCE strict-contract-mode escalates soft mismatches
+#### D.8.1 ENFORCE strict-contract-mode escalates soft mismatches ✅ fixed
 
-**Where**: `stream_proxy.py:2357`
+**Where**: `stream_proxy.py:2358`
 
-```python
-if contract_mode == _STRICT_CONTRACT_MODE_ENFORCE or hard_mismatch:
-    return _UPSTREAM_RANGE_PROTOCOL_MISMATCH, 0
-```
+The classifier (`_classify_contract_mismatch`) returns `(detail, hard)`
+distinguishing hard mismatches (e.g. 206 with wrong Content-Range —
+silent corruption if streamed) from soft ones (e.g. status 200 + valid
+Content-Range covering the full object, which nzbdav legitimately does
+for `Range: bytes=0-`). The condition was `ENFORCE or hard_mismatch`,
+which made ENFORCE reject every mismatch — soft included — killing
+pass-through playback at byte 0 with `Recovery density breaker tripped`.
 
-The classifier (`_classify_contract_mismatch`) already distinguishes
-*hard* mismatches (e.g. 206 with wrong Content-Range) from *soft* ones
-(e.g. status 200 + valid Content-Range covering the full object —
-which nzbdav legitimately does for `Range: bytes=0-`). The ENFORCE
-branch then ignores that distinction and rejects the response anyway.
+Fix: tightened the rejection branch to `if hard_mismatch:` only. Hard
+mismatches now reject regardless of mode (since serving wrong bytes is
+silent corruption), and soft mismatches stream while still being logged
+under WARN/ENFORCE. The setting now means "Off / log soft mismatches /
+log all mismatches" rather than "Off / log soft / reject everything".
+Test coverage flipped accordingly — `test_stream_upstream_range_enforce_streams_soft_contract_mismatch`
+(streams soft) and `test_stream_upstream_range_enforce_mode_rejects_hard_contract_mismatch`
+(rejects hard) replace the old `enforce_mode_rejects_soft` test.
 
-**Symptom**: with strict_contract_mode=2, every pass-through play of an
-nzbdav source dies at byte 0 with `Recovery density breaker tripped`.
-WARN mode (`=1`) papers over it but loses the loud failure signal we
-do want for genuine hard mismatches.
+#### D.8.2 Threshold clamping is silently wrong ✅ fixed
 
-**Fix**: change the condition to `contract_mode == ENFORCE and
-hard_mismatch`, or split into a "WARN-on-soft, ENFORCE-on-hard" semantic.
-The classifier already returns `(detail, hard)` — wire `hard` through
-both call sites (lines 2357 and 2397) consistently.
-
-#### D.8.2 Threshold clamping is silently wrong
-
-**Where**: `stream_proxy.py:339-351` + `_FORCE_REMUX_THRESHOLD_MB_MAX`
+**Where**: `stream_proxy.py:294` (`_FORCE_REMUX_THRESHOLD_MB_MAX`)
 
 A user-set `force_remux_threshold_mb=20000000` (intent: 20 TB =
-effectively-unlimited) clamps to 1,048,576 MB (1 TB). At 1 TB, no
+effectively-unlimited) used to clamp to 1,048,576 MB (1 TB). At 1 TB, no
 realistic file ever trips force-remux, which is fine — but the warning
 log "Setting force_remux_threshold_mb=20000000 out of range [0..1048576];
-clamping to 1048576" fires on *every play*. Either drop the cap (just
-raise it to e.g. 2^53 to match JSON-safe int range), or quiet the
-log to once-per-session.
+clamping to 1048576" fired on *every play*.
+
+Fix: raised the cap to `(1 << 53) - 1` (the JSON-safe int ceiling, ~9 PB
+in MB units). Realistic "effectively-unlimited" inputs survive without
+triggering the clamp warning every play. Inputs above that ceiling are
+genuine user error and still log loudly on first hit. The matching
+`test_get_force_remux_threshold_clamps_typo_high_and_logs` test was
+updated to use a value above the new ceiling.
 
 ---
 

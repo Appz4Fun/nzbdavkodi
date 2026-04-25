@@ -291,7 +291,13 @@ def _find_ffprobe():
 # set `force_remux_threshold_mb` in the addon settings to raise the bar
 # further (or to 0 to disable entirely and restore pure pass-through).
 _DEFAULT_FORCE_REMUX_THRESHOLD_MB = 20000
-_FORCE_REMUX_THRESHOLD_MB_MAX = 1048576
+# Clamp ceiling for force_remux_threshold_mb. Set just below 2^53 so any
+# JSON-safe int the user enters survives without triggering the
+# "out of range" warning every play. Realistic "I want this off" values
+# (e.g. 20_000_000 MB = 20 TB) used to clamp to 1 TB and re-log on every
+# play (TODO.md §D.8.2). Raising the ceiling silences that without
+# changing the semantics — values above this are still real user error.
+_FORCE_REMUX_THRESHOLD_MB_MAX = (1 << 53) - 1
 _PREPARE_REQUEST_MAX_BYTES = 64 * 1024
 _FFMPEG_CAPABILITY_PROBE_TIMEOUT = 5
 _FMP4_HLS_CAPABILITY_MARKERS = (
@@ -2355,7 +2361,15 @@ class _StreamHandler(BaseHTTPRequestHandler):
                         content_length,
                         mismatch_detail,
                     )
-                    if contract_mode == _STRICT_CONTRACT_MODE_ENFORCE or hard_mismatch:
+                    if hard_mismatch:
+                        # Hard mismatch (e.g. 206 with wrong Content-Range)
+                        # would feed wrong bytes to Kodi at wrong offsets —
+                        # silent corruption. Reject regardless of mode.
+                        # Soft mismatches (status 200 + valid range covering
+                        # the full object, which nzbdav legitimately produces
+                        # for `Range: bytes=0-`) fall through and stream so
+                        # ENFORCE doesn't kill playback at byte 0.
+                        # Per TODO.md §D.8.1.
                         return _UPSTREAM_RANGE_PROTOCOL_MISMATCH, 0
 
             while True:
