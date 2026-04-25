@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 import time
+from collections import namedtuple
 from unittest.mock import MagicMock, patch
 
 import resources.lib.cache as cache_module
@@ -275,15 +276,11 @@ def test_cache_evicts_using_allocated_block_size(mock_cache_dir):
             with open(path, "w") as f:
                 json.dump({"timestamp": time.time(), "results": []}, f)
 
-        class FakeStat:
-            def __init__(self, size, blocks, mtime):
-                self.st_size = size
-                self.st_blocks = blocks
-                self.st_mtime = mtime
+        FakeStat = namedtuple("FakeStat", "st_size st_blocks st_mtime")
 
         stats = {
-            old_path: FakeStat(size=10, blocks=1000, mtime=1000),
-            new_path: FakeStat(size=10, blocks=1, mtime=1001),
+            old_path: FakeStat(st_size=10, st_blocks=1000, st_mtime=1000),
+            new_path: FakeStat(st_size=10, st_blocks=1, st_mtime=1001),
         }
 
         def _fake_stat(path):
