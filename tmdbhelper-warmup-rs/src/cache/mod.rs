@@ -14,10 +14,12 @@ pub fn open_writer(path: &Path) -> Result<Connection> {
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_FULL_MUTEX,
     )
     .with_context(|| format!("open {}", path.display()))?;
+    // busy_timeout=30s tolerates Kodi's periodic database vacuum cycles
+    // (observed up to 60s on the live box).
     conn.execute_batch(
         "PRAGMA journal_mode=WAL;
          PRAGMA synchronous=NORMAL;
-         PRAGMA busy_timeout=10000;
+         PRAGMA busy_timeout=30000;
          PRAGMA foreign_keys=ON;",
     )?;
     Ok(conn)
