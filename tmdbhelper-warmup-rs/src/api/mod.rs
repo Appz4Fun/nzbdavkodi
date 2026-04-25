@@ -24,8 +24,7 @@ impl TmdbClient {
     pub fn new(api_key: String) -> Result<Self> {
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
-            .pool_max_idle_per_host(20)
-            .http2_prior_knowledge()
+            .pool_max_idle_per_host(50)
             .build()
             .context("build reqwest client")?;
         Ok(Self { client, api_key })
