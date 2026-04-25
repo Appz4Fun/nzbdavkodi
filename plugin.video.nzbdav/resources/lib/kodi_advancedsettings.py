@@ -18,6 +18,16 @@ from xml.etree import ElementTree as ET
 import xbmcvfs
 
 
+def _parse_local_xml_root(path):
+    """Parse Kodi profile XML while rejecting DTD/entity declarations."""
+    with open(path, "rb") as fh:
+        xml_bytes = fh.read()
+    upper_xml = xml_bytes.upper()
+    if b"<!DOCTYPE" in upper_xml or b"<!ENTITY" in upper_xml:
+        raise ET.ParseError("DTD/entity declarations are not supported")
+    return ET.fromstring(xml_bytes)
+
+
 def has_cache_memorysize_zero():
     """Return True iff ``<cache><memorysize>0</memorysize></cache>`` is set.
 
@@ -39,10 +49,9 @@ def has_cache_memorysize_zero():
     if not os.path.isfile(path):
         return False
     try:
-        tree = ET.parse(path)  # nosemgrep
+        root = _parse_local_xml_root(path)
     except (ET.ParseError, OSError):
         return False
-    root = tree.getroot()
     cache = root.find("cache")
     if cache is None:
         return False

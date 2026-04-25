@@ -6,6 +6,8 @@
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -31,3 +33,15 @@ def test_generate_repo_writes_pages_root_files(tmp_path, monkeypatch):
     assert "repository.nzbdav-" in contents
     assert ".zip" in contents
     assert (tmp_path / ".nojekyll").exists()
+
+
+def test_parse_local_xml_rejects_doctype(tmp_path):
+    module = _load_generate_repo_module()
+    addon_xml = tmp_path / "addon.xml"
+    addon_xml.write_text(
+        '<!DOCTYPE addon [<!ENTITY secret "x">]>\n<addon id="x" version="1.0.0" />',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(module.ET.ParseError):
+        module._parse_local_xml(str(addon_xml))

@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import socket
 import sys
 import threading
 import time
@@ -36,7 +35,7 @@ from functools import partial
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from unittest.mock import MagicMock
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit, urlunsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 ADDON = ROOT / "plugin.video.nzbdav"
@@ -108,6 +107,14 @@ def _serve_nzb(nzb_path: Path) -> tuple[HTTPServer, str]:
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     url = "http://{}:{}/{}".format(_detect_host_gateway(), port, quote(nzb_path.name))
     return srv, url
+
+
+def _stream_url_for_display(base_url, file_path):
+    """Build a display-only URL without credentials or auth headers."""
+    parts = urlsplit(base_url.rstrip("/"))
+    netloc = parts.netloc.rsplit("@", 1)[-1]
+    safe_base = urlunsplit((parts.scheme, netloc, parts.path.rstrip("/"), "", ""))
+    return "{}/{}".format(safe_base, file_path.lstrip("/"))
 
 
 def _main():
@@ -202,7 +209,7 @@ def _main():
         get_webdav_stream_url_for_path,
     )
 
-    _log("submitting NZB (title={!r}) to {}".format(title, settings["nzbdav_url"]))
+    _log("submitting NZB (title={!r}) to {}".format(title, nzbdav_url))
     nzo_id, err = submit_nzb(nzb_url, title)
     if err:
         _log("submit error: {}".format(err), level=3)
@@ -231,14 +238,15 @@ def _main():
                     "completed but no playable file found at {}".format(folder), level=3
                 )
                 sys.exit(1)
-            url, headers = get_webdav_stream_url_for_path(video_path)
+            _, headers = get_webdav_stream_url_for_path(video_path)
+            display_url = _stream_url_for_display(webdav_url, video_path)
             print("\n=== STREAM READY ===")
             print("webdav file: {}".format(video_path))
-            print("stream url : {}".format(url))
+            print("stream url : {}".format(display_url))
             if headers:
                 print("auth header: <redacted>")
             print("\nplay in vlc:")
-            print('  vlc "{}"'.format(url))
+            print('  vlc "{}"'.format(display_url))
             if args.webdav_user:
                 print(
                     "\nIf WebDAV auth is enabled, pass the username/password "

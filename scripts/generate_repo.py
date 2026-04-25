@@ -11,9 +11,19 @@ import shutil
 import xml.etree.ElementTree as ET
 
 
+def _parse_local_xml(path):
+    """Parse trusted repo XML without enabling DTD/entity declarations."""
+    with open(path, "rb") as fh:
+        xml_bytes = fh.read()
+    upper_xml = xml_bytes.upper()
+    if b"<!DOCTYPE" in upper_xml or b"<!ENTITY" in upper_xml:
+        raise ET.ParseError("DTD/entity declarations are not supported")
+    return ET.ElementTree(ET.fromstring(xml_bytes))
+
+
 def read_addon_xml(path):
     """Read an addon.xml and return its text content."""
-    tree = ET.parse(path)  # nosec B314  # nosemgrep
+    tree = _parse_local_xml(path)
     return ET.tostring(tree.getroot(), encoding="unicode")
 
 
@@ -73,7 +83,7 @@ def generate_repo(output_dir="dist"):
 
     # Copy addon zip into output_dir/plugin.video.nzbdav/
     # Read version from addon.xml for versioned zip filename
-    tree = ET.parse(main_addon)  # nosec B314  # nosemgrep
+    tree = _parse_local_xml(main_addon)
     version = tree.getroot().attrib["version"]
     addon_zip = "plugin.video.nzbdav-{}.zip".format(version)
     if os.path.exists(addon_zip):
@@ -100,7 +110,7 @@ def generate_repo(output_dir="dist"):
 
         repo_out = os.path.join(output_dir, "repository.nzbdav")
         os.makedirs(repo_out, exist_ok=True)
-        repo_tree = ET.parse(repo_addon)  # nosec B314  # nosemgrep
+        repo_tree = _parse_local_xml(repo_addon)
         repo_version = repo_tree.getroot().attrib["version"]
         repo_zip_path = os.path.join(
             repo_out, "repository.nzbdav-{}.zip".format(repo_version)

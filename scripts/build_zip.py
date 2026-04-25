@@ -6,7 +6,18 @@
 
 import argparse
 import os
+import xml.etree.ElementTree as ET
 import zipfile
+
+
+def _parse_local_xml(path):
+    """Parse trusted repo XML without enabling DTD/entity declarations."""
+    with open(path, "rb") as fh:
+        xml_bytes = fh.read()
+    upper_xml = xml_bytes.upper()
+    if b"<!DOCTYPE" in upper_xml or b"<!ENTITY" in upper_xml:
+        raise ET.ParseError("DTD/entity declarations are not supported")
+    return ET.ElementTree(ET.fromstring(xml_bytes))
 
 
 def build_zip(addon_dir="plugin.video.nzbdav", output_dir="."):
@@ -16,8 +27,6 @@ def build_zip(addon_dir="plugin.video.nzbdav", output_dir="."):
     # actionable errors instead of letting the raw ET / KeyError stack
     # trace escape — these are the two failure modes that actually happen
     # in practice (mistyped path, in-progress addon.xml edit).
-    import xml.etree.ElementTree as ET
-
     addon_xml_path = os.path.join(addon_dir, "addon.xml")
     if not os.path.isfile(addon_xml_path):
         raise SystemExit(
@@ -25,8 +34,8 @@ def build_zip(addon_dir="plugin.video.nzbdav", output_dir="."):
             "is the addon_dir argument correct?".format(addon_xml_path)
         )
     try:
-        tree = ET.parse(addon_xml_path)  # nosec B314  # nosemgrep
-    except ET.ParseError as exc:
+        tree = _parse_local_xml(addon_xml_path)
+    except (ET.ParseError, OSError) as exc:
         raise SystemExit(
             "build_zip: failed to parse {!r}: {}".format(addon_xml_path, exc)
         )

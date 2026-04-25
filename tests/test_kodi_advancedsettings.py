@@ -70,6 +70,18 @@ def test_returns_false_when_xml_malformed(mock_xbmcvfs, tmp_path):
 
 
 @patch("resources.lib.kodi_advancedsettings.xbmcvfs")
+def test_returns_false_when_xml_declares_doctype(mock_xbmcvfs, tmp_path):
+    xml = tmp_path / "advancedsettings.xml"
+    xml.write_text(
+        '<!DOCTYPE advancedsettings [<!ENTITY secret "x">]>\n'
+        "<advancedsettings><cache><memorysize>0</memorysize></cache></advancedsettings>"
+    )
+    mock_xbmcvfs.translatePath.return_value = str(xml)
+
+    assert has_cache_memorysize_zero() is False
+
+
+@patch("resources.lib.kodi_advancedsettings.xbmcvfs")
 def test_returns_true_when_memorysize_has_whitespace(mock_xbmcvfs, tmp_path):
     xml = tmp_path / "advancedsettings.xml"
     xml.write_text(
