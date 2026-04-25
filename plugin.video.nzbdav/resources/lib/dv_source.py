@@ -19,6 +19,7 @@ except ImportError:  # pragma: no cover — tests inject the module via conftest
     xbmc = None  # type: ignore[assignment]
 
 from resources.lib.dv_rpu import parse_unspec62_nalu
+from resources.lib.http_util import HTTP_USER_AGENT
 from resources.lib.mp4_parser import fetch_remote_mp4_layout, read_box_header
 
 # Safety caps — apply at every I/O seam where an attacker-controlled field
@@ -70,6 +71,7 @@ def _http_range(url, start, end, auth_header=None, max_bytes=_HTTP_READ_CAP):
     against servers that ignore the Range header (return 200 OK + full body).
     """
     req = Request(url)
+    req.add_header("User-Agent", HTTP_USER_AGENT)
     req.add_header("Range", "bytes={}-{}".format(start, end))
     clean_auth = _sanitize_header_value(auth_header)
     if clean_auth:

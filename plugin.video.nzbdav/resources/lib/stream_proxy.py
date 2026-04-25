@@ -49,6 +49,7 @@ except (ImportError, ModuleNotFoundError):
     fetch_remote_mp4_layout = None  # type: ignore[assignment]
 
 from resources.lib.dv_source import probe_dolby_vision_source
+from resources.lib.http_util import HTTP_USER_AGENT
 from resources.lib.http_util import notify as _notify
 from resources.lib.http_util import redact_text as _redact_text
 from resources.lib.kodi_advancedsettings import has_cache_memorysize_zero  # noqa: E402
@@ -172,6 +173,8 @@ _UPSTREAM_RANGE_OK = "OK"
 _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE = "SHORT_READ_RECOVERABLE"
 _UPSTREAM_RANGE_PROTOCOL_MISMATCH = "PROTOCOL_MISMATCH"
 _UPSTREAM_RANGE_UPSTREAM_ERROR = "UPSTREAM_ERROR"
+_UPSTREAM_RANGE_CLIENT_ERROR = "CLIENT_ERROR"
+_RECOVERABLE_HTTP_RANGE_ERROR_CODES = frozenset({416})
 
 _SESSION_ZERO_FILL_RATIO_MAX = 0.05
 _RECOVERY_NOTIFY_DEBOUNCE_SECONDS = 60.0
@@ -468,6 +471,21 @@ def _get_header(resp, name):
     if headers is None:
         return None
     return headers.get(name)
+
+
+def _add_request_headers(req, auth_header=None):
+    """Apply standard proxy outbound headers to a urllib Request."""
+    req.add_header("User-Agent", HTTP_USER_AGENT)
+    if auth_header:
+        req.add_header("Authorization", auth_header)
+    return req
+
+
+def _is_terminal_http_client_error(error):
+    if not isinstance(error, HTTPError):
+        return False
+    code = getattr(error, "code", 0) or 0
+    return 400 <= code < 500 and code not in _RECOVERABLE_HTTP_RANGE_ERROR_CODES
 
 
 def _classify_contract_mismatch(
@@ -1001,7 +1019,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):  # pylint: disable=arguments-differ
         xbmc.log("NZB-DAV: Proxy: {}".format(fmt % args), xbmc.LOGDEBUG)
 
-    def _get_stream_context(self):
+    def _get_stream_context(self, acquire=False):
         """Look up the active stream context for the current request path.
 
         Recognizes both direct-stream paths (``/stream`` and
@@ -1011,14 +1029,23 @@ class _StreamHandler(BaseHTTPRequestHandler):
         to resolve a session; the playlist/segment dispatch then branches
         on the trailing resource in ``_handle_hls``.
         """
+
+        def _touch(ctx):
+            if ctx is None or ctx.get("_cleanup_started"):
+                return None
+            ctx["last_access"] = time.time()
+            if acquire:
+                ctx["_active_handlers"] = int(ctx.get("_active_handlers", 0) or 0) + 1
+            return ctx
+
         raw_path = getattr(self, "path", "/stream")
         path = raw_path.split("?", 1)[0]
         context_lock = _get_server_context_lock(getattr(self, "server", None))
         if path in ("", "/stream"):
             if context_lock is None:
-                return getattr(self.server, "stream_context", None)
+                return _touch(getattr(self.server, "stream_context", None))
             with context_lock:
-                return getattr(self.server, "stream_context", None)
+                return _touch(getattr(self.server, "stream_context", None))
 
         session_id = None
         if path.startswith("/stream/"):
@@ -1035,17 +1062,42 @@ class _StreamHandler(BaseHTTPRequestHandler):
 
         if context_lock is None:
             sessions = getattr(self.server, "stream_sessions", {})
-            ctx = sessions.get(session_id)
-            if ctx is not None:
-                ctx["last_access"] = time.time()
-            return ctx
+            return _touch(sessions.get(session_id))
 
         with context_lock:
             sessions = getattr(self.server, "stream_sessions", {})
-            ctx = sessions.get(session_id)
-            if ctx is not None:
-                ctx["last_access"] = time.time()
-            return ctx
+            return _touch(sessions.get(session_id))
+
+    def _release_stream_context(self, ctx):
+        """Release a request lease and run deferred cleanup when safe."""
+        if ctx is None:
+            return
+
+        def _release():
+            active = max(0, int(ctx.get("_active_handlers", 0) or 0) - 1)
+            ctx["_active_handlers"] = active
+            if (
+                active == 0
+                and ctx.get("_cleanup_pending")
+                and not ctx.get("_cleanup_started")
+            ):
+                ctx["_cleanup_started"] = True
+                return True
+            return False
+
+        context_lock = _get_server_context_lock(getattr(self, "server", None))
+        if context_lock is None:
+            cleanup_now = _release()
+        else:
+            with context_lock:
+                cleanup_now = _release()
+
+        if cleanup_now:
+            owner_proxy = getattr(getattr(self, "server", None), "owner_proxy", None)
+            cleanup = getattr(owner_proxy, "_cleanup_session", None)
+            if cleanup is None:
+                cleanup = StreamProxy._cleanup_session
+            cleanup(ctx)
 
     @staticmethod
     def _parse_hls_resource(path):
@@ -1231,7 +1283,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
         """Tear down ffmpeg and emit completion logs for a remux request."""
         try:
             proc.kill()
-            proc.wait()
+            proc.wait(timeout=5)
         except (OSError, ValueError, subprocess.SubprocessError):
             pass
 
@@ -1363,6 +1415,19 @@ class _StreamHandler(BaseHTTPRequestHandler):
         except ValueError:
             self.send_error(400)
             return
+        except Exception as e:  # noqa: BLE001 — keep loopback handler alive
+            xbmc.log(
+                "NZB-DAV: /prepare failed: {} (reason=prepare_exception)".format(
+                    _redact_text(e)
+                ),
+                xbmc.LOGERROR,
+            )
+            try:
+                proxy.clear_sessions()
+            except Exception:  # noqa: BLE001 — best-effort partial cleanup
+                pass
+            self.send_error(500)
+            return
 
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -1472,19 +1537,22 @@ class _StreamHandler(BaseHTTPRequestHandler):
             self._handle_hls(raw_path)
             return
 
-        ctx = self._get_stream_context()
+        ctx = self._get_stream_context(acquire=True)
         if ctx is None:
             self.send_error(404)
             return
 
-        if ctx.get("faststart"):
-            self._serve_mp4_faststart(ctx)
-        elif ctx.get("temp_faststart"):
-            self._serve_temp_faststart(ctx)
-        elif ctx.get("remux"):
-            self._serve_remux(ctx)
-        else:
-            self._serve_proxy(ctx)
+        try:
+            if ctx.get("faststart"):
+                self._serve_mp4_faststart(ctx)
+            elif ctx.get("temp_faststart"):
+                self._serve_temp_faststart(ctx)
+            elif ctx.get("remux"):
+                self._serve_remux(ctx)
+            else:
+                self._serve_proxy(ctx)
+        finally:
+            self._release_stream_context(ctx)
 
     def _handle_hls(self, path):
         """Dispatch an /hls/<session>/... GET to playlist, init, or
@@ -1496,31 +1564,34 @@ class _StreamHandler(BaseHTTPRequestHandler):
         if parsed is None:
             self.send_error(404)
             return
-        ctx = self._get_stream_context()
+        ctx = self._get_stream_context(acquire=True)
         if ctx is None or ctx.get("mode") != "hls":
             self.send_error(404)
             return
-        _session_id, resource = parsed
-        seg_fmt = ctx.get("hls_segment_format", "mpegts")
+        try:
+            _session_id, resource = parsed
+            seg_fmt = ctx.get("hls_segment_format", "mpegts")
 
-        if resource == "playlist":
-            self._serve_hls_playlist(ctx)
-            return
-        if resource == "init":
-            if seg_fmt != "fmp4":
-                self.send_error(404)
+            if resource == "playlist":
+                self._serve_hls_playlist(ctx)
                 return
-            self._serve_hls_init(ctx)
-            return
-        if isinstance(resource, tuple) and resource[0] == "segment":
-            _, seg_n, ext = resource
-            expected_ext = "m4s" if seg_fmt == "fmp4" else "ts"
-            if ext != expected_ext:
-                self.send_error(404)
+            if resource == "init":
+                if seg_fmt != "fmp4":
+                    self.send_error(404)
+                    return
+                self._serve_hls_init(ctx)
                 return
-            self._serve_hls_segment(ctx, seg_n)
-            return
-        self.send_error(404)
+            if isinstance(resource, tuple) and resource[0] == "segment":
+                _, seg_n, ext = resource
+                expected_ext = "m4s" if seg_fmt == "fmp4" else "ts"
+                if ext != expected_ext:
+                    self.send_error(404)
+                    return
+                self._serve_hls_segment(ctx, seg_n)
+                return
+            self.send_error(404)
+        finally:
+            self._release_stream_context(ctx)
 
     def _build_ffmpeg_cmd(self, ctx, seek_seconds=None):
         """Build the ffmpeg remux command list.
@@ -1660,11 +1731,10 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     remote_end = payload_remote_start + payload_size - 1
 
                     req = Request(ctx["remote_url"])
+                    _add_request_headers(req, ctx.get("auth_header"))
                     req.add_header(
                         "Range", "bytes={}-{}".format(remote_pos, remote_end)
                     )
-                    if ctx.get("auth_header"):
-                        req.add_header("Authorization", ctx["auth_header"])
 
                     # nosemgrep
                     with urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
@@ -2271,6 +2341,24 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     if current > end:
                         return
 
+                if result in (
+                    _UPSTREAM_RANGE_CLIENT_ERROR,
+                    _UPSTREAM_RANGE_PROTOCOL_MISMATCH,
+                ):
+                    terminal_reason = (
+                        "upstream_client_error"
+                        if result == _UPSTREAM_RANGE_CLIENT_ERROR
+                        else "protocol_mismatch"
+                    )
+                    xbmc.log(
+                        "NZB-DAV: Aborting pass-through at byte {} "
+                        "(result={}, reason={})".format(
+                            current, result, terminal_reason
+                        ),
+                        xbmc.LOGERROR,
+                    )
+                    return
+
                 remaining = end - current + 1
                 skip = self._find_skip_offset(ctx, current, end)
 
@@ -2474,9 +2562,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
         abort cleanly.
         """
         req = Request(ctx["remote_url"])
+        _add_request_headers(req, ctx.get("auth_header"))
         req.add_header("Range", "bytes={}-{}".format(start, end))
-        if ctx.get("auth_header"):
-            req.add_header("Authorization", ctx["auth_header"])
 
         contract_mode = contract_mode or _get_strict_contract_mode()
         requested = end - start + 1
@@ -2496,6 +2583,18 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 )
             )
         except (OSError, ValueError) as e:
+            if _is_terminal_http_client_error(e):
+                code = getattr(e, "code", "?")
+                xbmc.log(
+                    "NZB-DAV: Proxy upstream client error at byte {}: HTTP {} "
+                    "(reason=upstream_client_error)".format(start, code),
+                    xbmc.LOGERROR,
+                )
+                if code in (401, 403):
+                    _notify_error(
+                        "WebDAV returned HTTP {}; check credentials/path".format(code)
+                    )
+                return _UPSTREAM_RANGE_CLIENT_ERROR, 0
             category = _classify_upstream_error(e)
             xbmc.log(
                 "NZB-DAV: Proxy upstream open failed at byte {}: {} "
@@ -2727,9 +2826,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 if delay and probe_monitor.waitForAbort(delay):
                     return None
                 req = Request(ctx["remote_url"])
+                _add_request_headers(req, ctx.get("auth_header"))
                 req.add_header("Range", "bytes={}-{}".format(target, probe_end))
-                if ctx.get("auth_header"):
-                    req.add_header("Authorization", ctx["auth_header"])
                 try:
                     # nosemgrep
                     with urlopen(  # nosec B310 — URL from user-configured stream
@@ -3832,7 +3930,7 @@ class StreamProxy:
             self._server.stream_context = None
             self._server.active_ffmpeg = None
         for ctx in sessions:
-            self._cleanup_session(ctx)
+            self._cleanup_session_or_defer(ctx)
 
     def cleanup_session_by_id(self, session_id):
         """Tear down a single session by id, cleanup outside the lock.
@@ -3853,7 +3951,18 @@ class StreamProxy:
             if ctx is not None and getattr(self._server, "stream_context", None) is ctx:
                 self._server.stream_context = None
         if ctx is not None:
-            self._cleanup_session(ctx)
+            self._cleanup_session_or_defer(ctx)
+
+    def _cleanup_session_or_defer(self, ctx):
+        """Cleanup now, or wait until in-flight handlers release the ctx."""
+        with self._context_lock:
+            if ctx.get("_cleanup_started"):
+                return
+            if int(ctx.get("_active_handlers", 0) or 0) > 0:
+                ctx["_cleanup_pending"] = True
+                return
+            ctx["_cleanup_started"] = True
+        self._cleanup_session(ctx)
 
     @staticmethod
     def _try_faststart_layout(remote_url, content_length, auth_header):
@@ -3898,7 +4007,7 @@ class StreamProxy:
         if active_ffmpeg:
             try:
                 active_ffmpeg.kill()
-                active_ffmpeg.wait()
+                active_ffmpeg.wait(timeout=5)
             except (OSError, subprocess.SubprocessError, ValueError):
                 pass
 
@@ -4026,6 +4135,9 @@ class StreamProxy:
         ctx["ffmpeg_lock"] = threading.Lock()
         ctx["active_ffmpeg"] = None
         ctx["current_byte_pos"] = 0
+        ctx["_active_handlers"] = 0
+        ctx["_cleanup_pending"] = False
+        ctx["_cleanup_started"] = False
 
         if ctx.get("mode") == "hls":
             workdir = _choose_hls_workdir()
@@ -4083,7 +4195,7 @@ class StreamProxy:
         # Cleanup outside the lock — `_cleanup_session` does proc.kill +
         # proc.wait, which on a stuck ffmpeg can block other lock waiters.
         for evicted_ctx in evicted:
-            self._cleanup_session(evicted_ctx)
+            self._cleanup_session_or_defer(evicted_ctx)
 
         if ctx.get("mode") == "hls":
             return "http://127.0.0.1:{}/hls/{}/playlist.m3u8".format(
@@ -4156,6 +4268,7 @@ class StreamProxy:
 
         if is_mp4:
             content_length = self._get_content_length(remote_url, auth_header)
+            content_length_unknown = content_length <= 0
             faststart = self._try_faststart_layout(
                 remote_url, content_length, auth_header
             )
@@ -4204,7 +4317,14 @@ class StreamProxy:
                 # and would time out the prepare_stream_via_service call.
                 _TEMP_FASTSTART_MAX = 4 * 1073741824  # 4 GB
                 ffmpeg_path = self._get_ffmpeg_capabilities().get("ffmpeg_path")
-                if content_length > _TEMP_FASTSTART_MAX:
+                if content_length_unknown:
+                    xbmc.log(
+                        "NZB-DAV: MP4 content length unknown; skipping "
+                        "temp-file faststart",
+                        xbmc.LOGWARNING,
+                    )
+                    temp_path = None
+                elif content_length > _TEMP_FASTSTART_MAX:
                     xbmc.log(
                         "NZB-DAV: File too large for temp-file faststart "
                         "({}B > {}B), skipping to MKV remux".format(
@@ -4256,6 +4376,11 @@ class StreamProxy:
                     }
                     xbmc.log("NZB-DAV: MP4 fallback to MKV remux", xbmc.LOGWARNING)
                 else:
+                    if content_length_unknown:
+                        raise OSError(
+                            "Unable to determine content length for MP4 stream "
+                            "and ffmpeg unavailable"
+                        )
                     # Last resort: direct proxy (may fail for large files)
                     ctx = {
                         "remote_url": remote_url,
@@ -4267,12 +4392,23 @@ class StreamProxy:
                     }
         else:
             content_length = self._get_content_length(remote_url, auth_header)
+            content_length_unknown = content_length <= 0
             threshold = _get_force_remux_threshold_bytes()
-            needs_remux = bool(threshold) and content_length >= threshold
+            needs_remux = content_length_unknown or (
+                bool(threshold) and content_length >= threshold
+            )
             force_mode = _get_force_remux_mode()
             if needs_remux:
-                cache_zero = has_cache_memorysize_zero()
-                if cache_zero and force_mode in ("matroska", "passthrough"):
+                cache_zero = (
+                    False if content_length_unknown else has_cache_memorysize_zero()
+                )
+                if content_length_unknown:
+                    xbmc.log(
+                        "NZB-DAV: Content length unknown; forcing live remux "
+                        "instead of zero-byte pass-through",
+                        xbmc.LOGWARNING,
+                    )
+                elif cache_zero and force_mode in ("matroska", "passthrough"):
                     xbmc.log(
                         "NZB-DAV: advancedsettings.xml cache=0 confirmed; "
                         "using pass-through for {}B file (force_remux_mode={})".format(
@@ -4477,6 +4613,11 @@ class StreamProxy:
                     )
             else:
                 if needs_remux:
+                    if content_length_unknown:
+                        raise OSError(
+                            "Unable to determine content length for stream "
+                            "and ffmpeg unavailable"
+                        )
                     xbmc.log(
                         "NZB-DAV: {}B file exceeds remux threshold but no "
                         "ffmpeg found — falling back to pass-through, "
@@ -4580,7 +4721,10 @@ class StreamProxy:
                 stdout_bytes, _ = proc.communicate(timeout=30)
             except subprocess.TimeoutExpired:
                 proc.kill()
-                proc.wait()
+                try:
+                    proc.communicate(timeout=5)
+                except (OSError, subprocess.SubprocessError):
+                    pass
                 xbmc.log("NZB-DAV: ffprobe duration timed out", xbmc.LOGWARNING)
                 return None
             if proc.returncode != 0:
@@ -4827,8 +4971,7 @@ class StreamProxy:
     def _get_content_length(url, auth_header):
         """Get file size via HEAD or range probe."""
         req = Request(url, method="HEAD")
-        if auth_header:
-            req.add_header("Authorization", auth_header)
+        _add_request_headers(req, auth_header)
         try:
             # nosemgrep
             with urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
@@ -4839,9 +4982,8 @@ class StreamProxy:
             pass
         try:
             req = Request(url)
+            _add_request_headers(req, auth_header)
             req.add_header("Range", "bytes=-1")
-            if auth_header:
-                req.add_header("Authorization", auth_header)
             # nosemgrep
             with urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
                 req, timeout=10
@@ -4904,6 +5046,7 @@ def prepare_stream_via_service(port, remote_url, auth_header=None):
     url = "http://127.0.0.1:{}/prepare".format(port)
     data = json.dumps({"remote_url": remote_url, "auth_header": auth_header})
     req = Request(url, data=data.encode(), method="POST")
+    req.add_header("User-Agent", HTTP_USER_AGENT)
     req.add_header("Content-Type", "application/json")
     try:
         # nosemgrep

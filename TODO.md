@@ -1280,7 +1280,7 @@ The two `PROXY_EPIC_*.md` one-pagers (`ARTICLE_HEALTH`, `NNTP_TUNING`) are alrea
 
 **Status (2026-04-25 cleanup pass).** Multiple surgical sweeps across April closed the bulk of §H findings and verified the rest as false positives. As of this pass the per-item fix annotations are stripped — what's listed below is the current open set; anything not listed has been closed in code or marked stale and removed for clarity. What's left to act on is concentrated in three buckets:
 
-- **§H.4 still-open architectural** — three High items (auth_header rotation, stream_context per-server-singleton, conftest module-level mock teardown) that need design before code.
+- **§H.4 still-open architectural** — one High item remains (conftest module-level mock teardown); the proxy auth/client-error masking and active-context cleanup races are fixed.
 - **§H.3 architectural / coordination** — items like the prune-vs-handler race, HlsProducer.prepare race, _retry_original_range boundary update, queue-adoption nzo_id race, _ensure_ffmpeg_headed_for lock duration, force-quit nzo_id orphan, ffmpeg-respawn-on-MP4-remux-crash. Each touches concurrency contracts that surgical fixes can't safely change without reproducer + soak.
 - **§H.2 historical** — most was closed by PR-1 (`16e7122`) and the 20-agent review remediation (`4103f5d`); the residue is theme-level (credential leaks beyond `apikey=`, mp4_parser unvalidated box sizes) that the cluster-of-bugs framing makes hard to "close" item-by-item.
 
@@ -1297,12 +1297,12 @@ Run the next bug-hunt pass on a dated tree if you want a fresh open-issue list �
 
 #### H.2.HIGH
 
-##### H1. Stream proxy session/lifetime races — H1a/b still open (architectural)
+##### [x] H1. Stream proxy session/lifetime races — H1a/b fixed
 
-Most of the original seven findings closed: `clear_sessions` does snapshot-then-cleanup; `_get_stream_context` is `_get_server_context_lock`-wrapped; `_prune_sessions_locked` returns evictions for caller-side cleanup; H1d's concurrent-spawn race closed via the CAS pattern in `_start_remux_process`. What remains needs a refactor that's bigger than a one-line fix:
+Most of the original seven findings closed earlier: `clear_sessions` does snapshot-then-cleanup; `_get_stream_context` is `_get_server_context_lock`-wrapped; `_prune_sessions_locked` returns evictions for caller-side cleanup; H1d's concurrent-spawn race closed via the CAS pattern in `_start_remux_process`.
 
-- **H1a. Use-after-free on prune.** `_get_stream_context` returns a `ctx` reference under lock; a concurrent prune (TTL or LRU cap) can pop+cleanup that ctx before the handler finishes serving from `temp_path` / `active_ffmpeg`. Mitigation needs per-ctx reference counting (handler increments on entry, prune skips refcount>0) or a graveyard/reaper queue. Real-world impact is small because Kodi plays one stream at a time and `prepare_stream → clear_sessions` keeps the table near-empty, but the race is structurally present. Bigger blast radius than benefit for a TV-streaming addon today.
-- **H1b. LRU cap evicts an active session under the same race.** The `_MAX_STREAM_SESSIONS = 8` cap only matters if `clear_sessions()` fails to drain; same root cause and mitigation path as H1a.
+- [x] **H1a. Use-after-free on prune.** Fixed by request leases on `_get_stream_context(acquire=True)` plus deferred `_cleanup_session_or_defer()` cleanup until active handlers release the ctx; covered by `test_clear_sessions_defers_cleanup_until_active_handler_releases_context`. (2026-04-25)
+- [x] **H1b. LRU cap evicts an active session under the same race.** Fixed by routing prune/LRU evictions through the same deferred cleanup path. (2026-04-25)
 
 #### H.2.MEDIUM
 
@@ -1527,7 +1527,7 @@ Most of the original seven findings closed: `clear_sessions` does snapshot-then-
 #### H.3.High
 
 - **Unlocked `_get_stream_context` mutation when lock is None** | `stream_proxy.py:_get_stream_context` | The "lock is None" path only fires when `_get_server_context_lock(server)` returns None (test fixtures or pre-init). Production `StreamProxy` instances always have `_context_lock` set, so the unlocked branch never runs in the live service. False positive for production paths; cosmetic for the test branch.
-- **Prune evicts ctx that active handlers still reference** | overlaps with §H.2-H1a/b above. Real-world impact mitigated by `prepare_stream → clear_sessions` keeping the table near-empty under Kodi's "one stream at a time" model. Architectural fix (per-ctx refcounts) deferred.
+- [x] **Prune evicts ctx that active handlers still reference** | Fixed by per-request ctx leases and deferred cleanup; see §H.2-H1a/b. (2026-04-25)
 
 - **ffmpeg remux path has no respawn/retry on early crash** | `stream_proxy.py:_start_remux_process` family | MP4 remux crashes during startup return a dead stream; only the HLS path auto-respawns. Architectural — needs the same retry-budget + restart-with-seek pattern that HLS uses.
 
@@ -1585,12 +1585,12 @@ Most of the original seven findings closed: `clear_sessions` does snapshot-then-
 
 > Scope: 50 Explore agents run in parallel against the same `3ee019b` tree as §H.3, biased toward newer code paths (Dolby Vision parser, cache prompt, contract-mismatch hardening, Prowlarr search), deeper bug classes (typed-contract drift, TOCTOU, NTP wall-clock arithmetic), more end-to-end scenarios, and the build / CI / test scaffolding (`scripts/`, `.github/workflows/`, `tests/conftest.py`). Items already present in §H.2 or §H.3 were dropped during dedup; spot-checks against the source confirmed the bulk but rejected a handful (build_zip `os.walk` symlinks, generate_repo zip-version, stream_max_retries `int()` wrapping, generate_repo repo-fanart asset).
 >
-> **Status (2026-04-24):** ~24 of the original 36 findings have been fixed in commits `06a047a` and `0ae903f`. The entries below are what remains: three architectural items that need design before code, plus a handful of false-positive / cosmetic items that were rejected on closer inspection of the live code. Severities are still agent-assigned and may not match real-world impact.
+> **Status (2026-04-25):** Most of the original 36 findings have been fixed. The entries below are what remains: one architectural item that needs design before code, plus a handful of false-positive / cosmetic items that were rejected on closer inspection of the live code. Severities are still agent-assigned and may not match real-world impact.
 
-#### H.4.High — still open (architectural)
+#### H.4.High — still open / recently closed
 
-- **Cached `ctx["auth_header"]` survives nzbdav apikey rotation** | `stream_proxy.py` (ctx auth header) | 401/403 from a rotated key is caught generically and feeds the zero-fill recovery loop, masking auth failure as data corruption. Fix needs a 401-aware exception path in `_stream_upstream_range` plus a refresh hook to re-read the WebDAV auth headers and tear down the active session, which is invasive enough to merit a design note before code.
-- **Shared `self._server.stream_context` torn down by second client** | `stream_proxy.py:_get_stream_context` | Concurrent `prepare_stream` from a second player calls `clear_sessions()` mid-handler on the first. Fix needs the stream-context registry to be keyed by `session_id` rather than a singleton on the server, which touches every call site of `_get_stream_context` and the prune/eviction path.
+- [x] **Cached `ctx["auth_header"]` survives nzbdav apikey rotation** | 401/403 no longer feed the zero-fill recovery path; `_stream_upstream_range` treats terminal HTTP client errors as fatal and notifies on auth failures. A rotated key still requires the user to start a fresh stream, but it is no longer masked as data corruption. Covered by `test_serve_proxy_aborts_terminal_http_client_error_without_zero_fill`. (2026-04-25)
+- [x] **Shared `self._server.stream_context` torn down by second client** | Active handlers now hold ctx leases, and `clear_sessions()` / prune remove registry entries without deleting resources until the handler releases. Covered by `test_clear_sessions_defers_cleanup_until_active_handler_releases_context`. (2026-04-25)
 - **`tests/conftest.py` module-level mock install with no teardown** | `tests/conftest.py:14-15,51,92` | `sys.modules["xbmc"]` patches and `xbmc.Player = _FakePlayer` persist for the entire test session. Refactoring this to a session-scoped autouse fixture with explicit teardown is a large test-scaffolding change and not tackled in this sweep.
 
 #### H.4.Medium — still open / deferred

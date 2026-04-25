@@ -7,6 +7,10 @@ import struct
 from unittest.mock import MagicMock, patch
 
 
+def _request_header(req, name):
+    return {key.lower(): value for key, value in req.header_items()}.get(name.lower())
+
+
 def test_read_box_header_standard():
     """Standard 8-byte box header: 4-byte size + 4-byte type."""
     from resources.lib.mp4_parser import read_box_header
@@ -311,6 +315,21 @@ def test_fetch_remote_mp4_layout_rejects_zero_file_size():
     assert layout is None
     # No network call should be issued for an empty file.
     assert mock_urlopen.call_count == 0
+
+
+def test_http_range_sends_addon_user_agent():
+    from resources.lib.mp4_parser import _http_range
+
+    resp = MagicMock()
+    resp.read.return_value = b"abcd"
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=False)
+
+    with patch("resources.lib.mp4_parser.urlopen", return_value=resp) as mocked:
+        assert _http_range("http://host/file.mp4", 0, 3) == b"abcd"
+
+    req = mocked.call_args[0][0]
+    assert _request_header(req, "User-Agent") == "NZB-DAV Kodi Addon"
 
 
 def test_fetch_remote_mp4_layout_rejects_negative_file_size():

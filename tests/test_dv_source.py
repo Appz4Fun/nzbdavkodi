@@ -4,6 +4,10 @@ from unittest.mock import patch
 from resources.lib.dv_source import probe_dolby_vision_source
 
 
+def _request_header(req, name):
+    return {key.lower(): value for key, value in req.header_items()}.get(name.lower())
+
+
 def _box(box_type, payload):
     return struct.pack(">I", 8 + len(payload)) + box_type + payload
 
@@ -71,6 +75,18 @@ def _mock_urlopen_from_file(file_bytes):
         return _MockResponse(data)
 
     return _mock
+
+
+def test_http_range_sends_addon_user_agent():
+    from resources.lib.dv_source import _http_range
+
+    with patch(
+        "resources.lib.dv_source.urlopen", return_value=_MockResponse(b"abcd")
+    ) as mocked:
+        assert _http_range("http://host/file.mp4", 0, 3) == b"abcd"
+
+    req = mocked.call_args[0][0]
+    assert _request_header(req, "User-Agent") == "NZB-DAV Kodi Addon"
 
 
 def _nal(body):

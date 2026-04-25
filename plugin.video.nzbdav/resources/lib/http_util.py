@@ -103,7 +103,8 @@ def redact_text(text):
 
 
 _ALLOWED_HTTP_SCHEMES = frozenset({"http", "https"})
-_HTTP_USER_AGENT = "NZB-DAV Kodi Addon"
+HTTP_USER_AGENT = "NZB-DAV Kodi Addon"
+_HTTP_USER_AGENT = HTTP_USER_AGENT
 
 
 def _response_status(resp):

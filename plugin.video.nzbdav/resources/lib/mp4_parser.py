@@ -13,6 +13,8 @@ import threading
 from collections import OrderedDict
 from urllib.request import Request, urlopen
 
+from resources.lib.http_util import HTTP_USER_AGENT
+
 
 def read_box_header(data, offset):
     """Read an MP4 box header at the given offset.
@@ -253,6 +255,7 @@ _MAX_MOOV_SIZE = 50 * 1048576  # 50 MB — safety cap for moov fetch
 def _http_range(url, start, end, auth_header=None):
     """Fetch a byte range from a URL. Returns bytes."""
     req = Request(url)
+    req.add_header("User-Agent", HTTP_USER_AGENT)
     req.add_header("Range", "bytes={}-{}".format(start, end))
     if auth_header:
         req.add_header("Authorization", auth_header)

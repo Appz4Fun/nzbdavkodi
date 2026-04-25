@@ -4,9 +4,11 @@
 """Unit tests for stream_proxy.py remux and range-serving logic."""
 
 import io
+import json
 import subprocess
 import threading
 from unittest.mock import MagicMock, patch
+from urllib.error import HTTPError
 
 import pytest
 from resources.lib.stream_proxy import _StreamHandler
@@ -115,6 +117,11 @@ def _make_prepare_post_handler(body=b"{}", content_length=None, path="/prepare")
     handler.end_headers = MagicMock()
     handler.send_error = MagicMock()
     return handler
+
+
+def _request_header(req, name):
+    """Return a Request header value case-insensitively."""
+    return {key.lower(): value for key, value in req.header_items()}.get(name.lower())
 
 
 def test_parse_range_standard():
@@ -347,6 +354,22 @@ def test_get_content_length_from_head():
         assert sp._get_content_length("http://host/file.mp4", None) == 12345
 
 
+def test_get_content_length_sends_addon_user_agent():
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    mock_resp = MagicMock()
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    mock_resp.headers.get.return_value = "12345"
+
+    with patch("resources.lib.stream_proxy.urlopen", return_value=mock_resp) as mocked:
+        sp._get_content_length("http://host/file.mp4", None)
+
+    req = mocked.call_args[0][0]
+    assert _request_header(req, "User-Agent") == "NZB-DAV Kodi Addon"
+
+
 def test_get_content_length_returns_zero_on_failure():
     from resources.lib.stream_proxy import StreamProxy
 
@@ -490,6 +513,72 @@ def test_prepare_stream_large_mkv_falls_back_without_ffmpeg():
     ctx = sp._server.stream_context
     assert ctx["remux"] is False
     assert ctx["content_length"] == huge
+
+
+def test_prepare_stream_unknown_length_mkv_remuxes_when_ffmpeg_available():
+    """Unknown-size streams must not become zero-byte pass-through responses."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_context = None
+    sp._server.stream_sessions = {}
+    sp._context_lock = threading.RLock()
+    sp.port = 9999
+
+    with patch.object(sp, "_get_content_length", return_value=0), patch.object(
+        sp,
+        "_get_ffmpeg_capabilities",
+        return_value={"ffmpeg_path": "/usr/bin/ffmpeg", "hls_fmp4": False},
+    ), patch.object(sp, "_probe_duration", return_value=None):
+        url, info = sp.prepare_stream("http://host/unknown.mkv")
+
+    ctx = next(iter(sp._server.stream_sessions.values()))
+    assert url.startswith("http://127.0.0.1:9999/stream/")
+    assert ctx["remux"] is True
+    assert ctx["total_bytes"] == 0
+    assert info["remux"] is True
+    assert info["seekable"] is False
+
+
+def test_prepare_stream_unknown_length_mkv_without_ffmpeg_raises():
+    """Unknown-size non-MP4 streams must not fall back to zero-byte pass-through."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_context = None
+    sp._server.stream_sessions = {}
+    sp._context_lock = threading.RLock()
+    sp.port = 9999
+
+    with patch.object(sp, "_get_content_length", return_value=0), patch.object(
+        sp,
+        "_get_ffmpeg_capabilities",
+        return_value={"ffmpeg_path": None, "hls_fmp4": False},
+    ):
+        with pytest.raises(OSError, match="content length"):
+            sp.prepare_stream("http://host/unknown.mkv")
+
+
+def test_prepare_stream_unknown_length_mp4_without_ffmpeg_raises():
+    """Unknown-size MP4 also cannot use the final pass-through fallback."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_context = None
+    sp._server.stream_sessions = {}
+    sp._context_lock = threading.RLock()
+    sp.port = 9999
+
+    with patch.object(sp, "_get_content_length", return_value=0), patch.object(
+        sp,
+        "_get_ffmpeg_capabilities",
+        return_value={"ffmpeg_path": None, "hls_fmp4": False},
+    ), patch("resources.lib.stream_proxy.fetch_remote_mp4_layout", return_value=None):
+        with pytest.raises(OSError, match="content length"):
+            sp.prepare_stream("http://host/unknown.mp4")
 
 
 def test_prepare_stream_respects_disabled_threshold():
@@ -1036,6 +1125,16 @@ def test_do_post_rejects_prepare_bodies_over_64k():
     handler.server.owner_proxy.prepare_stream.assert_not_called()
 
 
+def test_do_post_returns_500_on_unhandled_prepare_error():
+    body = json.dumps({"remote_url": "http://host/movie.mkv"}).encode()
+    handler = _make_prepare_post_handler(body=body)
+    handler.server.owner_proxy.prepare_stream.side_effect = RuntimeError("boom")
+
+    handler.do_POST()
+
+    handler.send_error.assert_called_once_with(500)
+
+
 def test_prepare_stream_uses_unique_session_urls():
     """Each prepare_stream must produce a unique session URL, and the
     previous session must be torn down so at most one session is live
@@ -1554,6 +1653,27 @@ def test_probe_duration_ffprobe_returns_none_on_nonzero_exit():
     assert result is None
 
 
+def test_probe_duration_ffprobe_timeout_reaps_with_bounded_communicate():
+    """Timeout cleanup must not block indefinitely on proc.wait()."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    mock_proc = MagicMock()
+    mock_proc.communicate.side_effect = [
+        subprocess.TimeoutExpired(["ffprobe"], 30),
+        (b"", b""),
+    ]
+
+    with patch("resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc):
+        result = StreamProxy._probe_duration_ffprobe(
+            "/usr/bin/ffprobe", "http://host/stuck.mkv"
+        )
+
+    assert result is None
+    mock_proc.kill.assert_called_once()
+    assert mock_proc.communicate.call_args_list[1].kwargs["timeout"] == 5
+    mock_proc.wait.assert_not_called()
+
+
 def test_probe_duration_ffmpeg_fallback_budget_handles_subtitle_wall():
     """Regression test for the Shawshank 30+ subtitle stream bug.
 
@@ -2056,6 +2176,19 @@ def test_serve_remux_write_timeout_exits_loop():
     mock_proc.wait.assert_called()
 
 
+def test_finish_remux_uses_bounded_wait_after_kill():
+    ctx = {"active_ffmpeg": None}
+    handler = _make_handler_with_server(ctx)
+    proc = MagicMock()
+    lock = threading.Lock()
+    stderr_thread = MagicMock()
+
+    handler._finish_remux(ctx, proc, lock, [], stderr_thread, 0)
+
+    proc.kill.assert_called_once()
+    proc.wait.assert_called_once_with(timeout=5)
+
+
 def test_serve_remux_sets_socket_write_timeout():
     """The remux handler must set a socket write timeout on the connection
     before streaming, so a blocked write from a half-dead client can't hang
@@ -2133,6 +2266,40 @@ def test_clear_sessions_kills_all_ffmpegs():
     proc_a.kill.assert_called_once()
     proc_b.kill.assert_called_once()
     assert sp._server.stream_sessions == {}
+
+
+def test_clear_sessions_defers_cleanup_until_active_handler_releases_context():
+    """A handler-held ctx must not have its files/procs removed mid-response."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._context_lock = threading.RLock()
+    sp.port = 9999
+
+    proc = MagicMock()
+    ctx = {"active_ffmpeg": proc}
+    sp._server.stream_context = ctx
+    sp._server.stream_sessions = {"abc": ctx}
+    sp._server.owner_proxy = sp
+
+    handler = _StreamHandler.__new__(_StreamHandler)
+    handler.server = sp._server
+    handler.path = "/stream/abc"
+
+    acquired = handler._get_stream_context(acquire=True)
+    assert acquired is ctx
+
+    sp.clear_sessions()
+
+    proc.kill.assert_not_called()
+    assert sp._server.stream_sessions == {}
+    assert ctx["_cleanup_pending"] is True
+
+    handler._release_stream_context(ctx)
+
+    proc.kill.assert_called_once()
+    proc.wait.assert_called_once_with(timeout=5)
 
 
 def test_prune_sessions_requires_context_lock_ownership():
@@ -5120,6 +5287,52 @@ def test_serve_proxy_streams_happy_path():
 
     handler.send_response.assert_called_once_with(206)
     assert _collect_written(handler) == payload
+
+
+def test_stream_upstream_range_sends_addon_user_agent():
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 1,
+    }
+    handler = _make_handler_with_server(ctx)
+
+    with patch(
+        "resources.lib.stream_proxy.urlopen",
+        return_value=_mock_urlopen_response(
+            [b"A"],
+            headers={"Content-Range": "bytes 0-0/1", "Content-Length": "1"},
+        ),
+    ) as mocked:
+        handler._stream_upstream_range(ctx, 0, 0)
+
+    req = mocked.call_args[0][0]
+    assert _request_header(req, "User-Agent") == "NZB-DAV Kodi Addon"
+
+
+def test_serve_proxy_aborts_terminal_http_client_error_without_zero_fill():
+    """Auth/path failures must not be disguised as missing-article gaps."""
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": "Basic expired",
+        "content_type": "video/x-matroska",
+        "content_length": 2048,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-2047")
+    err = HTTPError("http://host/movie.mkv", 401, "Unauthorized", hdrs=None, fp=None)
+
+    with patch("resources.lib.stream_proxy.urlopen", side_effect=err), patch(
+        "resources.lib.stream_proxy._retry_ladder_enabled", return_value=False
+    ), patch.object(handler, "_find_skip_offset") as mock_skip, patch(
+        "resources.lib.stream_proxy._notify"
+    ) as mock_notify:
+        handler._serve_proxy(ctx)
+
+    mock_skip.assert_not_called()
+    handler.wfile.write.assert_not_called()
+    assert mock_notify.call_args[0][0] == "NZB-DAV"
+    assert "HTTP 401" in mock_notify.call_args[0][1]
 
 
 @patch("resources.lib.stream_proxy.xbmc")
