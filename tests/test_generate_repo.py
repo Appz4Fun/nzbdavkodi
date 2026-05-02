@@ -56,7 +56,7 @@ def test_generate_repo_can_publish_release_zip_instead_of_worktree_addon(
 ):
     module = _load_generate_repo_module()
     monkeypatch.chdir(REPO_ROOT)
-    release_zip = tmp_path / "plugin.video.nzbdav-1.0.3.zip"
+    release_zip = tmp_path / "release-addon.zip"
     release_addon_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="plugin.video.nzbdav" name="NZB-DAV" version="1.0.3">
     <extension point="xbmc.addon.metadata">
@@ -87,6 +87,9 @@ def test_generate_repo_can_publish_release_zip_instead_of_worktree_addon(
         tmp_path / "dist" / "plugin.video.nzbdav" / "plugin.video.nzbdav-1.0.3.zip"
     ).exists()
     assert (tmp_path / "dist" / "plugin.video.nzbdav-1.0.3.zip").exists()
+    assert not (
+        tmp_path / "dist" / "plugin.video.nzbdav" / "release-addon.zip"
+    ).exists()
     assert (
         tmp_path / "dist" / "plugin.video.nzbdav" / "resources" / "icon.png"
     ).read_bytes() == b"icon"

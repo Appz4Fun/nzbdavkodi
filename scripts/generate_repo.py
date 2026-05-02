@@ -58,6 +58,13 @@ def _read_addon_xml_from_zip(zip_path, addon_id):
     return ET.tostring(root, encoding="unicode")
 
 
+def _read_addon_version_from_zip(zip_path, addon_id):
+    addon_xml_name = "{}/addon.xml".format(addon_id)
+    with zipfile.ZipFile(zip_path) as zf:
+        xml_bytes = zf.read(addon_xml_name)
+    return _parse_xml_bytes(xml_bytes).getroot().attrib["version"]
+
+
 def write_pages_index(output_dir, repo_version="1.0.0"):
     """Write a Kodi-browsable directory listing for the root."""
     index_path = os.path.join(output_dir, "index.html")
@@ -75,7 +82,8 @@ def write_pages_index(output_dir, repo_version="1.0.0"):
 
 def _copy_addon_artifacts(output_dir, addon_id, main_addon, addon_zip=None):
     if addon_zip:
-        zip_name = os.path.basename(addon_zip)
+        version = _read_addon_version_from_zip(addon_zip, addon_id)
+        zip_name = "{}-{}.zip".format(addon_id, version)
         dest_dir = os.path.join(output_dir, addon_id)
         os.makedirs(dest_dir, exist_ok=True)
         shutil.copy2(addon_zip, os.path.join(dest_dir, zip_name))
