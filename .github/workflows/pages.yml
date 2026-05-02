@@ -35,11 +35,17 @@ jobs:
       - name: Configure Pages
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
-      - name: Build addon zip
-        run: python3 scripts/build_zip.py
+      - name: Download latest release addon zip
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern 'plugin.video.nzbdav-*.zip' \
+            --output release-addon.zip
 
       - name: Generate repository metadata
-        run: python3 scripts/generate_repo.py --output-dir dist
+        run: python3 scripts/generate_repo.py --output-dir dist --addon-zip release-addon.zip
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0

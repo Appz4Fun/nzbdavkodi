@@ -5,6 +5,7 @@
 
 import importlib.util
 import xml.etree.ElementTree as ET
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -48,6 +49,47 @@ def test_generate_repo_omits_full_changelog_from_repo_index(tmp_path, monkeypatc
     metadata = addon.find("./extension[@point='xbmc.addon.metadata']")
     assert metadata is not None
     assert metadata.find("news") is None
+
+
+def test_generate_repo_can_publish_release_zip_instead_of_worktree_addon(
+    tmp_path, monkeypatch
+):
+    module = _load_generate_repo_module()
+    monkeypatch.chdir(REPO_ROOT)
+    release_zip = tmp_path / "plugin.video.nzbdav-1.0.3.zip"
+    release_addon_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<addon id="plugin.video.nzbdav" name="NZB-DAV" version="1.0.3">
+    <extension point="xbmc.addon.metadata">
+        <summary lang="en">Release addon</summary>
+        <news>release notes are too large for repository metadata</news>
+        <assets>
+            <icon>resources/icon.png</icon>
+            <fanart>resources/fanart.jpg</fanart>
+        </assets>
+    </extension>
+</addon>
+"""
+    with zipfile.ZipFile(release_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("plugin.video.nzbdav/addon.xml", release_addon_xml)
+        zf.writestr("plugin.video.nzbdav/resources/icon.png", b"icon")
+        zf.writestr("plugin.video.nzbdav/resources/fanart.jpg", b"fanart")
+
+    module.generate_repo(output_dir=str(tmp_path / "dist"), addon_zip=str(release_zip))
+
+    tree = ET.parse(tmp_path / "dist" / "addons.xml")
+    addon = tree.find("./addon[@id='plugin.video.nzbdav']")
+    assert addon is not None
+    assert addon.attrib["version"] == "1.0.3"
+    metadata = addon.find("./extension[@point='xbmc.addon.metadata']")
+    assert metadata is not None
+    assert metadata.find("news") is None
+    assert (
+        tmp_path / "dist" / "plugin.video.nzbdav" / "plugin.video.nzbdav-1.0.3.zip"
+    ).exists()
+    assert (tmp_path / "dist" / "plugin.video.nzbdav-1.0.3.zip").exists()
+    assert (
+        tmp_path / "dist" / "plugin.video.nzbdav" / "resources" / "icon.png"
+    ).read_bytes() == b"icon"
 
 
 def test_parse_local_xml_rejects_doctype(tmp_path):
