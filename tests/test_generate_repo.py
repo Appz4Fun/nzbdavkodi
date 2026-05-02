@@ -51,7 +51,7 @@ def test_generate_repo_omits_full_changelog_from_repo_index(tmp_path, monkeypatc
     assert metadata.find("news") is None
 
 
-def test_generate_repo_omits_repository_checksum_url(tmp_path, monkeypatch):
+def test_generate_repo_includes_repository_checksum_url(tmp_path, monkeypatch):
     module = _load_generate_repo_module()
     monkeypatch.chdir(REPO_ROOT)
 
@@ -62,7 +62,21 @@ def test_generate_repo_omits_repository_checksum_url(tmp_path, monkeypatch):
     assert repo is not None
     repo_dir = repo.find("./extension[@point='xbmc.addon.repository']/dir")
     assert repo_dir is not None
-    assert repo_dir.find("checksum") is None
+    assert (
+        repo_dir.findtext("checksum")
+        == "https://xbmc4lyfe.github.io/nzbdavkodi/addons.xml.md5"
+    )
+
+
+def test_generate_repo_writes_strict_md5_payload(tmp_path, monkeypatch):
+    module = _load_generate_repo_module()
+    monkeypatch.chdir(REPO_ROOT)
+
+    module.generate_repo(output_dir=str(tmp_path))
+
+    md5_payload = (tmp_path / "addons.xml.md5").read_bytes()
+    assert len(md5_payload) == 32
+    assert md5_payload.decode("ascii").isalnum()
 
 
 def test_generate_repo_can_publish_release_zip_instead_of_worktree_addon(

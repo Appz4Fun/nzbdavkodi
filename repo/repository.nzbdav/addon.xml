@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="repository.nzbdav"
        name="NZB-DAV Repository"
-       version="1.0.3"
+       version="1.0.4"
        provider-name="nzbdav">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
@@ -9,6 +9,7 @@
     <extension point="xbmc.addon.repository" name="NZB-DAV Repository">
         <dir>
             <info compressed="false">https://xbmc4lyfe.github.io/nzbdavkodi/addons.xml</info>
+            <checksum>https://xbmc4lyfe.github.io/nzbdavkodi/addons.xml.md5</checksum>
             <datadir zip="true">https://xbmc4lyfe.github.io/nzbdavkodi/</datadir>
         </dir>
     </extension>
