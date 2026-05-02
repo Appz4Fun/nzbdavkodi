@@ -51,6 +51,20 @@ def test_generate_repo_omits_full_changelog_from_repo_index(tmp_path, monkeypatc
     assert metadata.find("news") is None
 
 
+def test_generate_repo_omits_repository_checksum_url(tmp_path, monkeypatch):
+    module = _load_generate_repo_module()
+    monkeypatch.chdir(REPO_ROOT)
+
+    module.generate_repo(output_dir=str(tmp_path))
+
+    tree = ET.parse(tmp_path / "addons.xml")
+    repo = tree.find("./addon[@id='repository.nzbdav']")
+    assert repo is not None
+    repo_dir = repo.find("./extension[@point='xbmc.addon.repository']/dir")
+    assert repo_dir is not None
+    assert repo_dir.find("checksum") is None
+
+
 def test_generate_repo_can_publish_release_zip_instead_of_worktree_addon(
     tmp_path, monkeypatch
 ):
