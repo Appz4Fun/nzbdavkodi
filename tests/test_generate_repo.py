@@ -68,15 +68,16 @@ def test_generate_repo_includes_repository_checksum_url(tmp_path, monkeypatch):
     )
 
 
-def test_generate_repo_writes_strict_md5_payload(tmp_path, monkeypatch):
+def test_generate_repo_writes_crlf_terminated_md5_payload(tmp_path, monkeypatch):
     module = _load_generate_repo_module()
     monkeypatch.chdir(REPO_ROOT)
 
     module.generate_repo(output_dir=str(tmp_path))
 
     md5_payload = (tmp_path / "addons.xml.md5").read_bytes()
-    assert len(md5_payload) == 32
-    assert md5_payload.decode("ascii").isalnum()
+    assert len(md5_payload) == 34
+    assert md5_payload.endswith(b"\r\n")
+    assert md5_payload[:32].decode("ascii").isalnum()
 
 
 def test_generate_repo_can_publish_release_zip_instead_of_worktree_addon(
