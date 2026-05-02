@@ -24,7 +24,15 @@ def _parse_local_xml(path):
 def read_addon_xml(path):
     """Read an addon.xml and return its text content."""
     tree = _parse_local_xml(path)
-    return ET.tostring(tree.getroot(), encoding="unicode")
+    root = tree.getroot()
+    for metadata in root.findall("extension"):
+        if metadata.attrib.get("point") in {
+            "xbmc.addon.metadata",
+            "kodi.addon.metadata",
+        }:
+            for news in list(metadata.findall("news")):
+                metadata.remove(news)
+    return ET.tostring(root, encoding="unicode")
 
 
 def write_pages_index(output_dir, repo_version="1.0.0"):

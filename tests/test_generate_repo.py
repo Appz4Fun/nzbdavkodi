@@ -4,6 +4,7 @@
 """Tests for repository metadata generation."""
 
 import importlib.util
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -33,6 +34,20 @@ def test_generate_repo_writes_pages_root_files(tmp_path, monkeypatch):
     assert "repository.nzbdav-" in contents
     assert ".zip" in contents
     assert (tmp_path / ".nojekyll").exists()
+
+
+def test_generate_repo_omits_full_changelog_from_repo_index(tmp_path, monkeypatch):
+    module = _load_generate_repo_module()
+    monkeypatch.chdir(REPO_ROOT)
+
+    module.generate_repo(output_dir=str(tmp_path))
+
+    tree = ET.parse(tmp_path / "addons.xml")
+    addon = tree.find("./addon[@id='plugin.video.nzbdav']")
+    assert addon is not None
+    metadata = addon.find("./extension[@point='xbmc.addon.metadata']")
+    assert metadata is not None
+    assert metadata.find("news") is None
 
 
 def test_parse_local_xml_rejects_doctype(tmp_path):
