@@ -66,3 +66,59 @@ def test_get_configured_indexers_reads_enabled_custom_slot(mock_xbmcaddon):
             "api_key": "custom-key",
         }
     ]
+
+
+def test_build_search_url_appends_api_when_missing():
+    from resources.lib.direct_indexers import build_search_url
+
+    url = build_search_url(
+        "https://indexer.example",
+        {"apikey": "secret", "t": "movie", "o": "xml"},
+    )
+
+    assert url.startswith("https://indexer.example/api?")
+    assert "apikey=secret" in url
+    assert "t=movie" in url
+
+
+def test_build_search_url_preserves_existing_api_endpoint():
+    from resources.lib.direct_indexers import build_search_url
+
+    url = build_search_url(
+        "https://api.nzbgeek.info/api",
+        {"apikey": "secret", "t": "tvsearch", "o": "xml"},
+    )
+
+    assert url.startswith("https://api.nzbgeek.info/api?")
+
+
+def test_parse_results_uses_configured_label_when_xml_omits_indexer():
+    from resources.lib.direct_indexers import parse_results
+
+    xml_text = """<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2010/feeds/attributes/">
+<channel>
+<item>
+<title>The.Matrix.1999.1080p.BluRay.x264-GRP</title>
+<link>https://indexer.example/api?t=get&amp;id=abc&amp;apikey=secret</link>
+<pubDate>Mon, 01 Apr 2026 12:00:00 +0000</pubDate>
+<newznab:attr name="size" value="1234567890" />
+</item>
+</channel>
+</rss>"""
+
+    results, error = parse_results(xml_text, "My Indexer")
+
+    assert error is None
+    assert results[0]["title"] == "The.Matrix.1999.1080p.BluRay.x264-GRP"
+    assert results[0]["indexer"] == "My Indexer"
+    assert results[0]["size"] == "1234567890"
+
+
+def test_parse_results_reports_invalid_xml():
+    from resources.lib.direct_indexers import parse_results
+
+    results, error = parse_results("<html>bad", "My Indexer")
+
+    assert results == []
+    assert error.startswith("Direct indexer returned an invalid response:")
