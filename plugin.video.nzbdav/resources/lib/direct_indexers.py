@@ -3,6 +3,7 @@
 
 """Direct Newznab-compatible indexer provider."""
 
+from urllib.error import URLError
 from urllib.parse import urlencode, urlparse
 from xml.etree import ElementTree as ET
 
@@ -11,7 +12,11 @@ import xbmcaddon
 
 from resources.lib.http_util import (
     calculate_age as _calculate_age,
+    format_request_error as _format_request_error,
     get_xml_text as _get_text,
+    http_get as _http_get,
+    redact_text as _redact_text,
+    redact_url as _redact_url,
 )
 
 
@@ -26,6 +31,14 @@ PRESET_INDEXERS = (
 
 _CUSTOM_SLOT_IDS = ("custom1", "custom2", "custom3")
 NEWZNAB_NS = "http://www.newznab.com/DTD/2010/feeds/attributes/"
+_DIRECT_REQUEST_ERRORS = (
+    URLError,
+    AttributeError,
+    OSError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+)
 
 
 def _setting_enabled(addon, setting_id):
@@ -181,3 +194,129 @@ def parse_results(xml_text, fallback_indexer):
         return [], "Direct indexer returned an invalid response: expected RSS feed"
 
     return [_build_result(item, fallback_indexer) for item in root.iter("item")], None
+
+
+def _read_max_results():
+    raw = xbmcaddon.Addon().getSetting("max_results")
+    try:
+        max_results = int(raw) if raw not in (None, "") else 25
+    except (TypeError, ValueError):
+        max_results = 25
+    return max(1, min(max_results, 100))
+
+
+def _search_params(
+    search_type, title, api_key, max_results, imdb="", season="", episode=""
+):
+    params = {"apikey": api_key, "o": "xml", "limit": max_results}
+    if search_type == "episode":
+        params["t"] = "tvsearch"
+        if imdb:
+            params["imdbid"] = imdb
+        else:
+            params["q"] = title
+        if season:
+            params["season"] = season
+        if episode:
+            params["ep"] = episode
+    else:
+        params["t"] = "movie"
+        if imdb:
+            params["imdbid"] = imdb
+        else:
+            params["q"] = title
+    return params
+
+
+def _indexer_unavailable_error(indexer, error):
+    return "Direct indexer {} unavailable: {}".format(
+        indexer["label"], _format_request_error(error)
+    )
+
+
+def _fetch_indexer(indexer, params, error_prefix):
+    url = build_search_url(indexer["api_url"], params)
+    xbmc.log(
+        "NZB-DAV: Direct indexer {} search URL: {}".format(
+            indexer["label"], _redact_url(url)
+        ),
+        xbmc.LOGDEBUG,
+    )
+    try:
+        return _http_get(url, timeout=15), None
+    except _DIRECT_REQUEST_ERRORS as error:
+        xbmc.log(
+            "NZB-DAV: {}: {}".format(error_prefix, _redact_text(str(error))),
+            xbmc.LOGERROR,
+        )
+        return None, _indexer_unavailable_error(indexer, error)
+
+
+def _search_one_indexer(
+    indexer, search_type, title, max_results, imdb="", season="", episode=""
+):
+    params = _search_params(
+        search_type,
+        title,
+        indexer["api_key"],
+        max_results,
+        imdb=imdb,
+        season=season,
+        episode=episode,
+    )
+    xml_text, request_error = _fetch_indexer(
+        indexer, params, "Direct indexer {} search failed".format(indexer["label"])
+    )
+    if request_error:
+        return [], request_error
+    results, parse_error = parse_results(xml_text, indexer["label"])
+    if parse_error:
+        return [], parse_error
+
+    if not results and imdb and title:
+        params.pop("imdbid", None)
+        params["q"] = title
+        xml_text, request_error = _fetch_indexer(
+            indexer,
+            params,
+            "Direct indexer {} title fallback failed".format(indexer["label"]),
+        )
+        if request_error:
+            return [], request_error
+        results, parse_error = parse_results(xml_text, indexer["label"])
+        if parse_error:
+            return [], parse_error
+
+    return results, None
+
+
+def search_direct_indexers(search_type, title, year="", imdb="", season="", episode=""):
+    """Search all configured direct Newznab indexers."""
+    del year
+    indexers = get_configured_indexers()
+    if not indexers:
+        return [], None
+
+    max_results = _read_max_results()
+    all_results = []
+    errors = []
+
+    for indexer in indexers:
+        results, error = _search_one_indexer(
+            indexer,
+            search_type,
+            title,
+            max_results,
+            imdb=imdb,
+            season=season,
+            episode=episode,
+        )
+        if error:
+            errors.append(error)
+            xbmc.log("NZB-DAV: {}".format(error), xbmc.LOGWARNING)
+            continue
+        all_results.extend(results)
+
+    if not all_results and errors:
+        return [], errors[0]
+    return all_results, None
