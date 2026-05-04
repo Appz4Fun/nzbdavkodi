@@ -6,7 +6,7 @@
 import hashlib
 import re
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 import xbmc
@@ -46,10 +46,82 @@ def _setting_int(addon, key, default=0):
 
 def _valid_stream_url(url):
     """Return True for HTTP(S) stream URLs that are safe to probe."""
-    if not isinstance(url, str):
+    return _validated_probe_url(url) is not None
+
+
+def _split_http_url(url):
+    """Parse a URL and return parts only for simple HTTP(S) URLs."""
+    if not isinstance(url, str) or any(ord(char) < 0x20 for char in url):
         return False
-    parts = urlsplit(url)
-    return parts.scheme.lower() in _ALLOWED_STREAM_SCHEMES and bool(parts.netloc)
+    try:
+        parts = urlsplit(url)
+        if parts.scheme.lower() not in _ALLOWED_STREAM_SCHEMES:
+            return False
+        if not parts.netloc or not parts.hostname:
+            return False
+        if parts.username or parts.password:
+            return False
+        # Accessing .port validates that any explicit port is numeric/ranged.
+        _port = parts.port
+    except ValueError:
+        return False
+    return parts
+
+
+def _origin_key(parts):
+    scheme = parts.scheme.lower()
+    port = parts.port
+    if port is None:
+        port = 443 if scheme == "https" else 80
+    return scheme, parts.hostname.lower(), port
+
+
+def _path_is_under_base(path, base_path):
+    prefix = (base_path or "").rstrip("/")
+    if not prefix:
+        return True
+    return path == prefix or path.startswith(prefix + "/")
+
+
+def _configured_stream_bases():
+    """Return configured WebDAV/nzbdav bases that fallback probes may hit."""
+    try:
+        addon = xbmcaddon.Addon()
+        raw_bases = (
+            addon.getSetting("webdav_url"),
+            addon.getSetting("nzbdav_url"),
+        )
+    except Exception:  # pylint: disable=broad-except
+        raw_bases = ()
+
+    bases = []
+    for raw_base in raw_bases:
+        parts = _split_http_url(str(raw_base or "").rstrip("/"))
+        if parts:
+            bases.append(parts)
+    return bases
+
+
+def _validated_probe_url(url):
+    """Return a probe URL constrained to the configured WebDAV origin."""
+    candidate = _split_http_url(url)
+    if not candidate:
+        return None
+    for base in _configured_stream_bases():
+        if _origin_key(candidate) != _origin_key(base):
+            continue
+        if not _path_is_under_base(candidate.path or "/", base.path):
+            continue
+        return urlunsplit(
+            (
+                base.scheme.lower(),
+                base.netloc,
+                candidate.path or "/",
+                candidate.query,
+                "",
+            )
+        )
+    return None
 
 
 def _normalize_title(value):
@@ -219,9 +291,10 @@ def fingerprint_ranges(content_length):
 
 def fetch_content_length(url, auth_header, timeout=2):
     """Return Content-Length for a WebDAV stream URL, or 0."""
-    if not _valid_stream_url(url):
+    probe_url = _validated_probe_url(url)
+    if not probe_url:
         return 0
-    req = Request(url, method="HEAD")
+    req = Request(probe_url, method="HEAD")
     if auth_header:
         req.add_header("Authorization", auth_header)
     try:
@@ -251,9 +324,10 @@ def _content_range_matches_request(content_range, start, end, content_length=0):
 
 def fetch_range_digest(url, auth_header, start, end, timeout=2, content_length=0):
     """Read a byte range and return a SHA-256 digest of the returned bytes."""
-    if not _valid_stream_url(url):
+    probe_url = _validated_probe_url(url)
+    if not probe_url:
         return None
-    req = Request(url)
+    req = Request(probe_url)
     if auth_header:
         req.add_header("Authorization", auth_header)
     req.add_header("Range", "bytes={}-{}".format(start, end))

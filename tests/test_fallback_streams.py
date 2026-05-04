@@ -9,6 +9,7 @@ from resources.lib.fallback_streams import (
     attach_fallback_candidates,
     build_fallback_job_name,
     build_prepare_fallback_payload,
+    fetch_content_length,
     fetch_range_digest,
     fingerprint_ranges,
 )
@@ -42,6 +43,13 @@ def _result(title, link, size, meta=None):
             "container": "mkv",
         },
     }
+
+
+def _fallback_setting(key):
+    return {
+        "webdav_url": "http://webdav/content",
+        "nzbdav_url": "http://nzbdav:3000",
+    }.get(key, "")
 
 
 @patch("resources.lib.fallback_streams._fallback_settings")
@@ -212,20 +220,83 @@ def test_fingerprint_ranges_handles_small_files():
 
 @patch("resources.lib.fallback_streams.urlopen", side_effect=URLError("timeout"))
 def test_fetch_range_digest_returns_none_on_probe_error(_mock_urlopen):
-    assert fetch_range_digest("http://webdav/movie.mkv", None, 0, 1023) is None
+    with patch(
+        "resources.lib.fallback_streams.xbmcaddon.Addon.return_value.getSetting",
+        side_effect=_fallback_setting,
+    ):
+        assert (
+            fetch_range_digest("http://webdav/content/movie.mkv", None, 0, 1023) is None
+        )
 
 
 @patch("resources.lib.fallback_streams.urlopen")
 def test_fetch_range_digest_rejects_non_http_urls(mock_urlopen):
-    assert fetch_range_digest("file:///etc/passwd", None, 0, 3) is None
+    with patch(
+        "resources.lib.fallback_streams.xbmcaddon.Addon.return_value.getSetting",
+        side_effect=_fallback_setting,
+    ):
+        assert fetch_range_digest("file:///etc/passwd", None, 0, 3) is None
     mock_urlopen.assert_not_called()
+
+
+@patch("resources.lib.fallback_streams.urlopen")
+def test_fetch_range_digest_rejects_off_origin_urls(mock_urlopen):
+    with patch(
+        "resources.lib.fallback_streams.xbmcaddon.Addon.return_value.getSetting",
+        side_effect=_fallback_setting,
+    ):
+        assert (
+            fetch_range_digest("http://evil.test/content/movie.mkv", None, 0, 3) is None
+        )
+    mock_urlopen.assert_not_called()
+
+
+@patch("resources.lib.fallback_streams.urlopen")
+def test_fetch_content_length_rejects_off_origin_urls(mock_urlopen):
+    with patch(
+        "resources.lib.fallback_streams.xbmcaddon.Addon.return_value.getSetting",
+        side_effect=_fallback_setting,
+    ):
+        assert fetch_content_length("http://evil.test/content/movie.mkv", None) == 0
+    mock_urlopen.assert_not_called()
+
+
+@patch("resources.lib.fallback_streams.urlopen")
+def test_fetch_range_digest_rejects_configured_host_outside_content_root(mock_urlopen):
+    with patch(
+        "resources.lib.fallback_streams.xbmcaddon.Addon.return_value.getSetting",
+        side_effect=_fallback_setting,
+    ):
+        assert fetch_range_digest("http://webdav/private/movie.mkv", None, 0, 3) is None
+    mock_urlopen.assert_not_called()
+
+
+@patch("resources.lib.fallback_streams.urlopen")
+def test_fetch_content_length_accepts_configured_stream_url(mock_urlopen):
+    mock_urlopen.return_value = _mock_range_response(
+        b"",
+        headers={"Content-Length": "1234"},
+    )
+
+    with patch(
+        "resources.lib.fallback_streams.xbmcaddon.Addon.return_value.getSetting",
+        side_effect=_fallback_setting,
+    ):
+        assert fetch_content_length("http://webdav/content/movie.mkv", None) == 1234
+
+    req = mock_urlopen.call_args[0][0]
+    assert req.full_url == "http://webdav/content/movie.mkv"
 
 
 @patch("resources.lib.fallback_streams.urlopen")
 def test_fetch_range_digest_rejects_server_that_ignores_range(mock_urlopen):
     mock_urlopen.return_value = _mock_range_response(b"A" * 4, status=200)
 
-    assert fetch_range_digest("http://webdav/movie.mkv", None, 0, 3) is None
+    with patch(
+        "resources.lib.fallback_streams.xbmcaddon.Addon.return_value.getSetting",
+        side_effect=_fallback_setting,
+    ):
+        assert fetch_range_digest("http://webdav/content/movie.mkv", None, 0, 3) is None
 
 
 @patch("resources.lib.fallback_streams.urlopen")
@@ -236,7 +307,11 @@ def test_fetch_range_digest_requires_matching_content_range(mock_urlopen):
         headers={"Content-Range": "bytes 4-7/10"},
     )
 
-    assert fetch_range_digest("http://webdav/movie.mkv", None, 0, 3) is None
+    with patch(
+        "resources.lib.fallback_streams.xbmcaddon.Addon.return_value.getSetting",
+        side_effect=_fallback_setting,
+    ):
+        assert fetch_range_digest("http://webdav/content/movie.mkv", None, 0, 3) is None
 
 
 @patch("resources.lib.fallback_streams.urlopen")
@@ -247,10 +322,16 @@ def test_fetch_range_digest_requires_matching_content_range_total(mock_urlopen):
         headers={"Content-Range": "bytes 0-3/11"},
     )
 
-    assert (
-        fetch_range_digest("http://webdav/movie.mkv", None, 0, 3, content_length=10)
-        is None
-    )
+    with patch(
+        "resources.lib.fallback_streams.xbmcaddon.Addon.return_value.getSetting",
+        side_effect=_fallback_setting,
+    ):
+        assert (
+            fetch_range_digest(
+                "http://webdav/content/movie.mkv", None, 0, 3, content_length=10
+            )
+            is None
+        )
 
 
 @patch("resources.lib.fallback_streams.urlopen")
@@ -262,7 +343,13 @@ def test_fetch_range_digest_accepts_matching_partial_content(mock_urlopen):
         headers={"Content-Range": "bytes 0-3/10"},
     )
 
-    assert (
-        fetch_range_digest("http://webdav/movie.mkv", None, 0, 3, content_length=10)
-        == "63c1dd951ffedf6f7fd968ad4efa39b8ed584f162f46e715114ee184f8de9201"
-    )
+    with patch(
+        "resources.lib.fallback_streams.xbmcaddon.Addon.return_value.getSetting",
+        side_effect=_fallback_setting,
+    ):
+        assert (
+            fetch_range_digest(
+                "http://webdav/content/movie.mkv", None, 0, 3, content_length=10
+            )
+            == "63c1dd951ffedf6f7fd968ad4efa39b8ed584f162f46e715114ee184f8de9201"
+        )
