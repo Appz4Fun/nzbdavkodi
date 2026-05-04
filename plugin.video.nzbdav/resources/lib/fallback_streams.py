@@ -8,7 +8,6 @@ import re
 
 import xbmc
 import xbmcaddon
-import xbmcvfs  # noqa: F401 - used by follow-up fingerprinting slices.
 
 _SAFE_JOB_RE = re.compile(r"^[A-Za-z0-9._ \[\]-]+$")
 _SIZE_TOLERANCE_RATIO = 0.002

@@ -813,7 +813,7 @@ def test_submit_fallback_candidates_rejection_logs_without_dialog(
         monitor,
     )
 
-    assert jobs == []
+    assert not jobs
     mock_submit.assert_called_once_with(
         "http://hydra/getnzb/fallback-a",
         "Fallback A 2026 1080p WEB-DL [fallback-1-5c5fd5e4]",

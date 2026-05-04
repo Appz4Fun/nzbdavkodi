@@ -383,6 +383,17 @@ def _get_addon_setting(setting_id, default=None):
     return default if value is None else value
 
 
+def _set_addon_setting(setting_id, value):
+    """Best-effort Kodi addon setting write safe for tests and CLI."""
+    try:
+        import xbmcaddon
+
+        xbmcaddon.Addon().setSetting(setting_id, value)
+    except _KODI_SETTING_ERRORS:
+        return False
+    return True
+
+
 def _clamp_int_setting(setting_id, value, lo, hi):
     """Clamp an integer setting and log when user input was out of range."""
     clamped = value
@@ -434,6 +445,15 @@ def _get_force_remux_mode():
     Any other value -> 'passthrough'.
     """
     raw = _get_addon_setting("force_remux_mode")
+    migrated = _get_addon_setting("force_remux_mode_v2_migrated", "false")
+    if str(migrated).lower() != "true":
+        if raw == "2":
+            # Before pass-through became the default, enum value 2 meant
+            # explicit pass-through. Preserve that intent once, then let
+            # future value 2 selections mean Matroska compatibility mode.
+            _set_addon_setting("force_remux_mode", "0")
+            raw = "0"
+        _set_addon_setting("force_remux_mode_v2_migrated", "true")
     if raw == "1":
         return "hls_fmp4"
     if raw == "2":

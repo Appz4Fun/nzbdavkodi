@@ -1065,9 +1065,7 @@ def _submit_fallback_candidates(candidates, monitor, stop_event=None, on_job=Non
             nzo_id, submit_error = submit_nzb(nzb_url, job_name)
         except Exception as error:  # pylint: disable=broad-except
             xbmc.log(
-                "NZB-DAV: Fallback submit failed for '{}': {}".format(
-                    job_name, error
-                ),
+                "NZB-DAV: Fallback submit failed for '{}': {}".format(job_name, error),
                 xbmc.LOGWARNING,
             )
             continue
@@ -1090,9 +1088,7 @@ def _submit_fallback_candidates(candidates, monitor, stop_event=None, on_job=Non
                 continue
         if not nzo_id:
             xbmc.log(
-                "NZB-DAV: Fallback submit did not create job for '{}'".format(
-                    job_name
-                ),
+                "NZB-DAV: Fallback submit did not create job for '{}'".format(job_name),
                 xbmc.LOGWARNING,
             )
             continue
