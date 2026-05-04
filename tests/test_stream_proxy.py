@@ -5681,7 +5681,56 @@ def test_prepare_stream_uses_faststart_for_mp4():
 
 
 def test_prepare_stream_direct_redirect_for_already_faststart():
-    """Already-faststart MP4 returns remote URL directly (no proxy hop)."""
+    """Already-faststart MP4 without fallbacks returns remote URL directly."""
+
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_context = None
+    sp._context_lock = threading.Lock()
+    sp.port = 9999
+
+    mock_layout = {
+        "ftyp_data": b"\x00" * 16,
+        "ftyp_end": 16,
+        "moov_data": b"\x00" * 50,
+        "mdat_offset": 66,
+        "original_moov_offset": 16,
+        "moov_before_mdat": True,
+    }
+    mock_faststart = {
+        "header_data": b"\x00" * 66,
+        "virtual_size": 566,
+        "payload_remote_start": 66,
+        "payload_remote_end": 67,
+        "payload_size": 500,
+        "already_faststart": True,
+    }
+
+    with patch(
+        "resources.lib.stream_proxy._find_ffmpeg", return_value=None
+    ), patch.object(sp, "_get_content_length", return_value=566), patch(
+        "resources.lib.stream_proxy.fetch_remote_mp4_layout",
+        return_value=mock_layout,
+    ), patch(
+        "resources.lib.stream_proxy.build_faststart_layout",
+        return_value=mock_faststart,
+    ):
+        url, info = sp.prepare_stream("http://host/faststart.mp4")
+
+    # Direct redirect: URL is the remote URL, not the proxy URL
+    assert url == "http://host/faststart.mp4"
+    assert info["direct"] is True
+    assert info["seekable"] is True
+    assert info["remux"] is False
+    assert info["fallback_sources"] == []
+    assert info["fallback_active_index"] == -1
+    assert info["fallback_switch_count"] == 0
+
+
+def test_prepare_stream_faststart_mp4_uses_proxy_when_fallback_sources_exist():
+    """Already-faststart MP4 stays proxy-routed when fallback streams exist."""
 
     from resources.lib.stream_proxy import StreamProxy
 
@@ -5713,7 +5762,7 @@ def test_prepare_stream_direct_redirect_for_already_faststart():
             "nzb_url": "http://hydra/fallback-mp4",
             "job_name": "Fallback MP4 [fallback-1-11111111]",
             "nzo_id": "SABnzbd_nzo_mp4",
-            "stream_url": "",
+            "stream_url": "http://host/fallback.mp4",
         }
     ]
 
@@ -5727,23 +5776,21 @@ def test_prepare_stream_direct_redirect_for_already_faststart():
         return_value=mock_faststart,
     ):
         url, info = sp.prepare_stream(
-            "http://host/faststart.mp4",
-            auth_header="Basic dXNlcjpwYXNz",
-            fallback_sources=fallback_sources,
+            "http://host/faststart.mp4", fallback_sources=fallback_sources
         )
 
-    # Direct redirect: URL is the remote URL, not the proxy URL
-    assert url == "http://host/faststart.mp4"
-    assert info["direct"] is True
+    assert url.startswith("http://127.0.0.1:9999/stream/")
+    assert info["direct"] is False
     assert info["seekable"] is True
     assert info["remux"] is False
+    assert info["faststart"] is False
     assert info["fallback_sources"] == [
         {
             "title": "Fallback MP4",
             "nzb_url": "http://hydra/fallback-mp4",
             "job_name": "Fallback MP4 [fallback-1-11111111]",
             "nzo_id": "SABnzbd_nzo_mp4",
-            "stream_url": "",
+            "stream_url": "http://host/fallback.mp4",
             "stream_headers": {},
             "content_length": 0,
             "validated": False,
@@ -5752,6 +5799,12 @@ def test_prepare_stream_direct_redirect_for_already_faststart():
     ]
     assert info["fallback_active_index"] == -1
     assert info["fallback_switch_count"] == 0
+    ctx = sp._server.stream_context
+    assert ctx["remote_url"] == "http://host/faststart.mp4"
+    assert ctx["content_type"] == "video/mp4"
+    assert ctx["remux"] is False
+    assert ctx["faststart"] is False
+    assert ctx["fallback_sources"][0]["stream_url"] == "http://host/fallback.mp4"
 
 
 # ---------------------------------------------------------------------------
@@ -5969,6 +6022,7 @@ def test_serve_proxy_switches_to_valid_fallback_source_mid_response():
 def test_select_live_fallback_refreshes_completed_standby_job():
     """Standby nzo_id entries can become usable without restarting playback."""
     handler = _make_handler()
+    storage = "/mnt/nzbdav/completed-symlinks/movies/Fallback"
     ctx = {
         "remote_url": "http://webdav/primary.mkv",
         "auth_header": None,
@@ -5985,18 +6039,32 @@ def test_select_live_fallback_refreshes_completed_standby_job():
         ],
     }
 
-    with patch.object(
-        handler, "_refresh_standby_fallback_sources"
-    ) as refresh, patch.object(handler, "_fallback_source_matches", return_value=True):
-        refresh.side_effect = lambda inner_ctx: inner_ctx["fallback_sources"][0].update(
-            {
-                "stream_url": "http://webdav/fallback.mkv",
-                "content_length": 10,
-            }
-        )
+    with patch(
+        "resources.lib.nzbdav_api.get_job_history",
+        return_value={"status": "Completed", "storage": storage},
+    ) as history, patch(
+        "resources.lib.webdav.find_video_file",
+        return_value="/content/movies/Fallback/fallback.mkv",
+    ) as find_video, patch(
+        "resources.lib.webdav.get_webdav_stream_url_for_path",
+        return_value=(
+            "http://webdav/fallback.mkv",
+            {"Authorization": "Basic fallback"},
+        ),
+    ) as stream_url, patch(
+        "resources.lib.fallback_streams.fetch_content_length", return_value=10
+    ) as fetch_length, patch(
+        "resources.lib.fallback_streams.fetch_range_digest", return_value="digest"
+    ):
         source = handler._select_live_fallback_source(ctx, 0, 9)
 
     assert source["stream_url"] == "http://webdav/fallback.mkv"
+    assert source["stream_headers"] == {"Authorization": "Basic fallback"}
+    assert source["content_length"] == 10
+    history.assert_called_once_with("nzo2")
+    find_video.assert_called_once_with("/content/movies/Fallback/")
+    stream_url.assert_called_once_with("/content/movies/Fallback/fallback.mkv")
+    fetch_length.assert_called_once_with("http://webdav/fallback.mkv", "Basic fallback")
 
 
 def test_fallback_range_probe_failure_falls_back_to_zero_fill_path():
