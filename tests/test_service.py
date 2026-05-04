@@ -506,3 +506,37 @@ def test_cache_warning_noop_for_all_modes(mock_xbmcaddon, mock_notify, mode):
     mock_notify.assert_not_called()
     addon.setSetting.assert_not_called()
     assert state == {"last_mode": "previous"}
+
+
+@patch("service.xbmcaddon.Addon")
+@patch("service.xbmc")
+@patch("service.StreamProxy")
+def test_main_noop_cache_warning_does_not_touch_addon(
+    mock_proxy_cls, mock_xbmc, mock_addon_cls
+):
+    """The eager Addon() call during service startup must be eliminated
+    to prevent Kodi startup hangs. check_cache_warning and its
+    cache_warn_state must not evaluate xbmcaddon during service.main()
+    initialization."""
+    import service
+
+    # Make the Addon call raise if it gets evaluated
+    mock_addon_cls.side_effect = RuntimeError("Eager Addon() call detected")
+
+    # Make the monitor abort immediately to exit the main loop after one tick
+    mock_monitor = MagicMock()
+    mock_monitor.abortRequested.side_effect = [False, True]
+    mock_monitor.waitForAbort.return_value = False
+    mock_xbmc.Monitor.return_value = mock_monitor
+
+    # Don't let the proxy do anything
+    mock_proxy = MagicMock()
+    mock_proxy.is_alive.return_value = True
+    mock_proxy_cls.return_value = mock_proxy
+
+    # Make sure _HOME_WINDOW operations don't fail
+    with patch("service._HOME_WINDOW"):
+        service.main()
+
+    # If it reached here without RuntimeError, the eager call is gone.
+    mock_addon_cls.assert_not_called()

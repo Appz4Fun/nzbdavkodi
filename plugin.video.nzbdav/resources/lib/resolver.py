@@ -1114,10 +1114,12 @@ def _start_fallback_submit_worker(candidates):
         "lock": threading.Lock(),
         "jobs": [],
         "stop": threading.Event(),
+        "finished": threading.Event(),
         "thread": None,
     }
     candidate_list = list(candidates or [])
     if not candidate_list:
+        state["finished"].set()
         return state
 
     def _append_job(job):
@@ -1132,11 +1134,17 @@ def _start_fallback_submit_worker(candidates):
                 stop_event=state["stop"],
                 on_job=_append_job,
             )
+            state["finished"].set()
         except Exception as error:  # pylint: disable=broad-except
             xbmc.log(
                 "NZB-DAV: Fallback submit worker failed: {}".format(error),
                 xbmc.LOGWARNING,
             )
+            with state["lock"]:
+                jobs_to_cancel = list(state["jobs"])
+            for job in jobs_to_cancel:
+                cancel_job(job.get("nzo_id"))
+            state["finished"].set()
 
     thread = threading.Thread(
         target=_worker, name="nzbdav-fallback-submit", daemon=True
@@ -1147,17 +1155,22 @@ def _start_fallback_submit_worker(candidates):
 
 
 def _fallback_submit_jobs_snapshot(state):
-    """Return a non-blocking copy of fallback jobs submitted so far."""
+    """Wait for the worker to finish and return all jobs submitted."""
     if not state:
         return []
+    # Use the final jobs list, waiting for the worker to naturally finish or abort
+    if state["thread"]:
+        state["thread"].join(timeout=10.0)
     with state["lock"]:
         return [dict(job) for job in state["jobs"]]
 
 
 def _stop_fallback_submit_worker(state):
-    """Signal the fallback worker to stop before starting further candidates."""
+    """Signal the fallback worker to stop and wait for it to exit."""
     if state:
         state["stop"].set()
+        if state["thread"]:
+            state["thread"].join(timeout=5.0)
 
 
 def _abort_poll_before_fetch(

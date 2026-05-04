@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, urlparse
 
 import xbmc
 
+from resources.lib.fallback_streams import attach_fallback_candidates
 from resources.lib.http_util import format_size as _format_size
 from resources.lib.i18n import addon_name as _addon_name
 from resources.lib.i18n import fmt as _fmt
@@ -578,8 +579,6 @@ def _handle_play(handle, params):
             xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
             return
 
-    from resources.lib.fallback_streams import attach_fallback_candidates
-
     attach_fallback_candidates(filtered)
 
     # Auto-select best match if enabled
@@ -744,8 +743,6 @@ def _handle_search(handle, params):
             notify(_addon_name(), _fmt(30087, title), 3000)
             xbmcplugin.endOfDirectory(handle, succeeded=False)
             return
-
-    from resources.lib.fallback_streams import attach_fallback_candidates
 
     attach_fallback_candidates(filtered)
 

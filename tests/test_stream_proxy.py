@@ -849,8 +849,11 @@ def test_prepare_stream_large_mkv_defaults_to_passthrough_without_cache_zero():
             "_get_ffmpeg_capabilities",
             return_value={"ffmpeg_path": "/usr/bin/ffmpeg", "hls_fmp4": False},
         ) as mock_caps, patch.object(sp, "_get_content_length", return_value=huge):
-            with patch("resources.lib.stream_proxy._disk_free_bytes", return_value=100*1024**3):
-                    sp.prepare_stream("http://host/shawshank.mkv")
+            with patch(
+                "resources.lib.stream_proxy._disk_free_bytes",
+                return_value=100 * 1024**3,
+            ):
+                sp.prepare_stream("http://host/shawshank.mkv")
     finally:
         sys.modules["xbmcaddon"].Addon.return_value = original
 
@@ -901,7 +904,10 @@ def test_prepare_stream_matroska_mode_remuxes_documented_15_8_gib_crash_size():
         ), patch(
             "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
         ):
-            with patch("resources.lib.stream_proxy._disk_free_bytes", return_value=100*1024**3):
+            with patch(
+                "resources.lib.stream_proxy._disk_free_bytes",
+                return_value=100 * 1024**3,
+            ):
                 sp.prepare_stream("http://host/mayor-of-kingstown.mkv")
     finally:
         sys.modules["xbmcaddon"].Addon.return_value = original
@@ -941,7 +947,10 @@ def test_prepare_stream_matroska_mode_force_remuxes_huge_mkv():
             "_get_ffmpeg_capabilities",
             return_value={"ffmpeg_path": "/usr/bin/ffmpeg", "hls_fmp4": False},
         ), patch.object(sp, "_probe_duration", return_value=8000.0):
-            with patch("resources.lib.stream_proxy._disk_free_bytes", return_value=100*1024**3):
+            with patch(
+                "resources.lib.stream_proxy._disk_free_bytes",
+                return_value=100 * 1024**3,
+            ):
                 sp.prepare_stream("http://host/wasteman.mkv")
     finally:
         sys.modules["xbmcaddon"].Addon.return_value = original
@@ -1021,7 +1030,10 @@ def test_prepare_stream_default_passthrough_without_cache_does_not_probe_ffmpeg(
             "_get_ffmpeg_capabilities",
             return_value={"ffmpeg_path": "/usr/bin/ffmpeg", "hls_fmp4": False},
         ) as mock_caps:
-            with patch("resources.lib.stream_proxy._disk_free_bytes", return_value=100*1024**3):
+            with patch(
+                "resources.lib.stream_proxy._disk_free_bytes",
+                return_value=100 * 1024**3,
+            ):
                 sp.prepare_stream("http://host/wasteman.mkv")
     finally:
         sys.modules["xbmcaddon"].Addon.return_value = original
@@ -1082,7 +1094,10 @@ def test_prepare_stream_force_remux_hls_fmp4_setting_produces_hls_ctx():
                 return_value=DolbyVisionSourceResult("non_dv", "no_rpu_nal_found"),
             ), patch("resources.lib.stream_proxy.HlsProducer") as mock_producer_cls:
                 mock_producer_cls.return_value = MagicMock()
-                with patch("resources.lib.stream_proxy._disk_free_bytes", return_value=100*1024**3):
+                with patch(
+                    "resources.lib.stream_proxy._disk_free_bytes",
+                    return_value=100 * 1024**3,
+                ):
                     sp.prepare_stream("http://host/shawshank.mkv")
     finally:
         sys.modules["xbmcaddon"].Addon.return_value = original
@@ -1139,8 +1154,11 @@ def test_prepare_stream_force_remux_hls_fmp4_falls_back_when_duration_probe_fail
         ), patch(
             "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
         ):
-            with patch("resources.lib.stream_proxy._disk_free_bytes", return_value=100*1024**3):
-                    sp.prepare_stream("http://host/shawshank.mkv")
+            with patch(
+                "resources.lib.stream_proxy._disk_free_bytes",
+                return_value=100 * 1024**3,
+            ):
+                sp.prepare_stream("http://host/shawshank.mkv")
     finally:
         sys.modules["xbmcaddon"].Addon.return_value = original
 
@@ -1191,8 +1209,11 @@ def test_prepare_stream_force_remux_hls_fmp4_falls_back_when_capability_probe_fa
         ), patch(
             "resources.lib.stream_proxy.HlsProducer"
         ) as mock_producer_cls:
-            with patch("resources.lib.stream_proxy._disk_free_bytes", return_value=100*1024**3):
-                    sp.prepare_stream("http://host/shawshank.mkv")
+            with patch(
+                "resources.lib.stream_proxy._disk_free_bytes",
+                return_value=100 * 1024**3,
+            ):
+                sp.prepare_stream("http://host/shawshank.mkv")
     finally:
         sys.modules["xbmcaddon"].Addon.return_value = original
 
@@ -1533,11 +1554,17 @@ def _run_prepare_with_dv(dv_result, url, patch_hls=False):
                 "resources.lib.stream_proxy.HlsProducer"
             ) as mock_producer_cls:
                 mock_producer_cls.return_value = MagicMock()
-                with patch("resources.lib.stream_proxy._disk_free_bytes", return_value=100*1024**3):
+                with patch(
+                    "resources.lib.stream_proxy._disk_free_bytes",
+                    return_value=100 * 1024**3,
+                ):
                     sp.prepare_stream(url)
         else:
             with stack[0], stack[1], stack[2], stack[3], stack[4]:
-                with patch("resources.lib.stream_proxy._disk_free_bytes", return_value=100*1024**3):
+                with patch(
+                    "resources.lib.stream_proxy._disk_free_bytes",
+                    return_value=100 * 1024**3,
+                ):
                     sp.prepare_stream(url)
     finally:
         sys.modules["xbmcaddon"].Addon.return_value = original
@@ -1616,7 +1643,11 @@ def test_prepare_stream_profile8_stays_off_hls_even_if_hls_setup_would_succeed()
             "resources.lib.stream_proxy.HlsProducer"
         ) as mock_producer_cls:
             mock_producer_cls.return_value = MagicMock()
-            sp.prepare_stream("http://host/dv-p8.mkv")
+            with patch(
+                "resources.lib.stream_proxy._disk_free_bytes",
+                return_value=100 * 1024**3,
+            ):
+                sp.prepare_stream("http://host/dv-p8.mkv")
     finally:
         sys.modules["xbmcaddon"].Addon.return_value = original
 
@@ -1663,7 +1694,11 @@ def test_prepare_stream_profile5_stays_off_hls_even_if_hls_setup_would_succeed()
             "resources.lib.stream_proxy.HlsProducer"
         ) as mock_producer_cls:
             mock_producer_cls.return_value = MagicMock()
-            sp.prepare_stream("http://host/dv-p5.mkv")
+            with patch(
+                "resources.lib.stream_proxy._disk_free_bytes",
+                return_value=100 * 1024**3,
+            ):
+                sp.prepare_stream("http://host/dv-p5.mkv")
     finally:
         sys.modules["xbmcaddon"].Addon.return_value = original
 
@@ -5079,7 +5114,9 @@ def test_register_session_hls_returns_playlist_url(tmp_path):
         "resources.lib.stream_proxy._choose_hls_workdir",
         return_value=str(tmp_path),
     ):
-        with patch("resources.lib.stream_proxy._disk_free_bytes", return_value=100*1024**3):
+        with patch(
+            "resources.lib.stream_proxy._disk_free_bytes", return_value=100 * 1024**3
+        ):
             url = sp._register_session(ctx)
 
     assert url.startswith("http://127.0.0.1:12345/hls/")
@@ -5121,7 +5158,9 @@ def test_register_session_hls_producer_failure_rewrites_to_matroska():
         "resources.lib.stream_proxy.HlsProducer",
         side_effect=OSError("workdir not writable"),
     ):
-        with patch("resources.lib.stream_proxy._disk_free_bytes", return_value=100*1024**3):
+        with patch(
+            "resources.lib.stream_proxy._disk_free_bytes", return_value=100 * 1024**3
+        ):
             url = sp._register_session(ctx)
 
     assert url.startswith("http://127.0.0.1:9999/stream/")
@@ -5201,7 +5240,9 @@ def test_register_session_catches_non_oserror_exceptions():
         side_effect=ValueError("unexpected"),
     ):
         # Must NOT raise.
-        with patch("resources.lib.stream_proxy._disk_free_bytes", return_value=100*1024**3):
+        with patch(
+            "resources.lib.stream_proxy._disk_free_bytes", return_value=100 * 1024**3
+        ):
             url = sp._register_session(ctx)
 
     assert url.startswith("http://127.0.0.1:9999/stream/")
@@ -5273,7 +5314,9 @@ def test_register_session_prepare_failure_rewrites_to_matroska():
         "ffmpeg exited immediately with code 1 — fmp4 HLS unsupported"
     )
     with patch("resources.lib.stream_proxy.HlsProducer", return_value=producer_mock):
-        with patch("resources.lib.stream_proxy._disk_free_bytes", return_value=100*1024**3):
+        with patch(
+            "resources.lib.stream_proxy._disk_free_bytes", return_value=100 * 1024**3
+        ):
             url = sp._register_session(ctx)
 
     assert url.startswith("http://127.0.0.1:9999/stream/")
@@ -5310,7 +5353,9 @@ def test_register_session_hls_success_unchanged():
     producer_mock = MagicMock()
     # prepare is a no-op (MagicMock auto-returns None)
     with patch("resources.lib.stream_proxy.HlsProducer", return_value=producer_mock):
-        with patch("resources.lib.stream_proxy._disk_free_bytes", return_value=100*1024**3):
+        with patch(
+            "resources.lib.stream_proxy._disk_free_bytes", return_value=100 * 1024**3
+        ):
             url = sp._register_session(ctx)
 
     assert "/hls/" in url
@@ -5348,7 +5393,9 @@ def test_register_session_prepare_failure_closes_partially_initialized_producer(
     producer_mock = MagicMock()
     producer_mock.prepare.side_effect = RuntimeError("ffmpeg exited immediately")
     with patch("resources.lib.stream_proxy.HlsProducer", return_value=producer_mock):
-        with patch("resources.lib.stream_proxy._disk_free_bytes", return_value=100*1024**3):
+        with patch(
+            "resources.lib.stream_proxy._disk_free_bytes", return_value=100 * 1024**3
+        ):
             url = sp._register_session(ctx)
 
     producer_mock.close.assert_called_once_with()
@@ -5429,7 +5476,9 @@ def test_register_session_init_failure_does_not_call_close_on_undefined_producer
         side_effect=OSError("workdir not writable"),
     ):
         # Must NOT raise AttributeError on a None producer.
-        with patch("resources.lib.stream_proxy._disk_free_bytes", return_value=100*1024**3):
+        with patch(
+            "resources.lib.stream_proxy._disk_free_bytes", return_value=100 * 1024**3
+        ):
             url = sp._register_session(ctx)
 
     assert url.startswith("http://127.0.0.1:9999/stream/")

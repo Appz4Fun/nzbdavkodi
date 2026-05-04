@@ -507,7 +507,7 @@ def main():
 
     # Retained for the no-op check_cache_warning compatibility hook.
     cache_warn_state = {
-        "last_mode": xbmcaddon.Addon().getSetting("force_remux_mode"),
+        "last_mode": None,
     }
 
     while not monitor.abortRequested():

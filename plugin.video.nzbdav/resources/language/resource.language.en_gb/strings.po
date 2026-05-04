@@ -701,24 +701,23 @@ msgstr "Choose Player Folder"
 msgctxt "#30162"
 msgid "No other player folders found"
 msgstr "No other player folders found"
-||||||| parent of 707de76 (feat: group duplicate fallback releases)
 
-msgctxt "#30170"
+msgctxt "#30183"
 msgid "Fallback Streams"
 msgstr "Fallback Streams"
 
-msgctxt "#30171"
+msgctxt "#30184"
 msgid "Submit duplicate releases as live fallbacks"
 msgstr "Submit duplicate releases as live fallbacks"
 
-msgctxt "#30172"
+msgctxt "#30185"
 msgid "Maximum fallback releases"
 msgstr "Maximum fallback releases"
 
-msgctxt "#30173"
+msgctxt "#30186"
 msgid "Switched to fallback stream"
 msgstr "Switched to fallback stream"
 
-msgctxt "#30174"
+msgctxt "#30187"
 msgid "No matching fallback stream available"
 msgstr "No matching fallback stream available"
