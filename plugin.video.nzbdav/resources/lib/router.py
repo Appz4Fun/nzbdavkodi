@@ -578,6 +578,10 @@ def _handle_play(handle, params):
             xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
             return
 
+    from resources.lib.fallback_streams import attach_fallback_candidates
+
+    attach_fallback_candidates(filtered)
+
     # Auto-select best match if enabled
     import xbmcaddon
 
@@ -586,7 +590,14 @@ def _handle_play(handle, params):
         best = filtered[0]
         from resources.lib.resolver import resolve
 
-        resolve(handle, {"nzburl": best["link"], "title": best["title"]})
+        resolve(
+            handle,
+            {
+                "nzburl": best["link"],
+                "title": best["title"],
+                "_fallback_candidates": best.get("_fallback_candidates", []),
+            },
+        )
         return
 
     # Tag results already downloaded in nzbdav
@@ -602,7 +613,14 @@ def _handle_play(handle, params):
     if selected:
         from resources.lib.resolver import resolve
 
-        resolve(handle, {"nzburl": selected["link"], "title": selected["title"]})
+        resolve(
+            handle,
+            {
+                "nzburl": selected["link"],
+                "title": selected["title"],
+                "_fallback_candidates": selected.get("_fallback_candidates", []),
+            },
+        )
     else:
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
 
@@ -727,13 +745,19 @@ def _handle_search(handle, params):
             xbmcplugin.endOfDirectory(handle, succeeded=False)
             return
 
+    from resources.lib.fallback_streams import attach_fallback_candidates
+
+    attach_fallback_candidates(filtered)
+
     # Auto-select best match if enabled
     addon = xbmcaddon.Addon()
     if addon.getSetting("auto_select_best").lower() == "true" and filtered:
         best = filtered[0]
         from resources.lib.resolver import resolve_and_play
 
-        resolve_and_play(best["link"], best["title"], params=params)
+        resolver_params = dict(params)
+        resolver_params["_fallback_candidates"] = best.get("_fallback_candidates", [])
+        resolve_and_play(best["link"], best["title"], params=resolver_params)
         # Same hang class as C1 (router.py): /search is a directory
         # route, so Kodi blocks until endOfDirectory fires. Without
         # this, the auto-select branch returned silently and Kodi
@@ -756,7 +780,11 @@ def _handle_search(handle, params):
     if selected:
         from resources.lib.resolver import resolve_and_play
 
-        resolve_and_play(selected["link"], selected["title"], params=params)
+        resolver_params = dict(params)
+        resolver_params["_fallback_candidates"] = selected.get(
+            "_fallback_candidates", []
+        )
+        resolve_and_play(selected["link"], selected["title"], params=resolver_params)
 
     # Must end the directory or Kodi hangs
     xbmcplugin.endOfDirectory(handle, succeeded=False)

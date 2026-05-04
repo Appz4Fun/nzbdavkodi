@@ -679,6 +679,13 @@ def _stub_setting(value):
     return lambda *args, **kwargs: value
 
 
+def _attach_primary_duplicate_fallbacks(results):
+    if len(results) >= 2:
+        results[0]["_fallback_candidates"] = [results[1]]
+        results[1]["_fallback_candidates"] = [results[0]]
+    return results
+
+
 @patch("xbmcplugin.setResolvedUrl")
 @patch("xbmcgui.ListItem")
 @patch("resources.lib.http_util.notify")
@@ -779,6 +786,49 @@ def test_handle_play_happy_path_invokes_resolve(
     assert args[1]["title"] == chosen["title"]
 
 
+@patch("xbmcaddon.Addon")
+@patch("xbmcplugin.setResolvedUrl")
+@patch("xbmcgui.ListItem")
+@patch("resources.lib.resolver.resolve")
+@patch("resources.lib.results_dialog.show_results_dialog")
+@patch("resources.lib.fallback_streams.attach_fallback_candidates")
+@patch("resources.lib.filter.filter_results")
+@patch("resources.lib.router._search_all_providers")
+@patch("resources.lib.router._tag_available")
+@patch("resources.lib.cache.get_cached", return_value=None)
+def test_handle_play_picker_forwards_fallback_candidates(
+    mock_cache,
+    mock_tag,
+    mock_search,
+    mock_filter,
+    mock_attach,
+    mock_dialog,
+    mock_resolve,
+    mock_listitem,
+    mock_resolved,
+    mock_addon,
+):
+    _install_progress_dialog_that_wont_cancel()
+    mock_addon.return_value.getSetting.side_effect = _stub_setting("false")
+    primary = {"title": "Matrix.1999.mkv", "link": "http://hydra/nzb/primary"}
+    duplicate = {"title": "Matrix.1999.dupe.mkv", "link": "http://hydra/nzb/dupe"}
+    filtered = [primary, duplicate]
+    mock_search.return_value = (filtered, None)
+    mock_filter.return_value = (filtered, filtered)
+    mock_attach.side_effect = _attach_primary_duplicate_fallbacks
+    mock_dialog.return_value = primary
+
+    _handle_play(5, {"type": "movie", "title": "The Matrix", "year": "1999"})
+
+    mock_attach.assert_called_once_with(filtered)
+    mock_resolve.assert_called_once()
+    args, _kwargs = mock_resolve.call_args
+    assert args[0] == 5
+    assert args[1]["nzburl"] == primary["link"]
+    assert args[1]["title"] == primary["title"]
+    assert args[1]["_fallback_candidates"] == [duplicate]
+
+
 # --- _handle_search direct coverage for no-results path ---
 
 
@@ -841,6 +891,7 @@ def test_handle_search_auto_select_passes_clean_params_to_resolver(
             "title": "The Matrix",
             "year": "",
             "tmdb_id": "603",
+            "_fallback_candidates": [],
         },
     )
     mock_end.assert_called_once_with(7, succeeded=False)
@@ -892,6 +943,64 @@ def test_handle_search_picker_passes_clean_params_to_resolver(
             "title": "The Matrix",
             "year": "",
             "tmdb_id": "603",
+            "_fallback_candidates": [],
+        },
+    )
+    mock_end.assert_called_once_with(8, succeeded=False)
+
+
+@patch("xbmcaddon.Addon")
+@patch("xbmcplugin.endOfDirectory")
+@patch("resources.lib.resolver.resolve_and_play")
+@patch("resources.lib.results_dialog.show_results_dialog")
+@patch("resources.lib.fallback_streams.attach_fallback_candidates")
+@patch("resources.lib.filter.filter_results")
+@patch("resources.lib.router._search_all_providers")
+@patch("resources.lib.router._tag_available")
+@patch("resources.lib.cache.set_cached")
+@patch("resources.lib.cache.get_cached", return_value=None)
+def test_handle_search_picker_forwards_fallback_candidates_with_clean_params(
+    mock_cache,
+    mock_set_cache,
+    mock_tag,
+    mock_search,
+    mock_filter,
+    mock_attach,
+    mock_dialog,
+    mock_resolve_and_play,
+    mock_end,
+    mock_addon,
+):
+    _install_progress_dialog_that_wont_cancel()
+    mock_addon.return_value.getSetting.side_effect = _stub_setting("false")
+    primary = {"title": "Matrix.1999.mkv", "link": "http://hydra/nzb/primary"}
+    duplicate = {"title": "Matrix.1999.dupe.mkv", "link": "http://hydra/nzb/dupe"}
+    filtered = [primary, duplicate]
+    mock_search.return_value = (filtered, None)
+    mock_filter.return_value = (filtered, filtered)
+    mock_attach.side_effect = _attach_primary_duplicate_fallbacks
+    mock_dialog.return_value = primary
+
+    _handle_search(
+        8,
+        {
+            "type": "movie",
+            "title": "The Matrix",
+            "year": "_",
+            "tmdb_id": "603",
+        },
+    )
+
+    mock_attach.assert_called_once_with(filtered)
+    mock_resolve_and_play.assert_called_once_with(
+        primary["link"],
+        primary["title"],
+        params={
+            "type": "movie",
+            "title": "The Matrix",
+            "year": "",
+            "tmdb_id": "603",
+            "_fallback_candidates": [duplicate],
         },
     )
     mock_end.assert_called_once_with(8, succeeded=False)
