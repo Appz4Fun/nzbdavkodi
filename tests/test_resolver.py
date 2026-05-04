@@ -860,6 +860,32 @@ def test_fallback_submit_jobs_snapshot_does_not_wait_for_worker():
     worker.join.assert_not_called()
 
 
+def test_fallback_submit_jobs_snapshot_does_not_wait_for_active_worker():
+    """Success snapshots should not wait for standby jobs still submitting."""
+    worker = MagicMock()
+    worker.is_alive.return_value = True
+    worker.join.side_effect = AssertionError("snapshot blocked on active worker")
+    finished = MagicMock()
+    finished.wait.side_effect = AssertionError("snapshot waited on active worker")
+    job = {
+        "title": "Fallback A",
+        "nzb_url": "http://hydra/fallback-a",
+        "job_name": "Fallback A [fallback-1-5c5fd5e4]",
+        "nzo_id": "SABnzbd_nzo_fallback",
+    }
+    state = {
+        "lock": threading.Lock(),
+        "jobs": [job],
+        "thread": worker,
+        "stop": threading.Event(),
+        "finished": finished,
+    }
+
+    assert _fallback_submit_jobs_snapshot(state) == [job]
+    worker.join.assert_not_called()
+    finished.wait.assert_not_called()
+
+
 def test_fallback_submit_jobs_snapshot_waits_for_stopping_worker_final_jobs():
     """Shutdown snapshots should include jobs recorded while worker exits."""
     stop_event = threading.Event()
