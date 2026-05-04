@@ -6,6 +6,7 @@ from urllib.error import URLError
 
 from resources.lib.fallback_streams import (
     _SAFE_JOB_RE,
+    _fallback_settings,
     attach_fallback_candidates,
     build_fallback_job_name,
     build_prepare_fallback_payload,
@@ -107,8 +108,16 @@ def test_disabled_setting_adds_empty_fallback_lists(mock_settings):
     assert [result["_fallback_candidates"] for result in results] == [[], []]
 
 
+def test_fallback_settings_default_to_enabled_with_five_candidates():
+    with patch(
+        "resources.lib.fallback_streams.xbmcaddon.Addon.return_value.getSetting",
+        return_value="",
+    ):
+        assert _fallback_settings() == (True, 5)
+
+
 @patch("resources.lib.fallback_streams._fallback_settings")
-def test_size_mismatch_rejected(mock_settings):
+def test_size_mismatch_still_attaches_candidate_for_runtime_validation(mock_settings):
     mock_settings.return_value = (True, 2)
     results = [
         _result(
@@ -125,7 +134,8 @@ def test_size_mismatch_rejected(mock_settings):
 
     attach_fallback_candidates(results)
 
-    assert [result["_fallback_candidates"] for result in results] == [[], []]
+    assert results[0]["_fallback_candidates"] == [results[1]]
+    assert results[1]["_fallback_candidates"] == [results[0]]
 
 
 def test_build_fallback_job_name_unique_traceable_and_single_line():

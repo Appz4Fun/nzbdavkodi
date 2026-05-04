@@ -2672,6 +2672,17 @@ class _StreamHandler(BaseHTTPRequestHandler):
                             xbmc.LOGWARNING,
                         )
                         continue
+                    if ctx.get("fallback_sources"):
+                        terminal_reason = "fallback_exhausted"
+                        xbmc.log(
+                            "NZB-DAV: No validated fallback source available at "
+                            "byte {}; closing fallback-enabled stream before "
+                            "retry ladder or zero-fill rescue (reason={})".format(
+                                current, terminal_reason
+                            ),
+                            xbmc.LOGERROR,
+                        )
+                        return
 
                 if retry_ladder_enabled and result in (
                     _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE,
@@ -4683,7 +4694,27 @@ class StreamProxy:
         lower_url = remote_url.lower()
         is_mp4 = lower_url.endswith((".mp4", ".m4v"))
 
-        if is_mp4:
+        if fallback_sources:
+            content_length = self._get_content_length(remote_url, auth_header)
+            if content_length <= 0:
+                raise OSError(
+                    "Unable to determine content length for fallback-enabled stream"
+                )
+            ctx = {
+                "remote_url": remote_url,
+                "auth_header": auth_header,
+                "content_length": content_length,
+                "content_type": "video/mp4" if is_mp4 else content_type,
+                "remux": False,
+                "faststart": False,
+                "seekable": True,
+            }
+            xbmc.log(
+                "NZB-DAV: Fallback streams attached; using pass-through proxy "
+                "before MP4 repair or remux rescue tiers",
+                xbmc.LOGINFO,
+            )
+        elif is_mp4:
             content_length = self._get_content_length(remote_url, auth_header)
             content_length_unknown = content_length <= 0
             faststart = self._try_faststart_layout(

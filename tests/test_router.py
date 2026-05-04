@@ -856,9 +856,9 @@ def test_handle_play_picker_forwards_fallback_candidates(
     assert args[0] == 5
     assert args[1]["nzburl"] == primary["link"]
     assert args[1]["title"] == primary["title"]
-    assert args[1]["_fallback_candidates"] == [duplicate]
-    assert duplicate["_fallback_candidates"] == [primary]
-    assert oversized["_fallback_candidates"] == []
+    assert args[1]["_fallback_candidates"] == [duplicate, oversized]
+    assert duplicate["_fallback_candidates"] == [primary, oversized]
+    assert oversized["_fallback_candidates"] == [primary, duplicate]
 
 
 # --- _handle_search direct coverage for no-results path ---
@@ -1025,19 +1025,18 @@ def test_handle_search_picker_forwards_fallback_candidates_with_clean_params(
     )
 
     mock_attach.assert_called_once_with(filtered)
-    mock_resolve_and_play.assert_called_once_with(
-        primary["link"],
-        primary["title"],
-        params={
-            "type": "movie",
-            "title": "The Matrix",
-            "year": "",
-            "tmdb_id": "603",
-            "_fallback_candidates": [duplicate],
-        },
-    )
-    assert duplicate["_fallback_candidates"] == [primary]
-    assert oversized["_fallback_candidates"] == []
+    mock_resolve_and_play.assert_called_once()
+    args, kwargs = mock_resolve_and_play.call_args
+    assert args == (primary["link"], primary["title"])
+    assert kwargs["params"] == {
+        "type": "movie",
+        "title": "The Matrix",
+        "year": "",
+        "tmdb_id": "603",
+        "_fallback_candidates": [duplicate, oversized],
+    }
+    assert duplicate["_fallback_candidates"] == [primary, oversized]
+    assert oversized["_fallback_candidates"] == [primary, duplicate]
     mock_end.assert_called_once_with(8, succeeded=False)
 
 

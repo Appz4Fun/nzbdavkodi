@@ -1,3 +1,9 @@
+v1.0.7 (2026-05-04)
+- Enable fallback streams by default with a default maximum of 5 fallback submissions per primary result.
+- Keep fallback playback on the pass-through proxy path so standby streams can be switched in without force-remux.
+- Try fallback candidates regardless of release size, while runtime validation still checks source byte length and fingerprints before switching.
+- Use fallback recovery instead of retry, zero-fill, or skip recovery; if no validated fallback can resume, close the stream cleanly.
+
 v1.0.6 (2026-05-04)
 - Add live duplicate-release fallback streams. The router attaches conservative duplicate candidates, the resolver can submit them after the primary NZB is accepted, and the proxy keeps fallback metadata with the playback session so it can switch if the active source becomes unrecoverable.
 - Add fallback stream settings for enabling standby submits and capping maximum fallback releases per primary result.

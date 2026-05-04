@@ -14,11 +14,9 @@ import xbmcaddon
 
 _SAFE_JOB_RE = re.compile(r"^[A-Za-z0-9._ \[\]-]+$")
 _CONTENT_RANGE_RE = re.compile(r"^bytes\s+(\d+)-(\d+)/(\d+|\*)$")
-_SIZE_TOLERANCE_RATIO = 0.002
 _FINGERPRINT_OFFSETS = (0.0, 0.25, 0.5, 0.75, 0.98)
 _FINGERPRINT_BYTES = 4096
 
-_MIN_SIZE_TOLERANCE = 8 * 1024 * 1024
 _MAX_FALLBACKS = 5
 _ALLOWED_STREAM_SCHEMES = frozenset(("http", "https"))
 
@@ -30,7 +28,9 @@ def _setting_bool(addon, key, default=False):
         normalized = raw.strip().lower()
         if normalized in ("true", "1", "yes", "on"):
             return True
-        if normalized in ("false", "0", "no", "off", ""):
+        if normalized == "":
+            return bool(default)
+        if normalized in ("false", "0", "no", "off"):
             return False
     return bool(default)
 
@@ -132,28 +132,6 @@ def _normalize_title(value):
     return " ".join(normalized.split())
 
 
-def _size_int(value):
-    """Return a positive integer size, or None for missing/invalid values."""
-    try:
-        size = int(value)
-    except (TypeError, ValueError):
-        return None
-    return size if size > 0 else None
-
-
-def _same_size(left, right):
-    """Return True when two release sizes are present and within tolerance."""
-    left_size = _size_int(left)
-    right_size = _size_int(right)
-    if left_size is None or right_size is None:
-        return False
-    tolerance = max(
-        _MIN_SIZE_TOLERANCE,
-        int(max(left_size, right_size) * _SIZE_TOLERANCE_RATIO),
-    )
-    return abs(left_size - right_size) <= tolerance
-
-
 def _quality_key(result):
     """Return the conservative duplicate-grouping quality key for a result."""
     meta = result.get("_meta") if isinstance(result, dict) else {}
@@ -172,8 +150,8 @@ def _quality_key(result):
 def _fallback_settings():
     """Return (enabled, max_candidates) from Kodi settings."""
     addon = xbmcaddon.Addon()
-    enabled = _setting_bool(addon, "fallback_streams_enabled", False)
-    max_candidates = _setting_int(addon, "fallback_streams_max", 2)
+    enabled = _setting_bool(addon, "fallback_streams_enabled", True)
+    max_candidates = _setting_int(addon, "fallback_streams_max", 5)
     if max_candidates < 0 or max_candidates > _MAX_FALLBACKS:
         xbmc.log(
             "NZB-DAV: fallback_streams_max={} clamped to 0..{}".format(
@@ -222,8 +200,6 @@ def attach_fallback_candidates(results):
                     or not candidate_link
                     or candidate_link in seen_links
                 ):
-                    continue
-                if not _same_size(result.get("size"), candidate.get("size")):
                     continue
                 candidates.append(candidate)
                 seen_links.add(candidate_link)

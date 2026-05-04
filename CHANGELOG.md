@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Released | What it's about |
 |---|---|---|
+| **[1.0.7](#107--2026-05-04)** | 2026-05-04 | Fallback streams enabled by default, 5 standby submits, pass-through fallback playback, size-independent candidates with runtime validation, fallback-only recovery |
 | **[1.0.6](#106--2026-05-04)** | 2026-05-04 | Pass-through-first proxy, live duplicate-release fallback streams, authenticated settings checks, fallback worker cleanup, threshold-zero remux semantics |
 | **[1.0.5](#105--2026-05-04)** | 2026-05-04 | Direct Newznab indexers, manual Indexers settings, concurrent provider fan-out, Kodi repo publishing fixes, WebDAV range compatibility, cache eviction race fix |
 | **[1.0.4](#104--2026-04-25)** | 2026-04-25 | Pass-through stall watchdog (closes the slow-trickle wedge where seek doesn't unstick), proxy seek perf, sha256 cache keys, credential redaction sweep, Prowlarr UI label fix, §H.2 audit closure batch |
@@ -49,6 +50,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | **[0.1.0](#010--2026-04-05)** | 2026-04-05 | Initial release |
 
 > **Bolded** versions are either major features or recommended upgrades.
+
+---
+
+## [1.0.7] — 2026-05-04
+
+> **Fallback streams are on by default.** Standby fallback submits now default
+> to 5 per primary result, stay on the pass-through proxy path, and replace
+> retry, zero-fill, and skip rescue paths for fallback-enabled sessions.
+
+**Changed**
+- **Fallback streams are enabled by default** with **Maximum fallback releases**
+  defaulting to 5 standby submissions per primary result.
+- **Fallback playback uses the pass-through proxy** so standby streams can be
+  switched in without forcing ffmpeg remux.
+- **Fallback candidates are tried regardless of release size.** Runtime source
+  validation still checks content length and fingerprints before switching.
+- **Fallback recovery is the only rescue path for fallback sessions.** If no
+  validated fallback source can resume the failed range, the proxy closes the
+  stream instead of retrying the original source, zero-filling, or probing
+  forward to skip bytes.
 
 ---
 
@@ -813,7 +834,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[1.0.6]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v1.0.6
+[1.0.7]: https://github.com/xbmc4lyfe/nzbdavkodi/compare/v1.0.6...v1.0.7
+[1.0.6]: https://github.com/xbmc4lyfe/nzbdavkodi/compare/v1.0.5...v1.0.6
 [1.0.5]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v1.0.5
 [1.0.4]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v1.0.4
 [1.0.3]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v1.0.3

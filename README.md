@@ -11,10 +11,10 @@
 
 A Kodi 21 (Omega) player/resolver addon that enables Usenet-based streaming through NZBHydra2 (or Prowlarr) and nzbdav. Works as a TMDBHelper player -- search for a movie or TV episode, pick an NZB, and stream it directly through nzbdav's WebDAV server.
 
-> **Current release: `v1.0.6`** on `main`. Highlights on this branch:
+> **Current release: `v1.0.7`** on `main`. Highlights on this branch:
 >
 > - **Pass-through-first proxy**: MKV and other non-MP4 streams use byte pass-through by default, preserving native source seeking and zero-fill recovery. Force-remux is now optional, with threshold `0` meaning fully off.
-> - **Live fallback streams**: duplicate NZB releases can be submitted in the background as standby sources; the proxy can switch to a matching fallback when the active stream hits unrecoverable missing articles.
+> - **Live fallback streams**: duplicate NZB releases are enabled by default with up to 5 standby submissions; fallback playback stays on the pass-through proxy and uses fallback recovery instead of retry, zero-fill, or skip rescue paths.
 > - **MP4 rewrite remains first-class**: moov-at-tail MP4s are rewritten in pure Python for native Kodi seek; already-faststart MP4s direct-play unless fallback metadata requires proxy session tracking.
 > - **Prowlarr support** as an alternative indexer to NZBHydra2.
 > - **Dolby Vision routing matrix**: P5 / P7 FEL / P8 / unknown DV are routed to matroska automatically; P7 MEL and non-DV go to fmp4 HLS when that mode is selected.
@@ -60,9 +60,11 @@ If ffmpeg isn't installed, the proxy degrades gracefully to pass-through or dire
 
 ### Live Fallback Streams
 
-When **Submit duplicate releases as live fallbacks** is enabled, the resolver attaches conservative duplicate candidates from the result list and submits them after the primary NZB is accepted. Standby submits run in a background worker so primary playback can continue polling immediately. Once playback starts, the proxy keeps the fallback job metadata with the session and can switch to another prepared stream if the active source becomes unrecoverable.
+When **Submit duplicate releases as live fallbacks** is enabled, the resolver attaches conservative duplicate candidates from the result list and submits them after the primary NZB is accepted. This is enabled by default. Standby submits run in a background worker so primary playback can continue polling immediately. Once playback starts, the proxy keeps the fallback job metadata with the session and can switch to another prepared stream if the active source becomes unrecoverable.
 
-Fallback selection is intentionally strict: candidates must share the normalized title and quality markers, have a valid NZB link, and be within the configured size tolerance. **Maximum fallback releases** caps how many standby submits are attached per primary result.
+Fallback selection is intentionally strict: candidates must share the normalized title and quality markers and have a valid NZB link. Candidates can be tried regardless of release size, but runtime source validation still checks content length and fingerprints before switching. **Maximum fallback releases** caps how many standby submits are attached per primary result and defaults to `5`.
+
+Fallback recovery is the only rescue path for fallback sessions: if no validated fallback source can resume the failed range, the proxy closes the stream instead of retrying the original source, zero-filling, or probing forward to skip bytes.
 
 Force-remux remains available for environments that need ffmpeg compatibility paths, but pass-through is the default. Setting **Force ffmpeg remux above (MB, 0=off)** to `0` disables non-MP4 force-remux entirely, including unknown-length streams.
 
@@ -83,7 +85,7 @@ Force-remux remains available for environments that need ffmpeg compatibility pa
 Install through the NZB-DAV repository for automatic updates:
 
 1. In Kodi: **Settings > File Manager > Add source** > enter `https://xbmc4lyfe.github.io/nzbdavkodi/` > name it `nzbdav`
-2. **Settings > Add-ons > Install from zip file** > `nzbdav` > `repository.nzbdav` > `repository.nzbdav-1.0.6.zip`
+2. **Settings > Add-ons > Install from zip file** > `nzbdav` > `repository.nzbdav` > `repository.nzbdav-1.0.7.zip`
 3. **Settings > Add-ons > Install from repository > NZB-DAV Repository > Video add-ons > NZB-DAV**
 4. Future updates are installed automatically
 
@@ -240,8 +242,8 @@ These tune stream-proxy behaviour. Defaults are safe; only flip these if you hav
 
 | Setting | Description | Default |
 |---------|-------------|---------|
-| Submit duplicate releases as live fallbacks | Submit conservative duplicate releases in the background and keep them as standby streams for live proxy switching | Off |
-| Maximum fallback releases | Maximum standby releases attached per primary result | 2 |
+| Submit duplicate releases as live fallbacks | Submit conservative duplicate releases in the background and keep them as standby streams for live proxy switching | On |
+| Maximum fallback releases | Maximum standby releases attached per primary result | 5 |
 | Force remux output format | `Direct pass-through (default)` / `Fragmented MP4 HLS (compatibility, experimental)` / `Piped Matroska (seek limited, DV-safe)` | Direct pass-through |
 | Force ffmpeg remux above (MB, 0=off) | File size above which the proxy switches to the optional force-remux tier; `0` disables non-MP4 force-remux entirely, including unknown-length streams | 15000 (~15 GB) |
 | Convert MP4 subtitles to SRT | mov_text → SRT during remux so embedded subs survive the matroska/HLS pipeline | On |

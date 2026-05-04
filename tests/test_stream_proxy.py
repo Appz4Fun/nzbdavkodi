@@ -5846,6 +5846,63 @@ def test_prepare_stream_faststart_mp4_uses_proxy_when_fallback_sources_exist():
     assert ctx["fallback_sources"][0]["stream_url"] == "http://host/fallback.mp4"
 
 
+def test_prepare_stream_mp4_with_fallback_sources_bypasses_mp4_repair_paths():
+    """Fallback-enabled MP4 playback uses pass-through before rescue tiers."""
+
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_context = None
+    sp._context_lock = threading.Lock()
+    sp.port = 9999
+    fallback_sources = [
+        {
+            "title": "Fallback MP4",
+            "nzb_url": "http://hydra/fallback-mp4",
+            "job_name": "Fallback MP4 [fallback-1-11111111]",
+            "nzo_id": "SABnzbd_nzo_mp4",
+            "stream_url": "http://host/fallback.mp4",
+        }
+    ]
+    mock_faststart = {
+        "header_data": b"H" * 66,
+        "virtual_size": 566,
+        "payload_remote_start": 66,
+        "payload_remote_end": 565,
+        "payload_size": 500,
+        "already_faststart": False,
+    }
+
+    with patch.object(sp, "_get_content_length", return_value=566), patch.object(
+        sp, "_try_faststart_layout", return_value=mock_faststart
+    ) as try_faststart, patch.object(
+        sp, "_prepare_tempfile_faststart", return_value="/tmp/faststart.mp4"
+    ) as temp_faststart, patch.object(
+        sp, "_probe_duration", return_value=42.0
+    ) as probe_duration:
+        url, info = sp.prepare_stream(
+            "http://host/moov-tail.mp4", fallback_sources=fallback_sources
+        )
+
+    assert url.startswith("http://127.0.0.1:9999/stream/")
+    assert info["direct"] is False
+    assert info["seekable"] is True
+    assert info["remux"] is False
+    assert info["faststart"] is False
+    try_faststart.assert_not_called()
+    temp_faststart.assert_not_called()
+    probe_duration.assert_not_called()
+    ctx = sp._server.stream_context
+    assert ctx["remote_url"] == "http://host/moov-tail.mp4"
+    assert ctx["content_type"] == "video/mp4"
+    assert ctx["content_length"] == 566
+    assert ctx["remux"] is False
+    assert ctx["faststart"] is False
+    assert "header_data" not in ctx
+    assert "temp_path" not in ctx
+
+
 # ---------------------------------------------------------------------------
 # _notify_error — stream error notifications
 # ---------------------------------------------------------------------------
@@ -6147,9 +6204,11 @@ def test_select_live_fallback_refreshes_completed_standby_job():
     fetch_length.assert_called_once_with("http://webdav/fallback.mkv", "Basic fallback")
 
 
-def test_fallback_range_probe_failure_falls_back_to_zero_fill_path():
-    """Fallback probe errors must not unwind the request handler."""
-    from resources.lib.stream_proxy import _UPSTREAM_RANGE_UPSTREAM_ERROR
+def test_fallback_range_probe_failure_closes_before_retry_or_zero_fill():
+    """Fallback sessions stop when no validated fallback source can resume."""
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_UPSTREAM_ERROR,
+    )
 
     ctx = {
         "remote_url": "http://webdav/primary.mkv",
@@ -6178,18 +6237,27 @@ def test_fallback_range_probe_failure_falls_back_to_zero_fill_path():
         "resources.lib.fallback_streams.fetch_range_digest",
         side_effect=OSError("probe failed"),
     ), patch(
-        "resources.lib.stream_proxy._retry_ladder_enabled", return_value=False
+        "resources.lib.stream_proxy._retry_ladder_enabled", return_value=True
     ), patch(
-        "resources.lib.stream_proxy._zero_fill_budget_enabled", return_value=False
+        "resources.lib.stream_proxy._zero_fill_budget_enabled", return_value=True
     ), patch.object(
+        handler,
+        "_retry_original_range",
+        return_value=(_UPSTREAM_RANGE_UPSTREAM_ERROR, 0, 0),
+    ) as retry_original, patch.object(
         handler, "_find_skip_offset", return_value=1
-    ):
+    ) as find_skip, patch.object(
+        handler, "_write_zeros"
+    ) as write_zeros:
         handler._serve_proxy(ctx)
 
     assert ctx["remote_url"] == "http://webdav/primary.mkv"
     assert ctx["fallback_sources"][0]["failed"] is True
     assert ctx["fallback_switch_count"] == 0
-    assert _collect_written(handler) == b"\x00" * 10
+    retry_original.assert_not_called()
+    find_skip.assert_not_called()
+    write_zeros.assert_not_called()
+    assert _collect_written(handler) == b""
 
 
 def test_stream_upstream_range_sends_addon_user_agent():
