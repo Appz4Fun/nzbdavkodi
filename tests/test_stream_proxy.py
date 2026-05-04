@@ -541,7 +541,9 @@ def test_prepare_stream_unknown_length_mkv_remuxes_in_matroska_mode():
         return_value={"ffmpeg_path": "/usr/bin/ffmpeg", "hls_fmp4": False},
     ), patch(
         "resources.lib.stream_proxy._get_force_remux_mode", return_value="matroska"
-    ), patch.object(sp, "_probe_duration", return_value=None):
+    ), patch.object(
+        sp, "_probe_duration", return_value=None
+    ):
         url, info = sp.prepare_stream("http://host/unknown.mkv")
 
     ctx = next(iter(sp._server.stream_sessions.values()))
@@ -756,19 +758,71 @@ def test_get_force_remux_mode_unknown_value_falls_back_to_passthrough():
 
 
 def test_get_force_remux_mode_matroska_on_two():
-    """Setting '2' returns 'matroska'."""
+    """Setting '2' returns 'matroska' after the one-time migration has run."""
     import sys
 
     from resources.lib.stream_proxy import _get_force_remux_mode
 
     mock_addon = MagicMock()
-    mock_addon.getSetting.return_value = "2"
+    mock_addon.getSetting.side_effect = lambda key: {
+        "force_remux_mode": "2",
+        "force_remux_mode_v2_migrated": "true",
+    }.get(key, "")
     original = sys.modules["xbmcaddon"].Addon.return_value
     sys.modules["xbmcaddon"].Addon.return_value = mock_addon
     try:
         assert _get_force_remux_mode() == "matroska"
     finally:
         sys.modules["xbmcaddon"].Addon.return_value = original
+
+
+def test_get_force_remux_mode_migrates_legacy_passthrough_two():
+    """Pre-v2 '2' meant pass-through; migrate it to the new default value."""
+    import sys
+
+    from resources.lib.stream_proxy import _get_force_remux_mode
+
+    mock_addon = MagicMock()
+    settings = {
+        "force_remux_mode": "2",
+        "force_remux_mode_v2_migrated": "false",
+    }
+    mock_addon.getSetting.side_effect = lambda key: settings.get(key, "")
+
+    def set_setting(key, value):
+        settings[key] = value
+
+    mock_addon.setSetting.side_effect = set_setting
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        assert _get_force_remux_mode() == "passthrough"
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    mock_addon.setSetting.assert_any_call("force_remux_mode", "0")
+    mock_addon.setSetting.assert_any_call("force_remux_mode_v2_migrated", "true")
+
+
+def test_get_force_remux_mode_matroska_on_two_after_migration():
+    """After migration marker is set, '2' is the Matroska compatibility mode."""
+    import sys
+
+    from resources.lib.stream_proxy import _get_force_remux_mode
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = lambda key: {
+        "force_remux_mode": "2",
+        "force_remux_mode_v2_migrated": "true",
+    }.get(key, "")
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        assert _get_force_remux_mode() == "matroska"
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+    mock_addon.setSetting.assert_not_called()
 
 
 def test_prepare_stream_large_mkv_defaults_to_passthrough_without_cache_zero():
@@ -794,9 +848,7 @@ def test_prepare_stream_large_mkv_defaults_to_passthrough_without_cache_zero():
             sp,
             "_get_ffmpeg_capabilities",
             return_value={"ffmpeg_path": "/usr/bin/ffmpeg", "hls_fmp4": False},
-        ) as mock_caps, patch.object(
-            sp, "_get_content_length", return_value=huge
-        ):
+        ) as mock_caps, patch.object(sp, "_get_content_length", return_value=huge):
             with patch("resources.lib.stream_proxy._disk_free_bytes", return_value=100*1024**3):
                     sp.prepare_stream("http://host/shawshank.mkv")
     finally:
