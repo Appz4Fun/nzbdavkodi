@@ -6175,7 +6175,8 @@ def test_fallback_range_probe_failure_falls_back_to_zero_fill_path():
         "_stream_upstream_range",
         return_value=(_UPSTREAM_RANGE_UPSTREAM_ERROR, 0),
     ), patch(
-        "resources.lib.fallback_streams.fetch_range_digest", return_value=None
+        "resources.lib.fallback_streams.fetch_range_digest",
+        side_effect=OSError("probe failed"),
     ), patch(
         "resources.lib.stream_proxy._retry_ladder_enabled", return_value=False
     ), patch(

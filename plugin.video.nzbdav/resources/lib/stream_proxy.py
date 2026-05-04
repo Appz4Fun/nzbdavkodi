@@ -2486,22 +2486,19 @@ class _StreamHandler(BaseHTTPRequestHandler):
 
     def _validate_fallback_fingerprint(self, ctx, source, content_length):
         """Verify sampled bytes match before splicing in a fallback stream."""
-        from resources.lib.fallback_streams import (
-            fetch_range_digest,
-            fingerprint_ranges,
-        )
+        from resources.lib.fallback_streams import fingerprint_ranges
 
         primary_auth = ctx.get("auth_header")
         fallback_auth = (source.get("stream_headers") or {}).get("Authorization")
         for start, end in fingerprint_ranges(content_length):
-            primary_digest = fetch_range_digest(
+            primary_digest = self._fetch_fallback_range_digest(
                 ctx["remote_url"],
                 primary_auth,
                 start,
                 end,
                 content_length=content_length,
             )
-            fallback_digest = fetch_range_digest(
+            fallback_digest = self._fetch_fallback_range_digest(
                 source["stream_url"],
                 fallback_auth,
                 start,
@@ -2512,16 +2509,38 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 return False
         return True
 
+    @staticmethod
+    def _fetch_fallback_range_digest(url, auth_header, start, end, content_length):
+        """Return a range digest, treating probe errors as a failed match."""
+        from resources.lib.fallback_streams import fetch_range_digest
+
+        try:
+            return fetch_range_digest(
+                url,
+                auth_header,
+                start,
+                end,
+                content_length=content_length,
+            )
+        except Exception as exc:  # defensive guard for probe helpers
+            xbmc.log(
+                "NZB-DAV: Fallback range probe failed at bytes {}-{}: {}".format(
+                    start,
+                    end,
+                    exc,
+                ),
+                xbmc.LOGWARNING,
+            )
+            return None
+
     def _probe_fallback_current_range(
         self, source, failed_byte, range_end, content_length
     ):
         """Verify fallback can serve bytes at the failing offset."""
-        from resources.lib.fallback_streams import fetch_range_digest
-
         probe_end = min(range_end, failed_byte + 4095)
         auth_header = (source.get("stream_headers") or {}).get("Authorization")
         return bool(
-            fetch_range_digest(
+            self._fetch_fallback_range_digest(
                 source["stream_url"],
                 auth_header,
                 failed_byte,
