@@ -279,7 +279,7 @@ def test_search_all_providers_no_provider_error_mentions_direct_indexers(
 
     results, error = _search_all_providers("movie", "The Matrix")
 
-    assert results == []
+    assert not results
     assert "direct indexers" in error
 
 

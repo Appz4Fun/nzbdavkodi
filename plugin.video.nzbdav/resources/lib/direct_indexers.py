@@ -12,13 +12,22 @@ import xbmcaddon
 
 from resources.lib.http_util import (
     calculate_age as _calculate_age,
+)
+from resources.lib.http_util import (
     format_request_error as _format_request_error,
+)
+from resources.lib.http_util import (
     get_xml_text as _get_text,
+)
+from resources.lib.http_util import (
     http_get as _http_get,
+)
+from resources.lib.http_util import (
     redact_text as _redact_text,
+)
+from resources.lib.http_util import (
     redact_url as _redact_url,
 )
-
 
 PRESET_INDEXERS = (
     ("nzblife", "NZB.life / NZB.su", "https://api.nzb.su/api"),
@@ -53,7 +62,9 @@ def _setting_text(addon, setting_id):
 def _configured_preset(addon, indexer_id, label, default_url):
     if not _setting_enabled(addon, "direct_indexer_{}_enabled".format(indexer_id)):
         return None
-    url = _setting_text(addon, "direct_indexer_{}_url".format(indexer_id)) or default_url
+    url = (
+        _setting_text(addon, "direct_indexer_{}_url".format(indexer_id)) or default_url
+    )
     api_key = _setting_text(addon, "direct_indexer_{}_api_key".format(indexer_id))
     if not url or not api_key:
         xbmc.log(

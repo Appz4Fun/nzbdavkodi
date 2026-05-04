@@ -18,7 +18,7 @@ def test_get_configured_indexers_returns_empty_when_disabled(mock_xbmcaddon):
         {"direct_indexers_enabled": "false"}
     )
 
-    assert get_configured_indexers() == []
+    assert not get_configured_indexers()
 
 
 @patch("resources.lib.direct_indexers.xbmcaddon")
@@ -120,7 +120,7 @@ def test_parse_results_reports_invalid_xml():
 
     results, error = parse_results("<html>bad", "My Indexer")
 
-    assert results == []
+    assert not results
     assert error.startswith("Direct indexer returned an invalid response:")
 
 
@@ -288,7 +288,7 @@ def test_search_direct_indexers_all_failures_return_error(
 
     results, error = search_direct_indexers("movie", "The Matrix")
 
-    assert results == []
+    assert not results
     assert error == "Direct indexer Bad unavailable: down"
 
 
