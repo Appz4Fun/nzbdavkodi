@@ -307,7 +307,8 @@ def test_search_all_providers_no_provider_error_mentions_direct_indexers(
 # --- _safe_resolve_handle + action route handle-resolution tests ---
 #
 # Action routes (install_player, clear_cache, settings, configure_*,
-# test_hydra, test_nzbdav, resolve) are invoked from main-menu items with
+# test_hydra, test_nzbdav, test_webdav, resolve) are invoked from main-menu
+# items with
 # isFolder=False. Kodi blocks the UI until setResolvedUrl is called on the
 # handle. These tests assert the route path always resolves the handle so
 # Kodi never hangs. Regression test for TODO.md §H.2 C1 (was ISSUE_REPORT.md
@@ -477,6 +478,17 @@ def test_route_test_prowlarr_resolves_handle(mock_test, mock_resolved):
     mock_test.assert_called_once()
     assert mock_resolved.called
     assert mock_resolved.call_args[0][0] == 10
+    assert mock_resolved.call_args[0][1] is False
+
+
+@patch("xbmcplugin.setResolvedUrl")
+@patch("resources.lib.router._test_webdav_connection")
+def test_route_test_webdav_resolves_handle(mock_test, mock_resolved):
+    """/test_webdav must resolve the handle after running."""
+    route(["plugin://plugin.video.nzbdav/test_webdav", "11", ""])
+    mock_test.assert_called_once()
+    assert mock_resolved.called
+    assert mock_resolved.call_args[0][0] == 11
     assert mock_resolved.call_args[0][1] is False
 
 
@@ -1093,9 +1105,8 @@ def test_test_connection_redacts_api_key_on_error(mock_http_get, mock_notify):
 
 @patch("resources.lib.router._test_connection")
 @patch("xbmcaddon.Addon")
-def test_test_hydra_connection_wires_caps_endpoint(mock_addon, mock_test):
-    """_test_hydra_connection builds the /api?t=caps URL and checks for
-    ``<caps>`` / ``<server`` in the response via _test_connection."""
+def test_test_hydra_connection_wires_search_endpoint(mock_addon, mock_test):
+    """_test_hydra_connection builds an authenticated search URL."""
     mock_addon.return_value.getSetting.side_effect = lambda k: {
         "hydra_url": "http://hydra:5076",
         "hydra_api_key": "abc",
@@ -1107,18 +1118,49 @@ def test_test_hydra_connection_wires_caps_endpoint(mock_addon, mock_test):
     label, url, test_url, ok_cond = mock_test.call_args[0]
     assert label == "NZBHydra"
     assert url == "http://hydra:5076"
-    assert "t=caps" in test_url
+    assert "t=search" in test_url
     assert "apikey=abc" in test_url
-    # ok_cond accepts either <caps> or <server
-    assert ok_cond("<caps><server/></caps>") is True
-    assert ok_cond("<rss><channel/></rss>") is False
+    assert ok_cond("<rss><channel/></rss>") is True
+    assert ok_cond('<error code="100" description="Invalid API key"/>') is False
 
 
 @patch("resources.lib.router._test_connection")
 @patch("xbmcaddon.Addon")
-def test_test_nzbdav_connection_wires_version_endpoint(mock_addon, mock_test):
-    """_test_nzbdav_connection builds the SABnzbd-compatible mode=version
-    URL and checks the response contains the ``version`` key."""
+def test_test_hydra_connection_uses_authenticated_search_endpoint(
+    mock_addon, mock_test
+):
+    """Hydra verification must exercise an API-key-gated query, not public caps."""
+    mock_addon.return_value.getSetting.side_effect = lambda k: {
+        "hydra_url": "http://hydra:5076",
+        "hydra_api_key": "abc",
+    }.get(k, "")
+
+    _test_hydra_connection()
+
+    label, url, test_url, ok_cond = mock_test.call_args[0]
+    assert label == "NZBHydra"
+    assert url == "http://hydra:5076"
+    assert "t=search" in test_url
+    assert "t=caps" not in test_url
+    assert "apikey=abc" in test_url
+    assert (
+        ok_cond(
+            '<?xml version="1.0"?><rss><channel><title>NZBHydra</title></channel></rss>'
+        )
+        is True
+    )
+    assert (
+        ok_cond(
+            '<?xml version="1.0"?><error code="100" description="Invalid API key"/>'
+        )
+        is False
+    )
+
+
+@patch("resources.lib.router._test_connection")
+@patch("xbmcaddon.Addon")
+def test_test_nzbdav_connection_wires_queue_endpoint(mock_addon, mock_test):
+    """_test_nzbdav_connection builds an authenticated queue URL."""
     mock_addon.return_value.getSetting.side_effect = lambda k: {
         "nzbdav_url": "http://nzbdav:6789",
         "nzbdav_api_key": "xyz",
@@ -1130,10 +1172,34 @@ def test_test_nzbdav_connection_wires_version_endpoint(mock_addon, mock_test):
     label, url, test_url, ok_cond = mock_test.call_args[0]
     assert label == "nzbdav"
     assert url == "http://nzbdav:6789"
-    assert "mode=version" in test_url
+    assert "mode=queue" in test_url
     assert "apikey=xyz" in test_url
-    assert ok_cond('{"version": "1.0"}') is True
+    assert ok_cond('{"queue": {"slots": []}}') is True
     assert ok_cond("nope") is False
+
+
+@patch("resources.lib.router._test_connection")
+@patch("xbmcaddon.Addon")
+def test_test_nzbdav_connection_uses_queue_endpoint_to_validate_api_key(
+    mock_addon, mock_test
+):
+    """The nzbdav test must hit an authenticated SABnzbd API endpoint."""
+    mock_addon.return_value.getSetting.side_effect = lambda k: {
+        "nzbdav_url": "http://nzbdav:6789",
+        "nzbdav_api_key": "xyz",
+    }.get(k, "")
+
+    _test_nzbdav_connection()
+
+    label, url, test_url, ok_cond = mock_test.call_args[0]
+    assert label == "nzbdav"
+    assert url == "http://nzbdav:6789"
+    assert "mode=queue" in test_url
+    assert "mode=version" not in test_url
+    assert "apikey=xyz" in test_url
+    assert ok_cond('{"queue": {"slots": []}}') is True
+    assert ok_cond('{"version": "1.0"}') is False
+    assert ok_cond('{"status": false, "error": "invalid api key"}') is False
 
 
 @patch("resources.lib.http_util.notify")
@@ -1158,6 +1224,26 @@ def test_test_prowlarr_connection_reports_ok(mock_addon, mock_http_get, mock_not
 
 
 @patch("resources.lib.http_util.notify")
+@patch("resources.lib.http_util.http_get")
+@patch("xbmcaddon.Addon")
+def test_test_prowlarr_connection_rejects_json_error_object(
+    mock_addon, mock_http_get, mock_notify
+):
+    """A JSON-shaped error body must not pass Prowlarr verification."""
+    mock_addon.return_value.getSetting.side_effect = lambda k: {
+        "prowlarr_host": "http://prowlarr:9696",
+        "prowlarr_api_key": "zzz",
+    }.get(k, "")
+    mock_http_get.return_value = '{"message": "Invalid API key"}'
+
+    _test_prowlarr_connection()
+
+    msgs = [c.args[1] for c in mock_notify.call_args_list]
+    assert not any("OK" in m for m in msgs), msgs
+    assert any("unexpected response" in m for m in msgs), msgs
+
+
+@patch("resources.lib.http_util.notify")
 @patch("xbmcaddon.Addon")
 def test_test_prowlarr_connection_bails_when_host_empty(mock_addon, mock_notify):
     """No prowlarr_host → notify 'not configured' and return without HTTP."""
@@ -1167,6 +1253,28 @@ def test_test_prowlarr_connection_bails_when_host_empty(mock_addon, mock_notify)
 
     msgs = [c.args[1] for c in mock_notify.call_args_list]
     assert any("not configured" in m for m in msgs), msgs
+
+
+@patch("resources.lib.http_util.notify")
+@patch("resources.lib.webdav.probe_webdav_reachable")
+def test_test_webdav_connection_reports_ok(mock_probe, mock_notify):
+    """The WebDAV settings action should report a successful reachability probe."""
+    from resources.lib import router
+
+    mock_probe.return_value = (True, None)
+
+    router._test_webdav_connection()
+
+    mock_probe.assert_called_once()
+    msgs = [c.args[1] for c in mock_notify.call_args_list]
+    assert any("WebDAV connection OK" in m for m in msgs), msgs
+
+
+@patch("resources.lib.router._test_webdav_connection", create=True)
+def test_route_dispatches_to_test_webdav(mock_test):
+    """Route /test_webdav should call the WebDAV connection test."""
+    route(["plugin://plugin.video.nzbdav/test_webdav", "1", ""])
+    mock_test.assert_called_once()
 
 
 # --- _get_tmdb_poster tests ---

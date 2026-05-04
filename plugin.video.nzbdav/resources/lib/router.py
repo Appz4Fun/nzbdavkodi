@@ -4,7 +4,7 @@
 """URL routing for plugin:// calls from Kodi / TMDBHelper."""
 
 import re
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import xbmc
 
@@ -193,6 +193,8 @@ def route(argv):
             _test_hydra_connection()
         elif path == "/test_prowlarr":
             _test_prowlarr_connection()
+        elif path == "/test_webdav":
+            _test_webdav_connection()
         elif path == "/test_direct_indexers":
             _test_direct_indexers_connection()
         elif path == "/test_nzbdav":
@@ -913,17 +915,66 @@ def _test_connection(label, url, test_url, ok_condition):
         notify(_addon_name(), "{}: {}".format(label, err_msg[:60]), 5000)
 
 
+def _json_object(response):
+    """Parse a JSON object response, returning an empty dict on bad shape."""
+    import json
+
+    try:
+        data = json.loads(response)
+    except (TypeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _xml_root_name(response):
+    """Return the unqualified root XML tag name, lowercased."""
+    import xml.etree.ElementTree as ET  # nosec B405 - trusted service response
+
+    try:
+        root = ET.fromstring(response)  # nosec B314 - trusted service response
+    except (TypeError, ET.ParseError):
+        return ""
+    return root.tag.rsplit("}", 1)[-1].lower()
+
+
+def _hydra_search_response_ok(response):
+    """True when NZBHydra/Newznab returned an authenticated search RSS payload."""
+    return _xml_root_name(response) == "rss"
+
+
+def _nzbdav_queue_response_ok(response):
+    """True when nzbdav returned an authenticated queue payload."""
+    data = _json_object(response)
+    return isinstance(data.get("queue"), dict)
+
+
+def _prowlarr_indexers_response_ok(response):
+    """True when Prowlarr returned the authenticated indexer list."""
+    import json
+
+    try:
+        data = json.loads(response)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(data, list)
+
+
 def _test_hydra_connection():
-    """Test NZBHydra2 connection by hitting the caps endpoint."""
+    """Test NZBHydra2 connection and API-key auth with a lightweight search."""
     import xbmcaddon
 
     addon = xbmcaddon.Addon()
     url = addon.getSetting("hydra_url").rstrip("/")
     api_key = addon.getSetting("hydra_api_key")
-    test_url = "{}/api?apikey={}&t=caps&o=xml".format(url, api_key)
-    _test_connection(
-        "NZBHydra", url, test_url, lambda r: "<caps>" in r or "<server" in r
-    )
+    params = {
+        "apikey": api_key,
+        "t": "search",
+        "q": "__nzbdav_connection_test__",
+        "o": "xml",
+        "limit": "1",
+    }
+    test_url = "{}/api?{}".format(url, urlencode(params))
+    _test_connection("NZBHydra", url, test_url, _hydra_search_response_ok)
 
 
 def _test_prowlarr_connection():
@@ -943,7 +994,7 @@ def _test_prowlarr_connection():
     test_url = "{}/api/v1/indexer?apikey={}".format(host, api_key)
     try:
         response = http_get(test_url)
-        if "[" in response or "{" in response:
+        if _prowlarr_indexers_response_ok(response):
             notify(_addon_name(), "Prowlarr connection OK", 3000)
         else:
             notify(_addon_name(), "Prowlarr: unexpected response", 5000)
@@ -963,6 +1014,22 @@ def _test_prowlarr_connection():
         )
 
 
+def _test_webdav_connection():
+    """Test WebDAV reachability and credentials with the shared probe."""
+    from resources.lib.http_util import notify
+    from resources.lib.webdav import probe_webdav_reachable
+
+    reachable, error = probe_webdav_reachable(max_retries=0)
+    if reachable:
+        notify(_addon_name(), "WebDAV connection OK", 3000)
+    elif error == "auth_failed":
+        notify(_addon_name(), "WebDAV authentication failed. Check credentials.", 5000)
+    elif error == "server_error":
+        notify(_addon_name(), "WebDAV server error. Check server.", 5000)
+    else:
+        notify(_addon_name(), "WebDAV connection error. Check server.", 5000)
+
+
 def _test_direct_indexers_connection():
     """Test configured direct Newznab indexer caps endpoints."""
     from resources.lib.direct_indexers import test_configured_indexers
@@ -978,14 +1045,21 @@ def _test_direct_indexers_connection():
 
 
 def _test_nzbdav_connection():
-    """Test nzbdav connection by hitting the version endpoint."""
+    """Test nzbdav connection and API-key auth by reading the queue."""
     import xbmcaddon
 
     addon = xbmcaddon.Addon()
     url = addon.getSetting("nzbdav_url").rstrip("/")
     api_key = addon.getSetting("nzbdav_api_key")
-    test_url = "{}/api?mode=version&apikey={}&output=json".format(url, api_key)
-    _test_connection("nzbdav", url, test_url, lambda r: "version" in r)
+    params = {
+        "mode": "queue",
+        "start": "0",
+        "limit": "0",
+        "apikey": api_key,
+        "output": "json",
+    }
+    test_url = "{}/api?{}".format(url, urlencode(params))
+    _test_connection("nzbdav", url, test_url, _nzbdav_queue_response_ok)
 
 
 def _handle_main_menu(handle):

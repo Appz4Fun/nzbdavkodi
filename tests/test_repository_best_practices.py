@@ -52,6 +52,17 @@ def test_prowlarr_api_key_label_is_not_reused_for_test_action():
     assert test_action.get("label") == "30131"
 
 
+def test_settings_include_webdav_test_action():
+    settings_xml = REPO_ROOT / "plugin.video.nzbdav" / "resources" / "settings.xml"
+    root = ET.parse(settings_xml).getroot()
+
+    test_action = root.find(
+        ".//setting[@action='RunPlugin(plugin://plugin.video.nzbdav/test_webdav)']"
+    )
+    assert test_action is not None
+    assert test_action.get("label") == "30183"
+
+
 def test_language_file_exists_for_kodi_strings():
     strings_po = (
         REPO_ROOT

@@ -80,6 +80,7 @@ _FALLBACK_STRINGS = {
     30180: "NZBFinder",
     30181: "NZBPlanet",
     30182: "DOGnzb",
+    30183: "Test WebDAV Connection",
     30160: "Install Player In Other Add-on",
     30161: "Choose Player Folder",
     30162: "No other player folders found",
