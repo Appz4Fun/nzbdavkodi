@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Released | What it's about |
 |---|---|---|
+| **[1.0.5](#105--2026-05-04)** | 2026-05-04 | Direct Newznab indexers, manual Indexers settings, concurrent provider fan-out, Kodi repo publishing fixes, WebDAV range compatibility, cache eviction race fix |
 | **[1.0.4](#104--2026-04-25)** | 2026-04-25 | Pass-through stall watchdog (closes the slow-trickle wedge where seek doesn't unstick), proxy seek perf, sha256 cache keys, credential redaction sweep, Prowlarr UI label fix, §H.2 audit closure batch |
 | **[1.0.3](#103--2026-04-23)** | 2026-04-23 | Hotfix: ffmpeg safety check no longer rejects -headers values with legitimate CR/LF — unblocks every auth'd force-remux stream that regressed in v1.0.0-pre-alpha/v1.0.1/v1.0.2 |
 | **[1.0.2](#102--2026-04-23)** | 2026-04-23 | Hotfix: find_video_file no longer rejects cross-origin PROPFIND hrefs — unblocks reverse-proxied nzbdav setups that regressed in v1.0.0-pre-alpha / v1.0.1 |
@@ -47,6 +48,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | **[0.1.0](#010--2026-04-05)** | 2026-04-05 | Initial release |
 
 > **Bolded** versions are either major features or recommended upgrades.
+
+---
+
+## [1.0.5] — 2026-05-04
+
+> **Direct Newznab indexers and repository update hardening.** Users who do
+> not run NZBHydra2 or Prowlarr can now configure Newznab-compatible
+> indexers directly in Kodi. This release also fixes the GitHub Pages
+> repository publishing path so Kodi clients see the latest release zip in
+> `addons.xml`, and rolls in several proxy/cache correctness fixes from the
+> post-1.0.4 hardening pass.
+
+**Added**
+- **Direct Newznab indexer support** in
+  `plugin.video.nzbdav/resources/lib/direct_indexers.py`. The addon can now
+  search Newznab-compatible indexers directly and hand the selected NZB URL
+  to the existing nzbdav submit/poll/playback flow.
+- **New Settings -> Indexers section** for manual setup when NZBHydra2 or
+  Prowlarr is not available. Includes curated presets for NZBGeek,
+  NZBFinder, DrunkenSlug, NZBPlanet, DOGnzb, and NZB.life / NZB.su, plus
+  custom Newznab-compatible slots with name, URL, and API key fields.
+- **Test Direct Indexers action** in settings. It probes each configured
+  provider's Newznab caps endpoint and reports partial failures while still
+  counting working indexers.
+
+**Changed**
+- **Search fan-out now includes direct indexers** alongside NZBHydra2 and
+  Prowlarr. Results are merged into the existing picker and deduped by NZB
+  link before playback.
+- **Direct indexer search and caps checks run concurrently** with a shared
+  wall-clock deadline and capped worker count, so one slow indexer no longer
+  blocks Kodi while every provider is checked serially.
+- **Kodi repository publishing path hardened.** Pages metadata is generated
+  from the latest release zip, keeps the release zip filename intact, writes
+  Kodi-compatible CRLF `addons.xml.md5`, and keeps the generated repository
+  index slim enough for Kodi clients to refresh reliably.
+- **CI parity tightened** by adding pylint to `just lint` and keeping the
+  automatic Claude review workflow advisory when external Claude auth is not
+  available.
+
+**Fixed**
+- **WebDAV range compatibility:** accept standards-compliant HTTP 200
+  full-object responses for full-object range probes per RFC 9110 instead of
+  treating them as hard protocol mismatches.
+- **Cache eviction race:** prune cache entries using one stat snapshot per
+  file, closing the TOCTOU window where a file could disappear between size
+  accounting and deletion.
+- **Direct indexer XML parsing:** remove fragile `parser.parser` internal
+  handler access and rely on Python 3.8+'s default external-entity behavior.
 
 ---
 
@@ -719,6 +769,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[1.0.5]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v1.0.5
 [1.0.4]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v1.0.4
 [1.0.3]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v1.0.3
 [1.0.2]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v1.0.2

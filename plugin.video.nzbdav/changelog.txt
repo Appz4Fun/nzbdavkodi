@@ -1,3 +1,13 @@
+v1.0.5 (2026-05-04)
+- Add direct Newznab indexers for users who do not run NZBHydra2 or Prowlarr. New Settings -> Indexers section can enable popular providers such as NZBGeek, NZBFinder, DrunkenSlug, NZBPlanet, DOGnzb, and NZB.life / NZB.su, plus custom Newznab-compatible slots.
+- Direct indexer searches now run alongside NZBHydra2 and Prowlarr, merge into the existing result picker, dedupe by NZB link, and submit the selected NZB URL through the existing nzbdav playback flow.
+- Direct indexer search and connection testing fan out concurrently with a shared timeout and capped worker count, so one slow indexer no longer blocks the Kodi UI while the addon waits for every provider serially.
+- Add a Test Direct Indexers action that checks each configured provider's Newznab caps endpoint and reports partial failures without hiding working indexers.
+- Harden direct Newznab XML parsing and remove fragile parser internals while keeping Python 3.8+ XXE protections.
+- Fix Kodi repository publishing so GitHub Pages metadata is generated from the latest release zip, preserves the release zip filename, writes Kodi-compatible CRLF md5 payloads, and exposes the new addon version through addons.xml for repository updates.
+- Accept standards-compliant HTTP 200 full-object responses for range probes, closing a false protocol-mismatch path against some WebDAV servers.
+- Close a cache eviction TOCTOU race by using one stat snapshot per file while pruning old cache entries.
+
 v1.0.4 (2026-04-25)
 - Fix the playback wedge from a slow-trickle upstream. When a Usenet article fetch took >25 seconds (under the 30 s per-read socket timeout) the upstream delivered bytes below playable rate, Kodi's CFileCache underran, audio stalled, and subsequent seeks did NOT trigger a fresh range request — the player just sat at "Seeking" forever with no caching message. The pass-through proxy now samples bytes-per-second over a 20 s rolling window and closes the response when video throughput drops below 100 KB/s, forcing Kodi's CCurlFile to reconnect with a fresh upstream fetch. Gated to video/* content types so a legitimate 64 kbps audio stream (~8 KB/s) isn't false-killed every 20 seconds. Logged as terminal_reason=passthrough_stall in kodi.log so operators can tell stall-driven and Kodi-disconnect unwinds apart.
 - Improve proxy seek performance. The stream proxy's seek-path code path was reworked for lower latency on backseek and chapter jumps; effect is most visible on multi-hundred-gigabyte files where the previous implementation stalled briefly while restarting the upstream connection.

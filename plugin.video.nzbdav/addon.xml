@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="plugin.video.nzbdav"
        name="NZB-DAV"
-       version="1.0.4"
+       version="1.0.5"
        provider-name="nzbdav">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
@@ -22,7 +22,17 @@
         <license>GPL-3.0-or-later</license>
         <source>https://github.com/xbmc4lyfe/nzbdavkodi</source>
         <website>https://xbmc4lyfe.github.io/nzbdavkodi/</website>
-        <news>v1.0.4
+        <news>v1.0.5
+- Add direct Newznab indexers for users who do not run NZBHydra2 or Prowlarr. New Settings -> Indexers section can enable popular providers such as NZBGeek, NZBFinder, DrunkenSlug, NZBPlanet, DOGnzb, and NZB.life / NZB.su, plus custom Newznab-compatible slots.
+- Direct indexer searches now run alongside NZBHydra2 and Prowlarr, merge into the existing result picker, dedupe by NZB link, and submit the selected NZB URL through the existing nzbdav playback flow.
+- Direct indexer search and connection testing fan out concurrently with a shared timeout and capped worker count, so one slow indexer no longer blocks the Kodi UI while the addon waits for every provider serially.
+- Add a Test Direct Indexers action that checks each configured provider's Newznab caps endpoint and reports partial failures without hiding working indexers.
+- Harden direct Newznab XML parsing and remove fragile parser internals while keeping Python 3.8+ XXE protections.
+- Fix Kodi repository publishing so GitHub Pages metadata is generated from the latest release zip, preserves the release zip filename, writes Kodi-compatible CRLF md5 payloads, and exposes the new addon version through addons.xml for repository updates.
+- Accept standards-compliant HTTP 200 full-object responses for range probes, closing a false protocol-mismatch path against some WebDAV servers.
+- Close a cache eviction TOCTOU race by using one stat snapshot per file while pruning old cache entries.
+
+v1.0.4
 - Fix the playback wedge from a slow-trickle upstream. When a Usenet article fetch took >25s (under the 30s per-read socket timeout), bytes dripped in below playable rate, Kodi's CFileCache underran, audio stalled, and subsequent seeks did NOT trigger a fresh range request — the player just sat at "Seeking" forever with no caching message. The pass-through proxy now samples bytes-per-second over a 20s rolling window and closes the response when video throughput drops below 100 KB/s, forcing Kodi's CCurlFile to reconnect. Gated to video/* content types so legitimate audio streams aren't false-killed every 20s.
 - Improve proxy seek performance, most visible on multi-hundred-gigabyte files where the previous implementation stalled briefly while restarting the upstream connection.
 - Fix Prowlarr "Test Connection" button label so the success/failure dialog correctly identifies which indexer was tested when both NZBHydra2 and Prowlarr are configured.
