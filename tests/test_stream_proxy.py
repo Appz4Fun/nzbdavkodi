@@ -5918,6 +5918,82 @@ def test_serve_proxy_streams_happy_path():
     assert _collect_written(handler) == payload
 
 
+def test_serve_proxy_switches_to_valid_fallback_source_mid_response():
+    """A recoverable upstream failure switches to a validated fallback URL."""
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_OK,
+        _UPSTREAM_RANGE_UPSTREAM_ERROR,
+    )
+
+    ctx = {
+        "remote_url": "http://webdav/primary.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 10,
+        "fallback_sources": [
+            {
+                "nzo_id": "nzo2",
+                "stream_url": "http://webdav/fallback.mkv",
+                "stream_headers": {"Authorization": "Basic fallback"},
+                "content_length": 10,
+                "validated": True,
+                "failed": False,
+            }
+        ],
+        "fallback_switch_count": 0,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-9")
+
+    with patch.object(
+        handler,
+        "_stream_upstream_range",
+        side_effect=[(_UPSTREAM_RANGE_UPSTREAM_ERROR, 0), (_UPSTREAM_RANGE_OK, 10)],
+    ) as mock_stream, patch.object(
+        handler,
+        "_select_live_fallback_source",
+        return_value=ctx["fallback_sources"][0],
+    ):
+        handler._serve_proxy(ctx)
+
+    assert ctx["remote_url"] == "http://webdav/fallback.mkv"
+    assert ctx["auth_header"] == "Basic fallback"
+    assert ctx["fallback_switch_count"] == 1
+    assert mock_stream.call_args_list[1][0][1:3] == (0, 9)
+
+
+def test_select_live_fallback_refreshes_completed_standby_job():
+    """Standby nzo_id entries can become usable without restarting playback."""
+    handler = _make_handler()
+    ctx = {
+        "remote_url": "http://webdav/primary.mkv",
+        "auth_header": None,
+        "content_length": 10,
+        "fallback_sources": [
+            {
+                "nzo_id": "nzo2",
+                "stream_url": "",
+                "stream_headers": {},
+                "content_length": 0,
+                "validated": False,
+                "failed": False,
+            }
+        ],
+    }
+
+    with patch.object(
+        handler, "_refresh_standby_fallback_sources"
+    ) as refresh, patch.object(handler, "_fallback_source_matches", return_value=True):
+        refresh.side_effect = lambda inner_ctx: inner_ctx["fallback_sources"][0].update(
+            {
+                "stream_url": "http://webdav/fallback.mkv",
+                "content_length": 10,
+            }
+        )
+        source = handler._select_live_fallback_source(ctx, 0, 9)
+
+    assert source["stream_url"] == "http://webdav/fallback.mkv"
+
+
 def test_stream_upstream_range_sends_addon_user_agent():
     ctx = {
         "remote_url": "http://host/movie.mkv",

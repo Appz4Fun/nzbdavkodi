@@ -8,6 +8,7 @@ from resources.lib.fallback_streams import (
     attach_fallback_candidates,
     build_fallback_job_name,
     build_prepare_fallback_payload,
+    fingerprint_ranges,
 )
 
 
@@ -177,3 +178,17 @@ def test_build_prepare_fallback_payload_preserves_completed_and_standby_jobs():
             "content_length": 0,
         },
     ]
+
+
+def test_fingerprint_offsets_use_edges_and_middle():
+    assert fingerprint_ranges(100000) == [
+        (0, 4095),
+        (25000, 29095),
+        (50000, 54095),
+        (75000, 79095),
+        (95904, 99999),
+    ]
+
+
+def test_fingerprint_ranges_handles_small_files():
+    assert fingerprint_ranges(1024) == [(0, 1023)]
