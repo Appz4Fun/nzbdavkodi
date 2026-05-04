@@ -290,3 +290,31 @@ def test_search_direct_indexers_all_failures_return_error(
 
     assert results == []
     assert error == "Direct indexer Bad unavailable: down"
+
+
+@patch("resources.lib.direct_indexers.get_configured_indexers")
+@patch("resources.lib.direct_indexers._http_get")
+def test_test_configured_indexers_counts_caps_success(mock_http, mock_configured):
+    from resources.lib.direct_indexers import test_configured_indexers
+
+    mock_configured.return_value = [
+        {
+            "id": "one",
+            "label": "One",
+            "api_url": "https://one.example/api",
+            "api_key": "one",
+        },
+        {
+            "id": "two",
+            "label": "Two",
+            "api_url": "https://two.example/api",
+            "api_key": "two",
+        },
+    ]
+    mock_http.side_effect = ["<caps></caps>", RuntimeError("down")]
+
+    ok_count, total_count, errors = test_configured_indexers()
+
+    assert ok_count == 1
+    assert total_count == 2
+    assert errors == ["Direct indexer Two unavailable: down"]
