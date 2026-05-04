@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 nzbdav contributors
 
-import hashlib
 from unittest.mock import MagicMock, patch
 from urllib.error import URLError
 
@@ -135,8 +134,8 @@ def test_build_fallback_job_name_unique_traceable_and_single_line():
 
     assert first != second
     assert "Example Movie 2026 1080p WEB-DL x265-GROUP" in first
-    assert first.endswith("[fallback-1-fc7bc55a]")
-    assert second.endswith("[fallback-2-322c37e6]")
+    assert first.endswith("[fallback-1-91fffc91]")
+    assert second.endswith("[fallback-2-db3a3f35]")
     assert "\n" not in first
     assert "\r" not in first
     assert _SAFE_JOB_RE.match(first)
@@ -217,6 +216,12 @@ def test_fetch_range_digest_returns_none_on_probe_error(_mock_urlopen):
 
 
 @patch("resources.lib.fallback_streams.urlopen")
+def test_fetch_range_digest_rejects_non_http_urls(mock_urlopen):
+    assert fetch_range_digest("file:///etc/passwd", None, 0, 3) is None
+    mock_urlopen.assert_not_called()
+
+
+@patch("resources.lib.fallback_streams.urlopen")
 def test_fetch_range_digest_rejects_server_that_ignores_range(mock_urlopen):
     mock_urlopen.return_value = _mock_range_response(b"A" * 4, status=200)
 
@@ -257,6 +262,7 @@ def test_fetch_range_digest_accepts_matching_partial_content(mock_urlopen):
         headers={"Content-Range": "bytes 0-3/10"},
     )
 
-    assert fetch_range_digest(
-        "http://webdav/movie.mkv", None, 0, 3, content_length=10
-    ) == (hashlib.sha1(body).hexdigest())
+    assert (
+        fetch_range_digest("http://webdav/movie.mkv", None, 0, 3, content_length=10)
+        == "63c1dd951ffedf6f7fd968ad4efa39b8ed584f162f46e715114ee184f8de9201"
+    )
