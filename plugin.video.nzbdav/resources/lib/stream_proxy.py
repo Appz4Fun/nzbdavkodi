@@ -53,7 +53,6 @@ from resources.lib.dv_source import probe_dolby_vision_source
 from resources.lib.http_util import HTTP_USER_AGENT
 from resources.lib.http_util import notify as _notify
 from resources.lib.http_util import redact_text as _redact_text
-from resources.lib.kodi_advancedsettings import has_cache_memorysize_zero  # noqa: E402
 
 # Singleton proxy instance
 _proxy = None
@@ -429,22 +428,17 @@ def _get_force_remux_mode():
     """Return 'matroska', 'hls_fmp4', or 'passthrough' for the force-remux
     branch.
 
-    Empty string, unset, or '0' -> 'matroska' (default, control path).
+    Empty string, unset, or '0' -> 'passthrough' (default).
     '1' -> 'hls_fmp4' (experimental, DV-capable).
-    '2' -> 'passthrough' (skip remux, serve WebDAV bytes directly with
-           Content-Length + Accept-Ranges: bytes; relies on the user
-           bypassing 32-bit Kodi's CFileCache via
-           `<cache><memorysize>0</memorysize></cache>` in
-           advancedsettings.xml — without that, large MKVs will hit the
-           uint32 seek-delta truncation bug in FileCache.cpp:375).
-    Any other value -> 'matroska' (safe fall-through).
+    '2' -> 'matroska' (compatibility remux).
+    Any other value -> 'passthrough'.
     """
     raw = _get_addon_setting("force_remux_mode")
     if raw == "1":
         return "hls_fmp4"
     if raw == "2":
-        return "passthrough"
-    return "matroska"
+        return "matroska"
+    return "passthrough"
 
 
 def _get_strict_contract_mode():
@@ -4616,39 +4610,17 @@ class StreamProxy:
             content_length = self._get_content_length(remote_url, auth_header)
             content_length_unknown = content_length <= 0
             threshold = _get_force_remux_threshold_bytes()
-            needs_remux = content_length_unknown or (
-                bool(threshold) and content_length >= threshold
-            )
             force_mode = _get_force_remux_mode()
+            force_remux_requested = force_mode in ("matroska", "hls_fmp4")
+            needs_remux = force_remux_requested and (
+                content_length_unknown
+                or (bool(threshold) and content_length >= threshold)
+            )
             if needs_remux:
-                cache_zero = (
-                    False if content_length_unknown else has_cache_memorysize_zero()
-                )
                 if content_length_unknown:
                     xbmc.log(
                         "NZB-DAV: Content length unknown; forcing live remux "
                         "instead of zero-byte pass-through",
-                        xbmc.LOGWARNING,
-                    )
-                elif cache_zero and force_mode in ("matroska", "passthrough"):
-                    xbmc.log(
-                        "NZB-DAV: advancedsettings.xml cache=0 confirmed; "
-                        "using pass-through for {}B file (force_remux_mode={})".format(
-                            content_length, force_mode
-                        ),
-                        xbmc.LOGINFO,
-                    )
-                    needs_remux = False
-                elif force_mode == "passthrough":
-                    # User opted out of force-remux, but pass-through is only
-                    # safe on 32-bit Kodi when CFileCache is bypassed. Fall
-                    # through to Matroska rather than exposing a large
-                    # Content-Length to Kodi's uint32 seek-delta bug.
-                    xbmc.log(
-                        "NZB-DAV: force_remux_mode=passthrough requested but "
-                        "advancedsettings.xml <cache><memorysize>0</memorysize>"
-                        "</cache> is missing -- falling back to matroska for "
-                        "{}B file".format(content_length),
                         xbmc.LOGWARNING,
                     )
             ffmpeg_caps = self._get_ffmpeg_capabilities() if needs_remux else {}

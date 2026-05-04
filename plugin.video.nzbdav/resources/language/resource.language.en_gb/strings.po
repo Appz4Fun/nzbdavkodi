@@ -531,16 +531,16 @@ msgid "Test Prowlarr Connection"
 msgstr "Test Prowlarr Connection"
 
 msgctxt "#30140"
-msgid "Force remux output format"
-msgstr "Force remux output format"
+msgid "Large non-MP4 stream mode"
+msgstr "Large non-MP4 stream mode"
 
 msgctxt "#30141"
-msgid "Piped Matroska (seek limited, DV-safe)"
-msgstr "Piped Matroska (seek limited, DV-safe)"
+msgid "Matroska remux (compatibility)"
+msgstr "Matroska remux (compatibility)"
 
 msgctxt "#30142"
-msgid "Fragmented MP4 HLS (full seek, DV-capable, experimental)"
-msgstr "Fragmented MP4 HLS (full seek, DV-capable, experimental)"
+msgid "fMP4 HLS (compatibility, experimental)"
+msgstr "fMP4 HLS (compatibility, experimental)"
 
 msgctxt "#30143"
 msgid "Pass-through validation"
@@ -579,8 +579,8 @@ msgid "Send 200 for no-range pass-through"
 msgstr "Send 200 for no-range pass-through"
 
 msgctxt "#30152"
-msgid "Direct pass-through (requires advancedsettings.xml cache=0)"
-msgstr "Direct pass-through (requires advancedsettings.xml cache=0)"
+msgid "Direct pass-through (default)"
+msgstr "Direct pass-through (default)"
 
 msgctxt "#30153"
 msgid "This {0:.0f} GB file can play in pass-through mode with full seek if advancedsettings.xml has <cache><memorysize>0</memorysize></cache>. Without it, force-remux is used and seek is bounded."
