@@ -958,6 +958,20 @@ def _attach_fallback_context_fields(ctx, fallback_sources):
     return ctx
 
 
+def _storage_to_webdav_path(storage):
+    """Convert nzbdav history storage path to a WebDAV /content path."""
+    if storage.startswith("/content/"):
+        return storage.rstrip("/") + "/"
+
+    prefix = "/mnt/nzbdav/completed-symlinks/"
+    if storage.startswith(prefix):
+        relative = storage[len(prefix) :]
+    else:
+        parts = storage.rstrip("/").split("/")
+        relative = "/".join(parts[-2:]) if len(parts) >= 2 else parts[-1]
+    return "/content/{}/".format(relative)
+
+
 def _extract_session_id_from_proxy_url(proxy_url):
     """Pull the session id back out of a `/stream/<id>` or `/hls/<id>/...` URL.
 
@@ -2417,15 +2431,36 @@ class _StreamHandler(BaseHTTPRequestHandler):
 
     def _refresh_standby_fallback_sources(self, ctx):
         """Resolve completed standby nzo_ids into usable WebDAV stream URLs."""
-        from resources.lib.fallback_streams import resolve_completed_fallback_source
+        from resources.lib.fallback_streams import fetch_content_length
+        from resources.lib.nzbdav_api import get_job_history
+        from resources.lib.webdav import find_video_file, get_webdav_stream_url_for_path
 
         for source in ctx.get("fallback_sources", []):
             if source.get("stream_url") or source.get("failed"):
                 continue
-            resolved = resolve_completed_fallback_source(source.get("nzo_id", ""))
-            if not resolved:
+            nzo_id = source.get("nzo_id", "")
+            if not nzo_id:
                 continue
-            source.update(resolved)
+            history = get_job_history(nzo_id)
+            if not history or history.get("status") != "Completed":
+                continue
+            storage = history.get("storage", "")
+            if not storage:
+                continue
+            video_path = find_video_file(_storage_to_webdav_path(storage))
+            if not video_path:
+                continue
+            stream_url, stream_headers = get_webdav_stream_url_for_path(video_path)
+            auth_header = (
+                stream_headers.get("Authorization") if stream_headers else None
+            )
+            source.update(
+                {
+                    "stream_url": stream_url,
+                    "stream_headers": stream_headers or {},
+                    "content_length": fetch_content_length(stream_url, auth_header),
+                }
+            )
 
     def _fallback_source_matches(self, ctx, source, failed_byte, range_end):
         """Return True when a fallback looks like the same file and can resume."""
@@ -2435,31 +2470,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
             return False
         if source.get("validated"):
             return self._probe_fallback_current_range(source, failed_byte, range_end)
-        if not self._validate_fallback_fingerprint(ctx, source):
-            return False
         source["validated"] = True
         return self._probe_fallback_current_range(source, failed_byte, range_end)
-
-    def _validate_fallback_fingerprint(self, ctx, source):
-        """Compare deterministic range digests between primary and fallback."""
-        from resources.lib.fallback_streams import (
-            fetch_range_digest,
-            fingerprint_ranges,
-        )
-
-        content_length = int(ctx.get("content_length", 0) or 0)
-        primary_auth = ctx.get("auth_header")
-        fallback_auth = (source.get("stream_headers") or {}).get("Authorization")
-        for start, end in fingerprint_ranges(content_length):
-            primary_digest = fetch_range_digest(
-                ctx["remote_url"], primary_auth, start, end
-            )
-            fallback_digest = fetch_range_digest(
-                source["stream_url"], fallback_auth, start, end
-            )
-            if not primary_digest or primary_digest != fallback_digest:
-                return False
-        return True
 
     def _probe_fallback_current_range(self, source, failed_byte, range_end):
         """Verify fallback can serve bytes at the failing offset."""
@@ -2550,10 +2562,12 @@ class _StreamHandler(BaseHTTPRequestHandler):
         ctx["passthrough_window_bytes"] = 0
         ctx["passthrough_stall_detected"] = False
 
+        active_ctx = ctx
+
         try:
             while current <= end:
                 result, written = self._stream_upstream_range(
-                    ctx, current, end, contract_mode=contract_mode
+                    active_ctx, current, end, contract_mode=contract_mode
                 )
                 total_streamed += written
                 _update_session_recovery_state(self.server, ctx, streamed=written)
@@ -2568,13 +2582,22 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 ):
                     fallback = self._select_live_fallback_source(ctx, current, end)
                     if fallback:
-                        ctx["remote_url"] = fallback["stream_url"]
-                        ctx["auth_header"] = (fallback.get("stream_headers") or {}).get(
-                            "Authorization"
-                        )
+                        active_ctx = dict(ctx)
+                        active_ctx["remote_url"] = fallback["stream_url"]
+                        active_ctx["auth_header"] = (
+                            fallback.get("stream_headers") or {}
+                        ).get("Authorization")
+                        active_ctx.pop("upstream_down_notified", None)
+                        active_ctx.pop("upstream_unreachable_error", None)
                         ctx["fallback_switch_count"] = (
                             int(ctx.get("fallback_switch_count", 0) or 0) + 1
                         )
+                        try:
+                            ctx["fallback_active_index"] = ctx.get(
+                                "fallback_sources", []
+                            ).index(fallback)
+                        except ValueError:
+                            ctx["fallback_active_index"] = -1
                         xbmc.log(
                             "NZB-DAV: Switched pass-through source at byte {} "
                             "to fallback nzo_id={} (switch_count={})".format(
@@ -2594,7 +2617,9 @@ class _StreamHandler(BaseHTTPRequestHandler):
                         result,
                         retry_written,
                         current,
-                    ) = self._retry_original_range(ctx, current, end, contract_mode)
+                    ) = self._retry_original_range(
+                        active_ctx, current, end, contract_mode
+                    )
                     total_streamed += retry_written
                     _update_session_recovery_state(
                         self.server, ctx, streamed=retry_written
@@ -2622,7 +2647,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     return
 
                 remaining = end - current + 1
-                skip = self._find_skip_offset(ctx, current, end)
+                skip = self._find_skip_offset(active_ctx, current, end)
 
                 if skip is None or (
                     zero_fill_budget_enabled
@@ -2729,15 +2754,15 @@ class _StreamHandler(BaseHTTPRequestHandler):
             # Either way we unwind the handler and let BaseHTTPServer tear
             # down the socket; Kodi's CCurlFile will reconnect if it still
             # wants bytes.
-            if ctx.get("passthrough_stall_detected"):
+            if active_ctx.get("passthrough_stall_detected"):
                 terminal_reason = "passthrough_stall"
                 xbmc.log(
                     "NZB-DAV: Pass-through stall at byte {} "
                     "(rate={:.0f} B/s over {:.1f}s; threshold={} B/s) — "
                     "closing to force Kodi reconnect (reason={})".format(
                         current,
-                        ctx.get("passthrough_stall_bps", 0.0),
-                        ctx.get("passthrough_stall_window_seconds", 0.0),
+                        active_ctx.get("passthrough_stall_bps", 0.0),
+                        active_ctx.get("passthrough_stall_window_seconds", 0.0),
                         _PASSTHROUGH_MIN_THROUGHPUT_BPS,
                         terminal_reason,
                     ),

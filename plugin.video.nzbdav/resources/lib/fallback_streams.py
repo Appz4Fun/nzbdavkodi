@@ -5,6 +5,7 @@
 
 import hashlib
 import re
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 import xbmc
@@ -205,7 +206,7 @@ def fingerprint_ranges(content_length):
     return ranges
 
 
-def fetch_content_length(url, auth_header, timeout=5):
+def fetch_content_length(url, auth_header, timeout=2):
     """Return Content-Length for a WebDAV stream URL, or 0."""
     req = Request(url, method="HEAD")
     if auth_header:
@@ -213,48 +214,24 @@ def fetch_content_length(url, auth_header, timeout=5):
     try:
         with urlopen(req, timeout=timeout) as resp:  # nosec B310
             return int(resp.headers.get("Content-Length", "0") or 0)
-    except (OSError, TypeError, ValueError):
+    except (HTTPError, URLError, OSError, TypeError, ValueError):
         return 0
 
 
-def fetch_range_digest(url, auth_header, start, end, timeout=5):
+def fetch_range_digest(url, auth_header, start, end, timeout=2):
     """Read a byte range and return a SHA-1 digest of the returned bytes."""
     req = Request(url)
     if auth_header:
         req.add_header("Authorization", auth_header)
     req.add_header("Range", "bytes={}-{}".format(start, end))
-    with urlopen(req, timeout=timeout) as resp:  # nosec B310
-        status = getattr(resp, "status", None) or resp.getcode()
-        if status not in (200, 206):
-            return None
-        body = resp.read(end - start + 1)
+    try:
+        with urlopen(req, timeout=timeout) as resp:  # nosec B310
+            status = getattr(resp, "status", None) or resp.getcode()
+            if status not in (200, 206):
+                return None
+            body = resp.read(end - start + 1)
+    except (HTTPError, URLError, OSError, ValueError):
+        return None
     if len(body) != end - start + 1:
         return None
     return hashlib.sha1(body).hexdigest()
-
-
-def resolve_completed_fallback_source(nzo_id):
-    """Return stream metadata for a completed fallback job, or None."""
-    if not nzo_id:
-        return None
-
-    from resources.lib.nzbdav_api import get_job_history
-    from resources.lib.resolver import _storage_to_webdav_path
-    from resources.lib.webdav import find_video_file, get_webdav_stream_url_for_path
-
-    history = get_job_history(nzo_id)
-    if not history or history.get("status") != "Completed":
-        return None
-    storage = history.get("storage", "")
-    if not storage:
-        return None
-    video_path = find_video_file(_storage_to_webdav_path(storage))
-    if not video_path:
-        return None
-    stream_url, stream_headers = get_webdav_stream_url_for_path(video_path)
-    auth_header = stream_headers.get("Authorization") if stream_headers else None
-    return {
-        "stream_url": stream_url,
-        "stream_headers": stream_headers or {},
-        "content_length": fetch_content_length(stream_url, auth_header),
-    }
