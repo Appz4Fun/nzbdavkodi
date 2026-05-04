@@ -4647,25 +4647,43 @@ class StreamProxy:
                     xbmc.LOGINFO,
                 )
             elif faststart is not None and faststart.get("already_faststart"):
-                # Already faststart — redirect directly to WebDAV URL.
-                # No proxy needed: moov is at the front, Kodi can seek natively.
-                # This follows the Stremio ecosystem pattern: expose the direct
-                # byte-servable URL when the backend stream is already good.
+                if not fallback_sources:
+                    # Already faststart — redirect directly to WebDAV URL.
+                    # No proxy needed: moov is at the front, Kodi can seek
+                    # natively. This follows the Stremio ecosystem pattern:
+                    # expose the direct byte-servable URL when the backend
+                    # stream is already good and no live fallback is needed.
+                    xbmc.log(
+                        "NZB-DAV: MP4 already faststart, direct redirect",
+                        xbmc.LOGINFO,
+                    )
+                    stream_info = {
+                        "duration_seconds": None,
+                        "total_bytes": content_length,
+                        "virtual_size": 0,
+                        "seekable": True,
+                        "remux": False,
+                        "faststart": False,
+                        "direct": True,
+                        "content_type": "video/mp4",
+                    }
+                    _attach_fallback_context_fields(stream_info, fallback_sources)
+                    return remote_url, stream_info
+
                 xbmc.log(
-                    "NZB-DAV: MP4 already faststart, direct redirect", xbmc.LOGINFO
+                    "NZB-DAV: MP4 already faststart with fallback streams; "
+                    "using pass-through proxy",
+                    xbmc.LOGINFO,
                 )
-                stream_info = {
-                    "duration_seconds": None,
-                    "total_bytes": content_length,
-                    "virtual_size": 0,
-                    "seekable": True,
+                ctx = {
+                    "remote_url": remote_url,
+                    "auth_header": auth_header,
+                    "content_length": content_length,
+                    "content_type": "video/mp4",
                     "remux": False,
                     "faststart": False,
-                    "direct": True,
-                    "content_type": "video/mp4",
+                    "seekable": True,
                 }
-                _attach_fallback_context_fields(stream_info, fallback_sources)
-                return remote_url, stream_info
             else:
                 # Tier 2: Try temp-file faststart (ffmpeg -movflags +faststart)
                 # Skip for large files (>4GB) — temp remux would take too long
@@ -4985,9 +5003,13 @@ class StreamProxy:
             ),
             "remux": ctx.get("remux", False),
             "faststart": ctx.get("faststart", False),
+            "direct": False,
             "mode": ctx.get("mode"),
             "content_type": ctx.get("content_type"),
         }
+        _attach_fallback_context_fields(
+            stream_info, ctx.get("fallback_sources", fallback_sources)
+        )
         return local_url, stream_info
 
     @staticmethod

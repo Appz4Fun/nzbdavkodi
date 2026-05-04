@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 nzbdav contributors
 
-from unittest.mock import patch
+import hashlib
+from unittest.mock import MagicMock, patch
 from urllib.error import URLError
 
 from resources.lib.fallback_streams import (
@@ -12,6 +13,20 @@ from resources.lib.fallback_streams import (
     fetch_range_digest,
     fingerprint_ranges,
 )
+
+
+def _mock_range_response(body, status=206, headers=None):
+    resp = MagicMock()
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=False)
+    resp.read = MagicMock(return_value=body)
+    resp.status = status
+    resp.getcode = MagicMock(return_value=status)
+    header_map = headers or {}
+    resp.headers.get = MagicMock(
+        side_effect=lambda key, default=None: header_map.get(key, default)
+    )
+    return resp
 
 
 def _result(title, link, size, meta=None):
@@ -199,3 +214,35 @@ def test_fingerprint_ranges_handles_small_files():
 @patch("resources.lib.fallback_streams.urlopen", side_effect=URLError("timeout"))
 def test_fetch_range_digest_returns_none_on_probe_error(_mock_urlopen):
     assert fetch_range_digest("http://webdav/movie.mkv", None, 0, 1023) is None
+
+
+@patch("resources.lib.fallback_streams.urlopen")
+def test_fetch_range_digest_rejects_server_that_ignores_range(mock_urlopen):
+    mock_urlopen.return_value = _mock_range_response(b"A" * 4, status=200)
+
+    assert fetch_range_digest("http://webdav/movie.mkv", None, 0, 3) is None
+
+
+@patch("resources.lib.fallback_streams.urlopen")
+def test_fetch_range_digest_requires_matching_content_range(mock_urlopen):
+    mock_urlopen.return_value = _mock_range_response(
+        b"A" * 4,
+        status=206,
+        headers={"Content-Range": "bytes 4-7/10"},
+    )
+
+    assert fetch_range_digest("http://webdav/movie.mkv", None, 0, 3) is None
+
+
+@patch("resources.lib.fallback_streams.urlopen")
+def test_fetch_range_digest_accepts_matching_partial_content(mock_urlopen):
+    body = b"A" * 4
+    mock_urlopen.return_value = _mock_range_response(
+        body,
+        status=206,
+        headers={"Content-Range": "bytes 0-3/10"},
+    )
+
+    assert fetch_range_digest("http://webdav/movie.mkv", None, 0, 3) == (
+        hashlib.sha1(body).hexdigest()
+    )

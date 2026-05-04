@@ -12,6 +12,7 @@ import xbmc
 import xbmcaddon
 
 _SAFE_JOB_RE = re.compile(r"^[A-Za-z0-9._ \[\]-]+$")
+_CONTENT_RANGE_RE = re.compile(r"^bytes\s+(\d+)-(\d+)/(\d+|\*)$")
 _SIZE_TOLERANCE_RATIO = 0.002
 _FINGERPRINT_OFFSETS = (0.0, 0.25, 0.5, 0.75, 0.98)
 _FINGERPRINT_BYTES = 4096
@@ -218,6 +219,18 @@ def fetch_content_length(url, auth_header, timeout=2):
         return 0
 
 
+def _content_range_matches_request(content_range, start, end):
+    if not isinstance(content_range, str):
+        return False
+    match = _CONTENT_RANGE_RE.match(content_range.strip())
+    if not match:
+        return False
+    try:
+        return int(match.group(1)) == start and int(match.group(2)) == end
+    except ValueError:
+        return False
+
+
 def fetch_range_digest(url, auth_header, start, end, timeout=2):
     """Read a byte range and return a SHA-1 digest of the returned bytes."""
     req = Request(url)
@@ -227,7 +240,11 @@ def fetch_range_digest(url, auth_header, start, end, timeout=2):
     try:
         with urlopen(req, timeout=timeout) as resp:  # nosec B310
             status = getattr(resp, "status", None) or resp.getcode()
-            if status not in (200, 206):
+            if status != 206:
+                return None
+            if not _content_range_matches_request(
+                resp.headers.get("Content-Range"), start, end
+            ):
                 return None
             body = resp.read(end - start + 1)
     except (HTTPError, URLError, OSError, ValueError):
