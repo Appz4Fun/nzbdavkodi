@@ -1222,8 +1222,10 @@ def _fallback_submit_jobs_snapshot(state, wait_seconds=0.5):
     if not state:
         return []
     thread = state.get("thread")
+    stop_event = state.get("stop")
     finished = state.get("finished")
-    if thread:
+    stop_requested = bool(stop_event and stop_event.is_set())
+    if thread and stop_requested:
         deadline = time.monotonic() + max(0, wait_seconds)
         while thread.is_alive() and time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
