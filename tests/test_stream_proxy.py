@@ -1252,6 +1252,54 @@ def test_do_post_rejects_auth_header_control_chars():
     handler.server.owner_proxy.prepare_stream.assert_not_called()
 
 
+def test_do_post_passes_fallback_sources_to_prepare_stream():
+    fallback_sources = [
+        {
+            "title": "Fallback A",
+            "nzo_id": "SABnzbd_nzo_a",
+            "stream_url": "",
+            "stream_headers": {},
+            "content_length": 0,
+        }
+    ]
+    body = json.dumps(
+        {
+            "remote_url": "http://host/movie.mkv",
+            "auth_header": "Basic abc",
+            "fallback_sources": fallback_sources,
+        }
+    ).encode()
+    handler = _make_prepare_post_handler(body=body)
+    handler.server.owner_proxy.prepare_stream.return_value = (
+        "http://127.0.0.1:9999/stream/abc",
+        {"remux": False},
+    )
+
+    handler.do_POST()
+
+    handler.server.owner_proxy.prepare_stream.assert_called_once_with(
+        "http://host/movie.mkv",
+        "Basic abc",
+        fallback_sources=fallback_sources,
+    )
+    handler.send_error.assert_not_called()
+
+
+def test_do_post_rejects_non_list_fallback_sources():
+    body = json.dumps(
+        {
+            "remote_url": "http://host/movie.mkv",
+            "fallback_sources": {"nzo_id": "SABnzbd_nzo_a"},
+        }
+    ).encode()
+    handler = _make_prepare_post_handler(body=body)
+
+    handler.do_POST()
+
+    handler.send_error.assert_called_once_with(400)
+    handler.server.owner_proxy.prepare_stream.assert_not_called()
+
+
 def test_prepare_stream_uses_unique_session_urls():
     """Each prepare_stream must produce a unique session URL, and the
     previous session must be torn down so at most one session is live
@@ -1273,6 +1321,68 @@ def test_prepare_stream_uses_unique_session_urls():
     # The second prepare_stream must have cleared the first session.
     assert len(sp._server.stream_sessions) == 1
     assert url2.rsplit("/", 1)[-1] in sp._server.stream_sessions
+
+
+def test_prepare_stream_context_keeps_normalized_fallback_sources():
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_sessions = {}
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 9999
+    fallback_sources = [
+        {
+            "title": "Fallback A",
+            "nzb_url": "http://hydra/fallback-a",
+            "job_name": "Fallback A [fallback-1-11111111]",
+            "nzo_id": "SABnzbd_nzo_a",
+            "stream_url": "http://host/fallback-a.mkv",
+            "stream_headers": None,
+            "content_length": "1234",
+        },
+        {
+            "title": "Fallback B",
+            "nzb_url": "http://hydra/fallback-b",
+            "job_name": "Fallback B [fallback-2-22222222]",
+            "nzo_id": "SABnzbd_nzo_b",
+            "stream_url": "",
+        },
+    ]
+
+    with patch.object(sp, "_get_content_length", return_value=100000):
+        sp.prepare_stream(
+            "http://host/movie.mkv",
+            fallback_sources=fallback_sources,
+        )
+
+    ctx = sp._server.stream_context
+    assert ctx["fallback_sources"] == [
+        {
+            "title": "Fallback A",
+            "nzb_url": "http://hydra/fallback-a",
+            "job_name": "Fallback A [fallback-1-11111111]",
+            "nzo_id": "SABnzbd_nzo_a",
+            "stream_url": "http://host/fallback-a.mkv",
+            "stream_headers": {},
+            "content_length": 1234,
+            "validated": False,
+            "failed": False,
+        },
+        {
+            "title": "Fallback B",
+            "nzb_url": "http://hydra/fallback-b",
+            "job_name": "Fallback B [fallback-2-22222222]",
+            "nzo_id": "SABnzbd_nzo_b",
+            "stream_url": "",
+            "stream_headers": {},
+            "content_length": 0,
+            "validated": False,
+            "failed": False,
+        },
+    ]
+    assert ctx["fallback_active_index"] == -1
+    assert ctx["fallback_switch_count"] == 0
 
 
 def test_prepare_stream_falls_back_to_proxy_without_ffmpeg():

@@ -15,13 +15,13 @@ import xbmcgui
 import xbmcplugin
 import xbmcvfs
 
-from resources.lib.i18n import addon_name as _addon_name
-from resources.lib.i18n import fmt as _fmt
-from resources.lib.i18n import string as _string
 from resources.lib.fallback_streams import (
     build_fallback_job_name,
     build_prepare_fallback_payload,
 )
+from resources.lib.i18n import addon_name as _addon_name
+from resources.lib.i18n import fmt as _fmt
+from resources.lib.i18n import string as _string
 from resources.lib.nzbdav_api import (
     cancel_job,
     find_completed_by_name,
@@ -1048,10 +1048,12 @@ def _submit_nzb_with_retries(nzb_url, title, dialog, monitor, max_submit_retries
     return None
 
 
-def _submit_fallback_candidates(candidates, dialog, monitor):
+def _submit_fallback_candidates(candidates, monitor, stop_event=None, on_job=None):
     """Submit duplicate fallback candidates as standby nzbdav jobs."""
     fallback_jobs = []
     for index, candidate in enumerate(candidates or [], start=1):
+        if stop_event is not None and stop_event.is_set():
+            break
         if not isinstance(candidate, dict):
             continue
         nzb_url = candidate.get("link")
@@ -1060,13 +1062,7 @@ def _submit_fallback_candidates(candidates, dialog, monitor):
             continue
         job_name = build_fallback_job_name(title, nzb_url, index)
         try:
-            nzo_id = _submit_nzb_with_retries(
-                nzb_url,
-                job_name,
-                dialog,
-                monitor,
-                max_submit_retries=1,
-            )
+            nzo_id, submit_error = submit_nzb(nzb_url, job_name)
         except Exception as error:  # pylint: disable=broad-except
             xbmc.log(
                 "NZB-DAV: Fallback submit failed for '{}': {}".format(
@@ -1075,6 +1071,23 @@ def _submit_fallback_candidates(candidates, dialog, monitor):
                 xbmc.LOGWARNING,
             )
             continue
+        if not nzo_id and submit_error:
+            status = submit_error.get("status")
+            if status == "timeout":
+                xbmc.log(
+                    "NZB-DAV: Fallback submit timed out for '{}'; probing "
+                    "queue/history in background".format(job_name),
+                    xbmc.LOGWARNING,
+                )
+                nzo_id = _adopt_queued_or_completed_job(job_name, monitor)
+            if not nzo_id:
+                xbmc.log(
+                    "NZB-DAV: Fallback submit skipped for '{}' (status={}): {}".format(
+                        job_name, status, submit_error.get("message", "")
+                    ),
+                    xbmc.LOGWARNING,
+                )
+                continue
         if not nzo_id:
             xbmc.log(
                 "NZB-DAV: Fallback submit did not create job for '{}'".format(
@@ -1094,54 +1107,61 @@ def _submit_fallback_candidates(candidates, dialog, monitor):
                 "content_length": 0,
             }
         )
+        if on_job is not None:
+            on_job(dict(fallback_jobs[-1]))
     return fallback_jobs
 
 
-def _refresh_completed_fallback_jobs(jobs):
-    """Fill stream fields for fallback jobs already completed by nzbdav."""
-    for job in jobs:
-        if job.get("stream_url") or not job.get("nzo_id"):
-            continue
+def _start_fallback_submit_worker(candidates):
+    """Start background fallback submits and return shared state."""
+    state = {
+        "lock": threading.Lock(),
+        "jobs": [],
+        "stop": threading.Event(),
+        "thread": None,
+    }
+    candidate_list = list(candidates or [])
+    if not candidate_list:
+        return state
+
+    def _append_job(job):
+        with state["lock"]:
+            state["jobs"].append(job)
+
+    def _worker():
         try:
-            history = get_job_history(job["nzo_id"])
-            if not history or history.get("status") != "Completed":
-                continue
-            storage = history.get("storage")
-            if not storage:
-                continue
-            webdav_folder = _storage_to_webdav_path(storage)
-            video_path = find_video_file(webdav_folder)
-            if not video_path:
-                continue
-            stream_url, stream_headers = get_webdav_stream_url_for_path(video_path)
-            job["stream_url"] = stream_url
-            job["stream_headers"] = stream_headers or {}
-            job["content_length"] = job.get("content_length") or 0
+            _submit_fallback_candidates(
+                candidate_list,
+                xbmc.Monitor(),
+                stop_event=state["stop"],
+                on_job=_append_job,
+            )
         except Exception as error:  # pylint: disable=broad-except
             xbmc.log(
-                "NZB-DAV: Failed to refresh fallback job '{}': {}".format(
-                    job.get("job_name", job.get("nzo_id", "unknown")), error
-                ),
+                "NZB-DAV: Fallback submit worker failed: {}".format(error),
                 xbmc.LOGWARNING,
             )
-    return jobs
+
+    thread = threading.Thread(
+        target=_worker, name="nzbdav-fallback-submit", daemon=True
+    )
+    state["thread"] = thread
+    thread.start()
+    return state
 
 
-def _prepare_fallback_sources(candidates, dialog):
-    """Submit and refresh fallback candidates without blocking primary playback."""
-    if not candidates:
+def _fallback_submit_jobs_snapshot(state):
+    """Return a non-blocking copy of fallback jobs submitted so far."""
+    if not state:
         return []
-    try:
-        monitor = xbmc.Monitor()
-        fallback_jobs = _submit_fallback_candidates(candidates, dialog, monitor)
-        _refresh_completed_fallback_jobs(fallback_jobs)
-        return build_prepare_fallback_payload(fallback_jobs)
-    except Exception as error:  # pylint: disable=broad-except
-        xbmc.log(
-            "NZB-DAV: Fallback source preparation failed: {}".format(error),
-            xbmc.LOGWARNING,
-        )
-        return []
+    with state["lock"]:
+        return [dict(job) for job in state["jobs"]]
+
+
+def _stop_fallback_submit_worker(state):
+    """Signal the fallback worker to stop before starting further candidates."""
+    if state:
+        state["stop"].set()
 
 
 def _abort_poll_before_fetch(
@@ -1427,6 +1447,7 @@ def resolve(handle, params):
     """
     nzb_url = unquote(params.get("nzburl", ""))
     title = unquote(params.get("title", ""))
+    fallback_state = None
 
     if not nzb_url:
         xbmcgui.Dialog().ok(_addon_name(), _string(30096))
@@ -1439,13 +1460,16 @@ def resolve(handle, params):
         poll_interval, download_timeout = _get_poll_settings()
         dialog = xbmcgui.DialogProgress()
         dialog.create(_addon_name(), _string(30097))
+        fallback_state = _start_fallback_submit_worker(
+            params.get("_fallback_candidates", [])
+        )
 
         stream_url, stream_headers = _poll_until_ready(
             nzb_url, title, dialog, poll_interval, download_timeout
         )
         if stream_url:
-            fallback_sources = _prepare_fallback_sources(
-                params.get("_fallback_candidates", []), dialog
+            fallback_sources = build_prepare_fallback_payload(
+                _fallback_submit_jobs_snapshot(fallback_state)
             )
             _clear_kodi_playback_state(params)
             _play_direct(
@@ -1455,9 +1479,11 @@ def resolve(handle, params):
                 fallback_sources=fallback_sources,
             )
         else:
+            _stop_fallback_submit_worker(fallback_state)
             xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
             xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
     except _RESOLVE_RUNTIME_ERRORS as error:
+        _stop_fallback_submit_worker(fallback_state)
         _handle_resolve_exception("resolve", error, handle=handle)
     finally:
         if dialog is not None:
@@ -1483,17 +1509,21 @@ def resolve_and_play(nzb_url, title, params=None):
     on the RunPlugin path. Same fix as `resolve()` — TODO.md §H.2-H9.
     """
     dialog = None
+    fallback_state = None
     try:
         poll_interval, download_timeout = _get_poll_settings()
         dialog = xbmcgui.DialogProgress()
         dialog.create(_addon_name(), _string(30097))
+        fallback_state = _start_fallback_submit_worker(
+            (params or {}).get("_fallback_candidates", [])
+        )
 
         stream_url, stream_headers = _poll_until_ready(
             nzb_url, title, dialog, poll_interval, download_timeout
         )
         if stream_url:
-            fallback_sources = _prepare_fallback_sources(
-                (params or {}).get("_fallback_candidates", []), dialog
+            fallback_sources = build_prepare_fallback_payload(
+                _fallback_submit_jobs_snapshot(fallback_state)
             )
             _clear_kodi_playback_state(params)
             _play_via_proxy(
@@ -1501,7 +1531,10 @@ def resolve_and_play(nzb_url, title, params=None):
                 stream_headers,
                 fallback_sources=fallback_sources,
             )
+        else:
+            _stop_fallback_submit_worker(fallback_state)
     except _RESOLVE_RUNTIME_ERRORS as error:
+        _stop_fallback_submit_worker(fallback_state)
         _handle_resolve_exception("resolve_and_play", error)
     finally:
         if dialog is not None:
