@@ -133,9 +133,9 @@
 		<setting id="stream_auto_retry" label="30074" type="bool" default="true" />
 		<setting id="stream_max_retries" label="30075" type="number" default="3" />
 		<setting id="stream_retry_delay" label="30076" type="number" default="5" />
-		<setting label="30170" type="lsep" />
-		<setting id="fallback_streams_enabled" label="30171" type="bool" default="false" />
-		<setting id="fallback_streams_max" label="30172" type="number" default="2" />
+		<setting label="30183" type="lsep" />
+		<setting id="fallback_streams_enabled" label="30184" type="bool" default="false" />
+		<setting id="fallback_streams_max" label="30185" type="number" default="2" />
 		<setting label="30118" type="lsep" />
 		<setting id="proxy_convert_subs" label="30119" type="bool" default="true" />
 		<setting id="force_remux_threshold_mb" label="30123" type="number" default="15000" />

@@ -87,11 +87,11 @@ _FALLBACK_STRINGS = {
     30141: "Matroska remux (compatibility)",
     30142: "fMP4 HLS (compatibility, experimental)",
     30152: "Direct pass-through (default)",
-    30170: "Fallback Streams",
-    30171: "Submit duplicate releases as live fallbacks",
-    30172: "Maximum fallback releases",
-    30173: "Switched to fallback stream",
-    30174: "No matching fallback stream available",
+    30183: "Fallback Streams",
+    30184: "Submit duplicate releases as live fallbacks",
+    30185: "Maximum fallback releases",
+    30186: "Switched to fallback stream",
+    30187: "No matching fallback stream available",
 }
 
 
