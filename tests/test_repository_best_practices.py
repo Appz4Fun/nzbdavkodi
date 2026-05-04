@@ -74,8 +74,7 @@ def test_settings_include_direct_indexers_category():
     indexers_category = root.find("./category[@label='30163']")
     assert indexers_category is not None
     assert (
-        indexers_category.find(".//setting[@id='direct_indexers_enabled']")
-        is not None
+        indexers_category.find(".//setting[@id='direct_indexers_enabled']") is not None
     )
     assert (
         indexers_category.find(".//setting[@id='direct_indexer_nzbgeek_api_key']")

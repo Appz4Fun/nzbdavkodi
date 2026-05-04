@@ -6461,7 +6461,6 @@ def test_stream_upstream_range_warn_mode_streams_on_soft_contract_mismatch(mock_
     import sys
 
     from resources.lib.stream_proxy import (
-        _UPSTREAM_RANGE_PROTOCOL_MISMATCH,
         _StreamHandler,
     )
 
@@ -6514,7 +6513,6 @@ def test_stream_upstream_range_enforce_streams_soft_contract_mismatch(mock_xbmc)
     import sys
 
     from resources.lib.stream_proxy import (
-        _UPSTREAM_RANGE_PROTOCOL_MISMATCH,
         _StreamHandler,
     )
 

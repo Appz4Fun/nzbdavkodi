@@ -565,9 +565,7 @@ def _classify_contract_mismatch(
     ):
         if not (status == 200 and is_full_object):
             problems.append(
-                "Content-Range={!r} expected={!r}".format(
-                    content_range, expected_range
-                )
+                "Content-Range={!r} expected={!r}".format(content_range, expected_range)
             )
             hard = True
 
