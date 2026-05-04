@@ -18,6 +18,10 @@ import xbmcvfs
 from resources.lib.i18n import addon_name as _addon_name
 from resources.lib.i18n import fmt as _fmt
 from resources.lib.i18n import string as _string
+from resources.lib.fallback_streams import (
+    build_fallback_job_name,
+    build_prepare_fallback_payload,
+)
 from resources.lib.nzbdav_api import (
     cancel_job,
     find_completed_by_name,
@@ -414,7 +418,7 @@ def _apply_proxy_mime(li, stream_url, stream_info):
             li.setMimeType("video/x-matroska")
 
 
-def _play_direct(handle, stream_url, stream_headers):
+def _play_direct(handle, stream_url, stream_headers, fallback_sources=None):
     """Play a stream through the local service proxy.
 
     Every file type routes through the service proxy so Kodi never opens the
@@ -439,7 +443,7 @@ def _play_direct(handle, stream_url, stream_headers):
     service_port = get_service_proxy_port()
     if service_port:
         proxy_url, stream_info = prepare_stream_via_service(
-            service_port, stream_url, auth_header
+            service_port, stream_url, auth_header, fallback_sources=fallback_sources
         )
 
         # Window properties go DOWN before ``setResolvedUrl`` so the
@@ -490,7 +494,7 @@ def _play_direct(handle, stream_url, stream_headers):
     xbmcplugin.setResolvedUrl(handle, True, li)
 
 
-def _play_via_proxy(stream_url, stream_headers):
+def _play_via_proxy(stream_url, stream_headers, fallback_sources=None):
     """Play a stream for the resolve_and_play (service-side) path.
 
     Routes everything through the service proxy for the same reasons as
@@ -520,7 +524,7 @@ def _play_via_proxy(stream_url, stream_headers):
     service_port = get_service_proxy_port()
     if service_port:
         proxy_url, stream_info = prepare_stream_via_service(
-            service_port, stream_url, auth_header
+            service_port, stream_url, auth_header, fallback_sources=fallback_sources
         )
 
         if stream_info.get("direct"):
@@ -1044,6 +1048,102 @@ def _submit_nzb_with_retries(nzb_url, title, dialog, monitor, max_submit_retries
     return None
 
 
+def _submit_fallback_candidates(candidates, dialog, monitor):
+    """Submit duplicate fallback candidates as standby nzbdav jobs."""
+    fallback_jobs = []
+    for index, candidate in enumerate(candidates or [], start=1):
+        if not isinstance(candidate, dict):
+            continue
+        nzb_url = candidate.get("link")
+        title = candidate.get("title")
+        if not nzb_url or not title:
+            continue
+        job_name = build_fallback_job_name(title, nzb_url, index)
+        try:
+            nzo_id = _submit_nzb_with_retries(
+                nzb_url,
+                job_name,
+                dialog,
+                monitor,
+                max_submit_retries=1,
+            )
+        except Exception as error:  # pylint: disable=broad-except
+            xbmc.log(
+                "NZB-DAV: Fallback submit failed for '{}': {}".format(
+                    job_name, error
+                ),
+                xbmc.LOGWARNING,
+            )
+            continue
+        if not nzo_id:
+            xbmc.log(
+                "NZB-DAV: Fallback submit did not create job for '{}'".format(
+                    job_name
+                ),
+                xbmc.LOGWARNING,
+            )
+            continue
+        fallback_jobs.append(
+            {
+                "title": title,
+                "nzb_url": nzb_url,
+                "job_name": job_name,
+                "nzo_id": nzo_id,
+                "stream_url": "",
+                "stream_headers": {},
+                "content_length": 0,
+            }
+        )
+    return fallback_jobs
+
+
+def _refresh_completed_fallback_jobs(jobs):
+    """Fill stream fields for fallback jobs already completed by nzbdav."""
+    for job in jobs:
+        if job.get("stream_url") or not job.get("nzo_id"):
+            continue
+        try:
+            history = get_job_history(job["nzo_id"])
+            if not history or history.get("status") != "Completed":
+                continue
+            storage = history.get("storage")
+            if not storage:
+                continue
+            webdav_folder = _storage_to_webdav_path(storage)
+            video_path = find_video_file(webdav_folder)
+            if not video_path:
+                continue
+            stream_url, stream_headers = get_webdav_stream_url_for_path(video_path)
+            job["stream_url"] = stream_url
+            job["stream_headers"] = stream_headers or {}
+            job["content_length"] = job.get("content_length") or 0
+        except Exception as error:  # pylint: disable=broad-except
+            xbmc.log(
+                "NZB-DAV: Failed to refresh fallback job '{}': {}".format(
+                    job.get("job_name", job.get("nzo_id", "unknown")), error
+                ),
+                xbmc.LOGWARNING,
+            )
+    return jobs
+
+
+def _prepare_fallback_sources(candidates, dialog):
+    """Submit and refresh fallback candidates without blocking primary playback."""
+    if not candidates:
+        return []
+    try:
+        monitor = xbmc.Monitor()
+        fallback_jobs = _submit_fallback_candidates(candidates, dialog, monitor)
+        _refresh_completed_fallback_jobs(fallback_jobs)
+        return build_prepare_fallback_payload(fallback_jobs)
+    except Exception as error:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: Fallback source preparation failed: {}".format(error),
+            xbmc.LOGWARNING,
+        )
+        return []
+
+
 def _abort_poll_before_fetch(
     iteration, elapsed, download_timeout, dialog, nzo_id, title
 ):
@@ -1344,8 +1444,16 @@ def resolve(handle, params):
             nzb_url, title, dialog, poll_interval, download_timeout
         )
         if stream_url:
+            fallback_sources = _prepare_fallback_sources(
+                params.get("_fallback_candidates", []), dialog
+            )
             _clear_kodi_playback_state(params)
-            _play_direct(handle, stream_url, stream_headers)
+            _play_direct(
+                handle,
+                stream_url,
+                stream_headers,
+                fallback_sources=fallback_sources,
+            )
         else:
             xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
             xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
@@ -1384,8 +1492,15 @@ def resolve_and_play(nzb_url, title, params=None):
             nzb_url, title, dialog, poll_interval, download_timeout
         )
         if stream_url:
+            fallback_sources = _prepare_fallback_sources(
+                (params or {}).get("_fallback_candidates", []), dialog
+            )
             _clear_kodi_playback_state(params)
-            _play_via_proxy(stream_url, stream_headers)
+            _play_via_proxy(
+                stream_url,
+                stream_headers,
+                fallback_sources=fallback_sources,
+            )
     except _RESOLVE_RUNTIME_ERRORS as error:
         _handle_resolve_exception("resolve_and_play", error)
     finally:

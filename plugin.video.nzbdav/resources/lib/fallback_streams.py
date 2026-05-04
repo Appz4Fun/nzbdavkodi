@@ -3,13 +3,14 @@
 
 """Conservative grouping for duplicate releases usable as fallback streams."""
 
+import hashlib
 import re
 
 import xbmc
 import xbmcaddon
 import xbmcvfs  # noqa: F401 - used by follow-up fingerprinting slices.
 
-_SAFE_JOB_RE = re.compile(r"^[A-Za-z0-9._ -]+$")
+_SAFE_JOB_RE = re.compile(r"^[A-Za-z0-9._ \[\]-]+$")
 _SIZE_TOLERANCE_RATIO = 0.002
 _FINGERPRINT_OFFSETS = (0.0, 0.25, 0.5, 0.75, 0.98)
 _FINGERPRINT_BYTES = 4096
@@ -147,3 +148,40 @@ def attach_fallback_candidates(results):
             result["_fallback_candidates"] = candidates
 
     return results
+
+
+def build_fallback_job_name(title, nzb_url, index):
+    """Return a stable, traceable nzbdav job name for a fallback candidate."""
+    clean_title = title if isinstance(title, str) else ""
+    clean_title = re.sub(r"[^A-Za-z0-9._ -]+", " ", clean_title)
+    clean_title = " ".join(clean_title.split())[:180].strip()
+    if not clean_title:
+        clean_title = "fallback"
+
+    digest = hashlib.sha1(str(nzb_url).encode("utf-8")).hexdigest()[:8]
+    job_name = "{} [fallback-{}-{}]".format(clean_title, index, digest)
+    if not _SAFE_JOB_RE.match(job_name):
+        job_name = re.sub(r"[^A-Za-z0-9._ -]+", " ", job_name)
+        job_name = " ".join(job_name.split())
+    return job_name
+
+
+def build_prepare_fallback_payload(fallback_jobs):
+    """Build the service prepare manifest payload for fallback jobs."""
+    payload = []
+    for job in fallback_jobs:
+        nzo_id = job.get("nzo_id") if isinstance(job, dict) else None
+        if not nzo_id:
+            continue
+        payload.append(
+            {
+                "title": job.get("title", ""),
+                "nzb_url": job.get("nzb_url", ""),
+                "job_name": job.get("job_name", ""),
+                "nzo_id": nzo_id,
+                "stream_url": job.get("stream_url") or "",
+                "stream_headers": job.get("stream_headers") or {},
+                "content_length": job.get("content_length") or 0,
+            }
+        )
+    return payload
