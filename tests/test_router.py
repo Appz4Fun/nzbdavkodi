@@ -220,6 +220,69 @@ def test_route_dispatches_to_install_player(mock_install):
     assert True, "route() with /install_player should complete without error"
 
 
+@patch("xbmcaddon.Addon")
+def test_search_all_providers_calls_direct_indexers_when_enabled(mock_addon):
+    from resources.lib.router import _search_all_providers
+
+    addon = MagicMock()
+    addon.getSetting.side_effect = lambda key: {
+        "nzbhydra_enabled": "false",
+        "prowlarr_enabled": "false",
+        "direct_indexers_enabled": "true",
+    }.get(key, "")
+    mock_addon.return_value = addon
+
+    direct_search = MagicMock(
+        return_value=(
+            [
+                {
+                    "title": "The.Matrix.1999.1080p-GRP",
+                    "link": "https://indexer/api?t=get&id=1&apikey=secret",
+                    "size": "123",
+                    "indexer": "NZBGeek",
+                    "pubdate": "",
+                    "age": "",
+                }
+            ],
+            None,
+        )
+    )
+
+    with patch.dict(
+        "sys.modules",
+        {
+            "resources.lib.direct_indexers": MagicMock(
+                search_direct_indexers=direct_search
+            )
+        },
+    ):
+        results, error = _search_all_providers("movie", "The Matrix")
+
+    assert error is None
+    assert len(results) == 1
+    direct_search.assert_called_once()
+
+
+@patch("xbmcaddon.Addon")
+def test_search_all_providers_no_provider_error_mentions_direct_indexers(
+    mock_addon,
+):
+    from resources.lib.router import _search_all_providers
+
+    addon = MagicMock()
+    addon.getSetting.side_effect = lambda key: {
+        "nzbhydra_enabled": "false",
+        "prowlarr_enabled": "false",
+        "direct_indexers_enabled": "false",
+    }.get(key, "")
+    mock_addon.return_value = addon
+
+    results, error = _search_all_providers("movie", "The Matrix")
+
+    assert results == []
+    assert "direct indexers" in error
+
+
 # --- _safe_resolve_handle + action route handle-resolution tests ---
 #
 # Action routes (install_player, clear_cache, settings, configure_*,
