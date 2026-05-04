@@ -700,6 +700,109 @@ def test_resolve_success(
     assert resolve_call[0][1] is True
 
 
+@patch("resources.lib.resolver._play_direct")
+@patch("resources.lib.resolver._clear_kodi_playback_state")
+@patch("resources.lib.resolver.get_webdav_stream_url_for_path")
+@patch("resources.lib.resolver.find_video_file")
+@patch("resources.lib.resolver.get_job_history")
+@patch("resources.lib.resolver._submit_nzb_with_retries")
+@patch("resources.lib.resolver._poll_until_ready")
+@patch("resources.lib.resolver.xbmc")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver._get_poll_settings")
+def test_resolve_submits_fallback_candidates_and_passes_manifest_to_direct_play(
+    mock_poll_settings,
+    mock_gui,
+    mock_xbmc,
+    mock_poll_until_ready,
+    mock_submit_with_retries,
+    mock_history,
+    mock_find_video,
+    mock_stream_url,
+    mock_clear_state,
+    mock_play_direct,
+):
+    mock_poll_settings.return_value = (2, 60)
+    mock_poll_until_ready.return_value = (
+        "http://webdav/content/primary/movie.mkv",
+        {"Authorization": "Basic primary"},
+    )
+    mock_submit_with_retries.side_effect = [
+        "SABnzbd_nzo_done",
+        "SABnzbd_nzo_standby",
+    ]
+    mock_history.side_effect = [
+        {
+            "status": "Completed",
+            "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/fallback-a",
+        },
+        {"status": "Downloading"},
+    ]
+    mock_find_video.return_value = "/content/uncategorized/fallback-a/movie.mkv"
+    mock_stream_url.return_value = (
+        "http://webdav/content/uncategorized/fallback-a/movie.mkv",
+        {"Authorization": "Basic fallback"},
+    )
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    dialog = MagicMock()
+    mock_gui.DialogProgress.return_value = dialog
+
+    resolve(
+        1,
+        {
+            "nzburl": "http://hydra/getnzb/primary",
+            "title": "movie.mkv",
+            "_fallback_candidates": [
+                {
+                    "title": "Fallback A 2026 1080p WEB-DL",
+                    "link": "http://hydra/getnzb/fallback-a",
+                },
+                {
+                    "title": "Fallback B 2026 1080p WEB-DL",
+                    "link": "http://hydra/getnzb/fallback-b",
+                },
+            ],
+        },
+    )
+
+    assert mock_submit_with_retries.call_count == 2
+    submit_calls = mock_submit_with_retries.call_args_list
+    assert submit_calls[0].args[:2] == (
+        "http://hydra/getnzb/fallback-a",
+        "Fallback A 2026 1080p WEB-DL [fallback-1-5c5fd5e4]",
+    )
+    assert submit_calls[1].args[:2] == (
+        "http://hydra/getnzb/fallback-b",
+        "Fallback B 2026 1080p WEB-DL [fallback-2-1a5c50ea]",
+    )
+    assert submit_calls[0].kwargs == {"max_submit_retries": 1}
+    mock_play_direct.assert_called_once_with(
+        1,
+        "http://webdav/content/primary/movie.mkv",
+        {"Authorization": "Basic primary"},
+        fallback_sources=[
+            {
+                "title": "Fallback A 2026 1080p WEB-DL",
+                "nzb_url": "http://hydra/getnzb/fallback-a",
+                "job_name": "Fallback A 2026 1080p WEB-DL [fallback-1-5c5fd5e4]",
+                "nzo_id": "SABnzbd_nzo_done",
+                "stream_url": "http://webdav/content/uncategorized/fallback-a/movie.mkv",
+                "stream_headers": {"Authorization": "Basic fallback"},
+                "content_length": 0,
+            },
+            {
+                "title": "Fallback B 2026 1080p WEB-DL",
+                "nzb_url": "http://hydra/getnzb/fallback-b",
+                "job_name": "Fallback B 2026 1080p WEB-DL [fallback-2-1a5c50ea]",
+                "nzo_id": "SABnzbd_nzo_standby",
+                "stream_url": "",
+                "stream_headers": {},
+                "content_length": 0,
+            },
+        ],
+    )
+
+
 @patch("resources.lib.resolver.find_completed_by_name")
 @patch("resources.lib.resolver.xbmc")
 @patch("resources.lib.resolver.xbmcgui")
