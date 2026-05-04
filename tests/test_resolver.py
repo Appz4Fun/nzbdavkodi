@@ -22,6 +22,7 @@ from resources.lib.resolver import (
     _play_direct,
     _play_via_proxy,
     _poll_until_ready,
+    _start_fallback_submit_worker,
     _stop_fallback_submit_worker,
     _storage_to_webdav_path,
     _validate_stream_url,
@@ -927,8 +928,83 @@ def test_fallback_submit_jobs_snapshot_waits_for_stopping_worker_final_jobs():
         worker.join(timeout=1)
 
 
+def test_stop_fallback_submit_worker_uses_bounded_join_for_active_worker():
+    worker = MagicMock()
+    worker.is_alive.return_value = True
+    join_timeouts = []
+
+    def record_join(timeout=None):
+        if timeout is None:
+            raise AssertionError("fallback shutdown used an unbounded join")
+        join_timeouts.append(timeout)
+
+    worker.join.side_effect = record_join
+    cancelled = []
+    stop_event = threading.Event()
+    job = {
+        "title": "Fallback A",
+        "nzo_id": "SABnzbd_nzo_fallback",
+        "status": "Downloading",
+    }
+    state = {
+        "lock": threading.Lock(),
+        "jobs": [job],
+        "thread": worker,
+        "stop": stop_event,
+        "finished": threading.Event(),
+        "cancel_job": cancelled.append,
+    }
+
+    assert _stop_fallback_submit_worker(
+        state, cancel_submitted=True, join_timeout=0.05
+    ) == [job]
+
+    assert stop_event.is_set()
+    assert join_timeouts == [0.05]
+    assert cancelled == ["SABnzbd_nzo_fallback"]
+    assert state["thread"] is worker
+
+
+@patch("resources.lib.resolver.cancel_job")
+@patch("resources.lib.resolver.submit_nzb")
+@patch("resources.lib.resolver.xbmc")
+def test_stop_fallback_submit_worker_cancels_job_finished_after_shutdown(
+    mock_xbmc, mock_submit, mock_cancel_job
+):
+    submit_started = threading.Event()
+    release_submit = threading.Event()
+
+    def delayed_submit(*args):
+        submit_started.set()
+        assert release_submit.wait(timeout=1)
+        return "SABnzbd_nzo_late", None
+
+    mock_submit.side_effect = delayed_submit
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    state = _start_fallback_submit_worker(
+        [
+            {
+                "title": "Fallback A 2026 1080p WEB-DL",
+                "link": "http://hydra/getnzb/fallback-a",
+            }
+        ]
+    )
+
+    assert submit_started.wait(timeout=1)
+    assert (
+        _stop_fallback_submit_worker(state, cancel_submitted=True, join_timeout=0.01)
+        == []
+    )
+
+    release_submit.set()
+    assert state["finished"].wait(timeout=1)
+    mock_cancel_job.assert_called_once_with("SABnzbd_nzo_late")
+    assert _fallback_submit_jobs_snapshot(state) == []
+
+
 def test_stop_fallback_submit_worker_cancels_running_jobs_when_requested():
     worker = MagicMock()
+    worker.is_alive.return_value = False
     cancelled = []
     stop_event = threading.Event()
     job = {
@@ -948,7 +1024,7 @@ def test_stop_fallback_submit_worker_cancels_running_jobs_when_requested():
     assert _stop_fallback_submit_worker(state, cancel_submitted=True) == [job]
 
     assert stop_event.is_set()
-    worker.join.assert_called_once_with()
+    worker.join.assert_called_once_with(timeout=0.5)
     assert cancelled == ["SABnzbd_nzo_fallback"]
     assert state["thread"] is None
 

@@ -41,6 +41,7 @@ _POLL_INTERVAL_MAX = 60
 _DOWNLOAD_TIMEOUT_MIN = 60
 _DOWNLOAD_TIMEOUT_MAX = 86400
 MAX_POLL_ITERATIONS = _DOWNLOAD_TIMEOUT_MAX // _POLL_INTERVAL_MIN
+_FALLBACK_SHUTDOWN_JOIN_TIMEOUT = 0.5
 # HTTP status codes the submit retry loop treats as transient and worth
 # retrying. RFC 9110 explicitly calls 408 retry-friendly ("client may
 # assume the server closed the connection due to inactivity and retry").
@@ -1124,8 +1125,14 @@ def _start_fallback_submit_worker(candidates):
         return state
 
     def _append_job(job):
+        should_cancel = False
         with state["lock"]:
-            state["jobs"].append(job)
+            if state["stop"].is_set():
+                should_cancel = True
+            else:
+                state["jobs"].append(job)
+        if should_cancel:
+            _cancel_fallback_job(state, job)
 
     def _worker():
         try:
@@ -1184,36 +1191,42 @@ def _fallback_job_pending(job):
     return str(status).strip().lower() not in _FALLBACK_TERMINAL_STATUSES
 
 
+def _cancel_fallback_job(state, job):
+    cancel_callable = state.get("cancel_job") or cancel_job
+    if not _fallback_job_pending(job):
+        return False
+    nzo_id = _fallback_job_value(job, "nzo_id")
+    try:
+        if nzo_id and cancel_callable:
+            cancel_callable(nzo_id)
+            return True
+        if hasattr(job, "cancel"):
+            job.cancel()
+            return True
+        if hasattr(job, "abort"):
+            job.abort()
+            return True
+    except Exception as error:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: Failed to cancel fallback submit job {}: {}".format(
+                nzo_id or job, error
+            ),
+            xbmc.LOGWARNING,
+        )
+    return False
+
+
 def _cancel_fallback_submitted_jobs(state):
     """Cancel submitted fallback jobs that are still pending or running."""
     if not state:
         return []
-    cancel_callable = state.get("cancel_job") or cancel_job
     with state["lock"]:
         jobs_to_cancel = list(state["jobs"])
 
     cancelled = []
     for job in jobs_to_cancel:
-        if not _fallback_job_pending(job):
-            continue
-        nzo_id = _fallback_job_value(job, "nzo_id")
-        try:
-            if nzo_id and cancel_callable:
-                cancel_callable(nzo_id)
-                cancelled.append(job)
-            elif hasattr(job, "cancel"):
-                job.cancel()
-                cancelled.append(job)
-            elif hasattr(job, "abort"):
-                job.abort()
-                cancelled.append(job)
-        except Exception as error:  # pylint: disable=broad-except
-            xbmc.log(
-                "NZB-DAV: Failed to cancel fallback submit job {}: {}".format(
-                    nzo_id or job, error
-                ),
-                xbmc.LOGWARNING,
-            )
+        if _cancel_fallback_job(state, job):
+            cancelled.append(job)
     return cancelled
 
 
@@ -1239,15 +1252,25 @@ def _fallback_submit_jobs_snapshot(state, wait_seconds=0.5):
         return [dict(job) if isinstance(job, dict) else job for job in state["jobs"]]
 
 
-def _stop_fallback_submit_worker(state, cancel_submitted=False):
-    """Signal the fallback worker to stop, join it, and optionally cancel jobs."""
+def _stop_fallback_submit_worker(
+    state, cancel_submitted=False, join_timeout=_FALLBACK_SHUTDOWN_JOIN_TIMEOUT
+):
+    """Signal the fallback worker to stop and optionally cancel known jobs."""
     if not state:
         return []
     state["stop"].set()
     thread = state.get("thread")
     if thread:
-        thread.join()
-        state["thread"] = None
+        timeout = max(0, join_timeout)
+        thread.join(timeout=timeout)
+        if thread.is_alive():
+            xbmc.log(
+                "NZB-DAV: Fallback submit worker still running after {:.2f}s; "
+                "resolve shutdown is continuing".format(timeout),
+                xbmc.LOGWARNING,
+            )
+        else:
+            state["thread"] = None
     if cancel_submitted:
         _cancel_fallback_submitted_jobs(state)
     return _fallback_submit_jobs_snapshot(state, wait_seconds=0)
