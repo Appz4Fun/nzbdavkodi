@@ -11,12 +11,13 @@
 
 A Kodi 21 (Omega) player/resolver addon that enables Usenet-based streaming through NZBHydra2 (or Prowlarr) and nzbdav. Works as a TMDBHelper player -- search for a movie or TV episode, pick an NZB, and stream it directly through nzbdav's WebDAV server.
 
-> **Current release: `v1.0.3`** on `main`. Highlights since the v1.0.0 pre-alpha:
+> **Current release: `v1.0.5`** on `main`. Highlights on this branch:
 >
-> - **Three force-remux modes**: piped matroska (default, DV-safe), fragmented MP4 HLS (full seek, experimental), and direct pass-through (no remux at all when `<cache><memorysize>0</memorysize></cache>` is set in `advancedsettings.xml`).
+> - **Pass-through-first proxy**: MKV and other non-MP4 streams use byte pass-through by default, preserving native source seeking and zero-fill recovery. Force-remux is now optional, with threshold `0` meaning fully off.
+> - **Live fallback streams**: duplicate NZB releases can be submitted in the background as standby sources; the proxy can switch to a matching fallback when the active stream hits unrecoverable missing articles.
+> - **MP4 rewrite remains first-class**: moov-at-tail MP4s are rewritten in pure Python for native Kodi seek; already-faststart MP4s direct-play unless fallback metadata requires proxy session tracking.
 > - **Prowlarr support** as an alternative indexer to NZBHydra2.
 > - **Dolby Vision routing matrix**: P5 / P7 FEL / P8 / unknown DV are routed to matroska automatically; P7 MEL and non-DV go to fmp4 HLS when that mode is selected.
-> - **First-play cache dialog** offers the cache=0 setup snippet (Show instructions / Not now / Never ask) the first time force-remux fires on a large file.
 > - **Hardening**: co64 chunk-offset support for MP4s ≥ 4 GB, MKV SimpleBlock-lacing rejection, ffmpeg `-headers` CR/LF stripping, cross-origin PROPFIND href trust path.
 >
 > See [CHANGELOG.md](CHANGELOG.md) for the full per-release record.
@@ -42,15 +43,14 @@ No separate SABnzbd needed -- nzbdav handles both downloading and serving.
 
 Every playback request is routed through a local HTTP proxy (`stream_proxy.py`) running on a random port in the background service. Kodi never talks to the WebDAV server directly, which sidesteps a PROPFIND parent-directory scan that caused `Open - Unhandled exception` errors on several Kodi builds.
 
-The proxy picks one of four paths based on the container, file size, and the configured `force_remux_mode`:
+The proxy picks one of four paths based on the container, fallback metadata, file size, and the configured `force_remux_mode`:
 
-1. **MP4 (already faststart)** -- redirected straight to the WebDAV URL; Kodi seeks and plays natively.
+1. **MP4 (already faststart)** -- redirected straight to the WebDAV URL when no fallback sources are attached; Kodi seeks and plays natively. If fallback streams are attached, the session stays proxy-routed so live switching still has the standby metadata.
 2. **MP4 (moov at tail)** -- parsed in pure Python via HTTP range requests, `stco` and `co64` chunk offsets rewritten (so 4 GB+ MP4s work on 32-bit Kodi), and served as a virtual faststart MP4 with `Accept-Ranges: bytes`. If parsing fails, falls back to an ffmpeg tempfile remux.
-3. **MKV and other containers (under the force-remux threshold)** -- served as a byte pass-through with ranged upstream fetches. Kodi gets native seeking from the source file's real Cues, and the proxy layers zero-fill recovery on top: when an upstream read fails mid-stream, it probes forward to the next readable offset, writes zero bytes across the gap, and keeps streaming. No more black screen when a single Usenet article is unrecoverable.
-4. **Files above the force-remux threshold (default 20 GB)** -- routed by `force_remux_mode`:
-   - **Piped Matroska (default, DV-safe)** -- `ffmpeg -c copy -f matroska pipe:1`, unsized. Known-good on Dolby Vision HEVC + TrueHD/Atmos 100 GB REMUXes. Seek is approximate (each seek respawns ffmpeg with `-ss`).
+3. **MKV and other containers (default path)** -- served as a byte pass-through with ranged upstream fetches. Kodi gets native seeking from the source file's real Cues, and the proxy layers zero-fill recovery on top: when an upstream read fails mid-stream, it probes forward to the next readable offset, writes zero bytes across the gap, and keeps streaming.
+4. **Optional force-remux tier** -- when `force_remux_mode` is set to matroska or fMP4 HLS and the stream is above the non-zero threshold, the proxy uses ffmpeg:
+   - **Piped Matroska (DV-safe)** -- `ffmpeg -c copy -f matroska pipe:1`, unsized. Known-good on Dolby Vision HEVC + TrueHD/Atmos 100 GB REMUXes. Seek is approximate (each seek respawns ffmpeg with `-ss`).
    - **Fragmented MP4 HLS (experimental, opt-in)** -- produces an HLS VOD playlist with per-segment `hvc1`-tagged fMP4 + a canonical `init.mp4` that survives seek respawns. Gives full random seek across multi-hundred-gigabyte sources. **Self-healing**: if ffmpeg fails to start or doesn't produce a valid init segment within 30 s, the proxy automatically rewrites the session to the matroska branch *before* Kodi sees a broken URL.
-   - **Direct pass-through (opt-in)** -- no remux at all; bytes flow 1:1 from nzbdav. Requires `<cache><memorysize>0</memorysize></cache>` in `advancedsettings.xml` so 32-bit Kodi's `CFileCache` does not overflow on the source byte count. The addon probes for that setting at startup and falls back to matroska automatically if it is missing.
 
 **Dolby Vision routing matrix** (applied within the force-remux tier): P5, P7 FEL, P8, and unknown-DV sources are routed to **matroska** (the safest option on Amlogic CAMLCodec). P7 MEL and confirmed non-DV are eligible for **fmp4 HLS** when that mode is selected. P7 FEL specifically is forced to matroska because fmp4 cannot carry dual-layer HEVC.
 
@@ -58,29 +58,13 @@ If ffmpeg isn't installed, the proxy degrades gracefully to pass-through or dire
 
 > **Architecture deep-dive:** [`TODO.md` Part C](TODO.md#part-c--stream-proxy-architecture-reference-proxymd) documents the full session lifecycle, how the proxy interacts with `resolver.py` / `service.py` / `router.py` / `mp4_parser.py`, the HLS producer internals, and where to look when debugging playback failures. (The former standalone `PROXY.md` was consolidated into `TODO.md` on 2026-04-24.)
 
-### Pass-through mode (optional, recommended for large files)
+### Live Fallback Streams
 
-By default, files above the force-remux threshold (20 GB) stream through ffmpeg so 32-bit Kodi's `CFileCache` cannot overflow on the source byte count. You can skip the remux and get pure byte pass-through with full random seek by disabling Kodi's memory cache.
+When **Submit duplicate releases as live fallbacks** is enabled, the resolver attaches conservative duplicate candidates from the result list and submits them after the primary NZB is accepted. Standby submits run in a background worker so primary playback can continue polling immediately. Once playback starts, the proxy keeps the fallback job metadata with the session and can switch to another prepared stream if the active source becomes unrecoverable.
 
-Create or edit `special://profile/advancedsettings.xml` (on CoreELEC: `/storage/.kodi/userdata/advancedsettings.xml`) and merge in:
+Fallback selection is intentionally strict: candidates must share the normalized title and quality markers, have a valid NZB link, and be within the configured size tolerance. **Maximum fallback releases** caps how many standby submits are attached per primary result.
 
-```xml
-<advancedsettings>
-  <cache>
-    <memorysize>0</memorysize>
-  </cache>
-</advancedsettings>
-```
-
-Restart Kodi for the change to take effect. The addon probes this file and only takes the pass-through path when `memorysize` is `0`; without it, force-remux remains the safe default so large MKVs will not hit the CFileCache overflow.
-
-The addon surfaces this same snippet in a one-off dialog the first time force-remux fires on a large file. The dialog has three buttons:
-
-- **Show instructions** — opens a textviewer with the exact XML snippet to paste.
-- **Not now** — dismisses the dialog for the current Kodi session only.
-- **Never ask** — sets the persistent `cache_dialog_dismissed` flag so the dialog does not return.
-
-The addon never writes to `advancedsettings.xml` itself — merging the snippet is left to the user so existing `<video>` / `<network>` / `<videodatabase>` entries are preserved.
+Force-remux remains available for environments that need ffmpeg compatibility paths, but pass-through is the default. Setting **Force ffmpeg remux above (MB, 0=off)** to `0` disables non-MP4 force-remux entirely, including unknown-length streams.
 
 ## Requirements
 
@@ -256,15 +240,16 @@ These tune stream-proxy behaviour. Defaults are safe; only flip these if you hav
 
 | Setting | Description | Default |
 |---------|-------------|---------|
-| Force remux output format | `Piped Matroska (seek limited, DV-safe)` / `Fragmented MP4 HLS (full seek, DV-capable, experimental)` / `Direct pass-through (requires advancedsettings.xml cache=0)` | Piped Matroska |
-| Force ffmpeg remux above (MB, 0=off) | File size above which the proxy switches to the force-remux tier (0 disables remux entirely) | 20000 (~20 GB) |
+| Submit duplicate releases as live fallbacks | Submit conservative duplicate releases in the background and keep them as standby streams for live proxy switching | Off |
+| Maximum fallback releases | Maximum standby releases attached per primary result | 2 |
+| Force remux output format | `Direct pass-through (default)` / `Fragmented MP4 HLS (compatibility, experimental)` / `Piped Matroska (seek limited, DV-safe)` | Direct pass-through |
+| Force ffmpeg remux above (MB, 0=off) | File size above which the proxy switches to the optional force-remux tier; `0` disables non-MP4 force-remux entirely, including unknown-length streams | 15000 (~15 GB) |
 | Convert MP4 subtitles to SRT | mov_text → SRT during remux so embedded subs survive the matroska/HLS pipeline | On |
 | Strict contract mode | How to react when nzbdav responds with HTTP shapes that violate the strict Range/Content-Length contract: `Off` / `Warn only` / `Enforce` | Warn only |
 | Density breaker | Abort streams where recovery zero-fill exceeds 50% of a sliding window (catches dead releases early) | Off |
 | Zero-fill budget | Cap total per-stream zero-fill bytes; stream terminates with a clean error when the budget is hit | On |
 | Retry ladder | Re-issue the original Range request with backoff on transient upstream errors before falling back to skip-fill | On |
 | Send 200 for no-range pass-through | Send `200 OK` instead of always `206 Partial Content` when Kodi requests a full object. **Off by default** until validated on the target build. | Off |
-| Cache dialog dismissed | Persistent flag set when you click "Never ask" on the first-play cache=0 dialog | Off |
 
 1. Open **TMDBHelper** and browse to a movie or TV episode
 2. Select **Play with NZB-DAV**
@@ -326,13 +311,14 @@ plugin.video.nzbdav/
       filter.py            # Result filtering with PTT
       results_dialog.py    # Custom full-screen results dialog
       resolver.py          # Download + polling orchestrator
-      stream_proxy.py      # Local HTTP proxy -- MP4->MKV remux via ffmpeg
+      stream_proxy.py      # Local HTTP proxy -- pass-through, MP4 rewrite, optional remux
       mp4_parser.py        # Pure-Python MP4 moov / stco / co64 rewriter
       dv_source.py         # Dolby Vision source probe (profile / RPU detection)
       dv_rpu.py            # DV RPU NAL parser
       cache.py             # JSON-based search result cache
-      cache_prompt.py      # First-play advancedsettings.xml cache=0 dialog
-      kodi_advancedsettings.py  # Probe Kodi's advancedsettings.xml for cache=0
+      fallback_streams.py  # Duplicate release fallback selection and payloads
+      cache_prompt.py      # Legacy cache compatibility prompt helpers
+      kodi_advancedsettings.py  # Probe Kodi's advancedsettings.xml cache settings
       player_installer.py  # TMDBHelper player JSON installer
       http_util.py         # Shared HTTP utilities
       i18n.py              # Localization helper

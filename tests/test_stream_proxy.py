@@ -554,6 +554,36 @@ def test_prepare_stream_unknown_length_mkv_remuxes_in_matroska_mode():
     assert info["seekable"] is False
 
 
+def test_prepare_stream_unknown_length_mkv_threshold_zero_disables_remux():
+    """force_remux_threshold_mb=0 is documented as off, even for unknown size."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_context = None
+    sp._server.stream_sessions = {}
+    sp._context_lock = threading.RLock()
+    sp.port = 9999
+
+    with patch.object(sp, "_get_content_length", return_value=0), patch.object(
+        sp,
+        "_get_ffmpeg_capabilities",
+        return_value={"ffmpeg_path": "/usr/bin/ffmpeg", "hls_fmp4": False},
+    ) as mock_caps, patch(
+        "resources.lib.stream_proxy._get_force_remux_mode", return_value="matroska"
+    ), patch(
+        "resources.lib.stream_proxy._get_force_remux_threshold_bytes", return_value=0
+    ):
+        url, info = sp.prepare_stream("http://host/unknown.mkv")
+
+    ctx = next(iter(sp._server.stream_sessions.values()))
+    assert url.startswith("http://127.0.0.1:9999/stream/")
+    assert ctx["remux"] is False
+    assert ctx["content_length"] == 0
+    assert info["remux"] is False
+    mock_caps.assert_not_called()
+
+
 def test_prepare_stream_unknown_length_mkv_without_ffmpeg_raises_in_matroska_mode():
     """Matroska mode cannot handle unknown-size non-MP4 streams without ffmpeg."""
     from resources.lib.stream_proxy import StreamProxy
@@ -5201,7 +5231,10 @@ def test_register_session_hls_producer_failure_preserves_duration_and_seekable()
         "resources.lib.stream_proxy.HlsProducer",
         side_effect=OSError("boom"),
     ):
-        sp._register_session(ctx)
+        with patch(
+            "resources.lib.stream_proxy._disk_free_bytes", return_value=100 * 1024**3
+        ):
+            sp._register_session(ctx)
 
     assert ctx["duration_seconds"] == 600.0
     assert ctx["total_bytes"] == 123456789
@@ -5275,7 +5308,10 @@ def test_register_session_calls_producer_prepare():
 
     producer_mock = MagicMock()
     with patch("resources.lib.stream_proxy.HlsProducer", return_value=producer_mock):
-        sp._register_session(ctx)
+        with patch(
+            "resources.lib.stream_proxy._disk_free_bytes", return_value=100 * 1024**3
+        ):
+            sp._register_session(ctx)
 
     producer_mock.prepare.assert_called_once_with()
 
@@ -5439,8 +5475,11 @@ def test_clear_sessions_closes_pending_hls_producer_during_prepare(tmp_path):
     with patch(
         "resources.lib.stream_proxy._choose_hls_workdir", return_value=str(tmp_path)
     ), patch("resources.lib.stream_proxy.HlsProducer", return_value=producer_mock):
-        with pytest.raises(RuntimeError, match="cancelled"):
-            sp._register_session(ctx)
+        with patch(
+            "resources.lib.stream_proxy._disk_free_bytes", return_value=100 * 1024**3
+        ):
+            with pytest.raises(RuntimeError, match="cancelled"):
+                sp._register_session(ctx)
 
     assert closed_during_prepare["value"] is True
 
