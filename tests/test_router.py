@@ -256,11 +256,25 @@ def test_search_all_providers_calls_direct_indexers_when_enabled(mock_addon):
             )
         },
     ):
-        results, error = _search_all_providers("movie", "The Matrix")
+        results, error = _search_all_providers(
+            "episode",
+            "Breaking Bad",
+            year="2008",
+            imdb="tt0903747",
+            season="5",
+            episode="14",
+        )
 
     assert error is None
     assert len(results) == 1
-    direct_search.assert_called_once()
+    direct_search.assert_called_once_with(
+        "episode",
+        "Breaking Bad",
+        year="2008",
+        imdb="tt0903747",
+        season="5",
+        episode="14",
+    )
 
 
 @patch("xbmcaddon.Addon")
