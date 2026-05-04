@@ -936,6 +936,14 @@ def _normalize_fallback_sources(fallback_sources):
     return normalized
 
 
+def _attach_fallback_context_fields(ctx, fallback_sources):
+    """Attach fallback tracking fields to a stream context or stream info."""
+    ctx["fallback_sources"] = list(fallback_sources)
+    ctx["fallback_active_index"] = -1
+    ctx["fallback_switch_count"] = 0
+    return ctx
+
+
 def _extract_session_id_from_proxy_url(proxy_url):
     """Pull the session id back out of a `/stream/<id>` or `/hls/<id>/...` URL.
 
@@ -4523,6 +4531,7 @@ class StreamProxy:
                     "direct": True,
                     "content_type": "video/mp4",
                 }
+                _attach_fallback_context_fields(stream_info, fallback_sources)
                 return remote_url, stream_info
             else:
                 # Tier 2: Try temp-file faststart (ffmpeg -movflags +faststart)
@@ -4845,9 +4854,7 @@ class StreamProxy:
                     "remux": False,
                 }
 
-        ctx["fallback_sources"] = list(fallback_sources)
-        ctx["fallback_active_index"] = -1
-        ctx["fallback_switch_count"] = 0
+        _attach_fallback_context_fields(ctx, fallback_sources)
 
         local_url = self._register_session(ctx)
         xbmc.log(

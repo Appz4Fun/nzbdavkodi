@@ -5662,6 +5662,15 @@ def test_prepare_stream_direct_redirect_for_already_faststart():
         "payload_size": 500,
         "already_faststart": True,
     }
+    fallback_sources = [
+        {
+            "title": "Fallback MP4",
+            "nzb_url": "http://hydra/fallback-mp4",
+            "job_name": "Fallback MP4 [fallback-1-11111111]",
+            "nzo_id": "SABnzbd_nzo_mp4",
+            "stream_url": "",
+        }
+    ]
 
     with patch(
         "resources.lib.stream_proxy._find_ffmpeg", return_value=None
@@ -5673,7 +5682,9 @@ def test_prepare_stream_direct_redirect_for_already_faststart():
         return_value=mock_faststart,
     ):
         url, info = sp.prepare_stream(
-            "http://host/faststart.mp4", auth_header="Basic dXNlcjpwYXNz"
+            "http://host/faststart.mp4",
+            auth_header="Basic dXNlcjpwYXNz",
+            fallback_sources=fallback_sources,
         )
 
     # Direct redirect: URL is the remote URL, not the proxy URL
@@ -5681,6 +5692,21 @@ def test_prepare_stream_direct_redirect_for_already_faststart():
     assert info["direct"] is True
     assert info["seekable"] is True
     assert info["remux"] is False
+    assert info["fallback_sources"] == [
+        {
+            "title": "Fallback MP4",
+            "nzb_url": "http://hydra/fallback-mp4",
+            "job_name": "Fallback MP4 [fallback-1-11111111]",
+            "nzo_id": "SABnzbd_nzo_mp4",
+            "stream_url": "",
+            "stream_headers": {},
+            "content_length": 0,
+            "validated": False,
+            "failed": False,
+        }
+    ]
+    assert info["fallback_active_index"] == -1
+    assert info["fallback_switch_count"] == 0
 
 
 # ---------------------------------------------------------------------------
