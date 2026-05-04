@@ -1116,6 +1116,7 @@ def _start_fallback_submit_worker(candidates):
         "stop": threading.Event(),
         "finished": threading.Event(),
         "thread": None,
+        "cancel_job": cancel_job,
     }
     candidate_list = list(candidates or [])
     if not candidate_list:
@@ -1134,16 +1135,13 @@ def _start_fallback_submit_worker(candidates):
                 stop_event=state["stop"],
                 on_job=_append_job,
             )
-            state["finished"].set()
         except Exception as error:  # pylint: disable=broad-except
             xbmc.log(
                 "NZB-DAV: Fallback submit worker failed: {}".format(error),
                 xbmc.LOGWARNING,
             )
-            with state["lock"]:
-                jobs_to_cancel = list(state["jobs"])
-            for job in jobs_to_cancel:
-                cancel_job(job.get("nzo_id"))
+            _cancel_fallback_submitted_jobs(state)
+        finally:
             state["finished"].set()
 
     thread = threading.Thread(
@@ -1154,20 +1152,109 @@ def _start_fallback_submit_worker(candidates):
     return state
 
 
-def _fallback_submit_jobs_snapshot(state):
-    """Return fallback jobs submitted so far without delaying playback."""
+_FALLBACK_TERMINAL_STATUSES = frozenset(
+    (
+        "aborted",
+        "cancelled",
+        "canceled",
+        "completed",
+        "complete",
+        "deleted",
+        "failed",
+        "failure",
+        "finished",
+        "history",
+        "success",
+    )
+)
+
+
+def _fallback_job_value(job, key, default=None):
+    if isinstance(job, dict):
+        return job.get(key, default)
+    return getattr(job, key, default)
+
+
+def _fallback_job_pending(job):
+    status = _fallback_job_value(job, "status")
+    if status is None:
+        status = _fallback_job_value(job, "state")
+    if status is None:
+        return True
+    return str(status).strip().lower() not in _FALLBACK_TERMINAL_STATUSES
+
+
+def _cancel_fallback_submitted_jobs(state):
+    """Cancel submitted fallback jobs that are still pending or running."""
     if not state:
         return []
+    cancel_callable = state.get("cancel_job") or cancel_job
     with state["lock"]:
-        return [dict(job) for job in state["jobs"]]
+        jobs_to_cancel = list(state["jobs"])
+
+    cancelled = []
+    for job in jobs_to_cancel:
+        if not _fallback_job_pending(job):
+            continue
+        nzo_id = _fallback_job_value(job, "nzo_id")
+        try:
+            if nzo_id and cancel_callable:
+                cancel_callable(nzo_id)
+                cancelled.append(job)
+            elif hasattr(job, "cancel"):
+                job.cancel()
+                cancelled.append(job)
+            elif hasattr(job, "abort"):
+                job.abort()
+                cancelled.append(job)
+        except Exception as error:  # pylint: disable=broad-except
+            xbmc.log(
+                "NZB-DAV: Failed to cancel fallback submit job {}: {}".format(
+                    nzo_id or job, error
+                ),
+                xbmc.LOGWARNING,
+            )
+    return cancelled
 
 
-def _stop_fallback_submit_worker(state):
-    """Signal the fallback worker to stop and wait for it to exit."""
-    if state:
-        state["stop"].set()
-        if state["thread"]:
-            state["thread"].join(timeout=5.0)
+def _fallback_submit_jobs_snapshot(state, wait_seconds=0.5):
+    """Return fallback jobs submitted so far, waiting briefly for completion."""
+    if not state:
+        return []
+    thread = state.get("thread")
+    stop_event = state.get("stop")
+    finished = state.get("finished")
+    stop_requested = bool(stop_event and stop_event.is_set())
+    if thread and not stop_requested:
+        deadline = time.monotonic() + max(0, wait_seconds)
+        while (
+            thread.is_alive()
+            and not (stop_event and stop_event.is_set())
+            and time.monotonic() < deadline
+        ):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            wait_for = min(0.05, remaining)
+            if finished and finished.wait(wait_for):
+                break
+
+    with state["lock"]:
+        return [dict(job) if isinstance(job, dict) else job for job in state["jobs"]]
+
+
+def _stop_fallback_submit_worker(state, cancel_submitted=False):
+    """Signal the fallback worker to stop, join it, and optionally cancel jobs."""
+    if not state:
+        return []
+    state["stop"].set()
+    thread = state.get("thread")
+    if thread:
+        thread.join()
+        state["thread"] = None
+    if cancel_submitted:
+        _cancel_fallback_submitted_jobs(state)
+    return _fallback_submit_jobs_snapshot(state, wait_seconds=0)
 
 
 def _abort_poll_before_fetch(
@@ -1510,11 +1597,11 @@ def resolve(handle, params):
                 fallback_sources=fallback_sources,
             )
         else:
-            _stop_fallback_submit_worker(fallback_state)
+            _stop_fallback_submit_worker(fallback_state, cancel_submitted=True)
             xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
             xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
     except _RESOLVE_RUNTIME_ERRORS as error:
-        _stop_fallback_submit_worker(fallback_state)
+        _stop_fallback_submit_worker(fallback_state, cancel_submitted=True)
         _handle_resolve_exception("resolve", error, handle=handle)
     finally:
         if dialog is not None:
@@ -1573,9 +1660,9 @@ def resolve_and_play(nzb_url, title, params=None):
                 fallback_sources=fallback_sources,
             )
         else:
-            _stop_fallback_submit_worker(fallback_state)
+            _stop_fallback_submit_worker(fallback_state, cancel_submitted=True)
     except _RESOLVE_RUNTIME_ERRORS as error:
-        _stop_fallback_submit_worker(fallback_state)
+        _stop_fallback_submit_worker(fallback_state, cancel_submitted=True)
         _handle_resolve_exception("resolve_and_play", error)
     finally:
         if dialog is not None:

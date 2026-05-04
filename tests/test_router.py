@@ -680,10 +680,26 @@ def _stub_setting(value):
 
 
 def _attach_primary_duplicate_fallbacks(results):
-    if len(results) >= 2:
-        results[0]["_fallback_candidates"] = [results[1]]
-        results[1]["_fallback_candidates"] = [results[0]]
-    return results
+    from resources.lib.fallback_streams import attach_fallback_candidates
+
+    with patch("resources.lib.fallback_streams._fallback_settings") as mock_settings:
+        mock_settings.return_value = (True, 2)
+        return attach_fallback_candidates(results)
+
+
+def _duplicate_release(link, size=8 * 1024**3):
+    return {
+        "title": "The.Matrix.1999.1080p.BluRay.x264-GROUP.mkv",
+        "link": link,
+        "size": size,
+        "_meta": {
+            "resolution": "1080p",
+            "quality": "bluray",
+            "codec": "x264",
+            "group": "group",
+            "container": "mkv",
+        },
+    }
 
 
 @patch("xbmcplugin.setResolvedUrl")
@@ -810,9 +826,10 @@ def test_handle_play_picker_forwards_fallback_candidates(
 ):
     _install_progress_dialog_that_wont_cancel()
     mock_addon.return_value.getSetting.side_effect = _stub_setting("false")
-    primary = {"title": "Matrix.1999.mkv", "link": "http://hydra/nzb/primary"}
-    duplicate = {"title": "Matrix.1999.dupe.mkv", "link": "http://hydra/nzb/dupe"}
-    filtered = [primary, duplicate]
+    primary = _duplicate_release("http://hydra/nzb/primary")
+    duplicate = _duplicate_release("http://hydra/nzb/dupe")
+    oversized = _duplicate_release("http://hydra/nzb/oversized", size=20 * 1024**3)
+    filtered = [primary, duplicate, oversized]
     mock_search.return_value = (filtered, None)
     mock_filter.return_value = (filtered, filtered)
     mock_attach.side_effect = _attach_primary_duplicate_fallbacks
@@ -827,6 +844,8 @@ def test_handle_play_picker_forwards_fallback_candidates(
     assert args[1]["nzburl"] == primary["link"]
     assert args[1]["title"] == primary["title"]
     assert args[1]["_fallback_candidates"] == [duplicate]
+    assert duplicate["_fallback_candidates"] == [primary]
+    assert oversized["_fallback_candidates"] == []
 
 
 # --- _handle_search direct coverage for no-results path ---
@@ -973,9 +992,10 @@ def test_handle_search_picker_forwards_fallback_candidates_with_clean_params(
 ):
     _install_progress_dialog_that_wont_cancel()
     mock_addon.return_value.getSetting.side_effect = _stub_setting("false")
-    primary = {"title": "Matrix.1999.mkv", "link": "http://hydra/nzb/primary"}
-    duplicate = {"title": "Matrix.1999.dupe.mkv", "link": "http://hydra/nzb/dupe"}
-    filtered = [primary, duplicate]
+    primary = _duplicate_release("http://hydra/nzb/primary")
+    duplicate = _duplicate_release("http://hydra/nzb/dupe")
+    oversized = _duplicate_release("http://hydra/nzb/oversized", size=20 * 1024**3)
+    filtered = [primary, duplicate, oversized]
     mock_search.return_value = (filtered, None)
     mock_filter.return_value = (filtered, filtered)
     mock_attach.side_effect = _attach_primary_duplicate_fallbacks
@@ -1003,6 +1023,8 @@ def test_handle_search_picker_forwards_fallback_candidates_with_clean_params(
             "_fallback_candidates": [duplicate],
         },
     )
+    assert duplicate["_fallback_candidates"] == [primary]
+    assert oversized["_fallback_candidates"] == []
     mock_end.assert_called_once_with(8, succeeded=False)
 
 

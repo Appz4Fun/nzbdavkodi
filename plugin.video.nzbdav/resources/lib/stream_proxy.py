@@ -33,6 +33,11 @@ from urllib.request import Request, urlopen
 
 import xbmc
 
+try:
+    import xbmcaddon
+except ImportError:
+    xbmcaddon = None
+
 # mp4_parser functions are imported here so tests can patch them at this
 # module's namespace.  They have no Kodi dependencies, so the import is safe
 # at module load time.  If mp4_parser is unavailable (e.g. during a partial
@@ -374,9 +379,9 @@ _FMP4_HLS_CAPABILITY_MARKERS = (
 
 def _get_addon_setting(setting_id, default=None):
     """Best-effort Kodi addon setting lookup safe for tests and CLI."""
+    if xbmcaddon is None:
+        return default
     try:
-        import xbmcaddon
-
         value = xbmcaddon.Addon().getSetting(setting_id)
     except _KODI_SETTING_ERRORS:
         return default
@@ -385,9 +390,9 @@ def _get_addon_setting(setting_id, default=None):
 
 def _set_addon_setting(setting_id, value):
     """Best-effort Kodi addon setting write safe for tests and CLI."""
+    if xbmcaddon is None:
+        return False
     try:
-        import xbmcaddon
-
         xbmcaddon.Addon().setSetting(setting_id, value)
     except _KODI_SETTING_ERRORS:
         return False
@@ -4808,10 +4813,12 @@ class StreamProxy:
             content_length_unknown = content_length <= 0
             threshold = _get_force_remux_threshold_bytes()
             force_mode = _get_force_remux_mode()
-            force_remux_requested = force_mode in ("matroska", "hls_fmp4")
+            force_remux_requested = threshold > 0 and force_mode in (
+                "matroska",
+                "hls_fmp4",
+            )
             needs_remux = force_remux_requested and (
-                content_length_unknown
-                or (bool(threshold) and content_length >= threshold)
+                content_length_unknown or content_length >= threshold
             )
             if needs_remux:
                 if content_length_unknown:

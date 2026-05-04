@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Released | What it's about |
 |---|---|---|
+| **[1.0.6](#106--2026-05-04)** | 2026-05-04 | Pass-through-first proxy, live duplicate-release fallback streams, fallback worker cleanup, threshold-zero remux semantics |
 | **[1.0.5](#105--2026-05-04)** | 2026-05-04 | Direct Newznab indexers, manual Indexers settings, concurrent provider fan-out, Kodi repo publishing fixes, WebDAV range compatibility, cache eviction race fix |
 | **[1.0.4](#104--2026-04-25)** | 2026-04-25 | Pass-through stall watchdog (closes the slow-trickle wedge where seek doesn't unstick), proxy seek perf, sha256 cache keys, credential redaction sweep, Prowlarr UI label fix, §H.2 audit closure batch |
 | **[1.0.3](#103--2026-04-23)** | 2026-04-23 | Hotfix: ffmpeg safety check no longer rejects -headers values with legitimate CR/LF — unblocks every auth'd force-remux stream that regressed in v1.0.0-pre-alpha/v1.0.1/v1.0.2 |
@@ -48,6 +49,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | **[0.1.0](#010--2026-04-05)** | 2026-04-05 | Initial release |
 
 > **Bolded** versions are either major features or recommended upgrades.
+
+---
+
+## [1.0.6] — 2026-05-04
+
+> **Live fallback streams on a pass-through-first proxy.** Duplicate releases
+> can now be attached as standby sources for the same playback session, while
+> non-MP4 streams default back to byte pass-through instead of force-remux.
+> MP4 rewriting remains in place for moov-at-tail files.
+
+**Added**
+- **Live duplicate-release fallback streams.** The router attaches conservative
+  duplicate candidates, the resolver submits them after the primary NZB is
+  accepted, and the proxy keeps the fallback metadata with the playback session
+  so it can switch streams if the active source becomes unrecoverable.
+- **Fallback stream settings** for enabling standby submits and capping the
+  maximum fallback releases per primary result.
+
+**Changed**
+- **Pass-through is the default non-MP4 path.** Force-remux remains available
+  as an opt-in compatibility tier for matroska or experimental fMP4 HLS.
+- **`force_remux_threshold_mb=0` now fully disables non-MP4 force-remux,**
+  including unknown-length streams. That restores the documented "0=off"
+  behavior and keeps unknown-size pass-through sessions from touching ffmpeg.
+- **Already-faststart MP4s direct-play only when no fallback metadata is
+  attached.** Sessions with fallbacks stay proxy-routed so live switching can
+  find the standby sources.
+
+**Fixed**
+- **Fallback submit worker shutdown** now signals, joins, and optionally
+  cancels submitted standby jobs on playback abort or resolver failure. Worker
+  exceptions also cancel recorded pending/running fallback jobs before exit.
+- **Fallback job snapshots** wait briefly for a completing worker unless
+  shutdown has been requested, then copy the final submitted-job list under
+  the worker lock.
 
 ---
 
@@ -769,6 +805,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[1.0.6]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v1.0.6
 [1.0.5]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v1.0.5
 [1.0.4]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v1.0.4
 [1.0.3]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v1.0.3

@@ -22,6 +22,7 @@ from resources.lib.resolver import (
     _play_direct,
     _play_via_proxy,
     _poll_until_ready,
+    _stop_fallback_submit_worker,
     _storage_to_webdav_path,
     _validate_stream_url,
     resolve,
@@ -794,9 +795,53 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
     mock_stop_fallback.assert_not_called()
 
 
+@patch("resources.lib.resolver._stop_fallback_submit_worker")
+@patch("resources.lib.resolver._start_fallback_submit_worker")
+@patch("resources.lib.resolver._poll_until_ready")
+@patch("resources.lib.resolver.xbmc")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.xbmcplugin")
+@patch("resources.lib.resolver._get_poll_settings")
+def test_resolve_cancels_fallback_worker_jobs_when_primary_fails(
+    mock_poll_settings,
+    mock_plugin,
+    mock_gui,
+    mock_xbmc,
+    mock_poll_until_ready,
+    mock_start_fallback,
+    mock_stop_fallback,
+):
+    mock_poll_settings.return_value = (2, 60)
+    fallback_state = {"state": "fallback"}
+    mock_start_fallback.return_value = fallback_state
+
+    def poll_not_ready(*args, **kwargs):
+        kwargs["on_primary_submitted"]("SABnzbd_nzo_primary")
+        return None, {}
+
+    mock_poll_until_ready.side_effect = poll_not_ready
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    mock_gui.DialogProgress.return_value = MagicMock()
+
+    resolve(
+        1,
+        {
+            "nzburl": "http://hydra/getnzb/primary",
+            "title": "movie.mkv",
+            "_fallback_candidates": [{"link": "http://hydra/getnzb/fallback"}],
+        },
+    )
+
+    mock_stop_fallback.assert_called_once_with(fallback_state, cancel_submitted=True)
+    mock_plugin.setResolvedUrl.assert_called_once()
+
+
 def test_fallback_submit_jobs_snapshot_does_not_wait_for_worker():
     """Ready primary playback must not block on slow standby submissions."""
     worker = MagicMock()
+    worker.is_alive.return_value = True
+    stop_event = threading.Event()
+    stop_event.set()
     job = {
         "title": "Fallback A",
         "nzb_url": "http://hydra/fallback-a",
@@ -807,10 +852,56 @@ def test_fallback_submit_jobs_snapshot_does_not_wait_for_worker():
         "lock": threading.Lock(),
         "jobs": [job],
         "thread": worker,
+        "stop": stop_event,
+        "finished": threading.Event(),
     }
 
     assert _fallback_submit_jobs_snapshot(state) == [job]
     worker.join.assert_not_called()
+
+
+def test_stop_fallback_submit_worker_cancels_running_jobs_when_requested():
+    worker = MagicMock()
+    cancelled = []
+    stop_event = threading.Event()
+    job = {
+        "title": "Fallback A",
+        "nzo_id": "SABnzbd_nzo_fallback",
+        "status": "Downloading",
+    }
+    state = {
+        "lock": threading.Lock(),
+        "jobs": [job],
+        "thread": worker,
+        "stop": stop_event,
+        "finished": threading.Event(),
+        "cancel_job": cancelled.append,
+    }
+
+    assert _stop_fallback_submit_worker(state, cancel_submitted=True) == [job]
+
+    assert stop_event.is_set()
+    worker.join.assert_called_once_with()
+    assert cancelled == ["SABnzbd_nzo_fallback"]
+    assert state["thread"] is None
+
+
+def test_stop_fallback_submit_worker_skips_completed_jobs_when_cancelling():
+    worker = MagicMock()
+    cancelled = []
+    stop_event = threading.Event()
+    state = {
+        "lock": threading.Lock(),
+        "jobs": [{"nzo_id": "SABnzbd_nzo_done", "status": "Completed"}],
+        "thread": worker,
+        "stop": stop_event,
+        "finished": threading.Event(),
+        "cancel_job": cancelled.append,
+    }
+
+    _stop_fallback_submit_worker(state, cancel_submitted=True)
+
+    assert not cancelled
 
 
 @patch("resources.lib.resolver._show_submit_error_dialog")
