@@ -690,7 +690,7 @@ msgctxt "#30182"
 msgid "DOGnzb"
 msgstr "DOGnzb"
 
-msgctxt "#30183"
+msgctxt "#30188"
 msgid "Test WebDAV Connection"
 msgstr "Test WebDAV Connection"
 

@@ -60,7 +60,7 @@ def test_settings_include_webdav_test_action():
         ".//setting[@action='RunPlugin(plugin://plugin.video.nzbdav/test_webdav)']"
     )
     assert test_action is not None
-    assert test_action.get("label") == "30183"
+    assert test_action.get("label") == "30188"
 
 
 def test_language_file_exists_for_kodi_strings():
