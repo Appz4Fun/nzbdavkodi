@@ -609,3 +609,83 @@ msgstr "advancedsettings.xml setup"
 msgctxt "#30159"
 msgid "Create or edit the file:\n  special://profile/advancedsettings.xml\n(on CoreELEC: /storage/.kodi/userdata/advancedsettings.xml)\n\nAdd this content (merging with any existing <advancedsettings> entries):\n\n<advancedsettings>\n  <cache>\n    <memorysize>0</memorysize>\n  </cache>\n</advancedsettings>\n\nRestart Kodi for the change to take effect."
 msgstr "Create or edit the file:\n  special://profile/advancedsettings.xml\n(on CoreELEC: /storage/.kodi/userdata/advancedsettings.xml)\n\nAdd this content (merging with any existing <advancedsettings> entries):\n\n<advancedsettings>\n  <cache>\n    <memorysize>0</memorysize>\n  </cache>\n</advancedsettings>\n\nRestart Kodi for the change to take effect."
+
+msgctxt "#30163"
+msgid "Indexers"
+msgstr "Indexers"
+
+msgctxt "#30164"
+msgid "Use this if you do not have Prowlarr or NZBHydra2 set up. Enable direct indexers below, choose the indexers you use, and enter each API key."
+msgstr "Use this if you do not have Prowlarr or NZBHydra2 set up. Enable direct indexers below, choose the indexers you use, and enter each API key."
+
+msgctxt "#30165"
+msgid "Enable direct Newznab indexers"
+msgstr "Enable direct Newznab indexers"
+
+msgctxt "#30166"
+msgid "Popular Indexers"
+msgstr "Popular Indexers"
+
+msgctxt "#30167"
+msgid "Custom Newznab Indexers"
+msgstr "Custom Newznab Indexers"
+
+msgctxt "#30168"
+msgid "API URL"
+msgstr "API URL"
+
+msgctxt "#30169"
+msgid "Custom Indexer 1"
+msgstr "Custom Indexer 1"
+
+msgctxt "#30170"
+msgid "Custom Indexer 2"
+msgstr "Custom Indexer 2"
+
+msgctxt "#30171"
+msgid "Custom Indexer 3"
+msgstr "Custom Indexer 3"
+
+msgctxt "#30172"
+msgid "Indexer Name"
+msgstr "Indexer Name"
+
+msgctxt "#30173"
+msgid "Test Direct Indexers"
+msgstr "Test Direct Indexers"
+
+msgctxt "#30174"
+msgid "NZB.life / NZB.su"
+msgstr "NZB.life / NZB.su"
+
+msgctxt "#30175"
+msgid "DrunkenSlug"
+msgstr "DrunkenSlug"
+
+msgctxt "#30176"
+msgid "No direct indexers configured"
+msgstr "No direct indexers configured"
+
+msgctxt "#30177"
+msgid "Direct indexers OK: {}/{}"
+msgstr "Direct indexers OK: {}/{}"
+
+msgctxt "#30178"
+msgid "Direct indexers failed: {}"
+msgstr "Direct indexers failed: {}"
+
+msgctxt "#30179"
+msgid "NZBGeek"
+msgstr "NZBGeek"
+
+msgctxt "#30180"
+msgid "NZBFinder"
+msgstr "NZBFinder"
+
+msgctxt "#30181"
+msgid "NZBPlanet"
+msgstr "NZBPlanet"
+
+msgctxt "#30182"
+msgid "DOGnzb"
+msgstr "DOGnzb"

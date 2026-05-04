@@ -118,3 +118,9 @@ def test_string_falls_back_when_getLocalizedString_returns_non_string():
         assert string(30011) == "Install Player File"  # from _FALLBACK_STRINGS
     finally:
         xbmcaddon.Addon.return_value.getLocalizedString.return_value = original
+
+
+def test_direct_indexer_strings_have_fallbacks():
+    assert string(30163) == "Indexers"
+    assert string(30165) == "Enable direct Newznab indexers"
+    assert string(30176) == "No direct indexers configured"

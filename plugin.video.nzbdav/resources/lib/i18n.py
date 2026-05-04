@@ -56,6 +56,30 @@ _FALLBACK_STRINGS = {
         "nzbdav rejected the submission (HTTP {0}). "
         "Server message: {1}. Check nzbdav's logs for details."
     ),
+    30163: "Indexers",
+    30164: (
+        "Use this if you do not have Prowlarr or NZBHydra2 set up. "
+        "Enable direct indexers below, choose the indexers you use, "
+        "and enter each API key."
+    ),
+    30165: "Enable direct Newznab indexers",
+    30166: "Popular Indexers",
+    30167: "Custom Newznab Indexers",
+    30168: "API URL",
+    30169: "Custom Indexer 1",
+    30170: "Custom Indexer 2",
+    30171: "Custom Indexer 3",
+    30172: "Indexer Name",
+    30173: "Test Direct Indexers",
+    30174: "NZB.life / NZB.su",
+    30175: "DrunkenSlug",
+    30176: "No direct indexers configured",
+    30177: "Direct indexers OK: {}/{}",
+    30178: "Direct indexers failed: {}",
+    30179: "NZBGeek",
+    30180: "NZBFinder",
+    30181: "NZBPlanet",
+    30182: "DOGnzb",
 }
 
 

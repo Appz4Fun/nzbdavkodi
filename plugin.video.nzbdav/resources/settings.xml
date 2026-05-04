@@ -21,6 +21,43 @@
 		<setting id="webdav_username" label="30008" type="text" default="" />
 		<setting id="webdav_password" label="30009" type="text" default="" option="hidden" />
 	</category>
+	<category label="30163">
+		<setting label="30164" type="lsep" />
+		<setting id="direct_indexers_enabled" label="30165" type="bool" default="false" />
+		<setting label="30166" type="lsep" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
+		<setting id="direct_indexer_nzblife_enabled" label="30174" type="bool" default="false" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
+		<setting id="direct_indexer_nzblife_url" label="30168" type="text" default="https://api.nzb.su/api" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
+		<setting id="direct_indexer_nzblife_api_key" label="30003" type="text" default="" option="hidden" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
+		<setting id="direct_indexer_nzbgeek_enabled" label="30179" type="bool" default="false" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
+		<setting id="direct_indexer_nzbgeek_url" label="30168" type="text" default="https://api.nzbgeek.info/api" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
+		<setting id="direct_indexer_nzbgeek_api_key" label="30003" type="text" default="" option="hidden" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
+		<setting id="direct_indexer_nzbfinder_enabled" label="30180" type="bool" default="false" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
+		<setting id="direct_indexer_nzbfinder_url" label="30168" type="text" default="https://nzbfinder.ws/api" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
+		<setting id="direct_indexer_nzbfinder_api_key" label="30003" type="text" default="" option="hidden" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
+		<setting id="direct_indexer_drunkenslug_enabled" label="30175" type="bool" default="false" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
+		<setting id="direct_indexer_drunkenslug_url" label="30168" type="text" default="https://drunkenslug.com/api" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
+		<setting id="direct_indexer_drunkenslug_api_key" label="30003" type="text" default="" option="hidden" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
+		<setting id="direct_indexer_nzbplanet_enabled" label="30181" type="bool" default="false" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
+		<setting id="direct_indexer_nzbplanet_url" label="30168" type="text" default="https://api.nzbplanet.net/api" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
+		<setting id="direct_indexer_nzbplanet_api_key" label="30003" type="text" default="" option="hidden" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
+		<setting id="direct_indexer_dognzb_enabled" label="30182" type="bool" default="false" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
+		<setting id="direct_indexer_dognzb_url" label="30168" type="text" default="https://api.dognzb.cr/api" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
+		<setting id="direct_indexer_dognzb_api_key" label="30003" type="text" default="" option="hidden" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
+		<setting label="30167" type="lsep" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
+		<setting id="direct_indexer_custom1_enabled" label="30169" type="bool" default="false" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
+		<setting id="direct_indexer_custom1_name" label="30172" type="text" default="" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
+		<setting id="direct_indexer_custom1_url" label="30168" type="text" default="" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
+		<setting id="direct_indexer_custom1_api_key" label="30003" type="text" default="" option="hidden" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
+		<setting id="direct_indexer_custom2_enabled" label="30170" type="bool" default="false" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
+		<setting id="direct_indexer_custom2_name" label="30172" type="text" default="" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
+		<setting id="direct_indexer_custom2_url" label="30168" type="text" default="" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
+		<setting id="direct_indexer_custom2_api_key" label="30003" type="text" default="" option="hidden" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
+		<setting id="direct_indexer_custom3_enabled" label="30171" type="bool" default="false" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
+		<setting id="direct_indexer_custom3_name" label="30172" type="text" default="" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
+		<setting id="direct_indexer_custom3_url" label="30168" type="text" default="" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
+		<setting id="direct_indexer_custom3_api_key" label="30003" type="text" default="" option="hidden" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
+		<setting label="30173" type="action" action="RunPlugin(plugin://plugin.video.nzbdav/test_direct_indexers)" option="close" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
+	</category>
 	<category label="30010">
 		<setting label="30011" type="action" action="RunPlugin(plugin://plugin.video.nzbdav/install_player)" />
 	</category>
