@@ -1,5 +1,64 @@
 # NZB-DAV Kodi Addon
 
+# Install local development dependencies needed by the other recipes
+make-dev:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    echo "Installing Python test and lint dependencies..."
+    pip_flags=()
+    if python3 -m pip install --help | grep -q -- "--break-system-packages"; then
+        pip_flags+=(--break-system-packages)
+    fi
+    python3 -m pip install "${pip_flags[@]}" -r requirements-test.txt "ruff>=0.15" "black>=24"
+
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        if ! command -v brew >/dev/null 2>&1; then
+            echo "Homebrew is required on macOS to install ffmpeg/x265." >&2
+            echo "Install it from https://brew.sh/ and rerun: just make-dev" >&2
+            exit 1
+        fi
+
+        echo "Installing Homebrew tools used by just recipes..."
+        brew install just x265
+        if ! command -v ffmpeg >/dev/null 2>&1; then
+            brew install ffmpeg
+        fi
+
+        ffmpeg_formula="$(brew list --formula --full-name | grep -E '(^|/)ffmpeg$' | head -n 1 || true)"
+        brew upgrade just x265 || true
+        if [[ -n "${ffmpeg_formula}" ]]; then
+            brew upgrade "${ffmpeg_formula}" || true
+        fi
+
+        if ! ffmpeg -version >/dev/null 2>&1; then
+            echo "ffmpeg failed to start; reinstalling ffmpeg to refresh dylib links..."
+            brew reinstall "${ffmpeg_formula:-ffmpeg}"
+        fi
+    elif command -v apt-get >/dev/null 2>&1; then
+        echo "Installing ffmpeg with apt-get..."
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg
+    elif command -v dnf >/dev/null 2>&1; then
+        echo "Installing ffmpeg with dnf..."
+        sudo dnf install -y ffmpeg
+    elif command -v pacman >/dev/null 2>&1; then
+        echo "Installing ffmpeg with pacman..."
+        sudo pacman -Sy --needed ffmpeg
+    elif ! command -v ffmpeg >/dev/null 2>&1; then
+        echo "ffmpeg is required for just test-integration; install it and rerun make-dev." >&2
+        exit 1
+    fi
+
+    echo "Verifying required command-line tools..."
+    python3 -m pytest --version >/dev/null
+    ruff --version >/dev/null
+    black --version >/dev/null
+    pylint --version >/dev/null
+    ffmpeg -version >/dev/null
+
+    echo "Development dependencies are installed."
+
 # Run all tests (excluding integration tests that require a real ffmpeg)
 test:
     python3 -m pytest tests/ -v --tb=short -m "not integration"
