@@ -60,6 +60,7 @@
 	</category>
 	<category label="30010">
 		<setting label="30011" type="action" action="RunPlugin(plugin://plugin.video.nzbdav/install_player)" />
+		<setting label="30160" type="action" action="RunPlugin(plugin://plugin.video.nzbdav/install_player_other)" />
 	</category>
 	<category label="30012">
 		<setting label="30013" type="lsep" />

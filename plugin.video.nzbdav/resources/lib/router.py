@@ -48,11 +48,11 @@ def parse_params(query_string):
 def _safe_resolve_handle(handle):
     """Resolve a plugin handle as a non-playable action.
 
-    Action routes (install_player, clear_cache, settings, configure_*,
-    test_hydra, test_nzbdav, resolve) are reached from ``_handle_main_menu``
-    items created with ``isFolder=False``. Kodi blocks the UI until the
-    plugin calls ``setResolvedUrl`` for that handle; a bare ``return`` from
-    the route leaves Kodi waiting indefinitely.
+    Action routes (install_player, install_player_other, clear_cache, settings,
+    configure_*, test_hydra, test_nzbdav, resolve) are reached from
+    ``_handle_main_menu`` items created with ``isFolder=False``. Kodi blocks
+    the UI until the plugin calls ``setResolvedUrl`` for that handle; a bare
+    ``return`` from the route leaves Kodi waiting indefinitely.
 
     Calling ``setResolvedUrl(handle, False, ListItem())`` unblocks Kodi
     without initiating playback. When the route was invoked via ``RunPlugin``
@@ -151,6 +151,10 @@ def route(argv):
             from resources.lib.player_installer import install_player
 
             install_player()
+        elif path == "/install_player_other":
+            from resources.lib.player_installer import install_player_other
+
+            install_player_other()
         elif path == "/clear_cache":
             from resources.lib.cache import clear_cache
 
@@ -966,6 +970,10 @@ def _handle_main_menu(handle):
 
     li = xbmcgui.ListItem(label=_string(30011))
     url = "plugin://plugin.video.nzbdav/install_player"
+    xbmcplugin.addDirectoryItem(handle=handle, url=url, listitem=li, isFolder=False)
+
+    li = xbmcgui.ListItem(label=_string(30160))
+    url = "plugin://plugin.video.nzbdav/install_player_other"
     xbmcplugin.addDirectoryItem(handle=handle, url=url, listitem=li, isFolder=False)
 
     li = xbmcgui.ListItem(label=_string(30091))

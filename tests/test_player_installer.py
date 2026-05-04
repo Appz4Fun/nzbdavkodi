@@ -7,7 +7,9 @@ from unittest.mock import MagicMock, patch
 from resources.lib.player_installer import (
     PLAYER_JSON,
     TMDBHELPER_PLAYER_PATH,
+    discover_other_player_targets,
     install_player,
+    install_player_other,
 )
 
 
@@ -213,3 +215,132 @@ def test_install_player_backs_up_and_overwrites_on_schema_mismatch(
     assert backup_args[1].endswith(".bak")
     # And the write did land after the backup.
     mock_write_file.write.assert_called_once()
+
+
+@patch("resources.lib.player_installer.xbmcaddon")
+@patch("resources.lib.player_installer.xbmcvfs")
+def test_discover_other_player_targets_lists_existing_non_tmdbhelper_player_dirs(
+    mock_vfs, mock_addon
+):
+    """Other-player discovery should offer existing player folders and skip
+    TMDBHelper, since TMDBHelper has its own direct install action."""
+
+    mock_vfs.listdir.return_value = (
+        [
+            "plugin.video.themoviedb.helper",
+            "plugin.video.seren",
+            "plugin.video.empty",
+            "script.module.not-a-player",
+        ],
+        [],
+    )
+    mock_vfs.translatePath.side_effect = lambda p: p.replace(
+        "special://profile", "/home/kodi/.kodi/userdata"
+    )
+
+    def _exists(path):
+        return path.endswith("/plugin.video.seren/players/")
+
+    mock_vfs.exists.side_effect = _exists
+    addon_names = {
+        "plugin.video.seren": "Seren",
+        "plugin.video.empty": "Empty Addon",
+        "script.module.not-a-player": "Not A Player",
+    }
+
+    def _addon(addon_id=None):
+        addon = MagicMock()
+        addon.getAddonInfo.side_effect = lambda key: (
+            addon_names.get(addon_id, addon_id or "") if key == "name" else ""
+        )
+        return addon
+
+    mock_addon.Addon.side_effect = _addon
+
+    targets = discover_other_player_targets()
+
+    assert targets == [
+        {
+            "addon_id": "plugin.video.seren",
+            "label": "Seren (plugin.video.seren)",
+            "path": "special://profile/addon_data/plugin.video.seren/players/",
+        }
+    ]
+
+
+@patch("resources.lib.player_installer._notify")
+@patch("resources.lib.player_installer.xbmcgui")
+@patch("resources.lib.player_installer.xbmcaddon")
+@patch("resources.lib.player_installer.xbmcvfs")
+def test_install_player_other_prompts_and_writes_selected_target(
+    mock_vfs, mock_addon, mock_gui, mock_notify
+):
+    """The alternate installer should prompt for discovered player folders
+    and write nzbdav.json into the selected addon's players directory."""
+
+    mock_vfs.listdir.return_value = (
+        ["plugin.video.seren", "plugin.video.umbrella"],
+        [],
+    )
+    mock_vfs.translatePath.side_effect = lambda p: p.replace(
+        "special://profile", "/home/kodi/.kodi/userdata"
+    )
+
+    def _exists(path):
+        if path.endswith("/plugin.video.seren/players/"):
+            return True
+        if path.endswith("/plugin.video.umbrella/players/"):
+            return True
+        # Force installer to skip existing-file preservation and write fresh.
+        if path.endswith("/nzbdav.json"):
+            return False
+        return True
+
+    mock_vfs.exists.side_effect = _exists
+    addon_names = {
+        "plugin.video.seren": "Seren",
+        "plugin.video.umbrella": "Umbrella",
+    }
+
+    def _addon(addon_id=None):
+        addon = MagicMock()
+        addon.getAddonInfo.side_effect = lambda key: (
+            addon_names.get(addon_id, addon_id or "") if key == "name" else ""
+        )
+        return addon
+
+    mock_addon.Addon.side_effect = _addon
+    mock_gui.Dialog.return_value.select.return_value = 1
+    mock_file = MagicMock()
+    mock_vfs.File.return_value = mock_file
+
+    install_player_other()
+
+    mock_gui.Dialog.return_value.select.assert_called_once()
+    write_calls = [
+        c for c in mock_vfs.File.call_args_list if len(c[0]) >= 2 and c[0][1] == "w"
+    ]
+    assert len(write_calls) == 1
+    assert "/plugin.video.umbrella/players/nzbdav.json" in write_calls[0][0][0]
+    mock_file.write.assert_called_once()
+    notify_msgs = [str(c) for c in mock_notify.call_args_list]
+    assert any("Umbrella" in msg for msg in notify_msgs)
+
+
+@patch("resources.lib.player_installer._notify")
+@patch("resources.lib.player_installer.xbmcgui")
+@patch("resources.lib.player_installer.xbmcvfs")
+def test_install_player_other_notifies_when_no_other_targets(
+    mock_vfs, mock_gui, mock_notify
+):
+    mock_vfs.listdir.return_value = (["plugin.video.themoviedb.helper"], [])
+    mock_vfs.translatePath.side_effect = lambda p: p.replace(
+        "special://profile", "/home/kodi/.kodi/userdata"
+    )
+    mock_vfs.exists.return_value = False
+
+    install_player_other()
+
+    mock_gui.Dialog.return_value.select.assert_not_called()
+    mock_vfs.File.assert_not_called()
+    mock_notify.assert_called()

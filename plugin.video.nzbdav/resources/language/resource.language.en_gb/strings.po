@@ -51,8 +51,8 @@ msgid "Player Installation"
 msgstr "Player Installation"
 
 msgctxt "#30011"
-msgid "Install Player File"
-msgstr "Install Player File"
+msgid "Install TMDBHelper Player"
+msgstr "Install TMDBHelper Player"
 
 msgctxt "#30012"
 msgid "Quality Filters"
@@ -689,3 +689,15 @@ msgstr "NZBPlanet"
 msgctxt "#30182"
 msgid "DOGnzb"
 msgstr "DOGnzb"
+
+msgctxt "#30160"
+msgid "Install Player In Other Add-on"
+msgstr "Install Player In Other Add-on"
+
+msgctxt "#30161"
+msgid "Choose Player Folder"
+msgstr "Choose Player Folder"
+
+msgctxt "#30162"
+msgid "No other player folders found"
+msgstr "No other player folders found"

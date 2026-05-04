@@ -7,7 +7,7 @@ import xbmcaddon
 
 _FALLBACK_NAME = "NZB-DAV"
 _FALLBACK_STRINGS = {
-    30011: "Install Player File",
+    30011: "Install TMDBHelper Player",
     30082: "Search cache cleared",
     30083: "Searching NZBHydra for {}...",
     30084: "Querying NZBHydra2...",
@@ -80,6 +80,9 @@ _FALLBACK_STRINGS = {
     30180: "NZBFinder",
     30181: "NZBPlanet",
     30182: "DOGnzb",
+    30160: "Install Player In Other Add-on",
+    30161: "Choose Player Folder",
+    30162: "No other player folders found",
 }
 
 

@@ -40,6 +40,13 @@ def test_parse_route_install_player():
     )
 
 
+def test_parse_route_install_player_other():
+    assert (
+        parse_route("plugin://plugin.video.nzbdav/install_player_other")
+        == "/install_player_other"
+    )
+
+
 def test_parse_params_movie():
     query = "?" + urlencode(
         {"type": "movie", "title": "The Matrix", "year": "1999", "imdb": "tt0133093"}
@@ -360,6 +367,27 @@ def test_route_install_player_resolves_handle(mock_resolved):
         route(["plugin://plugin.video.nzbdav/install_player", "7", ""])
     assert mock_resolved.called, "setResolvedUrl must be called for /install_player"
     assert mock_resolved.call_args[0][0] == 7
+    assert mock_resolved.call_args[0][1] is False
+
+
+@patch("xbmcplugin.setResolvedUrl")
+def test_route_install_player_other_resolves_handle(mock_resolved):
+    """/install_player_other must resolve the handle after running."""
+    install_player_other = MagicMock()
+    with patch.dict(
+        "sys.modules",
+        {
+            "resources.lib.player_installer": MagicMock(
+                install_player_other=install_player_other
+            )
+        },
+    ):
+        route(["plugin://plugin.video.nzbdav/install_player_other", "9", ""])
+    install_player_other.assert_called_once()
+    assert (
+        mock_resolved.called
+    ), "setResolvedUrl must be called for /install_player_other"
+    assert mock_resolved.call_args[0][0] == 9
     assert mock_resolved.call_args[0][1] is False
 
 

@@ -17,8 +17,8 @@ def test_string_falls_back_for_empty_kodi_response():
     xbmcaddon.Addon().getLocalizedString.return_value = ""
     result = string(30011)
     assert isinstance(result, str)
-    # Fallback dict has 30011 = "Install Player File"
-    assert result == "Install Player File"
+    # Fallback dict has 30011 = "Install TMDBHelper Player"
+    assert result == "Install TMDBHelper Player"
 
 
 def test_string_returns_empty_for_unknown_id():
@@ -115,7 +115,7 @@ def test_string_falls_back_when_getLocalizedString_returns_non_string():
     original = xbmcaddon.Addon.return_value.getLocalizedString.return_value
     try:
         xbmcaddon.Addon.return_value.getLocalizedString.return_value = None
-        assert string(30011) == "Install Player File"  # from _FALLBACK_STRINGS
+        assert string(30011) == "Install TMDBHelper Player"  # from _FALLBACK_STRINGS
     finally:
         xbmcaddon.Addon.return_value.getLocalizedString.return_value = original
 
