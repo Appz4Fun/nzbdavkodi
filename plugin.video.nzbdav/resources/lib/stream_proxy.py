@@ -901,6 +901,41 @@ def _validate_auth_header(auth_header):
     return auth_header
 
 
+def _normalize_fallback_sources(fallback_sources):
+    """Validate and normalize fallback stream metadata for session contexts."""
+    normalized = []
+    for source in fallback_sources or []:
+        if not isinstance(source, dict):
+            continue
+        stream_url = source.get("stream_url") or ""
+        nzo_id = source.get("nzo_id") or ""
+        if not stream_url and not nzo_id:
+            continue
+        if stream_url:
+            _validate_url(stream_url)
+        stream_headers = source.get("stream_headers")
+        if not isinstance(stream_headers, dict):
+            stream_headers = {}
+        try:
+            content_length = int(source.get("content_length") or 0)
+        except (TypeError, ValueError):
+            content_length = 0
+        normalized.append(
+            {
+                "title": source.get("title", ""),
+                "nzb_url": source.get("nzb_url", ""),
+                "job_name": source.get("job_name", ""),
+                "nzo_id": nzo_id,
+                "stream_url": stream_url,
+                "stream_headers": dict(stream_headers),
+                "content_length": max(0, content_length),
+                "validated": bool(source.get("validated", False)),
+                "failed": bool(source.get("failed", False)),
+            }
+        )
+    return normalized
+
+
 def _extract_session_id_from_proxy_url(proxy_url):
     """Pull the session id back out of a `/stream/<id>` or `/hls/<id>/...` URL.
 
@@ -1481,7 +1516,11 @@ class _StreamHandler(BaseHTTPRequestHandler):
 
         remote_url = data.get("remote_url", "")
         auth_header = data.get("auth_header")
+        fallback_sources = data.get("fallback_sources", [])
         if not remote_url:
+            self.send_error(400)
+            return
+        if not isinstance(fallback_sources, list):
             self.send_error(400)
             return
         try:
@@ -1492,7 +1531,9 @@ class _StreamHandler(BaseHTTPRequestHandler):
 
         proxy = self.server.owner_proxy
         try:
-            proxy_url, stream_info = proxy.prepare_stream(remote_url, auth_header)
+            proxy_url, stream_info = proxy.prepare_stream(
+                remote_url, auth_header, fallback_sources=fallback_sources
+            )
         except ValueError:
             self.send_error(400)
             return
@@ -4416,7 +4457,7 @@ class StreamProxy:
 
         return evicted
 
-    def prepare_stream(self, remote_url, auth_header=None):
+    def prepare_stream(self, remote_url, auth_header=None, fallback_sources=None):
         """Set up proxy for a new stream.
 
         Returns (local_proxy_url, stream_info_dict).
@@ -4425,6 +4466,7 @@ class StreamProxy:
         """
         _validate_url(remote_url)
         auth_header = _validate_auth_header(auth_header)
+        fallback_sources = _normalize_fallback_sources(fallback_sources)
         # Tear down any previous session before starting a new one. Kodi only
         # ever plays one stream at a time, so anything still in the table is
         # garbage from a prior play — possibly with a zombie ffmpeg attached
@@ -4802,6 +4844,10 @@ class StreamProxy:
                     "content_type": content_type,
                     "remux": False,
                 }
+
+        ctx["fallback_sources"] = list(fallback_sources)
+        ctx["fallback_active_index"] = -1
+        ctx["fallback_switch_count"] = 0
 
         local_url = self._register_session(ctx)
         xbmc.log(

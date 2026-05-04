@@ -700,48 +700,60 @@ def test_resolve_success(
     assert resolve_call[0][1] is True
 
 
+@patch("resources.lib.resolver._stop_fallback_submit_worker")
+@patch("resources.lib.resolver._fallback_submit_jobs_snapshot")
+@patch("resources.lib.resolver._start_fallback_submit_worker")
+@patch("resources.lib.resolver._poll_until_ready")
 @patch("resources.lib.resolver._play_direct")
 @patch("resources.lib.resolver._clear_kodi_playback_state")
-@patch("resources.lib.resolver.get_webdav_stream_url_for_path")
-@patch("resources.lib.resolver.find_video_file")
-@patch("resources.lib.resolver.get_job_history")
-@patch("resources.lib.resolver._submit_nzb_with_retries")
-@patch("resources.lib.resolver._poll_until_ready")
 @patch("resources.lib.resolver.xbmc")
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver._get_poll_settings")
-def test_resolve_submits_fallback_candidates_and_passes_manifest_to_direct_play(
+def test_resolve_starts_fallback_worker_before_poll_and_uses_snapshot(
     mock_poll_settings,
     mock_gui,
     mock_xbmc,
-    mock_poll_until_ready,
-    mock_submit_with_retries,
-    mock_history,
-    mock_find_video,
-    mock_stream_url,
     mock_clear_state,
     mock_play_direct,
+    mock_poll_until_ready,
+    mock_start_fallback,
+    mock_snapshot,
+    mock_stop_fallback,
 ):
     mock_poll_settings.return_value = (2, 60)
+    fallback_candidates = [
+        {
+            "title": "Fallback A 2026 1080p WEB-DL",
+            "link": "http://hydra/getnzb/fallback-a",
+        }
+    ]
+    fallback_state = {"state": "fallback"}
+    mock_start_fallback.return_value = fallback_state
+    call_order = []
+
+    def poll_ready(*args):
+        call_order.append("poll")
+        mock_start_fallback.assert_called_once_with(fallback_candidates)
+        return (
+            "http://webdav/content/primary/movie.mkv",
+            {"Authorization": "Basic primary"},
+        )
+
+    mock_poll_until_ready.side_effect = poll_ready
+    mock_snapshot.return_value = [
+        {
+            "title": "Fallback A 2026 1080p WEB-DL",
+            "nzb_url": "http://hydra/getnzb/fallback-a",
+            "job_name": "Fallback A 2026 1080p WEB-DL [fallback-1-5c5fd5e4]",
+            "nzo_id": "SABnzbd_nzo_done",
+            "stream_url": "",
+            "stream_headers": {},
+            "content_length": 0,
+        }
+    ]
     mock_poll_until_ready.return_value = (
         "http://webdav/content/primary/movie.mkv",
         {"Authorization": "Basic primary"},
-    )
-    mock_submit_with_retries.side_effect = [
-        "SABnzbd_nzo_done",
-        "SABnzbd_nzo_standby",
-    ]
-    mock_history.side_effect = [
-        {
-            "status": "Completed",
-            "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/fallback-a",
-        },
-        {"status": "Downloading"},
-    ]
-    mock_find_video.return_value = "/content/uncategorized/fallback-a/movie.mkv"
-    mock_stream_url.return_value = (
-        "http://webdav/content/uncategorized/fallback-a/movie.mkv",
-        {"Authorization": "Basic fallback"},
     )
     mock_xbmc.Monitor.return_value = _make_monitor()
     dialog = MagicMock()
@@ -752,30 +764,12 @@ def test_resolve_submits_fallback_candidates_and_passes_manifest_to_direct_play(
         {
             "nzburl": "http://hydra/getnzb/primary",
             "title": "movie.mkv",
-            "_fallback_candidates": [
-                {
-                    "title": "Fallback A 2026 1080p WEB-DL",
-                    "link": "http://hydra/getnzb/fallback-a",
-                },
-                {
-                    "title": "Fallback B 2026 1080p WEB-DL",
-                    "link": "http://hydra/getnzb/fallback-b",
-                },
-            ],
+            "_fallback_candidates": fallback_candidates,
         },
     )
 
-    assert mock_submit_with_retries.call_count == 2
-    submit_calls = mock_submit_with_retries.call_args_list
-    assert submit_calls[0].args[:2] == (
-        "http://hydra/getnzb/fallback-a",
-        "Fallback A 2026 1080p WEB-DL [fallback-1-5c5fd5e4]",
-    )
-    assert submit_calls[1].args[:2] == (
-        "http://hydra/getnzb/fallback-b",
-        "Fallback B 2026 1080p WEB-DL [fallback-2-1a5c50ea]",
-    )
-    assert submit_calls[0].kwargs == {"max_submit_retries": 1}
+    assert call_order == ["poll"]
+    mock_snapshot.assert_called_once_with(fallback_state)
     mock_play_direct.assert_called_once_with(
         1,
         "http://webdav/content/primary/movie.mkv",
@@ -786,21 +780,46 @@ def test_resolve_submits_fallback_candidates_and_passes_manifest_to_direct_play(
                 "nzb_url": "http://hydra/getnzb/fallback-a",
                 "job_name": "Fallback A 2026 1080p WEB-DL [fallback-1-5c5fd5e4]",
                 "nzo_id": "SABnzbd_nzo_done",
-                "stream_url": "http://webdav/content/uncategorized/fallback-a/movie.mkv",
-                "stream_headers": {"Authorization": "Basic fallback"},
-                "content_length": 0,
-            },
-            {
-                "title": "Fallback B 2026 1080p WEB-DL",
-                "nzb_url": "http://hydra/getnzb/fallback-b",
-                "job_name": "Fallback B 2026 1080p WEB-DL [fallback-2-1a5c50ea]",
-                "nzo_id": "SABnzbd_nzo_standby",
                 "stream_url": "",
                 "stream_headers": {},
                 "content_length": 0,
             },
         ],
     )
+    mock_stop_fallback.assert_not_called()
+
+
+@patch("resources.lib.resolver._show_submit_error_dialog")
+@patch("resources.lib.resolver.submit_nzb")
+@patch("resources.lib.resolver.xbmc")
+def test_submit_fallback_candidates_rejection_logs_without_dialog(
+    mock_xbmc, mock_submit, mock_show_dialog
+):
+    from resources.lib.resolver import _submit_fallback_candidates
+
+    mock_submit.return_value = (
+        None,
+        {"status": "rejected", "message": "bad fallback nzb"},
+    )
+    monitor = _make_monitor()
+
+    jobs = _submit_fallback_candidates(
+        [
+            {
+                "title": "Fallback A 2026 1080p WEB-DL",
+                "link": "http://hydra/getnzb/fallback-a",
+            }
+        ],
+        monitor,
+    )
+
+    assert jobs == []
+    mock_submit.assert_called_once_with(
+        "http://hydra/getnzb/fallback-a",
+        "Fallback A 2026 1080p WEB-DL [fallback-1-5c5fd5e4]",
+    )
+    mock_show_dialog.assert_not_called()
+    mock_xbmc.log.assert_called()
 
 
 @patch("resources.lib.resolver.find_completed_by_name")
