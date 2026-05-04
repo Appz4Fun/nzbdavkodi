@@ -1,9 +1,11 @@
 v1.0.6 (2026-05-04)
 - Add live duplicate-release fallback streams. The router attaches conservative duplicate candidates, the resolver can submit them after the primary NZB is accepted, and the proxy keeps fallback metadata with the playback session so it can switch if the active source becomes unrecoverable.
 - Add fallback stream settings for enabling standby submits and capping maximum fallback releases per primary result.
+- Add a Test WebDAV Connection settings action with localized success and failure notifications.
 - Make pass-through the default non-MP4 path again; force-remux remains available as an opt-in compatibility tier for matroska or experimental fMP4 HLS.
 - Treat force_remux_threshold_mb=0 as fully disabling non-MP4 force-remux, including unknown-length streams.
 - Keep already-faststart MP4s proxy-routed when fallback metadata is attached so live switching can find standby sources.
+- Fix settings connection tests so NZBHydra, nzbdav, Prowlarr, and WebDAV validate authenticated endpoints and report the specific failure path instead of false-positive OK results.
 - Harden fallback submit worker shutdown so playback aborts and resolver failures signal, join, snapshot, and cancel standby jobs predictably.
 
 v1.0.5 (2026-05-04)

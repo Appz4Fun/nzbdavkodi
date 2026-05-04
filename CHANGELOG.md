@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Released | What it's about |
 |---|---|---|
-| **[1.0.6](#106--2026-05-04)** | 2026-05-04 | Pass-through-first proxy, live duplicate-release fallback streams, fallback worker cleanup, threshold-zero remux semantics |
+| **[1.0.6](#106--2026-05-04)** | 2026-05-04 | Pass-through-first proxy, live duplicate-release fallback streams, authenticated settings checks, fallback worker cleanup, threshold-zero remux semantics |
 | **[1.0.5](#105--2026-05-04)** | 2026-05-04 | Direct Newznab indexers, manual Indexers settings, concurrent provider fan-out, Kodi repo publishing fixes, WebDAV range compatibility, cache eviction race fix |
 | **[1.0.4](#104--2026-04-25)** | 2026-04-25 | Pass-through stall watchdog (closes the slow-trickle wedge where seek doesn't unstick), proxy seek perf, sha256 cache keys, credential redaction sweep, Prowlarr UI label fix, §H.2 audit closure batch |
 | **[1.0.3](#103--2026-04-23)** | 2026-04-23 | Hotfix: ffmpeg safety check no longer rejects -headers values with legitimate CR/LF — unblocks every auth'd force-remux stream that regressed in v1.0.0-pre-alpha/v1.0.1/v1.0.2 |
@@ -66,6 +66,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so it can switch streams if the active source becomes unrecoverable.
 - **Fallback stream settings** for enabling standby submits and capping the
   maximum fallback releases per primary result.
+- **Test WebDAV Connection settings action** so users can verify WebDAV
+  reachability and credentials directly from Kodi settings, with localized
+  success and failure notifications.
 
 **Changed**
 - **Pass-through is the default non-MP4 path.** Force-remux remains available
@@ -78,6 +81,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   find the standby sources.
 
 **Fixed**
+- **Settings connection tests now validate authenticated endpoints.** NZBHydra
+  uses an API-key-gated search response, nzbdav validates the authenticated
+  queue shape, Prowlarr validates the authenticated indexer-list shape through
+  the shared redaction/error helper, and WebDAV distinguishes reachable,
+  auth-failed, server-error, and generic failure cases.
 - **Fallback submit worker shutdown** now signals, joins, and optionally
   cancels submitted standby jobs on playback abort or resolver failure. Worker
   exceptions also cancel recorded pending/running fallback jobs before exit.
