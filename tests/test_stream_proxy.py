@@ -445,10 +445,8 @@ def test_prepare_stream_proxies_mkv():
     assert ctx["content_length"] == 100000
 
 
-def test_prepare_stream_forces_remux_for_large_mkv():
-    """Large MKV above threshold must route through ffmpeg remux so Kodi
-    never sees a >4 GB Content-Length — the pass-through path overflows on
-    32-bit Kodi builds with `Open - Unhandled exception`.
+def test_prepare_stream_matroska_mode_forces_remux_for_large_mkv():
+    """Large MKV above threshold routes through ffmpeg in Matroska mode.
 
     Output is piped Matroska via the standard remux path, the same
     shape used by the MP4 Tier 3 fallback. An earlier iteration routed
@@ -479,6 +477,8 @@ def test_prepare_stream_forces_remux_for_large_mkv():
     with patch(
         "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
     ), patch("resources.lib.stream_proxy._find_ffprobe", return_value=None), patch(
+        "resources.lib.stream_proxy._get_force_remux_mode", return_value="matroska"
+    ), patch(
         "resources.lib.stream_proxy._get_force_remux_threshold_bytes",
         return_value=1 * 1024 * 1024,
     ), patch.object(
@@ -524,8 +524,8 @@ def test_prepare_stream_large_mkv_falls_back_without_ffmpeg():
     assert ctx["content_length"] == huge
 
 
-def test_prepare_stream_unknown_length_mkv_remuxes_when_ffmpeg_available():
-    """Unknown-size streams must not become zero-byte pass-through responses."""
+def test_prepare_stream_unknown_length_mkv_remuxes_in_matroska_mode():
+    """Unknown-size streams still remux when Matroska mode is selected."""
     from resources.lib.stream_proxy import StreamProxy
 
     sp = StreamProxy.__new__(StreamProxy)
@@ -539,6 +539,8 @@ def test_prepare_stream_unknown_length_mkv_remuxes_when_ffmpeg_available():
         sp,
         "_get_ffmpeg_capabilities",
         return_value={"ffmpeg_path": "/usr/bin/ffmpeg", "hls_fmp4": False},
+    ), patch(
+        "resources.lib.stream_proxy._get_force_remux_mode", return_value="matroska"
     ), patch.object(sp, "_probe_duration", return_value=None):
         url, info = sp.prepare_stream("http://host/unknown.mkv")
 
@@ -550,8 +552,8 @@ def test_prepare_stream_unknown_length_mkv_remuxes_when_ffmpeg_available():
     assert info["seekable"] is False
 
 
-def test_prepare_stream_unknown_length_mkv_without_ffmpeg_raises():
-    """Unknown-size non-MP4 streams must not fall back to zero-byte pass-through."""
+def test_prepare_stream_unknown_length_mkv_without_ffmpeg_raises_in_matroska_mode():
+    """Matroska mode cannot handle unknown-size non-MP4 streams without ffmpeg."""
     from resources.lib.stream_proxy import StreamProxy
 
     sp = StreamProxy.__new__(StreamProxy)
@@ -565,6 +567,8 @@ def test_prepare_stream_unknown_length_mkv_without_ffmpeg_raises():
         sp,
         "_get_ffmpeg_capabilities",
         return_value={"ffmpeg_path": None, "hls_fmp4": False},
+    ), patch(
+        "resources.lib.stream_proxy._get_force_remux_mode", return_value="matroska"
     ):
         with pytest.raises(OSError, match="content length"):
             sp.prepare_stream("http://host/unknown.mkv")
@@ -701,8 +705,8 @@ def test_get_force_remux_threshold_clamps_typo_high_and_logs(mock_xbmc):
     assert "force_remux_threshold_mb" in mock_xbmc.log.call_args[0][0]
 
 
-def test_get_force_remux_mode_default_returns_matroska():
-    """Unset / empty / '0' all return 'matroska'."""
+def test_get_force_remux_mode_default_returns_passthrough():
+    """Unset / empty / '0' all return 'passthrough'."""
     import sys
 
     from resources.lib.stream_proxy import _get_force_remux_mode
@@ -713,7 +717,7 @@ def test_get_force_remux_mode_default_returns_matroska():
     try:
         for raw in ("", "0", None):
             mock_addon.getSetting.return_value = raw
-            assert _get_force_remux_mode() == "matroska"
+            assert _get_force_remux_mode() == "passthrough"
     finally:
         sys.modules["xbmcaddon"].Addon.return_value = original
 
@@ -734,8 +738,8 @@ def test_get_force_remux_mode_hls_fmp4_on_one():
         sys.modules["xbmcaddon"].Addon.return_value = original
 
 
-def test_get_force_remux_mode_unknown_value_falls_back_to_matroska():
-    """Any unrecognized value safely falls back to matroska."""
+def test_get_force_remux_mode_unknown_value_falls_back_to_passthrough():
+    """Any unrecognized value safely falls back to passthrough."""
     import sys
 
     from resources.lib.stream_proxy import _get_force_remux_mode
@@ -746,13 +750,13 @@ def test_get_force_remux_mode_unknown_value_falls_back_to_matroska():
     try:
         for raw in ("true", "garbage", "-1", "3"):
             mock_addon.getSetting.return_value = raw
-            assert _get_force_remux_mode() == "matroska"
+            assert _get_force_remux_mode() == "passthrough"
     finally:
         sys.modules["xbmcaddon"].Addon.return_value = original
 
 
-def test_get_force_remux_mode_passthrough_on_two():
-    """Setting '2' returns 'passthrough' (CFileCache-bypass mode)."""
+def test_get_force_remux_mode_matroska_on_two():
+    """Setting '2' returns 'matroska'."""
     import sys
 
     from resources.lib.stream_proxy import _get_force_remux_mode
@@ -762,16 +766,13 @@ def test_get_force_remux_mode_passthrough_on_two():
     original = sys.modules["xbmcaddon"].Addon.return_value
     sys.modules["xbmcaddon"].Addon.return_value = mock_addon
     try:
-        assert _get_force_remux_mode() == "passthrough"
+        assert _get_force_remux_mode() == "matroska"
     finally:
         sys.modules["xbmcaddon"].Addon.return_value = original
 
 
-def test_prepare_stream_force_remuxes_huge_mkv_with_default_threshold():
-    """A 58 GB MKV must be force-remuxed even when the user leaves the
-    threshold setting at its shipped default. Regression test for
-    memory/project_32bit_kodi_largefile_limit.md — pass-through of huge
-    MKVs crashes 32-bit Kodi with `Open - Unhandled exception`."""
+def test_prepare_stream_large_mkv_defaults_to_passthrough_without_cache_zero():
+    """Large MKV defaults to pass-through even without cache=0."""
     import sys
 
     from resources.lib.stream_proxy import StreamProxy
@@ -782,8 +783,6 @@ def test_prepare_stream_force_remuxes_huge_mkv_with_default_threshold():
     sp.port = 9999
 
     huge = 58 * 1024 * 1024 * 1024  # 58 GB, matches Shawshank REMUX
-    mock_proc = MagicMock()
-    mock_proc.stderr = iter([b"  Duration: 02:22:12.00, start: 0.000000\n"])
 
     mock_addon = MagicMock()
     # Empty string — user left the setting at its default.
@@ -791,37 +790,30 @@ def test_prepare_stream_force_remuxes_huge_mkv_with_default_threshold():
     original = sys.modules["xbmcaddon"].Addon.return_value
     sys.modules["xbmcaddon"].Addon.return_value = mock_addon
     try:
-        with patch(
-            "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
-        ), patch(
-            "resources.lib.stream_proxy._find_ffprobe", return_value=None
-        ), patch.object(
+        with patch.object(
+            sp,
+            "_get_ffmpeg_capabilities",
+            return_value={"ffmpeg_path": "/usr/bin/ffmpeg", "hls_fmp4": False},
+        ) as mock_caps, patch.object(
             sp, "_get_content_length", return_value=huge
-        ), patch(
-            "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
         ):
-            with patch(
-                "resources.lib.stream_proxy._disk_free_bytes",
-                return_value=100 * 1024**3,
-            ):
-                sp.prepare_stream("http://host/shawshank.mkv")
+            with patch("resources.lib.stream_proxy._disk_free_bytes", return_value=100*1024**3):
+                    sp.prepare_stream("http://host/shawshank.mkv")
     finally:
         sys.modules["xbmcaddon"].Addon.return_value = original
 
     ctx = sp._server.stream_context
-    assert (
-        ctx["remux"] is True
-    ), "58 GB MKV must be force-remuxed with the default threshold"
+    assert ctx["remux"] is False
     assert ctx.get("mode") != "hls"
     assert ctx["content_type"] == "video/x-matroska"
-    assert ctx["total_bytes"] == huge
-    assert ctx["duration_seconds"] == 8532.0
-    assert ctx["seekable"] is True
+    assert ctx["content_length"] == huge
     assert ctx.get("hls_segment_format") is None
+    assert "ffmpeg_path" not in ctx
+    mock_caps.assert_not_called()
 
 
-def test_prepare_stream_force_remuxes_documented_15_8_gib_crash_size():
-    """Default threshold must cover the reproduced 15.8 GiB crash case."""
+def test_prepare_stream_matroska_mode_remuxes_documented_15_8_gib_crash_size():
+    """Matroska compatibility mode must cover the reproduced 15.8 GiB case."""
     import sys
 
     from resources.lib.stream_proxy import StreamProxy
@@ -836,7 +828,15 @@ def test_prepare_stream_force_remuxes_documented_15_8_gib_crash_size():
     mock_proc.stderr = iter([b"  Duration: 01:00:00.00, start: 0.000000\n"])
 
     mock_addon = MagicMock()
-    mock_addon.getSetting.return_value = ""
+
+    def get_setting(key):
+        if key == "force_remux_mode":
+            return "2"
+        if key == "force_remux_mode_v2_migrated":
+            return "true"
+        return ""
+
+    mock_addon.getSetting.side_effect = get_setting
     original = sys.modules["xbmcaddon"].Addon.return_value
     sys.modules["xbmcaddon"].Addon.return_value = mock_addon
     try:
@@ -849,10 +849,7 @@ def test_prepare_stream_force_remuxes_documented_15_8_gib_crash_size():
         ), patch(
             "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
         ):
-            with patch(
-                "resources.lib.stream_proxy._disk_free_bytes",
-                return_value=100 * 1024**3,
-            ):
+            with patch("resources.lib.stream_proxy._disk_free_bytes", return_value=100*1024**3):
                 sp.prepare_stream("http://host/mayor-of-kingstown.mkv")
     finally:
         sys.modules["xbmcaddon"].Addon.return_value = original
@@ -861,11 +858,8 @@ def test_prepare_stream_force_remuxes_documented_15_8_gib_crash_size():
     assert sp._server.stream_context["total_bytes"] == known_bad
 
 
-def test_prepare_stream_passthrough_mode_skips_force_remux_for_huge_mkv():
-    """force_remux_mode=2 (passthrough) bypasses the force-remux tier
-    even on a huge MKV *when* advancedsettings.xml cache=0 is present.
-    The resulting ctx is the direct pass-through shape (remux=False,
-    content_type=video/x-matroska, content_length set)."""
+def test_prepare_stream_matroska_mode_force_remuxes_huge_mkv():
+    """force_remux_mode=2 opts into the piped Matroska compatibility path."""
     import sys
 
     from resources.lib.stream_proxy import StreamProxy
@@ -890,33 +884,27 @@ def test_prepare_stream_passthrough_mode_skips_force_remux_for_huge_mkv():
     original = sys.modules["xbmcaddon"].Addon.return_value
     sys.modules["xbmcaddon"].Addon.return_value = mock_addon
     try:
-        with patch(
-            "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
-        ), patch.object(sp, "_get_content_length", return_value=huge), patch(
-            "resources.lib.stream_proxy.has_cache_memorysize_zero", return_value=True
-        ):
-            with patch(
-                "resources.lib.stream_proxy._disk_free_bytes",
-                return_value=100 * 1024**3,
-            ):
+        with patch.object(sp, "_get_content_length", return_value=huge), patch.object(
+            sp,
+            "_get_ffmpeg_capabilities",
+            return_value={"ffmpeg_path": "/usr/bin/ffmpeg", "hls_fmp4": False},
+        ), patch.object(sp, "_probe_duration", return_value=8000.0):
+            with patch("resources.lib.stream_proxy._disk_free_bytes", return_value=100*1024**3):
                 sp.prepare_stream("http://host/wasteman.mkv")
     finally:
         sys.modules["xbmcaddon"].Addon.return_value = original
 
     ctx = sp._server.stream_context
-    assert ctx["remux"] is False, "passthrough mode must skip the force-remux tier"
+    assert ctx["remux"] is True
     assert ctx.get("mode") != "hls"
     assert ctx["content_type"] == "video/x-matroska"
-    assert ctx["content_length"] == huge
+    assert ctx["total_bytes"] == huge
     assert ctx.get("hls_segment_format") is None
-    # ffmpeg_path should NOT be in the ctx — pass-through doesn't need it.
-    assert "ffmpeg_path" not in ctx
+    assert ctx["ffmpeg_path"] == "/usr/bin/ffmpeg"
 
 
-def test_prepare_stream_default_mode_uses_passthrough_when_cache_zero():
-    """When cache=0 is verified, the default large-file route should use
-    byte pass-through instead of piped Matroska so Kodi can use source Cues for
-    fast 5-minute and 15-minute seeks."""
+def test_prepare_stream_default_mode_uses_passthrough_without_cache_zero():
+    """Default large-file route uses byte pass-through without cache gating."""
     import sys
 
     from resources.lib.stream_proxy import StreamProxy
@@ -937,9 +925,8 @@ def test_prepare_stream_default_mode_uses_passthrough_when_cache_zero():
             "_get_ffmpeg_capabilities",
             return_value={"ffmpeg_path": "/usr/bin/ffmpeg", "hls_fmp4": False},
         ) as mock_caps, patch.object(sp, "_probe_duration", return_value=8000.0), patch(
-            "resources.lib.stream_proxy.has_cache_memorysize_zero",
-            return_value=True,
-        ):
+            "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
+        ) as mock_find_ffmpeg:
             sp.prepare_stream("http://host/movie.mkv")
     finally:
         sys.modules["xbmcaddon"].Addon.return_value = original
@@ -950,14 +937,11 @@ def test_prepare_stream_default_mode_uses_passthrough_when_cache_zero():
     assert ctx["content_length"] == huge
     assert "ffmpeg_path" not in ctx
     mock_caps.assert_not_called()
+    mock_find_ffmpeg.assert_not_called()
 
 
-def test_prepare_stream_passthrough_falls_back_to_matroska_when_cache_not_set():
-    """force_remux_mode=2 (passthrough) BUT advancedsettings.xml cache=0
-    is missing — the gate in prepare_stream detects this and falls
-    through to the matroska remux path regardless of the setting.
-    Without this gate a misconfigured user's large MKV would crash on
-    32-bit Kodi (FileCache.cpp:375 uint32 seek-delta truncation)."""
+def test_prepare_stream_default_passthrough_without_cache_does_not_probe_ffmpeg():
+    """Default pass-through ignores the old cache gate and ffmpeg path."""
     import sys
 
     from resources.lib.stream_proxy import StreamProxy
@@ -973,40 +957,29 @@ def test_prepare_stream_passthrough_falls_back_to_matroska_when_cache_not_set():
 
     def get_setting(key):
         if key == "force_remux_mode":
-            return "2"
-        if key == "force_remux_mode_v2_migrated":
-            return "true"
+            return ""
         return ""
 
     mock_addon.getSetting.side_effect = get_setting
     original = sys.modules["xbmcaddon"].Addon.return_value
     sys.modules["xbmcaddon"].Addon.return_value = mock_addon
     try:
-        with patch(
-            "resources.lib.stream_proxy._find_ffmpeg", return_value="/usr/bin/ffmpeg"
-        ), patch.object(sp, "_get_content_length", return_value=huge), patch(
-            "resources.lib.stream_proxy.has_cache_memorysize_zero", return_value=False
-        ), patch.object(
-            sp, "_probe_duration", return_value=8000.0
-        ), patch.object(
+        with patch.object(sp, "_get_content_length", return_value=huge), patch.object(
             sp,
             "_get_ffmpeg_capabilities",
             return_value={"ffmpeg_path": "/usr/bin/ffmpeg", "hls_fmp4": False},
-        ):
-            with patch(
-                "resources.lib.stream_proxy._disk_free_bytes",
-                return_value=100 * 1024**3,
-            ):
+        ) as mock_caps:
+            with patch("resources.lib.stream_proxy._disk_free_bytes", return_value=100*1024**3):
                 sp.prepare_stream("http://host/wasteman.mkv")
     finally:
         sys.modules["xbmcaddon"].Addon.return_value = original
 
     ctx = sp._server.stream_context
-    assert (
-        ctx["remux"] is True
-    ), "gate must force remux when passthrough selected but cache=0 missing"
-    assert ctx.get("mode") != "hls", "fmp4 disabled in this test — matroska expected"
-    assert ctx["ffmpeg_path"] == "/usr/bin/ffmpeg"
+    assert ctx["remux"] is False
+    assert ctx.get("mode") != "hls"
+    assert ctx["content_length"] == huge
+    assert "ffmpeg_path" not in ctx
+    mock_caps.assert_not_called()
 
 
 def test_prepare_stream_force_remux_hls_fmp4_setting_produces_hls_ctx():
@@ -1057,10 +1030,7 @@ def test_prepare_stream_force_remux_hls_fmp4_setting_produces_hls_ctx():
                 return_value=DolbyVisionSourceResult("non_dv", "no_rpu_nal_found"),
             ), patch("resources.lib.stream_proxy.HlsProducer") as mock_producer_cls:
                 mock_producer_cls.return_value = MagicMock()
-                with patch(
-                    "resources.lib.stream_proxy._disk_free_bytes",
-                    return_value=100 * 1024**3,
-                ):
+                with patch("resources.lib.stream_proxy._disk_free_bytes", return_value=100*1024**3):
                     sp.prepare_stream("http://host/shawshank.mkv")
     finally:
         sys.modules["xbmcaddon"].Addon.return_value = original
@@ -1117,11 +1087,8 @@ def test_prepare_stream_force_remux_hls_fmp4_falls_back_when_duration_probe_fail
         ), patch(
             "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
         ):
-            with patch(
-                "resources.lib.stream_proxy._disk_free_bytes",
-                return_value=100 * 1024**3,
-            ):
-                sp.prepare_stream("http://host/shawshank.mkv")
+            with patch("resources.lib.stream_proxy._disk_free_bytes", return_value=100*1024**3):
+                    sp.prepare_stream("http://host/shawshank.mkv")
     finally:
         sys.modules["xbmcaddon"].Addon.return_value = original
 
@@ -1172,11 +1139,8 @@ def test_prepare_stream_force_remux_hls_fmp4_falls_back_when_capability_probe_fa
         ), patch(
             "resources.lib.stream_proxy.HlsProducer"
         ) as mock_producer_cls:
-            with patch(
-                "resources.lib.stream_proxy._disk_free_bytes",
-                return_value=100 * 1024**3,
-            ):
-                sp.prepare_stream("http://host/shawshank.mkv")
+            with patch("resources.lib.stream_proxy._disk_free_bytes", return_value=100*1024**3):
+                    sp.prepare_stream("http://host/shawshank.mkv")
     finally:
         sys.modules["xbmcaddon"].Addon.return_value = original
 
@@ -1517,17 +1481,11 @@ def _run_prepare_with_dv(dv_result, url, patch_hls=False):
                 "resources.lib.stream_proxy.HlsProducer"
             ) as mock_producer_cls:
                 mock_producer_cls.return_value = MagicMock()
-                with patch(
-                    "resources.lib.stream_proxy._disk_free_bytes",
-                    return_value=100 * 1024**3,
-                ):
+                with patch("resources.lib.stream_proxy._disk_free_bytes", return_value=100*1024**3):
                     sp.prepare_stream(url)
         else:
             with stack[0], stack[1], stack[2], stack[3], stack[4]:
-                with patch(
-                    "resources.lib.stream_proxy._disk_free_bytes",
-                    return_value=100 * 1024**3,
-                ):
+                with patch("resources.lib.stream_proxy._disk_free_bytes", return_value=100*1024**3):
                     sp.prepare_stream(url)
     finally:
         sys.modules["xbmcaddon"].Addon.return_value = original
@@ -5069,9 +5027,7 @@ def test_register_session_hls_returns_playlist_url(tmp_path):
         "resources.lib.stream_proxy._choose_hls_workdir",
         return_value=str(tmp_path),
     ):
-        with patch(
-            "resources.lib.stream_proxy._disk_free_bytes", return_value=100 * 1024**3
-        ):
+        with patch("resources.lib.stream_proxy._disk_free_bytes", return_value=100*1024**3):
             url = sp._register_session(ctx)
 
     assert url.startswith("http://127.0.0.1:12345/hls/")
@@ -5113,9 +5069,7 @@ def test_register_session_hls_producer_failure_rewrites_to_matroska():
         "resources.lib.stream_proxy.HlsProducer",
         side_effect=OSError("workdir not writable"),
     ):
-        with patch(
-            "resources.lib.stream_proxy._disk_free_bytes", return_value=100 * 1024**3
-        ):
+        with patch("resources.lib.stream_proxy._disk_free_bytes", return_value=100*1024**3):
             url = sp._register_session(ctx)
 
     assert url.startswith("http://127.0.0.1:9999/stream/")
@@ -5195,9 +5149,7 @@ def test_register_session_catches_non_oserror_exceptions():
         side_effect=ValueError("unexpected"),
     ):
         # Must NOT raise.
-        with patch(
-            "resources.lib.stream_proxy._disk_free_bytes", return_value=100 * 1024**3
-        ):
+        with patch("resources.lib.stream_proxy._disk_free_bytes", return_value=100*1024**3):
             url = sp._register_session(ctx)
 
     assert url.startswith("http://127.0.0.1:9999/stream/")
@@ -5269,9 +5221,7 @@ def test_register_session_prepare_failure_rewrites_to_matroska():
         "ffmpeg exited immediately with code 1 — fmp4 HLS unsupported"
     )
     with patch("resources.lib.stream_proxy.HlsProducer", return_value=producer_mock):
-        with patch(
-            "resources.lib.stream_proxy._disk_free_bytes", return_value=100 * 1024**3
-        ):
+        with patch("resources.lib.stream_proxy._disk_free_bytes", return_value=100*1024**3):
             url = sp._register_session(ctx)
 
     assert url.startswith("http://127.0.0.1:9999/stream/")
@@ -5308,9 +5258,7 @@ def test_register_session_hls_success_unchanged():
     producer_mock = MagicMock()
     # prepare is a no-op (MagicMock auto-returns None)
     with patch("resources.lib.stream_proxy.HlsProducer", return_value=producer_mock):
-        with patch(
-            "resources.lib.stream_proxy._disk_free_bytes", return_value=100 * 1024**3
-        ):
+        with patch("resources.lib.stream_proxy._disk_free_bytes", return_value=100*1024**3):
             url = sp._register_session(ctx)
 
     assert "/hls/" in url
@@ -5348,9 +5296,7 @@ def test_register_session_prepare_failure_closes_partially_initialized_producer(
     producer_mock = MagicMock()
     producer_mock.prepare.side_effect = RuntimeError("ffmpeg exited immediately")
     with patch("resources.lib.stream_proxy.HlsProducer", return_value=producer_mock):
-        with patch(
-            "resources.lib.stream_proxy._disk_free_bytes", return_value=100 * 1024**3
-        ):
+        with patch("resources.lib.stream_proxy._disk_free_bytes", return_value=100*1024**3):
             url = sp._register_session(ctx)
 
     producer_mock.close.assert_called_once_with()
@@ -5431,9 +5377,7 @@ def test_register_session_init_failure_does_not_call_close_on_undefined_producer
         side_effect=OSError("workdir not writable"),
     ):
         # Must NOT raise AttributeError on a None producer.
-        with patch(
-            "resources.lib.stream_proxy._disk_free_bytes", return_value=100 * 1024**3
-        ):
+        with patch("resources.lib.stream_proxy._disk_free_bytes", return_value=100*1024**3):
             url = sp._register_session(ctx)
 
     assert url.startswith("http://127.0.0.1:9999/stream/")

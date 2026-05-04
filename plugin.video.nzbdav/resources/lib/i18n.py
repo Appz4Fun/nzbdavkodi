@@ -83,7 +83,10 @@ _FALLBACK_STRINGS = {
     30160: "Install Player In Other Add-on",
     30161: "Choose Player Folder",
     30162: "No other player folders found",
-||||||| parent of 707de76 (feat: group duplicate fallback releases)
+    30140: "Large non-MP4 stream mode",
+    30141: "Matroska remux (compatibility)",
+    30142: "fMP4 HLS (compatibility, experimental)",
+    30152: "Direct pass-through (default)",
     30170: "Fallback Streams",
     30171: "Submit duplicate releases as live fallbacks",
     30172: "Maximum fallback releases",
