@@ -2,12 +2,14 @@
 # Copyright (C) 2026 nzbdav contributors
 
 from unittest.mock import patch
+from urllib.error import URLError
 
 from resources.lib.fallback_streams import (
     _SAFE_JOB_RE,
     attach_fallback_candidates,
     build_fallback_job_name,
     build_prepare_fallback_payload,
+    fetch_range_digest,
     fingerprint_ranges,
 )
 
@@ -192,3 +194,8 @@ def test_fingerprint_offsets_use_edges_and_middle():
 
 def test_fingerprint_ranges_handles_small_files():
     assert fingerprint_ranges(1024) == [(0, 1023)]
+
+
+@patch("resources.lib.fallback_streams.urlopen", side_effect=URLError("timeout"))
+def test_fetch_range_digest_returns_none_on_probe_error(_mock_urlopen):
+    assert fetch_range_digest("http://webdav/movie.mkv", None, 0, 1023) is None

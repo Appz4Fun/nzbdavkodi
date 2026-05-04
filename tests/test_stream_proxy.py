@@ -5955,9 +5955,14 @@ def test_serve_proxy_switches_to_valid_fallback_source_mid_response():
     ):
         handler._serve_proxy(ctx)
 
-    assert ctx["remote_url"] == "http://webdav/fallback.mkv"
-    assert ctx["auth_header"] == "Basic fallback"
+    assert ctx["remote_url"] == "http://webdav/primary.mkv"
+    assert ctx["auth_header"] is None
     assert ctx["fallback_switch_count"] == 1
+    assert ctx["fallback_active_index"] == 0
+    assert mock_stream.call_args_list[1][0][0]["remote_url"] == (
+        "http://webdav/fallback.mkv"
+    )
+    assert mock_stream.call_args_list[1][0][0]["auth_header"] == "Basic fallback"
     assert mock_stream.call_args_list[1][0][1:3] == (0, 9)
 
 
@@ -5992,6 +5997,50 @@ def test_select_live_fallback_refreshes_completed_standby_job():
         source = handler._select_live_fallback_source(ctx, 0, 9)
 
     assert source["stream_url"] == "http://webdav/fallback.mkv"
+
+
+def test_fallback_range_probe_failure_falls_back_to_zero_fill_path():
+    """Fallback probe errors must not unwind the request handler."""
+    from resources.lib.stream_proxy import _UPSTREAM_RANGE_UPSTREAM_ERROR
+
+    ctx = {
+        "remote_url": "http://webdav/primary.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 10,
+        "fallback_sources": [
+            {
+                "nzo_id": "nzo2",
+                "stream_url": "http://webdav/fallback.mkv",
+                "stream_headers": {},
+                "content_length": 10,
+                "validated": False,
+                "failed": False,
+            }
+        ],
+        "fallback_switch_count": 0,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-9")
+
+    with patch.object(
+        handler,
+        "_stream_upstream_range",
+        return_value=(_UPSTREAM_RANGE_UPSTREAM_ERROR, 0),
+    ), patch(
+        "resources.lib.fallback_streams.fetch_range_digest", return_value=None
+    ), patch(
+        "resources.lib.stream_proxy._retry_ladder_enabled", return_value=False
+    ), patch(
+        "resources.lib.stream_proxy._zero_fill_budget_enabled", return_value=False
+    ), patch.object(
+        handler, "_find_skip_offset", return_value=1
+    ):
+        handler._serve_proxy(ctx)
+
+    assert ctx["remote_url"] == "http://webdav/primary.mkv"
+    assert ctx["fallback_sources"][0]["failed"] is True
+    assert ctx["fallback_switch_count"] == 0
+    assert _collect_written(handler) == b"\x00" * 10
 
 
 def test_stream_upstream_range_sends_addon_user_agent():
