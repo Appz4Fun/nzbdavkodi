@@ -235,6 +235,20 @@ def test_fetch_range_digest_requires_matching_content_range(mock_urlopen):
 
 
 @patch("resources.lib.fallback_streams.urlopen")
+def test_fetch_range_digest_requires_matching_content_range_total(mock_urlopen):
+    mock_urlopen.return_value = _mock_range_response(
+        b"A" * 4,
+        status=206,
+        headers={"Content-Range": "bytes 0-3/11"},
+    )
+
+    assert (
+        fetch_range_digest("http://webdav/movie.mkv", None, 0, 3, content_length=10)
+        is None
+    )
+
+
+@patch("resources.lib.fallback_streams.urlopen")
 def test_fetch_range_digest_accepts_matching_partial_content(mock_urlopen):
     body = b"A" * 4
     mock_urlopen.return_value = _mock_range_response(
@@ -243,6 +257,6 @@ def test_fetch_range_digest_accepts_matching_partial_content(mock_urlopen):
         headers={"Content-Range": "bytes 0-3/10"},
     )
 
-    assert fetch_range_digest("http://webdav/movie.mkv", None, 0, 3) == (
-        hashlib.sha1(body).hexdigest()
-    )
+    assert fetch_range_digest(
+        "http://webdav/movie.mkv", None, 0, 3, content_length=10
+    ) == (hashlib.sha1(body).hexdigest())

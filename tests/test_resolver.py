@@ -2,6 +2,7 @@
 # Copyright (C) 2026 nzbdav contributors
 
 import sys
+import threading
 from unittest.mock import MagicMock, patch
 
 from resources.lib.resolver import (
@@ -13,6 +14,7 @@ from resources.lib.resolver import (
     _cache_bust_url,
     _clear_kodi_playback_state,
     _existing_completed_stream,
+    _fallback_submit_jobs_snapshot,
     _get_poll_settings,
     _handle_job_status,
     _handle_resolve_exception,
@@ -709,7 +711,7 @@ def test_resolve_success(
 @patch("resources.lib.resolver.xbmc")
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver._get_poll_settings")
-def test_resolve_starts_fallback_worker_before_poll_and_uses_snapshot(
+def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
     mock_poll_settings,
     mock_gui,
     mock_xbmc,
@@ -731,8 +733,10 @@ def test_resolve_starts_fallback_worker_before_poll_and_uses_snapshot(
     mock_start_fallback.return_value = fallback_state
     call_order = []
 
-    def poll_ready(*args):
+    def poll_ready(*args, **kwargs):
         call_order.append("poll")
+        assert mock_start_fallback.call_count == 0
+        kwargs["on_primary_submitted"]("SABnzbd_nzo_primary")
         mock_start_fallback.assert_called_once_with(fallback_candidates)
         return (
             "http://webdav/content/primary/movie.mkv",
@@ -770,6 +774,7 @@ def test_resolve_starts_fallback_worker_before_poll_and_uses_snapshot(
 
     assert call_order == ["poll"]
     mock_snapshot.assert_called_once_with(fallback_state)
+    mock_start_fallback.assert_called_once_with(fallback_candidates)
     mock_play_direct.assert_called_once_with(
         1,
         "http://webdav/content/primary/movie.mkv",
@@ -787,6 +792,25 @@ def test_resolve_starts_fallback_worker_before_poll_and_uses_snapshot(
         ],
     )
     mock_stop_fallback.assert_not_called()
+
+
+def test_fallback_submit_jobs_snapshot_does_not_wait_for_worker():
+    """Ready primary playback must not block on slow standby submissions."""
+    worker = MagicMock()
+    job = {
+        "title": "Fallback A",
+        "nzb_url": "http://hydra/fallback-a",
+        "job_name": "Fallback A [fallback-1-5c5fd5e4]",
+        "nzo_id": "SABnzbd_nzo_fallback",
+    }
+    state = {
+        "lock": threading.Lock(),
+        "jobs": [job],
+        "thread": worker,
+    }
+
+    assert _fallback_submit_jobs_snapshot(state) == [job]
+    worker.join.assert_not_called()
 
 
 @patch("resources.lib.resolver._show_submit_error_dialog")

@@ -2469,11 +2469,47 @@ class _StreamHandler(BaseHTTPRequestHandler):
         if expected_length <= 0 or source_length != expected_length:
             return False
         if source.get("validated"):
-            return self._probe_fallback_current_range(source, failed_byte, range_end)
+            return self._probe_fallback_current_range(
+                source, failed_byte, range_end, expected_length
+            )
+        if not self._validate_fallback_fingerprint(ctx, source, expected_length):
+            return False
         source["validated"] = True
-        return self._probe_fallback_current_range(source, failed_byte, range_end)
+        return self._probe_fallback_current_range(
+            source, failed_byte, range_end, expected_length
+        )
 
-    def _probe_fallback_current_range(self, source, failed_byte, range_end):
+    def _validate_fallback_fingerprint(self, ctx, source, content_length):
+        """Verify sampled bytes match before splicing in a fallback stream."""
+        from resources.lib.fallback_streams import (
+            fetch_range_digest,
+            fingerprint_ranges,
+        )
+
+        primary_auth = ctx.get("auth_header")
+        fallback_auth = (source.get("stream_headers") or {}).get("Authorization")
+        for start, end in fingerprint_ranges(content_length):
+            primary_digest = fetch_range_digest(
+                ctx["remote_url"],
+                primary_auth,
+                start,
+                end,
+                content_length=content_length,
+            )
+            fallback_digest = fetch_range_digest(
+                source["stream_url"],
+                fallback_auth,
+                start,
+                end,
+                content_length=content_length,
+            )
+            if not primary_digest or primary_digest != fallback_digest:
+                return False
+        return True
+
+    def _probe_fallback_current_range(
+        self, source, failed_byte, range_end, content_length
+    ):
         """Verify fallback can serve bytes at the failing offset."""
         from resources.lib.fallback_streams import fetch_range_digest
 
@@ -2481,7 +2517,11 @@ class _StreamHandler(BaseHTTPRequestHandler):
         auth_header = (source.get("stream_headers") or {}).get("Authorization")
         return bool(
             fetch_range_digest(
-                source["stream_url"], auth_header, failed_byte, probe_end
+                source["stream_url"],
+                auth_header,
+                failed_byte,
+                probe_end,
+                content_length=content_length,
             )
         )
 
@@ -2582,13 +2622,13 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 ):
                     fallback = self._select_live_fallback_source(ctx, current, end)
                     if fallback:
-                        active_ctx = dict(ctx)
-                        active_ctx["remote_url"] = fallback["stream_url"]
-                        active_ctx["auth_header"] = (
-                            fallback.get("stream_headers") or {}
-                        ).get("Authorization")
-                        active_ctx.pop("upstream_down_notified", None)
-                        active_ctx.pop("upstream_unreachable_error", None)
+                        ctx["remote_url"] = fallback["stream_url"]
+                        ctx["auth_header"] = (fallback.get("stream_headers") or {}).get(
+                            "Authorization"
+                        )
+                        ctx.pop("upstream_down_notified", None)
+                        ctx.pop("upstream_unreachable_error", None)
+                        active_ctx = ctx
                         ctx["fallback_switch_count"] = (
                             int(ctx.get("fallback_switch_count", 0) or 0) + 1
                         )

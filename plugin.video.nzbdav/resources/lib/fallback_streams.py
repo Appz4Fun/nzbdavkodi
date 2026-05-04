@@ -219,19 +219,24 @@ def fetch_content_length(url, auth_header, timeout=2):
         return 0
 
 
-def _content_range_matches_request(content_range, start, end):
+def _content_range_matches_request(content_range, start, end, content_length=0):
     if not isinstance(content_range, str):
         return False
     match = _CONTENT_RANGE_RE.match(content_range.strip())
     if not match:
         return False
     try:
-        return int(match.group(1)) == start and int(match.group(2)) == end
+        if int(match.group(1)) != start or int(match.group(2)) != end:
+            return False
+        if content_length:
+            total = match.group(3)
+            return total != "*" and int(total) == int(content_length)
+        return True
     except ValueError:
         return False
 
 
-def fetch_range_digest(url, auth_header, start, end, timeout=2):
+def fetch_range_digest(url, auth_header, start, end, timeout=2, content_length=0):
     """Read a byte range and return a SHA-1 digest of the returned bytes."""
     req = Request(url)
     if auth_header:
@@ -243,7 +248,7 @@ def fetch_range_digest(url, auth_header, start, end, timeout=2):
             if status != 206:
                 return None
             if not _content_range_matches_request(
-                resp.headers.get("Content-Range"), start, end
+                resp.headers.get("Content-Range"), start, end, content_length
             ):
                 return None
             body = resp.read(end - start + 1)
