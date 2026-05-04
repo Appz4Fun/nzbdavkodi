@@ -3,6 +3,7 @@
 
 """Direct Newznab-compatible indexer provider."""
 
+from concurrent.futures import ThreadPoolExecutor, wait
 from urllib.error import URLError
 from urllib.parse import urlencode, urlparse
 from xml.etree import ElementTree as ET
@@ -48,6 +49,8 @@ _DIRECT_REQUEST_ERRORS = (
     TypeError,
     ValueError,
 )
+_DIRECT_FANOUT_MAX_WORKERS = 4
+_DIRECT_FANOUT_TIMEOUT = 20
 
 
 def _setting_enabled(addon, setting_id):
@@ -123,13 +126,7 @@ def build_search_url(api_url, params):
 
 
 def _build_xxe_safe_parser():
-    parser = ET.XMLParser()  # nosec B314 - entities disabled below
-    try:
-        parser.parser.DefaultHandler = lambda _d: None
-        parser.parser.ExternalEntityRefHandler = lambda *_: False
-    except AttributeError:
-        pass
-    return parser
+    return ET.XMLParser()  # nosec B314 - Python 3.8+ disables external entities
 
 
 def _parse_newznab_attrs(item):
@@ -245,6 +242,64 @@ def _indexer_unavailable_error(indexer, error):
     )
 
 
+def _format_timeout_seconds(timeout_seconds):
+    if isinstance(timeout_seconds, float) and timeout_seconds.is_integer():
+        return str(int(timeout_seconds))
+    return str(timeout_seconds)
+
+
+def _indexer_timeout_error(indexer, timeout_seconds):
+    return _indexer_unavailable_error(
+        indexer,
+        TimeoutError(
+            "timed out after {}s".format(_format_timeout_seconds(timeout_seconds))
+        ),
+    )
+
+
+def _worker_count(total_count):
+    return max(1, min(total_count, _DIRECT_FANOUT_MAX_WORKERS))
+
+
+def _run_indexer_fanout(indexers, worker, timeout_seconds=None):
+    timeout_seconds = (
+        _DIRECT_FANOUT_TIMEOUT if timeout_seconds is None else timeout_seconds
+    )
+    executor = ThreadPoolExecutor(max_workers=_worker_count(len(indexers)))
+    entries = []
+    try:
+        for indexer in indexers:
+            entries.append((indexer, executor.submit(worker, indexer)))
+
+        done, not_done = wait(
+            [future for _indexer, future in entries], timeout=timeout_seconds
+        )
+        outcomes = []
+        for indexer, future in entries:
+            if future in not_done:
+                future.cancel()
+                outcomes.append(
+                    (indexer, None, _indexer_timeout_error(indexer, timeout_seconds))
+                )
+                continue
+            if future not in done:
+                outcomes.append(
+                    (indexer, None, _indexer_timeout_error(indexer, timeout_seconds))
+                )
+                continue
+            try:
+                value, error = future.result()
+            except _DIRECT_REQUEST_ERRORS as error:
+                outcomes.append(
+                    (indexer, None, _indexer_unavailable_error(indexer, error))
+                )
+                continue
+            outcomes.append((indexer, value, error))
+        return outcomes
+    finally:
+        executor.shutdown(wait=False)
+
+
 def _fetch_indexer(indexer, params, error_prefix):
     url = build_search_url(indexer["api_url"], params)
     xbmc.log(
@@ -312,8 +367,8 @@ def search_direct_indexers(search_type, title, year="", imdb="", season="", epis
     all_results = []
     errors = []
 
-    for indexer in indexers:
-        results, error = _search_one_indexer(
+    def worker(indexer):
+        return _search_one_indexer(
             indexer,
             search_type,
             title,
@@ -322,6 +377,8 @@ def search_direct_indexers(search_type, title, year="", imdb="", season="", epis
             season=season,
             episode=episode,
         )
+
+    for _indexer, results, error in _run_indexer_fanout(indexers, worker):
         if error:
             errors.append(error)
             xbmc.log("NZB-DAV: {}".format(error), xbmc.LOGWARNING)
@@ -333,28 +390,32 @@ def search_direct_indexers(search_type, title, year="", imdb="", season="", epis
     return all_results, None
 
 
+def _check_one_indexer_caps(indexer):
+    params = {"apikey": indexer["api_key"], "t": "caps", "o": "xml"}
+    url = build_search_url(indexer["api_url"], params)
+    try:
+        response = _http_get(url, timeout=15)
+        if "<caps" in response or "<server" in response or "<rss" in response:
+            return True, None
+        return False, "Direct indexer {} unexpected response".format(indexer["label"])
+    except _DIRECT_REQUEST_ERRORS as error:
+        return False, _indexer_unavailable_error(indexer, error)
+
+
 def test_configured_indexers():
     """Return (ok_count, total_count, errors) for configured direct indexers."""
     indexers = get_configured_indexers()
     ok_count = 0
     errors = []
-    for indexer in indexers:
-        params = {"apikey": indexer["api_key"], "t": "caps", "o": "xml"}
-        url = build_search_url(indexer["api_url"], params)
-        try:
-            response = _http_get(url, timeout=15)
-            if "<caps" in response or "<server" in response or "<rss" in response:
-                ok_count += 1
-            else:
-                errors.append(
-                    "Direct indexer {} unexpected response".format(indexer["label"])
-                )
-        except _DIRECT_REQUEST_ERRORS as error:
-            errors.append(_indexer_unavailable_error(indexer, error))
+    for indexer, ok, error in _run_indexer_fanout(indexers, _check_one_indexer_caps):
+        if error:
+            errors.append(error)
             xbmc.log(
-                "NZB-DAV: Direct indexer caps failed for {}: {}".format(
-                    indexer["label"], _redact_text(str(error))
+                "NZB-DAV: Direct indexer caps error for {}: {}".format(
+                    indexer["label"], _redact_text(error)
                 ),
                 xbmc.LOGWARNING,
             )
+        elif ok:
+            ok_count += 1
     return ok_count, len(indexers), errors

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 nzbdav contributors
 
+import time
 from unittest.mock import MagicMock, patch
 
 
@@ -269,6 +270,82 @@ def test_search_direct_indexers_partial_failure_keeps_successful_results(
 
 @patch("resources.lib.direct_indexers.get_configured_indexers")
 @patch("resources.lib.direct_indexers.xbmcaddon")
+@patch("resources.lib.direct_indexers._search_one_indexer")
+def test_search_direct_indexers_fans_out_concurrently(
+    mock_search_one, mock_xbmcaddon, mock_configured
+):
+    from resources.lib.direct_indexers import search_direct_indexers
+
+    mock_configured.return_value = [
+        {
+            "id": "one",
+            "label": "One",
+            "api_url": "https://one.example/api",
+            "api_key": "one",
+        },
+        {
+            "id": "two",
+            "label": "Two",
+            "api_url": "https://two.example/api",
+            "api_key": "two",
+        },
+    ]
+    mock_xbmcaddon.Addon.return_value = _addon_with_settings({"max_results": "25"})
+
+    def slow_search(indexer, *_args, **_kwargs):
+        time.sleep(0.2)
+        return ([{"title": indexer["label"], "link": indexer["id"]}], None)
+
+    mock_search_one.side_effect = slow_search
+
+    started = time.monotonic()
+    results, error = search_direct_indexers("movie", "The Matrix")
+    elapsed = time.monotonic() - started
+
+    assert error is None
+    assert len(results) == 2
+    assert elapsed < 0.32
+
+
+@patch("resources.lib.direct_indexers.get_configured_indexers")
+@patch("resources.lib.direct_indexers.xbmcaddon")
+@patch("resources.lib.direct_indexers._search_one_indexer")
+def test_search_direct_indexers_marks_incomplete_futures_timed_out(
+    mock_search_one, mock_xbmcaddon, mock_configured
+):
+    from resources.lib.direct_indexers import search_direct_indexers
+
+    mock_configured.return_value = [
+        {
+            "id": "slow",
+            "label": "Slow",
+            "api_url": "https://slow.example/api",
+            "api_key": "slow",
+        }
+    ]
+    mock_xbmcaddon.Addon.return_value = _addon_with_settings({"max_results": "25"})
+
+    def slow_search(*_args, **_kwargs):
+        time.sleep(0.2)
+        return ([{"title": "late", "link": "late"}], None)
+
+    mock_search_one.side_effect = slow_search
+
+    with patch(
+        "resources.lib.direct_indexers._DIRECT_FANOUT_TIMEOUT", 0.05, create=True
+    ):
+        started = time.monotonic()
+        results, error = search_direct_indexers("movie", "The Matrix")
+        elapsed = time.monotonic() - started
+
+    assert not results
+    assert "Direct indexer Slow unavailable:" in error
+    assert "timed out" in error
+    assert elapsed < 0.15
+
+
+@patch("resources.lib.direct_indexers.get_configured_indexers")
+@patch("resources.lib.direct_indexers.xbmcaddon")
 @patch("resources.lib.direct_indexers._http_get")
 def test_search_direct_indexers_all_failures_return_error(
     mock_http, mock_xbmcaddon, mock_configured
@@ -290,6 +367,43 @@ def test_search_direct_indexers_all_failures_return_error(
 
     assert not results
     assert error == "Direct indexer Bad unavailable: down"
+
+
+@patch("resources.lib.direct_indexers.get_configured_indexers")
+@patch("resources.lib.direct_indexers._http_get")
+def test_test_configured_indexers_marks_incomplete_futures_timed_out(
+    mock_http, mock_configured
+):
+    from resources.lib.direct_indexers import test_configured_indexers
+
+    mock_configured.return_value = [
+        {
+            "id": "slow",
+            "label": "Slow",
+            "api_url": "https://slow.example/api",
+            "api_key": "slow",
+        }
+    ]
+
+    def slow_caps(*_args, **_kwargs):
+        time.sleep(0.2)
+        return "<caps></caps>"
+
+    mock_http.side_effect = slow_caps
+
+    with patch(
+        "resources.lib.direct_indexers._DIRECT_FANOUT_TIMEOUT", 0.05, create=True
+    ):
+        started = time.monotonic()
+        ok_count, total_count, errors = test_configured_indexers()
+        elapsed = time.monotonic() - started
+
+    assert ok_count == 0
+    assert total_count == 1
+    assert len(errors) == 1
+    assert "Direct indexer Slow unavailable:" in errors[0]
+    assert "timed out" in errors[0]
+    assert elapsed < 0.15
 
 
 @patch("resources.lib.direct_indexers.get_configured_indexers")
