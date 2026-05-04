@@ -67,6 +67,28 @@ def test_language_file_exists_for_kodi_strings():
     assert 'msgctxt "#30112"' in contents
 
 
+def test_settings_include_direct_indexers_category():
+    settings_xml = REPO_ROOT / "plugin.video.nzbdav" / "resources" / "settings.xml"
+    root = ET.parse(settings_xml).getroot()
+
+    indexers_category = root.find("./category[@label='30163']")
+    assert indexers_category is not None
+    assert (
+        indexers_category.find(".//setting[@id='direct_indexers_enabled']")
+        is not None
+    )
+    assert (
+        indexers_category.find(".//setting[@id='direct_indexer_nzbgeek_api_key']")
+        is not None
+    )
+    assert (
+        indexers_category.find(
+            ".//setting[@action='RunPlugin(plugin://plugin.video.nzbdav/test_direct_indexers)']"
+        )
+        is not None
+    )
+
+
 def test_community_health_files_exist():
     expected = [
         REPO_ROOT / "CONTRIBUTING.md",
