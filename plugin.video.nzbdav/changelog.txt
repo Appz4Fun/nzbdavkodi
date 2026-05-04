@@ -1,3 +1,11 @@
+v1.0.6 (2026-05-04)
+- Add live duplicate-release fallback streams. The router attaches conservative duplicate candidates, the resolver can submit them after the primary NZB is accepted, and the proxy keeps fallback metadata with the playback session so it can switch if the active source becomes unrecoverable.
+- Add fallback stream settings for enabling standby submits and capping maximum fallback releases per primary result.
+- Make pass-through the default non-MP4 path again; force-remux remains available as an opt-in compatibility tier for matroska or experimental fMP4 HLS.
+- Treat force_remux_threshold_mb=0 as fully disabling non-MP4 force-remux, including unknown-length streams.
+- Keep already-faststart MP4s proxy-routed when fallback metadata is attached so live switching can find standby sources.
+- Harden fallback submit worker shutdown so playback aborts and resolver failures signal, join, snapshot, and cancel standby jobs predictably.
+
 v1.0.5 (2026-05-04)
 - Add direct Newznab indexers for users who do not run NZBHydra2 or Prowlarr. New Settings -> Indexers section can enable popular providers such as NZBGeek, NZBFinder, DrunkenSlug, NZBPlanet, DOGnzb, and NZB.life / NZB.su, plus custom Newznab-compatible slots.
 - Direct indexer searches now run alongside NZBHydra2 and Prowlarr, merge into the existing result picker, dedupe by NZB link, and submit the selected NZB URL through the existing nzbdav playback flow.
