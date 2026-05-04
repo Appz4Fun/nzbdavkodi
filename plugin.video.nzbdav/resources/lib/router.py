@@ -981,37 +981,12 @@ def _test_prowlarr_connection():
     """Test Prowlarr connection by hitting the indexer endpoint."""
     import xbmcaddon
 
-    from resources.lib.http_util import http_get, notify
-
     addon = xbmcaddon.Addon()
     host = addon.getSetting("prowlarr_host").rstrip("/")
     api_key = addon.getSetting("prowlarr_api_key")
 
-    if not host:
-        notify(_addon_name(), "Prowlarr URL not configured", 3000)
-        return
-
     test_url = "{}/api/v1/indexer?apikey={}".format(host, api_key)
-    try:
-        response = http_get(test_url)
-        if _prowlarr_indexers_response_ok(response):
-            notify(_addon_name(), "Prowlarr connection OK", 3000)
-        else:
-            notify(_addon_name(), "Prowlarr: unexpected response", 5000)
-    except Exception as e:
-        # Mirror the redaction the shared `_test_connection` helper uses:
-        # urllib exception strings can embed the full URL (with apikey),
-        # so substitute the redacted form and run through `redact_text`
-        # for any other apikey/secret patterns. TODO.md §H.2-M31.
-        from resources.lib.http_util import redact_text, redact_url
-
-        err_msg = str(e).replace(test_url, redact_url(test_url))
-        err_msg = redact_text(err_msg)
-        notify(
-            _addon_name(),
-            "Prowlarr: {}".format(err_msg[:60]),
-            5000,
-        )
+    _test_connection("Prowlarr", host, test_url, _prowlarr_indexers_response_ok)
 
 
 def _test_webdav_connection():

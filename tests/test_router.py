@@ -11,6 +11,7 @@ from resources.lib.router import (
     _get_tmdb_poster,
     _handle_play,
     _handle_search,
+    _prowlarr_indexers_response_ok,
     _safe_resolve_handle,
     _test_connection,
     _test_hydra_connection,
@@ -1241,6 +1242,27 @@ def test_test_prowlarr_connection_rejects_json_error_object(
     msgs = [c.args[1] for c in mock_notify.call_args_list]
     assert not any("OK" in m for m in msgs), msgs
     assert any("unexpected response" in m for m in msgs), msgs
+
+
+@patch("resources.lib.router._test_connection")
+@patch("xbmcaddon.Addon")
+def test_test_prowlarr_connection_delegates_to_shared_connection_helper(
+    mock_addon, mock_test
+):
+    """Prowlarr verification should use shared redaction/error handling."""
+    mock_addon.return_value.getSetting.side_effect = lambda k: {
+        "prowlarr_host": "http://prowlarr:9696",
+        "prowlarr_api_key": "zzz",
+    }.get(k, "")
+
+    _test_prowlarr_connection()
+
+    mock_test.assert_called_once_with(
+        "Prowlarr",
+        "http://prowlarr:9696",
+        "http://prowlarr:9696/api/v1/indexer?apikey=zzz",
+        _prowlarr_indexers_response_ok,
+    )
 
 
 @patch("resources.lib.http_util.notify")
