@@ -320,3 +320,30 @@ def search_direct_indexers(search_type, title, year="", imdb="", season="", epis
     if not all_results and errors:
         return [], errors[0]
     return all_results, None
+
+
+def test_configured_indexers():
+    """Return (ok_count, total_count, errors) for configured direct indexers."""
+    indexers = get_configured_indexers()
+    ok_count = 0
+    errors = []
+    for indexer in indexers:
+        params = {"apikey": indexer["api_key"], "t": "caps", "o": "xml"}
+        url = build_search_url(indexer["api_url"], params)
+        try:
+            response = _http_get(url, timeout=15)
+            if "<caps" in response or "<server" in response or "<rss" in response:
+                ok_count += 1
+            else:
+                errors.append(
+                    "Direct indexer {} unexpected response".format(indexer["label"])
+                )
+        except _DIRECT_REQUEST_ERRORS as error:
+            errors.append(_indexer_unavailable_error(indexer, error))
+            xbmc.log(
+                "NZB-DAV: Direct indexer caps failed for {}: {}".format(
+                    indexer["label"], _redact_text(str(error))
+                ),
+                xbmc.LOGWARNING,
+            )
+    return ok_count, len(indexers), errors

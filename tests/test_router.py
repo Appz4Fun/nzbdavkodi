@@ -439,6 +439,25 @@ def test_route_test_prowlarr_resolves_handle(mock_test, mock_resolved):
 
 
 @patch("xbmcplugin.setResolvedUrl")
+def test_route_test_direct_indexers_resolves_handle(mock_resolved):
+    """Route /test_direct_indexers and resolve the action handle."""
+    test_configured = MagicMock(return_value=(1, 1, []))
+    with patch.dict(
+        "sys.modules",
+        {
+            "resources.lib.direct_indexers": MagicMock(
+                test_configured_indexers=test_configured
+            )
+        },
+    ):
+        route(["plugin://plugin.video.nzbdav/test_direct_indexers", "12", ""])
+    test_configured.assert_called_once()
+    assert mock_resolved.called
+    assert mock_resolved.call_args[0][0] == 12
+    assert mock_resolved.call_args[0][1] is False
+
+
+@patch("xbmcplugin.setResolvedUrl")
 def test_route_resolve_path_resolves_handle(mock_resolved):
     """/resolve must resolve the handle after running (regardless of handle value)."""
     fake_resolver = MagicMock(resolve_and_play=MagicMock())

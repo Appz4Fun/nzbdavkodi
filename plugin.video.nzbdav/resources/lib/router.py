@@ -188,6 +188,8 @@ def route(argv):
             _test_hydra_connection()
         elif path == "/test_prowlarr":
             _test_prowlarr_connection()
+        elif path == "/test_direct_indexers":
+            _test_direct_indexers_connection()
         elif path == "/test_nzbdav":
             _test_nzbdav_connection()
         else:
@@ -930,6 +932,20 @@ def _test_prowlarr_connection():
             "Prowlarr: {}".format(err_msg[:60]),
             5000,
         )
+
+
+def _test_direct_indexers_connection():
+    """Test configured direct Newznab indexer caps endpoints."""
+    from resources.lib.direct_indexers import test_configured_indexers
+    from resources.lib.http_util import notify
+
+    ok_count, total_count, errors = test_configured_indexers()
+    if total_count == 0:
+        notify(_addon_name(), _string(30176), 3000)
+    elif ok_count == total_count:
+        notify(_addon_name(), _fmt(30177, ok_count, total_count), 3000)
+    else:
+        notify(_addon_name(), _fmt(30178, errors[0] if errors else "unknown"), 5000)
 
 
 def _test_nzbdav_connection():
