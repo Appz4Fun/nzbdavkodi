@@ -6,6 +6,7 @@
 import hashlib
 import re
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 import xbmc
@@ -19,6 +20,7 @@ _FINGERPRINT_BYTES = 4096
 
 _MIN_SIZE_TOLERANCE = 8 * 1024 * 1024
 _MAX_FALLBACKS = 5
+_ALLOWED_STREAM_SCHEMES = frozenset(("http", "https"))
 
 
 def _setting_bool(addon, key, default=False):
@@ -40,6 +42,14 @@ def _setting_int(addon, key, default=0):
         return int(raw if raw not in (None, "") else default)
     except (TypeError, ValueError):
         return int(default)
+
+
+def _valid_stream_url(url):
+    """Return True for HTTP(S) stream URLs that are safe to probe."""
+    if not isinstance(url, str):
+        return False
+    parts = urlsplit(url)
+    return parts.scheme.lower() in _ALLOWED_STREAM_SCHEMES and bool(parts.netloc)
 
 
 def _normalize_title(value):
@@ -160,7 +170,7 @@ def build_fallback_job_name(title, nzb_url, index):
     if not clean_title:
         clean_title = "fallback"
 
-    digest = hashlib.sha1(str(nzb_url).encode("utf-8")).hexdigest()[:8]
+    digest = hashlib.sha256(str(nzb_url).encode("utf-8")).hexdigest()[:8]
     job_name = "{} [fallback-{}-{}]".format(clean_title, index, digest)
     if not _SAFE_JOB_RE.match(job_name):
         job_name = re.sub(r"[^A-Za-z0-9._ -]+", " ", job_name)
@@ -209,10 +219,13 @@ def fingerprint_ranges(content_length):
 
 def fetch_content_length(url, auth_header, timeout=2):
     """Return Content-Length for a WebDAV stream URL, or 0."""
+    if not _valid_stream_url(url):
+        return 0
     req = Request(url, method="HEAD")
     if auth_header:
         req.add_header("Authorization", auth_header)
     try:
+        # nosemgrep
         with urlopen(req, timeout=timeout) as resp:  # nosec B310
             return int(resp.headers.get("Content-Length", "0") or 0)
     except (HTTPError, URLError, OSError, TypeError, ValueError):
@@ -237,12 +250,15 @@ def _content_range_matches_request(content_range, start, end, content_length=0):
 
 
 def fetch_range_digest(url, auth_header, start, end, timeout=2, content_length=0):
-    """Read a byte range and return a SHA-1 digest of the returned bytes."""
+    """Read a byte range and return a SHA-256 digest of the returned bytes."""
+    if not _valid_stream_url(url):
+        return None
     req = Request(url)
     if auth_header:
         req.add_header("Authorization", auth_header)
     req.add_header("Range", "bytes={}-{}".format(start, end))
     try:
+        # nosemgrep
         with urlopen(req, timeout=timeout) as resp:  # nosec B310
             status = getattr(resp, "status", None) or resp.getcode()
             if status != 206:
@@ -256,4 +272,4 @@ def fetch_range_digest(url, auth_header, start, end, timeout=2, content_length=0
         return None
     if len(body) != end - start + 1:
         return None
-    return hashlib.sha1(body).hexdigest()
+    return hashlib.sha256(body).hexdigest()
