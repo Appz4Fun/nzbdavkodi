@@ -2403,6 +2403,76 @@ class _StreamHandler(BaseHTTPRequestHandler):
         )
         return cmd
 
+    def _select_live_fallback_source(self, ctx, failed_byte, range_end):
+        """Return a validated fallback source for the failed byte range."""
+        self._refresh_standby_fallback_sources(ctx)
+        for source in ctx.get("fallback_sources", []):
+            if not source.get("stream_url") or source.get("failed"):
+                continue
+            if not self._fallback_source_matches(ctx, source, failed_byte, range_end):
+                source["failed"] = True
+                continue
+            return source
+        return None
+
+    def _refresh_standby_fallback_sources(self, ctx):
+        """Resolve completed standby nzo_ids into usable WebDAV stream URLs."""
+        from resources.lib.fallback_streams import resolve_completed_fallback_source
+
+        for source in ctx.get("fallback_sources", []):
+            if source.get("stream_url") or source.get("failed"):
+                continue
+            resolved = resolve_completed_fallback_source(source.get("nzo_id", ""))
+            if not resolved:
+                continue
+            source.update(resolved)
+
+    def _fallback_source_matches(self, ctx, source, failed_byte, range_end):
+        """Return True when a fallback looks like the same file and can resume."""
+        expected_length = int(ctx.get("content_length", 0) or 0)
+        source_length = int(source.get("content_length", 0) or 0)
+        if expected_length <= 0 or source_length != expected_length:
+            return False
+        if source.get("validated"):
+            return self._probe_fallback_current_range(source, failed_byte, range_end)
+        if not self._validate_fallback_fingerprint(ctx, source):
+            return False
+        source["validated"] = True
+        return self._probe_fallback_current_range(source, failed_byte, range_end)
+
+    def _validate_fallback_fingerprint(self, ctx, source):
+        """Compare deterministic range digests between primary and fallback."""
+        from resources.lib.fallback_streams import (
+            fetch_range_digest,
+            fingerprint_ranges,
+        )
+
+        content_length = int(ctx.get("content_length", 0) or 0)
+        primary_auth = ctx.get("auth_header")
+        fallback_auth = (source.get("stream_headers") or {}).get("Authorization")
+        for start, end in fingerprint_ranges(content_length):
+            primary_digest = fetch_range_digest(
+                ctx["remote_url"], primary_auth, start, end
+            )
+            fallback_digest = fetch_range_digest(
+                source["stream_url"], fallback_auth, start, end
+            )
+            if not primary_digest or primary_digest != fallback_digest:
+                return False
+        return True
+
+    def _probe_fallback_current_range(self, source, failed_byte, range_end):
+        """Verify fallback can serve bytes at the failing offset."""
+        from resources.lib.fallback_streams import fetch_range_digest
+
+        probe_end = min(range_end, failed_byte + 4095)
+        auth_header = (source.get("stream_headers") or {}).get("Authorization")
+        return bool(
+            fetch_range_digest(
+                source["stream_url"], auth_header, failed_byte, probe_end
+            )
+        )
+
     def _serve_proxy(self, ctx):
         """Proxy range requests to remote with missing-article recovery.
 
@@ -2491,6 +2561,30 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 current += written
                 if current > end:
                     return
+
+                if current <= end and result in (
+                    _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE,
+                    _UPSTREAM_RANGE_UPSTREAM_ERROR,
+                ):
+                    fallback = self._select_live_fallback_source(ctx, current, end)
+                    if fallback:
+                        ctx["remote_url"] = fallback["stream_url"]
+                        ctx["auth_header"] = (fallback.get("stream_headers") or {}).get(
+                            "Authorization"
+                        )
+                        ctx["fallback_switch_count"] = (
+                            int(ctx.get("fallback_switch_count", 0) or 0) + 1
+                        )
+                        xbmc.log(
+                            "NZB-DAV: Switched pass-through source at byte {} "
+                            "to fallback nzo_id={} (switch_count={})".format(
+                                current,
+                                fallback.get("nzo_id", ""),
+                                ctx["fallback_switch_count"],
+                            ),
+                            xbmc.LOGWARNING,
+                        )
+                        continue
 
                 if retry_ladder_enabled and result in (
                     _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE,
