@@ -996,13 +996,13 @@ def _test_webdav_connection():
 
     reachable, error = probe_webdav_reachable(max_retries=0)
     if reachable:
-        notify(_addon_name(), "WebDAV connection OK", 3000)
+        notify(_addon_name(), _string(30189), 3000)
     elif error == "auth_failed":
-        notify(_addon_name(), "WebDAV authentication failed. Check credentials.", 5000)
+        notify(_addon_name(), _string(30190), 5000)
     elif error == "server_error":
-        notify(_addon_name(), "WebDAV server error. Check server.", 5000)
+        notify(_addon_name(), _string(30191), 5000)
     else:
-        notify(_addon_name(), "WebDAV connection error. Check server.", 5000)
+        notify(_addon_name(), _string(30192), 5000)
 
 
 def _test_direct_indexers_connection():

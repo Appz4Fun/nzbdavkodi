@@ -1277,19 +1277,36 @@ def test_test_prowlarr_connection_bails_when_host_empty(mock_addon, mock_notify)
     assert any("not configured" in m for m in msgs), msgs
 
 
+@patch("resources.lib.router._string")
 @patch("resources.lib.http_util.notify")
 @patch("resources.lib.webdav.probe_webdav_reachable")
-def test_test_webdav_connection_reports_ok(mock_probe, mock_notify):
-    """The WebDAV settings action should report a successful reachability probe."""
+def test_test_webdav_connection_uses_localized_notifications(
+    mock_probe, mock_notify, mock_string
+):
+    """The WebDAV settings action should localize each user-facing result."""
     from resources.lib import router
 
-    mock_probe.return_value = (True, None)
+    labels = {
+        30189: "localized ok",
+        30190: "localized auth",
+        30191: "localized server",
+        30192: "localized error",
+    }
+    mock_string.side_effect = labels.__getitem__
 
-    router._test_webdav_connection()
+    cases = [
+        ((True, None), 30189, 3000),
+        ((False, "auth_failed"), 30190, 5000),
+        ((False, "server_error"), 30191, 5000),
+        ((False, "connection_error"), 30192, 5000),
+    ]
+    for probe_result, msg_id, duration in cases:
+        mock_probe.return_value = probe_result
+        mock_notify.reset_mock()
 
-    mock_probe.assert_called_once()
-    msgs = [c.args[1] for c in mock_notify.call_args_list]
-    assert any("WebDAV connection OK" in m for m in msgs), msgs
+        router._test_webdav_connection()
+
+        mock_notify.assert_called_once_with("NZB-DAV", labels[msg_id], duration)
 
 
 @patch("resources.lib.router._test_webdav_connection", create=True)
