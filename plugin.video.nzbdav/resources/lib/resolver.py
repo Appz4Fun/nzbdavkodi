@@ -1155,12 +1155,9 @@ def _start_fallback_submit_worker(candidates):
 
 
 def _fallback_submit_jobs_snapshot(state):
-    """Wait for the worker to finish and return all jobs submitted."""
+    """Return fallback jobs submitted so far without delaying playback."""
     if not state:
         return []
-    # Use the final jobs list, waiting for the worker to naturally finish or abort
-    if state["thread"]:
-        state["thread"].join(timeout=10.0)
     with state["lock"]:
         return [dict(job) for job in state["jobs"]]
 
@@ -1363,7 +1360,14 @@ def _handle_resolve_exception(label, error, handle=None):
         xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
 
 
-def _poll_until_ready(nzb_url, title, dialog, poll_interval, download_timeout):
+def _poll_until_ready(
+    nzb_url,
+    title,
+    dialog,
+    poll_interval,
+    download_timeout,
+    on_primary_submitted=None,
+):
     """Submit NZB and poll until download completes.
 
     Returns ``(stream_url, stream_headers)`` on success, or ``(None, None)``
@@ -1379,6 +1383,14 @@ def _poll_until_ready(nzb_url, title, dialog, poll_interval, download_timeout):
     nzo_id = _submit_nzb_with_retries(nzb_url, title, dialog, monitor)
     if not nzo_id:
         return None, None
+    if on_primary_submitted is not None:
+        try:
+            on_primary_submitted(nzo_id)
+        except Exception as error:  # pylint: disable=broad-except
+            xbmc.log(
+                "NZB-DAV: Fallback submit worker start failed: {}".format(error),
+                xbmc.LOGWARNING,
+            )
 
     xbmc.log(
         "NZB-DAV: NZB submitted, nzo_id={}, polling every {}s (timeout={}s)".format(
@@ -1469,14 +1481,24 @@ def resolve(handle, params):
         poll_interval, download_timeout = _get_poll_settings()
         dialog = xbmcgui.DialogProgress()
         dialog.create(_addon_name(), _string(30097))
-        fallback_state = _start_fallback_submit_worker(
-            params.get("_fallback_candidates", [])
-        )
+        fallback_candidates = params.get("_fallback_candidates", [])
+
+        def _start_fallback_after_primary(_nzo_id):
+            nonlocal fallback_state
+            if fallback_state is None:
+                fallback_state = _start_fallback_submit_worker(fallback_candidates)
 
         stream_url, stream_headers = _poll_until_ready(
-            nzb_url, title, dialog, poll_interval, download_timeout
+            nzb_url,
+            title,
+            dialog,
+            poll_interval,
+            download_timeout,
+            on_primary_submitted=_start_fallback_after_primary,
         )
         if stream_url:
+            if fallback_state is None:
+                _start_fallback_after_primary(None)
             fallback_sources = build_prepare_fallback_payload(
                 _fallback_submit_jobs_snapshot(fallback_state)
             )
@@ -1523,14 +1545,24 @@ def resolve_and_play(nzb_url, title, params=None):
         poll_interval, download_timeout = _get_poll_settings()
         dialog = xbmcgui.DialogProgress()
         dialog.create(_addon_name(), _string(30097))
-        fallback_state = _start_fallback_submit_worker(
-            (params or {}).get("_fallback_candidates", [])
-        )
+        fallback_candidates = (params or {}).get("_fallback_candidates", [])
+
+        def _start_fallback_after_primary(_nzo_id):
+            nonlocal fallback_state
+            if fallback_state is None:
+                fallback_state = _start_fallback_submit_worker(fallback_candidates)
 
         stream_url, stream_headers = _poll_until_ready(
-            nzb_url, title, dialog, poll_interval, download_timeout
+            nzb_url,
+            title,
+            dialog,
+            poll_interval,
+            download_timeout,
+            on_primary_submitted=_start_fallback_after_primary,
         )
         if stream_url:
+            if fallback_state is None:
+                _start_fallback_after_primary(None)
             fallback_sources = build_prepare_fallback_payload(
                 _fallback_submit_jobs_snapshot(fallback_state)
             )

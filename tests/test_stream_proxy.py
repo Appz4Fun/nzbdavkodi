@@ -6008,8 +6008,8 @@ def test_serve_proxy_switches_to_valid_fallback_source_mid_response():
     ):
         handler._serve_proxy(ctx)
 
-    assert ctx["remote_url"] == "http://webdav/primary.mkv"
-    assert ctx["auth_header"] is None
+    assert ctx["remote_url"] == "http://webdav/fallback.mkv"
+    assert ctx["auth_header"] == "Basic fallback"
     assert ctx["fallback_switch_count"] == 1
     assert ctx["fallback_active_index"] == 0
     assert mock_stream.call_args_list[1][0][0]["remote_url"] == (
@@ -6017,6 +6017,47 @@ def test_serve_proxy_switches_to_valid_fallback_source_mid_response():
     )
     assert mock_stream.call_args_list[1][0][0]["auth_header"] == "Basic fallback"
     assert mock_stream.call_args_list[1][0][1:3] == (0, 9)
+
+
+def test_select_live_fallback_rejects_same_length_different_fingerprint():
+    """Same-length fallback must still match sampled primary bytes."""
+    handler = _make_handler()
+    ctx = {
+        "remote_url": "http://webdav/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_length": 100000,
+        "fallback_sources": [
+            {
+                "nzo_id": "nzo2",
+                "stream_url": "http://webdav/fallback.mkv",
+                "stream_headers": {"Authorization": "Basic fallback"},
+                "content_length": 100000,
+                "validated": False,
+                "failed": False,
+            }
+        ],
+    }
+
+    with patch(
+        "resources.lib.fallback_streams.fetch_range_digest",
+        side_effect=["primary-digest", "fallback-digest"],
+    ) as digest:
+        source = handler._select_live_fallback_source(ctx, 0, 9)
+
+    assert source is None
+    assert ctx["fallback_sources"][0]["failed"] is True
+    assert digest.call_args_list[0][0][:4] == (
+        "http://webdav/primary.mkv",
+        "Basic primary",
+        0,
+        4095,
+    )
+    assert digest.call_args_list[1][0][:4] == (
+        "http://webdav/fallback.mkv",
+        "Basic fallback",
+        0,
+        4095,
+    )
 
 
 def test_select_live_fallback_refreshes_completed_standby_job():
