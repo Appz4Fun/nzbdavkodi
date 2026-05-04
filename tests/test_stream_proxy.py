@@ -7354,6 +7354,45 @@ def test_prepare_stream_via_service_sends_prepare_token_header():
     assert _request_header(req, "X-NZBDAV-Token") == "secret-token"
 
 
+def test_prepare_stream_via_service_sends_fallback_sources():
+    from resources.lib.stream_proxy import prepare_stream_via_service
+
+    payload = json.dumps(
+        {"proxy_url": "http://127.0.0.1:9999/stream/abc", "remux": False}
+    ).encode()
+    resp = MagicMock()
+    resp.read.return_value = payload
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=False)
+    fallback_sources = [
+        {
+            "title": "Fallback A",
+            "nzb_url": "http://hydra/fallback-a",
+            "job_name": "Fallback A [fallback-1-11111111]",
+            "nzo_id": "SABnzbd_nzo_a",
+            "stream_url": "",
+            "stream_headers": {},
+            "content_length": 0,
+        }
+    ]
+
+    with patch("resources.lib.stream_proxy.urlopen", return_value=resp) as mocked:
+        prepare_stream_via_service(
+            9999,
+            "http://nzbdav/movie.mkv",
+            auth_header="Basic abc",
+            fallback_sources=fallback_sources,
+        )
+
+    req = mocked.call_args[0][0]
+    body = json.loads(req.data.decode())
+    assert body == {
+        "remote_url": "http://nzbdav/movie.mkv",
+        "auth_header": "Basic abc",
+        "fallback_sources": fallback_sources,
+    }
+
+
 # --- Mid-stream resilience: upstream flaps DOWN/UP/DOWN in one session ---
 
 

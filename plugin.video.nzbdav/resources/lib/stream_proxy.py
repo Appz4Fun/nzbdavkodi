@@ -5214,7 +5214,9 @@ class ServiceProxyUnavailableError(OSError):
     """
 
 
-def prepare_stream_via_service(port, remote_url, auth_header=None, prepare_token=None):
+def prepare_stream_via_service(
+    port, remote_url, auth_header=None, prepare_token=None, fallback_sources=None
+):
     """Ask the service's proxy to prepare a stream.
 
     Returns (proxy_url, stream_info) where stream_info contains
@@ -5229,7 +5231,13 @@ def prepare_stream_via_service(port, remote_url, auth_header=None, prepare_token
 
     url = "http://127.0.0.1:{}/prepare".format(port)
     auth_header = _validate_auth_header(auth_header)
-    data = json.dumps({"remote_url": remote_url, "auth_header": auth_header})
+    data = json.dumps(
+        {
+            "remote_url": remote_url,
+            "auth_header": auth_header,
+            "fallback_sources": list(fallback_sources or []),
+        }
+    )
     req = Request(url, data=data.encode(), method="POST")
     req.add_header("User-Agent", HTTP_USER_AGENT)
     req.add_header("Content-Type", "application/json")
