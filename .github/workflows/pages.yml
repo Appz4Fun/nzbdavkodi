@@ -35,17 +35,36 @@ jobs:
       - name: Configure Pages
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
-      - name: Download latest release addon zip
+      - name: Download release addon zips
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          mkdir -p release-zips
+          gh release list \
+            --repo "$GITHUB_REPOSITORY" \
+            --limit 100 \
+            --json tagName \
+            --jq '.[].tagName' |
+          while read -r tag; do
+            gh release download "$tag" \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern 'plugin.video.nzbdav-*.zip' \
+              --dir release-zips \
+              --clobber || echo "No addon zip found for $tag"
+          done
+          latest_tag=$(gh release view \
+            --repo "$GITHUB_REPOSITORY" \
+            --json tagName \
+            --jq '.tagName')
+          rm -f release-addon.zip
           gh release download \
+            "$latest_tag" \
             --repo "$GITHUB_REPOSITORY" \
             --pattern 'plugin.video.nzbdav-*.zip' \
             --output release-addon.zip
 
       - name: Generate repository metadata
-        run: python3 scripts/generate_repo.py --output-dir dist --addon-zip release-addon.zip
+        run: python3 scripts/generate_repo.py --output-dir dist --addon-zip release-addon.zip --legacy-addon-zip-dir release-zips
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0

@@ -11,6 +11,8 @@ import shutil
 import xml.etree.ElementTree as ET
 import zipfile
 
+_REPOSITORY_ZIP_ALIAS_VERSIONS = ("1.0.5", "1.0.6", "1.0.7")
+
 
 def _parse_local_xml(path):
     """Parse trusted repo XML without enabling DTD/entity declarations."""
@@ -65,6 +67,16 @@ def _read_addon_version_from_zip(zip_path, addon_id):
     return _parse_xml_bytes(xml_bytes).getroot().attrib["version"]
 
 
+def _copy_addon_zip(output_dir, addon_id, addon_zip):
+    version = _read_addon_version_from_zip(addon_zip, addon_id)
+    zip_name = "{}-{}.zip".format(addon_id, version)
+    dest_dir = os.path.join(output_dir, addon_id)
+    os.makedirs(dest_dir, exist_ok=True)
+    shutil.copy2(addon_zip, os.path.join(dest_dir, zip_name))
+    shutil.copy2(addon_zip, os.path.join(output_dir, zip_name))
+    return version, dest_dir, zip_name
+
+
 def write_pages_index(output_dir, repo_version="1.0.0"):
     """Write a Kodi-browsable directory listing for the root."""
     index_path = os.path.join(output_dir, "index.html")
@@ -82,12 +94,7 @@ def write_pages_index(output_dir, repo_version="1.0.0"):
 
 def _copy_addon_artifacts(output_dir, addon_id, main_addon, addon_zip=None):
     if addon_zip:
-        version = _read_addon_version_from_zip(addon_zip, addon_id)
-        zip_name = "{}-{}.zip".format(addon_id, version)
-        dest_dir = os.path.join(output_dir, addon_id)
-        os.makedirs(dest_dir, exist_ok=True)
-        shutil.copy2(addon_zip, os.path.join(dest_dir, zip_name))
-        shutil.copy2(addon_zip, os.path.join(output_dir, zip_name))
+        _version, dest_dir, _zip_name = _copy_addon_zip(output_dir, addon_id, addon_zip)
         with zipfile.ZipFile(addon_zip) as zf:
             for member in [
                 "{}/addon.xml".format(addon_id),
@@ -124,7 +131,38 @@ def _copy_addon_artifacts(output_dir, addon_id, main_addon, addon_zip=None):
         print("Copied addon zip + metadata to {}".format(dest_dir))
 
 
-def generate_repo(output_dir="dist", addon_zip=None):
+def _copy_legacy_addon_zips(output_dir, addon_id, legacy_addon_zip_dir=None):
+    if not legacy_addon_zip_dir:
+        return
+    if not os.path.isdir(legacy_addon_zip_dir):
+        raise SystemExit(
+            "generate_repo: legacy addon zip directory not found: {!r}".format(
+                legacy_addon_zip_dir
+            )
+        )
+    for name in sorted(os.listdir(legacy_addon_zip_dir)):
+        zip_path = os.path.join(legacy_addon_zip_dir, name)
+        if not os.path.isfile(zip_path) or not name.endswith(".zip"):
+            continue
+        try:
+            _version, _dest_dir, zip_name = _copy_addon_zip(
+                output_dir, addon_id, zip_path
+            )
+        except (KeyError, ET.ParseError, zipfile.BadZipFile) as exc:
+            raise SystemExit(
+                "generate_repo: failed to read legacy addon zip {!r}: {}".format(
+                    zip_path, exc
+                )
+            )
+        print("Copied legacy addon zip {}".format(zip_name))
+
+
+def generate_repo(
+    output_dir="dist",
+    addon_zip=None,
+    legacy_addon_zip_dir=None,
+    repo_zip_alias_versions=None,
+):
     os.makedirs(output_dir, exist_ok=True)
 
     addon_xmls = []
@@ -165,6 +203,7 @@ def generate_repo(output_dir="dist", addon_zip=None):
     )
 
     _copy_addon_artifacts(output_dir, main_addon_id, main_addon, addon_zip)
+    _copy_legacy_addon_zips(output_dir, main_addon_id, legacy_addon_zip_dir)
 
     # Build repository addon zip and copy into output
     repo_dir = "repo/repository.nzbdav"
@@ -191,6 +230,14 @@ def generate_repo(output_dir="dist", addon_zip=None):
             output_dir, "repository.nzbdav-{}.zip".format(repo_version)
         )
         shutil.copy2(repo_zip_path, root_repo_zip)
+        if repo_zip_alias_versions is None:
+            repo_zip_alias_versions = _REPOSITORY_ZIP_ALIAS_VERSIONS
+        for alias_version in repo_zip_alias_versions:
+            if alias_version == repo_version:
+                continue
+            alias_name = "repository.nzbdav-{}.zip".format(alias_version)
+            shutil.copy2(repo_zip_path, os.path.join(repo_out, alias_name))
+            shutil.copy2(repo_zip_path, os.path.join(output_dir, alias_name))
         print("Built repository addon zip at {}".format(repo_zip_path))
     else:
         repo_version = "1.0.0"
@@ -231,5 +278,14 @@ if __name__ == "__main__":
             "worktree"
         ),
     )
+    parser.add_argument(
+        "--legacy-addon-zip-dir",
+        default=None,
+        help="Directory of older addon release zips to keep published",
+    )
     args = parser.parse_args()
-    generate_repo(output_dir=args.output_dir, addon_zip=args.addon_zip)
+    generate_repo(
+        output_dir=args.output_dir,
+        addon_zip=args.addon_zip,
+        legacy_addon_zip_dir=args.legacy_addon_zip_dir,
+    )

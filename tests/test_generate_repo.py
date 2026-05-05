@@ -124,6 +124,63 @@ def test_generate_repo_can_publish_release_zip_instead_of_worktree_addon(
     ).read_bytes() == b"icon"
 
 
+def test_generate_repo_preserves_legacy_addon_zips_for_cached_kodi_metadata(
+    tmp_path, monkeypatch
+):
+    module = _load_generate_repo_module()
+    monkeypatch.chdir(REPO_ROOT)
+    release_zip = tmp_path / "plugin.video.nzbdav-1.0.8.zip"
+    legacy_zip_dir = tmp_path / "legacy-zips"
+    legacy_zip_dir.mkdir()
+    legacy_zip = legacy_zip_dir / "plugin.video.nzbdav-1.0.5.zip"
+
+    for zip_path, version in ((release_zip, "1.0.8"), (legacy_zip, "1.0.5")):
+        addon_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+            '<addon id="plugin.video.nzbdav" name="NZB-DAV" version="{}" />'
+        ).format(version)
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("plugin.video.nzbdav/addon.xml", addon_xml)
+
+    module.generate_repo(
+        output_dir=str(tmp_path / "dist"),
+        addon_zip=str(release_zip),
+        legacy_addon_zip_dir=str(legacy_zip_dir),
+    )
+
+    tree = ET.parse(tmp_path / "dist" / "addons.xml")
+    addon = tree.find("./addon[@id='plugin.video.nzbdav']")
+    assert addon is not None
+    assert addon.attrib["version"] == "1.0.8"
+    assert (
+        tmp_path / "dist" / "plugin.video.nzbdav" / "plugin.video.nzbdav-1.0.8.zip"
+    ).exists()
+    assert (
+        tmp_path / "dist" / "plugin.video.nzbdav" / "plugin.video.nzbdav-1.0.5.zip"
+    ).exists()
+    assert (tmp_path / "dist" / "plugin.video.nzbdav-1.0.5.zip").exists()
+
+
+def test_generate_repo_writes_repository_zip_aliases_for_cached_kodi_metadata(
+    tmp_path, monkeypatch
+):
+    module = _load_generate_repo_module()
+    monkeypatch.chdir(REPO_ROOT)
+
+    module.generate_repo(
+        output_dir=str(tmp_path),
+        repo_zip_alias_versions=("1.0.6",),
+    )
+
+    current_repo_xml = ET.parse(REPO_ROOT / "repo" / "repository.nzbdav" / "addon.xml")
+    current_repo_version = current_repo_xml.getroot().attrib["version"]
+    alias_zip = tmp_path / "repository.nzbdav" / "repository.nzbdav-1.0.6.zip"
+    assert alias_zip.exists()
+    with zipfile.ZipFile(alias_zip) as zf:
+        root = ET.fromstring(zf.read("repository.nzbdav/addon.xml"))
+    assert root.attrib["version"] == current_repo_version
+
+
 def test_parse_local_xml_rejects_doctype(tmp_path):
     module = _load_generate_repo_module()
     addon_xml = tmp_path / "addon.xml"
