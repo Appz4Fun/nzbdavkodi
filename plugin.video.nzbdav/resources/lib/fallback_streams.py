@@ -4,7 +4,6 @@
 """Conservative grouping for duplicate releases usable as fallback streams."""
 
 import hashlib
-import random
 import re
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
@@ -335,10 +334,14 @@ def fingerprint_ranges(content_length):
         return ranges
 
     max_start = content_length - _FINGERPRINT_BYTES
-    rng = random.Random(content_length)
     starts = {0, max_start}
+    counter = 0
     while len(starts) < _FINGERPRINT_SAMPLE_COUNT:
-        starts.add(rng.randint(0, max_start))
+        digest = hashlib.sha256(
+            "{}:{}".format(content_length, counter).encode("utf-8")
+        ).digest()
+        starts.add(int.from_bytes(digest[:8], "big") % (max_start + 1))
+        counter += 1
     return [(start, start + _FINGERPRINT_BYTES - 1) for start in sorted(starts)]
 
 
