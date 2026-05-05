@@ -6156,6 +6156,48 @@ def test_select_live_fallback_rejects_same_length_different_fingerprint():
     )
 
 
+def test_live_fallback_selection_checks_all_attached_candidates_until_one_matches():
+    handler = _make_handler()
+    sources = [
+        {
+            "nzo_id": "nzo1",
+            "stream_url": "http://webdav/fallback1.mkv",
+            "failed": False,
+        },
+        {
+            "nzo_id": "nzo2",
+            "stream_url": "http://webdav/fallback2.mkv",
+            "failed": False,
+        },
+        {
+            "nzo_id": "nzo3",
+            "stream_url": "http://webdav/fallback3.mkv",
+            "failed": False,
+        },
+        {
+            "nzo_id": "nzo4",
+            "stream_url": "http://webdav/fallback4.mkv",
+            "failed": False,
+        },
+        {
+            "nzo_id": "nzo5",
+            "stream_url": "http://webdav/fallback5.mkv",
+            "failed": False,
+        },
+    ]
+    ctx = {"fallback_sources": sources}
+
+    with patch.object(handler, "_refresh_standby_fallback_sources"), patch.object(
+        handler,
+        "_fallback_source_matches",
+        side_effect=[False, False, False, False, True],
+    ) as mock_matches:
+        assert handler._select_live_fallback_source(ctx, 0, 9) == sources[4]
+
+    assert mock_matches.call_count == 5
+    assert [source["failed"] for source in sources] == [True, True, True, True, False]
+
+
 def test_select_live_fallback_refreshes_completed_standby_job():
     """Standby nzo_id entries can become usable without restarting playback."""
     handler = _make_handler()

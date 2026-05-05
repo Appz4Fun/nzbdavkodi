@@ -4,6 +4,7 @@
 """Conservative grouping for duplicate releases usable as fallback streams."""
 
 import hashlib
+import random
 import re
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
@@ -12,9 +13,11 @@ from urllib.request import Request, urlopen
 import xbmc
 import xbmcaddon
 
+from resources.lib.nzb_manifest import fetch_nzb_video_manifest
+
 _SAFE_JOB_RE = re.compile(r"^[A-Za-z0-9._ \[\]-]+$")
 _CONTENT_RANGE_RE = re.compile(r"^bytes\s+(\d+)-(\d+)/(\d+|\*)$")
-_FINGERPRINT_OFFSETS = (0.0, 0.25, 0.5, 0.75, 0.98)
+_FINGERPRINT_SAMPLE_COUNT = 1000
 _FINGERPRINT_BYTES = 4096
 
 _MAX_FALLBACKS = 5
@@ -147,6 +150,49 @@ def _quality_key(result):
     )
 
 
+def _manifest_group_key(result):
+    manifest = result.get("_fallback_manifest")
+    if not isinstance(manifest, dict):
+        return None
+    kind = manifest.get("payload_kind", "")
+    name = manifest.get("group_name", "")
+    size = int(manifest.get("group_bytes", 0) or 0)
+    digest = manifest.get("article_digest", "")
+    if not kind or not name or not digest:
+        return None
+    if kind == "video":
+        if size <= 0:
+            return None
+        return kind, name, size
+    if kind == "archive":
+        return kind, name
+    return None
+
+
+def _article_digest(result):
+    manifest = result.get("_fallback_manifest")
+    if not isinstance(manifest, dict):
+        return ""
+    return manifest.get("article_digest", "") or ""
+
+
+def _manifest_error(reason):
+    return {
+        "payload_kind": "",
+        "group_name": "",
+        "group_bytes": 0,
+        "video_name": "",
+        "normalized_video_name": "",
+        "video_bytes": 0,
+        "archive_base_name": "",
+        "article_digest": "",
+        "article_count": 0,
+        "skipped_candidate_count": 0,
+        "skipped_candidates": [],
+        "unsupported_reason": reason,
+    }
+
+
 def _fallback_settings():
     """Return (enabled, max_candidates) from Kodi settings."""
     addon = xbmcaddon.Addon()
@@ -176,13 +222,32 @@ def attach_fallback_candidates(results):
     if not enabled or max_candidates <= 0:
         return results
 
-    groups = {}
+    manifest_cache = {}
     for result in results:
+        manifest = result.get("_fallback_manifest")
+        if isinstance(manifest, dict):
+            result["_fallback_manifest_error"] = manifest.get("unsupported_reason", "")
+            continue
         link = result.get("link", "")
         if not isinstance(link, str) or not link.strip():
+            result["_fallback_manifest_error"] = "missing_link"
             continue
-        key = _quality_key(result)
-        if not key[0]:
+        if link not in manifest_cache:
+            try:
+                manifest_cache[link] = fetch_nzb_video_manifest(link)
+            except Exception:  # pylint: disable=broad-except
+                manifest_cache[link] = _manifest_error("fetch_error")
+        manifest = manifest_cache[link]
+        if not isinstance(manifest, dict):
+            manifest = _manifest_error("fetch_error")
+            manifest_cache[link] = manifest
+        result["_fallback_manifest"] = manifest
+        result["_fallback_manifest_error"] = manifest.get("unsupported_reason", "")
+
+    groups = {}
+    for result in results:
+        key = _manifest_group_key(result)
+        if key is None:
             continue
         groups.setdefault(key, []).append(result)
 
@@ -191,18 +256,24 @@ def attach_fallback_candidates(results):
             continue
         for result in group:
             link = result.get("link", "")
+            primary_digest = _article_digest(result)
             candidates = []
             seen_links = {link}
+            seen_article_digests = {primary_digest}
             for candidate in group:
                 candidate_link = candidate.get("link", "")
+                candidate_digest = _article_digest(candidate)
                 if (
                     candidate is result
                     or not candidate_link
                     or candidate_link in seen_links
+                    or not candidate_digest
+                    or candidate_digest in seen_article_digests
                 ):
                     continue
                 candidates.append(candidate)
                 seen_links.add(candidate_link)
+                seen_article_digests.add(candidate_digest)
                 if len(candidates) >= max_candidates:
                     break
             result["_fallback_candidates"] = candidates
@@ -254,15 +325,21 @@ def fingerprint_ranges(content_length):
     if content_length <= _FINGERPRINT_BYTES:
         return [(0, content_length - 1)]
 
-    ranges = []
-    for ratio in _FINGERPRINT_OFFSETS:
-        start = int(content_length * ratio)
-        start = min(start, max(0, content_length - _FINGERPRINT_BYTES))
-        end = min(content_length - 1, start + _FINGERPRINT_BYTES - 1)
-        pair = (start, end)
-        if pair not in ranges:
-            ranges.append(pair)
-    return ranges
+    if content_length <= _FINGERPRINT_SAMPLE_COUNT * _FINGERPRINT_BYTES:
+        ranges = []
+        start = 0
+        while start < content_length:
+            end = min(content_length - 1, start + _FINGERPRINT_BYTES - 1)
+            ranges.append((start, end))
+            start += _FINGERPRINT_BYTES
+        return ranges
+
+    max_start = content_length - _FINGERPRINT_BYTES
+    rng = random.Random(content_length)
+    starts = {0, max_start}
+    while len(starts) < _FINGERPRINT_SAMPLE_COUNT:
+        starts.add(rng.randint(0, max_start))
+    return [(start, start + _FINGERPRINT_BYTES - 1) for start in sorted(starts)]
 
 
 def fetch_content_length(url, auth_header, timeout=2):

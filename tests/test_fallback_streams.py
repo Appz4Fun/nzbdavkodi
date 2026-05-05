@@ -53,8 +53,29 @@ def _fallback_setting(key):
     }.get(key, "")
 
 
+def _manifest(kind, name, size, digest, article_count=2):
+    manifest = {
+        "payload_kind": kind,
+        "group_name": name,
+        "group_bytes": size,
+        "video_name": name if kind == "video" else "",
+        "normalized_video_name": name if kind == "video" else "",
+        "video_bytes": size if kind == "video" else 0,
+        "archive_base_name": name if kind == "archive" else "",
+        "article_digest": digest,
+        "article_count": article_count,
+        "skipped_candidate_count": 0,
+        "skipped_candidates": [],
+        "unsupported_reason": "",
+    }
+    return manifest
+
+
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
 @patch("resources.lib.fallback_streams._fallback_settings")
-def test_exact_duplicate_title_attaches_distinct_fallback_candidates(mock_settings):
+def test_manifest_grouping_uses_video_name_and_bytes_not_result_size(
+    mock_settings, mock_fetch
+):
     mock_settings.return_value = (True, 2)
     primary = _result(
         "Example Movie 2026 1080p WEB-DL x265-GROUP",
@@ -78,6 +99,12 @@ def test_exact_duplicate_title_attaches_distinct_fallback_candidates(mock_settin
             "container": "mkv",
         },
     )
+    manifests = {
+        "https://a/nzb": _manifest("video", "example movie 2026 group.mkv", 8000, "a"),
+        "https://b/nzb": _manifest("video", "example movie 2026 group.mkv", 8000, "b"),
+        "https://c/nzb": _manifest("video", "example movie 2026 group.mkv", 9000, "c"),
+    }
+    mock_fetch.side_effect = lambda url: manifests[url]
 
     results = [primary, duplicate, unrelated]
 
@@ -116,26 +143,84 @@ def test_fallback_settings_default_to_enabled_with_five_candidates():
         assert _fallback_settings() == (True, 5)
 
 
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
 @patch("resources.lib.fallback_streams._fallback_settings")
-def test_size_mismatch_still_attaches_candidate_for_runtime_validation(mock_settings):
-    mock_settings.return_value = (True, 2)
-    results = [
-        _result(
-            "Example Movie 2026 1080p WEB-DL x265-GROUP",
-            "https://a/nzb",
-            1000,
-        ),
-        _result(
-            "Example Movie 2026 1080p WEB-DL x265-GROUP",
-            "https://b/nzb",
-            10_000_000,
-        ),
-    ]
+def test_same_article_mirrors_are_not_attached_as_fallbacks(mock_settings, mock_fetch):
+    mock_settings.return_value = (True, 5)
+    primary = _result("Movie", "https://idx/a.nzb", 1)
+    mirror = _result("Movie mirror", "https://idx/b.nzb", 2)
+    repost = _result("Movie repost", "https://idx/c.nzb", 3)
+    manifests = {
+        "https://idx/a.nzb": _manifest("video", "movie.mkv", 1000, "articles-a"),
+        "https://idx/b.nzb": _manifest("video", "movie.mkv", 1000, "articles-a"),
+        "https://idx/c.nzb": _manifest("video", "movie.mkv", 1000, "articles-c"),
+    }
+    mock_fetch.side_effect = lambda url: manifests[url]
 
-    attach_fallback_candidates(results)
+    attach_fallback_candidates([primary, mirror, repost])
 
-    assert results[0]["_fallback_candidates"] == [results[1]]
-    assert results[1]["_fallback_candidates"] == [results[0]]
+    assert primary["_fallback_candidates"] == [repost]
+    assert mirror["_fallback_candidates"] == [repost]
+    assert repost["_fallback_candidates"] == [primary]
+
+
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+@patch("resources.lib.fallback_streams._fallback_settings")
+def test_rar_only_manifests_are_grouped_provisionally_for_runtime_validation(
+    mock_settings, mock_fetch
+):
+    mock_settings.return_value = (True, 5)
+    primary = _result("Movie", "https://idx/a.nzb", 1)
+    archive_fallback = _result("Movie", "https://idx/b.nzb", 2)
+    manifests = {
+        "https://idx/a.nzb": _manifest("archive", "movie", 0, "articles-a"),
+        "https://idx/b.nzb": _manifest("archive", "movie", 0, "articles-b"),
+    }
+    mock_fetch.side_effect = lambda url: manifests[url]
+
+    attach_fallback_candidates([primary, archive_fallback])
+
+    assert primary["_fallback_candidates"] == [archive_fallback]
+    assert archive_fallback["_fallback_candidates"] == [primary]
+
+
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+@patch("resources.lib.fallback_streams._fallback_settings")
+def test_manifest_fetches_are_cached_per_attach_call(mock_settings, mock_fetch):
+    mock_settings.return_value = (True, 5)
+    first = _result("Movie", "https://idx/same.nzb", 1)
+    second = _result("Movie duplicate", "https://idx/same.nzb", 2)
+    mock_fetch.return_value = _manifest("video", "movie.mkv", 1000, "same-articles")
+
+    attach_fallback_candidates([first, second])
+
+    mock_fetch.assert_called_once_with("https://idx/same.nzb")
+    assert first["_fallback_manifest_error"] == ""
+    assert second["_fallback_manifest_error"] == ""
+
+
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+@patch("resources.lib.fallback_streams._fallback_settings")
+def test_manifest_fetch_exception_marks_one_result_failed_without_raising(
+    mock_settings, mock_fetch
+):
+    mock_settings.return_value = (True, 5)
+    broken = _result("Broken", "https://idx/broken.nzb", 1)
+    working = _result("Working", "https://idx/working.nzb", 2)
+
+    def fetch(url):
+        if url.endswith("broken.nzb"):
+            raise RuntimeError("message id failure")
+        return _manifest("video", "movie.mkv", 1000, "articles-working")
+
+    mock_fetch.side_effect = fetch
+
+    attach_fallback_candidates([broken, working])
+
+    assert broken["_fallback_manifest_error"] == "fetch_error"
+    assert broken["_fallback_candidates"] == []
+    assert working["_fallback_manifest_error"] == ""
+    assert working["_fallback_candidates"] == []
 
 
 def test_build_fallback_job_name_unique_traceable_and_single_line():
@@ -214,18 +299,25 @@ def test_build_prepare_fallback_payload_preserves_completed_and_standby_jobs():
     ]
 
 
-def test_fingerprint_offsets_use_edges_and_middle():
-    assert fingerprint_ranges(100000) == [
-        (0, 4095),
-        (25000, 29095),
-        (50000, 54095),
-        (75000, 79095),
-        (95904, 99999),
-    ]
+def test_fingerprint_ranges_uses_1000_deterministic_4096_byte_samples_for_large_files():
+    content_length = 10 * 1024 * 1024 * 1024
+
+    ranges = fingerprint_ranges(content_length)
+
+    assert len(ranges) == 1000
+    assert len(set(ranges)) == 1000
+    assert ranges == fingerprint_ranges(content_length)
+    assert ranges[0] == (0, 4095)
+    assert ranges[-1] == (content_length - 4096, content_length - 1)
+    assert all((end - start + 1) == 4096 for start, end in ranges)
 
 
 def test_fingerprint_ranges_handles_small_files():
     assert fingerprint_ranges(1024) == [(0, 1023)]
+
+
+def test_fingerprint_ranges_chunks_whole_file_when_smaller_than_sample_budget():
+    assert fingerprint_ranges(5000) == [(0, 4095), (4096, 4999)]
 
 
 @patch("resources.lib.fallback_streams.urlopen", side_effect=URLError("timeout"))

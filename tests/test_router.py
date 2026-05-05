@@ -693,6 +693,23 @@ def _stub_setting(value):
 
 
 def _attach_primary_duplicate_fallbacks(results):
+    for index, result in enumerate(results):
+        result["_fallback_candidates"] = []
+        result["_fallback_manifest"] = {
+            "payload_kind": "video",
+            "group_name": "the matrix 1999 1080p bluray x264 group.mkv",
+            "group_bytes": 8589934592,
+            "video_name": "The.Matrix.1999.1080p.BluRay.x264-GROUP.mkv",
+            "normalized_video_name": "the matrix 1999 1080p bluray x264 group.mkv",
+            "video_bytes": 8589934592,
+            "archive_base_name": "",
+            "article_digest": "articles-{}".format(index),
+            "article_count": 100,
+            "skipped_candidate_count": 0,
+            "skipped_candidates": [],
+            "unsupported_reason": "",
+        }
+        result["_fallback_manifest_error"] = ""
     from resources.lib.fallback_streams import attach_fallback_candidates
 
     with patch("resources.lib.fallback_streams._fallback_settings") as mock_settings:
