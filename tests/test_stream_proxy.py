@@ -6029,9 +6029,9 @@ def _mock_urlopen_response(chunks, status=206, headers=None):
     resp.read = MagicMock(side_effect=data)
     resp.status = status
     resp.getcode = MagicMock(return_value=status)
-    header_map = headers or {}
+    header_map = {str(key).lower(): value for key, value in (headers or {}).items()}
     resp.headers.get = MagicMock(
-        side_effect=lambda key, default=None: header_map.get(key, default)
+        side_effect=lambda key, default=None: header_map.get(str(key).lower(), default)
     )
     resp.close = MagicMock()
     return resp
