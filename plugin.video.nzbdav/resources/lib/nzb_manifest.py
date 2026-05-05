@@ -41,6 +41,7 @@ def make_empty_manifest(reason, skipped_candidates=None):
 
 
 def _empty_manifest(reason, skipped_candidates=None):
+    """Return an unsupported manifest for internal parser call sites."""
     return make_empty_manifest(reason, skipped_candidates)
 
 
@@ -59,16 +60,19 @@ def normalize_video_filename(value):
 
 
 def _strip_namespace(tag):
+    """Return an XML tag name without its namespace prefix."""
     if "}" in tag:
         return tag.rsplit("}", 1)[1]
     return tag
 
 
 def _children_by_name(elem, name):
+    """Return direct XML children whose local tag name matches name."""
     return [child for child in list(elem) if _strip_namespace(child.tag) == name]
 
 
 def _find_video_name(subject):
+    """Extract a supported non-sample video filename from an NZB subject."""
     if not isinstance(subject, str):
         return ""
     match = _FILENAME_RE.search(subject) or _BARE_FILENAME_RE.search(subject)
@@ -85,6 +89,7 @@ def _find_video_name(subject):
 
 
 def _find_archive_base(subject):
+    """Extract a normalized archive base name from a RAR-style subject."""
     if not isinstance(subject, str):
         return ""
     match = _ARCHIVE_RE.search(subject)
@@ -96,6 +101,7 @@ def _find_archive_base(subject):
 
 
 def _segment_rows(file_elem):
+    """Return sorted NZB segment rows as number, byte size, and Message-ID."""
     rows = []
     for segments in _children_by_name(file_elem, "segments"):
         for segment in _children_by_name(segments, "segment"):
@@ -113,6 +119,7 @@ def _segment_rows(file_elem):
 
 
 def _digest_articles(rows):
+    """Return a stable digest over sorted article Message-IDs."""
     digest = hashlib.sha256()
     for _number, _size, msgid in rows:
         digest.update(msgid.encode("utf-8"))
@@ -121,6 +128,7 @@ def _digest_articles(rows):
 
 
 def _candidate_name(candidate):
+    """Return a human-readable candidate name for skip diagnostics."""
     return (
         candidate.get("video_name")
         or candidate.get("archive_base_name")
@@ -130,6 +138,7 @@ def _candidate_name(candidate):
 
 
 def _candidate_is_healthy(candidate, health_check):
+    """Return whether a candidate passes the optional health callback."""
     if health_check is None:
         return True
     try:
@@ -139,6 +148,7 @@ def _candidate_is_healthy(candidate, health_check):
 
 
 def _public_manifest(candidate, skipped_candidates):
+    """Return a public manifest without transient parser-only fields."""
     manifest = dict(candidate)
     manifest.pop("message_ids", None)
     manifest["skipped_candidate_count"] = len(skipped_candidates)
@@ -147,6 +157,7 @@ def _public_manifest(candidate, skipped_candidates):
 
 
 def _select_healthy_candidate(candidates, health_check):
+    """Return the first healthy manifest candidate or an unsupported manifest."""
     skipped_candidates = []
     for candidate in candidates:
         if _candidate_is_healthy(candidate, health_check):
@@ -235,6 +246,7 @@ def extract_nzb_video_manifest(nzb_bytes, health_check=None):
 
 
 def _valid_nzb_url(url):
+    """Return True for simple HTTP(S) NZB URLs that are safe to fetch."""
     if not isinstance(url, str) or any(ord(char) < 0x20 for char in url):
         return False
     try:
