@@ -158,7 +158,10 @@ def _manifest_group_key(result):
         return None
     kind = manifest.get("payload_kind", "")
     name = manifest.get("group_name", "")
-    size = int(manifest.get("group_bytes", 0) or 0)
+    try:
+        size = int(manifest.get("group_bytes", 0) or 0)
+    except (TypeError, ValueError):
+        return None
     digest = manifest.get("article_digest", "")
     if not kind or not name or not digest:
         return None

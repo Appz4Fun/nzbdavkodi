@@ -139,6 +139,21 @@ def test_manifest_grouping_uses_video_name_and_bytes_not_result_size(
 
 
 @patch("resources.lib.fallback_streams._fallback_settings")
+def test_malformed_manifest_group_bytes_fails_closed_without_aborting(mock_settings):
+    mock_settings.return_value = (True, 5)
+    malformed = _result("Movie bad manifest", "https://idx/a.nzb", 1)
+    malformed["_fallback_manifest"] = _manifest("video", "movie.mkv", 1000, "a")
+    malformed["_fallback_manifest"]["group_bytes"] = "not-a-number"
+    valid = _result("Movie valid manifest", "https://idx/b.nzb", 2)
+    valid["_fallback_manifest"] = _manifest("video", "movie.mkv", 1000, "b")
+
+    attach_fallback_candidates([malformed, valid])
+
+    assert malformed["_fallback_candidates"] == []
+    assert valid["_fallback_candidates"] == []
+
+
+@patch("resources.lib.fallback_streams._fallback_settings")
 def test_disabled_setting_adds_empty_fallback_lists(mock_settings):
     mock_settings.return_value = (False, 2)
     results = [
