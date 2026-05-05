@@ -21,7 +21,8 @@ _ARCHIVE_RE = re.compile(r'"?([^"\\/]+?)(?:\.part\d+)?\.(?:rar|r\d{2,3})\b', re.
 _ALLOWED_NZB_SCHEMES = frozenset(("http", "https"))
 
 
-def _empty_manifest(reason, skipped_candidates=None):
+def make_empty_manifest(reason, skipped_candidates=None):
+    """Return the shared unsupported manifest shape."""
     skipped_candidates = skipped_candidates or []
     return {
         "payload_kind": "",
@@ -37,6 +38,10 @@ def _empty_manifest(reason, skipped_candidates=None):
         "skipped_candidates": skipped_candidates,
         "unsupported_reason": reason,
     }
+
+
+def _empty_manifest(reason, skipped_candidates=None):
+    return make_empty_manifest(reason, skipped_candidates)
 
 
 def normalize_video_filename(value):

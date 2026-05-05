@@ -12,7 +12,7 @@ from urllib.request import Request, urlopen
 import xbmc
 import xbmcaddon
 
-from resources.lib.nzb_manifest import fetch_nzb_video_manifest
+from resources.lib.nzb_manifest import fetch_nzb_video_manifest, make_empty_manifest
 
 _SAFE_JOB_RE = re.compile(r"^[A-Za-z0-9._ \[\]-]+$")
 _CONTENT_RANGE_RE = re.compile(r"^bytes\s+(\d+)-(\d+)/(\d+|\*)$")
@@ -191,20 +191,7 @@ def _manifest_candidate_message_ids_are_healthy(candidate):
 
 
 def _manifest_error(reason):
-    return {
-        "payload_kind": "",
-        "group_name": "",
-        "group_bytes": 0,
-        "video_name": "",
-        "normalized_video_name": "",
-        "video_bytes": 0,
-        "archive_base_name": "",
-        "article_digest": "",
-        "article_count": 0,
-        "skipped_candidate_count": 0,
-        "skipped_candidates": [],
-        "unsupported_reason": reason,
-    }
+    return make_empty_manifest(reason)
 
 
 def _fallback_settings():
