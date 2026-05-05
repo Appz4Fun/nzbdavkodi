@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Released | What it's about |
 |---|---|---|
-| **[1.0.7](#107--2026-05-04)** | 2026-05-04 | Fallback streams enabled by default, 5 standby submits, pass-through fallback playback, size-independent candidates with runtime validation, fallback-only recovery |
+| **[1.0.7](#107--2026-05-04)** | 2026-05-04 | Fallback streams enabled by default, 5 standby submits, pass-through playback, NZB-manifest grouping, 1000-sample validation, fallback-only recovery |
 | **[1.0.6](#106--2026-05-04)** | 2026-05-04 | Pass-through-first proxy, live duplicate-release fallback streams, authenticated settings checks, fallback worker cleanup, threshold-zero remux semantics |
 | **[1.0.5](#105--2026-05-04)** | 2026-05-04 | Direct Newznab indexers, manual Indexers settings, concurrent provider fan-out, Kodi repo publishing fixes, WebDAV range compatibility, cache eviction race fix |
 | **[1.0.4](#104--2026-04-25)** | 2026-04-25 | Pass-through stall watchdog (closes the slow-trickle wedge where seek doesn't unstick), proxy seek perf, sha256 cache keys, credential redaction sweep, Prowlarr UI label fix, §H.2 audit closure batch |
@@ -64,8 +64,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   defaulting to 5 standby submissions per primary result.
 - **Fallback playback uses the pass-through proxy** so standby streams can be
   switched in without forcing ffmpeg remux.
-- **Fallback candidates are tried regardless of release size.** Runtime source
-  validation still checks content length and fingerprints before switching.
+- **Fallback grouping now uses NZB manifest payload metadata** instead of
+  release title/quality or indexer-reported size. Visible video entries group
+  by normalized filename plus file-level segment bytes; RAR-only NZBs stay
+  eligible under a provisional archive grouping key.
+- **Mirrored NZB listings are rejected by Article Message-ID digest** so a
+  fallback prefers a separate upload instead of the same NZB on another indexer.
+- **Unhealthy file candidates inside one NZB are skipped individually.** If the
+  first selected file fails a Message-ID health check, the addon tries the next
+  eligible file in that NZB bundle instead of failing the whole result.
+- **Runtime validation now samples 1000 pseudo-random 4096-byte ranges** after
+  exact WebDAV content-length equality before switching to a fallback source.
 - **Fallback recovery is the only rescue path for fallback sessions.** If no
   validated fallback source can resume the failed range, the proxy closes the
   stream instead of retrying the original source, zero-filling, or probing

@@ -14,7 +14,7 @@ A Kodi 21 (Omega) player/resolver addon that enables Usenet-based streaming thro
 > **Current release: `v1.0.7`** on `main`. Highlights on this branch:
 >
 > - **Pass-through-first proxy**: MKV and other non-MP4 streams use byte pass-through by default, preserving native source seeking and zero-fill recovery. Force-remux is now optional, with threshold `0` meaning fully off.
-> - **Live fallback streams**: duplicate NZB releases are enabled by default with up to 5 standby submissions; fallback playback stays on the pass-through proxy and uses fallback recovery instead of retry, zero-fill, or skip rescue paths.
+> - **Live fallback streams**: duplicate NZB releases are enabled by default with up to 5 standby submissions, grouped by NZB manifest payload metadata, and validated with exact content length plus 1000 sampled byte ranges before switching.
 > - **MP4 rewrite remains first-class**: moov-at-tail MP4s are rewritten in pure Python for native Kodi seek; already-faststart MP4s direct-play unless fallback metadata requires proxy session tracking.
 > - **Prowlarr support** as an alternative indexer to NZBHydra2.
 > - **Dolby Vision routing matrix**: P5 / P7 FEL / P8 / unknown DV are routed to matroska automatically; P7 MEL and non-DV go to fmp4 HLS when that mode is selected.
@@ -62,7 +62,9 @@ If ffmpeg isn't installed, the proxy degrades gracefully to pass-through or dire
 
 When **Submit duplicate releases as live fallbacks** is enabled, the resolver attaches conservative duplicate candidates from the result list and submits them after the primary NZB is accepted. This is enabled by default. Standby submits run in a background worker so primary playback can continue polling immediately. Once playback starts, the proxy keeps the fallback job metadata with the session and can switch to another prepared stream if the active source becomes unrecoverable.
 
-Fallback selection is intentionally strict: candidates must share the normalized title and quality markers and have a valid NZB link. Candidates can be tried regardless of release size, but runtime source validation still checks content length and fingerprints before switching. **Maximum fallback releases** caps how many standby submits are attached per primary result and defaults to `5`.
+Fallback grouping is based on the NZB manifest's selected payload entry, not the search result size. The addon fetches each candidate NZB, prefers the main video filename and file-level segment-byte total when visible, and falls back to a provisional archive/RAR grouping key when only archive parts are visible. If the initially selected file candidate fails a Message-ID health check, the addon skips that candidate and tries the next eligible file in the same NZB bundle instead of failing the whole result. Candidates with the same selected payload Article Message-IDs are treated as mirrored copies of the same NZB and are not used as fallbacks.
+
+Runtime switching still requires exact WebDAV `Content-Length` equality and 1000 pseudo-random 4096-byte fingerprint samples before the proxy switches to a fallback source. **Maximum fallback releases** caps how many standby submits are attached per primary result and defaults to `5`.
 
 Fallback recovery is the only rescue path for fallback sessions: if no validated fallback source can resume the failed range, the proxy closes the stream instead of retrying the original source, zero-filling, or probing forward to skip bytes.
 

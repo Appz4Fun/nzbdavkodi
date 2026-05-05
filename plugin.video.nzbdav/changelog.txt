@@ -1,7 +1,10 @@
 v1.0.7 (2026-05-04)
 - Enable fallback streams by default with a default maximum of 5 fallback submissions per primary result.
 - Keep fallback playback on the pass-through proxy path so standby streams can be switched in without force-remux.
-- Try fallback candidates regardless of release size, while runtime validation still checks source byte length and fingerprints before switching.
+- Group fallback candidates by NZB manifest payload metadata instead of release title/quality or indexer-reported size. Visible video entries group by normalized filename plus file-level segment bytes; RAR-only NZBs stay eligible under a provisional archive grouping key.
+- Reject mirrored NZB listings by Article Message-ID digest, so fallback submissions prefer separate uploads instead of the same NZB listed on another indexer.
+- Skip only the unhealthy file candidate when an initial Message-ID health check fails, then continue to the next eligible file in the NZB bundle.
+- Require exact WebDAV source byte length and 1000 pseudo-random 4096-byte fingerprint samples before runtime fallback switching.
 - Use fallback recovery instead of retry, zero-fill, or skip recovery; if no validated fallback can resume, close the stream cleanly.
 
 v1.0.6 (2026-05-04)
