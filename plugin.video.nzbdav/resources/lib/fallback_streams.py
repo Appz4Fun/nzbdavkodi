@@ -175,6 +175,21 @@ def _article_digest(result):
     return manifest.get("article_digest", "") or ""
 
 
+def _manifest_candidate_message_ids_are_healthy(candidate):
+    message_ids = candidate.get("message_ids") if isinstance(candidate, dict) else None
+    if not isinstance(message_ids, list) or not message_ids:
+        return False
+    for message_id in message_ids:
+        if not isinstance(message_id, str):
+            return False
+        clean = message_id.strip()
+        if not clean or "@" not in clean:
+            return False
+        if any(char.isspace() or ord(char) < 0x20 for char in clean):
+            return False
+    return True
+
+
 def _manifest_error(reason):
     return {
         "payload_kind": "",
@@ -233,7 +248,9 @@ def attach_fallback_candidates(results):
             continue
         if link not in manifest_cache:
             try:
-                manifest_cache[link] = fetch_nzb_video_manifest(link)
+                manifest_cache[link] = fetch_nzb_video_manifest(
+                    link, health_check=_manifest_candidate_message_ids_are_healthy
+                )
             except Exception:  # pylint: disable=broad-except
                 manifest_cache[link] = _manifest_error("fetch_error")
         manifest = manifest_cache[link]

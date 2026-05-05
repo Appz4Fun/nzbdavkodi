@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 nzbdav contributors
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 from urllib.error import URLError
+from xml.sax.saxutils import quoteattr
 
 from resources.lib.fallback_streams import (
     _SAFE_JOB_RE,
@@ -23,11 +24,48 @@ def _mock_range_response(body, status=206, headers=None):
     resp.read = MagicMock(return_value=body)
     resp.status = status
     resp.getcode = MagicMock(return_value=status)
-    header_map = headers or {}
+    header_map = {str(key).lower(): value for key, value in (headers or {}).items()}
     resp.headers.get = MagicMock(
-        side_effect=lambda key, default=None: header_map.get(key, default)
+        side_effect=lambda key, default=None: header_map.get(str(key).lower(), default)
     )
     return resp
+
+
+def _mock_nzb_response(body, status=200, headers=None):
+    resp = MagicMock()
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=False)
+    resp.status = status
+    resp.getcode = MagicMock(return_value=status)
+    resp.read = MagicMock(return_value=body)
+    header_map = {str(key).lower(): value for key, value in (headers or {}).items()}
+    resp.headers.get = MagicMock(
+        side_effect=lambda key, default=None: header_map.get(str(key).lower(), default)
+    )
+    return resp
+
+
+def _nzb_xml(files):
+    body = [
+        '<?xml version="1.0" encoding="utf-8"?>',
+        '<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">',
+    ]
+    body.extend(files)
+    body.append("</nzb>")
+    return "\n".join(body).encode("utf-8")
+
+
+def _nzb_file(subject, segments):
+    segment_xml = "\n".join(
+        '<segment bytes="{}" number="{}">{}</segment>'.format(size, number, msgid)
+        for number, size, msgid in segments
+    )
+    return """
+    <file poster="poster" date="1777937305" subject={}>
+      <groups><group>alt.binaries.test</group></groups>
+      <segments>{}</segments>
+    </file>
+    """.format(quoteattr(subject), segment_xml)
 
 
 def _result(title, link, size, meta=None):
@@ -104,7 +142,7 @@ def test_manifest_grouping_uses_video_name_and_bytes_not_result_size(
         "https://b/nzb": _manifest("video", "example movie 2026 group.mkv", 8000, "b"),
         "https://c/nzb": _manifest("video", "example movie 2026 group.mkv", 9000, "c"),
     }
-    mock_fetch.side_effect = lambda url: manifests[url]
+    mock_fetch.side_effect = lambda url, **_kwargs: manifests[url]
 
     results = [primary, duplicate, unrelated]
 
@@ -155,7 +193,7 @@ def test_same_article_mirrors_are_not_attached_as_fallbacks(mock_settings, mock_
         "https://idx/b.nzb": _manifest("video", "movie.mkv", 1000, "articles-a"),
         "https://idx/c.nzb": _manifest("video", "movie.mkv", 1000, "articles-c"),
     }
-    mock_fetch.side_effect = lambda url: manifests[url]
+    mock_fetch.side_effect = lambda url, **_kwargs: manifests[url]
 
     attach_fallback_candidates([primary, mirror, repost])
 
@@ -176,12 +214,54 @@ def test_rar_only_manifests_are_grouped_provisionally_for_runtime_validation(
         "https://idx/a.nzb": _manifest("archive", "movie", 0, "articles-a"),
         "https://idx/b.nzb": _manifest("archive", "movie", 0, "articles-b"),
     }
-    mock_fetch.side_effect = lambda url: manifests[url]
+    mock_fetch.side_effect = lambda url, **_kwargs: manifests[url]
 
     attach_fallback_candidates([primary, archive_fallback])
 
     assert primary["_fallback_candidates"] == [archive_fallback]
     assert archive_fallback["_fallback_candidates"] == [primary]
+
+
+@patch("resources.lib.nzb_manifest.urlopen")
+@patch("resources.lib.fallback_streams._fallback_settings")
+def test_attach_fallbacks_skips_unhealthy_manifest_file_candidates(
+    mock_settings, mock_urlopen
+):
+    mock_settings.return_value = (True, 5)
+    primary = _result("Movie primary", "https://idx/a.nzb", 1)
+    fallback = _result("Movie fallback", "https://idx/b.nzb", 2)
+    bodies = {
+        "https://idx/a.nzb": _nzb_xml(
+            [
+                _nzb_file(
+                    '"Broken.Primary.mkv" yEnc (1/1)',
+                    [(1, 10000, "malformed id")],
+                ),
+                _nzb_file('"Movie.mkv" yEnc (1/1)', [(1, 8000, "good-a@id")]),
+            ]
+        ),
+        "https://idx/b.nzb": _nzb_xml(
+            [
+                _nzb_file(
+                    '"Broken.Fallback.mkv" yEnc (1/1)',
+                    [(1, 10000, "also malformed")],
+                ),
+                _nzb_file('"Movie.mkv" yEnc (1/1)', [(1, 8000, "good-b@id")]),
+            ]
+        ),
+    }
+    mock_urlopen.side_effect = lambda req, timeout=5: _mock_nzb_response(
+        bodies[req.full_url], headers={"Content-Length": str(len(bodies[req.full_url]))}
+    )
+
+    attach_fallback_candidates([primary, fallback])
+
+    assert primary["_fallback_manifest"]["video_name"] == "Movie.mkv"
+    assert fallback["_fallback_manifest"]["video_name"] == "Movie.mkv"
+    assert primary["_fallback_manifest"]["skipped_candidate_count"] == 1
+    assert fallback["_fallback_manifest"]["skipped_candidate_count"] == 1
+    assert primary["_fallback_candidates"] == [fallback]
+    assert fallback["_fallback_candidates"] == [primary]
 
 
 @patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
@@ -194,7 +274,7 @@ def test_manifest_fetches_are_cached_per_attach_call(mock_settings, mock_fetch):
 
     attach_fallback_candidates([first, second])
 
-    mock_fetch.assert_called_once_with("https://idx/same.nzb")
+    mock_fetch.assert_called_once_with("https://idx/same.nzb", health_check=ANY)
     assert first["_fallback_manifest_error"] == ""
     assert second["_fallback_manifest_error"] == ""
 
@@ -208,7 +288,7 @@ def test_manifest_fetch_exception_marks_one_result_failed_without_raising(
     broken = _result("Broken", "https://idx/broken.nzb", 1)
     working = _result("Working", "https://idx/working.nzb", 2)
 
-    def fetch(url):
+    def fetch(url, **_kwargs):
         if url.endswith("broken.nzb"):
             raise RuntimeError("message id failure")
         return _manifest("video", "movie.mkv", 1000, "articles-working")
