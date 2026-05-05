@@ -107,6 +107,10 @@ HTTP_USER_AGENT = "NZB-DAV Kodi Addon"
 _HTTP_USER_AGENT = HTTP_USER_AGENT
 
 
+class HttpResponseTooLarge(ValueError):
+    """Raised when a response body exceeds the caller's byte limit."""
+
+
 def _response_status(resp):
     """Return an integer HTTP status from urllib-like responses, if exposed."""
     for attr in ("status", "code"):
@@ -121,7 +125,7 @@ def _response_status(resp):
     return None
 
 
-def http_get(url, timeout=15):
+def http_get(url, timeout=15, headers=None, max_bytes=None):
     """Perform an HTTP GET and return the response body as text.
 
     Invalid UTF-8 is decoded with replacement so callers receive one
@@ -132,11 +136,17 @@ def http_get(url, timeout=15):
     ``https``. urllib's default opener happily handles ``file://`` and
     ``ftp://`` and would otherwise return ``/etc/passwd`` if a user
     pasted that into a URL setting field.
+
+    Optional ``headers`` are merged with the shared User-Agent. ``max_bytes``
+    caps the response body and raises ``HttpResponseTooLarge`` when exceeded.
     """
     scheme = urlsplit(url).scheme.lower()
     if scheme not in _ALLOWED_HTTP_SCHEMES:
         raise ValueError("unsupported URL scheme: {!r}".format(scheme))
-    req = Request(url, headers={"User-Agent": _HTTP_USER_AGENT})
+    request_headers = {"User-Agent": _HTTP_USER_AGENT}
+    if headers:
+        request_headers.update(headers)
+    req = Request(url, headers=request_headers)
     # nosemgrep
     with urlopen(  # nosec B310 — scheme allowlist enforced above
         req, timeout=timeout
@@ -144,7 +154,26 @@ def http_get(url, timeout=15):
         status = _response_status(resp)
         if status is not None and not 200 <= status < 300:
             raise OSError("HTTP status {}".format(status))
-        return resp.read().decode("utf-8", errors="replace")
+        read_size = None
+        if max_bytes is not None:
+            max_bytes = int(max_bytes)
+            if max_bytes < 0:
+                raise ValueError("max_bytes must be non-negative")
+            try:
+                content_length = int(resp.headers.get("Content-Length", "0") or 0)
+            except (AttributeError, TypeError, ValueError):
+                content_length = 0
+            if content_length > max_bytes:
+                raise HttpResponseTooLarge(
+                    "HTTP response exceeds {} bytes".format(max_bytes)
+                )
+            read_size = max_bytes + 1
+        body = resp.read(read_size) if read_size is not None else resp.read()
+        if max_bytes is not None and len(body) > max_bytes:
+            raise HttpResponseTooLarge(
+                "HTTP response exceeds {} bytes".format(max_bytes)
+            )
+        return body.decode("utf-8", errors="replace")
 
 
 _PUBDATE_ERRORS = (OverflowError, TypeError, ValueError)

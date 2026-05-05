@@ -31,20 +31,6 @@ def _mock_range_response(body, status=206, headers=None):
     return resp
 
 
-def _mock_nzb_response(body, status=200, headers=None):
-    resp = MagicMock()
-    resp.__enter__ = MagicMock(return_value=resp)
-    resp.__exit__ = MagicMock(return_value=False)
-    resp.status = status
-    resp.getcode = MagicMock(return_value=status)
-    resp.read = MagicMock(return_value=body)
-    header_map = {str(key).lower(): value for key, value in (headers or {}).items()}
-    resp.headers.get = MagicMock(
-        side_effect=lambda key, default=None: header_map.get(str(key).lower(), default)
-    )
-    return resp
-
-
 def _nzb_xml(files):
     body = [
         '<?xml version="1.0" encoding="utf-8"?>',
@@ -222,10 +208,10 @@ def test_rar_only_manifests_are_grouped_provisionally_for_runtime_validation(
     assert archive_fallback["_fallback_candidates"] == [primary]
 
 
-@patch("resources.lib.nzb_manifest.urlopen")
+@patch("resources.lib.nzb_manifest.http_get")
 @patch("resources.lib.fallback_streams._fallback_settings")
 def test_attach_fallbacks_skips_unhealthy_manifest_file_candidates(
-    mock_settings, mock_urlopen
+    mock_settings, mock_http_get
 ):
     mock_settings.return_value = (True, 5)
     primary = _result("Movie primary", "https://idx/a.nzb", 1)
@@ -250,9 +236,7 @@ def test_attach_fallbacks_skips_unhealthy_manifest_file_candidates(
             ]
         ),
     }
-    mock_urlopen.side_effect = lambda req, timeout=5: _mock_nzb_response(
-        bodies[req.full_url], headers={"Content-Length": str(len(bodies[req.full_url]))}
-    )
+    mock_http_get.side_effect = lambda url, **_kwargs: bodies[url].decode("utf-8")
 
     attach_fallback_candidates([primary, fallback])
 

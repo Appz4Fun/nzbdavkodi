@@ -3,7 +3,7 @@
 
 from unittest.mock import MagicMock, patch
 
-from resources.lib.http_util import http_get, notify, redact_url
+from resources.lib.http_util import HttpResponseTooLarge, http_get, notify, redact_url
 
 
 @patch("resources.lib.http_util.urlopen")
@@ -74,6 +74,59 @@ def test_http_get_passes_timeout(mock_urlopen):
     http_get("http://example.com/api", timeout=30)
     _, kwargs = mock_urlopen.call_args
     assert kwargs.get("timeout") == 30
+
+
+@patch("resources.lib.http_util.urlopen")
+def test_http_get_passes_extra_headers_and_reads_with_max_bytes(mock_urlopen):
+    """http_get should merge caller headers and cap reads when requested."""
+    mock_resp = MagicMock()
+    mock_resp.headers.get.return_value = "0"
+    mock_resp.read.return_value = b"ok"
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    mock_urlopen.return_value = mock_resp
+
+    result = http_get("http://example.com/api", headers={"X-Test": "1"}, max_bytes=2)
+
+    assert result == "ok"
+
+    request = mock_urlopen.call_args[0][0]
+    assert request.get_header("User-agent") == "NZB-DAV Kodi Addon"
+    assert request.get_header("X-test") == "1"
+    mock_resp.read.assert_called_once_with(3)
+
+
+@patch("resources.lib.http_util.urlopen")
+def test_http_get_rejects_oversized_content_length(mock_urlopen):
+    """Content-Length larger than max_bytes should fail before body read."""
+    import pytest
+
+    mock_resp = MagicMock()
+    mock_resp.headers.get.return_value = "5"
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    mock_urlopen.return_value = mock_resp
+
+    with pytest.raises(HttpResponseTooLarge):
+        http_get("http://example.com/api", max_bytes=4)
+    mock_resp.read.assert_not_called()
+
+
+@patch("resources.lib.http_util.urlopen")
+def test_http_get_rejects_body_larger_than_max_bytes(mock_urlopen):
+    """Bodies without Content-Length should still be capped after read."""
+    import pytest
+
+    mock_resp = MagicMock()
+    mock_resp.headers.get.return_value = "0"
+    mock_resp.read.return_value = b"12345"
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    mock_urlopen.return_value = mock_resp
+
+    with pytest.raises(HttpResponseTooLarge):
+        http_get("http://example.com/api", max_bytes=4)
+    mock_resp.read.assert_called_once_with(5)
 
 
 @patch("resources.lib.http_util.urlopen")

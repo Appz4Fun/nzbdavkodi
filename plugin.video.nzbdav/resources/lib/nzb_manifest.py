@@ -6,9 +6,9 @@
 import hashlib
 import re
 import xml.etree.ElementTree as ET
-from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
+
+from resources.lib.http_util import HttpResponseTooLarge, http_get
 
 _MAX_NZB_BYTES = 2 * 1024 * 1024
 _VIDEO_EXTENSIONS = (".mkv", ".mp4", ".m4v", ".avi", ".ts", ".m2ts", ".mov", ".wmv")
@@ -269,20 +269,10 @@ def fetch_nzb_video_manifest(
     """Fetch and parse a candidate NZB manifest."""
     if not _valid_nzb_url(url):
         return _empty_manifest("invalid_url")
-    req = Request(url)
-    req.add_header("User-Agent", "NZB-DAV Kodi")
     try:
-        # nosemgrep
-        with urlopen(req, timeout=timeout) as resp:  # nosec B310
-            try:
-                content_length = int(resp.headers.get("Content-Length", "0") or 0)
-            except (TypeError, ValueError):
-                content_length = 0
-            if content_length > max_bytes:
-                return _empty_manifest("too_large")
-            body = resp.read(max_bytes + 1)
-    except (HTTPError, URLError, OSError, ValueError):
-        return _empty_manifest("fetch_error")
-    if len(body) > max_bytes:
+        body = http_get(url, timeout=timeout, max_bytes=max_bytes)
+    except HttpResponseTooLarge:
         return _empty_manifest("too_large")
+    except (OSError, ValueError):
+        return _empty_manifest("fetch_error")
     return extract_nzb_video_manifest(body, health_check=health_check)

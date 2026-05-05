@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 nzbdav contributors
 
-from unittest.mock import MagicMock, patch
-from urllib.error import URLError
+from unittest.mock import patch
 from xml.sax.saxutils import escape, quoteattr
 
+from resources.lib.http_util import HttpResponseTooLarge
 from resources.lib.nzb_manifest import (
     extract_nzb_video_manifest,
     fetch_nzb_video_manifest,
@@ -35,20 +35,6 @@ def _file(subject, segments):
       <segments>{}</segments>
     </file>
     """.format(quoteattr(subject), segment_xml)
-
-
-def _mock_response(body, status=200, headers=None):
-    resp = MagicMock()
-    resp.__enter__ = MagicMock(return_value=resp)
-    resp.__exit__ = MagicMock(return_value=False)
-    resp.status = status
-    resp.getcode = MagicMock(return_value=status)
-    resp.read = MagicMock(return_value=body)
-    header_map = {str(key).lower(): value for key, value in (headers or {}).items()}
-    resp.headers.get = MagicMock(
-        side_effect=lambda key, default=None: header_map.get(str(key).lower(), default)
-    )
-    return resp
 
 
 def test_normalize_video_filename_is_case_and_separator_insensitive():
@@ -231,28 +217,30 @@ def test_invalid_xml_is_unsupported_without_raising():
     assert manifest["unsupported_reason"] == "invalid_xml"
 
 
-@patch("resources.lib.nzb_manifest.urlopen")
-def test_fetch_nzb_video_manifest_fetches_and_parses_valid_nzb(mock_urlopen):
+@patch("resources.lib.nzb_manifest.http_get")
+def test_fetch_nzb_video_manifest_fetches_and_parses_valid_nzb(mock_http_get):
     xml = _nzb_xml([_file('"Movie.mkv" yEnc (1/1)', [(1, 1000, "a@id")])])
-    mock_urlopen.return_value = _mock_response(xml, headers={"Content-Length": "1234"})
+    mock_http_get.return_value = xml.decode("utf-8")
 
     manifest = fetch_nzb_video_manifest("https://idx/getnzb/123")
 
     assert manifest["video_name"] == "Movie.mkv"
-    req = mock_urlopen.call_args[0][0]
-    assert req.full_url == "https://idx/getnzb/123"
-    assert req.headers["User-agent"] == "NZB-DAV Kodi"
+    mock_http_get.assert_called_once_with(
+        "https://idx/getnzb/123",
+        timeout=5,
+        max_bytes=2 * 1024 * 1024,
+    )
 
 
-@patch("resources.lib.nzb_manifest.urlopen")
-def test_fetch_nzb_video_manifest_passes_candidate_health_check(mock_urlopen):
+@patch("resources.lib.nzb_manifest.http_get")
+def test_fetch_nzb_video_manifest_passes_candidate_health_check(mock_http_get):
     xml = _nzb_xml(
         [
             _file('"Broken.Movie.mkv" yEnc (1/1)', [(1, 1000, "bad@id")]),
             _file('"Working.Movie.mkv" yEnc (1/1)', [(1, 900, "good@id")]),
         ]
     )
-    mock_urlopen.return_value = _mock_response(xml, headers={"Content-Length": "1234"})
+    mock_http_get.return_value = xml.decode("utf-8")
 
     manifest = fetch_nzb_video_manifest(
         "https://idx/getnzb/123",
@@ -263,28 +251,26 @@ def test_fetch_nzb_video_manifest_passes_candidate_health_check(mock_urlopen):
     assert manifest["skipped_candidate_count"] == 1
 
 
-@patch("resources.lib.nzb_manifest.urlopen")
-def test_fetch_nzb_video_manifest_rejects_invalid_url(mock_urlopen):
+@patch("resources.lib.nzb_manifest.http_get")
+def test_fetch_nzb_video_manifest_rejects_invalid_url(mock_http_get):
     manifest = fetch_nzb_video_manifest("file:///etc/passwd")
 
     assert manifest["unsupported_reason"] == "invalid_url"
-    mock_urlopen.assert_not_called()
+    mock_http_get.assert_not_called()
 
 
-@patch("resources.lib.nzb_manifest.urlopen", side_effect=URLError("timeout"))
-def test_fetch_nzb_video_manifest_returns_fetch_error(_mock_urlopen):
+@patch("resources.lib.nzb_manifest.http_get", side_effect=OSError("timeout"))
+def test_fetch_nzb_video_manifest_returns_fetch_error(_mock_http_get):
     manifest = fetch_nzb_video_manifest("https://idx/getnzb/123")
 
     assert manifest["unsupported_reason"] == "fetch_error"
 
 
-@patch("resources.lib.nzb_manifest.urlopen")
-def test_fetch_nzb_video_manifest_rejects_oversized_nzb(mock_urlopen):
-    mock_urlopen.return_value = _mock_response(
-        b"<nzb/>",
-        headers={"Content-Length": str(2 * 1024 * 1024 + 1)},
-    )
-
+@patch(
+    "resources.lib.nzb_manifest.http_get",
+    side_effect=HttpResponseTooLarge("too large"),
+)
+def test_fetch_nzb_video_manifest_rejects_oversized_nzb(_mock_http_get):
     manifest = fetch_nzb_video_manifest("https://idx/getnzb/123")
 
     assert manifest["unsupported_reason"] == "too_large"
