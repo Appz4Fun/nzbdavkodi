@@ -71,6 +71,7 @@ def _split_http_url(url):
 
 
 def _origin_key(parts):
+    """Return the normalized origin tuple for parsed URL parts."""
     scheme = parts.scheme.lower()
     port = parts.port
     if port is None:
@@ -79,6 +80,7 @@ def _origin_key(parts):
 
 
 def _path_is_under_base(path, base_path):
+    """Return whether a URL path is within the configured base path."""
     prefix = (base_path or "").rstrip("/")
     if not prefix:
         return True
@@ -150,6 +152,7 @@ def _quality_key(result):
 
 
 def _manifest_group_key(result):
+    """Return the manifest grouping key used to find fallback peers."""
     manifest = result.get("_fallback_manifest")
     if not isinstance(manifest, dict):
         return None
@@ -169,6 +172,7 @@ def _manifest_group_key(result):
 
 
 def _article_digest(result):
+    """Return the manifest article digest attached to a result."""
     manifest = result.get("_fallback_manifest")
     if not isinstance(manifest, dict):
         return ""
@@ -176,6 +180,7 @@ def _article_digest(result):
 
 
 def _manifest_candidate_message_ids_are_healthy(candidate):
+    """Return whether a manifest candidate has usable article Message-IDs."""
     message_ids = candidate.get("message_ids") if isinstance(candidate, dict) else None
     if not isinstance(message_ids, list) or not message_ids:
         return False
@@ -191,6 +196,7 @@ def _manifest_candidate_message_ids_are_healthy(candidate):
 
 
 def _manifest_error(reason):
+    """Return an unsupported manifest for fallback grouping errors."""
     return make_empty_manifest(reason)
 
 
@@ -366,6 +372,7 @@ def fetch_content_length(url, auth_header, timeout=2):
 
 
 def _content_range_matches_request(content_range, start, end, content_length=0):
+    """Return whether a Content-Range header matches a requested range."""
     if not isinstance(content_range, str):
         return False
     match = _CONTENT_RANGE_RE.match(content_range.strip())
