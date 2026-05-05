@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Released | What it's about |
 |---|---|---|
+| **[1.0.8](#108--2026-05-05)** | 2026-05-05 | Fallback manifest hardening, shared HTTP fetch path, malformed group-size fail-closed behavior |
 | **[1.0.7](#107--2026-05-04)** | 2026-05-04 | Fallback streams enabled by default, 5 standby submits, pass-through playback, NZB-manifest grouping, 1000-sample validation, fallback-only recovery |
 | **[1.0.6](#106--2026-05-04)** | 2026-05-04 | Pass-through-first proxy, live duplicate-release fallback streams, authenticated settings checks, fallback worker cleanup, threshold-zero remux semantics |
 | **[1.0.5](#105--2026-05-04)** | 2026-05-04 | Direct Newznab indexers, manual Indexers settings, concurrent provider fan-out, Kodi repo publishing fixes, WebDAV range compatibility, cache eviction race fix |
@@ -50,6 +51,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | **[0.1.0](#010--2026-04-05)** | 2026-04-05 | Initial release |
 
 > **Bolded** versions are either major features or recommended upgrades.
+
+---
+
+## [1.0.8] — 2026-05-05
+
+> **Fallback manifest hardening.** This release tightens the v1.0.7 manifest
+> grouping path so malformed metadata fails closed and NZB downloads use the
+> shared HTTP utility layer.
+
+**Changed**
+- **NZB manifest downloads now use `http_util.http_get()`** while preserving the
+  existing timeout, 2 MiB manifest cap, invalid-URL guard, and `too_large` /
+  `fetch_error` manifest reasons.
+
+**Fixed**
+- **Malformed fallback `group_bytes` now fails closed.** A malformed
+  pre-attached manifest can no longer abort duplicate grouping for every result;
+  that candidate is skipped instead.
+
+**Tests**
+- Added regression coverage for malformed fallback manifest group sizes and
+  shared HTTP response size limits.
 
 ---
 
@@ -843,6 +866,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[1.0.8]: https://github.com/xbmc4lyfe/nzbdavkodi/compare/v1.0.7...v1.0.8
 [1.0.7]: https://github.com/xbmc4lyfe/nzbdavkodi/compare/v1.0.6...v1.0.7
 [1.0.6]: https://github.com/xbmc4lyfe/nzbdavkodi/compare/v1.0.5...v1.0.6
 [1.0.5]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v1.0.5

@@ -11,7 +11,7 @@
 
 A Kodi 21 (Omega) player/resolver addon that enables Usenet-based streaming through NZBHydra2 (or Prowlarr) and nzbdav. Works as a TMDBHelper player -- search for a movie or TV episode, pick an NZB, and stream it directly through nzbdav's WebDAV server.
 
-> **Current release: `v1.0.7`** on `main`. Highlights on this branch:
+> **Current release: `v1.0.8`** on `main`. Highlights on this branch:
 >
 > - **Pass-through-first proxy**: MKV and other non-MP4 streams use byte pass-through by default, preserving native source seeking and zero-fill recovery. Force-remux is now optional, with threshold `0` meaning fully off.
 > - **Live fallback streams**: duplicate NZB releases are enabled by default with up to 5 standby submissions, grouped by NZB manifest payload metadata, and validated with exact content length plus 1000 sampled byte ranges before switching.
@@ -87,7 +87,7 @@ Force-remux remains available for environments that need ffmpeg compatibility pa
 Install through the NZB-DAV repository for automatic updates:
 
 1. In Kodi: **Settings > File Manager > Add source** > enter `https://xbmc4lyfe.github.io/nzbdavkodi/` > name it `nzbdav`
-2. **Settings > Add-ons > Install from zip file** > `nzbdav` > `repository.nzbdav` > `repository.nzbdav-1.0.7.zip`
+2. **Settings > Add-ons > Install from zip file** > `nzbdav` > `repository.nzbdav` > `repository.nzbdav-1.0.8.zip`
 3. **Settings > Add-ons > Install from repository > NZB-DAV Repository > Video add-ons > NZB-DAV**
 4. Future updates are installed automatically
 

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="plugin.video.nzbdav"
        name="NZB-DAV"
-       version="1.0.7"
+       version="1.0.8"
        provider-name="nzbdav">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
@@ -22,7 +22,12 @@
         <license>GPL-3.0-or-later</license>
         <source>https://github.com/xbmc4lyfe/nzbdavkodi</source>
         <website>https://xbmc4lyfe.github.io/nzbdavkodi/</website>
-        <news>v1.0.7
+        <news>v1.0.8
+- Route NZB manifest downloads through the shared HTTP utility while preserving the 2 MiB manifest size guard and fetch-error handling.
+- Fail closed when pre-attached fallback manifest group sizes are malformed so one bad manifest cannot abort duplicate grouping.
+- Add focused regression coverage for malformed fallback manifests and shared HTTP size limits.
+
+v1.0.7
 - Enable fallback streams by default with a default maximum of 5 fallback submissions per primary result.
 - Keep fallback playback on the pass-through proxy path so standby streams can be switched in without force-remux.
 - Group fallback candidates by NZB manifest payload metadata instead of release title/quality or indexer-reported size. Visible video entries group by normalized filename plus file-level segment bytes; RAR-only NZBs stay eligible under a provisional archive grouping key.

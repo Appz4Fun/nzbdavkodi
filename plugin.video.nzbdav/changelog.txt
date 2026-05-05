@@ -1,3 +1,8 @@
+v1.0.8 (2026-05-05)
+- Route NZB manifest downloads through the shared HTTP utility while preserving the 2 MiB manifest size guard and fetch-error handling.
+- Fail closed when pre-attached fallback manifest group sizes are malformed so one bad manifest cannot abort duplicate grouping.
+- Add focused regression coverage for malformed fallback manifests and shared HTTP size limits.
+
 v1.0.7 (2026-05-04)
 - Enable fallback streams by default with a default maximum of 5 fallback submissions per primary result.
 - Keep fallback playback on the pass-through proxy path so standby streams can be switched in without force-remux.
