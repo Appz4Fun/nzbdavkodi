@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 
 from resources.lib.http_util import HttpResponseTooLarge, http_get
 
-_MAX_NZB_BYTES = 2 * 1024 * 1024
+_MAX_NZB_BYTES = 100 * 1024 * 1024
 _VIDEO_EXTENSIONS = (".mkv", ".mp4", ".m4v", ".avi", ".ts", ".m2ts", ".mov", ".wmv")
 _IGNORED_VIDEO_PREFIXES = ("sample.", "sample-", "sample_")
 _VIDEO_EXTENSION_PATTERN = r"(?:mkv|mp4|m4v|avi|ts|m2ts|mov|wmv)"

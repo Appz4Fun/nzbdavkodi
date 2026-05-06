@@ -1,4 +1,5 @@
 vNext (unreleased)
+- Raise the fallback NZB manifest download cap from 2 MiB to 100 MiB so large but valid NZBs can still be parsed for fallback grouping.
 - Defer fallback candidate discovery until a selected result needs it, prefilter with the same title/profile gates used by fallback matching, and stop once the configured fallback limit is satisfied.
 - Speed up NZB manifest parsing by skipping obvious non-video/non-archive subjects before segment parsing and deferring archive parsing until direct video candidates fail.
 - Speed up live fallback switching by checking ready streams before standby polls, rejecting same-current/wrong-length/failed candidates earlier, probing the failed byte range before full fingerprint validation, and reusing URL/auth/content-length/fingerprint state within one switch.

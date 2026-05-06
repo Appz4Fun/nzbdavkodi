@@ -739,7 +739,7 @@ def test_fetch_nzb_video_manifest_fetches_and_parses_valid_nzb(mock_http_get):
     mock_http_get.assert_called_once_with(
         "https://idx/getnzb/123",
         timeout=20,
-        max_bytes=2 * 1024 * 1024,
+        max_bytes=100 * 1024 * 1024,
     )
 
 

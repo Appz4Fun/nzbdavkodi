@@ -63,6 +63,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > work during live switch validation.
 
 **Changed**
+- **Fallback NZB manifest downloads now allow large NZBs up to 100 MiB.** The
+  previous 2 MiB guard rejected valid large NZBs before they could be parsed for
+  fallback grouping; the `too_large` reason remains for pathological responses.
 - **Fallback candidate discovery now runs lazily for the selected release** and
   prefilters candidates with the same title/profile gates used by the final
   fallback matcher before fetching NZB manifests.
