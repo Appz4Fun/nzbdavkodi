@@ -1574,6 +1574,80 @@ def test_selection_fallback_overlaps_selected_manifest_with_candidate_batch(
 
 @patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
 @patch("resources.lib.fallback_streams._fallback_settings")
+def test_selection_fallback_pipelines_second_manifest_wave_after_underfill(
+    mock_settings, mock_fetch
+):
+    mock_settings.return_value = (True, 3)
+    selected = _result(
+        "The.Matrix.1999.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/selected-pipeline.nzb",
+        60000000000,
+        meta={
+            "resolution": "2160p",
+            "quality": "REMUX",
+            "codec": "x265/HEVC",
+            "hdr": ["Dolby Vision"],
+            "audio": ["TrueHD", "Atmos"],
+            "container": "mkv",
+        },
+    )
+    candidates = [
+        _result(
+            "The.Matrix.1999.UHD.BluRay.2160p.DV.HEVC.REMUX-PIPE{:02d}".format(index),
+            "https://idx/fallback-pipeline-{}.nzb".format(index),
+            60000000000,
+            meta=selected["_meta"],
+        )
+        for index in range(1, 10)
+    ]
+    matching_digests = {
+        "https://idx/fallback-pipeline-1.nzb": "match-1",
+        "https://idx/fallback-pipeline-7.nzb": "match-7",
+        "https://idx/fallback-pipeline-8.nzb": "match-8",
+    }
+    manifests = {
+        selected["link"]: _manifest(
+            "video", "the matrix 1999 remux.mkv", 60000000000, "selected"
+        )
+    }
+    for candidate in candidates:
+        digest = matching_digests.get(candidate["link"])
+        if digest is None:
+            manifests[candidate["link"]] = _manifest(
+                "video",
+                "different {}.mkv".format(candidate["link"].rsplit("-", 1)[-1]),
+                61000000000,
+                "miss-{}".format(candidate["link"].rsplit("-", 1)[-1]),
+            )
+        else:
+            manifests[candidate["link"]] = _manifest(
+                "video", "the matrix 1999 remux.mkv", 60000000000, digest
+            )
+
+    seventh_started = threading.Event()
+    fourth_saw_seventh = [False]
+
+    def fetch(url, **_kwargs):
+        if url == candidates[6]["link"]:
+            seventh_started.set()
+        if url == candidates[3]["link"]:
+            fourth_saw_seventh[0] = seventh_started.wait(0.2)
+        return manifests[url]
+
+    mock_fetch.side_effect = fetch
+
+    attach_fallback_candidates_for_selection(selected, [selected] + candidates)
+
+    assert selected["_fallback_candidates"] == [
+        candidates[0],
+        candidates[6],
+        candidates[7],
+    ]
+    assert fourth_saw_seventh[0]
+
+
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+@patch("resources.lib.fallback_streams._fallback_settings")
 def test_selection_fallback_stops_prefilter_scan_after_max_attached_candidates(
     mock_settings, mock_fetch
 ):

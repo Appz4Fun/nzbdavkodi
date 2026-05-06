@@ -1086,6 +1086,7 @@ def attach_fallback_candidates_for_selection(selected, results, fallback_setting
         if selected_digest:
             seen_article_digests.add(selected_digest)
     candidate_batch = []
+    batch_limit = max_candidates
     for candidate in results or []:
         if candidate is selected or not isinstance(candidate, dict):
             continue
@@ -1121,7 +1122,7 @@ def attach_fallback_candidates_for_selection(selected, results, fallback_setting
             continue
         seen_prefetch_links.add(candidate_link)
         candidate_batch.append(candidate)
-        if len(candidate_batch) < max_candidates:
+        if len(candidate_batch) < batch_limit:
             continue
         if not _attach_selection_candidate_batch(
             selected,
@@ -1134,8 +1135,15 @@ def attach_fallback_candidates_for_selection(selected, results, fallback_setting
             break
         selected_manifest_ready = True
         candidate_batch = []
+        if len(candidates) > max_candidates:
+            del candidates[max_candidates:]
         if len(candidates) >= max_candidates:
             break
+        # If the first strict batch underfilled because some plausible peers
+        # were duplicate/non-matching manifests, let the executor pipeline a
+        # larger follow-up wave. Concurrency still stays capped in
+        # _ensure_fallback_candidate_manifests().
+        batch_limit = max_candidates * 2
     if candidate_batch and len(candidates) < max_candidates:
         _attach_selection_candidate_batch(
             selected,
