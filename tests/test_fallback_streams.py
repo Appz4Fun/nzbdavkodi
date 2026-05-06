@@ -982,7 +982,7 @@ def test_selection_fallback_skips_metadata_parse_for_unrelated_raw_titles(
 
 @patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
 @patch("resources.lib.fallback_streams._fallback_settings")
-def test_selection_fallback_stops_fetches_after_unusable_selected_manifest(
+def test_selection_fallback_rejects_batch_after_unusable_selected_manifest(
     mock_settings, mock_fetch
 ):
     mock_settings.return_value = (True, 5)
@@ -1021,9 +1021,15 @@ def test_selection_fallback_stops_fetches_after_unusable_selected_manifest(
     attach_fallback_candidates_for_selection(selected, [selected] + candidates)
 
     assert selected["_fallback_candidates"] == []
-    assert [call.args[0] for call in mock_fetch.call_args_list] == [
-        "https://idx/selected.nzb"
-    ]
+    assert selected["_fallback_manifest_error"] == "fetch_error"
+    assert set(call.args[0] for call in mock_fetch.call_args_list) == {
+        "https://idx/selected.nzb",
+        "https://idx/fallback-unusable-selected-0.nzb",
+        "https://idx/fallback-unusable-selected-1.nzb",
+        "https://idx/fallback-unusable-selected-2.nzb",
+        "https://idx/fallback-unusable-selected-3.nzb",
+        "https://idx/fallback-unusable-selected-4.nzb",
+    }
 
 
 @patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
@@ -1505,6 +1511,65 @@ def test_selection_fallback_fetches_candidate_manifests_in_parallel(
 
     assert selected["_fallback_candidates"] == candidates
     assert first_candidate_saw_second[0]
+
+
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+@patch("resources.lib.fallback_streams._fallback_settings")
+def test_selection_fallback_overlaps_selected_manifest_with_candidate_batch(
+    mock_settings, mock_fetch
+):
+    mock_settings.return_value = (True, 2)
+    selected = _result(
+        "The.Matrix.1999.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/selected-overlap.nzb",
+        60000000000,
+        meta={
+            "resolution": "2160p",
+            "quality": "REMUX",
+            "codec": "x265/HEVC",
+            "hdr": ["Dolby Vision"],
+            "audio": ["TrueHD", "Atmos"],
+            "container": "mkv",
+        },
+    )
+    candidates = [
+        _result(
+            "The.Matrix.1999.UHD.BluRay.2160p.DV.HEVC.REMUX-OVR{:02d}".format(index),
+            "https://idx/fallback-overlap-{}.nzb".format(index),
+            60000000000,
+            meta=selected["_meta"],
+        )
+        for index in range(1, 3)
+    ]
+    manifests = {
+        selected["link"]: _manifest(
+            "video", "the matrix 1999 remux.mkv", 60000000000, "selected"
+        )
+    }
+    for index, candidate in enumerate(candidates, start=1):
+        manifests[candidate["link"]] = _manifest(
+            "video",
+            "the matrix 1999 remux.mkv",
+            60000000000,
+            "overlap-{}".format(index),
+        )
+
+    candidate_started = threading.Event()
+    selected_saw_candidate = [False]
+
+    def fetch(url, **_kwargs):
+        if url == selected["link"]:
+            selected_saw_candidate[0] = candidate_started.wait(0.2)
+        else:
+            candidate_started.set()
+        return manifests[url]
+
+    mock_fetch.side_effect = fetch
+
+    attach_fallback_candidates_for_selection(selected, [selected] + candidates)
+
+    assert selected["_fallback_candidates"] == candidates
+    assert selected_saw_candidate[0]
 
 
 @patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")

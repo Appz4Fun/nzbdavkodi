@@ -929,11 +929,48 @@ def _ensure_fallback_candidate_manifests(candidate_batch):
                 candidate["_fallback_manifest_error"] = "fetch_error"
 
 
+def _ensure_selection_fallback_manifests(selected, candidate_batch):
+    """Fetch the selected manifest and first candidate batch together."""
+    fetch_targets = []
+    if not isinstance(selected.get("_fallback_manifest"), dict):
+        fetch_targets.append(selected)
+    fetch_targets.extend(candidate_batch)
+    if len(fetch_targets) <= 1:
+        for target in fetch_targets:
+            _ensure_fallback_manifest(target, {})
+        return
+    max_workers = min(len(fetch_targets), _MAX_FALLBACKS + 1)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [
+            executor.submit(_ensure_fallback_manifest, target, {})
+            for target in fetch_targets
+        ]
+        for target, future in zip(fetch_targets, futures):
+            try:
+                future.result()
+            except Exception:  # pylint: disable=broad-except
+                target["_fallback_manifest"] = _manifest_error("fetch_error")
+                target["_fallback_manifest_error"] = "fetch_error"
+
+
 def _attach_selection_candidate_batch(
-    selected, candidate_batch, candidates, seen_candidate_links, seen_article_digests
+    selected,
+    candidate_batch,
+    candidates,
+    seen_candidate_links,
+    seen_article_digests,
+    include_selected_manifest=False,
 ):
     """Attach matching fallbacks from one already-prefiltered candidate batch."""
-    _ensure_fallback_candidate_manifests(candidate_batch)
+    if include_selected_manifest:
+        _ensure_selection_fallback_manifests(selected, candidate_batch)
+        selected_digest = _article_digest(selected)
+        if selected_digest:
+            seen_article_digests.add(selected_digest)
+        if not _manifest_may_match_any_peer(selected):
+            return False
+    else:
+        _ensure_fallback_candidate_manifests(candidate_batch)
     for candidate in candidate_batch:
         candidate_link = candidate.get("link", "")
         candidate_digest = _article_digest(candidate)
@@ -947,6 +984,7 @@ def _attach_selection_candidate_batch(
         seen_candidate_links.add(candidate_link)
         if candidate_digest:
             seen_article_digests.add(candidate_digest)
+    return True
 
 
 def _prefetch_candidate_matches(
@@ -1042,7 +1080,11 @@ def attach_fallback_candidates_for_selection(selected, results, fallback_setting
     candidates = []
     seen_candidate_links = {selected.get("link", "")}
     seen_article_digests = set()
-    manifest_cache = None
+    selected_manifest_ready = isinstance(selected.get("_fallback_manifest"), dict)
+    if selected_manifest_ready:
+        selected_digest = _article_digest(selected)
+        if selected_digest:
+            seen_article_digests.add(selected_digest)
     candidate_batch = []
     for candidate in results or []:
         if candidate is selected or not isinstance(candidate, dict):
@@ -1078,23 +1120,19 @@ def attach_fallback_candidates_for_selection(selected, results, fallback_setting
         if not prefetch_match:
             continue
         seen_prefetch_links.add(candidate_link)
-        if manifest_cache is None:
-            manifest_cache = {}
-            _ensure_fallback_manifest(selected, manifest_cache)
-            if not _manifest_may_match_any_peer(selected):
-                break
-            selected_digest = _article_digest(selected)
-            seen_article_digests = {selected_digest} if selected_digest else set()
         candidate_batch.append(candidate)
         if len(candidate_batch) < max_candidates:
             continue
-        _attach_selection_candidate_batch(
+        if not _attach_selection_candidate_batch(
             selected,
             candidate_batch,
             candidates,
             seen_candidate_links,
             seen_article_digests,
-        )
+            include_selected_manifest=not selected_manifest_ready,
+        ):
+            break
+        selected_manifest_ready = True
         candidate_batch = []
         if len(candidates) >= max_candidates:
             break
@@ -1105,6 +1143,7 @@ def attach_fallback_candidates_for_selection(selected, results, fallback_setting
             candidates,
             seen_candidate_links,
             seen_article_digests,
+            include_selected_manifest=not selected_manifest_ready,
         )
         if len(candidates) > max_candidates:
             del candidates[max_candidates:]
