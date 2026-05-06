@@ -1649,6 +1649,141 @@ def test_selection_fallback_pipelines_second_manifest_wave_after_underfill(
 
 @patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
 @patch("resources.lib.fallback_streams._fallback_settings")
+def test_selection_fallback_uses_later_completed_candidate_instead_of_slow_gap(
+    mock_settings, mock_fetch
+):
+    mock_settings.return_value = (True, 2)
+    selected = _result(
+        "The.Matrix.1999.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/selected-slow-gap.nzb",
+        60000000000,
+        meta={
+            "resolution": "2160p",
+            "quality": "REMUX",
+            "codec": "x265/HEVC",
+            "hdr": ["Dolby Vision"],
+            "audio": ["TrueHD", "Atmos"],
+            "container": "mkv",
+        },
+    )
+    candidates = [
+        _result(
+            "The.Matrix.1999.UHD.BluRay.2160p.DV.HEVC.REMUX-GAP{:02d}".format(index),
+            "https://idx/fallback-slow-gap-{}.nzb".format(index),
+            60000000000,
+            meta=selected["_meta"],
+        )
+        for index in range(1, 4)
+    ]
+    manifests = {
+        selected["link"]: _manifest(
+            "video", "the matrix 1999 remux.mkv", 60000000000, "selected"
+        ),
+        candidates[0]["link"]: _manifest(
+            "video", "the matrix 1999 remux.mkv", 60000000000, "match-1"
+        ),
+        candidates[1]["link"]: _manifest(
+            "video", "the matrix 1999 remux.mkv", 60000000000, "slow-match-2"
+        ),
+        candidates[2]["link"]: _manifest(
+            "video", "the matrix 1999 remux.mkv", 60000000000, "match-3"
+        ),
+    }
+    slow_started = threading.Event()
+    release_slow = threading.Event()
+
+    def fetch(url, **_kwargs):
+        if url == candidates[1]["link"]:
+            slow_started.set()
+            release_slow.wait(timeout=1)
+        return manifests[url]
+
+    mock_fetch.side_effect = fetch
+    release_timer = threading.Timer(0.25, release_slow.set)
+    release_timer.start()
+    try:
+        before = _time.monotonic()
+        attach_fallback_candidates_for_selection(selected, [selected] + candidates)
+        elapsed = _time.monotonic() - before
+    finally:
+        release_slow.set()
+        release_timer.cancel()
+
+    assert slow_started.is_set()
+    assert elapsed < 0.2
+    assert selected["_fallback_candidates"] == [candidates[0], candidates[2]]
+
+
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+@patch("resources.lib.fallback_streams._fallback_settings")
+def test_selection_fallback_starts_followup_fetch_before_first_wave_tail_finishes(
+    mock_settings, mock_fetch
+):
+    mock_settings.return_value = (True, 2)
+    selected = _result(
+        "The.Matrix.1999.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/selected-rolling-window.nzb",
+        60000000000,
+        meta={
+            "resolution": "2160p",
+            "quality": "REMUX",
+            "codec": "x265/HEVC",
+            "hdr": ["Dolby Vision"],
+            "audio": ["TrueHD", "Atmos"],
+            "container": "mkv",
+        },
+    )
+    candidates = [
+        _result(
+            "The.Matrix.1999.UHD.BluRay.2160p.DV.HEVC.REMUX-ROLL{:02d}".format(index),
+            "https://idx/fallback-rolling-window-{}.nzb".format(index),
+            60000000000,
+            meta=selected["_meta"],
+        )
+        for index in range(1, 5)
+    ]
+    manifests = {
+        selected["link"]: _manifest(
+            "video", "the matrix 1999 remux.mkv", 60000000000, "selected"
+        ),
+        candidates[0]["link"]: _manifest(
+            "video", "different first miss.mkv", 61000000000, "miss-1"
+        ),
+        candidates[1]["link"]: _manifest(
+            "video", "different slow miss.mkv", 61000000000, "miss-2"
+        ),
+        candidates[2]["link"]: _manifest(
+            "video", "the matrix 1999 remux.mkv", 60000000000, "match-3"
+        ),
+        candidates[3]["link"]: _manifest(
+            "video", "the matrix 1999 remux.mkv", 60000000000, "match-4"
+        ),
+    }
+    third_started = threading.Event()
+    release_slow_second = threading.Event()
+    slow_second_saw_third = [False]
+
+    def fetch(url, **_kwargs):
+        if url == candidates[2]["link"]:
+            third_started.set()
+        if url == candidates[1]["link"]:
+            slow_second_saw_third[0] = third_started.wait(timeout=0.2)
+            release_slow_second.wait(timeout=1)
+        return manifests[url]
+
+    mock_fetch.side_effect = fetch
+
+    try:
+        attach_fallback_candidates_for_selection(selected, [selected] + candidates)
+    finally:
+        release_slow_second.set()
+
+    assert slow_second_saw_third[0]
+    assert selected["_fallback_candidates"] == [candidates[2], candidates[3]]
+
+
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+@patch("resources.lib.fallback_streams._fallback_settings")
 def test_selection_fallback_scales_second_wave_to_remaining_slots(
     mock_settings, mock_fetch
 ):

@@ -7,9 +7,8 @@ import hashlib
 import re
 import threading
 from collections import namedtuple
-from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
-from queue import Queue
+from queue import Empty, Queue
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
@@ -25,6 +24,7 @@ _FINGERPRINT_SAMPLE_COUNT = 20
 _FINGERPRINT_BYTES = 4096
 
 _MAX_FALLBACKS = 5
+_FALLBACK_MANIFEST_STALL_SPECULATION_SECONDS = 0.05
 _ALLOWED_STREAM_SCHEMES = frozenset(("http", "https"))
 _METADATA_ONLY_MANIFEST_REASONS = frozenset(("too_large",))
 _PrecomputedProbeBase = namedtuple("_PrecomputedProbeBase", "parts origin path")
@@ -911,50 +911,6 @@ def _attach_candidates_for_target(target, pool, max_candidates):
     target["_fallback_candidates"] = candidates
 
 
-def _ensure_fallback_candidate_manifests(candidate_batch):
-    """Fetch a bounded candidate manifest batch in parallel."""
-    if len(candidate_batch) <= 1:
-        for candidate in candidate_batch:
-            _ensure_fallback_manifest(candidate, {})
-        return
-    max_workers = min(len(candidate_batch), _MAX_FALLBACKS)
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [
-            executor.submit(_ensure_fallback_manifest, candidate, {})
-            for candidate in candidate_batch
-        ]
-        for candidate, future in zip(candidate_batch, futures):
-            try:
-                future.result()
-            except Exception:  # pylint: disable=broad-except
-                candidate["_fallback_manifest"] = _manifest_error("fetch_error")
-                candidate["_fallback_manifest_error"] = "fetch_error"
-
-
-def _ensure_selection_fallback_manifests(selected, candidate_batch):
-    """Fetch the selected manifest and first candidate batch together."""
-    fetch_targets = []
-    if not isinstance(selected.get("_fallback_manifest"), dict):
-        fetch_targets.append(selected)
-    fetch_targets.extend(candidate_batch)
-    if len(fetch_targets) <= 1:
-        for target in fetch_targets:
-            _ensure_fallback_manifest(target, {})
-        return
-    max_workers = min(len(fetch_targets), _MAX_FALLBACKS + 1)
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [
-            executor.submit(_ensure_fallback_manifest, target, {})
-            for target in fetch_targets
-        ]
-        for target, future in zip(fetch_targets, futures):
-            try:
-                future.result()
-            except Exception:  # pylint: disable=broad-except
-                target["_fallback_manifest"] = _manifest_error("fetch_error")
-                target["_fallback_manifest_error"] = "fetch_error"
-
-
 def _attach_manifest_candidate_if_matching(
     selected, candidate, candidates, seen_candidate_links, seen_article_digests
 ):
@@ -974,114 +930,200 @@ def _attach_manifest_candidate_if_matching(
     return True
 
 
-def _fetch_candidate_manifest_for_queue(index, candidate, result_queue):
-    """Fetch one candidate manifest and publish it to an ordered collector."""
+def _fetch_selection_manifest_for_queue(kind, index, target, result_queue):
+    """Fetch one selection manifest target and publish it to the collector."""
     try:
-        _ensure_fallback_manifest(candidate, {})
+        _ensure_fallback_manifest(target, {})
     except Exception:  # pylint: disable=broad-except
-        candidate["_fallback_manifest"] = _manifest_error("fetch_error")
-        candidate["_fallback_manifest_error"] = "fetch_error"
+        target["_fallback_manifest"] = _manifest_error("fetch_error")
+        target["_fallback_manifest_error"] = "fetch_error"
     finally:
-        result_queue.put((index, candidate))
+        result_queue.put((kind, index, target))
 
 
-def _attach_fallback_candidate_batch_until_full(
+def _start_selection_manifest_fetch(kind, index, target, result_queue):
+    """Start one daemon manifest fetch, falling back to inline execution."""
+    thread = threading.Thread(
+        target=_fetch_selection_manifest_for_queue,
+        args=(kind, index, target, result_queue),
+        name="nzbdav-fallback-manifest",
+        daemon=True,
+    )
+    try:
+        thread.start()
+    except RuntimeError:
+        _fetch_selection_manifest_for_queue(kind, index, target, result_queue)
+
+
+def _attach_ready_selection_candidates(
     selected,
-    candidate_batch,
+    completed,
+    next_to_attach,
     candidates,
     seen_candidate_links,
     seen_article_digests,
     max_candidates,
+    misses_seen,
+    consumed_indices,
 ):
-    """Fetch an optional candidate batch and stop once the cap is filled."""
-    if len(candidates) >= max_candidates:
-        return
-
-    result_queue = Queue()
-    completed = {}
-    next_to_start = [0]
-    active = [0]
-    next_to_attach = [0]
-    max_workers = min(len(candidate_batch), _MAX_FALLBACKS)
-
-    def _start_next_fetch():
-        index = next_to_start[0]
-        candidate = candidate_batch[index]
-        next_to_start[0] += 1
-        active[0] += 1
-        thread = threading.Thread(
-            target=_fetch_candidate_manifest_for_queue,
-            args=(index, candidate, result_queue),
-            name="nzbdav-fallback-manifest",
-            daemon=True,
+    """Attach completed candidate manifests in result order."""
+    while next_to_attach[0] in consumed_indices:
+        next_to_attach[0] += 1
+    while next_to_attach[0] in completed:
+        ready_index = next_to_attach[0]
+        ready_candidate = completed.pop(ready_index)
+        consumed_indices.add(ready_index)
+        attached = _attach_manifest_candidate_if_matching(
+            selected,
+            ready_candidate,
+            candidates,
+            seen_candidate_links,
+            seen_article_digests,
         )
-        try:
-            thread.start()
-        except RuntimeError:
-            _fetch_candidate_manifest_for_queue(index, candidate, result_queue)
-
-    while active[0] < max_workers and next_to_start[0] < len(candidate_batch):
-        _start_next_fetch()
-
-    while active[0]:
-        index, candidate = result_queue.get()
-        active[0] -= 1
-        completed[index] = candidate
-        while next_to_attach[0] in completed:
-            ready_candidate = completed.pop(next_to_attach[0])
-            _attach_manifest_candidate_if_matching(
+        if not attached:
+            misses_seen[0] += 1
+        next_to_attach[0] += 1
+        while next_to_attach[0] in consumed_indices:
+            next_to_attach[0] += 1
+        if len(candidates) >= max_candidates:
+            return True
+    remaining_slots = max_candidates - len(candidates)
+    if len(completed) >= remaining_slots > 0:
+        for ready_index in sorted(completed):
+            ready_candidate = completed.pop(ready_index)
+            consumed_indices.add(ready_index)
+            attached = _attach_manifest_candidate_if_matching(
                 selected,
                 ready_candidate,
                 candidates,
                 seen_candidate_links,
                 seen_article_digests,
             )
-            next_to_attach[0] += 1
+            if not attached:
+                misses_seen[0] += 1
             if len(candidates) >= max_candidates:
-                return
-        while active[0] < max_workers and next_to_start[0] < len(candidate_batch):
-            _start_next_fetch()
+                return True
+    return False
 
 
-def _attach_selection_candidate_batch(
+def _attach_selection_candidates_streaming(
     selected,
-    candidate_batch,
+    candidate_iter,
     candidates,
     seen_candidate_links,
     seen_article_digests,
-    include_selected_manifest=False,
-    max_candidates=None,
+    include_selected_manifest,
+    max_candidates,
 ):
-    """Attach matching fallbacks from one already-prefiltered candidate batch."""
-    if include_selected_manifest:
-        _ensure_selection_fallback_manifests(selected, candidate_batch)
-        selected_digest = _article_digest(selected)
-        if selected_digest:
-            seen_article_digests.add(selected_digest)
-        if not _manifest_may_match_any_peer(selected):
+    """Fetch selected fallback manifests with a rolling ordered window."""
+    result_queue = Queue()
+    completed = {}
+    next_candidate_index = [0]
+    next_to_attach = [0]
+    active = [0]
+    active_candidates = [0]
+    candidate_iter = iter(candidate_iter)
+    candidate_exhausted = [False]
+    pending_to_start = []
+    misses_seen = [0]
+    consumed_indices = set()
+    selected_ready = [not include_selected_manifest]
+    selected_can_match = [True]
+    max_workers = min(max_candidates, _MAX_FALLBACKS)
+
+    def _start_candidate_fetch():
+        if candidate_exhausted[0]:
             return False
-    else:
-        remaining_slots = (max_candidates or 0) - len(candidates)
-        if max_candidates and len(candidate_batch) > remaining_slots:
-            _attach_fallback_candidate_batch_until_full(
+        if pending_to_start:
+            candidate = pending_to_start.pop(0)
+        else:
+            try:
+                candidate = next(candidate_iter)
+            except StopIteration:
+                candidate_exhausted[0] = True
+                return False
+        index = next_candidate_index[0]
+        next_candidate_index[0] += 1
+        active[0] += 1
+        active_candidates[0] += 1
+        _start_selection_manifest_fetch("candidate", index, candidate, result_queue)
+        return True
+
+    def _fill_candidate_window():
+        speculative_slots = min(misses_seen[0], max_candidates - len(candidates))
+        while (
+            selected_can_match[0]
+            and len(candidates) < max_candidates
+            and active_candidates[0] < max_workers
+            and len(candidates) + active_candidates[0] + len(completed)
+            < max_candidates + speculative_slots
+            and _start_candidate_fetch()
+        ):
+            speculative_slots = min(misses_seen[0], max_candidates - len(candidates))
+
+    def _can_start_stall_speculation():
+        return (
+            selected_ready[0]
+            and selected_can_match[0]
+            and len(candidates) < max_candidates
+            and active_candidates[0] > 0
+            and active_candidates[0] < max_workers
+            and not candidate_exhausted[0]
+        )
+
+    try:
+        pending_to_start.append(next(candidate_iter))
+    except StopIteration:
+        candidate_exhausted[0] = True
+
+    if not pending_to_start and candidate_exhausted[0]:
+        return True
+
+    if include_selected_manifest:
+        active[0] += 1
+        _start_selection_manifest_fetch("selected", -1, selected, result_queue)
+
+    _fill_candidate_window()
+
+    while active[0]:
+        try:
+            if _can_start_stall_speculation():
+                kind, index, target = result_queue.get(
+                    timeout=_FALLBACK_MANIFEST_STALL_SPECULATION_SECONDS
+                )
+            else:
+                kind, index, target = result_queue.get()
+        except Empty:
+            _start_candidate_fetch()
+            continue
+        active[0] -= 1
+        if kind == "candidate":
+            active_candidates[0] -= 1
+            completed[index] = target
+        else:
+            selected_ready[0] = True
+            selected_digest = _article_digest(selected)
+            if selected_digest:
+                seen_article_digests.add(selected_digest)
+            selected_can_match[0] = _manifest_may_match_any_peer(selected)
+
+        if selected_ready[0] and selected_can_match[0]:
+            if _attach_ready_selection_candidates(
                 selected,
-                candidate_batch,
+                completed,
+                next_to_attach,
                 candidates,
                 seen_candidate_links,
                 seen_article_digests,
                 max_candidates,
-            )
-            return True
-        _ensure_fallback_candidate_manifests(candidate_batch)
-    for candidate in candidate_batch:
-        _attach_manifest_candidate_if_matching(
-            selected,
-            candidate,
-            candidates,
-            seen_candidate_links,
-            seen_article_digests,
-        )
-    return True
+                misses_seen,
+                consumed_indices,
+            ):
+                return True
+
+        _fill_candidate_window()
+
+    return selected_can_match[0]
 
 
 def _prefetch_candidate_matches(
@@ -1182,79 +1224,57 @@ def attach_fallback_candidates_for_selection(selected, results, fallback_setting
         selected_digest = _article_digest(selected)
         if selected_digest:
             seen_article_digests.add(selected_digest)
-    candidate_batch = []
-    batch_limit = max_candidates
-    for candidate in results or []:
-        if candidate is selected or not isinstance(candidate, dict):
-            continue
-        candidate_link = candidate.get("link", "")
-        if not candidate_link or candidate_link in seen_prefetch_links:
-            continue
-        if _has_prefetch_gate_match(selected, candidate):
-            prefetch_match = True
-        else:
-            candidate_meta = candidate.get("_meta")
-            if not isinstance(candidate_meta, dict):
-                candidate_meta = None
-            prefetch_tokens = selected_title_tokens
-            if prefetch_tokens is None and (
-                selected_meta is None or candidate_meta is None
-            ):
-                prefetch_tokens = _title_tokens(selected)
-                selected_title_tokens = prefetch_tokens
-            prefetch_match = _prefetch_candidate_matches(
-                selected,
-                candidate,
-                seen_prefetch_links,
-                prefetch_tokens,
-                selected_meta,
-            )
-            if selected_title_tokens is None:
-                selected_title_tokens = _cached_title_tokens(selected)
-        if selected_meta is None:
-            cached_selected_meta = selected.get("_meta")
-            if isinstance(cached_selected_meta, dict):
-                selected_meta = cached_selected_meta
-        if not prefetch_match:
-            continue
-        seen_prefetch_links.add(candidate_link)
-        candidate_batch.append(candidate)
-        if len(candidate_batch) < batch_limit:
-            continue
-        if not _attach_selection_candidate_batch(
-            selected,
-            candidate_batch,
-            candidates,
-            seen_candidate_links,
-            seen_article_digests,
-            include_selected_manifest=not selected_manifest_ready,
-            max_candidates=max_candidates,
-        ):
-            break
-        selected_manifest_ready = True
-        candidate_batch = []
-        if len(candidates) > max_candidates:
-            del candidates[max_candidates:]
-        if len(candidates) >= max_candidates:
-            break
-        # If the first strict batch underfilled because some plausible peers
-        # were duplicate/non-matching manifests, let the executor pipeline a
-        # larger follow-up wave. Scale that wave to the remaining slots so a
-        # nearly-full candidate list does not wait on a broad optional tail.
-        remaining_slots = max_candidates - len(candidates)
-        batch_limit = max(1, min(max_candidates * 2, remaining_slots * 2))
-    if candidate_batch and len(candidates) < max_candidates:
-        _attach_selection_candidate_batch(
-            selected,
-            candidate_batch,
-            candidates,
-            seen_candidate_links,
-            seen_article_digests,
-            include_selected_manifest=not selected_manifest_ready,
-            max_candidates=max_candidates,
-        )
-        if len(candidates) > max_candidates:
-            del candidates[max_candidates:]
+
+    def _prefetch_candidates():
+        # Keep prefiltering lazy so all-matching pools still stop after the cap
+        # instead of fetching manifests for the rest of the result list.
+        selected_title_tokens_ref = [selected_title_tokens]
+        selected_meta_ref = [selected_meta]
+        for candidate in results or []:
+            if candidate is selected or not isinstance(candidate, dict):
+                continue
+            candidate_link = candidate.get("link", "")
+            if not candidate_link or candidate_link in seen_prefetch_links:
+                continue
+            if _has_prefetch_gate_match(selected, candidate):
+                prefetch_match = True
+            else:
+                candidate_meta = candidate.get("_meta")
+                if not isinstance(candidate_meta, dict):
+                    candidate_meta = None
+                prefetch_tokens = selected_title_tokens_ref[0]
+                if prefetch_tokens is None and (
+                    selected_meta_ref[0] is None or candidate_meta is None
+                ):
+                    prefetch_tokens = _title_tokens(selected)
+                    selected_title_tokens_ref[0] = prefetch_tokens
+                prefetch_match = _prefetch_candidate_matches(
+                    selected,
+                    candidate,
+                    seen_prefetch_links,
+                    prefetch_tokens,
+                    selected_meta_ref[0],
+                )
+                if selected_title_tokens_ref[0] is None:
+                    selected_title_tokens_ref[0] = _cached_title_tokens(selected)
+            if selected_meta_ref[0] is None:
+                cached_selected_meta = selected.get("_meta")
+                if isinstance(cached_selected_meta, dict):
+                    selected_meta_ref[0] = cached_selected_meta
+            if not prefetch_match:
+                continue
+            seen_prefetch_links.add(candidate_link)
+            yield candidate
+
+    _attach_selection_candidates_streaming(
+        selected,
+        _prefetch_candidates(),
+        candidates,
+        seen_candidate_links,
+        seen_article_digests,
+        include_selected_manifest=not selected_manifest_ready,
+        max_candidates=max_candidates,
+    )
     selected["_fallback_candidates"] = candidates
     return selected
 
