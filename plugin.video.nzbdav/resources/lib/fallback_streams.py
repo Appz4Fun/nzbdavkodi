@@ -5,9 +5,11 @@
 
 import hashlib
 import re
+import threading
 from collections import namedtuple
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
+from queue import Queue
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
@@ -953,6 +955,94 @@ def _ensure_selection_fallback_manifests(selected, candidate_batch):
                 target["_fallback_manifest_error"] = "fetch_error"
 
 
+def _attach_manifest_candidate_if_matching(
+    selected, candidate, candidates, seen_candidate_links, seen_article_digests
+):
+    """Attach a fetched candidate when manifest evidence still matches."""
+    candidate_link = candidate.get("link", "")
+    candidate_digest = _article_digest(candidate)
+    if (
+        candidate_link in seen_candidate_links
+        or (candidate_digest and candidate_digest in seen_article_digests)
+        or not _fallback_manifest_peer_matches(selected, candidate)
+    ):
+        return False
+    candidates.append(candidate)
+    seen_candidate_links.add(candidate_link)
+    if candidate_digest:
+        seen_article_digests.add(candidate_digest)
+    return True
+
+
+def _fetch_candidate_manifest_for_queue(index, candidate, result_queue):
+    """Fetch one candidate manifest and publish it to an ordered collector."""
+    try:
+        _ensure_fallback_manifest(candidate, {})
+    except Exception:  # pylint: disable=broad-except
+        candidate["_fallback_manifest"] = _manifest_error("fetch_error")
+        candidate["_fallback_manifest_error"] = "fetch_error"
+    finally:
+        result_queue.put((index, candidate))
+
+
+def _attach_fallback_candidate_batch_until_full(
+    selected,
+    candidate_batch,
+    candidates,
+    seen_candidate_links,
+    seen_article_digests,
+    max_candidates,
+):
+    """Fetch an optional candidate batch and stop once the cap is filled."""
+    if len(candidates) >= max_candidates:
+        return
+
+    result_queue = Queue()
+    completed = {}
+    next_to_start = [0]
+    active = [0]
+    next_to_attach = [0]
+    max_workers = min(len(candidate_batch), _MAX_FALLBACKS)
+
+    def _start_next_fetch():
+        index = next_to_start[0]
+        candidate = candidate_batch[index]
+        next_to_start[0] += 1
+        active[0] += 1
+        thread = threading.Thread(
+            target=_fetch_candidate_manifest_for_queue,
+            args=(index, candidate, result_queue),
+            name="nzbdav-fallback-manifest",
+            daemon=True,
+        )
+        try:
+            thread.start()
+        except RuntimeError:
+            _fetch_candidate_manifest_for_queue(index, candidate, result_queue)
+
+    while active[0] < max_workers and next_to_start[0] < len(candidate_batch):
+        _start_next_fetch()
+
+    while active[0]:
+        index, candidate = result_queue.get()
+        active[0] -= 1
+        completed[index] = candidate
+        while next_to_attach[0] in completed:
+            ready_candidate = completed.pop(next_to_attach[0])
+            _attach_manifest_candidate_if_matching(
+                selected,
+                ready_candidate,
+                candidates,
+                seen_candidate_links,
+                seen_article_digests,
+            )
+            next_to_attach[0] += 1
+            if len(candidates) >= max_candidates:
+                return
+        while active[0] < max_workers and next_to_start[0] < len(candidate_batch):
+            _start_next_fetch()
+
+
 def _attach_selection_candidate_batch(
     selected,
     candidate_batch,
@@ -960,6 +1050,7 @@ def _attach_selection_candidate_batch(
     seen_candidate_links,
     seen_article_digests,
     include_selected_manifest=False,
+    max_candidates=None,
 ):
     """Attach matching fallbacks from one already-prefiltered candidate batch."""
     if include_selected_manifest:
@@ -970,20 +1061,26 @@ def _attach_selection_candidate_batch(
         if not _manifest_may_match_any_peer(selected):
             return False
     else:
+        remaining_slots = (max_candidates or 0) - len(candidates)
+        if max_candidates and len(candidate_batch) > remaining_slots:
+            _attach_fallback_candidate_batch_until_full(
+                selected,
+                candidate_batch,
+                candidates,
+                seen_candidate_links,
+                seen_article_digests,
+                max_candidates,
+            )
+            return True
         _ensure_fallback_candidate_manifests(candidate_batch)
     for candidate in candidate_batch:
-        candidate_link = candidate.get("link", "")
-        candidate_digest = _article_digest(candidate)
-        if (
-            candidate_link in seen_candidate_links
-            or (candidate_digest and candidate_digest in seen_article_digests)
-            or not _fallback_manifest_peer_matches(selected, candidate)
-        ):
-            continue
-        candidates.append(candidate)
-        seen_candidate_links.add(candidate_link)
-        if candidate_digest:
-            seen_article_digests.add(candidate_digest)
+        _attach_manifest_candidate_if_matching(
+            selected,
+            candidate,
+            candidates,
+            seen_candidate_links,
+            seen_article_digests,
+        )
     return True
 
 
@@ -1131,6 +1228,7 @@ def attach_fallback_candidates_for_selection(selected, results, fallback_setting
             seen_candidate_links,
             seen_article_digests,
             include_selected_manifest=not selected_manifest_ready,
+            max_candidates=max_candidates,
         ):
             break
         selected_manifest_ready = True
@@ -1141,9 +1239,10 @@ def attach_fallback_candidates_for_selection(selected, results, fallback_setting
             break
         # If the first strict batch underfilled because some plausible peers
         # were duplicate/non-matching manifests, let the executor pipeline a
-        # larger follow-up wave. Concurrency still stays capped in
-        # _ensure_fallback_candidate_manifests().
-        batch_limit = max_candidates * 2
+        # larger follow-up wave. Scale that wave to the remaining slots so a
+        # nearly-full candidate list does not wait on a broad optional tail.
+        remaining_slots = max_candidates - len(candidates)
+        batch_limit = max(1, min(max_candidates * 2, remaining_slots * 2))
     if candidate_batch and len(candidates) < max_candidates:
         _attach_selection_candidate_batch(
             selected,
@@ -1152,6 +1251,7 @@ def attach_fallback_candidates_for_selection(selected, results, fallback_setting
             seen_candidate_links,
             seen_article_digests,
             include_selected_manifest=not selected_manifest_ready,
+            max_candidates=max_candidates,
         )
         if len(candidates) > max_candidates:
             del candidates[max_candidates:]

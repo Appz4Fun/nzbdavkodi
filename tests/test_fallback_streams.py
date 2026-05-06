@@ -2,6 +2,7 @@
 # Copyright (C) 2026 nzbdav contributors
 
 import threading
+import time as _time
 from unittest.mock import ANY, MagicMock, patch
 from urllib.error import URLError
 from urllib.parse import urlsplit
@@ -1644,6 +1645,136 @@ def test_selection_fallback_pipelines_second_manifest_wave_after_underfill(
         candidates[7],
     ]
     assert fourth_saw_seventh[0]
+
+
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+@patch("resources.lib.fallback_streams._fallback_settings")
+def test_selection_fallback_scales_second_wave_to_remaining_slots(
+    mock_settings, mock_fetch
+):
+    mock_settings.return_value = (True, 5)
+    selected = _result(
+        "The.Matrix.1999.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/selected-scaled-wave.nzb",
+        60000000000,
+        meta={
+            "resolution": "2160p",
+            "quality": "REMUX",
+            "codec": "x265/HEVC",
+            "hdr": ["Dolby Vision"],
+            "audio": ["TrueHD", "Atmos"],
+            "container": "mkv",
+        },
+    )
+    candidates = [
+        _result(
+            "The.Matrix.1999.UHD.BluRay.2160p.DV.HEVC.REMUX-SCALE{:02d}".format(index),
+            "https://idx/fallback-scaled-wave-{}.nzb".format(index),
+            60000000000,
+            meta=selected["_meta"],
+        )
+        for index in range(1, 13)
+    ]
+    manifests = {
+        selected["link"]: _manifest(
+            "video", "the matrix 1999 remux.mkv", 60000000000, "selected"
+        )
+    }
+    for index, candidate in enumerate(candidates, start=1):
+        if index == 5:
+            manifests[candidate["link"]] = _manifest(
+                "video", "different matrix remux.mkv", 61000000000, "miss-5"
+            )
+        else:
+            manifests[candidate["link"]] = _manifest(
+                "video",
+                "the matrix 1999 remux.mkv",
+                60000000000,
+                "scaled-{}".format(index),
+            )
+
+    mock_fetch.side_effect = lambda url, **_kwargs: manifests[url]
+
+    attach_fallback_candidates_for_selection(selected, [selected] + candidates)
+
+    assert selected["_fallback_candidates"] == candidates[:4] + [candidates[5]]
+    fetched_urls = [call.args[0] for call in mock_fetch.call_args_list]
+    expected_urls = [selected["link"]] + [
+        candidate["link"] for candidate in candidates[:7]
+    ]
+    assert len(fetched_urls) == len(expected_urls)
+    assert set(fetched_urls) == set(expected_urls)
+
+
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+@patch("resources.lib.fallback_streams._fallback_settings")
+def test_selection_fallback_does_not_wait_for_optional_tail_after_max_filled(
+    mock_settings, mock_fetch
+):
+    mock_settings.return_value = (True, 5)
+    selected = _result(
+        "The.Matrix.1999.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/selected-optional-tail.nzb",
+        60000000000,
+        meta={
+            "resolution": "2160p",
+            "quality": "REMUX",
+            "codec": "x265/HEVC",
+            "hdr": ["Dolby Vision"],
+            "audio": ["TrueHD", "Atmos"],
+            "container": "mkv",
+        },
+    )
+    candidates = [
+        _result(
+            "The.Matrix.1999.UHD.BluRay.2160p.DV.HEVC.REMUX-TAIL{:02d}".format(index),
+            "https://idx/fallback-optional-tail-{}.nzb".format(index),
+            60000000000,
+            meta=selected["_meta"],
+        )
+        for index in range(1, 8)
+    ]
+    manifests = {
+        selected["link"]: _manifest(
+            "video", "the matrix 1999 remux.mkv", 60000000000, "selected"
+        )
+    }
+    for index, candidate in enumerate(candidates, start=1):
+        if index == 5:
+            manifests[candidate["link"]] = _manifest(
+                "video", "different matrix remux.mkv", 61000000000, "miss-5"
+            )
+        else:
+            manifests[candidate["link"]] = _manifest(
+                "video",
+                "the matrix 1999 remux.mkv",
+                60000000000,
+                "tail-{}".format(index),
+            )
+
+    slow_started = threading.Event()
+    release_slow = threading.Event()
+
+    def fetch(url, **_kwargs):
+        if url == candidates[6]["link"]:
+            slow_started.set()
+            release_slow.wait(timeout=1)
+        return manifests[url]
+
+    mock_fetch.side_effect = fetch
+    release_timer = threading.Timer(0.25, release_slow.set)
+    release_timer.start()
+    try:
+        before = _time.monotonic()
+        attach_fallback_candidates_for_selection(selected, [selected] + candidates)
+        elapsed = _time.monotonic() - before
+    finally:
+        release_slow.set()
+        release_timer.cancel()
+
+    assert slow_started.is_set()
+    assert elapsed < 0.2
+    assert selected["_fallback_candidates"] == candidates[:4] + [candidates[5]]
 
 
 @patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
