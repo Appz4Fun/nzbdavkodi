@@ -6,6 +6,7 @@
 import hashlib
 import re
 from collections import namedtuple
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
@@ -908,6 +909,46 @@ def _attach_candidates_for_target(target, pool, max_candidates):
     target["_fallback_candidates"] = candidates
 
 
+def _ensure_fallback_candidate_manifests(candidate_batch):
+    """Fetch a bounded candidate manifest batch in parallel."""
+    if len(candidate_batch) <= 1:
+        for candidate in candidate_batch:
+            _ensure_fallback_manifest(candidate, {})
+        return
+    max_workers = min(len(candidate_batch), _MAX_FALLBACKS)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [
+            executor.submit(_ensure_fallback_manifest, candidate, {})
+            for candidate in candidate_batch
+        ]
+        for candidate, future in zip(candidate_batch, futures):
+            try:
+                future.result()
+            except Exception:  # pylint: disable=broad-except
+                candidate["_fallback_manifest"] = _manifest_error("fetch_error")
+                candidate["_fallback_manifest_error"] = "fetch_error"
+
+
+def _attach_selection_candidate_batch(
+    selected, candidate_batch, candidates, seen_candidate_links, seen_article_digests
+):
+    """Attach matching fallbacks from one already-prefiltered candidate batch."""
+    _ensure_fallback_candidate_manifests(candidate_batch)
+    for candidate in candidate_batch:
+        candidate_link = candidate.get("link", "")
+        candidate_digest = _article_digest(candidate)
+        if (
+            candidate_link in seen_candidate_links
+            or (candidate_digest and candidate_digest in seen_article_digests)
+            or not _fallback_manifest_peer_matches(selected, candidate)
+        ):
+            continue
+        candidates.append(candidate)
+        seen_candidate_links.add(candidate_link)
+        if candidate_digest:
+            seen_article_digests.add(candidate_digest)
+
+
 def _prefetch_candidate_matches(
     target, candidate, seen_links, target_tokens=None, target_meta=None
 ):
@@ -1002,6 +1043,7 @@ def attach_fallback_candidates_for_selection(selected, results, fallback_setting
     seen_candidate_links = {selected.get("link", "")}
     seen_article_digests = set()
     manifest_cache = None
+    candidate_batch = []
     for candidate in results or []:
         if candidate is selected or not isinstance(candidate, dict):
             continue
@@ -1043,20 +1085,29 @@ def attach_fallback_candidates_for_selection(selected, results, fallback_setting
                 break
             selected_digest = _article_digest(selected)
             seen_article_digests = {selected_digest} if selected_digest else set()
-        _ensure_fallback_manifest(candidate, manifest_cache)
-        candidate_digest = _article_digest(candidate)
-        if (
-            candidate_link in seen_candidate_links
-            or (candidate_digest and candidate_digest in seen_article_digests)
-            or not _fallback_manifest_peer_matches(selected, candidate)
-        ):
+        candidate_batch.append(candidate)
+        if len(candidate_batch) < max_candidates:
             continue
-        candidates.append(candidate)
-        seen_candidate_links.add(candidate_link)
-        if candidate_digest:
-            seen_article_digests.add(candidate_digest)
+        _attach_selection_candidate_batch(
+            selected,
+            candidate_batch,
+            candidates,
+            seen_candidate_links,
+            seen_article_digests,
+        )
+        candidate_batch = []
         if len(candidates) >= max_candidates:
             break
+    if candidate_batch and len(candidates) < max_candidates:
+        _attach_selection_candidate_batch(
+            selected,
+            candidate_batch,
+            candidates,
+            seen_candidate_links,
+            seen_article_digests,
+        )
+        if len(candidates) > max_candidates:
+            del candidates[max_candidates:]
     selected["_fallback_candidates"] = candidates
     return selected
 
