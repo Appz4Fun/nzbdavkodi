@@ -1240,6 +1240,44 @@ def test_submit_ui_pump_probes_queue_without_two_second_startup_delay(
     assert elapsed < 1.5
 
 
+@patch("resources.lib.resolver._get_submit_timeout_seconds", return_value=300)
+@patch("resources.lib.resolver.find_queued_by_name", return_value=None)
+@patch("resources.lib.resolver.submit_nzb")
+def test_submit_ui_pump_reads_submit_timeout_once_per_attempt(
+    mock_submit, _mock_find_queued, mock_submit_timeout
+):
+    submit_started = threading.Event()
+    submit_can_finish = threading.Event()
+
+    def delayed_submit(_nzb_url, _title):
+        submit_started.set()
+        assert submit_can_finish.wait(timeout=1)
+        return "SABnzbd_nzo_submitted", None
+
+    wait_calls = []
+
+    def wait_for_abort(_seconds):
+        wait_calls.append(_seconds)
+        if len(wait_calls) >= 3:
+            submit_can_finish.set()
+        return False
+
+    mock_submit.side_effect = delayed_submit
+    dialog = MagicMock()
+    dialog.iscanceled.return_value = False
+    monitor = MagicMock()
+    monitor.waitForAbort.side_effect = wait_for_abort
+
+    nzo_id, submit_error = _submit_nzb_with_ui_pump(
+        "http://hydra/getnzb/abc", "movie.mkv", dialog, monitor
+    )
+
+    assert submit_started.is_set()
+    assert (nzo_id, submit_error) == ("SABnzbd_nzo_submitted", None)
+    assert len(wait_calls) >= 3
+    mock_submit_timeout.assert_called_once_with()
+
+
 @patch("resources.lib.stream_proxy.get_service_proxy_port", return_value=0)
 @patch("resources.lib.stream_proxy.get_proxy")
 @patch("resources.lib.resolver.find_completed_by_name")

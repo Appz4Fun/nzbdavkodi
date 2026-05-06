@@ -798,6 +798,7 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
     # accumulation under-reports on slow skins because dialog.update()
     # itself can block for tens of milliseconds.
     loop_start = time.monotonic()
+    submit_timeout_seconds = max(_get_submit_timeout_seconds(), 1)
     submit_msg = _string(30097)
     try:
         while not submit_done.is_set():
@@ -818,7 +819,7 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
             if monitor.waitForAbort(_SUBMIT_UI_PUMP_INTERVAL_SECONDS):
                 return None, {"status": "shutdown", "message": ""}
             elapsed = time.monotonic() - loop_start
-            pct = int((elapsed * 100) / max(_get_submit_timeout_seconds(), 1)) % 100
+            pct = int((elapsed * 100) / submit_timeout_seconds) % 100
             try:
                 dialog.update(
                     pct,
