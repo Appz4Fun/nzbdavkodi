@@ -757,10 +757,10 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
     1. ``submit_nzb`` runs in a daemon worker thread; the plugin thread
        loops on ``monitor.waitForAbort`` at 250 ms cadence, advances the
        dialog progress bar, and checks ``dialog.iscanceled`` every tick.
-    2. A second daemon thread concurrently probes nzbdav's queue via
-       ``find_queued_by_name`` and short-circuits as soon as the queue
-       entry for ``title`` appears — usually well before ``addurl``
-       replies.
+    2. A second daemon thread concurrently probes nzbdav's queue/history
+       via ``find_queued_by_name`` / ``find_completed_by_name`` and
+       short-circuits as soon as the job for ``title`` appears — usually
+       well before ``addurl`` replies.
 
     Returns ``(nzo_id, None)`` on success (either by worker completion or
     by queue adoption), or ``(None, error_dict)`` on cancel, shutdown,
@@ -788,6 +788,7 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
             submit_done.set()
 
     queue_hit = [None]
+    adopted_during_submit = [False]
     queue_stop = threading.Event()
 
     def _queue_probe_worker():
@@ -804,6 +805,15 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
                     xbmc.LOGWARNING,
                 )
                 match = None
+            if not match:
+                try:
+                    match = find_completed_by_name(title)
+                except Exception as e:  # pylint: disable=broad-except
+                    xbmc.log(
+                        "NZB-DAV: concurrent history probe raised: {}".format(e),
+                        xbmc.LOGWARNING,
+                    )
+                    match = None
             if match and match.get("nzo_id"):
                 queue_hit[0] = match["nzo_id"]
                 return
@@ -826,16 +836,25 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
     loop_start = time.monotonic()
     submit_timeout_seconds = max(_get_submit_timeout_seconds(), 1)
     submit_msg = _string(30097)
+
+    def _probe_adoption_result():
+        if not queue_hit[0]:
+            return None
+        adopted_during_submit[0] = True
+        xbmc.log(
+            "NZB-DAV: Concurrent queue/history probe found '{}' under "
+            "nzo_id={}; adopting without waiting for addurl response".format(
+                title, queue_hit[0]
+            ),
+            xbmc.LOGINFO,
+        )
+        return queue_hit[0], None
+
     try:
         while not submit_done.is_set():
-            if queue_hit[0]:
-                xbmc.log(
-                    "NZB-DAV: Concurrent queue probe found '{}' under "
-                    "nzo_id={}; adopting without waiting for addurl "
-                    "response".format(title, queue_hit[0]),
-                    xbmc.LOGINFO,
-                )
-                return queue_hit[0], None
+            probe_result = _probe_adoption_result()
+            if probe_result:
+                return probe_result
             if dialog.iscanceled():
                 xbmc.log(
                     "NZB-DAV: User cancelled during submit for '{}'".format(title),
@@ -844,6 +863,9 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
                 return None, {"status": "cancelled", "message": ""}
             if monitor.waitForAbort(_SUBMIT_UI_PUMP_INTERVAL_SECONDS):
                 return None, {"status": "shutdown", "message": ""}
+            probe_result = _probe_adoption_result()
+            if probe_result:
+                return probe_result
             elapsed = time.monotonic() - loop_start
             pct = int((elapsed * 100) / submit_timeout_seconds) % 100
             try:
@@ -873,14 +895,14 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
             return queue_hit[0], None
         return submit_result[0], submit_result[1]
     finally:
-        # Signal the probe worker to exit its wait loop, then give both
-        # daemon threads a brief join window so we don't leave two
-        # background HTTP calls running when the plugin script exits.
-        # Both threads are daemon=True, so a hang here can't block
-        # interpreter shutdown — the join timeout caps recovery time
-        # on an uncooperative upstream.
+        # Signal the probe worker to exit its wait loop, then give cleanup a
+        # brief bounded window. If we already adopted while addurl is still
+        # blocked, waiting on that uninterruptible HTTP worker only adds
+        # latency; it is daemon=True and will die with the plugin interpreter.
         queue_stop.set()
         for t in (submit_t, probe_t):
+            if t is submit_t and adopted_during_submit[0] and not submit_done.is_set():
+                continue
             try:
                 t.join(timeout=1)
             except RuntimeError as e:

@@ -1360,6 +1360,42 @@ def test_submit_ui_pump_starts_queue_probe_within_quarter_second(
     assert elapsed < 0.45
 
 
+@patch("resources.lib.resolver.find_completed_by_name")
+@patch("resources.lib.resolver.find_queued_by_name", return_value=None)
+@patch("resources.lib.resolver.submit_nzb")
+def test_submit_ui_pump_adopts_completed_history_without_submit_join_delay(
+    mock_submit, _mock_find_queued, mock_find_completed
+):
+    """Completed history adoption should not wait on the slow addurl response."""
+    submit_can_finish = threading.Event()
+
+    def delayed_submit(_nzb_url, _title):
+        submit_can_finish.wait(timeout=0.75)
+        return "SABnzbd_nzo_submitted", None
+
+    mock_submit.side_effect = delayed_submit
+    mock_find_completed.return_value = {
+        "nzo_id": "SABnzbd_nzo_completed_probe",
+        "name": "movie.mkv",
+        "status": "Completed",
+    }
+    dialog = MagicMock()
+    dialog.iscanceled.return_value = False
+    monitor = _make_monitor()
+
+    started = _time.monotonic()
+    try:
+        nzo_id, submit_error = _submit_nzb_with_ui_pump(
+            "http://hydra/getnzb/abc", "movie.mkv", dialog, monitor
+        )
+    finally:
+        submit_can_finish.set()
+    elapsed = _time.monotonic() - started
+
+    assert (nzo_id, submit_error) == ("SABnzbd_nzo_completed_probe", None)
+    assert elapsed < 0.6
+
+
 @patch("resources.lib.resolver._get_submit_timeout_seconds", return_value=300)
 @patch("resources.lib.resolver.find_queued_by_name", return_value=None)
 @patch("resources.lib.resolver.submit_nzb")
