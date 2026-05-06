@@ -716,7 +716,7 @@ def _existing_completed_stream(title):
 # is responsive; long enough that we're not burning CPU on the plugin
 # thread while waiting for a remote HTTP call.
 _SUBMIT_UI_PUMP_INTERVAL_SECONDS = 0.25
-_SUBMIT_QUEUE_PROBE_INITIAL_DELAY_SECONDS = 0.5
+_SUBMIT_QUEUE_PROBE_INITIAL_DELAY_SECONDS = 0.25
 _SUBMIT_QUEUE_PROBE_INTERVAL_SECONDS = 1.0
 
 

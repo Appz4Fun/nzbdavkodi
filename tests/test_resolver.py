@@ -1240,6 +1240,42 @@ def test_submit_ui_pump_probes_queue_without_two_second_startup_delay(
     assert elapsed < 1.5
 
 
+@patch("resources.lib.resolver.find_queued_by_name")
+@patch("resources.lib.resolver.submit_nzb")
+def test_submit_ui_pump_starts_queue_probe_within_quarter_second(
+    mock_submit, mock_find_queued
+):
+    """Fast queue adoption should not spend half a second in the grace window."""
+    queue_seen = threading.Event()
+
+    def delayed_submit(_nzb_url, _title):
+        assert queue_seen.wait(timeout=1)
+        return None, {"status": "timeout", "message": "Timed out"}
+
+    def queued_job(_title):
+        queue_seen.set()
+        return {
+            "nzo_id": "SABnzbd_nzo_fast_queue_probe",
+            "name": "movie.mkv",
+            "status": "Downloading",
+        }
+
+    mock_submit.side_effect = delayed_submit
+    mock_find_queued.side_effect = queued_job
+    dialog = MagicMock()
+    dialog.iscanceled.return_value = False
+    monitor = _make_monitor()
+
+    started = _time.monotonic()
+    nzo_id, submit_error = _submit_nzb_with_ui_pump(
+        "http://hydra/getnzb/abc", "movie.mkv", dialog, monitor
+    )
+    elapsed = _time.monotonic() - started
+
+    assert (nzo_id, submit_error) == ("SABnzbd_nzo_fast_queue_probe", None)
+    assert elapsed < 0.45
+
+
 @patch("resources.lib.resolver._get_submit_timeout_seconds", return_value=300)
 @patch("resources.lib.resolver.find_queued_by_name", return_value=None)
 @patch("resources.lib.resolver.submit_nzb")
