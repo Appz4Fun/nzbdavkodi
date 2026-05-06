@@ -1516,12 +1516,6 @@ def _handle_history_result(history, title, no_video_retries, max_no_video_retrie
             "NZB-DAV: File available, streaming '{}' via WebDAV".format(video_path),
             xbmc.LOGINFO,
         )
-        if not _validate_stream_url(stream_url, stream_headers):
-            xbmc.log(
-                "NZB-DAV: Stream validation failed for '{}', "
-                "attempting playback anyway".format(video_path),
-                xbmc.LOGWARNING,
-            )
         return True, stream_url, stream_headers, no_video_retries
 
     no_video_retries += 1
