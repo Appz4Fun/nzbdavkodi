@@ -1119,6 +1119,45 @@ def _fallback_streams_enabled():
     return str(raw or "").strip().lower() != "false"
 
 
+def _prefetch_fallback_candidate_loader(candidate_loader):
+    """Start fallback candidate discovery now and return a cached loader.
+
+    The returned loader is still consumed by the fallback submit worker after
+    primary submit/adoption, so this overlaps Hydra/NZB manifest discovery
+    without submitting standby nzbdav jobs before the primary is accepted.
+    """
+    if candidate_loader is None:
+        return None
+
+    done = threading.Event()
+    state = {"candidates": []}
+    errors = []
+
+    def _worker():
+        try:
+            state["candidates"] = list(candidate_loader() or [])
+        except Exception as error:  # pylint: disable=broad-except
+            errors.append(error)
+        finally:
+            done.set()
+
+    thread = threading.Thread(
+        target=_worker, name="nzbdav-fallback-candidate-prefetch", daemon=True
+    )
+    try:
+        thread.start()
+    except RuntimeError:
+        return candidate_loader
+
+    def _load_prefetched_candidates():
+        done.wait()
+        if errors:
+            raise errors[0]
+        return list(state["candidates"])
+
+    return _load_prefetched_candidates
+
+
 def _start_fallback_submit_worker(candidates=None, candidate_loader=None):
     """Start background fallback submits and return shared state."""
     state = {
@@ -1617,7 +1656,9 @@ def resolve(handle, params):
         dialog = xbmcgui.DialogProgress()
         dialog.create(_addon_name(), _string(30097))
         fallback_candidates = params.get("_fallback_candidates", [])
-        fallback_candidate_loader = params.get("_fallback_candidate_loader")
+        fallback_candidate_loader = _prefetch_fallback_candidate_loader(
+            params.get("_fallback_candidate_loader")
+        )
 
         def _start_fallback_after_primary(_nzo_id):
             nonlocal fallback_state
@@ -1685,7 +1726,9 @@ def resolve_and_play(nzb_url, title, params=None):
         dialog = xbmcgui.DialogProgress()
         dialog.create(_addon_name(), _string(30097))
         fallback_candidates = (params or {}).get("_fallback_candidates", [])
-        fallback_candidate_loader = (params or {}).get("_fallback_candidate_loader")
+        fallback_candidate_loader = _prefetch_fallback_candidate_loader(
+            (params or {}).get("_fallback_candidate_loader")
+        )
 
         def _start_fallback_after_primary(_nzo_id):
             nonlocal fallback_state

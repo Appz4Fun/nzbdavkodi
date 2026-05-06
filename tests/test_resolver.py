@@ -24,6 +24,7 @@ from resources.lib.resolver import (
     _play_direct,
     _play_via_proxy,
     _poll_until_ready,
+    _prefetch_fallback_candidate_loader,
     _start_fallback_submit_worker,
     _stop_fallback_submit_worker,
     _storage_to_webdav_path,
@@ -825,6 +826,63 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
     mock_stop_fallback.assert_not_called()
 
 
+@patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
+@patch("resources.lib.resolver._start_fallback_submit_worker")
+@patch("resources.lib.resolver._poll_until_ready")
+@patch("resources.lib.resolver._play_direct")
+@patch("resources.lib.resolver._clear_kodi_playback_state")
+@patch("resources.lib.resolver.xbmc")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver._get_poll_settings")
+def test_resolve_prefetches_fallback_loader_before_primary_submit(
+    mock_poll_settings,
+    mock_gui,
+    mock_xbmc,
+    _mock_clear_state,
+    _mock_play_direct,
+    mock_poll_until_ready,
+    mock_start_fallback,
+    _mock_snapshot,
+):
+    mock_poll_settings.return_value = (2, 60)
+    loader_started = threading.Event()
+    loader_can_finish = threading.Event()
+    candidates = [{"title": "Fallback A", "link": "http://hydra/fallback-a"}]
+
+    def slow_loader():
+        loader_started.set()
+        assert loader_can_finish.wait(timeout=1)
+        return list(candidates)
+
+    def poll_ready(*_args, **kwargs):
+        assert loader_started.wait(timeout=1)
+        kwargs["on_primary_submitted"]("SABnzbd_nzo_primary")
+        assert mock_start_fallback.call_args.args == ([],)
+        loader_kwarg = mock_start_fallback.call_args.kwargs["candidate_loader"]
+        assert loader_kwarg is not slow_loader
+        loader_can_finish.set()
+        assert loader_kwarg() == candidates
+        return (
+            "http://webdav/content/primary/movie.mkv",
+            {"Authorization": "Basic primary"},
+        )
+
+    mock_poll_until_ready.side_effect = poll_ready
+    mock_start_fallback.return_value = {"state": "fallback"}
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    mock_gui.DialogProgress.return_value = MagicMock()
+
+    resolve(
+        1,
+        {
+            "nzburl": "http://hydra/getnzb/primary",
+            "title": "movie.mkv",
+            "_fallback_candidates": [],
+            "_fallback_candidate_loader": slow_loader,
+        },
+    )
+
+
 @patch("resources.lib.resolver._stop_fallback_submit_worker")
 @patch("resources.lib.resolver._start_fallback_submit_worker")
 @patch("resources.lib.resolver._poll_until_ready")
@@ -952,6 +1010,31 @@ def test_fallback_submit_worker_loads_candidates_in_background(mock_xbmc, mock_s
             "content_length": 0,
         }
     ]
+
+
+def test_prefetch_fallback_candidate_loader_starts_immediately_and_caches_result():
+    """Selection manifest discovery should overlap primary submit latency."""
+    loader_started = threading.Event()
+    loader_can_finish = threading.Event()
+    calls = []
+    candidates = [{"title": "Fallback A", "link": "http://hydra/fallback-a"}]
+
+    def slow_loader():
+        calls.append("load")
+        loader_started.set()
+        assert loader_can_finish.wait(timeout=1)
+        return list(candidates)
+
+    wrapped = _prefetch_fallback_candidate_loader(slow_loader)
+
+    assert callable(wrapped)
+    assert loader_started.wait(timeout=1)
+
+    loader_can_finish.set()
+
+    assert wrapped() == candidates
+    assert wrapped() == candidates
+    assert calls == ["load"]
 
 
 def test_fallback_submit_jobs_snapshot_waits_for_stopping_worker_final_jobs():
