@@ -716,6 +716,8 @@ def _existing_completed_stream(title):
 # is responsive; long enough that we're not burning CPU on the plugin
 # thread while waiting for a remote HTTP call.
 _SUBMIT_UI_PUMP_INTERVAL_SECONDS = 0.25
+_SUBMIT_QUEUE_PROBE_INITIAL_DELAY_SECONDS = 0.5
+_SUBMIT_QUEUE_PROBE_INTERVAL_SECONDS = 1.0
 
 
 def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
@@ -763,9 +765,9 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
     queue_stop = threading.Event()
 
     def _queue_probe_worker():
-        # Short grace before the first probe — nzbdav needs a round-trip
-        # to fetch the .nzb before it can enqueue anything.
-        if queue_stop.wait(2.0):
+        # Short grace before the first probe — enough for nzbdav to receive
+        # the addurl request, without adding a fixed multi-second adoption lag.
+        if queue_stop.wait(_SUBMIT_QUEUE_PROBE_INITIAL_DELAY_SECONDS):
             return
         while not queue_stop.is_set() and not submit_done.is_set():
             try:
@@ -779,7 +781,7 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
             if match and match.get("nzo_id"):
                 queue_hit[0] = match["nzo_id"]
                 return
-            if queue_stop.wait(2.0):
+            if queue_stop.wait(_SUBMIT_QUEUE_PROBE_INTERVAL_SECONDS):
                 return
 
     submit_t = threading.Thread(

@@ -3,6 +3,7 @@
 
 import sys
 import threading
+import time as _time
 from unittest.mock import MagicMock, patch
 
 from resources.lib.resolver import (
@@ -26,6 +27,7 @@ from resources.lib.resolver import (
     _start_fallback_submit_worker,
     _stop_fallback_submit_worker,
     _storage_to_webdav_path,
+    _submit_nzb_with_ui_pump,
     _validate_stream_url,
     resolve,
     resolve_and_play,
@@ -1200,6 +1202,42 @@ def test_resolve_submit_failure(
 
     mock_plugin.setResolvedUrl.assert_called_once_with(1, False, mock_gui.ListItem())
     assert mock_submit.call_count == 3
+
+
+@patch("resources.lib.resolver.find_queued_by_name")
+@patch("resources.lib.resolver.submit_nzb")
+def test_submit_ui_pump_probes_queue_without_two_second_startup_delay(
+    mock_submit, mock_find_queued
+):
+    """Queue adoption should not wait two seconds before its first probe."""
+    queue_seen = threading.Event()
+
+    def delayed_submit(_nzb_url, _title):
+        assert queue_seen.wait(timeout=1.5)
+        return None, {"status": "timeout", "message": "Timed out"}
+
+    def queued_job(_title):
+        queue_seen.set()
+        return {
+            "nzo_id": "SABnzbd_nzo_queue_probe",
+            "name": "movie.mkv",
+            "status": "Downloading",
+        }
+
+    mock_submit.side_effect = delayed_submit
+    mock_find_queued.side_effect = queued_job
+    dialog = MagicMock()
+    dialog.iscanceled.return_value = False
+    monitor = _make_monitor()
+
+    started = _time.monotonic()
+    nzo_id, submit_error = _submit_nzb_with_ui_pump(
+        "http://hydra/getnzb/abc", "movie.mkv", dialog, monitor
+    )
+    elapsed = _time.monotonic() - started
+
+    assert (nzo_id, submit_error) == ("SABnzbd_nzo_queue_probe", None)
+    assert elapsed < 1.5
 
 
 @patch("resources.lib.stream_proxy.get_service_proxy_port", return_value=0)
