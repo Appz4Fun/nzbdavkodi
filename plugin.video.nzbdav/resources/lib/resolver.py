@@ -613,6 +613,13 @@ def _storage_to_webdav_path(storage):
     return "/content/{}/".format(relative)
 
 
+def _history_status_is_terminal(history_status):
+    """Return whether a history row is enough to stop waiting on queue state."""
+    if not isinstance(history_status, dict):
+        return False
+    return history_status.get("status") in ("Completed", "Failed")
+
+
 def _poll_once(nzo_id, title, monitor):
     """Poll nzbdav queue API and history API in parallel.
 
@@ -642,12 +649,23 @@ def _poll_once(nzo_id, title, monitor):
     job_status = [None]
     history_status = [None]
     error_type = [None]
+    history_ready = threading.Event()
+    queue_done = threading.Event()
+    history_done = threading.Event()
 
     def check_queue():
-        job_status[0] = get_job_status(nzo_id)
+        try:
+            job_status[0] = get_job_status(nzo_id)
+        finally:
+            queue_done.set()
 
     def check_history():
-        history_status[0] = get_job_history(nzo_id)
+        try:
+            history_status[0] = get_job_history(nzo_id)
+            if _history_status_is_terminal(history_status[0]):
+                history_ready.set()
+        finally:
+            history_done.set()
 
     # daemon=True so a stalled worker thread doesn't block the plugin
     # interpreter from exiting on Kodi shutdown.
@@ -655,11 +673,19 @@ def _poll_once(nzo_id, title, monitor):
     t2 = threading.Thread(target=check_history, daemon=True)
     t1.start()
     t2.start()
-    t1.join(timeout=10)
-    t2.join(timeout=10)
+    deadline = time.monotonic() + 10
+    while True:
+        if history_ready.is_set():
+            break
+        if queue_done.is_set() and history_done.is_set():
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        history_ready.wait(min(0.05, remaining))
 
-    # Only probe WebDAV for errors after both threads have finished,
-    # so we don't falsely conclude the job is missing.
+    # Only probe WebDAV for errors after both APIs returned no data within the
+    # bounded wait, so we don't falsely conclude the job is missing.
     if history_status[0] is None and job_status[0] is None:
         _, error = probe_webdav_reachable(monitor=monitor, max_retries=1, retry_delay=1)
         error_type[0] = error

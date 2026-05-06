@@ -23,6 +23,7 @@ from resources.lib.resolver import (
     _make_playable_listitem,
     _play_direct,
     _play_via_proxy,
+    _poll_once,
     _poll_until_ready,
     _prefetch_fallback_candidate_loader,
     _start_fallback_submit_worker,
@@ -1990,6 +1991,35 @@ def _make_dialog(canceled=False):
     dialog = MagicMock()
     dialog.iscanceled.return_value = canceled
     return dialog
+
+
+@patch("resources.lib.resolver.probe_webdav_reachable")
+@patch("resources.lib.resolver.get_job_history")
+@patch("resources.lib.resolver.get_job_status")
+def test_poll_once_returns_completed_history_before_slow_queue(
+    mock_status, mock_history, mock_probe
+):
+    """Completed history is enough to continue resolving; do not wait on queue."""
+
+    def slow_status(_nzo_id):
+        _time.sleep(0.25)
+        return {"status": "Downloading", "percentage": "99"}
+
+    mock_status.side_effect = slow_status
+    mock_history.return_value = {
+        "status": "Completed",
+        "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/movie",
+    }
+
+    started = _time.monotonic()
+    job_status, history, webdav_error = _poll_once("nzo_done", "movie", _make_monitor())
+    elapsed = _time.monotonic() - started
+
+    assert elapsed < 0.15
+    assert job_status is None
+    assert history == mock_history.return_value
+    assert webdav_error is None
+    mock_probe.assert_not_called()
 
 
 @patch("resources.lib.resolver.find_completed_by_name", return_value=None)
