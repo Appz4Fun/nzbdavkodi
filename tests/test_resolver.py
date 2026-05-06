@@ -16,6 +16,7 @@ from resources.lib.resolver import (
     _existing_completed_stream,
     _fallback_submit_jobs_snapshot,
     _get_poll_settings,
+    _get_submit_timeout_seconds,
     _handle_job_status,
     _handle_resolve_exception,
     _make_playable_listitem,
@@ -194,6 +195,28 @@ def test_get_poll_settings_clamps_typo_high_and_logs(mock_xbmc):
     logged = "\n".join(call.args[0] for call in mock_xbmc.log.call_args_list)
     assert "poll_interval" in logged
     assert "download_timeout" in logged
+
+
+def test_get_poll_settings_uses_requested_defaults_for_empty_settings():
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = lambda _key: ""
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        assert _get_poll_settings() == (1, 3600)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+
+def test_get_submit_timeout_seconds_uses_requested_default_for_empty_setting():
+    mock_addon = MagicMock()
+    mock_addon.getSetting.return_value = ""
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        assert _get_submit_timeout_seconds() == 300
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
 
 
 def test_handle_job_status_accepts_fractional_percentage():
@@ -739,7 +762,9 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
         call_order.append("poll")
         assert mock_start_fallback.call_count == 0
         kwargs["on_primary_submitted"]("SABnzbd_nzo_primary")
-        mock_start_fallback.assert_called_once_with(fallback_candidates)
+        mock_start_fallback.assert_called_once_with(
+            fallback_candidates, candidate_loader=None
+        )
         return (
             "http://webdav/content/primary/movie.mkv",
             {"Authorization": "Basic primary"},
@@ -776,7 +801,9 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
 
     assert call_order == ["poll"]
     mock_snapshot.assert_called_once_with(fallback_state)
-    mock_start_fallback.assert_called_once_with(fallback_candidates)
+    mock_start_fallback.assert_called_once_with(
+        fallback_candidates, candidate_loader=None
+    )
     mock_play_direct.assert_called_once_with(
         1,
         "http://webdav/content/primary/movie.mkv",
@@ -885,6 +912,44 @@ def test_fallback_submit_jobs_snapshot_does_not_wait_for_active_worker():
     assert _fallback_submit_jobs_snapshot(state) == [job]
     worker.join.assert_not_called()
     finished.wait.assert_not_called()
+
+
+@patch("resources.lib.resolver.submit_nzb")
+@patch("resources.lib.resolver.xbmc")
+def test_fallback_submit_worker_loads_candidates_in_background(mock_xbmc, mock_submit):
+    """Slow fallback discovery must not block the caller starting playback."""
+    release_loader = threading.Event()
+
+    def load_candidates():
+        release_loader.wait(timeout=1)
+        return [
+            {
+                "title": "Fallback A 2026 1080p WEB-DL",
+                "link": "http://hydra/getnzb/fallback-a",
+            }
+        ]
+
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    mock_submit.return_value = ("SABnzbd_nzo_fallback", None)
+
+    state = _start_fallback_submit_worker([], candidate_loader=load_candidates)
+
+    assert _fallback_submit_jobs_snapshot(state) == []
+    mock_submit.assert_not_called()
+
+    release_loader.set()
+    assert state["finished"].wait(timeout=1)
+    assert _fallback_submit_jobs_snapshot(state) == [
+        {
+            "title": "Fallback A 2026 1080p WEB-DL",
+            "nzb_url": "http://hydra/getnzb/fallback-a",
+            "job_name": "Fallback A 2026 1080p WEB-DL [fallback-1-253ccd06]",
+            "nzo_id": "SABnzbd_nzo_fallback",
+            "stream_url": "",
+            "stream_headers": {},
+            "content_length": 0,
+        }
+    ]
 
 
 def test_fallback_submit_jobs_snapshot_waits_for_stopping_worker_final_jobs():
@@ -1024,9 +1089,41 @@ def test_stop_fallback_submit_worker_cancels_running_jobs_when_requested():
     assert _stop_fallback_submit_worker(state, cancel_submitted=True) == [job]
 
     assert stop_event.is_set()
-    worker.join.assert_called_once_with(timeout=0.5)
+    worker.join.assert_called_once_with(timeout=10)
     assert cancelled == ["SABnzbd_nzo_fallback"]
     assert state["thread"] is None
+
+
+@patch("resources.lib.resolver._notify", create=True)
+@patch("resources.lib.resolver._submit_fallback_candidates")
+def test_fallback_submit_worker_notifies_when_loader_finds_no_candidates(
+    mock_submit_fallbacks, mock_notify
+):
+    from resources.lib.resolver import _start_fallback_submit_worker
+
+    state = _start_fallback_submit_worker(candidate_loader=lambda: [])
+
+    assert state["finished"].wait(timeout=2)
+    mock_submit_fallbacks.assert_not_called()
+    mock_notify.assert_called_once()
+    assert "No known fallback matches" in mock_notify.call_args[0][1]
+
+
+@patch("resources.lib.resolver.xbmcaddon", create=True)
+@patch("resources.lib.resolver._notify")
+@patch("resources.lib.resolver._submit_fallback_candidates")
+def test_fallback_submit_worker_does_not_notify_no_candidates_when_disabled(
+    mock_submit_fallbacks, mock_notify, mock_xbmcaddon
+):
+    from resources.lib.resolver import _start_fallback_submit_worker
+
+    mock_xbmcaddon.Addon.return_value.getSetting.return_value = "false"
+
+    state = _start_fallback_submit_worker(candidate_loader=lambda: [])
+
+    assert state["finished"].wait(timeout=2)
+    mock_submit_fallbacks.assert_not_called()
+    mock_notify.assert_not_called()
 
 
 def test_stop_fallback_submit_worker_skips_completed_jobs_when_cancelling():

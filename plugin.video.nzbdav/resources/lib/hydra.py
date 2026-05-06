@@ -56,7 +56,7 @@ def _get_settings():
 def _fetch_hydra_xml(url, error_prefix):
     """Fetch XML from Hydra and normalize network/runtime failures."""
     try:
-        return _http_get(url, timeout=15), None
+        return _http_get(url, timeout=300), None
     except (URLError,) + _HYDRA_REQUEST_ERRORS as error:
         # HTTPError/URLError str() can echo the failing URL (which embeds
         # the indexer's apikey query param) back into the log. Redact

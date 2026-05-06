@@ -396,6 +396,8 @@ def parse_title_metadata(title):
         group = parsed.get("group", "") or ""
         quality = parsed.get("quality", "") or ""
         edition = parsed.get("edition", "") or ""
+        proper = bool(parsed.get("proper", False))
+        repack = bool(parsed.get("repack", False))
         year = parsed.get("year", 0) or 0
         upscaled = bool(parsed.get("upscaled", False))
         container = parsed.get("container", "") or ""
@@ -428,6 +430,8 @@ def parse_title_metadata(title):
         group = parsed.get("group", "") or ""
         quality = parsed.get("quality", "") or ""
         edition = parsed.get("edition", "") or ""
+        proper = bool(parsed.get("proper", False))
+        repack = bool(parsed.get("repack", False))
         year = parsed.get("year", 0) or 0
         upscaled = bool(parsed.get("upscaled", False))
         container = parsed.get("container", "") or ""
@@ -442,6 +446,8 @@ def parse_title_metadata(title):
         "group": group,
         "quality": quality,
         "edition": edition,
+        "proper": proper,
+        "repack": repack,
         "channels": channels,
         "year": year,
         "upscaled": upscaled,

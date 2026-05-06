@@ -1,11 +1,15 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 nzbdav contributors
 
+import itertools
+import threading
 from unittest.mock import MagicMock, patch
 from urllib.parse import urlencode
 
+from resources.lib.nzb_manifest import make_empty_manifest
 from resources.lib.router import (
     _clean_params,
+    _fallback_candidate_loader_for_selection,
     _format_info_line,
     _format_size,
     _get_tmdb_poster,
@@ -717,6 +721,28 @@ def _attach_primary_duplicate_fallbacks(results):
         return attach_fallback_candidates(results)
 
 
+def _attach_selected_primary_duplicate_fallbacks(selected, results, **_kwargs):
+    _attach_primary_duplicate_fallbacks(list(results))
+    return selected
+
+
+def _manifest(name, size, digest):
+    return {
+        "payload_kind": "video",
+        "group_name": name,
+        "group_bytes": size,
+        "video_name": name,
+        "normalized_video_name": name,
+        "video_bytes": size,
+        "archive_base_name": "",
+        "article_digest": digest,
+        "article_count": 100,
+        "skipped_candidate_count": 0,
+        "skipped_candidates": [],
+        "unsupported_reason": "",
+    }
+
+
 def _duplicate_release(link, size=8 * 1024**3):
     return {
         "title": "The.Matrix.1999.1080p.BluRay.x264-GROUP.mkv",
@@ -730,6 +756,305 @@ def _duplicate_release(link, size=8 * 1024**3):
             "container": "mkv",
         },
     }
+
+
+def test_fallback_candidate_loader_skips_single_result_pool():
+    selected = _duplicate_release("http://hydra/nzb/only")
+
+    loader = _fallback_candidate_loader_for_selection(selected, [selected])
+
+    assert loader is None
+
+
+@patch("resources.lib.router.fallback_candidate_prefetch_settings")
+def test_fallback_candidate_loader_skips_duplicate_only_pool_before_settings(
+    mock_settings,
+):
+    mock_settings.return_value = (True, 5)
+    selected = _duplicate_release("http://hydra/nzb/selected")
+    duplicate = _duplicate_release("http://hydra/nzb/selected")
+    missing_link = _duplicate_release("")
+
+    loader = _fallback_candidate_loader_for_selection(
+        selected, [selected, duplicate, missing_link]
+    )
+
+    assert loader is None
+    mock_settings.assert_not_called()
+
+
+@patch("resources.lib.router.fallback_candidate_prefetch_settings")
+def test_fallback_candidate_loader_skips_unusable_selected_manifest_before_settings(
+    mock_settings,
+):
+    mock_settings.side_effect = AssertionError("settings should not be read")
+    selected = _duplicate_release("http://hydra/nzb/selected")
+    selected["_fallback_manifest"] = make_empty_manifest("fetch_error")
+    related = _duplicate_release("http://hydra/nzb/related")
+
+    loader = _fallback_candidate_loader_for_selection(selected, [selected, related])
+
+    assert loader is None
+    mock_settings.assert_not_called()
+
+
+@patch(
+    "resources.lib.router.selection_pool_may_have_fallback_peer",
+    side_effect=AssertionError("pool should not be scanned"),
+)
+@patch("resources.lib.router.fallback_candidate_prefetch_settings")
+def test_fallback_candidate_loader_skips_unusable_selected_manifest_before_pool_scan(
+    mock_settings, mock_selection_pool
+):
+    mock_settings.side_effect = AssertionError("settings should not be read")
+    selected = _duplicate_release("http://hydra/nzb/selected")
+    selected["_fallback_manifest"] = make_empty_manifest("fetch_error")
+    related = _duplicate_release("http://hydra/nzb/related")
+
+    loader = _fallback_candidate_loader_for_selection(selected, [selected, related])
+
+    assert loader is None
+    mock_selection_pool.assert_not_called()
+    mock_settings.assert_not_called()
+
+
+@patch("resources.lib.router.fallback_candidate_prefetch_settings")
+def test_fallback_candidate_loader_reuses_distinct_peer_scan_for_prefetch(
+    mock_settings,
+):
+    mock_settings.return_value = (True, 5)
+    selected = _duplicate_release("http://hydra/nzb/selected")
+    duplicates = [
+        _duplicate_release("http://hydra/nzb/selected") for _index in range(5)
+    ]
+    related = _duplicate_release("http://hydra/nzb/related")
+
+    class CountedResults:
+        def __init__(self, items):
+            self.items = items
+            self.iterations = 0
+
+        def __len__(self):
+            return len(self.items)
+
+        def __iter__(self):
+            for item in self.items:
+                self.iterations += 1
+                yield item
+
+    results = CountedResults([selected] + duplicates + [related])
+
+    loader = _fallback_candidate_loader_for_selection(selected, results)
+
+    assert callable(loader)
+    assert results.iterations == len(results.items)
+
+
+@patch(
+    "resources.lib.router.first_prefetchable_fallback_peer",
+    side_effect=AssertionError("disabled fallback scanned prefetch peers"),
+)
+@patch("resources.lib.fallback_streams._fallback_settings", return_value=(False, 5))
+def test_fallback_candidate_loader_skips_prefetch_when_fallback_disabled(
+    _mock_settings, mock_prefetch
+):
+    selected = _duplicate_release("http://hydra/nzb/selected")
+    related = _duplicate_release("http://hydra/nzb/related")
+
+    loader = _fallback_candidate_loader_for_selection(selected, [selected, related])
+
+    assert loader is None
+    mock_prefetch.assert_not_called()
+
+
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+@patch("resources.lib.fallback_streams._fallback_settings")
+def test_fallback_candidate_loader_reuses_prefetch_settings_for_attach(
+    mock_settings, mock_fetch
+):
+    selected = _duplicate_release("http://hydra/nzb/selected")
+    related = _duplicate_release("http://hydra/nzb/related")
+    manifests = {
+        selected["link"]: _manifest("the matrix 1999.mkv", selected["size"], "a"),
+        related["link"]: _manifest("the matrix 1999.mkv", related["size"], "b"),
+    }
+    mock_settings.return_value = (True, 1)
+    mock_fetch.side_effect = lambda url, **_kwargs: manifests[url]
+
+    loader = _fallback_candidate_loader_for_selection(selected, [selected, related])
+    candidates = loader()
+
+    assert candidates == [related]
+    assert mock_settings.call_count == 1
+
+
+def test_fallback_candidate_loader_skips_unrelated_peer_pool():
+    selected = _duplicate_release("http://hydra/nzb/selected")
+    unrelated = _duplicate_release("http://hydra/nzb/unrelated")
+    unrelated["title"] = "Bourne.Identity.2002.1080p.BluRay.x264-GROUP.mkv"
+
+    loader = _fallback_candidate_loader_for_selection(selected, [selected, unrelated])
+
+    assert loader is None
+
+
+def test_fallback_candidate_loader_skips_raw_unrelated_selected_metadata_parse():
+    selected = {
+        "title": "The.Matrix.1999.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "link": "http://hydra/nzb/selected-raw",
+        "size": 60 * 1024**3,
+    }
+    unrelated = [
+        {
+            "title": "Bourne.Identity.Raw{:02d}.2160p.UHD.BluRay.REMUX."
+            "DV.HEVC-GROUP".format(index),
+            "link": "http://hydra/nzb/unrelated-raw-{}".format(index),
+            "size": 60 * 1024**3,
+        }
+        for index in range(5)
+    ]
+    parsed_titles = []
+
+    def parse_title_metadata(title):
+        parsed_titles.append(title)
+        return {
+            "resolution": "2160p",
+            "quality": "REMUX",
+            "codec": "x265/HEVC",
+            "hdr": ["Dolby Vision"],
+            "audio": ["TrueHD", "Atmos"],
+            "container": "mkv",
+        }
+
+    with patch(
+        "resources.lib.filter.parse_title_metadata", side_effect=parse_title_metadata
+    ):
+        loader = _fallback_candidate_loader_for_selection(
+            selected, [selected] + unrelated
+        )
+
+    assert loader is None
+    assert not parsed_titles
+
+
+def test_loader_skips_cached_meta_unrelated_selected_metadata_parse():
+    selected = {
+        "title": "The.Matrix.1999.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "link": "http://hydra/nzb/selected-raw",
+        "size": 60 * 1024**3,
+    }
+    unrelated = []
+    for index in range(5):
+        unrelated.append(
+            {
+                "title": "Bourne.Identity.Meta{:02d}.2160p.UHD.BluRay.REMUX."
+                "DV.HEVC-GROUP".format(index),
+                "link": "http://hydra/nzb/unrelated-meta-{}".format(index),
+                "size": 60 * 1024**3,
+                "_meta": {
+                    "resolution": "2160p",
+                    "quality": "REMUX",
+                    "codec": "x265/HEVC",
+                    "hdr": ["Dolby Vision"],
+                    "audio": ["TrueHD", "Atmos"],
+                    "container": "mkv",
+                },
+            }
+        )
+    parsed_titles = []
+
+    def parse_title_metadata(title):
+        parsed_titles.append(title)
+        return {
+            "resolution": "2160p",
+            "quality": "REMUX",
+            "codec": "x265/HEVC",
+            "hdr": ["Dolby Vision"],
+            "audio": ["TrueHD", "Atmos"],
+            "container": "mkv",
+        }
+
+    with patch(
+        "resources.lib.filter.parse_title_metadata", side_effect=parse_title_metadata
+    ):
+        loader = _fallback_candidate_loader_for_selection(
+            selected, [selected] + unrelated
+        )
+
+    assert loader is None
+    assert not parsed_titles
+
+
+def test_fallback_candidate_loader_skips_profile_mismatched_peer_pool():
+    selected = _duplicate_release("http://hydra/nzb/selected")
+    mismatched = _duplicate_release("http://hydra/nzb/profile-mismatch")
+    mismatched["title"] = "The.Matrix.1999.2160p.BluRay.x264-GROUP.mkv"
+    mismatched["_meta"]["resolution"] = "2160p"
+
+    loader = _fallback_candidate_loader_for_selection(selected, [selected, mismatched])
+
+    assert loader is None
+
+
+@patch("resources.lib.router.attach_fallback_candidates_for_selection")
+def test_fallback_candidate_loader_prioritizes_known_prefetchable_peer(mock_attach):
+    selected = _duplicate_release("http://hydra/nzb/selected")
+    unrelated = []
+    for index in range(5):
+        result = _duplicate_release("http://hydra/nzb/unrelated-{}".format(index))
+        result["title"] = "Bourne.Identity.2002.1080p.BluRay.x264-GROUP.mkv"
+        unrelated.append(result)
+    related = _duplicate_release("http://hydra/nzb/related")
+
+    def attach_selection(selected_result, _pool, **_kwargs):
+        selected_result["_fallback_candidates"] = [related]
+
+    mock_attach.side_effect = attach_selection
+
+    loader = _fallback_candidate_loader_for_selection(
+        selected, [selected] + unrelated + [related]
+    )
+    candidates = loader()
+
+    assert candidates == [related]
+    called_selected, called_pool = mock_attach.call_args.args
+    assert called_selected is selected
+    assert list(itertools.islice(called_pool, 2)) == [selected, related]
+
+
+@patch("resources.lib.router.attach_fallback_candidates_for_selection")
+def test_fallback_candidate_loader_pool_stays_lazy_after_known_peer(mock_attach):
+    selected = _duplicate_release("http://hydra/nzb/selected")
+    related = _duplicate_release("http://hydra/nzb/related")
+    unrelated = []
+    for index in range(20):
+        result = _duplicate_release("http://hydra/nzb/unrelated-{}".format(index))
+        result["title"] = "Bourne.Identity.2002.1080p.BluRay.x264-GROUP.mkv"
+        unrelated.append(result)
+
+    class CountedResults:  # pylint: disable=too-few-public-methods
+        def __init__(self, items):
+            self.items = items
+            self.iterations = 0
+
+        def __iter__(self):
+            for item in self.items:
+                self.iterations += 1
+                yield item
+
+    results = CountedResults([selected, related] + unrelated)
+
+    def attach_selection(selected_result, pool, **_kwargs):
+        assert list(itertools.islice(pool, 2)) == [selected, related]
+        selected_result["_fallback_candidates"] = [related]
+
+    mock_attach.side_effect = attach_selection
+
+    loader = _fallback_candidate_loader_for_selection(selected, results)
+    assert results.iterations == 2
+
+    assert loader() == [related]
+    assert results.iterations == 2
 
 
 @patch("xbmcplugin.setResolvedUrl")
@@ -837,7 +1162,7 @@ def test_handle_play_happy_path_invokes_resolve(
 @patch("xbmcgui.ListItem")
 @patch("resources.lib.resolver.resolve")
 @patch("resources.lib.results_dialog.show_results_dialog")
-@patch("resources.lib.router.attach_fallback_candidates")
+@patch("resources.lib.router.attach_fallback_candidates_for_selection")
 @patch("resources.lib.filter.filter_results")
 @patch("resources.lib.router._search_all_providers")
 @patch("resources.lib.router._tag_available")
@@ -862,18 +1187,27 @@ def test_handle_play_picker_forwards_fallback_candidates(
     filtered = [primary, duplicate, oversized]
     mock_search.return_value = (filtered, None)
     mock_filter.return_value = (filtered, filtered)
-    mock_attach.side_effect = _attach_primary_duplicate_fallbacks
+    mock_attach.side_effect = _attach_selected_primary_duplicate_fallbacks
     mock_dialog.return_value = primary
 
-    _handle_play(5, {"type": "movie", "title": "The Matrix", "year": "1999"})
+    with patch(
+        "resources.lib.fallback_streams._fallback_settings", return_value=(True, 2)
+    ):
+        _handle_play(5, {"type": "movie", "title": "The Matrix", "year": "1999"})
 
-    mock_attach.assert_called_once_with(filtered)
+    mock_attach.assert_not_called()
     mock_resolve.assert_called_once()
     args, _kwargs = mock_resolve.call_args
     assert args[0] == 5
     assert args[1]["nzburl"] == primary["link"]
     assert args[1]["title"] == primary["title"]
-    assert args[1]["_fallback_candidates"] == [duplicate, oversized]
+    assert args[1]["_fallback_candidates"] == []
+    loader = args[1]["_fallback_candidate_loader"]
+    assert callable(loader)
+
+    assert loader() == [duplicate, oversized]
+    mock_attach.assert_called_once()
+    assert mock_attach.call_args.args[0] is primary
     assert duplicate["_fallback_candidates"] == [primary, oversized]
     assert oversized["_fallback_candidates"] == [primary, duplicate]
 
@@ -932,17 +1266,19 @@ def test_handle_search_auto_select_passes_clean_params_to_resolver(
         },
     )
 
-    mock_resolve_and_play.assert_called_once_with(
-        chosen["link"],
-        chosen["title"],
-        params={
-            "type": "movie",
-            "title": "The Matrix",
-            "year": "",
-            "tmdb_id": "603",
-            "_fallback_candidates": [],
-        },
-    )
+    mock_resolve_and_play.assert_called_once()
+    args, kwargs = mock_resolve_and_play.call_args
+    assert args == (chosen["link"], chosen["title"])
+    resolver_params = dict(kwargs["params"])
+    loader = resolver_params.pop("_fallback_candidate_loader")
+    assert loader is None
+    assert resolver_params == {
+        "type": "movie",
+        "title": "The Matrix",
+        "year": "",
+        "tmdb_id": "603",
+        "_fallback_candidates": [],
+    }
     mock_end.assert_called_once_with(7, succeeded=False)
 
 
@@ -984,17 +1320,19 @@ def test_handle_search_picker_passes_clean_params_to_resolver(
         },
     )
 
-    mock_resolve_and_play.assert_called_once_with(
-        chosen["link"],
-        chosen["title"],
-        params={
-            "type": "movie",
-            "title": "The Matrix",
-            "year": "",
-            "tmdb_id": "603",
-            "_fallback_candidates": [],
-        },
-    )
+    mock_resolve_and_play.assert_called_once()
+    args, kwargs = mock_resolve_and_play.call_args
+    assert args == (chosen["link"], chosen["title"])
+    resolver_params = dict(kwargs["params"])
+    loader = resolver_params.pop("_fallback_candidate_loader")
+    assert loader is None
+    assert resolver_params == {
+        "type": "movie",
+        "title": "The Matrix",
+        "year": "",
+        "tmdb_id": "603",
+        "_fallback_candidates": [],
+    }
     mock_end.assert_called_once_with(8, succeeded=False)
 
 
@@ -1002,19 +1340,21 @@ def test_handle_search_picker_passes_clean_params_to_resolver(
 @patch("xbmcplugin.endOfDirectory")
 @patch("resources.lib.resolver.resolve_and_play")
 @patch("resources.lib.results_dialog.show_results_dialog")
-@patch("resources.lib.router.attach_fallback_candidates")
+@patch("resources.lib.fallback_streams._fallback_settings")
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
 @patch("resources.lib.filter.filter_results")
 @patch("resources.lib.router._search_all_providers")
 @patch("resources.lib.router._tag_available")
 @patch("resources.lib.cache.set_cached")
 @patch("resources.lib.cache.get_cached", return_value=None)
-def test_handle_search_picker_forwards_fallback_candidates_with_clean_params(
+def test_handle_search_picker_fetches_fallbacks_after_selection(
     mock_cache,
     mock_set_cache,
     mock_tag,
     mock_search,
     mock_filter,
-    mock_attach,
+    mock_fetch_manifest,
+    mock_fallback_settings,
     mock_dialog,
     mock_resolve_and_play,
     mock_end,
@@ -1028,8 +1368,58 @@ def test_handle_search_picker_forwards_fallback_candidates_with_clean_params(
     filtered = [primary, duplicate, oversized]
     mock_search.return_value = (filtered, None)
     mock_filter.return_value = (filtered, filtered)
-    mock_attach.side_effect = _attach_primary_duplicate_fallbacks
-    mock_dialog.return_value = primary
+    mock_fallback_settings.return_value = (True, 2)
+    manifests = {
+        "http://hydra/nzb/primary": {
+            "payload_kind": "video",
+            "group_name": "the matrix primary.mkv",
+            "group_bytes": 8589934592,
+            "video_name": "The.Matrix.primary.mkv",
+            "normalized_video_name": "the matrix primary.mkv",
+            "video_bytes": 8589934592,
+            "archive_base_name": "",
+            "article_digest": "articles-primary",
+            "article_count": 100,
+            "skipped_candidate_count": 0,
+            "skipped_candidates": [],
+            "unsupported_reason": "",
+        },
+        "http://hydra/nzb/dupe": {
+            "payload_kind": "video",
+            "group_name": "the matrix alternate post.mkv",
+            "group_bytes": 8589934592,
+            "video_name": "The.Matrix.alternate.post.mkv",
+            "normalized_video_name": "the matrix alternate post.mkv",
+            "video_bytes": 8589934592,
+            "archive_base_name": "",
+            "article_digest": "articles-dupe",
+            "article_count": 100,
+            "skipped_candidate_count": 0,
+            "skipped_candidates": [],
+            "unsupported_reason": "",
+        },
+        "http://hydra/nzb/oversized": {
+            "payload_kind": "video",
+            "group_name": "the matrix oversized.mkv",
+            "group_bytes": 21474836480,
+            "video_name": "The.Matrix.oversized.mkv",
+            "normalized_video_name": "the matrix oversized.mkv",
+            "video_bytes": 21474836480,
+            "archive_base_name": "",
+            "article_digest": "articles-oversized",
+            "article_count": 100,
+            "skipped_candidate_count": 0,
+            "skipped_candidates": [],
+            "unsupported_reason": "",
+        },
+    }
+    mock_fetch_manifest.side_effect = lambda url, **_kwargs: manifests[url]
+
+    def choose_primary(*_args, **_kwargs):
+        mock_fetch_manifest.assert_not_called()
+        return primary
+
+    mock_dialog.side_effect = choose_primary
 
     _handle_search(
         8,
@@ -1041,20 +1431,97 @@ def test_handle_search_picker_forwards_fallback_candidates_with_clean_params(
         },
     )
 
-    mock_attach.assert_called_once_with(filtered)
     mock_resolve_and_play.assert_called_once()
     args, kwargs = mock_resolve_and_play.call_args
     assert args == (primary["link"], primary["title"])
-    assert kwargs["params"] == {
+    resolver_params = dict(kwargs["params"])
+    loader = resolver_params.pop("_fallback_candidate_loader")
+    assert callable(loader)
+    assert resolver_params == {
         "type": "movie",
         "title": "The Matrix",
         "year": "",
         "tmdb_id": "603",
-        "_fallback_candidates": [duplicate, oversized],
+        "_fallback_candidates": [],
     }
-    assert duplicate["_fallback_candidates"] == [primary, oversized]
-    assert oversized["_fallback_candidates"] == [primary, duplicate]
+
+    mock_fetch_manifest.assert_not_called()
+    assert loader() == [duplicate]
+    assert mock_fetch_manifest.call_count == 3
+    assert "_fallback_candidates" not in duplicate
+    assert "_fallback_candidates" not in oversized
     mock_end.assert_called_once_with(8, succeeded=False)
+
+
+@patch("xbmcaddon.Addon")
+@patch("xbmcplugin.endOfDirectory")
+@patch("resources.lib.resolver.resolve_and_play")
+@patch("resources.lib.results_dialog.show_results_dialog")
+@patch("resources.lib.fallback_streams._fallback_settings")
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+@patch("resources.lib.filter.filter_results")
+@patch("resources.lib.router._search_all_providers")
+@patch("resources.lib.router._tag_available")
+@patch("resources.lib.cache.set_cached")
+@patch("resources.lib.cache.get_cached", return_value=None)
+def test_handle_search_does_not_wait_for_slow_fallback_lookup_before_playing(
+    mock_cache,
+    mock_set_cache,
+    mock_tag,
+    mock_search,
+    mock_filter,
+    mock_fetch_manifest,
+    mock_fallback_settings,
+    mock_dialog,
+    mock_resolve_and_play,
+    mock_end,
+    mock_addon,
+):
+    _install_progress_dialog_that_wont_cancel()
+    mock_addon.return_value.getSetting.side_effect = _stub_setting("false")
+    primary = _duplicate_release("http://hydra/nzb/primary")
+    duplicate = _duplicate_release("http://hydra/nzb/dupe")
+    filtered = [primary, duplicate]
+    mock_search.return_value = (filtered, None)
+    mock_filter.return_value = (filtered, filtered)
+    mock_fallback_settings.return_value = (True, 2)
+    mock_dialog.return_value = primary
+
+    fetch_started = threading.Event()
+    release_fetch = threading.Event()
+    manifests = {
+        "http://hydra/nzb/primary": _manifest(
+            "the matrix primary.mkv", 8589934592, "articles-primary"
+        ),
+        "http://hydra/nzb/dupe": _manifest(
+            "the matrix alternate.mkv", 8589934592, "articles-dupe"
+        ),
+    }
+
+    def slow_fetch(url, **_kwargs):
+        fetch_started.set()
+        release_fetch.wait(timeout=1)
+        return manifests[url]
+
+    mock_fetch_manifest.side_effect = slow_fetch
+
+    try:
+        _handle_search(
+            8,
+            {
+                "type": "movie",
+                "title": "The Matrix",
+                "year": "_",
+                "tmdb_id": "603",
+            },
+        )
+        mock_fetch_manifest.assert_not_called()
+        mock_resolve_and_play.assert_called_once()
+        args, kwargs = mock_resolve_and_play.call_args
+        assert args == (primary["link"], primary["title"])
+        assert callable(kwargs["params"]["_fallback_candidate_loader"])
+    finally:
+        release_fetch.set()
 
 
 # --- _test_connection and per-provider connection tests ---

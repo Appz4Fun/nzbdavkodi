@@ -99,6 +99,21 @@ def test_settings_include_direct_indexers_category():
     )
 
 
+def test_settings_default_to_requested_resolver_timeouts():
+    settings_xml = REPO_ROOT / "plugin.video.nzbdav" / "resources" / "settings.xml"
+    root = ET.parse(settings_xml).getroot()
+
+    defaults = {
+        setting.get("id"): setting.get("default")
+        for setting in root.findall(".//setting")
+        if setting.get("id")
+    }
+
+    assert defaults["poll_interval"] == "1"
+    assert defaults["download_timeout"] == "3600"
+    assert defaults["submit_timeout"] == "300"
+
+
 def test_community_health_files_exist():
     expected = [
         REPO_ROOT / "CONTRIBUTING.md",

@@ -739,5 +739,5 @@ msgid "Switched to fallback stream"
 msgstr "Switched to fallback stream"
 
 msgctxt "#30187"
-msgid "No matching fallback stream available"
-msgstr "No matching fallback stream available"
+msgid "No known fallback matches found"
+msgstr "No known fallback matches found"

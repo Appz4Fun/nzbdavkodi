@@ -58,6 +58,7 @@ from resources.lib.dv_source import probe_dolby_vision_source
 from resources.lib.http_util import HTTP_USER_AGENT
 from resources.lib.http_util import notify as _notify
 from resources.lib.http_util import redact_text as _redact_text
+from resources.lib.i18n import string as _string
 
 # Singleton proxy instance
 _proxy = None
@@ -114,8 +115,8 @@ _FFPROBE_PATHS = [
 ]
 
 # Pass-through proxy recovery constants
-_UPSTREAM_OPEN_TIMEOUT = 30
-_SKIP_PROBE_TIMEOUT = 10
+_UPSTREAM_OPEN_TIMEOUT = 60
+_SKIP_PROBE_TIMEOUT = 60
 # Geometric skip sizes for probing past a bad article region. 1 MB covers a
 # single missing article (~700 KB). 16 MB covers a cluster of ~20 articles.
 _SKIP_PROBE_SIZES = (1048576, 4194304, 16777216)
@@ -139,7 +140,7 @@ _DENSITY_BREAKER_ZERO_FILL_RATIO = 0.5
 # is closed so Kodi's CCurlFile reconnects with a fresh upstream fetch.
 # Without this, a slow-trickle upstream — e.g. a Usenet article fetch that
 # takes 60+ seconds — keeps delivering chunks under the per-read socket
-# timeout (_UPSTREAM_OPEN_TIMEOUT, 30 s), so neither the urlopen-level
+# timeout (_UPSTREAM_OPEN_TIMEOUT, 60 s), so neither the urlopen-level
 # timeout nor Kodi's own watchdog ever fires. Bytes drip in below playable
 # rate, Kodi's CFileCache underruns, audio stalls, and the player wedges in
 # a state where subsequent seeks don't trigger a fresh range request
@@ -184,6 +185,11 @@ _RECOVERABLE_HTTP_RANGE_ERROR_CODES = frozenset({416})
 _SESSION_ZERO_FILL_RATIO_MAX = 0.05
 _RECOVERY_NOTIFY_DEBOUNCE_SECONDS = 60.0
 _RANGE_RETRY_DELAYS = (2, 4, 8)
+_AUTH_HEADER_NOT_PROVIDED = object()
+_FALLBACK_SOURCE_STATE_NOT_PROVIDED = object()
+_FALLBACK_SOURCE_STREAM_URL_HINT_KEY = "_fallback_source_stream_url_hint"
+_FALLBACK_PRIMARY_URL_HINT_KEY = "_fallback_primary_url_hint"
+_FALLBACK_PRIMARY_AUTH_HINT_KEY = "_fallback_primary_auth_hint"
 
 # Shared zero buffer reused across all pass-through responses.
 _ZERO_FILL_BUFFER = bytes(65536)
@@ -247,11 +253,11 @@ _HLS_SEGMENT_MTIME_STABLE_MS = 500
 # and scan stderr for a specific line. If ffmpeg hangs on the network
 # read (slow upstream, auth negotiation, stalled header parse) it may
 # never emit stderr output at all — without a wall-clock guard, the
-# reader loop blocks forever. 20 s is very generous for a healthy
+# reader loop blocks forever. 30 s is very generous for a healthy
 # LAN probe (typical: <2 s to Duration line on a 4K REMUX) and still
 # bounded enough that a stuck probe can't wedge the prepare_stream
 # path past the plugin client's 60 s /prepare timeout.
-_PROBE_DEADLINE_SECONDS = 20.0
+_PROBE_DEADLINE_SECONDS = 30.0
 
 
 def _get_private_hls_temp_root():
@@ -883,6 +889,17 @@ def _maybe_notify_recovery_summary(
             "NZB-DAV",
             "Skipped {} bytes across {} recoveries".format(skipped, recoveries),
         )
+    except (RuntimeError, OSError):
+        return False
+    return True
+
+
+def _notify_fallback_switch_once(ctx):
+    """Notify the user once when a session activates a live fallback stream."""
+    if int(ctx.get("fallback_switch_count", 0) or 0) != 1:
+        return False
+    try:
+        _notify("NZB-DAV", _string(30186))
     except (RuntimeError, OSError):
         return False
     return True
@@ -2424,11 +2441,243 @@ class _StreamHandler(BaseHTTPRequestHandler):
 
     def _select_live_fallback_source(self, ctx, failed_byte, range_end):
         """Return a validated fallback source for the failed byte range."""
-        self._refresh_standby_fallback_sources(ctx)
-        for source in ctx.get("fallback_sources", []):
-            if not source.get("stream_url") or source.get("failed"):
+        fallback_sources = ctx.get("fallback_sources") or []
+        if not fallback_sources:
+            return None
+        expected_length = self._fallback_expected_content_length(ctx)
+        if expected_length <= 0:
+            return None
+        ctx["_fallback_expected_content_length"] = expected_length
+        first_selectable_index = -1
+        first_selectable_stream_url = ""
+        first_selectable_nzo_id = ""
+        for index, source in enumerate(fallback_sources):
+            if source.get("failed"):
                 continue
-            if not self._fallback_source_matches(ctx, source, failed_byte, range_end):
+            stream_url = source.get("stream_url")
+            nzo_id = "" if stream_url else source.get("nzo_id")
+            if stream_url or nzo_id:
+                first_selectable_index = index
+                first_selectable_stream_url = stream_url or ""
+                first_selectable_nzo_id = nzo_id or ""
+                break
+        if first_selectable_index < 0:
+            return None
+        first_standby = {}
+        source = self._select_resolved_fallback_source(
+            ctx,
+            failed_byte,
+            range_end,
+            start_index=first_selectable_index,
+            first_stream_url=first_selectable_stream_url,
+            first_failed=False,
+            first_nzo_id=first_selectable_nzo_id,
+            first_standby=first_standby,
+            expected_length=expected_length,
+        )
+        if source:
+            return source
+        if not first_standby and first_selectable_nzo_id:
+            first_standby.update(
+                {
+                    "index": first_selectable_index,
+                    "stream_url": first_selectable_stream_url,
+                    "nzo_id": first_selectable_nzo_id,
+                }
+            )
+        if not first_standby:
+            return None
+        first_standby_index = first_standby["index"]
+        first_standby_stream_url = first_standby["stream_url"]
+        first_standby_nzo_id = first_standby["nzo_id"]
+        for index in range(first_standby_index, len(fallback_sources)):
+            source = fallback_sources[index]
+            source_failed = (
+                False if index == first_standby_index else source.get("failed")
+            )
+            if source_failed:
+                continue
+            stream_url = (
+                first_standby_stream_url
+                if index == first_standby_index
+                else source.get("stream_url")
+            )
+            if stream_url:
+                continue
+            nzo_id = (
+                first_standby_nzo_id
+                if index == first_standby_index
+                else source.get("nzo_id")
+            )
+            if not nzo_id:
+                continue
+            hint_key = "_fallback_source_content_length_hint"
+            auth_hint_key = "_fallback_source_auth_hint"
+            stream_url_hint_key = _FALLBACK_SOURCE_STREAM_URL_HINT_KEY
+            had_hint = hint_key in ctx
+            had_auth_hint = auth_hint_key in ctx
+            had_stream_url_hint = stream_url_hint_key in ctx
+            previous_hint = ctx.get(hint_key) if had_hint else None
+            previous_auth_hint = ctx.get(auth_hint_key) if had_auth_hint else None
+            previous_stream_url_hint = (
+                ctx.get(stream_url_hint_key) if had_stream_url_hint else None
+            )
+            try:
+                if not self._refresh_standby_fallback_source(
+                    ctx,
+                    source,
+                    nzo_id=nzo_id,
+                    known_stream_url=stream_url,
+                    known_failed=source_failed,
+                ):
+                    continue
+                if not self._fallback_source_matches(
+                    ctx, source, failed_byte, range_end
+                ):
+                    source["failed"] = True
+                    continue
+                return source
+            finally:
+                if had_hint:
+                    ctx[hint_key] = previous_hint
+                else:
+                    ctx.pop(hint_key, None)
+                if had_auth_hint:
+                    ctx[auth_hint_key] = previous_auth_hint
+                else:
+                    ctx.pop(auth_hint_key, None)
+                if had_stream_url_hint:
+                    ctx[stream_url_hint_key] = previous_stream_url_hint
+                else:
+                    ctx.pop(stream_url_hint_key, None)
+        return None
+
+    def _select_resolved_fallback_source(
+        self,
+        ctx,
+        failed_byte,
+        range_end,
+        start_index=0,
+        first_stream_url=None,
+        first_failed=None,
+        first_nzo_id=None,
+        first_standby=None,
+        expected_length=None,
+    ):
+        """Return a validated already-resolved fallback source, if any."""
+        sources = ctx.get("fallback_sources", [])
+        start_index = max(0, start_index)
+        if expected_length is None:
+            try:
+                expected_length = int(ctx.get("content_length", 0) or 0)
+            except (TypeError, ValueError):
+                expected_length = 0
+        primary_url = _FALLBACK_SOURCE_STATE_NOT_PROVIDED
+        primary_auth_for_url = _AUTH_HEADER_NOT_PROVIDED
+        for index in range(start_index, len(sources)):
+            source = sources[index]
+            source_failed = (
+                first_failed
+                if index == start_index and first_failed is not None
+                else source.get("failed")
+            )
+            if source_failed:
+                continue
+            stream_url = (
+                first_stream_url
+                if index == start_index and first_stream_url is not None
+                else source.get("stream_url")
+            )
+            if not stream_url:
+                if first_standby is not None and not first_standby:
+                    nzo_id = (
+                        first_nzo_id
+                        if index == start_index and first_nzo_id is not None
+                        else source.get("nzo_id")
+                    )
+                    if nzo_id:
+                        first_standby.update(
+                            {
+                                "index": index,
+                                "stream_url": stream_url or "",
+                                "nzo_id": nzo_id,
+                            }
+                        )
+                continue
+            source_auth = _AUTH_HEADER_NOT_PROVIDED
+            primary_auth = _AUTH_HEADER_NOT_PROVIDED
+            if primary_url is _FALLBACK_SOURCE_STATE_NOT_PROVIDED:
+                primary_url = ctx.get("remote_url")
+            if stream_url == primary_url:
+                source_auth = (source.get("stream_headers") or {}).get("Authorization")
+                if primary_auth_for_url is _AUTH_HEADER_NOT_PROVIDED:
+                    primary_auth_for_url = ctx.get("auth_header")
+                primary_auth = primary_auth_for_url
+                if source_auth == primary_auth:
+                    source["failed"] = True
+                    continue
+            if expected_length > 0:
+                try:
+                    source_length = int(source.get("content_length", 0) or 0)
+                except (TypeError, ValueError):
+                    source_length = 0
+                if source_length != expected_length:
+                    source["failed"] = True
+                    continue
+            hint_key = "_fallback_source_content_length_hint"
+            auth_hint_key = "_fallback_source_auth_hint"
+            stream_url_hint_key = _FALLBACK_SOURCE_STREAM_URL_HINT_KEY
+            primary_url_hint_key = _FALLBACK_PRIMARY_URL_HINT_KEY
+            primary_auth_hint_key = _FALLBACK_PRIMARY_AUTH_HINT_KEY
+            had_hint = hint_key in ctx
+            had_auth_hint = auth_hint_key in ctx
+            had_stream_url_hint = stream_url_hint_key in ctx
+            had_primary_url_hint = primary_url_hint_key in ctx
+            had_primary_auth_hint = primary_auth_hint_key in ctx
+            previous_hint = ctx.get(hint_key) if had_hint else None
+            previous_auth_hint = ctx.get(auth_hint_key) if had_auth_hint else None
+            previous_stream_url_hint = (
+                ctx.get(stream_url_hint_key) if had_stream_url_hint else None
+            )
+            previous_primary_url_hint = (
+                ctx.get(primary_url_hint_key) if had_primary_url_hint else None
+            )
+            previous_primary_auth_hint = (
+                ctx.get(primary_auth_hint_key) if had_primary_auth_hint else None
+            )
+            ctx[hint_key] = (id(source), source_length)
+            ctx[stream_url_hint_key] = (id(source), stream_url)
+            ctx[primary_url_hint_key] = primary_url
+            if source_auth is not _AUTH_HEADER_NOT_PROVIDED:
+                ctx[auth_hint_key] = (id(source), source_auth)
+            if primary_auth is not _AUTH_HEADER_NOT_PROVIDED:
+                ctx[primary_auth_hint_key] = primary_auth
+            try:
+                matches = self._fallback_source_matches(
+                    ctx, source, failed_byte, range_end
+                )
+            finally:
+                if had_hint:
+                    ctx[hint_key] = previous_hint
+                else:
+                    ctx.pop(hint_key, None)
+                if had_auth_hint:
+                    ctx[auth_hint_key] = previous_auth_hint
+                else:
+                    ctx.pop(auth_hint_key, None)
+                if had_stream_url_hint:
+                    ctx[stream_url_hint_key] = previous_stream_url_hint
+                else:
+                    ctx.pop(stream_url_hint_key, None)
+                if had_primary_url_hint:
+                    ctx[primary_url_hint_key] = previous_primary_url_hint
+                else:
+                    ctx.pop(primary_url_hint_key, None)
+                if had_primary_auth_hint:
+                    ctx[primary_auth_hint_key] = previous_primary_auth_hint
+                else:
+                    ctx.pop(primary_auth_hint_key, None)
+            if not matches:
                 source["failed"] = True
                 continue
             return source
@@ -2436,81 +2685,322 @@ class _StreamHandler(BaseHTTPRequestHandler):
 
     def _refresh_standby_fallback_sources(self, ctx):
         """Resolve completed standby nzo_ids into usable WebDAV stream URLs."""
+        for source in ctx.get("fallback_sources", []):
+            self._refresh_standby_fallback_source(ctx, source)
+
+    def _refresh_standby_fallback_source(
+        self,
+        ctx,
+        source,
+        nzo_id=None,
+        known_stream_url=_FALLBACK_SOURCE_STATE_NOT_PROVIDED,
+        known_failed=_FALLBACK_SOURCE_STATE_NOT_PROVIDED,
+    ):
+        """Resolve one completed standby nzo_id into a WebDAV stream URL."""
+        existing_stream_url = (
+            source.get("stream_url")
+            if known_stream_url is _FALLBACK_SOURCE_STATE_NOT_PROVIDED
+            else known_stream_url
+        )
+        existing_failed = (
+            source.get("failed")
+            if known_failed is _FALLBACK_SOURCE_STATE_NOT_PROVIDED
+            else known_failed
+        )
+        if existing_stream_url or existing_failed:
+            return False
+        if nzo_id is None:
+            nzo_id = source.get("nzo_id", "")
+        if not nzo_id:
+            return False
+
         from resources.lib.fallback_streams import fetch_content_length
         from resources.lib.nzbdav_api import get_job_history
         from resources.lib.webdav import find_video_file, get_webdav_stream_url_for_path
 
-        for source in ctx.get("fallback_sources", []):
-            if source.get("stream_url") or source.get("failed"):
-                continue
-            nzo_id = source.get("nzo_id", "")
-            if not nzo_id:
-                continue
-            history = get_job_history(nzo_id)
-            if not history or history.get("status") != "Completed":
-                continue
-            storage = history.get("storage", "")
-            if not storage:
-                continue
-            video_path = find_video_file(_storage_to_webdav_path(storage))
-            if not video_path:
-                continue
-            stream_url, stream_headers = get_webdav_stream_url_for_path(video_path)
-            auth_header = (
-                stream_headers.get("Authorization") if stream_headers else None
-            )
+        history = get_job_history(nzo_id)
+        history_status = history.get("status") if isinstance(history, dict) else ""
+        if history_status != "Completed":
+            if (
+                isinstance(history_status, str)
+                and history_status.strip().lower() == "failed"
+            ):
+                source["failed"] = True
+            return False
+        storage = history.get("storage", "")
+        if not storage:
+            return False
+        video_path = find_video_file(_storage_to_webdav_path(storage))
+        if not video_path:
+            return False
+        stream_url, stream_headers = get_webdav_stream_url_for_path(video_path)
+        auth_header = stream_headers.get("Authorization") if stream_headers else None
+        if not stream_url:
             source.update(
                 {
                     "stream_url": stream_url,
                     "stream_headers": stream_headers or {},
-                    "content_length": fetch_content_length(stream_url, auth_header),
+                    "content_length": 0,
                 }
             )
+            return False
+        if stream_url == ctx.get("remote_url") and auth_header == ctx.get(
+            "auth_header"
+        ):
+            source.update(
+                {
+                    "stream_url": stream_url,
+                    "stream_headers": stream_headers or {},
+                    "content_length": 0,
+                    "failed": True,
+                }
+            )
+            return False
+        content_length = fetch_content_length(
+            stream_url,
+            auth_header,
+            probe_bases=self._fallback_probe_bases(ctx),
+        )
+        try:
+            content_length = int(content_length or 0)
+        except (TypeError, ValueError):
+            content_length = 0
+        source.update(
+            {
+                "stream_url": stream_url,
+                "stream_headers": stream_headers or {},
+                "content_length": content_length,
+            }
+        )
+        cached_expected_length = ctx.get("_fallback_expected_content_length")
+        if cached_expected_length is not None:
+            try:
+                expected_length = int(cached_expected_length or 0)
+            except (TypeError, ValueError):
+                expected_length = 0
+        else:
+            expected_length = self._fallback_expected_content_length(ctx)
+        if expected_length > 0 and content_length != expected_length:
+            source["failed"] = True
+            return False
+        ctx["_fallback_source_content_length_hint"] = (id(source), content_length)
+        ctx["_fallback_source_auth_hint"] = (id(source), auth_header)
+        ctx[_FALLBACK_SOURCE_STREAM_URL_HINT_KEY] = (id(source), stream_url)
+        return bool(stream_url)
 
     def _fallback_source_matches(self, ctx, source, failed_byte, range_end):
         """Return True when a fallback looks like the same file and can resume."""
-        expected_length = int(ctx.get("content_length", 0) or 0)
-        source_length = int(source.get("content_length", 0) or 0)
+        source_url = self._fallback_source_stream_url(ctx, source)
+        source_auth = self._fallback_source_auth_hint(ctx, source)
+        primary_auth = _AUTH_HEADER_NOT_PROVIDED
+        primary_url = self._fallback_primary_url(ctx)
+        if source_url == primary_url:
+            if source_auth is _AUTH_HEADER_NOT_PROVIDED:
+                source_auth = self._fallback_source_auth(source)
+            primary_auth = ctx.get(
+                _FALLBACK_PRIMARY_AUTH_HINT_KEY, _AUTH_HEADER_NOT_PROVIDED
+            )
+            if primary_auth is _AUTH_HEADER_NOT_PROVIDED:
+                primary_auth = ctx.get("auth_header")
+            if source_auth == primary_auth:
+                return False
+        expected_length = self._fallback_expected_content_length(ctx)
+        source_length = self._fallback_source_content_length(ctx, source)
         if expected_length <= 0 or source_length != expected_length:
             return False
+        if source_auth is _AUTH_HEADER_NOT_PROVIDED:
+            source_auth = self._fallback_source_auth(source)
+        probe_bases = self._fallback_probe_bases(ctx)
         if source.get("validated"):
             return self._probe_fallback_current_range(
-                source, failed_byte, range_end, expected_length
+                source,
+                failed_byte,
+                range_end,
+                expected_length,
+                probe_bases,
+                auth_header=source_auth,
+                stream_url=source_url,
             )
-        if not self._validate_fallback_fingerprint(ctx, source, expected_length):
+        current_digest = self._fetch_fallback_current_range_digest(
+            source,
+            failed_byte,
+            range_end,
+            expected_length,
+            probe_bases,
+            auth_header=source_auth,
+            stream_url=source_url,
+        )
+        if not current_digest:
+            return False
+        current_range = (
+            failed_byte,
+            min(range_end, failed_byte + 4095),
+            current_digest,
+        )
+        if not self._validate_fallback_fingerprint(
+            ctx,
+            source,
+            expected_length,
+            probe_bases,
+            current_range,
+            primary_url,
+            fallback_url=source_url,
+            fallback_auth=source_auth,
+            primary_auth=primary_auth,
+        ):
             return False
         source["validated"] = True
-        return self._probe_fallback_current_range(
-            source, failed_byte, range_end, expected_length
-        )
+        return True
 
-    def _validate_fallback_fingerprint(self, ctx, source, content_length):
+    @staticmethod
+    def _fallback_expected_content_length(ctx):
+        cached_length = ctx.get("_fallback_expected_content_length")
+        if cached_length is not None:
+            try:
+                return int(cached_length or 0)
+            except (TypeError, ValueError):
+                return 0
+        try:
+            return int(ctx.get("content_length", 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _fallback_source_content_length(ctx, source):
+        hint = ctx.get("_fallback_source_content_length_hint")
+        if isinstance(hint, tuple) and len(hint) == 2 and hint[0] == id(source):
+            try:
+                return int(hint[1] or 0)
+            except (TypeError, ValueError):
+                return 0
+        try:
+            return int(source.get("content_length", 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _fallback_source_auth(source):
+        """Return the fallback source Authorization header, if present."""
+        return (source.get("stream_headers") or {}).get("Authorization")
+
+    @staticmethod
+    def _fallback_source_stream_url(ctx, source):
+        """Return a source stream URL already read by the selector."""
+        hint = ctx.get(_FALLBACK_SOURCE_STREAM_URL_HINT_KEY)
+        if isinstance(hint, tuple) and len(hint) == 2 and hint[0] == id(source):
+            return hint[1]
+        return source.get("stream_url")
+
+    @staticmethod
+    def _fallback_primary_url(ctx):
+        """Return the active stream URL already read by the selector."""
+        if _FALLBACK_PRIMARY_URL_HINT_KEY in ctx:
+            return ctx[_FALLBACK_PRIMARY_URL_HINT_KEY]
+        return ctx.get("remote_url")
+
+    @staticmethod
+    def _fallback_source_auth_hint(ctx, source):
+        """Return a source Authorization value already read by the selector."""
+        hint = ctx.get("_fallback_source_auth_hint")
+        if isinstance(hint, tuple) and len(hint) == 2 and hint[0] == id(source):
+            return hint[1]
+        return _AUTH_HEADER_NOT_PROVIDED
+
+    @staticmethod
+    def _fallback_probe_bases(ctx):
+        """Return cached stream bases used to validate fallback probe URLs."""
+        if "_fallback_probe_bases" not in ctx:
+            from resources.lib.fallback_streams import configured_stream_probe_bases
+
+            ctx["_fallback_probe_bases"] = configured_stream_probe_bases()
+        return ctx["_fallback_probe_bases"]
+
+    @staticmethod
+    def _fallback_fingerprint_ranges(ctx, content_length):
+        """Return cached byte ranges used to compare fallback streams."""
+        cache = ctx.setdefault("_fallback_fingerprint_ranges", {})
+        if content_length not in cache:
+            from resources.lib.fallback_streams import fingerprint_ranges
+
+            cache[content_length] = tuple(fingerprint_ranges(content_length))
+        return cache[content_length]
+
+    def _validate_fallback_fingerprint(
+        self,
+        ctx,
+        source,
+        content_length,
+        probe_bases,
+        current_range=None,
+        primary_url=None,
+        fallback_url=None,
+        fallback_auth=_AUTH_HEADER_NOT_PROVIDED,
+        primary_auth=_AUTH_HEADER_NOT_PROVIDED,
+    ):
         """Verify sampled bytes match before splicing in a fallback stream."""
-        from resources.lib.fallback_streams import fingerprint_ranges
-
-        primary_auth = ctx.get("auth_header")
-        fallback_auth = (source.get("stream_headers") or {}).get("Authorization")
-        for start, end in fingerprint_ranges(content_length):
-            primary_digest = self._fetch_fallback_range_digest(
-                ctx["remote_url"],
+        if primary_auth is _AUTH_HEADER_NOT_PROVIDED:
+            primary_auth = ctx.get("auth_header")
+        if fallback_url is None:
+            fallback_url = self._fallback_source_stream_url(ctx, source)
+        if fallback_auth is _AUTH_HEADER_NOT_PROVIDED:
+            fallback_auth = self._fallback_source_auth(source)
+        for start, end in self._fallback_fingerprint_ranges(ctx, content_length):
+            fallback_digest = None
+            if current_range and current_range[:2] == (start, end):
+                fallback_digest = current_range[2]
+            if not fallback_digest:
+                fallback_digest = self._fetch_fallback_range_digest(
+                    fallback_url,
+                    fallback_auth,
+                    start,
+                    end,
+                    content_length=content_length,
+                    probe_bases=probe_bases,
+                )
+            if not fallback_digest:
+                return False
+            primary_digest = self._fetch_primary_fallback_range_digest(
+                ctx,
                 primary_auth,
                 start,
                 end,
-                content_length=content_length,
-            )
-            fallback_digest = self._fetch_fallback_range_digest(
-                source["stream_url"],
-                fallback_auth,
-                start,
-                end,
-                content_length=content_length,
+                content_length,
+                probe_bases,
+                primary_url,
             )
             if not primary_digest or primary_digest != fallback_digest:
                 return False
         return True
 
+    def _fetch_primary_fallback_range_digest(
+        self, ctx, auth_header, start, end, content_length, probe_bases, primary_url
+    ):
+        """Return cached primary range digest for one live fallback selection."""
+        cache = ctx.setdefault("_fallback_primary_digest_cache", {})
+        key = (primary_url, auth_header, content_length, start, end)
+        if key in cache:
+            return cache[key]
+        digest = self._fetch_fallback_range_digest(
+            primary_url,
+            auth_header,
+            start,
+            end,
+            content_length=content_length,
+            probe_bases=probe_bases,
+        )
+        if digest:
+            cache[key] = digest
+        return digest
+
     @staticmethod
-    def _fetch_fallback_range_digest(url, auth_header, start, end, content_length):
+    def _fetch_fallback_range_digest(
+        url,
+        auth_header,
+        start,
+        end,
+        content_length,
+        probe_bases=None,
+    ):
         """Return a range digest, treating probe errors as a failed match."""
         from resources.lib.fallback_streams import fetch_range_digest
 
@@ -2521,6 +3011,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 start,
                 end,
                 content_length=content_length,
+                probe_bases=probe_bases,
             )
         except Exception as exc:  # defensive guard for probe helpers
             xbmc.log(
@@ -2534,19 +3025,51 @@ class _StreamHandler(BaseHTTPRequestHandler):
             return None
 
     def _probe_fallback_current_range(
-        self, source, failed_byte, range_end, content_length
+        self,
+        source,
+        failed_byte,
+        range_end,
+        content_length,
+        probe_bases=None,
+        auth_header=_AUTH_HEADER_NOT_PROVIDED,
+        stream_url=None,
     ):
         """Verify fallback can serve bytes at the failing offset."""
-        probe_end = min(range_end, failed_byte + 4095)
-        auth_header = (source.get("stream_headers") or {}).get("Authorization")
         return bool(
-            self._fetch_fallback_range_digest(
-                source["stream_url"],
-                auth_header,
+            self._fetch_fallback_current_range_digest(
+                source,
                 failed_byte,
-                probe_end,
-                content_length=content_length,
+                range_end,
+                content_length,
+                probe_bases,
+                auth_header=auth_header,
+                stream_url=stream_url,
             )
+        )
+
+    def _fetch_fallback_current_range_digest(
+        self,
+        source,
+        failed_byte,
+        range_end,
+        content_length,
+        probe_bases=None,
+        auth_header=_AUTH_HEADER_NOT_PROVIDED,
+        stream_url=None,
+    ):
+        """Return the digest proving fallback can serve bytes at the failing offset."""
+        probe_end = min(range_end, failed_byte + 4095)
+        if auth_header is _AUTH_HEADER_NOT_PROVIDED:
+            auth_header = self._fallback_source_auth(source)
+        if stream_url is None:
+            stream_url = source["stream_url"]
+        return self._fetch_fallback_range_digest(
+            stream_url,
+            auth_header,
+            failed_byte,
+            probe_end,
+            content_length=content_length,
+            probe_bases=probe_bases,
         )
 
     def _serve_proxy(self, ctx):
@@ -2671,6 +3194,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
                             ),
                             xbmc.LOGWARNING,
                         )
+                        _notify_fallback_switch_once(ctx)
                         continue
                     if ctx.get("fallback_sources"):
                         terminal_reason = "fallback_exhausted"

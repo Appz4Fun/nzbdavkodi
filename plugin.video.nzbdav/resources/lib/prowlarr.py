@@ -163,7 +163,7 @@ def search_prowlarr(search_type, title, year="", imdb="", season="", episode="")
     xbmc.log("NZB-DAV: Prowlarr search URL: {}".format(redact_url(url)), xbmc.LOGDEBUG)
 
     try:
-        xml_text = _http_get(url, timeout=15)
+        xml_text = _http_get(url, timeout=300)
     except Exception as e:
         # Redact: HTTPError / URLError str() can echo back the failing URL
         # (which embeds the apikey query param). Mirrors the redaction
@@ -189,7 +189,7 @@ def search_prowlarr(search_type, title, year="", imdb="", season="", episode="")
         params["q"] = title
         fallback_url = _build_search_url(base_url, params, indexer_ids)
         try:
-            xml_text = _http_get(fallback_url, timeout=15)
+            xml_text = _http_get(fallback_url, timeout=300)
             results, parse_error = _parse_results_checked(xml_text)
             if parse_error:
                 return [], parse_error

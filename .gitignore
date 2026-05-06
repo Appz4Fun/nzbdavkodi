@@ -40,6 +40,12 @@ troubleshooting.md
 # Scratch / debug artifacts that end up at repo root
 MagicMock/
 junk/
+run-ralphforever.sh
+
+# Local live-service credentials and environment config
+.env
+.env.*
+!.env.example
 
 # Build zips (versioned)
 plugin.video.nzbdav-*.zip

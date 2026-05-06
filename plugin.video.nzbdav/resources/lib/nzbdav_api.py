@@ -17,12 +17,10 @@ from resources.lib.http_util import redact_text as _redact_text
 
 # nzbdav's /api?mode=addurl handler fetches the .nzb from the indexer,
 # parses the XML, and enumerates segments before returning. On a big
-# REMUX this can routinely exceed 30 s — the previous default caused
-# client-side timeouts for submits that nzbdav had actually accepted
-# and was still processing. 120 s gives nzbdav real headroom while
-# remaining short enough that a truly unreachable backend still
-# surfaces in a reasonable time.
-_DEFAULT_SUBMIT_TIMEOUT = 120
+# REMUX this can routinely exceed 30 s. 300 s gives nzbdav real headroom
+# while remaining below the 10 minute clamp for truly stuck requests.
+_DEFAULT_SUBMIT_TIMEOUT = 300
+_API_READ_TIMEOUT = 30
 
 _HTML_TAG_RE = re.compile(r"<[^>]*>")
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -262,7 +260,7 @@ def submit_nzb(nzb_url, nzb_name=""):
     }
 
 
-def cancel_job(nzo_id, timeout=3):
+def cancel_job(nzo_id, timeout=30):
     """Cancel an in-flight nzbdav job by removing it from the queue.
 
     Issues a single SABnzbd-compatible queue DELETE
@@ -273,12 +271,8 @@ def cancel_job(nzo_id, timeout=3):
 
     Args:
         nzo_id: The nzbdav job identifier to cancel.
-        timeout: HTTP timeout in seconds. Defaults to 3 because this is
-            called from user-facing abort paths (cancel button, Kodi
-            shutdown) where waiting longer feels broken. A healthy
-            nzbdav responds in ~50ms; the 3s cap protects against
-            unreachable backends without blocking the UI thread for the
-            full network timeout.
+        timeout: HTTP timeout in seconds. Defaults to 30 for slower
+            nzbdav queue cleanup on loaded boxes.
 
     Returns:
         True if nzbdav reported the queue DELETE succeeded (job was
@@ -376,7 +370,7 @@ def get_job_history(nzo_id):
     url = "{}/api?{}".format(base_url, urlencode(params))
 
     try:
-        response_text = _http_get(url, timeout=10)
+        response_text = _http_get(url, timeout=_API_READ_TIMEOUT)
         response = _coerce_response_dict(json.loads(response_text))
     except Exception as e:  # pylint: disable=broad-except
         xbmc.log(
@@ -431,7 +425,7 @@ def find_completed_by_name(name):
     url = "{}/api?{}".format(base_url, urlencode(params))
 
     try:
-        response_text = _http_get(url, timeout=10)
+        response_text = _http_get(url, timeout=_API_READ_TIMEOUT)
         response = _coerce_response_dict(json.loads(response_text))
     except Exception as e:  # pylint: disable=broad-except
         xbmc.log(
@@ -461,7 +455,7 @@ def find_completed_by_name(name):
         params.pop("search")
         url = "{}/api?{}".format(base_url, urlencode(params))
         try:
-            response_text = _http_get(url, timeout=10)
+            response_text = _http_get(url, timeout=_API_READ_TIMEOUT)
             response = _coerce_response_dict(json.loads(response_text))
         except Exception as e:  # pylint: disable=broad-except
             xbmc.log(
@@ -512,8 +506,8 @@ def find_queued_by_name(name):
         or retry the submit".
 
     Side effects:
-        One HTTP GET to nzbdav /api?mode=queue with a short timeout
-        (10 s — this is a recovery-path probe, not the main submit).
+        One HTTP GET to nzbdav /api?mode=queue with a bounded timeout
+        (30 s — this is a recovery-path probe, not the main submit).
         No retries; the resolver calls this in a short loop after a
         submit timeout and handles its own pacing.
     """
@@ -531,7 +525,7 @@ def find_queued_by_name(name):
     url = "{}/api?{}".format(base_url, urlencode(params))
 
     try:
-        response_text = _http_get(url, timeout=10)
+        response_text = _http_get(url, timeout=_API_READ_TIMEOUT)
         response = _coerce_response_dict(json.loads(response_text))
     except Exception as e:  # pylint: disable=broad-except
         xbmc.log(
@@ -609,7 +603,7 @@ def get_completed_names():
     url = "{}/api?{}".format(base_url, urlencode(params))
 
     try:
-        response_text = _http_get(url, timeout=10)
+        response_text = _http_get(url, timeout=_API_READ_TIMEOUT)
         response = _coerce_response_dict(json.loads(response_text))
     except Exception as e:  # pylint: disable=broad-except
         xbmc.log(
@@ -663,7 +657,7 @@ def get_job_status(nzo_id):
 
     xbmc.log("NZB-DAV: Job status URL: {}".format(redact_url(url)), xbmc.LOGDEBUG)
     try:
-        response_text = _http_get(url, timeout=10)
+        response_text = _http_get(url, timeout=_API_READ_TIMEOUT)
         response = _coerce_response_dict(json.loads(response_text))
     except Exception as e:  # pylint: disable=broad-except
         # ``Exception`` intentionally — the prior ``(URLError, json.JSONDecodeError,

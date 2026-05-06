@@ -34,6 +34,20 @@ def test_legacy_flat_webdav_helpers_are_retired():
     assert not hasattr(webdav, "validate_stream")
 
 
+@patch("resources.lib.webdav.urlopen")
+def test_webdav_head_probe_uses_30s_timeout(mock_urlopen):
+    from resources.lib.webdav import _http_head
+
+    response = MagicMock()
+    response.__enter__ = MagicMock(return_value=response)
+    response.__exit__ = MagicMock(return_value=False)
+    response.getcode.return_value = 200
+    mock_urlopen.return_value = response
+
+    assert _http_head("http://nzbdav:3000/content/") == 200
+    assert mock_urlopen.call_args.kwargs["timeout"] == 30
+
+
 # --- probe_webdav_reachable tests ---
 
 

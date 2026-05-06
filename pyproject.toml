@@ -32,4 +32,5 @@ extend-exclude = "ptt/"
 testpaths = ["tests"]
 markers = [
     "integration: tests that spawn a real ffmpeg binary against a generated MKV; skipped by default, run via `just test-integration`",
+    "functional: dev-box tests that use live services plus local playback simulation; skipped by default, run via `just functional-test`",
 ]

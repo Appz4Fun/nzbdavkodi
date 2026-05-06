@@ -59,13 +59,13 @@ make-dev:
 
     echo "Development dependencies are installed."
 
-# Run all tests (excluding integration tests that require a real ffmpeg)
+# Run all tests (excluding integration tests and dev-box functional tests)
 test:
-    python3 -m pytest tests/ -v --tb=short -m "not integration"
+    python3 -m pytest tests/ -v --tb=short -m "not integration and not functional"
 
 # Run tests with coverage
 test-verbose:
-    python3 -m pytest tests/ -v --tb=long -m "not integration"
+    python3 -m pytest tests/ -v --tb=long -m "not integration and not functional"
 
 # Run integration tests against a real ffmpeg binary. Spawns the
 # actual fmp4 HLS producer pipeline against a tiny test MKV
@@ -76,6 +76,16 @@ test-verbose:
 # automatically if no ffmpeg is on PATH.
 test-integration:
     python3 -m pytest tests/ -v --tb=long -m integration
+
+# Run dev-box functional tests against live configured services.
+# Requires local .env credentials and may use real Hydra/indexer responses.
+functional-test:
+    python3 -m pytest tests/test_functional_fallback_playback.py -v --tb=long -m functional
+
+# Run a heavier dev-box fallback sample across random IMDb Top 50 movies.
+# Prefer FrameStor/FraMeSToR releases; otherwise use the most duplicated group.
+functional-test-top-imdb:
+    python3 -m pytest tests/test_functional_fallback_playback.py::test_functional_imdb_top50_random_sample_fallback_playback -v -s --tb=long -m functional
 
 # Lint the codebase (matches GitHub CI: ruff + black + pylint)
 lint:

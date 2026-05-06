@@ -70,6 +70,7 @@ def test_search_hydra_movie(mock_http, mock_settings):
     assert "t=movie" in call_url
     assert "imdbid=tt0133093" in call_url
     assert "apikey=testkey" in call_url
+    assert mock_http.call_args.kwargs["timeout"] == 300
 
 
 @patch("resources.lib.hydra._get_settings")

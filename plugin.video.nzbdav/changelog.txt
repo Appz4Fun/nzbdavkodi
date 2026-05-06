@@ -1,3 +1,12 @@
+vNext (unreleased)
+- Defer fallback candidate discovery until a selected result needs it, prefilter with the same title/profile gates used by fallback matching, and stop once the configured fallback limit is satisfied.
+- Speed up NZB manifest parsing by skipping obvious non-video/non-archive subjects before segment parsing and deferring archive parsing until direct video candidates fail.
+- Speed up live fallback switching by checking ready streams before standby polls, rejecting same-current/wrong-length/failed candidates earlier, probing the failed byte range before full fingerprint validation, and reusing URL/auth/content-length/fingerprint state within one switch.
+- Give large NZBs more live-service headroom: Hydra, Prowlarr, direct indexer, nzbdav submit, queue/history/status, WebDAV HEAD, upstream-open, skip-probe, and ffprobe timeouts were raised where needed.
+- Default resolver polling is now 1 second, fallback cleanup waits longer on loaded boxes, and fallback-empty messaging now says "No known fallback matches found".
+- Add dev-only live fallback validation recipes/tests and keep them out of the default test suite.
+- Trim TODO.md back to the active backlog and ignore local .env/Ralph loop artifacts.
+
 v1.0.8 (2026-05-05)
 - Route NZB manifest downloads through the shared HTTP utility while preserving the 2 MiB manifest size guard and fetch-error handling.
 - Fail closed when pre-attached fallback manifest group sizes are malformed so one bad manifest cannot abort duplicate grouping.

@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Released | What it's about |
 |---|---|---|
+| **[Unreleased](#unreleased)** | Pending | Fallback discovery and live failover speed, longer live-service timeouts, dev-only live fallback tests |
 | **[1.0.8](#108--2026-05-05)** | 2026-05-05 | Fallback manifest hardening, shared HTTP fetch path, malformed group-size fail-closed behavior |
 | **[1.0.7](#107--2026-05-04)** | 2026-05-04 | Fallback streams enabled by default, 5 standby submits, pass-through playback, NZB-manifest grouping, 1000-sample validation, fallback-only recovery |
 | **[1.0.6](#106--2026-05-04)** | 2026-05-04 | Pass-through-first proxy, live duplicate-release fallback streams, authenticated settings checks, fallback worker cleanup, threshold-zero remux semantics |
@@ -51,6 +52,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | **[0.1.0](#010--2026-04-05)** | 2026-04-05 | Initial release |
 
 > **Bolded** versions are either major features or recommended upgrades.
+
+---
+
+## [Unreleased]
+
+> **Fallback discovery and failover are faster.** This batch keeps the same
+> conservative fallback safety chain while moving expensive work out of the
+> search/picker path and avoiding repeated URL, auth, length, and range-probe
+> work during live switch validation.
+
+**Changed**
+- **Fallback candidate discovery now runs lazily for the selected release** and
+  prefilters candidates with the same title/profile gates used by the final
+  fallback matcher before fetching NZB manifests.
+- **NZB manifest parsing skips more non-candidates early** by checking video and
+  archive filename hints before segment parsing, deferring archive work until
+  direct video candidates fail, and keeping article digest evidence intact.
+- **Runtime fallback switching rejects bad candidates earlier**: current-stream
+  matches, wrong content lengths, failed sources, and terminal failed standby
+  jobs are skipped before full fingerprint validation.
+- **Live fallback validation reuses per-switch state** including configured
+  probe bases, fingerprint ranges, successful primary digests, parsed content
+  lengths, stream URLs, and Authorization headers.
+- **Provider and backend waits have more headroom for large NZBs**: Hydra,
+  Prowlarr, and direct indexer fetches use a 300 s request timeout; direct
+  indexer fan-out waits up to 60 s; nzbdav submit defaults to 300 s; nzbdav
+  queue/history/status probes and WebDAV HEAD checks use 30 s.
+- **Resolver polling defaults to 1 s** and fallback shutdown waits longer for
+  background cleanup on loaded boxes.
+- **Fallback user messaging was tightened** with a switch notification and a
+  clearer "No known fallback matches found" fallback-empty message.
+- **Developer live-service validation is split from the default suite** with
+  `just functional-test`, `just functional-test-top-imdb`, and a pytest
+  `functional` marker; default `just test` excludes those dev-box tests.
+- **TODO.md now contains only the active backlog**; completed/rejected detail
+  stays in git history.
+
+**Tests**
+- Added focused regression and timing coverage across fallback stream grouping,
+  NZB manifest parsing, router deferred loaders, resolver fallback submission,
+  stream-proxy failover, provider timeout defaults, and dev-only live fallback
+  workflows.
 
 ---
 

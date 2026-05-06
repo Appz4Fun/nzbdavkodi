@@ -11,6 +11,7 @@ from urllib.error import URLError
 from urllib.parse import unquote
 
 import xbmc
+import xbmcaddon
 import xbmcgui
 import xbmcplugin
 import xbmcvfs
@@ -19,6 +20,7 @@ from resources.lib.fallback_streams import (
     build_fallback_job_name,
     build_prepare_fallback_payload,
 )
+from resources.lib.http_util import notify as _notify
 from resources.lib.i18n import addon_name as _addon_name
 from resources.lib.i18n import fmt as _fmt
 from resources.lib.i18n import string as _string
@@ -41,7 +43,7 @@ _POLL_INTERVAL_MAX = 60
 _DOWNLOAD_TIMEOUT_MIN = 60
 _DOWNLOAD_TIMEOUT_MAX = 86400
 MAX_POLL_ITERATIONS = _DOWNLOAD_TIMEOUT_MAX // _POLL_INTERVAL_MIN
-_FALLBACK_SHUTDOWN_JOIN_TIMEOUT = 0.5
+_FALLBACK_SHUTDOWN_JOIN_TIMEOUT = 10
 # HTTP status codes the submit retry loop treats as transient and worth
 # retrying. RFC 9110 explicitly calls 408 retry-friendly ("client may
 # assume the server closed the connection due to inactivity and retry").
@@ -564,10 +566,8 @@ def _play_via_proxy(stream_url, stream_headers, fallback_sources=None):
 
 
 def _get_poll_settings():
-    import xbmcaddon
-
     addon = xbmcaddon.Addon()
-    interval = int(addon.getSetting("poll_interval") or "5")
+    interval = int(addon.getSetting("poll_interval") or "1")
     timeout = int(addon.getSetting("download_timeout") or "3600")
     interval = _clamp_int_setting(
         "poll_interval", interval, _POLL_INTERVAL_MIN, _POLL_INTERVAL_MAX
@@ -723,7 +723,7 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
     race a concurrent queue probe against the submit.
 
     ``submit_nzb`` issues a synchronous HTTP request to ``/api?mode=addurl``
-    which on a big NZB routinely takes 30-120 s. Running it on the Kodi
+    which on a big NZB routinely takes 30-300 s. Running it on the Kodi
     plugin thread freezes the progress dialog. The fix is two-part:
 
     1. ``submit_nzb`` runs in a daemon worker thread; the plugin thread
@@ -867,19 +867,17 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
 
 
 def _get_submit_timeout_seconds():
-    """Read submit_timeout setting; returns int or 120 on error."""
+    """Read submit_timeout setting; returns int or 300 on error."""
     try:
-        import xbmcaddon
-
         raw = xbmcaddon.Addon().getSetting("submit_timeout")
-        return int(raw) if raw else 120
+        return int(raw) if raw else 300
     except Exception:  # pylint: disable=broad-except
         # xbmcaddon import failures, unexpected setting shapes, int() on
         # a MagicMock in tests — all funnel to the documented default.
         # ``Exception`` on its own (the previous ``(ValueError, TypeError,
         # Exception)`` tuple was dead code — Exception subsumes the other
         # two) keeps the safety net without the misleading tuple.
-        return 120
+        return 300
 
 
 # After a submit timeout, how many times to poll nzbdav before giving up
@@ -1109,7 +1107,16 @@ def _submit_fallback_candidates(candidates, monitor, stop_event=None, on_job=Non
     return fallback_jobs
 
 
-def _start_fallback_submit_worker(candidates):
+def _fallback_streams_enabled():
+    """Return whether fallback streams are enabled in Kodi settings."""
+    try:
+        raw = xbmcaddon.Addon().getSetting("fallback_streams_enabled")
+    except (AttributeError, RuntimeError, TypeError):
+        return True
+    return str(raw or "").strip().lower() != "false"
+
+
+def _start_fallback_submit_worker(candidates=None, candidate_loader=None):
     """Start background fallback submits and return shared state."""
     state = {
         "lock": threading.Lock(),
@@ -1120,7 +1127,7 @@ def _start_fallback_submit_worker(candidates):
         "cancel_job": cancel_job,
     }
     candidate_list = list(candidates or [])
-    if not candidate_list:
+    if not candidate_list and candidate_loader is None:
         state["finished"].set()
         return state
 
@@ -1136,8 +1143,27 @@ def _start_fallback_submit_worker(candidates):
 
     def _worker():
         try:
+            active_candidates = candidate_list
+            if candidate_loader is not None:
+                try:
+                    active_candidates = list(candidate_loader() or [])
+                except Exception as error:  # pylint: disable=broad-except
+                    xbmc.log(
+                        "NZB-DAV: Fallback candidate lookup failed: {}".format(error),
+                        xbmc.LOGWARNING,
+                    )
+                    active_candidates = []
+            if state["stop"].is_set():
+                return
+            if not active_candidates:
+                if _fallback_streams_enabled():
+                    try:
+                        _notify(_addon_name(), _string(30187), 4000)
+                    except (RuntimeError, OSError):
+                        pass
+                return
             _submit_fallback_candidates(
-                candidate_list,
+                active_candidates,
                 xbmc.Monitor(),
                 stop_event=state["stop"],
                 on_job=_append_job,
@@ -1588,11 +1614,15 @@ def resolve(handle, params):
         dialog = xbmcgui.DialogProgress()
         dialog.create(_addon_name(), _string(30097))
         fallback_candidates = params.get("_fallback_candidates", [])
+        fallback_candidate_loader = params.get("_fallback_candidate_loader")
 
         def _start_fallback_after_primary(_nzo_id):
             nonlocal fallback_state
             if fallback_state is None:
-                fallback_state = _start_fallback_submit_worker(fallback_candidates)
+                fallback_state = _start_fallback_submit_worker(
+                    fallback_candidates,
+                    candidate_loader=fallback_candidate_loader,
+                )
 
         stream_url, stream_headers = _poll_until_ready(
             nzb_url,
@@ -1652,11 +1682,15 @@ def resolve_and_play(nzb_url, title, params=None):
         dialog = xbmcgui.DialogProgress()
         dialog.create(_addon_name(), _string(30097))
         fallback_candidates = (params or {}).get("_fallback_candidates", [])
+        fallback_candidate_loader = (params or {}).get("_fallback_candidate_loader")
 
         def _start_fallback_after_primary(_nzo_id):
             nonlocal fallback_state
             if fallback_state is None:
-                fallback_state = _start_fallback_submit_worker(fallback_candidates)
+                fallback_state = _start_fallback_submit_worker(
+                    fallback_candidates,
+                    candidate_loader=fallback_candidate_loader,
+                )
 
         stream_url, stream_headers = _poll_until_ready(
             nzb_url,

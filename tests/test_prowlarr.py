@@ -109,6 +109,7 @@ def test_search_prowlarr_movie(mock_http, mock_settings):
     assert "apikey=testkey" in call_url
     assert "indexerIds=1" in call_url
     assert "indexerIds=2" in call_url
+    assert mock_http.call_args.kwargs["timeout"] == 300
 
 
 @patch("resources.lib.prowlarr._get_settings")
@@ -196,6 +197,7 @@ def test_search_prowlarr_imdb_fallback_to_title(mock_http, mock_settings):
     fallback_url = mock_http.call_args_list[1][0][0]
     assert "q=The+Matrix" in fallback_url or "q=The%20Matrix" in fallback_url
     assert "imdbid" not in fallback_url
+    assert [call.kwargs["timeout"] for call in mock_http.call_args_list] == [300, 300]
 
 
 @patch("resources.lib.prowlarr._get_settings")

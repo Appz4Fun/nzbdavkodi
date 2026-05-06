@@ -32,3 +32,17 @@ def test_make_dev_installs_dependencies_for_all_just_recipes():
     assert "brew reinstall" in body
     assert "ffmpeg_formula" in body
     assert "ffmpeg -version" in body
+
+
+def test_functional_test_recipe_is_dev_only_and_not_in_default_test():
+    justfile_text = Path("justfile").read_text(encoding="utf-8")
+
+    test_body = _recipe_body(justfile_text, "test")
+    functional_body = _recipe_body(justfile_text, "functional-test")
+    top_imdb_body = _recipe_body(justfile_text, "functional-test-top-imdb")
+
+    assert "not functional" in test_body
+    assert "test_functional_fallback_playback.py" in functional_body
+    assert "-m functional" in functional_body
+    assert "test_functional_imdb_top50_random_sample_fallback_playback" in top_imdb_body
+    assert "-m functional" in top_imdb_body

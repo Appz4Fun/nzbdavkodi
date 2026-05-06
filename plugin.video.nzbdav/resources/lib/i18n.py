@@ -96,7 +96,7 @@ _FALLBACK_STRINGS = {
     30184: "Submit duplicate releases as live fallbacks",
     30185: "Maximum fallback releases",
     30186: "Switched to fallback stream",
-    30187: "No matching fallback stream available",
+    30187: "No known fallback matches found",
 }
 
 

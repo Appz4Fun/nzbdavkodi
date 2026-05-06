@@ -50,7 +50,7 @@ _DIRECT_REQUEST_ERRORS = (
     ValueError,
 )
 _DIRECT_FANOUT_MAX_WORKERS = 4
-_DIRECT_FANOUT_TIMEOUT = 20
+_DIRECT_FANOUT_TIMEOUT = 60
 
 
 def _setting_enabled(addon, setting_id):
@@ -309,7 +309,7 @@ def _fetch_indexer(indexer, params, error_prefix):
         xbmc.LOGDEBUG,
     )
     try:
-        return _http_get(url, timeout=15), None
+        return _http_get(url, timeout=300), None
     except _DIRECT_REQUEST_ERRORS as error:
         xbmc.log(
             "NZB-DAV: {}: {}".format(error_prefix, _redact_text(str(error))),

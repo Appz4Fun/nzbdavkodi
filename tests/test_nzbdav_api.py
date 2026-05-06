@@ -53,8 +53,8 @@ def test_submit_nzb_passes_configured_timeout(mock_http, mock_settings, mock_tim
 @patch("resources.lib.nzbdav_api.xbmcaddon")
 def test_get_submit_timeout_reads_setting(mock_xbmcaddon):
     """_get_submit_timeout returns the parsed setting value."""
-    mock_xbmcaddon.Addon.return_value.getSetting.return_value = "120"
-    assert _get_submit_timeout() == 120
+    mock_xbmcaddon.Addon.return_value.getSetting.return_value = "300"
+    assert _get_submit_timeout() == 300
 
 
 @patch("resources.lib.nzbdav_api.xbmcaddon")
@@ -522,6 +522,30 @@ def test_get_completed_names_returns_empty_on_error(mock_http, mock_settings):
     assert names == set()
 
 
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_nzbdav_queue_history_status_reads_use_30s_timeout(mock_http, mock_settings):
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.side_effect = [
+        json.dumps({"queue": {"slots": []}}),
+        json.dumps({"queue": {"slots": []}}),
+        json.dumps({"history": {"slots": []}}),
+        json.dumps({"history": {"slots": []}}),
+    ]
+
+    assert get_job_status("nzo_status") is None
+    assert find_queued_by_name("Movie") is None
+    assert get_job_history("nzo_history") is None
+    assert get_completed_names() == set()
+
+    assert [call.kwargs["timeout"] for call in mock_http.call_args_list] == [
+        30,
+        30,
+        30,
+        30,
+    ]
+
+
 # --- _sanitize_server_message tests ---
 
 
@@ -612,16 +636,14 @@ def test_cancel_job_returns_false_on_settings_error(mock_http, mock_settings):
 
 @patch("resources.lib.nzbdav_api._get_settings")
 @patch("resources.lib.nzbdav_api._http_get")
-def test_cancel_job_uses_default_3s_timeout(mock_http, mock_settings):
-    """The default timeout is 3 seconds — short enough to feel responsive
-    on user cancel and Kodi shutdown."""
+def test_cancel_job_uses_default_30s_timeout(mock_http, mock_settings):
+    """The default timeout is 30 seconds for slow nzbdav queue cleanup."""
     mock_settings.return_value = ("http://nzbdav:3000", "testkey")
     mock_http.return_value = '{"status":true}'
 
     cancel_job("nzo_xyz")
 
-    # _http_get is called with timeout=3 as a keyword argument
-    assert mock_http.call_args.kwargs["timeout"] == 3
+    assert mock_http.call_args.kwargs["timeout"] == 30
 
 
 @patch("resources.lib.nzbdav_api._get_settings")

@@ -34,7 +34,7 @@ def _http_head(
     try:
         # nosemgrep
         with urlopen(  # nosec B310 — URL from user's configured WebDAV setting
-            req, timeout=10
+            req, timeout=30
         ) as resp:
             return resp.getcode()
     except HTTPError as e:

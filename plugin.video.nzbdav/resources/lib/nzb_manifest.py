@@ -13,9 +13,15 @@ from resources.lib.http_util import HttpResponseTooLarge, http_get
 _MAX_NZB_BYTES = 2 * 1024 * 1024
 _VIDEO_EXTENSIONS = (".mkv", ".mp4", ".m4v", ".avi", ".ts", ".m2ts", ".mov", ".wmv")
 _IGNORED_VIDEO_PREFIXES = ("sample.", "sample-", "sample_")
-_FILENAME_RE = re.compile(r'"([^"]+\.(?:mkv|mp4|m4v|avi|ts|m2ts|mov|wmv))"', re.I)
+_VIDEO_EXTENSION_PATTERN = r"(?:mkv|mp4|m4v|avi|ts|m2ts|mov|wmv)"
+_VIDEO_EXTENSION_BOUNDARY = r"(?=$|[^A-Za-z0-9.])"
+_VIDEO_EXTENSION_TOKEN_RE = re.compile(
+    r"\.{}{}".format(_VIDEO_EXTENSION_PATTERN, _VIDEO_EXTENSION_BOUNDARY), re.I
+)
+_FILENAME_RE = re.compile(r'"([^"]+\.{})"'.format(_VIDEO_EXTENSION_PATTERN), re.I)
 _BARE_FILENAME_RE = re.compile(
-    r"([^\s\"']+\.(?:mkv|mp4|m4v|avi|ts|m2ts|mov|wmv))", re.I
+    r"([^\s\"']+\.{}){}".format(_VIDEO_EXTENSION_PATTERN, _VIDEO_EXTENSION_BOUNDARY),
+    re.I,
 )
 _ARCHIVE_RE = re.compile(r'"?([^"\\/]+?)(?:\.part\d+)?\.(?:rar|r\d{2,3})\b', re.I)
 _ALLOWED_NZB_SCHEMES = frozenset(("http", "https"))
@@ -75,7 +81,8 @@ def _find_video_name(subject):
     """Extract a supported non-sample video filename from an NZB subject."""
     if not isinstance(subject, str):
         return ""
-    match = _FILENAME_RE.search(subject) or _BARE_FILENAME_RE.search(subject)
+    match = _FILENAME_RE.search(subject) if '"' in subject else None
+    match = match or _BARE_FILENAME_RE.search(subject)
     if not match:
         return ""
     name = match.group(1).strip()
@@ -86,6 +93,15 @@ def _find_video_name(subject):
     if not lower.endswith(_VIDEO_EXTENSIONS):
         return ""
     return name
+
+
+def _subject_may_be_video(subject):
+    """Return whether a subject is worth checking with the video regex."""
+    if not isinstance(subject, str):
+        return False
+    if "." not in subject:
+        return False
+    return _VIDEO_EXTENSION_TOKEN_RE.search(subject) is not None
 
 
 def _find_archive_base(subject):
@@ -100,9 +116,47 @@ def _find_archive_base(subject):
     return " ".join(base.split())
 
 
+def _subject_may_be_archive(subject):
+    """Return whether a subject is worth checking with the archive regex."""
+    if not isinstance(subject, str):
+        return False
+    lower = subject.lower()
+    if ".r" not in lower:
+        return False
+    start = lower.find(".rar")
+    while start != -1:
+        boundary_index = start + 4
+        if boundary_index >= len(lower) or not (
+            lower[boundary_index].isalnum() or lower[boundary_index] == "_"
+        ):
+            return True
+        start = lower.find(".rar", boundary_index)
+    start = lower.find(".r")
+    while start != -1:
+        digits_start = start + 2
+        digits_end = digits_start
+        max_digits_end = min(len(lower), digits_start + 3)
+        while digits_end < max_digits_end and lower[digits_end].isdigit():
+            digits_end += 1
+        if digits_end - digits_start >= 2 and (
+            digits_end >= len(lower)
+            or not (lower[digits_end].isalnum() or lower[digits_end] == "_")
+        ):
+            return True
+        start = lower.find(".r", start + 2)
+    return False
+
+
+def _segment_row_sort_key(row):
+    """Return the stable article ordering key for NZB segment rows."""
+    return row[0], row[2]
+
+
 def _segment_rows(file_elem):
     """Return sorted NZB segment rows as number, byte size, and Message-ID."""
     rows = []
+    rows_ordered = True
+    previous_key = None
     for segments in _children_by_name(file_elem, "segments"):
         for segment in _children_by_name(segments, "segment"):
             try:
@@ -113,8 +167,13 @@ def _segment_rows(file_elem):
             msgid = (segment.text or "").strip().strip("<>").lower()
             if size <= 0 or not msgid:
                 continue
+            row_key = (number, msgid)
+            if previous_key is not None and row_key < previous_key:
+                rows_ordered = False
+            previous_key = row_key
             rows.append((number, size, msgid))
-    rows.sort(key=lambda item: (item[0], item[2]))
+    if not rows_ordered:
+        rows.sort(key=_segment_row_sort_key)
     return rows
 
 
@@ -156,9 +215,9 @@ def _public_manifest(candidate, skipped_candidates):
     return manifest
 
 
-def _select_healthy_candidate(candidates, health_check):
+def _select_healthy_candidate(candidates, health_check, skipped_candidates=None):
     """Return the first healthy manifest candidate or an unsupported manifest."""
-    skipped_candidates = []
+    skipped_candidates = list(skipped_candidates or [])
     for candidate in candidates:
         if _candidate_is_healthy(candidate, health_check):
             return _public_manifest(candidate, skipped_candidates)
@@ -181,67 +240,88 @@ def extract_nzb_video_manifest(nzb_bytes, health_check=None):
         return _empty_manifest("invalid_xml")
 
     video_candidates = []
-    archive_groups = {}
-    for file_elem in root.iter():
-        if _strip_namespace(file_elem.tag) != "file":
-            continue
-        rows = _segment_rows(file_elem)
-        video_name = _find_video_name(file_elem.attrib.get("subject", ""))
+    non_video_file_candidates = []
+    for file_elem in _children_by_name(root, "file"):
+        subject = file_elem.attrib.get("subject", "")
+        video_name = _find_video_name(subject) if _subject_may_be_video(subject) else ""
         if video_name:
+            rows = _segment_rows(file_elem)
             video_bytes = sum(row[1] for row in rows)
             article_digest = _digest_articles(rows)
             if video_bytes <= 0 or not article_digest:
                 continue
             normalized = normalize_video_filename(video_name)
-            video_candidates.append(
-                {
-                    "payload_kind": "video",
-                    "group_name": normalized,
-                    "group_bytes": video_bytes,
-                    "video_name": video_name,
-                    "normalized_video_name": normalized,
-                    "video_bytes": video_bytes,
-                    "archive_base_name": "",
-                    "article_digest": article_digest,
-                    "article_count": len(rows),
-                    "message_ids": [row[2] for row in rows],
-                    "unsupported_reason": "",
-                }
-            )
-            continue
-        archive_base = _find_archive_base(file_elem.attrib.get("subject", ""))
-        if archive_base and rows:
-            archive_groups.setdefault(archive_base, []).extend(rows)
-
-    archive_candidates = []
-    for archive_base, rows in archive_groups.items():
-        rows.sort(key=lambda item: (item[0], item[2]))
-        article_digest = _digest_articles(rows)
-        if not article_digest:
-            continue
-        archive_candidates.append(
-            {
-                "payload_kind": "archive",
-                "group_name": archive_base,
-                "group_bytes": 0,
-                "video_name": "",
-                "normalized_video_name": "",
-                "video_bytes": 0,
-                "archive_base_name": archive_base,
+            candidate = {
+                "payload_kind": "video",
+                "group_name": normalized,
+                "group_bytes": video_bytes,
+                "video_name": video_name,
+                "normalized_video_name": normalized,
+                "video_bytes": video_bytes,
+                "archive_base_name": "",
                 "article_digest": article_digest,
                 "article_count": len(rows),
-                "message_ids": [row[2] for row in rows],
                 "unsupported_reason": "",
             }
-        )
+            if health_check is not None:
+                candidate["message_ids"] = [row[2] for row in rows]
+            video_candidates.append(candidate)
+            continue
+        non_video_file_candidates.append(file_elem)
 
     video_candidates.sort(
         key=lambda item: (item["video_bytes"], item["article_count"]),
         reverse=True,
     )
+    video_skipped_candidates = []
+    if video_candidates:
+        video_manifest = _select_healthy_candidate(video_candidates, health_check)
+        if not video_manifest.get("unsupported_reason"):
+            return video_manifest
+        video_skipped_candidates = video_manifest.get("skipped_candidates", [])
+
+    archive_groups = {}
+    archive_group_file_counts = {}
+    for file_elem in non_video_file_candidates:
+        subject = file_elem.attrib.get("subject", "")
+        if not _subject_may_be_archive(subject):
+            continue
+        archive_base = _find_archive_base(subject)
+        if not archive_base:
+            continue
+        rows = _segment_rows(file_elem)
+        if not rows:
+            continue
+        archive_groups.setdefault(archive_base, []).extend(rows)
+        archive_group_file_counts[archive_base] = (
+            archive_group_file_counts.get(archive_base, 0) + 1
+        )
+    archive_candidates = []
+    for archive_base, rows in archive_groups.items():
+        if archive_group_file_counts.get(archive_base, 0) > 1:
+            rows.sort(key=_segment_row_sort_key)
+        article_digest = _digest_articles(rows)
+        if not article_digest:
+            continue
+        candidate = {
+            "payload_kind": "archive",
+            "group_name": archive_base,
+            "group_bytes": 0,
+            "video_name": "",
+            "normalized_video_name": "",
+            "video_bytes": 0,
+            "archive_base_name": archive_base,
+            "article_digest": article_digest,
+            "article_count": len(rows),
+            "unsupported_reason": "",
+        }
+        if health_check is not None:
+            candidate["message_ids"] = [row[2] for row in rows]
+        archive_candidates.append(candidate)
+
     archive_candidates.sort(key=lambda item: item["article_count"], reverse=True)
     return _select_healthy_candidate(
-        video_candidates + archive_candidates, health_check
+        archive_candidates, health_check, skipped_candidates=video_skipped_candidates
     )
 
 
@@ -264,7 +344,7 @@ def _valid_nzb_url(url):
 
 
 def fetch_nzb_video_manifest(
-    url, timeout=5, max_bytes=_MAX_NZB_BYTES, health_check=None
+    url, timeout=20, max_bytes=_MAX_NZB_BYTES, health_check=None
 ):
     """Fetch and parse a candidate NZB manifest."""
     if not _valid_nzb_url(url):

@@ -75,6 +75,43 @@ def test_extracts_main_video_file_manifest_from_nzb():
     assert manifest["unsupported_reason"] == ""
 
 
+def test_manifest_without_health_check_skips_message_id_materialization():
+    class RowWithoutMessageIdListAccess:  # pylint: disable=too-few-public-methods
+        def __init__(self, number, size):
+            self.number = number
+            self.size = size
+
+        def __getitem__(self, index):
+            if index == 0:
+                return self.number
+            if index == 1:
+                return self.size
+            if index == 2:
+                raise AssertionError(
+                    "message_ids should not be materialized without health_check"
+                )
+            raise IndexError(index)
+
+    xml = _nzb_xml(
+        [_file('"Movie.Name.2026.2160p-GROUP.mkv" yEnc (1/2)', [(1, 1, "a@id")])]
+    )
+    rows = [
+        RowWithoutMessageIdListAccess(1, 1000),
+        RowWithoutMessageIdListAccess(2, 2000),
+    ]
+
+    with patch("resources.lib.nzb_manifest._segment_rows", return_value=rows), patch(
+        "resources.lib.nzb_manifest._digest_articles", return_value="digest"
+    ):
+        manifest = extract_nzb_video_manifest(xml)
+
+    assert manifest["video_name"] == "Movie.Name.2026.2160p-GROUP.mkv"
+    assert manifest["video_bytes"] == 3000
+    assert manifest["article_count"] == 2
+    assert manifest["article_digest"] == "digest"
+    assert "message_ids" not in manifest
+
+
 def test_selects_largest_supported_video_entry_and_ignores_samples():
     xml = _nzb_xml(
         [
@@ -94,6 +131,448 @@ def test_selects_largest_supported_video_entry_and_ignores_samples():
 
     assert manifest["video_name"] == "Movie.Name.2026-GROUP.mkv"
     assert manifest["video_bytes"] == 10000
+
+
+def test_skips_segment_parsing_for_non_candidate_subjects():
+    from resources.lib import nzb_manifest
+
+    xml = _nzb_xml(
+        [
+            _file('"Movie.Name.2026-GROUP.nfo" yEnc (1/1)', [(1, 100, "nfo@id")]),
+            _file('"Movie.Name.2026-GROUP.par2" yEnc (1/1)', [(1, 200, "par2@id")]),
+            _file(
+                '"Sample.Movie.Name.2026-GROUP.mkv" yEnc (1/1)',
+                [(1, 300, "sample@id")],
+            ),
+            _file(
+                '"Movie.Name.2026-GROUP.mkv" yEnc (1/2)',
+                [(1, 5000, "a@id"), (2, 5000, "b@id")],
+            ),
+        ]
+    )
+    parsed_subjects = []
+    original_segment_rows = nzb_manifest._segment_rows
+
+    def counted_segment_rows(file_elem):
+        parsed_subjects.append(file_elem.attrib.get("subject", ""))
+        return original_segment_rows(file_elem)
+
+    with patch(
+        "resources.lib.nzb_manifest._segment_rows", side_effect=counted_segment_rows
+    ):
+        manifest = extract_nzb_video_manifest(xml)
+
+    assert manifest["video_name"] == "Movie.Name.2026-GROUP.mkv"
+    assert parsed_subjects == ['"Movie.Name.2026-GROUP.mkv" yEnc (1/2)']
+
+
+def test_extract_nzb_manifest_does_not_scan_segments_from_non_candidate_files():
+    from resources.lib import nzb_manifest
+
+    non_candidates = []
+    for file_index in range(20):
+        segments = [
+            (segment_index, 100, "nfo-{}-{}@id".format(file_index, segment_index))
+            for segment_index in range(1, 41)
+        ]
+        non_candidates.append(
+            _file(
+                '"Movie.Name.2026-GROUP.extra{}.nfo" yEnc'.format(file_index),
+                segments,
+            )
+        )
+    xml = _nzb_xml(
+        non_candidates
+        + [
+            _file(
+                '"Movie.Name.2026-GROUP.mkv" yEnc (1/2)',
+                [(1, 5000, "video-a@id"), (2, 5000, "video-b@id")],
+            )
+        ]
+    )
+    stripped_tags = []
+    original_strip_namespace = nzb_manifest._strip_namespace
+
+    def counted_strip_namespace(tag):
+        name = original_strip_namespace(tag)
+        stripped_tags.append(name)
+        return name
+
+    with patch(
+        "resources.lib.nzb_manifest._strip_namespace",
+        side_effect=counted_strip_namespace,
+    ):
+        manifest = extract_nzb_video_manifest(xml)
+
+    assert manifest["payload_kind"] == "video"
+    assert manifest["video_name"] == "Movie.Name.2026-GROUP.mkv"
+    assert stripped_tags.count("segment") == 2
+
+
+def test_skips_video_filename_regex_for_subjects_without_video_extensions():
+    from resources.lib import nzb_manifest
+
+    xml = _nzb_xml(
+        [
+            _file('"Movie.Name.2026-GROUP.nfo" yEnc (1/1)', [(1, 100, "nfo@id")]),
+            _file('"Movie.Name.2026-GROUP.par2" yEnc (1/1)', [(1, 200, "par2@id")]),
+            _file('"Movie.Name.2026-GROUP.sfv" yEnc (1/1)', [(1, 300, "sfv@id")]),
+            _file('"Artwork.Release.2026-GROUP.jpg" yEnc (1/1)', [(1, 400, "jpg@id")]),
+            _file(
+                '"Sample.Movie.Name.2026-GROUP.mkv" yEnc (1/1)',
+                [(1, 500, "sample@id")],
+            ),
+            _file(
+                '"Movie.Name.2026-GROUP.mkv" yEnc (1/2)',
+                [(1, 5000, "a@id"), (2, 5000, "b@id")],
+            ),
+        ]
+    )
+    checked_subjects = []
+    original_find_video_name = nzb_manifest._find_video_name
+
+    def counted_find_video_name(subject):
+        checked_subjects.append(subject)
+        return original_find_video_name(subject)
+
+    with patch(
+        "resources.lib.nzb_manifest._find_video_name",
+        side_effect=counted_find_video_name,
+    ):
+        manifest = extract_nzb_video_manifest(xml)
+
+    assert manifest["payload_kind"] == "video"
+    assert manifest["video_name"] == "Movie.Name.2026-GROUP.mkv"
+    assert checked_subjects == [
+        '"Sample.Movie.Name.2026-GROUP.mkv" yEnc (1/1)',
+        '"Movie.Name.2026-GROUP.mkv" yEnc (1/2)',
+    ]
+
+
+def test_video_hint_returns_before_regex_for_subjects_without_dot_marker():
+    from resources.lib import nzb_manifest
+
+    class CountingVideoExtensionRegex:  # pylint: disable=too-few-public-methods
+        def __init__(self):
+            self.calls = []
+
+        def search(self, subject):
+            self.calls.append(subject)
+
+    regex = CountingVideoExtensionRegex()
+
+    with patch("resources.lib.nzb_manifest._VIDEO_EXTENSION_TOKEN_RE", regex):
+        assert (
+            nzb_manifest._subject_may_be_video("Movie Name 2026 yEnc 1 of 1") is False
+        )
+
+    assert not regex.calls
+
+
+def test_bare_video_subject_skips_quoted_filename_regex():
+    from resources.lib import nzb_manifest
+
+    class QuotedFilenameRegex:  # pylint: disable=too-few-public-methods
+        def __init__(self):
+            self.calls = []
+
+        def search(self, subject):
+            self.calls.append(subject)
+
+    quoted_regex = QuotedFilenameRegex()
+    subject = "Movie.Name.2026.2160p.BluRay.x265-GROUP.mkv yEnc (1/80)"
+
+    with patch("resources.lib.nzb_manifest._FILENAME_RE", quoted_regex):
+        name = nzb_manifest._find_video_name(subject)
+
+    assert name == "Movie.Name.2026.2160p.BluRay.x265-GROUP.mkv"
+    assert not quoted_regex.calls
+
+
+def test_rejects_video_extension_substrings_before_segment_parsing():
+    from resources.lib import nzb_manifest
+
+    xml = _nzb_xml(
+        [
+            _file(
+                '"Movie.Name.2026-GROUP.mkvette.nfo" yEnc (1/1)',
+                [(1, 50000, "false-video@id")],
+            ),
+            _file(
+                '"Movie.Name.2026-GROUP.mkv" yEnc (1/1)',
+                [(1, 1000, "real-video@id")],
+            ),
+        ]
+    )
+    parsed_subjects = []
+    original_segment_rows = nzb_manifest._segment_rows
+
+    def counted_segment_rows(file_elem):
+        parsed_subjects.append(file_elem.attrib.get("subject", ""))
+        return original_segment_rows(file_elem)
+
+    with patch(
+        "resources.lib.nzb_manifest._segment_rows", side_effect=counted_segment_rows
+    ):
+        manifest = extract_nzb_video_manifest(xml)
+
+    assert manifest["payload_kind"] == "video"
+    assert manifest["video_name"] == "Movie.Name.2026-GROUP.mkv"
+    assert parsed_subjects == ['"Movie.Name.2026-GROUP.mkv" yEnc (1/1)']
+
+
+def test_defers_archive_segment_parsing_when_video_candidate_is_healthy():
+    from resources.lib import nzb_manifest
+
+    xml = _nzb_xml(
+        [
+            _file(
+                '"Movie.Name.2026-GROUP.mkv" yEnc (1/2)',
+                [(1, 5000, "video-a@id"), (2, 5000, "video-b@id")],
+            ),
+            _file(
+                '"Movie.Name.2026-GROUP.part001.rar" yEnc (1/1)',
+                [(1, 100, "rar-a@id")],
+            ),
+            _file(
+                '"Movie.Name.2026-GROUP.part002.rar" yEnc (1/1)',
+                [(1, 100, "rar-b@id")],
+            ),
+        ]
+    )
+    parsed_subjects = []
+    original_segment_rows = nzb_manifest._segment_rows
+
+    def counted_segment_rows(file_elem):
+        parsed_subjects.append(file_elem.attrib.get("subject", ""))
+        return original_segment_rows(file_elem)
+
+    with patch(
+        "resources.lib.nzb_manifest._segment_rows", side_effect=counted_segment_rows
+    ):
+        manifest = extract_nzb_video_manifest(xml)
+
+    assert manifest["payload_kind"] == "video"
+    assert manifest["video_name"] == "Movie.Name.2026-GROUP.mkv"
+    assert parsed_subjects == ['"Movie.Name.2026-GROUP.mkv" yEnc (1/2)']
+
+
+def test_defers_archive_subject_classification_when_video_candidate_is_healthy():
+    from resources.lib import nzb_manifest
+
+    xml = _nzb_xml(
+        [
+            _file(
+                '"Movie.Name.2026-GROUP.mkv" yEnc (1/2)',
+                [(1, 5000, "video-a@id"), (2, 5000, "video-b@id")],
+            ),
+            _file(
+                '"Movie.Name.2026-GROUP.part001.rar" yEnc (1/1)',
+                [(1, 100, "rar-a@id")],
+            ),
+            _file(
+                '"Movie.Name.2026-GROUP.part002.rar" yEnc (1/1)',
+                [(1, 100, "rar-b@id")],
+            ),
+        ]
+    )
+    archive_subjects = []
+    original_find_archive_base = nzb_manifest._find_archive_base
+
+    def counted_find_archive_base(subject):
+        archive_subjects.append(subject)
+        return original_find_archive_base(subject)
+
+    with patch(
+        "resources.lib.nzb_manifest._find_archive_base",
+        side_effect=counted_find_archive_base,
+    ):
+        manifest = extract_nzb_video_manifest(xml)
+
+    assert manifest["payload_kind"] == "video"
+    assert manifest["video_name"] == "Movie.Name.2026-GROUP.mkv"
+    assert not archive_subjects
+
+
+def test_defers_archive_hint_scanning_when_video_candidate_is_healthy():
+    from resources.lib import nzb_manifest
+
+    xml = _nzb_xml(
+        [
+            _file(
+                '"Movie.Name.2026-GROUP.mkv" yEnc (1/2)',
+                [(1, 5000, "video-a@id"), (2, 5000, "video-b@id")],
+            ),
+            _file(
+                '"Movie.Name.2026-GROUP.part001.rar" yEnc (1/1)',
+                [(1, 100, "rar-a@id")],
+            ),
+            _file(
+                '"Movie.Name.2026-GROUP.part002.rar" yEnc (1/1)',
+                [(1, 100, "rar-b@id")],
+            ),
+        ]
+    )
+    archive_hint_subjects = []
+    original_subject_may_be_archive = nzb_manifest._subject_may_be_archive
+
+    def counted_subject_may_be_archive(subject):
+        archive_hint_subjects.append(subject)
+        return original_subject_may_be_archive(subject)
+
+    with patch(
+        "resources.lib.nzb_manifest._subject_may_be_archive",
+        side_effect=counted_subject_may_be_archive,
+    ):
+        manifest = extract_nzb_video_manifest(xml)
+
+    assert manifest["payload_kind"] == "video"
+    assert manifest["video_name"] == "Movie.Name.2026-GROUP.mkv"
+    assert not archive_hint_subjects
+
+
+def test_archive_fallback_skips_classification_for_non_archive_subjects():
+    from resources.lib import nzb_manifest
+
+    xml = _nzb_xml(
+        [
+            _file('"Movie.Name.2026-GROUP.nfo" yEnc (1/1)', [(1, 100, "nfo@id")]),
+            _file('"Movie.Name.2026-GROUP.par2" yEnc (1/1)', [(1, 200, "par2@id")]),
+            _file('"Movie.Name.2026-GROUP.sfv" yEnc (1/1)', [(1, 300, "sfv@id")]),
+            _file('"Artwork.Release.2026-GROUP.jpg" yEnc (1/1)', [(1, 400, "jpg@id")]),
+            _file(
+                '"Movie.Name.2026-GROUP.part001.rar" yEnc (1/1)',
+                [(1, 1000, "rar-a@id")],
+            ),
+            _file(
+                '"Movie.Name.2026-GROUP.part002.rar" yEnc (1/1)',
+                [(1, 1000, "rar-b@id")],
+            ),
+        ]
+    )
+    archive_subjects = []
+    original_find_archive_base = nzb_manifest._find_archive_base
+
+    def counted_find_archive_base(subject):
+        archive_subjects.append(subject)
+        return original_find_archive_base(subject)
+
+    with patch(
+        "resources.lib.nzb_manifest._find_archive_base",
+        side_effect=counted_find_archive_base,
+    ):
+        manifest = extract_nzb_video_manifest(xml)
+
+    assert manifest["payload_kind"] == "archive"
+    assert manifest["archive_base_name"] == "movie name 2026 group"
+    assert archive_subjects == [
+        '"Movie.Name.2026-GROUP.part001.rar" yEnc (1/1)',
+        '"Movie.Name.2026-GROUP.part002.rar" yEnc (1/1)',
+    ]
+
+
+def test_archive_hint_returns_before_specific_scans_without_r_marker():
+    from resources.lib import nzb_manifest
+
+    class CountingLower(str):
+        def __new__(cls, value, find_calls):
+            obj = str.__new__(cls, value)
+            obj.find_calls = find_calls
+            return obj
+
+        def find(self, substring, *args):
+            self.find_calls.append(substring)
+            return super().find(substring, *args)
+
+    class CountingSubject(str):
+        def __new__(cls, value):
+            obj = str.__new__(cls, value)
+            obj.find_calls = []
+            return obj
+
+        def lower(self):
+            return CountingLower(str(self).lower(), self.find_calls)
+
+    subject = CountingSubject('"Movie.Name.2026-GROUP.nfo" yEnc (1/1)')
+
+    assert nzb_manifest._subject_may_be_archive(subject) is False
+    assert not subject.find_calls
+
+
+def test_archive_hint_rejects_rdigit_false_positive_boundaries():
+    from resources.lib import nzb_manifest
+
+    false_positive_files = [
+        _file(
+            '"Movie.Name.2026-GROUP.r12x.extra{:02d}.nfo" yEnc (1/1)'.format(index),
+            [(1, 100, "false-{}@id".format(index))],
+        )
+        for index in range(5)
+    ]
+    xml = _nzb_xml(
+        false_positive_files
+        + [
+            _file('"Movie.Name.2026-GROUP.r00" yEnc (1/1)', [(1, 1000, "r00@id")]),
+            _file('"Movie.Name.2026-GROUP.r01" yEnc (1/1)', [(1, 1000, "r01@id")]),
+        ]
+    )
+    archive_subjects = []
+    original_find_archive_base = nzb_manifest._find_archive_base
+
+    def counted_find_archive_base(subject):
+        archive_subjects.append(subject)
+        return original_find_archive_base(subject)
+
+    with patch(
+        "resources.lib.nzb_manifest._find_archive_base",
+        side_effect=counted_find_archive_base,
+    ):
+        manifest = extract_nzb_video_manifest(xml)
+
+    assert manifest["payload_kind"] == "archive"
+    assert manifest["archive_base_name"] == "movie name 2026 group"
+    assert archive_subjects == [
+        '"Movie.Name.2026-GROUP.r00" yEnc (1/1)',
+        '"Movie.Name.2026-GROUP.r01" yEnc (1/1)',
+    ]
+
+
+def test_single_file_archive_group_skips_redundant_group_sort_key_pass():
+    class ArchiveRow:  # pylint: disable=too-few-public-methods
+        def __init__(self, number, size, msgid, key_accesses):
+            self.number = number
+            self.size = size
+            self.msgid = msgid
+            self.key_accesses = key_accesses
+
+        def __getitem__(self, index):
+            if index == 0:
+                self.key_accesses.append(index)
+                return self.number
+            if index == 1:
+                return self.size
+            if index == 2:
+                self.key_accesses.append(index)
+                return self.msgid
+            raise IndexError(index)
+
+    key_accesses = []
+    rows = [
+        ArchiveRow(index, 100, "archive-{}@id".format(index), key_accesses)
+        for index in range(1, 11)
+    ]
+    xml = _nzb_xml(
+        [_file('"Movie.Name.2026-GROUP.rar" yEnc (1/10)', [(1, 100, "stub@id")])]
+    )
+
+    with patch("resources.lib.nzb_manifest._segment_rows", return_value=rows), patch(
+        "resources.lib.nzb_manifest._digest_articles", return_value="digest"
+    ):
+        manifest = extract_nzb_video_manifest(xml)
+
+    assert manifest["payload_kind"] == "archive"
+    assert manifest["article_count"] == len(rows)
+    assert not key_accesses
 
 
 def test_health_check_failure_skips_first_video_candidate():
@@ -177,6 +656,38 @@ def test_same_articles_have_same_digest_even_if_segment_order_changes():
     )
 
 
+def test_ordered_segment_rows_skip_sort_key_pass():
+    from resources.lib import nzb_manifest
+
+    xml = _nzb_xml(
+        [
+            _file(
+                '"Movie.mkv" yEnc (1/4)',
+                [
+                    (1, 1000, "a@id"),
+                    (2, 1000, "b@id"),
+                    (3, 1000, "c@id"),
+                    (4, 1000, "d@id"),
+                ],
+            )
+        ]
+    )
+    sort_key_calls = []
+
+    def counted_sort_key(row):
+        sort_key_calls.append(row)
+        return row[0], row[2]
+
+    with patch(
+        "resources.lib.nzb_manifest._segment_row_sort_key",
+        side_effect=counted_sort_key,
+    ):
+        manifest = nzb_manifest.extract_nzb_video_manifest(xml)
+
+    assert manifest["article_count"] == 4
+    assert not sort_key_calls
+
+
 def test_different_uploads_have_different_article_digest():
     first = _nzb_xml(
         [_file('"Movie.mkv" yEnc (1/2)', [(1, 1000, "a@id"), (2, 1000, "b@id")])]
@@ -227,7 +738,7 @@ def test_fetch_nzb_video_manifest_fetches_and_parses_valid_nzb(mock_http_get):
     assert manifest["video_name"] == "Movie.mkv"
     mock_http_get.assert_called_once_with(
         "https://idx/getnzb/123",
-        timeout=5,
+        timeout=20,
         max_bytes=2 * 1024 * 1024,
     )
 

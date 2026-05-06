@@ -22,6 +22,14 @@ def _make_handler():
     return _StreamHandler.__new__(_StreamHandler)
 
 
+def test_requested_proxy_timeout_defaults():
+    from resources.lib import stream_proxy
+
+    assert stream_proxy._UPSTREAM_OPEN_TIMEOUT == 60
+    assert stream_proxy._SKIP_PROBE_TIMEOUT == 60
+    assert stream_proxy._PROBE_DEADLINE_SECONDS == 30.0
+
+
 # ---------------------------------------------------------------------------
 # _StreamHandler._is_safe_ffmpeg_cmd — argv shape + CR/LF gating
 # ---------------------------------------------------------------------------
@@ -6101,7 +6109,9 @@ def test_serve_proxy_switches_to_valid_fallback_source_mid_response():
         handler,
         "_select_live_fallback_source",
         return_value=ctx["fallback_sources"][0],
-    ):
+    ), patch(
+        "resources.lib.stream_proxy._notify"
+    ) as mock_notify:
         handler._serve_proxy(ctx)
 
     assert ctx["remote_url"] == "http://webdav/fallback.mkv"
@@ -6113,6 +6123,8 @@ def test_serve_proxy_switches_to_valid_fallback_source_mid_response():
     )
     assert mock_stream.call_args_list[1][0][0]["auth_header"] == "Basic fallback"
     assert mock_stream.call_args_list[1][0][1:3] == (0, 9)
+    mock_notify.assert_called_once()
+    assert "fallback stream" in mock_notify.call_args[0][1].lower()
 
 
 def test_select_live_fallback_rejects_same_length_different_fingerprint():
@@ -6134,19 +6146,26 @@ def test_select_live_fallback_rejects_same_length_different_fingerprint():
         ],
     }
 
+    def digest_response(url, _auth_header, start, _end, **_kwargs):
+        if url.endswith("fallback.mkv") and start == 0:
+            return "current-range-digest"
+        if url.endswith("primary.mkv"):
+            return "primary-digest"
+        return "fallback-digest"
+
     with patch(
         "resources.lib.fallback_streams.fetch_range_digest",
-        side_effect=["primary-digest", "fallback-digest"],
+        side_effect=digest_response,
     ) as digest:
         source = handler._select_live_fallback_source(ctx, 0, 9)
 
     assert source is None
     assert ctx["fallback_sources"][0]["failed"] is True
     assert digest.call_args_list[0][0][:4] == (
-        "http://webdav/primary.mkv",
-        "Basic primary",
+        "http://webdav/fallback.mkv",
+        "Basic fallback",
         0,
-        4095,
+        9,
     )
     assert digest.call_args_list[1][0][:4] == (
         "http://webdav/fallback.mkv",
@@ -6154,6 +6173,2227 @@ def test_select_live_fallback_rejects_same_length_different_fingerprint():
         0,
         4095,
     )
+    assert digest.call_args_list[2][0][:4] == (
+        "http://webdav/primary.mkv",
+        "Basic primary",
+        0,
+        4095,
+    )
+
+
+def test_live_fallback_selection_probes_failed_range_before_full_fingerprint():
+    """Unreadable failed ranges should reject before expensive fingerprints."""
+    handler = _make_handler()
+    content_length = 10000000
+    failed_byte = 1234567
+    range_end = failed_byte + 100000
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": None,
+        "content_length": content_length,
+        "_fallback_probe_bases": [],
+        "fallback_sources": [
+            {
+                "nzo_id": "nzo2",
+                "stream_url": "http://webdav/content/fallback.mkv",
+                "stream_headers": {},
+                "content_length": content_length,
+                "validated": False,
+                "failed": False,
+            }
+        ],
+    }
+
+    def digest(url, _auth_header, start, _end, content_length, probe_bases=None):
+        assert content_length == ctx["content_length"]
+        assert probe_bases == []
+        if url.endswith("fallback.mkv") and start == failed_byte:
+            return None
+        return "digest"
+
+    with patch.object(handler, "_refresh_standby_fallback_sources"), patch.object(
+        handler, "_fetch_fallback_range_digest", side_effect=digest
+    ) as mock_digest:
+        source = handler._select_live_fallback_source(ctx, failed_byte, range_end)
+
+    assert source is None
+    assert ctx["fallback_sources"][0]["failed"] is True
+    assert mock_digest.call_count == 1
+    assert mock_digest.call_args[0][:4] == (
+        "http://webdav/content/fallback.mkv",
+        None,
+        failed_byte,
+        failed_byte + 4095,
+    )
+
+
+def test_live_fallback_selection_uses_precomputed_probe_bases():
+    """Fallback switch validation should reuse precomputed base origin/path data."""
+    handler = _make_handler()
+    ctx = {}
+
+    with patch(
+        "resources.lib.fallback_streams.configured_stream_probe_bases",
+        return_value=("precomputed",),
+    ) as configured:
+        assert handler._fallback_probe_bases(ctx) == ("precomputed",)
+        assert handler._fallback_probe_bases(ctx) == ("precomputed",)
+
+    configured.assert_called_once_with()
+
+
+def test_live_fallback_selection_reuses_probe_bases_for_fingerprint_validation():
+    """Fallback switch validation should not re-read settings per range probe."""
+    handler = _make_handler()
+    content_length = 100000
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": None,
+        "content_length": content_length,
+        "fallback_sources": [
+            {
+                "nzo_id": "nzo2",
+                "stream_url": "http://webdav/content/fallback.mkv",
+                "stream_headers": {},
+                "content_length": content_length,
+                "validated": False,
+                "failed": False,
+            }
+        ],
+    }
+
+    def range_response(req, **_kwargs):
+        range_header = _request_header(req, "Range")
+        start, end = [
+            int(value) for value in range_header.replace("bytes=", "").split("-")
+        ]
+        return _mock_urlopen_response(
+            [b"Z" * (end - start + 1)],
+            headers={
+                "Content-Range": "bytes {}-{}/{}".format(start, end, content_length)
+            },
+        )
+
+    def setting(key):
+        return {
+            "webdav_url": "http://webdav/content",
+            "nzbdav_url": "http://nzbdav:3000",
+        }.get(key, "")
+
+    with patch.object(handler, "_refresh_standby_fallback_sources"), patch(
+        "resources.lib.fallback_streams.urlopen", side_effect=range_response
+    ) as mock_urlopen, patch(
+        "resources.lib.fallback_streams.xbmcaddon.Addon.return_value.getSetting",
+        side_effect=setting,
+    ) as mock_setting:
+        source = handler._select_live_fallback_source(ctx, 0, 9999)
+
+    assert source is ctx["fallback_sources"][0]
+    assert ctx["fallback_sources"][0]["validated"] is True
+    assert mock_urlopen.call_count == 40
+    assert mock_setting.call_count == 2
+
+
+def test_live_fallback_selection_reuses_validated_probe_urls_for_range_reads():
+    """Fallback switch validation should not re-validate URLs per range probe."""
+    from resources.lib import fallback_streams
+
+    handler = _make_handler()
+    content_length = 10000000
+    failed_byte = 1234567
+    range_end = failed_byte + 200000
+    primary_url = "http://webdav/content/primary.mkv"
+    fallback_url = "http://webdav/content/fallback.mkv"
+    ctx = {
+        "remote_url": primary_url,
+        "auth_header": None,
+        "content_length": content_length,
+        "fallback_sources": [
+            {
+                "nzo_id": "nzo2",
+                "stream_url": fallback_url,
+                "stream_headers": {},
+                "content_length": content_length,
+                "validated": False,
+                "failed": False,
+            }
+        ],
+    }
+
+    def range_response(req, **_kwargs):
+        range_header = _request_header(req, "Range")
+        start, end = [
+            int(value) for value in range_header.replace("bytes=", "").split("-")
+        ]
+        return _mock_urlopen_response(
+            [b"Z" * (end - start + 1)],
+            headers={
+                "Content-Range": "bytes {}-{}/{}".format(start, end, content_length)
+            },
+        )
+
+    def setting(key):
+        return {
+            "webdav_url": "http://webdav/content",
+            "nzbdav_url": "http://nzbdav:3000",
+        }.get(key, "")
+
+    validated_urls = []
+    original_validate = fallback_streams._validated_probe_url
+    fallback_streams._cached_validated_probe_url.cache_clear()
+
+    def counted_validate(url, probe_bases=None):
+        validated_urls.append(url)
+        return original_validate(url, probe_bases=probe_bases)
+
+    with patch.object(handler, "_refresh_standby_fallback_sources"), patch(
+        "resources.lib.fallback_streams.urlopen", side_effect=range_response
+    ) as mock_urlopen, patch(
+        "resources.lib.fallback_streams.xbmcaddon.Addon.return_value.getSetting",
+        side_effect=setting,
+    ) as mock_setting, patch(
+        "resources.lib.fallback_streams._validated_probe_url",
+        side_effect=counted_validate,
+    ):
+        source = handler._select_live_fallback_source(ctx, failed_byte, range_end)
+
+    assert source is ctx["fallback_sources"][0]
+    assert ctx["fallback_sources"][0]["validated"] is True
+    assert mock_urlopen.call_count == 41
+    assert mock_setting.call_count == 2
+    assert validated_urls.count(primary_url) == 1
+    assert validated_urls.count(fallback_url) == 1
+
+
+def test_live_fallback_selection_reuses_primary_fingerprint_across_candidates():
+    """Primary fingerprint samples should be shared across candidate checks."""
+    from resources.lib.fallback_streams import fingerprint_ranges
+
+    handler = _make_handler()
+    content_length = 10000000
+    failed_byte = 7000000
+    range_end = failed_byte + 100000
+    ranges = fingerprint_ranges(content_length)
+    last_start = ranges[-1][0]
+    invalid_urls = {
+        "http://webdav/content/fallback{}.mkv".format(index) for index in range(4)
+    }
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_length": content_length,
+        "_fallback_probe_bases": [],
+        "fallback_sources": [
+            {
+                "nzo_id": "nzo{}".format(index),
+                "stream_url": "http://webdav/content/fallback{}.mkv".format(index),
+                "stream_headers": {"Authorization": "Basic fallback{}".format(index)},
+                "content_length": content_length,
+                "validated": False,
+                "failed": False,
+            }
+            for index in range(5)
+        ],
+    }
+    calls = []
+
+    def digest(url, _auth_header, start, end, content_length, probe_bases=None):
+        assert content_length == ctx["content_length"]
+        assert probe_bases == []
+        calls.append((url, start, end))
+        if start == failed_byte:
+            return "current-{}".format(url)
+        if url.endswith("primary.mkv"):
+            return "digest-{}-{}".format(start, end)
+        if url in invalid_urls and start == last_start:
+            return "bad-{}".format(url)
+        return "digest-{}-{}".format(start, end)
+
+    with patch.object(handler, "_refresh_standby_fallback_sources"), patch.object(
+        handler, "_fetch_fallback_range_digest", side_effect=digest
+    ):
+        source = handler._select_live_fallback_source(ctx, failed_byte, range_end)
+
+    assert source is ctx["fallback_sources"][-1]
+    assert [source["failed"] for source in ctx["fallback_sources"]] == [
+        True,
+        True,
+        True,
+        True,
+        False,
+    ]
+    assert ctx["fallback_sources"][-1]["validated"] is True
+    primary_sample_reads = [call for call in calls if call[0].endswith("primary.mkv")]
+    fallback_sample_reads = [
+        call for call in calls if "fallback" in call[0] and call[1] != failed_byte
+    ]
+    current_range_reads = [call for call in calls if call[1] == failed_byte]
+    assert len(primary_sample_reads) == len(ranges)
+    assert len(fallback_sample_reads) == len(ranges) * 5
+    assert len(current_range_reads) == 5
+
+
+def test_live_fallback_selection_reuses_fingerprint_ranges_across_candidates():
+    """Fingerprint sample offsets should be shared across same-length candidates."""
+    from resources.lib.fallback_streams import fingerprint_ranges
+
+    handler = _make_handler()
+    content_length = 10000000
+    failed_byte = 7000000
+    range_end = failed_byte + 100000
+    ranges = fingerprint_ranges(content_length)
+    last_start = ranges[-1][0]
+    bad_url = "http://webdav/content/fallback-bad.mkv"
+    good_url = "http://webdav/content/fallback-good.mkv"
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_length": content_length,
+        "_fallback_probe_bases": [],
+        "fallback_sources": [
+            {
+                "nzo_id": "bad",
+                "stream_url": bad_url,
+                "stream_headers": {"Authorization": "Basic bad"},
+                "content_length": content_length,
+                "validated": False,
+                "failed": False,
+            },
+            {
+                "nzo_id": "good",
+                "stream_url": good_url,
+                "stream_headers": {"Authorization": "Basic good"},
+                "content_length": content_length,
+                "validated": False,
+                "failed": False,
+            },
+        ],
+    }
+
+    def digest(url, _auth_header, start, end, content_length, probe_bases=None):
+        assert content_length == ctx["content_length"]
+        assert probe_bases == []
+        if start == failed_byte:
+            return "current-{}".format(url)
+        if url.endswith("primary.mkv"):
+            return "digest-{}-{}".format(start, end)
+        if url == bad_url and start == last_start:
+            return "bad-digest"
+        return "digest-{}-{}".format(start, end)
+
+    with patch.object(
+        handler, "_fetch_fallback_range_digest", side_effect=digest
+    ), patch(
+        "resources.lib.fallback_streams.fingerprint_ranges",
+        side_effect=fingerprint_ranges,
+    ) as mock_ranges:
+        source = handler._select_live_fallback_source(ctx, failed_byte, range_end)
+
+    assert source is ctx["fallback_sources"][1]
+    assert ctx["fallback_sources"][0]["failed"] is True
+    assert ctx["fallback_sources"][1]["validated"] is True
+    mock_ranges.assert_called_once_with(content_length)
+
+
+def test_live_fallback_selection_keeps_primary_cache_for_later_attempts():
+    """Primary fingerprint samples should survive later fallback attempts."""
+    from resources.lib.fallback_streams import fingerprint_ranges
+
+    handler = _make_handler()
+    content_length = 10000000
+    failed_byte = 7000000
+    range_end = failed_byte + 100000
+    ranges = fingerprint_ranges(content_length)
+    last_start = ranges[-1][0]
+    invalid_url = "http://webdav/content/fallback-bad.mkv"
+    valid_url = "http://webdav/content/fallback-good.mkv"
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_length": content_length,
+        "_fallback_probe_bases": [],
+        "fallback_sources": [
+            {
+                "nzo_id": "bad",
+                "stream_url": invalid_url,
+                "stream_headers": {"Authorization": "Basic bad"},
+                "content_length": content_length,
+                "validated": False,
+                "failed": False,
+            }
+        ],
+    }
+    calls = []
+
+    def digest(url, _auth_header, start, end, content_length, probe_bases=None):
+        assert content_length == ctx["content_length"]
+        assert probe_bases == []
+        calls.append((url, start, end))
+        if start == failed_byte:
+            return "current-{}".format(url)
+        if url.endswith("primary.mkv"):
+            return "digest-{}-{}".format(start, end)
+        if url == invalid_url and start == last_start:
+            return "bad-digest"
+        return "digest-{}-{}".format(start, end)
+
+    with patch.object(handler, "_fetch_fallback_range_digest", side_effect=digest):
+        first = handler._select_live_fallback_source(ctx, failed_byte, range_end)
+        ctx["fallback_sources"].append(
+            {
+                "nzo_id": "good",
+                "stream_url": valid_url,
+                "stream_headers": {"Authorization": "Basic good"},
+                "content_length": content_length,
+                "validated": False,
+                "failed": False,
+            }
+        )
+        second = handler._select_live_fallback_source(ctx, failed_byte, range_end)
+
+    assert first is None
+    assert second is ctx["fallback_sources"][1]
+    assert ctx["fallback_sources"][0]["failed"] is True
+    assert ctx["fallback_sources"][1]["validated"] is True
+    primary_sample_reads = [call for call in calls if call[0].endswith("primary.mkv")]
+    assert len(primary_sample_reads) == len(ranges)
+
+
+def test_live_fallback_selection_skips_primary_read_for_unreadable_fallback_sample():
+    """An unreadable fallback fingerprint sample should reject before primary I/O."""
+    from resources.lib.fallback_streams import fingerprint_ranges
+
+    handler = _make_handler()
+    content_length = 10000000
+    failed_byte = 7000000
+    range_end = failed_byte + 100000
+    first_sample_start = fingerprint_ranges(content_length)[0][0]
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_length": content_length,
+        "_fallback_probe_bases": [],
+        "fallback_sources": [
+            {
+                "nzo_id": "nzo2",
+                "stream_url": "http://webdav/content/fallback.mkv",
+                "stream_headers": {"Authorization": "Basic fallback"},
+                "content_length": content_length,
+                "validated": False,
+                "failed": False,
+            }
+        ],
+    }
+    calls = []
+
+    def digest(url, _auth_header, start, end, content_length, probe_bases=None):
+        assert content_length == ctx["content_length"]
+        assert probe_bases == []
+        calls.append((url, start, end))
+        if start == failed_byte:
+            return "current-range-{}".format(url)
+        if url.endswith("fallback.mkv") and start == first_sample_start:
+            return None
+        return "digest-{}-{}".format(start, end)
+
+    with patch.object(handler, "_fetch_fallback_range_digest", side_effect=digest):
+        source = handler._select_live_fallback_source(ctx, failed_byte, range_end)
+
+    assert source is None
+    assert ctx["fallback_sources"][0]["failed"] is True
+    assert [call[0] for call in calls] == [
+        "http://webdav/content/fallback.mkv",
+        "http://webdav/content/fallback.mkv",
+    ]
+
+
+def test_live_fallback_selection_reuses_failed_range_digest_for_fingerprint_sample():
+    """A matching failed-range probe should count as that fallback fingerprint read."""
+    from resources.lib.fallback_streams import fingerprint_ranges
+
+    handler = _make_handler()
+    content_length = 10000000
+    failed_byte, range_end = fingerprint_ranges(content_length)[0]
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_length": content_length,
+        "_fallback_probe_bases": [],
+        "fallback_sources": [
+            {
+                "nzo_id": "nzo2",
+                "stream_url": "http://webdav/content/fallback.mkv",
+                "stream_headers": {"Authorization": "Basic fallback"},
+                "content_length": content_length,
+                "validated": False,
+                "failed": False,
+            }
+        ],
+    }
+    calls = []
+
+    def digest(url, _auth_header, start, end, content_length, probe_bases=None):
+        assert content_length == ctx["content_length"]
+        assert probe_bases == []
+        calls.append((url, start, end))
+        return "digest-{}-{}".format(start, end)
+
+    with patch.object(handler, "_fetch_fallback_range_digest", side_effect=digest):
+        source = handler._select_live_fallback_source(ctx, failed_byte, range_end)
+
+    assert source is ctx["fallback_sources"][0]
+    assert ctx["fallback_sources"][0]["validated"] is True
+    fallback_failed_range_reads = [
+        call
+        for call in calls
+        if call
+        == (
+            "http://webdav/content/fallback.mkv",
+            failed_byte,
+            range_end,
+        )
+    ]
+    assert len(fallback_failed_range_reads) == 1
+
+
+def test_live_fallback_selection_tries_ready_source_before_standby_refresh():
+    """Ready fallback streams should not wait on unresolved standby jobs."""
+    handler = _make_handler()
+    ready = {
+        "nzo_id": "ready",
+        "stream_url": "http://webdav/content/ready.mkv",
+        "stream_headers": {},
+        "content_length": 1000,
+        "validated": True,
+        "failed": False,
+    }
+    pending = {
+        "nzo_id": "pending",
+        "stream_url": "",
+        "stream_headers": {},
+        "content_length": 0,
+        "validated": False,
+        "failed": False,
+    }
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": None,
+        "content_length": 1000,
+        "fallback_sources": [ready, pending],
+    }
+
+    with patch("resources.lib.nzbdav_api.get_job_history") as history, patch.object(
+        handler, "_fallback_source_matches", return_value=True
+    ) as matches:
+        source = handler._select_live_fallback_source(ctx, 0, 999)
+
+    assert source is ready
+    history.assert_not_called()
+    matches.assert_called_once_with(ctx, ready, 0, 999)
+
+
+def test_live_fallback_selection_returns_before_cache_when_no_sources():
+    """No fallback source means no validation cache or fallback scans are needed."""
+    handler = _make_handler()
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": None,
+        "content_length": 1000,
+        "fallback_sources": [],
+    }
+
+    with patch.object(
+        handler, "_select_resolved_fallback_source", return_value=None
+    ) as select_resolved:
+        source = handler._select_live_fallback_source(ctx, 100, 999)
+
+    assert source is None
+    select_resolved.assert_not_called()
+    assert "_fallback_primary_digest_cache" not in ctx
+
+
+def test_live_fallback_selection_returns_before_cache_when_all_sources_failed():
+    """Already failed fallback sources cannot produce a validated switch target."""
+    handler = _make_handler()
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": None,
+        "content_length": 1000,
+        "fallback_sources": [
+            {
+                "stream_url": "http://webdav/content/fallback1.mkv",
+                "stream_headers": {},
+                "content_length": 1000,
+                "validated": False,
+                "failed": True,
+            },
+            {
+                "stream_url": "",
+                "stream_headers": {},
+                "content_length": 0,
+                "validated": False,
+                "failed": True,
+            },
+        ],
+    }
+
+    with patch.object(
+        handler, "_select_resolved_fallback_source", return_value=None
+    ) as select_resolved:
+        source = handler._select_live_fallback_source(ctx, 100, 999)
+
+    assert source is None
+    select_resolved.assert_not_called()
+    assert "_fallback_primary_digest_cache" not in ctx
+
+
+def test_live_fallback_selection_returns_before_scan_when_no_source_is_selectable():
+    """Sources without a stream URL or nzo_id cannot become fallback targets."""
+    handler = _make_handler()
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": None,
+        "content_length": 1000,
+        "fallback_sources": [
+            {
+                "stream_url": "",
+                "stream_headers": {},
+                "content_length": 0,
+                "validated": False,
+                "failed": False,
+            },
+            {
+                "stream_url": "",
+                "stream_headers": {},
+                "content_length": 0,
+                "validated": False,
+                "failed": False,
+            },
+        ],
+    }
+
+    with patch.object(
+        handler, "_select_resolved_fallback_source", return_value=None
+    ) as select_resolved, patch.object(
+        handler, "_refresh_standby_fallback_source", return_value=False
+    ) as refresh_standby:
+        source = handler._select_live_fallback_source(ctx, 100, 999)
+
+    assert source is None
+    select_resolved.assert_not_called()
+    refresh_standby.assert_not_called()
+    assert "_fallback_probe_bases" not in ctx
+    assert "_fallback_primary_digest_cache" not in ctx
+
+
+def test_live_fallback_selection_returns_before_match_when_primary_length_unknown():
+    """Without a primary byte length, the exact-length fallback gate cannot pass."""
+    handler = _make_handler()
+    source = {
+        "nzo_id": "ready",
+        "stream_url": "http://webdav/content/ready.mkv",
+        "stream_headers": {},
+        "content_length": 1000,
+        "validated": True,
+        "failed": False,
+    }
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": None,
+        "content_length": 0,
+        "fallback_sources": [source],
+    }
+
+    with patch.object(
+        handler, "_fallback_source_matches", return_value=True
+    ) as matches, patch.object(
+        handler, "_refresh_standby_fallback_source", return_value=True
+    ) as refresh_standby:
+        selected = handler._select_live_fallback_source(ctx, 100, 999)
+
+    assert selected is None
+    matches.assert_not_called()
+    refresh_standby.assert_not_called()
+    assert source["failed"] is False
+    assert "_fallback_probe_bases" not in ctx
+    assert "_fallback_primary_digest_cache" not in ctx
+
+
+def test_live_fallback_selection_reuses_parsed_length_for_resolved_scan():
+    """The selector should not parse the active length again in the ready scan."""
+    handler = _make_handler()
+
+    class CountingContext(dict):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.get_counts = {}
+
+        def get(self, key, default=None):
+            self.get_counts[key] = self.get_counts.get(key, 0) + 1
+            return super().get(key, default)
+
+    ready = {
+        "nzo_id": "ready",
+        "stream_url": "http://webdav/content/ready.mkv",
+        "stream_headers": {},
+        "content_length": 1000,
+        "validated": True,
+        "failed": False,
+    }
+    ctx = CountingContext(
+        {
+            "remote_url": "http://webdav/content/primary.mkv",
+            "auth_header": None,
+            "content_length": 1000,
+            "fallback_sources": [ready],
+        }
+    )
+
+    with patch.object(handler, "_fallback_source_matches", return_value=True):
+        source = handler._select_live_fallback_source(ctx, 100, 999)
+
+    assert source is ready
+    assert ctx.get_counts.get("content_length", 0) == 1
+
+
+def test_live_fallback_selection_reuses_parsed_length_for_match_validation():
+    """Match validation should reuse the selector's parsed active length."""
+    handler = _make_handler()
+
+    class CountingContext(dict):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.get_counts = {}
+
+        def get(self, key, default=None):
+            self.get_counts[key] = self.get_counts.get(key, 0) + 1
+            return super().get(key, default)
+
+    ready = {
+        "nzo_id": "ready",
+        "stream_url": "http://webdav/content/ready.mkv",
+        "stream_headers": {},
+        "content_length": 1000,
+        "validated": True,
+        "failed": False,
+    }
+    ctx = CountingContext(
+        {
+            "remote_url": "http://webdav/content/primary.mkv",
+            "auth_header": None,
+            "content_length": 1000,
+            "fallback_sources": [ready],
+        }
+    )
+
+    with patch.object(
+        handler, "_fallback_probe_bases", return_value=("base",)
+    ), patch.object(
+        handler,
+        "_fetch_fallback_range_digest",
+        return_value="digest",
+    ) as fetch_digest:
+        source = handler._select_live_fallback_source(ctx, 100, 999)
+
+    assert source is ready
+    assert ctx.get_counts.get("content_length", 0) == 1
+    fetch_digest.assert_called_once_with(
+        "http://webdav/content/ready.mkv",
+        None,
+        100,
+        999,
+        content_length=1000,
+        probe_bases=("base",),
+    )
+
+
+def test_live_fallback_selection_reuses_source_length_for_match_validation():
+    """Ready-source validation should not re-read the known fallback length."""
+    handler = _make_handler()
+
+    class CountingSource(dict):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.get_counts = {}
+
+        def get(self, key, default=None):
+            self.get_counts[key] = self.get_counts.get(key, 0) + 1
+            return super().get(key, default)
+
+    ready = CountingSource(
+        {
+            "nzo_id": "ready",
+            "stream_url": "http://webdav/content/ready.mkv",
+            "stream_headers": {},
+            "content_length": 1000,
+            "validated": True,
+            "failed": False,
+        }
+    )
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": None,
+        "content_length": 1000,
+        "fallback_sources": [ready],
+    }
+
+    with patch.object(
+        handler, "_fallback_probe_bases", return_value=("base",)
+    ), patch.object(
+        handler,
+        "_fetch_fallback_range_digest",
+        return_value="digest",
+    ):
+        source = handler._select_live_fallback_source(ctx, 100, 999)
+
+    assert source is ready
+    assert ready.get_counts.get("content_length", 0) == 1
+
+
+def test_live_fallback_selection_reuses_parsed_length_for_standby_refresh():
+    """Completed standby refresh should reuse the selector's parsed active length."""
+    handler = _make_handler()
+
+    class CountingContext(dict):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.get_counts = {}
+
+        def get(self, key, default=None):
+            self.get_counts[key] = self.get_counts.get(key, 0) + 1
+            return super().get(key, default)
+
+    standby = {
+        "nzo_id": "nzo-standby",
+        "stream_url": "",
+        "stream_headers": {},
+        "content_length": 0,
+        "validated": False,
+        "failed": False,
+    }
+    ctx = CountingContext(
+        {
+            "remote_url": "http://webdav/content/primary.mkv",
+            "auth_header": None,
+            "content_length": 1000,
+            "fallback_sources": [standby],
+        }
+    )
+
+    with patch(
+        "resources.lib.nzbdav_api.get_job_history",
+        return_value={
+            "status": "Completed",
+            "storage": "/mnt/nzbdav/completed-symlinks/movies/Standby",
+        },
+    ), patch(
+        "resources.lib.webdav.find_video_file",
+        return_value="/content/movies/Standby/fallback.mkv",
+    ), patch(
+        "resources.lib.webdav.get_webdav_stream_url_for_path",
+        return_value=("http://webdav/content/fallback.mkv", {}),
+    ), patch(
+        "resources.lib.fallback_streams.fetch_content_length", return_value=1000
+    ), patch.object(
+        handler, "_fallback_source_matches", return_value=True
+    ):
+        source = handler._select_live_fallback_source(ctx, 100, 999)
+
+    assert source is standby
+    assert ctx.get_counts.get("content_length", 0) == 1
+
+
+def test_live_fallback_selection_reuses_expected_length_for_standby_refresh():
+    """Completed standby refresh should reuse the selector's expected length."""
+    handler = _make_handler()
+    standby = {
+        "nzo_id": "nzo-standby",
+        "stream_url": "",
+        "stream_headers": {},
+        "content_length": 0,
+        "validated": False,
+        "failed": False,
+    }
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": None,
+        "content_length": 1000,
+        "fallback_sources": [standby],
+    }
+
+    with patch(
+        "resources.lib.nzbdav_api.get_job_history",
+        return_value={
+            "status": "Completed",
+            "storage": "/mnt/nzbdav/completed-symlinks/movies/Standby",
+        },
+    ), patch(
+        "resources.lib.webdav.find_video_file",
+        return_value="/content/movies/Standby/fallback.mkv",
+    ), patch(
+        "resources.lib.webdav.get_webdav_stream_url_for_path",
+        return_value=("http://webdav/content/fallback.mkv", {}),
+    ), patch(
+        "resources.lib.fallback_streams.fetch_content_length", return_value=1000
+    ), patch.object(
+        handler, "_fallback_source_matches", return_value=True
+    ), patch.object(
+        handler,
+        "_fallback_expected_content_length",
+        wraps=handler._fallback_expected_content_length,
+    ) as expected_length:
+        source = handler._select_live_fallback_source(ctx, 100, 999)
+
+    assert source is standby
+    assert expected_length.call_count == 1
+
+
+def test_live_fallback_selection_reuses_standby_length_for_match_validation():
+    """Completed standby validation should reuse the freshly probed source length."""
+    handler = _make_handler()
+
+    class CountingSource(dict):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.get_counts = {}
+
+        def get(self, key, default=None):
+            self.get_counts[key] = self.get_counts.get(key, 0) + 1
+            return super().get(key, default)
+
+    standby = CountingSource(
+        {
+            "nzo_id": "nzo-standby",
+            "stream_url": "",
+            "stream_headers": {},
+            "content_length": 0,
+            "validated": False,
+            "failed": False,
+        }
+    )
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": None,
+        "content_length": 1000,
+        "fallback_sources": [standby],
+    }
+
+    with patch(
+        "resources.lib.nzbdav_api.get_job_history",
+        return_value={
+            "status": "Completed",
+            "storage": "/mnt/nzbdav/completed-symlinks/movies/Standby",
+        },
+    ), patch(
+        "resources.lib.webdav.find_video_file",
+        return_value="/content/movies/Standby/fallback.mkv",
+    ), patch(
+        "resources.lib.webdav.get_webdav_stream_url_for_path",
+        return_value=("http://webdav/content/fallback.mkv", {}),
+    ), patch(
+        "resources.lib.fallback_streams.fetch_content_length", return_value=1000
+    ), patch.object(
+        handler, "_fallback_probe_bases", return_value=("base",)
+    ), patch.object(
+        handler, "_fetch_fallback_range_digest", return_value="digest"
+    ):
+        source = handler._select_live_fallback_source(ctx, 100, 999)
+
+    assert source is standby
+    assert standby["content_length"] == 1000
+    assert standby.get_counts.get("content_length", 0) == 0
+    assert "_fallback_source_content_length_hint" not in ctx
+
+
+def test_live_fallback_selection_reuses_standby_auth_for_match_validation():
+    """Completed standby validation should reuse the freshly resolved auth header."""
+    handler = _make_handler()
+
+    class CountingSource(dict):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.get_counts = {}
+
+        def get(self, key, default=None):
+            self.get_counts[key] = self.get_counts.get(key, 0) + 1
+            return super().get(key, default)
+
+    standby = CountingSource(
+        {
+            "nzo_id": "nzo-standby",
+            "stream_url": "",
+            "stream_headers": {},
+            "content_length": 0,
+            "validated": False,
+            "failed": False,
+        }
+    )
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_length": 1000,
+        "fallback_sources": [standby],
+        "_fallback_probe_bases": [],
+    }
+
+    with patch(
+        "resources.lib.nzbdav_api.get_job_history",
+        return_value={
+            "status": "Completed",
+            "storage": "/mnt/nzbdav/completed-symlinks/movies/Standby",
+        },
+    ), patch(
+        "resources.lib.webdav.find_video_file",
+        return_value="/content/movies/Standby/fallback.mkv",
+    ), patch(
+        "resources.lib.webdav.get_webdav_stream_url_for_path",
+        return_value=(
+            "http://webdav/content/fallback.mkv",
+            {"Authorization": "Basic fallback"},
+        ),
+    ), patch(
+        "resources.lib.fallback_streams.fetch_content_length", return_value=1000
+    ), patch.object(
+        handler, "_fetch_fallback_range_digest", return_value="digest"
+    ) as digest:
+        source = handler._select_live_fallback_source(ctx, 100, 999)
+
+    assert source is standby
+    assert standby["validated"] is True
+    assert standby.get_counts.get("stream_headers", 0) == 0
+    assert all(
+        call.args[1] == "Basic fallback"
+        for call in digest.call_args_list
+        if call.args[0] == standby["stream_url"]
+    )
+    assert "_fallback_source_auth_hint" not in ctx
+
+
+def test_live_fallback_selection_reuses_selectable_scan_for_resolved_prefix():
+    """The initial selectable-source scan should not re-scan dead prefix rows."""
+    handler = _make_handler()
+
+    class CountingSource(dict):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.get_counts = {}
+
+        def get(self, key, default=None):
+            self.get_counts[key] = self.get_counts.get(key, 0) + 1
+            return super().get(key, default)
+
+    prefix = [
+        CountingSource(
+            {
+                "stream_url": "",
+                "stream_headers": {},
+                "content_length": 0,
+                "validated": False,
+                "failed": False,
+            }
+        )
+        for _ in range(5)
+    ]
+    ready = {
+        "nzo_id": "ready",
+        "stream_url": "http://webdav/content/ready.mkv",
+        "stream_headers": {},
+        "content_length": 1000,
+        "validated": True,
+        "failed": False,
+    }
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": None,
+        "content_length": 1000,
+        "fallback_sources": prefix + [ready],
+    }
+
+    with patch.object(handler, "_fallback_source_matches", return_value=True):
+        source = handler._select_live_fallback_source(ctx, 100, 999)
+
+    assert source is ready
+    assert [source.get_counts.get("stream_url", 0) for source in prefix] == [
+        1,
+        1,
+        1,
+        1,
+        1,
+    ]
+
+
+def test_live_fallback_selection_reuses_first_selectable_ready_url():
+    """The first ready source should reuse the stream URL seen during selection."""
+    handler = _make_handler()
+
+    class CountingSource(dict):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.get_counts = {}
+
+        def get(self, key, default=None):
+            self.get_counts[key] = self.get_counts.get(key, 0) + 1
+            return super().get(key, default)
+
+    ready = CountingSource(
+        {
+            "nzo_id": "ready",
+            "stream_url": "http://webdav/content/ready.mkv",
+            "stream_headers": {},
+            "content_length": 1000,
+            "validated": True,
+            "failed": False,
+        }
+    )
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": None,
+        "content_length": 1000,
+        "fallback_sources": [ready],
+    }
+
+    with patch.object(handler, "_fallback_source_matches", return_value=True):
+        source = handler._select_live_fallback_source(ctx, 100, 999)
+
+    assert source is ready
+    assert ready.get_counts.get("stream_url", 0) == 1
+
+
+def test_live_fallback_selection_reuses_ready_stream_url_for_match_validation():
+    """Ready-source validation should reuse the stream URL read by the selector."""
+    handler = _make_handler()
+
+    class CountingSource(dict):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.get_counts = {}
+
+        def get(self, key, default=None):
+            self.get_counts[key] = self.get_counts.get(key, 0) + 1
+            return super().get(key, default)
+
+    ready = CountingSource(
+        {
+            "nzo_id": "ready",
+            "stream_url": "http://webdav/content/ready.mkv",
+            "stream_headers": {},
+            "content_length": 1000,
+            "validated": True,
+            "failed": False,
+        }
+    )
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": None,
+        "content_length": 1000,
+        "_fallback_probe_bases": [],
+        "fallback_sources": [ready],
+    }
+
+    with patch.object(handler, "_fetch_fallback_range_digest", return_value="digest"):
+        source = handler._select_live_fallback_source(ctx, 100, 999)
+
+    assert source is ready
+    assert ready.get_counts.get("stream_url", 0) == 1
+
+
+def test_live_fallback_selection_reuses_first_selectable_failed_flag():
+    """The first ready source should reuse the failed flag seen during selection."""
+    handler = _make_handler()
+
+    class CountingSource(dict):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.get_counts = {}
+
+        def get(self, key, default=None):
+            self.get_counts[key] = self.get_counts.get(key, 0) + 1
+            return super().get(key, default)
+
+    ready = CountingSource(
+        {
+            "nzo_id": "ready",
+            "stream_url": "http://webdav/content/ready.mkv",
+            "stream_headers": {},
+            "content_length": 1000,
+            "validated": True,
+            "failed": False,
+        }
+    )
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": None,
+        "content_length": 1000,
+        "fallback_sources": [ready],
+    }
+
+    with patch.object(handler, "_fallback_source_matches", return_value=True):
+        source = handler._select_live_fallback_source(ctx, 100, 999)
+
+    assert source is ready
+    assert ready.get_counts.get("failed", 0) == 1
+
+
+def test_live_fallback_selection_reuses_first_standby_stream_url_for_poll():
+    """The first standby source should reuse the stream URL seen during selection."""
+    handler = _make_handler()
+
+    class CountingSource(dict):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.get_counts = {}
+
+        def get(self, key, default=None):
+            self.get_counts[key] = self.get_counts.get(key, 0) + 1
+            return super().get(key, default)
+
+    standby = CountingSource(
+        {
+            "title": "Fallback",
+            "nzo_id": "nzo-standby",
+            "stream_url": "",
+            "stream_headers": {},
+            "content_length": 0,
+            "validated": False,
+            "failed": False,
+        }
+    )
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_length": 1000,
+        "fallback_sources": [standby],
+    }
+
+    with patch.object(
+        handler, "_refresh_standby_fallback_source", return_value=False
+    ) as refresh:
+        source = handler._select_live_fallback_source(ctx, 100, 999)
+
+    assert source is None
+    refresh.assert_called_once_with(
+        ctx,
+        standby,
+        nzo_id="nzo-standby",
+        known_stream_url="",
+        known_failed=False,
+    )
+    assert standby.get_counts.get("stream_url", 0) == 1
+
+
+def test_live_fallback_selection_reuses_first_standby_failed_flag_for_poll():
+    """The first standby source should reuse the failed flag seen during selection."""
+    handler = _make_handler()
+
+    class CountingSource(dict):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.get_counts = {}
+
+        def get(self, key, default=None):
+            self.get_counts[key] = self.get_counts.get(key, 0) + 1
+            return super().get(key, default)
+
+    standby = CountingSource(
+        {
+            "title": "Fallback",
+            "nzo_id": "nzo-standby",
+            "stream_url": "",
+            "stream_headers": {},
+            "content_length": 0,
+            "validated": False,
+            "failed": False,
+        }
+    )
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_length": 1000,
+        "fallback_sources": [standby],
+    }
+
+    with patch.object(
+        handler, "_refresh_standby_fallback_source", return_value=False
+    ) as refresh:
+        source = handler._select_live_fallback_source(ctx, 100, 999)
+
+    assert source is None
+    refresh.assert_called_once_with(
+        ctx,
+        standby,
+        nzo_id="nzo-standby",
+        known_stream_url="",
+        known_failed=False,
+    )
+    assert standby.get_counts.get("failed", 0) == 1
+
+
+def test_live_fallback_selection_reuses_standby_nzo_id_for_refresh():
+    """The first standby refresh should reuse the selector's already-read nzo_id."""
+    handler = _make_handler()
+
+    class CountingSource(dict):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.get_counts = {}
+
+        def get(self, key, default=None):
+            self.get_counts[key] = self.get_counts.get(key, 0) + 1
+            return super().get(key, default)
+
+    standby = CountingSource(
+        {
+            "title": "Fallback",
+            "nzo_id": "nzo-standby",
+            "stream_url": "",
+            "stream_headers": {},
+            "content_length": 0,
+            "validated": False,
+            "failed": False,
+        }
+    )
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_length": 1000,
+        "fallback_sources": [standby],
+    }
+
+    with patch(
+        "resources.lib.nzbdav_api.get_job_history",
+        return_value={"status": "Completed", "storage": "/storage/movie.mkv"},
+    ) as history, patch(
+        "resources.lib.webdav.find_video_file", return_value="/content/movie.mkv"
+    ), patch(
+        "resources.lib.webdav.get_webdav_stream_url_for_path",
+        return_value=(
+            "http://webdav/content/fallback.mkv",
+            {"Authorization": "Basic fallback"},
+        ),
+    ), patch(
+        "resources.lib.fallback_streams.fetch_content_length", return_value=1000
+    ), patch.object(
+        handler, "_fallback_source_matches", return_value=True
+    ) as matches:
+        source = handler._select_live_fallback_source(ctx, 100, 999)
+
+    assert source is standby
+    history.assert_called_once_with("nzo-standby")
+    matches.assert_called_once_with(ctx, standby, 100, 999)
+    assert standby.get_counts.get("nzo_id", 0) == 1
+
+
+def test_live_fallback_selection_reuses_standby_state_for_refresh_guard():
+    """Standby refresh should reuse the selector's nonfailed/no-stream proof."""
+    handler = _make_handler()
+
+    class CountingSource(dict):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.get_counts = {}
+
+        def get(self, key, default=None):
+            self.get_counts[key] = self.get_counts.get(key, 0) + 1
+            return super().get(key, default)
+
+    standby = CountingSource(
+        {
+            "title": "Fallback",
+            "nzo_id": "nzo-standby",
+            "stream_url": "",
+            "stream_headers": {},
+            "content_length": 0,
+            "validated": False,
+            "failed": False,
+        }
+    )
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_length": 1000,
+        "fallback_sources": [standby],
+    }
+
+    with patch(
+        "resources.lib.nzbdav_api.get_job_history",
+        return_value={"status": "Completed", "storage": "/storage/movie.mkv"},
+    ), patch(
+        "resources.lib.webdav.find_video_file", return_value="/content/movie.mkv"
+    ), patch(
+        "resources.lib.webdav.get_webdav_stream_url_for_path",
+        return_value=(
+            "http://webdav/content/fallback.mkv",
+            {"Authorization": "Basic fallback"},
+        ),
+    ), patch(
+        "resources.lib.fallback_streams.fetch_content_length", return_value=1000
+    ), patch.object(
+        handler, "_fallback_source_matches", return_value=True
+    ):
+        source = handler._select_live_fallback_source(ctx, 100, 999)
+
+    assert source is standby
+    assert standby.get_counts.get("failed", 0) == 1
+    assert standby.get_counts.get("stream_url", 0) == 1
+
+
+def test_live_fallback_selection_reuses_resolved_scan_first_standby_hint():
+    """The ready-source scan should identify where standby polling can start."""
+    handler = _make_handler()
+
+    class CountingSource(dict):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.get_counts = {}
+
+        def get(self, key, default=None):
+            self.get_counts[key] = self.get_counts.get(key, 0) + 1
+            return super().get(key, default)
+
+    ready_sources = [
+        CountingSource(
+            {
+                "nzo_id": "ready{}".format(index),
+                "stream_url": "http://webdav/content/wrong{}.mkv".format(index),
+                "stream_headers": {},
+                "content_length": 999,
+                "validated": True,
+                "failed": False,
+            }
+        )
+        for index in range(3)
+    ]
+    standby = CountingSource(
+        {
+            "title": "Fallback",
+            "nzo_id": "nzo-standby",
+            "stream_url": "",
+            "stream_headers": {},
+            "content_length": 0,
+            "validated": False,
+            "failed": False,
+        }
+    )
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_length": 1000,
+        "fallback_sources": ready_sources + [standby],
+    }
+
+    with patch.object(
+        handler, "_refresh_standby_fallback_source", return_value=False
+    ) as refresh, patch.object(
+        handler, "_fallback_source_matches", return_value=False
+    ) as matches:
+        source = handler._select_live_fallback_source(ctx, 100, 999)
+
+    assert source is None
+    refresh.assert_called_once_with(
+        ctx,
+        standby,
+        nzo_id="nzo-standby",
+        known_stream_url="",
+        known_failed=False,
+    )
+    matches.assert_not_called()
+    assert [source.get_counts.get("stream_url", 0) for source in ready_sources] == [
+        1,
+        1,
+        1,
+    ]
+    assert standby.get_counts.get("stream_url", 0) == 1
+    assert standby.get_counts.get("nzo_id", 0) == 1
+
+
+def test_live_fallback_selection_skips_unrefreshable_sources_before_standby_poll():
+    """Only sources with nzo_id can be refreshed from standby state."""
+    handler = _make_handler()
+    unrefreshable = [
+        {
+            "stream_url": "",
+            "stream_headers": {},
+            "content_length": 0,
+            "validated": False,
+            "failed": False,
+        }
+        for _ in range(5)
+    ]
+    standby = {
+        "nzo_id": "pending",
+        "stream_url": "",
+        "stream_headers": {},
+        "content_length": 0,
+        "validated": False,
+        "failed": False,
+    }
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": None,
+        "content_length": 1000,
+        "fallback_sources": unrefreshable + [standby],
+    }
+
+    with patch.object(
+        handler, "_select_resolved_fallback_source", return_value=None
+    ), patch.object(
+        handler, "_refresh_standby_fallback_source", return_value=False
+    ) as refresh_standby:
+        source = handler._select_live_fallback_source(ctx, 100, 999)
+
+    assert source is None
+    refresh_standby.assert_called_once_with(
+        ctx, standby, nzo_id="pending", known_stream_url="", known_failed=False
+    )
+
+
+def test_live_fallback_selection_defers_primary_cache_until_fingerprint_needed():
+    """Exact length mismatch should reject before primary fingerprint cache setup."""
+    handler = _make_handler()
+    source = {
+        "nzo_id": "wrong-length",
+        "stream_url": "http://webdav/content/fallback.mkv",
+        "stream_headers": {},
+        "content_length": 999,
+        "validated": False,
+        "failed": False,
+    }
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": None,
+        "content_length": 1000,
+        "fallback_sources": [source],
+    }
+
+    selected = handler._select_live_fallback_source(ctx, 100, 999)
+
+    assert selected is None
+    assert source["failed"] is True
+    assert "_fallback_probe_bases" not in ctx
+    assert "_fallback_primary_digest_cache" not in ctx
+
+
+def test_live_fallback_selection_skips_ready_length_mismatches_before_match():
+    """Known wrong-length ready sources should not enter full match validation."""
+    handler = _make_handler()
+    wrong_sources = [
+        {
+            "nzo_id": "wrong{}".format(index),
+            "stream_url": "http://webdav/content/wrong{}.mkv".format(index),
+            "stream_headers": {},
+            "content_length": 999,
+            "validated": False,
+            "failed": False,
+        }
+        for index in range(2)
+    ]
+    good_source = {
+        "nzo_id": "good",
+        "stream_url": "http://webdav/content/good.mkv",
+        "stream_headers": {},
+        "content_length": 1000,
+        "validated": True,
+        "failed": False,
+    }
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": None,
+        "content_length": 1000,
+        "fallback_sources": wrong_sources + [good_source],
+    }
+
+    def match_source(_ctx, source, _failed_byte, _range_end):
+        return source is good_source
+
+    with patch.object(
+        handler, "_fallback_source_matches", side_effect=match_source
+    ) as matches:
+        source = handler._select_live_fallback_source(ctx, 100, 999)
+
+    assert source is good_source
+    assert [source["failed"] for source in wrong_sources] == [True, True]
+    matches.assert_called_once_with(ctx, good_source, 100, 999)
+
+
+def test_live_fallback_selection_skips_current_failed_stream_before_probe():
+    """The stream that just failed cannot be its own recovery fallback."""
+    handler = _make_handler()
+    current = {
+        "nzo_id": "current",
+        "stream_url": "http://webdav/content/current.mkv",
+        "stream_headers": {"Authorization": "Basic current"},
+        "content_length": 1000,
+        "validated": True,
+        "failed": False,
+    }
+    next_source = {
+        "nzo_id": "next",
+        "stream_url": "http://webdav/content/next.mkv",
+        "stream_headers": {"Authorization": "Basic next"},
+        "content_length": 1000,
+        "validated": True,
+        "failed": False,
+    }
+    ctx = {
+        "remote_url": current["stream_url"],
+        "auth_header": "Basic current",
+        "content_length": 1000,
+        "_fallback_probe_bases": [],
+        "fallback_active_index": 0,
+        "fallback_sources": [current, next_source],
+    }
+    probed_urls = []
+
+    def current_range_digest(source, *_args, **_kwargs):
+        probed_urls.append(source["stream_url"])
+        return "digest"
+
+    with patch.object(
+        handler,
+        "_fetch_fallback_current_range_digest",
+        side_effect=current_range_digest,
+    ):
+        source = handler._select_live_fallback_source(ctx, 100, 999)
+
+    assert source is next_source
+    assert current["failed"] is True
+    assert probed_urls == [next_source["stream_url"]]
+
+
+def test_live_fallback_selection_skips_current_stream_before_length_gate():
+    """Same-URL/Auth ready sources are impossible before the length gate."""
+    handler = _make_handler()
+
+    class CountingSource(dict):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.get_counts = {}
+
+        def get(self, key, default=None):
+            self.get_counts[key] = self.get_counts.get(key, 0) + 1
+            return super().get(key, default)
+
+    current = CountingSource(
+        {
+            "nzo_id": "current",
+            "stream_url": "http://webdav/content/current.mkv",
+            "stream_headers": {"Authorization": "Basic current"},
+            "content_length": 1000,
+            "validated": True,
+            "failed": False,
+        }
+    )
+    next_source = CountingSource(
+        {
+            "nzo_id": "next",
+            "stream_url": "http://webdav/content/next.mkv",
+            "stream_headers": {"Authorization": "Basic fallback"},
+            "content_length": 1000,
+            "validated": True,
+            "failed": False,
+        }
+    )
+    ctx = {
+        "remote_url": current["stream_url"],
+        "auth_header": "Basic current",
+        "content_length": 1000,
+        "_fallback_probe_bases": [],
+        "fallback_sources": [current, next_source],
+    }
+
+    with patch.object(
+        handler, "_fetch_fallback_current_range_digest", return_value="digest"
+    ) as fetch_current_range:
+        source = handler._select_live_fallback_source(ctx, 100, 999)
+
+    assert source is next_source
+    assert current["failed"] is True
+    assert current.get_counts.get("content_length", 0) == 0
+    assert next_source.get_counts.get("content_length", 0) == 1
+    fetch_current_range.assert_called_once()
+
+
+def test_live_fallback_selection_skips_headers_for_distinct_ready_sources():
+    """Distinct ready URLs do not need headers before the length gate."""
+    handler = _make_handler()
+
+    class CountingSource(dict):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.get_counts = {}
+
+        def get(self, key, default=None):
+            self.get_counts[key] = self.get_counts.get(key, 0) + 1
+            return super().get(key, default)
+
+    wrong_sources = [
+        CountingSource(
+            {
+                "nzo_id": "wrong{}".format(index),
+                "stream_url": "http://webdav/content/wrong{}.mkv".format(index),
+                "stream_headers": {"Authorization": "Basic wrong{}".format(index)},
+                "content_length": 999,
+                "validated": True,
+                "failed": False,
+            }
+        )
+        for index in range(3)
+    ]
+    good_source = {
+        "nzo_id": "good",
+        "stream_url": "http://webdav/content/good.mkv",
+        "stream_headers": {"Authorization": "Basic good"},
+        "content_length": 1000,
+        "validated": True,
+        "failed": False,
+    }
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_length": 1000,
+        "fallback_sources": wrong_sources + [good_source],
+    }
+
+    with patch.object(handler, "_fallback_source_matches", return_value=True):
+        source = handler._select_live_fallback_source(ctx, 100, 999)
+
+    assert source is good_source
+    assert [source.get_counts.get("stream_headers", 0) for source in wrong_sources] == [
+        0,
+        0,
+        0,
+    ]
+    assert [source["failed"] for source in wrong_sources] == [True, True, True]
+
+
+def test_live_fallback_selection_reuses_primary_url_for_ready_scan():
+    """The active stream URL should be read once while scanning ready sources."""
+    handler = _make_handler()
+
+    class CountingContext(dict):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.get_counts = {}
+
+        def get(self, key, default=None):
+            self.get_counts[key] = self.get_counts.get(key, 0) + 1
+            return super().get(key, default)
+
+    wrong_sources = [
+        {
+            "nzo_id": "wrong{}".format(index),
+            "stream_url": "http://webdav/content/wrong{}.mkv".format(index),
+            "stream_headers": {"Authorization": "Basic wrong{}".format(index)},
+            "content_length": 999,
+            "validated": True,
+            "failed": False,
+        }
+        for index in range(3)
+    ]
+    good_source = {
+        "nzo_id": "good",
+        "stream_url": "http://webdav/content/good.mkv",
+        "stream_headers": {"Authorization": "Basic good"},
+        "content_length": 1000,
+        "validated": True,
+        "failed": False,
+    }
+    ctx = CountingContext(
+        {
+            "remote_url": "http://webdav/content/primary.mkv",
+            "auth_header": "Basic primary",
+            "content_length": 1000,
+            "fallback_sources": wrong_sources + [good_source],
+        }
+    )
+
+    with patch.object(handler, "_fallback_source_matches", return_value=True):
+        source = handler._select_live_fallback_source(ctx, 100, 999)
+
+    assert source is good_source
+    assert ctx.get_counts.get("remote_url", 0) == 1
+
+
+def test_live_fallback_selection_reuses_primary_url_for_match_validation():
+    """Match validation should reuse the active URL read during the ready scan."""
+    handler = _make_handler()
+
+    class CountingContext(dict):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.get_counts = {}
+
+        def get(self, key, default=None):
+            self.get_counts[key] = self.get_counts.get(key, 0) + 1
+            return super().get(key, default)
+
+    source = {
+        "nzo_id": "good",
+        "stream_url": "http://webdav/content/fallback.mkv",
+        "stream_headers": {"Authorization": "Basic fallback"},
+        "content_length": 1000,
+        "validated": True,
+        "failed": False,
+    }
+    ctx = CountingContext(
+        {
+            "remote_url": "http://webdav/content/primary.mkv",
+            "auth_header": "Basic primary",
+            "content_length": 1000,
+            "_fallback_probe_bases": [],
+            "fallback_sources": [source],
+        }
+    )
+
+    with patch.object(handler, "_fetch_fallback_range_digest", return_value="digest"):
+        selected = handler._select_live_fallback_source(ctx, 100, 999)
+
+    assert selected is source
+    assert ctx.get_counts.get("remote_url", 0) == 1
+
+
+def test_live_fallback_selection_reuses_primary_url_for_fingerprint_validation():
+    """Primary fingerprint reads should not re-read the active URL per sample."""
+    handler = _make_handler()
+
+    class CountingContext(dict):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.get_counts = {}
+
+        def get(self, key, default=None):
+            self.get_counts[key] = self.get_counts.get(key, 0) + 1
+            return super().get(key, default)
+
+    content_length = 10 * 1024 * 1024
+    source = {
+        "nzo_id": "good",
+        "stream_url": "http://webdav/content/fallback.mkv",
+        "stream_headers": {"Authorization": "Basic fallback"},
+        "content_length": content_length,
+        "validated": False,
+        "failed": False,
+    }
+    ctx = CountingContext(
+        {
+            "remote_url": "http://webdav/content/primary.mkv",
+            "auth_header": "Basic primary",
+            "content_length": content_length,
+            "_fallback_probe_bases": [],
+            "fallback_sources": [source],
+        }
+    )
+
+    def digest(_url, _auth_header, start, end, content_length, probe_bases=None):
+        assert content_length == ctx["content_length"]
+        assert probe_bases == []
+        return "digest-{}-{}".format(start, end)
+
+    with patch.object(handler, "_fetch_fallback_range_digest", side_effect=digest):
+        selected = handler._select_live_fallback_source(ctx, 12345, 13344)
+
+    assert selected is source
+    assert source["validated"] is True
+    assert ctx.get_counts.get("remote_url", 0) <= 2
+
+
+def test_live_fallback_selection_reuses_fallback_url_for_fingerprint_validation():
+    """Fallback fingerprint reads should not re-read the source URL per sample."""
+    handler = _make_handler()
+
+    class CountingSource(dict):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.item_counts = {}
+
+        def __getitem__(self, key):
+            self.item_counts[key] = self.item_counts.get(key, 0) + 1
+            return super().__getitem__(key)
+
+    content_length = 10 * 1024 * 1024
+    source = CountingSource(
+        {
+            "nzo_id": "good",
+            "stream_url": "http://webdav/content/fallback.mkv",
+            "stream_headers": {"Authorization": "Basic fallback"},
+            "content_length": content_length,
+            "validated": False,
+            "failed": False,
+        }
+    )
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_length": content_length,
+        "_fallback_probe_bases": [],
+        "fallback_sources": [source],
+    }
+
+    def digest(_url, _auth_header, start, end, content_length, probe_bases=None):
+        assert content_length == ctx["content_length"]
+        assert probe_bases == []
+        return "digest-{}-{}".format(start, end)
+
+    with patch.object(handler, "_fetch_fallback_range_digest", side_effect=digest):
+        selected = handler._select_live_fallback_source(ctx, 12345, 13344)
+
+    assert selected is source
+    assert source["validated"] is True
+    assert source.item_counts.get("stream_url", 0) <= 2
+
+
+def test_live_fallback_selection_reuses_source_auth_during_match_validation():
+    """A single fallback match should read the source Authorization once."""
+    handler = _make_handler()
+
+    class CountingSource(dict):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.get_counts = {}
+
+        def get(self, key, default=None):
+            self.get_counts[key] = self.get_counts.get(key, 0) + 1
+            return super().get(key, default)
+
+    content_length = 10000000
+    failed_byte = 12345
+    range_end = failed_byte + 999
+    source = CountingSource(
+        {
+            "nzo_id": "good",
+            "stream_url": "http://webdav/content/good.mkv",
+            "stream_headers": {"Authorization": "Basic fallback"},
+            "content_length": content_length,
+            "validated": False,
+            "failed": False,
+        }
+    )
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_length": content_length,
+        "_fallback_probe_bases": [],
+        "fallback_sources": [source],
+    }
+    digest_calls = []
+
+    def digest(url, auth_header, start, end, content_length, probe_bases=None):
+        assert content_length == ctx["content_length"]
+        assert probe_bases == []
+        digest_calls.append((url, auth_header, start, end))
+        if start == failed_byte:
+            return "current-range"
+        return "digest-{}-{}".format(start, end)
+
+    with patch.object(handler, "_fetch_fallback_range_digest", side_effect=digest):
+        selected = handler._select_live_fallback_source(ctx, failed_byte, range_end)
+
+    assert selected is source
+    assert source["validated"] is True
+    assert source.get_counts.get("stream_headers", 0) == 1
+    assert all(
+        call[1] == "Basic fallback"
+        for call in digest_calls
+        if call[0] == source["stream_url"]
+    )
+    assert all(
+        call[1] == "Basic primary"
+        for call in digest_calls
+        if call[0] == ctx["remote_url"]
+    )
+
+
+def test_live_fallback_selection_reuses_same_url_auth_from_resolved_scan():
+    """Same-URL fallback auth read during scanning should feed validation."""
+    handler = _make_handler()
+
+    class CountingSource(dict):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.get_counts = {}
+
+        def get(self, key, default=None):
+            self.get_counts[key] = self.get_counts.get(key, 0) + 1
+            return super().get(key, default)
+
+    source = CountingSource(
+        {
+            "nzo_id": "same-url-different-auth",
+            "stream_url": "http://webdav/content/primary.mkv",
+            "stream_headers": {"Authorization": "Basic fallback"},
+            "content_length": 1000,
+            "validated": True,
+            "failed": False,
+        }
+    )
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_length": 1000,
+        "_fallback_probe_bases": [],
+        "fallback_sources": [source],
+    }
+
+    with patch.object(
+        handler, "_fetch_fallback_range_digest", return_value="digest"
+    ) as digest:
+        selected = handler._select_live_fallback_source(ctx, 100, 999)
+
+    assert selected is source
+    assert source.get_counts.get("stream_headers", 0) == 1
+    digest.assert_called_once_with(
+        "http://webdav/content/primary.mkv",
+        "Basic fallback",
+        100,
+        999,
+        content_length=1000,
+        probe_bases=[],
+    )
+
+
+def test_live_fallback_selection_reuses_primary_auth_for_same_url_fingerprint():
+    """Same-URL fallback validation should reuse the active stream auth."""
+    handler = _make_handler()
+
+    class CountingContext(dict):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.get_counts = {}
+
+        def get(self, key, default=None):
+            self.get_counts[key] = self.get_counts.get(key, 0) + 1
+            return super().get(key, default)
+
+    same_url = {
+        "nzo_id": "same-url-different-auth",
+        "stream_url": "http://webdav/content/movie.mkv",
+        "stream_headers": {"Authorization": "Basic fallback"},
+        "content_length": 1000,
+        "validated": False,
+        "failed": False,
+    }
+    ctx = CountingContext(
+        {
+            "remote_url": "http://webdav/content/movie.mkv",
+            "auth_header": "Basic primary",
+            "content_length": 1000,
+            "fallback_sources": [same_url],
+        }
+    )
+
+    with patch.object(
+        handler, "_fallback_probe_bases", return_value=("base",)
+    ), patch.object(handler, "_fetch_fallback_range_digest", return_value="digest"):
+        selected = handler._select_live_fallback_source(ctx, 100, 999)
+
+    assert selected is same_url
+    assert same_url["validated"] is True
+    assert ctx.get_counts.get("auth_header", 0) == 1
+
+
+def test_live_fallback_selection_reuses_primary_auth_across_same_url_scan():
+    """Same-URL ready candidates should not re-read active auth per row."""
+    handler = _make_handler()
+
+    class CountingContext(dict):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.get_counts = {}
+
+        def get(self, key, default=None):
+            self.get_counts[key] = self.get_counts.get(key, 0) + 1
+            return super().get(key, default)
+
+    sources = [
+        {
+            "nzo_id": "same-url-{}".format(index),
+            "stream_url": "http://webdav/content/movie.mkv",
+            "stream_headers": {"Authorization": "Basic fallback-{}".format(index)},
+            "content_length": 999,
+            "validated": False,
+            "failed": False,
+        }
+        for index in range(4)
+    ]
+    ctx = CountingContext(
+        {
+            "remote_url": "http://webdav/content/movie.mkv",
+            "auth_header": "Basic primary",
+            "content_length": 1000,
+            "fallback_sources": sources,
+        }
+    )
+
+    with patch.object(handler, "_fallback_source_matches") as matches:
+        selected = handler._select_live_fallback_source(ctx, 100, 999)
+
+    assert selected is None
+    matches.assert_not_called()
+    assert [source["failed"] for source in sources] == [True, True, True, True]
+    assert ctx.get_counts.get("auth_header", 0) == 1
+
+
+def test_resolved_fallback_selection_skips_stream_urls_for_failed_sources():
+    """Failed ready sources do not need stream URL reads during the scan."""
+    handler = _make_handler()
+
+    class CountingSource(dict):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.get_counts = {}
+
+        def get(self, key, default=None):
+            self.get_counts[key] = self.get_counts.get(key, 0) + 1
+            return super().get(key, default)
+
+    failed_sources = [
+        CountingSource(
+            {
+                "nzo_id": "failed{}".format(index),
+                "stream_url": "http://webdav/content/failed{}.mkv".format(index),
+                "stream_headers": {"Authorization": "Basic failed{}".format(index)},
+                "content_length": 1000,
+                "validated": True,
+                "failed": True,
+            }
+        )
+        for index in range(3)
+    ]
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_length": 1000,
+        "fallback_sources": failed_sources,
+    }
+
+    with patch.object(handler, "_fallback_source_matches") as matches:
+        source = handler._select_resolved_fallback_source(
+            ctx, 100, 999, expected_length=1000
+        )
+
+    assert source is None
+    matches.assert_not_called()
+    assert [source.get_counts.get("stream_url", 0) for source in failed_sources] == [
+        0,
+        0,
+        0,
+    ]
+
+
+def test_standby_fallback_poll_skips_stream_urls_for_failed_sources():
+    """Failed standby sources do not need stream URL reads during polling."""
+    handler = _make_handler()
+
+    class CountingSource(dict):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.get_counts = {}
+
+        def get(self, key, default=None):
+            self.get_counts[key] = self.get_counts.get(key, 0) + 1
+            return super().get(key, default)
+
+    first_standby = CountingSource(
+        {
+            "nzo_id": "pending",
+            "stream_url": "",
+            "stream_headers": {},
+            "content_length": 0,
+            "validated": False,
+            "failed": False,
+        }
+    )
+    failed_sources = [
+        CountingSource(
+            {
+                "nzo_id": "failed{}".format(index),
+                "stream_url": "",
+                "stream_headers": {},
+                "content_length": 0,
+                "validated": False,
+                "failed": True,
+            }
+        )
+        for index in range(3)
+    ]
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_length": 1000,
+        "fallback_sources": [first_standby] + failed_sources,
+    }
+
+    with patch.object(
+        handler, "_refresh_standby_fallback_source", return_value=False
+    ) as refresh:
+        source = handler._select_live_fallback_source(ctx, 100, 999)
+
+    assert source is None
+    refresh.assert_called_once_with(
+        ctx,
+        first_standby,
+        nzo_id="pending",
+        known_stream_url="",
+        known_failed=False,
+    )
+    assert [source.get_counts.get("stream_url", 0) for source in failed_sources] == [
+        0,
+        0,
+        0,
+    ]
+
+
+def test_live_fallback_selection_tries_completed_standby_before_later_polls():
+    """A completed standby source should be validated before polling later jobs."""
+    handler = _make_handler()
+    sources = [
+        {
+            "nzo_id": "nzo{}".format(index),
+            "stream_url": "",
+            "stream_headers": {},
+            "content_length": 0,
+            "validated": False,
+            "failed": False,
+        }
+        for index in range(5)
+    ]
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": None,
+        "content_length": 1000,
+        "fallback_sources": sources,
+    }
+
+    def history(nzo_id):
+        if nzo_id == "nzo0":
+            return {
+                "status": "Completed",
+                "storage": "/mnt/nzbdav/completed-symlinks/movies/nzo0",
+            }
+        return {"status": "Downloading", "storage": ""}
+
+    with patch(
+        "resources.lib.nzbdav_api.get_job_history", side_effect=history
+    ) as mock_history, patch(
+        "resources.lib.webdav.find_video_file",
+        return_value="/content/movies/nzo0/movie.mkv",
+    ), patch(
+        "resources.lib.webdav.get_webdav_stream_url_for_path",
+        return_value=(
+            "http://webdav/content/nzo0/movie.mkv",
+            {"Authorization": "Basic fallback"},
+        ),
+    ), patch(
+        "resources.lib.fallback_streams.fetch_content_length", return_value=1000
+    ) as fetch_length, patch.object(
+        handler, "_fallback_source_matches", return_value=True
+    ) as matches:
+        source = handler._select_live_fallback_source(ctx, 0, 999)
+
+    assert source is sources[0]
+    mock_history.assert_called_once_with("nzo0")
+    fetch_length.assert_called_once()
+    matches.assert_called_once_with(ctx, sources[0], 0, 999)
 
 
 def test_live_fallback_selection_checks_all_attached_candidates_until_one_matches():
@@ -6162,30 +8402,35 @@ def test_live_fallback_selection_checks_all_attached_candidates_until_one_matche
         {
             "nzo_id": "nzo1",
             "stream_url": "http://webdav/fallback1.mkv",
+            "content_length": 10,
             "failed": False,
         },
         {
             "nzo_id": "nzo2",
             "stream_url": "http://webdav/fallback2.mkv",
+            "content_length": 10,
             "failed": False,
         },
         {
             "nzo_id": "nzo3",
             "stream_url": "http://webdav/fallback3.mkv",
+            "content_length": 10,
             "failed": False,
         },
         {
             "nzo_id": "nzo4",
             "stream_url": "http://webdav/fallback4.mkv",
+            "content_length": 10,
             "failed": False,
         },
         {
             "nzo_id": "nzo5",
             "stream_url": "http://webdav/fallback5.mkv",
+            "content_length": 10,
             "failed": False,
         },
     ]
-    ctx = {"fallback_sources": sources}
+    ctx = {"content_length": 10, "fallback_sources": sources}
 
     with patch.object(handler, "_refresh_standby_fallback_sources"), patch.object(
         handler,
@@ -6243,7 +8488,284 @@ def test_select_live_fallback_refreshes_completed_standby_job():
     history.assert_called_once_with("nzo2")
     find_video.assert_called_once_with("/content/movies/Fallback/")
     stream_url.assert_called_once_with("/content/movies/Fallback/fallback.mkv")
-    fetch_length.assert_called_once_with("http://webdav/fallback.mkv", "Basic fallback")
+    assert fetch_length.call_args[0] == (
+        "http://webdav/fallback.mkv",
+        "Basic fallback",
+    )
+    assert fetch_length.call_args[1] == {"probe_bases": ctx["_fallback_probe_bases"]}
+
+
+def test_standby_refresh_skips_content_length_when_stream_url_missing():
+    """A completed standby job without a stream URL cannot be validated."""
+    handler = _make_handler()
+    source = {
+        "nzo_id": "nzo-missing-url",
+        "stream_url": "",
+        "stream_headers": {},
+        "content_length": 0,
+        "validated": False,
+        "failed": False,
+    }
+    ctx = {"fallback_sources": [source]}
+
+    with patch(
+        "resources.lib.nzbdav_api.get_job_history",
+        return_value={
+            "status": "Completed",
+            "storage": "/mnt/nzbdav/completed-symlinks/movies/MissingUrl",
+        },
+    ), patch(
+        "resources.lib.webdav.find_video_file",
+        return_value="/content/movies/MissingUrl/movie.mkv",
+    ), patch(
+        "resources.lib.webdav.get_webdav_stream_url_for_path",
+        return_value=("", {}),
+    ), patch(
+        "resources.lib.fallback_streams.fetch_content_length",
+        return_value=0,
+    ) as fetch_length, patch.object(
+        handler, "_fallback_probe_bases", return_value=("unused",)
+    ) as probe_bases:
+        assert handler._refresh_standby_fallback_source(ctx, source) is False
+
+    assert source["stream_url"] == ""
+    assert not source["stream_headers"]
+    assert source["content_length"] == 0
+    fetch_length.assert_not_called()
+    probe_bases.assert_not_called()
+
+
+def test_standby_refresh_skips_content_length_for_current_failed_stream():
+    """A standby job resolving to the failed stream cannot be a fallback."""
+    handler = _make_handler()
+    source = {
+        "nzo_id": "nzo-current",
+        "stream_url": "",
+        "stream_headers": {},
+        "content_length": 0,
+        "validated": False,
+        "failed": False,
+    }
+    ctx = {
+        "remote_url": "http://webdav/content/current.mkv",
+        "auth_header": "Basic current",
+        "content_length": 1000,
+        "fallback_sources": [source],
+    }
+
+    with patch(
+        "resources.lib.nzbdav_api.get_job_history",
+        return_value={
+            "status": "Completed",
+            "storage": "/mnt/nzbdav/completed-symlinks/movies/Current",
+        },
+    ), patch(
+        "resources.lib.webdav.find_video_file",
+        return_value="/content/movies/Current/current.mkv",
+    ), patch(
+        "resources.lib.webdav.get_webdav_stream_url_for_path",
+        return_value=(
+            "http://webdav/content/current.mkv",
+            {"Authorization": "Basic current"},
+        ),
+    ), patch(
+        "resources.lib.fallback_streams.fetch_content_length",
+        return_value=1000,
+    ) as fetch_length:
+        assert handler._select_live_fallback_source(ctx, 100, 999) is None
+
+    assert source["stream_url"] == "http://webdav/content/current.mkv"
+    assert source["stream_headers"] == {"Authorization": "Basic current"}
+    assert source["failed"] is True
+    fetch_length.assert_not_called()
+
+
+def test_standby_refresh_marks_current_failed_stream_before_match():
+    """Same-stream standby results should not enter fallback match validation."""
+    handler = _make_handler()
+    source = {
+        "nzo_id": "nzo-current",
+        "stream_url": "",
+        "stream_headers": {},
+        "content_length": 0,
+        "validated": False,
+        "failed": False,
+    }
+    ctx = {
+        "remote_url": "http://webdav/content/current.mkv",
+        "auth_header": "Basic current",
+        "content_length": 1000,
+        "fallback_sources": [source],
+    }
+
+    with patch(
+        "resources.lib.nzbdav_api.get_job_history",
+        return_value={
+            "status": "Completed",
+            "storage": "/mnt/nzbdav/completed-symlinks/movies/Current",
+        },
+    ), patch(
+        "resources.lib.webdav.find_video_file",
+        return_value="/content/movies/Current/current.mkv",
+    ), patch(
+        "resources.lib.webdav.get_webdav_stream_url_for_path",
+        return_value=(
+            "http://webdav/content/current.mkv",
+            {"Authorization": "Basic current"},
+        ),
+    ), patch(
+        "resources.lib.fallback_streams.fetch_content_length",
+        return_value=1000,
+    ) as fetch_length, patch.object(
+        handler, "_fallback_source_matches", return_value=False
+    ) as matches:
+        assert handler._select_live_fallback_source(ctx, 100, 999) is None
+
+    assert source["stream_url"] == "http://webdav/content/current.mkv"
+    assert source["stream_headers"] == {"Authorization": "Basic current"}
+    assert source["failed"] is True
+    fetch_length.assert_not_called()
+    matches.assert_not_called()
+
+
+def test_standby_refresh_marks_failed_history_terminal():
+    """A terminal failed standby job should not be polled on later attempts."""
+    handler = _make_handler()
+    source = {
+        "nzo_id": "nzo-failed",
+        "stream_url": "",
+        "stream_headers": {},
+        "content_length": 0,
+        "validated": False,
+        "failed": False,
+    }
+    ctx = {
+        "remote_url": "http://webdav/content/current.mkv",
+        "auth_header": None,
+        "content_length": 1000,
+        "fallback_sources": [source],
+    }
+
+    with patch(
+        "resources.lib.nzbdav_api.get_job_history",
+        return_value={"status": "Failed", "storage": ""},
+    ) as history, patch.object(
+        handler, "_fallback_source_matches", return_value=True
+    ) as matches:
+        assert handler._select_live_fallback_source(ctx, 100, 999) is None
+        assert handler._select_live_fallback_source(ctx, 100, 999) is None
+
+    history.assert_called_once_with("nzo-failed")
+    matches.assert_not_called()
+    assert source["failed"] is True
+
+
+def test_standby_refresh_marks_wrong_length_before_match():
+    """A completed standby source with wrong length cannot be a fallback."""
+    handler = _make_handler()
+    source = {
+        "nzo_id": "nzo-wrong-length",
+        "stream_url": "",
+        "stream_headers": {},
+        "content_length": 0,
+        "validated": False,
+        "failed": False,
+    }
+    ctx = {
+        "remote_url": "http://webdav/content/current.mkv",
+        "auth_header": None,
+        "content_length": 1000,
+        "fallback_sources": [source],
+    }
+
+    with patch(
+        "resources.lib.nzbdav_api.get_job_history",
+        return_value={
+            "status": "Completed",
+            "storage": "/mnt/nzbdav/completed-symlinks/movies/WrongLength",
+        },
+    ), patch(
+        "resources.lib.webdav.find_video_file",
+        return_value="/content/movies/WrongLength/fallback.mkv",
+    ), patch(
+        "resources.lib.webdav.get_webdav_stream_url_for_path",
+        return_value=(
+            "http://webdav/content/wrong-length.mkv",
+            {"Authorization": "Basic fallback"},
+        ),
+    ), patch(
+        "resources.lib.fallback_streams.fetch_content_length",
+        return_value=999,
+    ), patch.object(
+        handler, "_fallback_source_matches", return_value=False
+    ) as matches:
+        assert handler._select_live_fallback_source(ctx, 100, 999) is None
+
+    assert source["stream_url"] == "http://webdav/content/wrong-length.mkv"
+    assert source["stream_headers"] == {"Authorization": "Basic fallback"}
+    assert source["content_length"] == 999
+    assert source["failed"] is True
+    matches.assert_not_called()
+
+
+def test_standby_refresh_reuses_probe_bases_for_content_length_checks():
+    """Refreshing completed standby jobs should not re-read settings per source."""
+    handler = _make_handler()
+    sources = [
+        {
+            "nzo_id": "nzo{}".format(index),
+            "stream_url": "",
+            "stream_headers": {},
+            "content_length": 0,
+            "validated": False,
+            "failed": False,
+        }
+        for index in range(5)
+    ]
+    ctx = {"fallback_sources": sources}
+
+    def setting(key):
+        return {
+            "webdav_url": "http://webdav/content",
+            "nzbdav_url": "http://nzbdav:3000",
+        }.get(key, "")
+
+    def history(nzo_id):
+        return {
+            "status": "Completed",
+            "storage": "/mnt/nzbdav/completed-symlinks/movies/{}".format(nzo_id),
+        }
+
+    def stream_url(path):
+        return (
+            "http://webdav/content/{}".format(path.rsplit("/", 1)[-1]),
+            {"Authorization": "Basic fallback"},
+        )
+
+    def find_video_path(path):
+        return "{}movie.mkv".format(path)
+
+    with patch(
+        "resources.lib.nzbdav_api.get_job_history", side_effect=history
+    ) as mock_history, patch(
+        "resources.lib.webdav.find_video_file", side_effect=find_video_path
+    ), patch(
+        "resources.lib.webdav.get_webdav_stream_url_for_path", side_effect=stream_url
+    ), patch(
+        "resources.lib.fallback_streams.urlopen",
+        return_value=_mock_urlopen_response(
+            [b""], status=200, headers={"Content-Length": "10"}
+        ),
+    ) as mock_urlopen, patch(
+        "resources.lib.fallback_streams.xbmcaddon.Addon.return_value.getSetting",
+        side_effect=setting,
+    ) as mock_setting:
+        handler._refresh_standby_fallback_sources(ctx)
+
+    assert mock_history.call_count == 5
+    assert mock_urlopen.call_count == 5
+    assert mock_setting.call_count == 2
+    assert [source["content_length"] for source in sources] == [10, 10, 10, 10, 10]
 
 
 def test_fallback_range_probe_failure_closes_before_retry_or_zero_fill():

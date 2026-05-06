@@ -8,7 +8,15 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 import xbmc
 
-from resources.lib.fallback_streams import attach_fallback_candidates
+from resources.lib.fallback_streams import (
+    attach_fallback_candidates_for_selection,
+    cached_selection_pool_first_peer,
+    fallback_candidate_prefetch_enabled,
+    fallback_candidate_prefetch_settings,
+    first_prefetchable_fallback_peer,
+    selected_manifest_may_have_fallback_peer,
+    selection_pool_may_have_fallback_peer,
+)
 from resources.lib.http_util import format_size as _format_size
 from resources.lib.i18n import addon_name as _addon_name
 from resources.lib.i18n import fmt as _fmt
@@ -221,6 +229,50 @@ def _clean_params(params):
     https://github.com/jurialmunkey/plugin.video.themoviedb.helper/wiki/PlayerConfig
     """
     return {k: ("" if v == "_" else v) for k, v in params.items()}
+
+
+def _fallback_candidate_loader_for_selection(selected, results):
+    """Build a deferred fallback lookup for the selected release."""
+    if not selected_manifest_may_have_fallback_peer(selected):
+        return None
+    if not selection_pool_may_have_fallback_peer(selected, results):
+        return None
+    fallback_settings = fallback_candidate_prefetch_settings()
+    if not fallback_candidate_prefetch_enabled(fallback_settings):
+        return None
+    first_distinct_peer = cached_selection_pool_first_peer(selected, results)
+    prefetch_results = (
+        _selection_pool_with_peer_first(selected, results, first_distinct_peer)
+        if first_distinct_peer is not None
+        else results
+    )
+    first_peer = first_prefetchable_fallback_peer(
+        selected, prefetch_results, distinct_peer_already_checked=True
+    )
+    if first_peer is None:
+        return None
+
+    def _load_fallback_candidates():
+        attach_fallback_candidates_for_selection(
+            selected,
+            _selection_pool_with_peer_first(selected, results, first_peer),
+            fallback_settings=fallback_settings,
+        )
+        return list(selected.get("_fallback_candidates", []) or [])
+
+    return _load_fallback_candidates
+
+
+def _selection_pool_with_peer_first(selected, results, first_peer):
+    """Return a selection pool that tries the known plausible peer first."""
+    if isinstance(selected, dict):
+        yield selected
+    if isinstance(first_peer, dict) and first_peer is not selected:
+        yield first_peer
+    for result in results or []:
+        if result is selected or result is first_peer:
+            continue
+        yield result
 
 
 def _show_error_dialog(message):
@@ -581,8 +633,6 @@ def _handle_play(handle, params):
             xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
             return
 
-    attach_fallback_candidates(filtered)
-
     # Auto-select best match if enabled
     import xbmcaddon
 
@@ -596,7 +646,10 @@ def _handle_play(handle, params):
             {
                 "nzburl": best["link"],
                 "title": best["title"],
-                "_fallback_candidates": best.get("_fallback_candidates", []),
+                "_fallback_candidates": [],
+                "_fallback_candidate_loader": _fallback_candidate_loader_for_selection(
+                    best, filtered
+                ),
             },
         )
         return
@@ -619,7 +672,10 @@ def _handle_play(handle, params):
             {
                 "nzburl": selected["link"],
                 "title": selected["title"],
-                "_fallback_candidates": selected.get("_fallback_candidates", []),
+                "_fallback_candidates": [],
+                "_fallback_candidate_loader": _fallback_candidate_loader_for_selection(
+                    selected, filtered
+                ),
             },
         )
     else:
@@ -746,8 +802,6 @@ def _handle_search(handle, params):
             xbmcplugin.endOfDirectory(handle, succeeded=False)
             return
 
-    attach_fallback_candidates(filtered)
-
     # Auto-select best match if enabled
     addon = xbmcaddon.Addon()
     if addon.getSetting("auto_select_best").lower() == "true" and filtered:
@@ -755,7 +809,10 @@ def _handle_search(handle, params):
         from resources.lib.resolver import resolve_and_play
 
         resolver_params = dict(params)
-        resolver_params["_fallback_candidates"] = best.get("_fallback_candidates", [])
+        resolver_params["_fallback_candidates"] = []
+        resolver_params["_fallback_candidate_loader"] = (
+            _fallback_candidate_loader_for_selection(best, filtered)
+        )
         resolve_and_play(best["link"], best["title"], params=resolver_params)
         # Same hang class as C1 (router.py): /search is a directory
         # route, so Kodi blocks until endOfDirectory fires. Without
@@ -780,8 +837,9 @@ def _handle_search(handle, params):
         from resources.lib.resolver import resolve_and_play
 
         resolver_params = dict(params)
-        resolver_params["_fallback_candidates"] = selected.get(
-            "_fallback_candidates", []
+        resolver_params["_fallback_candidates"] = []
+        resolver_params["_fallback_candidate_loader"] = (
+            _fallback_candidate_loader_for_selection(selected, filtered)
         )
         resolve_and_play(selected["link"], selected["title"], params=resolver_params)
 

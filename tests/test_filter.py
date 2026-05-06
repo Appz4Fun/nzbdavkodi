@@ -45,6 +45,13 @@ def test_parse_title_metadata_no_resolution():
     assert meta["resolution"] == ""
 
 
+def test_parse_title_metadata_exposes_proper_and_repack_flags():
+    meta = parse_title_metadata("Movie.2024.PROPER.REPACK.1080p.BluRay.x264-GROUP")
+
+    assert meta["proper"] is True
+    assert meta["repack"] is True
+
+
 def test_parse_title_metadata_1080p_x264():
     """Real PTT parsing of a typical 1080p x264 release."""
     meta = parse_title_metadata("Inception.2010.1080p.BluRay.x264-FGT")
