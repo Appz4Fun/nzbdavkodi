@@ -1139,6 +1139,80 @@ def test_resolve_overlaps_bookmark_cleanup_with_existing_completed_fast_path(
     )
 
 
+@patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
+@patch("resources.lib.resolver._finish_direct_playback")
+@patch("resources.lib.resolver._wait_direct_playback_prepare")
+@patch("resources.lib.resolver._start_direct_playback_prepare")
+@patch("resources.lib.resolver._start_fallback_submit_worker")
+@patch("resources.lib.resolver._submit_nzb_with_retries")
+@patch("resources.lib.resolver.get_webdav_stream_url_for_path")
+@patch("resources.lib.resolver.find_video_file")
+@patch("resources.lib.resolver.find_completed_by_name")
+@patch("resources.lib.resolver._clear_kodi_playback_state")
+@patch("resources.lib.resolver.xbmc")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver._get_poll_settings")
+def test_resolve_uses_picker_completed_job_hint_without_history_lookup(
+    mock_poll_settings,
+    mock_gui,
+    mock_xbmc,
+    mock_clear_state,
+    mock_find_completed,
+    mock_find_video,
+    mock_stream_url,
+    mock_submit,
+    mock_start_fallback,
+    mock_start_prepare,
+    mock_wait_prepare,
+    mock_finish_playback,
+    _mock_snapshot,
+):
+    mock_poll_settings.return_value = (2, 60)
+    mock_start_fallback.return_value = {"state": "fallback"}
+    mock_start_prepare.return_value = {"state": "prepare"}
+    mock_wait_prepare.return_value = {"state": "prepared"}
+    mock_submit.side_effect = AssertionError("completed picker hint should skip submit")
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    mock_gui.DialogProgress.return_value = MagicMock()
+    mock_find_video.return_value = "/content/uncategorized/movie/movie.mkv"
+    mock_stream_url.return_value = (
+        "http://webdav/content/primary/movie.mkv",
+        {"Authorization": "Basic primary"},
+    )
+
+    def slow_history_lookup(_title):
+        _time.sleep(0.18)
+        return {
+            "status": "Completed",
+            "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/movie",
+        }
+
+    mock_find_completed.side_effect = slow_history_lookup
+
+    started = _time.perf_counter()
+    resolve(
+        1,
+        {
+            "nzburl": "http://hydra/getnzb/primary",
+            "title": "movie.mkv",
+            "_fallback_candidates": [],
+            "_completed_job": {
+                "status": "Completed",
+                "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/movie",
+                "name": "movie.mkv",
+                "nzo_id": "SABnzbd_nzo_done",
+            },
+        },
+    )
+    elapsed = _time.perf_counter() - started
+
+    mock_find_completed.assert_not_called()
+    mock_finish_playback.assert_called_once()
+    assert (
+        elapsed < 0.1
+    ), "picker completed hint still paid history lookup {:.3f}s".format(elapsed)
+
+
 @patch("resources.lib.resolver._stop_fallback_submit_worker")
 @patch("resources.lib.resolver._start_fallback_submit_worker")
 @patch("resources.lib.resolver._poll_until_ready")

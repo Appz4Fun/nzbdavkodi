@@ -12,6 +12,7 @@ from resources.lib.nzbdav_api import (
     _sanitize_server_message,
     cancel_job,
     find_queued_by_name,
+    get_completed_jobs,
     get_completed_names,
     get_job_history,
     get_job_status,
@@ -602,6 +603,41 @@ def test_get_completed_names_returns_set(mock_http, mock_settings):
     )
     names = get_completed_names()
     assert names == {"Movie.A.2024", "Movie.B.2023"}
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_get_completed_jobs_returns_completed_job_map(mock_http, mock_settings):
+    """Completed history fetch should preserve storage for picker fast-path hints."""
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.return_value = json.dumps(
+        {
+            "history": {
+                "slots": [
+                    {
+                        "name": "Movie.A.2024",
+                        "status": "Completed",
+                        "storage": (
+                            "/mnt/nzbdav/completed-symlinks/uncategorized/Movie.A.2024"
+                        ),
+                        "nzo_id": "SABnzbd_nzo_a",
+                    },
+                    {"name": "Movie.B.2023", "status": "Failed"},
+                ]
+            }
+        }
+    )
+
+    jobs = get_completed_jobs()
+
+    assert jobs == {
+        "Movie.A.2024": {
+            "status": "Completed",
+            "storage": ("/mnt/nzbdav/completed-symlinks/uncategorized/Movie.A.2024"),
+            "name": "Movie.A.2024",
+            "nzo_id": "SABnzbd_nzo_a",
+        }
+    }
 
 
 @patch("resources.lib.nzbdav_api._get_settings")

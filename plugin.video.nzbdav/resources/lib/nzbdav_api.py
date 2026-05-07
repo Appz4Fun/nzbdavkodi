@@ -623,12 +623,12 @@ def find_queued_by_names(names):
     return found
 
 
-def get_completed_names():
-    """Fetch all completed download names from nzbdav history.
+def get_completed_jobs():
+    """Fetch completed downloads from nzbdav history keyed by exact name.
 
     Returns:
-        A set of completed download names for fast membership checks. Returns
-        an empty set on any error or when no completed jobs exist.
+        A mapping of completed download name to job metadata. Returns an empty
+        mapping on any error or when no completed jobs exist.
 
     Side effects:
         Reads nzbdav settings from Kodi via xbmcaddon.Addon().
@@ -640,12 +640,12 @@ def get_completed_names():
         base_url, api_key = _get_settings()
     except Exception as e:  # pylint: disable=broad-except
         xbmc.log(
-            "NZB-DAV: Settings read failed in get_completed_names: {}".format(
+            "NZB-DAV: Settings read failed in get_completed_jobs: {}".format(
                 _redact_text(str(e))
             ),
             xbmc.LOGDEBUG,
         )
-        return set()
+        return {}
 
     params = {
         "mode": "history",
@@ -660,21 +660,31 @@ def get_completed_names():
         response = _coerce_response_dict(json.loads(response_text))
     except Exception as e:  # pylint: disable=broad-except
         xbmc.log(
-            "NZB-DAV: get_completed_names request failed: {}".format(e),
+            "NZB-DAV: get_completed_jobs request failed: {}".format(e),
             xbmc.LOGDEBUG,
         )
-        return set()
+        return {}
 
     slots = _response_slots(response, "history")
-    names = set()
+    jobs = {}
     for slot in slots:
         if slot.get("status") == "Completed" and slot.get("name"):
-            names.add(slot["name"])
+            jobs[slot["name"]] = _completed_job_from_slot(slot)
     xbmc.log(
-        "NZB-DAV: Loaded {} completed download names from history".format(len(names)),
+        "NZB-DAV: Loaded {} completed downloads from history".format(len(jobs)),
         xbmc.LOGDEBUG,
     )
-    return names
+    return jobs
+
+
+def get_completed_names():
+    """Fetch all completed download names from nzbdav history.
+
+    Returns:
+        A set of completed download names for fast membership checks. Returns
+        an empty set on any error or when no completed jobs exist.
+    """
+    return set(get_completed_jobs())
 
 
 def get_job_status(nzo_id):

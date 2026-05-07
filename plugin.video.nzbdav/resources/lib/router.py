@@ -21,6 +21,7 @@ from resources.lib.http_util import format_size as _format_size
 from resources.lib.i18n import addon_name as _addon_name
 from resources.lib.i18n import fmt as _fmt
 from resources.lib.i18n import string as _string
+from resources.lib.nzbdav_api import get_completed_jobs
 
 # IMDB IDs are always `tt` + 7–9 digits. Reject anything else before making
 # outbound HTTP calls to IMDB's suggestion API.
@@ -402,14 +403,14 @@ def _tag_available(results):
             `"title"` matches a completed name in nzbdav will be modified
             in-place with `result["_available"] = True`.
     """
-    from resources.lib.nzbdav_api import get_completed_names
-
-    completed = get_completed_names()
+    completed = get_completed_jobs()
     if not completed:
         return
     for result in results:
-        if result.get("title") in completed:
+        completed_job = completed.get(result.get("title"))
+        if completed_job:
             result["_available"] = True
+            result["_completed_job"] = completed_job
 
 
 def _lookup_episode_info(imdb, tmdb_id=""):
@@ -667,16 +668,20 @@ def _handle_play(handle, params):
     if selected:
         from resources.lib.resolver import resolve
 
+        resolver_params = {
+            "nzburl": selected["link"],
+            "title": selected["title"],
+            "_fallback_candidates": [],
+            "_fallback_candidate_loader": _fallback_candidate_loader_for_selection(
+                selected, filtered
+            ),
+        }
+        completed_job = selected.get("_completed_job")
+        if completed_job:
+            resolver_params["_completed_job"] = completed_job
         resolve(
             handle,
-            {
-                "nzburl": selected["link"],
-                "title": selected["title"],
-                "_fallback_candidates": [],
-                "_fallback_candidate_loader": _fallback_candidate_loader_for_selection(
-                    selected, filtered
-                ),
-            },
+            resolver_params,
         )
     else:
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
@@ -841,6 +846,9 @@ def _handle_search(handle, params):
         resolver_params["_fallback_candidate_loader"] = (
             _fallback_candidate_loader_for_selection(selected, filtered)
         )
+        completed_job = selected.get("_completed_job")
+        if completed_job:
+            resolver_params["_completed_job"] = completed_job
         resolve_and_play(selected["link"], selected["title"], params=resolver_params)
 
     # Must end the directory or Kodi hangs

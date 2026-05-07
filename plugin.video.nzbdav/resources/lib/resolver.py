@@ -948,17 +948,22 @@ def _start_existing_completed_cleanup(title, on_existing_completed):
         )
 
 
-def _existing_completed_stream(title, on_existing_completed=None):
-    """Return an already-downloaded stream URL when the title exists."""
-    existing = find_completed_by_name(title)
-    if not existing:
+def _completed_job_stream(title, completed_job, on_existing_completed=None):
+    """Return a WebDAV stream URL from a completed nzbdav history row."""
+    if not isinstance(completed_job, dict):
+        return None
+    status = completed_job.get("status", "")
+    if status and status != "Completed":
+        return None
+    name = completed_job.get("name", "")
+    if name and name != title:
         return None
 
     xbmc.log(
         "NZB-DAV: '{}' already downloaded, streaming directly".format(title),
         xbmc.LOGINFO,
     )
-    storage = existing.get("storage")
+    storage = completed_job.get("storage")
     if not storage:
         xbmc.log(
             "NZB-DAV: Completed history row for '{}' has no storage path".format(title),
@@ -971,6 +976,22 @@ def _existing_completed_stream(title, on_existing_completed=None):
     if not video_path:
         return None
     return get_webdav_stream_url_for_path(video_path)
+
+
+def _existing_completed_stream(
+    title, on_existing_completed=None, completed_job_hint=None
+):
+    """Return an already-downloaded stream URL when the title exists."""
+    hinted_stream = _completed_job_stream(
+        title, completed_job_hint, on_existing_completed=on_existing_completed
+    )
+    if hinted_stream is not None:
+        return hinted_stream
+
+    existing = find_completed_by_name(title)
+    return _completed_job_stream(
+        title, existing, on_existing_completed=on_existing_completed
+    )
 
 
 # UI update cadence while submit_nzb is running on a background thread.
@@ -1888,6 +1909,7 @@ def _poll_until_ready(
     download_timeout,
     on_primary_submitted=None,
     on_existing_completed=None,
+    completed_job_hint=None,
 ):
     """Submit NZB and poll until download completes.
 
@@ -1897,7 +1919,9 @@ def _poll_until_ready(
     decide what to do with the resulting stream URL.
     """
     existing_stream = _existing_completed_stream(
-        title, on_existing_completed=on_existing_completed
+        title,
+        on_existing_completed=on_existing_completed,
+        completed_job_hint=completed_job_hint,
     )
     if existing_stream is not None:
         return existing_stream
@@ -2032,6 +2056,7 @@ def resolve(handle, params):
             download_timeout,
             on_primary_submitted=_start_fallback_after_primary,
             on_existing_completed=_start_playback_cleanup_once,
+            completed_job_hint=params.get("_completed_job"),
         )
         if stream_url:
             if fallback_state is None:
@@ -2113,6 +2138,7 @@ def resolve_and_play(nzb_url, title, params=None):
             download_timeout,
             on_primary_submitted=_start_fallback_after_primary,
             on_existing_completed=_start_playback_cleanup_once,
+            completed_job_hint=(params or {}).get("_completed_job"),
         )
         if stream_url:
             if fallback_state is None:

@@ -17,6 +17,7 @@ from resources.lib.router import (
     _handle_search,
     _prowlarr_indexers_response_ok,
     _safe_resolve_handle,
+    _tag_available,
     _test_connection,
     _test_hydra_connection,
     _test_nzbdav_connection,
@@ -1144,6 +1145,28 @@ def test_handle_play_happy_path_invokes_resolve(
     assert args[0] == 5
     assert args[1]["nzburl"] == chosen["link"]
     assert args[1]["title"] == chosen["title"]
+
+
+@patch("resources.lib.router.get_completed_jobs")
+def test_tag_available_attaches_completed_job_hint(mock_completed_jobs):
+    completed_job = {
+        "status": "Completed",
+        "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/Matrix.1999.mkv",
+        "name": "Matrix.1999.mkv",
+        "nzo_id": "SABnzbd_nzo_done",
+    }
+    mock_completed_jobs.return_value = {"Matrix.1999.mkv": completed_job}
+    results = [
+        {"title": "Matrix.1999.mkv", "link": "http://hydra/nzb/x"},
+        {"title": "Other.mkv", "link": "http://hydra/nzb/y"},
+    ]
+
+    _tag_available(results)
+
+    assert results[0]["_available"] is True
+    assert results[0]["_completed_job"] == completed_job
+    assert "_available" not in results[1]
+    assert "_completed_job" not in results[1]
 
 
 @patch("xbmcaddon.Addon")
