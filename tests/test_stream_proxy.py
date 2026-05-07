@@ -1607,6 +1607,89 @@ def test_prevalidated_fallback_reuses_current_probe_for_first_fallback_bytes():
     assert stream_open.call_count <= 1
 
 
+def test_prevalidated_fallback_cached_sample_writes_without_post_error_probe():
+    """A cached prevalidation sample should become the first fallback bytes."""
+    from urllib.parse import urlsplit
+
+    content_length = 8192
+    post_error_probe_delay = 0.04
+    primary_url = "http://webdav/content/primary.mkv"
+    fallback_url = "http://webdav/content/fallback.mkv"
+    ctx = {
+        "remote_url": primary_url,
+        "auth_header": "Basic primary",
+        "content_type": "video/x-matroska",
+        "content_length": content_length,
+        "_fallback_probe_bases": (urlsplit("http://webdav/content/"),),
+        "fallback_sources": [
+            {
+                "nzo_id": "nzo-fallback",
+                "stream_url": fallback_url,
+                "stream_headers": {"Authorization": "Basic fallback"},
+                "content_length": content_length,
+                "validated": False,
+                "failed": False,
+            }
+        ],
+        "fallback_switch_count": 0,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-4095")
+    post_error_probe = {"active": False}
+    first_write_at = []
+
+    def range_payload(start, end):
+        fill = b"A" if start == 0 else b"B"
+        return fill * (end - start + 1)
+
+    def range_response(req, timeout=None):  # pylint: disable=unused-argument
+        if post_error_probe["active"]:
+            time.sleep(post_error_probe_delay)
+        range_header = _request_header(req, "Range")
+        start, end = [
+            int(value) for value in range_header.replace("bytes=", "").split("-")
+        ]
+        body = range_payload(start, end)
+        return _mock_urlopen_response(
+            [body],
+            headers={
+                "Content-Range": "bytes {}-{}/{}".format(start, end, content_length),
+                "Content-Length": str(len(body)),
+            },
+        )
+
+    def primary_fails(req, timeout=None):  # pylint: disable=unused-argument
+        assert req.full_url == primary_url
+        raise ConnectionRefusedError("primary down")
+
+    def record_first_write(_chunk):
+        if not first_write_at:
+            first_write_at.append(time.monotonic())
+
+    handler.wfile.write.side_effect = record_first_write
+    with patch(
+        "resources.lib.fallback_streams.urlopen", side_effect=range_response
+    ) as probe_open:
+        assert handler._prevalidate_ready_fallback_sources(ctx) == 1
+        assert ctx["fallback_sources"][0]["validated"] is True
+        probe_open.reset_mock()
+        post_error_probe["active"] = True
+        with patch("resources.lib.stream_proxy.urlopen", side_effect=primary_fails):
+            started = time.monotonic()
+            handler._serve_proxy(ctx)
+
+    assert first_write_at, "fallback did not write cached sample bytes"
+    first_byte_elapsed = first_write_at[0] - started
+    assert (
+        first_byte_elapsed < 0.02
+    ), "post-error cutover took {:.3f}s; cached sampled bytes were not reused".format(
+        first_byte_elapsed
+    )
+    assert probe_open.call_count == 0
+    assert _collect_written(handler) == range_payload(0, 4095)
+    assert ctx["fallback_switch_count"] == 1
+    assert ctx["fallback_active_index"] == 0
+
+
 def test_stream_upstream_range_counts_cached_prefix_when_remaining_open_fails():
     """A cached verified prefix is real progress even if the tail open fails."""
     from resources.lib.stream_proxy import (

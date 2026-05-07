@@ -28,7 +28,7 @@ jobs:
         run: pip install -r requirements-test.txt
 
       - name: Run tests
-        run: python -m pytest tests/ -v --tb=short
+        run: python -m pytest tests/ -v --tb=short -m "not integration and not functional"
 
       - name: Extract version from tag
         id: version

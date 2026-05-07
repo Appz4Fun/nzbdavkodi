@@ -192,6 +192,7 @@ _FALLBACK_SOURCE_STATE_NOT_PROVIDED = object()
 _FALLBACK_SOURCE_STREAM_URL_HINT_KEY = "_fallback_source_stream_url_hint"
 _FALLBACK_PRIMARY_URL_HINT_KEY = "_fallback_primary_url_hint"
 _FALLBACK_PRIMARY_AUTH_HINT_KEY = "_fallback_primary_auth_hint"
+_FALLBACK_CURRENT_RANGE_CACHE_KEY = "_fallback_current_range_cache"
 _FALLBACK_FINGERPRINT_WORKERS = 10
 
 # Shared zero buffer reused across all pass-through responses.
@@ -2919,6 +2920,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     fallback_url=source_url,
                     fallback_auth=source_auth,
                     primary_auth=primary_auth,
+                    cache_fallback_range_bytes=True,
                 ):
                     source["validated"] = True
                     validated += 1
@@ -3029,6 +3031,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
         fallback_url=None,
         fallback_auth=_AUTH_HEADER_NOT_PROVIDED,
         primary_auth=_AUTH_HEADER_NOT_PROVIDED,
+        cache_fallback_range_bytes=False,
     ):
         """Verify sampled bytes match before splicing in a fallback stream."""
         if primary_auth is _AUTH_HEADER_NOT_PROVIDED:
@@ -3049,20 +3052,19 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 fallback_url,
                 fallback_auth,
                 primary_auth,
+                cache_fallback_range_bytes,
             )
         for start, end in ranges:
-            fallback_digest = None
-            if current_range and current_range[:2] == (start, end):
-                fallback_digest = current_range[2]
-            if not fallback_digest:
-                fallback_digest = self._fetch_fallback_range_digest(
-                    fallback_url,
-                    fallback_auth,
-                    start,
-                    end,
-                    content_length=content_length,
-                    probe_bases=probe_bases,
-                )
+            fallback_digest = self._fetch_fallback_fingerprint_digest(
+                (start, end),
+                content_length,
+                probe_bases,
+                current_range,
+                fallback_url,
+                fallback_auth,
+                cache_ctx=ctx,
+                cache_range_bytes=cache_fallback_range_bytes,
+            )
             if not fallback_digest:
                 return False
             primary_digest = self._fetch_primary_fallback_range_digest(
@@ -3074,7 +3076,9 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 probe_bases,
                 primary_url,
             )
-            return all(results)
+            if not primary_digest or primary_digest != fallback_digest:
+                return False
+        return True
 
     def _fetch_fallback_fingerprint_digest(
         self,
@@ -3084,11 +3088,32 @@ class _StreamHandler(BaseHTTPRequestHandler):
         current_range,
         fallback_url,
         fallback_auth,
+        cache_ctx=None,
+        cache_range_bytes=False,
     ):
         """Return the fallback digest for one sampled byte range."""
         start, end = byte_range
         if current_range and current_range[:2] == (start, end):
             return current_range[2]
+        if cache_range_bytes:
+            body = self._fetch_fallback_range_bytes(
+                fallback_url,
+                fallback_auth,
+                start,
+                end,
+                content_length=content_length,
+                probe_bases=probe_bases,
+            )
+            if body is not None:
+                self._cache_fallback_range(
+                    cache_ctx,
+                    fallback_url,
+                    fallback_auth,
+                    content_length,
+                    start,
+                    body,
+                )
+                return hashlib.sha256(body).hexdigest()
         return self._fetch_fallback_range_digest(
             fallback_url,
             fallback_auth,
@@ -3184,6 +3209,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
         fallback_url,
         fallback_auth,
         primary_auth,
+        cache_fallback_range_bytes=False,
     ):
         """Verify fingerprint ranges with bounded parallel range probes."""
         workers = min(_FALLBACK_FINGERPRINT_WORKERS, len(ranges))
@@ -3195,13 +3221,15 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     fallback_digests[(start, end)] = current_range[2]
                     continue
                 future = executor.submit(
-                    self._fetch_fallback_range_digest,
+                    self._fetch_fallback_fingerprint_digest,
+                    (start, end),
+                    content_length,
+                    probe_bases,
+                    current_range,
                     fallback_url,
                     fallback_auth,
-                    start,
-                    end,
-                    content_length=content_length,
-                    probe_bases=probe_bases,
+                    cache_ctx=ctx,
+                    cache_range_bytes=cache_fallback_range_bytes,
                 )
                 fallback_futures[future] = (start, end)
             for future in as_completed(fallback_futures):
@@ -3327,6 +3355,16 @@ class _StreamHandler(BaseHTTPRequestHandler):
             auth_header = self._fallback_source_auth(source)
         if stream_url is None:
             stream_url = source["stream_url"]
+        cached_body = self._cached_fallback_range_body(
+            cache_ctx,
+            stream_url,
+            auth_header,
+            content_length,
+            failed_byte,
+            probe_end,
+        )
+        if cached_body:
+            return hashlib.sha256(cached_body).hexdigest()
         body = self._fetch_fallback_range_bytes(
             stream_url,
             auth_header,
@@ -3336,17 +3374,14 @@ class _StreamHandler(BaseHTTPRequestHandler):
             probe_bases=probe_bases,
         )
         if body is not None:
-            if cache_ctx is not None:
-                cache = cache_ctx.setdefault(_FALLBACK_CURRENT_RANGE_CACHE_KEY, {})
-                cache[
-                    (
-                        stream_url,
-                        auth_header,
-                        content_length,
-                        failed_byte,
-                        failed_byte + len(body) - 1,
-                    )
-                ] = body
+            self._cache_fallback_range(
+                cache_ctx,
+                stream_url,
+                auth_header,
+                content_length,
+                failed_byte,
+                body,
+            )
             return hashlib.sha256(body).hexdigest()
         return self._fetch_fallback_range_digest(
             stream_url,
@@ -3390,6 +3425,50 @@ class _StreamHandler(BaseHTTPRequestHandler):
             return None
 
     @staticmethod
+    def _cache_fallback_range(
+        ctx, stream_url, auth_header, content_length, start, body
+    ):
+        """Remember verified fallback bytes that can start a future stream read."""
+        if ctx is None or not body:
+            return
+        cache = ctx.setdefault(_FALLBACK_CURRENT_RANGE_CACHE_KEY, {})
+        cache[
+            (
+                stream_url,
+                auth_header,
+                content_length,
+                start,
+                start + len(body) - 1,
+            )
+        ] = body
+
+    @staticmethod
+    def _cached_fallback_range_body(
+        ctx, stream_url, auth_header, content_length, start, end
+    ):
+        """Return cached fallback bytes that cover the requested range prefix."""
+        if ctx is None:
+            return b""
+        cache = ctx.get(_FALLBACK_CURRENT_RANGE_CACHE_KEY)
+        if not isinstance(cache, dict):
+            return b""
+        prefix = (stream_url, auth_header, content_length, start)
+        selected_body = b""
+        requested_length = end - start + 1
+        for key, body in list(cache.items()):
+            if not isinstance(key, tuple) or len(key) != 5:
+                continue
+            if key[:4] != prefix or not isinstance(body, bytes):
+                continue
+            cached_end = key[4]
+            if cached_end < end or cached_end != start + len(body) - 1:
+                continue
+            candidate = body[:requested_length]
+            if len(candidate) > len(selected_body):
+                selected_body = candidate
+        return selected_body
+
+    @staticmethod
     def _pop_cached_fallback_range(ctx, start, end):
         """Return cached verified fallback bytes for the start of this range."""
         cache = ctx.get(_FALLBACK_CURRENT_RANGE_CACHE_KEY)
@@ -3408,11 +3487,12 @@ class _StreamHandler(BaseHTTPRequestHandler):
             if key[:4] != prefix or not isinstance(body, bytes):
                 continue
             cached_end = key[4]
-            if cached_end > end or cached_end != start + len(body) - 1:
+            if cached_end != start + len(body) - 1:
                 continue
-            if len(body) > len(selected_body):
+            candidate = body[: end - start + 1]
+            if len(candidate) > len(selected_body):
                 selected_key = key
-                selected_body = body
+                selected_body = candidate
         if selected_key is None:
             return b""
         cache.pop(selected_key, None)

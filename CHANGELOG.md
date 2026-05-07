@@ -13,7 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Released | What it's about |
 |---|---|---|
-| **[Unreleased](#unreleased)** | Pending | Fallback discovery and live failover speed, longer live-service timeouts, dev-only live fallback tests |
+| **[Unreleased](#unreleased)** | Pending | Not started |
+| **[1.0.9](#109--2026-05-06)** | 2026-05-06 | Fallback discovery and live failover speed, longer live-service timeouts, dev-only live fallback tests |
 | **[1.0.8](#108--2026-05-05)** | 2026-05-05 | Fallback manifest hardening, shared HTTP fetch path, malformed group-size fail-closed behavior |
 | **[1.0.7](#107--2026-05-04)** | 2026-05-04 | Fallback streams enabled by default, 5 standby submits, pass-through playback, NZB-manifest grouping, 1000-sample validation, fallback-only recovery |
 | **[1.0.6](#106--2026-05-04)** | 2026-05-04 | Pass-through-first proxy, live duplicate-release fallback streams, authenticated settings checks, fallback worker cleanup, threshold-zero remux semantics |
@@ -57,6 +58,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+No changes yet.
+
+## [1.0.9] — 2026-05-06
+
 > **Fallback discovery and failover are faster.** This batch keeps the same
 > conservative fallback safety chain while moving expensive work out of the
 > search/picker path and avoiding repeated URL, auth, length, and range-probe
@@ -86,11 +91,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   background cleanup on loaded boxes.
 - **Fallback user messaging was tightened** with a switch notification and a
   clearer "No known fallback matches found" fallback-empty message.
+- **Prevalidated fallback sample bytes are reused as the first live fallback
+  bytes** after an upstream error, avoiding a redundant post-error probe before
+  playback can resume on a validated standby stream.
+- **The WebDAV settings test route is wired back into the router** and fallback
+  localization now covers WebDAV test results, fallback-empty, and fallback
+  switch notifications outside a fully initialized Kodi localization context.
 - **Developer live-service validation is split from the default suite** with
   `just functional-test`, `just functional-test-top-imdb`, and a pytest
   `functional` marker; default `just test` excludes those dev-box tests.
 - **TODO.md now contains only the active backlog**; completed/rejected detail
   stays in git history.
+- **CI lint is clean again** after removing a duplicate direct-indexer test
+  handler definition.
 
 **Tests**
 - Added focused regression and timing coverage across fallback stream grouping,
@@ -912,6 +925,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[1.0.9]: https://github.com/xbmc4lyfe/nzbdavkodi/compare/v1.0.8...v1.0.9
 [1.0.8]: https://github.com/xbmc4lyfe/nzbdavkodi/compare/v1.0.7...v1.0.8
 [1.0.7]: https://github.com/xbmc4lyfe/nzbdavkodi/compare/v1.0.6...v1.0.7
 [1.0.6]: https://github.com/xbmc4lyfe/nzbdavkodi/compare/v1.0.5...v1.0.6

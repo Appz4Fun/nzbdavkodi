@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="plugin.video.nzbdav"
        name="NZB-DAV"
-       version="1.0.8"
+       version="1.0.9"
        provider-name="nzbdav">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
@@ -22,7 +22,14 @@
         <license>GPL-3.0-or-later</license>
         <source>https://github.com/xbmc4lyfe/nzbdavkodi</source>
         <website>https://xbmc4lyfe.github.io/nzbdavkodi/</website>
-        <news>v1.0.8
+        <news>v1.0.9
+- Speed up fallback discovery by deferring candidate lookup until selection time, prefiltering before manifest fetches, and stopping when the fallback limit is filled.
+- Speed up live fallback switching by reusing URL/auth/length/fingerprint state and prevalidated sample bytes after upstream errors.
+- Raise large-NZB and backend timeout headroom for Hydra, Prowlarr, direct indexers, nzbdav, WebDAV, upstream opens, skip probes, and ffprobe.
+- Restore Test WebDAV route dispatch and fallback localization for WebDAV test, fallback-empty, and fallback-switch notifications.
+- Add dev-only live fallback validation recipes/tests and keep them out of the default test suite.
+
+v1.0.8
 - Route NZB manifest downloads through the shared HTTP utility while preserving the 2 MiB manifest size guard and fetch-error handling.
 - Fail closed when pre-attached fallback manifest group sizes are malformed so one bad manifest cannot abort duplicate grouping.
 - Add focused regression coverage for malformed fallback manifests and shared HTTP size limits.

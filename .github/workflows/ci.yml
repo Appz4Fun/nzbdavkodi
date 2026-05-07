@@ -50,4 +50,4 @@ jobs:
           black --check plugin.video.nzbdav/ tests/ --exclude="ptt/"
 
       - name: Test
-        run: python -m pytest tests/ -v --tb=short
+        run: python -m pytest tests/ -v --tb=short -m "not integration and not functional"

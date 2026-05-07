@@ -80,6 +80,13 @@ _FALLBACK_STRINGS = {
     30180: "NZBFinder",
     30181: "NZBPlanet",
     30182: "DOGnzb",
+    30186: "Switched to fallback stream",
+    30187: "No known fallback matches found",
+    30188: "Test WebDAV Connection",
+    30189: "WebDAV connection OK",
+    30190: "WebDAV authentication failed. Check credentials.",
+    30191: "WebDAV server error. Check server logs.",
+    30192: "WebDAV connection error. Check server.",
 }
 
 

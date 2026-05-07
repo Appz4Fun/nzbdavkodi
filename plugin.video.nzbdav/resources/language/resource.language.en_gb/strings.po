@@ -689,3 +689,31 @@ msgstr "NZBPlanet"
 msgctxt "#30182"
 msgid "DOGnzb"
 msgstr "DOGnzb"
+
+msgctxt "#30186"
+msgid "Switched to fallback stream"
+msgstr "Switched to fallback stream"
+
+msgctxt "#30187"
+msgid "No known fallback matches found"
+msgstr "No known fallback matches found"
+
+msgctxt "#30188"
+msgid "Test WebDAV Connection"
+msgstr "Test WebDAV Connection"
+
+msgctxt "#30189"
+msgid "WebDAV connection OK"
+msgstr "WebDAV connection OK"
+
+msgctxt "#30190"
+msgid "WebDAV authentication failed. Check credentials."
+msgstr "WebDAV authentication failed. Check credentials."
+
+msgctxt "#30191"
+msgid "WebDAV server error. Check server logs."
+msgstr "WebDAV server error. Check server logs."
+
+msgctxt "#30192"
+msgid "WebDAV connection error. Check server."
+msgstr "WebDAV connection error. Check server."
