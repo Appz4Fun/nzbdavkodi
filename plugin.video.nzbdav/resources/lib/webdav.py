@@ -137,17 +137,8 @@ def _find_video_file_in_subdirs(subdirs, depth, visited):
     if not subdirs:
         return None
 
-    first = subdirs[0]
-    xbmc.log(
-        "NZB-DAV: No video at depth {}, checking subfolder: {}".format(depth, first),
-        xbmc.LOGDEBUG,
-    )
-    result = find_video_file(first, depth + 1, visited, _already_encoded=True)
-    if result or len(subdirs) == 1:
-        return result
-
-    remaining = list(subdirs[1:])
-    workers = max(1, min(_WEBDAV_SUBDIR_SCAN_WORKERS, len(remaining)))
+    pending = list(subdirs)
+    workers = max(1, min(_WEBDAV_SUBDIR_SCAN_WORKERS, len(pending)))
     result_queue = Queue()
     stop_event = threading.Event()
     next_index = [0]
@@ -156,10 +147,10 @@ def _find_video_file_in_subdirs(subdirs, depth, visited):
     def _scan_worker():
         while not stop_event.is_set():
             with index_lock:
-                if next_index[0] >= len(remaining):
+                if next_index[0] >= len(pending):
                     return
                 index = next_index[0]
-                subdir = remaining[index]
+                subdir = pending[index]
                 next_index[0] += 1
             xbmc.log(
                 "NZB-DAV: No video at depth {}, checking subfolder: {}".format(
@@ -185,7 +176,7 @@ def _find_video_file_in_subdirs(subdirs, depth, visited):
     completed = {}
     completed_count = 0
     next_to_return = 0
-    while completed_count < len(remaining):
+    while completed_count < len(pending):
         index, result = result_queue.get()
         completed[index] = result
         completed_count += 1

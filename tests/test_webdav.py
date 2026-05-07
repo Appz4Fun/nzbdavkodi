@@ -551,6 +551,60 @@ def test_find_video_file_parallelizes_sibling_subfolders_for_post_picker_start(
 
 @patch("resources.lib.webdav._get_settings")
 @patch("resources.lib.webdav.urlopen")
+def test_find_video_file_overlaps_first_sibling_probe_for_post_picker_start(
+    mock_urlopen, mock_settings
+):
+    """The first slow empty sibling should not delay probing later siblings."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    parent = _propfind_listing(
+        [
+            ("/content/uncategorized/Overlap/", True, None),
+            ("/content/uncategorized/Overlap/A/", True, None),
+            ("/content/uncategorized/Overlap/B/", True, None),
+            ("/content/uncategorized/Overlap/C/", True, None),
+        ]
+    )
+    empty_a = _propfind_listing([("/content/uncategorized/Overlap/A/", True, None)])
+    with_video_b = _propfind_listing(
+        [
+            ("/content/uncategorized/Overlap/B/", True, None),
+            ("/content/uncategorized/Overlap/B/Movie.mkv", False, 1234),
+        ]
+    )
+    slow_c = _propfind_listing(
+        [
+            ("/content/uncategorized/Overlap/C/", True, None),
+            ("/content/uncategorized/Overlap/C/Slow.mkv", False, 1234),
+        ]
+    )
+
+    def propfind(req, **_kwargs):
+        url = req.full_url
+        if url.endswith("/Overlap/"):
+            return _webdav_response(parent)
+        if url.endswith("/Overlap/A/"):
+            time.sleep(0.16)
+            return _webdav_response(empty_a)
+        if url.endswith("/Overlap/B/"):
+            time.sleep(0.16)
+            return _webdav_response(with_video_b)
+        if url.endswith("/Overlap/C/"):
+            time.sleep(0.6)
+            return _webdav_response(slow_c)
+        raise AssertionError("unexpected PROPFIND URL: {}".format(url))
+
+    mock_urlopen.side_effect = propfind
+
+    started = time.perf_counter()
+    path = find_video_file("/content/uncategorized/Overlap/")
+    elapsed = time.perf_counter() - started
+
+    assert path == "/content/uncategorized/Overlap/B/Movie.mkv"
+    assert elapsed < 0.24, "first-sibling WebDAV overlap took {:.3f}s".format(elapsed)
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
 def test_find_video_file_returns_before_slower_later_sibling_when_ordered_match_found(
     mock_urlopen, mock_settings
 ):
