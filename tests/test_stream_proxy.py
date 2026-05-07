@@ -1666,6 +1666,110 @@ def test_first_get_reuses_inflight_initial_prefetch_before_opening_duplicate_ran
     duplicate_open.assert_not_called()
 
 
+def test_fallback_prevalidation_does_not_delay_initial_prefetch_first_bytes():
+    """Fallback prevalidation should not compete with the first playable bytes."""
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_OK,
+        StreamProxy,
+    )
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_context = None
+    sp._server.stream_sessions = {}
+    sp._server.pending_stream_contexts = {}
+    sp._context_lock = threading.RLock()
+    sp.port = 9999
+
+    content_length = 4096
+    payload = b"P" * content_length
+    network_slot = threading.Lock()
+    prefetch_started = threading.Event()
+    prevalidation_started = threading.Event()
+
+    def prefetch_bytes(url, auth_header, start, end, content_length, probe_bases=None):
+        assert url == "http://host/movie.mkv"
+        assert auth_header == "Basic primary"
+        assert (start, end) == (0, len(payload) - 1)
+        assert content_length == len(payload)
+        assert probe_bases == ()
+        prefetch_started.set()
+        # If prevalidation starts immediately, let it expose contention for the
+        # same upstream link before this byte-0 prefetch can finish.
+        prevalidation_started.wait(0.03)
+        with network_slot:
+            time.sleep(0.01)
+        return payload
+
+    def prevalidate(_ctx):
+        assert prefetch_started.wait(timeout=1)
+        prevalidation_started.set()
+        with network_slot:
+            time.sleep(0.12)
+
+    def duplicate_first_get(_req, timeout=None):  # pylint: disable=unused-argument
+        with network_slot:
+            time.sleep(0.04)
+        return _mock_urlopen_response(
+            [payload],
+            headers={
+                "Content-Range": "bytes 0-4095/4096",
+                "Content-Length": str(len(payload)),
+            },
+        )
+
+    fallback_sources = [
+        {
+            "nzo_id": "nzo-fallback",
+            "stream_url": "http://host/fallback.mkv",
+            "stream_headers": {"Authorization": "Basic fallback"},
+            "content_length": content_length,
+        }
+    ]
+    with patch.object(
+        sp, "_get_content_length", return_value=content_length
+    ), patch.object(
+        sp, "_prevalidate_fallback_sources", side_effect=prevalidate
+    ), patch.object(
+        _StreamHandler, "_fallback_probe_bases", return_value=()
+    ), patch.object(
+        _StreamHandler, "_fetch_fallback_range_bytes", side_effect=prefetch_bytes
+    ):
+        sp.prepare_stream(
+            "http://host/movie.mkv",
+            auth_header="Basic primary",
+            fallback_sources=fallback_sources,
+        )
+
+    ctx = sp._server.stream_context
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-4095")
+    first_write_at = []
+
+    def record_first_write(_chunk):
+        if not first_write_at:
+            first_write_at.append(time.monotonic())
+
+    handler.wfile.write.side_effect = record_first_write
+    with patch("resources.lib.stream_proxy.urlopen", side_effect=duplicate_first_get):
+        started = time.monotonic()
+        result, written = handler._stream_upstream_range(ctx, 0, len(payload) - 1)
+
+    thread = ctx.get("_fallback_prevalidation_thread")
+    if thread:
+        thread.join(timeout=1)
+
+    assert result == _UPSTREAM_RANGE_OK
+    assert written == len(payload)
+    assert _collect_written(handler) == payload
+    assert first_write_at, "proxy did not write first playable bytes"
+    first_byte_elapsed = first_write_at[0] - started
+    assert (
+        first_byte_elapsed < 0.09
+    ), "fallback prevalidation delayed first playable bytes by {:.3f}s".format(
+        first_byte_elapsed
+    )
+
+
 def test_ready_fallback_is_prevalidated_before_upstream_error_cutover():
     """Cutover should not pay full fingerprint validation after the read error."""
     from resources.lib.stream_proxy import (

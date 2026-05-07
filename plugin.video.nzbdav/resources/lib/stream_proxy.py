@@ -5762,9 +5762,18 @@ class StreamProxy:
 
         if not any(_can_prevalidate(source) for source in sources):
             return
+
+        def _prevalidate_after_initial_prefetch():
+            prefetch_thread = ctx.get("_initial_range_prefetch_thread")
+            if prefetch_thread and prefetch_thread is not threading.current_thread():
+                try:
+                    prefetch_thread.join()
+                except RuntimeError:
+                    pass
+            self._prevalidate_fallback_sources(ctx)
+
         thread = threading.Thread(
-            target=self._prevalidate_fallback_sources,
-            args=(ctx,),
+            target=_prevalidate_after_initial_prefetch,
             name="nzbdav-fallback-prevalidate",
         )
         thread.daemon = True
