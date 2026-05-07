@@ -3551,6 +3551,58 @@ def test_poll_until_ready_graces_nearly_complete_queue_for_history(
     )
 
 
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._submit_nzb_with_retries", return_value="nzo_abc")
+@patch("resources.lib.resolver.get_webdav_stream_url_for_path")
+@patch("resources.lib.resolver.find_video_file")
+@patch("resources.lib.resolver.get_job_history")
+@patch("resources.lib.resolver.get_job_status")
+@patch("resources.lib.resolver.xbmc")
+def test_poll_until_ready_waits_for_full_progress_history_before_poll_tick(
+    mock_xbmc,
+    mock_status,
+    mock_history,
+    mock_find,
+    mock_stream_url,
+    mock_submit,
+    mock_find_completed,
+):
+    """A 100% queue row should not miss history and sleep a full poll tick."""
+    completed_history = {
+        "status": "Completed",
+        "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/movie",
+    }
+    history_calls = []
+
+    mock_status.return_value = {"status": "Downloading", "percentage": "100"}
+
+    def get_history(_nzo_id):
+        history_calls.append(_time.perf_counter())
+        if len(history_calls) == 1:
+            _time.sleep(0.12)
+        return completed_history
+
+    monitor = MagicMock()
+    monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
+    mock_xbmc.Monitor.return_value = monitor
+    mock_history.side_effect = get_history
+    mock_find.return_value = "/content/uncategorized/movie/movie.mkv"
+    mock_stream_url.return_value = ("http://webdav/movie.mkv", {"Authorization": "x"})
+
+    started = _time.perf_counter()
+    url, headers = _poll_until_ready(
+        "http://hydra/nzb", "movie", _make_dialog(), 0.25, 3600
+    )
+    elapsed = _time.perf_counter() - started
+
+    assert url == "http://webdav/movie.mkv"
+    assert headers == {"Authorization": "x"}
+    assert len(history_calls) == 1
+    assert elapsed < 0.25, "full-progress history missed grace by {:.3f}s".format(
+        elapsed
+    )
+
+
 @patch("resources.lib.resolver.cancel_job")
 @patch("resources.lib.resolver.find_completed_by_name", return_value=None)
 @patch("resources.lib.resolver.get_job_history", return_value=None)

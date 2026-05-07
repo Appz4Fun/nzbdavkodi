@@ -50,6 +50,7 @@ MAX_POLL_ITERATIONS = _DOWNLOAD_TIMEOUT_MAX // _POLL_INTERVAL_MIN
 _FALLBACK_SHUTDOWN_JOIN_TIMEOUT = 10
 _POLL_NEAR_COMPLETE_PERCENTAGE = 99.0
 _POLL_NEAR_COMPLETE_HISTORY_GRACE_SECONDS = 0.1
+_POLL_FULL_PROGRESS_HISTORY_GRACE_SECONDS = 0.14
 # HTTP status codes the submit retry loop treats as transient and worth
 # retrying. RFC 9110 explicitly calls 408 retry-friendly ("client may
 # assume the server closed the connection due to inactivity and retry").
@@ -965,11 +966,27 @@ def _queue_status_is_nearly_complete(job_status):
     return percentage >= _POLL_NEAR_COMPLETE_PERCENTAGE
 
 
-def _wait_for_nearly_complete_history(history_ready, history_done, deadline):
+def _queue_status_history_grace_seconds(job_status):
+    if not isinstance(job_status, dict):
+        return _POLL_NEAR_COMPLETE_HISTORY_GRACE_SECONDS
+    try:
+        percentage = float(job_status.get("percentage", 0) or 0)
+    except (TypeError, ValueError):
+        return _POLL_NEAR_COMPLETE_HISTORY_GRACE_SECONDS
+    if percentage >= 100.0:
+        return _POLL_FULL_PROGRESS_HISTORY_GRACE_SECONDS
+    return _POLL_NEAR_COMPLETE_HISTORY_GRACE_SECONDS
+
+
+def _wait_for_nearly_complete_history(
+    history_ready, history_done, deadline, grace_seconds=None
+):
     """Give completed history a small chance to beat the next poll interval."""
+    if grace_seconds is None:
+        grace_seconds = _POLL_NEAR_COMPLETE_HISTORY_GRACE_SECONDS
     grace_deadline = min(
         deadline,
-        time.monotonic() + _POLL_NEAR_COMPLETE_HISTORY_GRACE_SECONDS,
+        time.monotonic() + max(0, grace_seconds),
     )
     while True:
         if history_ready.is_set() or history_done.is_set():
@@ -1039,11 +1056,21 @@ def _poll_once(nzo_id, title, monitor):
             break
         if queue_done.is_set() and _queue_status_is_clearly_active(job_status[0]):
             if _queue_status_is_nearly_complete(job_status[0]):
-                _wait_for_nearly_complete_history(history_ready, history_done, deadline)
+                _wait_for_nearly_complete_history(
+                    history_ready,
+                    history_done,
+                    deadline,
+                    _queue_status_history_grace_seconds(job_status[0]),
+                )
             break
         if queue_done.is_set() and _queue_status_has_active_status(job_status[0]):
             if _queue_status_is_nearly_complete(job_status[0]):
-                _wait_for_nearly_complete_history(history_ready, history_done, deadline)
+                _wait_for_nearly_complete_history(
+                    history_ready,
+                    history_done,
+                    deadline,
+                    _queue_status_history_grace_seconds(job_status[0]),
+                )
                 break
         if queue_done.is_set() and history_done.is_set():
             break
