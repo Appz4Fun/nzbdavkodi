@@ -25,7 +25,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn as _ThreadingMixIn
@@ -192,7 +192,7 @@ _FALLBACK_SOURCE_STATE_NOT_PROVIDED = object()
 _FALLBACK_SOURCE_STREAM_URL_HINT_KEY = "_fallback_source_stream_url_hint"
 _FALLBACK_PRIMARY_URL_HINT_KEY = "_fallback_primary_url_hint"
 _FALLBACK_PRIMARY_AUTH_HINT_KEY = "_fallback_primary_auth_hint"
-_FALLBACK_FINGERPRINT_PROBE_WORKERS = 8
+_FALLBACK_FINGERPRINT_WORKERS = 10
 
 # Shared zero buffer reused across all pass-through responses.
 _ZERO_FILL_BUFFER = bytes(65536)
@@ -3038,85 +3038,41 @@ class _StreamHandler(BaseHTTPRequestHandler):
         if fallback_auth is _AUTH_HEADER_NOT_PROVIDED:
             fallback_auth = self._fallback_source_auth(source)
         ranges = tuple(self._fallback_fingerprint_ranges(ctx, content_length))
-        if not ranges:
-            return True
-
-        fallback_digests = {}
-        first_range = ranges[0]
-        first_digest = self._fetch_fallback_fingerprint_digest(
-            first_range,
-            content_length,
-            probe_bases,
-            current_range,
-            fallback_url,
-            fallback_auth,
-        )
-        if not first_digest:
-            return False
-        first_primary_digest = self._fetch_primary_fallback_range_digest(
-            ctx,
-            primary_auth,
-            first_range[0],
-            first_range[1],
-            content_length,
-            probe_bases,
-            primary_url,
-        )
-        if not first_primary_digest or first_primary_digest != first_digest:
-            return False
-
-        remaining_ranges = ranges[1:]
-        if remaining_ranges:
-            if len(remaining_ranges) == 1:
-                remaining_digests = [
-                    self._fetch_fallback_fingerprint_digest(
-                        remaining_ranges[0],
-                        content_length,
-                        probe_bases,
-                        current_range,
-                        fallback_url,
-                        fallback_auth,
-                    )
-                ]
-            else:
-                workers = min(_FALLBACK_FINGERPRINT_PROBE_WORKERS, len(ranges))
-                with ThreadPoolExecutor(max_workers=workers) as executor:
-                    remaining_digests = list(
-                        executor.map(
-                            lambda byte_range: self._fetch_fallback_fingerprint_digest(
-                                byte_range,
-                                content_length,
-                                probe_bases,
-                                current_range,
-                                fallback_url,
-                                fallback_auth,
-                            ),
-                            remaining_ranges,
-                        )
-                    )
-            for byte_range, digest in zip(remaining_ranges, remaining_digests):
-                if not digest:
-                    return False
-                fallback_digests[byte_range] = digest
-        else:
-            return True
-
-        cache_lock = threading.Lock()
-        workers = min(_FALLBACK_FINGERPRINT_PROBE_WORKERS, len(remaining_ranges))
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            results = executor.map(
-                lambda byte_range: self._primary_fingerprint_range_matches(
-                    ctx,
-                    byte_range[0],
-                    byte_range[1],
-                    fallback_digests[byte_range],
-                    content_length,
-                    probe_bases,
-                    primary_url,
-                    primary_auth,
-                    cache_lock,
-                ),
-                remaining_ranges,
+        if len(ranges) > 1 and _FALLBACK_FINGERPRINT_WORKERS > 1:
+            return self._validate_fallback_fingerprint_parallel(
+                ctx,
+                ranges,
+                content_length,
+                probe_bases,
+                current_range,
+                primary_url,
+                fallback_url,
+                fallback_auth,
+                primary_auth,
+            )
+        for start, end in ranges:
+            fallback_digest = None
+            if current_range and current_range[:2] == (start, end):
+                fallback_digest = current_range[2]
+            if not fallback_digest:
+                fallback_digest = self._fetch_fallback_range_digest(
+                    fallback_url,
+                    fallback_auth,
+                    start,
+                    end,
+                    content_length=content_length,
+                    probe_bases=probe_bases,
+                )
+            if not fallback_digest:
+                return False
+            primary_digest = self._fetch_primary_fallback_range_digest(
+                ctx,
+                primary_auth,
+                start,
+                end,
+                content_length,
+                probe_bases,
+                primary_url,
             )
             return all(results)
 
@@ -3216,6 +3172,66 @@ class _StreamHandler(BaseHTTPRequestHandler):
             )
             return False
         return bool(primary_digest and primary_digest == fallback_digest)
+
+    def _validate_fallback_fingerprint_parallel(
+        self,
+        ctx,
+        ranges,
+        content_length,
+        probe_bases,
+        current_range,
+        primary_url,
+        fallback_url,
+        fallback_auth,
+        primary_auth,
+    ):
+        """Verify fingerprint ranges with bounded parallel range probes."""
+        workers = min(_FALLBACK_FINGERPRINT_WORKERS, len(ranges))
+        fallback_digests = {}
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            fallback_futures = {}
+            for start, end in ranges:
+                if current_range and current_range[:2] == (start, end):
+                    fallback_digests[(start, end)] = current_range[2]
+                    continue
+                future = executor.submit(
+                    self._fetch_fallback_range_digest,
+                    fallback_url,
+                    fallback_auth,
+                    start,
+                    end,
+                    content_length=content_length,
+                    probe_bases=probe_bases,
+                )
+                fallback_futures[future] = (start, end)
+            for future in as_completed(fallback_futures):
+                start, end = fallback_futures[future]
+                digest = future.result()
+                if not digest:
+                    return False
+                fallback_digests[(start, end)] = digest
+
+            primary_futures = {
+                executor.submit(
+                    self._fetch_primary_fallback_range_digest,
+                    ctx,
+                    primary_auth,
+                    start,
+                    end,
+                    content_length,
+                    probe_bases,
+                    primary_url,
+                ): (start, end)
+                for start, end in ranges
+            }
+            for future in as_completed(primary_futures):
+                start, end = primary_futures[future]
+                primary_digest = future.result()
+                if not primary_digest or primary_digest != fallback_digests.get(
+                    (start, end)
+                ):
+                    return False
+        return True
 
     def _fetch_primary_fallback_range_digest(
         self, ctx, auth_header, start, end, content_length, probe_bases, primary_url
