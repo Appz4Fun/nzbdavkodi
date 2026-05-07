@@ -6953,6 +6953,68 @@ def test_live_fallback_selection_reuses_failed_range_digest_for_fingerprint_samp
     assert len(fallback_failed_range_reads) == 1
 
 
+def test_live_fallback_selection_pipelines_fingerprint_reads_before_cutover():
+    """Primary fingerprint reads should overlap fallback probes during cutover."""
+    from resources.lib.fallback_streams import fingerprint_ranges
+
+    handler = _make_handler()
+    content_length = 10000000
+    failed_byte = 1
+    range_end = failed_byte + 100000
+    source = {
+        "nzo_id": "good",
+        "stream_url": "http://webdav/content/fallback.mkv",
+        "stream_headers": {"Authorization": "Basic fallback"},
+        "content_length": content_length,
+        "validated": False,
+        "failed": False,
+    }
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_length": content_length,
+        "_fallback_probe_bases": [],
+        "fallback_sources": [source],
+    }
+    ranges = fingerprint_ranges(content_length)
+    delay = 0.006
+    calls = []
+    lock = threading.Lock()
+    active = [0]
+    max_active = [0]
+
+    def digest(url, _auth_header, start, end, content_length, probe_bases=None):
+        assert content_length == ctx["content_length"]
+        assert probe_bases == []
+        with lock:
+            active[0] += 1
+            max_active[0] = max(max_active[0], active[0])
+            calls.append((url, start, end))
+        try:
+            time.sleep(delay)
+        finally:
+            with lock:
+                active[0] -= 1
+        if start == failed_byte:
+            return "current-range-{}".format(url)
+        return "digest-{}-{}".format(start, end)
+
+    started = time.monotonic()
+    with patch.object(handler, "_fetch_fallback_range_digest", side_effect=digest):
+        selected = handler._select_live_fallback_source(ctx, failed_byte, range_end)
+    elapsed = time.monotonic() - started
+
+    assert selected is source
+    assert source["validated"] is True
+    assert len(calls) == 1 + len(ranges) * 2
+    sequential_floor = len(calls) * delay
+    assert max_active[0] > 1, (
+        "expected overlapped fingerprint reads; max_active={} elapsed={:.3f}s "
+        "sequential_floor={:.3f}s".format(max_active[0], elapsed, sequential_floor)
+    )
+    assert elapsed < sequential_floor * 0.75
+
+
 def test_live_fallback_selection_tries_ready_source_before_standby_refresh():
     """Ready fallback streams should not wait on unresolved standby jobs."""
     handler = _make_handler()
