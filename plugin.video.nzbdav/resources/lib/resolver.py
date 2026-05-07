@@ -1436,6 +1436,12 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
         for t in (submit_t, probe_t):
             if t is submit_t and adopted_during_submit[0] and not submit_done.is_set():
                 continue
+            if t is probe_t and submit_result[0]:
+                # A successful addurl response is authoritative. The adoption
+                # probe may still be blocked in a read-only queue/history API
+                # call, so do not keep the post-picker submit path waiting on
+                # cleanup after we already have the nzo_id.
+                continue
             try:
                 t.join(timeout=1)
             except RuntimeError as e:

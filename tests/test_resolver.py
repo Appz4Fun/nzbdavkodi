@@ -2224,6 +2224,55 @@ def test_submit_ui_pump_wakes_when_submit_finishes_before_adoption_tick(
     ), "fast submit result waited for poll tick; elapsed={:.3f}s".format(elapsed)
 
 
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.find_queued_by_name")
+@patch("resources.lib.resolver.submit_nzb")
+def test_submit_ui_pump_fast_submit_skips_slow_probe_cleanup_wait(
+    mock_submit, mock_find_queued, _mock_find_completed
+):
+    """Fast addurl success should not wait for a stale slow adoption probe."""
+    queue_probe_started = threading.Event()
+    release_queue_probe = threading.Event()
+    queue_probe_finished = threading.Event()
+
+    def slow_queue_miss(_title):
+        try:
+            queue_probe_started.set()
+            release_queue_probe.wait(timeout=0.25)
+            return None
+        finally:
+            queue_probe_finished.set()
+
+    def fast_submit(_nzb_url, _title):
+        assert queue_probe_started.wait(timeout=1)
+        _time.sleep(0.02)
+        return "SABnzbd_nzo_fast_submit", None
+
+    mock_find_queued.side_effect = slow_queue_miss
+    mock_submit.side_effect = fast_submit
+    dialog = MagicMock()
+    dialog.iscanceled.return_value = False
+    monitor = MagicMock()
+    monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
+
+    started = _time.perf_counter()
+    try:
+        nzo_id, submit_error = _submit_nzb_with_ui_pump(
+            "http://hydra/getnzb/abc", "movie.mkv", dialog, monitor
+        )
+        elapsed = _time.perf_counter() - started
+    finally:
+        release_queue_probe.set()
+        queue_probe_finished.wait(timeout=1)
+
+    assert (nzo_id, submit_error) == ("SABnzbd_nzo_fast_submit", None)
+    assert (
+        elapsed < 0.08
+    ), "fast submit waited for slow adoption probe cleanup; elapsed={:.3f}s".format(
+        elapsed
+    )
+
+
 @patch("resources.lib.resolver.find_completed_by_name")
 @patch("resources.lib.resolver.find_queued_by_name", return_value=None)
 @patch("resources.lib.resolver.submit_nzb")
