@@ -2251,6 +2251,55 @@ def test_submit_ui_pump_starts_history_probe_after_fast_queue_miss(
 
 
 @patch("resources.lib.resolver.find_completed_by_name")
+@patch("resources.lib.resolver.find_queued_by_name", return_value=None)
+@patch("resources.lib.resolver.submit_nzb")
+def test_submit_ui_pump_rechecks_completed_history_quickly_after_initial_miss(
+    mock_submit, _mock_find_queued, mock_find_completed
+):
+    """Completed jobs appearing after the first miss should use the fast cadence."""
+    submit_can_finish = threading.Event()
+    history_probe_times = []
+
+    def delayed_submit(_nzb_url, _title):
+        submit_can_finish.wait(timeout=0.75)
+        return "SABnzbd_nzo_submitted", None
+
+    def completed_history_on_second_probe(_title):
+        history_probe_times.append(_time.perf_counter())
+        if len(history_probe_times) == 1:
+            return None
+        return {
+            "nzo_id": "SABnzbd_nzo_second_history_probe",
+            "name": "movie.mkv",
+            "status": "Completed",
+        }
+
+    mock_submit.side_effect = delayed_submit
+    mock_find_completed.side_effect = completed_history_on_second_probe
+    dialog = MagicMock()
+    dialog.iscanceled.return_value = False
+    monitor = MagicMock()
+    monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
+
+    started = _time.perf_counter()
+    try:
+        nzo_id, submit_error = _submit_nzb_with_ui_pump(
+            "http://hydra/getnzb/abc", "movie.mkv", dialog, monitor
+        )
+    finally:
+        submit_can_finish.set()
+    elapsed = _time.perf_counter() - started
+    history_gap = history_probe_times[1] - history_probe_times[0]
+
+    assert (nzo_id, submit_error) == ("SABnzbd_nzo_second_history_probe", None)
+    assert (
+        elapsed < 0.18
+    ), "second completed-history probe took {:.3f}s; gap was {:.3f}s".format(
+        elapsed, history_gap
+    )
+
+
+@patch("resources.lib.resolver.find_completed_by_name")
 @patch("resources.lib.resolver.find_queued_by_name")
 @patch("resources.lib.resolver.submit_nzb")
 def test_submit_ui_pump_rechecks_queue_while_history_miss_is_slow(

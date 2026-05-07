@@ -1380,6 +1380,7 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
         # do not make completed-history adoption wait out the full grace.
         if not _wait_for_history_probe_start():
             return
+        probe_started = time.monotonic()
         while (
             not queue_stop.is_set()
             and not submit_done.is_set()
@@ -1395,7 +1396,13 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
                 match = None
             if _record_adoption_hit(_job_nzo_id(match)):
                 return
-            if queue_stop.wait(_SUBMIT_QUEUE_PROBE_INTERVAL_SECONDS):
+            elapsed = time.monotonic() - probe_started
+            interval = (
+                _SUBMIT_QUEUE_PROBE_FAST_INTERVAL_SECONDS
+                if elapsed < _SUBMIT_QUEUE_PROBE_FAST_WINDOW_SECONDS
+                else _SUBMIT_QUEUE_PROBE_INTERVAL_SECONDS
+            )
+            if queue_stop.wait(interval):
                 return
 
     submit_t = threading.Thread(
