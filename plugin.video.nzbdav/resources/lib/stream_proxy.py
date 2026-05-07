@@ -3593,8 +3593,11 @@ class _StreamHandler(BaseHTTPRequestHandler):
             start, end = 0, content_length - 1
 
         total_bytes = end - start + 1
-        runtime_settings = _passthrough_runtime_settings(ctx)
-        no_range_status = range_header is None and _send_200_no_range_enabled()
+        runtime_settings = None
+        no_range_status = False
+        if range_header is None:
+            runtime_settings = _passthrough_runtime_settings(ctx)
+            no_range_status = _send_200_no_range_enabled()
         self.send_response(200 if no_range_status else 206)
         self.send_header("Content-Type", ctx["content_type"])
         self.send_header("Content-Length", str(total_bytes))
@@ -3636,10 +3639,6 @@ class _StreamHandler(BaseHTTPRequestHandler):
         total_skipped = 0
         recovery_count = 0
         terminal_reason = "complete"
-        contract_mode = runtime_settings["contract_mode"]
-        density_breaker_enabled = runtime_settings["density_breaker_enabled"]
-        zero_fill_budget_enabled = runtime_settings["zero_fill_budget_enabled"]
-        retry_ladder_enabled = runtime_settings["retry_ladder_enabled"]
         density_window = deque()
         # Reset the throughput watchdog window per request. ctx may be reused
         # across requests for the same session, so explicit re-init avoids
@@ -3652,6 +3651,33 @@ class _StreamHandler(BaseHTTPRequestHandler):
         fallback_notification_pending = False
 
         try:
+            waited_for_initial_prefetch = False
+            if range_header and current == 0:
+                cached_prefix = self._pop_cached_fallback_range(ctx, current, end)
+                if not cached_prefix:
+                    self._wait_for_initial_range_prefetch(ctx, current)
+                    waited_for_initial_prefetch = True
+                    cached_prefix = self._pop_cached_fallback_range(ctx, current, end)
+                if cached_prefix:
+                    self.wfile.write(cached_prefix)
+                    written = len(cached_prefix)
+                    total_streamed += written
+                    current += written
+                    _update_session_recovery_state(self.server, ctx, streamed=written)
+                    _record_density_window(density_window, "progress", written)
+                    if current > end:
+                        return
+
+            if waited_for_initial_prefetch:
+                ctx["_initial_range_prefetch_wait_consumed"] = True
+
+            if runtime_settings is None:
+                runtime_settings = _passthrough_runtime_settings(ctx)
+            contract_mode = runtime_settings["contract_mode"]
+            density_breaker_enabled = runtime_settings["density_breaker_enabled"]
+            zero_fill_budget_enabled = runtime_settings["zero_fill_budget_enabled"]
+            retry_ladder_enabled = runtime_settings["retry_ladder_enabled"]
+
             while current <= end:
                 result, written = self._stream_upstream_range(
                     active_ctx, current, end, contract_mode=contract_mode
@@ -3956,7 +3982,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
         requested_start = start
         written = 0
         cached_prefix = self._pop_cached_fallback_range(ctx, start, end)
-        if not cached_prefix:
+        wait_consumed = bool(ctx.pop("_initial_range_prefetch_wait_consumed", False))
+        if not cached_prefix and not wait_consumed:
             self._wait_for_initial_range_prefetch(ctx, start)
             cached_prefix = self._pop_cached_fallback_range(ctx, start, end)
         if cached_prefix:

@@ -1737,6 +1737,82 @@ def test_prepare_stream_prefetches_passthrough_settings_for_first_get_bytes():
     )
 
 
+def test_first_get_writes_prefetched_bytes_before_slow_runtime_settings():
+    """Cached byte-0 data should reach Kodi even if settings prefetch lags."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_context = None
+    sp._server.stream_sessions = {}
+    sp._server.pending_stream_contexts = {}
+    sp._context_lock = threading.RLock()
+    sp.port = 9999
+
+    content_length = 4096
+    payload = b"P" * content_length
+    settings_started = threading.Event()
+    release_settings = threading.Event()
+
+    def slow_runtime_settings():
+        settings_started.set()
+        release_settings.wait(timeout=1)
+        return {
+            "contract_mode": "warn",
+            "density_breaker_enabled": False,
+            "zero_fill_budget_enabled": True,
+            "retry_ladder_enabled": True,
+        }
+
+    with patch.object(
+        sp, "_get_content_length", return_value=content_length
+    ), patch.object(
+        _StreamHandler, "_fallback_probe_bases", return_value=()
+    ), patch.object(
+        _StreamHandler, "_fetch_fallback_range_bytes", return_value=payload
+    ), patch(
+        "resources.lib.stream_proxy._read_passthrough_runtime_settings",
+        side_effect=slow_runtime_settings,
+    ), patch(
+        "resources.lib.stream_proxy._send_200_no_range_enabled", return_value=False
+    ):
+        sp.prepare_stream("http://host/movie.mkv", auth_header="Basic primary")
+        thread = sp._server.stream_context.get("_initial_range_prefetch_thread")
+        if thread:
+            thread.join(timeout=1)
+        assert settings_started.wait(timeout=1)
+
+        ctx = sp._server.stream_context
+        handler = _make_handler_with_server(ctx, range_header="bytes=0-4095")
+        first_write_at = []
+
+        def record_first_write(_chunk):
+            if not first_write_at:
+                first_write_at.append(time.monotonic())
+
+        handler.wfile.write.side_effect = record_first_write
+        started = time.monotonic()
+        serve_thread = threading.Thread(target=handler._serve_proxy, args=(ctx,))
+        serve_thread.start()
+        try:
+            deadline = time.monotonic() + 0.08
+            while not first_write_at and time.monotonic() < deadline:
+                time.sleep(0.001)
+            first_byte_elapsed = (
+                first_write_at[0] - started
+                if first_write_at
+                else time.monotonic() - started
+            )
+        finally:
+            release_settings.set()
+            serve_thread.join(timeout=1)
+
+    assert first_write_at, "proxy waited for runtime settings before cached bytes"
+    assert (
+        first_byte_elapsed < 0.04
+    ), "first proxy bytes waited {:.3f}s on runtime settings".format(first_byte_elapsed)
+
+
 def test_fallback_prevalidation_does_not_delay_initial_prefetch_first_bytes():
     """Fallback prevalidation should not compete with the first playable bytes."""
     from resources.lib.stream_proxy import (
