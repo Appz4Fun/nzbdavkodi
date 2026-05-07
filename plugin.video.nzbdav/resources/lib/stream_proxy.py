@@ -5684,6 +5684,72 @@ class StreamProxy:
         ctx["_fallback_prevalidation_thread"] = thread
         thread.start()
 
+    @staticmethod
+    def _initial_range_prefetchable(ctx):
+        """Return whether this pass-through context can prefetch byte 0."""
+        if (
+            ctx.get("remux")
+            or ctx.get("faststart")
+            or ctx.get("temp_faststart")
+            or ctx.get("mode") == "hls"
+            or not ctx.get("remote_url")
+        ):
+            return False
+        try:
+            return int(ctx.get("content_length", 0) or 0) > 0
+        except (TypeError, ValueError):
+            return False
+
+    def _prefetch_initial_range(self, ctx):
+        """Prime the first pass-through bytes for Kodi's initial range GET."""
+        try:
+            content_length = int(ctx.get("content_length", 0) or 0)
+        except (TypeError, ValueError):
+            return
+        if content_length <= 0:
+            return
+        end = min(content_length - 1, _UPSTREAM_READ_CHUNK - 1)
+        try:
+            body = _StreamHandler._fetch_fallback_range_bytes(
+                ctx["remote_url"],
+                ctx.get("auth_header"),
+                0,
+                end,
+                content_length=content_length,
+                probe_bases=_StreamHandler._fallback_probe_bases(ctx),
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            xbmc.log(
+                "NZB-DAV: Initial range prefetch failed: {}".format(exc),
+                xbmc.LOGDEBUG,
+            )
+            return
+        if body:
+            _StreamHandler._cache_fallback_range(
+                ctx,
+                ctx["remote_url"],
+                ctx.get("auth_header"),
+                content_length,
+                0,
+                body,
+            )
+
+    def _start_initial_range_prefetch(self, ctx):
+        """Start byte-0 prefetch without delaying proxy prepare."""
+        if not self._initial_range_prefetchable(ctx):
+            return
+        thread = threading.Thread(
+            target=self._prefetch_initial_range,
+            args=(ctx,),
+            name="nzbdav-initial-range-prefetch",
+        )
+        thread.daemon = True
+        ctx["_initial_range_prefetch_thread"] = thread
+        try:
+            thread.start()
+        except RuntimeError:
+            ctx.pop("_initial_range_prefetch_thread", None)
+
     def prepare_stream(self, remote_url, auth_header=None, fallback_sources=None):
         """Set up proxy for a new stream.
 
@@ -6092,6 +6158,7 @@ class StreamProxy:
                 }
 
         _attach_fallback_context_fields(ctx, fallback_sources)
+        self._start_initial_range_prefetch(ctx)
         self._start_fallback_prevalidation(ctx)
 
         local_url = self._register_session(ctx)
