@@ -553,16 +553,113 @@ def _direct_playback_service_config():
     return service_port, prepare_token
 
 
+def _ready_direct_playback_service_config_state(service_port, prepare_token):
+    done = threading.Event()
+    done.set()
+    return {
+        "done": done,
+        "error": None,
+        "service_port": service_port,
+        "prepare_token": prepare_token,
+        "thread": None,
+    }
+
+
+def _start_direct_playback_service_config_lookup():
+    """Start proxy service config lookup before stream readiness."""
+    done = threading.Event()
+    state = {
+        "done": done,
+        "error": None,
+        "service_port": None,
+        "prepare_token": "",
+        "thread": None,
+    }
+
+    def _worker():
+        try:
+            state["service_port"], state["prepare_token"] = (
+                _direct_playback_service_config()
+            )
+        except Exception as error:  # pylint: disable=broad-except
+            state["error"] = error
+        finally:
+            done.set()
+
+    thread = threading.Thread(
+        target=_worker, name="nzbdav-direct-playback-service-config", daemon=True
+    )
+    state["thread"] = thread
+    try:
+        thread.start()
+    except RuntimeError:
+        try:
+            service_port, prepare_token = _direct_playback_service_config()
+            return _ready_direct_playback_service_config_state(
+                service_port, prepare_token
+            )
+        except Exception as error:  # pylint: disable=broad-except
+            state["error"] = error
+            done.set()
+    return state
+
+
+def _wait_direct_playback_service_config(state):
+    if not state:
+        return _direct_playback_service_config()
+    done = state.get("done")
+    if done:
+        done.wait()
+    error = state.get("error")
+    if error is not None:
+        raise error
+    return state.get("service_port") or 0, state.get("prepare_token") or ""
+
+
+def _prepare_direct_playback_with_service_config(
+    stream_url, stream_headers, fallback_sources, service_config_state
+):
+    from resources.lib.stream_proxy import ServiceProxyUnavailableError
+
+    service_port, prepare_token = _wait_direct_playback_service_config(
+        service_config_state
+    )
+    try:
+        return _prepare_direct_playback(
+            stream_url,
+            stream_headers,
+            fallback_sources=fallback_sources,
+            service_port=service_port,
+            prepare_token=prepare_token,
+        )
+    except ServiceProxyUnavailableError:
+        fresh_service_port, fresh_prepare_token = _direct_playback_service_config()
+        if (fresh_service_port, fresh_prepare_token) == (service_port, prepare_token):
+            raise
+        return _prepare_direct_playback(
+            stream_url,
+            stream_headers,
+            fallback_sources=fallback_sources,
+            service_port=fresh_service_port,
+            prepare_token=fresh_prepare_token,
+        )
+
+
 def _ready_direct_playback_prepare_state(prepared):
     done = threading.Event()
     done.set()
     return {"done": done, "error": None, "prepared": prepared, "thread": None}
 
 
-def _start_direct_playback_prepare(stream_url, stream_headers, fallback_sources=None):
+def _start_direct_playback_prepare(
+    stream_url, stream_headers, fallback_sources=None, service_config_state=None
+):
     """Start proxy prepare in the background and return its state."""
-    service_port, prepare_token = _direct_playback_service_config()
-    if not service_port:
+    if service_config_state is None:
+        service_port, prepare_token = _direct_playback_service_config()
+    else:
+        service_port, prepare_token = None, None
+    if service_config_state is None and not service_port:
         prepared = _prepare_direct_playback(
             stream_url,
             stream_headers,
@@ -577,13 +674,21 @@ def _start_direct_playback_prepare(stream_url, stream_headers, fallback_sources=
 
     def _worker():
         try:
-            state["prepared"] = _prepare_direct_playback(
-                stream_url,
-                stream_headers,
-                fallback_sources=fallback_sources,
-                service_port=service_port,
-                prepare_token=prepare_token,
-            )
+            if service_config_state is None:
+                state["prepared"] = _prepare_direct_playback(
+                    stream_url,
+                    stream_headers,
+                    fallback_sources=fallback_sources,
+                    service_port=service_port,
+                    prepare_token=prepare_token,
+                )
+            else:
+                state["prepared"] = _prepare_direct_playback_with_service_config(
+                    stream_url,
+                    stream_headers,
+                    fallback_sources,
+                    service_config_state,
+                )
         except Exception as error:  # pylint: disable=broad-except
             state["error"] = error
         finally:
@@ -2061,6 +2166,7 @@ def resolve(handle, params):
     title = unquote(params.get("title", ""))
     fallback_state = None
     playback_cleanup_state = None
+    playback_service_config_state = None
 
     if not nzb_url:
         xbmcgui.Dialog().ok(_addon_name(), _string(30096))
@@ -2077,6 +2183,7 @@ def resolve(handle, params):
         fallback_candidate_loader = _prefetch_fallback_candidate_loader(
             params.get("_fallback_candidate_loader")
         )
+        playback_service_config_state = _start_direct_playback_service_config_lookup()
 
         def _start_playback_cleanup_once():
             nonlocal playback_cleanup_state
@@ -2113,6 +2220,7 @@ def resolve(handle, params):
                 stream_url,
                 stream_headers,
                 fallback_sources=fallback_sources,
+                service_config_state=playback_service_config_state,
             )
             _wait_playback_state_cleanup(playback_cleanup_state)
             _finish_direct_playback(
@@ -2152,6 +2260,7 @@ def resolve_and_play(nzb_url, title, params=None):
     dialog = None
     fallback_state = None
     playback_cleanup_state = None
+    playback_service_config_state = None
     try:
         poll_interval, download_timeout = _get_poll_settings()
         dialog = xbmcgui.DialogProgress()
@@ -2160,6 +2269,7 @@ def resolve_and_play(nzb_url, title, params=None):
         fallback_candidate_loader = _prefetch_fallback_candidate_loader(
             (params or {}).get("_fallback_candidate_loader")
         )
+        playback_service_config_state = _start_direct_playback_service_config_lookup()
 
         def _start_playback_cleanup_once():
             nonlocal playback_cleanup_state
@@ -2198,6 +2308,7 @@ def resolve_and_play(nzb_url, title, params=None):
                 stream_url,
                 stream_headers,
                 fallback_sources=fallback_sources,
+                service_config_state=playback_service_config_state,
             )
             _wait_playback_state_cleanup(playback_cleanup_state)
             _finish_player_playback(

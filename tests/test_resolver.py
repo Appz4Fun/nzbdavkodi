@@ -4,7 +4,7 @@
 import sys
 import threading
 import time as _time
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 from resources.lib.resolver import (
     _DOWNLOAD_TIMEOUT_MAX,
@@ -830,6 +830,7 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
                 "content_length": 0,
             },
         ],
+        service_config_state=ANY,
     )
     mock_wait_prepare.assert_called_once_with(prepare_state)
     mock_finish_playback.assert_called_once_with(1, prepared_playback)
@@ -1096,6 +1097,87 @@ def test_resolve_overlaps_proxy_prepare_with_bookmark_cleanup_after_ready(
     assert timing["cleanup_end"] <= timing["resolved"]
     elapsed = timing["resolved"] - timing["ready"]
     assert elapsed < 0.32, "ready-to-resolved stayed serial at {:.3f}s".format(elapsed)
+
+
+@patch("resources.lib.cache_prompt.maybe_show_cache_prompt")
+@patch("resources.lib.stream_proxy.prepare_stream_via_service")
+@patch("resources.lib.stream_proxy.get_service_proxy_token", return_value="token")
+@patch("resources.lib.stream_proxy.get_service_proxy_port")
+@patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
+@patch("resources.lib.resolver._start_fallback_submit_worker")
+@patch("resources.lib.resolver._poll_until_ready")
+@patch("resources.lib.resolver._clear_kodi_playback_state")
+@patch("resources.lib.resolver.xbmc")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.xbmcplugin")
+@patch("resources.lib.resolver._get_poll_settings")
+def test_resolve_overlaps_service_config_lookup_with_stream_readiness(
+    mock_poll_settings,
+    mock_plugin,
+    mock_gui,
+    mock_xbmc,
+    mock_clear_state,
+    mock_poll_until_ready,
+    mock_start_fallback,
+    _mock_snapshot,
+    mock_get_port,
+    _mock_get_token,
+    mock_prepare,
+    _mock_cache_prompt,
+):
+    """Proxy port/token lookup should not start after WebDAV readiness."""
+    mock_poll_settings.return_value = (2, 60)
+    mock_start_fallback.return_value = {"state": "fallback"}
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    mock_gui.DialogProgress.return_value = MagicMock()
+    mock_gui.ListItem.return_value = MagicMock()
+    mock_prepare.return_value = (
+        "http://127.0.0.1:57800/stream/primary",
+        {"remux": False, "faststart": False, "direct": False},
+    )
+    timing = {}
+
+    def get_port():
+        timing["service_config_start"] = _time.perf_counter()
+        _time.sleep(0.10)
+        timing["service_config_end"] = _time.perf_counter()
+        return 57800
+
+    def poll_ready(*_args, **_kwargs):
+        timing["poll_start"] = _time.perf_counter()
+        _time.sleep(0.12)
+        timing["ready"] = _time.perf_counter()
+        return (
+            "http://webdav/content/primary/movie.mkv",
+            {"Authorization": "Basic primary"},
+        )
+
+    def prepare(*_args, **_kwargs):
+        timing["prepare_start"] = _time.perf_counter()
+        return mock_prepare.return_value
+
+    mock_get_port.side_effect = get_port
+    mock_poll_until_ready.side_effect = poll_ready
+    mock_prepare.side_effect = prepare
+
+    resolve(
+        1,
+        {
+            "nzburl": "http://hydra/getnzb/primary",
+            "title": "movie.mkv",
+            "_fallback_candidates": [],
+        },
+    )
+
+    ready_to_prepare = timing["prepare_start"] - timing["ready"]
+    assert timing["service_config_start"] < timing["ready"]
+    assert (
+        ready_to_prepare < 0.05
+    ), "service config delayed prepare by {:.3f}s after readiness".format(
+        ready_to_prepare
+    )
+    mock_clear_state.assert_called_once()
+    mock_plugin.setResolvedUrl.assert_called_once()
 
 
 @patch("resources.lib.cache_prompt.maybe_show_cache_prompt")
