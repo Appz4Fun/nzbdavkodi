@@ -195,6 +195,9 @@ _FALLBACK_PRIMARY_AUTH_HINT_KEY = "_fallback_primary_auth_hint"
 _FALLBACK_CURRENT_RANGE_CACHE_KEY = "_fallback_current_range_cache"
 _FALLBACK_FINGERPRINT_WORKERS = 10
 _INITIAL_RANGE_PREFETCH_WAIT_SECONDS = 0.08
+_PASSTHROUGH_RUNTIME_SETTINGS_KEY = "_passthrough_runtime_settings"
+_PASSTHROUGH_RUNTIME_SETTINGS_DONE_KEY = "_passthrough_runtime_settings_done"
+_PASSTHROUGH_RUNTIME_SETTINGS_ERROR_KEY = "_passthrough_runtime_settings_error"
 
 # Shared zero buffer reused across all pass-through responses.
 _ZERO_FILL_BUFFER = bytes(65536)
@@ -518,6 +521,45 @@ def _retry_ladder_enabled():
 
 def _send_200_no_range_enabled():
     return _get_bool_setting("send_200_no_range", default=False)
+
+
+def _read_passthrough_runtime_settings():
+    """Read per-session pass-through recovery settings once."""
+    contract_mode = _get_strict_contract_mode()
+    return {
+        "contract_mode": contract_mode,
+        "density_breaker_enabled": _density_breaker_enabled(contract_mode),
+        "zero_fill_budget_enabled": _zero_fill_budget_enabled(),
+        "retry_ladder_enabled": _retry_ladder_enabled(),
+    }
+
+
+def _passthrough_runtime_settings(ctx):
+    """Return cached pass-through settings, waiting for a prefetch if present."""
+    if isinstance(ctx, dict):
+        settings = ctx.get(_PASSTHROUGH_RUNTIME_SETTINGS_KEY)
+        if isinstance(settings, dict):
+            return settings
+        done = ctx.get(_PASSTHROUGH_RUNTIME_SETTINGS_DONE_KEY)
+        if done is not None:
+            try:
+                done.wait()
+            except (AttributeError, RuntimeError):
+                pass
+            settings = ctx.get(_PASSTHROUGH_RUNTIME_SETTINGS_KEY)
+            if isinstance(settings, dict):
+                return settings
+            error = ctx.get(_PASSTHROUGH_RUNTIME_SETTINGS_ERROR_KEY)
+            if error is not None:
+                xbmc.log(
+                    "NZB-DAV: Pass-through settings prefetch failed: {}".format(error),
+                    xbmc.LOGDEBUG,
+                )
+
+    settings = _read_passthrough_runtime_settings()
+    if isinstance(ctx, dict):
+        ctx[_PASSTHROUGH_RUNTIME_SETTINGS_KEY] = settings
+    return settings
 
 
 def _expected_content_range(start, end, content_length):
@@ -3551,6 +3593,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
             start, end = 0, content_length - 1
 
         total_bytes = end - start + 1
+        runtime_settings = _passthrough_runtime_settings(ctx)
         no_range_status = range_header is None and _send_200_no_range_enabled()
         self.send_response(200 if no_range_status else 206)
         self.send_header("Content-Type", ctx["content_type"])
@@ -3593,10 +3636,10 @@ class _StreamHandler(BaseHTTPRequestHandler):
         total_skipped = 0
         recovery_count = 0
         terminal_reason = "complete"
-        contract_mode = _get_strict_contract_mode()
-        density_breaker_enabled = _density_breaker_enabled(contract_mode)
-        zero_fill_budget_enabled = _zero_fill_budget_enabled()
-        retry_ladder_enabled = _retry_ladder_enabled()
+        contract_mode = runtime_settings["contract_mode"]
+        density_breaker_enabled = runtime_settings["density_breaker_enabled"]
+        zero_fill_budget_enabled = runtime_settings["zero_fill_budget_enabled"]
+        retry_ladder_enabled = runtime_settings["retry_ladder_enabled"]
         density_window = deque()
         # Reset the throughput watchdog window per request. ctx may be reused
         # across requests for the same session, so explicit re-init avoids
@@ -5846,6 +5889,35 @@ class StreamProxy:
         except RuntimeError:
             ctx.pop("_initial_range_prefetch_thread", None)
 
+    def _start_passthrough_runtime_settings_prefetch(self, ctx):
+        """Read pass-through recovery settings during the player handoff gap."""
+        if not self._initial_range_prefetchable(ctx):
+            return
+        done = threading.Event()
+        ctx[_PASSTHROUGH_RUNTIME_SETTINGS_DONE_KEY] = done
+
+        def _worker():
+            try:
+                ctx[_PASSTHROUGH_RUNTIME_SETTINGS_KEY] = (
+                    _read_passthrough_runtime_settings()
+                )
+            except Exception as exc:  # pylint: disable=broad-except
+                ctx[_PASSTHROUGH_RUNTIME_SETTINGS_ERROR_KEY] = exc
+            finally:
+                done.set()
+
+        thread = threading.Thread(
+            target=_worker,
+            name="nzbdav-passthrough-settings-prefetch",
+        )
+        thread.daemon = True
+        ctx["_passthrough_runtime_settings_thread"] = thread
+        try:
+            thread.start()
+        except RuntimeError:
+            ctx.pop("_passthrough_runtime_settings_thread", None)
+            ctx.pop(_PASSTHROUGH_RUNTIME_SETTINGS_DONE_KEY, None)
+
     def prepare_stream(
         self,
         remote_url,
@@ -6267,6 +6339,7 @@ class StreamProxy:
                 }
 
         _attach_fallback_context_fields(ctx, fallback_sources)
+        self._start_passthrough_runtime_settings_prefetch(ctx)
         self._start_initial_range_prefetch(ctx)
         self._start_fallback_prevalidation(ctx)
 

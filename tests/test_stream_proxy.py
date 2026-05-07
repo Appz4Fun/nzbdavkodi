@@ -1666,6 +1666,77 @@ def test_first_get_reuses_inflight_initial_prefetch_before_opening_duplicate_ran
     duplicate_open.assert_not_called()
 
 
+def test_prepare_stream_prefetches_passthrough_settings_for_first_get_bytes():
+    """Recovery-setting reads should be hidden before Kodi's first proxy GET."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_context = None
+    sp._server.stream_sessions = {}
+    sp._server.pending_stream_contexts = {}
+    sp._context_lock = threading.RLock()
+    sp.port = 9999
+
+    content_length = 4096
+    payload = b"P" * content_length
+
+    def slow_setting(key, default=""):  # pylint: disable=unused-argument
+        if key in (
+            "strict_contract_mode",
+            "density_breaker_enabled",
+            "zero_fill_budget_enabled",
+            "retry_ladder_enabled",
+        ):
+            time.sleep(0.03)
+        return {
+            "strict_contract_mode": "warn",
+            "density_breaker_enabled": "false",
+            "zero_fill_budget_enabled": "true",
+            "retry_ladder_enabled": "true",
+            "force_remux_threshold_mb": "0",
+            "force_remux_mode": "0",
+            "force_remux_mode_v2_migrated": "true",
+        }.get(key, default)
+
+    with patch.object(
+        sp, "_get_content_length", return_value=content_length
+    ), patch.object(
+        _StreamHandler, "_fallback_probe_bases", return_value=()
+    ), patch.object(
+        _StreamHandler, "_fetch_fallback_range_bytes", return_value=payload
+    ), patch(
+        "resources.lib.stream_proxy._get_addon_setting", side_effect=slow_setting
+    ):
+        sp.prepare_stream("http://host/movie.mkv", auth_header="Basic primary")
+        # Simulate Kodi's setResolvedUrl/player handoff gap. The proxy should
+        # use that time to finish slow session-scoped settings reads.
+        time.sleep(0.16)
+
+        ctx = sp._server.stream_context
+        handler = _make_handler_with_server(ctx, range_header="bytes=0-4095")
+        first_write_at = []
+
+        def record_first_write(_chunk):
+            if not first_write_at:
+                first_write_at.append(time.monotonic())
+
+        handler.wfile.write.side_effect = record_first_write
+        started = time.monotonic()
+        with patch("resources.lib.stream_proxy.urlopen") as duplicate_open:
+            handler._serve_proxy(ctx)
+
+    assert _collect_written(handler) == payload
+    duplicate_open.assert_not_called()
+    assert first_write_at, "proxy did not write first playable bytes"
+    first_byte_elapsed = first_write_at[0] - started
+    assert (
+        first_byte_elapsed < 0.08
+    ), "first proxy bytes waited {:.3f}s on recovery settings".format(
+        first_byte_elapsed
+    )
+
+
 def test_fallback_prevalidation_does_not_delay_initial_prefetch_first_bytes():
     """Fallback prevalidation should not compete with the first playable bytes."""
     from resources.lib.stream_proxy import (
