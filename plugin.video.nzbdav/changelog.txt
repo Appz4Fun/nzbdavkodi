@@ -1,3 +1,11 @@
+v1.2.0 (2026-05-07)
+- Wire fallback discovery into the RunScript/TMDBHelper playback path so script-mode picks now submit standby fallback streams the same way the plugin-handle path does.
+- Plumb a thread-safe settings getter through fallback prefetch, submit, adoption, and candidate submission so RunScript fallback work reads addon settings without touching xbmcaddon.Addon() off the main thread.
+- Defer fallback candidate prefetch in resolve_and_play until after the primary submit is accepted, removing a pre-playback delay on the script path.
+- Survive thread-start failures during submit by treating the queue/history probes as optional and falling back to a synchronous submit when even the submit thread cannot start.
+- Raise the NZBHydra2 search result cap from 100 to 10000 so the configured max_results setting is honored for high values.
+- Add regression coverage for the deferred RunScript fallback loader, settings-getter plumbing, and probe-thread starvation.
+
 v1.1.0 (2026-05-07)
 - TMDBHelper playback now uses a RunScript handoff instead of a resolvable plugin URL, avoiding Kodi resolver hangs while preserving the result picker flow.
 - Script-mode playback can read addon settings directly from addon_data/settings.xml, so Kodi getSetting RuntimeError failures no longer abort searches or playback before the picker appears.

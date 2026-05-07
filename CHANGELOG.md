@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | Version | Released | What it's about |
 |---|---|---|
 | **[Unreleased](#unreleased)** | Pending | Not started |
+| **[1.2.0](#120--2026-05-07)** | 2026-05-07 | RunScript fallback discovery wiring, thread-safe settings plumbing through fallback path, deferred fallback prefetch, probe-thread starvation survival, NZBHydra2 result cap raised |
 | **[1.1.0](#110--2026-05-07)** | 2026-05-07 | TMDBHelper RunScript playback handoff, script-safe settings reads, faster post-picker resolver handoff, direct MKV start, clearer submit errors |
 | **[1.0.9](#109--2026-05-06)** | 2026-05-06 | Fallback discovery and live failover speed, longer live-service timeouts, dev-only live fallback tests |
 | **[1.0.8](#108--2026-05-05)** | 2026-05-05 | Fallback manifest hardening, shared HTTP fetch path, malformed group-size fail-closed behavior |
@@ -60,6 +61,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 No changes yet.
+
+## [1.2.0] — 2026-05-07
+
+> **RunScript playback now gets the same fallback discovery as plugin-handle
+> playback.** TMDBHelper script-mode picks were previously skipping standby
+> submissions; this release wires the deferred fallback loader and threads a
+> safe settings getter through every fallback path so the work runs cleanly off
+> the main thread. Also raises the NZBHydra2 result cap and hardens the submit
+> thread-start path.
+
+**Changed**
+- **RunScript/TMDBHelper playback now submits fallback standby streams.** The
+  `_handle_search` and `_handle_script_play` routes now build the deferred
+  fallback candidate loader (previously hardcoded to `None`), so script-mode
+  picks get the same duplicate-release fallback chain as the plugin-handle
+  picker path.
+- **A thread-safe settings getter is plumbed through fallback prefetch,
+  submit, adoption, and candidate submission.** Fallback workers no longer
+  rely on `xbmcaddon.Addon()` from non-main threads when running under
+  RunScript, fixing the same `getSetting` RuntimeError class that v1.1.0
+  addressed for the picker path.
+- **Fallback candidate prefetch is deferred until after the primary submit is
+  accepted.** `resolve_and_play` no longer kicks off fallback discovery as
+  part of the post-picker handoff, removing a pre-playback delay on the
+  RunScript path.
+- **Submit survives thread-start failures.** When `threading.Thread.start()`
+  raises (Kodi process under thread pressure), the optional queue/history
+  probe threads are skipped and the submit falls back to a synchronous path
+  instead of aborting the whole submit.
+- **NZBHydra2 search result cap raised from 100 to 10000.** Configured
+  `max_results` values above 100 are now passed through unchanged so wide
+  pre-filter searches honor the user setting.
+
+**Tests**
+- Added regression coverage for the deferred RunScript fallback loader,
+  `settings_getter` plumbing through fallback discovery and submission, and
+  probe-thread starvation during submit.
 
 ## [1.1.0] — 2026-05-07
 
