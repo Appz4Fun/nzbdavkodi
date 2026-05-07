@@ -1536,6 +1536,81 @@ def test_prepare_stream_prefetches_initial_passthrough_bytes_before_first_get():
     assert prefetch_finished.is_set()
 
 
+def test_first_get_reuses_inflight_initial_prefetch_before_opening_duplicate_range():
+    """An immediate first GET should wait briefly for the prepare prefetch."""
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_OK,
+        StreamProxy,
+    )
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_context = None
+    sp._server.stream_sessions = {}
+    sp._server.pending_stream_contexts = {}
+    sp._context_lock = threading.RLock()
+    sp.port = 9999
+    content_length = 131072
+    payload = b"P" * 65536
+    prefetch_started = threading.Event()
+
+    def prefetch_bytes(url, auth_header, start, end, content_length, probe_bases=None):
+        assert url == "http://host/movie.mkv"
+        assert auth_header == "Basic primary"
+        assert (start, end) == (0, len(payload) - 1)
+        assert content_length == 131072
+        assert probe_bases == ()
+        prefetch_started.set()
+        time.sleep(0.06)
+        return payload
+
+    def duplicate_first_get(req, timeout=None):  # pylint: disable=unused-argument
+        time.sleep(0.12)
+        return _mock_urlopen_response(
+            [payload],
+            headers={
+                "Content-Range": "bytes 0-65535/131072",
+                "Content-Length": str(len(payload)),
+            },
+        )
+
+    with patch.object(
+        sp, "_get_content_length", return_value=content_length
+    ), patch.object(
+        _StreamHandler, "_fallback_probe_bases", return_value=()
+    ), patch.object(
+        _StreamHandler, "_fetch_fallback_range_bytes", side_effect=prefetch_bytes
+    ):
+        sp.prepare_stream("http://host/movie.mkv", auth_header="Basic primary")
+        assert prefetch_started.wait(timeout=1)
+        time.sleep(0.02)
+
+    ctx = sp._server.stream_context
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-65535")
+    first_write_at = []
+
+    def record_first_write(_chunk):
+        if not first_write_at:
+            first_write_at.append(time.monotonic())
+
+    handler.wfile.write.side_effect = record_first_write
+    with patch(
+        "resources.lib.stream_proxy.urlopen", side_effect=duplicate_first_get
+    ) as duplicate_open:
+        started = time.monotonic()
+        result, written = handler._stream_upstream_range(ctx, 0, len(payload) - 1)
+
+    assert result == _UPSTREAM_RANGE_OK
+    assert written == len(payload)
+    assert _collect_written(handler) == payload
+    assert first_write_at, "proxy did not write first playable bytes"
+    first_byte_elapsed = first_write_at[0] - started
+    assert first_byte_elapsed < 0.09, "first proxy byte took {:.3f}s".format(
+        first_byte_elapsed
+    )
+    duplicate_open.assert_not_called()
+
+
 def test_ready_fallback_is_prevalidated_before_upstream_error_cutover():
     """Cutover should not pay full fingerprint validation after the read error."""
     from resources.lib.stream_proxy import (

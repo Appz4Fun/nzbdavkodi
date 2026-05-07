@@ -194,6 +194,7 @@ _FALLBACK_PRIMARY_URL_HINT_KEY = "_fallback_primary_url_hint"
 _FALLBACK_PRIMARY_AUTH_HINT_KEY = "_fallback_primary_auth_hint"
 _FALLBACK_CURRENT_RANGE_CACHE_KEY = "_fallback_current_range_cache"
 _FALLBACK_FINGERPRINT_WORKERS = 10
+_INITIAL_RANGE_PREFETCH_WAIT_SECONDS = 0.08
 
 # Shared zero buffer reused across all pass-through responses.
 _ZERO_FILL_BUFFER = bytes(65536)
@@ -3498,6 +3499,21 @@ class _StreamHandler(BaseHTTPRequestHandler):
         cache.pop(selected_key, None)
         return selected_body
 
+    @staticmethod
+    def _wait_for_initial_range_prefetch(ctx, start):
+        """Briefly wait for prepare-time byte-0 prefetch to populate the cache."""
+        if start != 0:
+            return
+        thread = ctx.get("_initial_range_prefetch_thread")
+        if not thread or thread is threading.current_thread():
+            return
+        try:
+            if not thread.is_alive():
+                return
+            thread.join(_INITIAL_RANGE_PREFETCH_WAIT_SECONDS)
+        except RuntimeError:
+            return
+
     def _serve_proxy(self, ctx):
         """Proxy range requests to remote with missing-article recovery.
 
@@ -3883,6 +3899,9 @@ class _StreamHandler(BaseHTTPRequestHandler):
         requested_start = start
         written = 0
         cached_prefix = self._pop_cached_fallback_range(ctx, start, end)
+        if not cached_prefix:
+            self._wait_for_initial_range_prefetch(ctx, start)
+            cached_prefix = self._pop_cached_fallback_range(ctx, start, end)
         if cached_prefix:
             self.wfile.write(cached_prefix)
             written += len(cached_prefix)
