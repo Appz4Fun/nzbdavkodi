@@ -1154,6 +1154,29 @@ def _submit_fallback_candidates(candidates, monitor, stop_event=None, on_job=Non
         if not nzb_url or not title:
             continue
         job_name = build_fallback_job_name(title, nzb_url, index)
+        existing_job = find_completed_by_name(job_name) or find_queued_by_name(job_name)
+        if existing_job and existing_job.get("nzo_id"):
+            xbmc.log(
+                "NZB-DAV: Adopting existing fallback job '{}' nzo_id={}".format(
+                    job_name, existing_job["nzo_id"]
+                ),
+                xbmc.LOGINFO,
+            )
+            fallback_jobs.append(
+                {
+                    "title": title,
+                    "nzb_url": nzb_url,
+                    "job_name": job_name,
+                    "nzo_id": existing_job["nzo_id"],
+                    "stream_url": "",
+                    "stream_headers": {},
+                    "content_length": 0,
+                    "status": existing_job.get("status", ""),
+                }
+            )
+            if on_job is not None:
+                on_job(dict(fallback_jobs[-1]))
+            continue
         try:
             nzo_id, submit_error = submit_nzb(nzb_url, job_name)
         except Exception as error:  # pylint: disable=broad-except

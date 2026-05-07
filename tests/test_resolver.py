@@ -1263,6 +1263,49 @@ def test_submit_fallback_candidates_rejection_logs_without_dialog(
     mock_xbmc.log.assert_called()
 
 
+@patch("resources.lib.resolver.find_queued_by_name")
+@patch("resources.lib.resolver.find_completed_by_name")
+@patch("resources.lib.resolver.submit_nzb")
+def test_submit_fallback_candidates_adopts_existing_completed_before_submit(
+    mock_submit, mock_find_completed, mock_find_queued
+):
+    from resources.lib.resolver import _submit_fallback_candidates
+
+    mock_find_completed.return_value = {
+        "nzo_id": "SABnzbd_nzo_existing",
+        "status": "Completed",
+    }
+    mock_submit.side_effect = AssertionError("existing fallback should be adopted")
+    observed_jobs = []
+
+    jobs = _submit_fallback_candidates(
+        [
+            {
+                "title": "Fallback A 2026 1080p WEB-DL",
+                "link": "http://hydra/getnzb/fallback-a",
+            }
+        ],
+        _make_monitor(),
+        on_job=observed_jobs.append,
+    )
+
+    expected = {
+        "title": "Fallback A 2026 1080p WEB-DL",
+        "nzb_url": "http://hydra/getnzb/fallback-a",
+        "job_name": "Fallback A 2026 1080p WEB-DL [fallback-1-253ccd06]",
+        "nzo_id": "SABnzbd_nzo_existing",
+        "stream_url": "",
+        "stream_headers": {},
+        "content_length": 0,
+        "status": "Completed",
+    }
+    assert jobs == [expected]
+    assert observed_jobs == [expected]
+    mock_find_completed.assert_called_once_with(expected["job_name"])
+    mock_find_queued.assert_not_called()
+    mock_submit.assert_not_called()
+
+
 @patch("resources.lib.resolver.find_completed_by_name")
 @patch("resources.lib.resolver.xbmc")
 @patch("resources.lib.resolver.xbmcgui")
