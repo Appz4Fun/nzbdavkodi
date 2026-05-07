@@ -36,6 +36,7 @@ from resources.lib.nzbdav_api import (
 )
 from resources.lib.webdav import (
     find_video_file,
+    find_video_stream_for_folder,
     get_video_file_size_hint,
     get_webdav_stream_url_for_path,
     probe_webdav_reachable,
@@ -1086,6 +1087,27 @@ def _start_existing_completed_cleanup(title, on_existing_completed):
         )
 
 
+def _find_video_stream_for_folder(webdav_folder):
+    """Return video path, URL, and headers for a completed WebDAV folder."""
+    try:
+        from resources.lib import webdav as _webdav
+
+        if (
+            find_video_stream_for_folder is _webdav.find_video_stream_for_folder
+            and find_video_file is _webdav.find_video_file
+            and get_webdav_stream_url_for_path is _webdav.get_webdav_stream_url_for_path
+        ):
+            return find_video_stream_for_folder(webdav_folder)
+    except (AttributeError, ImportError):
+        pass
+
+    video_path = find_video_file(webdav_folder)
+    if not video_path:
+        return None, None, None
+    stream_url, stream_headers = get_webdav_stream_url_for_path(video_path)
+    return video_path, stream_url, stream_headers
+
+
 def _completed_job_stream(title, completed_job, on_existing_completed=None):
     """Return a WebDAV stream URL from a completed nzbdav history row."""
     if not isinstance(completed_job, dict):
@@ -1110,10 +1132,11 @@ def _completed_job_stream(title, completed_job, on_existing_completed=None):
         return None
     webdav_folder = _storage_to_webdav_path(storage)
     _start_existing_completed_cleanup(title, on_existing_completed)
-    video_path = find_video_file(webdav_folder)
+    video_path, stream_url, stream_headers = _find_video_stream_for_folder(
+        webdav_folder
+    )
     if not video_path:
         return None
-    stream_url, stream_headers = get_webdav_stream_url_for_path(video_path)
     _remember_webdav_stream_content_length_hint(stream_url, video_path)
     return stream_url, stream_headers
 
@@ -2046,9 +2069,10 @@ def _handle_history_result(history, title, no_video_retries, max_no_video_retrie
     if not storage:
         return False, None, None, no_video_retries
     webdav_folder = _storage_to_webdav_path(storage)
-    video_path = find_video_file(webdav_folder)
+    video_path, stream_url, stream_headers = _find_video_stream_for_folder(
+        webdav_folder
+    )
     if video_path:
-        stream_url, stream_headers = get_webdav_stream_url_for_path(video_path)
         _remember_webdav_stream_content_length_hint(stream_url, video_path)
         xbmc.log(
             "NZB-DAV: File available, streaming '{}' via WebDAV".format(video_path),

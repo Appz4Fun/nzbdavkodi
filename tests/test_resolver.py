@@ -18,6 +18,7 @@ from resources.lib.resolver import (
     _fallback_submit_jobs_snapshot,
     _get_poll_settings,
     _get_submit_timeout_seconds,
+    _handle_history_result,
     _handle_job_status,
     _handle_resolve_exception,
     _make_playable_listitem,
@@ -1426,6 +1427,70 @@ def test_resolve_uses_picker_completed_job_hint_without_history_lookup(
     assert (
         elapsed < 0.1
     ), "picker completed hint still paid history lookup {:.3f}s".format(elapsed)
+
+
+@patch("resources.lib.webdav.urlopen")
+@patch("resources.lib.webdav._get_settings")
+def test_completed_history_reuses_webdav_settings_for_stream_url(
+    mock_settings, mock_urlopen
+):
+    """Completed history -> playable URL should not re-read Kodi settings."""
+    settings = {
+        "webdav_url": "",
+        "nzbdav_url": "http://nzbdav:3000",
+        "username": "user",
+        "password": "pass",
+    }
+
+    def slow_settings():
+        _time.sleep(0.04)
+        return settings
+
+    propfind_body = """<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/content/uncategorized/Movie/</D:href>
+    <D:propstat>
+      <D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/content/uncategorized/Movie/Movie.mkv</D:href>
+    <D:propstat>
+      <D:prop>
+        <D:getcontentlength>123456789</D:getcontentlength>
+        <D:resourcetype/>
+      </D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+</D:multistatus>"""
+    mock_resp = MagicMock()
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    mock_resp.read.return_value = propfind_body.encode("utf-8")
+    mock_urlopen.return_value = mock_resp
+    mock_settings.side_effect = slow_settings
+
+    started = _time.perf_counter()
+    should_stop, stream_url, stream_headers, no_video_retries = _handle_history_result(
+        {
+            "status": "Completed",
+            "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/Movie",
+        },
+        "Movie",
+        no_video_retries=0,
+        max_no_video_retries=5,
+    )
+    elapsed = _time.perf_counter() - started
+
+    assert should_stop is True
+    assert stream_url == "http://nzbdav:3000/content/uncategorized/Movie/Movie.mkv"
+    assert stream_headers.get("Authorization", "").startswith("Basic ")
+    assert no_video_retries == 0
+    assert mock_settings.call_count == 1
+    assert elapsed < 0.07, "completed-history stream URL took {:.3f}s".format(elapsed)
 
 
 @patch("resources.lib.stream_proxy.prepare_stream_via_service")

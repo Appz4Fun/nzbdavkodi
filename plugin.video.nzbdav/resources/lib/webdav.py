@@ -423,14 +423,8 @@ def find_video_file(
         return None
 
 
-def get_webdav_stream_url_for_path(file_path):
-    """Build a stream URL and auth headers for a full WebDAV path.
-
-    Returns (url, headers_dict) where headers_dict may be empty if no auth.
-    """
-    settings = _get_settings()
-
-    # file_path is already URL-encoded from PROPFIND
+def _get_webdav_stream_url_for_path_with_settings(file_path, settings):
+    """Build a stream URL and auth headers from an already-read settings dict."""
     base = settings["webdav_url"] or settings["nzbdav_url"]
     # Normalize base/file-path boundary so we never produce "host" + "path"
     # (missing slash) or "host//" + "/path" (double slash). The PROPFIND
@@ -439,6 +433,26 @@ def get_webdav_stream_url_for_path(file_path):
     url = "{}/{}".format(base.rstrip("/"), file_path.lstrip("/"))
     headers = _build_auth_headers(settings["username"], settings["password"])
     return url, headers
+
+
+def get_webdav_stream_url_for_path(file_path):
+    """Build a stream URL and auth headers for a full WebDAV path.
+
+    Returns (url, headers_dict) where headers_dict may be empty if no auth.
+    """
+    return _get_webdav_stream_url_for_path_with_settings(file_path, _get_settings())
+
+
+def find_video_stream_for_folder(folder_path):
+    """Find a folder's playable video path and stream URL with one settings read."""
+    settings = _get_settings()
+    video_path = find_video_file(folder_path, _settings=settings)
+    if not video_path:
+        return None, None, None
+    stream_url, stream_headers = _get_webdav_stream_url_for_path_with_settings(
+        video_path, settings
+    )
+    return video_path, stream_url, stream_headers
 
 
 def _build_auth_headers(username, password):
