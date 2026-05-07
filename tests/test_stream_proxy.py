@@ -6410,6 +6410,46 @@ def test_live_fallback_selection_parallelizes_fingerprint_samples_for_cutover_sp
     assert elapsed < 0.16, "cutover validation took {:.3f}s".format(elapsed)
 
 
+def test_live_fallback_selection_keeps_slow_rtt_cutover_under_budget():
+    """Slow-but-healthy fallback probes should still validate inside budget."""
+    handler = _make_handler()
+    content_length = 10000000
+    failed_byte = 1234567
+    range_end = failed_byte + 200000
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": None,
+        "content_length": content_length,
+        "_fallback_probe_bases": [],
+        "fallback_sources": [
+            {
+                "nzo_id": "nzo2",
+                "stream_url": "http://webdav/content/fallback.mkv",
+                "stream_headers": {},
+                "content_length": content_length,
+                "validated": False,
+                "failed": False,
+            }
+        ],
+    }
+    per_probe_delay = 0.02
+
+    def digest(_url, _auth_header, start, end, content_length, probe_bases=None):
+        assert content_length == ctx["content_length"]
+        assert probe_bases == []
+        time.sleep(per_probe_delay)
+        return "digest-{}-{}".format(start, end)
+
+    with patch.object(handler, "_fetch_fallback_range_digest", side_effect=digest):
+        started = time.monotonic()
+        source = handler._select_live_fallback_source(ctx, failed_byte, range_end)
+        elapsed = time.monotonic() - started
+
+    assert source is ctx["fallback_sources"][0]
+    assert ctx["fallback_sources"][0]["validated"] is True
+    assert elapsed < 0.17, "cutover validation took {:.3f}s".format(elapsed)
+
+
 def test_live_fallback_selection_reuses_primary_fingerprint_across_candidates():
     """Primary fingerprint samples should be shared across candidate checks."""
     from resources.lib.fallback_streams import fingerprint_ranges
