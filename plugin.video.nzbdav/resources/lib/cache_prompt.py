@@ -60,10 +60,13 @@ def maybe_show_cache_prompt(stream_info):
     appropriate. Handles the button result (Show instructions / Not
     now / Never ask) and records the session / persistent dismissal.
     """
+    stream_remux = bool(stream_info.get("remux"))
+    if not stream_remux:
+        return
+
     window = xbmcgui.Window(_HOME_WINDOW_ID)
     addon = xbmcaddon.Addon()
 
-    stream_remux = bool(stream_info.get("remux"))
     cache_is_set = has_cache_memorysize_zero()
     session_shown = window.getProperty(_PROP_SHOWN_THIS_SESSION).lower() == "true"
     persistent_dismissed = addon.getSetting("cache_dialog_dismissed").lower() == "true"

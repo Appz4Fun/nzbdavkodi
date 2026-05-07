@@ -3,6 +3,7 @@
 
 """Tests for cache_prompt — first-play advancedsettings.xml dialog."""
 
+import time
 from unittest.mock import MagicMock, patch
 
 from resources.lib.cache_prompt import (
@@ -181,6 +182,35 @@ def test_maybe_show_skips_when_remux_false(
 
     maybe_show_cache_prompt({"remux": False, "total_bytes": 0})
 
+    dialog.yesnocustom.assert_not_called()
+
+
+@patch("resources.lib.cache_prompt.xbmcgui")
+@patch("resources.lib.cache_prompt.xbmcaddon")
+@patch("resources.lib.cache_prompt.has_cache_memorysize_zero")
+def test_maybe_show_skips_advancedsettings_probe_when_remux_false(
+    mock_has_cache, mock_xbmcaddon, mock_xbmcgui
+):
+    """Non-remux proxy playback should not delay setResolvedUrl on cache XML I/O."""
+    mock_xbmcaddon.Addon.return_value = _make_addon(dismissed="false")
+    mock_xbmcgui.Window.return_value = _make_window(shown=False)
+    dialog = MagicMock()
+    mock_xbmcgui.Dialog.return_value = dialog
+
+    def slow_cache_probe():
+        time.sleep(0.12)
+        return False
+
+    mock_has_cache.side_effect = slow_cache_probe
+
+    started = time.perf_counter()
+    maybe_show_cache_prompt({"remux": False, "total_bytes": 0})
+    elapsed = time.perf_counter() - started
+
+    assert (
+        elapsed < 0.03
+    ), "non-remux cache prompt gate took {:.3f}s before playable URL".format(elapsed)
+    mock_has_cache.assert_not_called()
     dialog.yesnocustom.assert_not_called()
 
 
