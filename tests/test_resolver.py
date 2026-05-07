@@ -2479,6 +2479,63 @@ def test_poll_until_ready_skips_non_gate_stream_validation(
     mock_validate.assert_not_called()
 
 
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._submit_nzb_with_retries", return_value="nzo_abc")
+@patch("resources.lib.resolver.get_webdav_stream_url_for_path")
+@patch("resources.lib.resolver.find_video_file")
+@patch("resources.lib.resolver.get_job_history")
+@patch("resources.lib.resolver.get_job_status")
+@patch("resources.lib.resolver.xbmc")
+def test_poll_until_ready_graces_nearly_complete_queue_for_history(
+    mock_xbmc,
+    mock_status,
+    mock_history,
+    mock_find,
+    mock_stream_url,
+    mock_submit,
+    mock_find_completed,
+):
+    """A 99% queue row should not force a full extra poll before WebDAV discovery."""
+    completed_history = {
+        "status": "Completed",
+        "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/movie",
+    }
+    status_calls = []
+    history_calls = []
+
+    def get_status(_nzo_id):
+        status_calls.append(_time.perf_counter())
+        if len(status_calls) > 1:
+            _time.sleep(0.05)
+        return {"status": "Downloading", "percentage": "99"}
+
+    def get_history(_nzo_id):
+        history_calls.append(_time.perf_counter())
+        if len(history_calls) == 1:
+            _time.sleep(0.05)
+        return completed_history
+
+    monitor = MagicMock()
+    monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
+    mock_xbmc.Monitor.return_value = monitor
+    mock_status.side_effect = get_status
+    mock_history.side_effect = get_history
+    mock_find.return_value = "/content/uncategorized/movie/movie.mkv"
+    mock_stream_url.return_value = ("http://webdav/movie.mkv", {"Authorization": "x"})
+
+    started = _time.perf_counter()
+    url, headers = _poll_until_ready(
+        "http://hydra/nzb", "movie", _make_dialog(), 0.2, 3600
+    )
+    elapsed = _time.perf_counter() - started
+
+    assert url == "http://webdav/movie.mkv"
+    assert headers == {"Authorization": "x"}
+    assert elapsed < 0.14, "nearly-complete poll delayed WebDAV by {:.3f}s".format(
+        elapsed
+    )
+
+
 @patch("resources.lib.resolver.cancel_job")
 @patch("resources.lib.resolver.find_completed_by_name", return_value=None)
 @patch("resources.lib.resolver.get_job_history", return_value=None)

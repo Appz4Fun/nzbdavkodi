@@ -46,6 +46,8 @@ _DOWNLOAD_TIMEOUT_MIN = 60
 _DOWNLOAD_TIMEOUT_MAX = 86400
 MAX_POLL_ITERATIONS = _DOWNLOAD_TIMEOUT_MAX // _POLL_INTERVAL_MIN
 _FALLBACK_SHUTDOWN_JOIN_TIMEOUT = 10
+_POLL_NEAR_COMPLETE_PERCENTAGE = 99.0
+_POLL_NEAR_COMPLETE_HISTORY_GRACE_SECONDS = 0.1
 # HTTP status codes the submit retry loop treats as transient and worth
 # retrying. RFC 9110 explicitly calls 408 retry-friendly ("client may
 # assume the server closed the connection due to inactivity and retry").
@@ -690,6 +692,32 @@ def _queue_status_is_clearly_active(job_status):
         return True
 
 
+def _queue_status_is_nearly_complete(job_status):
+    """Return whether queue progress is close enough to briefly await history."""
+    if not isinstance(job_status, dict):
+        return False
+    try:
+        percentage = float(job_status.get("percentage", 0) or 0)
+    except (TypeError, ValueError):
+        return False
+    return percentage >= _POLL_NEAR_COMPLETE_PERCENTAGE
+
+
+def _wait_for_nearly_complete_history(history_ready, history_done, deadline):
+    """Give completed history a small chance to beat the next poll interval."""
+    grace_deadline = min(
+        deadline,
+        time.monotonic() + _POLL_NEAR_COMPLETE_HISTORY_GRACE_SECONDS,
+    )
+    while True:
+        if history_ready.is_set() or history_done.is_set():
+            return
+        remaining = grace_deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        history_ready.wait(min(0.01, remaining))
+
+
 def _poll_once(nzo_id, title, monitor):
     """Poll nzbdav queue API and history API in parallel.
 
@@ -748,6 +776,8 @@ def _poll_once(nzo_id, title, monitor):
         if history_ready.is_set():
             break
         if queue_done.is_set() and _queue_status_is_clearly_active(job_status[0]):
+            if _queue_status_is_nearly_complete(job_status[0]):
+                _wait_for_nearly_complete_history(history_ready, history_done, deadline)
             break
         if queue_done.is_set() and history_done.is_set():
             break
