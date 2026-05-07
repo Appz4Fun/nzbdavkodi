@@ -785,7 +785,22 @@ def _show_submit_error_dialog(submit_error):
     )
 
 
-def _existing_completed_stream(title):
+def _start_existing_completed_cleanup(title, on_existing_completed):
+    """Start existing-completed cleanup callback without failing resolve."""
+    if on_existing_completed is None:
+        return
+    try:
+        on_existing_completed()
+    except Exception as error:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: Existing completed cleanup start failed for '{}': {}".format(
+                title, error
+            ),
+            xbmc.LOGWARNING,
+        )
+
+
+def _existing_completed_stream(title, on_existing_completed=None):
     """Return an already-downloaded stream URL when the title exists."""
     existing = find_completed_by_name(title)
     if not existing:
@@ -803,6 +818,7 @@ def _existing_completed_stream(title):
         )
         return None
     webdav_folder = _storage_to_webdav_path(storage)
+    _start_existing_completed_cleanup(title, on_existing_completed)
     video_path = find_video_file(webdav_folder)
     if not video_path:
         return None
@@ -1705,6 +1721,7 @@ def _poll_until_ready(
     poll_interval,
     download_timeout,
     on_primary_submitted=None,
+    on_existing_completed=None,
 ):
     """Submit NZB and poll until download completes.
 
@@ -1713,7 +1730,9 @@ def _poll_until_ready(
     notifications are issued inside this function; the caller only needs to
     decide what to do with the resulting stream URL.
     """
-    existing_stream = _existing_completed_stream(title)
+    existing_stream = _existing_completed_stream(
+        title, on_existing_completed=on_existing_completed
+    )
     if existing_stream is not None:
         return existing_stream
 
@@ -1846,6 +1865,7 @@ def resolve(handle, params):
             poll_interval,
             download_timeout,
             on_primary_submitted=_start_fallback_after_primary,
+            on_existing_completed=_start_playback_cleanup_once,
         )
         if stream_url:
             if fallback_state is None:
@@ -1923,6 +1943,7 @@ def resolve_and_play(nzb_url, title, params=None):
             poll_interval,
             download_timeout,
             on_primary_submitted=_start_fallback_after_primary,
+            on_existing_completed=_start_playback_cleanup_once,
         )
         if stream_url:
             if fallback_state is None:

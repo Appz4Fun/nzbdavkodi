@@ -949,6 +949,88 @@ def test_resolve_overlaps_bookmark_cleanup_with_post_submit_poll(
     assert elapsed < 0.35, "selected-to-play path took {:.3f}s".format(elapsed)
 
 
+@patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
+@patch("resources.lib.resolver._start_fallback_submit_worker")
+@patch("resources.lib.resolver._submit_nzb_with_retries")
+@patch("resources.lib.resolver.get_webdav_stream_url_for_path")
+@patch("resources.lib.resolver.find_video_file")
+@patch("resources.lib.resolver.find_completed_by_name")
+@patch("resources.lib.resolver._play_direct")
+@patch("resources.lib.resolver._clear_kodi_playback_state")
+@patch("resources.lib.resolver.xbmc")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver._get_poll_settings")
+def test_resolve_overlaps_bookmark_cleanup_with_existing_completed_fast_path(
+    mock_poll_settings,
+    mock_gui,
+    mock_xbmc,
+    mock_clear_state,
+    mock_play_direct,
+    mock_find_completed,
+    mock_find_video,
+    mock_stream_url,
+    mock_submit,
+    mock_start_fallback,
+    _mock_snapshot,
+):
+    mock_poll_settings.return_value = (2, 60)
+    mock_start_fallback.return_value = {"state": "fallback"}
+    mock_submit.side_effect = AssertionError(
+        "existing completed stream should not submit"
+    )
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    mock_gui.DialogProgress.return_value = MagicMock()
+    mock_find_completed.return_value = {
+        "status": "Completed",
+        "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/movie",
+    }
+    mock_stream_url.return_value = (
+        "http://webdav/content/primary/movie.mkv",
+        {"Authorization": "Basic primary"},
+    )
+    timing = {}
+
+    def cleanup(_params):
+        timing["cleanup_start"] = _time.perf_counter()
+        _time.sleep(0.2)
+        timing["cleanup_end"] = _time.perf_counter()
+
+    def find_video(_path):
+        timing["video_scan_start"] = _time.perf_counter()
+        _time.sleep(0.2)
+        timing["video_scan_end"] = _time.perf_counter()
+        return "/content/uncategorized/movie/movie.mkv"
+
+    def play_direct(*_args, **_kwargs):
+        timing["play"] = _time.perf_counter()
+
+    mock_clear_state.side_effect = cleanup
+    mock_find_video.side_effect = find_video
+    mock_play_direct.side_effect = play_direct
+
+    resolve(
+        1,
+        {
+            "nzburl": "http://hydra/getnzb/primary",
+            "title": "movie.mkv",
+            "_fallback_candidates": [],
+        },
+    )
+
+    elapsed = timing["play"] - timing["video_scan_start"]
+    after_ready_cleanup = timing["play"] - timing["video_scan_end"]
+    assert timing["cleanup_start"] < timing["video_scan_end"], (
+        "bookmark cleanup started after existing-completed stream readiness; "
+        "elapsed={:.3f}s after_ready_cleanup={:.3f}s".format(
+            elapsed, after_ready_cleanup
+        )
+    )
+    assert timing["cleanup_end"] <= timing["play"]
+    assert elapsed < 0.35, "existing-completed selected-to-play took {:.3f}s".format(
+        elapsed
+    )
+
+
 @patch("resources.lib.resolver._stop_fallback_submit_worker")
 @patch("resources.lib.resolver._start_fallback_submit_worker")
 @patch("resources.lib.resolver._poll_until_ready")
