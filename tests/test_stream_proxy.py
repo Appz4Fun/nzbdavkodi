@@ -1535,12 +1535,11 @@ def test_prepare_stream_prefetches_initial_passthrough_bytes_before_first_get():
     prefetch_started = threading.Event()
     prefetch_finished = threading.Event()
 
-    def prefetch_bytes(url, auth_header, start, end, content_length, probe_bases=None):
+    def prefetch_bytes(url, auth_header, start, end, content_length):
         assert url == "http://host/movie.mkv"
         assert auth_header == "Basic primary"
         assert (start, end) == (0, len(payload) - 1)
         assert content_length == 131072
-        assert probe_bases == ()
         prefetch_started.set()
         time.sleep(0.08)
         prefetch_finished.set()
@@ -1561,7 +1560,7 @@ def test_prepare_stream_prefetches_initial_passthrough_bytes_before_first_get():
     ), patch.object(
         _StreamHandler, "_fallback_probe_bases", return_value=()
     ), patch.object(
-        _StreamHandler, "_fetch_fallback_range_bytes", side_effect=prefetch_bytes
+        _StreamHandler, "_fetch_primary_range_bytes", side_effect=prefetch_bytes
     ):
         sp.prepare_stream("http://host/movie.mkv", auth_header="Basic primary")
         time.sleep(0.12)
@@ -1609,12 +1608,11 @@ def test_first_get_reuses_inflight_initial_prefetch_before_opening_duplicate_ran
     payload = b"P" * 65536
     prefetch_started = threading.Event()
 
-    def prefetch_bytes(url, auth_header, start, end, content_length, probe_bases=None):
+    def prefetch_bytes(url, auth_header, start, end, content_length):
         assert url == "http://host/movie.mkv"
         assert auth_header == "Basic primary"
         assert (start, end) == (0, len(payload) - 1)
         assert content_length == 131072
-        assert probe_bases == ()
         prefetch_started.set()
         time.sleep(0.06)
         return payload
@@ -1634,7 +1632,7 @@ def test_first_get_reuses_inflight_initial_prefetch_before_opening_duplicate_ran
     ), patch.object(
         _StreamHandler, "_fallback_probe_bases", return_value=()
     ), patch.object(
-        _StreamHandler, "_fetch_fallback_range_bytes", side_effect=prefetch_bytes
+        _StreamHandler, "_fetch_primary_range_bytes", side_effect=prefetch_bytes
     ):
         sp.prepare_stream("http://host/movie.mkv", auth_header="Basic primary")
         assert prefetch_started.wait(timeout=1)
@@ -1664,6 +1662,87 @@ def test_first_get_reuses_inflight_initial_prefetch_before_opening_duplicate_ran
         first_byte_elapsed
     )
     duplicate_open.assert_not_called()
+
+
+def test_initial_prefetch_skips_probe_base_settings_before_first_get():
+    """Primary byte-0 prefetch should not wait for fallback probe-base settings."""
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_OK,
+        StreamProxy,
+    )
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_context = None
+    sp._server.stream_sessions = {}
+    sp._server.pending_stream_contexts = {}
+    sp._context_lock = threading.RLock()
+    sp.port = 9999
+
+    content_length = 4096
+    payload = b"P" * content_length
+    open_threads = []
+
+    def slow_probe_bases(_ctx):
+        time.sleep(0.18)
+        return ()
+
+    def direct_urlopen(req, timeout=None):  # pylint: disable=unused-argument
+        open_threads.append(threading.current_thread().name)
+        assert req.full_url == "http://host/movie.mkv"
+        assert _request_header(req, "Authorization") == "Basic primary"
+        assert _request_header(req, "Range") == "bytes=0-4095"
+        if threading.current_thread().name != "nzbdav-initial-range-prefetch":
+            time.sleep(0.12)
+        return _mock_urlopen_response(
+            [payload],
+            headers={
+                "Content-Range": "bytes 0-4095/4096",
+                "Content-Length": str(content_length),
+            },
+        )
+
+    with patch.object(
+        sp, "_get_content_length", return_value=content_length
+    ), patch.object(
+        _StreamHandler, "_fallback_probe_bases", side_effect=slow_probe_bases
+    ) as probe_bases, patch.object(
+        _StreamHandler, "_fetch_fallback_range_bytes", return_value=payload
+    ) as fallback_fetch, patch(
+        "resources.lib.stream_proxy.urlopen", side_effect=direct_urlopen
+    ) as direct_open:
+        sp.prepare_stream("http://host/movie.mkv", auth_header="Basic primary")
+        thread = sp._server.stream_context.get("_initial_range_prefetch_thread")
+        time.sleep(0.02)
+
+        ctx = sp._server.stream_context
+        handler = _make_handler_with_server(ctx, range_header="bytes=0-4095")
+        first_write_at = []
+
+        def record_first_write(_chunk):
+            if not first_write_at:
+                first_write_at.append(time.monotonic())
+
+        handler.wfile.write.side_effect = record_first_write
+        started = time.monotonic()
+        result, written = handler._stream_upstream_range(ctx, 0, content_length - 1)
+        if thread:
+            thread.join(timeout=1)
+
+    assert result == _UPSTREAM_RANGE_OK
+    assert written == content_length
+    assert _collect_written(handler) == payload
+    assert first_write_at, "proxy did not write first playable bytes"
+    first_byte_elapsed = first_write_at[0] - started
+    assert (
+        first_byte_elapsed < 0.09
+    ), "first proxy byte waited {:.3f}s on probe-base settings".format(
+        first_byte_elapsed
+    )
+    probe_bases.assert_not_called()
+    fallback_fetch.assert_not_called()
+    assert direct_open.call_count == 1
+    assert open_threads == ["nzbdav-initial-range-prefetch"]
 
 
 def test_prepare_stream_prefetches_passthrough_settings_for_first_get_bytes():
@@ -1704,7 +1783,7 @@ def test_prepare_stream_prefetches_passthrough_settings_for_first_get_bytes():
     ), patch.object(
         _StreamHandler, "_fallback_probe_bases", return_value=()
     ), patch.object(
-        _StreamHandler, "_fetch_fallback_range_bytes", return_value=payload
+        _StreamHandler, "_fetch_primary_range_bytes", return_value=payload
     ), patch(
         "resources.lib.stream_proxy._get_addon_setting", side_effect=slow_setting
     ):
@@ -1769,7 +1848,7 @@ def test_first_get_writes_prefetched_bytes_before_slow_runtime_settings():
     ), patch.object(
         _StreamHandler, "_fallback_probe_bases", return_value=()
     ), patch.object(
-        _StreamHandler, "_fetch_fallback_range_bytes", return_value=payload
+        _StreamHandler, "_fetch_primary_range_bytes", return_value=payload
     ), patch(
         "resources.lib.stream_proxy._read_passthrough_runtime_settings",
         side_effect=slow_runtime_settings,
@@ -1893,12 +1972,11 @@ def test_fallback_prevalidation_does_not_delay_initial_prefetch_first_bytes():
     prefetch_started = threading.Event()
     prevalidation_started = threading.Event()
 
-    def prefetch_bytes(url, auth_header, start, end, content_length, probe_bases=None):
+    def prefetch_bytes(url, auth_header, start, end, content_length):
         assert url == "http://host/movie.mkv"
         assert auth_header == "Basic primary"
         assert (start, end) == (0, len(payload) - 1)
         assert content_length == len(payload)
-        assert probe_bases == ()
         prefetch_started.set()
         # If prevalidation starts immediately, let it expose contention for the
         # same upstream link before this byte-0 prefetch can finish.
@@ -1939,7 +2017,7 @@ def test_fallback_prevalidation_does_not_delay_initial_prefetch_first_bytes():
     ), patch.object(
         _StreamHandler, "_fallback_probe_bases", return_value=()
     ), patch.object(
-        _StreamHandler, "_fetch_fallback_range_bytes", side_effect=prefetch_bytes
+        _StreamHandler, "_fetch_primary_range_bytes", side_effect=prefetch_bytes
     ):
         sp.prepare_stream(
             "http://host/movie.mkv",

@@ -3483,6 +3483,45 @@ class _StreamHandler(BaseHTTPRequestHandler):
             return None
 
     @staticmethod
+    def _fetch_primary_range_bytes(url, auth_header, start, end, content_length):
+        """Return validated range bytes from the already-selected primary URL."""
+        if not isinstance(start, int) or not isinstance(end, int):
+            return None
+        try:
+            content_length = int(content_length or 0)
+        except (TypeError, ValueError):
+            return None
+        if start < 0 or end < start or content_length <= 0 or end >= content_length:
+            return None
+
+        expected_length = end - start + 1
+        try:
+            req = Request(url)
+            _add_request_headers(req, auth_header)
+            req.add_header("Range", "bytes={}-{}".format(start, end))
+            # nosemgrep
+            with urlopen(req, timeout=10) as resp:  # nosec B310
+                status = getattr(resp, "status", None) or resp.getcode()
+                content_range = _get_header(resp, "Content-Range")
+                header_length = _get_header(resp, "Content-Length")
+                if isinstance(content_range, str):
+                    content_range = content_range.strip()
+                if isinstance(header_length, str):
+                    header_length = header_length.strip()
+                if status != 206:
+                    return None
+                if content_range != _expected_content_range(start, end, content_length):
+                    return None
+                if header_length != str(expected_length):
+                    return None
+                body = resp.read(expected_length)
+        except (OSError, TypeError, ValueError):
+            return None
+        if len(body) != expected_length:
+            return None
+        return body
+
+    @staticmethod
     def _cache_fallback_range(
         ctx, stream_url, auth_header, content_length, start, body
     ):
@@ -5880,13 +5919,12 @@ class StreamProxy:
             return
         end = min(content_length - 1, _UPSTREAM_READ_CHUNK - 1)
         try:
-            body = _StreamHandler._fetch_fallback_range_bytes(
+            body = _StreamHandler._fetch_primary_range_bytes(
                 ctx["remote_url"],
                 ctx.get("auth_header"),
                 0,
                 end,
-                content_length=content_length,
-                probe_bases=_StreamHandler._fallback_probe_bases(ctx),
+                content_length,
             )
         except Exception as exc:  # pylint: disable=broad-except
             xbmc.log(
