@@ -7,6 +7,7 @@ import io
 import json
 import subprocess
 import threading
+import time
 from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
 
@@ -6493,6 +6494,59 @@ def test_live_fallback_selection_reuses_fingerprint_ranges_across_candidates():
     assert ctx["fallback_sources"][0]["failed"] is True
     assert ctx["fallback_sources"][1]["validated"] is True
     mock_ranges.assert_called_once_with(content_length)
+
+
+def test_live_fallback_validation_overlaps_primary_and_fallback_fingerprint_probes():
+    """Post-error fallback cutover should overlap paired fingerprint probes."""
+    handler = _make_handler()
+    content_length = 10000000
+    failed_byte = 7000000
+    range_end = failed_byte + 100000
+    probe_delay = 0.01
+    source = {
+        "nzo_id": "good",
+        "stream_url": "http://webdav/content/fallback.mkv",
+        "stream_headers": {"Authorization": "Basic fallback"},
+        "content_length": content_length,
+        "validated": False,
+        "failed": False,
+    }
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_length": content_length,
+        "_fallback_probe_bases": [],
+        "fallback_sources": [source],
+    }
+    lock = threading.Lock()
+    active_probes = [0]
+    max_active_probes = [0]
+
+    def digest(_url, _auth_header, start, end, content_length, probe_bases=None):
+        assert content_length == ctx["content_length"]
+        assert probe_bases == []
+        with lock:
+            active_probes[0] += 1
+            max_active_probes[0] = max(max_active_probes[0], active_probes[0])
+        try:
+            time.sleep(probe_delay)
+            if start == failed_byte:
+                return "current-range"
+            return "digest-{}-{}".format(start, end)
+        finally:
+            with lock:
+                active_probes[0] -= 1
+
+    started = time.monotonic()
+    with patch.object(handler, "_fetch_fallback_range_digest", side_effect=digest):
+        selected = handler._select_live_fallback_source(ctx, failed_byte, range_end)
+    elapsed = time.monotonic() - started
+
+    assert selected is source
+    assert source["validated"] is True
+    assert (
+        max_active_probes[0] >= 2
+    ), "fallback probes were serial; elapsed={:.3f}s".format(elapsed)
 
 
 def test_live_fallback_selection_keeps_primary_cache_for_later_attempts():

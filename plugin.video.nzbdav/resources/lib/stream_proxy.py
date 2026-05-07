@@ -2944,33 +2944,115 @@ class _StreamHandler(BaseHTTPRequestHandler):
             fallback_url = self._fallback_source_stream_url(ctx, source)
         if fallback_auth is _AUTH_HEADER_NOT_PROVIDED:
             fallback_auth = self._fallback_source_auth(source)
-        for start, end in self._fallback_fingerprint_ranges(ctx, content_length):
-            fallback_digest = None
-            if current_range and current_range[:2] == (start, end):
-                fallback_digest = current_range[2]
-            if not fallback_digest:
-                fallback_digest = self._fetch_fallback_range_digest(
-                    fallback_url,
-                    fallback_auth,
+        pending_primary_probe = None
+        pipeline_ready = False
+        try:
+            for start, end in self._fallback_fingerprint_ranges(ctx, content_length):
+                fallback_digest = None
+                if current_range and current_range[:2] == (start, end):
+                    fallback_digest = current_range[2]
+                if not fallback_digest:
+                    fallback_digest = self._fetch_fallback_range_digest(
+                        fallback_url,
+                        fallback_auth,
+                        start,
+                        end,
+                        content_length=content_length,
+                        probe_bases=probe_bases,
+                    )
+                if pending_primary_probe is not None:
+                    if not self._finish_primary_fingerprint_probe(
+                        pending_primary_probe
+                    ):
+                        pending_primary_probe = None
+                        return False
+                    pending_primary_probe = None
+                if not fallback_digest:
+                    return False
+                if not pipeline_ready:
+                    primary_digest = self._fetch_primary_fallback_range_digest(
+                        ctx,
+                        primary_auth,
+                        start,
+                        end,
+                        content_length,
+                        probe_bases,
+                        primary_url,
+                    )
+                    if not primary_digest or primary_digest != fallback_digest:
+                        return False
+                    pipeline_ready = True
+                    continue
+                pending_primary_probe = self._start_primary_fingerprint_probe(
+                    ctx,
+                    primary_auth,
                     start,
                     end,
-                    content_length=content_length,
-                    probe_bases=probe_bases,
+                    content_length,
+                    probe_bases,
+                    primary_url,
+                    fallback_digest,
                 )
-            if not fallback_digest:
-                return False
-            primary_digest = self._fetch_primary_fallback_range_digest(
-                ctx,
-                primary_auth,
-                start,
-                end,
-                content_length,
-                probe_bases,
-                primary_url,
-            )
-            if not primary_digest or primary_digest != fallback_digest:
-                return False
-        return True
+            if pending_primary_probe is not None:
+                if not self._finish_primary_fingerprint_probe(pending_primary_probe):
+                    pending_primary_probe = None
+                    return False
+                pending_primary_probe = None
+            return True
+        finally:
+            if pending_primary_probe is not None:
+                pending_primary_probe["thread"].join()
+
+    def _start_primary_fingerprint_probe(
+        self,
+        ctx,
+        primary_auth,
+        start,
+        end,
+        content_length,
+        probe_bases,
+        primary_url,
+        fallback_digest,
+    ):
+        """Start one primary fingerprint sample while the next fallback reads."""
+        probe = {
+            "digest": None,
+            "error": None,
+            "fallback_digest": fallback_digest,
+        }
+
+        def _fetch_primary():
+            try:
+                probe["digest"] = self._fetch_primary_fallback_range_digest(
+                    ctx,
+                    primary_auth,
+                    start,
+                    end,
+                    content_length,
+                    probe_bases,
+                    primary_url,
+                )
+            except Exception as exc:  # preserve foreground exception behavior
+                probe["error"] = exc
+
+        primary_thread = threading.Thread(
+            target=_fetch_primary,
+            name="nzbdav-fallback-primary-probe",
+        )
+        primary_thread.daemon = True
+        probe["thread"] = primary_thread
+        primary_thread.start()
+        return probe
+
+    @staticmethod
+    def _finish_primary_fingerprint_probe(probe):
+        """Return whether an overlapped primary sample matches its fallback."""
+        probe["thread"].join()
+        if probe["error"] is not None:
+            raise probe["error"]
+        primary_digest = probe["digest"]
+        fallback_digest = probe["fallback_digest"]
+        return bool(primary_digest and primary_digest == fallback_digest)
 
     def _fetch_primary_fallback_range_digest(
         self, ctx, auth_header, start, end, content_length, probe_bases, primary_url
