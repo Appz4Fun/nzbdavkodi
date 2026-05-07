@@ -620,6 +620,33 @@ def _history_status_is_terminal(history_status):
     return history_status.get("status") in ("Completed", "Failed")
 
 
+_ACTIVE_QUEUE_STATUSES = frozenset(
+    (
+        "queued",
+        "downloading",
+        "paused",
+        "quickcheck",
+        "verifying",
+        "repairing",
+        "extracting",
+        "moving",
+    )
+)
+
+
+def _queue_status_is_clearly_active(job_status):
+    """Return whether queue status is enough to defer history to the next poll."""
+    if not isinstance(job_status, dict):
+        return False
+    status = str(job_status.get("status", "") or "").strip().lower()
+    if status not in _ACTIVE_QUEUE_STATUSES:
+        return False
+    try:
+        return float(job_status.get("percentage", 0) or 0) < 100
+    except (TypeError, ValueError):
+        return True
+
+
 def _poll_once(nzo_id, title, monitor):
     """Poll nzbdav queue API and history API in parallel.
 
@@ -676,6 +703,8 @@ def _poll_once(nzo_id, title, monitor):
     deadline = time.monotonic() + 10
     while True:
         if history_ready.is_set():
+            break
+        if queue_done.is_set() and _queue_status_is_clearly_active(job_status[0]):
             break
         if queue_done.is_set() and history_done.is_set():
             break
