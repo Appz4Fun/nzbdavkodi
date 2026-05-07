@@ -1572,12 +1572,9 @@ def _adopt_queued_or_completed_job(title, monitor):
     if nothing surfaces within the poll budget (caller retries submit).
     """
     for poll in range(_SUBMIT_ADOPT_POLL_COUNT):
-        queued = find_queued_by_name(title)
-        if queued and queued.get("nzo_id"):
-            return queued["nzo_id"]
-        completed = find_completed_by_name(title)
-        if completed and completed.get("nzo_id"):
-            return completed["nzo_id"]
+        nzo_id = _find_adoptable_job_during_submit(title)
+        if nzo_id:
+            return nzo_id
         if poll < _SUBMIT_ADOPT_POLL_COUNT - 1:
             if monitor.waitForAbort(_SUBMIT_ADOPT_POLL_INTERVAL_SECONDS):
                 return None

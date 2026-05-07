@@ -2301,6 +2301,35 @@ def test_submit_ui_pump_rechecks_completed_history_quickly_after_initial_miss(
 
 @patch("resources.lib.resolver.find_completed_by_name")
 @patch("resources.lib.resolver.find_queued_by_name")
+def test_timeout_adoption_overlaps_completed_history_with_slow_queue_miss(
+    mock_find_queued, mock_find_completed
+):
+    """Submit-timeout adoption should not serialize history behind queue miss."""
+    from resources.lib.resolver import _adopt_queued_or_completed_job
+
+    def slow_queue_miss(_title):
+        _time.sleep(0.12)
+
+    mock_find_queued.side_effect = slow_queue_miss
+    mock_find_completed.return_value = {
+        "nzo_id": "SABnzbd_nzo_completed_timeout",
+        "name": "movie.mkv",
+        "status": "Completed",
+    }
+    monitor = _make_monitor()
+
+    started = _time.perf_counter()
+    nzo_id = _adopt_queued_or_completed_job("movie.mkv", monitor)
+    elapsed = _time.perf_counter() - started
+
+    assert nzo_id == "SABnzbd_nzo_completed_timeout"
+    assert (
+        elapsed < 0.07
+    ), "timeout adoption serialized history behind queue miss: {:.3f}s".format(elapsed)
+
+
+@patch("resources.lib.resolver.find_completed_by_name")
+@patch("resources.lib.resolver.find_queued_by_name")
 @patch("resources.lib.resolver.submit_nzb")
 def test_submit_ui_pump_rechecks_queue_while_history_miss_is_slow(
     mock_submit, mock_find_queued, mock_find_completed
