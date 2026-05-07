@@ -626,6 +626,63 @@ def test_find_video_file_overlaps_first_sibling_probe_for_post_picker_start(
 
 @patch("resources.lib.webdav._get_settings")
 @patch("resources.lib.webdav.urlopen")
+def test_find_video_file_reuses_settings_during_recursive_post_picker_scan(
+    mock_urlopen, mock_settings
+):
+    """Recursive WebDAV discovery should not re-read Kodi settings per sibling."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+
+    def slow_settings():
+        time.sleep(0.04)
+        return _SETTINGS_WITH_AUTH
+
+    mock_settings.side_effect = slow_settings
+    parent = _propfind_listing(
+        [
+            ("/content/uncategorized/SettingsFanout/", True, None),
+            ("/content/uncategorized/SettingsFanout/A/", True, None),
+            ("/content/uncategorized/SettingsFanout/B/", True, None),
+        ]
+    )
+    empty_a = _propfind_listing(
+        [("/content/uncategorized/SettingsFanout/A/", True, None)]
+    )
+    with_video_b = _propfind_listing(
+        [
+            ("/content/uncategorized/SettingsFanout/B/", True, None),
+            ("/content/uncategorized/SettingsFanout/B/Movie.mkv", False, 1234),
+        ]
+    )
+
+    def propfind(req, **_kwargs):
+        url = req.full_url
+        if url.endswith("/SettingsFanout/"):
+            return _webdav_response(parent)
+        if url.endswith("/SettingsFanout/A/"):
+            time.sleep(0.02)
+            return _webdav_response(empty_a)
+        if url.endswith("/SettingsFanout/B/"):
+            time.sleep(0.02)
+            return _webdav_response(with_video_b)
+        raise AssertionError("unexpected PROPFIND URL: {}".format(url))
+
+    mock_urlopen.side_effect = propfind
+
+    started = time.perf_counter()
+    path = find_video_file("/content/uncategorized/SettingsFanout/")
+    elapsed = time.perf_counter() - started
+
+    assert path == "/content/uncategorized/SettingsFanout/B/Movie.mkv"
+    assert (
+        elapsed < 0.10
+    ), "settings fanout WebDAV discovery took {:.3f}s with {} settings reads".format(
+        elapsed, mock_settings.call_count
+    )
+    assert mock_settings.call_count == 1
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
 def test_find_video_file_returns_before_slower_later_sibling_when_ordered_match_found(
     mock_urlopen, mock_settings
 ):

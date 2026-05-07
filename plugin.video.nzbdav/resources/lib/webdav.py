@@ -134,7 +134,7 @@ def probe_webdav_reachable(monitor=None, max_retries=1, retry_delay=1):
     return False, "connection_error"
 
 
-def _find_video_file_in_subdirs(subdirs, depth, visited):
+def _find_video_file_in_subdirs(subdirs, depth, visited, settings):
     """Probe sibling WebDAV subfolders while preserving result order."""
     if not subdirs:
         return None
@@ -161,7 +161,7 @@ def _find_video_file_in_subdirs(subdirs, depth, visited):
                 xbmc.LOGDEBUG,
             )
             try:
-                result = find_video_file(subdir, depth + 1, visited, True)
+                result = find_video_file(subdir, depth + 1, visited, True, settings)
             except Exception as e:  # pylint: disable=broad-except
                 xbmc.log(
                     "NZB-DAV: Error scanning WebDAV subfolder in parallel: "
@@ -211,7 +211,9 @@ def get_video_file_size_hint(file_path):
         return 0
 
 
-def find_video_file(folder_path, _depth=0, _visited=None, _already_encoded=False):
+def find_video_file(
+    folder_path, _depth=0, _visited=None, _already_encoded=False, _settings=None
+):
     """Browse a WebDAV folder and find the largest video file.
 
     Args:
@@ -254,7 +256,7 @@ def find_video_file(folder_path, _depth=0, _visited=None, _already_encoded=False
         return None
     _visited.add(normalized)
 
-    settings = _get_settings()
+    settings = _get_settings() if _settings is None else _settings
     base = settings["webdav_url"] or settings["nzbdav_url"]
     username = settings["username"]
     password = settings["password"]
@@ -406,7 +408,7 @@ def find_video_file(folder_path, _depth=0, _visited=None, _already_encoded=False
         # No video found at this level, recurse into subdirectories. Subdirs
         # came from PROPFIND hrefs and are already URL-encoded, so recursive
         # calls skip top-level quote() to avoid `%20` -> `%2520`.
-        result = _find_video_file_in_subdirs(subdirs, _depth, _visited)
+        result = _find_video_file_in_subdirs(subdirs, _depth, _visited, settings)
         if result:
             return result
 
