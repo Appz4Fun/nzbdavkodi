@@ -978,7 +978,7 @@ def _existing_completed_stream(title, on_existing_completed=None):
 # redrawing for every queue-probe poll.
 _SUBMIT_UI_PUMP_INTERVAL_SECONDS = 0.25
 _SUBMIT_ADOPTION_CHECK_INTERVAL_SECONDS = 0.05
-_SUBMIT_QUEUE_PROBE_INITIAL_DELAY_SECONDS = 0.05
+_SUBMIT_QUEUE_PROBE_INITIAL_DELAY_SECONDS = 0.0
 _SUBMIT_QUEUE_PROBE_FAST_INTERVAL_SECONDS = 0.05
 _SUBMIT_QUEUE_PROBE_FAST_WINDOW_SECONDS = 2.0
 _SUBMIT_QUEUE_PROBE_INTERVAL_SECONDS = 1.0
@@ -1032,8 +1032,9 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
     queue_stop = threading.Event()
 
     def _queue_probe_worker():
-        # Short grace before the first probe — enough for nzbdav to receive
-        # the addurl request, without adding a fixed multi-second adoption lag.
+        # Probe immediately for already-visible retry/duplicate jobs. A miss
+        # still falls through to the fast retry cadence while nzbdav receives
+        # the addurl request.
         if queue_stop.wait(_SUBMIT_QUEUE_PROBE_INITIAL_DELAY_SECONDS):
             return
         probe_started = time.monotonic()

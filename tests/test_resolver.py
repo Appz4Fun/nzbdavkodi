@@ -1701,6 +1701,48 @@ def test_submit_ui_pump_starts_queue_probe_within_short_grace_window(
     assert elapsed < 0.2
 
 
+@patch("resources.lib.resolver.find_queued_by_name")
+@patch("resources.lib.resolver.submit_nzb")
+def test_submit_ui_pump_adopts_existing_queue_without_initial_probe_delay(
+    mock_submit, mock_find_queued
+):
+    """Existing nzbdav queue jobs should be adopted without a fixed grace wait."""
+    queue_seen = threading.Event()
+    submit_can_finish = threading.Event()
+
+    def delayed_submit(_nzb_url, _title):
+        assert queue_seen.wait(timeout=1)
+        submit_can_finish.wait(timeout=0.75)
+        return "SABnzbd_nzo_submitted_late", None
+
+    def queued_job(_title):
+        queue_seen.set()
+        return {
+            "nzo_id": "SABnzbd_nzo_existing_queue",
+            "name": "movie.mkv",
+            "status": "Downloading",
+        }
+
+    mock_submit.side_effect = delayed_submit
+    mock_find_queued.side_effect = queued_job
+    dialog = MagicMock()
+    dialog.iscanceled.return_value = False
+    monitor = MagicMock()
+    monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
+
+    started = _time.perf_counter()
+    try:
+        nzo_id, submit_error = _submit_nzb_with_ui_pump(
+            "http://hydra/getnzb/abc", "movie.mkv", dialog, monitor
+        )
+    finally:
+        submit_can_finish.set()
+    elapsed = _time.perf_counter() - started
+
+    assert (nzo_id, submit_error) == ("SABnzbd_nzo_existing_queue", None)
+    assert elapsed < 0.035, "existing queue adoption took {:.3f}s".format(elapsed)
+
+
 @patch("resources.lib.resolver.find_completed_by_name", return_value=None)
 @patch("resources.lib.resolver.find_queued_by_name")
 @patch("resources.lib.resolver.submit_nzb")
