@@ -844,6 +844,7 @@ def test_fallback_candidate_loader_reuses_distinct_peer_scan_for_prefetch(
 @patch(
     "resources.lib.router.first_prefetchable_fallback_peer",
     side_effect=AssertionError("disabled fallback scanned prefetch peers"),
+    create=True,
 )
 @patch("resources.lib.fallback_streams._fallback_settings", return_value=(False, 5))
 def test_fallback_candidate_loader_skips_prefetch_when_fallback_disabled(
@@ -856,6 +857,32 @@ def test_fallback_candidate_loader_skips_prefetch_when_fallback_disabled(
 
     assert loader is None
     mock_prefetch.assert_not_called()
+
+
+@patch("resources.lib.router.attach_fallback_candidates_for_selection")
+@patch(
+    "resources.lib.router.first_prefetchable_fallback_peer",
+    side_effect=AssertionError("post-picker loader construction scanned peers"),
+    create=True,
+)
+@patch("resources.lib.router.fallback_candidate_prefetch_settings")
+def test_fallback_candidate_loader_defers_prefetch_scan_until_loader_runs(
+    mock_settings, mock_prefetch, mock_attach
+):
+    mock_settings.return_value = (True, 5)
+    selected = _duplicate_release("http://hydra/nzb/selected")
+    related = _duplicate_release("http://hydra/nzb/related")
+
+    def attach_selection(selected_result, _pool, **_kwargs):
+        selected_result["_fallback_candidates"] = [related]
+
+    mock_attach.side_effect = attach_selection
+
+    loader = _fallback_candidate_loader_for_selection(selected, [selected, related])
+
+    assert callable(loader)
+    mock_prefetch.assert_not_called()
+    assert loader() == [related]
 
 
 @patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
@@ -886,7 +913,12 @@ def test_fallback_candidate_loader_skips_unrelated_peer_pool():
 
     loader = _fallback_candidate_loader_for_selection(selected, [selected, unrelated])
 
-    assert loader is None
+    assert callable(loader)
+    with patch(
+        "resources.lib.fallback_streams.fetch_nzb_video_manifest",
+        side_effect=AssertionError("unrelated pool fetched manifests"),
+    ):
+        assert not loader()
 
 
 def test_fallback_candidate_loader_skips_raw_unrelated_selected_metadata_parse():
@@ -923,8 +955,9 @@ def test_fallback_candidate_loader_skips_raw_unrelated_selected_metadata_parse()
         loader = _fallback_candidate_loader_for_selection(
             selected, [selected] + unrelated
         )
+        assert callable(loader)
+        assert not loader()
 
-    assert loader is None
     assert not parsed_titles
 
 
@@ -971,8 +1004,9 @@ def test_loader_skips_cached_meta_unrelated_selected_metadata_parse():
         loader = _fallback_candidate_loader_for_selection(
             selected, [selected] + unrelated
         )
+        assert callable(loader)
+        assert not loader()
 
-    assert loader is None
     assert not parsed_titles
 
 
@@ -984,11 +1018,16 @@ def test_fallback_candidate_loader_skips_profile_mismatched_peer_pool():
 
     loader = _fallback_candidate_loader_for_selection(selected, [selected, mismatched])
 
-    assert loader is None
+    assert callable(loader)
+    with patch(
+        "resources.lib.fallback_streams.fetch_nzb_video_manifest",
+        side_effect=AssertionError("profile mismatch fetched manifests"),
+    ):
+        assert not loader()
 
 
 @patch("resources.lib.router.attach_fallback_candidates_for_selection")
-def test_fallback_candidate_loader_prioritizes_known_prefetchable_peer(mock_attach):
+def test_fallback_candidate_loader_keeps_prefetch_match_scan_deferred(mock_attach):
     selected = _duplicate_release("http://hydra/nzb/selected")
     unrelated = []
     for index in range(5):
@@ -1010,7 +1049,7 @@ def test_fallback_candidate_loader_prioritizes_known_prefetchable_peer(mock_atta
     assert candidates == [related]
     called_selected, called_pool = mock_attach.call_args.args
     assert called_selected is selected
-    assert list(itertools.islice(called_pool, 2)) == [selected, related]
+    assert list(itertools.islice(called_pool, 2)) == [selected, unrelated[0]]
 
 
 @patch("resources.lib.router.attach_fallback_candidates_for_selection")
@@ -1042,7 +1081,7 @@ def test_fallback_candidate_loader_pool_stays_lazy_after_known_peer(mock_attach)
     mock_attach.side_effect = attach_selection
 
     loader = _fallback_candidate_loader_for_selection(selected, results)
-    assert results.iterations == 2
+    assert results.iterations == 0
 
     assert loader() == [related]
     assert results.iterations == 2

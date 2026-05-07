@@ -13,7 +13,6 @@ from resources.lib.fallback_streams import (
     cached_selection_pool_first_peer,
     fallback_candidate_prefetch_enabled,
     fallback_candidate_prefetch_settings,
-    first_prefetchable_fallback_peer,
     selected_manifest_may_have_fallback_peer,
     selection_pool_may_have_fallback_peer,
 )
@@ -241,17 +240,9 @@ def _fallback_candidate_loader_for_selection(selected, results):
     fallback_settings = fallback_candidate_prefetch_settings()
     if not fallback_candidate_prefetch_enabled(fallback_settings):
         return None
-    first_distinct_peer = cached_selection_pool_first_peer(selected, results)
-    prefetch_results = (
-        _selection_pool_with_peer_first(selected, results, first_distinct_peer)
-        if first_distinct_peer is not None
-        else results
-    )
-    first_peer = first_prefetchable_fallback_peer(
-        selected, prefetch_results, distinct_peer_already_checked=True
-    )
-    if first_peer is None:
-        return None
+    # Keep title/profile matching in the returned loader. Resolver starts that
+    # loader in the background, while this function blocks post-picker submit.
+    first_peer = cached_selection_pool_first_peer(selected, results)
 
     def _load_fallback_candidates():
         attach_fallback_candidates_for_selection(
