@@ -1263,17 +1263,20 @@ def test_submit_fallback_candidates_rejection_logs_without_dialog(
     mock_xbmc.log.assert_called()
 
 
-@patch("resources.lib.resolver.find_queued_by_name")
-@patch("resources.lib.resolver.find_completed_by_name")
+@patch("resources.lib.resolver.find_queued_by_names")
+@patch("resources.lib.resolver.find_completed_by_names")
 @patch("resources.lib.resolver.submit_nzb")
 def test_submit_fallback_candidates_adopts_existing_completed_before_submit(
     mock_submit, mock_find_completed, mock_find_queued
 ):
     from resources.lib.resolver import _submit_fallback_candidates
 
+    expected_job_name = "Fallback A 2026 1080p WEB-DL [fallback-1-253ccd06]"
     mock_find_completed.return_value = {
-        "nzo_id": "SABnzbd_nzo_existing",
-        "status": "Completed",
+        expected_job_name: {
+            "nzo_id": "SABnzbd_nzo_existing",
+            "status": "Completed",
+        }
     }
     mock_submit.side_effect = AssertionError("existing fallback should be adopted")
     observed_jobs = []
@@ -1292,7 +1295,7 @@ def test_submit_fallback_candidates_adopts_existing_completed_before_submit(
     expected = {
         "title": "Fallback A 2026 1080p WEB-DL",
         "nzb_url": "http://hydra/getnzb/fallback-a",
-        "job_name": "Fallback A 2026 1080p WEB-DL [fallback-1-253ccd06]",
+        "job_name": expected_job_name,
         "nzo_id": "SABnzbd_nzo_existing",
         "stream_url": "",
         "stream_headers": {},
@@ -1301,9 +1304,48 @@ def test_submit_fallback_candidates_adopts_existing_completed_before_submit(
     }
     assert jobs == [expected]
     assert observed_jobs == [expected]
-    mock_find_completed.assert_called_once_with(expected["job_name"])
-    mock_find_queued.assert_not_called()
+    mock_find_completed.assert_called_once_with([expected_job_name])
+    mock_find_queued.assert_called_once_with([])
     mock_submit.assert_not_called()
+
+
+@patch("resources.lib.resolver.find_queued_by_name")
+@patch("resources.lib.resolver.find_completed_by_name")
+@patch("resources.lib.resolver.find_queued_by_names", create=True, return_value={})
+@patch("resources.lib.resolver.find_completed_by_names", create=True, return_value={})
+@patch("resources.lib.resolver.submit_nzb")
+def test_submit_fallback_candidates_batches_existing_job_probes(
+    mock_submit,
+    mock_find_completed_batch,
+    mock_find_queued_batch,
+    mock_find_completed,
+    mock_find_queued,
+):
+    from resources.lib.resolver import _submit_fallback_candidates
+
+    candidates = [
+        {"title": "Fallback A", "link": "http://hydra/getnzb/fallback-a"},
+        {"title": "Fallback B", "link": "http://hydra/getnzb/fallback-b"},
+    ]
+    mock_submit.side_effect = [
+        ("SABnzbd_nzo_submitted_a", None),
+        ("SABnzbd_nzo_submitted_b", None),
+    ]
+
+    jobs = _submit_fallback_candidates(candidates, _make_monitor())
+
+    expected_names = [
+        "Fallback A [fallback-1-253ccd06]",
+        "Fallback B [fallback-2-15dc370d]",
+    ]
+    mock_find_completed_batch.assert_called_once_with(expected_names)
+    mock_find_queued_batch.assert_called_once_with(expected_names)
+    mock_find_completed.assert_not_called()
+    mock_find_queued.assert_not_called()
+    assert [job["nzo_id"] for job in jobs] == [
+        "SABnzbd_nzo_submitted_a",
+        "SABnzbd_nzo_submitted_b",
+    ]
 
 
 @patch("resources.lib.resolver.find_completed_by_name")

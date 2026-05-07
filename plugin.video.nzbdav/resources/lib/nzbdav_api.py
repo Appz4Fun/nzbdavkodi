@@ -401,85 +401,125 @@ def find_completed_by_name(name):
 
     Returns dict with: status, storage, name, nzo_id. None if not found.
     """
-    try:
-        base_url, api_key = _get_settings()
-    except Exception as e:  # pylint: disable=broad-except
-        xbmc.log(
-            "NZB-DAV: Settings read failed in find_completed_by_name: {}".format(
-                _redact_text(str(e))
-            ),
-            xbmc.LOGDEBUG,
-        )
-        return None
+    return find_completed_by_names([name]).get(name)
 
-    # Extract a short search term from the name (first few words)
-    search_term = name.split(".")[0] if "." in name else name
 
-    params = {
-        "mode": "history",
-        "apikey": api_key,
-        "output": "json",
-        "limit": 200,
-        "search": search_term,
+def _unique_names(names):
+    """Return non-empty names in first-seen order."""
+    unique = []
+    seen = set()
+    for name in names or []:
+        if not isinstance(name, str) or not name:
+            continue
+        if name in seen:
+            continue
+        seen.add(name)
+        unique.append(name)
+    return unique
+
+
+def _history_search_term(name):
+    """Return the same SABnzbd history search term as find_completed_by_name."""
+    return name.split(".")[0] if "." in name else name
+
+
+def _completed_job_from_slot(slot):
+    """Return the public completed-job shape from a SABnzbd history slot."""
+    return {
+        "status": slot.get("status", ""),
+        "storage": slot.get("storage", ""),
+        "name": slot.get("name", ""),
+        "nzo_id": slot.get("nzo_id", ""),
     }
-    url = "{}/api?{}".format(base_url, urlencode(params))
 
+
+def _record_completed_name_matches(slots, target_names, found):
+    """Copy exact completed name matches from history slots into found."""
+    remaining = target_names.difference(found)
+    if not remaining:
+        return
+    for slot in slots:
+        name = slot.get("name")
+        if name in remaining and slot.get("status") == "Completed":
+            found[name] = _completed_job_from_slot(slot)
+            xbmc.log(
+                "NZB-DAV: Found existing download '{}' in history".format(name),
+                xbmc.LOGINFO,
+            )
+
+
+def _history_slots(base_url, params, log_context):
+    """Fetch nzbdav history slots for one parameter set."""
+    url = "{}/api?{}".format(base_url, urlencode(params))
     try:
         response_text = _http_get(url, timeout=_API_READ_TIMEOUT)
         response = _coerce_response_dict(json.loads(response_text))
     except Exception as e:  # pylint: disable=broad-except
         xbmc.log(
-            "NZB-DAV: History search request failed for '{}': {}".format(
-                name, _redact_text(str(e))
+            "NZB-DAV: History {} request failed: {}".format(
+                log_context, _redact_text(str(e))
             ),
             xbmc.LOGDEBUG,
         )
-        return None
+        return []
+    return _response_slots(response, "history")
 
-    slots = _response_slots(response, "history")
-    for slot in slots:
-        if slot.get("name") == name and slot.get("status") == "Completed":
-            xbmc.log(
-                "NZB-DAV: Found existing download '{}' in history".format(name),
-                xbmc.LOGINFO,
-            )
-            return {
-                "status": slot.get("status", ""),
-                "storage": slot.get("storage", ""),
-                "name": slot.get("name", ""),
-                "nzo_id": slot.get("nzo_id", ""),
-            }
+
+def find_completed_by_names(names):
+    """Search nzbdav history for completed downloads matching exact names.
+
+    This is the batched equivalent of find_completed_by_name(): it groups
+    identical SABnzbd search terms and performs the broad fallback search at
+    most once for the remaining names.
+    """
+    unique_names = _unique_names(names)
+    if not unique_names:
+        return {}
+
+    try:
+        base_url, api_key = _get_settings()
+    except Exception as e:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: Settings read failed in find_completed_by_names: {}".format(
+                _redact_text(str(e))
+            ),
+            xbmc.LOGDEBUG,
+        )
+        return {}
+
+    target_names = set(unique_names)
+    found = {}
+    search_terms = []
+    seen_terms = set()
+    for name in unique_names:
+        search_term = _history_search_term(name)
+        if search_term and search_term not in seen_terms:
+            search_terms.append(search_term)
+            seen_terms.add(search_term)
+
+    base_params = {
+        "mode": "history",
+        "apikey": api_key,
+        "output": "json",
+        "limit": 200,
+    }
+    for search_term in search_terms:
+        params = dict(base_params)
+        params["search"] = search_term
+        slots = _history_slots(
+            base_url,
+            params,
+            "search for '{}'".format(search_term),
+        )
+        _record_completed_name_matches(slots, target_names, found)
+        if len(found) == len(unique_names):
+            return found
 
     # Fallback: broader search without search term filter
-    if search_term:
-        params.pop("search")
-        url = "{}/api?{}".format(base_url, urlencode(params))
-        try:
-            response_text = _http_get(url, timeout=_API_READ_TIMEOUT)
-            response = _coerce_response_dict(json.loads(response_text))
-        except Exception as e:  # pylint: disable=broad-except
-            xbmc.log(
-                "NZB-DAV: History fallback request failed for '{}': {}".format(
-                    name, _redact_text(str(e))
-                ),
-                xbmc.LOGDEBUG,
-            )
-            return None
-
-        slots = _response_slots(response, "history")
-        for slot in slots:
-            if slot.get("name") == name and slot.get("status") == "Completed":
-                xbmc.log(
-                    "NZB-DAV: Found '{}' in history (broad search)".format(name),
-                    xbmc.LOGINFO,
-                )
-                return {
-                    "status": slot.get("status", ""),
-                    "storage": slot.get("storage", ""),
-                    "name": slot.get("name", ""),
-                    "nzo_id": slot.get("nzo_id", ""),
-                }
-    return None
+    if search_terms and len(found) < len(unique_names):
+        slots = _history_slots(base_url, base_params, "fallback")
+        _record_completed_name_matches(slots, target_names, found)
+    return found
 
 
 def find_queued_by_name(name):
@@ -511,10 +551,19 @@ def find_queued_by_name(name):
         No retries; the resolver calls this in a short loop after a
         submit timeout and handles its own pacing.
     """
+    return find_queued_by_names([name]).get(name)
+
+
+def find_queued_by_names(names):
+    """Search nzbdav's active queue for exact job-name matches."""
+    unique_names = _unique_names(names)
+    if not unique_names:
+        return {}
+
     try:
         base_url, api_key = _get_settings()
     except Exception:  # pylint: disable=broad-except
-        return None
+        return {}
 
     params = {
         "mode": "queue",
@@ -529,45 +578,49 @@ def find_queued_by_name(name):
         response = _coerce_response_dict(json.loads(response_text))
     except Exception as e:  # pylint: disable=broad-except
         xbmc.log(
-            "NZB-DAV: find_queued_by_name request failed: {}".format(
+            "NZB-DAV: find_queued_by_names request failed: {}".format(
                 _redact_text(str(e))
             ),
             xbmc.LOGWARNING,
         )
-        return None
+        return {}
 
     slots = _response_slots(response, "queue")
-    for slot in slots:
-        if slot.get("filename") == name or slot.get("nzo_id_name") == name:
-            xbmc.log(
-                "NZB-DAV: Found '{}' already in nzbdav queue with "
-                "nzo_id={}".format(name, slot.get("nzo_id")),
-                xbmc.LOGINFO,
-            )
-            return {
-                "nzo_id": slot.get("nzo_id", ""),
-                "name": name,
-                "status": slot.get("status", ""),
-            }
+    target_names = set(unique_names)
+    found = {}
+
+    def _record(slot, name, key):
+        if name in found:
+            return
+        xbmc.log(
+            "NZB-DAV: Found '{}' in queue via {} (nzo_id={})".format(
+                name, key, slot.get("nzo_id")
+            ),
+            xbmc.LOGINFO,
+        )
+        found[name] = {
+            "nzo_id": slot.get("nzo_id", ""),
+            "name": name,
+            "status": slot.get("status", ""),
+        }
+
+    for key in ("filename", "nzo_id_name"):
+        for slot in slots:
+            value = slot.get(key)
+            if value in target_names:
+                _record(slot, value, key)
+        if len(found) == len(unique_names):
+            return found
+
     # Some nzbdav builds report the user-supplied nzbname under "filename"
     # only after the fetch/parse phase finishes, so a freshly-submitted job
     # may appear under a different slot key during the first few seconds.
     # Fall back to a broader scan across any string-valued slot field.
     for slot in slots:
-        for key in ("filename", "nzo_id_name", "name"):
-            if slot.get(key) == name:
-                xbmc.log(
-                    "NZB-DAV: Found '{}' in queue via {} (nzo_id={})".format(
-                        name, key, slot.get("nzo_id")
-                    ),
-                    xbmc.LOGINFO,
-                )
-                return {
-                    "nzo_id": slot.get("nzo_id", ""),
-                    "name": name,
-                    "status": slot.get("status", ""),
-                }
-    return None
+        value = slot.get("name")
+        if value in target_names:
+            _record(slot, value, "name")
+    return found
 
 
 def get_completed_names():

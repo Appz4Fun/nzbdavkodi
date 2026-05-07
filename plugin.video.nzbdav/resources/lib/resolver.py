@@ -27,7 +27,9 @@ from resources.lib.i18n import string as _string
 from resources.lib.nzbdav_api import (
     cancel_job,
     find_completed_by_name,
+    find_completed_by_names,
     find_queued_by_name,
+    find_queued_by_names,
     get_job_history,
     get_job_status,
     submit_nzb,
@@ -1144,6 +1146,7 @@ def _submit_nzb_with_retries(nzb_url, title, dialog, monitor, max_submit_retries
 def _submit_fallback_candidates(candidates, monitor, stop_event=None, on_job=None):
     """Submit duplicate fallback candidates as standby nzbdav jobs."""
     fallback_jobs = []
+    candidate_jobs = []
     for index, candidate in enumerate(candidates or [], start=1):
         if stop_event is not None and stop_event.is_set():
             break
@@ -1154,7 +1157,19 @@ def _submit_fallback_candidates(candidates, monitor, stop_event=None, on_job=Non
         if not nzb_url or not title:
             continue
         job_name = build_fallback_job_name(title, nzb_url, index)
-        existing_job = find_completed_by_name(job_name) or find_queued_by_name(job_name)
+        candidate_jobs.append((candidate, nzb_url, title, job_name))
+
+    job_names = [row[3] for row in candidate_jobs]
+    completed_jobs = find_completed_by_names(job_names)
+    queue_names = [name for name in job_names if name not in completed_jobs]
+    queued_jobs = find_queued_by_names(queue_names)
+    existing_jobs = dict(completed_jobs)
+    existing_jobs.update(queued_jobs)
+
+    for _candidate, nzb_url, title, job_name in candidate_jobs:
+        if stop_event is not None and stop_event.is_set():
+            break
+        existing_job = existing_jobs.get(job_name)
         if existing_job and existing_job.get("nzo_id"):
             xbmc.log(
                 "NZB-DAV: Adopting existing fallback job '{}' nzo_id={}".format(

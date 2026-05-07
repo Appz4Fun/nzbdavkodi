@@ -249,6 +249,98 @@ def test_find_queued_by_name_handles_empty_queue(mock_http, mock_settings):
 
 @patch("resources.lib.nzbdav_api._get_settings")
 @patch("resources.lib.nzbdav_api._http_get")
+def test_find_completed_by_names_reuses_grouped_history_queries(
+    mock_http, mock_settings
+):
+    from resources.lib.nzbdav_api import find_completed_by_names
+
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    names = [
+        "The.Matrix.1999.Remux [fallback-1-aaaa1111]",
+        "The.Matrix.1999.Remux [fallback-2-bbbb2222]",
+    ]
+    mock_http.side_effect = [
+        json.dumps(
+            {
+                "history": {
+                    "slots": [
+                        {
+                            "nzo_id": "SABnzbd_nzo_found_search",
+                            "name": names[0],
+                            "status": "Completed",
+                            "storage": "/content/found-search",
+                        }
+                    ]
+                }
+            }
+        ),
+        json.dumps(
+            {
+                "history": {
+                    "slots": [
+                        {
+                            "nzo_id": "SABnzbd_nzo_found_broad",
+                            "name": names[1],
+                            "status": "Completed",
+                            "storage": "/content/found-broad",
+                        }
+                    ]
+                }
+            }
+        ),
+    ]
+
+    result = find_completed_by_names(names)
+
+    assert sorted(result) == sorted(names)
+    assert result[names[0]]["nzo_id"] == "SABnzbd_nzo_found_search"
+    assert result[names[1]]["nzo_id"] == "SABnzbd_nzo_found_broad"
+    assert mock_http.call_count == 2
+    assert "search=The" in mock_http.call_args_list[0].args[0]
+    assert "search=" not in mock_http.call_args_list[1].args[0]
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_find_queued_by_names_scans_queue_once(mock_http, mock_settings):
+    from resources.lib.nzbdav_api import find_queued_by_names
+
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.return_value = json.dumps(
+        {
+            "queue": {
+                "slots": [
+                    {
+                        "nzo_id": "SABnzbd_nzo_a",
+                        "filename": "Fallback A",
+                        "status": "Downloading",
+                    },
+                    {
+                        "nzo_id": "SABnzbd_nzo_b",
+                        "nzo_id_name": "Fallback B",
+                        "status": "Queued",
+                    },
+                    {
+                        "nzo_id": "SABnzbd_nzo_c",
+                        "name": "Fallback C",
+                        "status": "Paused",
+                    },
+                ]
+            }
+        }
+    )
+
+    result = find_queued_by_names(["Fallback A", "Fallback B", "Fallback C"])
+
+    assert sorted(result) == ["Fallback A", "Fallback B", "Fallback C"]
+    assert result["Fallback A"]["nzo_id"] == "SABnzbd_nzo_a"
+    assert result["Fallback B"]["status"] == "Queued"
+    assert result["Fallback C"]["status"] == "Paused"
+    assert mock_http.call_count == 1
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
 def test_get_job_status_downloading(mock_http, mock_settings):
     mock_settings.return_value = ("http://nzbdav:3000", "testkey")
     mock_http.return_value = json.dumps(
