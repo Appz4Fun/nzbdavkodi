@@ -2277,6 +2277,61 @@ def test_submit_ui_pump_retries_queue_probe_quickly_after_initial_miss(
     assert elapsed < 0.6
 
 
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.find_queued_by_name")
+@patch("resources.lib.resolver.submit_nzb")
+def test_submit_ui_pump_keeps_late_queue_probe_cadence_subsecond(
+    mock_submit, mock_find_queued, _mock_find_completed
+):
+    """Late queue adoption should not pay a one-second post-picker probe gap."""
+    second_probe_seen = threading.Event()
+    submit_can_finish = threading.Event()
+    queue_probe_times = []
+
+    def delayed_submit(_nzb_url, _title):
+        second_probe_seen.wait(timeout=2)
+        submit_can_finish.wait(timeout=0.75)
+        return "SABnzbd_nzo_submitted_late", None
+
+    def queued_job(_title):
+        queue_probe_times.append(_time.perf_counter())
+        if len(queue_probe_times) == 1:
+            return None
+        second_probe_seen.set()
+        return {
+            "nzo_id": "SABnzbd_nzo_late_probe",
+            "name": "movie.mkv",
+            "status": "Downloading",
+        }
+
+    mock_submit.side_effect = delayed_submit
+    mock_find_queued.side_effect = queued_job
+    dialog = MagicMock()
+    dialog.iscanceled.return_value = False
+    monitor = MagicMock()
+    monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
+
+    started = _time.perf_counter()
+    try:
+        with patch(
+            "resources.lib.resolver._SUBMIT_QUEUE_PROBE_FAST_WINDOW_SECONDS", 0.0
+        ):
+            nzo_id, submit_error = _submit_nzb_with_ui_pump(
+                "http://hydra/getnzb/abc", "movie.mkv", dialog, monitor
+            )
+    finally:
+        submit_can_finish.set()
+    elapsed = _time.perf_counter() - started
+    probe_gap = queue_probe_times[1] - queue_probe_times[0]
+
+    assert (nzo_id, submit_error) == ("SABnzbd_nzo_late_probe", None)
+    assert (
+        elapsed < 0.5
+    ), "late queue adoption took {:.3f}s; probe gap was {:.3f}s".format(
+        elapsed, probe_gap
+    )
+
+
 @patch("resources.lib.resolver._get_submit_timeout_seconds", return_value=300)
 @patch("resources.lib.resolver.find_queued_by_name", return_value=None)
 @patch("resources.lib.resolver.submit_nzb")
