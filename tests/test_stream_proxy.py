@@ -1813,6 +1813,65 @@ def test_first_get_writes_prefetched_bytes_before_slow_runtime_settings():
     ), "first proxy bytes waited {:.3f}s on runtime settings".format(first_byte_elapsed)
 
 
+def test_no_range_first_get_uses_prefetched_no_range_setting_before_first_byte():
+    """A no-Range initial GET should not reread settings before cached bytes."""
+    from resources.lib.stream_proxy import (
+        _PASSTHROUGH_RUNTIME_SETTINGS_KEY,
+        _STRICT_CONTRACT_MODE_OFF,
+    )
+
+    content_length = 65536
+    payload = b"N" * content_length
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": "Basic primary",
+        "content_length": content_length,
+        "content_type": "video/x-matroska",
+        "remux": False,
+        _PASSTHROUGH_RUNTIME_SETTINGS_KEY: {
+            "contract_mode": _STRICT_CONTRACT_MODE_OFF,
+            "density_breaker_enabled": False,
+            "zero_fill_budget_enabled": True,
+            "retry_ladder_enabled": True,
+            "send_200_no_range_enabled": False,
+        },
+    }
+    _StreamHandler._cache_fallback_range(
+        ctx,
+        "http://host/movie.mkv",
+        "Basic primary",
+        content_length,
+        0,
+        payload,
+    )
+    handler = _make_handler_with_server(ctx)
+    first_write_at = []
+
+    def slow_uncached_setting():
+        time.sleep(0.12)
+        return False
+
+    def record_first_write(_chunk):
+        if not first_write_at:
+            first_write_at.append(time.monotonic())
+
+    handler.wfile.write.side_effect = record_first_write
+    with patch(
+        "resources.lib.stream_proxy._send_200_no_range_enabled",
+        side_effect=slow_uncached_setting,
+    ) as send_200_setting:
+        started = time.monotonic()
+        handler._serve_proxy(ctx)
+
+    assert _collect_written(handler) == payload
+    assert first_write_at, "proxy did not write cached first bytes"
+    first_byte_elapsed = first_write_at[0] - started
+    assert first_byte_elapsed < 0.05, "no-Range first byte took {:.3f}s".format(
+        first_byte_elapsed
+    )
+    send_200_setting.assert_not_called()
+
+
 def test_fallback_prevalidation_does_not_delay_initial_prefetch_first_bytes():
     """Fallback prevalidation should not compete with the first playable bytes."""
     from resources.lib.stream_proxy import (

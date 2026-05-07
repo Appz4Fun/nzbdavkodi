@@ -531,6 +531,7 @@ def _read_passthrough_runtime_settings():
         "density_breaker_enabled": _density_breaker_enabled(contract_mode),
         "zero_fill_budget_enabled": _zero_fill_budget_enabled(),
         "retry_ladder_enabled": _retry_ladder_enabled(),
+        "send_200_no_range_enabled": _send_200_no_range_enabled(),
     }
 
 
@@ -3597,7 +3598,10 @@ class _StreamHandler(BaseHTTPRequestHandler):
         no_range_status = False
         if range_header is None:
             runtime_settings = _passthrough_runtime_settings(ctx)
-            no_range_status = _send_200_no_range_enabled()
+            if "send_200_no_range_enabled" in runtime_settings:
+                no_range_status = runtime_settings["send_200_no_range_enabled"]
+            else:
+                no_range_status = _send_200_no_range_enabled()
         self.send_response(200 if no_range_status else 206)
         self.send_header("Content-Type", ctx["content_type"])
         self.send_header("Content-Length", str(total_bytes))
