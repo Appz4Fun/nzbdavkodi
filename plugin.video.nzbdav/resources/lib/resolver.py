@@ -772,6 +772,8 @@ def _existing_completed_stream(title):
 _SUBMIT_UI_PUMP_INTERVAL_SECONDS = 0.25
 _SUBMIT_ADOPTION_CHECK_INTERVAL_SECONDS = 0.05
 _SUBMIT_QUEUE_PROBE_INITIAL_DELAY_SECONDS = 0.05
+_SUBMIT_QUEUE_PROBE_FAST_INTERVAL_SECONDS = 0.2
+_SUBMIT_QUEUE_PROBE_FAST_WINDOW_SECONDS = 2.0
 _SUBMIT_QUEUE_PROBE_INTERVAL_SECONDS = 1.0
 
 
@@ -825,6 +827,7 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
         # the addurl request, without adding a fixed multi-second adoption lag.
         if queue_stop.wait(_SUBMIT_QUEUE_PROBE_INITIAL_DELAY_SECONDS):
             return
+        probe_started = time.monotonic()
         while not queue_stop.is_set() and not submit_done.is_set():
             try:
                 match = find_queued_by_name(title)
@@ -846,7 +849,13 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
             if match and match.get("nzo_id"):
                 queue_hit[0] = match["nzo_id"]
                 return
-            if queue_stop.wait(_SUBMIT_QUEUE_PROBE_INTERVAL_SECONDS):
+            elapsed = time.monotonic() - probe_started
+            interval = (
+                _SUBMIT_QUEUE_PROBE_FAST_INTERVAL_SECONDS
+                if elapsed < _SUBMIT_QUEUE_PROBE_FAST_WINDOW_SECONDS
+                else _SUBMIT_QUEUE_PROBE_INTERVAL_SECONDS
+            )
+            if queue_stop.wait(interval):
                 return
 
     submit_t = threading.Thread(

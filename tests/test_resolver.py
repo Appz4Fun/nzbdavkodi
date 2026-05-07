@@ -1397,6 +1397,46 @@ def test_submit_ui_pump_adopts_completed_history_without_submit_join_delay(
     assert elapsed < 0.6
 
 
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.find_queued_by_name")
+@patch("resources.lib.resolver.submit_nzb")
+def test_submit_ui_pump_retries_queue_probe_quickly_after_initial_miss(
+    mock_submit, mock_find_queued, _mock_find_completed
+):
+    """Jobs appearing just after the first probe should not wait one second."""
+    second_probe_seen = threading.Event()
+
+    def delayed_submit(_nzb_url, _title):
+        assert second_probe_seen.wait(timeout=2)
+        return None, {"status": "timeout", "message": "Timed out"}
+
+    def queued_job(_title):
+        if mock_find_queued.call_count == 1:
+            return None
+        second_probe_seen.set()
+        return {
+            "nzo_id": "SABnzbd_nzo_second_probe",
+            "name": "movie.mkv",
+            "status": "Downloading",
+        }
+
+    mock_submit.side_effect = delayed_submit
+    mock_find_queued.side_effect = queued_job
+    dialog = MagicMock()
+    dialog.iscanceled.return_value = False
+    monitor = MagicMock()
+    monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
+
+    started = _time.monotonic()
+    nzo_id, submit_error = _submit_nzb_with_ui_pump(
+        "http://hydra/getnzb/abc", "movie.mkv", dialog, monitor
+    )
+    elapsed = _time.monotonic() - started
+
+    assert (nzo_id, submit_error) == ("SABnzbd_nzo_second_probe", None)
+    assert elapsed < 0.6
+
+
 @patch("resources.lib.resolver._get_submit_timeout_seconds", return_value=300)
 @patch("resources.lib.resolver.find_queued_by_name", return_value=None)
 @patch("resources.lib.resolver.submit_nzb")
