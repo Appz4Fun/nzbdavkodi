@@ -972,6 +972,85 @@ def test_resolve_overlaps_bookmark_cleanup_with_post_submit_poll(
     assert elapsed < 0.35, "selected-to-play path took {:.3f}s".format(elapsed)
 
 
+@patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
+@patch("resources.lib.resolver._finish_direct_playback")
+@patch("resources.lib.resolver._wait_direct_playback_prepare")
+@patch("resources.lib.resolver._start_direct_playback_prepare")
+@patch("resources.lib.resolver._start_fallback_submit_worker")
+@patch("resources.lib.resolver._poll_until_ready")
+@patch("resources.lib.resolver._clear_kodi_playback_state")
+@patch("resources.lib.resolver.xbmc")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver._get_poll_settings")
+def test_resolve_starts_bookmark_cleanup_before_primary_submit_wait(
+    mock_poll_settings,
+    mock_gui,
+    mock_xbmc,
+    mock_clear_state,
+    mock_poll_until_ready,
+    mock_start_fallback,
+    mock_start_prepare,
+    mock_wait_prepare,
+    mock_finish_playback,
+    _mock_snapshot,
+):
+    """Submit/adoption latency should hide bookmark cleanup after selection."""
+    mock_poll_settings.return_value = (2, 60)
+    mock_start_fallback.return_value = {"state": "fallback"}
+    mock_start_prepare.return_value = {"state": "prepare"}
+    mock_wait_prepare.return_value = {"state": "prepared"}
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    mock_gui.DialogProgress.return_value = MagicMock()
+    timing = {}
+
+    def cleanup(_params):
+        timing["cleanup_start"] = _time.perf_counter()
+        _time.sleep(0.16)
+        timing["cleanup_end"] = _time.perf_counter()
+
+    def poll_ready(*_args, **kwargs):
+        timing["poll_start"] = _time.perf_counter()
+        _time.sleep(0.16)
+        timing["primary_submitted"] = _time.perf_counter()
+        kwargs["on_primary_submitted"]("SABnzbd_nzo_primary")
+        timing["ready"] = _time.perf_counter()
+        return (
+            "http://webdav/content/primary/movie.mkv",
+            {"Authorization": "Basic primary"},
+        )
+
+    def finish_playback(*_args, **_kwargs):
+        timing["play"] = _time.perf_counter()
+
+    mock_clear_state.side_effect = cleanup
+    mock_poll_until_ready.side_effect = poll_ready
+    mock_finish_playback.side_effect = finish_playback
+
+    started = _time.perf_counter()
+    resolve(
+        1,
+        {
+            "nzburl": "http://hydra/getnzb/primary",
+            "title": "movie.mkv",
+            "_fallback_candidates": [],
+        },
+    )
+
+    cleanup_start_delay = timing["cleanup_start"] - started
+    ready_to_play = timing["play"] - timing["ready"]
+    assert timing["cleanup_start"] < timing["poll_start"], (
+        "bookmark cleanup started after submit/poll wait; "
+        "cleanup_start_delay={:.3f}s ready_to_play={:.3f}s".format(
+            cleanup_start_delay,
+            ready_to_play,
+        )
+    )
+    assert ready_to_play < 0.05, (
+        "bookmark cleanup was not hidden by submit/adoption latency; "
+        "ready_to_play={:.3f}s".format(ready_to_play)
+    )
+
+
 @patch("resources.lib.resolver.xbmcplugin")
 @patch("resources.lib.resolver.find_completed_by_name")
 @patch("resources.lib.resolver._submit_nzb_with_retries", return_value=None)

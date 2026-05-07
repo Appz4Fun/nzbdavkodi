@@ -2474,6 +2474,10 @@ def resolve(handle, params):
             poll_interval, download_timeout = _get_poll_settings()
             dialog = xbmcgui.DialogProgress()
             dialog.create(_addon_name(), _string(30097))
+            # Bookmark cleanup does not depend on the accepted nzo_id. Start it
+            # before the submit/poll wait so selected-result latency hides the
+            # DB scan/write instead of paying it after WebDAV readiness.
+            _start_playback_cleanup_once()
             stream_url, stream_headers = _poll_until_ready(
                 nzb_url,
                 title,
@@ -2569,6 +2573,10 @@ def resolve_and_play(nzb_url, title, params=None):
             poll_interval, download_timeout = _get_poll_settings()
             dialog = xbmcgui.DialogProgress()
             dialog.create(_addon_name(), _string(30097))
+            # Bookmark cleanup does not depend on the accepted nzo_id. Start it
+            # before the submit/poll wait so selected-result latency hides the
+            # DB scan/write instead of paying it after WebDAV readiness.
+            _start_playback_cleanup_once()
             stream_url, stream_headers = _poll_until_ready(
                 nzb_url,
                 title,
