@@ -1276,10 +1276,10 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
     1. ``submit_nzb`` runs in a daemon worker thread; the plugin thread
        loops on ``monitor.waitForAbort`` at 250 ms cadence, advances the
        dialog progress bar, and checks ``dialog.iscanceled`` every tick.
-    2. A second daemon thread concurrently probes nzbdav's queue/history
-       via ``find_queued_by_name`` / ``find_completed_by_name`` and
-       short-circuits as soon as the job for ``title`` appears — usually
-       well before ``addurl`` replies.
+    2. Daemon probe threads concurrently watch nzbdav's queue/history via
+       ``find_queued_by_name`` / ``find_completed_by_name`` and short-circuit
+       as soon as the job for ``title`` appears — usually well before
+       ``addurl`` replies.
 
     Returns ``(nzo_id, None)`` on success (either by worker completion or
     by queue adoption), or ``(None, error_dict)`` on cancel, shutdown,
@@ -1309,8 +1309,23 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
             activity_ready.set()
 
     queue_hit = [None]
+    queue_hit_lock = threading.Lock()
     adopted_during_submit = [False]
     queue_stop = threading.Event()
+
+    def _current_adoption_hit():
+        with queue_hit_lock:
+            return queue_hit[0]
+
+    def _record_adoption_hit(nzo_id):
+        if not nzo_id or queue_stop.is_set():
+            return False
+        with queue_hit_lock:
+            if queue_hit[0]:
+                return True
+            queue_hit[0] = nzo_id
+        activity_ready.set()
+        return True
 
     def _queue_probe_worker():
         # Probe immediately for already-visible retry/duplicate jobs. A miss
@@ -1320,10 +1335,15 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
             return
         probe_started = time.monotonic()
         while not queue_stop.is_set() and not submit_done.is_set():
-            nzo_id = _find_adoptable_job_during_submit(title)
-            if nzo_id:
-                queue_hit[0] = nzo_id
-                activity_ready.set()
+            try:
+                match = find_queued_by_name(title)
+            except Exception as e:  # pylint: disable=broad-except
+                xbmc.log(
+                    "NZB-DAV: concurrent queue probe raised: {}".format(e),
+                    xbmc.LOGWARNING,
+                )
+                match = None
+            if _record_adoption_hit(_job_nzo_id(match)):
                 return
             elapsed = time.monotonic() - probe_started
             interval = (
@@ -1334,14 +1354,42 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
             if queue_stop.wait(interval):
                 return
 
+    def _history_probe_worker():
+        # Start shortly after the queue probe so an immediate queue hit wins
+        # without a history request, but keep slow history misses from blocking
+        # the fast queue cadence once the first queue probe misses.
+        if queue_stop.wait(_SUBMIT_HISTORY_PROBE_PARALLEL_GRACE_SECONDS):
+            return
+        while (
+            not queue_stop.is_set()
+            and not submit_done.is_set()
+            and not _current_adoption_hit()
+        ):
+            try:
+                match = find_completed_by_name(title)
+            except Exception as e:  # pylint: disable=broad-except
+                xbmc.log(
+                    "NZB-DAV: concurrent history probe raised: {}".format(e),
+                    xbmc.LOGWARNING,
+                )
+                match = None
+            if _record_adoption_hit(_job_nzo_id(match)):
+                return
+            if queue_stop.wait(_SUBMIT_QUEUE_PROBE_INTERVAL_SECONDS):
+                return
+
     submit_t = threading.Thread(
         target=_submit_worker, name="nzbdav-submit", daemon=True
     )
     probe_t = threading.Thread(
         target=_queue_probe_worker, name="nzbdav-submit-probe", daemon=True
     )
+    history_probe_t = threading.Thread(
+        target=_history_probe_worker, name="nzbdav-submit-history-probe", daemon=True
+    )
     submit_t.start()
     probe_t.start()
+    history_probe_t.start()
 
     # Anchor elapsed to wall-clock via time.monotonic() instead of
     # accumulating _SUBMIT_UI_PUMP_INTERVAL_SECONDS per loop; the per-loop
@@ -1353,21 +1401,22 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
     submit_msg = _string(30097)
 
     def _probe_adoption_result():
-        if not queue_hit[0]:
+        nzo_id = _current_adoption_hit()
+        if not nzo_id:
             return None
         adopted_during_submit[0] = True
         xbmc.log(
             "NZB-DAV: Concurrent queue/history probe found '{}' under "
             "nzo_id={}; adopting without waiting for addurl response".format(
-                title, queue_hit[0]
+                title, nzo_id
             ),
             xbmc.LOGINFO,
         )
-        return queue_hit[0], None
+        return nzo_id, None
 
     def _wait_for_submit_activity_or_abort(wait_seconds):
         deadline = time.monotonic() + max(0, wait_seconds)
-        while not submit_done.is_set() and not queue_hit[0]:
+        while not submit_done.is_set() and not _current_adoption_hit():
             if monitor.waitForAbort(0):
                 return True
             remaining = deadline - time.monotonic()
@@ -1418,14 +1467,15 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
                     xbmc.LOGDEBUG,
                 )
         # Race window re-check: prefer adopted nzo_id over a failed submit.
-        if queue_hit[0] and not submit_result[0]:
+        nzo_id = _current_adoption_hit()
+        if nzo_id and not submit_result[0]:
             xbmc.log(
                 "NZB-DAV: Queue probe found '{}' under nzo_id={} just as "
                 "submit worker finished; preferring the adopted job over "
-                "the submit result".format(title, queue_hit[0]),
+                "the submit result".format(title, nzo_id),
                 xbmc.LOGINFO,
             )
-            return queue_hit[0], None
+            return nzo_id, None
         return submit_result[0], submit_result[1]
     finally:
         # Signal the probe worker to exit its wait loop, then give cleanup a
@@ -1433,14 +1483,16 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
         # blocked, waiting on that uninterruptible HTTP worker only adds
         # latency; it is daemon=True and will die with the plugin interpreter.
         queue_stop.set()
-        for t in (submit_t, probe_t):
+        for t in (submit_t, probe_t, history_probe_t):
             if t is submit_t and adopted_during_submit[0] and not submit_done.is_set():
                 continue
-            if t is probe_t and submit_result[0]:
+            if t in (probe_t, history_probe_t) and (
+                _current_adoption_hit() or submit_result[0]
+            ):
                 # A successful addurl response is authoritative. The adoption
                 # probe may still be blocked in a read-only queue/history API
                 # call, so do not keep the post-picker submit path waiting on
-                # cleanup after we already have the nzo_id.
+                # cleanup after we already have the nzo_id or submitted result.
                 continue
             try:
                 t.join(timeout=1)
