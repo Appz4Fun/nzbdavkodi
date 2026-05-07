@@ -466,33 +466,131 @@ def _apply_proxy_mime(li, stream_url, stream_info):
             li.setMimeType("video/x-matroska")
 
 
-def _play_direct(handle, stream_url, stream_headers, fallback_sources=None):
-    """Play a stream through the local service proxy.
+def _stream_auth_header(stream_headers):
+    if stream_headers and "Authorization" in stream_headers:
+        return stream_headers["Authorization"]
+    return None
 
-    Every file type routes through the service proxy so Kodi never opens the
-    remote WebDAV URL directly. This avoids Kodi's PROPFIND scan of the
-    parent directory (nzbdav's WebDAV returns localhost:8080 hrefs that
-    break Kodi's directory parser and cascade into an Open failure) and
-    sidesteps pipe-header auth quirks on MKV.
 
-    The proxy picks the right mode per file: MP4 gets Tier 1-3 faststart or
-    MKV remux; MKV/AVI/other get a range-capable pass-through.
-    """
-    from resources.lib.cache_prompt import maybe_show_cache_prompt
+def _prepare_direct_playback(
+    stream_url,
+    stream_headers,
+    fallback_sources=None,
+    service_port=None,
+    prepare_token=None,
+):
+    """Prepare resolver playback without touching Kodi UI state."""
     from resources.lib.stream_proxy import (
         get_service_proxy_port,
         prepare_stream_via_service,
     )
 
-    auth_header = None
-    if stream_headers and "Authorization" in stream_headers:
-        auth_header = stream_headers["Authorization"]
+    if service_port is None:
+        service_port = get_service_proxy_port()
+
+    prepared = {
+        "service_port": service_port,
+        "stream_url": stream_url,
+        "stream_headers": stream_headers,
+        "proxy_url": "",
+        "stream_info": {},
+    }
+    if not service_port:
+        return prepared
+
+    auth_header = _stream_auth_header(stream_headers)
+    prepare_kwargs = {"fallback_sources": fallback_sources}
+    if prepare_token is not None:
+        prepare_kwargs["prepare_token"] = prepare_token
+    proxy_url, stream_info = prepare_stream_via_service(
+        service_port, stream_url, auth_header, **prepare_kwargs
+    )
+    prepared["proxy_url"] = proxy_url
+    prepared["stream_info"] = stream_info
+    return prepared
+
+
+def _direct_playback_service_config():
+    """Read proxy connection details on the resolver thread."""
+    from resources.lib.stream_proxy import (
+        get_service_proxy_port,
+        get_service_proxy_token,
+    )
 
     service_port = get_service_proxy_port()
-    if service_port:
-        proxy_url, stream_info = prepare_stream_via_service(
-            service_port, stream_url, auth_header, fallback_sources=fallback_sources
+    prepare_token = get_service_proxy_token() if service_port else ""
+    return service_port, prepare_token
+
+
+def _ready_direct_playback_prepare_state(prepared):
+    done = threading.Event()
+    done.set()
+    return {"done": done, "error": None, "prepared": prepared, "thread": None}
+
+
+def _start_direct_playback_prepare(stream_url, stream_headers, fallback_sources=None):
+    """Start proxy prepare in the background and return its state."""
+    service_port, prepare_token = _direct_playback_service_config()
+    if not service_port:
+        prepared = _prepare_direct_playback(
+            stream_url,
+            stream_headers,
+            fallback_sources=fallback_sources,
+            service_port=service_port,
+            prepare_token=prepare_token,
         )
+        return _ready_direct_playback_prepare_state(prepared)
+
+    done = threading.Event()
+    state = {"done": done, "error": None, "prepared": None, "thread": None}
+
+    def _worker():
+        try:
+            state["prepared"] = _prepare_direct_playback(
+                stream_url,
+                stream_headers,
+                fallback_sources=fallback_sources,
+                service_port=service_port,
+                prepare_token=prepare_token,
+            )
+        except Exception as error:  # pylint: disable=broad-except
+            state["error"] = error
+        finally:
+            done.set()
+
+    thread = threading.Thread(
+        target=_worker, name="nzbdav-direct-playback-prepare", daemon=True
+    )
+    state["thread"] = thread
+    try:
+        thread.start()
+    except RuntimeError:
+        state["thread"] = None
+        _worker()
+    return state
+
+
+def _wait_direct_playback_prepare(state):
+    done = state.get("done")
+    if done:
+        done.wait()
+    error = state.get("error")
+    if error is not None:
+        raise error
+    return state.get("prepared")
+
+
+def _finish_direct_playback(handle, prepared):
+    """Finish resolver playback on the Kodi thread."""
+    stream_url = prepared["stream_url"]
+    stream_headers = prepared["stream_headers"]
+    service_port = prepared.get("service_port")
+
+    if service_port:
+        from resources.lib.cache_prompt import maybe_show_cache_prompt
+
+        proxy_url = prepared["proxy_url"]
+        stream_info = prepared["stream_info"]
 
         # Window properties go DOWN before ``setResolvedUrl`` so the
         # service-side playback monitor sees them the instant Kodi
@@ -540,6 +638,26 @@ def _play_direct(handle, stream_url, stream_headers, fallback_sources=None):
     home.setProperty("nzbdav.stream_title", stream_url.rsplit("/", 1)[-1])
     home.setProperty("nzbdav.active", "true")
     xbmcplugin.setResolvedUrl(handle, True, li)
+
+
+def _play_direct(handle, stream_url, stream_headers, fallback_sources=None):
+    """Play a stream through the local service proxy.
+
+    Every file type routes through the service proxy so Kodi never opens the
+    remote WebDAV URL directly. This avoids Kodi's PROPFIND scan of the
+    parent directory (nzbdav's WebDAV returns localhost:8080 hrefs that
+    break Kodi's directory parser and cascade into an Open failure) and
+    sidesteps pipe-header auth quirks on MKV.
+
+    The proxy picks the right mode per file: MP4 gets Tier 1-3 faststart or
+    MKV remux; MKV/AVI/other get a range-capable pass-through.
+    """
+    _finish_direct_playback(
+        handle,
+        _prepare_direct_playback(
+            stream_url, stream_headers, fallback_sources=fallback_sources
+        ),
+    )
 
 
 def _play_via_proxy(stream_url, stream_headers, fallback_sources=None):
@@ -1920,12 +2038,15 @@ def resolve(handle, params):
             fallback_sources = build_prepare_fallback_payload(
                 _fallback_submit_jobs_snapshot(fallback_state)
             )
-            _wait_playback_state_cleanup(playback_cleanup_state)
-            _play_direct(
-                handle,
+            playback_prepare_state = _start_direct_playback_prepare(
                 stream_url,
                 stream_headers,
                 fallback_sources=fallback_sources,
+            )
+            _wait_playback_state_cleanup(playback_cleanup_state)
+            _finish_direct_playback(
+                handle,
+                _wait_direct_playback_prepare(playback_prepare_state),
             )
         else:
             _stop_fallback_submit_worker(fallback_state, cancel_submitted=True)

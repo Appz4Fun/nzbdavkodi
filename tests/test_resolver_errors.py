@@ -82,7 +82,9 @@ def test_resolve_aborts_on_webdav_auth_failed_when_nzbdav_apis_silent(resolver_m
 
 
 @patch("resources.lib.resolver.find_completed_by_name", return_value=None)
-@patch("resources.lib.resolver._play_direct")
+@patch("resources.lib.resolver._finish_direct_playback")
+@patch("resources.lib.resolver._wait_direct_playback_prepare")
+@patch("resources.lib.resolver._start_direct_playback_prepare")
 @patch("resources.lib.resolver._validate_stream_url")
 @patch("resources.lib.resolver.get_webdav_stream_url_for_path")
 @patch("resources.lib.resolver.find_video_file")
@@ -90,7 +92,9 @@ def test_resolve_continues_polling_when_webdav_reachable_and_apis_silent(
     mock_find_video,
     mock_stream_url,
     mock_validate,
-    mock_play_direct,
+    mock_start_prepare,
+    mock_wait_prepare,
+    mock_finish_playback,
     mock_find_completed,
     resolver_mocks,
 ):
@@ -120,6 +124,8 @@ def test_resolve_continues_polling_when_webdav_reachable_and_apis_silent(
         {"Authorization": "Basic dGVzdDp0ZXN0"},
     )
     mock_validate.return_value = True
+    mock_start_prepare.return_value = {"state": "prepare"}
+    mock_wait_prepare.return_value = {"state": "prepared"}
 
     resolve(1, {"nzburl": "http://hydra/getnzb/reachable", "title": "reachable.mkv"})
 
@@ -130,8 +136,8 @@ def test_resolve_continues_polling_when_webdav_reachable_and_apis_silent(
     # silent).
     assert resolver_mocks.probe.call_count >= 1
     # The resolve landed successfully (history came back Completed on
-    # the second iteration and _play_direct was invoked).
-    assert mock_play_direct.called
+    # the second iteration and playback was finalized).
+    mock_finish_playback.assert_called_once_with(1, {"state": "prepared"})
 
 
 @patch("resources.lib.resolver.find_completed_by_name", return_value=None)

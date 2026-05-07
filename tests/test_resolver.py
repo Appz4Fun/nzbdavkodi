@@ -733,9 +733,11 @@ def test_resolve_success(
 
 @patch("resources.lib.resolver._stop_fallback_submit_worker")
 @patch("resources.lib.resolver._fallback_submit_jobs_snapshot")
+@patch("resources.lib.resolver._finish_direct_playback")
+@patch("resources.lib.resolver._wait_direct_playback_prepare")
+@patch("resources.lib.resolver._start_direct_playback_prepare")
 @patch("resources.lib.resolver._start_fallback_submit_worker")
 @patch("resources.lib.resolver._poll_until_ready")
-@patch("resources.lib.resolver._play_direct")
 @patch("resources.lib.resolver._clear_kodi_playback_state")
 @patch("resources.lib.resolver.xbmc")
 @patch("resources.lib.resolver.xbmcgui")
@@ -745,9 +747,11 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
     mock_gui,
     mock_xbmc,
     mock_clear_state,
-    mock_play_direct,
     mock_poll_until_ready,
     mock_start_fallback,
+    mock_start_prepare,
+    mock_wait_prepare,
+    mock_finish_playback,
     mock_snapshot,
     mock_stop_fallback,
 ):
@@ -759,7 +763,11 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
         }
     ]
     fallback_state = {"state": "fallback"}
+    prepare_state = {"state": "prepare"}
+    prepared_playback = {"state": "prepared"}
     mock_start_fallback.return_value = fallback_state
+    mock_start_prepare.return_value = prepare_state
+    mock_wait_prepare.return_value = prepared_playback
     call_order = []
 
     def poll_ready(*args, **kwargs):
@@ -808,8 +816,7 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
     mock_start_fallback.assert_called_once_with(
         fallback_candidates, candidate_loader=None
     )
-    mock_play_direct.assert_called_once_with(
-        1,
+    mock_start_prepare.assert_called_once_with(
         "http://webdav/content/primary/movie.mkv",
         {"Authorization": "Basic primary"},
         fallback_sources=[
@@ -824,13 +831,17 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
             },
         ],
     )
+    mock_wait_prepare.assert_called_once_with(prepare_state)
+    mock_finish_playback.assert_called_once_with(1, prepared_playback)
     mock_stop_fallback.assert_not_called()
 
 
 @patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
+@patch("resources.lib.resolver._finish_direct_playback")
+@patch("resources.lib.resolver._wait_direct_playback_prepare")
+@patch("resources.lib.resolver._start_direct_playback_prepare")
 @patch("resources.lib.resolver._start_fallback_submit_worker")
 @patch("resources.lib.resolver._poll_until_ready")
-@patch("resources.lib.resolver._play_direct")
 @patch("resources.lib.resolver._clear_kodi_playback_state")
 @patch("resources.lib.resolver.xbmc")
 @patch("resources.lib.resolver.xbmcgui")
@@ -840,12 +851,16 @@ def test_resolve_prefetches_fallback_loader_before_primary_submit(
     mock_gui,
     mock_xbmc,
     _mock_clear_state,
-    _mock_play_direct,
     mock_poll_until_ready,
     mock_start_fallback,
+    mock_start_prepare,
+    mock_wait_prepare,
+    _mock_finish_playback,
     _mock_snapshot,
 ):
     mock_poll_settings.return_value = (2, 60)
+    mock_start_prepare.return_value = {"state": "prepare"}
+    mock_wait_prepare.return_value = {"state": "prepared"}
     loader_started = threading.Event()
     loader_can_finish = threading.Event()
     candidates = [{"title": "Fallback A", "link": "http://hydra/fallback-a"}]
@@ -885,9 +900,11 @@ def test_resolve_prefetches_fallback_loader_before_primary_submit(
 
 
 @patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
+@patch("resources.lib.resolver._finish_direct_playback")
+@patch("resources.lib.resolver._wait_direct_playback_prepare")
+@patch("resources.lib.resolver._start_direct_playback_prepare")
 @patch("resources.lib.resolver._start_fallback_submit_worker")
 @patch("resources.lib.resolver._poll_until_ready")
-@patch("resources.lib.resolver._play_direct")
 @patch("resources.lib.resolver._clear_kodi_playback_state")
 @patch("resources.lib.resolver.xbmc")
 @patch("resources.lib.resolver.xbmcgui")
@@ -897,13 +914,17 @@ def test_resolve_overlaps_bookmark_cleanup_with_post_submit_poll(
     mock_gui,
     mock_xbmc,
     mock_clear_state,
-    mock_play_direct,
     mock_poll_until_ready,
     mock_start_fallback,
+    mock_start_prepare,
+    mock_wait_prepare,
+    mock_finish_playback,
     _mock_snapshot,
 ):
     mock_poll_settings.return_value = (2, 60)
     mock_start_fallback.return_value = {"state": "fallback"}
+    mock_start_prepare.return_value = {"state": "prepare"}
+    mock_wait_prepare.return_value = {"state": "prepared"}
     mock_xbmc.Monitor.return_value = _make_monitor()
     mock_gui.DialogProgress.return_value = MagicMock()
     timing = {}
@@ -923,12 +944,12 @@ def test_resolve_overlaps_bookmark_cleanup_with_post_submit_poll(
             {"Authorization": "Basic primary"},
         )
 
-    def play_direct(*_args, **_kwargs):
+    def finish_playback(*_args, **_kwargs):
         timing["play"] = _time.perf_counter()
 
     mock_clear_state.side_effect = cleanup
     mock_poll_until_ready.side_effect = poll_ready
-    mock_play_direct.side_effect = play_direct
+    mock_finish_playback.side_effect = finish_playback
 
     resolve(
         1,
@@ -949,13 +970,96 @@ def test_resolve_overlaps_bookmark_cleanup_with_post_submit_poll(
     assert elapsed < 0.35, "selected-to-play path took {:.3f}s".format(elapsed)
 
 
+@patch("resources.lib.cache_prompt.maybe_show_cache_prompt")
+@patch("resources.lib.stream_proxy.prepare_stream_via_service")
+@patch("resources.lib.stream_proxy.get_service_proxy_token", return_value="token")
+@patch("resources.lib.stream_proxy.get_service_proxy_port", return_value=57800)
 @patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
+@patch("resources.lib.resolver._start_fallback_submit_worker")
+@patch("resources.lib.resolver._poll_until_ready")
+@patch("resources.lib.resolver._clear_kodi_playback_state")
+@patch("resources.lib.resolver.xbmc")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.xbmcplugin")
+@patch("resources.lib.resolver._get_poll_settings")
+def test_resolve_overlaps_proxy_prepare_with_bookmark_cleanup_after_ready(
+    mock_poll_settings,
+    mock_plugin,
+    mock_gui,
+    mock_xbmc,
+    mock_clear_state,
+    mock_poll_until_ready,
+    mock_start_fallback,
+    _mock_snapshot,
+    _mock_get_port,
+    _mock_get_token,
+    mock_prepare,
+    _mock_cache_prompt,
+):
+    """Proxy prepare should overlap cleanup without resolving before cleanup."""
+    mock_poll_settings.return_value = (2, 60)
+    mock_start_fallback.return_value = {"state": "fallback"}
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    mock_gui.DialogProgress.return_value = MagicMock()
+    mock_gui.ListItem.return_value = MagicMock()
+    timing = {}
+
+    def cleanup(_params):
+        timing["cleanup_start"] = _time.perf_counter()
+        _time.sleep(0.2)
+        timing["cleanup_end"] = _time.perf_counter()
+
+    def poll_ready(*_args, **kwargs):
+        timing["poll_start"] = _time.perf_counter()
+        kwargs["on_primary_submitted"]("SABnzbd_nzo_primary")
+        _time.sleep(0.02)
+        timing["ready"] = _time.perf_counter()
+        return (
+            "http://webdav/content/primary/movie.mkv",
+            {"Authorization": "Basic primary"},
+        )
+
+    def prepare(*_args, **_kwargs):
+        timing["prepare_start"] = _time.perf_counter()
+        _time.sleep(0.2)
+        timing["prepare_end"] = _time.perf_counter()
+        return (
+            "http://127.0.0.1:57800/stream/primary",
+            {"remux": False, "faststart": False, "direct": False},
+        )
+
+    def set_resolved(*_args):
+        timing["resolved"] = _time.perf_counter()
+
+    mock_clear_state.side_effect = cleanup
+    mock_poll_until_ready.side_effect = poll_ready
+    mock_prepare.side_effect = prepare
+    mock_plugin.setResolvedUrl.side_effect = set_resolved
+
+    resolve(
+        1,
+        {
+            "nzburl": "http://hydra/getnzb/primary",
+            "title": "movie.mkv",
+            "_fallback_candidates": [],
+        },
+    )
+
+    assert timing["prepare_start"] < timing["cleanup_end"]
+    assert timing["cleanup_end"] <= timing["resolved"]
+    elapsed = timing["resolved"] - timing["ready"]
+    assert elapsed < 0.32, "ready-to-resolved stayed serial at {:.3f}s".format(elapsed)
+
+
+@patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
+@patch("resources.lib.resolver._finish_direct_playback")
+@patch("resources.lib.resolver._wait_direct_playback_prepare")
+@patch("resources.lib.resolver._start_direct_playback_prepare")
 @patch("resources.lib.resolver._start_fallback_submit_worker")
 @patch("resources.lib.resolver._submit_nzb_with_retries")
 @patch("resources.lib.resolver.get_webdav_stream_url_for_path")
 @patch("resources.lib.resolver.find_video_file")
 @patch("resources.lib.resolver.find_completed_by_name")
-@patch("resources.lib.resolver._play_direct")
 @patch("resources.lib.resolver._clear_kodi_playback_state")
 @patch("resources.lib.resolver.xbmc")
 @patch("resources.lib.resolver.xbmcgui")
@@ -965,16 +1069,20 @@ def test_resolve_overlaps_bookmark_cleanup_with_existing_completed_fast_path(
     mock_gui,
     mock_xbmc,
     mock_clear_state,
-    mock_play_direct,
     mock_find_completed,
     mock_find_video,
     mock_stream_url,
     mock_submit,
     mock_start_fallback,
+    mock_start_prepare,
+    mock_wait_prepare,
+    mock_finish_playback,
     _mock_snapshot,
 ):
     mock_poll_settings.return_value = (2, 60)
     mock_start_fallback.return_value = {"state": "fallback"}
+    mock_start_prepare.return_value = {"state": "prepare"}
+    mock_wait_prepare.return_value = {"state": "prepared"}
     mock_submit.side_effect = AssertionError(
         "existing completed stream should not submit"
     )
@@ -1001,12 +1109,12 @@ def test_resolve_overlaps_bookmark_cleanup_with_existing_completed_fast_path(
         timing["video_scan_end"] = _time.perf_counter()
         return "/content/uncategorized/movie/movie.mkv"
 
-    def play_direct(*_args, **_kwargs):
+    def finish_playback(*_args, **_kwargs):
         timing["play"] = _time.perf_counter()
 
     mock_clear_state.side_effect = cleanup
     mock_find_video.side_effect = find_video
-    mock_play_direct.side_effect = play_direct
+    mock_finish_playback.side_effect = finish_playback
 
     resolve(
         1,
