@@ -267,6 +267,47 @@ def _clear_kodi_playback_state(params=None):
         )
 
 
+def _start_playback_state_cleanup(params=None):
+    """Start bookmark cleanup in the background and return its state."""
+    done = threading.Event()
+    state = {"done": done, "error": None, "thread": None}
+
+    def _worker():
+        try:
+            _clear_kodi_playback_state(params)
+        except Exception as error:  # pylint: disable=broad-except
+            state["error"] = error
+            xbmc.log(
+                "NZB-DAV: Playback-state cleanup worker failed: {}".format(error),
+                xbmc.LOGWARNING,
+            )
+        finally:
+            done.set()
+
+    thread = threading.Thread(
+        target=_worker, name="nzbdav-playback-state-cleanup", daemon=True
+    )
+    state["thread"] = thread
+    try:
+        thread.start()
+    except RuntimeError:
+        state["thread"] = None
+        _worker()
+    return state
+
+
+def _wait_playback_state_cleanup(state):
+    """Wait for a background bookmark cleanup and re-raise any failure."""
+    if not state:
+        return
+    done = state.get("done")
+    if done:
+        done.wait()
+    error = state.get("error")
+    if error is not None:
+        raise error
+
+
 def _locate_kodi_video_db():
     """Return the newest MyVideos DB path, or None when unavailable."""
     try:
@@ -1766,6 +1807,7 @@ def resolve(handle, params):
     nzb_url = unquote(params.get("nzburl", ""))
     title = unquote(params.get("title", ""))
     fallback_state = None
+    playback_cleanup_state = None
 
     if not nzb_url:
         xbmcgui.Dialog().ok(_addon_name(), _string(30096))
@@ -1783,8 +1825,14 @@ def resolve(handle, params):
             params.get("_fallback_candidate_loader")
         )
 
+        def _start_playback_cleanup_once():
+            nonlocal playback_cleanup_state
+            if playback_cleanup_state is None:
+                playback_cleanup_state = _start_playback_state_cleanup(params)
+
         def _start_fallback_after_primary(_nzo_id):
             nonlocal fallback_state
+            _start_playback_cleanup_once()
             if fallback_state is None:
                 fallback_state = _start_fallback_submit_worker(
                     fallback_candidates,
@@ -1805,7 +1853,7 @@ def resolve(handle, params):
             fallback_sources = build_prepare_fallback_payload(
                 _fallback_submit_jobs_snapshot(fallback_state)
             )
-            _clear_kodi_playback_state(params)
+            _wait_playback_state_cleanup(playback_cleanup_state)
             _play_direct(
                 handle,
                 stream_url,
@@ -1844,6 +1892,7 @@ def resolve_and_play(nzb_url, title, params=None):
     """
     dialog = None
     fallback_state = None
+    playback_cleanup_state = None
     try:
         poll_interval, download_timeout = _get_poll_settings()
         dialog = xbmcgui.DialogProgress()
@@ -1853,8 +1902,14 @@ def resolve_and_play(nzb_url, title, params=None):
             (params or {}).get("_fallback_candidate_loader")
         )
 
+        def _start_playback_cleanup_once():
+            nonlocal playback_cleanup_state
+            if playback_cleanup_state is None:
+                playback_cleanup_state = _start_playback_state_cleanup(params)
+
         def _start_fallback_after_primary(_nzo_id):
             nonlocal fallback_state
+            _start_playback_cleanup_once()
             if fallback_state is None:
                 fallback_state = _start_fallback_submit_worker(
                     fallback_candidates,
@@ -1875,7 +1930,7 @@ def resolve_and_play(nzb_url, title, params=None):
             fallback_sources = build_prepare_fallback_payload(
                 _fallback_submit_jobs_snapshot(fallback_state)
             )
-            _clear_kodi_playback_state(params)
+            _wait_playback_state_cleanup(playback_cleanup_state)
             _play_via_proxy(
                 stream_url,
                 stream_headers,
