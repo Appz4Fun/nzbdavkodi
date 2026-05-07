@@ -761,6 +761,8 @@ def test_fallback_candidate_loader_skips_single_result_pool():
 def test_fallback_candidate_loader_skips_duplicate_only_pool_before_settings(
     mock_settings,
 ):
+    from resources.lib.fallback_streams import FALLBACK_CANDIDATES_DISABLED
+
     mock_settings.return_value = (True, 5)
     selected = _duplicate_release("http://hydra/nzb/selected")
     duplicate = _duplicate_release("http://hydra/nzb/selected")
@@ -770,7 +772,8 @@ def test_fallback_candidate_loader_skips_duplicate_only_pool_before_settings(
         selected, [selected, duplicate, missing_link]
     )
 
-    assert loader is None
+    assert callable(loader)
+    assert loader() is FALLBACK_CANDIDATES_DISABLED
     mock_settings.assert_not_called()
 
 
@@ -835,10 +838,23 @@ def test_fallback_candidate_loader_reuses_distinct_peer_scan_for_prefetch(
 
     results = CountedResults([selected] + duplicates + [related])
 
-    loader = _fallback_candidate_loader_for_selection(selected, results)
+    def attach_selection(selected_result, _pool, **_kwargs):
+        selected_result["_fallback_candidates"] = [related]
 
-    assert callable(loader)
+    with patch(
+        "resources.lib.router.attach_fallback_candidates_for_selection",
+        side_effect=attach_selection,
+    ) as mock_attach:
+        loader = _fallback_candidate_loader_for_selection(selected, results)
+
+        assert callable(loader)
+        assert results.iterations == 0
+        assert loader() == [related]
+
     assert results.iterations == len(results.items)
+    called_selected, called_pool = mock_attach.call_args.args
+    assert called_selected is selected
+    assert list(itertools.islice(called_pool, 2)) == [selected, related]
 
 
 @patch(
@@ -918,6 +934,43 @@ def test_fallback_candidate_loader_defers_settings_until_loader_runs():
         mock_settings.assert_not_called()
         assert loader() == [related]
         mock_settings.assert_called_once()
+
+
+def test_fallback_candidate_loader_construction_defers_slow_pool_scan():
+    """Selected result -> resolver should not scan the fallback pool first."""
+    selected = _duplicate_release("http://hydra/nzb/selected")
+    duplicates = [
+        _duplicate_release("http://hydra/nzb/selected") for _index in range(5)
+    ]
+    related = _duplicate_release("http://hydra/nzb/related")
+
+    class SlowResults:
+        def __init__(self, items):
+            self.items = items
+            self.iterations = 0
+
+        def __len__(self):
+            return len(self.items)
+
+        def __iter__(self):
+            for item in self.items:
+                self.iterations += 1
+                _time.sleep(0.025)
+                yield item
+
+    results = SlowResults([selected] + duplicates + [related])
+
+    with patch(
+        "resources.lib.router.fallback_candidate_prefetch_settings",
+        side_effect=AssertionError("settings should stay deferred"),
+    ):
+        started = _time.perf_counter()
+        loader = _fallback_candidate_loader_for_selection(selected, results)
+        elapsed = _time.perf_counter() - started
+
+    assert callable(loader)
+    assert elapsed < 0.05, "post-picker fallback pool scan took {:.3f}s".format(elapsed)
+    assert results.iterations == 0
 
 
 @patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")

@@ -236,21 +236,32 @@ def _fallback_candidate_loader_for_selection(selected, results):
     """Build a deferred fallback lookup for the selected release."""
     if not selected_manifest_may_have_fallback_peer(selected):
         return None
-    if not selection_pool_may_have_fallback_peer(selected, results):
+    if results is None:
         return None
-    # Keep title/profile matching in the returned loader. Resolver starts that
-    # loader in the background, while this function blocks post-picker submit.
-    # Read Kodi settings inside that loader so slow settings access is hidden
-    # behind primary submit/adoption instead of delaying the selected result.
+    try:
+        if len(results) == 1 and not selection_pool_may_have_fallback_peer(
+            selected, results
+        ):
+            return None
+    except TypeError:
+        pass
+
+    # Multi-result distinct-peer scans can walk the full picker pool. Keep them
+    # inside the loader so resolver can start the primary submit first.
     first_peer = cached_selection_pool_first_peer(selected, results)
 
     def _load_fallback_candidates():
+        if not selection_pool_may_have_fallback_peer(selected, results):
+            return FALLBACK_CANDIDATES_DISABLED
         fallback_settings = fallback_candidate_prefetch_settings()
         if not fallback_candidate_prefetch_enabled(fallback_settings):
             return FALLBACK_CANDIDATES_DISABLED
+        known_first_peer = cached_selection_pool_first_peer(selected, results)
         attach_fallback_candidates_for_selection(
             selected,
-            _selection_pool_with_peer_first(selected, results, first_peer),
+            _selection_pool_with_peer_first(
+                selected, results, known_first_peer or first_peer
+            ),
             fallback_settings=fallback_settings,
         )
         return list(selected.get("_fallback_candidates", []) or [])
