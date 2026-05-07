@@ -7,6 +7,7 @@ import io
 import json
 import subprocess
 import threading
+import time
 from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
 
@@ -6167,18 +6168,19 @@ def test_select_live_fallback_rejects_same_length_different_fingerprint():
         0,
         9,
     )
-    assert digest.call_args_list[1][0][:4] == (
+    digest_calls = [call[0][:4] for call in digest.call_args_list]
+    assert (
         "http://webdav/fallback.mkv",
         "Basic fallback",
         0,
         4095,
-    )
-    assert digest.call_args_list[2][0][:4] == (
+    ) in digest_calls
+    assert (
         "http://webdav/primary.mkv",
         "Basic primary",
         0,
         4095,
-    )
+    ) in digest_calls
 
 
 def test_live_fallback_selection_probes_failed_range_before_full_fingerprint():
@@ -6363,6 +6365,49 @@ def test_live_fallback_selection_reuses_validated_probe_urls_for_range_reads():
     assert mock_setting.call_count == 2
     assert validated_urls.count(primary_url) == 1
     assert validated_urls.count(fallback_url) == 1
+
+
+def test_live_fallback_selection_parallelizes_fingerprint_samples_for_cutover_speed():
+    """Successful fallback cutover should not wait on serial fingerprint probes."""
+    handler = _make_handler()
+    content_length = 10000000
+    failed_byte = 1234567
+    range_end = failed_byte + 200000
+    fallback_url = "http://webdav/content/fallback.mkv"
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": None,
+        "content_length": content_length,
+        "_fallback_probe_bases": [],
+        "fallback_sources": [
+            {
+                "nzo_id": "nzo2",
+                "stream_url": fallback_url,
+                "stream_headers": {},
+                "content_length": content_length,
+                "validated": False,
+                "failed": False,
+            }
+        ],
+    }
+    per_probe_delay = 0.005
+
+    def digest(_url, _auth_header, start, end, content_length, probe_bases=None):
+        assert content_length == ctx["content_length"]
+        assert probe_bases == []
+        time.sleep(per_probe_delay)
+        return "digest-{}-{}".format(start, end)
+
+    with patch.object(handler, "_refresh_standby_fallback_sources"), patch.object(
+        handler, "_fetch_fallback_range_digest", side_effect=digest
+    ):
+        started = time.monotonic()
+        source = handler._select_live_fallback_source(ctx, failed_byte, range_end)
+        elapsed = time.monotonic() - started
+
+    assert source is ctx["fallback_sources"][0]
+    assert ctx["fallback_sources"][0]["validated"] is True
+    assert elapsed < 0.16, "cutover validation took {:.3f}s".format(elapsed)
 
 
 def test_live_fallback_selection_reuses_primary_fingerprint_across_candidates():
@@ -6601,10 +6646,8 @@ def test_live_fallback_selection_skips_primary_read_for_unreadable_fallback_samp
 
     assert source is None
     assert ctx["fallback_sources"][0]["failed"] is True
-    assert [call[0] for call in calls] == [
-        "http://webdav/content/fallback.mkv",
-        "http://webdav/content/fallback.mkv",
-    ]
+    assert calls
+    assert all(call[0] == "http://webdav/content/fallback.mkv" for call in calls)
 
 
 def test_live_fallback_selection_reuses_failed_range_digest_for_fingerprint_sample():
