@@ -938,15 +938,20 @@ _ACTIVE_QUEUE_STATUSES = frozenset(
 
 def _queue_status_is_clearly_active(job_status):
     """Return whether queue status is enough to defer history to the next poll."""
-    if not isinstance(job_status, dict):
-        return False
-    status = str(job_status.get("status", "") or "").strip().lower()
-    if status not in _ACTIVE_QUEUE_STATUSES:
+    if not _queue_status_has_active_status(job_status):
         return False
     try:
         return float(job_status.get("percentage", 0) or 0) < 100
     except (TypeError, ValueError):
         return True
+
+
+def _queue_status_has_active_status(job_status):
+    """Return whether the queue row describes an active nzbdav job."""
+    if not isinstance(job_status, dict):
+        return False
+    status = str(job_status.get("status", "") or "").strip().lower()
+    return status in _ACTIVE_QUEUE_STATUSES
 
 
 def _queue_status_is_nearly_complete(job_status):
@@ -1036,6 +1041,10 @@ def _poll_once(nzo_id, title, monitor):
             if _queue_status_is_nearly_complete(job_status[0]):
                 _wait_for_nearly_complete_history(history_ready, history_done, deadline)
             break
+        if queue_done.is_set() and _queue_status_has_active_status(job_status[0]):
+            if _queue_status_is_nearly_complete(job_status[0]):
+                _wait_for_nearly_complete_history(history_ready, history_done, deadline)
+                break
         if queue_done.is_set() and history_done.is_set():
             break
         remaining = deadline - time.monotonic()

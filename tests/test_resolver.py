@@ -3086,6 +3086,33 @@ def test_poll_once_returns_active_queue_before_slow_history(
     mock_probe.assert_not_called()
 
 
+@patch("resources.lib.resolver.probe_webdav_reachable")
+@patch("resources.lib.resolver.get_job_history")
+@patch("resources.lib.resolver.get_job_status")
+def test_poll_once_returns_full_progress_queue_before_slow_history(
+    mock_status, mock_history, mock_probe
+):
+    """A 100% queue row should not block behind a slow history request."""
+
+    def slow_history(_nzo_id):
+        _time.sleep(0.25)
+
+    mock_status.return_value = {"status": "Downloading", "percentage": "100"}
+    mock_history.side_effect = slow_history
+
+    started = _time.monotonic()
+    job_status, history, webdav_error = _poll_once("nzo_full", "movie", _make_monitor())
+    elapsed = _time.monotonic() - started
+
+    assert elapsed < 0.15, "100% queue row waited on history for {:.3f}s".format(
+        elapsed
+    )
+    assert job_status == mock_status.return_value
+    assert history is None
+    assert webdav_error is None
+    mock_probe.assert_not_called()
+
+
 @patch("resources.lib.resolver.find_completed_by_name", return_value=None)
 @patch("resources.lib.resolver._validate_stream_url", return_value=True)
 @patch("resources.lib.resolver.get_webdav_stream_url_for_path")
