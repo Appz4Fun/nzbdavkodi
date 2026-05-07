@@ -1346,6 +1346,58 @@ def test_resolve_uses_picker_completed_job_hint_without_history_lookup(
     ), "picker completed hint still paid history lookup {:.3f}s".format(elapsed)
 
 
+@patch("resources.lib.stream_proxy.prepare_stream_via_service")
+@patch("resources.lib.resolver.get_video_file_size_hint", create=True)
+@patch("resources.lib.resolver.get_webdav_stream_url_for_path")
+@patch("resources.lib.resolver.find_video_file")
+def test_completed_history_propfind_length_hint_reaches_proxy_prepare(
+    mock_find_video,
+    mock_stream_url,
+    mock_size_hint,
+    mock_prepare_via_service,
+):
+    """Ready-to-proxy prepare should reuse the WebDAV length from discovery."""
+    from resources.lib.resolver import _handle_history_result, _prepare_direct_playback
+
+    mock_find_video.return_value = "/content/uncategorized/movie/movie.mkv"
+    mock_stream_url.return_value = (
+        "http://webdav/content/uncategorized/movie/movie.mkv",
+        {"Authorization": "Basic primary"},
+    )
+    mock_size_hint.return_value = 131072
+    mock_prepare_via_service.return_value = (
+        "http://127.0.0.1:57800/stream/abc",
+        {"remux": False},
+    )
+
+    should_stop, stream_url, stream_headers, _retries = _handle_history_result(
+        {
+            "status": "Completed",
+            "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/movie",
+        },
+        "movie.mkv",
+        0,
+        5,
+    )
+    assert should_stop is True
+
+    _prepare_direct_playback(
+        stream_url,
+        stream_headers,
+        service_port=57800,
+        prepare_token="token",
+    )
+
+    mock_prepare_via_service.assert_called_once_with(
+        57800,
+        "http://webdav/content/uncategorized/movie/movie.mkv",
+        "Basic primary",
+        fallback_sources=None,
+        prepare_token="token",
+        content_length_hint=131072,
+    )
+
+
 @patch("resources.lib.resolver._stop_fallback_submit_worker")
 @patch("resources.lib.resolver._start_fallback_submit_worker")
 @patch("resources.lib.resolver._poll_until_ready")

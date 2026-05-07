@@ -251,6 +251,27 @@ def test_find_video_file_returns_path(mock_urlopen, mock_settings):
 
 @patch("resources.lib.webdav._get_settings")
 @patch("resources.lib.webdav.urlopen")
+def test_find_video_file_records_propfind_content_length_hint(
+    mock_urlopen, mock_settings
+):
+    """The resolver should not have to HEAD the selected WebDAV file again."""
+    from resources.lib import webdav
+
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    mock_resp = MagicMock()
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    mock_resp.read.return_value = _PROPFIND_RESPONSE.encode("utf-8")
+    mock_urlopen.return_value = mock_resp
+
+    path = find_video_file("/content/uncategorized/Send Help 2026/")
+
+    assert path is not None
+    assert webdav.get_video_file_size_hint(path) == 4294967296
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
 def test_find_video_file_returns_none_when_no_video(mock_urlopen, mock_settings):
     """find_video_file returns None when no video file is found in the folder."""
     mock_settings.return_value = _SETTINGS_WITH_AUTH

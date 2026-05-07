@@ -36,6 +36,7 @@ from resources.lib.nzbdav_api import (
 )
 from resources.lib.webdav import (
     find_video_file,
+    get_video_file_size_hint,
     get_webdav_stream_url_for_path,
     probe_webdav_reachable,
 )
@@ -85,6 +86,8 @@ _RESOLVE_RUNTIME_ERRORS = (
 # per (setting_id, value) so a user with a typo'd setting doesn't see the
 # same warning spam on every play.
 _CLAMP_LOGGED = set()
+_STREAM_CONTENT_LENGTH_HINTS_MAX = 32
+_STREAM_CONTENT_LENGTH_HINTS = {}
 
 
 def _clamp_int_setting(setting_id, value, lo, hi):
@@ -472,6 +475,31 @@ def _stream_auth_header(stream_headers):
     return None
 
 
+def _remember_stream_content_length_hint(stream_url, content_length):
+    try:
+        content_length = int(content_length or 0)
+    except (TypeError, ValueError):
+        return
+    if not stream_url or content_length <= 0:
+        return
+    _STREAM_CONTENT_LENGTH_HINTS[stream_url] = content_length
+    while len(_STREAM_CONTENT_LENGTH_HINTS) > _STREAM_CONTENT_LENGTH_HINTS_MAX:
+        _STREAM_CONTENT_LENGTH_HINTS.pop(next(iter(_STREAM_CONTENT_LENGTH_HINTS)), None)
+
+
+def _stream_content_length_hint(stream_url):
+    try:
+        return int(_STREAM_CONTENT_LENGTH_HINTS.get(stream_url, 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _remember_webdav_stream_content_length_hint(stream_url, video_path):
+    _remember_stream_content_length_hint(
+        stream_url, get_video_file_size_hint(video_path)
+    )
+
+
 def _prepare_direct_playback(
     stream_url,
     stream_headers,
@@ -500,6 +528,9 @@ def _prepare_direct_playback(
 
     auth_header = _stream_auth_header(stream_headers)
     prepare_kwargs = {"fallback_sources": fallback_sources}
+    content_length_hint = _stream_content_length_hint(stream_url)
+    if content_length_hint > 0:
+        prepare_kwargs["content_length_hint"] = content_length_hint
     if prepare_token is not None:
         prepare_kwargs["prepare_token"] = prepare_token
     proxy_url, stream_info = prepare_stream_via_service(
@@ -977,7 +1008,9 @@ def _completed_job_stream(title, completed_job, on_existing_completed=None):
     video_path = find_video_file(webdav_folder)
     if not video_path:
         return None
-    return get_webdav_stream_url_for_path(video_path)
+    stream_url, stream_headers = get_webdav_stream_url_for_path(video_path)
+    _remember_webdav_stream_content_length_hint(stream_url, video_path)
+    return stream_url, stream_headers
 
 
 def _existing_completed_stream(
@@ -1845,6 +1878,7 @@ def _handle_history_result(history, title, no_video_retries, max_no_video_retrie
     video_path = find_video_file(webdav_folder)
     if video_path:
         stream_url, stream_headers = get_webdav_stream_url_for_path(video_path)
+        _remember_webdav_stream_content_length_hint(stream_url, video_path)
         xbmc.log(
             "NZB-DAV: File available, streaming '{}' via WebDAV".format(video_path),
             xbmc.LOGINFO,

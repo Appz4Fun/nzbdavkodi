@@ -454,6 +454,36 @@ def test_prepare_stream_proxies_mkv():
     assert ctx["content_length"] == 100000
 
 
+def test_prepare_stream_uses_content_length_hint_for_passthrough_start():
+    """A PROPFIND size hint should skip the duplicate prepare-time HEAD."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_context = None
+    sp._server.stream_sessions = {}
+    sp._server.pending_stream_contexts = {}
+    sp._context_lock = threading.RLock()
+    sp.port = 9999
+
+    def slow_head(*_args, **_kwargs):
+        time.sleep(0.12)
+        return 131072
+
+    with patch.object(sp, "_get_content_length", side_effect=slow_head) as mock_head:
+        started = time.perf_counter()
+        url, info = sp.prepare_stream(
+            "http://host/movie.mkv", content_length_hint=131072
+        )
+        elapsed = time.perf_counter() - started
+
+    assert url.startswith("http://127.0.0.1:9999/stream/")
+    assert info["total_bytes"] == 131072
+    assert sp._server.stream_context["content_length"] == 131072
+    assert elapsed < 0.05, "content-length hint was not used: {:.3f}s".format(elapsed)
+    mock_head.assert_not_called()
+
+
 def test_prepare_stream_matroska_mode_forces_remux_for_large_mkv():
     """Large MKV above threshold routes through ffmpeg in Matroska mode.
 
@@ -1357,6 +1387,31 @@ def test_do_post_passes_fallback_sources_to_prepare_stream():
         "http://host/movie.mkv",
         "Basic abc",
         fallback_sources=fallback_sources,
+    )
+    handler.send_error.assert_not_called()
+
+
+def test_do_post_passes_content_length_hint_to_prepare_stream():
+    body = json.dumps(
+        {
+            "remote_url": "http://host/movie.mkv",
+            "auth_header": "Basic abc",
+            "content_length_hint": 131072,
+        }
+    ).encode()
+    handler = _make_prepare_post_handler(body=body)
+    handler.server.owner_proxy.prepare_stream.return_value = (
+        "http://127.0.0.1:9999/stream/abc",
+        {"remux": False},
+    )
+
+    handler.do_POST()
+
+    handler.server.owner_proxy.prepare_stream.assert_called_once_with(
+        "http://host/movie.mkv",
+        "Basic abc",
+        fallback_sources=[],
+        content_length_hint=131072,
     )
     handler.send_error.assert_not_called()
 
@@ -11269,6 +11324,35 @@ def test_prepare_stream_via_service_sends_fallback_sources():
         "remote_url": "http://nzbdav/movie.mkv",
         "auth_header": "Basic abc",
         "fallback_sources": fallback_sources,
+    }
+
+
+def test_prepare_stream_via_service_sends_content_length_hint():
+    from resources.lib.stream_proxy import prepare_stream_via_service
+
+    payload = json.dumps(
+        {"proxy_url": "http://127.0.0.1:9999/stream/abc", "remux": False}
+    ).encode()
+    resp = MagicMock()
+    resp.read.return_value = payload
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=False)
+
+    with patch("resources.lib.stream_proxy.urlopen", return_value=resp) as mocked:
+        prepare_stream_via_service(
+            9999,
+            "http://nzbdav/movie.mkv",
+            auth_header="Basic abc",
+            content_length_hint=131072,
+        )
+
+    req = mocked.call_args[0][0]
+    body = json.loads(req.data.decode())
+    assert body == {
+        "remote_url": "http://nzbdav/movie.mkv",
+        "auth_header": "Basic abc",
+        "fallback_sources": [],
+        "content_length_hint": 131072,
     }
 
 

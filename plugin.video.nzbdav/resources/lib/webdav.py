@@ -13,6 +13,8 @@ from urllib.request import Request, urlopen
 import xbmc
 
 _WEBDAV_SUBDIR_SCAN_WORKERS = 4
+_VIDEO_FILE_SIZE_HINTS_MAX = 64
+_VIDEO_FILE_SIZE_HINTS = {}
 
 
 def _get_settings():
@@ -187,6 +189,26 @@ def _find_video_file_in_subdirs(subdirs, depth, visited):
                 return result
             next_to_return += 1
     return None
+
+
+def _remember_video_file_size_hint(file_path, size):
+    try:
+        size = int(size or 0)
+    except (TypeError, ValueError):
+        return
+    if not file_path or size <= 0:
+        return
+    _VIDEO_FILE_SIZE_HINTS[file_path] = size
+    while len(_VIDEO_FILE_SIZE_HINTS) > _VIDEO_FILE_SIZE_HINTS_MAX:
+        _VIDEO_FILE_SIZE_HINTS.pop(next(iter(_VIDEO_FILE_SIZE_HINTS)), None)
+
+
+def get_video_file_size_hint(file_path):
+    """Return the PROPFIND getcontentlength captured for a discovered file."""
+    try:
+        return int(_VIDEO_FILE_SIZE_HINTS.get(file_path, 0) or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def find_video_file(folder_path, _depth=0, _visited=None, _already_encoded=False):
@@ -374,6 +396,7 @@ def find_video_file(folder_path, _depth=0, _visited=None, _already_encoded=False
 
         if best_file:
             file_path = best_file
+            _remember_video_file_size_hint(file_path, best_size)
             xbmc.log(
                 "NZB-DAV: Found video file: {} ({} bytes)".format(file_path, best_size),
                 xbmc.LOGINFO,

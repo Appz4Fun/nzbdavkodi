@@ -977,6 +977,14 @@ def _normalize_fallback_sources(fallback_sources):
     return normalized
 
 
+def _normalize_content_length_hint(content_length_hint):
+    try:
+        hint = int(content_length_hint or 0)
+    except (TypeError, ValueError):
+        return 0
+    return hint if hint > 0 else 0
+
+
 def _attach_fallback_context_fields(ctx, fallback_sources):
     """Attach fallback tracking fields to a stream context or stream info."""
     ctx["fallback_sources"] = list(fallback_sources)
@@ -1591,11 +1599,17 @@ class _StreamHandler(BaseHTTPRequestHandler):
         except ValueError:
             self.send_error(400)
             return
+        content_length_hint = _normalize_content_length_hint(
+            data.get("content_length_hint")
+        )
 
         proxy = self.server.owner_proxy
         try:
+            prepare_kwargs = {"fallback_sources": fallback_sources}
+            if content_length_hint > 0:
+                prepare_kwargs["content_length_hint"] = content_length_hint
             proxy_url, stream_info = proxy.prepare_stream(
-                remote_url, auth_header, fallback_sources=fallback_sources
+                remote_url, auth_header, **prepare_kwargs
             )
         except ValueError:
             self.send_error(400)
@@ -5790,7 +5804,13 @@ class StreamProxy:
         except RuntimeError:
             ctx.pop("_initial_range_prefetch_thread", None)
 
-    def prepare_stream(self, remote_url, auth_header=None, fallback_sources=None):
+    def prepare_stream(
+        self,
+        remote_url,
+        auth_header=None,
+        fallback_sources=None,
+        content_length_hint=None,
+    ):
         """Set up proxy for a new stream.
 
         Returns (local_proxy_url, stream_info_dict).
@@ -5800,6 +5820,7 @@ class StreamProxy:
         _validate_url(remote_url)
         auth_header = _validate_auth_header(auth_header)
         fallback_sources = _normalize_fallback_sources(fallback_sources)
+        content_length_hint = _normalize_content_length_hint(content_length_hint)
         # Tear down any previous session before starting a new one. Kodi only
         # ever plays one stream at a time, so anything still in the table is
         # garbage from a prior play — possibly with a zombie ffmpeg attached
@@ -5812,7 +5833,9 @@ class StreamProxy:
         is_mp4 = lower_url.endswith((".mp4", ".m4v"))
 
         if fallback_sources:
-            content_length = self._get_content_length(remote_url, auth_header)
+            content_length = content_length_hint or self._get_content_length(
+                remote_url, auth_header
+            )
             if content_length <= 0:
                 raise OSError(
                     "Unable to determine content length for fallback-enabled stream"
@@ -5832,7 +5855,9 @@ class StreamProxy:
                 xbmc.LOGINFO,
             )
         elif is_mp4:
-            content_length = self._get_content_length(remote_url, auth_header)
+            content_length = content_length_hint or self._get_content_length(
+                remote_url, auth_header
+            )
             content_length_unknown = content_length <= 0
             faststart = self._try_faststart_layout(
                 remote_url, content_length, auth_header
@@ -5976,7 +6001,9 @@ class StreamProxy:
                         "faststart": False,
                     }
         else:
-            content_length = self._get_content_length(remote_url, auth_header)
+            content_length = content_length_hint or self._get_content_length(
+                remote_url, auth_header
+            )
             content_length_unknown = content_length <= 0
             threshold = _get_force_remux_threshold_bytes()
             force_mode = _get_force_remux_mode()
@@ -6617,7 +6644,12 @@ class ServiceProxyUnavailableError(OSError):
 
 
 def prepare_stream_via_service(
-    port, remote_url, auth_header=None, prepare_token=None, fallback_sources=None
+    port,
+    remote_url,
+    auth_header=None,
+    prepare_token=None,
+    fallback_sources=None,
+    content_length_hint=None,
 ):
     """Ask the service's proxy to prepare a stream.
 
@@ -6633,13 +6665,15 @@ def prepare_stream_via_service(
 
     url = "http://127.0.0.1:{}/prepare".format(port)
     auth_header = _validate_auth_header(auth_header)
-    data = json.dumps(
-        {
-            "remote_url": remote_url,
-            "auth_header": auth_header,
-            "fallback_sources": list(fallback_sources or []),
-        }
-    )
+    payload = {
+        "remote_url": remote_url,
+        "auth_header": auth_header,
+        "fallback_sources": list(fallback_sources or []),
+    }
+    content_length_hint = _normalize_content_length_hint(content_length_hint)
+    if content_length_hint > 0:
+        payload["content_length_hint"] = content_length_hint
+    data = json.dumps(payload)
     req = Request(url, data=data.encode(), method="POST")
     req.add_header("User-Agent", HTTP_USER_AGENT)
     req.add_header("Content-Type", "application/json")
