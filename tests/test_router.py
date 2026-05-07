@@ -311,6 +311,81 @@ def test_search_all_providers_no_provider_error_mentions_direct_indexers(
     assert "direct indexers" in error
 
 
+@patch("xbmcaddon.Addon")
+def test_search_all_providers_uses_defaults_when_setting_read_raises(mock_addon):
+    from resources.lib.router import _search_all_providers
+
+    addon = MagicMock()
+    addon.getSetting.side_effect = RuntimeError(
+        'Unknown exception thrown from the call "getSetting"'
+    )
+    mock_addon.return_value = addon
+
+    hydra_search = MagicMock(
+        return_value=(
+            [
+                {
+                    "title": "The.Matrix.1999.1080p-GRP",
+                    "link": "https://indexer/api?t=get&id=1&apikey=secret",
+                    "size": "123",
+                    "indexer": "NZBHydra2",
+                    "pubdate": "",
+                    "age": "",
+                }
+            ],
+            None,
+        )
+    )
+
+    with patch("resources.lib.hydra.search_hydra", hydra_search):
+        results, error = _search_all_providers("movie", "The Matrix")
+
+    assert error is None
+    assert len(results) == 1
+    hydra_search.assert_called_once()
+
+
+@patch("xbmcaddon.Addon", side_effect=RuntimeError("no addon context"))
+def test_search_all_providers_uses_script_settings_getter_without_kodi_addon(
+    mock_addon,
+):
+    from resources.lib.router import _search_all_providers
+
+    def setting(key, default=""):
+        return {
+            "nzbhydra_enabled": "true",
+            "prowlarr_enabled": "false",
+            "direct_indexers_enabled": "false",
+        }.get(key, default)
+
+    hydra_search = MagicMock(
+        return_value=(
+            [
+                {
+                    "title": "The.Odyssey.2026.1080p-GRP",
+                    "link": "https://hydra/getnzb/1",
+                    "size": "123",
+                    "indexer": "NZBHydra2",
+                    "pubdate": "",
+                    "age": "",
+                }
+            ],
+            None,
+        )
+    )
+
+    with patch("resources.lib.hydra.search_hydra", hydra_search):
+        results, error = _search_all_providers(
+            "movie", "The Odyssey", settings_getter=setting
+        )
+
+    assert error is None
+    assert len(results) == 1
+    mock_addon.assert_not_called()
+    hydra_search.assert_called_once()
+    assert hydra_search.call_args.kwargs["settings_getter"] is setting
+
+
 # --- _safe_resolve_handle + action route handle-resolution tests ---
 #
 # Action routes (install_player, clear_cache, settings, configure_*,
@@ -1233,6 +1308,45 @@ def test_handle_play_resolves_handle_when_user_cancels_picker(
 
 
 @patch("xbmcaddon.Addon")
+@patch("xbmcgui.DialogProgress")
+@patch("xbmcplugin.setResolvedUrl")
+@patch("xbmcgui.ListItem")
+@patch("resources.lib.results_dialog.show_results_dialog", return_value=None)
+@patch("resources.lib.filter.filter_results")
+@patch("resources.lib.router._search_all_providers")
+@patch("resources.lib.router._tag_available")
+@patch("resources.lib.cache.get_cached", return_value=None)
+def test_handle_play_does_not_open_modal_progress_before_picker(
+    mock_cache,
+    mock_tag,
+    mock_search,
+    mock_filter,
+    mock_dialog,
+    mock_listitem,
+    mock_resolved,
+    mock_progress_cls,
+    mock_addon,
+):
+    """TMDBHelper /play should go straight to the picker without DialogProgress.
+
+    On CoreELEC/Arctic Fuse, the modal progress dialog can native-crash Kodi
+    while the label still reads "Searching NZBHydra", even though Hydra has
+    already returned.
+    """
+    mock_addon.return_value.getSetting.side_effect = _stub_setting("false")
+    mock_listitem.return_value = "li"
+    results = [{"title": "Matrix.1999.mkv", "link": "http://hydra/nzb/x"}]
+    mock_search.return_value = (results, None)
+    mock_filter.return_value = (results, results)
+
+    _handle_play(4, {"type": "movie", "title": "The Matrix"})
+
+    mock_progress_cls.assert_not_called()
+    mock_dialog.assert_called_once()
+    mock_resolved.assert_called_once_with(4, False, "li")
+
+
+@patch("xbmcaddon.Addon")
 @patch("xbmcplugin.setResolvedUrl")
 @patch("xbmcgui.ListItem")
 @patch("resources.lib.resolver.resolve")
@@ -1586,6 +1700,236 @@ def test_handle_search_picker_passes_clean_params_to_resolver(
         "_fallback_candidates": [],
     }
     mock_end.assert_called_once_with(8, succeeded=False)
+
+
+@patch("xbmcaddon.Addon", side_effect=RuntimeError("Kodi settings unavailable"))
+@patch("xbmcplugin.endOfDirectory")
+@patch("xbmcplugin.setResolvedUrl")
+@patch("resources.lib.resolver.resolve_and_play")
+@patch("resources.lib.results_dialog.show_results_dialog")
+@patch("resources.lib.filter.filter_results")
+@patch("resources.lib.router._search_all_providers")
+@patch("resources.lib.router._tag_available", side_effect=RuntimeError("slow history"))
+@patch("resources.lib.cache.set_cached")
+@patch("resources.lib.cache.get_cached", return_value=None)
+def test_handle_script_play_uses_picker_without_plugin_handle_resolution(
+    mock_cache,
+    mock_set_cache,
+    mock_tag,
+    mock_search,
+    mock_filter,
+    mock_dialog,
+    mock_resolve_and_play,
+    mock_set_resolved,
+    mock_end,
+    mock_addon,
+):
+    """Script handoff runs in RunScript context, so it must not resolve a
+    plugin handle or end a plugin directory."""
+    from resources.lib.router import _handle_script_play
+
+    chosen = {
+        "title": "The.Odyssey.2026.mkv",
+        "link": "http://hydra/nzb/odyssey",
+        "indexer": "NZBFinder",
+    }
+    alternate = {
+        "title": "The.Odyssey.2026.1080p.mkv",
+        "link": "http://hydra/nzb/odyssey-alt",
+    }
+    mock_search.return_value = ([chosen], None)
+    mock_filter.return_value = ([chosen, alternate], [chosen, alternate])
+    mock_dialog.return_value = chosen
+
+    _handle_script_play(
+        {
+            "type": "movie",
+            "title": "The Odyssey",
+            "year": "2026",
+            "tmdb_id": "1368337",
+        }
+    )
+
+    _, filter_kwargs = mock_filter.call_args
+    assert callable(filter_kwargs["settings_getter"])
+    mock_resolve_and_play.assert_called_once()
+    args, kwargs = mock_resolve_and_play.call_args
+    assert args == (chosen["link"], chosen["title"])
+    resolver_params = dict(kwargs["params"])
+    assert callable(resolver_params.pop("_settings_getter"))
+    assert resolver_params.pop("_fallback_candidate_loader") is None
+    assert resolver_params == {
+        "type": "movie",
+        "title": "The Odyssey",
+        "year": "2026",
+        "tmdb_id": "1368337",
+        "_fallback_candidates": [],
+        "_completed_job_lookup_done": True,
+        "_selected_indexer": "NZBFinder",
+    }
+    mock_addon.assert_not_called()
+    mock_tag.assert_not_called()
+    mock_end.assert_not_called()
+    mock_set_resolved.assert_not_called()
+
+
+@patch("xbmcaddon.Addon", side_effect=RuntimeError("Kodi settings unavailable"))
+@patch("xbmcplugin.endOfDirectory")
+@patch("xbmcplugin.setResolvedUrl")
+@patch("resources.lib.resolver.resolve_and_play")
+@patch("resources.lib.results_dialog.show_results_dialog")
+@patch("resources.lib.filter.filter_results")
+@patch("resources.lib.router._search_all_providers")
+@patch("resources.lib.nzbdav_api.find_completed_by_name")
+def test_handle_script_play_attaches_completed_job_for_selected_result(
+    mock_find_completed,
+    mock_search,
+    mock_filter,
+    mock_dialog,
+    mock_resolve_and_play,
+    mock_set_resolved,
+    mock_end,
+    mock_addon,
+):
+    from resources.lib.router import _handle_script_play
+
+    chosen = {"title": "Wuthering.Heights.2026.mkv", "link": "http://hydra/nzb/wh"}
+    completed_job = {
+        "status": "Completed",
+        "storage": "/mnt/data/completed-symlinks/uncategorized/Wuthering",
+        "name": chosen["title"],
+        "nzo_id": "nzo_done",
+    }
+    mock_find_completed.return_value = completed_job
+    mock_search.return_value = ([chosen], None)
+    mock_filter.return_value = ([chosen], [chosen])
+    mock_dialog.return_value = chosen
+
+    _handle_script_play(
+        {
+            "type": "movie",
+            "title": "Wuthering Heights",
+            "year": "2026",
+            "tmdb_id": "1316092",
+        }
+    )
+
+    mock_find_completed.assert_called_once()
+    args, kwargs = mock_find_completed.call_args
+    assert args == (chosen["title"],)
+    assert callable(kwargs["settings_getter"])
+    resolver_params = dict(mock_resolve_and_play.call_args.kwargs["params"])
+    assert resolver_params["_completed_job"] == completed_job
+    assert "_completed_job_lookup_done" not in resolver_params
+    mock_addon.assert_not_called()
+    mock_end.assert_not_called()
+    mock_set_resolved.assert_not_called()
+
+
+@patch("xbmcaddon.Addon")
+@patch("xbmcplugin.endOfDirectory")
+@patch("xbmcplugin.setResolvedUrl")
+@patch("resources.lib.resolver.resolve_and_play")
+@patch("resources.lib.results_dialog.show_results_dialog")
+@patch("resources.lib.filter.filter_results")
+@patch("resources.lib.router._search_all_providers")
+@patch("resources.lib.router._tag_available")
+@patch("resources.lib.cache.set_cached")
+@patch("resources.lib.cache.get_cached", side_effect=RuntimeError("cache unsafe"))
+def test_handle_script_play_skips_search_cache_in_runscript_context(
+    mock_cache,
+    mock_set_cache,
+    mock_tag,
+    mock_search,
+    mock_filter,
+    mock_dialog,
+    mock_resolve_and_play,
+    mock_set_resolved,
+    mock_end,
+    mock_addon,
+):
+    """The file-path RunScript context can crash CoreELEC inside cache profile
+    lookup, so script playback searches providers directly."""
+    from resources.lib.router import _handle_script_play
+
+    mock_addon.return_value.getSetting.side_effect = _stub_setting("false")
+    chosen = {"title": "The.Odyssey.2026.mkv", "link": "http://hydra/nzb/odyssey"}
+    alternate = {
+        "title": "The.Odyssey.2026.1080p.mkv",
+        "link": "http://hydra/nzb/odyssey-alt",
+    }
+    mock_search.return_value = ([chosen], None)
+    mock_filter.return_value = ([chosen, alternate], [chosen, alternate])
+    mock_dialog.return_value = chosen
+
+    _handle_script_play({"type": "movie", "title": "The Odyssey", "year": "2026"})
+
+    mock_cache.assert_not_called()
+    mock_set_cache.assert_not_called()
+    mock_resolve_and_play.assert_called_once()
+    mock_end.assert_not_called()
+    mock_set_resolved.assert_not_called()
+
+
+@patch(
+    "resources.lib.router._get_script_setting",
+    side_effect=lambda key, default="": (
+        "true" if key == "auto_select_best" else default
+    ),
+)
+@patch("xbmcaddon.Addon", side_effect=RuntimeError("Kodi settings unavailable"))
+@patch("xbmcplugin.endOfDirectory")
+@patch("xbmcplugin.setResolvedUrl")
+@patch("resources.lib.resolver.resolve_and_play")
+@patch("resources.lib.results_dialog.show_results_dialog")
+@patch("resources.lib.filter.filter_results")
+@patch("resources.lib.router._search_all_providers")
+@patch("resources.lib.router._tag_available", side_effect=RuntimeError("slow history"))
+@patch("resources.lib.cache.set_cached")
+@patch("resources.lib.cache.get_cached", side_effect=RuntimeError("cache unsafe"))
+def test_handle_script_play_auto_select_marks_completed_lookup_done(
+    mock_cache,
+    mock_set_cache,
+    mock_tag,
+    mock_search,
+    mock_filter,
+    mock_dialog,
+    mock_resolve_and_play,
+    mock_set_resolved,
+    mock_end,
+    mock_addon,
+    mock_script_setting,
+):
+    from resources.lib.router import _handle_script_play
+
+    chosen = {"title": "The.Odyssey.2026.mkv", "link": "http://hydra/nzb/odyssey"}
+    alternate = {
+        "title": "The.Odyssey.2026.1080p.mkv",
+        "link": "http://hydra/nzb/odyssey-alt",
+    }
+    mock_search.return_value = ([chosen], None)
+    mock_filter.return_value = ([chosen, alternate], [chosen, alternate])
+
+    _handle_script_play({"type": "movie", "title": "The Odyssey", "year": "2026"})
+
+    mock_cache.assert_not_called()
+    mock_set_cache.assert_not_called()
+    mock_tag.assert_not_called()
+    mock_dialog.assert_not_called()
+    mock_addon.assert_not_called()
+    mock_resolve_and_play.assert_called_once()
+    resolver_params = dict(mock_resolve_and_play.call_args.kwargs["params"])
+    assert callable(resolver_params.pop("_settings_getter"))
+    assert resolver_params.pop("_fallback_candidate_loader") is None
+    assert resolver_params == {
+        "type": "movie",
+        "title": "The Odyssey",
+        "year": "2026",
+        "_fallback_candidates": [],
+        "_completed_job_lookup_done": True,
+    }
+    mock_end.assert_not_called()
+    mock_set_resolved.assert_not_called()
 
 
 @patch("xbmcaddon.Addon")

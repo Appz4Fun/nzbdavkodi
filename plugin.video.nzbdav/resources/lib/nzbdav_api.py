@@ -66,10 +66,14 @@ def _sanitize_server_message(raw):
     return cleaned
 
 
-def _get_settings():
-    addon = xbmcaddon.Addon()
-    url = addon.getSetting("nzbdav_url").rstrip("/")
-    api_key = addon.getSetting("nzbdav_api_key")
+def _get_settings(settings_getter=None):
+    if settings_getter is None:
+        addon = xbmcaddon.Addon()
+        url = addon.getSetting("nzbdav_url").rstrip("/")
+        api_key = addon.getSetting("nzbdav_api_key")
+    else:
+        url = settings_getter("nzbdav_url", "").rstrip("/")
+        api_key = settings_getter("nzbdav_api_key", "")
     return url, api_key
 
 
@@ -97,13 +101,16 @@ def _clamp_int_setting(value, lo, hi):
     return value
 
 
-def _get_submit_timeout():
+def _get_submit_timeout(settings_getter=None):
     """Read the configurable submit timeout from settings, default 120s.
 
     Clamped to [_SUBMIT_TIMEOUT_MIN, _SUBMIT_TIMEOUT_MAX] so a typo
     in the Kodi settings UI can't produce a 83-hour timeout."""
     try:
-        raw = xbmcaddon.Addon().getSetting("submit_timeout")
+        if settings_getter is None:
+            raw = xbmcaddon.Addon().getSetting("submit_timeout")
+        else:
+            raw = settings_getter("submit_timeout", "")
         value = int(raw) if raw else _DEFAULT_SUBMIT_TIMEOUT
     except (ValueError, TypeError):
         return _DEFAULT_SUBMIT_TIMEOUT
@@ -128,7 +135,7 @@ def _is_timeout_error(exc):
     return False
 
 
-def submit_nzb(nzb_url, nzb_name=""):
+def submit_nzb(nzb_url, nzb_name="", settings_getter=None, submit_timeout=None):
     """Submit an NZB URL to nzbdav's SABnzbd-compatible API.
 
     Args:
@@ -160,7 +167,7 @@ def submit_nzb(nzb_url, nzb_name=""):
         Logs submission URLs, successes, and errors to the Kodi log.
     """
     try:
-        base_url, api_key = _get_settings()
+        base_url, api_key = _get_settings(settings_getter=settings_getter)
     except Exception as e:  # pylint: disable=broad-except
         xbmc.log(
             "NZB-DAV: Failed to read nzbdav settings: {}".format(_redact_text(str(e))),
@@ -177,7 +184,11 @@ def submit_nzb(nzb_url, nzb_name=""):
     url = "{}/api?{}".format(base_url, urlencode(params))
     from resources.lib.http_util import redact_url
 
-    timeout = _get_submit_timeout()
+    timeout = (
+        submit_timeout
+        if submit_timeout is not None
+        else _get_submit_timeout(settings_getter=settings_getter)
+    )
     xbmc.log(
         "NZB-DAV: Submit NZB URL (timeout={}s): {}".format(timeout, redact_url(url)),
         xbmc.LOGDEBUG,
@@ -346,7 +357,7 @@ def cancel_job(nzo_id, timeout=30):
     return False
 
 
-def get_job_history(nzo_id):
+def get_job_history(nzo_id, settings_getter=None):
     """Check if a job has landed in nzbdav's history.
 
     Returns dict with keys ``status``, ``storage``, ``name``,
@@ -356,7 +367,7 @@ def get_job_history(nzo_id):
     transient failures don't abort the resolve).
     """
     try:
-        base_url, api_key = _get_settings()
+        base_url, api_key = _get_settings(settings_getter=settings_getter)
     except Exception:  # pylint: disable=broad-except
         xbmc.log("NZB-DAV: Failed to read settings for job history", xbmc.LOGDEBUG)
         return None
@@ -393,7 +404,7 @@ def get_job_history(nzo_id):
     return None
 
 
-def find_completed_by_name(name):
+def find_completed_by_name(name, settings_getter=None):
     """Search nzbdav history for a completed download matching the given name.
 
     Uses the SABnzbd search parameter to narrow results, then matches by name.
@@ -401,7 +412,7 @@ def find_completed_by_name(name):
 
     Returns dict with: status, storage, name, nzo_id. None if not found.
     """
-    return find_completed_by_names([name]).get(name)
+    return find_completed_by_names([name], settings_getter=settings_getter).get(name)
 
 
 def _unique_names(names):
@@ -465,7 +476,7 @@ def _history_slots(base_url, params, log_context):
     return _response_slots(response, "history")
 
 
-def find_completed_by_names(names):
+def find_completed_by_names(names, settings_getter=None):
     """Search nzbdav history for completed downloads matching exact names.
 
     This is the batched equivalent of find_completed_by_name(): it groups
@@ -477,7 +488,7 @@ def find_completed_by_names(names):
         return {}
 
     try:
-        base_url, api_key = _get_settings()
+        base_url, api_key = _get_settings(settings_getter=settings_getter)
     except Exception as e:  # pylint: disable=broad-except
         xbmc.log(
             "NZB-DAV: Settings read failed in find_completed_by_names: {}".format(
@@ -522,7 +533,7 @@ def find_completed_by_names(names):
     return found
 
 
-def find_queued_by_name(name):
+def find_queued_by_name(name, settings_getter=None):
     """Search nzbdav's active queue for a job matching ``name``.
 
     Used by the resolver's submit path to recover from a client-side
@@ -551,17 +562,17 @@ def find_queued_by_name(name):
         No retries; the resolver calls this in a short loop after a
         submit timeout and handles its own pacing.
     """
-    return find_queued_by_names([name]).get(name)
+    return find_queued_by_names([name], settings_getter=settings_getter).get(name)
 
 
-def find_queued_by_names(names):
+def find_queued_by_names(names, settings_getter=None):
     """Search nzbdav's active queue for exact job-name matches."""
     unique_names = _unique_names(names)
     if not unique_names:
         return {}
 
     try:
-        base_url, api_key = _get_settings()
+        base_url, api_key = _get_settings(settings_getter=settings_getter)
     except Exception:  # pylint: disable=broad-except
         return {}
 
@@ -701,7 +712,7 @@ def get_completed_names():
     return set(get_completed_jobs())
 
 
-def get_job_status(nzo_id):
+def get_job_status(nzo_id, settings_getter=None):
     """Poll the nzbdav queue for an in-flight NZB's current status.
 
     Args:
@@ -716,7 +727,7 @@ def get_job_status(nzo_id):
         not abort the resolve.
     """
     try:
-        base_url, api_key = _get_settings()
+        base_url, api_key = _get_settings(settings_getter=settings_getter)
     except Exception as e:  # pylint: disable=broad-except
         xbmc.log(
             "NZB-DAV: Failed to read nzbdav settings for status check: {}".format(e),

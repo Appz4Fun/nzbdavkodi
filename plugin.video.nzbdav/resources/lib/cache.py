@@ -13,6 +13,8 @@ import xbmcvfs
 
 MAX_CACHE_SIZE_BYTES = 52428800  # 50MB
 MAX_CACHE_ENTRY_COUNT = 1000
+DEFAULT_CACHE_TTL_SECONDS = 300
+MAX_CACHE_TTL_SECONDS = 86400
 
 
 def _get_cache_dir():
@@ -51,16 +53,27 @@ def _cache_key(search_type, title, year="", imdb="", season="", episode=""):
     return "{}_{}_{}".format(search_type, legible or "untitled", digest)
 
 
+def _get_cache_ttl_seconds():
+    """Return the configured cache TTL, falling back if Kodi settings fail."""
+    try:
+        addon = xbmcaddon.Addon()
+        raw_ttl = addon.getSetting("cache_ttl") or str(DEFAULT_CACHE_TTL_SECONDS)
+    except RuntimeError as exc:
+        xbmc.log(
+            "NZB-DAV: cache_ttl setting unavailable; using default: {}".format(exc),
+            xbmc.LOGWARNING,
+        )
+        return DEFAULT_CACHE_TTL_SECONDS
+
+    try:
+        return max(0, min(int(raw_ttl), MAX_CACHE_TTL_SECONDS))
+    except (TypeError, ValueError):
+        return DEFAULT_CACHE_TTL_SECONDS
+
+
 def get_cached(search_type, title, **kwargs):
     """Get cached results if fresh enough. Returns list or None."""
-    addon = xbmcaddon.Addon()
-    # Clamp to [0, 86400] so a typo (e.g. "99999999") can't leave a cache
-    # entry valid forever. 24 h is the upper sensible bound for search-
-    # result freshness on a home-scale indexer.
-    try:
-        cache_ttl = max(0, min(int(addon.getSetting("cache_ttl") or "300"), 86400))
-    except (TypeError, ValueError):
-        cache_ttl = 300
+    cache_ttl = _get_cache_ttl_seconds()
     if cache_ttl <= 0:
         return None
 
@@ -104,14 +117,7 @@ def get_cached(search_type, title, **kwargs):
 
 def set_cached(search_type, title, results, **kwargs):
     """Cache search results."""
-    addon = xbmcaddon.Addon()
-    # Clamp to [0, 86400] so a typo (e.g. "99999999") can't leave a cache
-    # entry valid forever. 24 h is the upper sensible bound for search-
-    # result freshness on a home-scale indexer.
-    try:
-        cache_ttl = max(0, min(int(addon.getSetting("cache_ttl") or "300"), 86400))
-    except (TypeError, ValueError):
-        cache_ttl = 300
+    cache_ttl = _get_cache_ttl_seconds()
     if cache_ttl <= 0:
         return
 

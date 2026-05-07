@@ -4,7 +4,7 @@
 import sys
 import threading
 import time as _time
-from unittest.mock import ANY, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 from resources.lib.resolver import (
     _DOWNLOAD_TIMEOUT_MAX,
@@ -14,6 +14,7 @@ from resources.lib.resolver import (
     MAX_POLL_ITERATIONS,
     _cache_bust_url,
     _clear_kodi_playback_state,
+    _completed_job_stream,
     _direct_playback_service_config,
     _existing_completed_stream,
     _fallback_submit_jobs_snapshot,
@@ -28,11 +29,15 @@ from resources.lib.resolver import (
     _poll_once,
     _poll_until_ready,
     _prefetch_fallback_candidate_loader,
+    _show_submit_error_dialog,
+    _start_direct_playback_prepare,
     _start_fallback_submit_worker,
     _stop_fallback_submit_worker,
     _storage_to_webdav_path,
+    _submit_nzb_with_retries,
     _submit_nzb_with_ui_pump,
     _validate_stream_url,
+    _wait_direct_playback_prepare,
     resolve,
     resolve_and_play,
 )
@@ -214,6 +219,32 @@ def test_get_poll_settings_uses_requested_defaults_for_empty_settings():
         sys.modules["xbmcaddon"].Addon.return_value = original
 
 
+def test_get_poll_settings_uses_defaults_when_kodi_setting_raises_runtime():
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = RuntimeError("Kodi settings unavailable")
+    original = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        assert _get_poll_settings() == (1, 3600)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original
+
+
+def test_get_poll_settings_uses_settings_getter_without_kodi_addon():
+    original_addon = sys.modules["xbmcaddon"].Addon
+    sys.modules["xbmcaddon"].Addon = MagicMock(
+        side_effect=RuntimeError("Kodi settings unavailable")
+    )
+
+    def settings_getter(key, default=""):
+        return {"poll_interval": "2", "download_timeout": "120"}.get(key, default)
+
+    try:
+        assert _get_poll_settings(settings_getter=settings_getter) == (2, 120)
+    finally:
+        sys.modules["xbmcaddon"].Addon = original_addon
+
+
 def test_get_submit_timeout_seconds_uses_requested_default_for_empty_setting():
     mock_addon = MagicMock()
     mock_addon.getSetting.return_value = ""
@@ -262,8 +293,33 @@ def test_handle_job_status_accepts_fractional_percentage():
 
     assert should_stop is False
     assert last_status == "Downloading"
+    for _ in range(20):
+        if dialog.update.call_args_list:
+            break
+        _time.sleep(0.01)
     dialog.update.assert_called_once()
     assert dialog.update.call_args[0][0] == 45
+
+
+def test_handle_job_status_does_not_block_on_stuck_dialog_update():
+    def stuck_update(*_args):
+        _time.sleep(0.25)
+
+    dialog = MagicMock()
+    dialog.update.side_effect = stuck_update
+
+    started = _time.perf_counter()
+    should_stop, last_status = _handle_job_status(
+        {"status": "Downloading", "percentage": "99"},
+        "nzo_stuck_dialog",
+        dialog,
+        None,
+    )
+    elapsed = _time.perf_counter() - started
+
+    assert should_stop is False
+    assert last_status == "Downloading"
+    assert elapsed < 0.05
 
 
 @patch("resources.lib.resolver.find_video_file")
@@ -275,6 +331,35 @@ def test_existing_completed_stream_ignores_partial_history_row(
 
     assert _existing_completed_stream("movie.mkv") is None
     mock_find_video.assert_not_called()
+
+
+@patch("resources.lib.resolver._find_video_stream_for_folder")
+def test_completed_job_stream_passes_settings_getter_to_webdav_lookup(mock_find_stream):
+    def settings_getter(_key, default=""):
+        return default
+
+    mock_find_stream.return_value = (
+        "/content/uncategorized/movie/movie.mkv",
+        "http://webdav/movie.mkv",
+        {"Authorization": "Basic x"},
+    )
+    completed_job = {
+        "status": "Completed",
+        "name": "movie.mkv",
+        "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/movie",
+    }
+
+    stream = _completed_job_stream(
+        "movie.mkv",
+        completed_job,
+        settings_getter=settings_getter,
+    )
+
+    assert stream == ("http://webdav/movie.mkv", {"Authorization": "Basic x"})
+    mock_find_stream.assert_called_once_with(
+        "/content/uncategorized/movie/",
+        settings_getter=settings_getter,
+    )
 
 
 @patch("resources.lib.resolver.xbmcgui")
@@ -822,7 +907,7 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
         }
     ]
     mock_poll_until_ready.return_value = (
-        "http://webdav/content/primary/movie.mkv",
+        "http://webdav/content/primary/movie.mp4",
         {"Authorization": "Basic primary"},
     )
     mock_xbmc.Monitor.return_value = _make_monitor()
@@ -857,7 +942,7 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
                 "content_length": 0,
             },
         ],
-        service_config_state=ANY,
+        service_config_state=None,
     )
     mock_wait_prepare.assert_called_once_with(prepare_state)
     mock_finish_playback.assert_called_once_with(1, prepared_playback)
@@ -983,7 +1068,7 @@ def test_resolve_overlaps_bookmark_cleanup_with_post_submit_poll(
         1,
         {
             "nzburl": "http://hydra/getnzb/primary",
-            "title": "movie.mkv",
+            "title": "movie.mp4",
             "_fallback_candidates": [],
         },
     )
@@ -1169,7 +1254,7 @@ def test_resolve_overlaps_proxy_prepare_with_bookmark_cleanup_after_ready(
         _time.sleep(0.02)
         timing["ready"] = _time.perf_counter()
         return (
-            "http://webdav/content/primary/movie.mkv",
+            "http://webdav/content/primary/movie.mp4",
             {"Authorization": "Basic primary"},
         )
 
@@ -1238,7 +1323,7 @@ def test_resolve_sets_resolved_url_before_remux_cache_prompt(
     mock_gui.DialogProgress.return_value = MagicMock()
     mock_gui.ListItem.return_value = MagicMock()
     mock_poll_until_ready.return_value = (
-        "http://webdav/content/primary/movie.mkv",
+        "http://webdav/content/primary/movie.mp4",
         {"Authorization": "Basic primary"},
     )
     mock_prepare.return_value = (
@@ -1290,85 +1375,63 @@ def test_resolve_sets_resolved_url_before_remux_cache_prompt(
     mock_cache_prompt.assert_called_once()
 
 
-@patch("resources.lib.cache_prompt.maybe_show_cache_prompt")
-@patch("resources.lib.stream_proxy.prepare_stream_via_service")
-@patch("resources.lib.stream_proxy.get_service_proxy_token", return_value="token")
-@patch("resources.lib.stream_proxy.get_service_proxy_port")
 @patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
+@patch("resources.lib.resolver._finish_direct_playback")
+@patch("resources.lib.resolver._wait_direct_playback_prepare")
+@patch("resources.lib.resolver._start_direct_playback_prepare")
 @patch("resources.lib.resolver._start_fallback_submit_worker")
 @patch("resources.lib.resolver._poll_until_ready")
+@patch("resources.lib.resolver._start_direct_playback_service_config_lookup")
 @patch("resources.lib.resolver._clear_kodi_playback_state")
 @patch("resources.lib.resolver.xbmc")
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver.xbmcplugin")
 @patch("resources.lib.resolver._get_poll_settings")
-def test_resolve_overlaps_service_config_lookup_with_stream_readiness(
+def test_resolve_keeps_service_config_lookup_on_resolver_thread(
     mock_poll_settings,
     mock_plugin,
     mock_gui,
     mock_xbmc,
     mock_clear_state,
+    mock_service_config_lookup,
     mock_poll_until_ready,
     mock_start_fallback,
+    mock_start_prepare,
+    mock_wait_prepare,
+    mock_finish_playback,
     _mock_snapshot,
-    mock_get_port,
-    _mock_get_token,
-    mock_prepare,
-    _mock_cache_prompt,
 ):
-    """Proxy port/token lookup should not start after WebDAV readiness."""
+    """Do not call Kodi Window APIs from a background lookup thread."""
     mock_poll_settings.return_value = (2, 60)
     mock_start_fallback.return_value = {"state": "fallback"}
+    mock_start_prepare.return_value = {"state": "prepare"}
+    mock_wait_prepare.return_value = {"state": "prepared"}
     mock_xbmc.Monitor.return_value = _make_monitor()
     mock_gui.DialogProgress.return_value = MagicMock()
-    mock_gui.ListItem.return_value = MagicMock()
-    mock_prepare.return_value = (
-        "http://127.0.0.1:57800/stream/primary",
-        {"remux": False, "faststart": False, "direct": False},
+    mock_poll_until_ready.return_value = (
+        "http://webdav/content/primary/movie.mp4",
+        {"Authorization": "Basic primary"},
     )
-    timing = {}
-
-    def get_port():
-        timing["service_config_start"] = _time.perf_counter()
-        _time.sleep(0.10)
-        timing["service_config_end"] = _time.perf_counter()
-        return 57800
-
-    def poll_ready(*_args, **_kwargs):
-        timing["poll_start"] = _time.perf_counter()
-        _time.sleep(0.12)
-        timing["ready"] = _time.perf_counter()
-        return (
-            "http://webdav/content/primary/movie.mkv",
-            {"Authorization": "Basic primary"},
-        )
-
-    def prepare(*_args, **_kwargs):
-        timing["prepare_start"] = _time.perf_counter()
-        return mock_prepare.return_value
-
-    mock_get_port.side_effect = get_port
-    mock_poll_until_ready.side_effect = poll_ready
-    mock_prepare.side_effect = prepare
 
     resolve(
         1,
         {
             "nzburl": "http://hydra/getnzb/primary",
-            "title": "movie.mkv",
+            "title": "movie.mp4",
             "_fallback_candidates": [],
         },
     )
 
-    ready_to_prepare = timing["prepare_start"] - timing["ready"]
-    assert timing["service_config_start"] < timing["ready"]
-    assert (
-        ready_to_prepare < 0.05
-    ), "service config delayed prepare by {:.3f}s after readiness".format(
-        ready_to_prepare
+    mock_service_config_lookup.assert_not_called()
+    mock_start_prepare.assert_called_once_with(
+        "http://webdav/content/primary/movie.mp4",
+        {"Authorization": "Basic primary"},
+        fallback_sources=[],
+        service_config_state=None,
     )
+    mock_wait_prepare.assert_called_once_with({"state": "prepare"})
+    mock_finish_playback.assert_called_once_with(1, {"state": "prepared"})
     mock_clear_state.assert_called_once()
-    mock_plugin.setResolvedUrl.assert_called_once()
 
 
 @patch("resources.lib.cache_prompt.maybe_show_cache_prompt")
@@ -1416,7 +1479,7 @@ def test_resolve_and_play_overlaps_proxy_prepare_with_bookmark_cleanup_after_rea
         _time.sleep(0.02)
         timing["ready"] = _time.perf_counter()
         return (
-            "http://webdav/content/primary/movie.mkv",
+            "http://webdav/content/primary/movie.mp4",
             {"Authorization": "Basic primary"},
         )
 
@@ -1457,6 +1520,126 @@ def test_resolve_and_play_overlaps_proxy_prepare_with_bookmark_cleanup_after_rea
     ), "resolve_and_play ready-to-play stayed serial at {:.3f}s".format(elapsed)
 
 
+@patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
+@patch("resources.lib.resolver._finish_player_playback")
+@patch("resources.lib.resolver._wait_direct_playback_prepare")
+@patch("resources.lib.resolver._start_direct_playback_prepare")
+@patch("resources.lib.resolver._start_fallback_submit_worker")
+@patch("resources.lib.resolver._poll_until_ready")
+@patch("resources.lib.resolver._clear_kodi_playback_state")
+@patch("resources.lib.resolver.xbmc")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver._get_poll_settings")
+def test_resolve_and_play_does_not_wait_forever_for_stuck_bookmark_cleanup(
+    mock_poll_settings,
+    mock_gui,
+    mock_xbmc,
+    mock_clear_state,
+    mock_poll_until_ready,
+    mock_start_fallback,
+    mock_start_prepare,
+    mock_wait_prepare,
+    mock_finish_playback,
+    _mock_snapshot,
+):
+    """A stuck noncritical bookmark cleanup must not block Player.play()."""
+    cleanup_started = threading.Event()
+    cleanup_can_finish = threading.Event()
+    resolve_finished = threading.Event()
+
+    def stuck_cleanup(_params):
+        cleanup_started.set()
+        cleanup_can_finish.wait()
+
+    def run_resolve():
+        resolve_and_play(
+            "http://hydra/getnzb/primary",
+            "movie.mkv",
+            params={"_fallback_candidates": []},
+        )
+        resolve_finished.set()
+
+    mock_poll_settings.return_value = (2, 60)
+    mock_start_fallback.return_value = {"state": "fallback"}
+    mock_start_prepare.return_value = {"state": "prepare"}
+    mock_wait_prepare.return_value = {"state": "prepared"}
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    mock_gui.DialogProgress.return_value = MagicMock()
+    mock_poll_until_ready.return_value = (
+        "http://webdav/content/primary/movie.mkv",
+        {"Authorization": "Basic primary"},
+    )
+    mock_clear_state.side_effect = stuck_cleanup
+
+    thread = threading.Thread(target=run_resolve, daemon=True)
+    thread.start()
+
+    assert cleanup_started.wait(timeout=1)
+    assert resolve_finished.wait(
+        timeout=0.35
+    ), "resolve_and_play blocked playback on a stuck bookmark cleanup worker"
+    mock_finish_playback.assert_called_once_with(
+        {
+            "service_port": 0,
+            "stream_url": "http://webdav/content/primary/movie.mkv",
+            "stream_headers": {"Authorization": "Basic primary"},
+            "proxy_url": "",
+            "stream_info": {},
+        }
+    )
+    cleanup_can_finish.set()
+
+
+@patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
+@patch("resources.lib.resolver._finish_player_playback")
+@patch("resources.lib.resolver._wait_direct_playback_prepare")
+@patch("resources.lib.resolver._start_direct_playback_prepare")
+@patch("resources.lib.resolver._start_fallback_submit_worker")
+@patch("resources.lib.resolver._poll_until_ready")
+@patch("resources.lib.resolver._clear_kodi_playback_state")
+@patch("resources.lib.resolver.xbmc")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver._get_poll_settings")
+def test_resolve_and_play_skips_proxy_prepare_for_plain_mkv_without_fallbacks(
+    mock_poll_settings,
+    mock_gui,
+    mock_xbmc,
+    _mock_clear_state,
+    mock_poll_until_ready,
+    mock_start_fallback,
+    mock_start_prepare,
+    mock_wait_prepare,
+    mock_finish_playback,
+    _mock_snapshot,
+):
+    mock_poll_settings.return_value = (2, 60)
+    mock_start_fallback.return_value = {"state": "fallback"}
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    mock_gui.DialogProgress.return_value = MagicMock()
+    mock_poll_until_ready.return_value = (
+        "http://webdav/content/primary/movie.mkv",
+        {"Authorization": "Basic primary"},
+    )
+
+    resolve_and_play(
+        "http://hydra/getnzb/primary",
+        "movie.mp4",
+        params={"_fallback_candidates": []},
+    )
+
+    mock_start_prepare.assert_not_called()
+    mock_wait_prepare.assert_not_called()
+    mock_finish_playback.assert_called_once_with(
+        {
+            "service_port": 0,
+            "stream_url": "http://webdav/content/primary/movie.mkv",
+            "stream_headers": {"Authorization": "Basic primary"},
+            "proxy_url": "",
+            "stream_info": {},
+        }
+    )
+
+
 @patch("resources.lib.cache_prompt.maybe_show_cache_prompt")
 @patch("resources.lib.stream_proxy.prepare_stream_via_service")
 @patch("resources.lib.stream_proxy.get_service_proxy_token", return_value="token")
@@ -1490,7 +1673,7 @@ def test_resolve_and_play_starts_player_before_remux_cache_prompt(
     mock_gui.DialogProgress.return_value = MagicMock()
     mock_gui.ListItem.return_value = MagicMock()
     mock_poll_until_ready.return_value = (
-        "http://webdav/content/primary/movie.mkv",
+        "http://webdav/content/primary/movie.mp4",
         {"Authorization": "Basic primary"},
     )
     mock_prepare.return_value = (
@@ -1519,7 +1702,7 @@ def test_resolve_and_play_starts_player_before_remux_cache_prompt(
     started = _time.perf_counter()
     resolve_and_play(
         "http://hydra/getnzb/primary",
-        "movie.mkv",
+        "movie.mp4",
         params={"_fallback_candidates": []},
     )
 
@@ -2543,6 +2726,213 @@ def test_submit_ui_pump_probes_queue_without_two_second_startup_delay(
     assert elapsed < 1.5
 
 
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.find_queued_by_name", return_value=None)
+@patch("resources.lib.resolver.submit_nzb")
+def test_submit_ui_pump_passes_settings_getter_to_submit_worker(
+    mock_submit, mock_find_queued, mock_find_completed
+):
+    def settings_getter(_key, default=""):
+        return default
+
+    seen = {}
+
+    def submit(_nzb_url, _title, **kwargs):
+        seen.update(kwargs)
+        return "SABnzbd_nzo_script", None
+
+    mock_submit.side_effect = submit
+    dialog = MagicMock()
+    dialog.iscanceled.return_value = False
+    monitor = _make_monitor()
+
+    nzo_id, submit_error = _submit_nzb_with_ui_pump(
+        "http://hydra/getnzb/abc",
+        "movie.mkv",
+        dialog,
+        monitor,
+        settings_getter=settings_getter,
+    )
+
+    assert (nzo_id, submit_error) == ("SABnzbd_nzo_script", None)
+    assert seen["settings_getter"] is settings_getter
+    assert seen["submit_timeout"] == 300
+    if mock_find_queued.called:
+        assert mock_find_queued.call_args.kwargs["settings_getter"] is settings_getter
+    if mock_find_completed.called:
+        assert (
+            mock_find_completed.call_args.kwargs["settings_getter"] is settings_getter
+        )
+
+
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.find_queued_by_name", return_value=None)
+@patch("resources.lib.resolver.submit_nzb")
+def test_submit_ui_pump_uses_nonblocking_abort_check_after_submit_result(
+    mock_submit, _mock_find_queued, _mock_find_completed
+):
+    def delayed_terminal_submit(_nzb_url, _title, **_kwargs):
+        _time.sleep(0.03)
+        return None, {"status": 400, "message": "TooManyRequests"}
+
+    def wait_for_abort(seconds):
+        if seconds == 0:
+            _time.sleep(0.25)
+        return False
+
+    mock_submit.side_effect = delayed_terminal_submit
+    dialog = MagicMock()
+    dialog.iscanceled.return_value = False
+    monitor = MagicMock()
+    monitor.waitForAbort.side_effect = wait_for_abort
+    monitor.abortRequested.return_value = False
+
+    started = _time.monotonic()
+    nzo_id, submit_error = _submit_nzb_with_ui_pump(
+        "http://hydra/getnzb/rate-limited",
+        "movie.mkv",
+        dialog,
+        monitor,
+    )
+    elapsed = _time.monotonic() - started
+
+    assert nzo_id is None
+    assert submit_error == {"status": 400, "message": "TooManyRequests"}
+    assert elapsed < 0.15
+    assert 0 not in [call.args[0] for call in monitor.waitForAbort.call_args_list]
+
+
+@patch("resources.lib.resolver.find_completed_by_name")
+@patch("resources.lib.resolver.find_queued_by_name")
+@patch("resources.lib.resolver.submit_nzb")
+def test_submit_ui_pump_terminal_error_does_not_wait_for_probe_cleanup(
+    mock_submit, mock_find_queued, mock_find_completed
+):
+    def terminal_submit(_nzb_url, _title, **_kwargs):
+        _time.sleep(0.03)
+        return None, {"status": 400, "message": "TooManyRequests"}
+
+    def slow_probe(*_args, **_kwargs):
+        _time.sleep(0.25)
+
+    mock_submit.side_effect = terminal_submit
+    mock_find_queued.side_effect = slow_probe
+    mock_find_completed.side_effect = slow_probe
+    dialog = MagicMock()
+    dialog.iscanceled.return_value = False
+    monitor = MagicMock()
+    monitor.abortRequested.return_value = False
+
+    started = _time.monotonic()
+    nzo_id, submit_error = _submit_nzb_with_ui_pump(
+        "http://hydra/getnzb/rate-limited",
+        "movie.mkv",
+        dialog,
+        monitor,
+    )
+    elapsed = _time.monotonic() - started
+
+    assert nzo_id is None
+    assert submit_error == {"status": 400, "message": "TooManyRequests"}
+    assert elapsed < 0.15
+
+
+@patch("resources.lib.resolver._show_submit_error_dialog")
+@patch("resources.lib.resolver._adopt_queued_or_completed_job")
+@patch("resources.lib.resolver.submit_nzb")
+def test_submit_retries_http_4xx_closes_progress_and_skips_adoption(
+    mock_submit, mock_adopt, mock_show_error
+):
+    submit_error = {
+        "status": 400,
+        "message": "Failed to fetch nzb-file url: TooManyRequests",
+    }
+    mock_submit.return_value = (None, submit_error)
+    dialog = MagicMock()
+    monitor = _make_monitor()
+
+    result = _submit_nzb_with_retries(
+        "http://hydra/getnzb/rate-limited",
+        "movie.mkv",
+        dialog,
+        monitor,
+    )
+
+    assert result is None
+    mock_submit.assert_called_once()
+    mock_adopt.assert_not_called()
+    dialog.close.assert_called_once()
+    mock_show_error.assert_called_once_with(submit_error)
+
+
+@patch("resources.lib.resolver.xbmcgui")
+def test_show_submit_error_dialog_uses_nonblocking_rate_limit_notification(mock_gui):
+    submit_error = {
+        "status": 400,
+        "indexer": "DrunkenSlug",
+        "message": (
+            "Failed to fetch nzb-file url "
+            "`http://hydra/getnzb/abc?apikey=secret` Received status code "
+            "TooManyRequests."
+        ),
+    }
+
+    _show_submit_error_dialog(submit_error)
+
+    dialog = mock_gui.Dialog.return_value
+    dialog.ok.assert_not_called()
+    dialog.notification.assert_called_once()
+    message = dialog.notification.call_args.args[1]
+    assert "DrunkenSlug" in message
+    assert "too many requests" in message.lower()
+    assert "http://" not in message
+    assert "getnzb" not in message
+    assert "TooManyRequests" not in message
+
+
+@patch("resources.lib.stream_proxy.prepare_stream_via_service")
+@patch("resources.lib.stream_proxy.get_service_proxy_token", return_value="token")
+@patch("resources.lib.stream_proxy.get_service_proxy_port", return_value=57800)
+def test_wait_direct_playback_prepare_falls_back_when_proxy_prepare_stalls(
+    _mock_get_port, _mock_get_token, mock_prepare
+):
+    def slow_prepare(*_args, **_kwargs):
+        _time.sleep(0.2)
+        return (
+            "http://127.0.0.1:57800/stream/slow",
+            {"remux": False, "faststart": False, "direct": False},
+        )
+
+    stream_url = "http://webdav/content/movie.mkv"
+    stream_headers = {"Authorization": "Basic x"}
+    mock_prepare.side_effect = slow_prepare
+
+    state = _start_direct_playback_prepare(stream_url, stream_headers)
+    started = _time.perf_counter()
+    prepared = _wait_direct_playback_prepare(state, wait_seconds=0.02)
+    elapsed = _time.perf_counter() - started
+
+    assert elapsed < 0.08
+    assert prepared["service_port"] == 0
+    assert prepared["stream_url"] == stream_url
+    assert prepared["stream_headers"] == stream_headers
+
+
+@patch("resources.lib.resolver.probe_webdav_reachable", return_value=(False, None))
+@patch("resources.lib.resolver.get_job_history", return_value=None)
+@patch("resources.lib.resolver.get_job_status", return_value=None)
+def test_poll_once_passes_settings_getter_to_queue_history_workers(
+    mock_status, mock_history, _mock_probe
+):
+    def settings_getter(_key, default=""):
+        return default
+
+    _poll_once("SABnzbd_nzo_script", "movie.mkv", _make_monitor(), settings_getter)
+
+    assert mock_status.call_args.kwargs["settings_getter"] is settings_getter
+    assert mock_history.call_args.kwargs["settings_getter"] is settings_getter
+
+
 @patch("resources.lib.resolver.find_queued_by_name")
 @patch("resources.lib.resolver.submit_nzb")
 def test_submit_ui_pump_starts_queue_probe_within_short_grace_window(
@@ -2801,6 +3191,49 @@ def test_timeout_adoption_overlaps_completed_history_with_slow_queue_miss(
     ), "timeout adoption serialized history behind queue miss: {:.3f}s".format(elapsed)
 
 
+@patch("resources.lib.resolver.probe_webdav_reachable")
+@patch("resources.lib.resolver.get_job_history")
+@patch("resources.lib.resolver.get_job_status")
+def test_poll_once_catches_late_active_queue_completed_history(
+    mock_status, mock_history, mock_probe_webdav
+):
+    """A stale late-stage queue row should not cost a full poll interval."""
+    history_started = threading.Event()
+    history_may_finish = threading.Event()
+
+    def late_active_status(_nzo_id):
+        assert history_started.wait(timeout=1)
+        history_may_finish.set()
+        return {"status": "Downloading", "percentage": "96.0"}
+
+    def completed_history(_nzo_id):
+        history_started.set()
+        assert history_may_finish.wait(timeout=1)
+        _time.sleep(0.015)
+        return {
+            "status": "Completed",
+            "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/movie",
+        }
+
+    mock_status.side_effect = late_active_status
+    mock_history.side_effect = completed_history
+
+    started = _time.perf_counter()
+    job_status, history, error = _poll_once(
+        "SABnzbd_nzo_primary", "movie.mkv", _make_monitor()
+    )
+    elapsed = _time.perf_counter() - started
+
+    assert error is None
+    assert job_status["status"] == "Downloading"
+    assert history and history["status"] == "Completed", (
+        "late completed history missed after {:.3f}s; resolver would wait for "
+        "the next poll interval".format(elapsed)
+    )
+    assert elapsed < 0.08, "late-history catch took {:.3f}s".format(elapsed)
+    mock_probe_webdav.assert_not_called()
+
+
 @patch("resources.lib.resolver.find_completed_by_name")
 @patch("resources.lib.resolver.find_queued_by_name")
 @patch("resources.lib.resolver.submit_nzb")
@@ -2967,6 +3400,14 @@ def test_submit_ui_pump_adopts_completed_history_without_submit_join_delay(
 
     assert (nzo_id, submit_error) == ("SABnzbd_nzo_completed_probe", None)
     assert elapsed < 0.6
+    for _ in range(20):
+        if dialog.update.call_args_list:
+            break
+        _time.sleep(0.01)
+    dialog.update.assert_any_call(
+        100,
+        "Already completed in nzbdav\nPreparing stream: movie.mkv",
+    )
 
 
 @patch("resources.lib.resolver.find_completed_by_name")
@@ -3113,26 +3554,17 @@ def test_submit_ui_pump_reads_submit_timeout_once_per_attempt(
     mock_submit, _mock_find_queued, mock_submit_timeout
 ):
     submit_started = threading.Event()
-    submit_can_finish = threading.Event()
 
     def delayed_submit(_nzb_url, _title):
         submit_started.set()
-        assert submit_can_finish.wait(timeout=1)
+        _time.sleep(0.03)
         return "SABnzbd_nzo_submitted", None
-
-    wait_calls = []
-
-    def wait_for_abort(_seconds):
-        wait_calls.append(_seconds)
-        if len(wait_calls) >= 3:
-            submit_can_finish.set()
-        return False
 
     mock_submit.side_effect = delayed_submit
     dialog = MagicMock()
     dialog.iscanceled.return_value = False
     monitor = MagicMock()
-    monitor.waitForAbort.side_effect = wait_for_abort
+    monitor.abortRequested.return_value = False
 
     nzo_id, submit_error = _submit_nzb_with_ui_pump(
         "http://hydra/getnzb/abc", "movie.mkv", dialog, monitor
@@ -3140,7 +3572,6 @@ def test_submit_ui_pump_reads_submit_timeout_once_per_attempt(
 
     assert submit_started.is_set()
     assert (nzo_id, submit_error) == ("SABnzbd_nzo_submitted", None)
-    assert len(wait_calls) >= 3
     mock_submit_timeout.assert_called_once_with()
 
 
@@ -3355,11 +3786,17 @@ def test_resolve_timeout(
     mock_xbmc,
 ):
     """Resolve should time out after download_timeout seconds."""
-    mock_poll.return_value = (2, 5)  # 5 second timeout
+    mock_poll.return_value = (0.01, 5)  # 5 second timeout
     mock_submit.return_value = ("SABnzbd_nzo_abc123", None)
-    mock_status.return_value = {"status": "Downloading", "percentage": "10"}
     mock_history.return_value = None
     mock_xbmc.Monitor.return_value = _make_monitor()
+    poll_started = [False]
+
+    def status_downloading(_nzo_id):
+        poll_started[0] = True
+        return {"status": "Downloading", "percentage": "10"}
+
+    mock_status.side_effect = status_downloading
 
     dialog = MagicMock()
     dialog.iscanceled.return_value = False
@@ -3367,15 +3804,9 @@ def test_resolve_timeout(
 
     # Simulate time passing beyond timeout
     mock_time.time.side_effect = [0.0, 10.0]
-    # _poll_until_ready uses time.monotonic for elapsed-time tracking;
-    # `_submit_nzb_with_ui_pump` and other helpers also call monotonic, so
-    # a fixed side_effect list exhausts. First call returns 0.0 (poll
-    # start), subsequent calls return 10.0 to force the timeout branch.
-    _mono_calls = [0]
 
     def _fake_monotonic():
-        _mono_calls[0] += 1
-        return 0.0 if _mono_calls[0] <= 1 else 10.0
+        return 10.0 if poll_started[0] else 0.0
 
     mock_time.monotonic.side_effect = _fake_monotonic
 
@@ -3487,9 +3918,11 @@ def test_resolve_url_encoded_special_characters(
 @patch("resources.lib.resolver.get_job_history")
 @patch("resources.lib.resolver.get_job_status")
 @patch("resources.lib.resolver.submit_nzb")
+@patch("resources.lib.resolver._wait_for_abort_or_timeout", return_value=False)
 @patch("resources.lib.resolver._get_poll_settings")
 def test_resolve_poll_interval_respected(
     mock_poll,
+    mock_wait,
     mock_submit,
     mock_status,
     mock_history,
@@ -3497,7 +3930,7 @@ def test_resolve_poll_interval_respected(
     mock_gui,
     mock_xbmc,
 ):
-    """resolve() calls monitor.waitForAbort with the configured poll_interval."""
+    """resolve() waits between polls with the configured poll_interval."""
     poll_interval = 7
     mock_poll.return_value = (poll_interval, 3600)
     mock_submit.return_value = ("SABnzbd_nzo_poll123", None)
@@ -3514,7 +3947,8 @@ def test_resolve_poll_interval_respected(
 
     resolve(1, {"nzburl": "http://hydra/getnzb/poll", "title": "polltest.mkv"})
 
-    monitor.waitForAbort.assert_called_with(poll_interval)
+    mock_wait.assert_called_with(monitor, poll_interval)
+    monitor.waitForAbort.assert_not_called()
 
 
 @patch("resources.lib.stream_proxy.get_service_proxy_port", return_value=0)
@@ -3859,6 +4293,45 @@ def test_poll_until_ready_success(
     assert headers == {"Authorization": "x"}
 
 
+@patch("resources.lib.resolver._handle_history_result")
+@patch("resources.lib.resolver._poll_once")
+@patch("resources.lib.resolver._submit_nzb_with_retries", return_value="nzo_abc")
+@patch("resources.lib.resolver.xbmc")
+def test_poll_until_ready_uses_nonblocking_abort_check_between_polls(
+    mock_xbmc,
+    _mock_submit,
+    mock_poll_once,
+    mock_handle_history,
+):
+    def blocking_wait_for_abort(_seconds):
+        _time.sleep(0.25)
+        return False
+
+    monitor = MagicMock()
+    monitor.abortRequested.return_value = False
+    monitor.waitForAbort.side_effect = blocking_wait_for_abort
+    mock_xbmc.Monitor.return_value = monitor
+    mock_poll_once.side_effect = [
+        ({"status": "Downloading", "percentage": "1"}, None, None),
+        (None, {"status": "Completed"}, None),
+    ]
+    mock_handle_history.side_effect = [
+        (False, None, None, 0),
+        (False, "http://webdav/movie.mkv", {"Authorization": "x"}, 0),
+    ]
+
+    started = _time.monotonic()
+    url, headers = _poll_until_ready(
+        "http://hydra/nzb", "movie", _make_dialog(), 0.01, 3600
+    )
+    elapsed = _time.monotonic() - started
+
+    assert url == "http://webdav/movie.mkv"
+    assert headers == {"Authorization": "x"}
+    assert elapsed < 0.15
+    monitor.waitForAbort.assert_not_called()
+
+
 @patch("resources.lib.resolver.find_completed_by_name", return_value=None)
 @patch("resources.lib.resolver._validate_stream_url")
 @patch("resources.lib.resolver.get_webdav_stream_url_for_path")
@@ -4105,22 +4578,24 @@ def test_poll_until_ready_timeout(
     mock_cancel_job,
 ):
     """_poll_until_ready returns (None, None) and shows dialog on timeout."""
-    mock_status.return_value = {"status": "Downloading", "percentage": "10"}
     mock_xbmc.Monitor.return_value = _make_monitor()
+    poll_started = [False]
+
+    def status_downloading(_nzo_id):
+        poll_started[0] = True
+        return {"status": "Downloading", "percentage": "10"}
+
+    mock_status.side_effect = status_downloading
     mock_time.time.side_effect = [0.0, 10.0]
-    # _poll_until_ready uses time.monotonic for elapsed-time tracking;
-    # `_submit_nzb_with_ui_pump` and other helpers also call monotonic, so
-    # a fixed side_effect list exhausts. First call returns 0.0 (poll
-    # start), subsequent calls return 10.0 to force the timeout branch.
-    _mono_calls = [0]
 
     def _fake_monotonic():
-        _mono_calls[0] += 1
-        return 0.0 if _mono_calls[0] <= 1 else 10.0
+        return 10.0 if poll_started[0] else 0.0
 
     mock_time.monotonic.side_effect = _fake_monotonic
 
-    url, headers = _poll_until_ready("http://hydra/nzb", "movie", _make_dialog(), 2, 5)
+    url, headers = _poll_until_ready(
+        "http://hydra/nzb", "movie", _make_dialog(), 0.01, 5
+    )
 
     assert url is None
     assert headers is None
@@ -4532,9 +5007,10 @@ def test_poll_until_ready_cleanup_on_kodi_shutdown(
     must fire."""
     mock_status.return_value = {"status": "Downloading", "percentage": "10"}
     monitor = MagicMock()
-    # First waitForAbort returns False (initial poll wait), second returns True
-    # (Kodi shutdown signal)
-    monitor.waitForAbort.side_effect = [False, True]
+    # First abort flag check returns False (initial poll wait), second returns
+    # True (Kodi shutdown signal). The resolver intentionally does not call
+    # waitForAbort here because that can wedge Kodi's RunScript resolver path.
+    monitor.abortRequested.side_effect = [False, True]
     mock_xbmc.Monitor.return_value = monitor
 
     url, headers = _poll_until_ready(
@@ -4544,6 +5020,7 @@ def test_poll_until_ready_cleanup_on_kodi_shutdown(
     assert url is None
     assert headers is None
     mock_cancel_job.assert_called_once_with("nzo_xyz")
+    monitor.waitForAbort.assert_not_called()
 
 
 @patch("resources.lib.resolver.cancel_job")

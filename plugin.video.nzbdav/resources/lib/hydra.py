@@ -43,8 +43,13 @@ def _hydra_unavailable_error(error):
     return "NZBHydra unavailable: {}".format(_format_request_error(error))
 
 
-def _get_settings():
+def _get_settings(settings_getter=None):
     """Read NZBHydra settings from Kodi addon config."""
+    if settings_getter is not None:
+        url = settings_getter("hydra_url", "").rstrip("/")
+        api_key = settings_getter("hydra_api_key", "")
+        return url, api_key
+
     import xbmcaddon
 
     addon = xbmcaddon.Addon()
@@ -71,7 +76,15 @@ def _fetch_hydra_xml(url, error_prefix):
         return None, _hydra_unavailable_error(error)
 
 
-def search_hydra(search_type, title, year="", imdb="", season="", episode=""):
+def search_hydra(
+    search_type,
+    title,
+    year="",
+    imdb="",
+    season="",
+    episode="",
+    settings_getter=None,
+):
     """Search NZBHydra2 for NZB entries.
 
     Args:
@@ -94,20 +107,23 @@ def search_hydra(search_type, title, year="", imdb="", season="", episode=""):
         Logs search URLs and errors to the Kodi log.
     """
     try:
-        base_url, api_key = _get_settings()
+        base_url, api_key = _get_settings(settings_getter)
     except _HYDRA_REQUEST_ERRORS as error:
         xbmc.log(
             "NZB-DAV: Failed to read Hydra settings: {}".format(error), xbmc.LOGERROR
         )
         return [], "Failed to read NZBHydra settings"
 
-    import xbmcaddon
-
     # `max_results` is exposed via Kodi's number input but the addon also
     # ships with old user profiles that may have the setting as a non-
     # numeric string (legacy text input, hand-edited XML). Guard the int
     # conversion + clamp to a sensible range — TODO.md §H.2-M20 / §H.3.
-    raw_max = xbmcaddon.Addon().getSetting("max_results")
+    if settings_getter is not None:
+        raw_max = settings_getter("max_results", "25")
+    else:
+        import xbmcaddon
+
+        raw_max = xbmcaddon.Addon().getSetting("max_results")
     try:
         max_results = int(raw_max) if raw_max not in (None, "") else 25
     except (TypeError, ValueError):

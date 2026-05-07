@@ -12,5 +12,9 @@ if lib_path not in sys.path:
     sys.path.insert(0, lib_path)
 
 from resources.lib.router import route  # noqa: E402
+from resources.lib.script_player import run_tmdb_play  # noqa: E402
 
-route(sys.argv)
+if len(sys.argv) > 1 and sys.argv[1] == "tmdb_play":
+    run_tmdb_play(sys.argv[2:])
+else:
+    route(sys.argv)

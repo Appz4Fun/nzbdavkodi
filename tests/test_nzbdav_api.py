@@ -52,6 +52,33 @@ def test_submit_nzb_passes_configured_timeout(mock_http, mock_settings, mock_tim
     assert mock_http.call_args.kwargs["timeout"] == 90
 
 
+@patch("resources.lib.nzbdav_api.xbmcaddon.Addon")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_submit_nzb_uses_settings_getter_without_kodi_addon(mock_http, mock_addon):
+    mock_addon.side_effect = RuntimeError("Kodi settings unavailable")
+    mock_http.return_value = json.dumps({"status": True, "nzo_ids": ["nzo_1"]})
+
+    def settings_getter(key, default=""):
+        return {
+            "nzbdav_url": "http://nzbdav:3000/",
+            "nzbdav_api_key": "scriptkey",
+        }.get(key, default)
+
+    nzo_id, error = submit_nzb(
+        "http://hydra:5076/getnzb/abc123",
+        "Test",
+        settings_getter=settings_getter,
+        submit_timeout=12,
+    )
+
+    mock_addon.assert_not_called()
+    assert (nzo_id, error) == ("nzo_1", None)
+    call_url = mock_http.call_args.args[0]
+    assert call_url.startswith("http://nzbdav:3000/api?")
+    assert "apikey=scriptkey" in call_url
+    assert mock_http.call_args.kwargs["timeout"] == 12
+
+
 @patch("resources.lib.nzbdav_api.xbmcaddon")
 def test_get_submit_timeout_reads_setting(mock_xbmcaddon):
     """_get_submit_timeout returns the parsed setting value."""

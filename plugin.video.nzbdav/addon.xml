@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="plugin.video.nzbdav"
        name="NZB-DAV"
-       version="1.0.9"
+       version="1.1.0"
        provider-name="nzbdav">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
@@ -22,7 +22,17 @@
         <license>GPL-3.0-or-later</license>
         <source>https://github.com/xbmc4lyfe/nzbdavkodi</source>
         <website>https://xbmc4lyfe.github.io/nzbdavkodi/</website>
-        <news>v1.0.9
+        <news>v1.1.0
+- TMDBHelper playback now uses a RunScript handoff instead of a resolvable plugin URL, avoiding Kodi resolver hangs while preserving the result picker flow.
+- Script-mode playback can read addon settings directly from addon_data/settings.xml, so Kodi getSetting RuntimeError failures no longer abort searches or playback before the picker appears.
+- Speed up the post-picker path by skipping advisory search progress UI, overlapping cleanup with submit/poll work, and bounding noncritical cleanup and proxy-prepare waits.
+- Already-ready plain MKV files now skip proxy prepare when no fallback streams are attached and hand Kodi the WebDAV URL directly; live CoreELEC validation confirmed Apex and Shelter start without the previous freeze.
+- Catch completed nzbdav history sooner near the end of downloads so the progress dialog no longer stays at 99% after nzbdav marks the job complete.
+- TooManyRequests submit rejections now close the progress dialog and show a nonblocking notification that names the selected indexer when available.
+- Progress dialog updates and abort checks avoid Kodi calls that can wedge the RunScript resolver path.
+- Add regression coverage for RunScript argument parsing, script settings, nonblocking submit/poll paths, direct MKV handoff, and clearer submit errors.
+
+v1.0.9
 - Speed up fallback discovery by deferring candidate lookup until selection time, prefiltering before manifest fetches, and stopping when the fallback limit is filled.
 - Speed up live fallback switching by reusing URL/auth/length/fingerprint state and prevalidated sample bytes after upstream errors.
 - Raise large-NZB and backend timeout headroom for Hydra, Prowlarr, direct indexers, nzbdav, WebDAV, upstream opens, skip probes, and ffprobe.

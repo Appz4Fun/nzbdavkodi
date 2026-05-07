@@ -841,3 +841,31 @@ def test_get_filter_settings_returns_empty_lists_when_nothing_enabled(mock_addon
     assert settings["require_keywords"] == []
     assert settings["release_group"] == []
     assert settings["exclude_release_group"] == []
+
+
+@patch("xbmcaddon.Addon", side_effect=RuntimeError("Kodi settings unavailable"))
+def test_filter_results_uses_script_settings_getter_without_kodi_addon(mock_addon):
+    """RunScript playback can enter without a safe Kodi addon settings
+    context, so filtering must be able to read settings from the script
+    settings adapter instead."""
+    settings = {
+        "filter_1080p": "true",
+        "filter_hevc": "true",
+        "max_results": "5",
+    }
+
+    def script_setting(key, default=""):
+        return settings.get(key, default)
+
+    results = [
+        _make_result(
+            "The.Odyssey.2026.1080p.WEB-DL.DDP5.1.H.265-GROUP.mkv",
+            size=str(8 * 1024**3),
+        )
+    ]
+
+    filtered, all_parsed = filter_results(results, settings_getter=script_setting)
+
+    mock_addon.assert_not_called()
+    assert filtered == results
+    assert all_parsed == results

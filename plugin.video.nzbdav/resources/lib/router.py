@@ -26,6 +26,23 @@ from resources.lib.nzbdav_api import completed_jobs_lookup_done, get_completed_j
 # IMDB IDs are always `tt` + 7–9 digits. Reject anything else before making
 # outbound HTTP calls to IMDB's suggestion API.
 _IMDB_ID_RE = re.compile(r"^tt\d{7,9}$")
+_SCRIPT_PLAY_STAGE_PATH = "/storage/.kodi/temp/nzbdav-script-play-stage.log"
+_SCRIPT_SETTINGS_PATH = (
+    "/storage/.kodi/userdata/addon_data/plugin.video.nzbdav/settings.xml"
+)
+
+
+def _script_play_stage(message):
+    xbmc.log("NZB-DAV: Script play stage: {}".format(message), xbmc.LOGINFO)
+    try:
+        import os
+
+        with open(_SCRIPT_PLAY_STAGE_PATH, "a", encoding="utf-8") as stage_file:
+            stage_file.write(message + "\n")
+            stage_file.flush()
+            os.fsync(stage_file.fileno())
+    except OSError:
+        pass
 
 
 def parse_route(url):
@@ -269,6 +286,14 @@ def _fallback_candidate_loader_for_selection(selected, results):
     return _load_fallback_candidates
 
 
+def _attach_selected_indexer(resolver_params, selected):
+    if not isinstance(selected, dict):
+        return
+    indexer = str(selected.get("indexer", "") or "").strip()
+    if indexer:
+        resolver_params["_selected_indexer"] = indexer
+
+
 def _selection_pool_with_peer_first(selected, results, first_peer):
     """Return a selection pool that tries the known plausible peer first."""
     if isinstance(selected, dict):
@@ -293,7 +318,62 @@ def _show_error_dialog(message):
     xbmcgui.Dialog().ok(_addon_name(), message)
 
 
-def _search_all_providers(search_type, title, year="", imdb="", season="", episode=""):
+def _get_addon_setting(addon, key, default=""):
+    """Read a Kodi setting, returning a default if Kodi's settings layer fails."""
+    try:
+        value = addon.getSetting(key)
+    except RuntimeError as exc:
+        xbmc.log(
+            "NZB-DAV: setting '{}' unavailable; using default: {}".format(key, exc),
+            xbmc.LOGWARNING,
+        )
+        return default
+    return value if isinstance(value, str) else default
+
+
+def _get_script_setting(key, default=""):
+    """Read this addon's setting from settings.xml without Kodi settings APIs."""
+    try:
+        from xml.etree import ElementTree as element_tree
+
+        root = element_tree.parse(_SCRIPT_SETTINGS_PATH).getroot()
+    except (OSError, element_tree.ParseError):
+        return default
+
+    for setting in root.findall(".//setting"):
+        if setting.get("id") != key:
+            continue
+        value = setting.text
+        return value if isinstance(value, str) else default
+    return default
+
+
+def _script_completed_job_for_selection(selected):
+    """Look up completed-history metadata for a RunScript picker selection."""
+    title = selected.get("title", "") if isinstance(selected, dict) else ""
+    if not title:
+        return None
+    try:
+        from resources.lib.nzbdav_api import find_completed_by_name
+
+        return find_completed_by_name(title, settings_getter=_get_script_setting)
+    except Exception as error:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: Script completed lookup failed for '{}': {}".format(title, error),
+            xbmc.LOGDEBUG,
+        )
+        return None
+
+
+def _search_all_providers(
+    search_type,
+    title,
+    year="",
+    imdb="",
+    season="",
+    episode="",
+    settings_getter=None,
+):
     """
     Search enabled indexer providers and return combined, deduplicated results.
 
@@ -311,18 +391,33 @@ def _search_all_providers(search_type, title, year="", imdb="", season="", episo
                 provider failed or when no providers are enabled; otherwise
                 `None`.
     """
-    import xbmcaddon
+    _script_play_stage("providers entry")
+    if settings_getter is None:
+        import xbmcaddon
 
-    addon = xbmcaddon.Addon()
+        addon = xbmcaddon.Addon()
+        _script_play_stage("providers addon created")
+
+        def settings_getter(key, default=""):
+            return _get_addon_setting(addon, key, default)
+
+    else:
+        _script_play_stage("providers using script settings")
+
     # NZBHydra2 defaults ON (settings.xml default="true"), Prowlarr defaults
     # OFF (default="false"). The two getSetting checks below are the
     # default-preserving forms of those defaults — empty/unset reads to True
     # for nzbhydra and False for prowlarr.
-    nzbhydra_raw = addon.getSetting("nzbhydra_enabled")
+    nzbhydra_raw = settings_getter("nzbhydra_enabled", "true")
     nzbhydra_enabled = nzbhydra_raw.lower() != "false"
-    prowlarr_enabled = addon.getSetting("prowlarr_enabled").lower() == "true"
+    prowlarr_enabled = settings_getter("prowlarr_enabled", "false").lower() == "true"
     direct_indexers_enabled = (
-        addon.getSetting("direct_indexers_enabled").lower() == "true"
+        settings_getter("direct_indexers_enabled", "false").lower() == "true"
+    )
+    _script_play_stage(
+        "providers settings nzbhydra={} prowlarr={} direct={}".format(
+            nzbhydra_enabled, prowlarr_enabled, direct_indexers_enabled
+        )
     )
 
     if not nzbhydra_enabled and not prowlarr_enabled and not direct_indexers_enabled:
@@ -338,8 +433,20 @@ def _search_all_providers(search_type, title, year="", imdb="", season="", episo
     if nzbhydra_enabled:
         from resources.lib.hydra import search_hydra
 
+        _script_play_stage("hydra search start")
         hydra_results, hydra_error = search_hydra(
-            search_type, title, year=year, imdb=imdb, season=season, episode=episode
+            search_type,
+            title,
+            year=year,
+            imdb=imdb,
+            season=season,
+            episode=episode,
+            settings_getter=settings_getter,
+        )
+        _script_play_stage(
+            "hydra search done count={} error={}".format(
+                len(hydra_results or []), bool(hydra_error)
+            )
         )
         if hydra_error:
             xbmc.log(
@@ -353,8 +460,14 @@ def _search_all_providers(search_type, title, year="", imdb="", season="", episo
     if prowlarr_enabled:
         from resources.lib.prowlarr import search_prowlarr
 
+        _script_play_stage("prowlarr search start")
         prowlarr_results, prowlarr_error = search_prowlarr(
             search_type, title, year=year, imdb=imdb, season=season, episode=episode
+        )
+        _script_play_stage(
+            "prowlarr search done count={} error={}".format(
+                len(prowlarr_results or []), bool(prowlarr_error)
+            )
         )
         if prowlarr_error:
             xbmc.log(
@@ -368,8 +481,14 @@ def _search_all_providers(search_type, title, year="", imdb="", season="", episo
     if direct_indexers_enabled:
         from resources.lib.direct_indexers import search_direct_indexers
 
+        _script_play_stage("direct indexers search start")
         direct_results, direct_error = search_direct_indexers(
             search_type, title, year=year, imdb=imdb, season=season, episode=episode
+        )
+        _script_play_stage(
+            "direct indexers search done count={} error={}".format(
+                len(direct_results or []), bool(direct_error)
+            )
         )
         if direct_error:
             xbmc.log(
@@ -550,10 +669,6 @@ def _handle_play(handle, params):
         if looked_up:
             title = looked_up.get("title", title)
 
-    # Show progress bar while searching
-    progress = xbmcgui.DialogProgress()
-    progress.create(_addon_name(), _fmt(30083, title))
-    progress.update(10)
     xbmc.log(
         "NZB-DAV: Search stage: checking cache for '{}' ({})".format(
             title, search_type
@@ -565,7 +680,6 @@ def _handle_play(handle, params):
     results = get_cached(search_type, title, **cache_kwargs)
 
     if results is None:
-        progress.update(30, _string(30084))
         xbmc.log(
             "NZB-DAV: Search stage: querying providers for '{}'".format(title),
             xbmc.LOGDEBUG,
@@ -578,12 +692,10 @@ def _handle_play(handle, params):
                 "NZB-DAV: Search stage: provider error — {}".format(search_error),
                 xbmc.LOGWARNING,
             )
-            progress.close()
             _show_error_dialog(search_error)
             xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
             return
         if results:
-            progress.update(70, _fmt(30085, len(results)))
             xbmc.log(
                 "NZB-DAV: Search stage: caching {} results for '{}'".format(
                     len(results), title
@@ -592,7 +704,6 @@ def _handle_play(handle, params):
             )
             set_cached(search_type, title, results, **cache_kwargs)
     else:
-        progress.update(70, _fmt(30086, len(results)))
         xbmc.log(
             "NZB-DAV: Search stage: loaded {} results from cache for '{}'".format(
                 len(results), title
@@ -600,23 +711,15 @@ def _handle_play(handle, params):
             xbmc.LOGDEBUG,
         )
 
-    if progress.iscanceled():
-        xbmc.log("NZB-DAV: Search stage: cancelled by user", xbmc.LOGDEBUG)
-        progress.close()
-        xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
-        return
-
     if not results:
         xbmc.log(
             "NZB-DAV: Search stage: no results found for '{}'".format(title),
             xbmc.LOGINFO,
         )
-        progress.close()
         notify(_addon_name(), _fmt(30087, title), 3000)
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
         return
 
-    progress.update(90, _string(30088))
     xbmc.log(
         "NZB-DAV: Search stage: filtering {} results for '{}'".format(
             len(results), title
@@ -628,8 +731,6 @@ def _handle_play(handle, params):
 
     total_count = len(results)
     filtered, all_parsed = filter_results(results)
-
-    progress.close()
 
     if not filtered:
         if all_parsed:
@@ -653,20 +754,22 @@ def _handle_play(handle, params):
     import xbmcaddon
 
     addon = xbmcaddon.Addon()
-    if addon.getSetting("auto_select_best").lower() == "true":
+    if _get_addon_setting(addon, "auto_select_best", "false").lower() == "true":
         best = filtered[0]
         from resources.lib.resolver import resolve
 
+        resolver_params = {
+            "nzburl": best["link"],
+            "title": best["title"],
+            "_fallback_candidates": [],
+            "_fallback_candidate_loader": _fallback_candidate_loader_for_selection(
+                best, filtered
+            ),
+        }
+        _attach_selected_indexer(resolver_params, best)
         resolve(
             handle,
-            {
-                "nzburl": best["link"],
-                "title": best["title"],
-                "_fallback_candidates": [],
-                "_fallback_candidate_loader": _fallback_candidate_loader_for_selection(
-                    best, filtered
-                ),
-            },
+            resolver_params,
         )
         return
 
@@ -696,6 +799,7 @@ def _handle_play(handle, params):
             resolver_params["_completed_job"] = completed_job
         elif _completed_lookup_was_done(completed_jobs):
             resolver_params["_completed_job_lookup_done"] = True
+        _attach_selected_indexer(resolver_params, selected)
         resolve(
             handle,
             resolver_params,
@@ -826,15 +930,17 @@ def _handle_search(handle, params):
 
     # Auto-select best match if enabled
     addon = xbmcaddon.Addon()
-    if addon.getSetting("auto_select_best").lower() == "true" and filtered:
+    if (
+        _get_addon_setting(addon, "auto_select_best", "false").lower() == "true"
+        and filtered
+    ):
         best = filtered[0]
         from resources.lib.resolver import resolve_and_play
 
         resolver_params = dict(params)
         resolver_params["_fallback_candidates"] = []
-        resolver_params["_fallback_candidate_loader"] = (
-            _fallback_candidate_loader_for_selection(best, filtered)
-        )
+        resolver_params["_fallback_candidate_loader"] = None
+        _attach_selected_indexer(resolver_params, best)
         resolve_and_play(best["link"], best["title"], params=resolver_params)
         # Same hang class as C1 (router.py): /search is a directory
         # route, so Kodi blocks until endOfDirectory fires. Without
@@ -868,10 +974,162 @@ def _handle_search(handle, params):
             resolver_params["_completed_job"] = completed_job
         elif _completed_lookup_was_done(completed_jobs):
             resolver_params["_completed_job_lookup_done"] = True
+        _attach_selected_indexer(resolver_params, selected)
         resolve_and_play(selected["link"], selected["title"], params=resolver_params)
 
     # Must end the directory or Kodi hangs
     xbmcplugin.endOfDirectory(handle, succeeded=False)
+
+
+def _handle_script_play(params):
+    """
+    Run the TMDBHelper player flow from a RunScript action.
+
+    This path intentionally avoids plugin handle APIs. On CoreELEC/Kodi 21,
+    asking Kodi to open plugin://plugin.video.nzbdav/... as a playable URL can
+    crash before this addon's router is invoked. RunScript enters Python
+    directly, shows the NZB picker, then starts playback via resolve_and_play().
+    """
+    from resources.lib.filter import filter_results
+    from resources.lib.http_util import notify
+
+    params = _clean_params(params)
+    search_type = params.get("type", "movie")
+    title = params.get("title", "")
+    year = params.get("year", "")
+    imdb = params.get("imdb", "")
+    season = params.get("season", "") or params.get("ep_season", "")
+    episode = params.get("episode", "") or params.get("ep_episode", "")
+
+    xbmc.log(
+        "NZB-DAV: Script play route: type={!r} title={!r} imdb={!r} "
+        "tmdb_id={!r}".format(search_type, title, imdb, params.get("tmdb_id", "")),
+        xbmc.LOGINFO,
+    )
+    _script_play_stage(
+        "route type={!r} title={!r} imdb={!r} tmdb_id={!r}".format(
+            search_type, title, imdb, params.get("tmdb_id", "")
+        )
+    )
+
+    if search_type == "episode" and imdb and not title:
+        looked_up = _lookup_episode_info(imdb, params.get("tmdb_id", ""))
+        if looked_up:
+            title = looked_up.get("title", title)
+            season = season or looked_up.get("season", "")
+            episode = episode or looked_up.get("episode", "")
+
+    _script_play_stage(
+        "skipping cache for '{}' ({})".format(
+            title,
+            search_type,
+        )
+    )
+    _script_play_stage(
+        "provider search start for '{}'".format(title),
+    )
+    results, search_error = _search_all_providers(
+        search_type,
+        title,
+        year=year,
+        imdb=imdb,
+        season=season,
+        episode=episode,
+        settings_getter=_get_script_setting,
+    )
+    _script_play_stage("provider search done count={}".format(len(results or [])))
+    if search_error:
+        xbmc.log(
+            "NZB-DAV: Search stage: provider error - {}".format(search_error),
+            xbmc.LOGWARNING,
+        )
+        _show_error_dialog(search_error)
+        return
+
+    if not results:
+        xbmc.log(
+            "NZB-DAV: Search stage: no results found for '{}'".format(title),
+            xbmc.LOGINFO,
+        )
+        notify(_addon_name(), _fmt(30087, title), 3000)
+        return
+
+    total_count = len(results)
+    _script_play_stage("filter start count={} for '{}'".format(len(results), title))
+    filtered, all_parsed = filter_results(results, settings_getter=_get_script_setting)
+    _script_play_stage(
+        "filter done filtered={} parsed={}".format(
+            len(filtered or []), len(all_parsed or [])
+        )
+    )
+
+    if not filtered:
+        if all_parsed:
+            import xbmcgui
+
+            choice = xbmcgui.Dialog().yesno(
+                _addon_name(),
+                "All {} results were filtered out. Show unfiltered?".format(
+                    len(all_parsed)
+                ),
+            )
+            if choice:
+                filtered = all_parsed
+            else:
+                return
+        else:
+            notify(_addon_name(), _fmt(30087, title), 3000)
+            return
+
+    if _get_script_setting("auto_select_best", "false").lower() == "true" and filtered:
+        best = filtered[0]
+        from resources.lib.resolver import resolve_and_play
+
+        resolver_params = dict(params)
+        resolver_params["_fallback_candidates"] = []
+        resolver_params["_fallback_candidate_loader"] = None
+        completed_job = _script_completed_job_for_selection(best)
+        if completed_job:
+            resolver_params["_completed_job"] = completed_job
+        else:
+            resolver_params["_completed_job_lookup_done"] = True
+        resolver_params["_settings_getter"] = _get_script_setting
+        _attach_selected_indexer(resolver_params, best)
+        _script_play_stage("resolve start '{}'".format(best.get("title", "")))
+        resolve_and_play(best["link"], best["title"], params=resolver_params)
+        _script_play_stage("resolve returned")
+        return
+
+    _script_play_stage("tag available skipped")
+
+    from resources.lib.results_dialog import show_results_dialog
+
+    _script_play_stage("picker open")
+    selected = show_results_dialog(
+        filtered, title=title, year=year, total_count=total_count
+    )
+    if not selected:
+        _script_play_stage("picker cancelled")
+        return
+    _script_play_stage("picker selected")
+
+    from resources.lib.resolver import resolve_and_play
+
+    resolver_params = dict(params)
+    resolver_params["_fallback_candidates"] = []
+    resolver_params["_fallback_candidate_loader"] = None
+    resolver_params["_completed_job_lookup_done"] = True
+    resolver_params["_settings_getter"] = _get_script_setting
+    completed_job = selected.get(
+        "_completed_job"
+    ) or _script_completed_job_for_selection(selected)
+    if completed_job:
+        resolver_params.pop("_completed_job_lookup_done", None)
+        resolver_params["_completed_job"] = completed_job
+    _attach_selected_indexer(resolver_params, selected)
+    _script_play_stage("resolve start '{}'".format(selected.get("title", "")))
+    resolve_and_play(selected["link"], selected["title"], params=resolver_params)
+    _script_play_stage("resolve returned")
 
 
 def _format_info_line(item):

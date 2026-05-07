@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | Version | Released | What it's about |
 |---|---|---|
 | **[Unreleased](#unreleased)** | Pending | Not started |
+| **[1.1.0](#110--2026-05-07)** | 2026-05-07 | TMDBHelper RunScript playback handoff, script-safe settings reads, faster post-picker resolver handoff, direct MKV start, clearer submit errors |
 | **[1.0.9](#109--2026-05-06)** | 2026-05-06 | Fallback discovery and live failover speed, longer live-service timeouts, dev-only live fallback tests |
 | **[1.0.8](#108--2026-05-05)** | 2026-05-05 | Fallback manifest hardening, shared HTTP fetch path, malformed group-size fail-closed behavior |
 | **[1.0.7](#107--2026-05-04)** | 2026-05-04 | Fallback streams enabled by default, 5 standby submits, pass-through playback, NZB-manifest grouping, 1000-sample validation, fallback-only recovery |
@@ -59,6 +60,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 No changes yet.
+
+## [1.1.0] — 2026-05-07
+
+> **Playback starts sooner and avoids the post-picker freeze.** TMDBHelper now
+> enters the addon through a script-mode player path, and already-ready MKV
+> streams can go straight to Kodi without the proxy-prepare step that froze the
+> live CoreELEC box.
+
+**Changed**
+- **TMDBHelper playback now uses `RunScript(...)` instead of a resolvable
+  `plugin://` player URL.** This avoids Kodi waiting on a plugin handle while
+  the addon opens its own picker and hands playback to `xbmc.Player()`.
+- **Script-mode playback reads addon settings from
+  `addon_data/plugin.video.nzbdav/settings.xml` when Kodi's settings API is not
+  safe to call.** This fixes `RuntimeError: Unknown exception thrown from the
+  call "getSetting"` before the NZB picker appears.
+- **The post-picker resolver path does less blocking work before playback.**
+  Bookmark cleanup overlaps submit/poll work, noncritical cleanup waits are
+  bounded, progress dialog updates are best-effort, and resolver poll sleeps use
+  nonblocking abort checks.
+- **Already-ready plain MKV streams without fallback sources skip proxy
+  prepare** and are handed directly to Kodi as WebDAV URLs. This was live
+  validated on CoreELEC with Apex and Shelter after the previous freeze point.
+- **Completed nzbdav history is caught sooner near the end of downloads,**
+  including late active queue rows and 99%/100% handoff races, so the dialog
+  stops waiting after nzbdav has already marked the item complete.
+- **Submit failures that contain TooManyRequests now surface as a nonblocking
+  rate-limit notification** and include the selected indexer name when the
+  picker result provides one.
+- **Search and resolver diagnostics are written to Kodi logs and a temporary
+  stage log** to make live CoreELEC failures easier to localize before restart.
+- **The agent guide now permits Kodi restarts on `root@coreelec.local`** when
+  Kodi is crashed, wedged, or needs a fresh process for live debugging.
+
+**Tests**
+- Added regression coverage for TMDBHelper RunScript argument parsing,
+  script-mode addon context, settings reads without Kodi Addon construction,
+  faster provider/search handoff, nonblocking submit and poll loops, direct MKV
+  playback handoff, 99% completed-history races, and rate-limit submit errors.
 
 ## [1.0.9] — 2026-05-06
 

@@ -50,10 +50,14 @@ _DOWNLOAD_TIMEOUT_MAX = 86400
 MAX_POLL_ITERATIONS = _DOWNLOAD_TIMEOUT_MAX // _POLL_INTERVAL_MIN
 _FALLBACK_SHUTDOWN_JOIN_TIMEOUT = 10
 _POLL_NEAR_COMPLETE_PERCENTAGE = 99.0
+_POLL_LATE_ACTIVE_HISTORY_GRACE_PERCENTAGE = 95.0
+_POLL_LATE_ACTIVE_HISTORY_GRACE_SECONDS = 0.025
 _POLL_NEAR_COMPLETE_HISTORY_GRACE_SECONDS = 0.1
 _POLL_FULL_PROGRESS_HISTORY_GRACE_SECONDS = 0.14
 _POLL_NEAR_COMPLETE_FAST_REPOLL_SECONDS = 0.1
 _POLL_NEAR_COMPLETE_FAST_REPOLL_COUNT = 5
+_PLAYBACK_CLEANUP_HANDOFF_GRACE_SECONDS = 0.25
+_PLAYBACK_PREPARE_HANDOFF_GRACE_SECONDS = 3.0
 # HTTP status codes the submit retry loop treats as transient and worth
 # retrying. RFC 9110 explicitly calls 408 retry-friendly ("client may
 # assume the server closed the connection due to inactivity and retry").
@@ -93,6 +97,22 @@ _RESOLVE_RUNTIME_ERRORS = (
 _CLAMP_LOGGED = set()
 _STREAM_CONTENT_LENGTH_HINTS_MAX = 32
 _STREAM_CONTENT_LENGTH_HINTS = {}
+_DIALOG_UPDATE_LOCK = threading.Lock()
+_DIALOG_UPDATE_INFLIGHT = {}
+_SCRIPT_PLAY_STAGE_PATH = "/storage/.kodi/temp/nzbdav-script-play-stage.log"
+
+
+def _resolve_stage(message):
+    xbmc.log("NZB-DAV: Resolve stage: {}".format(message), xbmc.LOGINFO)
+    try:
+        import os
+
+        with open(_SCRIPT_PLAY_STAGE_PATH, "a", encoding="utf-8") as stage_file:
+            stage_file.write("resolve: " + message + "\n")
+            stage_file.flush()
+            os.fsync(stage_file.fileno())
+    except OSError:
+        pass
 
 
 def _clamp_int_setting(setting_id, value, lo, hi):
@@ -306,16 +326,25 @@ def _start_playback_state_cleanup(params=None):
     return state
 
 
-def _wait_playback_state_cleanup(state):
-    """Wait for a background bookmark cleanup and re-raise any failure."""
+def _wait_playback_state_cleanup(
+    state, wait_seconds=_PLAYBACK_CLEANUP_HANDOFF_GRACE_SECONDS
+):
+    """Wait briefly for bookmark cleanup without blocking playback handoff."""
     if not state:
-        return
+        return True
     done = state.get("done")
     if done:
-        done.wait()
+        if not done.wait(max(0, wait_seconds)):
+            xbmc.log(
+                "NZB-DAV: Playback-state cleanup still running; "
+                "continuing playback handoff",
+                xbmc.LOGWARNING,
+            )
+            return False
     error = state.get("error")
     if error is not None:
         raise error
+    return True
 
 
 def _locate_kodi_video_db():
@@ -665,6 +694,87 @@ def _ready_direct_playback_prepare_state(prepared):
     return {"done": done, "error": None, "prepared": prepared, "thread": None}
 
 
+def _direct_playback_fallback_prepared(stream_url, stream_headers):
+    return {
+        "service_port": 0,
+        "stream_url": stream_url,
+        "stream_headers": stream_headers,
+        "proxy_url": "",
+        "stream_info": {},
+    }
+
+
+def _should_skip_proxy_prepare(stream_url, fallback_sources):
+    """Return true when proxy prepare adds risk without helping playback."""
+    return not fallback_sources and _url_path(stream_url).endswith(".mkv")
+
+
+def _monitor_abort_requested(monitor):
+    """Return Kodi's abort flag without entering a wait call."""
+    try:
+        return monitor.abortRequested() is True
+    except (AttributeError, RuntimeError, TypeError):
+        return False
+
+
+def _wait_for_abort_or_timeout(monitor, wait_seconds, tick_seconds=0.05):
+    import time as real_time
+
+    deadline = real_time.monotonic() + max(0, wait_seconds)
+    while True:
+        if _monitor_abort_requested(monitor):
+            return True
+        remaining = deadline - real_time.monotonic()
+        if remaining <= 0:
+            return False
+        threading.Event().wait(min(tick_seconds, remaining))
+
+
+def _settings_getter_kwargs(settings_getter):
+    return {"settings_getter": settings_getter} if settings_getter is not None else {}
+
+
+def _safe_dialog_update(dialog, progress, message):
+    """Best-effort progress update that cannot block the resolver loop."""
+    key = id(dialog)
+    with _DIALOG_UPDATE_LOCK:
+        inflight = _DIALOG_UPDATE_INFLIGHT.get(key)
+        if inflight is not None and not inflight.is_set():
+            return False
+        done = threading.Event()
+        _DIALOG_UPDATE_INFLIGHT[key] = done
+
+    def _worker():
+        try:
+            dialog.update(progress, message)
+        except Exception as error:  # pylint: disable=broad-except
+            xbmc.log(
+                "NZB-DAV: progress dialog update failed: {}".format(error),
+                xbmc.LOGDEBUG,
+            )
+        finally:
+            done.set()
+            with _DIALOG_UPDATE_LOCK:
+                if _DIALOG_UPDATE_INFLIGHT.get(key) is done:
+                    _DIALOG_UPDATE_INFLIGHT.pop(key, None)
+
+    try:
+        threading.Thread(
+            target=_worker, name="nzbdav-dialog-progress-update", daemon=True
+        ).start()
+        return True
+    except RuntimeError as error:
+        done.set()
+        with _DIALOG_UPDATE_LOCK:
+            if _DIALOG_UPDATE_INFLIGHT.get(key) is done:
+                _DIALOG_UPDATE_INFLIGHT.pop(key, None)
+        xbmc.log(
+            "NZB-DAV: progress dialog update thread failed: {}".format(error),
+            xbmc.LOGDEBUG,
+        )
+        return False
+
+
 def _start_direct_playback_prepare(
     stream_url, stream_headers, fallback_sources=None, service_config_state=None
 ):
@@ -684,7 +794,15 @@ def _start_direct_playback_prepare(
         return _ready_direct_playback_prepare_state(prepared)
 
     done = threading.Event()
-    state = {"done": done, "error": None, "prepared": None, "thread": None}
+    state = {
+        "done": done,
+        "error": None,
+        "prepared": None,
+        "thread": None,
+        "fallback_prepared": _direct_playback_fallback_prepared(
+            stream_url, stream_headers
+        ),
+    }
 
     def _worker():
         try:
@@ -720,10 +838,18 @@ def _start_direct_playback_prepare(
     return state
 
 
-def _wait_direct_playback_prepare(state):
+def _wait_direct_playback_prepare(
+    state, wait_seconds=_PLAYBACK_PREPARE_HANDOFF_GRACE_SECONDS
+):
     done = state.get("done")
     if done:
-        done.wait()
+        if not done.wait(max(0, wait_seconds)):
+            xbmc.log(
+                "NZB-DAV: Proxy prepare still running; "
+                "falling back to direct WebDAV handoff",
+                xbmc.LOGWARNING,
+            )
+            return state.get("fallback_prepared")
     error = state.get("error")
     if error is not None:
         raise error
@@ -887,10 +1013,20 @@ def _play_via_proxy(stream_url, stream_headers, fallback_sources=None):
     )
 
 
-def _get_poll_settings():
-    addon = xbmcaddon.Addon()
-    interval = int(addon.getSetting("poll_interval") or "1")
-    timeout = int(addon.getSetting("download_timeout") or "3600")
+def _get_poll_settings(settings_getter=None):
+    try:
+        if settings_getter is None:
+            addon = xbmcaddon.Addon()
+            interval_raw = addon.getSetting("poll_interval")
+            timeout_raw = addon.getSetting("download_timeout")
+        else:
+            interval_raw = settings_getter("poll_interval", "1")
+            timeout_raw = settings_getter("download_timeout", "3600")
+        interval = int(interval_raw or "1")
+        timeout = int(timeout_raw or "3600")
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        interval = 1
+        timeout = 3600
     interval = _clamp_int_setting(
         "poll_interval", interval, _POLL_INTERVAL_MIN, _POLL_INTERVAL_MAX
     )
@@ -985,6 +1121,17 @@ def _queue_status_is_nearly_complete(job_status):
     return percentage >= _POLL_NEAR_COMPLETE_PERCENTAGE
 
 
+def _queue_status_is_late_active(job_status):
+    """Return whether an active queue row is late enough to catch history."""
+    if not _queue_status_has_active_status(job_status):
+        return False
+    try:
+        percentage = float(job_status.get("percentage", 0) or 0)
+    except (TypeError, ValueError):
+        return False
+    return percentage >= _POLL_LATE_ACTIVE_HISTORY_GRACE_PERCENTAGE
+
+
 def _queue_status_history_grace_seconds(job_status):
     if not isinstance(job_status, dict):
         return _POLL_NEAR_COMPLETE_HISTORY_GRACE_SECONDS
@@ -1028,7 +1175,7 @@ def _wait_for_nearly_complete_history(
         history_ready.wait(min(0.01, remaining))
 
 
-def _poll_once(nzo_id, title, monitor):
+def _poll_once(nzo_id, title, monitor, settings_getter=None):
     """Poll nzbdav queue API and history API in parallel.
 
     Args:
@@ -1063,13 +1210,17 @@ def _poll_once(nzo_id, title, monitor):
 
     def check_queue():
         try:
-            job_status[0] = get_job_status(nzo_id)
+            job_status[0] = get_job_status(
+                nzo_id, **_settings_getter_kwargs(settings_getter)
+            )
         finally:
             queue_done.set()
 
     def check_history():
         try:
-            history_status[0] = get_job_history(nzo_id)
+            history_status[0] = get_job_history(
+                nzo_id, **_settings_getter_kwargs(settings_getter)
+            )
             if _history_status_is_terminal(history_status[0]):
                 history_ready.set()
         finally:
@@ -1092,6 +1243,13 @@ def _poll_once(nzo_id, title, monitor):
                     history_done,
                     deadline,
                     _queue_status_history_grace_seconds(job_status[0]),
+                )
+            elif _queue_status_is_late_active(job_status[0]):
+                _wait_for_nearly_complete_history(
+                    history_ready,
+                    history_done,
+                    deadline,
+                    _POLL_LATE_ACTIVE_HISTORY_GRACE_SECONDS,
                 )
             break
         if queue_done.is_set() and _queue_status_has_active_status(job_status[0]):
@@ -1125,6 +1283,12 @@ def _poll_once(nzo_id, title, monitor):
     return job_status[0], history_status[0], error_type[0]
 
 
+def _submit_error_is_too_many_requests(submit_error):
+    message = str(submit_error.get("message", "") or "")
+    normalized = message.replace(" ", "").replace("-", "").lower()
+    return "toomanyrequests" in normalized or "429" in normalized
+
+
 def _show_submit_error_dialog(submit_error):
     """Show a Kodi modal dialog reporting nzbdav's actual error message.
 
@@ -1132,11 +1296,38 @@ def _show_submit_error_dialog(submit_error):
     already applied in submit_nzb) and falls back to a clear placeholder
     when nzbdav returned an empty body.
     """
+    if _submit_error_is_too_many_requests(submit_error):
+        indexer = str(submit_error.get("indexer", "") or "").strip()
+        message = _fmt(30193, indexer) if indexer else _string(30194)
+        xbmcgui.Dialog().notification(_addon_name(), message, "", 7000)
+        return
+
     message = submit_error["message"][:200] or "(no error message)"
     xbmcgui.Dialog().ok(
         _addon_name(),
         _fmt(30124, submit_error["status"], message),
     )
+
+
+def _submit_error_with_indexer(submit_error, selected_indexer):
+    if not selected_indexer:
+        return submit_error
+    enriched = dict(submit_error)
+    enriched["indexer"] = selected_indexer
+    return enriched
+
+
+def _close_dialog_before_submit_error(dialog):
+    """Close the progress dialog before displaying a terminal submit error."""
+    try:
+        dialog.close()
+    except Exception as error:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: progress dialog close before submit error failed: {}".format(
+                error
+            ),
+            xbmc.LOGDEBUG,
+        )
 
 
 def _start_existing_completed_cleanup(title, on_existing_completed):
@@ -1154,7 +1345,7 @@ def _start_existing_completed_cleanup(title, on_existing_completed):
         )
 
 
-def _find_video_stream_for_folder(webdav_folder):
+def _find_video_stream_for_folder(webdav_folder, settings_getter=None):
     """Return video path, URL, and headers for a completed WebDAV folder."""
     try:
         from resources.lib import webdav as _webdav
@@ -1164,18 +1355,23 @@ def _find_video_stream_for_folder(webdav_folder):
             and find_video_file is _webdav.find_video_file
             and get_webdav_stream_url_for_path is _webdav.get_webdav_stream_url_for_path
         ):
-            return find_video_stream_for_folder(webdav_folder)
+            return find_video_stream_for_folder(
+                webdav_folder, **_settings_getter_kwargs(settings_getter)
+            )
     except (AttributeError, ImportError):
         pass
 
-    video_path = find_video_file(webdav_folder)
+    kwargs = _settings_getter_kwargs(settings_getter)
+    video_path = find_video_file(webdav_folder, **kwargs)
     if not video_path:
         return None, None, None
-    stream_url, stream_headers = get_webdav_stream_url_for_path(video_path)
+    stream_url, stream_headers = get_webdav_stream_url_for_path(video_path, **kwargs)
     return video_path, stream_url, stream_headers
 
 
-def _completed_job_stream(title, completed_job, on_existing_completed=None):
+def _completed_job_stream(
+    title, completed_job, on_existing_completed=None, settings_getter=None
+):
     """Return a WebDAV stream URL from a completed nzbdav history row."""
     if not isinstance(completed_job, dict):
         return None
@@ -1200,7 +1396,7 @@ def _completed_job_stream(title, completed_job, on_existing_completed=None):
     webdav_folder = _storage_to_webdav_path(storage)
     _start_existing_completed_cleanup(title, on_existing_completed)
     video_path, stream_url, stream_headers = _find_video_stream_for_folder(
-        webdav_folder
+        webdav_folder, settings_getter=settings_getter
     )
     if not video_path:
         return None
@@ -1213,10 +1409,14 @@ def _existing_completed_stream(
     on_existing_completed=None,
     completed_job_hint=None,
     completed_job_lookup_done=False,
+    settings_getter=None,
 ):
     """Return an already-downloaded stream URL when the title exists."""
     hinted_stream = _completed_job_stream(
-        title, completed_job_hint, on_existing_completed=on_existing_completed
+        title,
+        completed_job_hint,
+        on_existing_completed=on_existing_completed,
+        settings_getter=settings_getter,
     )
     if hinted_stream is not None:
         return hinted_stream
@@ -1224,13 +1424,18 @@ def _existing_completed_stream(
     if completed_job_lookup_done:
         return None
 
-    existing = find_completed_by_name(title)
+    existing = find_completed_by_name(title, **_settings_getter_kwargs(settings_getter))
     return _completed_job_stream(
-        title, existing, on_existing_completed=on_existing_completed
+        title,
+        existing,
+        on_existing_completed=on_existing_completed,
+        settings_getter=settings_getter,
     )
 
 
-def _picker_completed_stream(title, params, on_existing_completed=None):
+def _picker_completed_stream(
+    title, params, on_existing_completed=None, settings_getter=None
+):
     """Return a picker-provided completed stream before opening progress UI."""
     if not params:
         return None
@@ -1243,6 +1448,7 @@ def _picker_completed_stream(title, params, on_existing_completed=None):
         on_existing_completed=on_existing_completed,
         completed_job_hint=params.get("_completed_job"),
         completed_job_lookup_done=lookup_done,
+        settings_getter=settings_getter,
     )
 
 
@@ -1347,7 +1553,7 @@ def _find_adoptable_job_during_submit(title):
         progress.clear()
 
 
-def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
+def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor, settings_getter=None):
     """Run ``submit_nzb`` off the plugin thread, pump the dialog, and
     race a concurrent queue probe against the submit.
 
@@ -1376,10 +1582,20 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
     submit_result = [None, None]
     submit_done = threading.Event()
     activity_ready = threading.Event()
+    submit_timeout_seconds = max(
+        _get_submit_timeout_seconds(**_settings_getter_kwargs(settings_getter)), 1
+    )
 
     def _submit_worker():
         try:
-            submit_result[0], submit_result[1] = submit_nzb(nzb_url, title)
+            submit_kwargs = _settings_getter_kwargs(settings_getter)
+            if settings_getter is not None:
+                submit_kwargs["submit_timeout"] = submit_timeout_seconds
+            submit_result[0], submit_result[1] = submit_nzb(
+                nzb_url,
+                title,
+                **submit_kwargs,
+            )
         except Exception as e:  # pylint: disable=broad-except
             xbmc.log(
                 "NZB-DAV: submit_nzb worker raised: {}".format(e),
@@ -1391,6 +1607,7 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
             activity_ready.set()
 
     queue_hit = [None]
+    adoption_status = [""]
     queue_hit_lock = threading.Lock()
     adopted_during_submit = [False]
     queue_stop = threading.Event()
@@ -1400,13 +1617,16 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
         with queue_hit_lock:
             return queue_hit[0]
 
-    def _record_adoption_hit(nzo_id):
+    def _record_adoption_hit(match):
+        nzo_id = _job_nzo_id(match)
         if not nzo_id or queue_stop.is_set():
             return False
         with queue_hit_lock:
             if queue_hit[0]:
                 return True
             queue_hit[0] = nzo_id
+            if isinstance(match, dict):
+                adoption_status[0] = str(match.get("status", "") or "")
         activity_ready.set()
         return True
 
@@ -1420,7 +1640,9 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
         first_probe = True
         while not queue_stop.is_set() and not submit_done.is_set():
             try:
-                match = find_queued_by_name(title)
+                match = find_queued_by_name(
+                    title, **_settings_getter_kwargs(settings_getter)
+                )
             except Exception as e:  # pylint: disable=broad-except
                 xbmc.log(
                     "NZB-DAV: concurrent queue probe raised: {}".format(e),
@@ -1428,7 +1650,7 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
                 )
                 match = None
             try:
-                if _record_adoption_hit(_job_nzo_id(match)):
+                if _record_adoption_hit(match):
                     return
             finally:
                 if first_probe:
@@ -1469,14 +1691,16 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
             and not _current_adoption_hit()
         ):
             try:
-                match = find_completed_by_name(title)
+                match = find_completed_by_name(
+                    title, **_settings_getter_kwargs(settings_getter)
+                )
             except Exception as e:  # pylint: disable=broad-except
                 xbmc.log(
                     "NZB-DAV: concurrent history probe raised: {}".format(e),
                     xbmc.LOGWARNING,
                 )
                 match = None
-            if _record_adoption_hit(_job_nzo_id(match)):
+            if _record_adoption_hit(match):
                 return
             elapsed = time.monotonic() - probe_started
             interval = (
@@ -1506,7 +1730,6 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
     # itself can block for tens of milliseconds.
     loop_start = time.monotonic()
     last_dialog_update = loop_start
-    submit_timeout_seconds = max(_get_submit_timeout_seconds(), 1)
     submit_msg = _string(30097)
 
     def _probe_adoption_result():
@@ -1514,6 +1737,18 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
         if not nzo_id:
             return None
         adopted_during_submit[0] = True
+        if adoption_status[0] == "Completed":
+            _safe_dialog_update(
+                dialog,
+                100,
+                "Already completed in nzbdav\nPreparing stream: {}".format(title[:60]),
+            )
+        else:
+            _safe_dialog_update(
+                dialog,
+                1,
+                "Found in nzbdav\nChecking download status: {}".format(title[:60]),
+            )
         xbmc.log(
             "NZB-DAV: Concurrent queue/history probe found '{}' under "
             "nzo_id={}; adopting without waiting for addurl response".format(
@@ -1526,7 +1761,7 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
     def _wait_for_submit_activity_or_abort(wait_seconds):
         deadline = time.monotonic() + max(0, wait_seconds)
         while not submit_done.is_set() and not _current_adoption_hit():
-            if monitor.waitForAbort(0):
+            if _monitor_abort_requested(monitor):
                 return True
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -1559,22 +1794,11 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
                 continue
             last_dialog_update = now
             pct = int((elapsed * 100) / submit_timeout_seconds) % 100
-            try:
-                dialog.update(
-                    pct,
-                    "{}\n{} ({}s)".format(submit_msg, title[:60], int(elapsed)),
-                )
-            except Exception as e:  # pylint: disable=broad-except
-                # DialogProgress.update can fail if the user closed the
-                # dialog between our isPlaying poll and the update call;
-                # also fails when the xbmcgui MagicMock doesn't accept
-                # the call shape in some tests. Best-effort — log at
-                # debug so a real bug in Kodi's UI layer is still
-                # diagnosable without spamming the log on every tick.
-                xbmc.log(
-                    "NZB-DAV: progress dialog update failed: {}".format(e),
-                    xbmc.LOGDEBUG,
-                )
+            _safe_dialog_update(
+                dialog,
+                pct,
+                "{}\n{} ({}s)".format(submit_msg, title[:60], int(elapsed)),
+            )
         # Race window re-check: prefer adopted nzo_id over a failed submit.
         nzo_id = _current_adoption_hit()
         if nzo_id and not submit_result[0]:
@@ -1596,12 +1820,14 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
             if t is submit_t and adopted_during_submit[0] and not submit_done.is_set():
                 continue
             if t in (probe_t, history_probe_t) and (
-                _current_adoption_hit() or submit_result[0]
+                _current_adoption_hit() or submit_result[0] or submit_result[1]
             ):
                 # A successful addurl response is authoritative. The adoption
                 # probe may still be blocked in a read-only queue/history API
                 # call, so do not keep the post-picker submit path waiting on
                 # cleanup after we already have the nzo_id or submitted result.
+                # A terminal submit error is just as authoritative for the
+                # immediate UI path; retries/adoption happen in the caller.
                 continue
             try:
                 t.join(timeout=1)
@@ -1617,10 +1843,13 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
                 )
 
 
-def _get_submit_timeout_seconds():
+def _get_submit_timeout_seconds(settings_getter=None):
     """Read submit_timeout setting; returns int or 300 on error."""
     try:
-        raw = xbmcaddon.Addon().getSetting("submit_timeout")
+        if settings_getter is None:
+            raw = xbmcaddon.Addon().getSetting("submit_timeout")
+        else:
+            raw = settings_getter("submit_timeout", "")
         return int(raw) if raw else 300
     except Exception:  # pylint: disable=broad-except
         # xbmcaddon import failures, unexpected setting shapes, int() on
@@ -1663,13 +1892,23 @@ def _adopt_queued_or_completed_job(title, monitor):
     return None
 
 
-def _submit_nzb_with_retries(nzb_url, title, dialog, monitor, max_submit_retries=3):
+def _submit_nzb_with_retries(
+    nzb_url,
+    title,
+    dialog,
+    monitor,
+    max_submit_retries=3,
+    settings_getter=None,
+    selected_indexer=None,
+):
     """Submit an NZB with the existing retry and error-dialog behavior."""
     xbmc.log("NZB-DAV: Submitting NZB for '{}'".format(title), xbmc.LOGINFO)
     last_submit_error = None
 
     for attempt in range(1, max_submit_retries + 1):
-        nzo_id, submit_error = _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor)
+        nzo_id, submit_error = _submit_nzb_with_ui_pump(
+            nzb_url, title, dialog, monitor, settings_getter=settings_getter
+        )
         if nzo_id:
             return nzo_id
 
@@ -1730,7 +1969,25 @@ def _submit_nzb_with_retries(nzb_url, title, dialog, monitor, max_submit_retries
                     ),
                     xbmc.LOGERROR,
                 )
-                _show_submit_error_dialog(submit_error)
+                _close_dialog_before_submit_error(dialog)
+                _show_submit_error_dialog(
+                    _submit_error_with_indexer(submit_error, selected_indexer)
+                )
+                return None
+            elif isinstance(status, int) and 400 <= status < 500:
+                # HTTP 4xx means nzbdav reached upstream and got a terminal
+                # client/indexer-side rejection (for example Hydra 429 mapped
+                # to nzbdav's HTTP 400). There is no nzbdav job to adopt, and
+                # probing queue/history just leaves the progress dialog stuck.
+                xbmc.log(
+                    "NZB-DAV: Submit failed with HTTP {}, not probing queue: "
+                    "{}".format(status, submit_error["message"]),
+                    xbmc.LOGERROR,
+                )
+                _close_dialog_before_submit_error(dialog)
+                _show_submit_error_dialog(
+                    _submit_error_with_indexer(submit_error, selected_indexer)
+                )
                 return None
             else:
                 # Non-transient HTTP error (often 500 "duplicate nzo_id").
@@ -1754,7 +2011,10 @@ def _submit_nzb_with_retries(nzb_url, title, dialog, monitor, max_submit_retries
                     ),
                     xbmc.LOGERROR,
                 )
-                _show_submit_error_dialog(submit_error)
+                _close_dialog_before_submit_error(dialog)
+                _show_submit_error_dialog(
+                    _submit_error_with_indexer(submit_error, selected_indexer)
+                )
                 return None
         else:
             xbmc.log(
@@ -1783,7 +2043,10 @@ def _submit_nzb_with_retries(nzb_url, title, dialog, monitor, max_submit_retries
             ),
             xbmc.LOGERROR,
         )
-        _show_submit_error_dialog(last_submit_error)
+        _close_dialog_before_submit_error(dialog)
+        _show_submit_error_dialog(
+            _submit_error_with_indexer(last_submit_error, selected_indexer)
+        )
         return None
 
     xbmc.log(
@@ -1791,6 +2054,7 @@ def _submit_nzb_with_retries(nzb_url, title, dialog, monitor, max_submit_retries
         "Check nzbdav URL and API key in settings.".format(max_submit_retries, title),
         xbmc.LOGERROR,
     )
+    _close_dialog_before_submit_error(dialog)
     xbmcgui.Dialog().ok(_addon_name(), _string(30098))
     return None
 
@@ -2217,14 +2481,16 @@ def _handle_job_status(job_status, nzo_id, dialog, last_status):
     except (TypeError, ValueError):
         progress = 0
     progress = max(0, min(progress, 100))
-    dialog.update(progress, _status_dialog_message(status, percentage))
+    _safe_dialog_update(dialog, progress, _status_dialog_message(status, percentage))
     return False, last_status
 
 
-def _find_completed_video_stream_with_rechecks(webdav_folder, monitor=None):
+def _find_completed_video_stream_with_rechecks(
+    webdav_folder, monitor=None, settings_getter=None
+):
     """Return a completed WebDAV stream, briefly rechecking symlink visibility."""
     video_path, stream_url, stream_headers = _find_video_stream_for_folder(
-        webdav_folder
+        webdav_folder, settings_getter=settings_getter
     )
     if video_path or monitor is None:
         return video_path, stream_url, stream_headers
@@ -2233,7 +2499,7 @@ def _find_completed_video_stream_with_rechecks(webdav_folder, monitor=None):
         if monitor.waitForAbort(delay_seconds):
             return None, None, None
         video_path, stream_url, stream_headers = _find_video_stream_for_folder(
-            webdav_folder
+            webdav_folder, settings_getter=settings_getter
         )
         if video_path:
             return video_path, stream_url, stream_headers
@@ -2241,7 +2507,12 @@ def _find_completed_video_stream_with_rechecks(webdav_folder, monitor=None):
 
 
 def _handle_history_result(
-    history, title, no_video_retries, max_no_video_retries, monitor=None
+    history,
+    title,
+    no_video_retries,
+    max_no_video_retries,
+    monitor=None,
+    settings_getter=None,
 ):
     """Handle history-based completion and failure states.
 
@@ -2277,7 +2548,7 @@ def _handle_history_result(
         return False, None, None, no_video_retries
     webdav_folder = _storage_to_webdav_path(storage)
     video_path, stream_url, stream_headers = _find_completed_video_stream_with_rechecks(
-        webdav_folder, monitor=monitor
+        webdav_folder, monitor=monitor, settings_getter=settings_getter
     )
     if video_path:
         _remember_webdav_stream_content_length_hint(stream_url, video_path)
@@ -2355,6 +2626,8 @@ def _poll_until_ready(
     on_existing_completed=None,
     completed_job_hint=None,
     completed_job_lookup_done=False,
+    settings_getter=None,
+    selected_indexer=None,
 ):
     """Submit NZB and poll until download completes.
 
@@ -2368,12 +2641,20 @@ def _poll_until_ready(
         on_existing_completed=on_existing_completed,
         completed_job_hint=completed_job_hint,
         completed_job_lookup_done=completed_job_lookup_done,
+        settings_getter=settings_getter,
     )
     if existing_stream is not None:
         return existing_stream
 
     monitor = xbmc.Monitor()
-    nzo_id = _submit_nzb_with_retries(nzb_url, title, dialog, monitor)
+    nzo_id = _submit_nzb_with_retries(
+        nzb_url,
+        title,
+        dialog,
+        monitor,
+        settings_getter=settings_getter,
+        selected_indexer=selected_indexer,
+    )
     if not nzo_id:
         return None, None
     if on_primary_submitted is not None:
@@ -2411,7 +2692,9 @@ def _poll_until_ready(
         ):
             return None, None
 
-        job_status, history, webdav_error = _poll_once(nzo_id, title, monitor)
+        job_status, history, webdav_error = _poll_once(
+            nzo_id, title, monitor, settings_getter=settings_getter
+        )
 
         should_stop, last_status = _handle_job_status(
             job_status, nzo_id, dialog, last_status
@@ -2426,6 +2709,7 @@ def _poll_until_ready(
                 no_video_retries,
                 max_no_video_retries,
                 monitor=monitor,
+                settings_getter=settings_getter,
             )
         )
         if stream_url:
@@ -2445,7 +2729,7 @@ def _poll_until_ready(
         wait_seconds, near_complete_fast_repolls = _poll_wait_after_status(
             job_status, poll_interval, near_complete_fast_repolls
         )
-        if monitor.waitForAbort(wait_seconds):
+        if _wait_for_abort_or_timeout(monitor, wait_seconds):
             # Kodi is shutting down
             xbmc.log("NZB-DAV: Kodi shutdown detected, aborting resolve", xbmc.LOGINFO)
             cancel_job(nzo_id)
@@ -2471,7 +2755,6 @@ def resolve(handle, params):
     title = unquote(params.get("title", ""))
     fallback_state = None
     playback_cleanup_state = None
-    playback_service_config_state = None
 
     if not nzb_url:
         xbmcgui.Dialog().ok(_addon_name(), _string(30096))
@@ -2482,10 +2765,10 @@ def resolve(handle, params):
     dialog = None
     try:
         fallback_candidates = params.get("_fallback_candidates", [])
+        selected_indexer = params.get("_selected_indexer", "")
         fallback_candidate_loader = _prefetch_fallback_candidate_loader(
             params.get("_fallback_candidate_loader")
         )
-        playback_service_config_state = _start_direct_playback_service_config_lookup()
         picker_completed_lookup_done = _picker_completed_lookup_done(params)
 
         def _start_playback_cleanup_once():
@@ -2529,6 +2812,7 @@ def resolve(handle, params):
                     else params.get("_completed_job")
                 ),
                 completed_job_lookup_done=picker_completed_lookup_done,
+                selected_indexer=selected_indexer,
             )
         if stream_url:
             if fallback_state is None:
@@ -2536,17 +2820,23 @@ def resolve(handle, params):
             fallback_sources = build_prepare_fallback_payload(
                 _fallback_submit_jobs_snapshot(fallback_state)
             )
-            playback_prepare_state = _start_direct_playback_prepare(
-                stream_url,
-                stream_headers,
-                fallback_sources=fallback_sources,
-                service_config_state=playback_service_config_state,
-            )
+            prepared = None
+            if _should_skip_proxy_prepare(stream_url, fallback_sources):
+                prepared = _direct_playback_fallback_prepared(
+                    stream_url, stream_headers
+                )
+                playback_prepare_state = None
+            else:
+                playback_prepare_state = _start_direct_playback_prepare(
+                    stream_url,
+                    stream_headers,
+                    fallback_sources=fallback_sources,
+                    service_config_state=None,
+                )
             _wait_playback_state_cleanup(playback_cleanup_state)
-            _finish_direct_playback(
-                handle,
-                _wait_direct_playback_prepare(playback_prepare_state),
-            )
+            if playback_prepare_state is not None:
+                prepared = _wait_direct_playback_prepare(playback_prepare_state)
+            _finish_direct_playback(handle, prepared)
         else:
             _stop_fallback_submit_worker(fallback_state, cancel_submitted=True)
             xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
@@ -2580,14 +2870,18 @@ def resolve_and_play(nzb_url, title, params=None):
     dialog = None
     fallback_state = None
     playback_cleanup_state = None
-    playback_service_config_state = None
     try:
+        _resolve_stage("enter resolve_and_play")
         resolve_params = params or {}
+        settings_getter = resolve_params.get("_settings_getter")
+        selected_indexer = resolve_params.get("_selected_indexer", "")
         fallback_candidates = resolve_params.get("_fallback_candidates", [])
+        _resolve_stage("prefetch fallback start")
         fallback_candidate_loader = _prefetch_fallback_candidate_loader(
             resolve_params.get("_fallback_candidate_loader")
         )
-        playback_service_config_state = _start_direct_playback_service_config_lookup()
+        _resolve_stage("prefetch fallback done")
+        _resolve_stage("service config lookup deferred")
         picker_completed_lookup_done = _picker_completed_lookup_done(resolve_params)
 
         def _start_playback_cleanup_once():
@@ -2605,18 +2899,29 @@ def resolve_and_play(nzb_url, title, params=None):
                 )
 
         completed_stream = _picker_completed_stream(
-            title, resolve_params, on_existing_completed=_start_playback_cleanup_once
+            title,
+            resolve_params,
+            on_existing_completed=_start_playback_cleanup_once,
+            settings_getter=settings_getter,
         )
+        _resolve_stage("picker completed stream checked")
         if completed_stream is not None:
             stream_url, stream_headers = completed_stream
         else:
-            poll_interval, download_timeout = _get_poll_settings()
+            _resolve_stage("poll settings start")
+            poll_interval, download_timeout = _get_poll_settings(
+                settings_getter=settings_getter
+            )
+            _resolve_stage("poll settings done")
+            _resolve_stage("progress create start")
             dialog = xbmcgui.DialogProgress()
             dialog.create(_addon_name(), _string(30097))
+            _resolve_stage("progress create done")
             # Bookmark cleanup does not depend on the accepted nzo_id. Start it
             # before the submit/poll wait so selected-result latency hides the
             # DB scan/write instead of paying it after WebDAV readiness.
             _start_playback_cleanup_once()
+            _resolve_stage("poll until ready start")
             stream_url, stream_headers = _poll_until_ready(
                 nzb_url,
                 title,
@@ -2631,23 +2936,44 @@ def resolve_and_play(nzb_url, title, params=None):
                     else resolve_params.get("_completed_job")
                 ),
                 completed_job_lookup_done=picker_completed_lookup_done,
+                settings_getter=settings_getter,
+                selected_indexer=selected_indexer,
             )
+            _resolve_stage("poll until ready done stream={}".format(bool(stream_url)))
         if stream_url:
             if fallback_state is None:
                 _start_fallback_after_primary(None)
             fallback_sources = build_prepare_fallback_payload(
                 _fallback_submit_jobs_snapshot(fallback_state)
             )
-            playback_prepare_state = _start_direct_playback_prepare(
-                stream_url,
-                stream_headers,
-                fallback_sources=fallback_sources,
-                service_config_state=playback_service_config_state,
-            )
+            if _should_skip_proxy_prepare(stream_url, fallback_sources):
+                _resolve_stage("proxy prepare skipped for plain mkv")
+                prepared = _direct_playback_fallback_prepared(
+                    stream_url, stream_headers
+                )
+                playback_prepare_state = None
+            else:
+                _resolve_stage("prepare playback start")
+                playback_prepare_state = _start_direct_playback_prepare(
+                    stream_url,
+                    stream_headers,
+                    fallback_sources=fallback_sources,
+                    service_config_state=None,
+                )
+            _resolve_stage("cleanup wait start")
             _wait_playback_state_cleanup(playback_cleanup_state)
-            _finish_player_playback(
-                _wait_direct_playback_prepare(playback_prepare_state)
-            )
+            _resolve_stage("cleanup wait done")
+            _resolve_stage("finish playback start")
+            if playback_prepare_state is not None:
+                _resolve_stage("prepare wait start")
+                prepared = _wait_direct_playback_prepare(playback_prepare_state)
+                _resolve_stage(
+                    "prepare wait done service_port={}".format(
+                        prepared.get("service_port") if prepared else ""
+                    )
+                )
+            _finish_player_playback(prepared)
+            _resolve_stage("player playback started")
         else:
             _stop_fallback_submit_worker(fallback_state, cancel_submitted=True)
     except _RESOLVE_RUNTIME_ERRORS as error:

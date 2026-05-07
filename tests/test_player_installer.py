@@ -75,18 +75,57 @@ def test_install_player_handles_write_failure(mock_vfs, mock_notify):
     assert any("Failed" in s or "failed" in s for s in notify_calls)
 
 
-def test_player_json_contains_correct_plugin_url_patterns():
+def test_player_json_uses_script_handoff_instead_of_plugin_media_url():
+    assert PLAYER_JSON["is_resolvable"] == "false"
+    assert PLAYER_JSON["play_movie"].startswith(
+        "executebuiltin://RunScript("
+        "special://home/addons/plugin.video.nzbdav/addon.py,tmdb_play,"
+    )
+    assert "plugin://plugin.video.nzbdav" not in PLAYER_JSON["play_movie"]
     assert "plugin.video.nzbdav" in PLAYER_JSON["play_movie"]
     assert "type=movie" in PLAYER_JSON["play_movie"]
-    assert "{title}" in PLAYER_JSON["play_movie"]
+    assert "title={title_url}" in PLAYER_JSON["play_movie"]
     # tmdb_id must be forwarded so resolver can clear TMDBHelper bookmarks
     assert "tmdb_id={tmdb_id}" in PLAYER_JSON["play_movie"]
+    assert PLAYER_JSON["play_episode"].startswith(
+        "executebuiltin://RunScript("
+        "special://home/addons/plugin.video.nzbdav/addon.py,tmdb_play,"
+    )
+    assert "plugin://plugin.video.nzbdav" not in PLAYER_JSON["play_episode"]
+    assert "plugin.video.nzbdav" in PLAYER_JSON["play_movie"]
     assert "plugin.video.nzbdav" in PLAYER_JSON["play_episode"]
     assert "type=episode" in PLAYER_JSON["play_episode"]
-    assert "{showname}" in PLAYER_JSON["play_episode"]
+    assert "title={showname_url}" in PLAYER_JSON["play_episode"]
     assert "tmdb_id={tmdb_id}" in PLAYER_JSON["play_episode"]
     roundtripped = json.loads(json.dumps(PLAYER_JSON))
     assert roundtripped["name"] == PLAYER_JSON["name"]
+
+
+@patch("resources.lib.player_installer.xbmcaddon")
+@patch("resources.lib.player_installer._notify")
+@patch("resources.lib.player_installer.xbmcvfs")
+def test_install_player_enables_tmdbhelper_strm_only_for_script_handoff(
+    mock_vfs, mock_notify, mock_addon
+):
+    """TMDBHelper action players should skip the dummy resolver probe.
+
+    The CoreELEC crash reproduces before NZB-DAV starts when TMDBHelper asks
+    Kodi to open plugin://plugin.video.nzbdav/... as media. Script handoff
+    avoids that path, but TMDBHelper only executes non-resolvable actions
+    directly when only_resolve_strm is true.
+    """
+    mock_vfs.exists.return_value = True
+    mock_vfs.translatePath.side_effect = lambda p: p.replace(
+        "special://profile", "/home/kodi/.kodi/userdata"
+    )
+    mock_vfs.File.return_value = MagicMock()
+    tmdb_addon = MagicMock()
+    mock_addon.Addon.return_value = tmdb_addon
+
+    install_player()
+
+    mock_addon.Addon.assert_any_call("plugin.video.themoviedb.helper")
+    tmdb_addon.setSetting.assert_called_once_with("only_resolve_strm", "true")
 
 
 @patch("resources.lib.player_installer._notify")
@@ -184,8 +223,7 @@ def test_install_player_preserves_existing_file_on_matching_schema(
 def test_install_player_backs_up_and_overwrites_on_schema_mismatch(
     mock_vfs, mock_notify
 ):
-    """Existing nzbdav.json at an older schema_version must be backed
-    up to .bak and then overwritten with the fresh shipped content."""
+    """Existing stale player JSON must be backed up outside TMDBHelper's scan."""
     from resources.lib.player_installer import _PLAYER_SCHEMA_VERSION
 
     mock_vfs.translatePath.side_effect = lambda p: p.replace(
@@ -208,11 +246,12 @@ def test_install_player_backs_up_and_overwrites_on_schema_mismatch(
 
     install_player()
 
-    # copy() was called with (original, original + ".bak") before the
-    # overwrite fired.
+    # copy() was called before the overwrite fired. The backup filename must
+    # not contain ".json" because TMDBHelper scans r".*\.json" with re.match
+    # and will otherwise treat nzbdav.json.bak as an active player.
     assert mock_vfs.copy.called
     backup_args = mock_vfs.copy.call_args[0]
-    assert backup_args[1].endswith(".bak")
+    assert backup_args[1].endswith("/nzbdav.bak")
     # And the write did land after the backup.
     mock_write_file.write.assert_called_once()
 

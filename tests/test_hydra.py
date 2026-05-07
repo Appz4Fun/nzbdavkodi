@@ -73,6 +73,36 @@ def test_search_hydra_movie(mock_http, mock_settings):
     assert mock_http.call_args.kwargs["timeout"] == 300
 
 
+@patch("xbmcaddon.Addon", side_effect=RuntimeError("no addon context"))
+@patch("resources.lib.hydra._http_get")
+def test_search_hydra_uses_script_settings_getter_without_kodi_addon(
+    mock_http, mock_addon
+):
+    mock_http.return_value = _load_fixture("hydra_movie_response.xml")
+
+    def setting(key, default=""):
+        return {
+            "hydra_url": "http://hydra:5076",
+            "hydra_api_key": "testkey",
+            "max_results": "12",
+        }.get(key, default)
+
+    results, error = search_hydra(
+        "movie",
+        "The Odyssey",
+        year="2026",
+        imdb="tt33764258",
+        settings_getter=setting,
+    )
+
+    assert error is None
+    assert len(results) == 2
+    mock_addon.assert_not_called()
+    call_url = mock_http.call_args[0][0]
+    assert "limit=12" in call_url
+    assert "apikey=testkey" in call_url
+
+
 @patch("resources.lib.hydra._get_settings")
 @patch("resources.lib.hydra._http_get")
 def test_search_hydra_tv(mock_http, mock_settings):

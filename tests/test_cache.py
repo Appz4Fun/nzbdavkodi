@@ -366,6 +366,54 @@ def test_get_cached_falls_back_to_300s_when_ttl_setting_unparseable(
 
 
 @patch("resources.lib.cache._get_cache_dir")
+@patch("resources.lib.cache.xbmcaddon")
+def test_get_cached_falls_back_to_300s_when_ttl_setting_raises_runtime(
+    mock_addon_mod, mock_cache_dir
+):
+    """Kodi can raise RuntimeError from getSetting during early /play routing."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        mock_cache_dir.return_value = tmpdir
+        addon = MagicMock()
+        addon.getSetting.side_effect = RuntimeError(
+            'Unknown exception thrown from the call "getSetting"'
+        )
+        mock_addon_mod.Addon.return_value = addon
+
+        fresh = {
+            "timestamp": time.time() - 60,
+            "results": [{"title": "Fresh"}],
+        }
+        os.makedirs(tmpdir, exist_ok=True)
+        key_path = os.path.join(tmpdir, _cache_key("movie", "Fresh") + ".json")
+        with open(key_path, "w") as f:
+            json.dump(fresh, f)
+
+        cached = get_cached("movie", "Fresh")
+        assert cached is not None
+        assert cached[0]["title"] == "Fresh"
+
+
+@patch("resources.lib.cache._get_cache_dir")
+@patch("resources.lib.cache.xbmcaddon")
+def test_set_cached_falls_back_to_300s_when_ttl_setting_raises_runtime(
+    mock_addon_mod, mock_cache_dir
+):
+    """A transient Kodi getSetting RuntimeError must not abort cache writes."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        mock_cache_dir.return_value = tmpdir
+        addon = MagicMock()
+        addon.getSetting.side_effect = RuntimeError(
+            'Unknown exception thrown from the call "getSetting"'
+        )
+        mock_addon_mod.Addon.return_value = addon
+
+        set_cached("movie", "Fresh", [{"title": "Fresh"}])
+
+        cache_files = [name for name in os.listdir(tmpdir) if name.endswith(".json")]
+        assert cache_files
+
+
+@patch("resources.lib.cache._get_cache_dir")
 def test_clear_cache_swallows_per_file_oserror(mock_cache_dir):
     """clear_cache() must not raise if one of the files can't be
     deleted (locked by Kodi, gone mid-loop, permissions). Other files

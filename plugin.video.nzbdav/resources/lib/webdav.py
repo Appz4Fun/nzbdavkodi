@@ -17,16 +17,28 @@ _VIDEO_FILE_SIZE_HINTS_MAX = 64
 _VIDEO_FILE_SIZE_HINTS = {}
 
 
-def _get_settings():
-    import xbmcaddon
+def _get_settings(settings_getter=None):
+    if settings_getter is None:
+        import xbmcaddon
 
-    addon = xbmcaddon.Addon()
+        addon = xbmcaddon.Addon()
+
+        def settings_getter(key, default=""):
+            value = addon.getSetting(key)
+            return value if isinstance(value, str) else default
+
     return {
-        "webdav_url": addon.getSetting("webdav_url").rstrip("/"),
-        "nzbdav_url": addon.getSetting("nzbdav_url").rstrip("/"),
-        "username": addon.getSetting("webdav_username"),
-        "password": addon.getSetting("webdav_password"),
+        "webdav_url": settings_getter("webdav_url", "").rstrip("/"),
+        "nzbdav_url": settings_getter("nzbdav_url", "").rstrip("/"),
+        "username": settings_getter("webdav_username", ""),
+        "password": settings_getter("webdav_password", ""),
     }
+
+
+def _read_settings(settings_getter=None):
+    if settings_getter is None:
+        return _get_settings()
+    return _get_settings(settings_getter=settings_getter)
 
 
 def _http_head(
@@ -212,7 +224,12 @@ def get_video_file_size_hint(file_path):
 
 
 def find_video_file(
-    folder_path, _depth=0, _visited=None, _already_encoded=False, _settings=None
+    folder_path,
+    _depth=0,
+    _visited=None,
+    _already_encoded=False,
+    _settings=None,
+    settings_getter=None,
 ):
     """Browse a WebDAV folder and find the largest video file.
 
@@ -256,7 +273,7 @@ def find_video_file(
         return None
     _visited.add(normalized)
 
-    settings = _get_settings() if _settings is None else _settings
+    settings = _read_settings(settings_getter) if _settings is None else _settings
     base = settings["webdav_url"] or settings["nzbdav_url"]
     username = settings["username"]
     password = settings["password"]
@@ -437,17 +454,19 @@ def _get_webdav_stream_url_for_path_with_settings(file_path, settings):
     return url, headers
 
 
-def get_webdav_stream_url_for_path(file_path):
+def get_webdav_stream_url_for_path(file_path, settings_getter=None):
     """Build a stream URL and auth headers for a full WebDAV path.
 
     Returns (url, headers_dict) where headers_dict may be empty if no auth.
     """
-    return _get_webdav_stream_url_for_path_with_settings(file_path, _get_settings())
+    return _get_webdav_stream_url_for_path_with_settings(
+        file_path, _read_settings(settings_getter)
+    )
 
 
-def find_video_stream_for_folder(folder_path):
+def find_video_stream_for_folder(folder_path, settings_getter=None):
     """Find a folder's playable video path and stream URL with one settings read."""
-    settings = _get_settings()
+    settings = _read_settings(settings_getter)
     video_path = find_video_file(folder_path, _settings=settings)
     if not video_path:
         return None, None, None

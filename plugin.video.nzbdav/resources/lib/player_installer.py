@@ -32,23 +32,25 @@ TMDBHELPER_PLAYER_PATH = _player_path_for(TMDBHELPER_ADDON_ID)
 # Bump this when PLAYER_JSON's shape changes in a way that requires the
 # installer to overwrite an older generation. We ignore the user's manual
 # edits only when the stored schema_version differs from ours.
-_PLAYER_SCHEMA_VERSION = 1
+_PLAYER_SCHEMA_VERSION = 6
 
 PLAYER_JSON = {
     "name": "NZB-DAV",
     "plugin": "plugin.video.nzbdav",
     "priority": 100,
-    "is_resolvable": "true",
+    "is_resolvable": "false",
     "schema_version": _PLAYER_SCHEMA_VERSION,
     "play_movie": (
-        "plugin://plugin.video.nzbdav/play?type=movie"
-        "&title={title}&year={year}&imdb={imdb}&tmdb_id={tmdb_id}"
+        "executebuiltin://RunScript("
+        "special://home/addons/plugin.video.nzbdav/addon.py,tmdb_play,"
+        "type=movie,title={title_url},year={year},imdb={imdb},tmdb_id={tmdb_id})"
     ),
     "play_episode": (
-        "plugin://plugin.video.nzbdav/play?type=episode"
-        "&title={showname}&year={showyear}&season={season}&episode={episode}"
-        "&imdb={imdb}&tmdb_id={tmdb_id}"
-        "&ep_season={ep_showseason}&ep_episode={ep_showepisode}"
+        "executebuiltin://RunScript("
+        "special://home/addons/plugin.video.nzbdav/addon.py,tmdb_play,"
+        "type=episode,title={showname_url},year={showyear},season={season},"
+        "episode={episode},imdb={imdb},tmdb_id={tmdb_id},"
+        "ep_season={ep_showseason},ep_episode={ep_showepisode})"
     ),
 }
 
@@ -168,7 +170,7 @@ def _install_player_to_path(target_name, target_path):
                     _notify(_addon_name(), _fmt(30094, target_name))
                     return
                 # Schema change — back up the old file before overwriting.
-                backup_path = file_path + ".bak"
+                backup_path = os.path.splitext(file_path)[0] + ".bak"
                 try:
                     xbmcvfs.copy(file_path, backup_path)
                 except Exception as e:  # pylint: disable=broad-except
@@ -205,8 +207,22 @@ def _install_player_to_path(target_name, target_path):
         _notify(_addon_name(), _fmt(30095, target_name))
 
 
+def _enable_tmdbhelper_action_player_mode():
+    """Make TMDBHelper execute non-resolvable player actions directly."""
+    try:
+        xbmcaddon.Addon(TMDBHELPER_ADDON_ID).setSetting("only_resolve_strm", "true")
+    except Exception as e:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: Could not enable TMDBHelper STRM-only resolver mode: {}".format(
+                e
+            ),
+            xbmc.LOGWARNING,
+        )
+
+
 def install_player():
     """Install player JSON to TMDBHelper."""
+    _enable_tmdbhelper_action_player_mode()
     _install_player_to_path(TMDBHELPER_LABEL, TMDBHELPER_PLAYER_PATH)
 
 

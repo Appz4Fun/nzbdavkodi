@@ -3,6 +3,8 @@
 
 """Result filtering and sorting using PTT for title parsing."""
 
+from types import SimpleNamespace
+
 import xbmc
 
 # ---------------------------------------------------------------------------
@@ -238,11 +240,14 @@ def _int_setting(addon, key, default):
         return default
 
 
-def _get_filter_settings():
+def _get_filter_settings(settings_getter=None):
     """Read filter settings from Kodi addon config."""
-    import xbmcaddon
+    if settings_getter is None:
+        import xbmcaddon
 
-    addon = xbmcaddon.Addon()
+        addon = xbmcaddon.Addon()
+    else:
+        addon = SimpleNamespace(getSetting=lambda key: settings_getter(key, ""))
 
     resolutions = _collect_enabled(
         addon,
@@ -525,7 +530,7 @@ def matches_filters(result, meta, settings):
     return True
 
 
-def filter_results(results):
+def filter_results(results, settings_getter=None):
     """Apply filters, sort, truncate. Returns (filtered, all_parsed).
 
     Side effect: mutates each input dict by attaching a ``_meta`` key
@@ -535,7 +540,7 @@ def filter_results(results):
     ``filtered`` is the subset that passed every filter, truncated
     to ``settings["max_results"]`` if that is non-zero.
     """
-    settings = _get_filter_settings()
+    settings = _get_filter_settings(settings_getter=settings_getter)
 
     all_parsed = []
     filtered = []

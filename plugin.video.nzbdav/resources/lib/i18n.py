@@ -56,6 +56,14 @@ _FALLBACK_STRINGS = {
         "nzbdav rejected the submission (HTTP {0}). "
         "Server message: {1}. Check nzbdav's logs for details."
     ),
+    30193: (
+        "{0} blocked the NZB download: too many requests. "
+        "Wait before submitting more from that indexer or choose another source."
+    ),
+    30194: (
+        "The selected indexer blocked the NZB download: too many requests. "
+        "Wait before submitting more or choose another source."
+    ),
     30163: "Indexers",
     30164: (
         "Use this if you do not have Prowlarr or NZBHydra2 set up. "

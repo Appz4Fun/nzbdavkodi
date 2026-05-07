@@ -30,25 +30,23 @@ def test_resolve_times_out_gracefully(resolver_mocks):
     even if status calls return None."""
     resolver_mocks.poll.return_value = (1, 5)  # override: 5s timeout
     resolver_mocks.submit.return_value = ("SABnzbd_nzo_timeout", None)
-    resolver_mocks.status.return_value = None  # simulate connection timeout
     resolver_mocks.history.return_value = None
     resolver_mocks.probe.return_value = (False, "connection_error")
-    # Override the pinned time so the timeout branch actually fires.
-    # resolver uses time.monotonic for elapsed; first call is the poll
-    # start and returns 0.0, subsequent calls return 6.0 to push elapsed
-    # past the 5 s timeout. A fixed list exhausts because submit helpers
-    # also call monotonic.
+    poll_started = [False]
+
+    def no_status(_nzo_id):
+        poll_started[0] = True
+
+    resolver_mocks.status.side_effect = no_status
     resolver_mocks.time.time.side_effect = [0.0, 6.0]
 
-    _mono_calls = [0]
-
     def _fake_monotonic():
-        _mono_calls[0] += 1
-        return 0.0 if _mono_calls[0] <= 1 else 6.0
+        return 6.0 if poll_started[0] else 0.0
 
     resolver_mocks.time.monotonic.side_effect = _fake_monotonic
 
-    resolve(1, {"nzburl": "http://hydra/getnzb/timeout", "title": "timeout.mkv"})
+    with patch("resources.lib.resolver._wait_for_abort_or_timeout", return_value=False):
+        resolve(1, {"nzburl": "http://hydra/getnzb/timeout", "title": "timeout.mkv"})
 
     resolver_mocks.plugin.setResolvedUrl.assert_called_once_with(
         1, False, resolver_mocks.gui.ListItem()
@@ -137,7 +135,18 @@ def test_resolve_continues_polling_when_webdav_reachable_and_apis_silent(
     assert resolver_mocks.probe.call_count >= 1
     # The resolve landed successfully (history came back Completed on
     # the second iteration and playback was finalized).
-    mock_finish_playback.assert_called_once_with(1, {"state": "prepared"})
+    mock_start_prepare.assert_not_called()
+    mock_wait_prepare.assert_not_called()
+    mock_finish_playback.assert_called_once_with(
+        1,
+        {
+            "service_port": 0,
+            "stream_url": "http://webdav:8080/content/uncategorized/Test/test.mkv",
+            "stream_headers": {"Authorization": "Basic dGVzdDp0ZXN0"},
+            "proxy_url": "",
+            "stream_info": {},
+        },
+    )
 
 
 @patch("resources.lib.resolver.find_completed_by_name", return_value=None)

@@ -7,6 +7,7 @@ from urllib.error import HTTPError
 
 from resources.lib.webdav import (
     find_video_file,
+    find_video_stream_for_folder,
     get_webdav_stream_url_for_path,
     probe_webdav_reachable,
 )
@@ -347,6 +348,39 @@ def test_get_webdav_stream_url_for_path_without_auth(mock_settings):
     url, headers = get_webdav_stream_url_for_path(file_path)
     assert url == "http://nzbdav:3000/content/uncategorized/Movie/Movie.mkv"
     assert not headers
+
+
+@patch("xbmcaddon.Addon", side_effect=RuntimeError("Kodi settings unavailable"))
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_stream_for_folder_uses_settings_getter_without_kodi_addon(
+    mock_urlopen, mock_addon
+):
+    def settings_getter(key, default=""):
+        return {
+            "webdav_url": "",
+            "nzbdav_url": "http://nzbdav:3000",
+            "webdav_username": "user",
+            "webdav_password": "pass",
+        }.get(key, default)
+
+    mock_urlopen.return_value = _webdav_response(
+        _propfind_listing(
+            [
+                ("/content/uncategorized/Movie/", True, None),
+                ("/content/uncategorized/Movie/Movie.mkv", False, 1234),
+            ]
+        )
+    )
+
+    path, url, headers = find_video_stream_for_folder(
+        "/content/uncategorized/Movie/",
+        settings_getter=settings_getter,
+    )
+
+    assert path == "/content/uncategorized/Movie/Movie.mkv"
+    assert url == "http://nzbdav:3000/content/uncategorized/Movie/Movie.mkv"
+    assert "Authorization" in headers
+    mock_addon.assert_not_called()
 
 
 # --- find_video_file hardening tests ---

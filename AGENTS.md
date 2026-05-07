@@ -63,6 +63,7 @@ just dist-clean    # clean + remove dist/
 - **setResolvedUrl**: MUST be called on ALL paths (success with True, failure with False) or Kodi hangs waiting for resolution.
 - **xbmc.Monitor.waitForAbort()**: Use instead of time.sleep() in loops so Kodi can shut down cleanly.
 - **Testing Kodi code**: conftest.py mocks all xbmc* modules globally. Add `plugin.video.nzbdav` and `plugin.video.nzbdav/resources/lib` to sys.path.
+- **Live CoreELEC/Kodi debugging**: Agents may restart or kill/restart Kodi on `root@coreelec.local` when Kodi is crashed, hung, wedged in a core dump, or a deployment/debugging change needs a fresh Kodi process. Preserve useful crash/log evidence first when practical, then restart without waiting for separate approval.
 
 ## Adding New Features
 

@@ -502,6 +502,14 @@ msgctxt "#30124"
 msgid "nzbdav rejected the submission (HTTP {0}). Server message: {1}. Check nzbdav's logs for details."
 msgstr "nzbdav rejected the submission (HTTP {0}). Server message: {1}. Check nzbdav's logs for details."
 
+msgctxt "#30193"
+msgid "{0} blocked the NZB download: too many requests. Wait before submitting more from that indexer or choose another source."
+msgstr "{0} blocked the NZB download: too many requests. Wait before submitting more from that indexer or choose another source."
+
+msgctxt "#30194"
+msgid "The selected indexer blocked the NZB download: too many requests. Wait before submitting more or choose another source."
+msgstr "The selected indexer blocked the NZB download: too many requests. Wait before submitting more or choose another source."
+
 msgctxt "#30125"
 msgid "Enable NZBHydra2"
 msgstr "Enable NZBHydra2"
