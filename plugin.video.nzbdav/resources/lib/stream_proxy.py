@@ -24,6 +24,7 @@ import threading
 import time
 import uuid
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn as _ThreadingMixIn
@@ -190,6 +191,8 @@ _FALLBACK_SOURCE_STATE_NOT_PROVIDED = object()
 _FALLBACK_SOURCE_STREAM_URL_HINT_KEY = "_fallback_source_stream_url_hint"
 _FALLBACK_PRIMARY_URL_HINT_KEY = "_fallback_primary_url_hint"
 _FALLBACK_PRIMARY_AUTH_HINT_KEY = "_fallback_primary_auth_hint"
+_FALLBACK_PIPELINED_FINGERPRINT_MIN_LENGTH = 1024 * 1024
+_FALLBACK_PRIMARY_FINGERPRINT_WINDOW = 4
 
 # Shared zero buffer reused across all pass-through responses.
 _ZERO_FILL_BUFFER = bytes(65536)
@@ -2944,7 +2947,48 @@ class _StreamHandler(BaseHTTPRequestHandler):
             fallback_url = self._fallback_source_stream_url(ctx, source)
         if fallback_auth is _AUTH_HEADER_NOT_PROVIDED:
             fallback_auth = self._fallback_source_auth(source)
-        for start, end in self._fallback_fingerprint_ranges(ctx, content_length):
+        ranges = self._fallback_fingerprint_ranges(ctx, content_length)
+        if (
+            len(ranges) < 2
+            or content_length < _FALLBACK_PIPELINED_FINGERPRINT_MIN_LENGTH
+        ):
+            return self._validate_fallback_fingerprint_sequential(
+                ctx,
+                content_length,
+                probe_bases,
+                ranges,
+                current_range,
+                primary_url,
+                fallback_url,
+                fallback_auth,
+                primary_auth,
+            )
+        return self._validate_fallback_fingerprint_pipelined(
+            ctx,
+            content_length,
+            probe_bases,
+            ranges,
+            current_range,
+            primary_url,
+            fallback_url,
+            fallback_auth,
+            primary_auth,
+        )
+
+    def _validate_fallback_fingerprint_sequential(
+        self,
+        ctx,
+        content_length,
+        probe_bases,
+        ranges,
+        current_range,
+        primary_url,
+        fallback_url,
+        fallback_auth,
+        primary_auth,
+    ):
+        """Verify fallback fingerprints with the original sequential flow."""
+        for start, end in ranges:
             fallback_digest = None
             if current_range and current_range[:2] == (start, end):
                 fallback_digest = current_range[2]
@@ -2971,6 +3015,77 @@ class _StreamHandler(BaseHTTPRequestHandler):
             if not primary_digest or primary_digest != fallback_digest:
                 return False
         return True
+
+    def _validate_fallback_fingerprint_pipelined(
+        self,
+        ctx,
+        content_length,
+        probe_bases,
+        ranges,
+        current_range,
+        primary_url,
+        fallback_url,
+        fallback_auth,
+        primary_auth,
+    ):
+        """Overlap primary fingerprint probes with fallback sample reads."""
+        pending_primary = []
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            for start, end in ranges:
+                fallback_digest = None
+                if current_range and current_range[:2] == (start, end):
+                    fallback_digest = current_range[2]
+                if not fallback_digest:
+                    fallback_digest = self._fetch_fallback_range_digest(
+                        fallback_url,
+                        fallback_auth,
+                        start,
+                        end,
+                        content_length=content_length,
+                        probe_bases=probe_bases,
+                    )
+                if not fallback_digest:
+                    return False
+                pending_primary.append(
+                    (
+                        start,
+                        end,
+                        fallback_digest,
+                        executor.submit(
+                            self._fetch_primary_fallback_range_digest,
+                            ctx,
+                            primary_auth,
+                            start,
+                            end,
+                            content_length,
+                            probe_bases,
+                            primary_url,
+                        ),
+                    )
+                )
+                if len(pending_primary) >= _FALLBACK_PRIMARY_FINGERPRINT_WINDOW:
+                    if not self._primary_fingerprint_future_matches(
+                        pending_primary.pop(0)
+                    ):
+                        return False
+            while pending_primary:
+                if not self._primary_fingerprint_future_matches(pending_primary.pop(0)):
+                    return False
+        return True
+
+    @staticmethod
+    def _primary_fingerprint_future_matches(pending):
+        start, end, fallback_digest, future = pending
+        try:
+            primary_digest = future.result()
+        except Exception as exc:  # defensive guard for threaded probes
+            xbmc.log(
+                "NZB-DAV: Primary fallback range probe failed at bytes "
+                "{}-{}: {}".format(start, end, exc),
+                xbmc.LOGWARNING,
+            )
+            return False
+        return bool(primary_digest and primary_digest == fallback_digest)
 
     def _fetch_primary_fallback_range_digest(
         self, ctx, auth_header, start, end, content_length, probe_bases, primary_url
