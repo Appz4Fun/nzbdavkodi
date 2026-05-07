@@ -5037,6 +5037,8 @@ class HlsProducer:
         if self.segment_format != "fmp4":
             return  # mpegts is lazy-spawned, no eager validation
         self._ensure_ffmpeg_headed_for(0)
+        init_path = os.path.join(self.session_dir, "init.mp4")
+        first_seg_path = os.path.join(self.session_dir, "seg_000000.m4s")
 
         # Window 1: argument-rejection poll (500 ms).
         # An early exit with rc != 0 is a hard failure (bad argv,
@@ -5063,6 +5065,13 @@ class HlsProducer:
                     )
                 early_exit = True
                 break
+            if os.path.exists(init_path) and os.path.exists(first_seg_path):
+                xbmc.log(
+                    "NZB-DAV: HlsProducer.prepare confirmed init.mp4 "
+                    "and seg_000000.m4s on disk during argv window",
+                    xbmc.LOGINFO,
+                )
+                return  # healthy — both files are on disk
             # Monitor.waitForAbort instead of bare time.sleep so a Kodi
             # shutdown during HLS warmup unblocks the prepare argv-loop
             # immediately. TODO.md §H.3.
@@ -5075,8 +5084,6 @@ class HlsProducer:
         # If ffmpeg already exited cleanly in window 1 (rc==0), the
         # output files should already exist; we just need to verify
         # them once instead of waiting.
-        init_path = os.path.join(self.session_dir, "init.mp4")
-        first_seg_path = os.path.join(self.session_dir, "seg_000000.m4s")
         prod_deadline = time.monotonic() + self._PREPARE_PRODUCTION_TIMEOUT_SECONDS
         while time.monotonic() < prod_deadline:
             if os.path.exists(init_path) and os.path.exists(first_seg_path):

@@ -5049,7 +5049,12 @@ def test_hls_producer_prepare_returns_when_init_and_first_segment_appear(
             "resources.lib.stream_proxy.subprocess.Popen",
             side_effect=spy_popen,
         ):
+            started = time.perf_counter()
             producer.prepare()  # must not raise
+            elapsed = time.perf_counter() - started
+        assert elapsed < 0.30, "fmp4 prepare waited {:.3f}s after early output".format(
+            elapsed
+        )
     finally:
         producer.close()
 
