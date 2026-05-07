@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 nzbdav contributors
 
+import time
 from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
 
@@ -462,6 +463,143 @@ def test_find_video_file_recurses_without_double_encoding_href(
     second_url = mock_urlopen.call_args_list[1][0][0].full_url
     assert "Disc%201" in second_url
     assert "%2520" not in second_url
+
+
+def _webdav_response(body):
+    response = MagicMock()
+    response.__enter__ = lambda s: s
+    response.__exit__ = MagicMock(return_value=False)
+    response.read.return_value = body.encode("utf-8")
+    return response
+
+
+def _propfind_listing(hrefs):
+    responses = []
+    for href, is_collection, size in hrefs:
+        collection = (
+            "<D:resourcetype><D:collection/></D:resourcetype>"
+            if is_collection
+            else "<D:resourcetype/>"
+        )
+        length = (
+            "<D:getcontentlength>{}</D:getcontentlength>".format(size)
+            if size is not None
+            else ""
+        )
+        responses.append("""
+  <D:response>
+    <D:href>{}</D:href>
+    <D:propstat>
+      <D:prop>{}{}</D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>""".format(href, length, collection))
+    return (
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        '<D:multistatus xmlns:D="DAV:">' + "".join(responses) + "\n</D:multistatus>"
+    )
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_parallelizes_sibling_subfolders_for_post_picker_start(
+    mock_urlopen, mock_settings
+):
+    """WebDAV video discovery should not pay one sibling RTT at a time."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    parent = _propfind_listing(
+        [
+            ("/content/uncategorized/Serial/", True, None),
+            ("/content/uncategorized/Serial/A/", True, None),
+            ("/content/uncategorized/Serial/B/", True, None),
+            ("/content/uncategorized/Serial/C/", True, None),
+        ]
+    )
+    empty_a = _propfind_listing([("/content/uncategorized/Serial/A/", True, None)])
+    empty_b = _propfind_listing([("/content/uncategorized/Serial/B/", True, None)])
+    with_video = _propfind_listing(
+        [
+            ("/content/uncategorized/Serial/C/", True, None),
+            ("/content/uncategorized/Serial/C/Movie.mkv", False, 1234),
+        ]
+    )
+
+    def propfind(req, **_kwargs):
+        url = req.full_url
+        if url.endswith("/Serial/"):
+            return _webdav_response(parent)
+        if url.endswith("/Serial/A/"):
+            time.sleep(0.08)
+            return _webdav_response(empty_a)
+        if url.endswith("/Serial/B/"):
+            time.sleep(0.18)
+            return _webdav_response(empty_b)
+        if url.endswith("/Serial/C/"):
+            time.sleep(0.18)
+            return _webdav_response(with_video)
+        raise AssertionError("unexpected PROPFIND URL: {}".format(url))
+
+    mock_urlopen.side_effect = propfind
+
+    started = time.perf_counter()
+    path = find_video_file("/content/uncategorized/Serial/")
+    elapsed = time.perf_counter() - started
+
+    assert path == "/content/uncategorized/Serial/C/Movie.mkv"
+    assert elapsed < 0.34, "WebDAV sibling discovery took {:.3f}s".format(elapsed)
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_returns_before_slower_later_sibling_when_ordered_match_found(
+    mock_urlopen, mock_settings
+):
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    parent = _propfind_listing(
+        [
+            ("/content/uncategorized/Ordered/", True, None),
+            ("/content/uncategorized/Ordered/A/", True, None),
+            ("/content/uncategorized/Ordered/B/", True, None),
+            ("/content/uncategorized/Ordered/C/", True, None),
+        ]
+    )
+    empty_a = _propfind_listing([("/content/uncategorized/Ordered/A/", True, None)])
+    with_video_b = _propfind_listing(
+        [
+            ("/content/uncategorized/Ordered/B/", True, None),
+            ("/content/uncategorized/Ordered/B/Movie.mkv", False, 1234),
+        ]
+    )
+    with_video_c = _propfind_listing(
+        [
+            ("/content/uncategorized/Ordered/C/", True, None),
+            ("/content/uncategorized/Ordered/C/Slow.mkv", False, 1234),
+        ]
+    )
+
+    def propfind(req, **_kwargs):
+        url = req.full_url
+        if url.endswith("/Ordered/"):
+            return _webdav_response(parent)
+        if url.endswith("/Ordered/A/"):
+            time.sleep(0.08)
+            return _webdav_response(empty_a)
+        if url.endswith("/Ordered/B/"):
+            time.sleep(0.18)
+            return _webdav_response(with_video_b)
+        if url.endswith("/Ordered/C/"):
+            time.sleep(0.5)
+            return _webdav_response(with_video_c)
+        raise AssertionError("unexpected PROPFIND URL: {}".format(url))
+
+    mock_urlopen.side_effect = propfind
+
+    started = time.perf_counter()
+    path = find_video_file("/content/uncategorized/Ordered/")
+    elapsed = time.perf_counter() - started
+
+    assert path == "/content/uncategorized/Ordered/B/Movie.mkv"
+    assert elapsed < 0.34, "ordered WebDAV match waited {:.3f}s".format(elapsed)
 
 
 _PROPFIND_CROSS_ORIGIN_HREFS = """<?xml version="1.0" encoding="utf-8"?>

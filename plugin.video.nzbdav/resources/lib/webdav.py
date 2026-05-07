@@ -4,11 +4,15 @@
 """WebDAV availability checker for nzbdav streams."""
 
 import base64
+import threading
+from queue import Queue
 from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 import xbmc
+
+_WEBDAV_SUBDIR_SCAN_WORKERS = 4
 
 
 def _get_settings():
@@ -126,6 +130,72 @@ def probe_webdav_reachable(monitor=None, max_retries=1, retry_delay=1):
                 return False, "connection_error"
     # Unreachable in normal flow — defensive safety net for static analysis.
     return False, "connection_error"
+
+
+def _find_video_file_in_subdirs(subdirs, depth, visited):
+    """Probe sibling WebDAV subfolders while preserving result order."""
+    if not subdirs:
+        return None
+
+    first = subdirs[0]
+    xbmc.log(
+        "NZB-DAV: No video at depth {}, checking subfolder: {}".format(depth, first),
+        xbmc.LOGDEBUG,
+    )
+    result = find_video_file(first, depth + 1, visited, _already_encoded=True)
+    if result or len(subdirs) == 1:
+        return result
+
+    remaining = list(subdirs[1:])
+    workers = max(1, min(_WEBDAV_SUBDIR_SCAN_WORKERS, len(remaining)))
+    result_queue = Queue()
+    stop_event = threading.Event()
+    next_index = [0]
+    index_lock = threading.Lock()
+
+    def _scan_worker():
+        while not stop_event.is_set():
+            with index_lock:
+                if next_index[0] >= len(remaining):
+                    return
+                index = next_index[0]
+                subdir = remaining[index]
+                next_index[0] += 1
+            xbmc.log(
+                "NZB-DAV: No video at depth {}, checking subfolder: {}".format(
+                    depth, subdir
+                ),
+                xbmc.LOGDEBUG,
+            )
+            try:
+                result = find_video_file(subdir, depth + 1, visited, True)
+            except Exception as e:  # pylint: disable=broad-except
+                xbmc.log(
+                    "NZB-DAV: Error scanning WebDAV subfolder in parallel: "
+                    "{} ({})".format(e, type(e).__name__),
+                    xbmc.LOGWARNING,
+                )
+                result = None
+            result_queue.put((index, result))
+
+    for _index in range(workers):
+        thread = threading.Thread(target=_scan_worker, daemon=True)
+        thread.start()
+
+    completed = {}
+    completed_count = 0
+    next_to_return = 0
+    while completed_count < len(remaining):
+        index, result = result_queue.get()
+        completed[index] = result
+        completed_count += 1
+        while next_to_return in completed:
+            result = completed.pop(next_to_return)
+            if result:
+                stop_event.set()
+                return result
+            next_to_return += 1
+    return None
 
 
 def find_video_file(folder_path, _depth=0, _visited=None, _already_encoded=False):
@@ -319,22 +389,12 @@ def find_video_file(folder_path, _depth=0, _visited=None, _already_encoded=False
             )
             return file_path
 
-        # No video found at this level, recurse into subdirectories
-        for subdir in subdirs:
-            xbmc.log(
-                "NZB-DAV: No video at depth {}, checking subfolder: {}".format(
-                    _depth, subdir
-                ),
-                xbmc.LOGDEBUG,
-            )
-            # subdir came from a PROPFIND href, which is already URL-encoded.
-            # Mark it so the recursive call skips the top-level ``quote()``
-            # and doesn't double-encode ``%20`` into ``%2520``.
-            result = find_video_file(
-                subdir, _depth + 1, _visited, _already_encoded=True
-            )
-            if result:
-                return result
+        # No video found at this level, recurse into subdirectories. Subdirs
+        # came from PROPFIND hrefs and are already URL-encoded, so recursive
+        # calls skip top-level quote() to avoid `%20` -> `%2520`.
+        result = _find_video_file_in_subdirs(subdirs, _depth, _visited)
+        if result:
+            return result
 
         return None
     except Exception as e:
