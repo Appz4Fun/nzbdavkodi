@@ -2056,6 +2056,139 @@ def test_resolve_and_play_skips_duplicate_stale_picker_completed_probe_before_su
     mock_find_completed.assert_not_called()
 
 
+@patch(
+    "resources.lib.resolver._prefetch_fallback_candidate_loader",
+    side_effect=AssertionError(
+        "RunScript fallback lookup started before primary accept"
+    ),
+)
+@patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
+@patch("resources.lib.resolver._finish_player_playback")
+@patch("resources.lib.resolver._wait_direct_playback_prepare")
+@patch("resources.lib.resolver._start_direct_playback_prepare")
+@patch("resources.lib.resolver._start_fallback_submit_worker")
+@patch("resources.lib.resolver._poll_until_ready")
+@patch("resources.lib.resolver._clear_kodi_playback_state")
+@patch("resources.lib.resolver.xbmc")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver._get_poll_settings")
+def test_resolve_and_play_defers_fallback_loader_until_primary_accept(
+    mock_poll_settings,
+    mock_gui,
+    mock_xbmc,
+    _mock_clear_state,
+    mock_poll_until_ready,
+    mock_start_fallback,
+    mock_start_prepare,
+    mock_wait_prepare,
+    _mock_finish_playback,
+    _mock_snapshot,
+    _mock_prefetch_loader,
+):
+    """RunScript playback should not start fallback discovery at picker close."""
+    mock_poll_settings.return_value = (1, 60)
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    mock_gui.DialogProgress.return_value = MagicMock()
+    mock_start_fallback.return_value = {"state": "fallback"}
+    mock_start_prepare.return_value = {"state": "prepare"}
+    mock_wait_prepare.return_value = {
+        "stream_url": "http://webdav/content/primary/movie.mkv",
+        "stream_headers": {},
+        "service_port": 0,
+    }
+
+    def fallback_loader():
+        return [{"title": "Fallback A", "link": "http://hydra/getnzb/fallback"}]
+
+    def poll_ready(*_args, **kwargs):
+        kwargs["on_primary_submitted"]("SABnzbd_nzo_primary")
+        return (
+            "http://webdav/content/primary/movie.mkv",
+            {"Authorization": "Basic primary"},
+        )
+
+    mock_poll_until_ready.side_effect = poll_ready
+
+    resolve_and_play(
+        "http://hydra/getnzb/primary",
+        "movie.mkv",
+        params={
+            "_fallback_candidates": [],
+            "_fallback_candidate_loader": fallback_loader,
+        },
+    )
+
+    mock_start_fallback.assert_called_once_with(
+        [],
+        candidate_loader=fallback_loader,
+    )
+
+
+@patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
+@patch("resources.lib.resolver._finish_player_playback")
+@patch("resources.lib.resolver._wait_direct_playback_prepare")
+@patch("resources.lib.resolver._start_direct_playback_prepare")
+@patch("resources.lib.resolver._start_fallback_submit_worker")
+@patch("resources.lib.resolver._poll_until_ready")
+@patch("resources.lib.resolver._clear_kodi_playback_state")
+@patch("resources.lib.resolver.xbmc")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver._get_poll_settings")
+def test_resolve_and_play_passes_settings_getter_to_fallback_worker(
+    mock_poll_settings,
+    mock_gui,
+    mock_xbmc,
+    _mock_clear_state,
+    mock_poll_until_ready,
+    mock_start_fallback,
+    mock_start_prepare,
+    mock_wait_prepare,
+    _mock_finish_playback,
+    _mock_snapshot,
+):
+    """RunScript fallback worker should reuse the thread-safe settings getter."""
+    mock_poll_settings.return_value = (1, 60)
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    mock_gui.DialogProgress.return_value = MagicMock()
+    mock_start_prepare.return_value = {"state": "prepare"}
+    mock_wait_prepare.return_value = {
+        "stream_url": "http://webdav/content/primary/movie.mkv",
+        "stream_headers": {},
+        "service_port": 0,
+    }
+
+    def settings_getter(_key, default=""):
+        return default
+
+    def fallback_loader():
+        return [{"title": "Fallback A", "link": "http://hydra/getnzb/fallback"}]
+
+    def poll_ready(*_args, **kwargs):
+        kwargs["on_primary_submitted"]("SABnzbd_nzo_primary")
+        return (
+            "http://webdav/content/primary/movie.mkv",
+            {"Authorization": "Basic primary"},
+        )
+
+    mock_poll_until_ready.side_effect = poll_ready
+
+    resolve_and_play(
+        "http://hydra/getnzb/primary",
+        "movie.mkv",
+        params={
+            "_fallback_candidates": [],
+            "_fallback_candidate_loader": fallback_loader,
+            "_settings_getter": settings_getter,
+        },
+    )
+
+    mock_start_fallback.assert_called_once_with(
+        [],
+        candidate_loader=fallback_loader,
+        settings_getter=settings_getter,
+    )
+
+
 @patch("resources.lib.webdav.urlopen")
 @patch("resources.lib.webdav._get_settings")
 def test_completed_history_reuses_webdav_settings_for_stream_url(
@@ -2299,6 +2432,24 @@ def test_fallback_submit_worker_loads_candidates_in_background(mock_xbmc, mock_s
             "content_length": 0,
         }
     ]
+
+
+@patch("resources.lib.resolver._submit_fallback_candidates")
+def test_fallback_submit_worker_passes_settings_getter_to_submit_candidates(
+    mock_submit_fallbacks,
+):
+    from resources.lib.resolver import _start_fallback_submit_worker
+
+    def settings_getter(_key, default=""):
+        return default
+
+    state = _start_fallback_submit_worker(
+        [{"title": "Fallback A", "link": "http://hydra/getnzb/fallback-a"}],
+        settings_getter=settings_getter,
+    )
+
+    assert state["finished"].wait(timeout=2)
+    assert mock_submit_fallbacks.call_args.kwargs["settings_getter"] is settings_getter
 
 
 def test_prefetch_fallback_candidate_loader_starts_immediately_and_caches_result():
@@ -2665,6 +2816,42 @@ def test_submit_fallback_candidates_batches_existing_job_probes(
     ]
 
 
+@patch("resources.lib.resolver.find_queued_by_names", return_value={})
+@patch("resources.lib.resolver.find_completed_by_names", return_value={})
+@patch("resources.lib.resolver.submit_nzb")
+def test_submit_fallback_candidates_passes_settings_getter_to_nzbdav_calls(
+    mock_submit,
+    mock_find_completed,
+    mock_find_queued,
+):
+    from resources.lib.resolver import _submit_fallback_candidates
+
+    def settings_getter(_key, default=""):
+        return default
+
+    mock_submit.return_value = ("SABnzbd_nzo_fallback", None)
+
+    jobs = _submit_fallback_candidates(
+        [{"title": "Fallback A", "link": "http://hydra/getnzb/fallback-a"}],
+        _make_monitor(),
+        settings_getter=settings_getter,
+    )
+
+    expected_job_name = "Fallback A [fallback-1-253ccd06]"
+    mock_find_completed.assert_called_once_with(
+        [expected_job_name], settings_getter=settings_getter
+    )
+    mock_find_queued.assert_called_once_with(
+        [expected_job_name], settings_getter=settings_getter
+    )
+    mock_submit.assert_called_once_with(
+        "http://hydra/getnzb/fallback-a",
+        expected_job_name,
+        settings_getter=settings_getter,
+    )
+    assert jobs[0]["nzo_id"] == "SABnzbd_nzo_fallback"
+
+
 @patch("resources.lib.resolver.find_completed_by_name")
 @patch("resources.lib.resolver.xbmc")
 @patch("resources.lib.resolver.xbmcgui")
@@ -2800,6 +2987,52 @@ def test_submit_ui_pump_uses_nonblocking_abort_check_after_submit_result(
     assert submit_error == {"status": 400, "message": "TooManyRequests"}
     assert elapsed < 0.15
     assert 0 not in [call.args[0] for call in monitor.waitForAbort.call_args_list]
+
+
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.find_queued_by_name", return_value=None)
+@patch("resources.lib.resolver.submit_nzb")
+def test_submit_ui_pump_continues_when_probe_threads_cannot_start(
+    mock_submit, _mock_find_queued, _mock_find_completed
+):
+    """Thread exhaustion in optional probes must not abort an active submit."""
+    real_thread = threading.Thread
+    allow_submit = threading.Event()
+
+    def submit(_nzb_url, _title, **_kwargs):
+        assert allow_submit.wait(timeout=1)
+        return "SABnzbd_nzo_script", None
+
+    class FakeThread:
+        def __init__(self, target, name=None, daemon=None):
+            self.target = target
+            self.name = name
+            self.daemon = daemon
+            self._thread = None
+
+        def start(self):
+            if self.name == "nzbdav-submit":
+                self._thread = real_thread(target=self.target, daemon=self.daemon)
+                self._thread.start()
+                return
+            allow_submit.set()
+            raise RuntimeError("can't start new thread")
+
+        def join(self, timeout=None):
+            if self._thread is not None:
+                self._thread.join(timeout=timeout)
+
+    mock_submit.side_effect = submit
+    dialog = MagicMock()
+    dialog.iscanceled.return_value = False
+    monitor = _make_monitor()
+
+    with patch("resources.lib.resolver.threading.Thread", FakeThread):
+        nzo_id, submit_error = _submit_nzb_with_ui_pump(
+            "http://hydra/getnzb/abc", "movie.mkv", dialog, monitor
+        )
+
+    assert (nzo_id, submit_error) == ("SABnzbd_nzo_script", None)
 
 
 @patch("resources.lib.resolver.find_completed_by_name")

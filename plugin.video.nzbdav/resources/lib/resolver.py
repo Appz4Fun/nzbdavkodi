@@ -1478,7 +1478,7 @@ def _job_nzo_id(match):
     return None
 
 
-def _find_adoptable_job_during_submit(title):
+def _find_adoptable_job_during_submit(title, settings_getter=None):
     """Return queue/history nzo_id without serializing behind a slow queue miss."""
     result = {"nzo_id": None, "done_count": 0}
     lock = threading.Lock()
@@ -1494,7 +1494,9 @@ def _find_adoptable_job_during_submit(title):
 
     def _probe_queue():
         try:
-            match = find_queued_by_name(title)
+            match = find_queued_by_name(
+                title, **_settings_getter_kwargs(settings_getter)
+            )
         except Exception as e:  # pylint: disable=broad-except
             xbmc.log(
                 "NZB-DAV: concurrent queue probe raised: {}".format(e),
@@ -1505,7 +1507,9 @@ def _find_adoptable_job_during_submit(title):
 
     def _probe_history():
         try:
-            match = find_completed_by_name(title)
+            match = find_completed_by_name(
+                title, **_settings_getter_kwargs(settings_getter)
+            )
         except Exception as e:  # pylint: disable=broad-except
             xbmc.log(
                 "NZB-DAV: concurrent history probe raised: {}".format(e),
@@ -1720,9 +1724,31 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor, settings_getter=No
     history_probe_t = threading.Thread(
         target=_history_probe_worker, name="nzbdav-submit-history-probe", daemon=True
     )
-    submit_t.start()
-    probe_t.start()
-    history_probe_t.start()
+    started_threads = []
+
+    def _start_submit_thread(thread, label):
+        try:
+            thread.start()
+        except RuntimeError as error:
+            xbmc.log(
+                "NZB-DAV: Could not start {} thread for '{}': {}".format(
+                    label, title, error
+                ),
+                xbmc.LOGWARNING,
+            )
+            return False
+        started_threads.append(thread)
+        return True
+
+    if not _start_submit_thread(submit_t, "submit"):
+        xbmc.log(
+            "NZB-DAV: Falling back to synchronous submit for '{}'".format(title),
+            xbmc.LOGWARNING,
+        )
+        _submit_worker()
+    elif not submit_done.is_set():
+        _start_submit_thread(probe_t, "queue probe")
+        _start_submit_thread(history_probe_t, "history probe")
 
     # Anchor elapsed to wall-clock via time.monotonic() instead of
     # accumulating _SUBMIT_UI_PUMP_INTERVAL_SECONDS per loop; the per-loop
@@ -1816,7 +1842,7 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor, settings_getter=No
         # blocked, waiting on that uninterruptible HTTP worker only adds
         # latency; it is daemon=True and will die with the plugin interpreter.
         queue_stop.set()
-        for t in (submit_t, probe_t, history_probe_t):
+        for t in started_threads:
             if t is submit_t and adopted_during_submit[0] and not submit_done.is_set():
                 continue
             if t in (probe_t, history_probe_t) and (
@@ -1869,7 +1895,7 @@ _SUBMIT_ADOPT_POLL_COUNT = 6
 _SUBMIT_ADOPT_POLL_INTERVAL_SECONDS = 2
 
 
-def _adopt_queued_or_completed_job(title, monitor):
+def _adopt_queued_or_completed_job(title, monitor, settings_getter=None):
     """Return an existing nzbdav nzo_id for ``title`` if the submit we
     just timed out on actually reached nzbdav.
 
@@ -1883,7 +1909,9 @@ def _adopt_queued_or_completed_job(title, monitor):
     if nothing surfaces within the poll budget (caller retries submit).
     """
     for poll in range(_SUBMIT_ADOPT_POLL_COUNT):
-        nzo_id = _find_adoptable_job_during_submit(title)
+        nzo_id = _find_adoptable_job_during_submit(
+            title, settings_getter=settings_getter
+        )
         if nzo_id:
             return nzo_id
         if poll < _SUBMIT_ADOPT_POLL_COUNT - 1:
@@ -1938,7 +1966,9 @@ def _submit_nzb_with_retries(
                     ),
                     xbmc.LOGWARNING,
                 )
-                adopted_nzo_id = _adopt_queued_or_completed_job(title, monitor)
+                adopted_nzo_id = _adopt_queued_or_completed_job(
+                    title, monitor, settings_getter=settings_getter
+                )
                 if adopted_nzo_id:
                     xbmc.log(
                         "NZB-DAV: Adopted existing nzbdav job nzo_id={} for "
@@ -1995,7 +2025,9 @@ def _submit_nzb_with_retries(
                 # if the job is already running, attach to it. This covers
                 # the race where a concurrent submit (e.g. retried play of
                 # the same title) beat us to nzbdav.
-                adopted_nzo_id = _adopt_queued_or_completed_job(title, monitor)
+                adopted_nzo_id = _adopt_queued_or_completed_job(
+                    title, monitor, settings_getter=settings_getter
+                )
                 if adopted_nzo_id:
                     xbmc.log(
                         "NZB-DAV: Adopted existing nzbdav job nzo_id={} for "
@@ -2059,7 +2091,9 @@ def _submit_nzb_with_retries(
     return None
 
 
-def _submit_fallback_candidates(candidates, monitor, stop_event=None, on_job=None):
+def _submit_fallback_candidates(
+    candidates, monitor, stop_event=None, on_job=None, settings_getter=None
+):
     """Submit duplicate fallback candidates as standby nzbdav jobs."""
     fallback_jobs = []
     candidate_jobs = []
@@ -2076,9 +2110,13 @@ def _submit_fallback_candidates(candidates, monitor, stop_event=None, on_job=Non
         candidate_jobs.append((candidate, nzb_url, title, job_name))
 
     job_names = [row[3] for row in candidate_jobs]
-    completed_jobs = find_completed_by_names(job_names)
+    completed_jobs = find_completed_by_names(
+        job_names, **_settings_getter_kwargs(settings_getter)
+    )
     queue_names = [name for name in job_names if name not in completed_jobs]
-    queued_jobs = find_queued_by_names(queue_names)
+    queued_jobs = find_queued_by_names(
+        queue_names, **_settings_getter_kwargs(settings_getter)
+    )
     existing_jobs = dict(completed_jobs)
     existing_jobs.update(queued_jobs)
 
@@ -2109,7 +2147,9 @@ def _submit_fallback_candidates(candidates, monitor, stop_event=None, on_job=Non
                 on_job(dict(fallback_jobs[-1]))
             continue
         try:
-            nzo_id, submit_error = submit_nzb(nzb_url, job_name)
+            nzo_id, submit_error = submit_nzb(
+                nzb_url, job_name, **_settings_getter_kwargs(settings_getter)
+            )
         except Exception as error:  # pylint: disable=broad-except
             xbmc.log(
                 "NZB-DAV: Fallback submit failed for '{}': {}".format(job_name, error),
@@ -2124,7 +2164,9 @@ def _submit_fallback_candidates(candidates, monitor, stop_event=None, on_job=Non
                     "queue/history in background".format(job_name),
                     xbmc.LOGWARNING,
                 )
-                nzo_id = _adopt_queued_or_completed_job(job_name, monitor)
+                nzo_id = _adopt_queued_or_completed_job(
+                    job_name, monitor, settings_getter=settings_getter
+                )
             if not nzo_id:
                 xbmc.log(
                     "NZB-DAV: Fallback submit skipped for '{}' (status={}): {}".format(
@@ -2155,10 +2197,13 @@ def _submit_fallback_candidates(candidates, monitor, stop_event=None, on_job=Non
     return fallback_jobs
 
 
-def _fallback_streams_enabled():
+def _fallback_streams_enabled(settings_getter=None):
     """Return whether fallback streams are enabled in Kodi settings."""
     try:
-        raw = xbmcaddon.Addon().getSetting("fallback_streams_enabled")
+        if settings_getter is None:
+            raw = xbmcaddon.Addon().getSetting("fallback_streams_enabled")
+        else:
+            raw = settings_getter("fallback_streams_enabled", "true")
     except (AttributeError, RuntimeError, TypeError):
         return True
     return str(raw or "").strip().lower() != "false"
@@ -2210,7 +2255,9 @@ def _prefetch_fallback_candidate_loader(candidate_loader):
     return _load_prefetched_candidates
 
 
-def _start_fallback_submit_worker(candidates=None, candidate_loader=None):
+def _start_fallback_submit_worker(
+    candidates=None, candidate_loader=None, settings_getter=None
+):
     """Start background fallback submits and return shared state."""
     state = {
         "lock": threading.Lock(),
@@ -2256,7 +2303,9 @@ def _start_fallback_submit_worker(candidates=None, candidate_loader=None):
             if state["stop"].is_set():
                 return
             if not active_candidates:
-                if not candidate_lookup_disabled and _fallback_streams_enabled():
+                if not candidate_lookup_disabled and _fallback_streams_enabled(
+                    settings_getter=settings_getter
+                ):
                     try:
                         _notify(_addon_name(), _string(30187), 4000)
                     except (RuntimeError, OSError):
@@ -2267,6 +2316,7 @@ def _start_fallback_submit_worker(candidates=None, candidate_loader=None):
                 xbmc.Monitor(),
                 stop_event=state["stop"],
                 on_job=_append_job,
+                settings_getter=settings_getter,
             )
         except Exception as error:  # pylint: disable=broad-except
             xbmc.log(
@@ -2876,11 +2926,8 @@ def resolve_and_play(nzb_url, title, params=None):
         settings_getter = resolve_params.get("_settings_getter")
         selected_indexer = resolve_params.get("_selected_indexer", "")
         fallback_candidates = resolve_params.get("_fallback_candidates", [])
-        _resolve_stage("prefetch fallback start")
-        fallback_candidate_loader = _prefetch_fallback_candidate_loader(
-            resolve_params.get("_fallback_candidate_loader")
-        )
-        _resolve_stage("prefetch fallback done")
+        fallback_candidate_loader = resolve_params.get("_fallback_candidate_loader")
+        _resolve_stage("fallback lookup deferred")
         _resolve_stage("service config lookup deferred")
         picker_completed_lookup_done = _picker_completed_lookup_done(resolve_params)
 
@@ -2893,9 +2940,13 @@ def resolve_and_play(nzb_url, title, params=None):
             nonlocal fallback_state
             _start_playback_cleanup_once()
             if fallback_state is None:
+                fallback_submit_kwargs = {
+                    "candidate_loader": fallback_candidate_loader,
+                }
+                fallback_submit_kwargs.update(_settings_getter_kwargs(settings_getter))
                 fallback_state = _start_fallback_submit_worker(
                     fallback_candidates,
-                    candidate_loader=fallback_candidate_loader,
+                    **fallback_submit_kwargs,
                 )
 
         completed_stream = _picker_completed_stream(

@@ -1757,7 +1757,7 @@ def test_handle_script_play_uses_picker_without_plugin_handle_resolution(
     assert args == (chosen["link"], chosen["title"])
     resolver_params = dict(kwargs["params"])
     assert callable(resolver_params.pop("_settings_getter"))
-    assert resolver_params.pop("_fallback_candidate_loader") is None
+    assert callable(resolver_params.pop("_fallback_candidate_loader"))
     assert resolver_params == {
         "type": "movie",
         "title": "The Odyssey",
@@ -1771,6 +1771,118 @@ def test_handle_script_play_uses_picker_without_plugin_handle_resolution(
     mock_tag.assert_not_called()
     mock_end.assert_not_called()
     mock_set_resolved.assert_not_called()
+
+
+@patch(
+    "resources.lib.router.fallback_candidate_prefetch_settings", return_value=(True, 2)
+)
+@patch("resources.lib.router.attach_fallback_candidates_for_selection")
+@patch("resources.lib.nzbdav_api.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.resolve_and_play")
+@patch("resources.lib.results_dialog.show_results_dialog")
+@patch("resources.lib.filter.filter_results")
+@patch("resources.lib.router._search_all_providers")
+def test_handle_script_play_picker_forwards_deferred_fallback_loader(
+    mock_search,
+    mock_filter,
+    mock_dialog,
+    mock_resolve_and_play,
+    mock_find_completed,
+    mock_attach,
+    mock_fallback_settings,
+):
+    """RunScript TMDBHelper playback should keep fallback submission available.
+
+    The live TMDBHelper player enters via ``tmdb_play`` instead of the plugin
+    handle routes, so this path must forward the same deferred fallback loader
+    used by the picker routes.
+    """
+    from resources.lib.router import _handle_script_play
+
+    primary = _duplicate_release("http://hydra/nzb/primary")
+    duplicate = _duplicate_release("http://hydra/nzb/duplicate")
+    filtered = [primary, duplicate]
+    seen_pool = []
+
+    def attach_selected(selected, results, **_kwargs):
+        seen_pool.extend(list(results))
+        selected["_fallback_candidates"] = [duplicate]
+        return selected
+
+    mock_search.return_value = (filtered, None)
+    mock_filter.return_value = (filtered, filtered)
+    mock_dialog.return_value = primary
+    mock_attach.side_effect = attach_selected
+
+    _handle_script_play({"type": "movie", "title": "The Matrix", "year": "1999"})
+
+    mock_find_completed.assert_called_once()
+    mock_resolve_and_play.assert_called_once()
+    resolver_params = dict(mock_resolve_and_play.call_args.kwargs["params"])
+    loader = resolver_params["_fallback_candidate_loader"]
+    assert callable(loader)
+    mock_attach.assert_not_called()
+
+    assert loader() == [duplicate]
+    mock_fallback_settings.assert_called_once()
+    mock_attach.assert_called_once()
+    assert seen_pool[0] is primary
+    assert duplicate in seen_pool
+
+
+@patch("resources.lib.router._get_script_setting")
+@patch("resources.lib.router.fallback_candidate_prefetch_settings")
+@patch("resources.lib.router.attach_fallback_candidates_for_selection")
+@patch("resources.lib.nzbdav_api.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.resolve_and_play")
+@patch("resources.lib.results_dialog.show_results_dialog")
+@patch("resources.lib.filter.filter_results")
+@patch("resources.lib.router._search_all_providers")
+def test_handle_script_play_picker_fallback_loader_uses_script_settings_getter(
+    mock_search,
+    mock_filter,
+    mock_dialog,
+    mock_resolve_and_play,
+    _mock_find_completed,
+    mock_attach,
+    mock_fallback_settings,
+    mock_script_setting,
+):
+    """Deferred RunScript fallback discovery must avoid Kodi settings APIs."""
+    from resources.lib.router import _handle_script_play
+
+    primary = _duplicate_release("http://hydra/nzb/primary")
+    duplicate = _duplicate_release("http://hydra/nzb/duplicate")
+    filtered = [primary, duplicate]
+
+    def script_setting(key, default=""):
+        return {
+            "auto_select_best": "false",
+            "fallback_streams_enabled": "true",
+            "fallback_streams_max": "2",
+        }.get(key, default)
+
+    def fallback_settings(*_args, **kwargs):
+        assert kwargs.get("settings_getter") is mock_script_setting
+        return (True, 2)
+
+    def attach_selected(selected, _results, **_kwargs):
+        selected["_fallback_candidates"] = [duplicate]
+        return selected
+
+    mock_script_setting.side_effect = script_setting
+    mock_fallback_settings.side_effect = fallback_settings
+    mock_attach.side_effect = attach_selected
+    mock_search.return_value = (filtered, None)
+    mock_filter.return_value = (filtered, filtered)
+    mock_dialog.return_value = primary
+
+    _handle_script_play({"type": "movie", "title": "The Matrix", "year": "1999"})
+
+    resolver_params = dict(mock_resolve_and_play.call_args.kwargs["params"])
+    loader = resolver_params["_fallback_candidate_loader"]
+    assert loader() == [duplicate]
+    mock_fallback_settings.assert_called_once()
 
 
 @patch("xbmcaddon.Addon", side_effect=RuntimeError("Kodi settings unavailable"))
@@ -1920,7 +2032,7 @@ def test_handle_script_play_auto_select_marks_completed_lookup_done(
     mock_resolve_and_play.assert_called_once()
     resolver_params = dict(mock_resolve_and_play.call_args.kwargs["params"])
     assert callable(resolver_params.pop("_settings_getter"))
-    assert resolver_params.pop("_fallback_candidate_loader") is None
+    assert callable(resolver_params.pop("_fallback_candidate_loader"))
     assert resolver_params == {
         "type": "movie",
         "title": "The Odyssey",

@@ -10,6 +10,7 @@ import time
 from collections import namedtuple
 from functools import lru_cache
 from queue import Empty, Queue
+from types import SimpleNamespace
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
@@ -795,9 +796,12 @@ def _manifest_error(reason):
     return make_empty_manifest(reason)
 
 
-def _fallback_settings():
+def _fallback_settings(settings_getter=None):
     """Return (enabled, max_candidates) from Kodi settings."""
-    addon = xbmcaddon.Addon()
+    if settings_getter is None:
+        addon = xbmcaddon.Addon()
+    else:
+        addon = SimpleNamespace(getSetting=lambda key: settings_getter(key, ""))
     enabled = _setting_bool(addon, "fallback_streams_enabled", True)
     max_candidates = _setting_int(addon, "fallback_streams_max", 5)
     if max_candidates < 0 or max_candidates > _MAX_FALLBACKS:
@@ -810,9 +814,11 @@ def _fallback_settings():
     return enabled, max(0, min(max_candidates, _MAX_FALLBACKS))
 
 
-def fallback_candidate_prefetch_settings():
+def fallback_candidate_prefetch_settings(settings_getter=None):
     """Return fallback discovery settings for picker prefetch callers."""
-    return _fallback_settings()
+    if settings_getter is None:
+        return _fallback_settings()
+    return _fallback_settings(settings_getter=settings_getter)
 
 
 def fallback_candidate_prefetch_enabled(settings=None):

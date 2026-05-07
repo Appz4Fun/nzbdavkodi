@@ -128,7 +128,7 @@ def search_hydra(
         max_results = int(raw_max) if raw_max not in (None, "") else 25
     except (TypeError, ValueError):
         max_results = 25
-    max_results = max(1, min(max_results, 100))
+    max_results = max(1, min(max_results, 10000))
     params = {"apikey": api_key, "o": "xml", "limit": max_results}
 
     if search_type == "episode":

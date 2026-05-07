@@ -105,6 +105,35 @@ def test_search_hydra_uses_script_settings_getter_without_kodi_addon(
 
 @patch("resources.lib.hydra._get_settings")
 @patch("resources.lib.hydra._http_get")
+def test_search_hydra_allows_large_result_limit_up_to_ten_thousand(
+    mock_http, mock_settings
+):
+    mock_settings.return_value = ("http://hydra:5076", "testkey")
+    mock_http.return_value = _load_fixture("hydra_movie_response.xml")
+
+    def setting(key, default=""):
+        return {
+            "hydra_url": "http://hydra:5076",
+            "hydra_api_key": "testkey",
+            "max_results": "2500",
+        }.get(key, default)
+
+    results, error = search_hydra(
+        "movie",
+        "Terminator 2: Judgment Day",
+        year="1991",
+        imdb="tt0103064",
+        settings_getter=setting,
+    )
+
+    assert error is None
+    assert len(results) == 2
+    call_url = mock_http.call_args[0][0]
+    assert "limit=2500" in call_url
+
+
+@patch("resources.lib.hydra._get_settings")
+@patch("resources.lib.hydra._http_get")
 def test_search_hydra_tv(mock_http, mock_settings):
     mock_settings.return_value = ("http://hydra:5076", "testkey")
     mock_http.return_value = _load_fixture("hydra_tv_response.xml")

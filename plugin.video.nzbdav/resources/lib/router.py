@@ -249,7 +249,7 @@ def _clean_params(params):
     return {k: ("" if v == "_" else v) for k, v in params.items()}
 
 
-def _fallback_candidate_loader_for_selection(selected, results):
+def _fallback_candidate_loader_for_selection(selected, results, settings_getter=None):
     """Build a deferred fallback lookup for the selected release."""
     if not selected_manifest_may_have_fallback_peer(selected):
         return None
@@ -270,7 +270,12 @@ def _fallback_candidate_loader_for_selection(selected, results):
     def _load_fallback_candidates():
         if not selection_pool_may_have_fallback_peer(selected, results):
             return FALLBACK_CANDIDATES_DISABLED
-        fallback_settings = fallback_candidate_prefetch_settings()
+        if settings_getter is None:
+            fallback_settings = fallback_candidate_prefetch_settings()
+        else:
+            fallback_settings = fallback_candidate_prefetch_settings(
+                settings_getter=settings_getter
+            )
         if not fallback_candidate_prefetch_enabled(fallback_settings):
             return FALLBACK_CANDIDATES_DISABLED
         known_first_peer = cached_selection_pool_first_peer(selected, results)
@@ -939,7 +944,8 @@ def _handle_search(handle, params):
 
         resolver_params = dict(params)
         resolver_params["_fallback_candidates"] = []
-        resolver_params["_fallback_candidate_loader"] = None
+        fallback_loader = _fallback_candidate_loader_for_selection(best, filtered)
+        resolver_params["_fallback_candidate_loader"] = fallback_loader
         _attach_selected_indexer(resolver_params, best)
         resolve_and_play(best["link"], best["title"], params=resolver_params)
         # Same hang class as C1 (router.py): /search is a directory
@@ -1087,7 +1093,10 @@ def _handle_script_play(params):
 
         resolver_params = dict(params)
         resolver_params["_fallback_candidates"] = []
-        resolver_params["_fallback_candidate_loader"] = None
+        fallback_loader = _fallback_candidate_loader_for_selection(
+            best, filtered, settings_getter=_get_script_setting
+        )
+        resolver_params["_fallback_candidate_loader"] = fallback_loader
         completed_job = _script_completed_job_for_selection(best)
         if completed_job:
             resolver_params["_completed_job"] = completed_job
@@ -1117,7 +1126,10 @@ def _handle_script_play(params):
 
     resolver_params = dict(params)
     resolver_params["_fallback_candidates"] = []
-    resolver_params["_fallback_candidate_loader"] = None
+    fallback_loader = _fallback_candidate_loader_for_selection(
+        selected, filtered, settings_getter=_get_script_setting
+    )
+    resolver_params["_fallback_candidate_loader"] = fallback_loader
     resolver_params["_completed_job_lookup_done"] = True
     resolver_params["_settings_getter"] = _get_script_setting
     completed_job = selected.get(
