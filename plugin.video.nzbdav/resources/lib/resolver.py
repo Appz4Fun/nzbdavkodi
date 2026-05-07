@@ -548,6 +548,15 @@ def _prepare_direct_playback(
 
 def _direct_playback_service_config():
     """Read proxy connection details on the resolver thread."""
+    from resources.lib import stream_proxy
+
+    if getattr(stream_proxy, "get_service_proxy_port", None) is getattr(
+        stream_proxy, "_ORIGINAL_GET_SERVICE_PROXY_PORT", None
+    ) and getattr(stream_proxy, "get_service_proxy_token", None) is getattr(
+        stream_proxy, "_ORIGINAL_GET_SERVICE_PROXY_TOKEN", None
+    ):
+        return stream_proxy.get_service_proxy_config()
+
     from resources.lib.stream_proxy import (
         get_service_proxy_port,
         get_service_proxy_token,

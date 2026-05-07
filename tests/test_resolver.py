@@ -14,6 +14,7 @@ from resources.lib.resolver import (
     MAX_POLL_ITERATIONS,
     _cache_bust_url,
     _clear_kodi_playback_state,
+    _direct_playback_service_config,
     _existing_completed_stream,
     _fallback_submit_jobs_snapshot,
     _get_poll_settings,
@@ -222,6 +223,31 @@ def test_get_submit_timeout_seconds_uses_requested_default_for_empty_setting():
         assert _get_submit_timeout_seconds() == 300
     finally:
         sys.modules["xbmcaddon"].Addon.return_value = original
+
+
+def test_direct_playback_service_config_reads_proxy_window_once_for_fast_start():
+    """Proxy port/token lookup should not duplicate Kodi window access."""
+
+    window_calls = []
+    home_window = MagicMock()
+    home_window.getProperty.side_effect = lambda key: {
+        "nzbdav.proxy_port": "57800",
+        "nzbdav.proxy_token": "secret-token",
+    }.get(key, "")
+
+    def slow_window(_window_id):
+        window_calls.append(_time.perf_counter())
+        _time.sleep(0.06)
+        return home_window
+
+    with patch.object(sys.modules["xbmcgui"], "Window", side_effect=slow_window):
+        started = _time.perf_counter()
+        service_port, prepare_token = _direct_playback_service_config()
+        elapsed = _time.perf_counter() - started
+
+    assert (service_port, prepare_token) == (57800, "secret-token")
+    assert len(window_calls) == 1
+    assert elapsed < 0.09, "proxy config lookup took {:.3f}s".format(elapsed)
 
 
 def test_handle_job_status_accepts_fractional_percentage():

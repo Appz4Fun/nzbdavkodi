@@ -6773,6 +6773,24 @@ def get_service_proxy_token():
         return ""
 
 
+def get_service_proxy_config():
+    """Get proxy port and token with a single Kodi Home window read."""
+    try:
+        import xbmcgui
+
+        home = xbmcgui.Window(10000)
+        port_str = home.getProperty("nzbdav.proxy_port")
+        service_port = int(port_str) if port_str else 0
+        prepare_token = home.getProperty(_PROP_PROXY_TOKEN) if service_port else ""
+        return service_port, prepare_token or ""
+    except _KODI_SETTING_ERRORS:
+        return 0, ""
+
+
+_ORIGINAL_GET_SERVICE_PROXY_PORT = get_service_proxy_port
+_ORIGINAL_GET_SERVICE_PROXY_TOKEN = get_service_proxy_token
+
+
 class ServiceProxyUnavailableError(OSError):
     """Raised when the NZB-DAV background service's proxy is unreachable.
 
