@@ -6,6 +6,7 @@
 import hashlib
 import re
 import threading
+import time
 from collections import namedtuple
 from functools import lru_cache
 from queue import Empty, Queue
@@ -25,6 +26,7 @@ _FINGERPRINT_BYTES = 4096
 
 _MAX_FALLBACKS = 5
 _FALLBACK_MANIFEST_STALL_SPECULATION_SECONDS = 0.05
+_FALLBACK_MANIFEST_OPTIONAL_TAIL_WAIT_SECONDS = 0.1
 _ALLOWED_STREAM_SCHEMES = frozenset(("http", "https"))
 _METADATA_ONLY_MANIFEST_REASONS = frozenset(("too_large",))
 _PrecomputedProbeBase = namedtuple("_PrecomputedProbeBase", "parts origin path")
@@ -1029,6 +1031,7 @@ def _attach_selection_candidates_streaming(
     consumed_indices = set()
     selected_ready = [not include_selected_manifest]
     selected_can_match = [True]
+    optional_tail_deadline = [None]
     max_workers = min(max_candidates, _MAX_FALLBACKS)
 
     def _start_candidate_fetch():
@@ -1071,6 +1074,24 @@ def _attach_selection_candidates_streaming(
             and not candidate_exhausted[0]
         )
 
+    def _optional_tail_wait_remaining():
+        if not (
+            selected_ready[0]
+            and selected_can_match[0]
+            and candidate_exhausted[0]
+            and candidates
+            and len(candidates) < max_candidates
+            and active_candidates[0] > 0
+        ):
+            optional_tail_deadline[0] = None
+            return None
+        now = time.monotonic()
+        if optional_tail_deadline[0] is None:
+            optional_tail_deadline[0] = (
+                now + _FALLBACK_MANIFEST_OPTIONAL_TAIL_WAIT_SECONDS
+            )
+        return max(0, optional_tail_deadline[0] - now)
+
     try:
         pending_to_start.append(next(candidate_iter))
     except StopIteration:
@@ -1087,13 +1108,20 @@ def _attach_selection_candidates_streaming(
 
     while active[0]:
         try:
-            if _can_start_stall_speculation():
+            tail_wait = _optional_tail_wait_remaining()
+            if tail_wait is not None:
+                if tail_wait <= 0:
+                    return True
+                kind, index, target = result_queue.get(timeout=tail_wait)
+            elif _can_start_stall_speculation():
                 kind, index, target = result_queue.get(
                     timeout=_FALLBACK_MANIFEST_STALL_SPECULATION_SECONDS
                 )
             else:
                 kind, index, target = result_queue.get()
         except Empty:
+            if _optional_tail_wait_remaining() is not None:
+                return True
             _start_candidate_fetch()
             continue
         active[0] -= 1
