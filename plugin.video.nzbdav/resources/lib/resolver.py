@@ -1198,6 +1198,8 @@ _SUBMIT_QUEUE_PROBE_FAST_INTERVAL_SECONDS = 0.05
 _SUBMIT_QUEUE_PROBE_FAST_WINDOW_SECONDS = 2.0
 _SUBMIT_QUEUE_PROBE_INTERVAL_SECONDS = 0.25
 _SUBMIT_HISTORY_PROBE_PARALLEL_GRACE_SECONDS = 0.01
+_COMPLETED_NO_VIDEO_FAST_RECHECKS = 2
+_COMPLETED_NO_VIDEO_RECHECK_DELAY_SECONDS = 0.1
 
 
 def _job_nzo_id(match):
@@ -2142,7 +2144,28 @@ def _handle_job_status(job_status, nzo_id, dialog, last_status):
     return False, last_status
 
 
-def _handle_history_result(history, title, no_video_retries, max_no_video_retries):
+def _find_completed_video_stream_with_rechecks(webdav_folder, monitor=None):
+    """Return a completed WebDAV stream, briefly rechecking symlink visibility."""
+    video_path, stream_url, stream_headers = _find_video_stream_for_folder(
+        webdav_folder
+    )
+    if video_path or monitor is None:
+        return video_path, stream_url, stream_headers
+
+    for _attempt in range(_COMPLETED_NO_VIDEO_FAST_RECHECKS):
+        if monitor.waitForAbort(_COMPLETED_NO_VIDEO_RECHECK_DELAY_SECONDS):
+            return None, None, None
+        video_path, stream_url, stream_headers = _find_video_stream_for_folder(
+            webdav_folder
+        )
+        if video_path:
+            return video_path, stream_url, stream_headers
+    return None, None, None
+
+
+def _handle_history_result(
+    history, title, no_video_retries, max_no_video_retries, monitor=None
+):
     """Handle history-based completion and failure states.
 
     Use ``.get(...)`` for ``status`` and ``storage`` instead of bracket
@@ -2176,8 +2199,8 @@ def _handle_history_result(history, title, no_video_retries, max_no_video_retrie
     if not storage:
         return False, None, None, no_video_retries
     webdav_folder = _storage_to_webdav_path(storage)
-    video_path, stream_url, stream_headers = _find_video_stream_for_folder(
-        webdav_folder
+    video_path, stream_url, stream_headers = _find_completed_video_stream_with_rechecks(
+        webdav_folder, monitor=monitor
     )
     if video_path:
         _remember_webdav_stream_content_length_hint(stream_url, video_path)
@@ -2320,7 +2343,11 @@ def _poll_until_ready(
 
         should_stop, stream_url, stream_headers, no_video_retries = (
             _handle_history_result(
-                history, title, no_video_retries, max_no_video_retries
+                history,
+                title,
+                no_video_retries,
+                max_no_video_retries,
+                monitor=monitor,
             )
         )
         if stream_url:

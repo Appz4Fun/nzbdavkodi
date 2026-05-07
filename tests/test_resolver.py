@@ -3749,6 +3749,54 @@ def test_poll_until_ready_no_video_after_retries(
     mock_gui.Dialog.return_value.ok.assert_called_once()
 
 
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.get_webdav_stream_url_for_path")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.find_video_file")
+@patch(
+    "resources.lib.resolver.get_job_history",
+    return_value={
+        "status": "Completed",
+        "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/movie",
+    },
+)
+@patch("resources.lib.resolver.get_job_status", return_value=None)
+@patch("resources.lib.resolver.submit_nzb", return_value=("nzo_xyz", None))
+@patch("resources.lib.resolver.xbmc")
+def test_poll_until_ready_rechecks_completed_webdav_before_full_poll_interval(
+    mock_xbmc,
+    _mock_submit,
+    _mock_status,
+    _mock_history,
+    mock_find_video,
+    _mock_gui,
+    mock_stream_url,
+    _mock_find_completed,
+):
+    """A just-completed job should not wait a full poll tick for WebDAV visibility."""
+    monitor = MagicMock()
+    monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
+    mock_xbmc.Monitor.return_value = monitor
+    mock_find_video.side_effect = [
+        None,
+        "/content/uncategorized/movie/movie.mkv",
+    ]
+    mock_stream_url.return_value = (
+        "http://webdav/content/uncategorized/movie/movie.mkv",
+        {"Authorization": "Basic primary"},
+    )
+
+    started = _time.perf_counter()
+    url, headers = _poll_until_ready(
+        "http://hydra/nzb", "movie", _make_dialog(), 1, 3600
+    )
+    elapsed = _time.perf_counter() - started
+
+    assert url == "http://webdav/content/uncategorized/movie/movie.mkv"
+    assert headers == {"Authorization": "Basic primary"}
+    assert elapsed < 0.3, "completed WebDAV recheck waited {:.3f}s".format(elapsed)
+
+
 # --- HTTP error classification tests for the submit retry loop ---
 
 
