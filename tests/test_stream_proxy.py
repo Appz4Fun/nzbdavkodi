@@ -7,6 +7,7 @@ import io
 import json
 import subprocess
 import threading
+import time
 from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
 
@@ -6125,6 +6126,67 @@ def test_serve_proxy_switches_to_valid_fallback_source_mid_response():
     assert mock_stream.call_args_list[1][0][1:3] == (0, 9)
     mock_notify.assert_called_once()
     assert "fallback stream" in mock_notify.call_args[0][1].lower()
+
+
+def test_serve_proxy_starts_fallback_stream_before_slow_switch_notification():
+    """A slow Kodi notification must not delay the first fallback read."""
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_OK,
+        _UPSTREAM_RANGE_UPSTREAM_ERROR,
+    )
+
+    ctx = {
+        "remote_url": "http://webdav/primary.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 10,
+        "fallback_sources": [
+            {
+                "nzo_id": "nzo2",
+                "stream_url": "http://webdav/fallback.mkv",
+                "stream_headers": {"Authorization": "Basic fallback"},
+                "content_length": 10,
+                "validated": True,
+                "failed": False,
+            }
+        ],
+        "fallback_switch_count": 0,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-9")
+    timings = {}
+
+    def stream_range(stream_ctx, _start, _end, contract_mode=None):
+        _ = contract_mode
+        if "upstream_error_returned_at" not in timings:
+            timings["upstream_error_returned_at"] = time.perf_counter()
+            return _UPSTREAM_RANGE_UPSTREAM_ERROR, 0
+        timings["fallback_stream_started_at"] = time.perf_counter()
+        assert stream_ctx["remote_url"] == "http://webdav/fallback.mkv"
+        return _UPSTREAM_RANGE_OK, 10
+
+    def slow_notify(_title, _message):
+        time.sleep(0.12)
+
+    with patch.object(
+        handler,
+        "_stream_upstream_range",
+        side_effect=stream_range,
+    ), patch.object(
+        handler,
+        "_select_live_fallback_source",
+        return_value=ctx["fallback_sources"][0],
+    ), patch(
+        "resources.lib.stream_proxy._notify",
+        side_effect=slow_notify,
+    ):
+        handler._serve_proxy(ctx)
+
+    cutover_delay = (
+        timings["fallback_stream_started_at"] - timings["upstream_error_returned_at"]
+    )
+    assert (
+        cutover_delay < 0.06
+    ), "fallback stream start waited {:.3f}s after upstream error".format(cutover_delay)
 
 
 def test_select_live_fallback_rejects_same_length_different_fingerprint():

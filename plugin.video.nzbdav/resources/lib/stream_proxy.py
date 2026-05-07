@@ -3150,6 +3150,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
         ctx["passthrough_stall_detected"] = False
 
         active_ctx = ctx
+        fallback_notification_pending = False
 
         try:
             while current <= end:
@@ -3160,6 +3161,9 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 _update_session_recovery_state(self.server, ctx, streamed=written)
                 _record_density_window(density_window, "progress", written)
                 current += written
+                if fallback_notification_pending and written:
+                    fallback_notification_pending = False
+                    _notify_fallback_switch_once(ctx)
                 if current > end:
                     return
 
@@ -3194,7 +3198,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
                             ),
                             xbmc.LOGWARNING,
                         )
-                        _notify_fallback_switch_once(ctx)
+                        fallback_notification_pending = True
                         continue
                     if ctx.get("fallback_sources"):
                         terminal_reason = "fallback_exhausted"
