@@ -487,17 +487,6 @@ def test_route_test_prowlarr_resolves_handle(mock_test, mock_resolved):
 
 
 @patch("xbmcplugin.setResolvedUrl")
-@patch("resources.lib.router._test_webdav_connection")
-def test_route_test_webdav_resolves_handle(mock_test, mock_resolved):
-    """/test_webdav must resolve the handle after running."""
-    route(["plugin://plugin.video.nzbdav/test_webdav", "11", ""])
-    mock_test.assert_called_once()
-    assert mock_resolved.called
-    assert mock_resolved.call_args[0][0] == 11
-    assert mock_resolved.call_args[0][1] is False
-
-
-@patch("xbmcplugin.setResolvedUrl")
 def test_route_test_direct_indexers_resolves_handle(mock_resolved):
     """Route /test_direct_indexers and resolve the action handle."""
     test_configured = MagicMock(return_value=(1, 1, []))

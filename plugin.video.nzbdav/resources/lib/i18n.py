@@ -80,23 +80,6 @@ _FALLBACK_STRINGS = {
     30180: "NZBFinder",
     30181: "NZBPlanet",
     30182: "DOGnzb",
-    30188: "Test WebDAV Connection",
-    30189: "WebDAV connection OK",
-    30190: "WebDAV authentication failed. Check credentials.",
-    30191: "WebDAV server error. Check server.",
-    30192: "WebDAV connection error. Check server.",
-    30160: "Install Player In Other Add-on",
-    30161: "Choose Player Folder",
-    30162: "No other player folders found",
-    30140: "Large non-MP4 stream mode",
-    30141: "Matroska remux (compatibility)",
-    30142: "fMP4 HLS (compatibility, experimental)",
-    30152: "Direct pass-through (default)",
-    30183: "Fallback Streams",
-    30184: "Submit duplicate releases as live fallbacks",
-    30185: "Maximum fallback releases",
-    30186: "Switched to fallback stream",
-    30187: "No known fallback matches found",
 }
 
 

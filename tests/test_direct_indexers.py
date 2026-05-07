@@ -125,12 +125,6 @@ def test_parse_results_reports_invalid_xml():
     assert error.startswith("Direct indexer returned an invalid response:")
 
 
-def test_direct_indexer_fanout_default_timeout_is_60s():
-    from resources.lib.direct_indexers import _DIRECT_FANOUT_TIMEOUT
-
-    assert _DIRECT_FANOUT_TIMEOUT == 60
-
-
 EMPTY_RSS = """<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2010/feeds/attributes/">
 <channel><newznab:response offset="0" total="0"/></channel>
@@ -179,7 +173,6 @@ def test_search_direct_indexers_movie_uses_imdb_when_present(
     assert "imdbid=tt0133093" in call_url
     assert "q=The+Matrix" not in call_url
     assert "apikey=geek-key" in call_url
-    assert mock_http.call_args.kwargs["timeout"] == 300
 
 
 @patch("resources.lib.direct_indexers.get_configured_indexers")

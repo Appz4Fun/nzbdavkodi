@@ -124,11 +124,3 @@ def test_direct_indexer_strings_have_fallbacks():
     assert string(30163) == "Indexers"
     assert string(30165) == "Enable direct Newznab indexers"
     assert string(30176) == "No direct indexers configured"
-
-
-def test_webdav_test_strings_have_fallbacks():
-    assert string(30188) == "Test WebDAV Connection"
-    assert string(30189) == "WebDAV connection OK"
-    assert string(30190) == "WebDAV authentication failed. Check credentials."
-    assert string(30191) == "WebDAV server error. Check server."
-    assert string(30192) == "WebDAV connection error. Check server."

@@ -9909,7 +9909,9 @@ def test_get_strict_contract_mode_maps_known_values_and_defaults_warn():
 def test_stream_upstream_range_warn_mode_streams_on_soft_contract_mismatch(mock_xbmc):
     import sys
 
-    from resources.lib.stream_proxy import _StreamHandler
+    from resources.lib.stream_proxy import (
+        _StreamHandler,
+    )
 
     ctx = {
         "remote_url": "http://host/movie.mkv",
@@ -9959,7 +9961,9 @@ def test_stream_upstream_range_enforce_streams_soft_contract_mismatch(mock_xbmc)
     """
     import sys
 
-    from resources.lib.stream_proxy import _StreamHandler
+    from resources.lib.stream_proxy import (
+        _StreamHandler,
+    )
 
     ctx = {
         "remote_url": "http://host/movie.mkv",
