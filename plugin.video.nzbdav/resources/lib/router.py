@@ -21,7 +21,7 @@ from resources.lib.http_util import format_size as _format_size
 from resources.lib.i18n import addon_name as _addon_name
 from resources.lib.i18n import fmt as _fmt
 from resources.lib.i18n import string as _string
-from resources.lib.nzbdav_api import get_completed_jobs
+from resources.lib.nzbdav_api import completed_jobs_lookup_done, get_completed_jobs
 
 # IMDB IDs are always `tt` + 7–9 digits. Reject anything else before making
 # outbound HTTP calls to IMDB's suggestion API.
@@ -416,6 +416,13 @@ def _tag_available(results):
     return completed
 
 
+def _completed_lookup_was_done(completed_jobs):
+    """Return whether picker-time completed-history lookup can be reused."""
+    return (isinstance(completed_jobs, dict) and bool(completed_jobs)) or (
+        completed_jobs_lookup_done(completed_jobs)
+    )
+
+
 def _lookup_episode_info(imdb, tmdb_id=""):
     """Look up show title and episode info from IMDB ID via TMDB API.
 
@@ -682,7 +689,7 @@ def _handle_play(handle, params):
         completed_job = selected.get("_completed_job")
         if completed_job:
             resolver_params["_completed_job"] = completed_job
-        elif isinstance(completed_jobs, dict) and completed_jobs:
+        elif _completed_lookup_was_done(completed_jobs):
             resolver_params["_completed_job_lookup_done"] = True
         resolve(
             handle,
@@ -854,7 +861,7 @@ def _handle_search(handle, params):
         completed_job = selected.get("_completed_job")
         if completed_job:
             resolver_params["_completed_job"] = completed_job
-        elif isinstance(completed_jobs, dict) and completed_jobs:
+        elif _completed_lookup_was_done(completed_jobs):
             resolver_params["_completed_job_lookup_done"] = True
         resolve_and_play(selected["link"], selected["title"], params=resolver_params)
 

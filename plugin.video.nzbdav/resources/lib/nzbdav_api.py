@@ -623,6 +623,20 @@ def find_queued_by_names(names):
     return found
 
 
+class _CompletedJobs(dict):
+    """Completed-history mapping plus whether the history lookup succeeded."""
+
+    def __init__(self, *args, **kwargs):
+        lookup_done = kwargs.pop("lookup_done", False)
+        super().__init__(*args, **kwargs)
+        self._lookup_done = bool(lookup_done)
+
+
+def completed_jobs_lookup_done(completed_jobs):
+    """Return whether a completed-jobs mapping came from a successful lookup."""
+    return getattr(completed_jobs, "_lookup_done", False) is True
+
+
 def get_completed_jobs():
     """Fetch completed downloads from nzbdav history keyed by exact name.
 
@@ -666,7 +680,7 @@ def get_completed_jobs():
         return {}
 
     slots = _response_slots(response, "history")
-    jobs = {}
+    jobs = _CompletedJobs(lookup_done=True)
     for slot in slots:
         if slot.get("status") == "Completed" and slot.get("name"):
             jobs[slot["name"]] = _completed_job_from_slot(slot)

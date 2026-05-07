@@ -11,6 +11,7 @@ from resources.lib.nzbdav_api import (
     _get_submit_timeout,
     _sanitize_server_message,
     cancel_job,
+    completed_jobs_lookup_done,
     find_queued_by_name,
     get_completed_jobs,
     get_completed_names,
@@ -638,6 +639,31 @@ def test_get_completed_jobs_returns_completed_job_map(mock_http, mock_settings):
             "nzo_id": "SABnzbd_nzo_a",
         }
     }
+    assert completed_jobs_lookup_done(jobs) is True
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_get_completed_jobs_marks_successful_empty_lookup(mock_http, mock_settings):
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.return_value = json.dumps({"history": {"slots": []}})
+
+    jobs = get_completed_jobs()
+
+    assert jobs == {}
+    assert completed_jobs_lookup_done(jobs) is True
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_get_completed_jobs_does_not_mark_failed_lookup_done(mock_http, mock_settings):
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.side_effect = Exception("Connection refused")
+
+    jobs = get_completed_jobs()
+
+    assert jobs == {}
+    assert completed_jobs_lookup_done(jobs) is False
 
 
 @patch("resources.lib.nzbdav_api._get_settings")

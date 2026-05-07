@@ -3,6 +3,7 @@
 
 import itertools
 import threading
+import time as _time
 from unittest.mock import MagicMock, patch
 from urllib.parse import urlencode
 
@@ -1190,6 +1191,70 @@ def test_handle_play_marks_completed_history_miss_from_picker_snapshot(
     args, _kwargs = mock_resolve.call_args
     assert args[1]["_completed_job_lookup_done"] is True
     assert "_completed_job" not in args[1]
+
+
+@patch("resources.lib.resolver._start_direct_playback_service_config_lookup")
+@patch("resources.lib.resolver._get_poll_settings", return_value=(1, 60))
+@patch("resources.lib.resolver.find_completed_by_name")
+@patch("resources.lib.resolver._submit_nzb_with_retries")
+@patch("xbmcaddon.Addon")
+@patch("xbmcplugin.setResolvedUrl")
+@patch("xbmcgui.ListItem")
+@patch("resources.lib.results_dialog.show_results_dialog")
+@patch("resources.lib.filter.filter_results")
+@patch("resources.lib.router._search_all_providers")
+@patch("resources.lib.router.get_completed_jobs")
+@patch("resources.lib.cache.get_cached", return_value=None)
+def test_handle_play_empty_completed_snapshot_skips_post_picker_history_lookup(
+    mock_cache,
+    mock_completed_jobs,
+    mock_search,
+    mock_filter,
+    mock_dialog,
+    mock_listitem,
+    mock_resolved,
+    mock_addon,
+    mock_submit,
+    mock_find_completed,
+    mock_poll_settings,
+    mock_service_config,
+):
+    """A successful empty picker snapshot should not delay selected-result submit."""
+
+    class SuccessfulCompletedJobs(dict):
+        _lookup_done = True
+
+    _install_progress_dialog_that_wont_cancel()
+    mock_addon.return_value.getSetting.side_effect = _stub_setting("false")
+    mock_listitem.return_value = "li"
+    mock_service_config.return_value = {"done": threading.Event()}
+    mock_service_config.return_value["done"].set()
+    chosen = {"title": "Matrix.1999.mkv", "link": "http://hydra/nzb/x"}
+    mock_completed_jobs.return_value = SuccessfulCompletedJobs()
+    mock_search.return_value = ([chosen], None)
+    mock_filter.return_value = ([chosen], [chosen])
+    mock_dialog.return_value = chosen
+
+    def slow_completed_lookup(_title):
+        _time.sleep(0.12)
+
+    submit_started = []
+    mock_find_completed.side_effect = slow_completed_lookup
+    mock_submit.side_effect = (
+        lambda *_args, **_kwargs: submit_started.append(_time.perf_counter()) or None
+    )
+
+    started = _time.perf_counter()
+    _handle_play(5, {"type": "movie", "title": "The Matrix", "year": "1999"})
+    elapsed_to_submit = submit_started[0] - started
+
+    assert (
+        elapsed_to_submit < 0.05
+    ), "post-picker submit waited {:.3f}s on a repeated history miss".format(
+        elapsed_to_submit
+    )
+    mock_find_completed.assert_not_called()
+    mock_resolved.assert_called_once_with(5, False, "li")
 
 
 @patch("resources.lib.router.get_completed_jobs")
