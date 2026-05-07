@@ -51,6 +51,8 @@ _FALLBACK_SHUTDOWN_JOIN_TIMEOUT = 10
 _POLL_NEAR_COMPLETE_PERCENTAGE = 99.0
 _POLL_NEAR_COMPLETE_HISTORY_GRACE_SECONDS = 0.1
 _POLL_FULL_PROGRESS_HISTORY_GRACE_SECONDS = 0.14
+_POLL_NEAR_COMPLETE_FAST_REPOLL_SECONDS = 0.2
+_POLL_NEAR_COMPLETE_FAST_REPOLL_COUNT = 5
 # HTTP status codes the submit retry loop treats as transient and worth
 # retrying. RFC 9110 explicitly calls 408 retry-friendly ("client may
 # assume the server closed the connection due to inactivity and retry").
@@ -976,6 +978,18 @@ def _queue_status_history_grace_seconds(job_status):
     if percentage >= 100.0:
         return _POLL_FULL_PROGRESS_HISTORY_GRACE_SECONDS
     return _POLL_NEAR_COMPLETE_HISTORY_GRACE_SECONDS
+
+
+def _poll_wait_after_status(job_status, poll_interval, fast_repolls_used):
+    """Return the next poll wait and updated near-complete fast-repoll count."""
+    if _queue_status_is_nearly_complete(job_status):
+        if fast_repolls_used < _POLL_NEAR_COMPLETE_FAST_REPOLL_COUNT:
+            return (
+                min(poll_interval, _POLL_NEAR_COMPLETE_FAST_REPOLL_SECONDS),
+                fast_repolls_used + 1,
+            )
+        return poll_interval, fast_repolls_used
+    return poll_interval, 0
 
 
 def _wait_for_nearly_complete_history(
@@ -2351,6 +2365,7 @@ def _poll_until_ready(
     iteration = 0
     no_video_retries = 0
     max_no_video_retries = 5
+    near_complete_fast_repolls = 0
 
     while True:
         iteration += 1
@@ -2391,7 +2406,10 @@ def _poll_until_ready(
             # would show a vanished download for no apparent reason.
             return None, None
 
-        if monitor.waitForAbort(poll_interval):
+        wait_seconds, near_complete_fast_repolls = _poll_wait_after_status(
+            job_status, poll_interval, near_complete_fast_repolls
+        )
+        if monitor.waitForAbort(wait_seconds):
             # Kodi is shutting down
             xbmc.log("NZB-DAV: Kodi shutdown detected, aborting resolve", xbmc.LOGINFO)
             cancel_job(nzo_id)
