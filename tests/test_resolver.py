@@ -3729,7 +3729,11 @@ def test_poll_until_ready_repolls_full_progress_history_miss_before_full_tick(
     assert url == "http://webdav/movie.mkv"
     assert headers == {"Authorization": "x"}
     assert len(history_calls) == 2
-    assert elapsed < 0.45, "full-progress repoll waited {:.3f}s".format(elapsed)
+    history_gap = history_calls[1] - history_calls[0]
+    assert history_gap < 0.15, "full-progress history retry gap was {:.3f}s".format(
+        history_gap
+    )
+    assert elapsed < 0.25, "full-progress repoll waited {:.3f}s".format(elapsed)
 
 
 @patch("resources.lib.resolver.cancel_job")
