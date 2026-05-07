@@ -1312,6 +1312,7 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
     queue_hit_lock = threading.Lock()
     adopted_during_submit = [False]
     queue_stop = threading.Event()
+    first_queue_probe_done = threading.Event()
 
     def _current_adoption_hit():
         with queue_hit_lock:
@@ -1334,6 +1335,7 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
         if queue_stop.wait(_SUBMIT_QUEUE_PROBE_INITIAL_DELAY_SECONDS):
             return
         probe_started = time.monotonic()
+        first_probe = True
         while not queue_stop.is_set() and not submit_done.is_set():
             try:
                 match = find_queued_by_name(title)
@@ -1343,8 +1345,13 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
                     xbmc.LOGWARNING,
                 )
                 match = None
-            if _record_adoption_hit(_job_nzo_id(match)):
-                return
+            try:
+                if _record_adoption_hit(_job_nzo_id(match)):
+                    return
+            finally:
+                if first_probe:
+                    first_probe = False
+                    first_queue_probe_done.set()
             elapsed = time.monotonic() - probe_started
             interval = (
                 _SUBMIT_QUEUE_PROBE_FAST_INTERVAL_SECONDS
@@ -1354,11 +1361,24 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
             if queue_stop.wait(interval):
                 return
 
+    def _wait_for_history_probe_start():
+        deadline = time.monotonic() + max(
+            0, _SUBMIT_HISTORY_PROBE_PARALLEL_GRACE_SECONDS
+        )
+        while not queue_stop.is_set() and not _current_adoption_hit():
+            if first_queue_probe_done.is_set():
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return True
+            first_queue_probe_done.wait(min(0.01, remaining))
+        return False
+
     def _history_probe_worker():
         # Start shortly after the queue probe so an immediate queue hit wins
-        # without a history request, but keep slow history misses from blocking
-        # the fast queue cadence once the first queue probe misses.
-        if queue_stop.wait(_SUBMIT_HISTORY_PROBE_PARALLEL_GRACE_SECONDS):
+        # without a history request. If the first queue probe misses quickly,
+        # do not make completed-history adoption wait out the full grace.
+        if not _wait_for_history_probe_start():
             return
         while (
             not queue_stop.is_set()
