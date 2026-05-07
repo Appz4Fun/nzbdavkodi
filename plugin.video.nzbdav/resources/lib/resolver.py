@@ -17,6 +17,7 @@ import xbmcplugin
 import xbmcvfs
 
 from resources.lib.fallback_streams import (
+    FALLBACK_CANDIDATES_DISABLED,
     build_fallback_job_name,
     build_prepare_fallback_payload,
 )
@@ -1887,12 +1888,17 @@ def _prefetch_fallback_candidate_loader(candidate_loader):
         return None
 
     done = threading.Event()
-    state = {"candidates": []}
+    state = {"candidates": [], "disabled": False}
     errors = []
 
     def _worker():
         try:
-            state["candidates"] = list(candidate_loader() or [])
+            loaded = candidate_loader()
+            if loaded is FALLBACK_CANDIDATES_DISABLED:
+                state["disabled"] = True
+                state["candidates"] = []
+            else:
+                state["candidates"] = list(loaded or [])
         except Exception as error:  # pylint: disable=broad-except
             errors.append(error)
         finally:
@@ -1910,6 +1916,8 @@ def _prefetch_fallback_candidate_loader(candidate_loader):
         done.wait()
         if errors:
             raise errors[0]
+        if state["disabled"]:
+            return FALLBACK_CANDIDATES_DISABLED
         return list(state["candidates"])
 
     return _load_prefetched_candidates
@@ -1943,9 +1951,15 @@ def _start_fallback_submit_worker(candidates=None, candidate_loader=None):
     def _worker():
         try:
             active_candidates = candidate_list
+            candidate_lookup_disabled = False
             if candidate_loader is not None:
                 try:
-                    active_candidates = list(candidate_loader() or [])
+                    loaded_candidates = candidate_loader()
+                    if loaded_candidates is FALLBACK_CANDIDATES_DISABLED:
+                        candidate_lookup_disabled = True
+                        active_candidates = []
+                    else:
+                        active_candidates = list(loaded_candidates or [])
                 except Exception as error:  # pylint: disable=broad-except
                     xbmc.log(
                         "NZB-DAV: Fallback candidate lookup failed: {}".format(error),
@@ -1955,7 +1969,7 @@ def _start_fallback_submit_worker(candidates=None, candidate_loader=None):
             if state["stop"].is_set():
                 return
             if not active_candidates:
-                if _fallback_streams_enabled():
+                if not candidate_lookup_disabled and _fallback_streams_enabled():
                     try:
                         _notify(_addon_name(), _string(30187), 4000)
                     except (RuntimeError, OSError):

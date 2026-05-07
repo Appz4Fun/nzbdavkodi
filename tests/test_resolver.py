@@ -1847,6 +1847,14 @@ def test_prefetch_fallback_candidate_loader_starts_immediately_and_caches_result
     assert calls == ["load"]
 
 
+def test_prefetch_fallback_candidate_loader_preserves_disabled_sentinel():
+    from resources.lib.fallback_streams import FALLBACK_CANDIDATES_DISABLED
+
+    wrapped = _prefetch_fallback_candidate_loader(lambda: FALLBACK_CANDIDATES_DISABLED)
+
+    assert wrapped() is FALLBACK_CANDIDATES_DISABLED
+
+
 def test_fallback_submit_jobs_snapshot_waits_for_stopping_worker_final_jobs():
     """Shutdown snapshots should include jobs recorded while worker exits."""
     stop_event = threading.Event()
@@ -2015,6 +2023,27 @@ def test_fallback_submit_worker_does_not_notify_no_candidates_when_disabled(
     mock_xbmcaddon.Addon.return_value.getSetting.return_value = "false"
 
     state = _start_fallback_submit_worker(candidate_loader=lambda: [])
+
+    assert state["finished"].wait(timeout=2)
+    mock_submit_fallbacks.assert_not_called()
+    mock_notify.assert_not_called()
+
+
+@patch(
+    "resources.lib.resolver._fallback_streams_enabled",
+    side_effect=AssertionError("disabled loader should not re-check settings"),
+)
+@patch("resources.lib.resolver._notify")
+@patch("resources.lib.resolver._submit_fallback_candidates")
+def test_fallback_submit_worker_does_not_notify_when_loader_reports_disabled(
+    mock_submit_fallbacks, mock_notify, _mock_enabled
+):
+    from resources.lib.fallback_streams import FALLBACK_CANDIDATES_DISABLED
+    from resources.lib.resolver import _start_fallback_submit_worker
+
+    state = _start_fallback_submit_worker(
+        candidate_loader=lambda: FALLBACK_CANDIDATES_DISABLED
+    )
 
     assert state["finished"].wait(timeout=2)
     mock_submit_fallbacks.assert_not_called()

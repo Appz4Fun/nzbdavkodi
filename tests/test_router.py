@@ -850,12 +850,15 @@ def test_fallback_candidate_loader_reuses_distinct_peer_scan_for_prefetch(
 def test_fallback_candidate_loader_skips_prefetch_when_fallback_disabled(
     _mock_settings, mock_prefetch
 ):
+    from resources.lib.fallback_streams import FALLBACK_CANDIDATES_DISABLED
+
     selected = _duplicate_release("http://hydra/nzb/selected")
     related = _duplicate_release("http://hydra/nzb/related")
 
     loader = _fallback_candidate_loader_for_selection(selected, [selected, related])
 
-    assert loader is None
+    assert callable(loader)
+    assert loader() is FALLBACK_CANDIDATES_DISABLED
     mock_prefetch.assert_not_called()
 
 
@@ -883,6 +886,38 @@ def test_fallback_candidate_loader_defers_prefetch_scan_until_loader_runs(
     assert callable(loader)
     mock_prefetch.assert_not_called()
     assert loader() == [related]
+
+
+def test_fallback_candidate_loader_defers_settings_until_loader_runs():
+    """Kodi settings reads should not block the selected-result submit path."""
+    selected = _duplicate_release("http://hydra/nzb/selected")
+    related = _duplicate_release("http://hydra/nzb/related")
+
+    def slow_settings():
+        _time.sleep(0.12)
+        return (True, 5)
+
+    def attach_selection(selected_result, _pool, **_kwargs):
+        selected_result["_fallback_candidates"] = [related]
+
+    with patch(
+        "resources.lib.router.fallback_candidate_prefetch_settings",
+        side_effect=slow_settings,
+    ) as mock_settings, patch(
+        "resources.lib.router.attach_fallback_candidates_for_selection",
+        side_effect=attach_selection,
+    ):
+        started = _time.perf_counter()
+        loader = _fallback_candidate_loader_for_selection(selected, [selected, related])
+        elapsed = _time.perf_counter() - started
+
+        assert callable(loader)
+        assert (
+            elapsed < 0.05
+        ), "fallback settings delayed loader construction by {:.3f}s".format(elapsed)
+        mock_settings.assert_not_called()
+        assert loader() == [related]
+        mock_settings.assert_called_once()
 
 
 @patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
@@ -1366,7 +1401,10 @@ def test_handle_play_picker_forwards_fallback_candidates(
     loader = args[1]["_fallback_candidate_loader"]
     assert callable(loader)
 
-    assert loader() == [duplicate, oversized]
+    with patch(
+        "resources.lib.fallback_streams._fallback_settings", return_value=(True, 2)
+    ):
+        assert loader() == [duplicate, oversized]
     mock_attach.assert_called_once()
     assert mock_attach.call_args.args[0] is primary
     assert duplicate["_fallback_candidates"] == [primary, oversized]

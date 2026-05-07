@@ -316,6 +316,7 @@ _TITLE_TOKEN_CACHE_TITLE_KEY = "_fallback_title_tokens_title"
 _TITLE_TOKEN_CACHE_VALUE_KEY = "_fallback_title_tokens"
 _PREFETCH_PROOF_KEY = "_fallback_prefetch_gate_proof"
 _SELECTION_POOL_FIRST_PEER_KEY = "_fallback_selection_pool_first_peer"
+FALLBACK_CANDIDATES_DISABLED = object()
 
 
 def _title_tokens(result):

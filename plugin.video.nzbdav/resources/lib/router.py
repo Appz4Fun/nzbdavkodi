@@ -9,6 +9,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 import xbmc
 
 from resources.lib.fallback_streams import (
+    FALLBACK_CANDIDATES_DISABLED,
     attach_fallback_candidates_for_selection,
     cached_selection_pool_first_peer,
     fallback_candidate_prefetch_enabled,
@@ -237,14 +238,16 @@ def _fallback_candidate_loader_for_selection(selected, results):
         return None
     if not selection_pool_may_have_fallback_peer(selected, results):
         return None
-    fallback_settings = fallback_candidate_prefetch_settings()
-    if not fallback_candidate_prefetch_enabled(fallback_settings):
-        return None
     # Keep title/profile matching in the returned loader. Resolver starts that
     # loader in the background, while this function blocks post-picker submit.
+    # Read Kodi settings inside that loader so slow settings access is hidden
+    # behind primary submit/adoption instead of delaying the selected result.
     first_peer = cached_selection_pool_first_peer(selected, results)
 
     def _load_fallback_candidates():
+        fallback_settings = fallback_candidate_prefetch_settings()
+        if not fallback_candidate_prefetch_enabled(fallback_settings):
+            return FALLBACK_CANDIDATES_DISABLED
         attach_fallback_candidates_for_selection(
             selected,
             _selection_pool_with_peer_first(selected, results, first_peer),
