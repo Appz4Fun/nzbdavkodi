@@ -1172,6 +1172,22 @@ def _existing_completed_stream(
     )
 
 
+def _picker_completed_stream(title, params, on_existing_completed=None):
+    """Return a picker-provided completed stream before opening progress UI."""
+    if not params:
+        return None
+    has_hint = "_completed_job" in params
+    lookup_done = bool(params.get("_completed_job_lookup_done"))
+    if not has_hint and not lookup_done:
+        return None
+    return _existing_completed_stream(
+        title,
+        on_existing_completed=on_existing_completed,
+        completed_job_hint=params.get("_completed_job"),
+        completed_job_lookup_done=lookup_done,
+    )
+
+
 # UI update cadence while submit_nzb is running on a background thread.
 # Kept slower than adoption checks so the progress dialog looks live without
 # redrawing for every queue-probe poll.
@@ -2357,9 +2373,6 @@ def resolve(handle, params):
 
     dialog = None
     try:
-        poll_interval, download_timeout = _get_poll_settings()
-        dialog = xbmcgui.DialogProgress()
-        dialog.create(_addon_name(), _string(30097))
         fallback_candidates = params.get("_fallback_candidates", [])
         fallback_candidate_loader = _prefetch_fallback_candidate_loader(
             params.get("_fallback_candidate_loader")
@@ -2380,17 +2393,28 @@ def resolve(handle, params):
                     candidate_loader=fallback_candidate_loader,
                 )
 
-        stream_url, stream_headers = _poll_until_ready(
-            nzb_url,
-            title,
-            dialog,
-            poll_interval,
-            download_timeout,
-            on_primary_submitted=_start_fallback_after_primary,
-            on_existing_completed=_start_playback_cleanup_once,
-            completed_job_hint=params.get("_completed_job"),
-            completed_job_lookup_done=bool(params.get("_completed_job_lookup_done")),
+        completed_stream = _picker_completed_stream(
+            title, params, on_existing_completed=_start_playback_cleanup_once
         )
+        if completed_stream is not None:
+            stream_url, stream_headers = completed_stream
+        else:
+            poll_interval, download_timeout = _get_poll_settings()
+            dialog = xbmcgui.DialogProgress()
+            dialog.create(_addon_name(), _string(30097))
+            stream_url, stream_headers = _poll_until_ready(
+                nzb_url,
+                title,
+                dialog,
+                poll_interval,
+                download_timeout,
+                on_primary_submitted=_start_fallback_after_primary,
+                on_existing_completed=_start_playback_cleanup_once,
+                completed_job_hint=params.get("_completed_job"),
+                completed_job_lookup_done=bool(
+                    params.get("_completed_job_lookup_done")
+                ),
+            )
         if stream_url:
             if fallback_state is None:
                 _start_fallback_after_primary(None)
@@ -2443,12 +2467,10 @@ def resolve_and_play(nzb_url, title, params=None):
     playback_cleanup_state = None
     playback_service_config_state = None
     try:
-        poll_interval, download_timeout = _get_poll_settings()
-        dialog = xbmcgui.DialogProgress()
-        dialog.create(_addon_name(), _string(30097))
-        fallback_candidates = (params or {}).get("_fallback_candidates", [])
+        resolve_params = params or {}
+        fallback_candidates = resolve_params.get("_fallback_candidates", [])
         fallback_candidate_loader = _prefetch_fallback_candidate_loader(
-            (params or {}).get("_fallback_candidate_loader")
+            resolve_params.get("_fallback_candidate_loader")
         )
         playback_service_config_state = _start_direct_playback_service_config_lookup()
 
@@ -2466,19 +2488,28 @@ def resolve_and_play(nzb_url, title, params=None):
                     candidate_loader=fallback_candidate_loader,
                 )
 
-        stream_url, stream_headers = _poll_until_ready(
-            nzb_url,
-            title,
-            dialog,
-            poll_interval,
-            download_timeout,
-            on_primary_submitted=_start_fallback_after_primary,
-            on_existing_completed=_start_playback_cleanup_once,
-            completed_job_hint=(params or {}).get("_completed_job"),
-            completed_job_lookup_done=bool(
-                (params or {}).get("_completed_job_lookup_done")
-            ),
+        completed_stream = _picker_completed_stream(
+            title, resolve_params, on_existing_completed=_start_playback_cleanup_once
         )
+        if completed_stream is not None:
+            stream_url, stream_headers = completed_stream
+        else:
+            poll_interval, download_timeout = _get_poll_settings()
+            dialog = xbmcgui.DialogProgress()
+            dialog.create(_addon_name(), _string(30097))
+            stream_url, stream_headers = _poll_until_ready(
+                nzb_url,
+                title,
+                dialog,
+                poll_interval,
+                download_timeout,
+                on_primary_submitted=_start_fallback_after_primary,
+                on_existing_completed=_start_playback_cleanup_once,
+                completed_job_hint=resolve_params.get("_completed_job"),
+                completed_job_lookup_done=bool(
+                    resolve_params.get("_completed_job_lookup_done")
+                ),
+            )
         if stream_url:
             if fallback_state is None:
                 _start_fallback_after_primary(None)

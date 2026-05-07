@@ -1429,6 +1429,75 @@ def test_resolve_uses_picker_completed_job_hint_without_history_lookup(
     ), "picker completed hint still paid history lookup {:.3f}s".format(elapsed)
 
 
+@patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
+@patch("resources.lib.resolver._finish_direct_playback")
+@patch("resources.lib.resolver._wait_direct_playback_prepare")
+@patch("resources.lib.resolver._start_direct_playback_prepare")
+@patch("resources.lib.resolver._start_fallback_submit_worker")
+@patch("resources.lib.resolver._submit_nzb_with_retries")
+@patch("resources.lib.resolver.get_webdav_stream_url_for_path")
+@patch("resources.lib.resolver.find_video_file")
+@patch("resources.lib.resolver.find_completed_by_name")
+@patch("resources.lib.resolver._clear_kodi_playback_state")
+@patch("resources.lib.resolver.xbmc")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver._get_poll_settings")
+def test_resolve_picker_completed_hint_skips_progress_dialog_startup_latency(
+    mock_poll_settings,
+    mock_gui,
+    mock_xbmc,
+    _mock_clear_state,
+    mock_find_completed,
+    mock_find_video,
+    mock_stream_url,
+    mock_submit,
+    mock_start_fallback,
+    mock_start_prepare,
+    mock_wait_prepare,
+    mock_finish_playback,
+    _mock_snapshot,
+):
+    mock_poll_settings.return_value = (2, 60)
+    mock_submit.side_effect = AssertionError("completed picker hint should skip submit")
+    mock_start_fallback.return_value = {"state": "fallback"}
+    mock_start_prepare.return_value = {"state": "prepare"}
+    mock_wait_prepare.return_value = {"state": "prepared"}
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    mock_find_video.return_value = "/content/uncategorized/movie/movie.mkv"
+    mock_stream_url.return_value = (
+        "http://webdav/content/primary/movie.mkv",
+        {"Authorization": "Basic primary"},
+    )
+
+    def slow_dialog_progress():
+        _time.sleep(0.12)
+        return MagicMock()
+
+    mock_gui.DialogProgress.side_effect = slow_dialog_progress
+
+    started = _time.perf_counter()
+    resolve(
+        1,
+        {
+            "nzburl": "http://hydra/getnzb/primary",
+            "title": "movie.mkv",
+            "_fallback_candidates": [],
+            "_completed_job": {
+                "status": "Completed",
+                "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/movie",
+                "name": "movie.mkv",
+                "nzo_id": "SABnzbd_nzo_done",
+            },
+        },
+    )
+    elapsed = _time.perf_counter() - started
+
+    mock_find_completed.assert_not_called()
+    mock_finish_playback.assert_called_once()
+    assert elapsed < 0.08, "completed hint paid dialog startup {:.3f}s".format(elapsed)
+    mock_gui.DialogProgress.assert_not_called()
+
+
 @patch("resources.lib.webdav.urlopen")
 @patch("resources.lib.webdav._get_settings")
 def test_completed_history_reuses_webdav_settings_for_stream_url(
