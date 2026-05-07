@@ -2994,6 +2994,52 @@ def test_prepare_stream_clears_previous_sessions():
     assert len(sp._server.stream_sessions) == 1
 
 
+def test_prepare_stream_does_not_block_new_url_on_old_ffmpeg_wait():
+    """Old ffmpeg teardown must not delay the next post-picker proxy URL."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_sessions = {}
+    sp._server.pending_stream_contexts = {}
+    sp._context_lock = threading.RLock()
+    sp.port = 9999
+
+    with patch.object(sp, "_get_content_length", return_value=100000):
+        sp.prepare_stream("http://host/one.mkv")
+    old_session = next(iter(sp._server.stream_sessions.values()))
+
+    wait_entered = threading.Event()
+    release_wait = threading.Event()
+
+    def slow_wait(timeout=None):
+        assert timeout == 5
+        wait_entered.set()
+        release_wait.wait(timeout=1)
+
+    old_proc = MagicMock()
+    old_proc.wait.side_effect = slow_wait
+    old_session["active_ffmpeg"] = old_proc
+
+    timer = threading.Timer(0.18, release_wait.set)
+    timer.start()
+    started = time.perf_counter()
+    try:
+        with patch.object(sp, "_get_content_length", return_value=200000):
+            sp.prepare_stream("http://host/two.mkv")
+        elapsed = time.perf_counter() - started
+        assert old_proc.kill.called
+        assert wait_entered.wait(timeout=1)
+    finally:
+        release_wait.set()
+        timer.cancel()
+
+    assert elapsed < 0.08, "old ffmpeg wait blocked new proxy URL for {:.3f}s".format(
+        elapsed
+    )
+    assert len(sp._server.stream_sessions) == 1
+
+
 def test_clear_sessions_kills_all_ffmpegs():
     """StreamProxy.clear_sessions must kill every registered ffmpeg."""
     from resources.lib.stream_proxy import StreamProxy

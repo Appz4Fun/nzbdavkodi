@@ -5274,7 +5274,7 @@ class StreamProxy:
             self._thread.join(timeout=5)
             self._thread = None
 
-    def clear_sessions(self):
+    def clear_sessions(self, wait_for_process=True):
         """Tear down every registered session and kill its ffmpeg process.
 
         Called from:
@@ -5302,7 +5302,7 @@ class StreamProxy:
             if marker in seen:
                 continue
             seen.add(marker)
-            self._cleanup_session_or_defer(ctx)
+            self._cleanup_session_or_defer(ctx, wait_for_process=wait_for_process)
 
     def cleanup_session_by_id(self, session_id):
         """Tear down a single session by id, cleanup outside the lock.
@@ -5325,7 +5325,7 @@ class StreamProxy:
         if ctx is not None:
             self._cleanup_session_or_defer(ctx)
 
-    def _cleanup_session_or_defer(self, ctx):
+    def _cleanup_session_or_defer(self, ctx, wait_for_process=True):
         """Cleanup now, or wait until in-flight handlers release the ctx."""
         with self._context_lock:
             if ctx.get("_cleanup_started"):
@@ -5334,7 +5334,7 @@ class StreamProxy:
                 ctx["_cleanup_pending"] = True
                 return
             ctx["_cleanup_started"] = True
-        self._cleanup_session(ctx)
+        self._cleanup_session(ctx, wait_for_process=wait_for_process)
 
     @staticmethod
     def _try_faststart_layout(remote_url, content_length, auth_header):
@@ -5373,15 +5373,36 @@ class StreamProxy:
             return None
 
     @staticmethod
-    def _cleanup_session(ctx):
+    def _wait_for_active_ffmpeg(active_ffmpeg):
+        try:
+            active_ffmpeg.wait(timeout=5)
+        except (OSError, subprocess.SubprocessError, ValueError):
+            pass
+
+    @staticmethod
+    def _wait_for_active_ffmpeg_in_background(active_ffmpeg):
+        thread = threading.Thread(
+            target=StreamProxy._wait_for_active_ffmpeg,
+            args=(active_ffmpeg,),
+            name="nzbdav-old-ffmpeg-reap",
+        )
+        thread.daemon = True
+        thread.start()
+
+    @staticmethod
+    def _cleanup_session(ctx, wait_for_process=True):
         """Release resources associated with a stream session."""
         active_ffmpeg = ctx.get("active_ffmpeg")
         if active_ffmpeg:
             try:
                 active_ffmpeg.kill()
-                active_ffmpeg.wait(timeout=5)
             except (OSError, subprocess.SubprocessError, ValueError):
                 pass
+            else:
+                if wait_for_process:
+                    StreamProxy._wait_for_active_ffmpeg(active_ffmpeg)
+                else:
+                    StreamProxy._wait_for_active_ffmpeg_in_background(active_ffmpeg)
 
         temp_path = ctx.get("temp_path")
         if temp_path and os.path.exists(temp_path):
@@ -5766,7 +5787,7 @@ class StreamProxy:
         # to a half-dead socket if Kodi stalled without firing
         # onPlayBackStopped. Cleaning up here guarantees the next play gets a
         # fresh proxy state and no stale ffmpeg hogging the upstream.
-        self.clear_sessions()
+        self.clear_sessions(wait_for_process=False)
         content_type = self._detect_content_type(remote_url)
         lower_url = remote_url.lower()
         is_mp4 = lower_url.endswith((".mp4", ".m4v"))
