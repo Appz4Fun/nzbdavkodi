@@ -640,58 +640,19 @@ def _finish_direct_playback(handle, prepared):
     xbmcplugin.setResolvedUrl(handle, True, li)
 
 
-def _play_direct(handle, stream_url, stream_headers, fallback_sources=None):
-    """Play a stream through the local service proxy.
-
-    Every file type routes through the service proxy so Kodi never opens the
-    remote WebDAV URL directly. This avoids Kodi's PROPFIND scan of the
-    parent directory (nzbdav's WebDAV returns localhost:8080 hrefs that
-    break Kodi's directory parser and cascade into an Open failure) and
-    sidesteps pipe-header auth quirks on MKV.
-
-    The proxy picks the right mode per file: MP4 gets Tier 1-3 faststart or
-    MKV remux; MKV/AVI/other get a range-capable pass-through.
-    """
-    _finish_direct_playback(
-        handle,
-        _prepare_direct_playback(
-            stream_url, stream_headers, fallback_sources=fallback_sources
-        ),
-    )
-
-
-def _play_via_proxy(stream_url, stream_headers, fallback_sources=None):
-    """Play a stream for the resolve_and_play (service-side) path.
-
-    Routes everything through the service proxy for the same reasons as
-    _play_direct — see that function's docstring.
-
-    Each play branch also sets ``nzbdav.stream_url`` /
-    ``nzbdav.stream_title`` / ``nzbdav.active`` on the Home window
-    (window 10000). The service-side playback monitor (``service.py``)
-    polls these to drive its retry / error-dialog state machine; the
-    RunPlugin entrypoint used to skip them so a stream that died
-    mid-playback never triggered the retry path. Closes
-    TODO.md §H.2-H10.
-    """
-    from resources.lib.cache_prompt import maybe_show_cache_prompt
-    from resources.lib.stream_proxy import (
-        get_service_proxy_port,
-        prepare_stream_via_service,
-    )
-
-    auth_header = None
-    if stream_headers and "Authorization" in stream_headers:
-        auth_header = stream_headers["Authorization"]
-
+def _finish_player_playback(prepared):
+    """Finish service-side playback on the Kodi thread."""
+    stream_url = prepared["stream_url"]
+    stream_headers = prepared["stream_headers"]
+    service_port = prepared.get("service_port")
     home = xbmcgui.Window(10000)
     title = stream_url.rsplit("/", 1)[-1]
 
-    service_port = get_service_proxy_port()
     if service_port:
-        proxy_url, stream_info = prepare_stream_via_service(
-            service_port, stream_url, auth_header, fallback_sources=fallback_sources
-        )
+        from resources.lib.cache_prompt import maybe_show_cache_prompt
+
+        proxy_url = prepared["proxy_url"]
+        stream_info = prepared["stream_info"]
 
         if stream_info.get("direct"):
             xbmc.log(
@@ -726,6 +687,47 @@ def _play_via_proxy(stream_url, stream_headers, fallback_sources=None):
     home.setProperty("nzbdav.stream_title", title)
     home.setProperty("nzbdav.active", "true")
     xbmc.Player().play(li.getPath(), li)
+
+
+def _play_direct(handle, stream_url, stream_headers, fallback_sources=None):
+    """Play a stream through the local service proxy.
+
+    Every file type routes through the service proxy so Kodi never opens the
+    remote WebDAV URL directly. This avoids Kodi's PROPFIND scan of the
+    parent directory (nzbdav's WebDAV returns localhost:8080 hrefs that
+    break Kodi's directory parser and cascade into an Open failure) and
+    sidesteps pipe-header auth quirks on MKV.
+
+    The proxy picks the right mode per file: MP4 gets Tier 1-3 faststart or
+    MKV remux; MKV/AVI/other get a range-capable pass-through.
+    """
+    _finish_direct_playback(
+        handle,
+        _prepare_direct_playback(
+            stream_url, stream_headers, fallback_sources=fallback_sources
+        ),
+    )
+
+
+def _play_via_proxy(stream_url, stream_headers, fallback_sources=None):
+    """Play a stream for the resolve_and_play (service-side) path.
+
+    Routes everything through the service proxy for the same reasons as
+    _play_direct — see that function's docstring.
+
+    Each play branch also sets ``nzbdav.stream_url`` /
+    ``nzbdav.stream_title`` / ``nzbdav.active`` on the Home window
+    (window 10000). The service-side playback monitor (``service.py``)
+    polls these to drive its retry / error-dialog state machine; the
+    RunPlugin entrypoint used to skip them so a stream that died
+    mid-playback never triggered the retry path. Closes
+    TODO.md §H.2-H10.
+    """
+    _finish_player_playback(
+        _prepare_direct_playback(
+            stream_url, stream_headers, fallback_sources=fallback_sources
+        )
+    )
 
 
 def _get_poll_settings():
@@ -2146,11 +2148,14 @@ def resolve_and_play(nzb_url, title, params=None):
             fallback_sources = build_prepare_fallback_payload(
                 _fallback_submit_jobs_snapshot(fallback_state)
             )
-            _wait_playback_state_cleanup(playback_cleanup_state)
-            _play_via_proxy(
+            playback_prepare_state = _start_direct_playback_prepare(
                 stream_url,
                 stream_headers,
                 fallback_sources=fallback_sources,
+            )
+            _wait_playback_state_cleanup(playback_cleanup_state)
+            _finish_player_playback(
+                _wait_direct_playback_prepare(playback_prepare_state)
             )
         else:
             _stop_fallback_submit_worker(fallback_state, cancel_submitted=True)

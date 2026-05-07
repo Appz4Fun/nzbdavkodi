@@ -1051,6 +1051,92 @@ def test_resolve_overlaps_proxy_prepare_with_bookmark_cleanup_after_ready(
     assert elapsed < 0.32, "ready-to-resolved stayed serial at {:.3f}s".format(elapsed)
 
 
+@patch("resources.lib.cache_prompt.maybe_show_cache_prompt")
+@patch("resources.lib.stream_proxy.prepare_stream_via_service")
+@patch("resources.lib.stream_proxy.get_service_proxy_token", return_value="token")
+@patch("resources.lib.stream_proxy.get_service_proxy_port", return_value=57800)
+@patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
+@patch("resources.lib.resolver._start_fallback_submit_worker")
+@patch("resources.lib.resolver._poll_until_ready")
+@patch("resources.lib.resolver._clear_kodi_playback_state")
+@patch("resources.lib.resolver.xbmc")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver._get_poll_settings")
+def test_resolve_and_play_overlaps_proxy_prepare_with_bookmark_cleanup_after_ready(
+    mock_poll_settings,
+    mock_gui,
+    mock_xbmc,
+    mock_clear_state,
+    mock_poll_until_ready,
+    mock_start_fallback,
+    _mock_snapshot,
+    _mock_get_port,
+    _mock_get_token,
+    mock_prepare,
+    _mock_cache_prompt,
+):
+    """The result-dialog RunPlugin path should overlap cleanup and proxy prepare."""
+    mock_poll_settings.return_value = (2, 60)
+    mock_start_fallback.return_value = {"state": "fallback"}
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    player = MagicMock()
+    mock_xbmc.Player.return_value = player
+    mock_gui.DialogProgress.return_value = MagicMock()
+    mock_gui.ListItem.return_value = MagicMock()
+    timing = {}
+
+    def cleanup(_params):
+        timing["cleanup_start"] = _time.perf_counter()
+        _time.sleep(0.2)
+        timing["cleanup_end"] = _time.perf_counter()
+
+    def poll_ready(*_args, **kwargs):
+        timing["poll_start"] = _time.perf_counter()
+        kwargs["on_primary_submitted"]("SABnzbd_nzo_primary")
+        _time.sleep(0.02)
+        timing["ready"] = _time.perf_counter()
+        return (
+            "http://webdav/content/primary/movie.mkv",
+            {"Authorization": "Basic primary"},
+        )
+
+    def prepare(*_args, **_kwargs):
+        timing["prepare_start"] = _time.perf_counter()
+        _time.sleep(0.2)
+        timing["prepare_end"] = _time.perf_counter()
+        return (
+            "http://127.0.0.1:57800/stream/primary",
+            {"remux": False, "faststart": False, "direct": False},
+        )
+
+    def play(*_args):
+        timing["played"] = _time.perf_counter()
+
+    mock_clear_state.side_effect = cleanup
+    mock_poll_until_ready.side_effect = poll_ready
+    mock_prepare.side_effect = prepare
+    player.play.side_effect = play
+
+    resolve_and_play(
+        "http://hydra/getnzb/primary",
+        "movie.mkv",
+        params={"_fallback_candidates": []},
+    )
+
+    assert timing["prepare_start"] < timing["cleanup_end"], (
+        "resolve_and_play proxy prepare started after cleanup; "
+        "ready_to_play={:.3f}s cleanup_wait={:.3f}s".format(
+            timing["played"] - timing["ready"],
+            timing["cleanup_end"] - timing["ready"],
+        )
+    )
+    assert timing["cleanup_end"] <= timing["played"]
+    elapsed = timing["played"] - timing["ready"]
+    assert (
+        elapsed < 0.32
+    ), "resolve_and_play ready-to-play stayed serial at {:.3f}s".format(elapsed)
+
+
 @patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
 @patch("resources.lib.resolver._finish_direct_playback")
 @patch("resources.lib.resolver._wait_direct_playback_prepare")
