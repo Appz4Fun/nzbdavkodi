@@ -3170,6 +3170,43 @@ def test_prepare_stream_does_not_block_new_url_on_old_ffmpeg_wait():
     assert len(sp._server.stream_sessions) == 1
 
 
+def test_prepare_stream_does_not_block_new_url_on_old_hls_close():
+    """Old HLS session cleanup must not delay the next post-picker proxy URL."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_context = None
+    sp._server.stream_sessions = {}
+    sp._server.pending_stream_contexts = {}
+    sp._context_lock = threading.RLock()
+    sp.port = 9999
+
+    with patch.object(sp, "_get_content_length", return_value=100000):
+        sp.prepare_stream("http://host/one.mkv")
+    old_session = next(iter(sp._server.stream_sessions.values()))
+
+    hls_producer = MagicMock()
+
+    def slow_close(wait_for_process=True):
+        if wait_for_process:
+            time.sleep(0.18)
+
+    hls_producer.close.side_effect = slow_close
+    old_session["hls_producer"] = hls_producer
+
+    started = time.perf_counter()
+    with patch.object(sp, "_get_content_length", return_value=200000):
+        sp.prepare_stream("http://host/two.mkv")
+    elapsed = time.perf_counter() - started
+
+    hls_producer.close.assert_called_once_with(wait_for_process=False)
+    assert elapsed < 0.08, "old HLS close blocked new proxy URL for {:.3f}s".format(
+        elapsed
+    )
+    assert len(sp._server.stream_sessions) == 1
+
+
 def test_clear_sessions_kills_all_ffmpegs():
     """StreamProxy.clear_sessions must kill every registered ffmpeg."""
     from resources.lib.stream_proxy import StreamProxy
@@ -4831,6 +4868,35 @@ def test_hls_producer_close_kills_ffmpeg_and_removes_dir(tmp_path):
 
     alive_proc.kill.assert_called_once()
     assert not _os.path.exists(seg_dir)
+
+
+def test_hls_producer_close_wait_false_kills_without_waiting(tmp_path):
+    """Nonblocking close should signal ffmpeg immediately and defer waiting."""
+    producer = _make_producer(tmp_path)
+
+    alive_proc = MagicMock()
+    alive_proc.poll.return_value = None
+    wait_entered = threading.Event()
+    release_wait = threading.Event()
+
+    def slow_wait(timeout=None):
+        assert timeout == 5
+        wait_entered.set()
+        release_wait.wait(timeout=1)
+
+    alive_proc.wait.side_effect = slow_wait
+    producer._proc = alive_proc
+
+    started = time.perf_counter()
+    try:
+        producer.close(wait_for_process=False)
+        elapsed = time.perf_counter() - started
+        alive_proc.kill.assert_called_once()
+        assert wait_entered.wait(timeout=1)
+    finally:
+        release_wait.set()
+
+    assert elapsed < 0.08, "nonblocking HLS close waited {:.3f}s".format(elapsed)
 
 
 def test_hls_producer_opens_ffmpeg_log_in_init(tmp_path):

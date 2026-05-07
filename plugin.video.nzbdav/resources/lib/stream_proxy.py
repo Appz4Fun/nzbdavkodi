@@ -5129,15 +5129,10 @@ class HlsProducer:
             )
         )
 
-    def close(self):
-        """Kill ffmpeg and delete the session directory."""
-        with self._lock:
-            self._closed = True
-            proc = self._proc
-            self._proc = None
-        if proc is not None and proc.poll() is None:
+    def _finish_close_after_kill(self, proc, wait_for_proc):
+        """Finish HLS cleanup after close() has signaled ffmpeg to stop."""
+        if wait_for_proc:
             try:
-                proc.kill()
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 xbmc.log(
@@ -5180,6 +5175,37 @@ class HlsProducer:
             _shutil.rmtree(self.session_dir, ignore_errors=True)
         except OSError:
             pass
+
+    def _finish_close_after_kill_in_background(self, proc, wait_for_proc):
+        thread = threading.Thread(
+            target=self._finish_close_after_kill,
+            args=(proc, wait_for_proc),
+            name="nzbdav-old-hls-close",
+        )
+        thread.daemon = True
+        try:
+            thread.start()
+        except RuntimeError:
+            self._finish_close_after_kill(proc, wait_for_proc)
+
+    def close(self, wait_for_process=True):
+        """Kill ffmpeg and delete the session directory."""
+        with self._lock:
+            self._closed = True
+            proc = self._proc
+            self._proc = None
+        wait_for_proc = False
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.kill()
+            except (OSError, subprocess.SubprocessError):
+                pass
+            else:
+                wait_for_proc = True
+        if wait_for_process:
+            self._finish_close_after_kill(proc, wait_for_proc)
+        else:
+            self._finish_close_after_kill_in_background(proc, wait_for_proc)
 
     def _archive_ffmpeg_log(self):
         """Copy the session's ffmpeg.log to /storage/.kodi/temp/
@@ -5454,7 +5480,7 @@ class StreamProxy:
         hls_producer = ctx.get("hls_producer")
         if hls_producer is not None:
             try:
-                hls_producer.close()
+                hls_producer.close(wait_for_process=wait_for_process)
             except _HLS_CLOSE_ERRORS as e:
                 xbmc.log(
                     "NZB-DAV: HLS producer close failed: {}".format(e),
