@@ -310,6 +310,10 @@ def find_video_file(
 
         from urllib.parse import urlparse
 
+        parsed_request_url = urlparse(url)
+        base_host = parsed_request_url.netloc
+        request_path = parsed_request_url.path.rstrip("/")
+
         for response in root.findall(".//D:response", ns):
             href = response.find("D:href", ns)
             if href is None:
@@ -325,7 +329,6 @@ def find_video_file(
 
             try:
                 parsed_href_obj = urlparse(href_text)
-                base_host = urlparse(url).netloc
                 # Handle cross-host hrefs. nzbdav legitimately returns its
                 # INTERNAL hostname in PROPFIND hrefs (e.g. localhost:8080)
                 # while we address it at the configured public endpoint
@@ -365,7 +368,6 @@ def find_video_file(
             resource_type = response.find(".//D:resourcetype/D:collection", ns)
             if resource_type is not None:
                 # Skip the folder itself (href matches our request URL)
-                request_path = urlparse(url).path.rstrip("/")
                 if href_path.rstrip("/") != request_path:
                     subdirs.append(href_path.rstrip("/") + "/")
                 continue

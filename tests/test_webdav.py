@@ -523,6 +523,48 @@ def _propfind_listing(hrefs):
 
 @patch("resources.lib.webdav._get_settings")
 @patch("resources.lib.webdav.urlopen")
+def test_find_video_file_parses_request_url_once_for_large_propfind_listing(
+    mock_urlopen, mock_settings
+):
+    """Completed-stream WebDAV discovery should not reparse invariants per row."""
+    import urllib.parse
+
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    hrefs = [("/content/uncategorized/Many/", True, None)]
+    hrefs.extend(
+        (
+            "/content/uncategorized/Many/Sample{:03d}.nfo".format(index),
+            False,
+            100 + index,
+        )
+        for index in range(40)
+    )
+    hrefs.append(("/content/uncategorized/Many/Movie.mkv", False, 1234))
+    mock_urlopen.return_value = _webdav_response(_propfind_listing(hrefs))
+
+    request_url = "http://nzbdav:3000/content/uncategorized/Many/"
+    real_urlparse = urllib.parse.urlparse
+    request_url_parses = []
+
+    def counted_urlparse(value, *args, **kwargs):
+        if value == request_url:
+            request_url_parses.append(time.perf_counter())
+            time.sleep(0.002)
+        return real_urlparse(value, *args, **kwargs)
+
+    with patch("urllib.parse.urlparse", side_effect=counted_urlparse):
+        started = time.perf_counter()
+        path = find_video_file("/content/uncategorized/Many/")
+        elapsed = time.perf_counter() - started
+
+    assert path == "/content/uncategorized/Many/Movie.mkv"
+    assert len(request_url_parses) == 1, (
+        "request URL was parsed {} times; completed-stream discovery took {:.3f}s"
+    ).format(len(request_url_parses), elapsed)
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
 def test_find_video_file_parallelizes_sibling_subfolders_for_post_picker_start(
     mock_urlopen, mock_settings
 ):
