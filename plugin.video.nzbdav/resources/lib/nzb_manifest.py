@@ -32,6 +32,7 @@ _METADATA_EXTENSION_RE = re.compile(
 _DOMINANT_BLOB_THRESHOLD_FRACTION = 0.80
 _SPLIT_PAYLOAD_MIN_FILE_COUNT = 10
 _SPLIT_PAYLOAD_MAX_SIZE_RATIO = 5
+_SYNTHETIC_VIDEO_MIN_PAYLOAD_BYTES = 100 * 1024 * 1024
 
 
 def make_empty_manifest(reason, skipped_candidates=None):
@@ -274,6 +275,8 @@ def _dominant_blob_video_candidates(file_elems, health_check):
         return []
     if largest[1] < payload_total * _DOMINANT_BLOB_THRESHOLD_FRACTION:
         return []
+    if largest[1] < _SYNTHETIC_VIDEO_MIN_PAYLOAD_BYTES:
+        return []
     rows, total = largest
     article_digest = _digest_articles(rows)
     if not article_digest:
@@ -330,13 +333,15 @@ def _split_payload_video_candidates(file_elems, health_check):
         return []
     if largest > smallest * _SPLIT_PAYLOAD_MAX_SIZE_RATIO:
         return []
+    payload_total = sum(sizes)
+    if payload_total < _SYNTHETIC_VIDEO_MIN_PAYLOAD_BYTES:
+        return []
     combined_rows = []
     for rows in payload_rows:
         combined_rows.extend(rows)
     article_digest = _digest_articles(combined_rows)
     if not article_digest:
         return []
-    payload_total = sum(sizes)
     candidate = {
         "payload_kind": "video",
         "group_name": "",

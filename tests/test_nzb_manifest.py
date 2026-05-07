@@ -881,6 +881,27 @@ def test_extracts_split_payload_obfuscation_as_video_manifest():
     assert manifest["article_digest"]
 
 
+def test_synthetic_video_manifest_rejects_tiny_stub_nzb():
+    """Stub uploads with kilobyte-scale payloads should not classify as video.
+    A 4K REMUX peer band built from a stub will mismatch every real release.
+    """
+    xml = _nzb_xml(
+        [
+            _file('"obfuscated.7z.001" yEnc (1/1)', [(1, 36916, "stub-a@id")]),
+            _file('"obfuscated.par2" yEnc (1/1)', [(1, 456, "par2-a@id")]),
+            _file(
+                '"obfuscated.vol00+01.par2" yEnc (1/8)',
+                [(i, 655425, "par2-{}@id".format(i)) for i in range(1, 9)],
+            ),
+        ]
+    )
+
+    manifest = extract_nzb_video_manifest(xml)
+
+    assert manifest["payload_kind"] == ""
+    assert manifest["unsupported_reason"] == "no_video_file"
+
+
 def test_split_payload_detection_rejects_high_size_variance():
     """Releases where payload-file sizes vary wildly are not the obfuscation
     pattern we are inferring — could be a multi-file pack with extras. Stay
