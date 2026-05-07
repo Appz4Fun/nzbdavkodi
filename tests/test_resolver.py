@@ -1768,6 +1768,111 @@ def test_resolve_picker_completed_hint_skips_progress_dialog_startup_latency(
     mock_gui.DialogProgress.assert_not_called()
 
 
+@patch("resources.lib.resolver._start_direct_playback_service_config_lookup")
+@patch("resources.lib.resolver._wait_direct_playback_prepare")
+@patch("resources.lib.resolver._start_direct_playback_prepare")
+@patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
+@patch("resources.lib.resolver._start_fallback_submit_worker")
+@patch("resources.lib.resolver._poll_once")
+@patch("resources.lib.resolver._submit_nzb_with_retries")
+@patch("resources.lib.resolver.get_webdav_stream_url_for_path")
+@patch("resources.lib.resolver.find_video_file")
+@patch("resources.lib.resolver.find_completed_by_name")
+@patch("resources.lib.resolver._clear_kodi_playback_state")
+@patch("resources.lib.resolver.xbmc")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver._get_poll_settings")
+def test_resolve_and_play_skips_duplicate_stale_picker_completed_probe_before_submit(
+    mock_poll_settings,
+    mock_gui,
+    mock_xbmc,
+    _mock_clear_state,
+    mock_find_completed,
+    mock_find_video,
+    mock_stream_url,
+    mock_submit,
+    mock_poll_once,
+    mock_start_fallback,
+    _mock_snapshot,
+    mock_start_prepare,
+    mock_wait_prepare,
+    mock_service_config,
+):
+    """A stale picker completed hint should not delay the primary submit twice."""
+    mock_poll_settings.return_value = (1, 60)
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    mock_xbmc.Player.return_value = MagicMock()
+    dialog = MagicMock()
+    dialog.iscanceled.return_value = False
+    mock_gui.DialogProgress.return_value = dialog
+    mock_start_fallback.return_value = {"state": "fallback"}
+    mock_start_prepare.return_value = {"state": "prepare"}
+    mock_wait_prepare.return_value = {
+        "stream_url": "http://webdav/content/ready/movie.mkv",
+        "stream_headers": {},
+        "service_port": 0,
+    }
+    service_config_done = threading.Event()
+    service_config_done.set()
+    mock_service_config.return_value = {"done": service_config_done}
+    mock_poll_once.return_value = (
+        None,
+        {
+            "status": "Completed",
+            "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/ready",
+        },
+        None,
+    )
+    mock_stream_url.return_value = (
+        "http://webdav/content/ready/movie.mkv",
+        {"Authorization": "Basic primary"},
+    )
+    timing = {}
+    scanned_folders = []
+
+    def slow_find_video(folder):
+        scanned_folders.append(folder)
+        _time.sleep(0.09)
+        if folder.endswith("/ready/"):
+            return "/content/uncategorized/ready/movie.mkv"
+        return None
+
+    def slow_completed_lookup(_title):
+        _time.sleep(0.07)
+
+    def submit(*_args, **_kwargs):
+        timing["submit_start"] = _time.perf_counter()
+        return "SABnzbd_nzo_primary"
+
+    mock_find_video.side_effect = slow_find_video
+    mock_find_completed.side_effect = slow_completed_lookup
+    mock_submit.side_effect = submit
+
+    started = _time.perf_counter()
+    resolve_and_play(
+        "http://hydra/getnzb/primary",
+        "movie.mkv",
+        params={
+            "_fallback_candidates": [],
+            "_completed_job": {
+                "status": "Completed",
+                "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/stale",
+                "name": "movie.mkv",
+                "nzo_id": "SABnzbd_nzo_stale",
+            },
+        },
+    )
+
+    elapsed_to_submit = timing["submit_start"] - started
+    assert (
+        elapsed_to_submit < 0.18
+    ), "stale completed hint delayed primary submit by {:.3f}s".format(
+        elapsed_to_submit
+    )
+    assert scanned_folders.count("/content/uncategorized/stale/") == 1
+    mock_find_completed.assert_not_called()
+
+
 @patch("resources.lib.webdav.urlopen")
 @patch("resources.lib.webdav._get_settings")
 def test_completed_history_reuses_webdav_settings_for_stream_url(

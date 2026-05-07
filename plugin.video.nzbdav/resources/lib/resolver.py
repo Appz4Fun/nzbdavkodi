@@ -1221,7 +1221,7 @@ def _existing_completed_stream(
     if hinted_stream is not None:
         return hinted_stream
 
-    if completed_job_lookup_done and completed_job_hint is None:
+    if completed_job_lookup_done:
         return None
 
     existing = find_completed_by_name(title)
@@ -1235,7 +1235,7 @@ def _picker_completed_stream(title, params, on_existing_completed=None):
     if not params:
         return None
     has_hint = "_completed_job" in params
-    lookup_done = bool(params.get("_completed_job_lookup_done"))
+    lookup_done = _picker_completed_lookup_done(params)
     if not has_hint and not lookup_done:
         return None
     return _existing_completed_stream(
@@ -1244,6 +1244,13 @@ def _picker_completed_stream(title, params, on_existing_completed=None):
         completed_job_hint=params.get("_completed_job"),
         completed_job_lookup_done=lookup_done,
     )
+
+
+def _picker_completed_lookup_done(params):
+    """Return whether picker metadata already covered completed-history lookup."""
+    if not params:
+        return False
+    return bool(params.get("_completed_job_lookup_done") or "_completed_job" in params)
 
 
 # UI update cadence while submit_nzb is running on a background thread.
@@ -2479,6 +2486,7 @@ def resolve(handle, params):
             params.get("_fallback_candidate_loader")
         )
         playback_service_config_state = _start_direct_playback_service_config_lookup()
+        picker_completed_lookup_done = _picker_completed_lookup_done(params)
 
         def _start_playback_cleanup_once():
             nonlocal playback_cleanup_state
@@ -2515,10 +2523,12 @@ def resolve(handle, params):
                 download_timeout,
                 on_primary_submitted=_start_fallback_after_primary,
                 on_existing_completed=_start_playback_cleanup_once,
-                completed_job_hint=params.get("_completed_job"),
-                completed_job_lookup_done=bool(
-                    params.get("_completed_job_lookup_done")
+                completed_job_hint=(
+                    None
+                    if picker_completed_lookup_done
+                    else params.get("_completed_job")
                 ),
+                completed_job_lookup_done=picker_completed_lookup_done,
             )
         if stream_url:
             if fallback_state is None:
@@ -2578,6 +2588,7 @@ def resolve_and_play(nzb_url, title, params=None):
             resolve_params.get("_fallback_candidate_loader")
         )
         playback_service_config_state = _start_direct_playback_service_config_lookup()
+        picker_completed_lookup_done = _picker_completed_lookup_done(resolve_params)
 
         def _start_playback_cleanup_once():
             nonlocal playback_cleanup_state
@@ -2614,10 +2625,12 @@ def resolve_and_play(nzb_url, title, params=None):
                 download_timeout,
                 on_primary_submitted=_start_fallback_after_primary,
                 on_existing_completed=_start_playback_cleanup_once,
-                completed_job_hint=resolve_params.get("_completed_job"),
-                completed_job_lookup_done=bool(
-                    resolve_params.get("_completed_job_lookup_done")
+                completed_job_hint=(
+                    None
+                    if picker_completed_lookup_done
+                    else resolve_params.get("_completed_job")
                 ),
+                completed_job_lookup_done=picker_completed_lookup_done,
             )
         if stream_url:
             if fallback_state is None:
