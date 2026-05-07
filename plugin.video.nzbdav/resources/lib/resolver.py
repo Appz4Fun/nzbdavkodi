@@ -1239,8 +1239,7 @@ _SUBMIT_QUEUE_PROBE_FAST_INTERVAL_SECONDS = 0.05
 _SUBMIT_QUEUE_PROBE_FAST_WINDOW_SECONDS = 2.0
 _SUBMIT_QUEUE_PROBE_INTERVAL_SECONDS = 0.25
 _SUBMIT_HISTORY_PROBE_PARALLEL_GRACE_SECONDS = 0.01
-_COMPLETED_NO_VIDEO_FAST_RECHECKS = 2
-_COMPLETED_NO_VIDEO_RECHECK_DELAY_SECONDS = 0.1
+_COMPLETED_NO_VIDEO_RECHECK_DELAYS_SECONDS = (0.025, 0.075, 0.1)
 
 
 def _job_nzo_id(match):
@@ -2193,8 +2192,8 @@ def _find_completed_video_stream_with_rechecks(webdav_folder, monitor=None):
     if video_path or monitor is None:
         return video_path, stream_url, stream_headers
 
-    for _attempt in range(_COMPLETED_NO_VIDEO_FAST_RECHECKS):
-        if monitor.waitForAbort(_COMPLETED_NO_VIDEO_RECHECK_DELAY_SECONDS):
+    for delay_seconds in _COMPLETED_NO_VIDEO_RECHECK_DELAYS_SECONDS:
+        if monitor.waitForAbort(delay_seconds):
             return None, None, None
         video_path, stream_url, stream_headers = _find_video_stream_for_folder(
             webdav_folder
