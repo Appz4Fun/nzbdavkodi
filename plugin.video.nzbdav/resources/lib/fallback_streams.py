@@ -1415,7 +1415,7 @@ def _content_range_matches_request(content_range, start, end, content_length=0):
         return False
 
 
-def fetch_range_digest(
+def fetch_range_bytes(
     url,
     auth_header,
     start,
@@ -1424,7 +1424,7 @@ def fetch_range_digest(
     content_length=0,
     probe_bases=None,
 ):
-    """Read a byte range and return a SHA-256 digest of the returned bytes."""
+    """Read a validated byte range from a configured WebDAV stream URL."""
     if not isinstance(start, int) or not isinstance(end, int):
         return None
     try:
@@ -1457,5 +1457,29 @@ def fetch_range_digest(
     except (HTTPError, URLError, OSError, ValueError):
         return None
     if len(body) != end - start + 1:
+        return None
+    return body
+
+
+def fetch_range_digest(
+    url,
+    auth_header,
+    start,
+    end,
+    timeout=10,
+    content_length=0,
+    probe_bases=None,
+):
+    """Read a byte range and return a SHA-256 digest of the returned bytes."""
+    body = fetch_range_bytes(
+        url,
+        auth_header,
+        start,
+        end,
+        timeout=timeout,
+        content_length=content_length,
+        probe_bases=probe_bases,
+    )
+    if body is None:
         return None
     return hashlib.sha256(body).hexdigest()

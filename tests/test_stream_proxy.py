@@ -1528,6 +1528,121 @@ def test_ready_fallback_is_prevalidated_before_upstream_error_cutover():
     assert cutover_elapsed < 0.04, "cutover took {:.3f}s".format(cutover_elapsed)
 
 
+def test_prevalidated_fallback_reuses_current_probe_for_first_fallback_bytes():
+    """Cutover should not re-fetch the same current fallback range before writing."""
+    from urllib.parse import urlsplit
+
+    content_length = 4096
+    payload = b"F" * content_length
+    probe_delay = 0.035
+    stream_delay = 0.035
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_type": "video/x-matroska",
+        "content_length": content_length,
+        "_fallback_probe_bases": (urlsplit("http://webdav/content/"),),
+        "fallback_sources": [
+            {
+                "nzo_id": "nzo-fallback",
+                "stream_url": "http://webdav/content/fallback.mkv",
+                "stream_headers": {"Authorization": "Basic fallback"},
+                "content_length": content_length,
+                "validated": True,
+                "failed": False,
+            }
+        ],
+        "fallback_switch_count": 0,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-4095")
+    first_write_at = []
+
+    def record_first_write(_chunk):
+        if not first_write_at:
+            first_write_at.append(time.monotonic())
+
+    def probe_urlopen(req, timeout=None):  # pylint: disable=unused-argument
+        time.sleep(probe_delay)
+        assert req.full_url == "http://webdav/content/fallback.mkv"
+        assert _request_header(req, "Range") == "bytes=0-4095"
+        return _mock_urlopen_response(
+            [payload],
+            headers={
+                "Content-Range": "bytes 0-4095/4096",
+                "Content-Length": "4096",
+            },
+        )
+
+    def stream_urlopen(req, timeout=None):  # pylint: disable=unused-argument
+        if req.full_url.endswith("/primary.mkv"):
+            raise ConnectionRefusedError("primary down")
+        time.sleep(stream_delay)
+        assert req.full_url == "http://webdav/content/fallback.mkv"
+        assert _request_header(req, "Range") == "bytes=0-4095"
+        return _mock_urlopen_response(
+            [payload],
+            headers={
+                "Content-Range": "bytes 0-4095/4096",
+                "Content-Length": "4096",
+            },
+        )
+
+    handler.wfile.write.side_effect = record_first_write
+    with patch(
+        "resources.lib.fallback_streams.urlopen", side_effect=probe_urlopen
+    ) as probe_open, patch(
+        "resources.lib.stream_proxy.urlopen", side_effect=stream_urlopen
+    ) as stream_open:
+        started = time.monotonic()
+        handler._serve_proxy(ctx)
+
+    assert first_write_at, "fallback did not write playable bytes"
+    first_byte_elapsed = first_write_at[0] - started
+    assert ctx["fallback_switch_count"] == 1
+    assert _collect_written(handler) == payload
+    assert probe_open.call_count == 1
+    assert first_byte_elapsed < 0.055, "first fallback byte took {:.3f}s".format(
+        first_byte_elapsed
+    )
+    assert stream_open.call_count <= 1
+
+
+def test_stream_upstream_range_counts_cached_prefix_when_remaining_open_fails():
+    """A cached verified prefix is real progress even if the tail open fails."""
+    from resources.lib.stream_proxy import (
+        _FALLBACK_CURRENT_RANGE_CACHE_KEY,
+        _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE,
+    )
+
+    cached = b"C" * 4096
+    ctx = {
+        "remote_url": "http://webdav/content/fallback.mkv",
+        "auth_header": "Basic fallback",
+        "content_type": "video/x-matroska",
+        "content_length": 8192,
+        _FALLBACK_CURRENT_RANGE_CACHE_KEY: {
+            (
+                "http://webdav/content/fallback.mkv",
+                "Basic fallback",
+                8192,
+                0,
+                4095,
+            ): cached
+        },
+    }
+    handler = _make_handler_with_server(ctx)
+
+    with patch(
+        "resources.lib.stream_proxy.urlopen",
+        side_effect=ConnectionRefusedError("tail down"),
+    ):
+        result, written = handler._stream_upstream_range(ctx, 0, 8191)
+
+    assert result == _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE
+    assert written == len(cached)
+    assert _collect_written(handler) == cached
+
+
 def test_prepare_stream_falls_back_to_proxy_without_ffmpeg():
     from resources.lib.stream_proxy import StreamProxy
 

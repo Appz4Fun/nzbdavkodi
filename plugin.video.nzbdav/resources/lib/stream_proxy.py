@@ -11,6 +11,7 @@ For MKV and other files, proxies range requests directly to the remote
 WebDAV server with proper 206 responses.
 """
 
+import hashlib
 import math
 import os
 import re
@@ -190,6 +191,7 @@ _FALLBACK_SOURCE_STATE_NOT_PROVIDED = object()
 _FALLBACK_SOURCE_STREAM_URL_HINT_KEY = "_fallback_source_stream_url_hint"
 _FALLBACK_PRIMARY_URL_HINT_KEY = "_fallback_primary_url_hint"
 _FALLBACK_PRIMARY_AUTH_HINT_KEY = "_fallback_primary_auth_hint"
+_FALLBACK_CURRENT_RANGE_CACHE_KEY = "_fallback_current_range_cache"
 
 # Shared zero buffer reused across all pass-through responses.
 _ZERO_FILL_BUFFER = bytes(65536)
@@ -2820,6 +2822,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 probe_bases,
                 auth_header=source_auth,
                 stream_url=source_url,
+                cache_ctx=ctx,
             )
         current_digest = self._fetch_fallback_current_range_digest(
             source,
@@ -2829,6 +2832,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
             probe_bases,
             auth_header=source_auth,
             stream_url=source_url,
+            cache_ctx=ctx,
         )
         if not current_digest:
             return False
@@ -3121,6 +3125,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
         probe_bases=None,
         auth_header=_AUTH_HEADER_NOT_PROVIDED,
         stream_url=None,
+        cache_ctx=None,
     ):
         """Verify fallback can serve bytes at the failing offset."""
         return bool(
@@ -3132,6 +3137,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 probe_bases,
                 auth_header=auth_header,
                 stream_url=stream_url,
+                cache_ctx=cache_ctx,
             )
         )
 
@@ -3144,6 +3150,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
         probe_bases=None,
         auth_header=_AUTH_HEADER_NOT_PROVIDED,
         stream_url=None,
+        cache_ctx=None,
     ):
         """Return the digest proving fallback can serve bytes at the failing offset."""
         probe_end = min(range_end, failed_byte + 4095)
@@ -3151,6 +3158,27 @@ class _StreamHandler(BaseHTTPRequestHandler):
             auth_header = self._fallback_source_auth(source)
         if stream_url is None:
             stream_url = source["stream_url"]
+        body = self._fetch_fallback_range_bytes(
+            stream_url,
+            auth_header,
+            failed_byte,
+            probe_end,
+            content_length=content_length,
+            probe_bases=probe_bases,
+        )
+        if body is not None:
+            if cache_ctx is not None:
+                cache = cache_ctx.setdefault(_FALLBACK_CURRENT_RANGE_CACHE_KEY, {})
+                cache[
+                    (
+                        stream_url,
+                        auth_header,
+                        content_length,
+                        failed_byte,
+                        failed_byte + len(body) - 1,
+                    )
+                ] = body
+            return hashlib.sha256(body).hexdigest()
         return self._fetch_fallback_range_digest(
             stream_url,
             auth_header,
@@ -3159,6 +3187,67 @@ class _StreamHandler(BaseHTTPRequestHandler):
             content_length=content_length,
             probe_bases=probe_bases,
         )
+
+    @staticmethod
+    def _fetch_fallback_range_bytes(
+        url,
+        auth_header,
+        start,
+        end,
+        content_length,
+        probe_bases=None,
+    ):
+        """Return a validated range body, treating probe errors as no match."""
+        from resources.lib.fallback_streams import fetch_range_bytes
+
+        try:
+            return fetch_range_bytes(
+                url,
+                auth_header,
+                start,
+                end,
+                content_length=content_length,
+                probe_bases=probe_bases,
+            )
+        except Exception as exc:  # defensive guard for probe helpers
+            xbmc.log(
+                "NZB-DAV: Fallback range body probe failed at bytes {}-{}: {}".format(
+                    start,
+                    end,
+                    exc,
+                ),
+                xbmc.LOGWARNING,
+            )
+            return None
+
+    @staticmethod
+    def _pop_cached_fallback_range(ctx, start, end):
+        """Return cached verified fallback bytes for the start of this range."""
+        cache = ctx.get(_FALLBACK_CURRENT_RANGE_CACHE_KEY)
+        if not isinstance(cache, dict):
+            return b""
+        try:
+            content_length = int(ctx.get("content_length", 0) or 0)
+        except (TypeError, ValueError):
+            return b""
+        prefix = (ctx.get("remote_url"), ctx.get("auth_header"), content_length, start)
+        selected_key = None
+        selected_body = b""
+        for key, body in list(cache.items()):
+            if not isinstance(key, tuple) or len(key) != 5:
+                continue
+            if key[:4] != prefix or not isinstance(body, bytes):
+                continue
+            cached_end = key[4]
+            if cached_end > end or cached_end != start + len(body) - 1:
+                continue
+            if len(body) > len(selected_body):
+                selected_key = key
+                selected_body = body
+        if selected_key is None:
+            return b""
+        cache.pop(selected_key, None)
+        return selected_body
 
     def _serve_proxy(self, ctx):
         """Proxy range requests to remote with missing-article recovery.
@@ -3538,13 +3627,22 @@ class _StreamHandler(BaseHTTPRequestHandler):
         BrokenPipeError / ConnectionResetError propagate out so the caller can
         abort cleanly.
         """
+        requested_start = start
+        written = 0
+        cached_prefix = self._pop_cached_fallback_range(ctx, start, end)
+        if cached_prefix:
+            self.wfile.write(cached_prefix)
+            written += len(cached_prefix)
+            start += len(cached_prefix)
+            if start > end:
+                return _UPSTREAM_RANGE_OK, written
+
         req = Request(ctx["remote_url"])
         _add_request_headers(req, ctx.get("auth_header"))
         req.add_header("Range", "bytes={}-{}".format(start, end))
 
         contract_mode = contract_mode or _get_strict_contract_mode()
-        requested = end - start + 1
-        written = 0
+        requested = end - requested_start + 1
         # Capture the observation timestamp BEFORE urlopen so we can pass
         # it into the flag-clearing path below. Using a post-urlopen
         # ``time.time()`` would race with a concurrent thread that
@@ -3571,7 +3669,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     _notify_error(
                         "WebDAV returned HTTP {}; check credentials/path".format(code)
                     )
-                return _UPSTREAM_RANGE_CLIENT_ERROR, 0
+                return _UPSTREAM_RANGE_CLIENT_ERROR, written
             category = _classify_upstream_error(e)
             xbmc.log(
                 "NZB-DAV: Proxy upstream open failed at byte {}: {} "
@@ -3583,6 +3681,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 _UPSTREAM_REACHABILITY_HTTP_SERVER_ERROR,
             ):
                 _record_upstream_unreachable(self.server, ctx, e)
+            if written:
+                return _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, written
             return _UPSTREAM_RANGE_UPSTREAM_ERROR, 0
 
         # urlopen returned without raising → nzbdav responded with a
