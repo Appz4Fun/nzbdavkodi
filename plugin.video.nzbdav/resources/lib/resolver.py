@@ -721,6 +721,19 @@ def _wait_direct_playback_prepare(state):
     return state.get("prepared")
 
 
+def _show_cache_prompt_after_playback(stream_info):
+    """Show the advisory cache prompt after Kodi has the playable URL."""
+    try:
+        from resources.lib.cache_prompt import maybe_show_cache_prompt
+
+        maybe_show_cache_prompt(stream_info)
+    except _RESOLVE_RUNTIME_ERRORS as error:
+        xbmc.log(
+            "NZB-DAV: cache prompt skipped after playback handoff: {}".format(error),
+            xbmc.LOGWARNING,
+        )
+
+
 def _finish_direct_playback(handle, prepared):
     """Finish resolver playback on the Kodi thread."""
     stream_url = prepared["stream_url"]
@@ -728,8 +741,6 @@ def _finish_direct_playback(handle, prepared):
     service_port = prepared.get("service_port")
 
     if service_port:
-        from resources.lib.cache_prompt import maybe_show_cache_prompt
-
         proxy_url = prepared["proxy_url"]
         stream_info = prepared["stream_info"]
 
@@ -754,8 +765,6 @@ def _finish_direct_playback(handle, prepared):
             xbmcplugin.setResolvedUrl(handle, True, li)
             return
 
-        maybe_show_cache_prompt(stream_info)
-
         li = xbmcgui.ListItem(path=proxy_url)
         li.setContentLookup(False)
         _apply_proxy_mime(li, stream_url, stream_info)
@@ -764,6 +773,7 @@ def _finish_direct_playback(handle, prepared):
         home.setProperty("nzbdav.stream_title", stream_url.rsplit("/", 1)[-1])
         home.setProperty("nzbdav.active", "true")
         xbmcplugin.setResolvedUrl(handle, True, li)
+        _show_cache_prompt_after_playback(stream_info)
         return
 
     bust_url = _cache_bust_url(stream_url)
@@ -790,8 +800,6 @@ def _finish_player_playback(prepared):
     title = stream_url.rsplit("/", 1)[-1]
 
     if service_port:
-        from resources.lib.cache_prompt import maybe_show_cache_prompt
-
         proxy_url = prepared["proxy_url"]
         stream_info = prepared["stream_info"]
 
@@ -809,8 +817,6 @@ def _finish_player_playback(prepared):
             xbmc.Player().play(li.getPath(), li)
             return
 
-        maybe_show_cache_prompt(stream_info)
-
         li = xbmcgui.ListItem(path=proxy_url)
         li.setContentLookup(False)
         _apply_proxy_mime(li, stream_url, stream_info)
@@ -818,6 +824,7 @@ def _finish_player_playback(prepared):
         home.setProperty("nzbdav.stream_title", title)
         home.setProperty("nzbdav.active", "true")
         xbmc.Player().play(proxy_url, li)
+        _show_cache_prompt_after_playback(stream_info)
         return
 
     bust_url = _cache_bust_url(stream_url)
