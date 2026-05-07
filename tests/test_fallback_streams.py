@@ -1035,6 +1035,66 @@ def test_selection_fallback_rejects_batch_after_unusable_selected_manifest(
 
 @patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
 @patch("resources.lib.fallback_streams._fallback_settings")
+def test_selection_fallback_skips_candidate_wait_after_unusable_selected_manifest(
+    mock_settings, mock_fetch
+):
+    mock_settings.return_value = (True, 5)
+    selected = _result(
+        "The.Matrix.1999.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/selected-fast-fail.nzb",
+        60000000000,
+        meta={
+            "resolution": "2160p",
+            "quality": "REMUX",
+            "codec": "x265/HEVC",
+            "hdr": ["Dolby Vision"],
+            "audio": ["TrueHD", "Atmos"],
+            "container": "mkv",
+        },
+    )
+    candidates = [
+        _result(
+            "The.Matrix.1999.UHD.BluRay.2160p.DV.HEVC.REMUX-SLOW{:02d}".format(index),
+            "https://idx/fallback-slow-unusable-selected-{}.nzb".format(index),
+            60000000000,
+            meta=selected["_meta"],
+        )
+        for index in range(1, 6)
+    ]
+    manifests = {selected["link"]: make_empty_manifest("fetch_error")}
+    for candidate in candidates:
+        manifests[candidate["link"]] = _manifest(
+            "video", "the matrix 1999 remux.mkv", 60000000000, candidate["link"]
+        )
+    candidate_started = threading.Event()
+    release_candidates = threading.Event()
+
+    def fetch(url, **_kwargs):
+        if url == selected["link"]:
+            return manifests[url]
+        candidate_started.set()
+        release_candidates.wait(timeout=1)
+        return manifests[url]
+
+    mock_fetch.side_effect = fetch
+    release_timer = threading.Timer(0.3, release_candidates.set)
+    release_timer.start()
+    try:
+        before = _time.monotonic()
+        attach_fallback_candidates_for_selection(selected, [selected] + candidates)
+        elapsed = _time.monotonic() - before
+    finally:
+        release_candidates.set()
+        release_timer.cancel()
+
+    assert candidate_started.wait(0.2)
+    assert elapsed < 0.2
+    assert selected["_fallback_candidates"] == []
+    assert selected["_fallback_manifest_error"] == "fetch_error"
+
+
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+@patch("resources.lib.fallback_streams._fallback_settings")
 def test_selection_fallback_reuses_selected_title_tokens_while_prefiltering(
     mock_settings, mock_fetch
 ):

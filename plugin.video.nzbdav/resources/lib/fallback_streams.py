@@ -1107,6 +1107,9 @@ def _attach_selection_candidates_streaming(
                 seen_article_digests.add(selected_digest)
             selected_can_match[0] = _manifest_may_match_any_peer(selected)
 
+        if selected_ready[0] and not selected_can_match[0]:
+            return False
+
         if selected_ready[0] and selected_can_match[0]:
             if _attach_ready_selection_candidates(
                 selected,
