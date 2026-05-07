@@ -1,8 +1,9 @@
 name: Pages
 
 on:
-  push:
-    branches: [main]
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -19,6 +20,7 @@ concurrency:
 
 jobs:
   deploy-pages:
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:
@@ -26,6 +28,8 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
 
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
@@ -52,16 +56,32 @@ jobs:
               --dir release-zips \
               --clobber || echo "No addon zip found for $tag"
           done
-          latest_tag=$(gh release view \
-            --repo "$GITHUB_REPOSITORY" \
-            --json tagName \
-            --jq '.tagName')
+          target_tag="${{ github.event.workflow_run.head_branch || '' }}"
+          case "$target_tag" in
+            v*) ;;
+            *)
+              target_tag=$(gh release view \
+                --repo "$GITHUB_REPOSITORY" \
+                --json tagName \
+                --jq '.tagName')
+              ;;
+          esac
+          echo "Publishing addon release $target_tag"
           rm -f release-addon.zip
-          gh release download \
-            "$latest_tag" \
-            --repo "$GITHUB_REPOSITORY" \
-            --pattern 'plugin.video.nzbdav-*.zip' \
-            --output release-addon.zip
+          for attempt in 1 2 3 4 5; do
+            if gh release download \
+              "$target_tag" \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern 'plugin.video.nzbdav-*.zip' \
+              --output release-addon.zip; then
+              break
+            fi
+            if [ "$attempt" -eq 5 ]; then
+              echo "Failed to download addon zip for $target_tag" >&2
+              exit 1
+            fi
+            sleep 15
+          done
 
       - name: Generate repository metadata
         run: python3 scripts/generate_repo.py --output-dir dist --addon-zip release-addon.zip --legacy-addon-zip-dir release-zips
