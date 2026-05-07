@@ -9183,6 +9183,74 @@ def test_fallback_range_probe_failure_closes_before_retry_or_zero_fill():
     assert _collect_written(handler) == b""
 
 
+def test_fallback_cutover_parallelizes_fingerprint_probes_before_first_byte():
+    """Fallback switch should not serially probe every fingerprint range."""
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_OK,
+        _UPSTREAM_RANGE_UPSTREAM_ERROR,
+    )
+
+    content_length = 200000
+    failed_byte = 90000
+    range_end = failed_byte + 4095
+    fingerprint_ranges = tuple(
+        (start, start + 4095) for start in range(0, 20 * 4096, 4096)
+    )
+    ctx = {
+        "remote_url": "http://webdav/primary.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": content_length,
+        "_fallback_probe_bases": [],
+        "fallback_sources": [
+            {
+                "nzo_id": "nzo2",
+                "stream_url": "http://webdav/fallback.mkv",
+                "stream_headers": {},
+                "content_length": content_length,
+                "validated": False,
+                "failed": False,
+            }
+        ],
+        "fallback_switch_count": 0,
+    }
+    handler = _make_handler_with_server(
+        ctx, range_header="bytes={}-{}".format(failed_byte, range_end)
+    )
+    timestamps = {}
+
+    def stream_range(active_ctx, start, end, contract_mode=None):
+        del contract_mode
+        if active_ctx["remote_url"] == "http://webdav/primary.mkv":
+            timestamps["primary_error"] = time.perf_counter()
+            return _UPSTREAM_RANGE_UPSTREAM_ERROR, 0
+        timestamps["fallback_first_byte"] = time.perf_counter()
+        handler.wfile.write(b"F" * (end - start + 1))
+        return _UPSTREAM_RANGE_OK, end - start + 1
+
+    def digest(url, auth_header, start, end, content_length, probe_bases=None):
+        del url, auth_header, content_length, probe_bases
+        time.sleep(0.006)
+        return "digest-{}-{}".format(start, end)
+
+    with patch.object(
+        handler, "_stream_upstream_range", side_effect=stream_range
+    ), patch.object(
+        handler, "_fallback_fingerprint_ranges", return_value=fingerprint_ranges
+    ), patch.object(
+        handler, "_fetch_fallback_range_digest", side_effect=digest
+    ), patch(
+        "resources.lib.stream_proxy._notify"
+    ):
+        handler._serve_proxy(ctx)
+
+    cutover_elapsed = timestamps["fallback_first_byte"] - timestamps["primary_error"]
+    assert cutover_elapsed < 0.12, "fallback cutover took {:.3f}s".format(
+        cutover_elapsed
+    )
+    assert _collect_written(handler) == b"F" * (range_end - failed_byte + 1)
+
+
 def test_stream_upstream_range_sends_addon_user_agent():
     ctx = {
         "remote_url": "http://host/movie.mkv",
