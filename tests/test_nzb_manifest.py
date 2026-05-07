@@ -824,10 +824,10 @@ def test_extracts_obfuscated_dominant_file_as_video_manifest():
     assert manifest["article_digest"]
 
 
-def test_obfuscated_blob_below_dominance_threshold_stays_unsupported():
-    """Many uploaders split the payload across dozens of equal-sized files.
-    Without a single dominant blob we cannot infer which file is the video,
-    so leave the manifest unsupported instead of guessing.
+def test_obfuscated_blob_below_threshold_stays_unsupported_when_uniform_count_low():
+    """A handful of similarly-sized files are not enough to infer the payload.
+    Real split-payload obfuscation runs into many dozens of pieces; reject
+    short uniform-size collections as ambiguous.
     """
     xml = _nzb_xml(
         [
@@ -835,7 +835,65 @@ def test_obfuscated_blob_below_dominance_threshold_stays_unsupported():
                 '"part.{:03d}" yEnc (1/1)'.format(i),
                 [(1, 1000000, "p{}@id".format(i))],
             )
-            for i in range(20)
+            for i in range(5)
+        ]
+    )
+
+    manifest = extract_nzb_video_manifest(xml)
+
+    assert manifest["payload_kind"] == ""
+    assert manifest["unsupported_reason"] == "no_video_file"
+
+
+def test_extracts_split_payload_obfuscation_as_video_manifest():
+    """Heavily obfuscated uploads split the payload across many quasi-uniform
+    files (numeric extensions or .7z.NNN). Recognize them as a video-kind
+    manifest using the summed payload bytes so duplicate-release peers can
+    match via the size-tolerant peer matcher.
+    """
+    xml = _nzb_xml(
+        [
+            _file('"abc123.par2" yEnc (1/1)', [(1, 50000, "par2-a@id")]),
+            _file('"abc123.sfv" yEnc (1/1)', [(1, 1000, "sfv-a@id")]),
+        ]
+        + [
+            _file(
+                '"abc123.{:03d}" yEnc (1/1)'.format(i),
+                [(1, 471800000, "blob-{}@id".format(i))],
+            )
+            for i in range(50)
+        ]
+        + [
+            _file(
+                '"abc123.050" yEnc (1/1)',
+                [(1, 200000000, "blob-tail@id")],
+            )
+        ]
+    )
+
+    manifest = extract_nzb_video_manifest(xml)
+
+    assert manifest["unsupported_reason"] == ""
+    assert manifest["payload_kind"] == "video"
+    assert manifest["group_bytes"] == 50 * 471800000 + 200000000
+    assert manifest["video_bytes"] == manifest["group_bytes"]
+    assert manifest["article_count"] == 51
+    assert manifest["article_digest"]
+
+
+def test_split_payload_detection_rejects_high_size_variance():
+    """Releases where payload-file sizes vary wildly are not the obfuscation
+    pattern we are inferring — could be a multi-file pack with extras. Stay
+    unsupported instead of guessing a single grouped payload.
+    """
+    sizes = [10000000, 50000000, 200000000, 1000000000, 5000000000] * 3
+    xml = _nzb_xml(
+        [
+            _file(
+                '"mixed.{:03d}" yEnc (1/1)'.format(i),
+                [(1, size, "blob-{}@id".format(i))],
+            )
+            for i, size in enumerate(sizes)
         ]
     )
 

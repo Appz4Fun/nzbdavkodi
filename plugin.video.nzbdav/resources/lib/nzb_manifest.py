@@ -30,6 +30,8 @@ _METADATA_EXTENSION_RE = re.compile(
     re.I,
 )
 _DOMINANT_BLOB_THRESHOLD_FRACTION = 0.80
+_SPLIT_PAYLOAD_MIN_FILE_COUNT = 10
+_SPLIT_PAYLOAD_MAX_SIZE_RATIO = 5
 
 
 def make_empty_manifest(reason, skipped_candidates=None):
@@ -293,6 +295,65 @@ def _dominant_blob_video_candidates(file_elems, health_check):
     return [candidate]
 
 
+def _split_payload_video_candidates(file_elems, health_check):
+    """Return a synthetic video candidate when the payload is split across many
+    quasi-uniform obfuscated files.
+
+    Heavily obfuscated uploads chunk the movie into dozens of similarly-sized
+    files (numeric extensions, ``.7z.NNN``, etc.). When the non-metadata files
+    are uniform enough that the largest is at most ``_SPLIT_PAYLOAD_MAX_SIZE_RATIO``
+    times the smallest and the count clears the floor, sum their bytes and
+    treat the result as a video manifest. The +/-20% peer matcher upstream then
+    groups these uploads against each other and against real video manifests
+    of the same release. Title and profile gates upstream guard against
+    unrelated releases collapsing together.
+    """
+    payload_rows = []
+    sizes = []
+    for elem in file_elems:
+        subject = elem.attrib.get("subject", "")
+        if _subject_looks_like_metadata(subject):
+            continue
+        rows = _segment_rows(elem)
+        if not rows:
+            continue
+        total = sum(row[1] for row in rows)
+        if total <= 0:
+            continue
+        payload_rows.append(rows)
+        sizes.append(total)
+    if len(sizes) < _SPLIT_PAYLOAD_MIN_FILE_COUNT:
+        return []
+    smallest = min(sizes)
+    largest = max(sizes)
+    if smallest <= 0:
+        return []
+    if largest > smallest * _SPLIT_PAYLOAD_MAX_SIZE_RATIO:
+        return []
+    combined_rows = []
+    for rows in payload_rows:
+        combined_rows.extend(rows)
+    article_digest = _digest_articles(combined_rows)
+    if not article_digest:
+        return []
+    payload_total = sum(sizes)
+    candidate = {
+        "payload_kind": "video",
+        "group_name": "",
+        "group_bytes": payload_total,
+        "video_name": "",
+        "normalized_video_name": "",
+        "video_bytes": payload_total,
+        "archive_base_name": "",
+        "article_digest": article_digest,
+        "article_count": len(combined_rows),
+        "unsupported_reason": "",
+    }
+    if health_check is not None:
+        candidate["message_ids"] = [row[2] for row in combined_rows]
+    return [candidate]
+
+
 def extract_nzb_video_manifest(nzb_bytes, health_check=None):
     """Return main video-file or provisional archive metadata from an NZB XML."""
     try:
@@ -394,6 +455,16 @@ def extract_nzb_video_manifest(nzb_bytes, health_check=None):
     if blob_candidates:
         return _select_healthy_candidate(
             blob_candidates,
+            health_check,
+            skipped_candidates=video_skipped_candidates,
+        )
+
+    split_candidates = _split_payload_video_candidates(
+        non_video_file_candidates, health_check
+    )
+    if split_candidates:
+        return _select_healthy_candidate(
+            split_candidates,
             health_check,
             skipped_candidates=video_skipped_candidates,
         )
