@@ -7,6 +7,7 @@ import io
 import json
 import subprocess
 import threading
+import time
 from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
 
@@ -1458,6 +1459,73 @@ def test_prepare_stream_context_keeps_normalized_fallback_sources():
     ]
     assert ctx["fallback_active_index"] == -1
     assert ctx["fallback_switch_count"] == 0
+
+
+def test_ready_fallback_is_prevalidated_before_upstream_error_cutover():
+    """Cutover should not pay full fingerprint validation after the read error."""
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_OK,
+        _UPSTREAM_RANGE_UPSTREAM_ERROR,
+        StreamProxy,
+    )
+
+    content_length = 10000000
+    primary_url = "http://webdav/content/primary.mkv"
+    fallback_url = "http://webdav/content/fallback.mkv"
+    probe_delay = 0.003
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_context = None
+    sp._server.stream_sessions = {}
+    sp._server.pending_stream_contexts = {}
+    sp._context_lock = threading.RLock()
+    sp.port = 9999
+
+    def digest(url, _auth_header, start, end, content_length, probe_bases=None):
+        assert content_length == 10000000
+        time.sleep(probe_delay)
+        return "digest-{}-{}".format(start, end)
+
+    with patch.object(
+        sp, "_get_content_length", return_value=content_length
+    ), patch.object(_StreamHandler, "_fetch_fallback_range_digest", side_effect=digest):
+        sp.prepare_stream(
+            primary_url,
+            auth_header="Basic primary",
+            fallback_sources=[
+                {
+                    "nzo_id": "nzo-fallback",
+                    "stream_url": fallback_url,
+                    "stream_headers": {"Authorization": "Basic fallback"},
+                    "content_length": content_length,
+                }
+            ],
+        )
+        ctx = sp._server.stream_context
+
+        deadline = time.monotonic() + 0.5
+        while (
+            not ctx["fallback_sources"][0]["validated"] and time.monotonic() < deadline
+        ):
+            time.sleep(0.005)
+
+        handler = _make_handler_with_server(ctx, range_header="bytes=0-999")
+        with patch.object(
+            handler,
+            "_stream_upstream_range",
+            side_effect=[
+                (_UPSTREAM_RANGE_UPSTREAM_ERROR, 0),
+                (_UPSTREAM_RANGE_OK, 1000),
+            ],
+        ):
+            started = time.monotonic()
+            handler._serve_proxy(ctx)
+            cutover_elapsed = time.monotonic() - started
+
+    assert ctx["fallback_switch_count"] == 1
+    assert ctx["fallback_active_index"] == 0
+    assert cutover_elapsed < 0.04, "cutover took {:.3f}s".format(cutover_elapsed)
 
 
 def test_prepare_stream_falls_back_to_proxy_without_ffmpeg():

@@ -2852,6 +2852,94 @@ class _StreamHandler(BaseHTTPRequestHandler):
         source["validated"] = True
         return True
 
+    def _prevalidate_ready_fallback_sources(self, ctx):
+        """Fingerprint ready fallback URLs before an upstream failure happens."""
+        expected_length = self._fallback_expected_content_length(ctx)
+        if expected_length <= 0:
+            return 0
+
+        validated = 0
+        primary_url = ctx.get("remote_url")
+        primary_auth = ctx.get("auth_header")
+        probe_bases = self._fallback_probe_bases(ctx)
+        for source in ctx.get("fallback_sources", []):
+            if source.get("failed") or source.get("validated"):
+                continue
+            source_url = source.get("stream_url")
+            if not source_url:
+                continue
+            try:
+                source_length = int(source.get("content_length", 0) or 0)
+            except (TypeError, ValueError):
+                source_length = 0
+            if source_length != expected_length:
+                continue
+            source_auth = self._fallback_source_auth(source)
+            if source_url == primary_url and source_auth == primary_auth:
+                continue
+
+            hint_key = "_fallback_source_content_length_hint"
+            auth_hint_key = "_fallback_source_auth_hint"
+            stream_url_hint_key = _FALLBACK_SOURCE_STREAM_URL_HINT_KEY
+            primary_url_hint_key = _FALLBACK_PRIMARY_URL_HINT_KEY
+            primary_auth_hint_key = _FALLBACK_PRIMARY_AUTH_HINT_KEY
+            had_hint = hint_key in ctx
+            had_auth_hint = auth_hint_key in ctx
+            had_stream_url_hint = stream_url_hint_key in ctx
+            had_primary_url_hint = primary_url_hint_key in ctx
+            had_primary_auth_hint = primary_auth_hint_key in ctx
+            previous_hint = ctx.get(hint_key) if had_hint else None
+            previous_auth_hint = ctx.get(auth_hint_key) if had_auth_hint else None
+            previous_stream_url_hint = (
+                ctx.get(stream_url_hint_key) if had_stream_url_hint else None
+            )
+            previous_primary_url_hint = (
+                ctx.get(primary_url_hint_key) if had_primary_url_hint else None
+            )
+            previous_primary_auth_hint = (
+                ctx.get(primary_auth_hint_key) if had_primary_auth_hint else None
+            )
+            ctx[hint_key] = (id(source), source_length)
+            ctx[stream_url_hint_key] = (id(source), source_url)
+            ctx[primary_url_hint_key] = primary_url
+            ctx[auth_hint_key] = (id(source), source_auth)
+            ctx[primary_auth_hint_key] = primary_auth
+            try:
+                if self._validate_fallback_fingerprint(
+                    ctx,
+                    source,
+                    expected_length,
+                    probe_bases,
+                    primary_url=primary_url,
+                    fallback_url=source_url,
+                    fallback_auth=source_auth,
+                    primary_auth=primary_auth,
+                ):
+                    source["validated"] = True
+                    validated += 1
+            finally:
+                if had_hint:
+                    ctx[hint_key] = previous_hint
+                else:
+                    ctx.pop(hint_key, None)
+                if had_auth_hint:
+                    ctx[auth_hint_key] = previous_auth_hint
+                else:
+                    ctx.pop(auth_hint_key, None)
+                if had_stream_url_hint:
+                    ctx[stream_url_hint_key] = previous_stream_url_hint
+                else:
+                    ctx.pop(stream_url_hint_key, None)
+                if had_primary_url_hint:
+                    ctx[primary_url_hint_key] = previous_primary_url_hint
+                else:
+                    ctx.pop(primary_url_hint_key, None)
+                if had_primary_auth_hint:
+                    ctx[primary_auth_hint_key] = previous_primary_auth_hint
+                else:
+                    ctx.pop(primary_auth_hint_key, None)
+        return validated
+
     @staticmethod
     def _fallback_expected_content_length(ctx):
         cached_length = ctx.get("_fallback_expected_content_length")
@@ -5197,6 +5285,52 @@ class StreamProxy:
 
         return evicted
 
+    def _prevalidate_fallback_sources(self, ctx):
+        handler = _StreamHandler.__new__(_StreamHandler)
+        handler.server = self._server
+        try:
+            validated = handler._prevalidate_ready_fallback_sources(ctx)
+        except Exception as exc:  # pylint: disable=broad-except
+            xbmc.log(
+                "NZB-DAV: Fallback prevalidation failed: {}".format(exc),
+                xbmc.LOGWARNING,
+            )
+            return
+        if validated:
+            xbmc.log(
+                "NZB-DAV: Prevalidated {} fallback stream(s)".format(validated),
+                xbmc.LOGINFO,
+            )
+
+    def _start_fallback_prevalidation(self, ctx):
+        expected_length = _StreamHandler._fallback_expected_content_length(ctx)
+        if expected_length <= 0:
+            return
+        sources = ctx.get("fallback_sources") or []
+
+        def _can_prevalidate(source):
+            if (
+                not source.get("stream_url")
+                or source.get("failed")
+                or source.get("validated")
+            ):
+                return False
+            try:
+                return int(source.get("content_length", 0) or 0) == expected_length
+            except (TypeError, ValueError):
+                return False
+
+        if not any(_can_prevalidate(source) for source in sources):
+            return
+        thread = threading.Thread(
+            target=self._prevalidate_fallback_sources,
+            args=(ctx,),
+            name="nzbdav-fallback-prevalidate",
+        )
+        thread.daemon = True
+        ctx["_fallback_prevalidation_thread"] = thread
+        thread.start()
+
     def prepare_stream(self, remote_url, auth_header=None, fallback_sources=None):
         """Set up proxy for a new stream.
 
@@ -5605,6 +5739,7 @@ class StreamProxy:
                 }
 
         _attach_fallback_context_fields(ctx, fallback_sources)
+        self._start_fallback_prevalidation(ctx)
 
         local_url = self._register_session(ctx)
         xbmc.log(
