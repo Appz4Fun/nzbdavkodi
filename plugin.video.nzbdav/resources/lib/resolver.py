@@ -894,6 +894,7 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
 
     submit_result = [None, None]
     submit_done = threading.Event()
+    activity_ready = threading.Event()
 
     def _submit_worker():
         try:
@@ -906,6 +907,7 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
             submit_result[0], submit_result[1] = None, None
         finally:
             submit_done.set()
+            activity_ready.set()
 
     queue_hit = [None]
     adopted_during_submit = [False]
@@ -937,6 +939,7 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
                     match = None
             if match and match.get("nzo_id"):
                 queue_hit[0] = match["nzo_id"]
+                activity_ready.set()
                 return
             elapsed = time.monotonic() - probe_started
             interval = (
@@ -978,6 +981,18 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
         )
         return queue_hit[0], None
 
+    def _wait_for_submit_activity_or_abort(wait_seconds):
+        deadline = time.monotonic() + max(0, wait_seconds)
+        while not submit_done.is_set() and not queue_hit[0]:
+            if monitor.waitForAbort(0):
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            activity_ready.wait(min(0.01, remaining))
+            activity_ready.clear()
+        return False
+
     try:
         while not submit_done.is_set():
             probe_result = _probe_adoption_result()
@@ -989,7 +1004,9 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
                     xbmc.LOGINFO,
                 )
                 return None, {"status": "cancelled", "message": ""}
-            if monitor.waitForAbort(_SUBMIT_ADOPTION_CHECK_INTERVAL_SECONDS):
+            if _wait_for_submit_activity_or_abort(
+                _SUBMIT_ADOPTION_CHECK_INTERVAL_SECONDS
+            ):
                 return None, {"status": "shutdown", "message": ""}
             probe_result = _probe_adoption_result()
             if probe_result:

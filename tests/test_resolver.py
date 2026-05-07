@@ -1638,6 +1638,36 @@ def test_submit_ui_pump_rechecks_queue_quickly_after_initial_fast_miss(
     assert elapsed < 0.18, "second fast queue probe took {:.3f}s".format(elapsed)
 
 
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.find_queued_by_name", return_value=None)
+@patch("resources.lib.resolver.submit_nzb")
+def test_submit_ui_pump_wakes_when_submit_finishes_before_adoption_tick(
+    mock_submit, _mock_find_queued, _mock_find_completed
+):
+    """Fast addurl success should not wait for the next 50 ms adoption tick."""
+
+    def fast_submit(_nzb_url, _title):
+        _time.sleep(0.02)
+        return "SABnzbd_nzo_fast_submit", None
+
+    mock_submit.side_effect = fast_submit
+    dialog = MagicMock()
+    dialog.iscanceled.return_value = False
+    monitor = MagicMock()
+    monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
+
+    started = _time.perf_counter()
+    nzo_id, submit_error = _submit_nzb_with_ui_pump(
+        "http://hydra/getnzb/abc", "movie.mkv", dialog, monitor
+    )
+    elapsed = _time.perf_counter() - started
+
+    assert (nzo_id, submit_error) == ("SABnzbd_nzo_fast_submit", None)
+    assert (
+        elapsed < 0.04
+    ), "fast submit result waited for poll tick; elapsed={:.3f}s".format(elapsed)
+
+
 @patch("resources.lib.resolver.find_completed_by_name")
 @patch("resources.lib.resolver.find_queued_by_name", return_value=None)
 @patch("resources.lib.resolver.submit_nzb")
