@@ -1326,10 +1326,10 @@ def test_submit_ui_pump_probes_queue_without_two_second_startup_delay(
 
 @patch("resources.lib.resolver.find_queued_by_name")
 @patch("resources.lib.resolver.submit_nzb")
-def test_submit_ui_pump_starts_queue_probe_within_quarter_second(
+def test_submit_ui_pump_starts_queue_probe_within_short_grace_window(
     mock_submit, mock_find_queued
 ):
-    """Fast queue adoption should not spend half a second in the grace window."""
+    """Fast queue adoption should not spend a quarter second in the grace window."""
     queue_seen = threading.Event()
 
     def delayed_submit(_nzb_url, _title):
@@ -1348,7 +1348,8 @@ def test_submit_ui_pump_starts_queue_probe_within_quarter_second(
     mock_find_queued.side_effect = queued_job
     dialog = MagicMock()
     dialog.iscanceled.return_value = False
-    monitor = _make_monitor()
+    monitor = MagicMock()
+    monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
 
     started = _time.monotonic()
     nzo_id, submit_error = _submit_nzb_with_ui_pump(
@@ -1357,7 +1358,7 @@ def test_submit_ui_pump_starts_queue_probe_within_quarter_second(
     elapsed = _time.monotonic() - started
 
     assert (nzo_id, submit_error) == ("SABnzbd_nzo_fast_queue_probe", None)
-    assert elapsed < 0.45
+    assert elapsed < 0.2
 
 
 @patch("resources.lib.resolver.find_completed_by_name")

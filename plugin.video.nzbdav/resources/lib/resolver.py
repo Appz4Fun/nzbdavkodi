@@ -766,12 +766,12 @@ def _existing_completed_stream(title):
     return get_webdav_stream_url_for_path(video_path)
 
 
-# UI pump cadence while submit_nzb is running on a background thread.
-# Short enough that the progress dialog looks live and the cancel button
-# is responsive; long enough that we're not burning CPU on the plugin
-# thread while waiting for a remote HTTP call.
+# UI update cadence while submit_nzb is running on a background thread.
+# Kept slower than adoption checks so the progress dialog looks live without
+# redrawing for every queue-probe poll.
 _SUBMIT_UI_PUMP_INTERVAL_SECONDS = 0.25
-_SUBMIT_QUEUE_PROBE_INITIAL_DELAY_SECONDS = 0.25
+_SUBMIT_ADOPTION_CHECK_INTERVAL_SECONDS = 0.05
+_SUBMIT_QUEUE_PROBE_INITIAL_DELAY_SECONDS = 0.05
 _SUBMIT_QUEUE_PROBE_INTERVAL_SECONDS = 1.0
 
 
@@ -863,6 +863,7 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
     # accumulation under-reports on slow skins because dialog.update()
     # itself can block for tens of milliseconds.
     loop_start = time.monotonic()
+    last_dialog_update = loop_start
     submit_timeout_seconds = max(_get_submit_timeout_seconds(), 1)
     submit_msg = _string(30097)
 
@@ -890,12 +891,16 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
                     xbmc.LOGINFO,
                 )
                 return None, {"status": "cancelled", "message": ""}
-            if monitor.waitForAbort(_SUBMIT_UI_PUMP_INTERVAL_SECONDS):
+            if monitor.waitForAbort(_SUBMIT_ADOPTION_CHECK_INTERVAL_SECONDS):
                 return None, {"status": "shutdown", "message": ""}
             probe_result = _probe_adoption_result()
             if probe_result:
                 return probe_result
-            elapsed = time.monotonic() - loop_start
+            now = time.monotonic()
+            elapsed = now - loop_start
+            if now - last_dialog_update < _SUBMIT_UI_PUMP_INTERVAL_SECONDS:
+                continue
+            last_dialog_update = now
             pct = int((elapsed * 100) / submit_timeout_seconds) % 100
             try:
                 dialog.update(
