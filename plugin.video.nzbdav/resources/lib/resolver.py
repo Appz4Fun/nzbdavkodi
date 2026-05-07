@@ -1149,6 +1149,88 @@ _SUBMIT_QUEUE_PROBE_INITIAL_DELAY_SECONDS = 0.0
 _SUBMIT_QUEUE_PROBE_FAST_INTERVAL_SECONDS = 0.05
 _SUBMIT_QUEUE_PROBE_FAST_WINDOW_SECONDS = 2.0
 _SUBMIT_QUEUE_PROBE_INTERVAL_SECONDS = 1.0
+_SUBMIT_HISTORY_PROBE_PARALLEL_GRACE_SECONDS = 0.01
+
+
+def _job_nzo_id(match):
+    if isinstance(match, dict) and match.get("nzo_id"):
+        return match["nzo_id"]
+    return None
+
+
+def _find_adoptable_job_during_submit(title):
+    """Return queue/history nzo_id without serializing behind a slow queue miss."""
+    result = {"nzo_id": None, "done_count": 0}
+    lock = threading.Lock()
+    progress = threading.Event()
+
+    def _record_match(match):
+        nzo_id = _job_nzo_id(match)
+        with lock:
+            if nzo_id and result["nzo_id"] is None:
+                result["nzo_id"] = nzo_id
+            result["done_count"] += 1
+        progress.set()
+
+    def _probe_queue():
+        try:
+            match = find_queued_by_name(title)
+        except Exception as e:  # pylint: disable=broad-except
+            xbmc.log(
+                "NZB-DAV: concurrent queue probe raised: {}".format(e),
+                xbmc.LOGWARNING,
+            )
+            match = None
+        _record_match(match)
+
+    def _probe_history():
+        try:
+            match = find_completed_by_name(title)
+        except Exception as e:  # pylint: disable=broad-except
+            xbmc.log(
+                "NZB-DAV: concurrent history probe raised: {}".format(e),
+                xbmc.LOGWARNING,
+            )
+            match = None
+        _record_match(match)
+
+    queue_thread = threading.Thread(
+        target=_probe_queue, name="nzbdav-submit-queue-probe", daemon=True
+    )
+    try:
+        queue_thread.start()
+    except RuntimeError:
+        _probe_queue()
+
+    progress.wait(_SUBMIT_HISTORY_PROBE_PARALLEL_GRACE_SECONDS)
+    with lock:
+        nzo_id = result["nzo_id"]
+        done_count = result["done_count"]
+    if nzo_id:
+        return nzo_id
+    if done_count:
+        _probe_history()
+        with lock:
+            return result["nzo_id"]
+
+    history_thread = threading.Thread(
+        target=_probe_history, name="nzbdav-submit-history-probe", daemon=True
+    )
+    try:
+        history_thread.start()
+        expected_done = 2
+    except RuntimeError:
+        _probe_history()
+        expected_done = 2
+
+    while True:
+        with lock:
+            nzo_id = result["nzo_id"]
+            done_count = result["done_count"]
+        if nzo_id or done_count >= expected_done:
+            return nzo_id
+        progress.wait(0.01)
+        progress.clear()
 
 
 def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
@@ -1206,25 +1288,9 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor):
             return
         probe_started = time.monotonic()
         while not queue_stop.is_set() and not submit_done.is_set():
-            try:
-                match = find_queued_by_name(title)
-            except Exception as e:  # pylint: disable=broad-except
-                xbmc.log(
-                    "NZB-DAV: concurrent queue probe raised: {}".format(e),
-                    xbmc.LOGWARNING,
-                )
-                match = None
-            if not match:
-                try:
-                    match = find_completed_by_name(title)
-                except Exception as e:  # pylint: disable=broad-except
-                    xbmc.log(
-                        "NZB-DAV: concurrent history probe raised: {}".format(e),
-                        xbmc.LOGWARNING,
-                    )
-                    match = None
-            if match and match.get("nzo_id"):
-                queue_hit[0] = match["nzo_id"]
+            nzo_id = _find_adoptable_job_during_submit(title)
+            if nzo_id:
+                queue_hit[0] = nzo_id
                 activity_ready.set()
                 return
             elapsed = time.monotonic() - probe_started
