@@ -970,6 +970,53 @@ def test_resolve_overlaps_bookmark_cleanup_with_post_submit_poll(
     assert elapsed < 0.35, "selected-to-play path took {:.3f}s".format(elapsed)
 
 
+@patch("resources.lib.resolver.xbmcplugin")
+@patch("resources.lib.resolver.find_completed_by_name")
+@patch("resources.lib.resolver._submit_nzb_with_retries", return_value=None)
+@patch("resources.lib.resolver.xbmc")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver._get_poll_settings", return_value=(1, 60))
+def test_resolve_skips_completed_lookup_after_picker_snapshot_miss(
+    _mock_poll_settings,
+    mock_gui,
+    mock_xbmc,
+    mock_submit,
+    mock_find_completed,
+    mock_plugin,
+):
+    """A picker-time completed-history miss should go straight to submit."""
+
+    def slow_completed_lookup(_title):
+        _time.sleep(0.12)
+
+    submit_started = []
+    mock_find_completed.side_effect = slow_completed_lookup
+    mock_submit.side_effect = (
+        lambda *_args, **_kwargs: submit_started.append(_time.perf_counter()) or None
+    )
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    mock_gui.DialogProgress.return_value = MagicMock()
+    mock_gui.ListItem.return_value = "li"
+
+    started = _time.perf_counter()
+    resolve(
+        1,
+        {
+            "nzburl": "http://hydra/getnzb/primary",
+            "title": "movie.mkv",
+            "_completed_job_lookup_done": True,
+        },
+    )
+    elapsed_to_submit = submit_started[0] - started
+
+    assert (
+        elapsed_to_submit < 0.05
+    ), "completed miss lookup delayed submit by {:.3f}s".format(elapsed_to_submit)
+    mock_find_completed.assert_not_called()
+    mock_submit.assert_called_once()
+    mock_plugin.setResolvedUrl.assert_called_once()
+
+
 @patch("resources.lib.cache_prompt.maybe_show_cache_prompt")
 @patch("resources.lib.stream_proxy.prepare_stream_via_service")
 @patch("resources.lib.stream_proxy.get_service_proxy_token", return_value="token")

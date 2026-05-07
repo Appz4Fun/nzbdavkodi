@@ -1147,6 +1147,51 @@ def test_handle_play_happy_path_invokes_resolve(
     assert args[1]["title"] == chosen["title"]
 
 
+@patch("xbmcaddon.Addon")
+@patch("xbmcplugin.setResolvedUrl")
+@patch("xbmcgui.ListItem")
+@patch("resources.lib.resolver.resolve")
+@patch("resources.lib.results_dialog.show_results_dialog")
+@patch("resources.lib.filter.filter_results")
+@patch("resources.lib.router._search_all_providers")
+@patch("resources.lib.router.get_completed_jobs")
+@patch("resources.lib.cache.get_cached", return_value=None)
+def test_handle_play_marks_completed_history_miss_from_picker_snapshot(
+    mock_cache,
+    mock_completed_jobs,
+    mock_search,
+    mock_filter,
+    mock_dialog,
+    mock_resolve,
+    mock_listitem,
+    mock_resolved,
+    mock_addon,
+):
+    """Post-picker resolve should not repeat a completed-history miss."""
+    _install_progress_dialog_that_wont_cancel()
+    mock_addon.return_value.getSetting.side_effect = _stub_setting("false")
+    mock_listitem.return_value = "li"
+    chosen = {"title": "Matrix.1999.mkv", "link": "http://hydra/nzb/x"}
+    mock_completed_jobs.return_value = {
+        "Other.1999.mkv": {
+            "status": "Completed",
+            "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/Other.1999.mkv",
+            "name": "Other.1999.mkv",
+            "nzo_id": "SABnzbd_nzo_other",
+        }
+    }
+    mock_search.return_value = ([chosen], None)
+    mock_filter.return_value = ([chosen], [chosen])
+    mock_dialog.return_value = chosen
+
+    _handle_play(5, {"type": "movie", "title": "The Matrix", "year": "1999"})
+
+    mock_resolve.assert_called_once()
+    args, _kwargs = mock_resolve.call_args
+    assert args[1]["_completed_job_lookup_done"] is True
+    assert "_completed_job" not in args[1]
+
+
 @patch("resources.lib.router.get_completed_jobs")
 def test_tag_available_attaches_completed_job_hint(mock_completed_jobs):
     completed_job = {

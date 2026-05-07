@@ -981,7 +981,10 @@ def _completed_job_stream(title, completed_job, on_existing_completed=None):
 
 
 def _existing_completed_stream(
-    title, on_existing_completed=None, completed_job_hint=None
+    title,
+    on_existing_completed=None,
+    completed_job_hint=None,
+    completed_job_lookup_done=False,
 ):
     """Return an already-downloaded stream URL when the title exists."""
     hinted_stream = _completed_job_stream(
@@ -989,6 +992,9 @@ def _existing_completed_stream(
     )
     if hinted_stream is not None:
         return hinted_stream
+
+    if completed_job_lookup_done and completed_job_hint is None:
+        return None
 
     existing = find_completed_by_name(title)
     return _completed_job_stream(
@@ -1912,6 +1918,7 @@ def _poll_until_ready(
     on_primary_submitted=None,
     on_existing_completed=None,
     completed_job_hint=None,
+    completed_job_lookup_done=False,
 ):
     """Submit NZB and poll until download completes.
 
@@ -1924,6 +1931,7 @@ def _poll_until_ready(
         title,
         on_existing_completed=on_existing_completed,
         completed_job_hint=completed_job_hint,
+        completed_job_lookup_done=completed_job_lookup_done,
     )
     if existing_stream is not None:
         return existing_stream
@@ -2059,6 +2067,7 @@ def resolve(handle, params):
             on_primary_submitted=_start_fallback_after_primary,
             on_existing_completed=_start_playback_cleanup_once,
             completed_job_hint=params.get("_completed_job"),
+            completed_job_lookup_done=bool(params.get("_completed_job_lookup_done")),
         )
         if stream_url:
             if fallback_state is None:
@@ -2141,6 +2150,9 @@ def resolve_and_play(nzb_url, title, params=None):
             on_primary_submitted=_start_fallback_after_primary,
             on_existing_completed=_start_playback_cleanup_once,
             completed_job_hint=(params or {}).get("_completed_job"),
+            completed_job_lookup_done=bool(
+                (params or {}).get("_completed_job_lookup_done")
+            ),
         )
         if stream_url:
             if fallback_state is None:

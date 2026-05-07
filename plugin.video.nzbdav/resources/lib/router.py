@@ -403,14 +403,17 @@ def _tag_available(results):
             `"title"` matches a completed name in nzbdav will be modified
             in-place with `result["_available"] = True`.
     """
+    if not results:
+        return {}
     completed = get_completed_jobs()
     if not completed:
-        return
+        return completed
     for result in results:
         completed_job = completed.get(result.get("title"))
         if completed_job:
             result["_available"] = True
             result["_completed_job"] = completed_job
+    return completed
 
 
 def _lookup_episode_info(imdb, tmdb_id=""):
@@ -656,7 +659,7 @@ def _handle_play(handle, params):
         return
 
     # Tag results already downloaded in nzbdav
-    _tag_available(filtered)
+    completed_jobs = _tag_available(filtered)
 
     # Show custom results dialog
     from resources.lib.results_dialog import show_results_dialog
@@ -679,6 +682,8 @@ def _handle_play(handle, params):
         completed_job = selected.get("_completed_job")
         if completed_job:
             resolver_params["_completed_job"] = completed_job
+        elif isinstance(completed_jobs, dict) and completed_jobs:
+            resolver_params["_completed_job_lookup_done"] = True
         resolve(
             handle,
             resolver_params,
@@ -829,7 +834,7 @@ def _handle_search(handle, params):
         return
 
     # Tag results already downloaded in nzbdav
-    _tag_available(filtered)
+    completed_jobs = _tag_available(filtered)
 
     # Show custom results dialog
     from resources.lib.results_dialog import show_results_dialog
@@ -849,6 +854,8 @@ def _handle_search(handle, params):
         completed_job = selected.get("_completed_job")
         if completed_job:
             resolver_params["_completed_job"] = completed_job
+        elif isinstance(completed_jobs, dict) and completed_jobs:
+            resolver_params["_completed_job_lookup_done"] = True
         resolve_and_play(selected["link"], selected["title"], params=resolver_params)
 
     # Must end the directory or Kodi hangs
