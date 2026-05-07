@@ -743,6 +743,9 @@ def _fallback_peer_matches(primary, candidate):
     return _fallback_manifest_peer_matches(primary, candidate)
 
 
+_VIDEO_PEER_BYTES_TOLERANCE_FRACTION = 0.20
+
+
 def _fallback_manifest_peer_matches(primary, candidate):
     """Return whether manifest evidence allows an already-prefiltered peer."""
     primary_key = _manifest_group_key(primary)
@@ -760,7 +763,14 @@ def _fallback_manifest_peer_matches(primary, candidate):
     if primary_kind == "video":
         primary_bytes = _manifest_group_bytes(primary)
         candidate_bytes = _manifest_group_bytes(candidate)
-        return primary_bytes > 0 and primary_bytes == candidate_bytes
+        if primary_bytes <= 0 or candidate_bytes <= 0:
+            return False
+        # Different uploads of the same source MKV pick different yEnc segment
+        # sizes and so report different group_bytes. The title and profile
+        # gates already proved the candidate is a related release; allow the
+        # configured tolerance band so segmentation noise does not block peers.
+        tolerance = primary_bytes * _VIDEO_PEER_BYTES_TOLERANCE_FRACTION
+        return abs(primary_bytes - candidate_bytes) <= tolerance
     if primary_kind == "archive":
         return True
     return False

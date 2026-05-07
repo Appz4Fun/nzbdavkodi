@@ -1677,7 +1677,7 @@ def test_selection_fallback_pipelines_second_manifest_wave_after_underfill(
             manifests[candidate["link"]] = _manifest(
                 "video",
                 "different {}.mkv".format(candidate["link"].rsplit("-", 1)[-1]),
-                61000000000,
+                90000000000,
                 "miss-{}".format(candidate["link"].rsplit("-", 1)[-1]),
             )
         else:
@@ -1807,10 +1807,10 @@ def test_selection_fallback_starts_followup_fetch_before_first_wave_tail_finishe
             "video", "the matrix 1999 remux.mkv", 60000000000, "selected"
         ),
         candidates[0]["link"]: _manifest(
-            "video", "different first miss.mkv", 61000000000, "miss-1"
+            "video", "different first miss.mkv", 90000000000, "miss-1"
         ),
         candidates[1]["link"]: _manifest(
-            "video", "different slow miss.mkv", 61000000000, "miss-2"
+            "video", "different slow miss.mkv", 90000000000, "miss-2"
         ),
         candidates[2]["link"]: _manifest(
             "video", "the matrix 1999 remux.mkv", 60000000000, "match-3"
@@ -1878,7 +1878,7 @@ def test_selection_fallback_scales_second_wave_to_remaining_slots(
     for index, candidate in enumerate(candidates, start=1):
         if index == 5:
             manifests[candidate["link"]] = _manifest(
-                "video", "different matrix remux.mkv", 61000000000, "miss-5"
+                "video", "different matrix remux.mkv", 90000000000, "miss-5"
             )
         else:
             manifests[candidate["link"]] = _manifest(
@@ -1937,7 +1937,7 @@ def test_selection_fallback_does_not_wait_for_optional_tail_after_max_filled(
     for index, candidate in enumerate(candidates, start=1):
         if index == 5:
             manifests[candidate["link"]] = _manifest(
-                "video", "different matrix remux.mkv", 61000000000, "miss-5"
+                "video", "different matrix remux.mkv", 90000000000, "miss-5"
             )
         else:
             manifests[candidate["link"]] = _manifest(
@@ -2013,7 +2013,7 @@ def test_selection_fallback_does_not_wait_for_optional_tail_after_partial_match(
             "video", "the matrix 1999 remux.mkv", 60000000000, "slow-match-2"
         ),
         candidates[2]["link"]: _manifest(
-            "video", "different matrix remux.mkv", 61000000000, "miss-3"
+            "video", "different matrix remux.mkv", 90000000000, "miss-3"
         ),
     }
     slow_started = threading.Event()
@@ -2795,3 +2795,107 @@ def test_fetch_range_digest_accepts_matching_partial_content(mock_urlopen):
             == "63c1dd951ffedf6f7fd968ad4efa39b8ed584f162f46e715114ee184f8de9201"
         )
     assert mock_urlopen.call_args.kwargs["timeout"] == 10
+
+
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+@patch("resources.lib.fallback_streams._fallback_settings")
+def test_video_manifest_peer_match_accepts_size_within_20_percent_tolerance(
+    mock_settings, mock_fetch
+):
+    """Different uploads of the same source MKV use different yEnc segment sizes,
+    so two video manifests for the same release will report different group_bytes.
+    Accept matches when the bytes are within +/-20% as long as title and profile
+    gates already passed.
+    """
+    mock_settings.return_value = (True, 5)
+    primary = _result(
+        "Once.Upon.a.Time.in.the.West.1968.PROPER.UHD.BluRay.2160p.DTS-HD.MA.5.1.DV.HEVC.HYBRID.REMUX-FraMeSToR",
+        "https://idx/primary.nzb",
+        95000000000,
+        meta={
+            "resolution": "2160p",
+            "quality": "BluRay REMUX",
+            "codec": "x265/HEVC",
+            "hdr": ["Dolby Vision"],
+            "group": "FraMeSToR",
+            "container": "mkv",
+        },
+    )
+    repost_within_tolerance = _result(
+        "Once.Upon.a.Time.in.the.West.1968.PROPER.UHD.BluRay.2160p.DTS-HD.MA.5.1.DV.HEVC.HYBRID.REMUX-FraMeSToR",
+        "https://idx/repost.nzb",
+        110000000000,
+        meta={
+            "resolution": "2160p",
+            "quality": "BluRay REMUX",
+            "codec": "x265/HEVC",
+            "hdr": ["Dolby Vision"],
+            "group": "FraMeSToR",
+            "container": "mkv",
+        },
+    )
+    manifests = {
+        "https://idx/primary.nzb": _manifest(
+            "video", "once upon a time framestor.mkv", 95000000000, "articles-a"
+        ),
+        "https://idx/repost.nzb": _manifest(
+            "video", "once upon a time alt repost.mkv", 110000000000, "articles-b"
+        ),
+    }
+    mock_fetch.side_effect = lambda url, **_kwargs: manifests[url]
+
+    attach_fallback_candidates([primary, repost_within_tolerance])
+
+    assert primary["_fallback_candidates"] == [repost_within_tolerance]
+    assert repost_within_tolerance["_fallback_candidates"] == [primary]
+
+
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+@patch("resources.lib.fallback_streams._fallback_settings")
+def test_video_manifest_peer_match_rejects_size_outside_20_percent_tolerance(
+    mock_settings, mock_fetch
+):
+    """A larger gap probably reflects different audio/video tracks, not just
+    different yEnc segmentation. Stay conservative outside the tolerance band.
+    """
+    mock_settings.return_value = (True, 5)
+    primary = _result(
+        "Once.Upon.a.Time.in.the.West.1968.PROPER.UHD.BluRay.2160p.DTS-HD.MA.5.1.DV.HEVC.HYBRID.REMUX-FraMeSToR",
+        "https://idx/primary.nzb",
+        95000000000,
+        meta={
+            "resolution": "2160p",
+            "quality": "BluRay REMUX",
+            "codec": "x265/HEVC",
+            "hdr": ["Dolby Vision"],
+            "group": "FraMeSToR",
+            "container": "mkv",
+        },
+    )
+    repost_outside_tolerance = _result(
+        "Once.Upon.a.Time.in.the.West.1968.PROPER.UHD.BluRay.2160p.DTS-HD.MA.5.1.DV.HEVC.HYBRID.REMUX-FraMeSToR",
+        "https://idx/different.nzb",
+        130000000000,
+        meta={
+            "resolution": "2160p",
+            "quality": "BluRay REMUX",
+            "codec": "x265/HEVC",
+            "hdr": ["Dolby Vision"],
+            "group": "FraMeSToR",
+            "container": "mkv",
+        },
+    )
+    manifests = {
+        "https://idx/primary.nzb": _manifest(
+            "video", "once upon a time framestor.mkv", 95000000000, "articles-a"
+        ),
+        "https://idx/different.nzb": _manifest(
+            "video", "once upon a time bigger.mkv", 130000000000, "articles-b"
+        ),
+    }
+    mock_fetch.side_effect = lambda url, **_kwargs: manifests[url]
+
+    attach_fallback_candidates([primary, repost_outside_tolerance])
+
+    assert primary["_fallback_candidates"] == []
+    assert repost_outside_tolerance["_fallback_candidates"] == []

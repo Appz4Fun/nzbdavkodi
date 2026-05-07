@@ -25,6 +25,11 @@ _BARE_FILENAME_RE = re.compile(
 )
 _ARCHIVE_RE = re.compile(r'"?([^"\\/]+?)(?:\.part\d+)?\.(?:rar|r\d{2,3})\b', re.I)
 _ALLOWED_NZB_SCHEMES = frozenset(("http", "https"))
+_METADATA_EXTENSION_RE = re.compile(
+    r"\.(par2?|nfo|sfv|jpg|jpeg|png|gif|txt|url|lnk|srt|sub|idx|md5|sha\d*)\b",
+    re.I,
+)
+_DOMINANT_BLOB_THRESHOLD_FRACTION = 0.80
 
 
 def make_empty_manifest(reason, skipped_candidates=None):
@@ -232,6 +237,62 @@ def _select_healthy_candidate(candidates, health_check, skipped_candidates=None)
     return _empty_manifest("no_video_file")
 
 
+def _subject_looks_like_metadata(subject):
+    """Return whether a subject names a metadata sidecar (par2/nfo/sfv/...)."""
+    if not isinstance(subject, str):
+        return False
+    return _METADATA_EXTENSION_RE.search(subject) is not None
+
+
+def _dominant_blob_video_candidates(file_elems, health_check):
+    """Return a synthetic video candidate when one obfuscated file dominates.
+
+    Heavily obfuscated NZBs strip filename extensions off every file but still
+    ship a single dominant payload that holds the actual movie. When that
+    blob accounts for at least the configured fraction of non-metadata bytes,
+    treat it as a video manifest so the fallback peer matcher can pair it
+    against other releases via the size-tolerance band.
+    """
+    payload_total = 0
+    largest = None  # (rows, total_bytes)
+    for elem in file_elems:
+        subject = elem.attrib.get("subject", "")
+        if _subject_looks_like_metadata(subject):
+            continue
+        rows = _segment_rows(elem)
+        if not rows:
+            continue
+        total = sum(row[1] for row in rows)
+        if total <= 0:
+            continue
+        payload_total += total
+        if largest is None or total > largest[1]:
+            largest = (rows, total)
+    if largest is None or payload_total <= 0:
+        return []
+    if largest[1] < payload_total * _DOMINANT_BLOB_THRESHOLD_FRACTION:
+        return []
+    rows, total = largest
+    article_digest = _digest_articles(rows)
+    if not article_digest:
+        return []
+    candidate = {
+        "payload_kind": "video",
+        "group_name": "",
+        "group_bytes": total,
+        "video_name": "",
+        "normalized_video_name": "",
+        "video_bytes": total,
+        "archive_base_name": "",
+        "article_digest": article_digest,
+        "article_count": len(rows),
+        "unsupported_reason": "",
+    }
+    if health_check is not None:
+        candidate["message_ids"] = [row[2] for row in rows]
+    return [candidate]
+
+
 def extract_nzb_video_manifest(nzb_bytes, health_check=None):
     """Return main video-file or provisional archive metadata from an NZB XML."""
     try:
@@ -320,6 +381,23 @@ def extract_nzb_video_manifest(nzb_bytes, health_check=None):
         archive_candidates.append(candidate)
 
     archive_candidates.sort(key=lambda item: item["article_count"], reverse=True)
+    if archive_candidates:
+        return _select_healthy_candidate(
+            archive_candidates,
+            health_check,
+            skipped_candidates=video_skipped_candidates,
+        )
+
+    blob_candidates = _dominant_blob_video_candidates(
+        non_video_file_candidates, health_check
+    )
+    if blob_candidates:
+        return _select_healthy_candidate(
+            blob_candidates,
+            health_check,
+            skipped_candidates=video_skipped_candidates,
+        )
+
     return _select_healthy_candidate(
         archive_candidates, health_check, skipped_candidates=video_skipped_candidates
     )

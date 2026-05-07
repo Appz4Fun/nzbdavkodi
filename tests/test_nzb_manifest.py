@@ -785,3 +785,61 @@ def test_fetch_nzb_video_manifest_rejects_oversized_nzb(_mock_http_get):
     manifest = fetch_nzb_video_manifest("https://idx/getnzb/123")
 
     assert manifest["unsupported_reason"] == "too_large"
+
+
+def test_extracts_obfuscated_dominant_file_as_video_manifest():
+    """Heavily obfuscated uploads strip the .mkv extension off every file but
+    still ship a single dominant payload that holds the actual movie.
+    Recognize that as a video manifest so duplicate-release peers can match
+    via the size-tolerant peer matcher.
+    """
+    xml = _nzb_xml(
+        [
+            _file(
+                '"abc123def456.par2" yEnc (1/1)',
+                [(1, 50000, "par2-a@id")],
+            ),
+            _file(
+                '"abc123def456" yEnc (1/3)',
+                [
+                    (1, 950000000, "blob-a@id"),
+                    (2, 950000000, "blob-b@id"),
+                    (3, 100000000, "blob-c@id"),
+                ],
+            ),
+            _file(
+                '"abc123def456.nfo" yEnc (1/1)',
+                [(1, 1000, "nfo-a@id")],
+            ),
+        ]
+    )
+
+    manifest = extract_nzb_video_manifest(xml)
+
+    assert manifest["unsupported_reason"] == ""
+    assert manifest["payload_kind"] == "video"
+    assert manifest["group_bytes"] == 2000000000
+    assert manifest["video_bytes"] == 2000000000
+    assert manifest["article_count"] == 3
+    assert manifest["article_digest"]
+
+
+def test_obfuscated_blob_below_dominance_threshold_stays_unsupported():
+    """Many uploaders split the payload across dozens of equal-sized files.
+    Without a single dominant blob we cannot infer which file is the video,
+    so leave the manifest unsupported instead of guessing.
+    """
+    xml = _nzb_xml(
+        [
+            _file(
+                '"part.{:03d}" yEnc (1/1)'.format(i),
+                [(1, 1000000, "p{}@id".format(i))],
+            )
+            for i in range(20)
+        ]
+    )
+
+    manifest = extract_nzb_video_manifest(xml)
+
+    assert manifest["payload_kind"] == ""
+    assert manifest["unsupported_reason"] == "no_video_file"
