@@ -1232,7 +1232,8 @@ def _poll_once(nzo_id, title, monitor, settings_getter=None):
     t2 = threading.Thread(target=check_history, daemon=True)
     t1.start()
     t2.start()
-    deadline = time.monotonic() + 10
+    # Deadline must allow for API timeout (10s) + processing overhead
+    deadline = time.monotonic() + 12
     while True:
         if history_ready.is_set():
             break

@@ -20,7 +20,9 @@ from resources.lib.http_util import redact_text as _redact_text
 # REMUX this can routinely exceed 30 s. 300 s gives nzbdav real headroom
 # while remaining below the 10 minute clamp for truly stuck requests.
 _DEFAULT_SUBMIT_TIMEOUT = 300
-_API_READ_TIMEOUT = 30
+# Status/history queries should be fast; 10s timeout prevents dialog freeze
+# on slow/unresponsive SABnzbd. Polling loop retries every 1-2s anyway.
+_API_READ_TIMEOUT = 10
 
 _HTML_TAG_RE = re.compile(r"<[^>]*>")
 _WHITESPACE_RE = re.compile(r"\s+")
