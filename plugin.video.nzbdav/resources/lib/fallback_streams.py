@@ -743,7 +743,7 @@ def _fallback_peer_matches(primary, candidate):
     return _fallback_manifest_peer_matches(primary, candidate)
 
 
-_VIDEO_PEER_BYTES_TOLERANCE_FRACTION = 0.20
+_PEER_BYTES_TOLERANCE_FRACTION = 0.20
 
 
 def _fallback_manifest_peer_matches(primary, candidate):
@@ -758,21 +758,22 @@ def _fallback_manifest_peer_matches(primary, candidate):
 
     primary_kind = _manifest_payload_kind(primary)
     candidate_kind = _manifest_payload_kind(candidate)
-    if not primary_kind or primary_kind != candidate_kind:
+    if not primary_kind or not candidate_kind:
         return False
-    if primary_kind == "video":
+    # Apply the same +/-20% group_bytes tolerance whenever both kinds are
+    # plausible video payloads (direct MKV or RAR archive). Title and profile
+    # gates already proved the candidate is a related release; allow the
+    # configured tolerance band so yEnc segmentation noise across uploads
+    # does not block peers and so a direct-MKV upload can peer with a RAR
+    # upload of the same release. Reject pairs whose group_bytes gap exceeds
+    # the band (e.g., a Theatrical-UHD RAR vs. an Extended-UHD RAR).
+    if primary_kind in ("video", "archive") and candidate_kind in ("video", "archive"):
         primary_bytes = _manifest_group_bytes(primary)
         candidate_bytes = _manifest_group_bytes(candidate)
         if primary_bytes <= 0 or candidate_bytes <= 0:
             return False
-        # Different uploads of the same source MKV pick different yEnc segment
-        # sizes and so report different group_bytes. The title and profile
-        # gates already proved the candidate is a related release; allow the
-        # configured tolerance band so segmentation noise does not block peers.
-        tolerance = primary_bytes * _VIDEO_PEER_BYTES_TOLERANCE_FRACTION
+        tolerance = primary_bytes * _PEER_BYTES_TOLERANCE_FRACTION
         return abs(primary_bytes - candidate_bytes) <= tolerance
-    if primary_kind == "archive":
-        return True
     return False
 
 
