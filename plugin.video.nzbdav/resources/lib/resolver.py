@@ -1357,6 +1357,7 @@ def _find_video_stream_for_folder(webdav_folder, settings_getter=None):
             and find_video_file is _webdav.find_video_file
             and get_webdav_stream_url_for_path is _webdav.get_webdav_stream_url_for_path
         ):
+            _resolve_stage("find_video_stream_for_folder_delegated")
             return find_video_stream_for_folder(
                 webdav_folder, **_settings_getter_kwargs(settings_getter)
             )
@@ -1364,10 +1365,14 @@ def _find_video_stream_for_folder(webdav_folder, settings_getter=None):
         pass
 
     kwargs = _settings_getter_kwargs(settings_getter)
+    _resolve_stage("find_video_file_start folder={}".format(webdav_folder))
     video_path = find_video_file(webdav_folder, **kwargs)
+    _resolve_stage("find_video_file_done path={}".format(bool(video_path)))
     if not video_path:
         return None, None, None
+    _resolve_stage("get_webdav_stream_url_start")
     stream_url, stream_headers = get_webdav_stream_url_for_path(video_path, **kwargs)
+    _resolve_stage("get_webdav_stream_url_done")
     return video_path, stream_url, stream_headers
 
 
@@ -2549,20 +2554,25 @@ def _find_completed_video_stream_with_rechecks(
     webdav_folder, monitor=None, settings_getter=None
 ):
     """Return a completed WebDAV stream, briefly rechecking symlink visibility."""
+    _resolve_stage("find_video_stream_start")
     video_path, stream_url, stream_headers = _find_video_stream_for_folder(
         webdav_folder, settings_getter=settings_getter
     )
+    _resolve_stage("find_video_stream_done path={}".format(bool(video_path)))
     if video_path or monitor is None:
         return video_path, stream_url, stream_headers
 
     for delay_seconds in _COMPLETED_NO_VIDEO_RECHECK_DELAYS_SECONDS:
         if monitor.waitForAbort(delay_seconds):
             return None, None, None
+        _resolve_stage("find_video_stream_retry delay={}".format(delay_seconds))
         video_path, stream_url, stream_headers = _find_video_stream_for_folder(
             webdav_folder, settings_getter=settings_getter
         )
+        _resolve_stage("find_video_stream_retry_done path={}".format(bool(video_path)))
         if video_path:
             return video_path, stream_url, stream_headers
+    _resolve_stage("find_video_stream_rechecks_exhausted")
     return None, None, None
 
 
