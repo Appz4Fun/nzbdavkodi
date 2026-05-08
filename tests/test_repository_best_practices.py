@@ -21,6 +21,42 @@ def test_addon_metadata_includes_repo_links_and_disclaimer():
     assert len(disclaimers) >= 2
 
 
+def test_addon_news_metadata_is_tiny_current_release_summary():
+    addon_xml = REPO_ROOT / "plugin.video.nzbdav" / "addon.xml"
+    root = ET.parse(addon_xml).getroot()
+    metadata = root.find("./extension[@point='xbmc.addon.metadata']")
+
+    assert metadata is not None
+    news = metadata.findtext("news") or ""
+    version = root.get("version")
+    summary = news.strip()
+    assert summary.startswith("v{}: ".format(version))
+    assert "\n" not in summary
+    assert len(summary) < 80
+
+
+def test_kodi_visible_changelog_is_tiny_current_release_summary():
+    addon_xml = REPO_ROOT / "plugin.video.nzbdav" / "addon.xml"
+    root = ET.parse(addon_xml).getroot()
+    version = root.get("version")
+    changelog = (REPO_ROOT / "plugin.video.nzbdav" / "changelog.txt").read_text(
+        encoding="utf-8"
+    )
+    summary = changelog.strip()
+
+    assert summary.startswith("v{}: ".format(version))
+    assert "\n" not in summary
+    assert len(summary) < 80
+
+
+def test_repo_changelog_keeps_full_release_history():
+    changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+
+    assert "## [1.2.1] — 2026-05-07" in changelog
+    assert "## [1.2.0] — 2026-05-07" in changelog
+    assert "## [0.1.0] — 2026-04-05" in changelog
+
+
 def test_settings_labels_use_localized_string_ids():
     settings_xml = REPO_ROOT / "plugin.video.nzbdav" / "resources" / "settings.xml"
     root = ET.parse(settings_xml).getroot()
