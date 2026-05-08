@@ -890,7 +890,7 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
             fallback_candidates, candidate_loader=None
         )
         return (
-            "http://webdav/content/primary/movie.mkv",
+            "http://webdav/content/primary/movie.mp4",
             {"Authorization": "Basic primary"},
         )
 
@@ -906,10 +906,6 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
             "content_length": 0,
         }
     ]
-    mock_poll_until_ready.return_value = (
-        "http://webdav/content/primary/movie.mp4",
-        {"Authorization": "Basic primary"},
-    )
     mock_xbmc.Monitor.return_value = _make_monitor()
     dialog = MagicMock()
     mock_gui.DialogProgress.return_value = dialog
@@ -918,7 +914,7 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
         1,
         {
             "nzburl": "http://hydra/getnzb/primary",
-            "title": "movie.mkv",
+            "title": "movie.mp4",
             "_fallback_candidates": fallback_candidates,
         },
     )
@@ -929,7 +925,7 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
         fallback_candidates, candidate_loader=None
     )
     mock_start_prepare.assert_called_once_with(
-        "http://webdav/content/primary/movie.mkv",
+        "http://webdav/content/primary/movie.mp4",
         {"Authorization": "Basic primary"},
         fallback_sources=[
             {
@@ -947,6 +943,73 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
     mock_wait_prepare.assert_called_once_with(prepare_state)
     mock_finish_playback.assert_called_once_with(1, prepared_playback)
     mock_stop_fallback.assert_not_called()
+
+
+@patch("resources.lib.resolver._fallback_submit_jobs_snapshot")
+@patch("resources.lib.resolver._finish_direct_playback")
+@patch("resources.lib.resolver._wait_direct_playback_prepare")
+@patch("resources.lib.resolver._start_direct_playback_prepare")
+@patch("resources.lib.resolver._start_fallback_submit_worker")
+@patch("resources.lib.resolver._poll_until_ready")
+@patch("resources.lib.resolver._clear_kodi_playback_state")
+@patch("resources.lib.resolver.xbmc")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.xbmcplugin")
+@patch("resources.lib.resolver._get_poll_settings")
+def test_resolve_withholds_fallback_handoff_for_mkv_streams(
+    mock_poll_settings,
+    _mock_plugin,
+    mock_gui,
+    mock_xbmc,
+    _mock_clear_state,
+    mock_poll_until_ready,
+    mock_start_fallback,
+    mock_start_prepare,
+    mock_wait_prepare,
+    mock_finish_playback,
+    mock_snapshot,
+):
+    mock_poll_settings.return_value = (2, 60)
+    fallback_state = {"state": "fallback"}
+    mock_start_fallback.return_value = fallback_state
+    mock_start_prepare.return_value = {"state": "prepare"}
+    mock_wait_prepare.return_value = {"state": "prepared"}
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    mock_gui.DialogProgress.return_value = MagicMock()
+    mock_poll_until_ready.return_value = (
+        "http://webdav/content/primary/movie.mkv",
+        {"Authorization": "Basic primary"},
+    )
+    mock_snapshot.return_value = [
+        {
+            "title": "Fallback A 2026 1080p WEB-DL",
+            "nzb_url": "http://hydra/getnzb/fallback-a",
+            "job_name": "Fallback A 2026 1080p WEB-DL [fallback-1-5c5fd5e4]",
+            "nzo_id": "SABnzbd_nzo_done",
+            "stream_url": "",
+            "stream_headers": {},
+            "content_length": 0,
+        }
+    ]
+
+    resolve(
+        1,
+        {
+            "nzburl": "http://hydra/getnzb/primary",
+            "title": "movie.mkv",
+            "_fallback_candidates": [{"title": "Fallback A"}],
+        },
+    )
+
+    mock_snapshot.assert_called_once_with(fallback_state)
+    mock_start_prepare.assert_called_once_with(
+        "http://webdav/content/primary/movie.mkv",
+        {"Authorization": "Basic primary"},
+        fallback_sources=[],
+        service_config_state=None,
+    )
+    mock_wait_prepare.assert_called_once_with({"state": "prepare"})
+    mock_finish_playback.assert_called_once_with(1, {"state": "prepared"})
 
 
 @patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
@@ -1677,6 +1740,68 @@ def test_resolve_and_play_routes_plain_mkv_through_proxy_without_fallbacks(
         params={"_fallback_candidates": []},
     )
 
+    mock_start_prepare.assert_called_once_with(
+        "http://webdav/content/primary/movie.mkv",
+        {"Authorization": "Basic primary"},
+        fallback_sources=[],
+        service_config_state=None,
+    )
+    mock_wait_prepare.assert_called_once_with({"state": "prepare"})
+    mock_finish_playback.assert_called_once_with({"state": "prepared"})
+
+
+@patch("resources.lib.resolver._fallback_submit_jobs_snapshot")
+@patch("resources.lib.resolver._finish_player_playback")
+@patch("resources.lib.resolver._wait_direct_playback_prepare")
+@patch("resources.lib.resolver._start_direct_playback_prepare")
+@patch("resources.lib.resolver._start_fallback_submit_worker")
+@patch("resources.lib.resolver._poll_until_ready")
+@patch("resources.lib.resolver._clear_kodi_playback_state")
+@patch("resources.lib.resolver.xbmc")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver._get_poll_settings")
+def test_resolve_and_play_withholds_fallback_handoff_for_mkv_streams(
+    mock_poll_settings,
+    mock_gui,
+    mock_xbmc,
+    _mock_clear_state,
+    mock_poll_until_ready,
+    mock_start_fallback,
+    mock_start_prepare,
+    mock_wait_prepare,
+    mock_finish_playback,
+    mock_snapshot,
+):
+    mock_poll_settings.return_value = (2, 60)
+    fallback_state = {"state": "fallback"}
+    mock_start_fallback.return_value = fallback_state
+    mock_start_prepare.return_value = {"state": "prepare"}
+    mock_wait_prepare.return_value = {"state": "prepared"}
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    mock_gui.DialogProgress.return_value = MagicMock()
+    mock_poll_until_ready.return_value = (
+        "http://webdav/content/primary/movie.mkv",
+        {"Authorization": "Basic primary"},
+    )
+    mock_snapshot.return_value = [
+        {
+            "title": "Fallback A 2026 1080p WEB-DL",
+            "nzb_url": "http://hydra/getnzb/fallback-a",
+            "job_name": "Fallback A 2026 1080p WEB-DL [fallback-1-5c5fd5e4]",
+            "nzo_id": "SABnzbd_nzo_done",
+            "stream_url": "",
+            "stream_headers": {},
+            "content_length": 0,
+        }
+    ]
+
+    resolve_and_play(
+        "http://hydra/getnzb/primary",
+        "movie.mkv",
+        params={"_fallback_candidates": [{"title": "Fallback A"}]},
+    )
+
+    mock_snapshot.assert_called_once_with(fallback_state)
     mock_start_prepare.assert_called_once_with(
         "http://webdav/content/primary/movie.mkv",
         {"Authorization": "Basic primary"},

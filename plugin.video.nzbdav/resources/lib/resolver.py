@@ -438,6 +438,18 @@ def _url_path(url):
     return urlsplit(url).path.lower()
 
 
+def _playback_fallback_sources_for_stream(stream_url, fallback_jobs):
+    fallback_sources = build_prepare_fallback_payload(fallback_jobs)
+    if fallback_sources and _url_path(stream_url).endswith(".mkv"):
+        xbmc.log(
+            "NZB-DAV: Withholding fallback proxy handoff for MKV stream to avoid "
+            "Kodi/CoreELEC native CURL crash path",
+            xbmc.LOGWARNING,
+        )
+        return []
+    return fallback_sources
+
+
 def _make_playable_listitem(url, headers):
     """Create a ListItem with URL and optional HTTP auth headers.
 
@@ -2857,8 +2869,8 @@ def resolve(handle, params):
         if stream_url:
             if fallback_state is None:
                 _start_fallback_after_primary(None)
-            fallback_sources = build_prepare_fallback_payload(
-                _fallback_submit_jobs_snapshot(fallback_state)
+            fallback_sources = _playback_fallback_sources_for_stream(
+                stream_url, _fallback_submit_jobs_snapshot(fallback_state)
             )
             playback_prepare_state = _start_direct_playback_prepare(
                 stream_url,
@@ -2976,8 +2988,8 @@ def resolve_and_play(nzb_url, title, params=None):
         if stream_url:
             if fallback_state is None:
                 _start_fallback_after_primary(None)
-            fallback_sources = build_prepare_fallback_payload(
-                _fallback_submit_jobs_snapshot(fallback_state)
+            fallback_sources = _playback_fallback_sources_for_stream(
+                stream_url, _fallback_submit_jobs_snapshot(fallback_state)
             )
             _resolve_stage("prepare playback start")
             playback_prepare_state = _start_direct_playback_prepare(
