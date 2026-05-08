@@ -77,12 +77,14 @@ def _copy_addon_zip(output_dir, addon_id, addon_zip):
     return version, dest_dir, zip_name
 
 
-def write_pages_index(output_dir, repo_version="1.0.0"):
+def write_pages_index(output_dir, repo_version="1.0.0", addon_zip_names=None):
     """Write a Kodi-browsable directory listing for the root."""
     index_path = os.path.join(output_dir, "index.html")
     zip_name = "repository.nzbdav-{}.zip".format(repo_version)
     html = "<html><body>\n"
     html += '<a href="{z}">{z}</a><br>\n'.format(z=zip_name)
+    for addon_zip_name in addon_zip_names or ():
+        html += '<a href="{z}">{z}</a><br>\n'.format(z=addon_zip_name)
     html += "</body></html>\n"
     with open(index_path, "w", encoding="utf-8") as f:
         f.write(html)
@@ -94,7 +96,7 @@ def write_pages_index(output_dir, repo_version="1.0.0"):
 
 def _copy_addon_artifacts(output_dir, addon_id, main_addon, addon_zip=None):
     if addon_zip:
-        _version, dest_dir, _zip_name = _copy_addon_zip(output_dir, addon_id, addon_zip)
+        _version, dest_dir, zip_name = _copy_addon_zip(output_dir, addon_id, addon_zip)
         with zipfile.ZipFile(addon_zip) as zf:
             for member in [
                 "{}/addon.xml".format(addon_id),
@@ -111,7 +113,7 @@ def _copy_addon_artifacts(output_dir, addon_id, main_addon, addon_zip=None):
                 with open(target, "wb") as f:
                     f.write(data)
         print("Copied addon release zip + metadata to {}".format(dest_dir))
-        return
+        return zip_name
 
     tree = _parse_local_xml(main_addon)
     version = tree.getroot().attrib["version"]
@@ -129,6 +131,8 @@ def _copy_addon_artifacts(output_dir, addon_id, main_addon, addon_zip=None):
                 os.makedirs(os.path.dirname(asset_dest), exist_ok=True)
                 shutil.copy2(src, asset_dest)
         print("Copied addon zip + metadata to {}".format(dest_dir))
+        return zip_name
+    return None
 
 
 def _copy_legacy_addon_zips(output_dir, addon_id, legacy_addon_zip_dir=None):
@@ -202,7 +206,9 @@ def generate_repo(
         )
     )
 
-    _copy_addon_artifacts(output_dir, main_addon_id, main_addon, addon_zip)
+    addon_zip_name = _copy_addon_artifacts(
+        output_dir, main_addon_id, main_addon, addon_zip
+    )
     _copy_legacy_addon_zips(output_dir, main_addon_id, legacy_addon_zip_dir)
 
     # Build repository addon zip and copy into output
@@ -249,7 +255,11 @@ def generate_repo(
         if os.path.isdir(subdir_path):
             _write_dir_index(subdir_path)
 
-    write_pages_index(output_dir, repo_version)
+    write_pages_index(
+        output_dir,
+        repo_version,
+        addon_zip_names=[addon_zip_name] if addon_zip_name else None,
+    )
 
 
 def _write_dir_index(dir_path):

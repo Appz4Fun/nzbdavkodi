@@ -37,6 +37,23 @@ def test_generate_repo_writes_pages_root_files(tmp_path, monkeypatch):
     assert (tmp_path / ".nojekyll").exists()
 
 
+def test_generate_repo_root_index_links_current_addon_zip(tmp_path, monkeypatch):
+    module = _load_generate_repo_module()
+    monkeypatch.chdir(REPO_ROOT)
+    release_zip = tmp_path / "plugin.video.nzbdav-1.2.1.zip"
+    release_addon_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<addon id="plugin.video.nzbdav" name="NZB-DAV" version="1.2.1" />
+"""
+    with zipfile.ZipFile(release_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("plugin.video.nzbdav/addon.xml", release_addon_xml)
+
+    module.generate_repo(output_dir=str(tmp_path / "dist"), addon_zip=str(release_zip))
+
+    contents = (tmp_path / "dist" / "index.html").read_text(encoding="utf-8")
+    assert 'href="plugin.video.nzbdav-1.2.1.zip"' in contents
+    assert "plugin.video.nzbdav-1.2.1.zip" in contents
+
+
 def test_generate_repo_omits_full_changelog_from_repo_index(tmp_path, monkeypatch):
     module = _load_generate_repo_module()
     monkeypatch.chdir(REPO_ROOT)
