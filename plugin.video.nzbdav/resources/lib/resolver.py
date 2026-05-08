@@ -902,8 +902,8 @@ def _finish_direct_playback(handle, prepared):
         home.setProperty("nzbdav.stream_url", proxy_url)
         home.setProperty("nzbdav.stream_title", stream_url.rsplit("/", 1)[-1])
         home.setProperty("nzbdav.active", "true")
-        xbmcplugin.setResolvedUrl(handle, True, li)
         _show_cache_prompt_after_playback(stream_info)
+        xbmcplugin.setResolvedUrl(handle, True, li)
         return
 
     bust_url = _cache_bust_url(stream_url)
