@@ -2899,3 +2899,217 @@ def test_video_manifest_peer_match_rejects_size_outside_20_percent_tolerance(
 
     assert primary["_fallback_candidates"] == []
     assert repost_outside_tolerance["_fallback_candidates"] == []
+
+
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+@patch("resources.lib.fallback_streams._fallback_settings")
+def test_archive_peer_matches_video_peer_within_20_percent_tolerance(
+    mock_settings, mock_fetch
+):
+    """A direct-MKV upload and a RAR upload of the same release should peer
+    when the manifest group_bytes are within +/-20%, even though their kinds
+    differ (video vs archive). Title and profile gates upstream still bound
+    the candidate set.
+    """
+    mock_settings.return_value = (True, 5)
+    primary = _result(
+        "Once.Upon.a.Time.in.the.West.1968.PROPER.UHD.BluRay.2160p.DTS-HD.MA.5.1.DV.HEVC.HYBRID.REMUX-FraMeSToR",
+        "https://idx/primary.nzb",
+        87000000000,
+        meta={
+            "resolution": "2160p",
+            "quality": "BluRay REMUX",
+            "codec": "x265/HEVC",
+            "hdr": ["Dolby Vision"],
+            "group": "FraMeSToR",
+            "container": "mkv",
+        },
+    )
+    video_repost_within_tolerance = _result(
+        "Once.Upon.a.Time.in.the.West.1968.PROPER.UHD.BluRay.2160p.DTS-HD.MA.5.1.DV.HEVC.HYBRID.REMUX-FraMeSToR",
+        "https://idx/repost.nzb",
+        87500000000,
+        meta={
+            "resolution": "2160p",
+            "quality": "BluRay REMUX",
+            "codec": "x265/HEVC",
+            "hdr": ["Dolby Vision"],
+            "group": "FraMeSToR",
+            "container": "mkv",
+        },
+    )
+    manifests = {
+        "https://idx/primary.nzb": _manifest(
+            "archive", "once upon a time framestor", 87000000000, "articles-a"
+        ),
+        "https://idx/repost.nzb": _manifest(
+            "video", "once upon a time framestor.mkv", 87500000000, "articles-b"
+        ),
+    }
+    mock_fetch.side_effect = lambda url, **_kwargs: manifests[url]
+
+    attach_fallback_candidates([primary, video_repost_within_tolerance])
+
+    assert primary["_fallback_candidates"] == [video_repost_within_tolerance]
+    assert video_repost_within_tolerance["_fallback_candidates"] == [primary]
+
+
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+@patch("resources.lib.fallback_streams._fallback_settings")
+def test_archive_peer_does_not_match_video_peer_outside_20_percent(
+    mock_settings, mock_fetch
+):
+    """An archive RAR for one release should not peer with a video MKV whose
+    group_bytes are more than 20% off, even when titles and profiles agree.
+    A 67% gap (e.g., Theatrical-UHD vs Extended-UHD) reflects different
+    runtime, not yEnc segmentation noise.
+    """
+    mock_settings.return_value = (True, 5)
+    primary = _result(
+        "Once.Upon.a.Time.in.the.West.1968.PROPER.UHD.BluRay.2160p.DTS-HD.MA.5.1.DV.HEVC.HYBRID.REMUX-FraMeSToR",
+        "https://idx/primary.nzb",
+        87000000000,
+        meta={
+            "resolution": "2160p",
+            "quality": "BluRay REMUX",
+            "codec": "x265/HEVC",
+            "hdr": ["Dolby Vision"],
+            "group": "FraMeSToR",
+            "container": "mkv",
+        },
+    )
+    video_outside_tolerance = _result(
+        "Once.Upon.a.Time.in.the.West.1968.PROPER.UHD.BluRay.2160p.DTS-HD.MA.5.1.DV.HEVC.HYBRID.REMUX-FraMeSToR",
+        "https://idx/different.nzb",
+        137000000000,
+        meta={
+            "resolution": "2160p",
+            "quality": "BluRay REMUX",
+            "codec": "x265/HEVC",
+            "hdr": ["Dolby Vision"],
+            "group": "FraMeSToR",
+            "container": "mkv",
+        },
+    )
+    manifests = {
+        "https://idx/primary.nzb": _manifest(
+            "archive", "once upon a time framestor", 87000000000, "articles-a"
+        ),
+        "https://idx/different.nzb": _manifest(
+            "video",
+            "once upon a time framestor extended.mkv",
+            137000000000,
+            "articles-b",
+        ),
+    }
+    mock_fetch.side_effect = lambda url, **_kwargs: manifests[url]
+
+    attach_fallback_candidates([primary, video_outside_tolerance])
+
+    assert primary["_fallback_candidates"] == []
+    assert video_outside_tolerance["_fallback_candidates"] == []
+
+
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+@patch("resources.lib.fallback_streams._fallback_settings")
+def test_archive_peer_matches_archive_peer_within_20_percent_tolerance(
+    mock_settings, mock_fetch
+):
+    """Two archive RAR uploads of the same release should peer when their
+    manifest group_bytes are within +/-20%. yEnc segmentation noise across
+    different uploads still produces small variance even for the same source.
+    """
+    mock_settings.return_value = (True, 5)
+    primary = _result(
+        "Once.Upon.a.Time.in.the.West.1968.PROPER.UHD.BluRay.2160p.DTS-HD.MA.5.1.DV.HEVC.HYBRID.REMUX-FraMeSToR",
+        "https://idx/primary.nzb",
+        82000000000,
+        meta={
+            "resolution": "2160p",
+            "quality": "BluRay REMUX",
+            "codec": "x265/HEVC",
+            "hdr": ["Dolby Vision"],
+            "group": "FraMeSToR",
+            "container": "mkv",
+        },
+    )
+    archive_repost_within_tolerance = _result(
+        "Once.Upon.a.Time.in.the.West.1968.PROPER.UHD.BluRay.2160p.DTS-HD.MA.5.1.DV.HEVC.HYBRID.REMUX-FraMeSToR",
+        "https://idx/repost.nzb",
+        90000000000,
+        meta={
+            "resolution": "2160p",
+            "quality": "BluRay REMUX",
+            "codec": "x265/HEVC",
+            "hdr": ["Dolby Vision"],
+            "group": "FraMeSToR",
+            "container": "mkv",
+        },
+    )
+    manifests = {
+        "https://idx/primary.nzb": _manifest(
+            "archive", "once upon a time framestor", 82000000000, "articles-a"
+        ),
+        "https://idx/repost.nzb": _manifest(
+            "archive", "once upon a time framestor alt", 90000000000, "articles-b"
+        ),
+    }
+    mock_fetch.side_effect = lambda url, **_kwargs: manifests[url]
+
+    attach_fallback_candidates([primary, archive_repost_within_tolerance])
+
+    assert primary["_fallback_candidates"] == [archive_repost_within_tolerance]
+    assert archive_repost_within_tolerance["_fallback_candidates"] == [primary]
+
+
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+@patch("resources.lib.fallback_streams._fallback_settings")
+def test_archive_peer_rejects_archive_peer_outside_20_percent_tolerance(
+    mock_settings, mock_fetch
+):
+    """Two archive RAR uploads with very different group_bytes should not
+    peer. Previously archive-vs-archive returned True unconditionally, so a
+    Theatrical-UHD RAR (~82G) could peer with an Extended-UHD RAR (~137G)
+    despite the 67% gap. Apply the same +/-20% tolerance as video peers.
+    """
+    mock_settings.return_value = (True, 5)
+    primary = _result(
+        "Once.Upon.a.Time.in.the.West.1968.PROPER.UHD.BluRay.2160p.DTS-HD.MA.5.1.DV.HEVC.HYBRID.REMUX-FraMeSToR",
+        "https://idx/primary.nzb",
+        82000000000,
+        meta={
+            "resolution": "2160p",
+            "quality": "BluRay REMUX",
+            "codec": "x265/HEVC",
+            "hdr": ["Dolby Vision"],
+            "group": "FraMeSToR",
+            "container": "mkv",
+        },
+    )
+    archive_outside_tolerance = _result(
+        "Once.Upon.a.Time.in.the.West.1968.PROPER.UHD.BluRay.2160p.DTS-HD.MA.5.1.DV.HEVC.HYBRID.REMUX-FraMeSToR",
+        "https://idx/extended.nzb",
+        137000000000,
+        meta={
+            "resolution": "2160p",
+            "quality": "BluRay REMUX",
+            "codec": "x265/HEVC",
+            "hdr": ["Dolby Vision"],
+            "group": "FraMeSToR",
+            "container": "mkv",
+        },
+    )
+    manifests = {
+        "https://idx/primary.nzb": _manifest(
+            "archive", "once upon a time framestor", 82000000000, "articles-a"
+        ),
+        "https://idx/extended.nzb": _manifest(
+            "archive", "once upon a time framestor extended", 137000000000, "articles-b"
+        ),
+    }
+    mock_fetch.side_effect = lambda url, **_kwargs: manifests[url]
+
+    attach_fallback_candidates([primary, archive_outside_tolerance])
+
+    assert primary["_fallback_candidates"] == []
+    assert archive_outside_tolerance["_fallback_candidates"] == []
