@@ -2642,7 +2642,8 @@ def _handle_history_result(
             ),
             xbmc.LOGERROR,
         )
-        xbmcgui.Dialog().ok(_addon_name(), _string(30120))
+        msg = "Video file not found in WebDAV folder: {}\n\nCheck WebDAV settings and ensure the download completed on nzbdav.".format(webdav_folder)
+        xbmcgui.Dialog().ok(_addon_name(), msg)
         return True, None, None, no_video_retries
 
     xbmc.log(

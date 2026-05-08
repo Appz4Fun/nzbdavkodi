@@ -433,9 +433,16 @@ def find_video_file(
 
         return None
     except Exception as e:
+        error_detail = "{}".format(e)
+        if "401" in error_detail or "Unauthorized" in error_detail:
+            error_detail += " — Check WebDAV username/password in addon settings"
+        elif "404" in error_detail or "Not Found" in error_detail:
+            error_detail += " — WebDAV folder not found, check nzbdav is creating /content/ symlinks"
+        elif "Connection" in error_detail or "urlopen" in str(type(e).__name__):
+            error_detail += " — Check WebDAV server is reachable at configured URL"
         xbmc.log(
             "NZB-DAV: Error browsing WebDAV folder '{}': {} ({})".format(
-                folder_path, e, type(e).__name__
+                folder_path, error_detail, type(e).__name__
             ),
             xbmc.LOGERROR,
         )
