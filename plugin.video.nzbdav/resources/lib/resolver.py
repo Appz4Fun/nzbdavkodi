@@ -2511,6 +2511,14 @@ def _handle_job_status(job_status, nzo_id, dialog, last_status):
     status = job_status.get("status", "Unknown")
     percentage = job_status.get("percentage", "0")
 
+    if dialog.iscanceled():
+        xbmc.log(
+            "NZB-DAV: User cancelled job {}".format(nzo_id),
+            xbmc.LOGINFO,
+        )
+        cancel_job(nzo_id)
+        return True, last_status
+
     if status != last_status:
         xbmc.log(
             "NZB-DAV: Job {} status changed: {} -> {}".format(

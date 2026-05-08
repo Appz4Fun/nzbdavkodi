@@ -283,6 +283,7 @@ def test_direct_playback_service_config_reads_proxy_window_once_for_fast_start()
 
 def test_handle_job_status_accepts_fractional_percentage():
     dialog = MagicMock()
+    dialog.iscanceled.return_value = False
 
     should_stop, last_status = _handle_job_status(
         {"status": "Downloading", "percentage": "45.5"},
@@ -306,6 +307,7 @@ def test_handle_job_status_does_not_block_on_stuck_dialog_update():
         _time.sleep(0.25)
 
     dialog = MagicMock()
+    dialog.iscanceled.return_value = False
     dialog.update.side_effect = stuck_update
 
     started = _time.perf_counter()
@@ -4344,7 +4346,7 @@ def test_resolve_poll_interval_respected(
     mock_history.return_value = None
 
     dialog = MagicMock()
-    dialog.iscanceled.side_effect = [False, True]
+    dialog.iscanceled.return_value = False
     mock_gui.DialogProgress.return_value = dialog
 
     monitor = MagicMock()
