@@ -866,9 +866,11 @@ def _show_cache_prompt_after_playback(stream_info):
 
 def _finish_direct_playback(handle, prepared):
     """Finish resolver playback on the Kodi thread."""
+    _resolve_stage("finish_direct_playback_start")
     stream_url = prepared["stream_url"]
     stream_headers = prepared["stream_headers"]
     service_port = prepared.get("service_port")
+    _resolve_stage("finish_direct_playback_got_params service_port={}".format(service_port))
 
     if service_port:
         proxy_url = prepared["proxy_url"]
@@ -2677,6 +2679,7 @@ def _handle_resolve_exception(label, error, handle=None):
     from resources.lib.http_util import redact_text
 
     message = redact_text(str(error))
+    _resolve_stage("handle_resolve_exception {} {}".format(label, message))
     xbmc.log(
         "NZB-DAV: Unexpected error in {}: {}".format(label, message), xbmc.LOGERROR
     )
@@ -2904,6 +2907,7 @@ def resolve(handle, params):
             xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
             xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
     except _RESOLVE_RUNTIME_ERRORS as error:
+        _resolve_stage("resolve_exception {}".format(error))
         _stop_fallback_submit_worker(fallback_state, cancel_submitted=True)
         _handle_resolve_exception("resolve", error, handle=handle)
     finally:
