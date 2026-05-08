@@ -3113,3 +3113,57 @@ def test_archive_peer_rejects_archive_peer_outside_20_percent_tolerance(
 
     assert primary["_fallback_candidates"] == []
     assert archive_outside_tolerance["_fallback_candidates"] == []
+
+
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+@patch("resources.lib.fallback_streams._fallback_settings")
+def test_archive_peers_with_shared_archive_base_match_via_group_key_short_circuit(
+    mock_settings, mock_fetch
+):
+    """Archive manifests that share a non-empty archive_base produce identical
+    group keys (archive group keys exclude bytes by design), so they peer via
+    the early-return short-circuit even when their group_bytes diverge widely.
+    Pin that contract so a future change to the size gate does not silently
+    drop legitimate same-archive-base peers.
+    """
+    mock_settings.return_value = (True, 5)
+    primary = _result(
+        "Once.Upon.a.Time.in.the.West.1968.UHD.BluRay.2160p.DV.HEVC.REMUX-FraMeSToR",
+        "https://idx/primary-shared-base.nzb",
+        95000000000,
+        meta={
+            "resolution": "2160p",
+            "quality": "BluRay REMUX",
+            "codec": "x265/HEVC",
+            "hdr": ["Dolby Vision"],
+            "group": "FraMeSToR",
+            "container": "mkv",
+        },
+    )
+    repost_shared_base = _result(
+        "Once.Upon.a.Time.in.the.West.1968.UHD.BluRay.2160p.DV.HEVC.REMUX-FraMeSToR",
+        "https://idx/shared-base-repost.nzb",
+        140000000000,
+        meta={
+            "resolution": "2160p",
+            "quality": "BluRay REMUX",
+            "codec": "x265/HEVC",
+            "hdr": ["Dolby Vision"],
+            "group": "FraMeSToR",
+            "container": "mkv",
+        },
+    )
+    manifests = {
+        "https://idx/primary-shared-base.nzb": _manifest(
+            "archive", "shared archive base", 80000000000, "articles-a"
+        ),
+        "https://idx/shared-base-repost.nzb": _manifest(
+            "archive", "shared archive base", 140000000000, "articles-b"
+        ),
+    }
+    mock_fetch.side_effect = lambda url, **_kwargs: manifests[url]
+
+    attach_fallback_candidates([primary, repost_shared_base])
+
+    assert primary["_fallback_candidates"] == [repost_shared_base]
+    assert repost_shared_base["_fallback_candidates"] == [primary]

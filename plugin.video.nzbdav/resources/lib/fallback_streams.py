@@ -748,6 +748,12 @@ _PEER_BYTES_TOLERANCE_FRACTION = 0.20
 
 def _fallback_manifest_peer_matches(primary, candidate):
     """Return whether manifest evidence allows an already-prefiltered peer."""
+    # Archive group keys are (kind, archive_base_name) without group_bytes, so
+    # two archive manifests that share an archive_base short-circuit here and
+    # bypass the +/-20% size gate below. That is intentional: a shared
+    # archive_base is strong evidence of the same upload set. Distinct
+    # archive_base names (Theatrical vs Extended packaging) fall through to
+    # the byte-tolerance gate.
     primary_key = _manifest_group_key(primary)
     candidate_key = _manifest_group_key(candidate)
     if primary_key is not None and primary_key == candidate_key:
