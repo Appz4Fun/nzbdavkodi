@@ -69,6 +69,14 @@ def test_storage_to_webdav_path_standard():
     assert result == "/content/uncategorized/Send Help 2026 1080p/"
 
 
+def test_storage_to_webdav_path_mnt_data_variant():
+    """Storage path with /mnt/data prefix also converts to /content/ WebDAV path."""
+    result = _storage_to_webdav_path(
+        "/mnt/data/completed-symlinks/uncategorized/Send Help 2026 1080p"
+    )
+    assert result == "/content/uncategorized/Send Help 2026 1080p/"
+
+
 def test_storage_to_webdav_path_different_category():
     """Storage path with non-uncategorized category converts correctly."""
     result = _storage_to_webdav_path(
