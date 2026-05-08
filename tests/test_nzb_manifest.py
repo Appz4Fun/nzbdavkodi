@@ -16,9 +16,11 @@ from resources.lib.nzb_manifest import (
 
 @pytest.fixture(autouse=True)
 def clear_nzb_fetch_cache():
-    _nzb_manifest._fetch_nzb_bytes.cache_clear()
+    if hasattr(_nzb_manifest._fetch_nzb_bytes, 'cache_clear'):
+        _nzb_manifest._fetch_nzb_bytes.cache_clear()
     yield
-    _nzb_manifest._fetch_nzb_bytes.cache_clear()
+    if hasattr(_nzb_manifest._fetch_nzb_bytes, 'cache_clear'):
+        _nzb_manifest._fetch_nzb_bytes.cache_clear()
 
 
 def _nzb_xml(files):
@@ -793,6 +795,7 @@ def test_fetch_nzb_video_manifest_passes_candidate_health_check(mock_http_get):
 
 
 @patch("resources.lib.nzb_manifest.http_get")
+@pytest.mark.skip(reason="LRU cache removed to fix Kodi crash; cache is an optimization, not core functionality")
 def test_fetch_nzb_video_manifest_caches_raw_nzb_bytes_for_same_fetch_params(
     mock_http_get,
 ):
@@ -811,6 +814,7 @@ def test_fetch_nzb_video_manifest_caches_raw_nzb_bytes_for_same_fetch_params(
     )
 
 
+@pytest.mark.skip(reason="LRU cache removed to fix Kodi crash; cache is an optimization, not core functionality")
 @patch("resources.lib.nzb_manifest.http_get")
 def test_fetch_nzb_video_manifest_parses_cached_bytes_per_health_check(
     mock_http_get,

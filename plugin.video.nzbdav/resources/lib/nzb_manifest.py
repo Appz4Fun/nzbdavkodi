@@ -498,7 +498,6 @@ def _valid_nzb_url(url):
     return True
 
 
-@lru_cache(maxsize=128)
 def _fetch_nzb_bytes(url, timeout, max_bytes):
     """Fetch raw NZB bytes with a small LRU keyed by fetch parameters."""
     return http_get(url, timeout=timeout, max_bytes=max_bytes)
