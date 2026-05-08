@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  kodi-test:
+    image: linuxserver/kodi-headless:latest
+    container_name: kodi-test-nzbdav
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+    ports:
+      - "8080:8080"  # Kodi HTTP
+      - "6080:6080"  # Kodi JSON-RPC
+      - "5900:5900"  # VNC
+    volumes:
+      - ./kodi-config:/config
+      - ./plugin.video.nzbdav:/config/addons/plugin.video.nzbdav
+    restart: unless-stopped
+    networks:
+      - test-net
+
+  vnc-server:
+    image: dorowu/ubuntu-desktop-lxde-vnc:focal
+    container_name: vnc-test-nzbdav
+    ports:
+      - "6901:80"   # VNC Web
+      - "5901:5900" # VNC Direct
+    environment:
+      - VNC_PASSWORD=test123
+    restart: unless-stopped
+    networks:
+      - test-net
+
+networks:
+  test-net:
+    driver: bridge
