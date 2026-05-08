@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | Version | Released | What it's about |
 |---|---|---|
 | **[Unreleased](#unreleased)** | Pending | Not started |
+| **[1.2.1](#121--2026-05-07)** | 2026-05-07 | Synthetic indexer-size fallback manifests, prefetch indexer-size gate, NZB fetch LRU, stale-progress failure fix |
 | **[1.2.0](#120--2026-05-07)** | 2026-05-07 | RunScript fallback discovery wiring, thread-safe settings plumbing through fallback path, deferred fallback prefetch, probe-thread starvation survival, NZBHydra2 result cap raised |
 | **[1.1.0](#110--2026-05-07)** | 2026-05-07 | TMDBHelper RunScript playback handoff, script-safe settings reads, faster post-picker resolver handoff, direct MKV start, clearer submit errors |
 | **[1.0.9](#109--2026-05-06)** | 2026-05-06 | Fallback discovery and live failover speed, longer live-service timeouts, dev-only live fallback tests |
@@ -61,6 +62,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 No changes yet.
+
+## [1.2.1] — 2026-05-07
+
+> **Fallback selection handles more real-world NZBs and avoids more wasted
+> manifest fetches.** Parser-unsupported candidates can now use conservative
+> indexer-size evidence when the indexer has a plausible video-sized result,
+> while the selection prefetch path rejects obvious size mismatches before
+> downloading large NZB payloads.
+
+**Changed**
+- **Unsupported NZB manifests can synthesize fallback evidence from indexer
+  size.** When parsing returns `invalid_xml` or `no_video_file`, Hydra/Prowlarr
+  `<size>` can produce a video-kind manifest if the candidate is at least
+  100 MB. The synthetic digest is derived from `sha256(link)`, so same-link
+  duplicates stay rejectable without conflating separate fallback uploads.
+- **Selection-time fallback prefetch now gates on indexer size before fetching
+  the candidate NZB.** Candidates more than +/-25% away from the selected
+  result's indexer size are skipped before downloading the candidate NZB
+  payload. The band is wider than the manifest match gate to allow RAR/PAR2
+  overhead.
+- **Raw NZB bytes are cached with a small LRU.** Re-fetching the same URL with
+  the same fetch parameters reuses cached bytes, but parsing still runs fresh
+  on each call so per-call health checks continue to select the right file.
+- **Terminal nzbdav history failures beat stale active queue progress.** A
+  failed history row can now win over a fast stale queue row such as
+  `Downloading 50%`, avoiding a stuck progress dialog after article-not-found
+  failures.
+- **The prevalidated fallback first-byte timing assertion is less scheduler
+  fragile.** The test still proves the cached probe is reused before writing
+  fallback bytes, but no longer fails on tiny absolute timing jitter after a
+  full-suite run.
+
+**Tests**
+- Added regression coverage for synthetic indexer-size manifests, the 100 MB
+  floor, +/-25% prefetch size rejection, prefilled unsupported manifest
+  synthesis, cached prefetch proof size-gate enforcement, raw NZB fetch caching
+  with fresh health-check parsing, and failed-history polling precedence.
 
 ## [1.2.0] — 2026-05-07
 
@@ -1003,6 +1041,9 @@ No changes yet.
 
 ---
 
+[1.2.1]: https://github.com/xbmc4lyfe/nzbdavkodi/compare/v1.2.0...v1.2.1
+[1.2.0]: https://github.com/xbmc4lyfe/nzbdavkodi/compare/v1.1.0...v1.2.0
+[1.1.0]: https://github.com/xbmc4lyfe/nzbdavkodi/compare/v1.0.9...v1.1.0
 [1.0.9]: https://github.com/xbmc4lyfe/nzbdavkodi/compare/v1.0.8...v1.0.9
 [1.0.8]: https://github.com/xbmc4lyfe/nzbdavkodi/compare/v1.0.7...v1.0.8
 [1.0.7]: https://github.com/xbmc4lyfe/nzbdavkodi/compare/v1.0.6...v1.0.7

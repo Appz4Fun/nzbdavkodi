@@ -11,8 +11,11 @@
 
 A Kodi 21 (Omega) player/resolver addon that enables Usenet-based streaming through NZBHydra2 (or Prowlarr) and nzbdav. Works as a TMDBHelper player -- search for a movie or TV episode, pick an NZB, and stream it directly through nzbdav's WebDAV server.
 
-> **Current release: `v1.2.0`** on `main`. Highlights on this branch:
+> **Current release: `v1.2.1`** on `main`. Highlights on this branch:
 >
+> - **Broader fallback discovery**: unsupported or obfuscated candidate NZBs can use the indexer's reported size as conservative fallback evidence, while a +/-25% indexer-size prefetch gate skips obvious mismatches before downloading large NZBs.
+> - **Faster repeated manifest checks**: raw NZB downloads are cached with a small LRU, but each caller still reparses the bytes so health checks can select different valid files.
+> - **Cleaner nzbdav failure handling**: terminal failed history rows now beat stale active queue progress, avoiding the stuck-at-an-old-percentage dialog after article-not-found failures.
 > - **RunScript fallback discovery**: TMDBHelper script-mode picks now submit duplicate-release standby streams the same way the plugin-handle picker path does, with a thread-safe settings getter plumbed through every fallback path so the work runs cleanly off the main thread.
 > - **TMDBHelper RunScript playback handoff**: TMDBHelper enters the addon through a script-mode player path that avoids the plugin-handle resolver freeze; already-ready plain MKVs hand straight to Kodi as WebDAV URLs when no fallback sources are attached.
 > - **Pass-through-first proxy**: MKV and other non-MP4 streams use byte pass-through by default, preserving native source seeking and zero-fill recovery. Force-remux is now optional, with threshold `0` meaning fully off.
@@ -64,7 +67,9 @@ If ffmpeg isn't installed, the proxy degrades gracefully to pass-through or dire
 
 When **Submit duplicate releases as live fallbacks** is enabled, the resolver attaches conservative duplicate candidates from the result list and submits them after the primary NZB is accepted. This is enabled by default. Standby submits run in a background worker so primary playback can continue polling immediately. Once playback starts, the proxy keeps the fallback job metadata with the session and can switch to another prepared stream if the active source becomes unrecoverable.
 
-Fallback grouping is based on the NZB manifest's selected payload entry, not the search result size. The addon fetches each candidate NZB, prefers the main video filename and file-level segment-byte total when visible, and falls back to a provisional archive/RAR grouping key when only archive parts are visible. If the initially selected file candidate fails a Message-ID health check, the addon skips that candidate and tries the next eligible file in the same NZB bundle instead of failing the whole result. Candidates with the same selected payload Article Message-IDs are treated as mirrored copies of the same NZB and are not used as fallbacks.
+Fallback grouping is based on the NZB manifest's selected payload entry, not the search result size. The addon fetches each candidate NZB, prefers the main video filename and file-level segment-byte total when visible, and falls back to a provisional archive/RAR grouping key when only archive parts are visible. If the parser cannot extract a usable video entry from an otherwise plausible candidate, the addon can synthesize conservative video evidence from the indexer's reported size when it is at least 100 MB. Candidates with the same selected payload Article Message-IDs, or the same link-derived synthetic digest, are treated as mirrored copies of the same NZB and are not used as fallbacks.
+
+Before fetching a candidate NZB for selection-time fallback evidence, the addon also rejects candidates whose indexer-reported sizes are more than +/-25% away from the selected result. This is intentionally wider than the manifest match gate because indexer sizes can include RAR/PAR2 overhead, but it avoids downloading large NZBs for obvious size mismatches.
 
 Runtime switching still requires exact WebDAV `Content-Length` equality and 1000 pseudo-random 4096-byte fingerprint samples before the proxy switches to a fallback source. **Maximum fallback releases** caps how many standby submits are attached per primary result and defaults to `5`.
 

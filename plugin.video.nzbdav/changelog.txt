@@ -1,3 +1,10 @@
+v1.2.1 (2026-05-07)
+- Synthesize conservative video fallback manifests from Hydra/Prowlarr indexer size when an NZB parses as unsupported, with a 100 MB minimum and a link-derived digest so same-link duplicates stay rejectable without conflating separate uploads.
+- Reject fallback prefetch candidates whose indexer sizes are outside a +/-25% band before downloading their NZB, avoiding expensive manifest fetches for obvious mismatches.
+- Cache raw NZB fetch bytes with a small LRU while still reparsing each call so per-call health checks remain effective.
+- Let terminal failed history rows beat stale active queue progress, so article-not-found failures do not leave Kodi stuck at an old download percentage.
+- Add regression coverage for synthetic indexer-size manifests, prefetch size gating, NZB fetch caching, failed-history polling, and the fallback first-byte timing guard.
+
 v1.2.0 (2026-05-07)
 - Wire fallback discovery into the RunScript/TMDBHelper playback path so script-mode picks now submit standby fallback streams the same way the plugin-handle path does.
 - Plumb a thread-safe settings getter through fallback prefetch, submit, adoption, and candidate submission so RunScript fallback work reads addon settings without touching xbmcaddon.Addon() off the main thread.
