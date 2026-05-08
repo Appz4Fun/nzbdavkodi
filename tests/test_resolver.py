@@ -4465,6 +4465,37 @@ def test_poll_once_returns_active_queue_before_slow_history(
 @patch("resources.lib.resolver.probe_webdav_reachable")
 @patch("resources.lib.resolver.get_job_history")
 @patch("resources.lib.resolver.get_job_status")
+def test_poll_once_failed_history_wins_over_fast_stale_active_queue(
+    mock_status, mock_history, mock_probe
+):
+    """A stale active queue row must not hide a terminal failed history row."""
+
+    def slightly_slow_failed_history(_nzo_id):
+        _time.sleep(0.01)
+        return {
+            "status": "Failed",
+            "fail_message": "article not found",
+        }
+
+    mock_status.return_value = {"status": "Downloading", "percentage": "50"}
+    mock_history.side_effect = slightly_slow_failed_history
+
+    job_status, history, webdav_error = _poll_once(
+        "nzo_failed", "movie", _make_monitor()
+    )
+
+    assert job_status == mock_status.return_value
+    assert history == {
+        "status": "Failed",
+        "fail_message": "article not found",
+    }
+    assert webdav_error is None
+    mock_probe.assert_not_called()
+
+
+@patch("resources.lib.resolver.probe_webdav_reachable")
+@patch("resources.lib.resolver.get_job_history")
+@patch("resources.lib.resolver.get_job_status")
 def test_poll_once_returns_full_progress_queue_before_slow_history(
     mock_status, mock_history, mock_probe
 ):

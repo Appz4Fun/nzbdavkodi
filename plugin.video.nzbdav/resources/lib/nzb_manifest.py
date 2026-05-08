@@ -6,6 +6,7 @@
 import hashlib
 import re
 import xml.etree.ElementTree as ET
+from functools import lru_cache
 from urllib.parse import urlsplit
 
 from resources.lib.http_util import HttpResponseTooLarge, http_get
@@ -497,6 +498,12 @@ def _valid_nzb_url(url):
     return True
 
 
+@lru_cache(maxsize=128)
+def _fetch_nzb_bytes(url, timeout, max_bytes):
+    """Fetch raw NZB bytes with a small LRU keyed by fetch parameters."""
+    return http_get(url, timeout=timeout, max_bytes=max_bytes)
+
+
 def fetch_nzb_video_manifest(
     url, timeout=20, max_bytes=_MAX_NZB_BYTES, health_check=None
 ):
@@ -504,7 +511,7 @@ def fetch_nzb_video_manifest(
     if not _valid_nzb_url(url):
         return _empty_manifest("invalid_url")
     try:
-        body = http_get(url, timeout=timeout, max_bytes=max_bytes)
+        body = _fetch_nzb_bytes(url, timeout, max_bytes)
     except HttpResponseTooLarge:
         return _empty_manifest("too_large")
     except (OSError, ValueError):

@@ -2155,7 +2155,10 @@ def test_handle_search_picker_fetches_fallbacks_after_selection(
 
     mock_fetch_manifest.assert_not_called()
     assert loader() == [duplicate]
-    assert mock_fetch_manifest.call_count == 3
+    assert [call.args[0] for call in mock_fetch_manifest.call_args_list] == [
+        "http://hydra/nzb/primary",
+        "http://hydra/nzb/dupe",
+    ]
     assert "_fallback_candidates" not in duplicate
     assert "_fallback_candidates" not in oversized
     mock_end.assert_called_once_with(8, succeeded=False)

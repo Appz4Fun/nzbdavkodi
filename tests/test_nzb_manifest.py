@@ -4,12 +4,21 @@
 from unittest.mock import patch
 from xml.sax.saxutils import escape, quoteattr
 
+import pytest
+from resources.lib import nzb_manifest as _nzb_manifest
 from resources.lib.http_util import HttpResponseTooLarge
 from resources.lib.nzb_manifest import (
     extract_nzb_video_manifest,
     fetch_nzb_video_manifest,
     normalize_video_filename,
 )
+
+
+@pytest.fixture(autouse=True)
+def clear_nzb_fetch_cache():
+    _nzb_manifest._fetch_nzb_bytes.cache_clear()
+    yield
+    _nzb_manifest._fetch_nzb_bytes.cache_clear()
 
 
 def _nzb_xml(files):
@@ -781,6 +790,55 @@ def test_fetch_nzb_video_manifest_passes_candidate_health_check(mock_http_get):
 
     assert manifest["video_name"] == "Working.Movie.mkv"
     assert manifest["skipped_candidate_count"] == 1
+
+
+@patch("resources.lib.nzb_manifest.http_get")
+def test_fetch_nzb_video_manifest_caches_raw_nzb_bytes_for_same_fetch_params(
+    mock_http_get,
+):
+    xml = _nzb_xml([_file('"Movie.mkv" yEnc (1/1)', [(1, 1000, "a@id")])])
+    mock_http_get.return_value = xml.decode("utf-8")
+
+    first = fetch_nzb_video_manifest("https://idx/getnzb/cached", timeout=7)
+    second = fetch_nzb_video_manifest("https://idx/getnzb/cached", timeout=7)
+
+    assert first["video_name"] == "Movie.mkv"
+    assert second["video_name"] == "Movie.mkv"
+    mock_http_get.assert_called_once_with(
+        "https://idx/getnzb/cached",
+        timeout=7,
+        max_bytes=100 * 1024 * 1024,
+    )
+
+
+@patch("resources.lib.nzb_manifest.http_get")
+def test_fetch_nzb_video_manifest_parses_cached_bytes_per_health_check(
+    mock_http_get,
+):
+    xml = _nzb_xml(
+        [
+            _file('"Preferred.Movie.mkv" yEnc (1/1)', [(1, 1000, "preferred@id")]),
+            _file('"Fallback.Movie.mkv" yEnc (1/1)', [(1, 900, "fallback@id")]),
+        ]
+    )
+    mock_http_get.return_value = xml.decode("utf-8")
+
+    reject_preferred = fetch_nzb_video_manifest(
+        "https://idx/getnzb/health-cached",
+        health_check=lambda candidate: "preferred@id" not in candidate["message_ids"],
+    )
+    accept_preferred = fetch_nzb_video_manifest(
+        "https://idx/getnzb/health-cached",
+        health_check=lambda _candidate: True,
+    )
+
+    assert reject_preferred["video_name"] == "Fallback.Movie.mkv"
+    assert accept_preferred["video_name"] == "Preferred.Movie.mkv"
+    mock_http_get.assert_called_once_with(
+        "https://idx/getnzb/health-cached",
+        timeout=20,
+        max_bytes=100 * 1024 * 1024,
+    )
 
 
 @patch("resources.lib.nzb_manifest.http_get")

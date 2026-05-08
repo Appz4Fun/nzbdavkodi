@@ -51,6 +51,7 @@ MAX_POLL_ITERATIONS = _DOWNLOAD_TIMEOUT_MAX // _POLL_INTERVAL_MIN
 _FALLBACK_SHUTDOWN_JOIN_TIMEOUT = 10
 _POLL_NEAR_COMPLETE_PERCENTAGE = 99.0
 _POLL_LATE_ACTIVE_HISTORY_GRACE_PERCENTAGE = 95.0
+_POLL_ACTIVE_HISTORY_GRACE_SECONDS = 0.025
 _POLL_LATE_ACTIVE_HISTORY_GRACE_SECONDS = 0.025
 _POLL_NEAR_COMPLETE_HISTORY_GRACE_SECONDS = 0.1
 _POLL_FULL_PROGRESS_HISTORY_GRACE_SECONDS = 0.14
@@ -1250,6 +1251,13 @@ def _poll_once(nzo_id, title, monitor, settings_getter=None):
                     history_done,
                     deadline,
                     _POLL_LATE_ACTIVE_HISTORY_GRACE_SECONDS,
+                )
+            else:
+                _wait_for_nearly_complete_history(
+                    history_ready,
+                    history_done,
+                    deadline,
+                    _POLL_ACTIVE_HISTORY_GRACE_SECONDS,
                 )
             break
         if queue_done.is_set() and _queue_status_has_active_status(job_status[0]):

@@ -30,6 +30,8 @@ _FALLBACK_MANIFEST_STALL_SPECULATION_SECONDS = 0.05
 _FALLBACK_MANIFEST_OPTIONAL_TAIL_WAIT_SECONDS = 0.1
 _ALLOWED_STREAM_SCHEMES = frozenset(("http", "https"))
 _METADATA_ONLY_MANIFEST_REASONS = frozenset(("too_large",))
+_INDEXER_SIZE_SYNTHETIC_MANIFEST_REASONS = frozenset(("invalid_xml", "no_video_file"))
+_INDEXER_SIZE_SYNTHETIC_MIN_BYTES = 100 * 1024 * 1024
 _PrecomputedProbeBase = namedtuple("_PrecomputedProbeBase", "parts origin path")
 
 
@@ -744,6 +746,73 @@ def _fallback_peer_matches(primary, candidate):
 
 
 _PEER_BYTES_TOLERANCE_FRACTION = 0.20
+_PREFETCH_INDEXER_SIZE_TOLERANCE_FRACTION = 0.25
+
+
+def _result_indexer_size(result):
+    """Return the indexer-provided result size in bytes, or zero."""
+    if not isinstance(result, dict):
+        return 0
+    value = result.get("size")
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value if value > 0 else 0
+    if isinstance(value, str):
+        value = value.strip().replace(",", "")
+        if not value:
+            return 0
+    try:
+        size = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return size if size > 0 else 0
+
+
+def _synthetic_indexer_size_manifest(result):
+    """Return a video-kind manifest synthesized from indexer size metadata."""
+    size = _result_indexer_size(result)
+    if size < _INDEXER_SIZE_SYNTHETIC_MIN_BYTES:
+        return None
+    link = result.get("link", "") if isinstance(result, dict) else ""
+    if not isinstance(link, str) or not link:
+        return None
+    digest = hashlib.sha256(link.encode("utf-8")).hexdigest()
+    return {
+        "payload_kind": "video",
+        "group_name": "",
+        "group_bytes": size,
+        "video_name": "",
+        "normalized_video_name": "",
+        "video_bytes": size,
+        "archive_base_name": "",
+        "article_digest": digest,
+        "article_count": 0,
+        "skipped_candidate_count": 0,
+        "skipped_candidates": [],
+        "unsupported_reason": "",
+    }
+
+
+def _manifest_with_indexer_size_fallback(result, manifest):
+    """Replace parser-unsupported manifests with indexer-size fallback evidence."""
+    if not isinstance(manifest, dict):
+        return manifest
+    reason = manifest.get("unsupported_reason", "") or ""
+    if reason not in _INDEXER_SIZE_SYNTHETIC_MANIFEST_REASONS:
+        return manifest
+    synthetic = _synthetic_indexer_size_manifest(result)
+    return synthetic or manifest
+
+
+def _prefetch_size_gate_match(primary, candidate):
+    """Return whether indexer sizes are close enough for prefetching NZBs."""
+    primary_size = _result_indexer_size(primary)
+    candidate_size = _result_indexer_size(candidate)
+    if primary_size <= 0 or candidate_size <= 0:
+        return True
+    tolerance = primary_size * _PREFETCH_INDEXER_SIZE_TOLERANCE_FRACTION
+    return abs(primary_size - candidate_size) <= tolerance
 
 
 def _fallback_manifest_peer_matches(primary, candidate):
@@ -856,6 +925,14 @@ def selected_manifest_may_have_fallback_peer(selected):
     if not isinstance(selected, dict):
         return False
     selected_manifest = selected.get("_fallback_manifest")
+    if isinstance(selected_manifest, dict):
+        selected_manifest = _manifest_with_indexer_size_fallback(
+            selected, selected_manifest
+        )
+        selected["_fallback_manifest"] = selected_manifest
+        selected["_fallback_manifest_error"] = selected_manifest.get(
+            "unsupported_reason", ""
+        )
     return not (
         isinstance(selected_manifest, dict)
         and not _manifest_may_match_any_peer(selected)
@@ -889,6 +966,8 @@ def _ensure_fallback_manifest(result, manifest_cache):
     """Fetch one missing NZB manifest using the attach-call cache."""
     manifest = result.get("_fallback_manifest")
     if isinstance(manifest, dict):
+        manifest = _manifest_with_indexer_size_fallback(result, manifest)
+        result["_fallback_manifest"] = manifest
         result["_fallback_manifest_error"] = manifest.get("unsupported_reason", "")
         return manifest
     link = result.get("link", "")
@@ -906,6 +985,8 @@ def _ensure_fallback_manifest(result, manifest_cache):
     if not isinstance(manifest, dict):
         manifest = _manifest_error("fetch_error")
         manifest_cache[link] = manifest
+    manifest = _manifest_with_indexer_size_fallback(result, manifest)
+    manifest_cache[link] = manifest
     result["_fallback_manifest"] = manifest
     result["_fallback_manifest_error"] = manifest.get("unsupported_reason", "")
     return manifest
@@ -1190,6 +1271,8 @@ def _prefetch_candidate_matches(
     candidate_link = candidate.get("link", "")
     if not candidate_link or candidate_link in seen_links:
         return False
+    if not _prefetch_size_gate_match(target, candidate):
+        return False
     candidate_meta = candidate.get("_meta")
     if not isinstance(candidate_meta, dict):
         candidate_meta = None
@@ -1290,6 +1373,8 @@ def attach_fallback_candidates_for_selection(selected, results, fallback_setting
                 continue
             candidate_link = candidate.get("link", "")
             if not candidate_link or candidate_link in seen_prefetch_links:
+                continue
+            if not _prefetch_size_gate_match(selected, candidate):
                 continue
             if _has_prefetch_gate_match(selected, candidate):
                 prefetch_match = True

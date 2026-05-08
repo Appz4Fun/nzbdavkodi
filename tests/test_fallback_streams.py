@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 nzbdav contributors
 
+import hashlib
 import threading
 import time as _time
 from unittest.mock import ANY, MagicMock, patch
@@ -717,6 +718,73 @@ def test_too_large_manifest_can_attach_same_profile_metadata_fallback(
 
 @patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
 @patch("resources.lib.fallback_streams._fallback_settings")
+def test_unsupported_manifest_uses_indexer_size_as_synthetic_video_manifest(
+    mock_settings, mock_fetch
+):
+    mock_settings.return_value = (True, 5)
+    meta = {
+        "resolution": "2160p",
+        "quality": "REMUX",
+        "codec": "x265/HEVC",
+        "hdr": ["Dolby Vision"],
+        "audio": ["TrueHD", "Atmos"],
+        "container": "mkv",
+    }
+    primary = _result(
+        "The.Matrix.1999.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/unsupported-primary.nzb",
+        "60000000000",
+        meta=meta,
+    )
+    fallback = _result(
+        "The.Matrix.1999.UHD.BluRay.2160p.DV.HEVC.REMUX-ALT",
+        "https://idx/unsupported-fallback.nzb",
+        61000000000,
+        meta=meta,
+    )
+    mock_fetch.return_value = make_empty_manifest("no_video_file")
+
+    attach_fallback_candidates([primary, fallback])
+
+    assert primary["_fallback_candidates"] == [fallback]
+    assert fallback["_fallback_candidates"] == [primary]
+    assert primary["_fallback_manifest"]["payload_kind"] == "video"
+    assert primary["_fallback_manifest"]["group_bytes"] == 60000000000
+    assert primary["_fallback_manifest"]["video_bytes"] == 60000000000
+    assert (
+        primary["_fallback_manifest"]["article_digest"]
+        == hashlib.sha256(primary["link"].encode("utf-8")).hexdigest()
+    )
+    assert primary["_fallback_manifest"]["unsupported_reason"] == ""
+
+
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+@patch("resources.lib.fallback_streams._fallback_settings")
+def test_tiny_indexer_size_does_not_synthesize_unsupported_manifest(
+    mock_settings, mock_fetch
+):
+    mock_settings.return_value = (True, 5)
+    primary = _result(
+        "Movie 2026 1080p WEB-DL x265-GROUP",
+        "https://idx/tiny-a.nzb",
+        90 * 1024 * 1024,
+    )
+    fallback = _result(
+        "Movie 2026 1080p WEB-DL x265-ALT",
+        "https://idx/tiny-b.nzb",
+        99 * 1024 * 1024,
+    )
+    mock_fetch.return_value = make_empty_manifest("no_video_file")
+
+    attach_fallback_candidates([primary, fallback])
+
+    assert primary["_fallback_candidates"] == []
+    assert fallback["_fallback_candidates"] == []
+    assert primary["_fallback_manifest"]["unsupported_reason"] == "no_video_file"
+
+
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+@patch("resources.lib.fallback_streams._fallback_settings")
 def test_metadata_only_fallback_rejects_proper_repack_and_edition_mismatches(
     mock_settings, mock_fetch
 ):
@@ -804,6 +872,117 @@ def test_selection_fallback_prefilter_skips_manifest_fetch_for_unrelated_candida
         "https://idx/selected.nzb",
         "https://idx/related.nzb",
     ]
+
+
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+@patch("resources.lib.fallback_streams._fallback_settings")
+def test_selection_prefetch_rejects_indexer_size_outside_twenty_five_percent(
+    mock_settings, mock_fetch
+):
+    mock_settings.return_value = (True, 5)
+    selected = _result(
+        "The.Matrix.1999.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/selected-size-gate.nzb",
+        60000000000,
+        meta={
+            "resolution": "2160p",
+            "quality": "REMUX",
+            "codec": "x265/HEVC",
+            "hdr": ["Dolby Vision"],
+            "audio": ["TrueHD", "Atmos"],
+            "container": "mkv",
+        },
+    )
+    oversized = _result(
+        "The.Matrix.1999.UHD.BluRay.2160p.DV.HEVC.REMUX-ALT",
+        "https://idx/oversized-size-gate.nzb",
+        76000000000,
+        meta=selected["_meta"],
+    )
+
+    attach_fallback_candidates_for_selection(selected, [selected, oversized])
+
+    assert selected["_fallback_candidates"] == []
+    mock_fetch.assert_not_called()
+
+
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+@patch("resources.lib.fallback_streams._fallback_settings")
+def test_selection_prefilled_unsupported_manifest_can_synthesize_indexer_manifest(
+    mock_settings, mock_fetch
+):
+    mock_settings.return_value = (True, 5)
+    meta = {
+        "resolution": "2160p",
+        "quality": "REMUX",
+        "codec": "x265/HEVC",
+        "hdr": ["Dolby Vision"],
+        "audio": ["TrueHD", "Atmos"],
+        "container": "mkv",
+    }
+    selected = _result(
+        "The.Matrix.1999.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/prefilled-unsupported.nzb",
+        60000000000,
+        meta=meta,
+    )
+    selected["_fallback_manifest"] = make_empty_manifest("no_video_file")
+    fallback = _result(
+        "The.Matrix.1999.UHD.BluRay.2160p.DV.HEVC.REMUX-ALT",
+        "https://idx/prefilled-fallback.nzb",
+        61000000000,
+        meta=meta,
+    )
+    mock_fetch.return_value = _manifest(
+        "video", "the matrix 1999 remux.mkv", 61000000000, "fallback"
+    )
+
+    attach_fallback_candidates_for_selection(selected, [selected, fallback])
+
+    assert selected["_fallback_candidates"] == [fallback]
+    assert selected["_fallback_manifest"]["payload_kind"] == "video"
+    assert selected["_fallback_manifest"]["group_bytes"] == 60000000000
+    assert [call.args[0] for call in mock_fetch.call_args_list] == [
+        "https://idx/prefilled-fallback.nzb",
+    ]
+
+
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+@patch("resources.lib.fallback_streams._fallback_settings")
+def test_selection_cached_prefetch_proof_still_respects_indexer_size_gate(
+    mock_settings, mock_fetch
+):
+    from resources.lib import fallback_streams
+
+    mock_settings.return_value = (True, 5)
+    meta = {
+        "resolution": "2160p",
+        "quality": "REMUX",
+        "codec": "x265/HEVC",
+        "hdr": ["Dolby Vision"],
+        "audio": ["TrueHD", "Atmos"],
+        "container": "mkv",
+    }
+    selected = _result(
+        "The.Matrix.1999.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/proof-selected.nzb",
+        60000000000,
+        meta=meta,
+    )
+    oversized = _result(
+        "The.Matrix.1999.UHD.BluRay.2160p.DV.HEVC.REMUX-ALT",
+        "https://idx/proof-oversized.nzb",
+        76000000000,
+        meta=meta,
+    )
+    fallback_streams._remember_prefetch_gate_match(
+        selected, oversized, selected["_meta"], oversized["_meta"]
+    )
+
+    attach_fallback_candidates_for_selection(selected, [selected, oversized])
+
+    assert selected["_fallback_candidates"] == []
+    mock_fetch.assert_not_called()
 
 
 @patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")

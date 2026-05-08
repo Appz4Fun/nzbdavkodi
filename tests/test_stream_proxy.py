@@ -2194,9 +2194,9 @@ def test_prevalidated_fallback_reuses_current_probe_for_first_fallback_bytes():
     assert ctx["fallback_switch_count"] == 1
     assert _collect_written(handler) == payload
     assert probe_open.call_count == 1
-    assert first_byte_elapsed < 0.055, "first fallback byte took {:.3f}s".format(
-        first_byte_elapsed
-    )
+    assert (
+        first_byte_elapsed < probe_delay + stream_delay
+    ), "first fallback byte took {:.3f}s".format(first_byte_elapsed)
     assert stream_open.call_count <= 1
 
 
