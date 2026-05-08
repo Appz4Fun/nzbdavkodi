@@ -18,8 +18,8 @@ Both must pass cleanly. If `just lint` reports formatting issues, run `just lint
 Before cutting a new versioned release:
 
 1. Update `README.md` with any user-visible changes.
-2. Update `CHANGELOG.md` (repo-level) with the new version's notes.
-3. Update `plugin.video.nzbdav/changelog.txt` (the addon's Kodi-visible changelog).
+2. Update `CHANGELOG.md` (repo-level) with the full version notes.
+3. Update `plugin.video.nzbdav/changelog.txt` (the addon's Kodi-visible changelog) with only a short, sweet release summary under 80 characters.
 4. Bump the version in `plugin.video.nzbdav/addon.xml` to the new semver.
 5. Commit and push to `main`.
 6. Tag with the new semver and push the tag: `git tag vX.Y.Z && git push origin vX.Y.Z` (the Release workflow takes over from there).
