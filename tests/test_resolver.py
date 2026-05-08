@@ -1435,7 +1435,7 @@ def test_resolve_sets_resolved_url_before_remux_cache_prompt(
     mock_prepare,
     mock_cache_prompt,
 ):
-    """The advisory cache prompt must not delay Kodi receiving a playable URL."""
+    """The direct resolver path must not show a cache prompt before playback."""
     mock_poll_settings.return_value = (2, 60)
     mock_start_fallback.return_value = {"state": "fallback"}
     mock_xbmc.Monitor.return_value = _make_monitor()
@@ -1457,15 +1457,9 @@ def test_resolve_sets_resolved_url_before_remux_cache_prompt(
     )
     timing = {}
 
-    def slow_cache_prompt(_stream_info):
-        timing["cache_prompt_start"] = _time.perf_counter()
-        _time.sleep(0.12)
-        timing["cache_prompt_end"] = _time.perf_counter()
-
     def set_resolved(*_args):
         timing["resolved"] = _time.perf_counter()
 
-    mock_cache_prompt.side_effect = slow_cache_prompt
     mock_plugin.setResolvedUrl.side_effect = set_resolved
 
     started = _time.perf_counter()
@@ -1479,19 +1473,12 @@ def test_resolve_sets_resolved_url_before_remux_cache_prompt(
     )
 
     elapsed_to_resolved = timing["resolved"] - started
-    assert timing["resolved"] <= timing["cache_prompt_start"], (
-        "cache prompt started before setResolvedUrl; "
-        "selected-to-url={:.3f}s prompt_delay={:.3f}s".format(
-            elapsed_to_resolved,
-            timing["cache_prompt_end"] - timing["cache_prompt_start"],
-        )
-    )
     assert (
         elapsed_to_resolved < 0.08
     ), "remux cache prompt delayed setResolvedUrl by {:.3f}s".format(
         elapsed_to_resolved
     )
-    mock_cache_prompt.assert_called_once()
+    mock_cache_prompt.assert_not_called()
 
 
 @patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])

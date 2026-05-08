@@ -6,7 +6,6 @@
 import hashlib
 import re
 import xml.etree.ElementTree as ET
-from functools import lru_cache
 from urllib.parse import urlsplit
 
 from resources.lib.http_util import HttpResponseTooLarge, http_get

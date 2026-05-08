@@ -870,7 +870,9 @@ def _finish_direct_playback(handle, prepared):
     stream_url = prepared["stream_url"]
     stream_headers = prepared["stream_headers"]
     service_port = prepared.get("service_port")
-    _resolve_stage("finish_direct_playback_got_params service_port={}".format(service_port))
+    _resolve_stage(
+        "finish_direct_playback_got_params service_port={}".format(service_port)
+    )
 
     if service_port:
         proxy_url = prepared["proxy_url"]
