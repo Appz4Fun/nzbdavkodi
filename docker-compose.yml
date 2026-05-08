@@ -9,8 +9,7 @@ services:
       - PGID=1000
       - TZ=UTC
     ports:
-      - "8080:8080"  # Kodi HTTP
-      - "6080:6080"  # Kodi JSON-RPC
+      - "8080:8080"  # Kodi JSON-RPC (HTTP webserver)
       - "5900:5900"  # VNC
     volumes:
       - ./kodi-config:/config
