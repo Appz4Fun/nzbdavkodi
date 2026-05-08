@@ -1,1 +1,1 @@
-v1.2.1: Smarter fallbacks and stuck-download fixes.
+v1.2.2: Fix Kodi add-on info freeze.

@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | Version | Released | What it's about |
 |---|---|---|
 | **[Unreleased](#unreleased)** | Pending | Always-proxy playback default |
+| **[1.2.2](#122--2026-05-07)** | 2026-05-07 | Kodi add-on info freeze hotfix |
 | **[1.2.1](#121--2026-05-07)** | 2026-05-07 | Synthetic indexer-size fallback manifests, prefetch indexer-size gate, NZB fetch LRU, stale-progress failure fix |
 | **[1.2.0](#120--2026-05-07)** | 2026-05-07 | RunScript fallback discovery wiring, thread-safe settings plumbing through fallback path, deferred fallback prefetch, probe-thread starvation survival, NZBHydra2 result cap raised |
 | **[1.1.0](#110--2026-05-07)** | 2026-05-07 | TMDBHelper RunScript playback handoff, script-safe settings reads, faster post-picker resolver handoff, direct MKV start, clearer submit errors |
@@ -66,6 +67,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pass-through proxy by default instead of bypassing proxy prepare when no
   fallback sources are attached. This keeps fallback/rescue session handling
   available consistently across playback paths.
+
+## [1.2.2] — 2026-05-07
+
+> **Hotfix for Kodi/CoreELEC freezes when opening the NZB-DAV add-on info
+> dialog.** The published `v1.2.1` release asset still carried the full
+> historical changelog inside Kodi's `<news>` metadata, so clicking the add-on
+> could force Kodi/skin code to load a very large add-on-info payload.
+
+**Fixed**
+- Keep Kodi-visible `<news>` metadata to a short current-release summary in the
+  shipped package, matching the repository-side metadata guard and preventing
+  the oversized add-on info dialog path from being republished.
 
 ## [1.2.1] — 2026-05-07
 

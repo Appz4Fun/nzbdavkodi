@@ -11,8 +11,9 @@
 
 A Kodi 21 (Omega) player/resolver addon that enables Usenet-based streaming through NZBHydra2 (or Prowlarr) and nzbdav. Works as a TMDBHelper player -- search for a movie or TV episode, pick an NZB, and stream it directly through nzbdav's WebDAV server.
 
-> **Current release: `v1.2.1`** on `main`. Highlights on this branch:
+> **Current release: `v1.2.2`** on `main`. Highlights on this branch:
 >
+> - **Kodi add-on info hotfix**: the Kodi-visible release notes are kept to a short current-release summary so opening the add-on info dialog does not load the oversized historical changelog that froze CoreELEC/Kodi builds.
 > - **Broader fallback discovery**: unsupported or obfuscated candidate NZBs can use the indexer's reported size as conservative fallback evidence, while a +/-25% indexer-size prefetch gate skips obvious mismatches before downloading large NZBs.
 > - **Faster repeated manifest checks**: raw NZB downloads are cached with a small LRU, but each caller still reparses the bytes so health checks can select different valid files.
 > - **Cleaner nzbdav failure handling**: terminal failed history rows now beat stale active queue progress, avoiding the stuck-at-an-old-percentage dialog after article-not-found failures.
