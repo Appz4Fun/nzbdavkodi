@@ -7381,7 +7381,8 @@ def test_live_fallback_selection_reuses_validated_probe_urls_for_range_reads():
 
     validated_urls = []
     original_validate = fallback_streams._validated_probe_url
-    fallback_streams._cached_validated_probe_url.cache_clear()
+    if hasattr(fallback_streams._cached_validated_probe_url, "cache_clear"):
+        fallback_streams._cached_validated_probe_url.cache_clear()
 
     def counted_validate(url, probe_bases=None):
         validated_urls.append(url)

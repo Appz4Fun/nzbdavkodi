@@ -8,7 +8,6 @@ import re
 import threading
 import time
 from collections import namedtuple
-from functools import lru_cache
 from queue import Empty, Queue
 from types import SimpleNamespace
 from urllib.error import HTTPError, URLError
@@ -163,9 +162,8 @@ def _validated_probe_url(url, probe_bases=None):
     return None
 
 
-@lru_cache(maxsize=256)
 def _cached_validated_probe_url(url, probe_bases):
-    """Return a cached configured-origin probe URL for immutable base snapshots."""
+    """Return a configured-origin probe URL for immutable base snapshots."""
     return _validated_probe_url(url, probe_bases=probe_bases)
 
 
@@ -1461,9 +1459,8 @@ def fingerprint_ranges(content_length):
     return list(_fingerprint_ranges_for_length(content_length))
 
 
-@lru_cache(maxsize=512)
 def _fingerprint_ranges_for_length(content_length):
-    """Return cached immutable fingerprint ranges for a content length."""
+    """Return immutable fingerprint ranges for a content length."""
     if content_length <= 0:
         return ()
     if content_length <= _FINGERPRINT_BYTES:
