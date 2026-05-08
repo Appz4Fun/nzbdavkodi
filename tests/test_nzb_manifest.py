@@ -715,11 +715,32 @@ def test_rar_only_nzb_produces_provisional_archive_manifest():
     assert manifest["payload_kind"] == "archive"
     assert manifest["archive_base_name"] == "movie"
     assert manifest["group_name"] == "movie"
-    assert manifest["group_bytes"] == 0
+    assert manifest["group_bytes"] == 2000
     assert manifest["video_name"] == ""
     assert manifest["video_bytes"] == 0
     assert manifest["article_digest"]
     assert manifest["unsupported_reason"] == ""
+
+
+def test_archive_manifest_carries_total_rar_segment_bytes():
+    xml = _nzb_xml(
+        [
+            _file(
+                '"Show.S01E01.part001.rar" yEnc (1/2)',
+                [(1, 500_000, "p1seg1@id"), (2, 500_000, "p1seg2@id")],
+            ),
+            _file(
+                '"Show.S01E01.part002.rar" yEnc (1/2)',
+                [(1, 600_000, "p2seg1@id"), (2, 400_000, "p2seg2@id")],
+            ),
+        ]
+    )
+
+    manifest = extract_nzb_video_manifest(xml)
+
+    assert manifest["payload_kind"] == "archive"
+    assert manifest["group_bytes"] == 500_000 + 500_000 + 600_000 + 400_000
+    assert manifest["video_bytes"] == 0
 
 
 def test_invalid_xml_is_unsupported_without_raising():

@@ -433,7 +433,7 @@ def extract_nzb_video_manifest(nzb_bytes, health_check=None):
         candidate = {
             "payload_kind": "archive",
             "group_name": archive_base,
-            "group_bytes": 0,
+            "group_bytes": sum(row[1] for row in rows),
             "video_name": "",
             "normalized_video_name": "",
             "video_bytes": 0,
