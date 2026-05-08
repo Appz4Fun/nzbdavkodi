@@ -135,18 +135,14 @@ def test_resolve_continues_polling_when_webdav_reachable_and_apis_silent(
     assert resolver_mocks.probe.call_count >= 1
     # The resolve landed successfully (history came back Completed on
     # the second iteration and playback was finalized).
-    mock_start_prepare.assert_not_called()
-    mock_wait_prepare.assert_not_called()
-    mock_finish_playback.assert_called_once_with(
-        1,
-        {
-            "service_port": 0,
-            "stream_url": "http://webdav:8080/content/uncategorized/Test/test.mkv",
-            "stream_headers": {"Authorization": "Basic dGVzdDp0ZXN0"},
-            "proxy_url": "",
-            "stream_info": {},
-        },
+    mock_start_prepare.assert_called_once_with(
+        "http://webdav:8080/content/uncategorized/Test/test.mkv",
+        {"Authorization": "Basic dGVzdDp0ZXN0"},
+        fallback_sources=[],
+        service_config_state=None,
     )
+    mock_wait_prepare.assert_called_once_with({"state": "prepare"})
+    mock_finish_playback.assert_called_once_with(1, {"state": "prepared"})
 
 
 @patch("resources.lib.resolver.find_completed_by_name", return_value=None)

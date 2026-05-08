@@ -6700,8 +6700,8 @@ def test_prepare_stream_uses_faststart_for_mp4():
     assert info["virtual_size"] == 5000000132
 
 
-def test_prepare_stream_direct_redirect_for_already_faststart():
-    """Already-faststart MP4 without fallbacks returns remote URL directly."""
+def test_prepare_stream_already_faststart_uses_pass_through_proxy_by_default():
+    """Already-faststart MP4 should stay on the local proxy by default."""
 
     from resources.lib.stream_proxy import StreamProxy
 
@@ -6739,9 +6739,15 @@ def test_prepare_stream_direct_redirect_for_already_faststart():
     ):
         url, info = sp.prepare_stream("http://host/faststart.mp4")
 
-    # Direct redirect: URL is the remote URL, not the proxy URL
-    assert url == "http://host/faststart.mp4"
-    assert info["direct"] is True
+    assert url.startswith("http://127.0.0.1:9999/stream/")
+    ctx = sp._server.stream_context
+    assert ctx["remote_url"] == "http://host/faststart.mp4"
+    assert ctx["content_length"] == 566
+    assert ctx["content_type"] == "video/mp4"
+    assert ctx["remux"] is False
+    assert ctx["faststart"] is False
+    assert ctx["seekable"] is True
+    assert info["direct"] is False
     assert info["seekable"] is True
     assert info["remux"] is False
     assert info["fallback_sources"] == []

@@ -17,10 +17,10 @@ A Kodi 21 (Omega) player/resolver addon that enables Usenet-based streaming thro
 > - **Faster repeated manifest checks**: raw NZB downloads are cached with a small LRU, but each caller still reparses the bytes so health checks can select different valid files.
 > - **Cleaner nzbdav failure handling**: terminal failed history rows now beat stale active queue progress, avoiding the stuck-at-an-old-percentage dialog after article-not-found failures.
 > - **RunScript fallback discovery**: TMDBHelper script-mode picks now submit duplicate-release standby streams the same way the plugin-handle picker path does, with a thread-safe settings getter plumbed through every fallback path so the work runs cleanly off the main thread.
-> - **TMDBHelper RunScript playback handoff**: TMDBHelper enters the addon through a script-mode player path that avoids the plugin-handle resolver freeze; already-ready plain MKVs hand straight to Kodi as WebDAV URLs when no fallback sources are attached.
+> - **TMDBHelper RunScript playback handoff**: TMDBHelper enters the addon through a script-mode player path that avoids the plugin-handle resolver freeze while still routing playback through the local proxy.
 > - **Pass-through-first proxy**: MKV and other non-MP4 streams use byte pass-through by default, preserving native source seeking and zero-fill recovery. Force-remux is now optional, with threshold `0` meaning fully off.
 > - **Live fallback streams**: duplicate NZB releases are enabled by default with up to 5 standby submissions, grouped by NZB manifest payload metadata, and validated with exact content length plus 1000 sampled byte ranges before switching.
-> - **MP4 rewrite remains first-class**: moov-at-tail MP4s are rewritten in pure Python for native Kodi seek; already-faststart MP4s direct-play unless fallback metadata requires proxy session tracking.
+> - **MP4 rewrite remains first-class**: moov-at-tail MP4s are rewritten in pure Python for native Kodi seek; already-faststart MP4s use the local pass-through proxy so fallback/rescue session handling stays available by default.
 > - **Prowlarr support** as an alternative indexer to NZBHydra2.
 > - **Dolby Vision routing matrix**: P5 / P7 FEL / P8 / unknown DV are routed to matroska automatically; P7 MEL and non-DV go to fmp4 HLS when that mode is selected.
 > - **Hardening**: probe-thread starvation survival on submit, NZBHydra2 search cap raised to 10000, co64 chunk-offset support for MP4s ≥ 4 GB, MKV SimpleBlock-lacing rejection, ffmpeg `-headers` CR/LF stripping, cross-origin PROPFIND href trust path.
@@ -50,7 +50,7 @@ Every playback request is routed through a local HTTP proxy (`stream_proxy.py`) 
 
 The proxy picks one of four paths based on the container, fallback metadata, file size, and the configured `force_remux_mode`:
 
-1. **MP4 (already faststart)** -- redirected straight to the WebDAV URL when no fallback sources are attached; Kodi seeks and plays natively. If fallback streams are attached, the session stays proxy-routed so live switching still has the standby metadata.
+1. **MP4 (already faststart)** -- served through the local pass-through proxy, preserving native range seeking while keeping proxy session tracking available for fallback/rescue handling.
 2. **MP4 (moov at tail)** -- parsed in pure Python via HTTP range requests, `stco` and `co64` chunk offsets rewritten (so 4 GB+ MP4s work on 32-bit Kodi), and served as a virtual faststart MP4 with `Accept-Ranges: bytes`. If parsing fails, falls back to an ffmpeg tempfile remux.
 3. **MKV and other containers (default path)** -- served as a byte pass-through with ranged upstream fetches. Kodi gets native seeking from the source file's real Cues, and the proxy layers zero-fill recovery on top: when an upstream read fails mid-stream, it probes forward to the next readable offset, writes zero bytes across the gap, and keeps streaming.
 4. **Optional force-remux tier** -- when `force_remux_mode` is set to matroska or fMP4 HLS and the stream is above the non-zero threshold, the proxy uses ffmpeg:
@@ -59,7 +59,7 @@ The proxy picks one of four paths based on the container, fallback metadata, fil
 
 **Dolby Vision routing matrix** (applied within the force-remux tier): P5, P7 FEL, P8, and unknown-DV sources are routed to **matroska** (the safest option on Amlogic CAMLCodec). P7 MEL and confirmed non-DV are eligible for **fmp4 HLS** when that mode is selected. P7 FEL specifically is forced to matroska because fmp4 cannot carry dual-layer HEVC.
 
-If ffmpeg isn't installed, the proxy degrades gracefully to pass-through or direct redirect.
+If ffmpeg isn't installed, the proxy degrades gracefully to pass-through.
 
 > **Architecture deep-dive:** [`TODO.md` Part C](TODO.md#part-c--stream-proxy-architecture-reference-proxymd) documents the full session lifecycle, how the proxy interacts with `resolver.py` / `service.py` / `router.py` / `mp4_parser.py`, the HLS producer internals, and where to look when debugging playback failures. (The former standalone `PROXY.md` was consolidated into `TODO.md` on 2026-04-24.)
 
@@ -85,7 +85,7 @@ Force-remux remains available for environments that need ffmpeg compatibility pa
 | **NZBHydra2** *or* **Prowlarr** | At least one indexer aggregator running and accessible |
 | **nzbdav** | Running and accessible (provides SABnzbd-compatible API + WebDAV) |
 | **TMDBHelper** | To trigger searches |
-| **ffmpeg** *(recommended)* | Required for force-remux. Without it the proxy falls back to pass-through / direct redirect for all files. |
+| **ffmpeg** *(recommended)* | Required for force-remux. Without it the proxy falls back to pass-through for all files. |
 
 ## Installation
 

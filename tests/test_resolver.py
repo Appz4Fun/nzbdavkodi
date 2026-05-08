@@ -958,6 +958,60 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
 @patch("resources.lib.resolver._clear_kodi_playback_state")
 @patch("resources.lib.resolver.xbmc")
 @patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.xbmcplugin")
+@patch("resources.lib.resolver._get_poll_settings")
+def test_resolve_routes_plain_mkv_through_proxy_without_fallbacks(
+    mock_poll_settings,
+    _mock_plugin,
+    mock_gui,
+    mock_xbmc,
+    _mock_clear_state,
+    mock_poll_until_ready,
+    mock_start_fallback,
+    mock_start_prepare,
+    mock_wait_prepare,
+    mock_finish_playback,
+    _mock_snapshot,
+):
+    mock_poll_settings.return_value = (2, 60)
+    mock_start_fallback.return_value = {"state": "fallback"}
+    mock_start_prepare.return_value = {"state": "prepare"}
+    mock_wait_prepare.return_value = {"state": "prepared"}
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    mock_gui.DialogProgress.return_value = MagicMock()
+    mock_poll_until_ready.return_value = (
+        "http://webdav/content/primary/movie.mkv",
+        {"Authorization": "Basic primary"},
+    )
+
+    resolve(
+        1,
+        {
+            "nzburl": "http://hydra/getnzb/primary",
+            "title": "movie.mkv",
+            "_fallback_candidates": [],
+        },
+    )
+
+    mock_start_prepare.assert_called_once_with(
+        "http://webdav/content/primary/movie.mkv",
+        {"Authorization": "Basic primary"},
+        fallback_sources=[],
+        service_config_state=None,
+    )
+    mock_wait_prepare.assert_called_once_with({"state": "prepare"})
+    mock_finish_playback.assert_called_once_with(1, {"state": "prepared"})
+
+
+@patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
+@patch("resources.lib.resolver._finish_direct_playback")
+@patch("resources.lib.resolver._wait_direct_playback_prepare")
+@patch("resources.lib.resolver._start_direct_playback_prepare")
+@patch("resources.lib.resolver._start_fallback_submit_worker")
+@patch("resources.lib.resolver._poll_until_ready")
+@patch("resources.lib.resolver._clear_kodi_playback_state")
+@patch("resources.lib.resolver.xbmc")
+@patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver._get_poll_settings")
 def test_resolve_prefetches_fallback_loader_before_primary_submit(
     mock_poll_settings,
@@ -1578,15 +1632,9 @@ def test_resolve_and_play_does_not_wait_forever_for_stuck_bookmark_cleanup(
     assert resolve_finished.wait(
         timeout=0.35
     ), "resolve_and_play blocked playback on a stuck bookmark cleanup worker"
-    mock_finish_playback.assert_called_once_with(
-        {
-            "service_port": 0,
-            "stream_url": "http://webdav/content/primary/movie.mkv",
-            "stream_headers": {"Authorization": "Basic primary"},
-            "proxy_url": "",
-            "stream_info": {},
-        }
-    )
+    mock_start_prepare.assert_called_once()
+    mock_wait_prepare.assert_called_once_with({"state": "prepare"})
+    mock_finish_playback.assert_called_once_with({"state": "prepared"})
     cleanup_can_finish.set()
 
 
@@ -1600,7 +1648,7 @@ def test_resolve_and_play_does_not_wait_forever_for_stuck_bookmark_cleanup(
 @patch("resources.lib.resolver.xbmc")
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver._get_poll_settings")
-def test_resolve_and_play_skips_proxy_prepare_for_plain_mkv_without_fallbacks(
+def test_resolve_and_play_routes_plain_mkv_through_proxy_without_fallbacks(
     mock_poll_settings,
     mock_gui,
     mock_xbmc,
@@ -1614,6 +1662,8 @@ def test_resolve_and_play_skips_proxy_prepare_for_plain_mkv_without_fallbacks(
 ):
     mock_poll_settings.return_value = (2, 60)
     mock_start_fallback.return_value = {"state": "fallback"}
+    mock_start_prepare.return_value = {"state": "prepare"}
+    mock_wait_prepare.return_value = {"state": "prepared"}
     mock_xbmc.Monitor.return_value = _make_monitor()
     mock_gui.DialogProgress.return_value = MagicMock()
     mock_poll_until_ready.return_value = (
@@ -1627,17 +1677,14 @@ def test_resolve_and_play_skips_proxy_prepare_for_plain_mkv_without_fallbacks(
         params={"_fallback_candidates": []},
     )
 
-    mock_start_prepare.assert_not_called()
-    mock_wait_prepare.assert_not_called()
-    mock_finish_playback.assert_called_once_with(
-        {
-            "service_port": 0,
-            "stream_url": "http://webdav/content/primary/movie.mkv",
-            "stream_headers": {"Authorization": "Basic primary"},
-            "proxy_url": "",
-            "stream_info": {},
-        }
+    mock_start_prepare.assert_called_once_with(
+        "http://webdav/content/primary/movie.mkv",
+        {"Authorization": "Basic primary"},
+        fallback_sources=[],
+        service_config_state=None,
     )
+    mock_wait_prepare.assert_called_once_with({"state": "prepare"})
+    mock_finish_playback.assert_called_once_with({"state": "prepared"})
 
 
 @patch("resources.lib.cache_prompt.maybe_show_cache_prompt")
@@ -3126,11 +3173,11 @@ def test_show_submit_error_dialog_uses_nonblocking_rate_limit_notification(mock_
 @patch("resources.lib.stream_proxy.prepare_stream_via_service")
 @patch("resources.lib.stream_proxy.get_service_proxy_token", return_value="token")
 @patch("resources.lib.stream_proxy.get_service_proxy_port", return_value=57800)
-def test_wait_direct_playback_prepare_falls_back_when_proxy_prepare_stalls(
+def test_wait_direct_playback_prepare_waits_for_local_proxy_when_prepare_stalls(
     _mock_get_port, _mock_get_token, mock_prepare
 ):
     def slow_prepare(*_args, **_kwargs):
-        _time.sleep(0.2)
+        _time.sleep(0.04)
         return (
             "http://127.0.0.1:57800/stream/slow",
             {"remux": False, "faststart": False, "direct": False},
@@ -3142,13 +3189,14 @@ def test_wait_direct_playback_prepare_falls_back_when_proxy_prepare_stalls(
 
     state = _start_direct_playback_prepare(stream_url, stream_headers)
     started = _time.perf_counter()
-    prepared = _wait_direct_playback_prepare(state, wait_seconds=0.02)
+    prepared = _wait_direct_playback_prepare(state, wait_seconds=0.01)
     elapsed = _time.perf_counter() - started
 
-    assert elapsed < 0.08
-    assert prepared["service_port"] == 0
+    assert elapsed >= 0.03
+    assert prepared["service_port"] == 57800
     assert prepared["stream_url"] == stream_url
     assert prepared["stream_headers"] == stream_headers
+    assert prepared["proxy_url"] == "http://127.0.0.1:57800/stream/slow"
 
 
 @patch("resources.lib.resolver.probe_webdav_reachable", return_value=(False, None))

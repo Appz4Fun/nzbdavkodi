@@ -695,21 +695,6 @@ def _ready_direct_playback_prepare_state(prepared):
     return {"done": done, "error": None, "prepared": prepared, "thread": None}
 
 
-def _direct_playback_fallback_prepared(stream_url, stream_headers):
-    return {
-        "service_port": 0,
-        "stream_url": stream_url,
-        "stream_headers": stream_headers,
-        "proxy_url": "",
-        "stream_info": {},
-    }
-
-
-def _should_skip_proxy_prepare(stream_url, fallback_sources):
-    """Return true when proxy prepare adds risk without helping playback."""
-    return not fallback_sources and _url_path(stream_url).endswith(".mkv")
-
-
 def _monitor_abort_requested(monitor):
     """Return Kodi's abort flag without entering a wait call."""
     try:
@@ -800,9 +785,6 @@ def _start_direct_playback_prepare(
         "error": None,
         "prepared": None,
         "thread": None,
-        "fallback_prepared": _direct_playback_fallback_prepared(
-            stream_url, stream_headers
-        ),
     }
 
     def _worker():
@@ -847,10 +829,10 @@ def _wait_direct_playback_prepare(
         if not done.wait(max(0, wait_seconds)):
             xbmc.log(
                 "NZB-DAV: Proxy prepare still running; "
-                "falling back to direct WebDAV handoff",
+                "waiting for local proxy handoff",
                 xbmc.LOGWARNING,
             )
-            return state.get("fallback_prepared")
+            done.wait()
     error = state.get("error")
     if error is not None:
         raise error
@@ -2878,22 +2860,14 @@ def resolve(handle, params):
             fallback_sources = build_prepare_fallback_payload(
                 _fallback_submit_jobs_snapshot(fallback_state)
             )
-            prepared = None
-            if _should_skip_proxy_prepare(stream_url, fallback_sources):
-                prepared = _direct_playback_fallback_prepared(
-                    stream_url, stream_headers
-                )
-                playback_prepare_state = None
-            else:
-                playback_prepare_state = _start_direct_playback_prepare(
-                    stream_url,
-                    stream_headers,
-                    fallback_sources=fallback_sources,
-                    service_config_state=None,
-                )
+            playback_prepare_state = _start_direct_playback_prepare(
+                stream_url,
+                stream_headers,
+                fallback_sources=fallback_sources,
+                service_config_state=None,
+            )
             _wait_playback_state_cleanup(playback_cleanup_state)
-            if playback_prepare_state is not None:
-                prepared = _wait_direct_playback_prepare(playback_prepare_state)
+            prepared = _wait_direct_playback_prepare(playback_prepare_state)
             _finish_direct_playback(handle, prepared)
         else:
             _stop_fallback_submit_worker(fallback_state, cancel_submitted=True)
@@ -3005,32 +2979,24 @@ def resolve_and_play(nzb_url, title, params=None):
             fallback_sources = build_prepare_fallback_payload(
                 _fallback_submit_jobs_snapshot(fallback_state)
             )
-            if _should_skip_proxy_prepare(stream_url, fallback_sources):
-                _resolve_stage("proxy prepare skipped for plain mkv")
-                prepared = _direct_playback_fallback_prepared(
-                    stream_url, stream_headers
-                )
-                playback_prepare_state = None
-            else:
-                _resolve_stage("prepare playback start")
-                playback_prepare_state = _start_direct_playback_prepare(
-                    stream_url,
-                    stream_headers,
-                    fallback_sources=fallback_sources,
-                    service_config_state=None,
-                )
+            _resolve_stage("prepare playback start")
+            playback_prepare_state = _start_direct_playback_prepare(
+                stream_url,
+                stream_headers,
+                fallback_sources=fallback_sources,
+                service_config_state=None,
+            )
             _resolve_stage("cleanup wait start")
             _wait_playback_state_cleanup(playback_cleanup_state)
             _resolve_stage("cleanup wait done")
             _resolve_stage("finish playback start")
-            if playback_prepare_state is not None:
-                _resolve_stage("prepare wait start")
-                prepared = _wait_direct_playback_prepare(playback_prepare_state)
-                _resolve_stage(
-                    "prepare wait done service_port={}".format(
-                        prepared.get("service_port") if prepared else ""
-                    )
+            _resolve_stage("prepare wait start")
+            prepared = _wait_direct_playback_prepare(playback_prepare_state)
+            _resolve_stage(
+                "prepare wait done service_port={}".format(
+                    prepared.get("service_port") if prepared else ""
                 )
+            )
             _finish_player_playback(prepared)
             _resolve_stage("player playback started")
         else:
