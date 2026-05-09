@@ -10,10 +10,14 @@ KODI_AUTH="${2:?usage: install_tmdbhelper.sh <jsonrpc-url> <user:password>}"
 ADDON_ID="plugin.video.themoviedb.helper"
 
 echo "[tmdbhelper] Enabling jurialmunkey repository"
-curl -fsS -u "$KODI_AUTH" -X POST "$KODI_URL/jsonrpc" \
+ENABLE_RESP="$(curl -fsS -u "$KODI_AUTH" -X POST "$KODI_URL/jsonrpc" \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","method":"Addons.SetAddonEnabled","params":{"addonid":"repository.jurialmunkey","enabled":true},"id":1}' \
-  | tee /dev/stderr | grep -q '"result":"OK"'
+  -d '{"jsonrpc":"2.0","method":"Addons.SetAddonEnabled","params":{"addonid":"repository.jurialmunkey","enabled":true},"id":1}')"
+echo "$ENABLE_RESP"
+if ! echo "$ENABLE_RESP" | grep -q '"result":"OK"'; then
+    echo "[tmdbhelper] FATAL: enable repository.jurialmunkey failed"
+    exit 1
+fi
 
 echo "[tmdbhelper] Installing $ADDON_ID via Addons.Install (will pull deps)"
 RESP="$(curl -fsS -u "$KODI_AUTH" -X POST "$KODI_URL/jsonrpc" \
