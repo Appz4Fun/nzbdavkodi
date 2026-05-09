@@ -184,9 +184,26 @@ def _apply_connection_reset(handler, resp, range_header, state) -> None:
     })
 
 
+def _apply_http_500(handler, resp, range_header, state) -> None:
+    """Discard the upstream response and return a 500."""
+    resp.close()
+    state.record_fired("http_500", range_header)
+    _log_event({
+        "fault_type": "http_500",
+        "t_wall": time.time(),
+        "range": range_header,
+    })
+    handler.send_response(500, "Internal Server Error")
+    handler.send_header("Content-Length", "0")
+    handler.send_header("Connection", "close")
+    handler.close_connection = True
+    handler.end_headers()
+
+
 _FAULT_DISPATCH = {
     "connection_reset": _apply_connection_reset,
-    # http_500, slow_upstream, truncated_response, corrupted_bytes added in later tasks.
+    "http_500": _apply_http_500,
+    # slow_upstream, truncated_response, corrupted_bytes added in later tasks.
 }
 
 
