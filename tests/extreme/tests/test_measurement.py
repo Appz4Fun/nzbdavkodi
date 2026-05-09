@@ -156,6 +156,27 @@ def test_write_summary_aggregates(tmp_path):
     assert "Extreme Functional Test Report" in out_md.read_text()
 
 
+def test_correlate_ignores_single_tick_stutter():
+    """A single advancing tick sandwiched between frozen ticks should NOT
+    count as resume."""
+    timeline = (
+        # 5 ticks of normal playback
+        [_tick(1000.0 + i * 0.25, time_sec=i * 0.25) for i in range(0, 5)]
+        # 4 frozen ticks
+        + [_tick(1001.25 + i * 0.25, time_sec=1.0) for i in range(1, 5)]
+        # 1 stutter tick (single advancing tick)
+        + [_tick(1002.5, time_sec=1.5)]
+        # 4 more frozen ticks
+        + [_tick(1002.75 + i * 0.25, time_sec=1.5) for i in range(0, 4)]
+    )
+    fault_events = [{"t_wall": 1001.0, "fault_type": "connection_reset", "range": "x"}]
+    out = measurement.correlate(timeline, fault_events)
+    # Single advancing tick should NOT be classified as resume
+    assert out[0]["resume_seconds"] is None, (
+        f"single-tick stutter incorrectly marked as resume: {out[0]}"
+    )
+
+
 def test_write_manifest(tmp_path):
     out = tmp_path / "manifest.json"
     measurement.write_manifest(out, {"movie": "Inception", "seed": 12345,
