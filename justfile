@@ -59,13 +59,13 @@ make-dev:
 
     echo "Development dependencies are installed."
 
-# Run all tests (excluding integration tests and dev-box functional tests)
+# Run all tests (excluding integration, functional, and extreme tests)
 test:
-    python3 -m pytest tests/ -v --tb=short -m "not integration and not functional"
+    python3 -m pytest tests/ -v --tb=short -m "not integration and not functional and not extreme"
 
 # Run tests with coverage
 test-verbose:
-    python3 -m pytest tests/ -v --tb=long -m "not integration and not functional"
+    python3 -m pytest tests/ -v --tb=long -m "not integration and not functional and not extreme"
 
 # Run integration tests against a real ffmpeg binary. Spawns the
 # actual fmp4 HLS producer pipeline against a tiny test MKV
@@ -86,6 +86,26 @@ functional-test:
 # Prefer FrameStor/FraMeSToR releases; otherwise use the most duplicated group.
 functional-test-top-imdb:
     python3 -m pytest tests/test_functional_fallback_playback.py::test_functional_imdb_top50_random_sample_fallback_playback -v -s --tb=long -m functional
+
+# Run the extreme end-to-end fault-recovery test (20+ minutes, real Eweka, real Hydra).
+# Brings up a self-contained docker-compose stack, installs TMDBHelper from the
+# jurialmunkey repository and the nzbdav addon from `just repo-zip`, picks a random
+# IMDb Top 50 movie with a wide fallback pool, drives playback through TMDBHelper
+# for 20 minutes while injecting 5 distinct fault types on a random schedule,
+# measures user-visible interruption, writes reports to docs/reports/run-<ts>/,
+# and tears down. Requires .env with HYDRA_URL/HYDRA_API_KEY/NNTP_USER/NNTP_PASS/
+# TMDB_API_KEY (see .env.example).
+extreme-functional-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    env_file="${EXTREME_ENV_FILE:-.env}"
+    if [[ ! -f "$env_file" ]]; then
+        echo "FATAL: env file not found: $env_file" >&2
+        echo "Copy .env.example to .env and fill in real values." >&2
+        exit 2
+    fi
+    set -a; source "$env_file"; set +a
+    python3 -m pytest tests/test_extreme_functional.py -v -s --tb=long -m extreme
 
 # Lint the codebase (matches GitHub CI: ruff + black + pylint)
 lint:
