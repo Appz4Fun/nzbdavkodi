@@ -1,0 +1,72 @@
+name: nzbdav-extreme
+
+services:
+  nzbdav-rs:
+    image: nzbdav-real-e2e/nzbdav-rs:local
+    container_name: nzbdav-extreme-nzbdav
+    environment:
+      NZBDAV_API_KEY: ${NZBDAV_API_KEY}
+      WEBDAV_USER: ${WEBDAV_USERNAME}
+      WEBDAV_PASS: ${WEBDAV_PASSWORD}
+    volumes:
+      - nzbdav-data:/var/lib/nzbdav
+    ports:
+      - "8180:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8080/api/servers", "-H", "X-Api-Key: ${NZBDAV_API_KEY}"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks:
+      - extreme
+
+  fault-proxy:
+    build:
+      context: ..
+      dockerfile: compose/Dockerfile.fault-proxy
+    container_name: nzbdav-extreme-fault-proxy
+    environment:
+      FAULT_PROXY_UPSTREAM: http://nzbdav-rs:8080
+      FAULT_PROXY_LISTEN: "0.0.0.0"
+      FAULT_PROXY_PORT: "19080"
+      FAULT_PROXY_CONTROL_PORT: "19081"
+      FAULT_PROXY_LOG: "/var/log/fault-proxy/full.log"
+      FAULT_PROXY_EVENTS: "/var/log/fault-proxy/events.jsonl"
+    volumes:
+      - ../../docs/reports/${EXTREME_RUN_DIR:-_default}/fault-proxy:/var/log/fault-proxy
+    ports:
+      - "8280:19080"
+      - "8281:19081"
+    depends_on:
+      nzbdav-rs:
+        condition: service_healthy
+    networks:
+      - extreme
+
+  kodi-desktop:
+    build:
+      context: .
+      dockerfile: Dockerfile.kodi-desktop
+    container_name: nzbdav-extreme-kodi
+    environment:
+      DISPLAY: ":0"
+    volumes:
+      - kodi-config:/root/.kodi
+      - ../../docs/reports/${EXTREME_RUN_DIR:-_default}:/run-reports
+    ports:
+      - "8082:8080"
+      - "6902:6901"
+      - "5902:5900"
+    depends_on:
+      fault-proxy:
+        condition: service_started
+    networks:
+      - extreme
+
+volumes:
+  nzbdav-data:
+  kodi-config:
+
+networks:
+  extreme:
+    driver: bridge
