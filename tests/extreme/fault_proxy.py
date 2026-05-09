@@ -9,6 +9,7 @@ import dataclasses
 import http.client
 import json
 import os
+import random
 import socketserver
 import sys
 import threading
@@ -271,14 +272,18 @@ def _apply_truncated_response(handler, resp, range_header, state) -> None:
         "fault_type": "truncated_response",
         "t_wall": time.time(),
         "range": range_header,
-        "sent_bytes": FAIL_BYTES,
+        "scheduled_bytes": FAIL_BYTES,
     })
     sent = 0
     while sent < FAIL_BYTES:
         chunk = resp.read(min(65536, FAIL_BYTES - sent))
         if not chunk:
             break
-        handler.wfile.write(chunk)
+        try:
+            handler.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            resp.close()
+            return
         sent += len(chunk)
     resp.close()
 
@@ -287,7 +292,6 @@ def _apply_corrupted_bytes(handler, resp, range_header, state) -> None:
     """Forward the response with 32 random byte positions XOR'd in the first FAIL_BYTES,
     then stream the remainder of the body unmodified.
     """
-    import random as _r
     handler.send_response(resp.status, resp.reason)
     for k, v in resp.getheaders():
         if k.lower() in ("connection", "transfer-encoding"):
@@ -300,25 +304,30 @@ def _apply_corrupted_bytes(handler, resp, range_header, state) -> None:
     # fired_events after the client's read() returns see the entry deterministically
     # — same early-record convention as _apply_slow_upstream.
     state.record_fired("corrupted_bytes", range_header)
-    head = bytearray(resp.read(FAIL_BYTES))
-    corruption_count = 0
-    if head:
-        positions = sorted(_r.sample(range(len(head)), min(32, len(head))))
-        for p in positions:
-            head[p] ^= 0xFF
-        corruption_count = len(positions)
-        handler.wfile.write(bytes(head))
     _log_event({
         "fault_type": "corrupted_bytes",
         "t_wall": time.time(),
         "range": range_header,
-        "corruption_count": corruption_count,
+        "corruption_count": min(32, FAIL_BYTES),
     })
+    head = bytearray(resp.read(FAIL_BYTES))
+    if head:
+        positions = sorted(random.sample(range(len(head)), min(32, len(head))))
+        for p in positions:
+            head[p] ^= 0xFF
+        try:
+            handler.wfile.write(bytes(head))
+        except (BrokenPipeError, ConnectionResetError):
+            resp.close()
+            return
     while True:
         chunk = resp.read(65536)
         if not chunk:
             break
-        handler.wfile.write(chunk)
+        try:
+            handler.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            break
     resp.close()
 
 
