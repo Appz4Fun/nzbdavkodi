@@ -58,6 +58,8 @@ services:
       - "6902:6901"
       - "5902:5900"
     depends_on:
+      nzbdav-rs:
+        condition: service_healthy
       fault-proxy:
         condition: service_started
     networks:
