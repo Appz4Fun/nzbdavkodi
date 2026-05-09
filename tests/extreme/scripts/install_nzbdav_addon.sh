@@ -37,7 +37,17 @@ docker exec "$CONTAINER" sh -c '
 
 echo "[nzbdav-addon] Rendering settings.xml from template"
 RENDERED="$WORKDIR/settings.xml"
-envsubst < "$TEMPLATE_PATH" > "$RENDERED"
+# Constrain envsubst to a known set of variables, avoiding accidental
+# substitution (and silent empty-replacement) of any other $VAR token
+# that might appear inside the template's XML.
+SUBST_VARS='${HYDRA_URL} ${HYDRA_API_KEY} ${NZBDAV_API_KEY} ${WEBDAV_USERNAME} ${WEBDAV_PASSWORD}'
+for var_name in HYDRA_URL HYDRA_API_KEY NZBDAV_API_KEY WEBDAV_USERNAME WEBDAV_PASSWORD; do
+    if [[ -z "${!var_name:-}" ]]; then
+        echo "[nzbdav-addon] FATAL: required env var $var_name is empty or unset"
+        exit 1
+    fi
+done
+envsubst "$SUBST_VARS" < "$TEMPLATE_PATH" > "$RENDERED"
 docker exec "$CONTAINER" mkdir -p /root/.kodi/userdata/addon_data/plugin.video.nzbdav
 docker cp "$RENDERED" "$CONTAINER:/root/.kodi/userdata/addon_data/plugin.video.nzbdav/settings.xml"
 
