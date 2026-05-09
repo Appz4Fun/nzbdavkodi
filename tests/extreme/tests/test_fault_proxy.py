@@ -1,4 +1,5 @@
 """Unit tests for tests.extreme.fault_proxy."""
+import http.client
 import json
 import socketserver
 import threading
@@ -7,7 +8,6 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler
 
-import http.client
 import pytest
 
 from tests.extreme import fault_proxy
@@ -181,3 +181,18 @@ def test_connection_reset_fault_records_state_before_close(proxy_with_upstream):
         resp = _request_large_range(proxy_url)
         resp.read()
     assert state.fired_events[0]["fault_type"] == "connection_reset"
+
+
+def test_slow_upstream_fault_throttles(proxy_with_upstream, monkeypatch):
+    proxy_url, state, _ = proxy_with_upstream
+    # Use a 1-second slow window with 64 KiB/s so the test stays fast.
+    monkeypatch.setattr(fault_proxy, "SLOW_BPS", 64 * 1024)
+    monkeypatch.setattr(fault_proxy, "SLOW_DURATION", 1.0)
+    state.scheduled_events = [fault_proxy.ScheduledEvent(0.0, "slow_upstream")]
+    state.start_t = time.monotonic() - 1.0
+    t0 = time.monotonic()
+    resp = _request_large_range(proxy_url)
+    resp.read(96 * 1024)  # 96 KiB > one second of throttled budget
+    elapsed = time.monotonic() - t0
+    assert elapsed >= 0.9, f"throttling did not slow request, elapsed={elapsed:.2f}s"
+    assert state.fired_events[0]["fault_type"] == "slow_upstream"

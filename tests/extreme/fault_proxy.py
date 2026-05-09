@@ -17,7 +17,6 @@ from http.server import BaseHTTPRequestHandler
 from typing import Optional
 from urllib.parse import urlsplit
 
-
 UPSTREAM = os.environ.get("FAULT_PROXY_UPSTREAM", "http://nzbdav-rs:8080")
 LISTEN = os.environ.get("FAULT_PROXY_LISTEN", "0.0.0.0")
 PORT = int(os.environ.get("FAULT_PROXY_PORT", "19080"))
@@ -204,10 +203,59 @@ def _apply_http_500(handler, resp, range_header, state) -> None:
     handler.end_headers()
 
 
+def _apply_slow_upstream(handler, resp, range_header, state) -> None:
+    """Throttle the response to SLOW_BPS for SLOW_DURATION seconds, then full speed."""
+    handler.send_response(resp.status, resp.reason)
+    for k, v in resp.getheaders():
+        if k.lower() in ("connection", "transfer-encoding"):
+            continue
+        handler.send_header(k, v)
+    handler.send_header("Connection", "close")
+    handler.close_connection = True
+    handler.end_headers()
+    # Record state early (right after end_headers) so that the fired_events
+    # entry is visible to test threads as soon as they unblock from read().
+    # Streaming fault: state recorded before the streaming-window completes;
+    # bytes are still in flight, but the test thread observes both fields
+    # together via urlopen.read() because read() blocks until bytes arrive.
+    state.record_fired("slow_upstream", range_header)
+    _log_event({
+        "fault_type": "slow_upstream",
+        "t_wall": time.time(),
+        "range": range_header,
+        "duration": SLOW_DURATION,
+    })
+    deadline = time.monotonic() + SLOW_DURATION
+    chunk_size = max(1024, SLOW_BPS // 10)  # ~10 chunks/sec
+    sleep_per_chunk = chunk_size / SLOW_BPS
+    while time.monotonic() < deadline:
+        chunk = resp.read(chunk_size)
+        if not chunk:
+            resp.close()
+            return
+        try:
+            handler.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            resp.close()
+            return
+        time.sleep(sleep_per_chunk)
+    # Past throttle window — drain at full speed.
+    while True:
+        chunk = resp.read(65536)
+        if not chunk:
+            break
+        try:
+            handler.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            break
+    resp.close()
+
+
 _FAULT_DISPATCH = {
     "connection_reset": _apply_connection_reset,
     "http_500": _apply_http_500,
-    # slow_upstream, truncated_response, corrupted_bytes added in later tasks.
+    "slow_upstream": _apply_slow_upstream,
+    # truncated_response, corrupted_bytes added in later tasks.
 }
 
 
