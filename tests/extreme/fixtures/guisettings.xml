@@ -1,0 +1,16 @@
+<settings version="2">
+    <setting id="services.webserver">true</setting>
+    <setting id="services.webserverport">8080</setting>
+    <setting id="services.webserverauthentication">true</setting>
+    <setting id="services.webserverusername">kodi</setting>
+    <setting id="services.webserverpassword">kodi</setting>
+    <setting id="services.webserverssl">false</setting>
+    <setting id="services.zeroconf">false</setting>
+    <setting id="general.addonupdates">2</setting>
+    <setting id="general.addonnotifications">false</setting>
+    <setting id="general.addonforeignfilter">false</setting>
+    <setting id="general.addonbrokenfilter">false</setting>
+    <setting id="addons.unknownsources">true</setting>
+    <setting id="addons.updatemode">2</setting>
+    <setting id="services.webserver.allowinstall">true</setting>
+</settings>
