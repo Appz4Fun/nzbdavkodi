@@ -131,3 +131,35 @@ def test_correlate_resume_null_when_never_resumes():
     fault_events = [{"t_wall": 1005.0, "fault_type": "http_500", "range": "x"}]
     out = measurement.correlate(timeline, fault_events)
     assert out[0]["resume_seconds"] is None
+
+
+def test_write_summary_aggregates(tmp_path):
+    events = [
+        {"fault_index": 1, "fault_type": "connection_reset",
+         "resume_seconds": 5.0, "max_freeze_seconds": 4.5,
+         "freeze_segments": [[0, 5, 5]]},
+        {"fault_index": 2, "fault_type": "http_500",
+         "resume_seconds": 2.0, "max_freeze_seconds": 1.5,
+         "freeze_segments": []},
+        {"fault_index": 3, "fault_type": "slow_upstream",
+         "resume_seconds": None, "max_freeze_seconds": 60.0,
+         "freeze_segments": []},
+    ]
+    out_json = tmp_path / "summary.json"
+    out_md = tmp_path / "summary.md"
+    measurement.write_summary(events, out_json, out_md)
+    parsed = json.loads(out_json.read_text())
+    assert parsed["events_total"] == 3
+    assert parsed["events_resumed"] == 2
+    assert parsed["resume_seconds"]["min"] == pytest.approx(2.0)
+    assert parsed["resume_seconds"]["max"] == pytest.approx(5.0)
+    assert "Extreme Functional Test Report" in out_md.read_text()
+
+
+def test_write_manifest(tmp_path):
+    out = tmp_path / "manifest.json"
+    measurement.write_manifest(out, {"movie": "Inception", "seed": 12345,
+                                     "image_shas": {"kodi": "abc"}})
+    parsed = json.loads(out.read_text())
+    assert parsed["movie"] == "Inception"
+    assert parsed["seed"] == 12345

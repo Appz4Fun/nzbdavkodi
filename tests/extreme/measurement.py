@@ -198,3 +198,56 @@ def correlate(timeline: list[dict], fault_events: list[dict]) -> list[dict]:
             "freeze_segments": freeze_segments,
         })
     return out
+
+
+def _percentile(values, p):
+    if not values:
+        return None
+    s = sorted(values)
+    k = (len(s) - 1) * (p / 100.0)
+    lo, hi = int(k), min(int(k) + 1, len(s) - 1)
+    return s[lo] + (s[hi] - s[lo]) * (k - lo)
+
+
+def write_summary(events: list[dict], out_json: Path, out_md: Path) -> None:
+    total = len(events)
+    resumed = [e for e in events if e.get("resume_seconds") is not None]
+    resume_vals = [e["resume_seconds"] for e in resumed]
+    freeze_vals = [e["max_freeze_seconds"] for e in events]
+
+    def _stats(vals):
+        if not vals:
+            return None
+        return {
+            "min": min(vals), "max": max(vals),
+            "median": statistics.median(vals),
+            "p95": _percentile(vals, 95),
+        }
+
+    summary = {
+        "events_total": total,
+        "events_resumed": len(resumed),
+        "events_never_resumed": total - len(resumed),
+        "resume_seconds": _stats(resume_vals),
+        "max_freeze_seconds": _stats(freeze_vals),
+        "events": events,
+    }
+    out_json.parent.mkdir(parents=True, exist_ok=True)
+    out_json.write_text(json.dumps(summary, indent=2, default=str))
+
+    rows = ["# Extreme Functional Test Report", "",
+            f"- Total events: {total}",
+            f"- Resumed: {len(resumed)} / {total}",
+            "",
+            "| # | type | resume (s) | max freeze (s) |",
+            "|---|------|-----------:|---------------:|"]
+    for e in events:
+        rs = "—" if e.get("resume_seconds") is None else f"{e['resume_seconds']:.2f}"
+        fr = f"{e['max_freeze_seconds']:.2f}"
+        rows.append(f"| {e['fault_index']} | {e.get('fault_type', '?')} | {rs} | {fr} |")
+    out_md.write_text("\n".join(rows) + "\n")
+
+
+def write_manifest(out: Path, data: dict) -> None:
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(data, indent=2, default=str))
