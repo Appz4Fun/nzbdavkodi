@@ -15,10 +15,28 @@ Import notes (adjusted from plan):
   _required_fallback_candidate_count()). The setdefault call below uses
   the correct env var name.
 - KODI_HOST_PORT / FAULT_PROXY_CONTROL_HOST_PORT from conftest are strings.
+
+DEVIATIONS from the spec/plan:
+
+- Spec line 230 says "XBMC.RunScript(plugin.video.themoviedb.helper, mode=play, type=movie, tmdb_id=...)".
+  Implementation uses JSON-RPC `Addons.ExecuteAddon` with `info=play` (TMDBHelper's
+  actual routing param). XBMC.RunScript is a Kodi builtin, not a JSON-RPC method
+  in Kodi 21 — Addons.ExecuteAddon with the addon's plugin params is the correct
+  JSON-RPC invocation.
+
+- Spec/plan implies `tmdb_id` parameter; we use `imdb_id` because IMDB_TOP_50_MOVIES
+  has imdb tt-IDs (no tmdb_ids). TMDBHelper accepts both.
+
+- _most_duplicated_group_pool returns a 2-tuple (group_str, pool_list) — plan
+  treated it as a flat list. Adjusted unpacking accordingly.
+
+- Plan's LIVE_FALLBACK_REQUIRED_COUNT env var doesn't exist in the helpers; the
+  actual knob is FUNCTIONAL_MIN_FALLBACK_CANDIDATES.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import random
@@ -83,8 +101,6 @@ def _post_schedule(events: list[dict]) -> None:
 
 
 def _kodi_rpc(method: str, params: dict | None = None, request_id: int = 1) -> dict:
-    import base64
-
     body = json.dumps(
         {"jsonrpc": "2.0", "method": method, "params": params or {}, "id": request_id}
     ).encode("utf-8")
@@ -152,7 +168,8 @@ def _wait_for_player(timeout=30):
 
 
 def test_extreme_fallback_run(stack_ready, run_dir):
-    rng = random.Random(_seed())
+    seed_value = _seed()
+    rng = random.Random(seed_value)
 
     # Pre-flight health checks
     hydra = os.environ["HYDRA_URL"].rstrip("/")
@@ -176,7 +193,7 @@ def test_extreme_fallback_run(stack_ready, run_dir):
     measurement.write_manifest(
         run_dir / "manifest.json",
         {
-            "seed": _seed(),
+            "seed": seed_value,
             "movie": {
                 "title": movie["title"],
                 "year": movie["year"],
@@ -190,37 +207,30 @@ def test_extreme_fallback_run(stack_ready, run_dir):
     )
 
     # Start playback via TMDBHelper.
-    tmdb_id = movie.get("tmdb_id")
-    if tmdb_id:
-        rpc_resp = _kodi_rpc(
-            "Addons.ExecuteAddon",
-            {
-                "addonid": "plugin.video.themoviedb.helper",
-                "params": {"info": "play", "type": "movie", "tmdb_id": str(tmdb_id)},
+    # TMDBHelper accepts imdb_id; use it so the test actually exercises the
+    # TMDBHelper -> player JSON -> nzbdav resolver path (per spec). The
+    # IMDB_TOP_50_MOVIES list pinned in test_functional_fallback_playback.py
+    # carries imdb tt-IDs, not tmdb_ids, so we route via imdb_id.
+    imdb_id = movie["imdb"]  # tt-format id like "tt0111161"
+    rpc_resp = _kodi_rpc(
+        "Addons.ExecuteAddon",
+        {
+            "addonid": "plugin.video.themoviedb.helper",
+            "params": {
+                "info": "play",
+                "type": "movie",
+                "imdb_id": imdb_id,
             },
-        )
-    else:
-        # No tmdb_id in the pinned IMDb top-50 list — fall through to plugin URL.
-        rpc_resp = _kodi_rpc(
-            "Player.Open",
-            {
-                "item": {
-                    "file": (
-                        f"plugin://plugin.video.nzbdav/play"
-                        f"?title={movie['title']}&year={movie['year']}"
-                        f"&imdb={movie['imdb']}"
-                    )
-                },
-            },
-        )
-    print(f"[extreme] playback launch response: {rpc_resp}")
+        },
+    )
+    print(f"[extreme] TMDBHelper playback launch (imdb_id={imdb_id}) response: {rpc_resp}")
 
     pid = _wait_for_player(timeout=60)
     if pid is None:
         # Save what we have and bail.
         measurement.write_manifest(
             run_dir / "manifest.json",
-            {"seed": _seed(), "playback_started": False},
+            {"seed": seed_value, "playback_started": False},
         )
         pytest.fail("playback never started")
 
