@@ -1,0 +1,37 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    software-properties-common \
+    ca-certificates \
+    curl \
+    && add-apt-repository -y ppa:ubuntuhandbook1/kodi \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+    kodi \
+    kodi-bin \
+    x11-utils \
+    xvfb \
+    x11vnc \
+    novnc \
+    websockify \
+    supervisor \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /var/log/supervisor /root/.kodi/addons /root/.kodi/userdata
+
+RUN printf '%s\n' \
+    'pcm.!default {' \
+    '  type null' \
+    '}' \
+    'ctl.!default {' \
+    '  type null' \
+    '}' \
+    > /etc/asound.conf
+
+COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+
+EXPOSE 5900 6901 8080
+
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
