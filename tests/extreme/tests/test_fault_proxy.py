@@ -229,3 +229,24 @@ def test_corrupted_bytes_modifies_payload(proxy_with_upstream):
     diff_count = sum(1 for b in head if b != ord("X"))
     assert 1 <= diff_count <= 64, f"unexpected number of corruptions: {diff_count}"
     assert state.fired_events[0]["fault_type"] == "corrupted_bytes"
+
+
+def test_truncated_response_logs_scheduled_bytes(proxy_with_upstream, tmp_path):
+    proxy_url, state, run_dir = proxy_with_upstream
+    state.scheduled_events = [fault_proxy.ScheduledEvent(0.0, "truncated_response")]
+    state.start_t = time.monotonic() - 1.0
+    try:
+        resp = _request_large_range(proxy_url)
+        try:
+            resp.read()
+        except _IncompleteRead:
+            pass
+    except Exception:
+        pass
+    # Inspect events.jsonl
+    events_path = run_dir / "events.jsonl"
+    assert events_path.exists(), "events.jsonl was not written"
+    lines = [json.loads(l) for l in events_path.read_text().splitlines() if l.strip()]
+    matched = [e for e in lines if e.get("fault_type") == "truncated_response"]
+    assert len(matched) >= 1
+    assert matched[0]["scheduled_bytes"] == fault_proxy.FAIL_BYTES
