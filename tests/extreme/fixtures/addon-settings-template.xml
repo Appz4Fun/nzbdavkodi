@@ -1,0 +1,52 @@
+<settings version="2">
+    <setting id="nzbhydra_enabled">true</setting>
+    <setting id="hydra_url">${HYDRA_URL}</setting>
+    <setting id="hydra_api_key">${HYDRA_API_KEY}</setting>
+    <setting id="prowlarr_enabled" default="true">false</setting>
+    <setting id="nzbdav_url">http://nzbdav-rs:8080</setting>
+    <setting id="nzbdav_api_key">${NZBDAV_API_KEY}</setting>
+    <setting id="webdav_url">http://fault-proxy:19080/dav</setting>
+    <setting id="webdav_username">${WEBDAV_USERNAME}</setting>
+    <setting id="webdav_password">${WEBDAV_PASSWORD}</setting>
+    <setting id="filter_2160p">false</setting>
+    <setting id="filter_1080p">true</setting>
+    <setting id="filter_720p">true</setting>
+    <setting id="filter_480p">true</setting>
+    <setting id="filter_hdr10">true</setting>
+    <setting id="filter_hdr10plus">true</setting>
+    <setting id="filter_dolby_vision">true</setting>
+    <setting id="filter_hlg">true</setting>
+    <setting id="filter_sdr">true</setting>
+    <setting id="filter_atmos">true</setting>
+    <setting id="filter_truehd">true</setting>
+    <setting id="filter_dtshd_ma">true</setting>
+    <setting id="filter_dtsx">true</setting>
+    <setting id="filter_ddplus">true</setting>
+    <setting id="filter_dd">true</setting>
+    <setting id="filter_aac">true</setting>
+    <setting id="filter_hevc">true</setting>
+    <setting id="filter_avc">true</setting>
+    <setting id="filter_av1">true</setting>
+    <setting id="filter_vp9">true</setting>
+    <setting id="filter_mpeg2">true</setting>
+    <setting id="filter_english">true</setting>
+    <setting id="filter_min_size" default="true">10000</setting>
+    <setting id="filter_max_size" default="true">17000</setting>
+    <setting id="max_results">25</setting>
+    <setting id="auto_select_best" default="true">true</setting>
+    <setting id="poll_interval">1</setting>
+    <setting id="download_timeout">3600</setting>
+    <setting id="submit_timeout">120</setting>
+    <setting id="cache_ttl">300</setting>
+    <setting id="stream_auto_retry">true</setting>
+    <setting id="stream_max_retries">3</setting>
+    <setting id="stream_retry_delay">5</setting>
+    <setting id="fallback_streams_enabled">true</setting>
+    <setting id="fallback_streams_max">8</setting>
+    <setting id="proxy_convert_subs">true</setting>
+    <setting id="force_remux_threshold_mb">15000</setting>
+    <setting id="strict_contract_mode">1</setting>
+    <setting id="zero_fill_budget_enabled">true</setting>
+    <setting id="retry_ladder_enabled">true</setting>
+    <setting id="install_tmdbhelper" default="true">false</setting>
+</settings>
