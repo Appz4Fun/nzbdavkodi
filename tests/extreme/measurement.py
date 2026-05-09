@@ -105,8 +105,18 @@ class PlayerPoller(threading.Thread):
                             "active_player_id": pid,
                         }) + "\n")
                         fh.flush()
-                except (urllib.error.URLError, OSError, json.JSONDecodeError, KeyError):
+                except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
                     self.exception_count += 1
+                    try:
+                        fh.write(json.dumps({
+                            "t_wall": time.time(),
+                            "t_run": time.time() - self.start_t_wall,
+                            "error": type(exc).__name__,
+                            "detail": str(exc)[:500],
+                        }) + "\n")
+                        fh.flush()
+                    except OSError:
+                        pass  # Avoid recursing if disk is full / file inaccessible
                 # Wait until interval elapses or stop signal
                 elapsed = time.monotonic() - tick_start
                 remaining = max(0.0, self.interval - elapsed)
@@ -134,19 +144,37 @@ def correlate(timeline: list[dict], fault_events: list[dict]) -> list[dict]:
         resume_t_wall = None
         if state_at_fault is not None and window:
             ref_time_sec = state_at_fault["time_sec"]
+            consecutive_advancing = 0
             for i in range(1, len(window)):
                 cur, prev = window[i], window[i - 1]
                 wall_delta = cur["t_wall"] - prev["t_wall"]
                 time_delta = cur["time_sec"] - prev["time_sec"]
-                # Resume: playback is advancing (time_sec moves forward relative
-                # to wall-clock) and we are past the fault position.
-                if (wall_delta <= 1.0
-                        and time_delta >= wall_delta * 0.5  # at least half-speed
-                        and time_delta > 0.05              # not frozen
-                        and cur["time_sec"] > ref_time_sec  # past fault position
-                        and cur["speed"] == 1):
-                    resume_t_wall = cur["t_wall"]
-                    break
+                # A tick "advances" if wall-delta is reasonable, media advanced,
+                # speed=1, and the rate is at least half real-time (not buffering
+                # catch-up of <0.05s).
+                # NOTE: The 0.5x rate threshold deviates from the spec's 1.0x
+                # requirement; it is intentionally lenient to handle brief
+                # catch-up bursts immediately after buffering completes.
+                # WHY debounce: a single advancing tick sandwiched between frozen
+                # ticks (buffer hiccup / stutter) would falsely declare resume
+                # without requiring 2 consecutive ticks. The debounce adds ~1
+                # polling interval of latency but eliminates that false positive.
+                advancing = (
+                    wall_delta <= 1.0
+                    and time_delta >= wall_delta * 0.5  # at least half-speed
+                    and time_delta > 0.05               # not frozen / catch-up noise
+                    and cur["time_sec"] > ref_time_sec  # past fault position
+                    and cur["speed"] == 1
+                )
+                if advancing:
+                    consecutive_advancing += 1
+                    # Require 2 consecutive advancing ticks to debounce single-tick
+                    # stutters falsely registering as "resumed".
+                    if consecutive_advancing >= 2:
+                        resume_t_wall = cur["t_wall"]
+                        break
+                else:
+                    consecutive_advancing = 0
         resume_seconds = (
             resume_t_wall - f_t if resume_t_wall is not None else None
         )
