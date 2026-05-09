@@ -112,3 +112,89 @@ class PlayerPoller(threading.Thread):
                 remaining = max(0.0, self.interval - elapsed)
                 if self._stop.wait(remaining):
                     return
+
+
+def correlate(timeline: list[dict], fault_events: list[dict]) -> list[dict]:
+    """For each fault event, compute resume time, max freeze, and freeze segments.
+
+    timeline: list of poller ticks sorted by t_wall ascending.
+    fault_events: list of {t_wall, fault_type, range} from the proxy events.jsonl.
+    Returns one dict per fault event in input order, each with the fields documented
+    in the spec's Measurement section.
+    """
+    sorted_timeline = sorted(timeline, key=lambda t: t["t_wall"])
+    out = []
+    for idx, fault in enumerate(fault_events, start=1):
+        f_t = fault["t_wall"]
+        # State at fault: last tick at or before f_t
+        before = [t for t in sorted_timeline if t["t_wall"] <= f_t]
+        state_at_fault = before[-1] if before else None
+        # Window for resume detection: [f_t, f_t + 30s]
+        window = [t for t in sorted_timeline if f_t <= t["t_wall"] <= f_t + 30.0]
+        resume_t_wall = None
+        if state_at_fault is not None and window:
+            ref_time_sec = state_at_fault["time_sec"]
+            for i in range(1, len(window)):
+                cur, prev = window[i], window[i - 1]
+                wall_delta = cur["t_wall"] - prev["t_wall"]
+                time_delta = cur["time_sec"] - prev["time_sec"]
+                # Resume: playback is advancing (time_sec moves forward relative
+                # to wall-clock) and we are past the fault position.
+                if (wall_delta <= 1.0
+                        and time_delta >= wall_delta * 0.5  # at least half-speed
+                        and time_delta > 0.05              # not frozen
+                        and cur["time_sec"] > ref_time_sec  # past fault position
+                        and cur["speed"] == 1):
+                    resume_t_wall = cur["t_wall"]
+                    break
+        resume_seconds = (
+            resume_t_wall - f_t if resume_t_wall is not None else None
+        )
+        # Freeze segments within [f_t, min(resume + 30, f_t + 60)]
+        end_window_t = (
+            min(resume_t_wall + 30.0 if resume_t_wall else f_t + 60.0,
+                f_t + 60.0)
+        )
+        freeze_window = [
+            t for t in sorted_timeline if f_t <= t["t_wall"] <= end_window_t
+        ]
+        freeze_segments = []
+        seg_start = None
+        seg_start_time_sec = None
+        for i in range(1, len(freeze_window)):
+            cur, prev = freeze_window[i], freeze_window[i - 1]
+            stalled = (
+                cur["speed"] == 1
+                and cur["time_sec"] - prev["time_sec"] < 0.05
+                and cur["t_wall"] - prev["t_wall"] < 1.0
+            )
+            if stalled:
+                if seg_start is None:
+                    seg_start = prev["t_wall"]
+                    seg_start_time_sec = prev["time_sec"]
+            else:
+                if seg_start is not None:
+                    freeze_segments.append([
+                        seg_start, prev["t_wall"], prev["t_wall"] - seg_start,
+                    ])
+                    seg_start = None
+        if seg_start is not None and freeze_window:
+            last = freeze_window[-1]
+            freeze_segments.append([
+                seg_start, last["t_wall"], last["t_wall"] - seg_start,
+            ])
+        max_freeze = max(
+            (s[2] for s in freeze_segments), default=0.0
+        )
+        out.append({
+            "fault_index": idx,
+            "fault_type": fault.get("fault_type"),
+            "fault_t_wall": f_t,
+            "fault_t_run": fault.get("t_run"),
+            "player_state_at_fault": state_at_fault,
+            "resume_t_wall": resume_t_wall,
+            "resume_seconds": resume_seconds,
+            "max_freeze_seconds": max_freeze,
+            "freeze_segments": freeze_segments,
+        })
+    return out
