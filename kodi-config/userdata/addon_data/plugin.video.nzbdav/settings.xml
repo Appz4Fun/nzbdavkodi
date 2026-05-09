@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<settings version="2">
+    <setting id="nzbhydra_enabled">true</setting>
+    <setting id="hydra_url">http://hydra:5076</setting>
+    <setting id="hydra_api_key"></setting>
+    <setting id="prowlarr_enabled">false</setting>
+    <setting id="nzbdav_url">http://nzbdav:8080</setting>
+    <setting id="nzbdav_api_key">testkey-dev</setting>
+    <setting id="webdav_url">http://nzbdav:8080/dav</setting>
+    <setting id="webdav_username">admin</setting>
+    <setting id="webdav_password">devpass</setting>
+</settings>

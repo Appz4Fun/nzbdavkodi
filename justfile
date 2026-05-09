@@ -87,6 +87,14 @@ functional-test:
 functional-test-top-imdb:
     python3 -m pytest tests/test_functional_fallback_playback.py::test_functional_imdb_top50_random_sample_fallback_playback -v -s --tb=long -m functional
 
+# Run tests against the full docker stack (nzbdav-rs + NZBHydra2 + Kodi + VNC)
+functional-test-full:
+    bash run-full-test.sh
+
+# Tear down the full docker test stack
+functional-test-full-down:
+    docker compose -f docker-compose.full-test.yml down
+
 # Lint the codebase (matches GitHub CI: ruff + black + pylint)
 lint:
     ruff check plugin.video.nzbdav/ tests/ --exclude="plugin.video.nzbdav/resources/lib/ptt/"

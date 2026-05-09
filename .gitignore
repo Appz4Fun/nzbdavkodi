@@ -46,6 +46,7 @@ run-ralphforever.sh
 .env
 .env.*
 !.env.example
+full-test.env
 
 # Build zips (versioned)
 plugin.video.nzbdav-*.zip

@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   kodi-test:
-    image: linuxserver/kodi-headless:latest
+    image: matthuisman/kodi-headless:Omega
     container_name: kodi-test-nzbdav
     environment:
       - PUID=1000
@@ -10,10 +10,10 @@ services:
       - TZ=UTC
     ports:
       - "8080:8080"  # Kodi JSON-RPC (HTTP webserver)
-      - "5900:5900"  # VNC
+      - "5902:5900"  # VNC
     volumes:
       - ./kodi-config:/config
-      - ./plugin.video.nzbdav:/config/addons/plugin.video.nzbdav
+      - ./plugin.video.nzbdav:/config/.kodi/addons/plugin.video.nzbdav
     restart: unless-stopped
     networks:
       - test-net

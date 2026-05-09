@@ -1,0 +1,101 @@
+name: nzbdavkodi-full-test
+
+# Full self-contained test stack:
+#   nzbdav-rs  — SABnzbd-compat API + WebDAV (host: 8180)
+#   NZBHydra2  — NZB indexer aggregator     (host: 5076)
+#   Kodi       — headless player + addon     (host: 8080 JSON-RPC, 5902 VNC)
+#   VNC        — desktop access              (host: 6901 web, 5901 direct)
+#
+# Usage:
+#   docker compose -f docker-compose.full-test.yml up -d
+#   docker compose -f docker-compose.full-test.yml down
+
+services:
+  nzbdav:
+    image: repo.indexarr.net/indexarr/nzbdav-rs:latest
+    container_name: nzbdavkodi-full-nzbdav
+    environment:
+      - NZBDAV_HOST=0.0.0.0
+      - NZBDAV_PORT=8080
+      - NZBDAV_DB=/data/nzbdav.db
+      - NZBDAV_LOG=info
+      - NZBDAV_API_KEY=testkey-dev
+      - NZBDAV_WEBDAV_USER=admin
+      - NZBDAV_WEBDAV_PASS=devpass
+    volumes:
+      - nzbdav-data:/data
+    ports:
+      - "8180:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/ui || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    networks:
+      - fulltest-net
+
+  hydra:
+    image: linuxserver/nzbhydra2:latest
+    container_name: nzbdavkodi-full-hydra
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+    volumes:
+      - hydra-config:/config
+    ports:
+      - "5076:5076"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:5076/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+    networks:
+      - fulltest-net
+
+  kodi:
+    image: matthuisman/kodi-headless:Omega
+    container_name: nzbdavkodi-full-kodi
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+    ports:
+      - "8080:8080"
+      - "5902:5900"
+    volumes:
+      - kodi-config:/config
+      - ./plugin.video.nzbdav:/config/.kodi/addons/plugin.video.nzbdav
+    depends_on:
+      nzbdav:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - fulltest-net
+
+  vnc:
+    image: dorowu/ubuntu-desktop-lxde-vnc:focal
+    container_name: nzbdavkodi-full-vnc
+    ports:
+      - "6901:80"
+      - "5901:5900"
+    environment:
+      - VNC_PASSWORD=test123
+    restart: unless-stopped
+    networks:
+      - fulltest-net
+
+volumes:
+  nzbdav-data:
+  hydra-config:
+  kodi-config:
+
+networks:
+  fulltest-net:
+    driver: bridge
