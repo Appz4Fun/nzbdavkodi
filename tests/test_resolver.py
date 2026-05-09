@@ -9,9 +9,9 @@ from unittest.mock import MagicMock, patch
 from resources.lib.resolver import (
     _DOWNLOAD_TIMEOUT_MAX,
     _DOWNLOAD_TIMEOUT_MIN,
+    _PLAYBACK_PREPARE_HANDOFF_GRACE_SECONDS,
     _POLL_INTERVAL_MAX,
     _POLL_INTERVAL_MIN,
-    _PLAYBACK_PREPARE_HANDOFF_GRACE_SECONDS,
     MAX_POLL_ITERATIONS,
     _cache_bust_url,
     _clear_kodi_playback_state,
