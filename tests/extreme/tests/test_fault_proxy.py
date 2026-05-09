@@ -12,6 +12,8 @@ import pytest
 
 from tests.extreme import fault_proxy
 
+_IncompleteRead = http.client.IncompleteRead
+
 
 @pytest.fixture
 def control_server():
@@ -196,3 +198,34 @@ def test_slow_upstream_fault_throttles(proxy_with_upstream, monkeypatch):
     elapsed = time.monotonic() - t0
     assert elapsed >= 0.9, f"throttling did not slow request, elapsed={elapsed:.2f}s"
     assert state.fired_events[0]["fault_type"] == "slow_upstream"
+
+
+def test_truncated_response_short_eof(proxy_with_upstream):
+    proxy_url, state, _ = proxy_with_upstream
+    state.scheduled_events = [fault_proxy.ScheduledEvent(0.0, "truncated_response")]
+    state.start_t = time.monotonic() - 1.0
+    resp = _request_large_range(proxy_url)
+    declared = int(resp.headers["Content-Length"])
+    # Python's http.client raises IncompleteRead when the peer closes before
+    # Content-Length bytes arrive — that IS the truncation signal.  Extract the
+    # partial payload from the exception so we can assert on its length.
+    try:
+        body = resp.read()
+    except _IncompleteRead as exc:
+        body = exc.partial
+    assert len(body) == fault_proxy.FAIL_BYTES
+    assert len(body) < declared, "body was not truncated relative to Content-Length"
+    assert state.fired_events[0]["fault_type"] == "truncated_response"
+
+
+def test_corrupted_bytes_modifies_payload(proxy_with_upstream):
+    proxy_url, state, _ = proxy_with_upstream
+    state.scheduled_events = [fault_proxy.ScheduledEvent(0.0, "corrupted_bytes")]
+    state.start_t = time.monotonic() - 1.0
+    resp = _request_large_range(proxy_url)
+    head = resp.read(fault_proxy.FAIL_BYTES)
+    # The fake upstream sent only 'X' bytes; corrupted region should contain non-'X'.
+    assert head.count(b"X") < len(head), "expected at least one corrupted byte"
+    diff_count = sum(1 for b in head if b != ord("X"))
+    assert 1 <= diff_count <= 64, f"unexpected number of corruptions: {diff_count}"
+    assert state.fired_events[0]["fault_type"] == "corrupted_bytes"

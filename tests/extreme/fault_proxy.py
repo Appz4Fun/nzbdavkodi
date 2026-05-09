@@ -251,11 +251,83 @@ def _apply_slow_upstream(handler, resp, range_header, state) -> None:
     resp.close()
 
 
+def _apply_truncated_response(handler, resp, range_header, state) -> None:
+    """Forward upstream's headers as-is (so client sees the upstream Content-Length),
+    then send only FAIL_BYTES of body and close, causing a premature EOF.
+    """
+    handler.send_response(resp.status, resp.reason)
+    for k, v in resp.getheaders():
+        if k.lower() in ("connection", "transfer-encoding"):
+            continue
+        handler.send_header(k, v)
+    handler.send_header("Connection", "close")
+    handler.close_connection = True
+    handler.end_headers()
+    # Record state early (right after end_headers) so test threads observing
+    # fired_events after the client unblocks on IncompleteRead see the entry
+    # deterministically — same early-record convention as _apply_slow_upstream.
+    state.record_fired("truncated_response", range_header)
+    _log_event({
+        "fault_type": "truncated_response",
+        "t_wall": time.time(),
+        "range": range_header,
+        "sent_bytes": FAIL_BYTES,
+    })
+    sent = 0
+    while sent < FAIL_BYTES:
+        chunk = resp.read(min(65536, FAIL_BYTES - sent))
+        if not chunk:
+            break
+        handler.wfile.write(chunk)
+        sent += len(chunk)
+    resp.close()
+
+
+def _apply_corrupted_bytes(handler, resp, range_header, state) -> None:
+    """Forward the response with 32 random byte positions XOR'd in the first FAIL_BYTES,
+    then stream the remainder of the body unmodified.
+    """
+    import random as _r
+    handler.send_response(resp.status, resp.reason)
+    for k, v in resp.getheaders():
+        if k.lower() in ("connection", "transfer-encoding"):
+            continue
+        handler.send_header(k, v)
+    handler.send_header("Connection", "close")
+    handler.close_connection = True
+    handler.end_headers()
+    # Record state early (right after end_headers) so test threads observing
+    # fired_events after the client's read() returns see the entry deterministically
+    # — same early-record convention as _apply_slow_upstream.
+    state.record_fired("corrupted_bytes", range_header)
+    head = bytearray(resp.read(FAIL_BYTES))
+    corruption_count = 0
+    if head:
+        positions = sorted(_r.sample(range(len(head)), min(32, len(head))))
+        for p in positions:
+            head[p] ^= 0xFF
+        corruption_count = len(positions)
+        handler.wfile.write(bytes(head))
+    _log_event({
+        "fault_type": "corrupted_bytes",
+        "t_wall": time.time(),
+        "range": range_header,
+        "corruption_count": corruption_count,
+    })
+    while True:
+        chunk = resp.read(65536)
+        if not chunk:
+            break
+        handler.wfile.write(chunk)
+    resp.close()
+
+
 _FAULT_DISPATCH = {
     "connection_reset": _apply_connection_reset,
     "http_500": _apply_http_500,
     "slow_upstream": _apply_slow_upstream,
-    # truncated_response, corrupted_bytes added in later tasks.
+    "truncated_response": _apply_truncated_response,
+    "corrupted_bytes": _apply_corrupted_bytes,
 }
 
 
