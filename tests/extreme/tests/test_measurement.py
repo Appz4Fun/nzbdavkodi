@@ -1,4 +1,5 @@
 """Unit tests for tests.extreme.measurement."""
+
 import json
 import socketserver
 import threading
@@ -12,30 +13,49 @@ from tests.extreme import measurement
 
 @pytest.fixture
 def mock_kodi():
-    """A fake JSON-RPC server that returns Player.GetActivePlayers + Player.GetProperties."""
+    """A fake JSON-RPC server that returns Player.GetActivePlayers +
+    Player.GetProperties."""
     state = {"speed": 1, "time_sec": 0.0}
     state_lock = threading.Lock()
 
     class _H(BaseHTTPRequestHandler):
-        def log_message(self, *a, **k): pass
+        def log_message(self, *a, **k):
+            pass
+
         def do_POST(self):
             length = int(self.headers.get("Content-Length", "0"))
             req = json.loads(self.rfile.read(length))
             method = req.get("method", "")
             with state_lock:
                 if method == "Player.GetActivePlayers":
-                    body = {"jsonrpc": "2.0", "id": req["id"],
-                            "result": [{"playerid": 1, "type": "video"}]}
+                    body = {
+                        "jsonrpc": "2.0",
+                        "id": req["id"],
+                        "result": [{"playerid": 1, "type": "video"}],
+                    }
                 elif method == "Player.GetProperties":
                     t = state["time_sec"]
-                    body = {"jsonrpc": "2.0", "id": req["id"], "result": {
-                        "speed": state["speed"],
-                        "time": {"hours": int(t // 3600), "minutes": int((t // 60) % 60),
-                                 "seconds": int(t % 60), "milliseconds": int((t * 1000) % 1000)},
-                        "totaltime": {"hours": 2, "minutes": 0, "seconds": 0, "milliseconds": 0},
-                        "percentage": (t / 7200.0) * 100,
-                        "playcount": 0,
-                    }}
+                    body = {
+                        "jsonrpc": "2.0",
+                        "id": req["id"],
+                        "result": {
+                            "speed": state["speed"],
+                            "time": {
+                                "hours": int(t // 3600),
+                                "minutes": int((t // 60) % 60),
+                                "seconds": int(t % 60),
+                                "milliseconds": int((t * 1000) % 1000),
+                            },
+                            "totaltime": {
+                                "hours": 2,
+                                "minutes": 0,
+                                "seconds": 0,
+                                "milliseconds": 0,
+                            },
+                            "percentage": (t / 7200.0) * 100,
+                            "playcount": 0,
+                        },
+                    }
                 else:
                     body = {"jsonrpc": "2.0", "id": req["id"], "error": {"code": -1}}
             data = json.dumps(body).encode("utf-8")
@@ -47,6 +67,7 @@ def mock_kodi():
 
     class _S(socketserver.ThreadingMixIn, socketserver.TCPServer):
         allow_reuse_address = True
+
     server = _S(("127.0.0.1", 0), _H)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     yield (server.server_address[1], state, state_lock)
@@ -97,26 +118,37 @@ def test_player_poller_survives_jsonrpc_error(mock_kodi, tmp_path):
 
 
 def _tick(t_wall, time_sec, speed=1):
-    return {"t_wall": t_wall, "t_run": t_wall - 1000.0,
-            "speed": speed, "time_sec": time_sec,
-            "totaltime_sec": 7200.0, "percentage": 0.0,
-            "playcount": 0, "active_player_id": 1}
+    return {
+        "t_wall": t_wall,
+        "t_run": t_wall - 1000.0,
+        "speed": speed,
+        "time_sec": time_sec,
+        "totaltime_sec": 7200.0,
+        "percentage": 0.0,
+        "playcount": 0,
+        "active_player_id": 1,
+    }
 
 
 def test_correlate_resume_seconds_simple():
     """Playback stalls from t=10 to t=15, then advances. Resume should be 5s."""
-    timeline = [
-        _tick(1000.0 + t / 4.0, time_sec=t / 4.0)
-        for t in range(0, 40)  # 10s of playback, 0.25s ticks
-    ] + [
-        _tick(1010.0 + (i * 0.25), time_sec=10.0)  # frozen for 5s
-        for i in range(0, 20)
-    ] + [
-        _tick(1015.0 + (i * 0.25), time_sec=10.0 + (i * 0.25))
-        for i in range(1, 20)  # advances again
+    timeline = (
+        [
+            _tick(1000.0 + t / 4.0, time_sec=t / 4.0)
+            for t in range(0, 40)  # 10s of playback, 0.25s ticks
+        ]
+        + [
+            _tick(1010.0 + (i * 0.25), time_sec=10.0)  # frozen for 5s
+            for i in range(0, 20)
+        ]
+        + [
+            _tick(1015.0 + (i * 0.25), time_sec=10.0 + (i * 0.25))
+            for i in range(1, 20)  # advances again
+        ]
+    )
+    fault_events = [
+        {"t_wall": 1010.0, "fault_type": "connection_reset", "range": "bytes=1048576-"}
     ]
-    fault_events = [{"t_wall": 1010.0, "fault_type": "connection_reset",
-                     "range": "bytes=1048576-"}]
     out = measurement.correlate(timeline, fault_events)
     assert len(out) == 1
     ev = out[0]
@@ -135,15 +167,27 @@ def test_correlate_resume_null_when_never_resumes():
 
 def test_write_summary_aggregates(tmp_path):
     events = [
-        {"fault_index": 1, "fault_type": "connection_reset",
-         "resume_seconds": 5.0, "max_freeze_seconds": 4.5,
-         "freeze_segments": [[0, 5, 5]]},
-        {"fault_index": 2, "fault_type": "http_500",
-         "resume_seconds": 2.0, "max_freeze_seconds": 1.5,
-         "freeze_segments": []},
-        {"fault_index": 3, "fault_type": "slow_upstream",
-         "resume_seconds": None, "max_freeze_seconds": 60.0,
-         "freeze_segments": []},
+        {
+            "fault_index": 1,
+            "fault_type": "connection_reset",
+            "resume_seconds": 5.0,
+            "max_freeze_seconds": 4.5,
+            "freeze_segments": [[0, 5, 5]],
+        },
+        {
+            "fault_index": 2,
+            "fault_type": "http_500",
+            "resume_seconds": 2.0,
+            "max_freeze_seconds": 1.5,
+            "freeze_segments": [],
+        },
+        {
+            "fault_index": 3,
+            "fault_type": "slow_upstream",
+            "resume_seconds": None,
+            "max_freeze_seconds": 60.0,
+            "freeze_segments": [],
+        },
     ]
     out_json = tmp_path / "summary.json"
     out_md = tmp_path / "summary.md"
@@ -172,15 +216,16 @@ def test_correlate_ignores_single_tick_stutter():
     fault_events = [{"t_wall": 1001.0, "fault_type": "connection_reset", "range": "x"}]
     out = measurement.correlate(timeline, fault_events)
     # Single advancing tick should NOT be classified as resume
-    assert out[0]["resume_seconds"] is None, (
-        f"single-tick stutter incorrectly marked as resume: {out[0]}"
-    )
+    assert (
+        out[0]["resume_seconds"] is None
+    ), f"single-tick stutter incorrectly marked as resume: {out[0]}"
 
 
 def test_write_manifest(tmp_path):
     out = tmp_path / "manifest.json"
-    measurement.write_manifest(out, {"movie": "Inception", "seed": 12345,
-                                     "image_shas": {"kodi": "abc"}})
+    measurement.write_manifest(
+        out, {"movie": "Inception", "seed": 12345, "image_shas": {"kodi": "abc"}}
+    )
     parsed = json.loads(out.read_text())
     assert parsed["movie"] == "Inception"
     assert parsed["seed"] == 12345

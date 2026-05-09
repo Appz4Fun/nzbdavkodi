@@ -30,13 +30,14 @@ class PlayerPoller(threading.Thread):
     {"t_wall": float, "t_run": float, "speed": int, "time_sec": float, ...}
     """
 
-    def __init__(self, url: str, auth: tuple[str, str], interval: float,
-                 output_path: Path):
+    def __init__(
+        self, url: str, auth: tuple[str, str], interval: float, output_path: Path
+    ):
         super().__init__(daemon=True)
         self.url = url
-        self.auth_header = "Basic " + base64.b64encode(
-            f"{auth[0]}:{auth[1]}".encode()
-        ).decode()
+        self.auth_header = (
+            "Basic " + base64.b64encode(f"{auth[0]}:{auth[1]}".encode()).decode()
+        )
         self.interval = interval
         self.output_path = Path(output_path)
         self._stop = threading.Event()
@@ -46,13 +47,21 @@ class PlayerPoller(threading.Thread):
     def stop(self) -> None:
         self._stop.set()
 
-    def _rpc(self, method: str, params: dict | None = None, request_id: int = 1) -> dict:
-        body = json.dumps({
-            "jsonrpc": "2.0", "method": method,
-            "params": params or {}, "id": request_id,
-        }).encode("utf-8")
+    def _rpc(
+        self, method: str, params: dict | None = None, request_id: int = 1
+    ) -> dict:
+        body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "method": method,
+                "params": params or {},
+                "id": request_id,
+            }
+        ).encode("utf-8")
         req = urllib.request.Request(
-            self.url, data=body, method="POST",
+            self.url,
+            data=body,
+            method="POST",
             headers={
                 "Content-Type": "application/json",
                 "Authorization": self.auth_header,
@@ -72,13 +81,21 @@ class PlayerPoller(threading.Thread):
                     result = players.get("result", [])
                     if not result:
                         # No active player yet — write a sentinel tick.
-                        fh.write(json.dumps({
-                            "t_wall": time.time(),
-                            "t_run": time.time() - self.start_t_wall,
-                            "speed": 0, "time_sec": 0.0, "totaltime_sec": 0.0,
-                            "percentage": 0.0, "playcount": 0,
-                            "active_player_id": None,
-                        }) + "\n")
+                        fh.write(
+                            json.dumps(
+                                {
+                                    "t_wall": time.time(),
+                                    "t_run": time.time() - self.start_t_wall,
+                                    "speed": 0,
+                                    "time_sec": 0.0,
+                                    "totaltime_sec": 0.0,
+                                    "percentage": 0.0,
+                                    "playcount": 0,
+                                    "active_player_id": None,
+                                }
+                            )
+                            + "\n"
+                        )
                         fh.flush()
                     else:
                         pid = result[0]["playerid"]
@@ -86,34 +103,51 @@ class PlayerPoller(threading.Thread):
                             "Player.GetProperties",
                             params={
                                 "playerid": pid,
-                                "properties": ["speed", "time", "totaltime",
-                                               "percentage", "playcount"],
+                                "properties": [
+                                    "speed",
+                                    "time",
+                                    "totaltime",
+                                    "percentage",
+                                    "playcount",
+                                ],
                             },
                             request_id=2,
                         )
                         r = props.get("result", {})
-                        fh.write(json.dumps({
-                            "t_wall": time.time(),
-                            "t_run": time.time() - self.start_t_wall,
-                            "speed": r.get("speed", 0),
-                            "time_sec": _kodi_time_to_seconds(r.get("time", {})),
-                            "totaltime_sec": _kodi_time_to_seconds(
-                                r.get("totaltime", {})
-                            ),
-                            "percentage": r.get("percentage", 0.0),
-                            "playcount": r.get("playcount", 0),
-                            "active_player_id": pid,
-                        }) + "\n")
+                        fh.write(
+                            json.dumps(
+                                {
+                                    "t_wall": time.time(),
+                                    "t_run": time.time() - self.start_t_wall,
+                                    "speed": r.get("speed", 0),
+                                    "time_sec": _kodi_time_to_seconds(
+                                        r.get("time", {})
+                                    ),
+                                    "totaltime_sec": _kodi_time_to_seconds(
+                                        r.get("totaltime", {})
+                                    ),
+                                    "percentage": r.get("percentage", 0.0),
+                                    "playcount": r.get("playcount", 0),
+                                    "active_player_id": pid,
+                                }
+                            )
+                            + "\n"
+                        )
                         fh.flush()
                 except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
                     self.exception_count += 1
                     try:
-                        fh.write(json.dumps({
-                            "t_wall": time.time(),
-                            "t_run": time.time() - self.start_t_wall,
-                            "error": type(exc).__name__,
-                            "detail": str(exc)[:500],
-                        }) + "\n")
+                        fh.write(
+                            json.dumps(
+                                {
+                                    "t_wall": time.time(),
+                                    "t_run": time.time() - self.start_t_wall,
+                                    "error": type(exc).__name__,
+                                    "detail": str(exc)[:500],
+                                }
+                            )
+                            + "\n"
+                        )
                         fh.flush()
                     except OSError:
                         pass  # Avoid recursing if disk is full / file inaccessible
@@ -162,7 +196,7 @@ def correlate(timeline: list[dict], fault_events: list[dict]) -> list[dict]:
                 advancing = (
                     wall_delta <= 1.0
                     and time_delta >= wall_delta * 0.5  # at least half-speed
-                    and time_delta > 0.05               # not frozen / catch-up noise
+                    and time_delta > 0.05  # not frozen / catch-up noise
                     and cur["time_sec"] > ref_time_sec  # past fault position
                     and cur["speed"] == 1
                 )
@@ -175,20 +209,16 @@ def correlate(timeline: list[dict], fault_events: list[dict]) -> list[dict]:
                         break
                 else:
                     consecutive_advancing = 0
-        resume_seconds = (
-            resume_t_wall - f_t if resume_t_wall is not None else None
-        )
+        resume_seconds = resume_t_wall - f_t if resume_t_wall is not None else None
         # Freeze segments within [f_t, min(resume + 30, f_t + 60)]
-        end_window_t = (
-            min(resume_t_wall + 30.0 if resume_t_wall else f_t + 60.0,
-                f_t + 60.0)
+        end_window_t = min(
+            resume_t_wall + 30.0 if resume_t_wall else f_t + 60.0, f_t + 60.0
         )
         freeze_window = [
             t for t in sorted_timeline if f_t <= t["t_wall"] <= end_window_t
         ]
         freeze_segments = []
         seg_start = None
-        seg_start_time_sec = None
         for i in range(1, len(freeze_window)):
             cur, prev = freeze_window[i], freeze_window[i - 1]
             stalled = (
@@ -199,32 +229,39 @@ def correlate(timeline: list[dict], fault_events: list[dict]) -> list[dict]:
             if stalled:
                 if seg_start is None:
                     seg_start = prev["t_wall"]
-                    seg_start_time_sec = prev["time_sec"]
             else:
                 if seg_start is not None:
-                    freeze_segments.append([
-                        seg_start, prev["t_wall"], prev["t_wall"] - seg_start,
-                    ])
+                    freeze_segments.append(
+                        [
+                            seg_start,
+                            prev["t_wall"],
+                            prev["t_wall"] - seg_start,
+                        ]
+                    )
                     seg_start = None
         if seg_start is not None and freeze_window:
             last = freeze_window[-1]
-            freeze_segments.append([
-                seg_start, last["t_wall"], last["t_wall"] - seg_start,
-            ])
-        max_freeze = max(
-            (s[2] for s in freeze_segments), default=0.0
+            freeze_segments.append(
+                [
+                    seg_start,
+                    last["t_wall"],
+                    last["t_wall"] - seg_start,
+                ]
+            )
+        max_freeze = max((s[2] for s in freeze_segments), default=0.0)
+        out.append(
+            {
+                "fault_index": idx,
+                "fault_type": fault.get("fault_type"),
+                "fault_t_wall": f_t,
+                "fault_t_run": fault.get("t_run"),
+                "player_state_at_fault": state_at_fault,
+                "resume_t_wall": resume_t_wall,
+                "resume_seconds": resume_seconds,
+                "max_freeze_seconds": max_freeze,
+                "freeze_segments": freeze_segments,
+            }
         )
-        out.append({
-            "fault_index": idx,
-            "fault_type": fault.get("fault_type"),
-            "fault_t_wall": f_t,
-            "fault_t_run": fault.get("t_run"),
-            "player_state_at_fault": state_at_fault,
-            "resume_t_wall": resume_t_wall,
-            "resume_seconds": resume_seconds,
-            "max_freeze_seconds": max_freeze,
-            "freeze_segments": freeze_segments,
-        })
     return out
 
 
@@ -247,7 +284,8 @@ def write_summary(events: list[dict], out_json: Path, out_md: Path) -> None:
         if not vals:
             return None
         return {
-            "min": min(vals), "max": max(vals),
+            "min": min(vals),
+            "max": max(vals),
             "median": statistics.median(vals),
             "p95": _percentile(vals, 95),
         }
@@ -263,16 +301,21 @@ def write_summary(events: list[dict], out_json: Path, out_md: Path) -> None:
     out_json.parent.mkdir(parents=True, exist_ok=True)
     out_json.write_text(json.dumps(summary, indent=2, default=str))
 
-    rows = ["# Extreme Functional Test Report", "",
-            f"- Total events: {total}",
-            f"- Resumed: {len(resumed)} / {total}",
-            "",
-            "| # | type | resume (s) | max freeze (s) |",
-            "|---|------|-----------:|---------------:|"]
+    rows = [
+        "# Extreme Functional Test Report",
+        "",
+        f"- Total events: {total}",
+        f"- Resumed: {len(resumed)} / {total}",
+        "",
+        "| # | type | resume (s) | max freeze (s) |",
+        "|---|------|-----------:|---------------:|",
+    ]
     for e in events:
         rs = "—" if e.get("resume_seconds") is None else f"{e['resume_seconds']:.2f}"
         fr = f"{e['max_freeze_seconds']:.2f}"
-        rows.append(f"| {e['fault_index']} | {e.get('fault_type', '?')} | {rs} | {fr} |")
+        rows.append(
+            f"| {e['fault_index']} | {e.get('fault_type', '?')} | {rs} | {fr} |"
+        )
     out_md.write_text("\n".join(rows) + "\n")
 
 
