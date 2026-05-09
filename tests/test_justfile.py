@@ -54,6 +54,11 @@ def test_justfile_has_extreme_functional_test_recipe():
     assert "extreme-functional-test:" in contents
 
 
+def test_justfile_has_setup_extreme_functional_test_recipe():
+    contents = Path(__file__).resolve().parents[1].joinpath("justfile").read_text()
+    assert "setup-extreme-functional-test:" in contents
+
+
 def test_test_recipe_excludes_extreme_marker():
     contents = Path(__file__).resolve().parents[1].joinpath("justfile").read_text()
     test_block = re.search(r"^test:\n(?:    .+\n)+", contents, re.MULTILINE)
