@@ -13,7 +13,6 @@ import socketserver
 import sys
 import threading
 import time
-from collections import deque
 from http.server import BaseHTTPRequestHandler
 from typing import Optional
 from urllib.parse import urlsplit
@@ -58,6 +57,14 @@ class ProxyState:
 
     def reset_clock(self) -> None:
         with self.lock:
+            self.start_t = time.monotonic()
+            self.start_t_wall = time.time()
+            self.fired_events.clear()
+
+    def replace_schedule(self, events: list[ScheduledEvent]) -> None:
+        """Atomically replace the event list and reset the run clock."""
+        with self.lock:
+            self.scheduled_events = sorted(events, key=lambda e: e.at_seconds)
             self.start_t = time.monotonic()
             self.start_t_wall = time.time()
             self.fired_events.clear()
@@ -218,15 +225,17 @@ class ControlHandler(BaseHTTPRequestHandler):
                 if fault_type not in VALID_FAULT_TYPES:
                     self.send_error(400, f"unknown fault_type: {fault_type}")
                     return
-                parsed.append(ScheduledEvent(
-                    at_seconds=float(ev["at_seconds"]),
-                    fault_type=fault_type,
-                ))
-            with self.state.lock:
-                self.state.scheduled_events = sorted(parsed, key=lambda e: e.at_seconds)
-                self.state.start_t = time.monotonic()
-                self.state.start_t_wall = time.time()
-                self.state.fired_events.clear()
+                at_seconds_raw = ev.get("at_seconds")
+                if at_seconds_raw is None:
+                    self.send_error(400, "missing at_seconds")
+                    return
+                try:
+                    at_seconds = float(at_seconds_raw)
+                except (TypeError, ValueError):
+                    self.send_error(400, "at_seconds not a number")
+                    return
+                parsed.append(ScheduledEvent(at_seconds=at_seconds, fault_type=fault_type))
+            self.state.replace_schedule(parsed)
             body = json.dumps({"scheduled": len(parsed)}).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -292,7 +301,9 @@ class Handler(BaseHTTPRequestHandler):
                 due = self.state.next_due_fault()
                 if due is not None:
                     fn = _FAULT_DISPATCH.get(due.fault_type)
-                    if fn is not None:
+                    if fn is None:
+                        _log(f"WARN unimplemented fault_type={due.fault_type!r} - passthrough")
+                    else:
                         fn(self, resp, range_header, self.state)
                         return
             self._passthrough(resp, head_only=head_only)

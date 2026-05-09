@@ -2,6 +2,7 @@
 import json
 import threading
 import time
+import urllib.error
 import urllib.request
 
 import pytest
@@ -63,3 +64,34 @@ def test_control_schedule_rejects_unknown_type(control_server):
     with pytest.raises(urllib.error.HTTPError) as exc:
         urllib.request.urlopen(req, timeout=2)
     assert exc.value.code == 400
+
+
+def test_control_schedule_rejects_missing_at_seconds(control_server):
+    base, _ = control_server
+    payload = json.dumps({
+        "events": [{"fault_type": "connection_reset"}],
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        f"{base}/control/schedule",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        urllib.request.urlopen(req, timeout=2)
+    assert exc.value.code == 400
+
+
+def test_proxy_state_replace_schedule_resets_clock(control_server):
+    _, state = control_server
+    state.fired_events.append({"sentinel": True})
+    events = [
+        fault_proxy.ScheduledEvent(at_seconds=10.0, fault_type="connection_reset"),
+        fault_proxy.ScheduledEvent(at_seconds=5.0, fault_type="http_500"),
+    ]
+    state.replace_schedule(events)
+    # Sorted ascending by at_seconds
+    assert state.scheduled_events[0].at_seconds == 5.0
+    assert state.scheduled_events[1].at_seconds == 10.0
+    # Clock reset; fired events cleared
+    assert state.fired_events == []
