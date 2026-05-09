@@ -7,6 +7,7 @@ so even on test failure we end with a clean machine.
 
 from __future__ import annotations
 
+import base64
 import datetime as _dt
 import os
 import subprocess
@@ -43,9 +44,13 @@ def _compose(*args: str, **kw) -> subprocess.CompletedProcess:
 
 
 def _existing_containers() -> list[str]:
+    # `--all` includes stopped containers from a prior crashed run, not just
+    # currently-running ones. Without this flag a crashed run that left
+    # stopped containers behind would silently pass the preflight guard and
+    # then fail later on volume/port conflicts.
     out = subprocess.run(
         ["docker", "compose", "-p", PROJECT_NAME, "-f", str(COMPOSE_FILE),
-         "ps", "--quiet"],
+         "ps", "--all", "--quiet"],
         check=False, capture_output=True, text=True,
     )
     return [line for line in out.stdout.splitlines() if line.strip()]
@@ -63,7 +68,13 @@ def run_dir() -> Path:
 
 @pytest.fixture(scope="session")
 def env_loaded(run_dir):
-    """Loads .env from EXTREME_ENV_FILE (default: ./.env)."""
+    """Loads .env from EXTREME_ENV_FILE (default: ./.env).
+
+    Uses os.environ.setdefault so any variable already exported in the
+    parent shell takes precedence over the .env file. This lets CI inject
+    overrides without editing .env, but means stale shell exports can
+    silently shadow .env edits during local development.
+    """
     env_file = Path(os.environ.get("EXTREME_ENV_FILE", REPO_ROOT / ".env"))
     if not env_file.exists():
         pytest.fail(f"EXTREME_ENV_FILE not found: {env_file}")
@@ -110,7 +121,7 @@ def kodi_ready(compose_up, nzbdav_seeded):
         b'{"jsonrpc":"2.0","method":"Application.GetProperties",'
         b'"params":{"properties":["version"]},"id":1}'
     )
-    auth = "Basic " + __import__("base64").b64encode(b"kodi:kodi").decode()
+    auth = "Basic " + base64.b64encode(":".join(KODI_AUTH).encode()).decode()
     deadline = time.time() + 60
     while time.time() < deadline:
         try:
