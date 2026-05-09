@@ -26,7 +26,9 @@ FAIL_BYTES = int(os.environ.get("FAULT_PROXY_FAIL_BYTES", str(4 * 1024 * 1024)))
 SLOW_BPS = int(os.environ.get("FAULT_PROXY_SLOW_BPS", str(50 * 1024)))
 SLOW_DURATION = float(os.environ.get("FAULT_PROXY_SLOW_DURATION", "30"))
 MIN_FAIL_START = int(os.environ.get("FAULT_PROXY_MIN_FAIL_START", str(1024 * 1024)))
-MAX_FAIL_START = int(os.environ.get("FAULT_PROXY_MAX_FAIL_START", str(1024 * 1024 * 1024)))
+MAX_FAIL_START = int(
+    os.environ.get("FAULT_PROXY_MAX_FAIL_START", str(1024 * 1024 * 1024))
+)
 LOG_PATH = os.environ.get("FAULT_PROXY_LOG", "/var/log/fault-proxy/full.log")
 EVENTS_PATH = os.environ.get("FAULT_PROXY_EVENTS", "/var/log/fault-proxy/events.jsonl")
 
@@ -80,12 +82,14 @@ class ProxyState:
 
     def record_fired(self, fault_type: str, range_header: str) -> None:
         with self.lock:
-            self.fired_events.append({
-                "t_wall": time.time(),
-                "t_run": time.monotonic() - self.start_t,
-                "fault_type": fault_type,
-                "range": range_header,
-            })
+            self.fired_events.append(
+                {
+                    "t_wall": time.time(),
+                    "t_run": time.monotonic() - self.start_t,
+                    "fault_type": fault_type,
+                    "range": range_header,
+                }
+            )
 
 
 # --- Logging helpers ---
@@ -158,12 +162,14 @@ def _apply_connection_reset(handler, resp, range_header, state) -> None:
     # Record state before sending response so test threads observing
     # fired_events after the client unblocks see the entry deterministically.
     state.record_fired("connection_reset", range_header)
-    _log_event({
-        "fault_type": "connection_reset",
-        "t_wall": time.time(),
-        "range": range_header,
-        "fail_bytes": FAIL_BYTES,
-    })
+    _log_event(
+        {
+            "fault_type": "connection_reset",
+            "t_wall": time.time(),
+            "range": range_header,
+            "fail_bytes": FAIL_BYTES,
+        }
+    )
     handler.send_response(resp.status, resp.reason)
     for k, v in resp.getheaders():
         if k.lower() in ("connection", "transfer-encoding"):
@@ -192,11 +198,13 @@ def _apply_http_500(handler, resp, range_header, state) -> None:
     # Record state before sending response so test threads observing
     # fired_events after the client unblocks see the entry deterministically.
     state.record_fired("http_500", range_header)
-    _log_event({
-        "fault_type": "http_500",
-        "t_wall": time.time(),
-        "range": range_header,
-    })
+    _log_event(
+        {
+            "fault_type": "http_500",
+            "t_wall": time.time(),
+            "range": range_header,
+        }
+    )
     handler.send_response(500, "Internal Server Error")
     handler.send_header("Content-Length", "0")
     handler.send_header("Connection", "close")
@@ -220,12 +228,14 @@ def _apply_slow_upstream(handler, resp, range_header, state) -> None:
     # bytes are still in flight, but the test thread observes both fields
     # together via urlopen.read() because read() blocks until bytes arrive.
     state.record_fired("slow_upstream", range_header)
-    _log_event({
-        "fault_type": "slow_upstream",
-        "t_wall": time.time(),
-        "range": range_header,
-        "duration": SLOW_DURATION,
-    })
+    _log_event(
+        {
+            "fault_type": "slow_upstream",
+            "t_wall": time.time(),
+            "range": range_header,
+            "duration": SLOW_DURATION,
+        }
+    )
     deadline = time.monotonic() + SLOW_DURATION
     chunk_size = max(1024, SLOW_BPS // 10)  # ~10 chunks/sec
     sleep_per_chunk = chunk_size / SLOW_BPS
@@ -268,12 +278,14 @@ def _apply_truncated_response(handler, resp, range_header, state) -> None:
     # fired_events after the client unblocks on IncompleteRead see the entry
     # deterministically — same early-record convention as _apply_slow_upstream.
     state.record_fired("truncated_response", range_header)
-    _log_event({
-        "fault_type": "truncated_response",
-        "t_wall": time.time(),
-        "range": range_header,
-        "scheduled_bytes": FAIL_BYTES,
-    })
+    _log_event(
+        {
+            "fault_type": "truncated_response",
+            "t_wall": time.time(),
+            "range": range_header,
+            "scheduled_bytes": FAIL_BYTES,
+        }
+    )
     sent = 0
     while sent < FAIL_BYTES:
         chunk = resp.read(min(65536, FAIL_BYTES - sent))
@@ -304,12 +316,14 @@ def _apply_corrupted_bytes(handler, resp, range_header, state) -> None:
     # fired_events after the client's read() returns see the entry deterministically
     # — same early-record convention as _apply_slow_upstream.
     state.record_fired("corrupted_bytes", range_header)
-    _log_event({
-        "fault_type": "corrupted_bytes",
-        "t_wall": time.time(),
-        "range": range_header,
-        "corruption_count": min(32, FAIL_BYTES),
-    })
+    _log_event(
+        {
+            "fault_type": "corrupted_bytes",
+            "t_wall": time.time(),
+            "range": range_header,
+            "corruption_count": min(32, FAIL_BYTES),
+        }
+    )
     head = bytearray(resp.read(FAIL_BYTES))
     if head:
         positions = sorted(random.sample(range(len(head)), min(32, len(head))))
@@ -384,7 +398,12 @@ class ControlHandler(BaseHTTPRequestHandler):
                 except (TypeError, ValueError):
                     self.send_error(400, "at_seconds not a number")
                     return
-                parsed.append(ScheduledEvent(at_seconds=at_seconds, fault_type=fault_type))
+                parsed.append(
+                    ScheduledEvent(
+                        at_seconds=at_seconds,
+                        fault_type=fault_type,
+                    )
+                )
             self.state.replace_schedule(parsed)
             body = json.dumps({"scheduled": len(parsed)}).encode("utf-8")
             self.send_response(200)
@@ -401,8 +420,9 @@ class _ThreadedHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     daemon_threads = True
 
 
-def start_control_server(state: ProxyState, host: str = "0.0.0.0",
-                         port: int = CONTROL_PORT) -> _ThreadedHTTPServer:
+def start_control_server(
+    state: ProxyState, host: str = "0.0.0.0", port: int = CONTROL_PORT
+) -> _ThreadedHTTPServer:
     handler_class = type("BoundControlHandler", (ControlHandler,), {"state": state})
     server = _ThreadedHTTPServer((host, port), handler_class)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -426,13 +446,16 @@ class Handler(BaseHTTPRequestHandler):
     def _forward(self, head_only=False):
         method = "HEAD" if head_only else self.command
         conn = http.client.HTTPConnection(
-            _upstream.hostname, _upstream.port or 80, timeout=120,
+            _upstream.hostname,
+            _upstream.port or 80,
+            timeout=120,
         )
         target = self.path
         if _upstream.path:
             target = _upstream.path.rstrip("/") + self.path
         headers = {
-            k: v for k, v in self.headers.items()
+            k: v
+            for k, v in self.headers.items()
             if k.lower() not in ("host", "connection", "proxy-connection")
         }
         headers["Host"] = _upstream.netloc
@@ -447,12 +470,19 @@ class Handler(BaseHTTPRequestHandler):
         conn.request(method, target, body=body, headers=headers)
         resp = conn.getresponse()
         try:
-            if not head_only and method == "GET" and _is_large_playback_range(range_header):
+            if (
+                not head_only
+                and method == "GET"
+                and _is_large_playback_range(range_header)
+            ):
                 due = self.state.next_due_fault()
                 if due is not None:
                     fn = _FAULT_DISPATCH.get(due.fault_type)
                     if fn is None:
-                        _log(f"WARN unimplemented fault_type={due.fault_type!r} - passthrough")
+                        _log(
+                            f"WARN unimplemented fault_type={due.fault_type!r}"
+                            " - passthrough"
+                        )
                     else:
                         fn(self, resp, range_header, self.state)
                         return
@@ -479,9 +509,14 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(chunk)
         resp.close()
 
-    def do_HEAD(self): self._forward(head_only=True)
-    def do_GET(self): self._forward(head_only=False)
-    def do_PROPFIND(self): self._forward(head_only=False)
+    def do_HEAD(self):
+        self._forward(head_only=True)
+
+    def do_GET(self):
+        self._forward(head_only=False)
+
+    def do_PROPFIND(self):
+        self._forward(head_only=False)
 
 
 def main():

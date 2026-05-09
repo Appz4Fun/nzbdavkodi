@@ -49,9 +49,20 @@ def _existing_containers() -> list[str]:
     # stopped containers behind would silently pass the preflight guard and
     # then fail later on volume/port conflicts.
     out = subprocess.run(
-        ["docker", "compose", "-p", PROJECT_NAME, "-f", str(COMPOSE_FILE),
-         "ps", "--all", "--quiet"],
-        check=False, capture_output=True, text=True,
+        [
+            "docker",
+            "compose",
+            "-p",
+            PROJECT_NAME,
+            "-f",
+            str(COMPOSE_FILE),
+            "ps",
+            "--all",
+            "--quiet",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
     )
     return [line for line in out.stdout.splitlines() if line.strip()]
 
@@ -84,9 +95,16 @@ def env_loaded(run_dir):
             continue
         k, v = s.split("=", 1)
         os.environ.setdefault(k.strip(), v.strip())
-    for required in ("HYDRA_URL", "HYDRA_API_KEY", "NNTP_USER", "NNTP_PASS",
-                     "TMDB_API_KEY", "NZBDAV_API_KEY", "WEBDAV_USERNAME",
-                     "WEBDAV_PASSWORD"):
+    for required in (
+        "HYDRA_URL",
+        "HYDRA_API_KEY",
+        "NNTP_USER",
+        "NNTP_PASS",
+        "TMDB_API_KEY",
+        "NZBDAV_API_KEY",
+        "WEBDAV_USERNAME",
+        "WEBDAV_PASSWORD",
+    ):
         if not os.environ.get(required):
             pytest.fail(f"missing required env var: {required}")
     return env_file
@@ -126,7 +144,9 @@ def kodi_ready(compose_up, nzbdav_seeded):
     while time.time() < deadline:
         try:
             req = urllib.request.Request(
-                url, data=body, method="POST",
+                url,
+                data=body,
+                method="POST",
                 headers={"Content-Type": "application/json", "Authorization": auth},
             )
             with urllib.request.urlopen(req, timeout=2) as r:
@@ -155,19 +175,40 @@ def tmdbhelper_installed(jurialmunkey_repo_added):
 def nzbdav_addon_installed(tmdbhelper_installed):
     script = EXTREME_DIR / "scripts" / "install_nzbdav_addon.sh"
     template = EXTREME_DIR / "fixtures" / "addon-settings-template.xml"
-    _run(["bash", str(script), "nzbdav-extreme-kodi",
-          f"http://localhost:{KODI_HOST_PORT}", "kodi:kodi", str(template)])
+    _run(
+        [
+            "bash",
+            str(script),
+            "nzbdav-extreme-kodi",
+            f"http://localhost:{KODI_HOST_PORT}",
+            "kodi:kodi",
+            str(template),
+        ]
+    )
 
 
 @pytest.fixture(scope="session")
 def tmdbhelper_player_added(nzbdav_addon_installed):
     src = EXTREME_DIR / "fixtures" / "nzbdav-player.json"
-    _run(["docker", "exec", "nzbdav-extreme-kodi",
-          "mkdir", "-p",
-          "/root/.kodi/userdata/addon_data/plugin.video.themoviedb.helper/players"])
-    _run(["docker", "cp", str(src),
-          "nzbdav-extreme-kodi:"
-          "/root/.kodi/userdata/addon_data/plugin.video.themoviedb.helper/players/nzbdav.json"])
+    _run(
+        [
+            "docker",
+            "exec",
+            "nzbdav-extreme-kodi",
+            "mkdir",
+            "-p",
+            "/root/.kodi/userdata/addon_data/plugin.video.themoviedb.helper/players",
+        ]
+    )
+    _run(
+        [
+            "docker",
+            "cp",
+            str(src),
+            "nzbdav-extreme-kodi:"
+            "/root/.kodi/userdata/addon_data/plugin.video.themoviedb.helper/players/nzbdav.json",
+        ]
+    )
 
 
 @pytest.fixture(scope="session")

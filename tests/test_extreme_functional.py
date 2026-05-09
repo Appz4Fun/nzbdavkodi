@@ -18,7 +18,8 @@ Import notes (adjusted from plan):
 
 DEVIATIONS from the spec/plan:
 
-- Spec line 230 says "XBMC.RunScript(plugin.video.themoviedb.helper, mode=play, type=movie, tmdb_id=...)".
+- Spec line 230 says "XBMC.RunScript(plugin.video.themoviedb.helper, mode=play,
+  type=movie, tmdb_id=...)".
   Implementation uses JSON-RPC `Addons.ExecuteAddon` with `info=play` (TMDBHelper's
   actual routing param). XBMC.RunScript is a Kodi builtin, not a JSON-RPC method
   in Kodi 21 — Addons.ExecuteAddon with the addon's plugin params is the correct
@@ -43,16 +44,13 @@ import random
 import subprocess
 import time
 import urllib.request
-from pathlib import Path
 
 import pytest
 
 from tests.extreme import measurement
 from tests.extreme.conftest import (
-    EXTREME_DIR,
     FAULT_PROXY_CONTROL_HOST_PORT,
     KODI_HOST_PORT,
-    NZBDAV_HOST_PORT,
 )
 
 pytestmark = pytest.mark.extreme
@@ -72,7 +70,6 @@ from tests.test_functional_fallback_playback import (  # noqa: E402
     _movie_search_pool,
     _selection_pairs_for_targets,
 )
-
 
 FAULT_TYPES = [
     "connection_reset",
@@ -124,8 +121,7 @@ def _generate_fault_schedule(rng: random.Random) -> list[dict]:
     types = FAULT_TYPES.copy()
     rng.shuffle(types)
     return [
-        {"at_seconds": float(t), "fault_type": ft}
-        for t, ft in zip(candidates, types)
+        {"at_seconds": float(t), "fault_type": ft} for t, ft in zip(candidates, types)
     ]
 
 
@@ -175,7 +171,8 @@ def test_extreme_fallback_run(stack_ready, run_dir):
     hydra = os.environ["HYDRA_URL"].rstrip("/")
     api_key = os.environ["HYDRA_API_KEY"]
     with urllib.request.urlopen(
-        f"{hydra}/api?apikey={api_key}&t=caps", timeout=10,
+        f"{hydra}/api?apikey={api_key}&t=caps",
+        timeout=10,
     ) as r:
         assert r.status == 200, "Hydra not reachable"
     with urllib.request.urlopen(
@@ -223,7 +220,9 @@ def test_extreme_fallback_run(stack_ready, run_dir):
             },
         },
     )
-    print(f"[extreme] TMDBHelper playback launch (imdb_id={imdb_id}) response: {rpc_resp}")
+    print(
+        f"[extreme] TMDBHelper playback launch (imdb_id={imdb_id}) response: {rpc_resp}"
+    )
 
     pid = _wait_for_player(timeout=60)
     if pid is None:
@@ -302,13 +301,13 @@ def test_extreme_fallback_run(stack_ready, run_dir):
     )
 
     # Assertions (observability mode: only check basics + opt-in bounds)
-    assert len(fault_events) == 5, (
-        f"expected 5 fault events, proxy log has {len(fault_events)}"
-    )
+    assert (
+        len(fault_events) == 5
+    ), f"expected 5 fault events, proxy log has {len(fault_events)}"
     for ev in correlated:
-        assert ev["resume_seconds"] is not None, (
-            f"event {ev['fault_index']} ({ev['fault_type']}) never resumed"
-        )
+        assert (
+            ev["resume_seconds"] is not None
+        ), f"event {ev['fault_index']} ({ev['fault_type']}) never resumed"
 
     max_resume = os.environ.get("EXTREME_MAX_RESUME_SECONDS")
     if max_resume:

@@ -1,4 +1,5 @@
 """Unit tests for tests.extreme.fault_proxy."""
+
 import http.client
 import json
 import socketserver
@@ -36,12 +37,14 @@ def test_control_health_returns_ok(control_server):
 
 def test_control_schedule_accepts_events(control_server):
     base, state = control_server
-    payload = json.dumps({
-        "events": [
-            {"at_seconds": 60.0, "fault_type": "connection_reset"},
-            {"at_seconds": 240.5, "fault_type": "http_500"},
-        ],
-    }).encode("utf-8")
+    payload = json.dumps(
+        {
+            "events": [
+                {"at_seconds": 60.0, "fault_type": "connection_reset"},
+                {"at_seconds": 240.5, "fault_type": "http_500"},
+            ],
+        }
+    ).encode("utf-8")
     req = urllib.request.Request(
         f"{base}/control/schedule",
         data=payload,
@@ -57,9 +60,11 @@ def test_control_schedule_accepts_events(control_server):
 
 def test_control_schedule_rejects_unknown_type(control_server):
     base, _ = control_server
-    payload = json.dumps({
-        "events": [{"at_seconds": 10.0, "fault_type": "kaboom"}],
-    }).encode("utf-8")
+    payload = json.dumps(
+        {
+            "events": [{"at_seconds": 10.0, "fault_type": "kaboom"}],
+        }
+    ).encode("utf-8")
     req = urllib.request.Request(
         f"{base}/control/schedule",
         data=payload,
@@ -73,9 +78,11 @@ def test_control_schedule_rejects_unknown_type(control_server):
 
 def test_control_schedule_rejects_missing_at_seconds(control_server):
     base, _ = control_server
-    payload = json.dumps({
-        "events": [{"fault_type": "connection_reset"}],
-    }).encode("utf-8")
+    payload = json.dumps(
+        {
+            "events": [{"fault_type": "connection_reset"}],
+        }
+    ).encode("utf-8")
     req = urllib.request.Request(
         f"{base}/control/schedule",
         data=payload,
@@ -105,8 +112,11 @@ def test_proxy_state_replace_schedule_resets_clock(control_server):
 @pytest.fixture
 def fake_upstream():
     """A tiny upstream that streams a 100MB body for any GET."""
+
     class _Upstream(BaseHTTPRequestHandler):
-        def log_message(self, *a, **k): pass
+        def log_message(self, *a, **k):
+            pass
+
         def do_GET(self):
             self.send_response(206)
             self.send_header("Content-Type", "video/x-matroska")
@@ -126,6 +136,7 @@ def fake_upstream():
     class _Server(socketserver.ThreadingMixIn, socketserver.TCPServer):
         allow_reuse_address = True
         daemon_threads = True
+
     server = _Server(("127.0.0.1", 0), _Upstream)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{server.server_address[1]}"
@@ -137,8 +148,9 @@ def fake_upstream():
 def proxy_with_upstream(fake_upstream, monkeypatch, tmp_path):
     """Start the proxy + control + fake upstream; yield (proxy_url, state)."""
     monkeypatch.setattr(fault_proxy, "UPSTREAM", fake_upstream)
-    monkeypatch.setattr(fault_proxy, "_upstream",
-                        fault_proxy.urlsplit(fake_upstream.rstrip("/")))
+    monkeypatch.setattr(
+        fault_proxy, "_upstream", fault_proxy.urlsplit(fake_upstream.rstrip("/"))
+    )
     monkeypatch.setattr(fault_proxy, "LOG_PATH", str(tmp_path / "full.log"))
     monkeypatch.setattr(fault_proxy, "EVENTS_PATH", str(tmp_path / "events.jsonl"))
     state = fault_proxy.ProxyState()
@@ -178,8 +190,9 @@ def test_connection_reset_fault_records_state_before_close(proxy_with_upstream):
     proxy_url, state, _ = proxy_with_upstream
     state.scheduled_events = [fault_proxy.ScheduledEvent(0.0, "connection_reset")]
     state.start_t = time.monotonic() - 1.0  # already due
-    with pytest.raises((urllib.error.URLError, ConnectionResetError,
-                        http.client.IncompleteRead)):
+    with pytest.raises(
+        (urllib.error.URLError, ConnectionResetError, http.client.IncompleteRead)
+    ):
         resp = _request_large_range(proxy_url)
         resp.read()
     assert state.fired_events[0]["fault_type"] == "connection_reset"
@@ -246,7 +259,9 @@ def test_truncated_response_logs_scheduled_bytes(proxy_with_upstream, tmp_path):
     # Inspect events.jsonl
     events_path = run_dir / "events.jsonl"
     assert events_path.exists(), "events.jsonl was not written"
-    lines = [json.loads(l) for l in events_path.read_text().splitlines() if l.strip()]
+    lines = [
+        json.loads(ln) for ln in events_path.read_text().splitlines() if ln.strip()
+    ]
     matched = [e for e in lines if e.get("fault_type") == "truncated_response"]
     assert len(matched) >= 1
     assert matched[0]["scheduled_bytes"] == fault_proxy.FAIL_BYTES
