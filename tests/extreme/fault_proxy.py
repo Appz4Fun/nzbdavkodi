@@ -155,6 +155,15 @@ def _is_large_playback_range(value):
 
 def _apply_connection_reset(handler, resp, range_header, state) -> None:
     """Forward FAIL_BYTES of the upstream body, then slam the connection closed."""
+    # Record state before sending response so test threads observing
+    # fired_events after the client unblocks see the entry deterministically.
+    state.record_fired("connection_reset", range_header)
+    _log_event({
+        "fault_type": "connection_reset",
+        "t_wall": time.time(),
+        "range": range_header,
+        "fail_bytes": FAIL_BYTES,
+    })
     handler.send_response(resp.status, resp.reason)
     for k, v in resp.getheaders():
         if k.lower() in ("connection", "transfer-encoding"):
@@ -175,18 +184,13 @@ def _apply_connection_reset(handler, resp, range_header, state) -> None:
     except OSError:
         pass
     handler.connection.close()
-    state.record_fired("connection_reset", range_header)
-    _log_event({
-        "fault_type": "connection_reset",
-        "t_wall": time.time(),
-        "range": range_header,
-        "fail_bytes": FAIL_BYTES,
-    })
 
 
 def _apply_http_500(handler, resp, range_header, state) -> None:
     """Discard the upstream response and return a 500."""
     resp.close()
+    # Record state before sending response so test threads observing
+    # fired_events after the client unblocks see the entry deterministically.
     state.record_fired("http_500", range_header)
     _log_event({
         "fault_type": "http_500",

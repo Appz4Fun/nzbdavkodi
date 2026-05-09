@@ -7,6 +7,7 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler
 
+import http.client
 import pytest
 
 from tests.extreme import fault_proxy
@@ -122,10 +123,12 @@ def fake_upstream():
 
     class _Server(socketserver.ThreadingMixIn, socketserver.TCPServer):
         allow_reuse_address = True
+        daemon_threads = True
     server = _Server(("127.0.0.1", 0), _Upstream)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{server.server_address[1]}"
     server.shutdown()
+    server.server_close()
 
 
 @pytest.fixture
@@ -142,6 +145,7 @@ def proxy_with_upstream(fake_upstream, monkeypatch, tmp_path):
     threading.Thread(target=server.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{server.server_address[1]}", state, tmp_path
     server.shutdown()
+    server.server_close()
 
 
 def _request_large_range(proxy_url):
@@ -160,3 +164,20 @@ def test_http_500_fault_returns_500(proxy_with_upstream):
         _request_large_range(proxy_url)
     assert exc.value.code == 500
     assert state.fired_events[0]["fault_type"] == "http_500"
+
+
+def test_connection_reset_fault_records_state_before_close(proxy_with_upstream):
+    """State is recorded before the connection is torn down.
+
+    Because record_fired now runs before send_response, the fired_events entry
+    is visible to test threads immediately after the client raises — no sleep
+    required.
+    """
+    proxy_url, state, _ = proxy_with_upstream
+    state.scheduled_events = [fault_proxy.ScheduledEvent(0.0, "connection_reset")]
+    state.start_t = time.monotonic() - 1.0  # already due
+    with pytest.raises((urllib.error.URLError, ConnectionResetError,
+                        http.client.IncompleteRead)):
+        resp = _request_large_range(proxy_url)
+        resp.read()
+    assert state.fired_events[0]["fault_type"] == "connection_reset"
