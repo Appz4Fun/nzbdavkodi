@@ -33,7 +33,7 @@ services:
       FAULT_PROXY_LOG: "/var/log/fault-proxy/full.log"
       FAULT_PROXY_EVENTS: "/var/log/fault-proxy/events.jsonl"
     volumes:
-      - ../../docs/reports/${EXTREME_RUN_DIR:-_default}/fault-proxy:/var/log/fault-proxy
+      - ../../../docs/reports/${EXTREME_RUN_DIR:-_default}/fault-proxy:/var/log/fault-proxy
     ports:
       - "8280:19080"
       - "8281:19081"
@@ -52,7 +52,7 @@ services:
       DISPLAY: ":0"
     volumes:
       - kodi-config:/root/.kodi
-      - ../../docs/reports/${EXTREME_RUN_DIR:-_default}:/run-reports
+      - ../../../docs/reports/${EXTREME_RUN_DIR:-_default}:/run-reports
     ports:
       - "8082:8080"
       - "6902:6901"
