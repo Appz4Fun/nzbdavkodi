@@ -1,9 +1,13 @@
 """Functional tests for nzbdav addon playback via VNC/Kodi."""
 
-import json
+# pylint: disable=redefined-outer-name
+
 import time
-import requests
+
 import pytest
+import requests
+
+pytestmark = pytest.mark.functional
 
 
 class KodiJSONRPC:
@@ -15,11 +19,7 @@ class KodiJSONRPC:
 
     def call(self, method, params=None, request_id=1):
         """Call a Kodi JSON-RPC method."""
-        payload = {
-            "jsonrpc": "2.0",
-            "method": method,
-            "id": request_id
-        }
+        payload = {"jsonrpc": "2.0", "method": method, "id": request_id}
         if params:
             payload["params"] = params
 
@@ -32,17 +32,15 @@ class KodiJSONRPC:
 
     def get_property(self, property_name):
         """Get a Kodi property."""
-        result = self.call("Settings.GetSettingValue", {
-            "setting": property_name
-        })
+        result = self.call("Settings.GetSettingValue", {"setting": property_name})
         return result.get("result", {}).get("value")
 
     def navigate_addon(self, addon_id):
         """Navigate to an addon."""
-        return self.call("GUI.ActivateWindow", {
-            "window": "addonbrowser",
-            "parameters": [f"addonid={addon_id}"]
-        })
+        return self.call(
+            "GUI.ActivateWindow",
+            {"window": "addonbrowser", "parameters": [f"addonid={addon_id}"]},
+        )
 
     def wait_for_property(self, check_fn, timeout=30, interval=0.5):
         """Wait for a property condition to be true."""
@@ -58,7 +56,7 @@ class KodiJSONRPC:
 
 
 @pytest.fixture
-def kodi():
+def kodi_client():
     """Fixture to connect to Kodi."""
     client = KodiJSONRPC()
     # Wait for Kodi to be ready
@@ -74,57 +72,53 @@ def kodi():
     return client
 
 
-def test_kodi_is_accessible(kodi):
+def test_kodi_is_accessible(kodi_client):
     """Test that Kodi is accessible via JSON-RPC."""
-    result = kodi.call("Application.GetProperties", {
-        "properties": ["version"]
-    })
+    result = kodi_client.call("Application.GetProperties", {"properties": ["version"]})
     assert "result" in result
     assert result["result"]["version"]["major"] >= 18
 
 
-def test_nzbdav_addon_is_installed(kodi):
+def test_nzbdav_addon_is_installed(kodi_client):
     """Test that the nzbdav addon is installed."""
-    result = kodi.call("Addons.GetAddons", {
-        "type": "xbmc.addon.video"
-    })
+    result = kodi_client.call("Addons.GetAddons", {"type": "xbmc.addon.video"})
     assert "result" in result
     addons = result.get("result", {}).get("addons", [])
-    nzbdav_found = any(addon.get("addonid") == "plugin.video.nzbdav" for addon in addons)
+    nzbdav_found = any(
+        addon.get("addonid") == "plugin.video.nzbdav" for addon in addons
+    )
     if nzbdav_found:
-        addon = next(addon for addon in addons if addon.get("addonid") == "plugin.video.nzbdav")
+        addon = next(
+            addon for addon in addons if addon.get("addonid") == "plugin.video.nzbdav"
+        )
         print(f"nzbdav addon found: {addon}")
     else:
         print("nzbdav addon not yet installed in container (expected on fresh Kodi)")
 
 
-def test_addon_settings_are_configured(kodi):
+def test_addon_settings_are_configured(kodi_client):
     """Test that addon settings have WebDAV URL configured."""
     # Note: This would require reading addon settings
     # which may not be exposed via JSON-RPC
-    result = kodi.call("Application.GetProperties", {
-        "properties": ["version"]
-    })
+    result = kodi_client.call("Application.GetProperties", {"properties": ["version"]})
     assert "result" in result
 
 
-def test_playback_workflow_simulation(kodi):
+def test_playback_workflow_simulation(kodi_client):
     """Simulate the addon playback workflow."""
     # This test simulates what would happen during playback
     # In a real scenario, we'd have an NZB URL and would trigger playback
 
     # Step 1: Verify Kodi is ready
-    result = kodi.call("Application.GetProperties", {
-        "properties": ["version"]
-    })
+    result = kodi_client.call("Application.GetProperties", {"properties": ["version"]})
     assert "result" in result
 
     # Step 2: Check if addon is available
-    result = kodi.call("Addons.GetAddons", {
-        "type": "xbmc.addon.video"
-    })
+    result = kodi_client.call("Addons.GetAddons", {"type": "xbmc.addon.video"})
     addons = result.get("result", {}).get("addons", [])
-    nzbdav_found = any(addon.get("addonid") == "plugin.video.nzbdav" for addon in addons)
+    nzbdav_found = any(
+        addon.get("addonid") == "plugin.video.nzbdav" for addon in addons
+    )
     if nzbdav_found:
         print("nzbdav addon is available for playback workflow")
     else:
@@ -134,10 +128,12 @@ def test_playback_workflow_simulation(kodi):
     print("Playback workflow simulation completed successfully")
 
 
-def test_background_service_is_running(kodi):
+def test_background_service_is_running(kodi_client):
     """Test that the addon's background service is running."""
+    del kodi_client
     # The service should be listening on port 1995
     import socket
+
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(2)

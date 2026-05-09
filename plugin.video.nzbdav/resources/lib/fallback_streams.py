@@ -8,6 +8,7 @@ import re
 import threading
 import time
 from collections import namedtuple
+from functools import lru_cache
 from queue import Empty, Queue
 from types import SimpleNamespace
 from urllib.error import HTTPError, URLError
@@ -162,6 +163,7 @@ def _validated_probe_url(url, probe_bases=None):
     return None
 
 
+@lru_cache(maxsize=256)
 def _cached_validated_probe_url(url, probe_bases):
     """Return a configured-origin probe URL for immutable base snapshots."""
     return _validated_probe_url(url, probe_bases=probe_bases)

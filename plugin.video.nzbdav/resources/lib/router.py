@@ -3,6 +3,7 @@
 
 """URL routing for plugin:// calls from Kodi / TMDBHelper."""
 
+import os
 import re
 from urllib.parse import parse_qs, urlencode, urlparse
 
@@ -34,15 +35,49 @@ _SCRIPT_SETTINGS_PATH = (
 
 def _script_play_stage(message):
     xbmc.log("NZB-DAV: Script play stage: {}".format(message), xbmc.LOGINFO)
-    try:
-        import os
+    for stage_path in _script_stage_paths():
+        try:
+            parent = os.path.dirname(stage_path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(stage_path, "a", encoding="utf-8") as stage_file:
+                stage_file.write(message + "\n")
+                stage_file.flush()
+                os.fsync(stage_file.fileno())
+            return
+        except OSError:
+            continue
 
-        with open(_SCRIPT_PLAY_STAGE_PATH, "a", encoding="utf-8") as stage_file:
-            stage_file.write(message + "\n")
-            stage_file.flush()
-            os.fsync(stage_file.fileno())
-    except OSError:
-        pass
+
+def _translate_path(path):
+    """Translate Kodi special:// paths, returning empty string on failure."""
+    try:
+        import xbmcvfs
+
+        translated = xbmcvfs.translatePath(path)
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return ""
+    return translated if isinstance(translated, str) else ""
+
+
+def _script_stage_paths():
+    paths = []
+    translated_temp = _translate_path("special://temp/")
+    if translated_temp:
+        paths.append(os.path.join(translated_temp, "nzbdav-script-play-stage.log"))
+    paths.append(_SCRIPT_PLAY_STAGE_PATH)
+    return paths
+
+
+def _script_settings_paths():
+    paths = []
+    translated = _translate_path(
+        "special://profile/addon_data/plugin.video.nzbdav/settings.xml"
+    )
+    if translated:
+        paths.append(translated)
+    paths.append(_SCRIPT_SETTINGS_PATH)
+    return paths
 
 
 def parse_route(url):
@@ -338,18 +373,19 @@ def _get_addon_setting(addon, key, default=""):
 
 def _get_script_setting(key, default=""):
     """Read this addon's setting from settings.xml without Kodi settings APIs."""
-    try:
-        from xml.etree import ElementTree as element_tree
+    from xml.etree import ElementTree as element_tree
 
-        root = element_tree.parse(_SCRIPT_SETTINGS_PATH).getroot()
-    except (OSError, element_tree.ParseError):
-        return default
-
-    for setting in root.findall(".//setting"):
-        if setting.get("id") != key:
+    for settings_path in _script_settings_paths():
+        try:
+            root = element_tree.parse(settings_path).getroot()
+        except (OSError, element_tree.ParseError):
             continue
-        value = setting.text
-        return value if isinstance(value, str) else default
+
+        for setting in root.findall(".//setting"):
+            if setting.get("id") != key:
+                continue
+            value = setting.text
+            return value if isinstance(value, str) else default
     return default
 
 

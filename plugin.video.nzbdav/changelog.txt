@@ -1,1 +1,1 @@
-v1.2.2: Fix Kodi add-on info freeze.
+v1.2.3: Harden proxy fallback and repo installs.

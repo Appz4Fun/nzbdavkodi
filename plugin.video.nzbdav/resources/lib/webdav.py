@@ -437,7 +437,10 @@ def find_video_file(
         if "401" in error_detail or "Unauthorized" in error_detail:
             error_detail += " — Check WebDAV username/password in addon settings"
         elif "404" in error_detail or "Not Found" in error_detail:
-            error_detail += " — WebDAV folder not found, check nzbdav is creating /content/ symlinks"
+            error_detail += (
+                " — WebDAV folder not found, check nzbdav is creating "
+                "/content/ symlinks"
+            )
         elif "Connection" in error_detail or "urlopen" in str(type(e).__name__):
             error_detail += " — Check WebDAV server is reachable at configured URL"
         xbmc.log(
@@ -456,7 +459,8 @@ def _get_webdav_stream_url_for_path_with_settings(file_path, settings):
     # (missing slash) or "host//" + "/path" (double slash). The PROPFIND
     # response is *supposed* to hand us an absolute path with a leading
     # slash, but nothing enforces that on the server side.
-    url = "{}/{}".format(base.rstrip("/"), file_path.lstrip("/"))
+    encoded_path = quote(file_path, safe="/%")
+    url = "{}/{}".format(base.rstrip("/"), encoded_path.lstrip("/"))
     headers = _build_auth_headers(settings["username"], settings["password"])
     return url, headers
 

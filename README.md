@@ -11,8 +11,12 @@
 
 A Kodi 21 (Omega) player/resolver addon that enables Usenet-based streaming through NZBHydra2 (or Prowlarr) and nzbdav. Works as a TMDBHelper player -- search for a movie or TV episode, pick an NZB, and stream it directly through nzbdav's WebDAV server.
 
-> **Current release: `v1.2.2`** on `main`. Highlights on this branch:
+> **Current release: `v1.2.3`** on `main`. Highlights on this branch:
 >
+> - **Proxy fallback hardening**: MKV playback can now carry standby fallback sources through the local proxy, survive repeated upstream outages, and use prepare-time settings snapshots instead of unsafe service-thread Kodi setting reads.
+> - **Kodi repository install fix**: repository metadata now publishes a strict 32-byte `addons.xml.md5`, matching Kodi's checksum reader and fixing "Could not connect to repository" after installing the repo zip from GitHub Pages.
+> - **RunScript setting/path reliability**: script playback reads translated profile settings paths and writes stage logs through Kodi's temp path before falling back to the CoreELEC temp path.
+> - **WebDAV URL encoding**: stream URLs now encode spaces and plus signs from PROPFIND paths before playback.
 > - **Kodi add-on info hotfix**: the Kodi-visible release notes are kept to a short current-release summary so opening the add-on info dialog does not load the oversized historical changelog that froze CoreELEC/Kodi builds.
 > - **Broader fallback discovery**: unsupported or obfuscated candidate NZBs can use the indexer's reported size as conservative fallback evidence, while a +/-25% indexer-size prefetch gate skips obvious mismatches before downloading large NZBs.
 > - **Faster repeated manifest checks**: raw NZB downloads are cached with a small LRU, but each caller still reparses the bytes so health checks can select different valid files.
@@ -95,7 +99,7 @@ Force-remux remains available for environments that need ffmpeg compatibility pa
 Install through the NZB-DAV repository for automatic updates:
 
 1. In Kodi: **Settings > File Manager > Add source** > enter `https://xbmc4lyfe.github.io/nzbdavkodi/` > name it `nzbdav`
-2. **Settings > Add-ons > Install from zip file** > `nzbdav` > `repository.nzbdav` > `repository.nzbdav-1.0.8.zip`
+2. **Settings > Add-ons > Install from zip file** > `nzbdav` > `repository.nzbdav` > `repository.nzbdav-1.1.0.zip`
 3. **Settings > Add-ons > Install from repository > NZB-DAV Repository > Video add-ons > NZB-DAV**
 4. Future updates are installed automatically
 

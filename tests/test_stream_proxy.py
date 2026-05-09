@@ -623,6 +623,59 @@ def test_prepare_stream_unknown_length_mkv_threshold_zero_disables_remux():
     mock_caps.assert_not_called()
 
 
+def test_prepare_stream_uses_settings_snapshot_without_kodi_setting_reads():
+    from resources.lib import stream_proxy
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._server.stream_context = None
+    sp._server.stream_sessions = {}
+    sp._server.pending_stream_contexts = {}
+    sp._context_lock = threading.RLock()
+    sp.port = 9999
+
+    settings_snapshot = {
+        "force_remux_threshold_mb": "15000",
+        "force_remux_mode": "0",
+        "force_remux_mode_v2_migrated": "false",
+        "strict_contract_mode": "1",
+        "density_breaker_enabled": "false",
+        "zero_fill_budget_enabled": "true",
+        "retry_ladder_enabled": "true",
+        "send_200_no_range": "false",
+    }
+
+    def fail_kodi_setting_read(*_args, **_kwargs):
+        raise AssertionError("Kodi settings API should not run during prepare")
+
+    with patch.object(sp, "_get_content_length", return_value=21 * 1024 * 1024), patch(
+        "resources.lib.stream_proxy._get_addon_setting",
+        side_effect=fail_kodi_setting_read,
+    ), patch(
+        "resources.lib.stream_proxy._read_passthrough_runtime_settings",
+        side_effect=fail_kodi_setting_read,
+    ):
+        url, info = sp.prepare_stream(
+            "http://host/movie.mkv",
+            settings_snapshot=settings_snapshot,
+        )
+
+    ctx = next(iter(sp._server.stream_sessions.values()))
+    assert url.startswith("http://127.0.0.1:9999/stream/")
+    assert info["remux"] is False
+    assert ctx["remux"] is False
+    assert ctx["content_length"] == 21 * 1024 * 1024
+    assert ctx[stream_proxy._PASSTHROUGH_RUNTIME_SETTINGS_KEY] == {
+        "contract_mode": "warn",
+        "density_breaker_enabled": False,
+        "zero_fill_budget_enabled": True,
+        "retry_ladder_enabled": True,
+        "send_200_no_range_enabled": False,
+    }
+    assert "_passthrough_runtime_settings_thread" not in ctx
+
+
 def test_prepare_stream_unknown_length_mkv_without_ffmpeg_raises_in_matroska_mode():
     """Matroska mode cannot handle unknown-size non-MP4 streams without ffmpeg."""
     from resources.lib.stream_proxy import StreamProxy
@@ -1412,6 +1465,36 @@ def test_do_post_passes_content_length_hint_to_prepare_stream():
         "Basic abc",
         fallback_sources=[],
         content_length_hint=131072,
+    )
+    handler.send_error.assert_not_called()
+
+
+def test_do_post_passes_settings_snapshot_to_prepare_stream():
+    settings_snapshot = {
+        "force_remux_threshold_mb": "15000",
+        "force_remux_mode": "0",
+        "force_remux_mode_v2_migrated": "false",
+    }
+    body = json.dumps(
+        {
+            "remote_url": "http://host/movie.mkv",
+            "auth_header": "Basic abc",
+            "settings_snapshot": settings_snapshot,
+        }
+    ).encode()
+    handler = _make_prepare_post_handler(body=body)
+    handler.server.owner_proxy.prepare_stream.return_value = (
+        "http://127.0.0.1:9999/stream/abc",
+        {"remux": False},
+    )
+
+    handler.do_POST()
+
+    handler.server.owner_proxy.prepare_stream.assert_called_once_with(
+        "http://host/movie.mkv",
+        "Basic abc",
+        fallback_sources=[],
+        settings_snapshot=settings_snapshot,
     )
     handler.send_error.assert_not_called()
 
@@ -7106,6 +7189,89 @@ def test_serve_proxy_switches_to_valid_fallback_source_mid_response():
     assert "fallback stream" in mock_notify.call_args[0][1].lower()
 
 
+def test_serve_proxy_survives_five_stream_outages_with_backup_sources():
+    """Repeated recoverable outages should switch through five backups."""
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_OK,
+        _UPSTREAM_RANGE_UPSTREAM_ERROR,
+    )
+
+    segment_size = 4
+    switch_count = 5
+    content_length = segment_size * (switch_count + 1)
+    fallback_sources = [
+        {
+            "nzo_id": "nzo{}".format(index),
+            "stream_url": "http://webdav/fallback{}.mkv".format(index),
+            "stream_headers": {"Authorization": "Basic fallback{}".format(index)},
+            "content_length": content_length,
+            "validated": True,
+            "failed": False,
+        }
+        for index in range(switch_count)
+    ]
+    ctx = {
+        "remote_url": "http://webdav/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_type": "video/x-matroska",
+        "content_length": content_length,
+        "fallback_sources": fallback_sources,
+        "fallback_switch_count": 0,
+    }
+    handler = _make_handler_with_server(
+        ctx, range_header="bytes=0-{}".format(content_length - 1)
+    )
+    failed_urls = set()
+
+    def stream_range(stream_ctx, start, end, contract_mode=None):
+        del contract_mode
+        url = stream_ctx["remote_url"]
+        if url == "http://webdav/primary.mkv":
+            return _UPSTREAM_RANGE_UPSTREAM_ERROR, 0
+        if url != "http://webdav/fallback4.mkv" and url not in failed_urls:
+            failed_urls.add(url)
+            handler.wfile.write(b"S" * segment_size)
+            return _UPSTREAM_RANGE_UPSTREAM_ERROR, segment_size
+        remaining = end - start + 1
+        handler.wfile.write(b"S" * remaining)
+        return _UPSTREAM_RANGE_OK, remaining
+
+    selected_fallbacks = []
+
+    def select_fallback(_ctx, _failed_byte, _range_end):
+        fallback = fallback_sources[len(selected_fallbacks)]
+        selected_fallbacks.append(fallback)
+        if len(selected_fallbacks) > 1:
+            selected_fallbacks[-2]["failed"] = True
+        return fallback
+
+    with patch.object(
+        handler,
+        "_stream_upstream_range",
+        side_effect=stream_range,
+    ), patch.object(
+        handler, "_select_live_fallback_source", side_effect=select_fallback
+    ) as mock_select, patch(
+        "resources.lib.stream_proxy._notify"
+    ) as mock_notify:
+        handler._serve_proxy(ctx)
+
+    assert ctx["remote_url"] == "http://webdav/fallback4.mkv"
+    assert ctx["auth_header"] == "Basic fallback4"
+    assert ctx["fallback_switch_count"] == 5
+    assert ctx["fallback_active_index"] == 4
+    assert [source.get("failed") for source in fallback_sources] == [
+        True,
+        True,
+        True,
+        True,
+        False,
+    ]
+    assert mock_select.call_count == 5
+    assert _collect_written(handler) == b"S" * content_length
+    mock_notify.assert_called_once()
+
+
 def test_serve_proxy_starts_fallback_stream_before_slow_switch_notification():
     """A slow Kodi notification must not delay the first fallback read."""
     from resources.lib.stream_proxy import (
@@ -11816,6 +11982,40 @@ def test_prepare_stream_via_service_sends_content_length_hint():
         "auth_header": "Basic abc",
         "fallback_sources": [],
         "content_length_hint": 131072,
+    }
+
+
+def test_prepare_stream_via_service_sends_settings_snapshot():
+    from resources.lib.stream_proxy import prepare_stream_via_service
+
+    payload = json.dumps(
+        {"proxy_url": "http://127.0.0.1:9999/stream/abc", "remux": False}
+    ).encode()
+    resp = MagicMock()
+    resp.read.return_value = payload
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=False)
+    settings_snapshot = {
+        "force_remux_threshold_mb": "15000",
+        "force_remux_mode": "0",
+        "force_remux_mode_v2_migrated": "false",
+    }
+
+    with patch("resources.lib.stream_proxy.urlopen", return_value=resp) as mocked:
+        prepare_stream_via_service(
+            9999,
+            "http://nzbdav/movie.mkv",
+            auth_header="Basic abc",
+            settings_snapshot=settings_snapshot,
+        )
+
+    req = mocked.call_args[0][0]
+    body = json.loads(req.data.decode())
+    assert body == {
+        "remote_url": "http://nzbdav/movie.mkv",
+        "auth_header": "Basic abc",
+        "fallback_sources": [],
+        "settings_snapshot": settings_snapshot,
     }
 
 

@@ -38,7 +38,6 @@ from resources.lib.nzbdav_api import (
 from resources.lib.webdav import (
     find_video_file,
     find_video_stream_for_folder,
-    get_video_file_size_hint,
     get_webdav_stream_url_for_path,
     probe_webdav_reachable,
 )
@@ -96,8 +95,6 @@ _RESOLVE_RUNTIME_ERRORS = (
 # per (setting_id, value) so a user with a typo'd setting doesn't see the
 # same warning spam on every play.
 _CLAMP_LOGGED = set()
-_STREAM_CONTENT_LENGTH_HINTS_MAX = 32
-_STREAM_CONTENT_LENGTH_HINTS = {}
 _DIALOG_UPDATE_LOCK = threading.Lock()
 _DIALOG_UPDATE_INFLIGHT = {}
 _SCRIPT_PLAY_STAGE_PATH = "/storage/.kodi/temp/nzbdav-script-play-stage.log"
@@ -440,13 +437,6 @@ def _url_path(url):
 
 def _playback_fallback_sources_for_stream(stream_url, fallback_jobs):
     fallback_sources = build_prepare_fallback_payload(fallback_jobs)
-    if fallback_sources and _url_path(stream_url).endswith(".mkv"):
-        xbmc.log(
-            "NZB-DAV: Withholding fallback proxy handoff for MKV stream to avoid "
-            "Kodi/CoreELEC native CURL crash path",
-            xbmc.LOGWARNING,
-        )
-        return []
     return fallback_sources
 
 
@@ -522,40 +512,17 @@ def _stream_auth_header(stream_headers):
     return None
 
 
-def _remember_stream_content_length_hint(stream_url, content_length):
-    try:
-        content_length = int(content_length or 0)
-    except (TypeError, ValueError):
-        return
-    if not stream_url or content_length <= 0:
-        return
-    _STREAM_CONTENT_LENGTH_HINTS[stream_url] = content_length
-    while len(_STREAM_CONTENT_LENGTH_HINTS) > _STREAM_CONTENT_LENGTH_HINTS_MAX:
-        _STREAM_CONTENT_LENGTH_HINTS.pop(next(iter(_STREAM_CONTENT_LENGTH_HINTS)), None)
-
-
-def _stream_content_length_hint(stream_url):
-    try:
-        return int(_STREAM_CONTENT_LENGTH_HINTS.get(stream_url, 0) or 0)
-    except (TypeError, ValueError):
-        return 0
-
-
-def _remember_webdav_stream_content_length_hint(stream_url, video_path):
-    _remember_stream_content_length_hint(
-        stream_url, get_video_file_size_hint(video_path)
-    )
-
-
 def _prepare_direct_playback(
     stream_url,
     stream_headers,
     fallback_sources=None,
     service_port=None,
     prepare_token=None,
+    settings_getter=None,
 ):
     """Prepare resolver playback without touching Kodi UI state."""
     from resources.lib.stream_proxy import (
+        build_settings_snapshot,
         get_service_proxy_port,
         prepare_stream_via_service,
     )
@@ -575,9 +542,9 @@ def _prepare_direct_playback(
 
     auth_header = _stream_auth_header(stream_headers)
     prepare_kwargs = {"fallback_sources": fallback_sources}
-    content_length_hint = _stream_content_length_hint(stream_url)
-    if content_length_hint > 0:
-        prepare_kwargs["content_length_hint"] = content_length_hint
+    settings_snapshot = build_settings_snapshot(settings_getter=settings_getter)
+    if any(settings_snapshot.values()):
+        prepare_kwargs["settings_snapshot"] = settings_snapshot
     if prepare_token is not None:
         prepare_kwargs["prepare_token"] = prepare_token
     proxy_url, stream_info = prepare_stream_via_service(
@@ -673,7 +640,11 @@ def _wait_direct_playback_service_config(state):
 
 
 def _prepare_direct_playback_with_service_config(
-    stream_url, stream_headers, fallback_sources, service_config_state
+    stream_url,
+    stream_headers,
+    fallback_sources,
+    service_config_state,
+    settings_getter=None,
 ):
     from resources.lib.stream_proxy import ServiceProxyUnavailableError
 
@@ -687,6 +658,7 @@ def _prepare_direct_playback_with_service_config(
             fallback_sources=fallback_sources,
             service_port=service_port,
             prepare_token=prepare_token,
+            settings_getter=settings_getter,
         )
     except ServiceProxyUnavailableError:
         fresh_service_port, fresh_prepare_token = _direct_playback_service_config()
@@ -698,6 +670,7 @@ def _prepare_direct_playback_with_service_config(
             fallback_sources=fallback_sources,
             service_port=fresh_service_port,
             prepare_token=fresh_prepare_token,
+            settings_getter=settings_getter,
         )
 
 
@@ -774,7 +747,11 @@ def _safe_dialog_update(dialog, progress, message):
 
 
 def _start_direct_playback_prepare(
-    stream_url, stream_headers, fallback_sources=None, service_config_state=None
+    stream_url,
+    stream_headers,
+    fallback_sources=None,
+    service_config_state=None,
+    settings_getter=None,
 ):
     """Start proxy prepare in the background and return its state."""
     if service_config_state is None:
@@ -788,6 +765,7 @@ def _start_direct_playback_prepare(
             fallback_sources=fallback_sources,
             service_port=service_port,
             prepare_token=prepare_token,
+            settings_getter=settings_getter,
         )
         return _ready_direct_playback_prepare_state(prepared)
 
@@ -808,6 +786,7 @@ def _start_direct_playback_prepare(
                     fallback_sources=fallback_sources,
                     service_port=service_port,
                     prepare_token=prepare_token,
+                    settings_getter=settings_getter,
                 )
             else:
                 state["prepared"] = _prepare_direct_playback_with_service_config(
@@ -815,6 +794,7 @@ def _start_direct_playback_prepare(
                     stream_headers,
                     fallback_sources,
                     service_config_state,
+                    settings_getter=settings_getter,
                 )
         except Exception as error:  # pylint: disable=broad-except
             state["error"] = error
@@ -1059,8 +1039,11 @@ def _storage_to_webdav_path(storage):
     if storage.startswith("/content/"):
         return storage.rstrip("/") + "/"
 
-    # Upstream nzbdav's completed-symlinks layout (both /mnt/nzbdav and /mnt/data variants).
-    for prefix in ("/mnt/nzbdav/completed-symlinks/", "/mnt/data/completed-symlinks/"):
+    # Upstream nzbdav's completed-symlinks layout.
+    for prefix in (
+        "/mnt/nzbdav/completed-symlinks/",
+        "/mnt/data/completed-symlinks/",
+    ):
         if storage.startswith(prefix):
             relative = storage[len(prefix) :]
             return "/content/{}/".format(relative)
@@ -1413,7 +1396,6 @@ def _completed_job_stream(
     )
     if not video_path:
         return None
-    _remember_webdav_stream_content_length_hint(stream_url, video_path)
     return stream_url, stream_headers
 
 
@@ -2627,7 +2609,6 @@ def _handle_history_result(
         webdav_folder, monitor=monitor, settings_getter=settings_getter
     )
     if video_path:
-        _remember_webdav_stream_content_length_hint(stream_url, video_path)
         xbmc.log(
             "NZB-DAV: File available, streaming '{}' via WebDAV".format(video_path),
             xbmc.LOGINFO,
@@ -2643,7 +2624,10 @@ def _handle_history_result(
             ),
             xbmc.LOGERROR,
         )
-        msg = "Video file not found in WebDAV folder: {}\n\nCheck WebDAV settings and ensure the download completed on nzbdav.".format(webdav_folder)
+        msg = (
+            "Video file not found in WebDAV folder: {}\n\n"
+            "Check WebDAV settings and ensure the download completed on nzbdav."
+        ).format(webdav_folder)
         xbmcgui.Dialog().ok(_addon_name(), msg)
         return True, None, None, no_video_retries
 
@@ -3019,11 +3003,13 @@ def resolve_and_play(nzb_url, title, params=None):
                 stream_url, _fallback_submit_jobs_snapshot(fallback_state)
             )
             _resolve_stage("prepare playback start")
+            prepare_kwargs = {
+                "fallback_sources": fallback_sources,
+                "service_config_state": None,
+            }
+            prepare_kwargs.update(_settings_getter_kwargs(settings_getter))
             playback_prepare_state = _start_direct_playback_prepare(
-                stream_url,
-                stream_headers,
-                fallback_sources=fallback_sources,
-                service_config_state=None,
+                stream_url, stream_headers, **prepare_kwargs
             )
             _resolve_stage("cleanup wait start")
             _wait_playback_state_cleanup(playback_cleanup_state)

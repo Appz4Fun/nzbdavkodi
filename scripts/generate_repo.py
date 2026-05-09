@@ -198,7 +198,7 @@ def generate_repo(
         addons_xml.encode("utf-8")
     ).hexdigest()  # noqa: S324  # not used for security
     with open(os.path.join(output_dir, "addons.xml.md5"), "w") as f:
-        f.write(md5 + "\r\n")
+        f.write(md5)
 
     print(
         "Generated {} ({} addons, md5: {})".format(

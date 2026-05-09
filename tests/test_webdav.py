@@ -36,6 +36,20 @@ def test_legacy_flat_webdav_helpers_are_retired():
     assert not hasattr(webdav, "validate_stream")
 
 
+@patch("resources.lib.webdav._get_settings")
+def test_get_webdav_stream_url_encodes_path_spaces(mock_settings):
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+
+    url, _headers = get_webdav_stream_url_for_path(
+        "/content/Dune Part Two/Dune Part Two DD+7.1.mkv"
+    )
+
+    assert url == (
+        "http://nzbdav:3000/content/Dune%20Part%20Two/"
+        "Dune%20Part%20Two%20DD%2B7.1.mkv"
+    )
+
+
 @patch("resources.lib.webdav.urlopen")
 def test_webdav_head_probe_uses_30s_timeout(mock_urlopen):
     from resources.lib.webdav import _http_head

@@ -198,6 +198,17 @@ _INITIAL_RANGE_PREFETCH_WAIT_SECONDS = 0.08
 _PASSTHROUGH_RUNTIME_SETTINGS_KEY = "_passthrough_runtime_settings"
 _PASSTHROUGH_RUNTIME_SETTINGS_DONE_KEY = "_passthrough_runtime_settings_done"
 _PASSTHROUGH_RUNTIME_SETTINGS_ERROR_KEY = "_passthrough_runtime_settings_error"
+_SETTINGS_SNAPSHOT_KEYS = (
+    "force_remux_threshold_mb",
+    "force_remux_mode",
+    "force_remux_mode_v2_migrated",
+    "strict_contract_mode",
+    "density_breaker_enabled",
+    "zero_fill_budget_enabled",
+    "retry_ladder_enabled",
+    "send_200_no_range",
+    "proxy_convert_subs",
+)
 
 # Shared zero buffer reused across all pass-through responses.
 _ZERO_FILL_BUFFER = bytes(65536)
@@ -402,6 +413,33 @@ def _get_addon_setting(setting_id, default=None):
     return default if value is None else value
 
 
+def normalize_settings_snapshot(settings_snapshot):
+    """Return a sanitized prepare-time setting snapshot."""
+    if not isinstance(settings_snapshot, dict):
+        return {}
+    snapshot = {}
+    for key in _SETTINGS_SNAPSHOT_KEYS:
+        value = settings_snapshot.get(key)
+        if isinstance(value, str):
+            snapshot[key] = value
+    return snapshot
+
+
+def build_settings_snapshot(settings_getter=None):
+    """Read proxy settings on the caller side before the service /prepare hop."""
+    snapshot = {}
+    for key in _SETTINGS_SNAPSHOT_KEYS:
+        if settings_getter is None:
+            value = _get_addon_setting(key, "")
+        else:
+            try:
+                value = settings_getter(key, "")
+            except _KODI_SETTING_ERRORS:
+                value = ""
+        snapshot[key] = value if isinstance(value, str) else ""
+    return snapshot
+
+
 def _set_addon_setting(setting_id, value):
     """Best-effort Kodi addon setting write safe for tests and CLI."""
     if xbmcaddon is None:
@@ -428,6 +466,81 @@ def _clamp_int_setting(setting_id, value, lo, hi):
             xbmc.LOGWARNING,
         )
     return clamped
+
+
+def _bool_from_snapshot(snapshot, setting_id, default=False):
+    raw = snapshot.get(setting_id) if isinstance(snapshot, dict) else None
+    if raw in (None, ""):
+        return default
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _strict_contract_mode_from_snapshot(snapshot):
+    raw = snapshot.get("strict_contract_mode") if isinstance(snapshot, dict) else None
+    key = str(raw).strip().lower() if raw is not None else ""
+    mapping = {
+        "0": _STRICT_CONTRACT_MODE_OFF,
+        _STRICT_CONTRACT_MODE_OFF: _STRICT_CONTRACT_MODE_OFF,
+        "1": _STRICT_CONTRACT_MODE_WARN,
+        _STRICT_CONTRACT_MODE_WARN: _STRICT_CONTRACT_MODE_WARN,
+        "2": _STRICT_CONTRACT_MODE_ENFORCE,
+        _STRICT_CONTRACT_MODE_ENFORCE: _STRICT_CONTRACT_MODE_ENFORCE,
+    }
+    return mapping.get(key, _STRICT_CONTRACT_MODE_WARN)
+
+
+def _force_remux_threshold_bytes_from_snapshot(snapshot):
+    raw = (
+        snapshot.get("force_remux_threshold_mb") if isinstance(snapshot, dict) else None
+    )
+    try:
+        mb = int(raw) if raw not in (None, "") else _DEFAULT_FORCE_REMUX_THRESHOLD_MB
+    except (TypeError, ValueError):
+        mb = _DEFAULT_FORCE_REMUX_THRESHOLD_MB
+    mb = _clamp_int_setting(
+        "force_remux_threshold_mb", mb, 0, _FORCE_REMUX_THRESHOLD_MB_MAX
+    )
+    if mb == 0:
+        return 0
+    return mb * 1024 * 1024
+
+
+def _force_remux_mode_from_snapshot(snapshot):
+    raw = snapshot.get("force_remux_mode") if isinstance(snapshot, dict) else None
+    migrated = (
+        snapshot.get("force_remux_mode_v2_migrated", "false")
+        if isinstance(snapshot, dict)
+        else "false"
+    )
+    if str(migrated).lower() != "true" and raw == "2":
+        raw = "0"
+    if raw == "1":
+        return "hls_fmp4"
+    if raw == "2":
+        return "matroska"
+    return "passthrough"
+
+
+def _passthrough_runtime_settings_from_snapshot(snapshot):
+    contract_mode = _strict_contract_mode_from_snapshot(snapshot)
+    density_breaker_enabled = False
+    if contract_mode != _STRICT_CONTRACT_MODE_OFF:
+        density_breaker_enabled = _bool_from_snapshot(
+            snapshot, "density_breaker_enabled", default=False
+        )
+    return {
+        "contract_mode": contract_mode,
+        "density_breaker_enabled": density_breaker_enabled,
+        "zero_fill_budget_enabled": _bool_from_snapshot(
+            snapshot, "zero_fill_budget_enabled", default=True
+        ),
+        "retry_ladder_enabled": _bool_from_snapshot(
+            snapshot, "retry_ladder_enabled", default=True
+        ),
+        "send_200_no_range_enabled": _bool_from_snapshot(
+            snapshot, "send_200_no_range", default=False
+        ),
+    }
 
 
 def _get_server_context_lock(server):
@@ -1631,6 +1744,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
         remote_url = data.get("remote_url", "")
         auth_header = data.get("auth_header")
         fallback_sources = data.get("fallback_sources", [])
+        settings_snapshot = normalize_settings_snapshot(data.get("settings_snapshot"))
         if not remote_url:
             self.send_error(400)
             return
@@ -1651,6 +1765,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
             prepare_kwargs = {"fallback_sources": fallback_sources}
             if content_length_hint > 0:
                 prepare_kwargs["content_length_hint"] = content_length_hint
+            if settings_snapshot:
+                prepare_kwargs["settings_snapshot"] = settings_snapshot
             proxy_url, stream_info = proxy.prepare_stream(
                 remote_url, auth_header, **prepare_kwargs
             )
@@ -5960,6 +6076,8 @@ class StreamProxy:
 
     def _start_passthrough_runtime_settings_prefetch(self, ctx):
         """Read pass-through recovery settings during the player handoff gap."""
+        if isinstance(ctx.get(_PASSTHROUGH_RUNTIME_SETTINGS_KEY), dict):
+            return
         if not self._initial_range_prefetchable(ctx):
             return
         done = threading.Event()
@@ -5993,6 +6111,7 @@ class StreamProxy:
         auth_header=None,
         fallback_sources=None,
         content_length_hint=None,
+        settings_snapshot=None,
     ):
         """Set up proxy for a new stream.
 
@@ -6004,6 +6123,7 @@ class StreamProxy:
         auth_header = _validate_auth_header(auth_header)
         fallback_sources = _normalize_fallback_sources(fallback_sources)
         content_length_hint = _normalize_content_length_hint(content_length_hint)
+        settings_snapshot = normalize_settings_snapshot(settings_snapshot)
         # Tear down any previous session before starting a new one. Kodi only
         # ever plays one stream at a time, so anything still in the table is
         # garbage from a prior play — possibly with a zombie ffmpeg attached
@@ -6164,8 +6284,14 @@ class StreamProxy:
                 remote_url, auth_header
             )
             content_length_unknown = content_length <= 0
-            threshold = _get_force_remux_threshold_bytes()
-            force_mode = _get_force_remux_mode()
+            if settings_snapshot:
+                threshold = _force_remux_threshold_bytes_from_snapshot(
+                    settings_snapshot
+                )
+                force_mode = _force_remux_mode_from_snapshot(settings_snapshot)
+            else:
+                threshold = _get_force_remux_threshold_bytes()
+                force_mode = _get_force_remux_mode()
             force_remux_requested = threshold > 0 and force_mode in (
                 "matroska",
                 "hls_fmp4",
@@ -6384,6 +6510,10 @@ class StreamProxy:
                 }
 
         _attach_fallback_context_fields(ctx, fallback_sources)
+        if settings_snapshot:
+            ctx[_PASSTHROUGH_RUNTIME_SETTINGS_KEY] = (
+                _passthrough_runtime_settings_from_snapshot(settings_snapshot)
+            )
         self._start_passthrough_runtime_settings_prefetch(ctx)
         self._start_initial_range_prefetch(ctx)
         self._start_fallback_prevalidation(ctx)
@@ -6828,6 +6958,7 @@ def prepare_stream_via_service(
     prepare_token=None,
     fallback_sources=None,
     content_length_hint=None,
+    settings_snapshot=None,
 ):
     """Ask the service's proxy to prepare a stream.
 
@@ -6851,6 +6982,9 @@ def prepare_stream_via_service(
     content_length_hint = _normalize_content_length_hint(content_length_hint)
     if content_length_hint > 0:
         payload["content_length_hint"] = content_length_hint
+    settings_snapshot = normalize_settings_snapshot(settings_snapshot)
+    if settings_snapshot:
+        payload["settings_snapshot"] = settings_snapshot
     data = json.dumps(payload)
     req = Request(url, data=data.encode(), method="POST")
     req.add_header("User-Agent", HTTP_USER_AGENT)

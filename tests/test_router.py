@@ -386,6 +386,22 @@ def test_search_all_providers_uses_script_settings_getter_without_kodi_addon(
     assert hydra_search.call_args.kwargs["settings_getter"] is setting
 
 
+def test_get_script_setting_reads_translated_profile_settings(tmp_path):
+    from resources.lib import router
+
+    settings_file = tmp_path / "settings.xml"
+    settings_file.write_text(
+        '<settings><setting id="hydra_url">http://hydra:5076</setting></settings>',
+        encoding="utf-8",
+    )
+
+    with patch("xbmcvfs.translatePath", return_value=str(settings_file)):
+        with patch.object(
+            router, "_SCRIPT_SETTINGS_PATH", str(tmp_path / "missing.xml")
+        ):
+            assert router._get_script_setting("hydra_url", "") == "http://hydra:5076"
+
+
 # --- _safe_resolve_handle + action route handle-resolution tests ---
 #
 # Action routes (install_player, clear_cache, settings, configure_*,

@@ -13,7 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Released | What it's about |
 |---|---|---|
-| **[Unreleased](#unreleased)** | Pending | Always-proxy playback default |
+| **[Unreleased](#unreleased)** | Pending | Next changes |
+| **[1.2.3](#123--2026-05-08)** | 2026-05-08 | Proxy fallback hardening, repo install checksum fix, RunScript path reliability |
 | **[1.2.2](#122--2026-05-07)** | 2026-05-07 | Kodi add-on info freeze hotfix |
 | **[1.2.1](#121--2026-05-07)** | 2026-05-07 | Synthetic indexer-size fallback manifests, prefetch indexer-size gate, NZB fetch LRU, stale-progress failure fix |
 | **[1.2.0](#120--2026-05-07)** | 2026-05-07 | RunScript fallback discovery wiring, thread-safe settings plumbing through fallback path, deferred fallback prefetch, probe-thread starvation survival, NZBHydra2 result cap raised |
@@ -62,11 +63,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+No unreleased changes yet.
+
+## [1.2.3] — 2026-05-08
+
+> **Proxy fallback and repository-install hardening.** This release keeps
+> fallback rescue paths active for MKV playback, avoids unsafe service-thread
+> Kodi settings reads during proxy prepare, and fixes Kodi repository refresh
+> after installing the repo zip from GitHub Pages.
+
 **Changed**
 - Route plain MKV and already-faststart MP4 playback through the local
   pass-through proxy by default instead of bypassing proxy prepare when no
   fallback sources are attached. This keeps fallback/rescue session handling
   available consistently across playback paths.
+- Pass a sanitized settings snapshot through resolver `/prepare` calls so the
+  proxy can decide remux/pass-through and recovery settings without reading
+  Kodi settings from the service thread.
+- Allow MKV streams to carry fallback handoff sources into the proxy, enabling
+  repeated live fallback switches when upstream WebDAV streams fail.
+- Script playback now reads settings from Kodi-translated profile paths and
+  writes stage logs via Kodi's temp path before falling back to the CoreELEC
+  temp path.
+
+**Fixed**
+- Generate `addons.xml.md5` as a strict 32-byte digest so Kodi can refresh the
+  repository after installing `repository.nzbdav` from the GitHub Pages file
+  source.
+- Encode WebDAV stream paths before playback so spaces and plus signs in
+  PROPFIND paths produce valid URLs.
+
+**Tests**
+- Added regression coverage for settings snapshot prepare calls, five fallback
+  switches in one proxy session, repository md5 payload shape, translated
+  RunScript settings paths, WebDAV path encoding, and Docker/VNC functional
+  playback scaffolding.
 
 ## [1.2.2] — 2026-05-07
 

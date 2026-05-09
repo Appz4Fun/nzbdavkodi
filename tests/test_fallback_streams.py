@@ -10,7 +10,6 @@ from urllib.parse import urlsplit
 from xml.sax.saxutils import quoteattr
 
 import pytest
-
 from resources.lib.fallback_streams import (
     _SAFE_JOB_RE,
     _fallback_settings,
@@ -2716,7 +2715,12 @@ def test_fingerprint_ranges_uses_20_deterministic_4096_byte_samples_for_large_fi
     assert all((end - start + 1) == 4096 for start, end in ranges)
 
 
-@pytest.mark.skip(reason="LRU cache removed to fix Kodi crash; cache is an optimization, not core functionality")
+@pytest.mark.skip(
+    reason=(
+        "LRU cache removed to fix Kodi crash; cache is an optimization, "
+        "not core functionality"
+    )
+)
 def test_fingerprint_ranges_reuses_large_file_sample_offsets_between_calls():
     from resources.lib import fallback_streams
 
@@ -2836,7 +2840,12 @@ def test_fetch_content_length_accepts_configured_stream_url(mock_urlopen):
     assert mock_urlopen.call_args.kwargs["timeout"] == 10
 
 
-@pytest.mark.skip(reason="LRU cache removed to fix Kodi crash; cache is an optimization, not core functionality")
+@pytest.mark.skip(
+    reason=(
+        "LRU cache removed to fix Kodi crash; cache is an optimization, "
+        "not core functionality"
+    )
+)
 def test_fetch_content_length_reuses_validated_probe_url_for_precomputed_bases():
     from resources.lib import fallback_streams
 

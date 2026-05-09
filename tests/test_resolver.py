@@ -966,7 +966,7 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver.xbmcplugin")
 @patch("resources.lib.resolver._get_poll_settings")
-def test_resolve_withholds_fallback_handoff_for_mkv_streams(
+def test_resolve_attaches_fallback_handoff_for_mkv_streams(
     mock_poll_settings,
     _mock_plugin,
     mock_gui,
@@ -1015,7 +1015,17 @@ def test_resolve_withholds_fallback_handoff_for_mkv_streams(
     mock_start_prepare.assert_called_once_with(
         "http://webdav/content/primary/movie.mkv",
         {"Authorization": "Basic primary"},
-        fallback_sources=[],
+        fallback_sources=[
+            {
+                "title": "Fallback A 2026 1080p WEB-DL",
+                "nzb_url": "http://hydra/getnzb/fallback-a",
+                "job_name": "Fallback A 2026 1080p WEB-DL [fallback-1-5c5fd5e4]",
+                "nzo_id": "SABnzbd_nzo_done",
+                "stream_url": "",
+                "stream_headers": {},
+                "content_length": 0,
+            },
+        ],
         service_config_state=None,
     )
     mock_wait_prepare.assert_called_once_with({"state": "prepare"})
@@ -1757,7 +1767,7 @@ def test_resolve_and_play_routes_plain_mkv_through_proxy_without_fallbacks(
 @patch("resources.lib.resolver.xbmc")
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver._get_poll_settings")
-def test_resolve_and_play_withholds_fallback_handoff_for_mkv_streams(
+def test_resolve_and_play_attaches_fallback_handoff_for_mkv_streams(
     mock_poll_settings,
     mock_gui,
     mock_xbmc,
@@ -1802,7 +1812,17 @@ def test_resolve_and_play_withholds_fallback_handoff_for_mkv_streams(
     mock_start_prepare.assert_called_once_with(
         "http://webdav/content/primary/movie.mkv",
         {"Authorization": "Basic primary"},
-        fallback_sources=[],
+        fallback_sources=[
+            {
+                "title": "Fallback A 2026 1080p WEB-DL",
+                "nzb_url": "http://hydra/getnzb/fallback-a",
+                "job_name": "Fallback A 2026 1080p WEB-DL [fallback-1-5c5fd5e4]",
+                "nzo_id": "SABnzbd_nzo_done",
+                "stream_url": "",
+                "stream_headers": {},
+                "content_length": 0,
+            },
+        ],
         service_config_state=None,
     )
     mock_wait_prepare.assert_called_once_with({"state": "prepare"})
@@ -2358,6 +2378,67 @@ def test_resolve_and_play_passes_settings_getter_to_fallback_worker(
     )
 
 
+@patch("resources.lib.cache_prompt.maybe_show_cache_prompt")
+@patch("resources.lib.stream_proxy.prepare_stream_via_service")
+@patch("resources.lib.stream_proxy.get_service_proxy_token", return_value="token")
+@patch("resources.lib.stream_proxy.get_service_proxy_port", return_value=57800)
+@patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
+@patch("resources.lib.resolver._start_fallback_submit_worker")
+@patch("resources.lib.resolver._poll_until_ready")
+@patch("resources.lib.resolver._clear_kodi_playback_state")
+@patch("resources.lib.resolver.xbmc")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver._get_poll_settings")
+def test_resolve_and_play_passes_settings_snapshot_to_proxy_prepare(
+    mock_poll_settings,
+    mock_gui,
+    mock_xbmc,
+    _mock_clear_state,
+    mock_poll_until_ready,
+    mock_start_fallback,
+    _mock_snapshot,
+    _mock_get_port,
+    _mock_get_token,
+    mock_prepare,
+    _mock_cache_prompt,
+):
+    mock_poll_settings.return_value = (1, 60)
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    mock_gui.DialogProgress.return_value = MagicMock()
+    mock_start_fallback.return_value = {"state": "fallback"}
+    mock_prepare.return_value = (
+        "http://127.0.0.1:57800/stream/abc",
+        {"remux": False, "faststart": False, "direct": False},
+    )
+    mock_poll_until_ready.return_value = (
+        "http://webdav/content/primary/movie.mkv",
+        {"Authorization": "Basic primary"},
+    )
+
+    values = {
+        "force_remux_threshold_mb": "15000",
+        "force_remux_mode": "0",
+        "force_remux_mode_v2_migrated": "false",
+        "strict_contract_mode": "1",
+        "density_breaker_enabled": "false",
+        "zero_fill_budget_enabled": "true",
+        "retry_ladder_enabled": "true",
+        "send_200_no_range": "false",
+        "proxy_convert_subs": "true",
+    }
+
+    def settings_getter(key, default=""):
+        return values.get(key, default)
+
+    resolve_and_play(
+        "http://hydra/getnzb/primary",
+        "movie.mkv",
+        params={"_settings_getter": settings_getter},
+    )
+
+    assert mock_prepare.call_args.kwargs["settings_snapshot"] == values
+
+
 @patch("resources.lib.webdav.urlopen")
 @patch("resources.lib.webdav._get_settings")
 def test_completed_history_reuses_webdav_settings_for_stream_url(
@@ -2423,16 +2504,14 @@ def test_completed_history_reuses_webdav_settings_for_stream_url(
 
 
 @patch("resources.lib.stream_proxy.prepare_stream_via_service")
-@patch("resources.lib.resolver.get_video_file_size_hint", create=True)
 @patch("resources.lib.resolver.get_webdav_stream_url_for_path")
 @patch("resources.lib.resolver.find_video_file")
-def test_completed_history_propfind_length_hint_reaches_proxy_prepare(
+def test_completed_history_propfind_length_hint_does_not_override_stream_head(
     mock_find_video,
     mock_stream_url,
-    mock_size_hint,
     mock_prepare_via_service,
 ):
-    """Ready-to-proxy prepare should reuse the WebDAV length from discovery."""
+    """PROPFIND sizes can be stale; proxy prepare must use the HTTP stream HEAD."""
     from resources.lib.resolver import _handle_history_result, _prepare_direct_playback
 
     mock_find_video.return_value = "/content/uncategorized/movie/movie.mkv"
@@ -2440,7 +2519,6 @@ def test_completed_history_propfind_length_hint_reaches_proxy_prepare(
         "http://webdav/content/uncategorized/movie/movie.mkv",
         {"Authorization": "Basic primary"},
     )
-    mock_size_hint.return_value = 131072
     mock_prepare_via_service.return_value = (
         "http://127.0.0.1:57800/stream/abc",
         {"remux": False},
@@ -2470,7 +2548,6 @@ def test_completed_history_propfind_length_hint_reaches_proxy_prepare(
         "Basic primary",
         fallback_sources=None,
         prepare_token="token",
-        content_length_hint=131072,
     )
 
 

@@ -705,7 +705,7 @@ def test_get_completed_names_returns_empty_on_error(mock_http, mock_settings):
 
 @patch("resources.lib.nzbdav_api._get_settings")
 @patch("resources.lib.nzbdav_api._http_get")
-def test_nzbdav_queue_history_status_reads_use_30s_timeout(mock_http, mock_settings):
+def test_nzbdav_queue_history_status_reads_use_10s_timeout(mock_http, mock_settings):
     mock_settings.return_value = ("http://nzbdav:3000", "testkey")
     mock_http.side_effect = [
         json.dumps({"queue": {"slots": []}}),
@@ -720,10 +720,10 @@ def test_nzbdav_queue_history_status_reads_use_30s_timeout(mock_http, mock_setti
     assert get_completed_names() == set()
 
     assert [call.kwargs["timeout"] for call in mock_http.call_args_list] == [
-        30,
-        30,
-        30,
-        30,
+        10,
+        10,
+        10,
+        10,
     ]
 
 
