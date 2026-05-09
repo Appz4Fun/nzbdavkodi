@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 nzbdav contributors
 
+import re
 from pathlib import Path
 
 
@@ -46,3 +47,15 @@ def test_functional_test_recipe_is_dev_only_and_not_in_default_test():
     assert "-m functional" in functional_body
     assert "test_functional_imdb_top50_random_sample_fallback_playback" in top_imdb_body
     assert "-m functional" in top_imdb_body
+
+
+def test_justfile_has_extreme_functional_test_recipe():
+    contents = Path(__file__).resolve().parents[1].joinpath("justfile").read_text()
+    assert "extreme-functional-test:" in contents
+
+
+def test_test_recipe_excludes_extreme_marker():
+    contents = Path(__file__).resolve().parents[1].joinpath("justfile").read_text()
+    test_block = re.search(r"^test:\n(?:    .+\n)+", contents, re.MULTILINE)
+    assert test_block is not None
+    assert "not extreme" in test_block.group(0)
