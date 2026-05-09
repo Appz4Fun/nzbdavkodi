@@ -2245,12 +2245,6 @@ def test_resolve_and_play_skips_duplicate_stale_picker_completed_probe_before_su
     mock_find_completed.assert_not_called()
 
 
-@patch(
-    "resources.lib.resolver._prefetch_fallback_candidate_loader",
-    side_effect=AssertionError(
-        "RunScript fallback lookup started before primary accept"
-    ),
-)
 @patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
 @patch("resources.lib.resolver._finish_player_playback")
 @patch("resources.lib.resolver._wait_direct_playback_prepare")
@@ -2272,9 +2266,8 @@ def test_resolve_and_play_defers_fallback_loader_until_primary_accept(
     mock_wait_prepare,
     _mock_finish_playback,
     _mock_snapshot,
-    _mock_prefetch_loader,
 ):
-    """RunScript playback should not start fallback discovery at picker close."""
+    """RunScript playback should prefetch discovery but defer standby submits."""
     mock_poll_settings.return_value = (1, 60)
     mock_xbmc.Monitor.return_value = _make_monitor()
     mock_gui.DialogProgress.return_value = MagicMock()
@@ -2290,6 +2283,7 @@ def test_resolve_and_play_defers_fallback_loader_until_primary_accept(
         return [{"title": "Fallback A", "link": "http://hydra/getnzb/fallback"}]
 
     def poll_ready(*_args, **kwargs):
+        assert mock_start_fallback.call_count == 0
         kwargs["on_primary_submitted"]("SABnzbd_nzo_primary")
         return (
             "http://webdav/content/primary/movie.mkv",
@@ -2307,10 +2301,54 @@ def test_resolve_and_play_defers_fallback_loader_until_primary_accept(
         },
     )
 
+    assert mock_start_fallback.call_count == 1
+    loader_kwarg = mock_start_fallback.call_args.kwargs["candidate_loader"]
+    assert loader_kwarg is not fallback_loader
+    assert loader_kwarg() == [
+        {"title": "Fallback A", "link": "http://hydra/getnzb/fallback"}
+    ]
     mock_start_fallback.assert_called_once_with(
         [],
-        candidate_loader=fallback_loader,
+        candidate_loader=loader_kwarg,
     )
+
+
+def test_fallback_submit_jobs_snapshot_waits_briefly_for_active_worker_jobs():
+    """Playback handoff should include fallback jobs that finish inside grace."""
+    finished = threading.Event()
+    release_job = threading.Event()
+    lock = threading.Lock()
+    jobs = []
+    job = {
+        "title": "Fallback A",
+        "nzb_url": "http://hydra/fallback-a",
+        "job_name": "Fallback A [fallback-1-5c5fd5e4]",
+        "nzo_id": "SABnzbd_nzo_fallback",
+    }
+
+    def worker_target():
+        release_job.wait(timeout=1)
+        with lock:
+            jobs.append(job)
+        finished.set()
+
+    worker = threading.Thread(target=worker_target)
+    state = {
+        "lock": lock,
+        "jobs": jobs,
+        "thread": worker,
+        "stop": threading.Event(),
+        "finished": finished,
+    }
+    worker.start()
+    timer = threading.Timer(0.05, release_job.set)
+    timer.start()
+    try:
+        assert _fallback_submit_jobs_snapshot(state, wait_seconds=0.5) == [job]
+    finally:
+        release_job.set()
+        timer.cancel()
+        worker.join(timeout=1)
 
 
 @patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
@@ -2371,11 +2409,10 @@ def test_resolve_and_play_passes_settings_getter_to_fallback_worker(
         },
     )
 
-    mock_start_fallback.assert_called_once_with(
-        [],
-        candidate_loader=fallback_loader,
-        settings_getter=settings_getter,
-    )
+    assert mock_start_fallback.call_count == 1
+    assert mock_start_fallback.call_args.args == ([],)
+    assert mock_start_fallback.call_args.kwargs["settings_getter"] is settings_getter
+    assert "candidate_loader" in mock_start_fallback.call_args.kwargs
 
 
 @patch("resources.lib.cache_prompt.maybe_show_cache_prompt")
@@ -2617,7 +2654,7 @@ def test_fallback_submit_jobs_snapshot_does_not_wait_for_worker():
 
 
 def test_fallback_submit_jobs_snapshot_does_not_wait_for_active_worker():
-    """Success snapshots should not wait for standby jobs still submitting."""
+    """A zero-grace snapshot remains nonblocking for shutdown/cleanup paths."""
     worker = MagicMock()
     worker.is_alive.return_value = True
     worker.join.side_effect = AssertionError("snapshot blocked on active worker")
@@ -2637,7 +2674,7 @@ def test_fallback_submit_jobs_snapshot_does_not_wait_for_active_worker():
         "finished": finished,
     }
 
-    assert _fallback_submit_jobs_snapshot(state) == [job]
+    assert _fallback_submit_jobs_snapshot(state, wait_seconds=0) == [job]
     worker.join.assert_not_called()
     finished.wait.assert_not_called()
 

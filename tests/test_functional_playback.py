@@ -5,7 +5,6 @@
 import time
 
 import pytest
-import requests
 
 pytestmark = pytest.mark.functional
 
@@ -16,6 +15,7 @@ class KodiJSONRPC:
     def __init__(self, host="localhost", port=8080, username="kodi", password="kodi"):
         self.url = f"http://{host}:{port}/jsonrpc"
         self.auth = (username, password)
+        self.requests = pytest.importorskip("requests")
 
     def call(self, method, params=None, request_id=1):
         """Call a Kodi JSON-RPC method."""
@@ -24,7 +24,9 @@ class KodiJSONRPC:
             payload["params"] = params
 
         try:
-            response = requests.post(self.url, json=payload, auth=self.auth, timeout=10)
+            response = self.requests.post(
+                self.url, json=payload, auth=self.auth, timeout=10
+            )
             response.raise_for_status()
             return response.json()
         except Exception as e:

@@ -2406,10 +2406,8 @@ def _fallback_submit_jobs_snapshot(state, wait_seconds=0.5):
     if not state:
         return []
     thread = state.get("thread")
-    stop_event = state.get("stop")
     finished = state.get("finished")
-    stop_requested = bool(stop_event and stop_event.is_set())
-    if thread and stop_requested:
+    if thread and thread.is_alive() and wait_seconds > 0:
         deadline = time.monotonic() + max(0, wait_seconds)
         while thread.is_alive() and time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
@@ -2931,7 +2929,9 @@ def resolve_and_play(nzb_url, title, params=None):
         settings_getter = resolve_params.get("_settings_getter")
         selected_indexer = resolve_params.get("_selected_indexer", "")
         fallback_candidates = resolve_params.get("_fallback_candidates", [])
-        fallback_candidate_loader = resolve_params.get("_fallback_candidate_loader")
+        fallback_candidate_loader = _prefetch_fallback_candidate_loader(
+            resolve_params.get("_fallback_candidate_loader")
+        )
         _resolve_stage("fallback lookup deferred")
         _resolve_stage("service config lookup deferred")
         picker_completed_lookup_done = _picker_completed_lookup_done(resolve_params)
