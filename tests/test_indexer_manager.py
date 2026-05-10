@@ -183,6 +183,43 @@ def test_refresh_hydra_provider_caps_reads_hydra_settings(monkeypatch):
     refresh_hydra_caps.assert_called_once_with("http://hydra:5076", "hydra-secret")
 
 
+def test_load_managed_indexers_migrates_legacy_static_settings(monkeypatch):
+    existing = _indexer(indexer_id="json-geek")
+    legacy = {
+        "id": "custom1",
+        "label": "Static Custom",
+        "api_url": "https://static.example/newznab",
+        "api_key": "custom-key",
+        "caps": {},
+    }
+    save_indexers = MagicMock()
+    monkeypatch.setattr(
+        indexer_manager, "load_indexers", MagicMock(return_value=[existing])
+    )
+    monkeypatch.setattr(
+        indexer_manager,
+        "get_legacy_configured_indexers",
+        MagicMock(return_value=[legacy]),
+    )
+    monkeypatch.setattr(indexer_manager, "save_indexers", save_indexers)
+
+    indexers = indexer_manager.load_managed_indexers()
+
+    assert indexers == [
+        existing,
+        {
+            "id": "custom1",
+            "preset_id": "custom1",
+            "name": "Static Custom",
+            "api_url": "https://static.example/newznab",
+            "api_key": "custom-key",
+            "enabled": True,
+            "caps": {},
+        },
+    ]
+    save_indexers.assert_called_once_with(indexers)
+
+
 def test_set_indexer_enabled_persists_new_enabled_value(monkeypatch):
     first = _indexer(enabled=True)
     second = _indexer(indexer_id="drunken_slug", enabled=False)

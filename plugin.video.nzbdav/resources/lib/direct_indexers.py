@@ -30,6 +30,7 @@ from resources.lib.http_util import (
     redact_url as _redact_url,
 )
 from resources.lib.indexer_store import load_indexers
+from resources.lib.newznab_caps import normalize_api_endpoint
 from resources.lib.search_planner import plan_newznab_search
 
 PRESET_INDEXERS = (
@@ -124,20 +125,8 @@ def _configured_json_indexer(item):
     }
 
 
-def get_configured_indexers():
-    """Return enabled direct indexers with complete URL and API key config."""
-    addon = xbmcaddon.Addon()
-    if not _setting_enabled(addon, "direct_indexers_enabled"):
-        return []
-
-    json_configured = []
-    for item in load_indexers():
-        configured = _configured_json_indexer(item)
-        if configured:
-            json_configured.append(configured)
-    if json_configured:
-        return json_configured
-
+def get_legacy_configured_indexers(addon=None):
+    addon = addon or xbmcaddon.Addon()
     configured = []
     for indexer_id, label, default_url in PRESET_INDEXERS:
         item = _configured_preset(addon, indexer_id, label, default_url)
@@ -152,11 +141,34 @@ def get_configured_indexers():
     return configured
 
 
+def get_configured_indexers():
+    """Return enabled direct indexers with complete URL and API key config."""
+    addon = xbmcaddon.Addon()
+    if not _setting_enabled(addon, "direct_indexers_enabled"):
+        return []
+
+    json_indexers = load_indexers()
+    json_managed_ids = {
+        str(item.get("id") or item.get("preset_id") or "").strip()
+        for item in json_indexers
+    }
+    json_configured = []
+    for item in json_indexers:
+        configured = _configured_json_indexer(item)
+        if configured:
+            json_configured.append(configured)
+
+    configured = list(json_configured)
+    for item in get_legacy_configured_indexers(addon):
+        if item["id"] in json_managed_ids:
+            continue
+        configured.append(item)
+    return configured
+
+
 def build_search_url(api_url, params):
     """Build a Newznab API URL from a user-configured API URL or host URL."""
-    base = api_url.rstrip("/")
-    if not base.endswith("/api"):
-        base = base + "/api"
+    base = normalize_api_endpoint(api_url)
     return "{}?{}".format(base, urlencode(params))
 
 

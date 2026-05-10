@@ -172,6 +172,41 @@ def test_search_hydra_uses_cached_provider_caps(
     assert "imdbid" not in params
 
 
+@patch("resources.lib.hydra.save_provider_caps")
+@patch("resources.lib.hydra.fetch_caps")
+@patch("resources.lib.hydra.load_provider_caps")
+@patch("resources.lib.hydra._get_settings")
+@patch("resources.lib.hydra._http_get")
+def test_search_hydra_refreshes_provider_caps_when_cache_missing(
+    mock_http,
+    mock_settings,
+    mock_load_provider_caps,
+    mock_fetch_caps,
+    mock_save_provider_caps,
+):
+    mock_settings.return_value = ("http://hydra:5076", "testkey")
+    mock_load_provider_caps.return_value = {}
+    mock_fetch_caps.return_value = (
+        {
+            "search_types": ["search"],
+            "supported_params": {"search": ["q"]},
+        },
+        None,
+    )
+    mock_http.return_value = _load_fixture("hydra_movie_response.xml")
+
+    results, error = search_hydra("movie", "The Matrix", imdb="tt0133093")
+
+    assert error is None
+    assert len(results) == 2
+    mock_fetch_caps.assert_called_once_with("http://hydra:5076", "testkey")
+    mock_save_provider_caps.assert_called_once()
+    params = _query_params(mock_http.call_args[0][0])
+    assert params["t"] == "search"
+    assert params["q"] == "The Matrix"
+    assert "imdbid" not in params
+
+
 @patch("resources.lib.hydra.load_provider_caps")
 @patch("resources.lib.hydra._get_settings")
 @patch("resources.lib.hydra._http_get")

@@ -39,6 +39,14 @@ def test_build_caps_url_appends_api_and_redacts_nothing():
     assert "o=xml" in url
 
 
+def test_build_caps_url_preserves_nonstandard_api_endpoint_paths():
+    tabula = build_caps_url("https://tabula-rasa.pw/api/v1/", "secret")
+    torbox = build_caps_url("https://torbox.app/newznab", "secret")
+
+    assert urlsplit(tabula).path == "/api/v1"
+    assert urlsplit(torbox).path == "/newznab"
+
+
 def test_build_caps_url_preserves_existing_query_and_forces_caps_params():
     url = build_caps_url(
         "https://idx.example/api?foo=1&t=search&o=json&apikey=old", "secret"
