@@ -725,3 +725,11 @@ msgstr "WebDAV server error. Check server logs."
 msgctxt "#30192"
 msgid "WebDAV connection error. Check server."
 msgstr "WebDAV connection error. Check server."
+
+msgctxt "#30195"
+msgid "Manage Indexers"
+msgstr "Manage Indexers"
+
+msgctxt "#30196"
+msgid "Refresh NZBHydra2 Caps"
+msgstr "Refresh NZBHydra2 Caps"

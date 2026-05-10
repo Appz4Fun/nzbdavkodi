@@ -124,3 +124,8 @@ def test_direct_indexer_strings_have_fallbacks():
     assert string(30163) == "Indexers"
     assert string(30165) == "Enable direct Newznab indexers"
     assert string(30176) == "No direct indexers configured"
+
+
+def test_indexer_manager_strings_have_fallbacks():
+    assert string(30195) == "Manage Indexers"
+    assert string(30196) == "Refresh NZBHydra2 Caps"
