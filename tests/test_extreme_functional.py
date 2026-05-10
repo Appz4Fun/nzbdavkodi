@@ -456,10 +456,10 @@ def test_extreme_fallback_run(stack_ready, run_dir):
     assert (
         len(fault_events) == 5
     ), f"expected 5 fault events, proxy log has {len(fault_events)}"
-    assert len(correlated) == len(fault_events), (
-        "expected {} correlated events, got {}".format(
-            len(fault_events), len(correlated)
-        )
+    assert len(correlated) == len(
+        fault_events
+    ), "expected {} correlated events, got {}".format(
+        len(fault_events), len(correlated)
     )
     for ev in correlated:
         assert (

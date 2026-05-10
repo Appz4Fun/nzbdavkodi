@@ -252,9 +252,7 @@ def test_passthrough_drops_unsafe_upstream_headers(proxy_with_upstream):
         (),
         {
             "headers": [],
-            "send_header": lambda self, name, value: self.headers.append(
-                (name, value)
-            ),
+            "send_header": lambda self, name, value: self.headers.append((name, value)),
         },
     )()
     resp = type(
