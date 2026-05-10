@@ -23,6 +23,8 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
+# pylint: disable=redefined-outer-name
+
 _SETTINGS_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "plugin.video.nzbdav",
