@@ -249,3 +249,42 @@ def test_fallback_loader_short_circuits_for_lone_picked_link(monkeypatch):
     )
     loader = _fallback_candidate_loader_for_selection(selected, [selected])
     assert loader is None
+
+
+# 11 (Ralph-discovered): _split_http_url must consistently return None on
+#     reject (not False). Discovered via tests/ralph_loop.py seed=5
+#     when the empty-string input returned False, breaking callers that
+#     use ``parts is None`` instead of truthiness.
+@pytest.mark.parametrize(
+    "rejected",
+    [
+        "",
+        "/",
+        "//",
+        "http://",
+        "ftp://server/",
+        "javascript:alert(1)",
+        "http://user:pass@host/",  # auth in URL is rejected by design
+        "http:// host /",  # space in netloc → ValueError on urlsplit (raises in some Python versions)
+        "http://[invalid::ipv6/",  # malformed v6 → ValueError
+        "http://host:not-a-port/",
+        "http://\rhost/",  # control char
+    ],
+)
+def test_split_http_url_returns_none_on_reject(rejected):
+    """Type-contract regression: rejected URLs must be ``None``, never
+    ``False``. Same-shaped return on every reject path lets callers
+    safely use ``parts is None`` or truthiness — both work, but only
+    consistently if reject = None."""
+    result = _split_http_url(rejected)
+    assert result is None, "expected None for {!r}, got {!r}".format(rejected, result)
+
+
+def test_split_http_url_returns_split_result_on_accept():
+    """Happy path: accepted URLs return a parsed SplitResult-like with
+    a usable scheme."""
+    result = _split_http_url("http://nzbdav-rs:8080/dav")
+    assert result is not None
+    assert result.scheme.lower() == "http"
+    assert result.hostname == "nzbdav-rs"
+    assert result.port == 8080
