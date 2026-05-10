@@ -28,10 +28,16 @@ from __future__ import annotations
 import base64
 import json
 import os
+import sys
 import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
+
+# Local sibling import — share the PROPFIND helper with the other
+# runners so all three pick storages the same way.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _storage_discovery import discover_cinefile_storages  # noqa: E402
 
 KODI_URL = os.environ.get("KODI_URL", "http://localhost:8082").rstrip("/")
 KODI_AUTH = ("kodi", "kodi")
@@ -47,13 +53,16 @@ OBSERVE_SECONDS = int(os.environ.get("CINEFILE_OBSERVE_SECONDS", "60"))
 OUT_DIR = Path(os.environ.get("CINEFILE_OUT_DIR", "/tmp/cinefile_proxy")).resolve()
 
 
-# nzbdav-rs (no fault-proxy) and fault-proxy URLs differ only in host.
 # Each iteration assigns one path as primary-via-fault-proxy and the
-# other as fallback-direct so the cutover happens.
-PATH_A = "/dav/content/12.Angry.Men.1957.1080p.BluRay.x264-CiNEFiLE%20%5Bbulk-11-nzbplanet%5D/2764ae488e9a43a4af60c9b65a22659c.mkv"
-PATH_B = "/dav/content/12.Angry.Men.1957.1080p.BluRay.x264-CiNEFiLE%20%5Bbulk-12-SceneNZBs%5D/2764ae488e9a43a4af60c9b65a22659c.mkv"
-HOST_FAULTPROXY = "nzbdav-extreme-fault-proxy:8280"
-HOST_DIRECT = "nzbdav-extreme-nzbdav:8080"
+# other as fallback-direct so the cutover happens. PATH_A / PATH_B
+# come from runtime PROPFIND (see ``main()``) — they're not hardcoded
+# any more so a re-seeded run with different UUIDs still works.
+HOST_FAULTPROXY = os.environ.get(
+    "FAULT_PROXY_HOST", "nzbdav-extreme-fault-proxy:8280"
+)
+HOST_DIRECT = os.environ.get(
+    "NZBDAV_DIRECT_HOST", "nzbdav-extreme-nzbdav:8080"
+)
 
 
 def _kodi_rpc(method: str, params: dict | None = None, timeout: int = 10):
@@ -170,9 +179,9 @@ def time_to_seconds(time_obj) -> float:
     )
 
 
-def run_iteration(iteration: int, log: Path) -> dict:
-    primary_path = PATH_A if iteration % 2 == 0 else PATH_B
-    fallback_path = PATH_B if iteration % 2 == 0 else PATH_A
+def run_iteration(iteration: int, path_a: str, path_b: str, log: Path) -> dict:
+    primary_path = path_a if iteration % 2 == 0 else path_b
+    fallback_path = path_b if iteration % 2 == 0 else path_a
     primary_url = url_with_auth(HOST_FAULTPROXY, primary_path)  # via fault-proxy
     fallback_url = url_with_auth(HOST_DIRECT, fallback_path)  # bypass fault-proxy
     summary = {
@@ -241,13 +250,27 @@ def run_iteration(iteration: int, log: Path) -> dict:
     return summary
 
 
+def _discover_paths() -> tuple[str, str]:
+    """Find two CiNEFiLE mkv paths to alternate as primary/fallback."""
+    pairs = discover_cinefile_storages(limit=2)
+    if len(pairs) < 2:
+        raise SystemExit(
+            "FATAL: need 2 CiNEFiLE storages, got {}".format(len(pairs))
+        )
+    # _propfind_mkv_path returns an already-quoted href ("/dav/content/...");
+    # url_with_auth takes the path component verbatim, so just pass it
+    # through.
+    return pairs[0][1], pairs[1][1]
+
+
 def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     log = OUT_DIR / "proxy_swap.jsonl"
     if log.exists():
         log.unlink()
-    print("Primary path A: {}{}".format(HOST_FAULTPROXY, PATH_A))
-    print("Primary path B: {}{}".format(HOST_FAULTPROXY, PATH_B))
+    path_a, path_b = _discover_paths()
+    print("Primary path A: {}{}".format(HOST_FAULTPROXY, path_a))
+    print("Primary path B: {}{}".format(HOST_FAULTPROXY, path_b))
     print(
         "Each iteration plays primary via fault-proxy, fault fires "
         "at +{}s, stream_proxy should swap to fallback (direct).".format(
@@ -263,7 +286,7 @@ def main():
             print("[iter {}] sleeping {:.1f}s until next 2-min mark".format(i, wait))
             time.sleep(wait)
         print("[iter {}] start (+{:.0f}s)".format(i, time.time() - test_start))
-        summary = run_iteration(i, log)
+        summary = run_iteration(i, path_a, path_b, log)
         summaries.append(summary)
         print(
             "[iter {}] primary={} fault_t_sec={} final_t_sec={} "

@@ -1158,7 +1158,7 @@ def _wait_for_nearly_complete_history(
         history_ready.wait(min(0.01, remaining))
 
 
-def _poll_once(nzo_id, title, monitor, settings_getter=None):
+def _poll_once(nzo_id, title, monitor, settings_getter=None, submit_started_wall=None):
     """Poll nzbdav queue API and history API in parallel.
 
     Args:
@@ -1215,13 +1215,34 @@ def _poll_once(nzo_id, title, monitor, settings_getter=None):
                 by_name = find_terminal_by_name(
                     title, **_settings_getter_kwargs(settings_getter)
                 )
+                # Suppress stale prior-attempt false positives on
+                # resubmit: a Failed slot from a previous resolver run
+                # would otherwise be reported as "this job failed" and
+                # surface a Failed-history error dialog before the
+                # current submit had a chance to land. Require the
+                # slot's ``completed`` timestamp to be >= the current
+                # submit start (with a 5 s tolerance for clock skew
+                # between the addon and nzbdav-rs). If the slot lacks
+                # ``completed`` entirely (older nzbdav-rs builds),
+                # don't trigger the by-name path at all — better to
+                # wait out the timeout than to fire a false-failure.
                 if by_name and by_name.get("status"):
-                    history_status[0] = {
-                        "status": by_name.get("status", ""),
-                        "storage": by_name.get("storage", ""),
-                        "name": by_name.get("name", ""),
-                        "fail_message": by_name.get("fail_message", ""),
-                    }
+                    completed = by_name.get("completed")
+                    try:
+                        completed_ts = int(completed) if completed is not None else None
+                    except (ValueError, TypeError):
+                        completed_ts = None
+                    if (
+                        completed_ts is not None
+                        and submit_started_wall is not None
+                        and completed_ts >= int(submit_started_wall) - 5
+                    ):
+                        history_status[0] = {
+                            "status": by_name.get("status", ""),
+                            "storage": by_name.get("storage", ""),
+                            "name": by_name.get("name", ""),
+                            "fail_message": by_name.get("fail_message", ""),
+                        }
             if _history_status_is_terminal(history_status[0]):
                 history_ready.set()
         finally:
@@ -2608,7 +2629,9 @@ def _handle_history_result(
 
     status = history.get("status")
     if status == "Failed":
-        fail_msg = history.get("fail_message", "")
+        from resources.lib.http_util import redact_text
+
+        fail_msg = redact_text(history.get("fail_message", "") or "")
         xbmc.log(
             "NZB-DAV: Download failed for nzo_id={} (title='{}'): {}".format(
                 history.get("nzo_id", "unknown"), title, fail_msg or "unknown reason"
@@ -2620,8 +2643,9 @@ def _handle_history_result(
         # so the resolve loop can promptly return to the caller (or
         # pivot to a fallback NZB) instead of hanging on a modal that
         # nobody clicks in script-mode invocations like TMDBHelper's
-        # tmdb_play hook.
-        xbmcgui.Dialog().notification(_addon_name(), error_text, "", 7000)
+        # tmdb_play hook. error_text is already redacted via fail_msg
+        # so any apikey echoed back from nzbdav doesn't reach the user.
+        xbmcgui.Dialog().notification(_addon_name(), redact_text(error_text), "", 7000)
         return True, None, None, no_video_retries
 
     if status != "Completed":
@@ -2735,6 +2759,10 @@ def _poll_until_ready(
         return existing_stream
 
     monitor = xbmc.Monitor()
+    # Wall-clock submit timestamp (epoch seconds). The by-name history
+    # fallback in _poll_once compares this against a slot's ``completed``
+    # epoch to suppress stale prior-attempt false positives on resubmit.
+    submit_started_wall = time.time()
     nzo_id = _submit_nzb_with_retries(
         nzb_url,
         title,
@@ -2781,7 +2809,11 @@ def _poll_until_ready(
             return None, None
 
         job_status, history, webdav_error = _poll_once(
-            nzo_id, title, monitor, settings_getter=settings_getter
+            nzo_id,
+            title,
+            monitor,
+            settings_getter=settings_getter,
+            submit_started_wall=submit_started_wall,
         )
 
         should_stop, last_status = _handle_job_status(
@@ -2820,7 +2852,7 @@ def _poll_until_ready(
         if _wait_for_abort_or_timeout(monitor, wait_seconds):
             # Kodi is shutting down
             xbmc.log("NZB-DAV: Kodi shutdown detected, aborting resolve", xbmc.LOGINFO)
-            cancel_job(nzo_id)
+            cancel_job(nzo_id, settings_getter=settings_getter)
             return None, None
 
 

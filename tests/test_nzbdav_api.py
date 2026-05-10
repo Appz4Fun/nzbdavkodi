@@ -658,12 +658,19 @@ def test_get_completed_jobs_returns_completed_job_map(mock_http, mock_settings):
 
     jobs = get_completed_jobs()
 
+    # `_completed_job_from_slot` shape grew: ``fail_message`` lets the
+    # name-based history fallback show users why a job failed,
+    # ``completed`` (epoch seconds, may be None for older nzbdav-rs
+    # builds) lets the resolver discriminate stale prior-attempt
+    # failures from a fresh resubmit.
     assert jobs == {
         "Movie.A.2024": {
             "status": "Completed",
             "storage": ("/mnt/nzbdav/completed-symlinks/uncategorized/Movie.A.2024"),
             "name": "Movie.A.2024",
             "nzo_id": "SABnzbd_nzo_a",
+            "fail_message": "",
+            "completed": None,
         }
     }
     assert completed_jobs_lookup_done(jobs) is True

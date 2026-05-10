@@ -182,20 +182,23 @@ def find_two_streamable_urls() -> list[str]:
         and s.get("name", "").startswith(target_prefix)
     ]
     streamable = []
-    seen_mkv = set()
+    seen_storage = set()
     for storage in candidates:
         if not storage:
             continue
+        # Dedup by full storage path, NOT mkv basename. nzbdav-rs writes
+        # the same UUID basename for byte-equivalent uploads from
+        # different indexers — that's exactly the "multiple peers
+        # serving identical bytes" case the cutover test relies on.
+        # Same storage path appearing twice (a re-pull of the same
+        # release) is the only true duplicate worth skipping.
+        if storage in seen_storage:
+            continue
+        seen_storage.add(storage)
         mkv_path = _propfind_mkv_path(storage)
         if not mkv_path:
             print("  PROPFIND miss:  {}".format(storage))
             continue
-        # Skip duplicates (multiple bulk submits sometimes share the
-        # same nzbdav-rs deobfuscated UUID) — same file isn't a
-        # different upload from the user's POV.
-        if mkv_path in seen_mkv:
-            continue
-        seen_mkv.add(mkv_path)
         ok = _verify_streamable(mkv_path)
         print(
             "  {} streamable={}  {}".format(

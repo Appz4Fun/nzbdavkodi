@@ -307,8 +307,11 @@ def submit_nzb(nzb_url, nzb_name="", settings_getter=None, submit_timeout=None):
     # immediately. The latter (network failure, timeout) is already
     # handled in the except branches above.
     error_msg = response.get("error") if isinstance(response, dict) else None
+    # Redact: nzbdav can echo back the failing indexer URL (with apikey)
+    # inside its rejection payload (e.g. "Failed to fetch <url>"), which
+    # would otherwise land in the Kodi log.
     xbmc.log(
-        "NZB-DAV: Submit NZB rejected by nzbdav: {}".format(response),
+        "NZB-DAV: Submit NZB rejected by nzbdav: {}".format(_redact_text(str(response))),
         xbmc.LOGERROR,
     )
     return None, {
@@ -317,7 +320,7 @@ def submit_nzb(nzb_url, nzb_name="", settings_getter=None, submit_timeout=None):
     }
 
 
-def cancel_job(nzo_id, timeout=30):
+def cancel_job(nzo_id, timeout=30, settings_getter=None):
     """Cancel an in-flight nzbdav job by removing it from the queue.
 
     Issues a single SABnzbd-compatible queue DELETE
@@ -330,6 +333,10 @@ def cancel_job(nzo_id, timeout=30):
         nzo_id: The nzbdav job identifier to cancel.
         timeout: HTTP timeout in seconds. Defaults to 30 for slower
             nzbdav queue cleanup on loaded boxes.
+        settings_getter: Optional callable for reading addon settings.
+            Required from script-mode contexts (e.g. TMDBHelper's
+            tmdb_play hook) where ``xbmcaddon.Addon()`` would SIGSEGV
+            because the GUI dispatcher hasn't been initialized.
 
     Returns:
         True if nzbdav reported the queue DELETE succeeded (job was
@@ -346,7 +353,7 @@ def cancel_job(nzo_id, timeout=30):
         (a normal race), LOGWARNING on network error.
     """
     try:
-        base_url, api_key = _get_settings()
+        base_url, api_key = _get_settings(settings_getter=settings_getter)
     except Exception as e:  # pylint: disable=broad-except
         xbmc.log(
             "NZB-DAV: cancel_job failed to read settings: {}".format(
@@ -521,6 +528,11 @@ def _completed_job_from_slot(slot):
         "name": slot.get("name", ""),
         "nzo_id": slot.get("nzo_id", ""),
         "fail_message": slot.get("fail_message", ""),
+        # SABnzbd-compatible: epoch-seconds timestamp the job moved into
+        # history. nzbdav-rs reports unix epoch directly. Used by the
+        # resolver's by-name fallback to suppress stale-prior-attempt
+        # false positives on resubmit.
+        "completed": slot.get("completed"),
     }
 
 

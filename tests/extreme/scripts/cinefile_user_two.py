@@ -15,10 +15,15 @@ from __future__ import annotations
 import base64
 import json
 import os
+import sys
 import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
+
+# Local sibling import — same PROPFIND helper the other runners use.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _storage_discovery import discover_cinefile_storages  # noqa: E402
 
 KODI_URL = os.environ.get("KODI_URL", "http://localhost:8082").rstrip("/")
 KODI_AUTH = ("kodi", "kodi")
@@ -31,11 +36,6 @@ ITERATIONS = int(os.environ.get("CINEFILE_ITERATIONS", "20"))
 INTERVAL_SECONDS = int(os.environ.get("CINEFILE_INTERVAL", "120"))
 PER_STREAM_PLAY_SECONDS = int(os.environ.get("CINEFILE_PLAY_SECONDS", "60"))
 OUT_DIR = Path(os.environ.get("CINEFILE_OUT_DIR", "/tmp/cinefile_user_two")).resolve()
-
-USER_URLS = [
-    "http://localhost:8180/dav/content/12.Angry.Men.1957.1080p.BluRay.x264-CiNEFiLE%20[bulk-11-nzbplanet]/2764ae488e9a43a4af60c9b65a22659c.mkv",
-    "http://localhost:8180/dav/content/12.Angry.Men.1957.1080p.BluRay.x264-CiNEFiLE%20[bulk-12-SceneNZBs]/2764ae488e9a43a4af60c9b65a22659c.mkv",
-]
 
 
 def _kodi_rpc(method: str, params: dict | None = None, timeout: int = 10):
@@ -55,16 +55,18 @@ def _kodi_rpc(method: str, params: dict | None = None, timeout: int = 10):
         return json.loads(r.read())
 
 
-def rewrite_for_kodi(url: str) -> str:
-    parsed = urllib.parse.urlsplit(url)
+def _build_kodi_url(mkv_path: str) -> str:
+    """Compose a Kodi-reachable URL from a PROPFIND-derived mkv href.
+
+    ``mkv_path`` is already URL-quoted (e.g. ``/dav/content/...mkv``)
+    so we pass it straight into urlunsplit's path slot.
+    """
     netloc = "{}:{}@{}".format(
         urllib.parse.quote(WEBDAV_USERNAME, safe=""),
         urllib.parse.quote(WEBDAV_PASSWORD, safe=""),
         NZBDAV_INTERNAL_HOST,
     )
-    return urllib.parse.urlunsplit(
-        (parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment)
-    )
+    return urllib.parse.urlunsplit(("http", netloc, mkv_path, "", ""))
 
 
 def player_status() -> dict:
@@ -165,7 +167,13 @@ def main():
     log = OUT_DIR / "user_two.jsonl"
     if log.exists():
         log.unlink()
-    a, b = (rewrite_for_kodi(u) for u in USER_URLS[:2])
+    pairs = discover_cinefile_storages(limit=2)
+    if len(pairs) < 2:
+        raise SystemExit(
+            "FATAL: need 2 CiNEFiLE storages, got {}".format(len(pairs))
+        )
+    a = _build_kodi_url(pairs[0][1])
+    b = _build_kodi_url(pairs[1][1])
     print("A: {}".format(a))
     print("B: {}".format(b))
     summaries = []
