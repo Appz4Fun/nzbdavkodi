@@ -68,8 +68,17 @@ def maybe_show_cache_prompt(stream_info):
     addon = xbmcaddon.Addon("plugin.video.nzbdav")
 
     cache_is_set = has_cache_memorysize_zero()
-    session_shown = window.getProperty(_PROP_SHOWN_THIS_SESSION).lower() == "true"
-    persistent_dismissed = addon.getSetting("cache_dialog_dismissed").lower() == "true"
+    # Kodi can return None from getProperty / getSetting after addon
+    # reload races (especially during shutdown). The bare ``.lower()``
+    # call AttributeErrors out, isn't in _SUPPRESSED_EXCEPTIONS, and
+    # would break playback resolution. Coerce to "" so the comparison
+    # stays boolean-clean and only matches when explicitly set to "true".
+    session_shown = (
+        window.getProperty(_PROP_SHOWN_THIS_SESSION) or ""
+    ).strip().lower() == "true"
+    persistent_dismissed = (
+        addon.getSetting("cache_dialog_dismissed") or ""
+    ).strip().lower() == "true"
 
     if not should_show_cache_prompt(
         stream_remux, cache_is_set, session_shown, persistent_dismissed
@@ -84,7 +93,10 @@ def maybe_show_cache_prompt(stream_info):
     except _SUPPRESSED_EXCEPTIONS:
         pass
 
-    total_bytes = int(stream_info.get("total_bytes") or 0)
+    # Clamp negatives to 0: buggy upstream sizers (e.g. Newznab providers
+    # returning -1 for "unknown") would otherwise format as "-2.3 GB" in
+    # the user-facing dialog. 0 falls through to the size-less message.
+    total_bytes = max(0, int(stream_info.get("total_bytes") or 0))
     size_gb = total_bytes / (1024.0**3) if total_bytes else 0.0
     message = _f(30153, size_gb) if size_gb else _s(30154)
 

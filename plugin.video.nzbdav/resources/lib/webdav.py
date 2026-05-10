@@ -110,7 +110,9 @@ def probe_webdav_reachable(
         try:
             import xbmcaddon
 
-            raw = xbmcaddon.Addon("plugin.video.nzbdav").getSetting("webdav_content_root")
+            raw = xbmcaddon.Addon("plugin.video.nzbdav").getSetting(
+                "webdav_content_root"
+            )
             content_root = raw.strip("/") if isinstance(raw, str) and raw else "content"
         except Exception:  # pylint: disable=broad-except
             content_root = "content"

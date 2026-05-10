@@ -343,13 +343,14 @@ def _fetch_indexer(indexer, params, error_prefix):
 
 
 def _search_one_indexer(
-    indexer, search_type, title, max_results, imdb="", season="", episode=""
+    indexer, search_type, title, max_results, year="", imdb="", season="", episode=""
 ):
     plan = plan_newznab_search(
         provider_kind="direct",
         host=indexer["api_url"],
         search_type=search_type,
         title=title,
+        year=year,
         imdb=imdb,
         season=season,
         episode=episode,
@@ -394,7 +395,6 @@ def _search_one_indexer(
 
 def search_direct_indexers(search_type, title, year="", imdb="", season="", episode=""):
     """Search all configured direct Newznab indexers."""
-    del year
     indexers = get_configured_indexers()
     if not indexers:
         return [], None
@@ -409,6 +409,7 @@ def search_direct_indexers(search_type, title, year="", imdb="", season="", epis
             search_type,
             title,
             max_results,
+            year=year,
             imdb=imdb,
             season=season,
             episode=episode,

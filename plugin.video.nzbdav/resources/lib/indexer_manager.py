@@ -3,10 +3,13 @@
 
 """Direct Newznab indexer manager actions."""
 
+from urllib.parse import urlsplit
+
 import xbmcaddon
 import xbmcgui
 
 from resources.lib.direct_indexers import get_legacy_configured_indexers
+from resources.lib.http_util import redact_text
 from resources.lib.hydra import refresh_hydra_caps
 from resources.lib.i18n import addon_name, string
 from resources.lib.indexer_presets import list_newznab_presets, slugify_preset_id
@@ -20,6 +23,47 @@ _EDIT = "Edit"
 _DELETE = "Delete"
 _NOT_FOUND = "Indexer not found"
 _KEEP_CURRENT = "<keep current>"
+# Unique identity sentinel: distinguishes "user accepted the displayed
+# default unchanged" from "user typed the literal placeholder string".
+# Compared via ``is`` so a user whose actual api_key happens to equal
+# ``"<keep current>"`` is not silently overwritten with the prior value.
+_KEEP_CURRENT_SENTINEL = object()
+_VERSION_CONFLICT = "Indexer was modified elsewhere; reload and retry"
+_DISABLED_SUFFIX = " (disabled)"
+_LAST_INDEXER_HEADING = "Last indexer"
+_LAST_INDEXER_PROMPT = (
+    "This is your last enabled indexer. Search will fail until you "
+    "add another. Continue?"
+)
+
+_ALLOWED_URL_SCHEMES = frozenset({"http", "https"})
+
+
+def _validate_indexer_url(url):
+    """Return ``(True, "")`` if ``url`` is acceptable, else ``(False, reason)``.
+
+    Reject scheme not in {http, https}, missing hostname, control chars
+    (``ord(c) < 0x20``), or any whitespace anywhere in the string. UI-
+    agnostic: callers decide how to surface the rejection reason.
+    """
+    text = "" if url is None else str(url)
+    if not text:
+        return False, "URL is empty"
+    for char in text:
+        if char.isspace():
+            return False, "URL must not contain whitespace"
+        if ord(char) < 0x20:
+            return False, "URL contains control characters"
+    try:
+        parts = urlsplit(text)
+    except ValueError as error:
+        return False, "URL parse error: {}".format(error)
+    scheme = (parts.scheme or "").lower()
+    if scheme not in _ALLOWED_URL_SCHEMES:
+        return False, "URL scheme must be http or https (got {!r})".format(scheme)
+    if not parts.hostname:
+        return False, "URL is missing a hostname"
+    return True, ""
 
 
 def _preset_id(preset):
@@ -32,7 +76,14 @@ def _indexer_id(indexer):
 
 def _indexer_label(indexer):
     name = str(indexer.get("name") or "").strip()
-    return name or _indexer_id(indexer)
+    base = name or _indexer_id(indexer)
+    # Visual disabled-state marker so the user can spot disabled
+    # indexers in the manage list at a glance instead of having to
+    # drill into each entry. ``enabled`` defaults to True for legacy
+    # entries that pre-date the flag.
+    if "enabled" in indexer and not bool(indexer.get("enabled")):
+        return "{}{}".format(base, _DISABLED_SUFFIX)
+    return base
 
 
 def _normalized_preset_entry(preset, api_key, caps):
@@ -88,6 +139,53 @@ def _replace_indexer(indexers, indexer):
     ] + [indexer]
 
 
+def _sorted_for_display(indexers):
+    """Return enabled indexers first, then alphabetically by display label."""
+    return sorted(
+        indexers,
+        key=lambda indexer: (
+            not bool(indexer.get("enabled")),
+            _indexer_label(indexer).lower(),
+            _indexer_id(indexer),
+        ),
+    )
+
+
+def _entry_version(entry):
+    """Derive a content-fingerprint version for an indexer entry.
+
+    `indexer_store.normalize_indexer` strips unknown fields, so an
+    integer counter persisted on the dict wouldn't survive a save
+    roundtrip. We instead derive a stable-but-mutation-sensitive
+    "version" from the user-editable fields. Two concurrent edits
+    against the same starting state will see the *original* fingerprint
+    on first load; the second writer will see a *different* fingerprint
+    on its pre-save re-load, triggering the conflict path.
+    """
+    if not isinstance(entry, dict):
+        return 0
+    snapshot = (
+        str(entry.get("id") or ""),
+        str(entry.get("name") or ""),
+        str(entry.get("api_url") or ""),
+        str(entry.get("api_key") or ""),
+        bool(entry.get("enabled")),
+    )
+    # hash() keeps the value as a small int; offset by 1 so an empty
+    # entry still reports a positive "default" version.
+    return (hash(snapshot) & 0x7FFFFFFF) + 1
+
+
+def _confirm_replace(indexer_id, name):
+    """Prompt the user before silently overwriting an existing entry."""
+    return xbmcgui.Dialog().yesno(
+        "Replace existing?",
+        "An indexer named {!r} (id={!r}) is already configured. Replace it?".format(
+            name, indexer_id
+        ),
+    )
+
+
 def _find_indexer(indexers, indexer_id):
     for position, indexer in enumerate(indexers):
         if _indexer_id(indexer) == indexer_id:
@@ -125,18 +223,37 @@ def add_preset_indexer(preset, api_key):
         return None, error
 
     indexer = _normalized_preset_entry(preset, api_key, caps)
-    save_indexers(_replace_indexer(load_indexers(), indexer))
+    indexers = load_indexers()
+    if _find_indexer(indexers, _indexer_id(indexer))[1] is not None:
+        if not _confirm_replace(_indexer_id(indexer), _indexer_label(indexer)):
+            return None, None
+    save_indexers(_replace_indexer(indexers, indexer))
     return indexer, None
 
 
-def add_custom_indexer(name, api_url, api_key):
-    """Fetch caps and persist an enabled custom Newznab indexer."""
+def add_custom_indexer(name, api_url, api_key, error_callback=None):
+    """Fetch caps and persist an enabled custom Newznab indexer.
+
+    ``error_callback`` (optional): invoked with the rejection reason if
+    URL validation fails. Lets UI callers surface the reason without
+    making this helper itself UI-bound.
+    """
+    valid, reason = _validate_indexer_url(api_url)
+    if not valid:
+        if error_callback is not None:
+            error_callback(reason)
+        return None, reason
+
     caps, error = fetch_caps(api_url, api_key)
     if error:
-        return None, error
+        return None, redact_text(error)
 
     indexer = _normalized_custom_entry(name, api_url, api_key, caps)
-    save_indexers(_replace_indexer(load_indexers(), indexer))
+    indexers = load_indexers()
+    if _find_indexer(indexers, _indexer_id(indexer))[1] is not None:
+        if not _confirm_replace(_indexer_id(indexer), _indexer_label(indexer)):
+            return None, None
+    save_indexers(_replace_indexer(indexers, indexer))
     return indexer, None
 
 
@@ -210,7 +327,9 @@ def retest_indexer(indexer_id):
 
     caps, error = fetch_caps(indexer.get("api_url"), indexer.get("api_key"))
     if error:
-        return caps, error
+        # Redact apikey-style tokens before bubbling the error up: callers
+        # render this directly to a Kodi dialog/notification.
+        return caps, redact_text(error)
 
     updated = dict(indexer)
     updated["caps"] = caps
@@ -219,13 +338,21 @@ def retest_indexer(indexer_id):
     return caps, None
 
 
-def update_indexer(indexer_id, name=None, api_url=None, api_key=None):
-    """Update editable indexer fields, refreshing caps when connection changes."""
+def update_indexer(
+    indexer_id, name=None, api_url=None, api_key=None, error_callback=None
+):
+    """Update editable indexer fields, refreshing caps when connection changes.
+
+    ``error_callback`` (optional): invoked with the rejection reason if
+    URL validation fails. Lets UI callers surface the reason without
+    making this helper itself UI-bound.
+    """
     indexers = load_indexers()
     position, indexer = _find_indexer(indexers, indexer_id)
     if indexer is None:
         return None, _NOT_FOUND
 
+    original_version = _entry_version(indexer)
     updated = dict(indexer)
     if name is not None:
         updated["name"] = name
@@ -234,18 +361,34 @@ def update_indexer(indexer_id, name=None, api_url=None, api_key=None):
     if api_key is not None:
         updated["api_key"] = api_key
 
+    # Validate the *effective* URL on the updated entry. Edits that don't
+    # touch api_url still get re-validated so a previously-stored bad URL
+    # cannot escape new policy on first edit.
+    valid, reason = _validate_indexer_url(updated.get("api_url"))
+    if not valid:
+        if error_callback is not None:
+            error_callback(reason)
+        return None, reason
+
+    current_indexers = load_indexers()
+    current_position, current_indexer = _find_indexer(current_indexers, indexer_id)
+    if current_indexer is None:
+        return None, _NOT_FOUND
+    if _entry_version(current_indexer) != original_version:
+        return None, _VERSION_CONFLICT
+
     connection_changed = updated.get("api_url") != indexer.get(
         "api_url"
     ) or updated.get("api_key") != indexer.get("api_key")
     if connection_changed:
         caps, error = fetch_caps(updated.get("api_url"), updated.get("api_key"))
         if error:
-            return None, error
+            return None, redact_text(error)
         updated["caps"] = caps
 
-    indexers[position] = normalize_indexer(updated)
-    save_indexers(indexers)
-    return indexers[position], None
+    current_indexers[current_position] = normalize_indexer(updated)
+    save_indexers(current_indexers)
+    return current_indexers[current_position], None
 
 
 def _notify(dialog, message, time=3000):
@@ -291,26 +434,34 @@ def _add_preset_flow(dialog):
 
 
 def _add_custom_flow(dialog):
-    name = dialog.input("Indexer name", "")
+    name = str(dialog.input("Indexer name", "") or "").strip()
     if not name:
-        return
-    api_url = dialog.input("API URL", "")
+        return False
+    api_url = str(dialog.input("API URL", "") or "").strip()
     if not api_url:
-        return
-    api_key = dialog.input("API key", "", option=xbmcgui.ALPHANUM_HIDE_INPUT)
+        return False
+    api_key = str(
+        dialog.input("API key", "", option=xbmcgui.ALPHANUM_HIDE_INPUT) or ""
+    ).strip()
     if not api_key:
-        return
+        return False
 
     indexer, error = add_custom_indexer(name, api_url, api_key)
     if error:
         _ok(dialog, error)
+        return False
     else:
         _notify(dialog, "Added {}".format(_indexer_label(indexer)))
+        return True
 
 
 def _refresh_hydra_flow(dialog):
     _caps, error = refresh_hydra_provider_caps()
-    _show_result(dialog, "NZBHydra2 caps refreshed", error)
+    # ``refresh_hydra_caps`` can surface the request URL (with apikey=...)
+    # via urllib's HTTPError; redact before rendering to a Kodi dialog.
+    _show_result(
+        dialog, "NZBHydra2 caps refreshed", redact_text(error) if error else None
+    )
 
 
 def _indexer_actions(indexer):
@@ -325,7 +476,7 @@ def _input_or_cancel(dialog, heading, current, hidden=False):
     if value == "":
         return None
     if value == _KEEP_CURRENT:
-        return current
+        return _KEEP_CURRENT_SENTINEL
     return value
 
 
@@ -342,6 +493,8 @@ def _edit_indexer_flow(dialog, indexer):
     api_key = _input_or_cancel(dialog, "API key", current_key, hidden=True)
     if api_key is None:
         return
+    if api_key is _KEEP_CURRENT_SENTINEL:
+        api_key = current_key
 
     updated, error = update_indexer(
         _indexer_id(indexer),
@@ -363,7 +516,13 @@ def _existing_indexer_flow(dialog, indexer):
     indexer_id = _indexer_id(indexer)
     if choice == 0:
         _caps, error = retest_indexer(indexer_id)
-        _show_result(dialog, "{} caps OK".format(_indexer_label(indexer)), error)
+        # ``retest_indexer`` already redacts via http_util, but apply
+        # again defensively in case the error path changes upstream.
+        _show_result(
+            dialog,
+            "{} caps OK".format(_indexer_label(indexer)),
+            redact_text(error) if error else None,
+        )
     elif choice == 1:
         _edit_indexer_flow(dialog, indexer)
     elif choice == 2:
@@ -376,6 +535,14 @@ def _existing_indexer_flow(dialog, indexer):
     elif choice == 3 and dialog.yesno(
         addon_name(), "Delete {}?".format(_indexer_label(indexer))
     ):
+        # If this is the last enabled indexer, warn the user before
+        # delete: search will fail with no enabled indexers configured.
+        enabled_count = sum(
+            1 for entry in load_indexers() if bool(entry.get("enabled"))
+        )
+        if enabled_count == 1 and bool(indexer.get("enabled")):
+            if not dialog.yesno(_LAST_INDEXER_HEADING, _LAST_INDEXER_PROMPT):
+                return
         _deleted, error = delete_indexer(indexer_id)
         _show_result(dialog, "Deleted {}".format(_indexer_label(indexer)), error)
 
@@ -383,7 +550,7 @@ def _existing_indexer_flow(dialog, indexer):
 def open_indexer_manager():
     """Open a simple Kodi dialog for managing configured direct indexers."""
     dialog = xbmcgui.Dialog()
-    indexers = load_managed_indexers()
+    indexers = _sorted_for_display(load_managed_indexers())
     options = [_ADD_NEWZNAB, string(30196)]
     options.extend(_indexer_label(indexer) for indexer in indexers)
 

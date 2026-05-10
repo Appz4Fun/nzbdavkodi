@@ -618,6 +618,10 @@ msgctxt "#30159"
 msgid "Create or edit the file:\n  special://profile/advancedsettings.xml\n(on CoreELEC: /storage/.kodi/userdata/advancedsettings.xml)\n\nAdd this content (merging with any existing <advancedsettings> entries):\n\n<advancedsettings>\n  <cache>\n    <memorysize>0</memorysize>\n  </cache>\n</advancedsettings>\n\nRestart Kodi for the change to take effect."
 msgstr "Create or edit the file:\n  special://profile/advancedsettings.xml\n(on CoreELEC: /storage/.kodi/userdata/advancedsettings.xml)\n\nAdd this content (merging with any existing <advancedsettings> entries):\n\n<advancedsettings>\n  <cache>\n    <memorysize>0</memorysize>\n  </cache>\n</advancedsettings>\n\nRestart Kodi for the change to take effect."
 
+msgctxt "#30160"
+msgid "Install Player Other"
+msgstr "Install Player Other"
+
 msgctxt "#30163"
 msgid "Indexers"
 msgstr "Indexers"
@@ -697,6 +701,18 @@ msgstr "NZBPlanet"
 msgctxt "#30182"
 msgid "DOGnzb"
 msgstr "DOGnzb"
+
+msgctxt "#30183"
+msgid "Fallback Streams"
+msgstr "Fallback Streams"
+
+msgctxt "#30184"
+msgid "Enable fallback streams"
+msgstr "Enable fallback streams"
+
+msgctxt "#30185"
+msgid "Maximum standby fallback streams"
+msgstr "Maximum standby fallback streams"
 
 msgctxt "#30186"
 msgid "Switched to fallback stream"

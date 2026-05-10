@@ -45,6 +45,43 @@ _PLAYER_RUNTIME_ERRORS = (
     ValueError,
 )
 
+# Bounds for retry settings. Without clamps, a typo of "99999" would
+# wedge the player monitor for ~28 hours between attempts (delay) or
+# never give up retrying a permanently-broken stream (max_retries).
+# The accepted ranges below cover every realistic recovery scenario:
+#   * max_retries: 0 disables retries entirely; 10 already takes >1 minute
+#     of cumulative backoff with the default 5 s delay.
+#   * retry_delay: 1 s is the smallest poll the service tick can honor;
+#     300 s (5 min) gives flaky-network recovery plenty of headroom.
+_STREAM_MAX_RETRIES_MIN = 0
+_STREAM_MAX_RETRIES_MAX = 10
+_STREAM_RETRY_DELAY_MIN = 1
+_STREAM_RETRY_DELAY_MAX = 300
+
+
+def _clamp_int_setting(setting_id, value, lo, hi):
+    """Clamp an integer setting and log when user input was out of range.
+
+    Mirrors the helper in ``stream_proxy.py`` / ``resolver.py`` — kept
+    as a private duplicate (rather than imported) so ``service.py``
+    stays importable in the early service-startup phase before
+    ``resources.lib`` is fully wired into ``sys.path`` for some
+    embedded Kodi builds.
+    """
+    clamped = value
+    if value < lo:
+        clamped = lo
+    elif value > hi:
+        clamped = hi
+    if clamped != value:
+        xbmc.log(
+            "NZB-DAV: Setting {}={} out of range [{}..{}]; clamping to {}".format(
+                setting_id, value, lo, hi, clamped
+            ),
+            xbmc.LOGWARNING,
+        )
+    return clamped
+
 
 class PlaybackState(Enum):
     """State machine for NzbdavPlayer.
@@ -111,7 +148,15 @@ class NzbdavPlayer(xbmc.Player):
 
     @staticmethod
     def _read_settings():
-        """Read retry settings from addon config."""
+        """Read retry settings from addon config (clamped to safe bounds).
+
+        Both ``stream_max_retries`` and ``stream_retry_delay`` are
+        unconstrained ``type="number"`` fields in settings.xml; without
+        the clamps applied below an unclamped 99999 retry_delay would
+        freeze the monitor loop for ~28 h between retries. The clamp
+        helper logs the original value at LOGWARNING so users debugging
+        "why didn't my stream retry?" see the cause in kodi.log.
+        """
         addon = xbmcaddon.Addon("plugin.video.nzbdav")
         enabled = addon.getSetting("stream_auto_retry").lower() == "true"
         max_retries = 3
@@ -124,6 +169,18 @@ class NzbdavPlayer(xbmc.Player):
             retry_delay = int(addon.getSetting("stream_retry_delay"))
         except (ValueError, TypeError):
             pass
+        max_retries = _clamp_int_setting(
+            "stream_max_retries",
+            max_retries,
+            _STREAM_MAX_RETRIES_MIN,
+            _STREAM_MAX_RETRIES_MAX,
+        )
+        retry_delay = _clamp_int_setting(
+            "stream_retry_delay",
+            retry_delay,
+            _STREAM_RETRY_DELAY_MIN,
+            _STREAM_RETRY_DELAY_MAX,
+        )
         return enabled, max_retries, retry_delay
 
     def _check_active(self):

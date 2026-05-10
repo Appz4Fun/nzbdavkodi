@@ -540,3 +540,104 @@ def test_main_noop_cache_warning_does_not_touch_addon(
 
     # If it reached here without RuntimeError, the eager call is gone.
     mock_addon_cls.assert_not_called()
+
+
+# --- Fix #4: stream_max_retries / stream_retry_delay clamp ----------------
+
+
+def _addon_with_settings(values):
+    """Build a MagicMock Addon whose getSetting returns from a dict."""
+    addon = MagicMock()
+    addon.getSetting.side_effect = lambda key: values.get(key, "")
+    return addon
+
+
+@patch("service.xbmcaddon.Addon")
+def test_read_settings_clamps_max_retries_high(mock_addon_cls):
+    """stream_max_retries=99999 must clamp to the upper bound (10)."""
+    import service as service_mod
+
+    mock_addon_cls.return_value = _addon_with_settings(
+        {
+            "stream_auto_retry": "true",
+            "stream_max_retries": "99999",
+            "stream_retry_delay": "5",
+        }
+    )
+    enabled, max_retries, retry_delay = NzbdavPlayer._read_settings()
+    assert enabled is True
+    assert max_retries == service_mod._STREAM_MAX_RETRIES_MAX == 10
+    assert retry_delay == 5
+
+
+@patch("service.xbmcaddon.Addon")
+def test_read_settings_clamps_retry_delay_high(mock_addon_cls):
+    """A 99999-second retry_delay would freeze the monitor for ~28 h —
+    must clamp to the upper bound."""
+    import service as service_mod
+
+    mock_addon_cls.return_value = _addon_with_settings(
+        {
+            "stream_auto_retry": "true",
+            "stream_max_retries": "3",
+            "stream_retry_delay": "99999",
+        }
+    )
+    _, _, retry_delay = NzbdavPlayer._read_settings()
+    assert retry_delay == service_mod._STREAM_RETRY_DELAY_MAX == 300
+
+
+@patch("service.xbmcaddon.Addon")
+def test_read_settings_clamps_negative_values(mock_addon_cls):
+    """Negative input is clamped to the lower bound rather than rejected."""
+    import service as service_mod
+
+    mock_addon_cls.return_value = _addon_with_settings(
+        {
+            "stream_auto_retry": "true",
+            "stream_max_retries": "-5",
+            "stream_retry_delay": "0",
+        }
+    )
+    _, max_retries, retry_delay = NzbdavPlayer._read_settings()
+    # max_retries lo bound is 0 (disable retries entirely is valid).
+    assert max_retries == service_mod._STREAM_MAX_RETRIES_MIN == 0
+    # retry_delay lo bound is 1 (smallest poll the tick can honor).
+    assert retry_delay == service_mod._STREAM_RETRY_DELAY_MIN == 1
+
+
+@patch("service.xbmcaddon.Addon")
+def test_read_settings_in_range_unchanged(mock_addon_cls):
+    """Values inside the clamp range should pass through untouched."""
+    mock_addon_cls.return_value = _addon_with_settings(
+        {
+            "stream_auto_retry": "true",
+            "stream_max_retries": "4",
+            "stream_retry_delay": "10",
+        }
+    )
+    _, max_retries, retry_delay = NzbdavPlayer._read_settings()
+    assert max_retries == 4
+    assert retry_delay == 10
+
+
+@patch("service.xbmc.log")
+@patch("service.xbmcaddon.Addon")
+def test_read_settings_clamp_logs_warning(mock_addon_cls, mock_log):
+    """Out-of-range values must surface in kodi.log so users can debug."""
+    mock_addon_cls.return_value = _addon_with_settings(
+        {
+            "stream_auto_retry": "true",
+            "stream_max_retries": "99999",
+            "stream_retry_delay": "1",  # in-range — should NOT log
+        }
+    )
+    NzbdavPlayer._read_settings()
+    log_lines = [c.args[0] for c in mock_log.call_args_list]
+    assert any(
+        "stream_max_retries" in line and "out of range" in line for line in log_lines
+    )
+    # retry_delay was in range — no warning for it.
+    assert not any(
+        "stream_retry_delay" in line and "out of range" in line for line in log_lines
+    )

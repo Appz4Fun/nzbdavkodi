@@ -2240,7 +2240,9 @@ def _fallback_streams_enabled(settings_getter=None):
     """Return whether fallback streams are enabled in Kodi settings."""
     try:
         if settings_getter is None:
-            raw = xbmcaddon.Addon("plugin.video.nzbdav").getSetting("fallback_streams_enabled")
+            raw = xbmcaddon.Addon("plugin.video.nzbdav").getSetting(
+                "fallback_streams_enabled"
+            )
         else:
             raw = settings_getter("fallback_streams_enabled", "true")
     except (AttributeError, RuntimeError, TypeError):
@@ -2639,13 +2641,7 @@ def _handle_history_result(
             xbmc.LOGERROR,
         )
         error_text = fail_msg if fail_msg else _string(30100)
-        # notification() (vs the previous Dialog().ok()) is non-blocking
-        # so the resolve loop can promptly return to the caller (or
-        # pivot to a fallback NZB) instead of hanging on a modal that
-        # nobody clicks in script-mode invocations like TMDBHelper's
-        # tmdb_play hook. error_text is already redacted via fail_msg
-        # so any apikey echoed back from nzbdav doesn't reach the user.
-        xbmcgui.Dialog().notification(_addon_name(), redact_text(error_text), "", 7000)
+        xbmcgui.Dialog().ok(_addon_name(), redact_text(error_text))
         return True, None, None, no_video_retries
 
     if status != "Completed":
@@ -2852,7 +2848,10 @@ def _poll_until_ready(
         if _wait_for_abort_or_timeout(monitor, wait_seconds):
             # Kodi is shutting down
             xbmc.log("NZB-DAV: Kodi shutdown detected, aborting resolve", xbmc.LOGINFO)
-            cancel_job(nzo_id, settings_getter=settings_getter)
+            if settings_getter is None:
+                cancel_job(nzo_id)
+            else:
+                cancel_job(nzo_id, settings_getter=settings_getter)
             return None, None
 
 

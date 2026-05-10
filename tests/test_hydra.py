@@ -172,6 +172,35 @@ def test_search_hydra_uses_cached_provider_caps(
     assert "imdbid" not in params
 
 
+@patch("resources.lib.hydra.load_provider_caps")
+@patch("resources.lib.hydra._get_settings")
+@patch("resources.lib.hydra._http_get")
+def test_search_hydra_movie_title_includes_year_when_caps_support_it(
+    mock_http, mock_settings, mock_load_provider_caps
+):
+    mock_settings.return_value = ("http://hydra:5076", "testkey")
+    mock_load_provider_caps.return_value = {
+        "nzbhydra2": {
+            "base_url": "http://hydra:5076",
+            "checked_at": "2026-05-10T00:00:00Z",
+            "caps": {
+                "search_types": ["movie"],
+                "supported_params": {"movie": ["q", "year"]},
+            },
+        }
+    }
+    mock_http.return_value = _load_fixture("hydra_movie_response.xml")
+
+    results, error = search_hydra("movie", "The Odyssey", year="2026")
+
+    assert error is None
+    assert len(results) == 2
+    params = _query_params(mock_http.call_args[0][0])
+    assert params["t"] == "movie"
+    assert params["q"] == "The Odyssey"
+    assert params["year"] == "2026"
+
+
 @patch("resources.lib.hydra.save_provider_caps")
 @patch("resources.lib.hydra.fetch_caps")
 @patch("resources.lib.hydra.load_provider_caps")

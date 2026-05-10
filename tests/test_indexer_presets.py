@@ -52,3 +52,40 @@ def test_hydra_host_fallback_hints_are_available():
     assert "dognzb" in DIRECT_FALLBACK_HOSTS
     assert "nzbplanet" in DIRECT_FALLBACK_HOSTS
     assert "dognzb" in DOGNZB_TVSEARCH_FALLBACK_HOSTS
+
+
+# ---------------------------------------------------------------------------
+# Dev-S5 Fix #1 / Fix #2 — preset URL hygiene
+# ---------------------------------------------------------------------------
+
+
+def test_all_preset_urls_use_https_scheme():
+    """Every preset must use https — http leaks the apikey on caps fetch."""
+    presets = list_newznab_presets()
+    bad = [p for p in presets if not p["api_url"].lower().startswith("https://")]
+    assert (
+        bad == []
+    ), "Non-https preset URLs leak apikey over the wire on caps fetch: " "{}".format(
+        [(p["id"], p["api_url"]) for p in bad]
+    )
+
+
+def test_nzbnation_preset_uses_https():
+    """Regression: nzbnation previously shipped http://, leaking apikey."""
+    preset = get_preset("nzbnation")
+    if preset is not None:
+        assert preset["api_url"].lower().startswith("https://")
+
+
+def test_tabula_rasa_preset_does_not_carry_api_path():
+    """Regression: trailing /api/v1/ path produced /api/v1/api?t=caps and 404'd.
+
+    fetch_caps appends the Newznab /api?t=caps suffix itself, so preset
+    URLs must be a bare host (no extra /api[/vN] tail).
+    """
+    preset = get_preset("tabula_rasa")
+    if preset is not None:
+        url = preset["api_url"].rstrip("/").lower()
+        # Bare host: no `/api` (any version) suffix.
+        assert not url.endswith("/api"), url
+        assert "/api/v" not in url, url

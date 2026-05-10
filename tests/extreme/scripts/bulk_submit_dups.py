@@ -12,9 +12,13 @@ under ``OUT_DIR`` for offline inspection.
 
 from __future__ import annotations
 
+# Pull the movie list from the existing test fixture without importing
+# the test module: that module's top-level transitively pulls in
+# xbmcaddon (only present inside Kodi). AST-extract the assignment so
+# the script can run with plain CPython.
+import ast
 import json
 import os
-import sys
 import time
 import urllib.error
 import urllib.parse
@@ -22,12 +26,6 @@ import urllib.request
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-
-# Pull the movie list from the existing test fixture without importing
-# the test module: that module's top-level transitively pulls in
-# xbmcaddon (only present inside Kodi). AST-extract the assignment so
-# the script can run with plain CPython.
-import ast
 
 
 def _load_movie_list():
@@ -238,7 +236,6 @@ def main():
         for fut in as_completed(futures):
             res = fut.result()
             summary.append(res)
-            tag = res.get("group_title", "?")
             count = res.get("group_size", 0)
             errors = sum(1 for s in res.get("submissions", []) if not s.get("ok"))
             print(

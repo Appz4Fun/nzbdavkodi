@@ -12,6 +12,7 @@ WebDAV server with proper 206 responses.
 """
 
 import hashlib
+import hmac
 import math
 import os
 import re
@@ -24,7 +25,7 @@ import tempfile
 import threading
 import time
 import uuid
-from collections import deque
+from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -194,6 +195,7 @@ _FALLBACK_PRIMARY_URL_HINT_KEY = "_fallback_primary_url_hint"
 _FALLBACK_PRIMARY_AUTH_HINT_KEY = "_fallback_primary_auth_hint"
 _FALLBACK_CURRENT_RANGE_CACHE_KEY = "_fallback_current_range_cache"
 _FALLBACK_FINGERPRINT_WORKERS = 10
+_FALLBACK_PRIMARY_DIGEST_CACHE_MAX = 512
 _INITIAL_RANGE_PREFETCH_WAIT_SECONDS = 0.08
 _PASSTHROUGH_RUNTIME_SETTINGS_KEY = "_passthrough_runtime_settings"
 _PASSTHROUGH_RUNTIME_SETTINGS_DONE_KEY = "_passthrough_runtime_settings_done"
@@ -405,28 +407,26 @@ _FMP4_HLS_CAPABILITY_MARKERS = (
 def _get_addon_setting(setting_id, default=None):
     """Best-effort Kodi addon setting lookup safe for tests and CLI.
 
-    When the plugin is invoked via ``RunScript(...)`` /
-    ``Player.Open(plugin://...)``, repeated ``addon.getSetting()``
-    calls SIGSEGV in the Kodi C++ binding (same crash pattern as
-    webdav.py / resolver.py). Fall back to reading the addon's
-    ``settings.xml`` directly from disk via the router-side helper
-    when we're inside that script-mode interpreter."""
+    Prefer the Kodi API when it is available, so tests and live settings
+    overrides win. Fall back to reading the addon's ``settings.xml``
+    directly only when the Kodi binding is unavailable or raises during
+    script-mode startup.
+    """
+    if xbmcaddon is not None:
+        try:
+            value = xbmcaddon.Addon("plugin.video.nzbdav").getSetting(setting_id)
+            return default if value is None else value
+        except _KODI_SETTING_ERRORS:
+            pass
     try:
         from resources.lib.router import _get_script_setting
 
         value = _get_script_setting(setting_id, default if default is not None else "")
         if value or default is None:
             return value
-        return default
     except Exception:  # pylint: disable=broad-except
         pass
-    if xbmcaddon is None:
-        return default
-    try:
-        value = xbmcaddon.Addon("plugin.video.nzbdav").getSetting(setting_id)
-    except _KODI_SETTING_ERRORS:
-        return default
-    return default if value is None else value
+    return default
 
 
 def normalize_settings_snapshot(settings_snapshot):
@@ -1641,7 +1641,13 @@ class _StreamHandler(BaseHTTPRequestHandler):
         stderr_thread.join(timeout=30)
         stderr = b"".join(stderr_chunks).decode(errors="replace")
         if stderr.strip():
-            xbmc.log("NZB-DAV: ffmpeg: {}".format(stderr[:300]), xbmc.LOGDEBUG)
+            # ffmpeg's HTTP demuxer echoes the failing input URL — including
+            # any apikey=... query and user:pass@ userinfo — into stderr on
+            # 4xx/5xx errors. Run through redact_text before logging.
+            xbmc.log(
+                "NZB-DAV: ffmpeg: {}".format(_redact_text(stderr[:300])),
+                xbmc.LOGDEBUG,
+            )
         xbmc.log(
             "NZB-DAV: Remux done: {} MB sent".format(total // 1048576),
             xbmc.LOGINFO,
@@ -1733,7 +1739,13 @@ class _StreamHandler(BaseHTTPRequestHandler):
             return
         expected_token = getattr(self.server, "prepare_token", "")
         supplied_token = self.headers.get(_PREPARE_TOKEN_HEADER)
-        if expected_token and supplied_token != expected_token:
+        # Constant-time comparison: a byte-by-byte != short-circuits on the
+        # first differing byte and leaks timing info about the secret that
+        # authorizes outbound HTTP from the loopback service. hmac.compare_digest
+        # rejects type mismatches, so coerce both sides to str("") if None.
+        if expected_token and not hmac.compare_digest(
+            supplied_token or "", expected_token or ""
+        ):
             self.send_error(403)
             return
         try:
@@ -1761,7 +1773,11 @@ class _StreamHandler(BaseHTTPRequestHandler):
         auth_header = data.get("auth_header")
         fallback_sources = data.get("fallback_sources", [])
         settings_snapshot = normalize_settings_snapshot(data.get("settings_snapshot"))
-        if not remote_url:
+        # Type-validate remote_url BEFORE any clear_sessions / prepare_stream
+        # work. A non-string (list/dict/int) made it into _validate_url and
+        # raised AttributeError on .startswith, but only after prepare_stream
+        # had already invoked clear_sessions(), clobbering an in-flight stream.
+        if not isinstance(remote_url, str) or not remote_url:
             self.send_error(400)
             return
         if not isinstance(fallback_sources, list):
@@ -3028,11 +3044,21 @@ class _StreamHandler(BaseHTTPRequestHandler):
         )
         if not current_digest:
             return False
-        current_range = (
-            failed_byte,
-            min(range_end, failed_byte + 4095),
-            current_digest,
-        )
+        # Bug 4: only reuse the current_range digest in fingerprint
+        # validation when its (start, end) covers the WHOLE 4096-byte
+        # fingerprint range. When ``range_end`` is shorter than
+        # ``failed_byte + 4095`` (file-tail or short HTTP range),
+        # the digest was computed over fewer than 4096 bytes — the
+        # equality cache in _fetch_fallback_fingerprint_digest would
+        # otherwise accept it as a match for a fingerprint sample whose
+        # natural end is failed_byte + 4095, producing a wrong proof.
+        # In the truncated case, fall through with current_range=None
+        # so the fingerprint loop refetches the natural range.
+        natural_end = failed_byte + 4095
+        if range_end < natural_end:
+            current_range = None
+        else:
+            current_range = (failed_byte, natural_end, current_digest)
         if not self._validate_fallback_fingerprint(
             ctx,
             source,
@@ -3210,13 +3236,16 @@ class _StreamHandler(BaseHTTPRequestHandler):
         """
         if "_fallback_probe_bases" not in ctx:
             from resources.lib.fallback_streams import (
-                _PrecomputedProbeBase,
                 _origin_key,
+                _PrecomputedProbeBase,
                 _split_http_url,
                 configured_stream_probe_bases,
             )
 
             bases = list(configured_stream_probe_bases())
+            if not all(isinstance(base, _PrecomputedProbeBase) for base in bases):
+                ctx["_fallback_probe_bases"] = tuple(bases)
+                return ctx["_fallback_probe_bases"]
             seen_origins = {b.origin for b in bases}
 
             session_urls = []
@@ -3226,7 +3255,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
             for source in ctx.get("fallback_sources", []) or []:
                 if not isinstance(source, dict):
                     continue
-                stream_url = source.get("stream_url")
+                stream_url = source["stream_url"] if "stream_url" in source else None
                 if isinstance(stream_url, str) and stream_url:
                     session_urls.append(stream_url)
 
@@ -3401,7 +3430,14 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 ctx, auth_header, start, end, content_length, probe_bases, primary_url
             )
 
-        cache = ctx.setdefault("_fallback_primary_digest_cache", {})
+        # Bug 5: same bounded OrderedDict cap as the non-threadsafe path.
+        # Lazy-create under the lock so two workers can't both install
+        # different cache instances on a fresh ctx.
+        with cache_lock:
+            cache = ctx.get("_fallback_primary_digest_cache")
+            if cache is None:
+                cache = OrderedDict()
+                ctx["_fallback_primary_digest_cache"] = cache
         key = (primary_url, auth_header, content_length, start, end)
         with cache_lock:
             if key in cache:
@@ -3418,6 +3454,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
         if digest:
             with cache_lock:
                 cache[key] = digest
+                while len(cache) > _FALLBACK_PRIMARY_DIGEST_CACHE_MAX:
+                    cache.popitem(last=False)
         return digest
 
     @staticmethod
@@ -3450,7 +3488,18 @@ class _StreamHandler(BaseHTTPRequestHandler):
         """Verify fingerprint ranges with bounded parallel range probes."""
         workers = min(_FALLBACK_FINGERPRINT_WORKERS, len(ranges))
         fallback_digests = {}
-        with ThreadPoolExecutor(max_workers=workers) as executor:
+        # Shared lock for the primary-digest cache: parallel workers
+        # would otherwise race on `ctx["_fallback_primary_digest_cache"]`
+        # writes. The threadsafe sibling guards both reads and writes
+        # with this lock.
+        cache_lock = threading.Lock()
+        # Manage the executor explicitly so the early-return paths can
+        # cancel pending probes instead of blocking on shutdown(wait=True).
+        # A single mismatched range otherwise pays full latency for all
+        # in-flight probes.
+        executor = ThreadPoolExecutor(max_workers=workers)
+
+        try:
             fallback_futures = {}
             for start, end in ranges:
                 if current_range and current_range[:2] == (start, end):
@@ -3475,19 +3524,21 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     return False
                 fallback_digests[(start, end)] = digest
 
-            primary_futures = {
-                executor.submit(
-                    self._fetch_primary_fallback_range_digest,
-                    ctx,
-                    primary_auth,
-                    start,
-                    end,
-                    content_length,
-                    probe_bases,
-                    primary_url,
-                ): (start, end)
-                for start, end in ranges
-            }
+            primary_futures = {}
+            for start, end in ranges:
+                primary_futures[
+                    executor.submit(
+                        self._fetch_primary_fallback_range_digest_threadsafe,
+                        ctx,
+                        primary_auth,
+                        start,
+                        end,
+                        content_length,
+                        probe_bases,
+                        primary_url,
+                        cache_lock,
+                    )
+                ] = (start, end)
             for future in as_completed(primary_futures):
                 start, end = primary_futures[future]
                 primary_digest = future.result()
@@ -3495,13 +3546,26 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     (start, end)
                 ):
                     return False
-        return True
+            return True
+        finally:
+            # cancel_futures requires Python 3.9+; still propagates
+            # results for futures that already started, but stops
+            # queued probes immediately on the early-return path.
+            executor.shutdown(wait=False, cancel_futures=True)
 
     def _fetch_primary_fallback_range_digest(
         self, ctx, auth_header, start, end, content_length, probe_bases, primary_url
     ):
         """Return cached primary range digest for one live fallback selection."""
-        cache = ctx.setdefault("_fallback_primary_digest_cache", {})
+        # Bug 5: cap the cache. OrderedDict preserves insertion order so
+        # the oldest entry is dropped when the cap is exceeded — bounding
+        # memory growth on long-lived sessions with many validation
+        # rounds. Use setdefault with OrderedDict() so legacy {} caches
+        # are upgraded transparently if missing.
+        cache = ctx.get("_fallback_primary_digest_cache")
+        if cache is None:
+            cache = OrderedDict()
+            ctx["_fallback_primary_digest_cache"] = cache
         key = (primary_url, auth_header, content_length, start, end)
         if key in cache:
             return cache[key]
@@ -3515,6 +3579,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
         )
         if digest:
             cache[key] = digest
+            while len(cache) > _FALLBACK_PRIMARY_DIGEST_CACHE_MAX:
+                cache.popitem(last=False)
         return digest
 
     @staticmethod

@@ -13,16 +13,63 @@ from queue import Empty, Queue
 from types import SimpleNamespace
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 import xbmc
 import xbmcaddon
 
 from resources.lib.nzb_manifest import fetch_nzb_video_manifest, make_empty_manifest
 
+
+class _NoRedirectHandler(HTTPRedirectHandler):
+    """Refuse every HTTP redirect so origin pinning isn't bypassed.
+
+    The fingerprint probes pin the request URL to the configured-origin
+    allow-list via ``_validated_probe_url``, but a vanilla
+    ``urlopen`` opener follows up to 10 redirects — a 302 to a
+    different origin would silently bypass the allow-list, and on
+    Python <3.11 the Authorization header even leaks across redirects.
+    Raising ``HTTPError`` on the 3xx surfaces the redirect as a probe
+    failure (None / 0 / empty digest) at every call site.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise HTTPError(req.full_url, code, msg, headers, fp)
+
+
+_NO_REDIRECT_OPENER = build_opener(_NoRedirectHandler())
+
+
+def _no_redirect_urlopen(req, timeout):
+    """Open ``req`` without following any HTTP redirect.
+
+    Centralized helper so the fingerprint probe path
+    (``fetch_content_length`` / ``fetch_range_bytes`` /
+    ``fetch_range_digest``) always uses the same allow-list-respecting
+    opener instead of the redirect-following module-level ``urlopen``.
+
+    Routes through the module-level ``urlopen`` symbol so existing
+    tests that patch ``resources.lib.fallback_streams.urlopen`` keep
+    working unchanged. In production the symbol is rebound below to
+    the no-redirect opener's ``open`` method, so production traffic
+    gets redirect rejection while tests intercept as before.
+    """
+    # nosemgrep
+    return urlopen(req, timeout=timeout)  # nosec B310
+
+
+# Rebind ``urlopen`` to the no-redirect opener's ``open`` so production
+# code refuses HTTP redirects on every fingerprint probe. Tests that
+# ``patch("resources.lib.fallback_streams.urlopen", ...)`` swap this
+# rebound symbol — patch shape is unchanged. The rebinding is at
+# import time so there is no thread-safety concern.
+urlopen = _NO_REDIRECT_OPENER.open  # noqa: F811
+
 _SAFE_JOB_RE = re.compile(r"^[A-Za-z0-9._ \[\]-]+$")
 _CONTENT_RANGE_RE = re.compile(r"^bytes\s+(\d+)-(\d+)/(\d+|\*)$")
 _FINGERPRINT_SAMPLE_COUNT = 100
+_FINGERPRINT_SMALL_SAMPLE_COUNT = 20
+_FINGERPRINT_DENSE_SAMPLE_MIN_BYTES = 1024 * 1024 * 1024
 _FINGERPRINT_BYTES = 4096
 
 _MAX_FALLBACKS = 5
@@ -73,6 +120,12 @@ def _split_http_url(url):
     URLs as valid.
     """
     if not isinstance(url, str) or any(ord(char) < 0x20 for char in url):
+        return None
+    # IDN homograph / RTL-override / full-width digit attacks: any byte
+    # > 0x7F could let an eyeball-identical hostname slip past the
+    # configured-origin allow-list. Reject high-bit input outright;
+    # operators who need IDN should pre-IDNA-encode the stream base.
+    if any(ord(char) > 0x7F for char in url):
         return None
     try:
         parts = urlsplit(url)
@@ -1503,7 +1556,8 @@ def _fingerprint_ranges_for_length(content_length):
     if content_length <= _FINGERPRINT_BYTES:
         return ((0, content_length - 1),)
 
-    if content_length <= _FINGERPRINT_SAMPLE_COUNT * _FINGERPRINT_BYTES:
+    sample_count = _fingerprint_sample_count(content_length)
+    if content_length <= sample_count * _FINGERPRINT_BYTES:
         ranges = []
         start = 0
         while start < content_length:
@@ -1515,13 +1569,20 @@ def _fingerprint_ranges_for_length(content_length):
     max_start = content_length - _FINGERPRINT_BYTES
     starts = {0, max_start}
     counter = 0
-    while len(starts) < _FINGERPRINT_SAMPLE_COUNT:
+    while len(starts) < sample_count:
         digest = hashlib.sha256(
             "{}:{}".format(content_length, counter).encode("utf-8")
         ).digest()
         starts.add(int.from_bytes(digest[:8], "big") % (max_start + 1))
         counter += 1
     return tuple((start, start + _FINGERPRINT_BYTES - 1) for start in sorted(starts))
+
+
+def _fingerprint_sample_count(content_length):
+    """Return how many sampled ranges should prove this stream length."""
+    if content_length >= _FINGERPRINT_DENSE_SAMPLE_MIN_BYTES:
+        return _FINGERPRINT_SAMPLE_COUNT
+    return _FINGERPRINT_SMALL_SAMPLE_COUNT
 
 
 def fetch_content_length(url, auth_header, timeout=10, probe_bases=None):
@@ -1533,8 +1594,7 @@ def fetch_content_length(url, auth_header, timeout=10, probe_bases=None):
     if auth_header:
         req.add_header("Authorization", auth_header)
     try:
-        # nosemgrep
-        with urlopen(req, timeout=timeout) as resp:  # nosec B310
+        with _no_redirect_urlopen(req, timeout=timeout) as resp:
             return int(resp.headers.get("Content-Length", "0") or 0)
     except (HTTPError, URLError, OSError, TypeError, ValueError):
         return 0
@@ -1587,8 +1647,7 @@ def fetch_range_bytes(
         req.add_header("Authorization", auth_header)
     req.add_header("Range", "bytes={}-{}".format(start, end))
     try:
-        # nosemgrep
-        with urlopen(req, timeout=timeout) as resp:  # nosec B310
+        with _no_redirect_urlopen(req, timeout=timeout) as resp:
             status = getattr(resp, "status", None) or resp.getcode()
             if status != 206:
                 return None

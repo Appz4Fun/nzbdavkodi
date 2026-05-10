@@ -25,12 +25,12 @@ _PRESETS = (
     ("nzbgeek", "NZBGeek", "https://api.nzbgeek.info"),
     ("nzbndx", "NzbNdx", "https://www.nzbndx.com"),
     ("nzbnoob", "NzBNooB", "https://www.nzbnoob.com"),
-    ("nzbnation", "NzbNation", "http://www.nzbnation.com/"),
+    ("nzbnation", "NzbNation", "https://www.nzbnation.com/"),
     ("nzbplanet", "nzbplanet", "https://nzbplanet.net"),
     ("omgwtfnzbs", "omgwtfnzbs", "https://api.omgwtfnzbs.org"),
     ("scenenzbs", "SceneNZBs", "https://scenenzbs.com"),
     ("spotweb", "spotweb.com", "https://spotweb.me"),
-    ("tabula_rasa", "Tabula-Rasa", "https://www.tabula-rasa.pw/api/v1/"),
+    ("tabula_rasa", "Tabula-Rasa", "https://www.tabula-rasa.pw/"),
     ("torbox_newznab", "Torbox (Newznab)", "https://search-api.torbox.app/newznab"),
 )
 

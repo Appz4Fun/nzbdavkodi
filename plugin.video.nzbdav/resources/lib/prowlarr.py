@@ -136,7 +136,9 @@ def search_prowlarr(search_type, title, year="", imdb="", season="", episode="")
 
     import xbmcaddon
 
-    max_results = int(xbmcaddon.Addon("plugin.video.nzbdav").getSetting("max_results") or 25)
+    max_results = int(
+        xbmcaddon.Addon("plugin.video.nzbdav").getSetting("max_results") or 25
+    )
     params = {"apikey": api_key, "limit": max_results}
 
     if search_type == "episode":

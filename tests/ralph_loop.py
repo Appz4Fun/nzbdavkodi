@@ -21,15 +21,13 @@ import sys
 from typing import Callable
 
 import pytest
-
 from resources.lib.fallback_streams import (
-    _PrecomputedProbeBase,
     _origin_key,
+    _PrecomputedProbeBase,
     _split_http_url,
     _validated_probe_url,
     fingerprint_ranges,
 )
-
 
 RALPH_ROUNDS = int(os.environ.get("RALPH_ROUNDS", "200"))
 DEBUG = bool(int(os.environ.get("RALPH_DEBUG", "0")))
@@ -66,8 +64,8 @@ def _rand_url(rng: random.Random) -> str:
         port_part = ":" + str(rng.randint(0, 70_000))
     auth = ""
     if rng.random() < 0.4:
-        auth_user = _rand_str(rng).split("/")[0][:20]
-        auth_pass = _rand_str(rng).split("/")[0][:20]
+        auth_user = _rand_str(rng).split("/", maxsplit=1)[0][:20]
+        auth_pass = _rand_str(rng).split("/", maxsplit=1)[0][:20]
         auth = "{}:{}@".format(auth_user, auth_pass)
     path = "/" + _rand_str(rng).strip("/")
     return "{}://{}{}{}{}".format(scheme, auth, host, port_part, path)
@@ -100,13 +98,13 @@ def _invariant_fingerprint_count(rng: random.Random) -> tuple[Callable, dict]:
         # within a single call, and bounded by content_length.
         assert isinstance(ranges, list), repr(ranges)
         if content_length <= 0:
-            assert ranges == [], "non-empty for non-positive: {}".format(content_length)
+            assert not ranges, "non-empty for non-positive: {}".format(content_length)
             return
         for start, end in ranges:
-            assert 0 <= start <= end < content_length, (
-                "range out of bounds for cl={}: ({}, {})".format(
-                    content_length, start, end
-                )
+            assert (
+                0 <= start <= end < content_length
+            ), "range out of bounds for cl={}: ({}, {})".format(
+                content_length, start, end
             )
         # Determinism: same input → same output.
         assert ranges == fingerprint_ranges(content_length)
@@ -120,28 +118,26 @@ def _invariant_fingerprint_count(rng: random.Random) -> tuple[Callable, dict]:
 
 
 def _invariant_validated_probe_url(rng: random.Random) -> tuple[Callable, dict]:
-    base_url = "http://" + rng.choice(["nzbdav", "host.example", "127.0.0.1:8080"]) + "/"
+    base_url = (
+        "http://" + rng.choice(["nzbdav", "host.example", "127.0.0.1:8080"]) + "/"
+    )
     probe_url = _rand_url(rng)
     parts = _split_http_url(base_url.rstrip("/"))
-    bases = (
-        (_PrecomputedProbeBase(parts, _origin_key(parts), "/"),)
-        if parts
-        else ()
-    )
+    bases = (_PrecomputedProbeBase(parts, _origin_key(parts), "/"),) if parts else ()
 
     def check():
         # Invariant: must NEVER raise on any input string. None or a URL
         # string is the only acceptable return shape.
         result = _validated_probe_url(probe_url, probe_bases=bases)
-        assert result is None or isinstance(result, str), (
-            "non-str/non-None: {!r}".format(result)
-        )
+        assert result is None or isinstance(
+            result, str
+        ), "non-str/non-None: {!r}".format(result)
         # If accepted, the result must start with the base origin.
         if result is not None and parts:
             origin_prefix = "{}://{}".format(parts.scheme.lower(), parts.netloc)
-            assert result.startswith(origin_prefix), (
-                "accepted off-origin: probe={!r} → {!r}".format(probe_url, result)
-            )
+            assert result.startswith(
+                origin_prefix
+            ), "accepted off-origin: probe={!r} → {!r}".format(probe_url, result)
 
     return check, {"probe_url": probe_url, "base": base_url}
 
@@ -170,11 +166,10 @@ def _invariant_split_http_url(rng: random.Random) -> tuple[Callable, dict]:
         result = _split_http_url(url)
         if result is not None:
             # If parse succeeded, scheme must be http or https.
-            assert result.scheme.lower() in ("http", "https"), (
-                "non-http scheme accepted: {!r} from {!r}".format(
-                    result.scheme, url
-                )
-            )
+            assert result.scheme.lower() in (
+                "http",
+                "https",
+            ), "non-http scheme accepted: {!r} from {!r}".format(result.scheme, url)
 
     return check, {"url": url}
 
