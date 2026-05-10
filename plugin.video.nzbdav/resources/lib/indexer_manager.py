@@ -74,6 +74,10 @@ def _indexer_id(indexer):
     return str(indexer.get("id") or "").strip()
 
 
+def _active_indexers(indexers):
+    return [indexer for indexer in indexers if not indexer.get("deleted")]
+
+
 def _indexer_label(indexer):
     name = str(indexer.get("name") or "").strip()
     base = name or _indexer_id(indexer)
@@ -213,7 +217,7 @@ def load_managed_indexers():
     if migrated:
         indexers = indexers + migrated
         save_indexers(indexers)
-    return indexers
+    return _active_indexers(indexers)
 
 
 def add_preset_indexer(preset, api_key):
@@ -224,7 +228,8 @@ def add_preset_indexer(preset, api_key):
 
     indexer = _normalized_preset_entry(preset, api_key, caps)
     indexers = load_indexers()
-    if _find_indexer(indexers, _indexer_id(indexer))[1] is not None:
+    _position, existing = _find_indexer(indexers, _indexer_id(indexer))
+    if existing is not None and not existing.get("deleted"):
         if not _confirm_replace(_indexer_id(indexer), _indexer_label(indexer)):
             return None, None
     save_indexers(_replace_indexer(indexers, indexer))
@@ -250,7 +255,8 @@ def add_custom_indexer(name, api_url, api_key, error_callback=None):
 
     indexer = _normalized_custom_entry(name, api_url, api_key, caps)
     indexers = load_indexers()
-    if _find_indexer(indexers, _indexer_id(indexer))[1] is not None:
+    _position, existing = _find_indexer(indexers, _indexer_id(indexer))
+    if existing is not None and not existing.get("deleted"):
         if not _confirm_replace(_indexer_id(indexer), _indexer_label(indexer)):
             return None, None
     save_indexers(_replace_indexer(indexers, indexer))
@@ -310,7 +316,11 @@ def delete_indexer(indexer_id):
     if indexer is None:
         return None, _NOT_FOUND
 
-    del indexers[position]
+    updated = dict(indexer)
+    updated["enabled"] = False
+    updated["deleted"] = True
+    updated["api_key"] = ""
+    indexers[position] = normalize_indexer(updated)
     save_indexers(indexers)
     return indexer, None
 

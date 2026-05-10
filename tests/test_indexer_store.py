@@ -123,6 +123,31 @@ def test_save_and_load_indexers_round_trip(tmp_path):
     assert loaded[0]["caps"]["search_types"] == ["movie"]
 
 
+def test_save_and_load_indexers_preserves_deleted_marker(tmp_path):
+    path = tmp_path / "indexers.json"
+
+    save_indexers(
+        [
+            {
+                "id": "custom1",
+                "preset_id": "custom1",
+                "name": "Static Custom",
+                "api_url": "https://static.example/newznab",
+                "api_key": "",
+                "enabled": False,
+                "deleted": True,
+                "caps": {},
+            }
+        ],
+        str(path),
+    )
+
+    loaded = load_indexers(str(path))
+
+    assert loaded[0]["deleted"] is True
+    assert loaded[0]["enabled"] is False
+
+
 def test_load_provider_caps_missing_or_corrupt_returns_empty(tmp_path):
     missing = tmp_path / "missing.json"
     corrupt = tmp_path / "provider_caps.json"
