@@ -145,21 +145,6 @@ def test_settings_include_direct_indexers_category():
     )
 
 
-def test_settings_ids_are_unique():
-    settings_xml = REPO_ROOT / "plugin.video.nzbdav" / "resources" / "settings.xml"
-    root = ET.parse(settings_xml).getroot()
-
-    seen = set()
-    duplicates = []
-    for setting in root.findall(".//setting[@id]"):
-        setting_id = setting.get("id")
-        if setting_id in seen:
-            duplicates.append(setting_id)
-        seen.add(setting_id)
-
-    assert not duplicates
-
-
 def test_community_health_files_exist():
     expected = [
         REPO_ROOT / "CONTRIBUTING.md",

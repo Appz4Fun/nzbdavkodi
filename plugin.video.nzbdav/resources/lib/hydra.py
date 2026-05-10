@@ -9,6 +9,7 @@ from urllib.parse import urlencode, urlparse
 from xml.etree import ElementTree as element_tree
 
 import xbmc
+import xbmcaddon
 
 from resources.lib.http_util import (
     calculate_age as _calculate_age,
@@ -36,6 +37,8 @@ _HYDRA_REQUEST_ERRORS = (
 )
 _SOURCE_URL_ERRORS = (AttributeError, TypeError, ValueError)
 _PUBDATE_ERRORS = (OverflowError, TypeError, ValueError)
+addon = xbmcaddon.Addon("plugin.video.nzbdav")
+url = addon.getSetting("hydra_url").rstrip("/")
 
 
 # _format_request_error, _get_text, _calculate_age imported from
@@ -54,10 +57,6 @@ def _get_settings(settings_getter=None):
         api_key = settings_getter("hydra_api_key", "")
         return url, api_key
 
-    import xbmcaddon
-
-    addon = xbmcaddon.Addon("plugin.video.nzbdav")
-    url = addon.getSetting("hydra_url").rstrip("/")
     api_key = addon.getSetting("hydra_api_key")
     return url, api_key
 
@@ -203,9 +202,7 @@ def search_hydra(
     if settings_getter is not None:
         raw_max = settings_getter("max_results", "25")
     else:
-        import xbmcaddon
-
-        raw_max = xbmcaddon.Addon("plugin.video.nzbdav").getSetting("max_results")
+        raw_max = addon.getSetting("max_results")
     try:
         max_results = int(raw_max) if raw_max not in (None, "") else 25
     except (TypeError, ValueError):

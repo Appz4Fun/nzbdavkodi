@@ -3555,7 +3555,10 @@ class _StreamHandler(BaseHTTPRequestHandler):
             # cancel_futures requires Python 3.9+; still propagates
             # results for futures that already started, but stops
             # queued probes immediately on the early-return path.
-            executor.shutdown(wait=False, cancel_futures=True)
+            if _EXECUTOR_SHUTDOWN_SUPPORTS_CANCEL_FUTURES:
+                executor.shutdown(wait=False, cancel_futures=True)
+            else:
+                executor.shutdown(wait=False)
 
     def _fetch_primary_fallback_range_digest(
         self, ctx, auth_header, start, end, content_length, probe_bases, primary_url
