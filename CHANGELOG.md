@@ -63,7 +63,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No unreleased changes yet.
+### Fixed
+
+- **SIGSEGV when `addon.getSetting()` runs in script-mode interpreter.** Reading
+  Kodi addon settings from the C++ binding inside a `RunScript` /
+  `Player.Open(plugin://...)` invocation crashed Kodi without a Python
+  traceback. The TMDBHelper `tmdb_play` flow exercised the crash path inside
+  the resolver poll loop after a long-running prepare. `webdav.py`,
+  `resolver.py`, `stream_proxy.py`, and `fallback_streams.py` now read the
+  affected settings (`webdav_url`, `nzbdav_url`, `webdav_content_root`,
+  `submit_timeout`, `fallback_streams_enabled`, plus the
+  `_configured_stream_bases` pair and `stream_proxy._get_addon_setting`)
+  through `router._get_script_setting`, which parses the addon's
+  `settings.xml` from disk and never touches the C++ binding.
+- **Resolver hung indefinitely after nzbdav-rs failed an NZB.** nzbdav-rs
+  remaps the `nzo_id` when moving a job from queue to history, so the
+  addon's `get_job_history(nzo_id)` lookup never matched and
+  `_poll_until_ready` ran out the full `download_timeout` (1 h) waiting for a
+  status that would never come. The poll loop now also looks the title up by
+  name via the new `nzbdav_api.find_terminal_by_name`, which returns
+  `Completed` *or* `Failed` history rows so the resolve closes promptly when
+  nzbdav-rs is done with a job — pass or fail.
+- **Failure dialog blocked the resolve thread.** The "Failed" history path
+  used `xbmcgui.Dialog().ok()`, which is modal — under TMDBHelper's
+  script-mode call (no operator at the keyboard) the resolve hung waiting
+  for an OK click that never arrives. Switched to
+  `xbmcgui.Dialog().notification()` so the resolve unwinds cleanly when
+  nzbdav-rs returns `no importable video file found`.
+- **Fingerprint pre-validation skipped 127.0.0.1-class fallback URLs.**
+  `_validated_probe_url` enforces a strict origin allow-list keyed off the
+  user-configured `nzbdav_url` / `webdav_url`. A test or operator-supplied
+  fallback URL on a different host (e.g. a local Range-capable file server)
+  would never run the 100×4 KiB SHA256 sweep because the probe URL came back
+  `None`. `stream_proxy._fallback_probe_bases` now also accepts the active
+  session's primary and fallback origins — those URLs were already trusted
+  at session-prepare time.
+
+### Added
+
+- **Same-release / different-upload fallback expansion through Hydra's
+  internal API.** `hydra.fetch_release_duplicate_uploads` calls
+  `/internalapi/search` with `showSingleResultPerSearchResultGroup=false` to
+  return every Usenet upload that shares the picked release's title.
+  `router._fallback_candidate_loader_for_selection` augments the picker's
+  deduped pool with those alternates *before*
+  `attach_fallback_candidates_for_selection` runs, so the existing
+  release-group / profile-signature / ±20 % size / article-digest matching
+  pipeline finds real same-content peers instead of giving up on the lone
+  deduped row.
+- **`/direct_play` plugin route for explicit-URL playback** — accepts a
+  `primary_url` plus a JSON array of `fallback_urls`, HEAD-validates each
+  upstream (rejects URLs that don't return Content-Length so unstreamable
+  peers never reach the proxy's swap pool), peels embedded `user:pass@`
+  auth into Authorization headers (Python urllib's name resolver mis-parses
+  inline auth), and hands Kodi the `stream_proxy` URL via `setResolvedUrl`.
+  Diagnostic-only; unblocks repeatable byte-precise cutover tests without
+  needing a live nzbdav backing store.
+
+### Changed
+
+- **Fingerprint sample count raised 20 → 100.**
+  `fallback_streams._FINGERPRINT_SAMPLE_COUNT` now pulls 100 deterministic
+  4 KiB ranges per fallback (still 4 096 bytes apiece) — primary and
+  fallback SHA256-compared in parallel by 10 worker threads. Cutover stays
+  byte-precise: when the sweep marks a peer `validated=True`, an upstream
+  failure swaps to that peer at the exact failed byte (recovery counters
+  remain `recoveries=0 zero_fill=0` — no skip-probe path), with detect →
+  swap latency observed at single-digit ms.
 
 ## [1.2.3] — 2026-05-08
 

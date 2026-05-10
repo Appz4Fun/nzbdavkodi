@@ -403,11 +403,27 @@ _FMP4_HLS_CAPABILITY_MARKERS = (
 
 
 def _get_addon_setting(setting_id, default=None):
-    """Best-effort Kodi addon setting lookup safe for tests and CLI."""
+    """Best-effort Kodi addon setting lookup safe for tests and CLI.
+
+    When the plugin is invoked via ``RunScript(...)`` /
+    ``Player.Open(plugin://...)``, repeated ``addon.getSetting()``
+    calls SIGSEGV in the Kodi C++ binding (same crash pattern as
+    webdav.py / resolver.py). Fall back to reading the addon's
+    ``settings.xml`` directly from disk via the router-side helper
+    when we're inside that script-mode interpreter."""
+    try:
+        from resources.lib.router import _get_script_setting
+
+        value = _get_script_setting(setting_id, default if default is not None else "")
+        if value or default is None:
+            return value
+        return default
+    except Exception:  # pylint: disable=broad-except
+        pass
     if xbmcaddon is None:
         return default
     try:
-        value = xbmcaddon.Addon().getSetting(setting_id)
+        value = xbmcaddon.Addon("plugin.video.nzbdav").getSetting(setting_id)
     except _KODI_SETTING_ERRORS:
         return default
     return default if value is None else value
@@ -445,7 +461,7 @@ def _set_addon_setting(setting_id, value):
     if xbmcaddon is None:
         return False
     try:
-        xbmcaddon.Addon().setSetting(setting_id, value)
+        xbmcaddon.Addon("plugin.video.nzbdav").setSetting(setting_id, value)
     except _KODI_SETTING_ERRORS:
         return False
     return True
@@ -3177,11 +3193,57 @@ class _StreamHandler(BaseHTTPRequestHandler):
 
     @staticmethod
     def _fallback_probe_bases(ctx):
-        """Return cached stream bases used to validate fallback probe URLs."""
-        if "_fallback_probe_bases" not in ctx:
-            from resources.lib.fallback_streams import configured_stream_probe_bases
+        """Return cached stream bases used to validate fallback probe URLs.
 
-            ctx["_fallback_probe_bases"] = configured_stream_probe_bases()
+        Augments the global ``configured_stream_probe_bases()`` (which
+        only carries the user-configured nzbdav_url / webdav_url
+        origins) with the origins of *this session's* own primary and
+        fallback URLs. Those URLs were already accepted by the caller
+        — either resolve_and_play built them from the user-configured
+        WebDAV roots, or /direct_play HEAD-validated each one before
+        prepare_stream — so peers from the same origin are by
+        definition trusted for the lifetime of the session. Without
+        this extension, a /direct_play test whose URLs live on
+        127.0.0.1 (e.g. local-file rangeserve) gets rejected by
+        _validated_probe_url and the 100×4 KiB fingerprint sweep can
+        never run.
+        """
+        if "_fallback_probe_bases" not in ctx:
+            from resources.lib.fallback_streams import (
+                _PrecomputedProbeBase,
+                _origin_key,
+                _split_http_url,
+                configured_stream_probe_bases,
+            )
+
+            bases = list(configured_stream_probe_bases())
+            seen_origins = {b.origin for b in bases}
+
+            session_urls = []
+            primary = ctx.get("remote_url")
+            if isinstance(primary, str) and primary:
+                session_urls.append(primary)
+            for source in ctx.get("fallback_sources", []) or []:
+                if not isinstance(source, dict):
+                    continue
+                stream_url = source.get("stream_url")
+                if isinstance(stream_url, str) and stream_url:
+                    session_urls.append(stream_url)
+
+            for url in session_urls:
+                parts = _split_http_url(url.rstrip("/"))
+                if not parts:
+                    continue
+                origin = _origin_key(parts)
+                if origin in seen_origins:
+                    continue
+                seen_origins.add(origin)
+                # Path stays "/" — anything under this origin is
+                # in-scope because the URL was already trusted at
+                # session-prepare time.
+                bases.append(_PrecomputedProbeBase(parts, origin, "/"))
+
+            ctx["_fallback_probe_bases"] = tuple(bases)
         return ctx["_fallback_probe_bases"]
 
     @staticmethod
@@ -5974,6 +6036,12 @@ class StreamProxy:
     def _start_fallback_prevalidation(self, ctx):
         expected_length = _StreamHandler._fallback_expected_content_length(ctx)
         if expected_length <= 0:
+            xbmc.log(
+                "NZB-DAV: prevalidation skipped (expected_length={})".format(
+                    expected_length
+                ),
+                xbmc.LOGINFO,
+            )
             return
         sources = ctx.get("fallback_sources") or []
 
@@ -5989,7 +6057,14 @@ class StreamProxy:
             except (TypeError, ValueError):
                 return False
 
-        if not any(_can_prevalidate(source) for source in sources):
+        eligible = [s for s in sources if _can_prevalidate(s)]
+        xbmc.log(
+            "NZB-DAV: prevalidation eligible sources={}/{} expected_length={}".format(
+                len(eligible), len(sources), expected_length
+            ),
+            xbmc.LOGINFO,
+        )
+        if not eligible:
             return
 
         def _prevalidate_after_initial_prefetch():

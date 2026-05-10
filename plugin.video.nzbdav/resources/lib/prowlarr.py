@@ -76,7 +76,7 @@ def _get_settings():
     """
     import xbmcaddon
 
-    addon = xbmcaddon.Addon()
+    addon = xbmcaddon.Addon("plugin.video.nzbdav")
     host = addon.getSetting("prowlarr_host").rstrip("/")
     api_key = addon.getSetting("prowlarr_api_key")
     ids_raw = addon.getSetting("prowlarr_indexer_ids").strip()
@@ -136,7 +136,7 @@ def search_prowlarr(search_type, title, year="", imdb="", season="", episode="")
 
     import xbmcaddon
 
-    max_results = int(xbmcaddon.Addon().getSetting("max_results") or 25)
+    max_results = int(xbmcaddon.Addon("plugin.video.nzbdav").getSetting("max_results") or 25)
     params = {"apikey": api_key, "limit": max_results}
 
     if search_type == "episode":

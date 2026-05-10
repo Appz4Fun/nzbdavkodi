@@ -56,7 +56,7 @@ def _get_settings(settings_getter=None):
 
     import xbmcaddon
 
-    addon = xbmcaddon.Addon()
+    addon = xbmcaddon.Addon("plugin.video.nzbdav")
     url = addon.getSetting("hydra_url").rstrip("/")
     api_key = addon.getSetting("hydra_api_key")
     return url, api_key
@@ -183,7 +183,7 @@ def search_hydra(
         on success or a short string describing the failure.
 
     Side effects:
-        Reads NZBHydra settings from Kodi via xbmcaddon.Addon().
+        Reads NZBHydra settings from Kodi via xbmcaddon.Addon("plugin.video.nzbdav").
         Performs one or two HTTP GET requests to NZBHydra2 (fallback by title
         when an imdb-based search returns no results).
         Logs search URLs and errors to the Kodi log.
@@ -205,7 +205,7 @@ def search_hydra(
     else:
         import xbmcaddon
 
-        raw_max = xbmcaddon.Addon().getSetting("max_results")
+        raw_max = xbmcaddon.Addon("plugin.video.nzbdav").getSetting("max_results")
     try:
         max_results = int(raw_max) if raw_max not in (None, "") else 25
     except (TypeError, ValueError):
@@ -275,6 +275,85 @@ def parse_results(xml_text):
     """Parse Newznab XML response into a list of result dicts."""
     results, _ = _parse_results_checked(xml_text)
     return results
+
+
+def fetch_release_duplicate_uploads(picked, settings_getter=None):
+    """Return all Usenet uploads that share ``picked``'s release title.
+
+    NZBHydra2's standard Newznab endpoint deduplicates results so the
+    runtime picker only sees one row per release group. This calls the
+    internal API with ``showSingleResultPerSearchResultGroup=false`` and
+    keeps rows whose exact ``title`` matches ``picked``'s, so the
+    resolver's fallback worker has real same-release/different-upload
+    peers to feed nzbdav-rs ahead of the first article failure.
+    """
+    import json as _json
+    from urllib.error import HTTPError as _HTTPError
+    from urllib.error import URLError as _URLError
+    from urllib.request import Request as _Request
+    from urllib.request import urlopen as _urlopen
+
+    try:
+        base_url, _api_key = _get_settings(settings_getter)
+    except _HYDRA_REQUEST_ERRORS:
+        return []
+    if not base_url:
+        return []
+    title = picked.get("title", "") if isinstance(picked, dict) else ""
+    if not title:
+        return []
+
+    payload = {
+        "query": title,
+        "mode": "search",
+        "showSingleResultPerSearchResultGroup": False,
+        "loadAll": True,
+    }
+    body = _json.dumps(payload).encode("utf-8")
+    request = _Request(
+        "{}/internalapi/search".format(base_url),
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        # nosemgrep
+        with _urlopen(request, timeout=30) as response:  # nosec B310
+            data = _json.load(response)
+    except (_HTTPError, _URLError, OSError, ValueError) as error:
+        xbmc.log(
+            "NZB-DAV: Hydra duplicate-uploads lookup failed: {}".format(
+                _format_request_error(error)
+            ),
+            xbmc.LOGDEBUG,
+        )
+        return []
+
+    raw_results = data.get("searchResults", []) if isinstance(data, dict) else []
+    picked_link = picked.get("link", "") if isinstance(picked, dict) else ""
+    uploads = []
+    for raw in raw_results:
+        if not isinstance(raw, dict):
+            continue
+        if raw.get("title", "") != title:
+            continue
+        link = raw.get("link", "") or ""
+        if not link or link == picked_link:
+            continue
+        # Hydra's internal API uses different field names than the public
+        # Newznab one. Normalize back into the addon's standard result
+        # shape so downstream filter/profile/peer code is unchanged.
+        uploads.append(
+            {
+                "title": raw.get("title", ""),
+                "link": link,
+                "size": raw.get("size", "") or "",
+                "indexer": raw.get("indexer", "") or "",
+                "pubdate": "",
+                "age": "",
+            }
+        )
+    return uploads
 
 
 def _source_url_hostname(source_url):

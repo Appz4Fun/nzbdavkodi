@@ -5,6 +5,8 @@ The compose_up fixture's finalizer always runs `docker compose down -v`,
 so even on test failure we end with a clean machine.
 """
 
+# pylint: disable=redefined-outer-name
+
 from __future__ import annotations
 
 import base64
@@ -212,6 +214,70 @@ def tmdbhelper_player_added(nzbdav_addon_installed):
 
 
 @pytest.fixture(scope="session")
-def stack_ready(tmdbhelper_player_added):
+def addons_user_confirmed(tmdbhelper_player_added):
+    """Pre-dismiss Kodi 21's "Disabled add-ons / Would you like to enable
+    this add-on?" prompt that appears on first invocation of any locally-
+    installed add-on, even after Addons.SetAddonEnabled has returned OK.
+
+    Without this step the orchestrator's Addons.ExecuteAddon for TMDBHelper
+    is intercepted by the modal dialog and Player.GetActivePlayers never
+    reports a player within the 60s timeout in the test body.
+
+    Strategy: trigger TMDBHelper, then send Input.Select repeatedly with
+    short sleeps so any queued "enable this add-on?" dialogs (TMDBHelper
+    + plugin.video.nzbdav + jurialmunkey-side script.module.* deps) are
+    confirmed in turn. Then send Input.Back / Home to return Kodi to a
+    clean state before the test body runs.
+    """
+    import json
+    import time as _time
+
+    auth = "Basic " + base64.b64encode(":".join(KODI_AUTH).encode()).decode()
+    base_url = f"http://localhost:{KODI_HOST_PORT}/jsonrpc"
+
+    def _rpc(method, params=None, request_id=1):
+        body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "method": method,
+                "params": params or {},
+                "id": request_id,
+            }
+        ).encode("utf-8")
+        req = urllib.request.Request(
+            base_url,
+            data=body,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": auth,
+            },
+        )
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return json.loads(r.read())
+
+    # Provoke the dialogs by invoking TMDBHelper (with a benign param it
+    # treats as no-op). Any locally-installed addon would do; TMDBHelper
+    # is the one most likely to also need confirmation downstream.
+    _rpc(
+        "Addons.ExecuteAddon",
+        {"addonid": "plugin.video.themoviedb.helper", "params": {}},
+    )
+    _time.sleep(2)
+    # Click Yes on whatever dialogs queue up. Up to ~10 should cover
+    # tmdbhelper + 2-3 jurialmunkey deps + nzbdav.
+    for _ in range(12):
+        _rpc("Input.Select")
+        _time.sleep(0.4)
+    # Return Kodi to home so the test body starts from a clean state.
+    for _ in range(3):
+        _rpc("Input.Back")
+        _time.sleep(0.3)
+    _rpc("Input.Home")
+    _time.sleep(2)
+
+
+@pytest.fixture(scope="session")
+def stack_ready(addons_user_confirmed):
     """Convenience marker fixture; depend on this from the test body."""
     return True

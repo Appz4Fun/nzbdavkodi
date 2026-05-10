@@ -1,4 +1,17 @@
 <settings version="2">
+    <!-- Force pure-software video decoding. Xvfb in this image has no
+         real GPU (libEGL falls back to swrast); Kodi's HW decode init
+         paths (VAAPI / VDPAU / DXVA2 / VTB / MediaCodec / Prime) SIGSEGV
+         when their backing devices are absent. Without these, the test
+         crashes immediately after nzbdav resolves a stream and Kodi
+         tries to start the video player. -->
+    <setting id="videoplayer.usevaapi">false</setting>
+    <setting id="videoplayer.usevdpau">false</setting>
+    <setting id="videoplayer.usedxva2">false</setting>
+    <setting id="videoplayer.usevtb">false</setting>
+    <setting id="videoplayer.usemediacodec">false</setting>
+    <setting id="videoplayer.usemediacodecsurface">false</setting>
+    <setting id="videoplayer.useprimedecoder">false</setting>
     <setting id="services.webserver">true</setting>
     <setting id="services.webserverport">8080</setting>
     <setting id="services.webserverauthentication">true</setting>

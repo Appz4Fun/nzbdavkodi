@@ -3,10 +3,19 @@
 
 """NZB-DAV background service — hosts stream proxy and monitors playback."""
 
+import faulthandler
 import os
 import sys
 import threading
 from enum import Enum
+
+# Same faulthandler hook as addon.py, but the service runs continuously so
+# this catches crashes during the long-lived stream-proxy thread too.
+try:
+    _fh = open("/tmp/nzbdav-faulthandler-service.log", "a", buffering=1)
+    faulthandler.enable(file=_fh, all_threads=True)
+except OSError:
+    pass
 
 # Add resources/lib/ to sys.path (same as addon.py)
 addon_dir = os.path.dirname(os.path.abspath(__file__))
@@ -103,7 +112,7 @@ class NzbdavPlayer(xbmc.Player):
     @staticmethod
     def _read_settings():
         """Read retry settings from addon config."""
-        addon = xbmcaddon.Addon()
+        addon = xbmcaddon.Addon("plugin.video.nzbdav")
         enabled = addon.getSetting("stream_auto_retry").lower() == "true"
         max_retries = 3
         retry_delay = 5

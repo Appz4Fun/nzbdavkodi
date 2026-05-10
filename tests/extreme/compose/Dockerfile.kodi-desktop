@@ -30,7 +30,14 @@ RUN printf '%s\n' \
     '}' \
     > /etc/asound.conf
 
-COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+COPY compose/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+
+# Bake Kodi userdata fixtures into the image. The /root/.kodi named volume
+# inherits these on first init; a bind mount would let Kodi mutate the host
+# fixture (566-line bloat after every shutdown), and a read-only bind mount
+# blocks Kodi's shutdown writes enough to break the kodi_ready 60s window.
+COPY fixtures/guisettings.xml /root/.kodi/userdata/guisettings.xml
+COPY fixtures/sources.xml /root/.kodi/userdata/sources.xml
 
 EXPOSE 5900 6901 8080
 

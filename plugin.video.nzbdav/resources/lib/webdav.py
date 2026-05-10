@@ -21,7 +21,15 @@ def _get_settings(settings_getter=None):
     if settings_getter is None:
         import xbmcaddon
 
-        addon = xbmcaddon.Addon()
+        # When the plugin is invoked via `RunScript(...)` (TMDBHelper's
+        # tmdb_play hook), repeatedly calling `addon.getSetting()` from the
+        # long-running poll loop SIGSEGVs in the Kodi C++ binding even with
+        # an explicit addon ID. Callers in the script-mode play path now
+        # pass settings_getter explicitly (via
+        # router._get_script_setting which reads settings.xml from disk),
+        # so this fallback only fires for the GUI plugin path where the
+        # script-mode crash doesn't apply.
+        addon = xbmcaddon.Addon("plugin.video.nzbdav")
 
         def settings_getter(key, default=""):
             value = addon.getSetting(key)
@@ -59,7 +67,9 @@ def _http_head(
         return e.code
 
 
-def probe_webdav_reachable(monitor=None, max_retries=1, retry_delay=1):
+def probe_webdav_reachable(
+    monitor=None, max_retries=1, retry_delay=1, settings_getter=None
+):
     """Probe WebDAV reachability and classify any error.
 
     HEADs the WebDAV content root to determine whether nzbdav/WebDAV is
@@ -86,17 +96,24 @@ def probe_webdav_reachable(monitor=None, max_retries=1, retry_delay=1):
                                         abort signal received during
                                         retry wait
     """
-    settings = _get_settings()
+    settings = _get_settings(settings_getter=settings_getter)
     base = settings["webdav_url"] or settings["nzbdav_url"]
     # Allow differently-routed nzbdav instances to override the content
     # root; default to "content" which matches the standard nzbdav layout.
-    try:
-        import xbmcaddon
+    if settings_getter is not None:
+        try:
+            raw = settings_getter("webdav_content_root", "")
+            content_root = raw.strip("/") if isinstance(raw, str) and raw else "content"
+        except Exception:  # pylint: disable=broad-except
+            content_root = "content"
+    else:
+        try:
+            import xbmcaddon
 
-        raw = xbmcaddon.Addon().getSetting("webdav_content_root")
-        content_root = raw.strip("/") if isinstance(raw, str) and raw else "content"
-    except Exception:  # pylint: disable=broad-except
-        content_root = "content"
+            raw = xbmcaddon.Addon("plugin.video.nzbdav").getSetting("webdav_content_root")
+            content_root = raw.strip("/") if isinstance(raw, str) and raw else "content"
+        except Exception:  # pylint: disable=broad-except
+            content_root = "content"
     # `content_root` is guaranteed non-empty by the branches above, so the
     # earlier trailing `or "content"` was dead code (closes §H.3 Low).
     url = "{}/{}/".format(base.rstrip("/"), content_root)
@@ -251,7 +268,7 @@ def find_video_file(
         located or an error occurs.
 
     Side effects:
-        Reads WebDAV settings from Kodi via xbmcaddon.Addon().
+        Reads WebDAV settings from Kodi via xbmcaddon.Addon("plugin.video.nzbdav").
         Issues a PROPFIND request at the target path and, if no video is found
         at that level, recurses into subdirectories up to two levels deep
         (three total levels including the starting folder).

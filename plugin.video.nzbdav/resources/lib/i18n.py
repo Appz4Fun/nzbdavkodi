@@ -103,13 +103,13 @@ _FALLBACK_STRINGS = {
 def addon():
     """Return the active addon instance, or None if Kodi isn't fully up yet.
 
-    Early in service startup, `xbmcaddon.Addon()` can raise RuntimeError
+    Early in service startup, `xbmcaddon.Addon("plugin.video.nzbdav")` can raise RuntimeError
     ("unknown addon id") because the plugin subsystem hasn't finished
     registering us. Return None so callers fall through to their fallback
     instead of crashing the service entry point.
     """
     try:
-        return xbmcaddon.Addon()
+        return xbmcaddon.Addon("plugin.video.nzbdav")
     except RuntimeError:
         return None
 

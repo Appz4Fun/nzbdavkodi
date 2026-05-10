@@ -994,7 +994,7 @@ def _play_via_proxy(stream_url, stream_headers, fallback_sources=None):
 def _get_poll_settings(settings_getter=None):
     try:
         if settings_getter is None:
-            addon = xbmcaddon.Addon()
+            addon = xbmcaddon.Addon("plugin.video.nzbdav")
             interval_raw = addon.getSetting("poll_interval")
             timeout_raw = addon.getSetting("download_timeout")
         else:
@@ -1204,6 +1204,24 @@ def _poll_once(nzo_id, title, monitor, settings_getter=None):
             history_status[0] = get_job_history(
                 nzo_id, **_settings_getter_kwargs(settings_getter)
             )
+            # nzbdav-rs remaps the nzo_id when a job is moved from queue to
+            # history (different storage layer keyed by name, not nzo_id).
+            # Without a name-based fallback the addon polls indefinitely
+            # for the original nzo_id even though the job has clearly
+            # landed in history with status=Failed.
+            if history_status[0] is None and title:
+                from resources.lib.nzbdav_api import find_terminal_by_name
+
+                by_name = find_terminal_by_name(
+                    title, **_settings_getter_kwargs(settings_getter)
+                )
+                if by_name and by_name.get("status"):
+                    history_status[0] = {
+                        "status": by_name.get("status", ""),
+                        "storage": by_name.get("storage", ""),
+                        "name": by_name.get("name", ""),
+                        "fail_message": by_name.get("fail_message", ""),
+                    }
             if _history_status_is_terminal(history_status[0]):
                 history_ready.set()
         finally:
@@ -1262,7 +1280,12 @@ def _poll_once(nzo_id, title, monitor, settings_getter=None):
     # Only probe WebDAV for errors after both APIs returned no data within the
     # bounded wait, so we don't falsely conclude the job is missing.
     if history_status[0] is None and job_status[0] is None:
-        _, error = probe_webdav_reachable(monitor=monitor, max_retries=1, retry_delay=1)
+        _, error = probe_webdav_reachable(
+            monitor=monitor,
+            max_retries=1,
+            retry_delay=1,
+            settings_getter=settings_getter,
+        )
         error_type[0] = error
 
     xbmc.log(
@@ -1868,7 +1891,7 @@ def _get_submit_timeout_seconds(settings_getter=None):
     """Read submit_timeout setting; returns int or 300 on error."""
     try:
         if settings_getter is None:
-            raw = xbmcaddon.Addon().getSetting("submit_timeout")
+            raw = xbmcaddon.Addon("plugin.video.nzbdav").getSetting("submit_timeout")
         else:
             raw = settings_getter("submit_timeout", "")
         return int(raw) if raw else 300
@@ -2196,7 +2219,7 @@ def _fallback_streams_enabled(settings_getter=None):
     """Return whether fallback streams are enabled in Kodi settings."""
     try:
         if settings_getter is None:
-            raw = xbmcaddon.Addon().getSetting("fallback_streams_enabled")
+            raw = xbmcaddon.Addon("plugin.video.nzbdav").getSetting("fallback_streams_enabled")
         else:
             raw = settings_getter("fallback_streams_enabled", "true")
     except (AttributeError, RuntimeError, TypeError):
@@ -2593,7 +2616,12 @@ def _handle_history_result(
             xbmc.LOGERROR,
         )
         error_text = fail_msg if fail_msg else _string(30100)
-        xbmcgui.Dialog().ok(_addon_name(), error_text)
+        # notification() (vs the previous Dialog().ok()) is non-blocking
+        # so the resolve loop can promptly return to the caller (or
+        # pivot to a fallback NZB) instead of hanging on a modal that
+        # nobody clicks in script-mode invocations like TMDBHelper's
+        # tmdb_play hook.
+        xbmcgui.Dialog().notification(_addon_name(), error_text, "", 7000)
         return True, None, None, no_video_retries
 
     if status != "Completed":

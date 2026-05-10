@@ -22,7 +22,7 @@ from resources.lib.nzb_manifest import fetch_nzb_video_manifest, make_empty_mani
 
 _SAFE_JOB_RE = re.compile(r"^[A-Za-z0-9._ \[\]-]+$")
 _CONTENT_RANGE_RE = re.compile(r"^bytes\s+(\d+)-(\d+)/(\d+|\*)$")
-_FINGERPRINT_SAMPLE_COUNT = 20
+_FINGERPRINT_SAMPLE_COUNT = 100
 _FINGERPRINT_BYTES = 4096
 
 _MAX_FALLBACKS = 5
@@ -100,15 +100,29 @@ def _path_is_under_base(path, base_path):
 
 
 def _configured_stream_bases():
-    """Return configured WebDAV/nzbdav bases that fallback probes may hit."""
+    """Return configured WebDAV/nzbdav bases that fallback probes may hit.
+
+    Reads from settings.xml on disk first — calling addon.getSetting()
+    from a background prevalidation thread (script-mode invocation)
+    SIGSEGVs in the Kodi C++ binding the same way webdav.py /
+    stream_proxy.py did before we switched their reads to disk."""
+    raw_bases = ()
     try:
-        addon = xbmcaddon.Addon()
+        from resources.lib.router import _get_script_setting
+
         raw_bases = (
-            addon.getSetting("webdav_url"),
-            addon.getSetting("nzbdav_url"),
+            _get_script_setting("webdav_url", ""),
+            _get_script_setting("nzbdav_url", ""),
         )
     except Exception:  # pylint: disable=broad-except
-        raw_bases = ()
+        try:
+            addon = xbmcaddon.Addon("plugin.video.nzbdav")
+            raw_bases = (
+                addon.getSetting("webdav_url"),
+                addon.getSetting("nzbdav_url"),
+            )
+        except Exception:  # pylint: disable=broad-except
+            raw_bases = ()
 
     bases = []
     for raw_base in raw_bases:
@@ -885,7 +899,7 @@ def _manifest_error(reason):
 def _fallback_settings(settings_getter=None):
     """Return (enabled, max_candidates) from Kodi settings."""
     if settings_getter is None:
-        addon = xbmcaddon.Addon()
+        addon = xbmcaddon.Addon("plugin.video.nzbdav")
     else:
         addon = SimpleNamespace(getSetting=lambda key: settings_getter(key, ""))
     enabled = _setting_bool(addon, "fallback_streams_enabled", True)

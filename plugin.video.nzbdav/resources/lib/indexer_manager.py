@@ -142,7 +142,7 @@ def add_custom_indexer(name, api_url, api_key):
 
 def refresh_hydra_provider_caps():
     """Refresh NZBHydra2 caps from the configured Kodi settings."""
-    addon = xbmcaddon.Addon()
+    addon = xbmcaddon.Addon("plugin.video.nzbdav")
     base_url = addon.getSetting("hydra_url").rstrip("/")
     api_key = addon.getSetting("hydra_api_key")
     return refresh_hydra_caps(base_url, api_key)

@@ -1,5 +1,7 @@
 """Unit tests for tests.extreme.measurement."""
 
+# pylint: disable=no-name-in-module,redefined-outer-name
+
 import json
 import socketserver
 import threading

@@ -1,15 +1,52 @@
 name: nzbdav-extreme
 
+# Bridge networking with explicit port maps. We tried host networking
+# initially per the user's request, but on OrbStack/macOS host networking
+# only shares the Linux VM's namespace — containers can reach the Mac via
+# host.docker.internal but cannot reach the LAN beyond. The user's Hydra2
+# lives on server.lan (192.168.1.93), a peer on the LAN, so containers
+# need bridge networking + the OrbStack default NAT to reach it.
+#
+# All services bind to host ports so the user can still hit each one via
+# localhost from the Mac:
+#   localhost:5076  -> Hydra2 web UI
+#   localhost:8180  -> nzbdav-rs API + WebDAV
+#   localhost:8280  -> fault-proxy WebDAV (wraps nzbdav-rs)
+#   localhost:8281  -> fault-proxy control plane
+#   localhost:8082  -> Kodi JSON-RPC web server
+#   localhost:5902  -> Kodi VNC (raw)
+#   localhost:6902  -> Kodi noVNC (browser at /vnc_lite.html?path=&scale=true)
+#
+# Host ports are picked to avoid: 8081 (kodi-real), 5900 (kodi-real VNC),
+# 6901 (kodi-real noVNC), 6379 (redis), 5000/7000 (Apple), 49152 (rapportd).
+
 services:
+  hydra2:
+    # Optional containerised NZBHydra2. The user's existing Hydra at
+    # 192.168.1.93:5076 is reached via .env's HYDRA_URL (the bridge
+    # network can reach the LAN), so this service is currently a
+    # placeholder for self-contained runs — configure indexers via
+    # http://localhost:5076 once and the hydra-config volume persists.
+    image: linuxserver/nzbhydra2:latest
+    container_name: nzbdav-extreme-hydra2
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      TZ: ${TZ:-Etc/UTC}
+    ports:
+      - "5076:5076"
+    volumes:
+      - hydra-config:/config
+    networks:
+      - extreme
+
   nzbdav-rs:
-    image: nzbdav-real-e2e/nzbdav-rs:local
+    image: docker.io/ausagentsmith/nzbdav-rs:v0.5.0
     container_name: nzbdav-extreme-nzbdav
     environment:
       NZBDAV_API_KEY: ${NZBDAV_API_KEY}
       WEBDAV_USER: ${WEBDAV_USERNAME}
       WEBDAV_PASS: ${WEBDAV_PASSWORD}
-    volumes:
-      - nzbdav-data:/var/lib/nzbdav
     ports:
       - "8180:8080"
     healthcheck:
@@ -17,6 +54,8 @@ services:
       interval: 5s
       timeout: 3s
       retries: 12
+    volumes:
+      - nzbdav-data:/data
     networks:
       - extreme
 
@@ -26,17 +65,20 @@ services:
       dockerfile: compose/Dockerfile.fault-proxy
     container_name: nzbdav-extreme-fault-proxy
     environment:
+      # Upstream uses the docker-network service name (not localhost) since
+      # this is bridge networking. The orchestrator on the host hits the
+      # mapped 8281 control port to schedule faults.
       FAULT_PROXY_UPSTREAM: http://nzbdav-rs:8080
       FAULT_PROXY_LISTEN: "0.0.0.0"
-      FAULT_PROXY_PORT: "19080"
-      FAULT_PROXY_CONTROL_PORT: "19081"
+      FAULT_PROXY_PORT: "8280"
+      FAULT_PROXY_CONTROL_PORT: "8281"
       FAULT_PROXY_LOG: "/var/log/fault-proxy/full.log"
       FAULT_PROXY_EVENTS: "/var/log/fault-proxy/events.jsonl"
+    ports:
+      - "8280:8280"
+      - "8281:8281"
     volumes:
       - ../../../docs/reports/${EXTREME_RUN_DIR:-_default}/fault-proxy:/var/log/fault-proxy
-    ports:
-      - "8280:19080"
-      - "8281:19081"
     depends_on:
       nzbdav-rs:
         condition: service_healthy
@@ -45,18 +87,51 @@ services:
 
   kodi-desktop:
     build:
-      context: .
-      dockerfile: Dockerfile.kodi-desktop
+      # Build context one level up so the Dockerfile can COPY
+      # fixtures/guisettings.xml and fixtures/sources.xml into the image.
+      context: ..
+      dockerfile: compose/Dockerfile.kodi-desktop
     container_name: nzbdav-extreme-kodi
     environment:
       DISPLAY: ":0"
+      # Force pure-software OpenGL via Mesa llvmpipe and skip any DRI
+      # device probing. Xvfb in this image has no DRI3 backend, and when
+      # Kodi enters its video render context (after the addon's
+      # setResolvedUrl returns) the libEGL DRI3 probe fails, the X
+      # connection breaks, and Kodi SIGSEGVs ~5s after "Processing".
+      # These envs let Kodi initialise GL via swrast on its own.
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      MESA_LOADER_DRIVER_OVERRIDE: "llvmpipe"
+      EGL_PLATFORM: "x11"
+      # OrbStack injects an HTTP proxy via http_proxy/HTTP_PROXY that
+      # transparently bridges LAN traffic, but it resets the connection
+      # mid-response when Kodi's curl tries to read the body. Tell the
+      # addon's HTTP client to skip the proxy for RFC1918 LAN traffic so
+      # NZBHydra at 192.168.x.x is reached directly via the bridge.
+      # OrbStack injects http_proxy/HTTP_PROXY into containers; its
+      # transparent proxy mid-stream-resets connections on long-running
+      # HTTP responses, breaking nzbdav addon's Hydra and webdav calls.
+      # Empty values override OrbStack's injected proxy so all addon
+      # HTTP traffic goes direct via the bridge (which can reach both
+      # the LAN and inter-container hosts on its own).
+      HTTP_PROXY: ""
+      http_proxy: ""
+      HTTPS_PROXY: ""
+      https_proxy: ""
+      ALL_PROXY: ""
+      all_proxy: ""
+      # When set, the addon writes a copy of every NZB it submits to
+      # nzbdav-rs into this directory so the test post-mortem can
+      # inspect the exact bytes that went into nzbdav-rs's
+      # deobfuscator.
+      NZBDAV_DUMP_NZBS_DIR: "/run-reports/submitted_nzbs"
+    ports:
+      - "8082:8080"   # Kodi JSON-RPC web server
+      - "5902:5900"   # x11vnc raw
+      - "6902:6901"   # noVNC web
     volumes:
       - kodi-config:/root/.kodi
       - ../../../docs/reports/${EXTREME_RUN_DIR:-_default}:/run-reports
-    ports:
-      - "8082:8080"
-      - "6902:6901"
-      - "5902:5900"
     depends_on:
       nzbdav-rs:
         condition: service_healthy
@@ -66,6 +141,7 @@ services:
       - extreme
 
 volumes:
+  hydra-config:
   nzbdav-data:
   kodi-config:
 

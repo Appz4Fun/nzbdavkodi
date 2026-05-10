@@ -126,7 +126,7 @@ def _configured_json_indexer(item):
 
 
 def get_legacy_configured_indexers(addon=None):
-    addon = addon or xbmcaddon.Addon()
+    addon = addon or xbmcaddon.Addon("plugin.video.nzbdav")
     configured = []
     for indexer_id, label, default_url in PRESET_INDEXERS:
         item = _configured_preset(addon, indexer_id, label, default_url)
@@ -143,7 +143,7 @@ def get_legacy_configured_indexers(addon=None):
 
 def get_configured_indexers():
     """Return enabled direct indexers with complete URL and API key config."""
-    addon = xbmcaddon.Addon()
+    addon = xbmcaddon.Addon("plugin.video.nzbdav")
     if not _setting_enabled(addon, "direct_indexers_enabled"):
         return []
 
@@ -252,7 +252,7 @@ def parse_results(xml_text, fallback_indexer):
 
 
 def _read_max_results():
-    raw = xbmcaddon.Addon().getSetting("max_results")
+    raw = xbmcaddon.Addon("plugin.video.nzbdav").getSetting("max_results")
     try:
         max_results = int(raw) if raw not in (None, "") else 25
     except (TypeError, ValueError):
