@@ -41,6 +41,7 @@ def test_get_configured_indexers_reads_enabled_preset(mock_xbmcaddon):
             "label": "NZBGeek",
             "api_url": "https://api.nzbgeek.info/api",
             "api_key": "geek-key",
+            "caps": {},
         }
     ]
 
@@ -65,7 +66,82 @@ def test_get_configured_indexers_reads_enabled_custom_slot(mock_xbmcaddon):
             "label": "My Indexer",
             "api_url": "https://indexer.example",
             "api_key": "custom-key",
+            "caps": {},
         }
+    ]
+
+
+@patch("resources.lib.direct_indexers.load_indexers")
+@patch("resources.lib.direct_indexers.xbmcaddon")
+def test_get_configured_indexers_reads_json_store(mock_xbmcaddon, mock_load_indexers):
+    from resources.lib.direct_indexers import get_configured_indexers
+
+    mock_xbmcaddon.Addon.return_value = _addon_with_settings(
+        {
+            "direct_indexers_enabled": "true",
+            "direct_indexer_nzbgeek_enabled": "true",
+            "direct_indexer_nzbgeek_url": "https://api.nzbgeek.info/api",
+            "direct_indexer_nzbgeek_api_key": "static-key",
+        }
+    )
+    mock_load_indexers.return_value = [
+        {
+            "id": "disabled",
+            "name": "Disabled",
+            "api_url": "https://disabled.example/api",
+            "api_key": "disabled-key",
+            "enabled": False,
+            "caps": {"search_types": ["search"]},
+        },
+        {
+            "id": "missing-url",
+            "name": "Missing URL",
+            "api_url": "",
+            "api_key": "missing-url-key",
+            "enabled": True,
+            "caps": {"search_types": ["search"]},
+        },
+        {
+            "id": "missing-key",
+            "name": "Missing Key",
+            "api_url": "https://missing-key.example/api",
+            "api_key": "",
+            "enabled": True,
+            "caps": {"search_types": ["search"]},
+        },
+        {
+            "id": "json-geek",
+            "name": "JSON Geek",
+            "api_url": "https://api.nzbgeek.info/api",
+            "api_key": "json-key",
+            "enabled": True,
+            "caps": {"search_types": ["search"], "supported_params": {"search": ["q"]}},
+        },
+        {
+            "id": "unnamed",
+            "name": "",
+            "api_url": "https://unnamed.example/api",
+            "api_key": "unnamed-key",
+            "enabled": True,
+            "caps": {},
+        },
+    ]
+
+    assert get_configured_indexers() == [
+        {
+            "id": "json-geek",
+            "label": "JSON Geek",
+            "api_url": "https://api.nzbgeek.info/api",
+            "api_key": "json-key",
+            "caps": {"search_types": ["search"], "supported_params": {"search": ["q"]}},
+        },
+        {
+            "id": "unnamed",
+            "label": "unnamed",
+            "api_url": "https://unnamed.example/api",
+            "api_key": "unnamed-key",
+            "caps": {},
+        },
     ]
 
 
@@ -157,6 +233,7 @@ def test_search_direct_indexers_movie_uses_imdb_when_present(
             "label": "NZBGeek",
             "api_url": "https://api.nzbgeek.info/api",
             "api_key": "geek-key",
+            "caps": {},
         }
     ]
     mock_xbmcaddon.Addon.return_value = _addon_with_settings({"max_results": "25"})
@@ -170,7 +247,7 @@ def test_search_direct_indexers_movie_uses_imdb_when_present(
     assert len(results) == 1
     call_url = mock_http.call_args[0][0]
     assert "t=movie" in call_url
-    assert "imdbid=tt0133093" in call_url
+    assert "imdbid=0133093" in call_url
     assert "q=The+Matrix" not in call_url
     assert "apikey=geek-key" in call_url
 
@@ -189,6 +266,7 @@ def test_search_direct_indexers_episode_uses_tvsearch_params(
             "label": "NZBFinder",
             "api_url": "https://nzbfinder.ws/api",
             "api_key": "finder-key",
+            "caps": {},
         }
     ]
     mock_xbmcaddon.Addon.return_value = _addon_with_settings({"max_results": "25"})
@@ -221,6 +299,7 @@ def test_search_direct_indexers_imdb_empty_retries_with_title(
             "label": "NZBGeek",
             "api_url": "https://api.nzbgeek.info/api",
             "api_key": "geek-key",
+            "caps": {},
         }
     ]
     mock_xbmcaddon.Addon.return_value = _addon_with_settings({"max_results": "25"})
@@ -234,6 +313,68 @@ def test_search_direct_indexers_imdb_empty_retries_with_title(
     fallback_url = mock_http.call_args_list[1][0][0]
     assert "q=The+Matrix" in fallback_url or "q=The%20Matrix" in fallback_url
     assert "imdbid" not in fallback_url
+
+
+@patch("resources.lib.direct_indexers.get_configured_indexers")
+@patch("resources.lib.direct_indexers.xbmcaddon")
+@patch("resources.lib.direct_indexers._http_get")
+def test_search_direct_indexers_uses_planner_for_host_fallback(
+    mock_http, mock_xbmcaddon, mock_configured
+):
+    from resources.lib.direct_indexers import search_direct_indexers
+
+    mock_configured.return_value = [
+        {
+            "id": "nzbgeek",
+            "label": "NZBGeek",
+            "api_url": "https://api.nzbgeek.info/api",
+            "api_key": "geek-key",
+            "caps": {
+                "search_types": ["movie", "search"],
+                "supported_params": {"movie": ["q"], "search": ["q"]},
+            },
+        }
+    ]
+    mock_xbmcaddon.Addon.return_value = _addon_with_settings({"max_results": "25"})
+    mock_http.return_value = ONE_RESULT_RSS
+
+    results, error = search_direct_indexers("movie", "The Matrix", imdb="tt0133093")
+
+    assert error is None
+    assert len(results) == 1
+    call_url = mock_http.call_args[0][0]
+    assert "t=search" in call_url
+    assert "q=The+Matrix" in call_url or "q=The%20Matrix" in call_url
+    assert "imdbid" not in call_url
+
+
+@patch("resources.lib.direct_indexers.get_configured_indexers")
+@patch("resources.lib.direct_indexers.xbmcaddon")
+@patch("resources.lib.direct_indexers._http_get")
+def test_search_direct_indexers_skips_when_caps_have_no_supported_query(
+    mock_http, mock_xbmcaddon, mock_configured
+):
+    from resources.lib.direct_indexers import search_direct_indexers
+
+    mock_configured.return_value = [
+        {
+            "id": "limited",
+            "label": "Limited",
+            "api_url": "https://limited.example/api",
+            "api_key": "limited-key",
+            "caps": {
+                "search_types": ["movie"],
+                "supported_params": {"movie": ["imdbid"]},
+            },
+        }
+    ]
+    mock_xbmcaddon.Addon.return_value = _addon_with_settings({"max_results": "25"})
+
+    results, error = search_direct_indexers("movie", "The Matrix")
+
+    assert results == []
+    assert error is None
+    mock_http.assert_not_called()
 
 
 @patch("resources.lib.direct_indexers.get_configured_indexers")
