@@ -113,7 +113,7 @@ def test_run_tmdb_play_routes_to_script_play_handler(mock_handle_script_play):
 
 
 @patch("resources.lib.router._handle_script_play")
-def test_run_tmdb_play_routes_split_quoted_title_without_quotes(mock_handle_script_play):
+def test_run_tmdb_play_routes_clean_split_quoted_title(mock_handle_script_play):
     from resources.lib.script_player import run_tmdb_play
 
     run_tmdb_play(
