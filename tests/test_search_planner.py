@@ -165,7 +165,7 @@ def test_movie_title_without_supported_search_returns_no_query():
         max_results=25,
     )
 
-    assert plan.primary == {}
+    assert not plan.primary
     assert plan.fallback is None
     assert plan.reason == "no_supported_query"
 
@@ -184,7 +184,7 @@ def test_episode_without_tvsearch_or_search_returns_no_query():
         max_results=25,
     )
 
-    assert plan.primary == {}
+    assert not plan.primary
     assert plan.fallback is None
     assert plan.reason == "no_supported_query"
 

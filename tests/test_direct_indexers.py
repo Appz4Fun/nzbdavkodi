@@ -372,7 +372,7 @@ def test_search_direct_indexers_skips_when_caps_have_no_supported_query(
 
     results, error = search_direct_indexers("movie", "The Matrix")
 
-    assert results == []
+    assert not results
     assert error is None
     mock_http.assert_not_called()
 
