@@ -65,6 +65,40 @@ def test_load_indexers_corrupt_json_returns_empty(tmp_path):
     assert load_indexers(str(path)) == []
 
 
+def test_load_indexers_defaults_legacy_rows_without_enabled_to_enabled(tmp_path):
+    path = tmp_path / "indexers.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "indexers": [
+                    {
+                        "id": "legacy",
+                        "preset_id": "legacy",
+                        "name": "Legacy Indexer",
+                        "api_url": "https://legacy.example/api",
+                        "api_key": "secret",
+                    },
+                    {
+                        "id": "disabled",
+                        "preset_id": "disabled",
+                        "name": "Disabled Indexer",
+                        "api_url": "https://disabled.example/api",
+                        "api_key": "secret",
+                        "enabled": False,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = load_indexers(str(path))
+
+    assert loaded[0]["enabled"] is True
+    assert loaded[1]["enabled"] is False
+
+
 def test_save_and_load_indexers_round_trip(tmp_path):
     path = tmp_path / "indexers.json"
 

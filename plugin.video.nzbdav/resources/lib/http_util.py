@@ -251,14 +251,19 @@ def format_size(size_bytes):
 
     Returns:
         One of:
-        - ``""`` when ``size_bytes`` is falsy.
+        - ``""`` when ``size_bytes`` is falsy or malformed.
         - ``"X.Y GB"`` when size >= 1 GiB (binary MiB/GiB units).
         - ``"X.Y MB"`` when size >= 1 MiB.
         - ``"N B"`` for anything smaller.
     """
     if not size_bytes:
         return ""
-    size_bytes = int(size_bytes)
+    try:
+        size_bytes = int(size_bytes)
+    except (TypeError, ValueError):
+        return ""
+    if size_bytes < 0:
+        return ""
     if size_bytes >= 1073741824:
         return "{:.1f} GB".format(size_bytes / 1073741824)
     if size_bytes >= 1048576:

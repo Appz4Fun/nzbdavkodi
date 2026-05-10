@@ -125,6 +125,11 @@ def test_format_size_string_input():
     assert _format_size("1073741824") == "1.0 GB"
 
 
+def test_format_size_malformed_string_returns_empty():
+    """A malformed provider size must not crash the result picker."""
+    assert _format_size("unknown") == ""
+
+
 # ---------------------------------------------------------------------------
 # _format_date
 # ---------------------------------------------------------------------------

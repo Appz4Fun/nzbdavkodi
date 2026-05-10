@@ -176,6 +176,11 @@ def test_format_size_string_input():
     ), "_format_size should handle MB string input"
 
 
+def test_format_size_malformed_string_returns_empty():
+    """Malformed provider sizes should render as unknown, not crash listings."""
+    assert _format_size("unknown") == ""
+
+
 # --- route() dispatch tests ---
 
 

@@ -61,13 +61,14 @@ def normalize_caps(caps):
 
 def normalize_indexer(item):
     item = item if isinstance(item, dict) else {}
+    enabled = bool(item.get("enabled")) if "enabled" in item else True
     return {
         "id": _text(item.get("id")),
         "preset_id": _text(item.get("preset_id")),
         "name": _text(item.get("name")),
         "api_url": _text(item.get("api_url")),
         "api_key": _text(item.get("api_key")),
-        "enabled": bool(item.get("enabled")),
+        "enabled": enabled,
         "caps": normalize_caps(item.get("caps")),
     }
 
