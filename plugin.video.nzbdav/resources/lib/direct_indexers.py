@@ -257,7 +257,7 @@ def _read_max_results():
         max_results = int(raw) if raw not in (None, "") else 25
     except (TypeError, ValueError):
         max_results = 25
-    return max(1, min(max_results, 100))
+    return max(1, min(max_results, 10000))
 
 
 def _indexer_unavailable_error(indexer, error):
