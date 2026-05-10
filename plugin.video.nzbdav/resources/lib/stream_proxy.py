@@ -22,7 +22,6 @@ import shutil
 import socket as _socket
 import struct
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -42,8 +41,6 @@ try:
     import xbmcaddon
 except ImportError:
     xbmcaddon = None
-
-_EXECUTOR_SHUTDOWN_SUPPORTS_CANCEL_FUTURES = sys.version_info >= (3, 9)
 
 # mp4_parser functions are imported here so tests can patch them at this
 # module's namespace.  They have no Kodi dependencies, so the import is safe
@@ -3476,6 +3473,15 @@ class _StreamHandler(BaseHTTPRequestHandler):
             return False
         return bool(primary_digest and primary_digest == fallback_digest)
 
+    @staticmethod
+    def _shutdown_executor_now(executor, futures):
+        for future in futures:
+            future.cancel()
+        try:
+            executor.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            executor.shutdown(wait=False)
+
     def _validate_fallback_fingerprint_parallel(
         self,
         ctx,
@@ -3552,13 +3558,11 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     return False
             return True
         finally:
-            # cancel_futures requires Python 3.9+; still propagates
-            # results for futures that already started, but stops
-            # queued probes immediately on the early-return path.
-            if _EXECUTOR_SHUTDOWN_SUPPORTS_CANCEL_FUTURES:
-                executor.shutdown(wait=False, cancel_futures=True)
-            else:
-                executor.shutdown(wait=False)
+            # `cancel_futures` requires Python 3.9+. Cancel explicitly first
+            # so Python 3.8 stops any queued probes before nonblocking shutdown.
+            self._shutdown_executor_now(
+                executor, tuple(fallback_futures) + tuple(primary_futures)
+            )
 
     def _fetch_primary_fallback_range_digest(
         self, ctx, auth_header, start, end, content_length, probe_bases, primary_url

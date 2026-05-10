@@ -53,9 +53,9 @@ def _hydra_unavailable_error(error):
 def _get_settings(settings_getter=None):
     """Read NZBHydra settings from Kodi addon config."""
     if settings_getter is not None:
-        url = settings_getter("hydra_url", "").rstrip("/")
+        configured_url = settings_getter("hydra_url", "").rstrip("/")
         api_key = settings_getter("hydra_api_key", "")
-        return url, api_key
+        return configured_url, api_key
 
     api_key = addon.getSetting("hydra_api_key")
     return url, api_key
