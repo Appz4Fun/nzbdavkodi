@@ -36,9 +36,8 @@ def _addon_with_settings(settings):
 
 def test_add_preset_indexer_saves_caps(monkeypatch):
     saved = []
-    monkeypatch.setattr(
-        indexer_manager, "fetch_caps", MagicMock(return_value=(CAPS, None))
-    )
+    fetch_caps = MagicMock(return_value=(CAPS, None))
+    monkeypatch.setattr(indexer_manager, "fetch_caps", fetch_caps)
     monkeypatch.setattr(indexer_manager, "load_indexers", MagicMock(return_value=[]))
     monkeypatch.setattr(indexer_manager, "save_indexers", saved.append)
 
@@ -54,9 +53,7 @@ def test_add_preset_indexer_saves_caps(monkeypatch):
         "enabled": True,
         "caps": CAPS,
     }
-    indexer_manager.fetch_caps.assert_called_once_with(
-        "https://api.nzbgeek.info", "api-secret"
-    )
+    fetch_caps.assert_called_once_with("https://api.nzbgeek.info", "api-secret")
     assert saved == [[indexer]]
 
 
