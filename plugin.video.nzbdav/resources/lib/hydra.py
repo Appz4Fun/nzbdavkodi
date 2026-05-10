@@ -129,6 +129,16 @@ def _fetch_planned_hydra_results(base_url, params, error_prefix):
     return results, None
 
 
+def _legacy_hydra_title_fallback(primary, title):
+    if not title:
+        return None
+
+    fallback = dict(primary)
+    fallback.pop("imdbid", None)
+    fallback["q"] = title
+    return fallback
+
+
 def search_hydra(
     search_type,
     title,
@@ -182,6 +192,7 @@ def search_hydra(
     except (TypeError, ValueError):
         max_results = 25
     max_results = max(1, min(max_results, 10000))
+    caps = _hydra_provider_caps(base_url)
     plan = plan_newznab_search(
         provider_kind="nzbhydra2",
         host=base_url,
@@ -191,7 +202,7 @@ def search_hydra(
         imdb=imdb,
         season=season,
         episode=episode,
-        caps=_hydra_provider_caps(base_url),
+        caps=caps,
         api_key=api_key,
         max_results=max_results,
     )
@@ -213,18 +224,21 @@ def search_hydra(
     if error:
         return [], error
 
-    if not results and plan.fallback and plan.fallback != plan.primary:
+    fallback = (
+        plan.fallback if caps else _legacy_hydra_title_fallback(plan.primary, title)
+    )
+    if not results and fallback and fallback != plan.primary:
         xbmc.log(
             "NZB-DAV: No results with primary Hydra query, retrying fallback",
             xbmc.LOGINFO,
         )
-        fallback_url = _search_url(base_url, plan.fallback)
+        fallback_url = _search_url(base_url, fallback)
         xbmc.log(
             "NZB-DAV: Hydra fallback URL: {}".format(redact_url(fallback_url)),
             xbmc.LOGDEBUG,
         )
         results, error = _fetch_planned_hydra_results(
-            base_url, plan.fallback, "Hydra fallback search failed"
+            base_url, fallback, "Hydra fallback search failed"
         )
         if error:
             return [], error

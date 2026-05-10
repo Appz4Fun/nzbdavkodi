@@ -211,6 +211,41 @@ def test_search_hydra_provider_caps_base_url_mismatch_uses_conservative_defaults
 @patch("resources.lib.hydra.load_provider_caps")
 @patch("resources.lib.hydra._get_settings")
 @patch("resources.lib.hydra._http_get")
+def test_search_hydra_provider_caps_mismatch_movie_fallback_keeps_movie_search_type(
+    mock_http, mock_settings, mock_load_provider_caps
+):
+    mock_settings.return_value = ("http://hydra:5076", "testkey")
+    mock_load_provider_caps.return_value = {
+        "nzbhydra2": {
+            "base_url": "http://other-hydra:5076",
+            "checked_at": "2026-05-10T00:00:00Z",
+            "caps": {
+                "search_types": ["search"],
+                "supported_params": {"search": ["q"]},
+            },
+        }
+    }
+    mock_http.side_effect = [
+        """<?xml version="1.0" encoding="UTF-8"?><rss><channel /></rss>""",
+        _load_fixture("hydra_movie_response.xml"),
+    ]
+
+    results, error = search_hydra("movie", "The Matrix", imdb="tt0133093")
+
+    assert error is None
+    assert len(results) == 2
+    primary = _query_params(mock_http.call_args_list[0][0][0])
+    fallback = _query_params(mock_http.call_args_list[1][0][0])
+    assert primary["t"] == "movie"
+    assert primary["imdbid"] == "0133093"
+    assert fallback["t"] == "movie"
+    assert fallback["q"] == "The Matrix"
+    assert "imdbid" not in fallback
+
+
+@patch("resources.lib.hydra.load_provider_caps")
+@patch("resources.lib.hydra._get_settings")
+@patch("resources.lib.hydra._http_get")
 def test_search_hydra_skips_when_planner_has_no_supported_query(
     mock_http, mock_settings, mock_load_provider_caps
 ):
