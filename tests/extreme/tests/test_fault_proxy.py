@@ -246,6 +246,34 @@ def test_corrupted_bytes_modifies_payload(proxy_with_upstream):
     assert state.fired_events[0]["fault_type"] == "corrupted_bytes"
 
 
+def test_passthrough_drops_unsafe_upstream_headers(proxy_with_upstream):
+    handler = type(
+        "HeaderRecorder",
+        (),
+        {
+            "headers": [],
+            "send_header": lambda self, name, value: self.headers.append(
+                (name, value)
+            ),
+        },
+    )()
+    resp = type(
+        "Response",
+        (),
+        {
+            "getheaders": lambda self: [
+                ("Content-Type", "video/x-matroska"),
+                ("X-Bad", "good\r\nInjected: yes"),
+                ("Transfer-Encoding", "chunked"),
+            ]
+        },
+    )()
+
+    fault_proxy._forward_upstream_headers(handler, resp)
+
+    assert handler.headers == [("Content-Type", "video/x-matroska")]
+
+
 def test_truncated_response_logs_scheduled_bytes(proxy_with_upstream, tmp_path):
     proxy_url, state, run_dir = proxy_with_upstream
     state.scheduled_events = [fault_proxy.ScheduledEvent(0.0, "truncated_response")]

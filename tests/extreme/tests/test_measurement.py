@@ -167,6 +167,21 @@ def test_correlate_resume_null_when_never_resumes():
     assert out[0]["resume_seconds"] is None
 
 
+def test_correlate_ignores_error_ticks():
+    timeline = [
+        _tick(1000.0, time_sec=0.0),
+        {"t_wall": 1000.5, "t_run": 0.5, "error": "URLError", "detail": "down"},
+        _tick(1001.0, time_sec=0.5),
+        _tick(1001.5, time_sec=1.0),
+    ]
+    fault_events = [{"t_wall": 1000.0, "fault_type": "connection_reset"}]
+
+    out = measurement.correlate(timeline, fault_events)
+
+    assert len(out) == 1
+    assert out[0]["resume_seconds"] is not None
+
+
 def test_write_summary_aggregates(tmp_path):
     events = [
         {
@@ -200,6 +215,16 @@ def test_write_summary_aggregates(tmp_path):
     assert parsed["resume_seconds"]["min"] == pytest.approx(2.0)
     assert parsed["resume_seconds"]["max"] == pytest.approx(5.0)
     assert "Extreme Functional Test Report" in out_md.read_text()
+
+
+def test_write_summary_creates_markdown_parent(tmp_path):
+    out_json = tmp_path / "json" / "summary.json"
+    out_md = tmp_path / "markdown" / "summary.md"
+
+    measurement.write_summary([], out_json, out_md)
+
+    assert out_json.exists()
+    assert out_md.exists()
 
 
 def test_correlate_ignores_single_tick_stutter():
