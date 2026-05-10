@@ -3,6 +3,7 @@
 
 """NZBHydra2 Newznab API client."""
 
+from datetime import datetime, timezone
 from urllib.error import URLError
 from urllib.parse import urlencode, urlparse
 from xml.etree import ElementTree as element_tree
@@ -21,6 +22,9 @@ from resources.lib.http_util import (
 from resources.lib.http_util import (
     http_get as _http_get,
 )
+from resources.lib.indexer_store import load_provider_caps, save_provider_caps
+from resources.lib.newznab_caps import fetch_caps
+from resources.lib.search_planner import plan_newznab_search
 
 NEWZNAB_NS = "http://www.newznab.com/DTD/2010/feeds/attributes/"
 _HYDRA_REQUEST_ERRORS = (
@@ -58,6 +62,38 @@ def _get_settings(settings_getter=None):
     return url, api_key
 
 
+def refresh_hydra_caps(base_url, api_key):
+    """Fetch and cache NZBHydra2's public Newznab caps."""
+    caps, error = fetch_caps(base_url, api_key)
+    if error:
+        return caps, error
+
+    providers = load_provider_caps()
+    providers["nzbhydra2"] = {
+        "base_url": str(base_url or "").rstrip("/"),
+        "checked_at": datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z"),
+        "caps": caps,
+    }
+    save_provider_caps(providers)
+    return caps, None
+
+
+def _hydra_provider_caps(base_url):
+    """Return cached Hydra provider caps for the current base URL."""
+    provider = load_provider_caps().get("nzbhydra2", {})
+    if not isinstance(provider, dict):
+        return {}
+    stored_base_url = str(provider.get("base_url") or "").rstrip("/")
+    current_base_url = str(base_url or "").rstrip("/")
+    if stored_base_url != current_base_url:
+        return {}
+    caps = provider.get("caps")
+    return caps if isinstance(caps, dict) else {}
+
+
 def _fetch_hydra_xml(url, error_prefix):
     """Fetch XML from Hydra and normalize network/runtime failures."""
     try:
@@ -74,6 +110,23 @@ def _fetch_hydra_xml(url, error_prefix):
             xbmc.LOGERROR,
         )
         return None, _hydra_unavailable_error(error)
+
+
+def _search_url(base_url, params):
+    return "{}/api?{}".format(base_url, urlencode(params))
+
+
+def _fetch_planned_hydra_results(base_url, params, error_prefix):
+    xml_text, request_error = _fetch_hydra_xml(
+        _search_url(base_url, params), error_prefix
+    )
+    if request_error:
+        return [], request_error
+
+    results, parse_error = _parse_results_checked(xml_text)
+    if parse_error:
+        return [], parse_error
+    return results, None
 
 
 def search_hydra(
@@ -129,57 +182,52 @@ def search_hydra(
     except (TypeError, ValueError):
         max_results = 25
     max_results = max(1, min(max_results, 10000))
-    params = {"apikey": api_key, "o": "xml", "limit": max_results}
+    plan = plan_newznab_search(
+        provider_kind="nzbhydra2",
+        host=base_url,
+        search_type=search_type,
+        title=title,
+        year=year,
+        imdb=imdb,
+        season=season,
+        episode=episode,
+        caps=_hydra_provider_caps(base_url),
+        api_key=api_key,
+        max_results=max_results,
+    )
+    if not plan.primary:
+        xbmc.log(
+            "NZB-DAV: Hydra search skipped: no supported query for '{}'".format(title),
+            xbmc.LOGINFO,
+        )
+        return [], None
 
-    if search_type == "episode":
-        params["t"] = "tvsearch"
-        if imdb:
-            params["imdbid"] = imdb
-        else:
-            params["q"] = title
-        if season:
-            params["season"] = season
-        if episode:
-            params["ep"] = episode
-    else:
-        params["t"] = "movie"
-        if imdb:
-            params["imdbid"] = imdb
-        else:
-            params["q"] = title
-
-    url = "{}/api?{}".format(base_url, urlencode(params))
+    url = _search_url(base_url, plan.primary)
     from resources.lib.http_util import redact_url
 
     xbmc.log("NZB-DAV: Hydra search URL: {}".format(redact_url(url)), xbmc.LOGDEBUG)
 
-    xml_text, request_error = _fetch_hydra_xml(url, "Hydra search request failed")
-    if request_error:
-        return [], request_error
+    results, error = _fetch_planned_hydra_results(
+        base_url, plan.primary, "Hydra search request failed"
+    )
+    if error:
+        return [], error
 
-    results, parse_error = _parse_results_checked(xml_text)
-    if parse_error:
-        return [], parse_error
-
-    # Fallback: if IMDB search returned nothing, retry with title
-    if not results and imdb and title:
+    if not results and plan.fallback and plan.fallback != plan.primary:
         xbmc.log(
-            "NZB-DAV: No results with imdbid={}, retrying with title '{}'".format(
-                imdb, title
-            ),
+            "NZB-DAV: No results with primary Hydra query, retrying fallback",
             xbmc.LOGINFO,
         )
-        params.pop("imdbid", None)
-        params["q"] = title
-        fallback_url = "{}/api?{}".format(base_url, urlencode(params))
-        xml_text, request_error = _fetch_hydra_xml(
-            fallback_url, "Hydra title fallback failed"
+        fallback_url = _search_url(base_url, plan.fallback)
+        xbmc.log(
+            "NZB-DAV: Hydra fallback URL: {}".format(redact_url(fallback_url)),
+            xbmc.LOGDEBUG,
         )
-        if request_error:
-            return [], request_error
-        results, parse_error = _parse_results_checked(xml_text)
-        if parse_error:
-            return [], parse_error
+        results, error = _fetch_planned_hydra_results(
+            base_url, plan.fallback, "Hydra fallback search failed"
+        )
+        if error:
+            return [], error
 
     xbmc.log(
         "NZB-DAV: Hydra returned {} results for '{}'".format(len(results), title),

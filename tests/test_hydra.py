@@ -4,14 +4,24 @@
 import os
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 
-from resources.lib.hydra import _calculate_age, parse_results, search_hydra
+from resources.lib.hydra import (
+    _calculate_age,
+    parse_results,
+    refresh_hydra_caps,
+    search_hydra,
+)
 
 
 def _load_fixture(name):
     fixture_path = os.path.join(os.path.dirname(__file__), "fixtures", name)
     with open(fixture_path, "r") as f:
         return f.read()
+
+
+def _query_params(url):
+    return {key: values[-1] for key, values in parse_qs(urlsplit(url).query).items()}
 
 
 def test_parse_results_movie():
@@ -67,9 +77,10 @@ def test_search_hydra_movie(mock_http, mock_settings):
     assert len(results) == 2
 
     call_url = mock_http.call_args[0][0]
-    assert "t=movie" in call_url
-    assert "imdbid=tt0133093" in call_url
-    assert "apikey=testkey" in call_url
+    params = _query_params(call_url)
+    assert params["t"] == "movie"
+    assert params["imdbid"] == "0133093"
+    assert params["apikey"] == "testkey"
     assert mock_http.call_args.kwargs["timeout"] == 300
 
 
@@ -132,6 +143,130 @@ def test_search_hydra_allows_large_result_limit_up_to_ten_thousand(
     assert "limit=2500" in call_url
 
 
+@patch("resources.lib.hydra.load_provider_caps")
+@patch("resources.lib.hydra._get_settings")
+@patch("resources.lib.hydra._http_get")
+def test_search_hydra_uses_cached_provider_caps(
+    mock_http, mock_settings, mock_load_provider_caps
+):
+    mock_settings.return_value = ("http://hydra:5076", "testkey")
+    mock_load_provider_caps.return_value = {
+        "nzbhydra2": {
+            "base_url": "http://hydra:5076",
+            "checked_at": "2026-05-10T00:00:00Z",
+            "caps": {
+                "search_types": ["search"],
+                "supported_params": {"search": ["q"]},
+            },
+        }
+    }
+    mock_http.return_value = _load_fixture("hydra_movie_response.xml")
+
+    results, error = search_hydra("movie", "The Matrix", imdb="tt0133093")
+
+    assert error is None
+    assert len(results) == 2
+    params = _query_params(mock_http.call_args[0][0])
+    assert params["t"] == "search"
+    assert params["q"] == "The Matrix"
+    assert "imdbid" not in params
+
+
+@patch("resources.lib.hydra.load_provider_caps")
+@patch("resources.lib.hydra._get_settings")
+@patch("resources.lib.hydra._http_get")
+def test_search_hydra_provider_caps_base_url_mismatch_uses_conservative_defaults(
+    mock_http, mock_settings, mock_load_provider_caps
+):
+    mock_settings.return_value = ("http://hydra:5076", "testkey")
+    mock_load_provider_caps.return_value = {
+        "nzbhydra2": {
+            "base_url": "http://other-hydra:5076",
+            "checked_at": "2026-05-10T00:00:00Z",
+            "caps": {
+                "search_types": ["search"],
+                "supported_params": {"search": ["q"]},
+            },
+        }
+    }
+    mock_http.return_value = _load_fixture("hydra_tv_response.xml")
+
+    results, error = search_hydra(
+        "episode",
+        "Breaking Bad",
+        imdb="tt0903747",
+        season="5",
+        episode="14",
+    )
+
+    assert error is None
+    assert len(results) == 1
+    params = _query_params(mock_http.call_args[0][0])
+    assert params["t"] == "tvsearch"
+    assert params["imdbid"] == "0903747"
+    assert params["season"] == "5"
+    assert params["ep"] == "14"
+
+
+@patch("resources.lib.hydra.load_provider_caps")
+@patch("resources.lib.hydra._get_settings")
+@patch("resources.lib.hydra._http_get")
+def test_search_hydra_skips_when_planner_has_no_supported_query(
+    mock_http, mock_settings, mock_load_provider_caps
+):
+    mock_settings.return_value = ("http://hydra:5076", "testkey")
+    mock_load_provider_caps.return_value = {
+        "nzbhydra2": {
+            "base_url": "http://hydra:5076",
+            "checked_at": "2026-05-10T00:00:00Z",
+            "caps": {
+                "search_types": ["movie"],
+                "supported_params": {"movie": ["imdbid"]},
+            },
+        }
+    }
+
+    results, error = search_hydra("movie", "The Matrix")
+
+    assert results == []
+    assert error is None
+    mock_http.assert_not_called()
+
+
+@patch("resources.lib.hydra.load_provider_caps")
+@patch("resources.lib.hydra._get_settings")
+@patch("resources.lib.hydra._http_get")
+def test_search_hydra_retries_planner_fallback_when_primary_has_no_results(
+    mock_http, mock_settings, mock_load_provider_caps
+):
+    mock_settings.return_value = ("http://hydra:5076", "testkey")
+    mock_load_provider_caps.return_value = {
+        "nzbhydra2": {
+            "base_url": "http://hydra:5076",
+            "checked_at": "2026-05-10T00:00:00Z",
+            "caps": {
+                "search_types": ["search", "movie"],
+                "supported_params": {"search": ["q"], "movie": ["imdbid"]},
+            },
+        }
+    }
+    mock_http.side_effect = [
+        """<?xml version="1.0" encoding="UTF-8"?><rss><channel /></rss>""",
+        _load_fixture("hydra_movie_response.xml"),
+    ]
+
+    results, error = search_hydra("movie", "The Matrix", imdb="tt0133093")
+
+    assert error is None
+    assert len(results) == 2
+    primary = _query_params(mock_http.call_args_list[0][0][0])
+    fallback = _query_params(mock_http.call_args_list[1][0][0])
+    assert primary["t"] == "movie"
+    assert primary["imdbid"] == "0133093"
+    assert fallback["t"] == "search"
+    assert fallback["q"] == "The Matrix"
+
+
 @patch("resources.lib.hydra._get_settings")
 @patch("resources.lib.hydra._http_get")
 def test_search_hydra_tv(mock_http, mock_settings):
@@ -146,6 +281,54 @@ def test_search_hydra_tv(mock_http, mock_settings):
     assert "t=tvsearch" in call_url
     assert "season=5" in call_url
     assert "ep=14" in call_url
+
+
+@patch("resources.lib.hydra.save_provider_caps")
+@patch("resources.lib.hydra.load_provider_caps")
+@patch("resources.lib.hydra.fetch_caps")
+def test_refresh_hydra_caps_fetches_and_saves_provider_caps(
+    mock_fetch_caps, mock_load_provider_caps, mock_save_provider_caps
+):
+    caps = {
+        "search_types": ["search", "movie"],
+        "supported_params": {"search": ["q"], "movie": ["imdbid"]},
+    }
+    mock_fetch_caps.return_value = (caps, None)
+    mock_load_provider_caps.return_value = {
+        "direct": {
+            "base_url": "https://api.example.test",
+            "checked_at": "2026-05-09T00:00:00Z",
+            "caps": {"search_types": ["search"]},
+        }
+    }
+
+    result, error = refresh_hydra_caps("http://hydra:5076", "testkey")
+
+    assert result == caps
+    assert error is None
+    mock_fetch_caps.assert_called_once_with("http://hydra:5076", "testkey")
+    saved = mock_save_provider_caps.call_args[0][0]
+    assert saved["direct"] == mock_load_provider_caps.return_value["direct"]
+    assert saved["nzbhydra2"]["base_url"] == "http://hydra:5076"
+    assert saved["nzbhydra2"]["caps"] == caps
+    assert saved["nzbhydra2"]["checked_at"].endswith("Z")
+
+
+@patch("resources.lib.hydra.save_provider_caps")
+@patch("resources.lib.hydra.load_provider_caps")
+@patch("resources.lib.hydra.fetch_caps")
+def test_refresh_hydra_caps_fetch_error_does_not_save(
+    mock_fetch_caps, mock_load_provider_caps, mock_save_provider_caps
+):
+    caps = {"search_types": [], "supported_params": {}, "categories": []}
+    mock_fetch_caps.return_value = (caps, "Connection refused")
+
+    result, error = refresh_hydra_caps("http://hydra:5076", "testkey")
+
+    assert result == caps
+    assert error == "Connection refused"
+    mock_load_provider_caps.assert_not_called()
+    mock_save_provider_caps.assert_not_called()
 
 
 @patch("resources.lib.hydra._get_settings")
