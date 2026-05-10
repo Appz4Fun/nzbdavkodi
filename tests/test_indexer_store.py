@@ -99,6 +99,41 @@ def test_load_indexers_defaults_legacy_rows_without_enabled_to_enabled(tmp_path)
     assert loaded[1]["enabled"] is False
 
 
+def test_load_indexers_treats_string_false_enabled_values_as_disabled(tmp_path):
+    path = tmp_path / "indexers.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "indexers": [
+                    {
+                        "id": "string-false",
+                        "preset_id": "string-false",
+                        "name": "String False",
+                        "api_url": "https://disabled.example/api",
+                        "api_key": "secret",
+                        "enabled": "false",
+                    },
+                    {
+                        "id": "string-zero",
+                        "preset_id": "string-zero",
+                        "name": "String Zero",
+                        "api_url": "https://zero.example/api",
+                        "api_key": "secret",
+                        "enabled": "0",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = load_indexers(str(path))
+
+    assert loaded[0]["enabled"] is False
+    assert loaded[1]["enabled"] is False
+
+
 def test_save_and_load_indexers_round_trip(tmp_path):
     path = tmp_path / "indexers.json"
 
