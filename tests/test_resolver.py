@@ -2912,6 +2912,52 @@ def test_stop_fallback_submit_worker_cancels_job_finished_after_shutdown(
     assert _fallback_submit_jobs_snapshot(state) == []
 
 
+@patch("resources.lib.resolver.cancel_job")
+@patch("resources.lib.resolver.submit_nzb")
+@patch("resources.lib.resolver.xbmc")
+def test_stop_fallback_submit_worker_cancels_late_job_with_settings_getter(
+    mock_xbmc, mock_submit, mock_cancel_job
+):
+    submit_started = threading.Event()
+    release_submit = threading.Event()
+    settings = {
+        "nzbdav_url": "http://nzbdav.example",
+        "nzbdav_api_key": "secret",
+    }
+
+    def delayed_submit(*args, **kwargs):
+        submit_started.set()
+        assert kwargs["settings_getter"]("nzbdav_url") == settings["nzbdav_url"]
+        assert release_submit.wait(timeout=1)
+        return "SABnzbd_nzo_late", None
+
+    mock_submit.side_effect = delayed_submit
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    state = _start_fallback_submit_worker(
+        [
+            {
+                "title": "Fallback A 2026 1080p WEB-DL",
+                "link": "http://hydra/getnzb/fallback-a",
+            }
+        ],
+        settings_getter=lambda key, default="": settings.get(key, default),
+    )
+
+    assert submit_started.wait(timeout=1)
+    assert (
+        _stop_fallback_submit_worker(state, cancel_submitted=True, join_timeout=0.01)
+        == []
+    )
+
+    release_submit.set()
+    assert state["finished"].wait(timeout=1)
+    mock_cancel_job.assert_called_once()
+    assert mock_cancel_job.call_args.args == ("SABnzbd_nzo_late",)
+    settings_getter = mock_cancel_job.call_args.kwargs["settings_getter"]
+    assert settings_getter("nzbdav_url") == settings["nzbdav_url"]
+    assert _fallback_submit_jobs_snapshot(state) == []
+
+
 def test_stop_fallback_submit_worker_cancels_running_jobs_when_requested():
     worker = MagicMock()
     worker.is_alive.return_value = False

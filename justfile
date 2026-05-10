@@ -162,7 +162,13 @@ setup-extreme-functional-test:
     echo ""
     echo "--- NNTP provider (Eweka, etc.) ---"
     NNTP_HOST=$(ask "NNTP host" "news.eweka.nl")
-    NNTP_PORT=$(ask "NNTP port" "563")
+    NNTP_USE_SSL=$(ask "NNTP SSL (true/false)" "false")
+    if [[ "$NNTP_USE_SSL" == "true" ]]; then
+        NNTP_PORT_DEFAULT="563"
+    else
+        NNTP_PORT_DEFAULT="119"
+    fi
+    NNTP_PORT=$(ask "NNTP port" "$NNTP_PORT_DEFAULT")
     NNTP_USER=$(ask_required "NNTP username")
     NNTP_PASS=$(ask_required "NNTP password" secret)
     NNTP_CONNS=$(ask "NNTP connection count" "50")
@@ -197,6 +203,7 @@ setup-extreme-functional-test:
         echo ""
         echo "# NNTP provider"
         emit_env "NNTP_HOST" "$NNTP_HOST"
+        emit_env "NNTP_USE_SSL" "$NNTP_USE_SSL"
         emit_env "NNTP_PORT" "$NNTP_PORT"
         emit_env "NNTP_USER" "$NNTP_USER"
         emit_env "NNTP_PASS" "$NNTP_PASS"
@@ -252,7 +259,11 @@ extreme-functional-test:
         echo "Copy .env.example to .env and fill in real values." >&2
         exit 2
     fi
+    env_snapshot="$(mktemp)"
+    trap 'rm -f "$env_snapshot"' EXIT
+    export -p > "$env_snapshot"
     set -a; source "$env_file"; set +a
+    source "$env_snapshot"
     python3 -m pytest tests/test_extreme_functional.py -v -s --tb=long -m extreme
 
 # Lint the codebase (matches GitHub CI: ruff + black + pylint)

@@ -6,7 +6,9 @@ from pathlib import Path
 
 
 def _recipe_body(justfile_text, recipe_name):
-    start = justfile_text.index("{}:".format(recipe_name))
+    match = re.search(r"^{}:$".format(re.escape(recipe_name)), justfile_text, re.M)
+    assert match is not None
+    start = match.start()
     lines = justfile_text[start:].splitlines()
     body = []
     for line in lines[1:]:
@@ -73,3 +75,12 @@ def test_test_recipe_excludes_extreme_marker():
     test_block = re.search(r"^test:\n(?:    .+\n)+", contents, re.MULTILINE)
     assert test_block is not None
     assert "not extreme" in test_block.group(0)
+
+
+def test_extreme_functional_test_recipe_preserves_exported_env_overrides():
+    contents = Path(__file__).resolve().parents[1].joinpath("justfile").read_text()
+    body = _recipe_body(contents, "extreme-functional-test")
+
+    assert "env_snapshot" in body
+    assert 'source "$env_file"' in body
+    assert 'source "$env_snapshot"' in body

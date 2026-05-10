@@ -41,16 +41,26 @@ services:
       - extreme
 
   nzbdav-rs:
-    image: docker.io/ausagentsmith/nzbdav-rs:v0.5.0
+    image: nzbdav/nzbdav:latest
     container_name: nzbdav-extreme-nzbdav
     environment:
       NZBDAV_API_KEY: ${NZBDAV_API_KEY}
+      FRONTEND_BACKEND_API_KEY: ${NZBDAV_API_KEY}
       WEBDAV_USER: ${WEBDAV_USERNAME}
       WEBDAV_PASS: ${WEBDAV_PASSWORD}
+      # OrbStack injects proxy envs into containers. The proxy has been
+      # observed resetting LAN Hydra NZB downloads mid-stream, so clear it
+      # here the same way the Kodi container does.
+      HTTP_PROXY: ""
+      http_proxy: ""
+      HTTPS_PROXY: ""
+      https_proxy: ""
+      ALL_PROXY: ""
+      all_proxy: ""
     ports:
       - "8180:8080"
     healthcheck:
-      test: ["CMD", "curl", "-fs", "http://localhost:8080/api/servers", "-H", "X-Api-Key: ${NZBDAV_API_KEY}"]
+      test: ["CMD", "curl", "-fs", "http://localhost:8080/health"]
       interval: 5s
       timeout: 3s
       retries: 12

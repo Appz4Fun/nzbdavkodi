@@ -38,10 +38,6 @@ _HYDRA_REQUEST_ERRORS = (
 _SOURCE_URL_ERRORS = (AttributeError, TypeError, ValueError)
 _PUBDATE_ERRORS = (OverflowError, TypeError, ValueError)
 addon = xbmcaddon.Addon("plugin.video.nzbdav")
-try:
-    url = addon.getSetting("hydra_url").rstrip("/")
-except _HYDRA_REQUEST_ERRORS:
-    url = ""
 
 
 # _format_request_error, _get_text, _calculate_age imported from
@@ -60,8 +56,9 @@ def _get_settings(settings_getter=None):
         api_key = settings_getter("hydra_api_key", "")
         return configured_url, api_key
 
+    configured_url = addon.getSetting("hydra_url").rstrip("/")
     api_key = addon.getSetting("hydra_api_key")
-    return url, api_key
+    return configured_url, api_key
 
 
 def refresh_hydra_caps(base_url, api_key):

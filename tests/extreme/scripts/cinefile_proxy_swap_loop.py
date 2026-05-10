@@ -261,7 +261,7 @@ def _discover_paths() -> tuple[str, str]:
     pairs = discover_cinefile_storages(limit=2)
     if len(pairs) < 2:
         raise SystemExit("FATAL: need 2 CiNEFiLE storages, got {}".format(len(pairs)))
-    # _propfind_mkv_path returns an already-quoted href ("/dav/content/...");
+    # _propfind_mkv_path returns an already-quoted href ("/content/...");
     # url_with_auth takes the path component verbatim, so just pass it
     # through.
     return pairs[0][1], pairs[1][1]

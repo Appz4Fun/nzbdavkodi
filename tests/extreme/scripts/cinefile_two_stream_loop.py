@@ -92,7 +92,7 @@ def redact_url(url: str) -> str:
 
 def _propfind_mkv_path(storage: str) -> str:
     safe = urllib.parse.quote(storage, safe="/") + "/"
-    url = "{}/dav{}".format(NZBDAV_URL, safe)
+    url = "{}/content{}".format(NZBDAV_URL, safe)
     req = urllib.request.Request(
         url,
         method="PROPFIND",
@@ -120,7 +120,7 @@ def _verify_streamable(mkv_path: str) -> bool:
     Kodi briefly, ask for ``streamdetails``, and reject any file with
     an empty ``video`` array."""
     safe = urllib.parse.quote(mkv_path, safe="/")
-    play_url = "{}/dav{}".format(WEBDAV_BASE_WITH_AUTH, safe)
+    play_url = "{}/content{}".format(WEBDAV_BASE_WITH_AUTH, safe)
     stop_player()
     play(play_url)
     deadline = time.time() + 15
@@ -165,7 +165,7 @@ def _stream_url_with_auth(mkv_path: str) -> str:
     base = urllib.parse.urlunsplit(
         (parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment)
     )
-    return "{}/dav{}".format(base, urllib.parse.quote(mkv_path, safe="/"))
+    return "{}/content{}".format(base, urllib.parse.quote(mkv_path, safe="/"))
 
 
 def find_two_streamable_urls() -> list[str]:

@@ -38,7 +38,7 @@ def _propfind(url: str, depth: str) -> str:
 def _propfind_mkv_path(storage: str, nzbdav_url: str) -> str:
     """Return the first non-sample .mkv href under ``storage`` or ''."""
     safe = urllib.parse.quote(storage, safe="/") + "/"
-    xml_text = _propfind("{}/dav{}".format(nzbdav_url.rstrip("/"), safe), "1")
+    xml_text = _propfind("{}/content{}".format(nzbdav_url.rstrip("/"), safe), "1")
     candidates = re.findall(r"<D:href>([^<]+\.mkv)</D:href>", xml_text)
     for c in candidates:
         if "sample" not in c.lower():
@@ -58,17 +58,17 @@ def discover_cinefile_storages(
     nzbdav_url = (
         nzbdav_url or os.environ.get("NZBDAV_URL", "http://localhost:8180")
     ).rstrip("/")
-    xml_text = _propfind("{}/dav/content/".format(nzbdav_url), "2")
+    xml_text = _propfind("{}/content/".format(nzbdav_url), "2")
     if not xml_text:
         return []
-    folder_hrefs = re.findall(r"<D:href>(/dav/content/[^<]+/)</D:href>", xml_text)
+    folder_hrefs = re.findall(r"<D:href>(/content/[^<]+/)</D:href>", xml_text)
     out: list[tuple[str, str]] = []
     seen: set[str] = set()
     for href in folder_hrefs:
         unquoted = urllib.parse.unquote(href)
-        if not unquoted.startswith("/dav/content/"):
+        if not unquoted.startswith("/content/"):
             continue
-        storage = unquoted[len("/dav") :].rstrip("/")
+        storage = unquoted.rstrip("/")
         basename = storage.rsplit("/", 1)[-1]
         if not basename.startswith(target_prefix) or storage in seen:
             continue

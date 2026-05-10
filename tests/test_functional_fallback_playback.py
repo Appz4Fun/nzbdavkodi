@@ -365,6 +365,7 @@ def _movie_search_pool(settings, movie, query_title=None, use_imdb=True):
             title,
             year=year,
             imdb=imdb,
+            settings_getter=lambda key, default="": settings.get(key, default),
         )
     if error:
         raise _FunctionalAttemptFailed(
@@ -388,6 +389,54 @@ def _movie_search_pool(settings, movie, query_title=None, use_imdb=True):
             "{} search returned too few linked results".format(title)
         )
     return pool
+
+
+def test_movie_search_pool_passes_live_settings_to_hydra_search():
+    settings = {
+        "hydra_url": "http://live-hydra:5076",
+        "hydra_api_key": "live-key",
+        "max_results": "100",
+    }
+    movie = {"title": "The Matrix", "year": "1999", "imdb": "tt0133093"}
+    hydra_result = {
+        "title": "The Matrix 1999 candidate",
+        "link": "http://hydra/getnzb/1",
+    }
+    captured = {}
+
+    def fake_search(search_type, title, year="", imdb="", settings_getter=None, **_kw):
+        captured.update(
+            {
+                "search_type": search_type,
+                "title": title,
+                "year": year,
+                "imdb": imdb,
+                "hydra_url": settings_getter("hydra_url", ""),
+                "hydra_api_key": settings_getter("hydra_api_key", ""),
+                "max_results": settings_getter("max_results", ""),
+            }
+        )
+        return [hydra_result], None
+
+    with patch(
+        "{}.search_hydra".format(__name__),
+        side_effect=fake_search,
+    ), patch(
+        "{}.filter_results".format(__name__),
+        return_value=([hydra_result, hydra_result], []),
+    ):
+        pool = _movie_search_pool(settings, movie)
+
+    assert pool == [hydra_result, hydra_result]
+    assert captured == {
+        "search_type": "movie",
+        "title": "The Matrix",
+        "year": "1999",
+        "imdb": "tt0133093",
+        "hydra_url": "http://live-hydra:5076",
+        "hydra_api_key": "live-key",
+        "max_results": "100",
+    }
 
 
 def _release_group_key(result):

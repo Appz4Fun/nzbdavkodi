@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 nzbdav contributors
 
+import importlib
 import os
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
@@ -25,6 +26,24 @@ def _query_params(url):
     return {key: values[-1] for key, values in parse_qs(urlsplit(url).query).items()}
 
 
+def test_hydra_import_does_not_read_kodi_settings(monkeypatch):
+    fake_addon = MagicMock()
+    fake_addon.getSetting.side_effect = RuntimeError(
+        "settings reads must be deferred until search"
+    )
+
+    with monkeypatch.context() as patch_context:
+        patch_context.setattr(
+            hydra.xbmcaddon, "Addon", MagicMock(return_value=fake_addon)
+        )
+        importlib.reload(hydra)
+
+        hydra.xbmcaddon.Addon.assert_called_once_with("plugin.video.nzbdav")
+        fake_addon.getSetting.assert_not_called()
+
+    importlib.reload(hydra)
+
+
 def test_search_hydra_reuses_module_level_addon_for_kodi_settings(monkeypatch):
     fake_addon = MagicMock()
     fake_addon.getSetting.side_effect = lambda key: {
@@ -33,7 +52,6 @@ def test_search_hydra_reuses_module_level_addon_for_kodi_settings(monkeypatch):
         "max_results": "33",
     }.get(key, "")
     monkeypatch.setattr(hydra, "addon", fake_addon, raising=False)
-    monkeypatch.setattr(hydra, "url", "http://hydra:5076", raising=False)
 
     with patch(
         "resources.lib.hydra.xbmcaddon.Addon",
@@ -68,11 +86,11 @@ def test_search_hydra_reuses_module_level_addon_for_kodi_settings(monkeypatch):
 def test_search_hydra_reuses_module_level_url(monkeypatch):
     fake_addon = MagicMock()
     fake_addon.getSetting.side_effect = lambda key: {
+        "hydra_url": "http://hydra:5076",
         "hydra_api_key": "testkey",
         "max_results": "25",
     }.get(key, "")
     monkeypatch.setattr(hydra, "addon", fake_addon, raising=False)
-    monkeypatch.setattr(hydra, "url", "http://hydra:5076", raising=False)
 
     with patch("resources.lib.hydra._http_get") as mock_http, patch(
         "resources.lib.hydra.load_provider_caps"
@@ -87,6 +105,7 @@ def test_search_hydra_reuses_module_level_url(monkeypatch):
     assert error is None
     assert len(results) == 2
     assert mock_http.call_args[0][0].startswith("http://hydra:5076/api?")
+    fake_addon.getSetting.assert_any_call("hydra_url")
     fake_addon.getSetting.assert_any_call("hydra_api_key")
 
 

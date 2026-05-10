@@ -2301,13 +2301,19 @@ def _start_fallback_submit_worker(
     candidates=None, candidate_loader=None, settings_getter=None
 ):
     """Start background fallback submits and return shared state."""
+
+    def _cancel_job(nzo_id):
+        if settings_getter is None:
+            return cancel_job(nzo_id)
+        return cancel_job(nzo_id, settings_getter=settings_getter)
+
     state = {
         "lock": threading.Lock(),
         "jobs": [],
         "stop": threading.Event(),
         "finished": threading.Event(),
         "thread": None,
-        "cancel_job": cancel_job,
+        "cancel_job": _cancel_job,
     }
     candidate_list = list(candidates or [])
     if not candidate_list and candidate_loader is None:

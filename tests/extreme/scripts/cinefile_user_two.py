@@ -70,7 +70,7 @@ def _kodi_rpc(method: str, params: dict | None = None, timeout: int = 10):
 def _build_kodi_url(mkv_path: str) -> str:
     """Compose a Kodi-reachable URL from a PROPFIND-derived mkv href.
 
-    ``mkv_path`` is already URL-quoted (e.g. ``/dav/content/...mkv``)
+    ``mkv_path`` is already URL-quoted (e.g. ``/content/...mkv``)
     so we pass it straight into urlunsplit's path slot.
     """
     netloc = "{}:{}@{}".format(

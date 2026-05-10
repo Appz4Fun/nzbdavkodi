@@ -124,7 +124,7 @@ def _propfind_mkv_name(storage: str) -> str:
 
     auth = base64.b64encode("{}:{}".format(user, pw).encode()).decode()
     safe_storage = urllib.parse.quote(storage, safe="/") + "/"
-    url = "{}/dav{}".format(NZBDAV_URL, safe_storage)
+    url = "{}/content{}".format(NZBDAV_URL, safe_storage)
     req = urllib.request.Request(
         url, method="PROPFIND", headers={"Depth": "1", "Authorization": "Basic " + auth}
     )
@@ -157,7 +157,7 @@ def storage_to_stream_url(storage: str) -> str:
     base_with_auth = urllib.parse.urlunsplit(
         (parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment)
     )
-    return "{}/dav{}".format(base_with_auth, urllib.parse.quote(mkv_path, safe="/"))
+    return "{}/content{}".format(base_with_auth, urllib.parse.quote(mkv_path, safe="/"))
 
 
 def schedule_fault(at_seconds: float, fault_type: str = "connection_reset"):

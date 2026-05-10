@@ -97,10 +97,51 @@ FAULT_TYPES = [
     "corrupted_bytes",
 ]
 
+EXTREME_FILTER_SETTINGS = {
+    "filter_2160p": "false",
+    "filter_1080p": "true",
+    "filter_720p": "false",
+    "filter_480p": "false",
+    "filter_hdr10": "false",
+    "filter_hdr10plus": "false",
+    "filter_dolby_vision": "false",
+    "filter_hlg": "false",
+    "filter_sdr": "true",
+    "filter_atmos": "true",
+    "filter_truehd": "true",
+    "filter_dtshd_ma": "true",
+    "filter_dtsx": "true",
+    "filter_ddplus": "true",
+    "filter_dd": "true",
+    "filter_aac": "true",
+    "filter_hevc": "false",
+    "filter_avc": "true",
+    "filter_av1": "false",
+    "filter_vp9": "false",
+    "filter_mpeg2": "true",
+    "filter_english": "true",
+    "filter_require_keywords": "framestor,1080p,avc,remux",
+    "filter_release_group": "",
+    "filter_exclude_keywords": "",
+    "filter_exclude_release_group": "",
+    "filter_min_size": "0",
+    "filter_max_size": "0",
+    "max_results": "250",
+    "auto_select_best": "true",
+    "fallback_streams_enabled": "true",
+    "fallback_streams_max": "8",
+}
+
 
 def _seed() -> int:
     raw = os.environ.get("EXTREME_SEED")
     return int(raw) if raw else int(time.time())
+
+
+def _extreme_addon_settings(settings):
+    merged = dict(settings)
+    merged.update(EXTREME_FILTER_SETTINGS)
+    return merged
 
 
 def _post_schedule(events: list[dict]) -> None:
@@ -259,7 +300,7 @@ def test_extreme_fallback_run(stack_ready, run_dir):
     ) as r:
         assert r.status == 200, "Fault proxy not reachable"
 
-    settings = _addon_settings(_live_env())
+    settings = _extreme_addon_settings(_addon_settings(_live_env()))
     movie, primary, fallbacks = _pick_movie_with_fallback_pool(rng, settings)
 
     schedule = _generate_fault_schedule(rng)

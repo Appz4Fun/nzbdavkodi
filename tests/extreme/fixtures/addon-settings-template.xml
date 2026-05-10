@@ -9,7 +9,7 @@
          localhost:8280 (port-mapped in docker-compose.yml). -->
     <setting id="nzbdav_url">http://nzbdav-rs:8080</setting>
     <setting id="nzbdav_api_key">${NZBDAV_API_KEY}</setting>
-    <setting id="webdav_url">http://fault-proxy:8280/dav</setting>
+    <setting id="webdav_url">http://fault-proxy:8280</setting>
     <setting id="webdav_username">${WEBDAV_USERNAME}</setting>
     <setting id="webdav_password">${WEBDAV_PASSWORD}</setting>
     <!-- Filter biases the runtime release pick toward simple SDR H.264.
@@ -22,8 +22,8 @@
          Re-enable everything when running this test on a real GPU host. -->
     <setting id="filter_2160p">false</setting>
     <setting id="filter_1080p">true</setting>
-    <setting id="filter_720p">true</setting>
-    <setting id="filter_480p">true</setting>
+    <setting id="filter_720p">false</setting>
+    <setting id="filter_480p">false</setting>
     <setting id="filter_hdr10">false</setting>
     <setting id="filter_hdr10plus">false</setting>
     <setting id="filter_dolby_vision">false</setting>
@@ -37,20 +37,16 @@
     <setting id="filter_dd">true</setting>
     <setting id="filter_aac">true</setting>
     <setting id="filter_hevc">false</setting>
-    <!-- AVC disabled, AV1 only. The addon's auto_select_best ranks
-         release-quality fields (resolution, codec, source) and picks the
-         single highest-scoring filtered result. With AVC enabled, every
-         WEB-DL AVC 1080p result outscores the AV1 BluRay alternatives —
-         and WEB-DL releases (GPRS/AMZN/etc.) produce NZBs whose PAR2 file
-         descriptors don't include clean filenames, so nzbdav-rs's
-         deobfuscator returns "no importable video file found". The
-         dAV1nci AV1 BluRay NZBs ship with clean descriptors that
-         nzbdav-rs handles, so we force the addon onto that path. -->
-    <setting id="filter_avc">false</setting>
-    <setting id="filter_av1">true</setting>
+    <!-- Require a known-simple 1080p AVC FraMeSToR remux profile. This
+         keeps the runtime TMDBHelper search aligned with the Python
+         preflight candidate and avoids WEB-DL/AV1/HEVC releases that are
+         unstable under the headless software-rendered Kodi container. -->
+    <setting id="filter_avc">true</setting>
+    <setting id="filter_av1">false</setting>
     <setting id="filter_vp9">false</setting>
     <setting id="filter_mpeg2">true</setting>
     <setting id="filter_english">true</setting>
+    <setting id="filter_require_keywords">framestor,1080p,avc,remux</setting>
     <!-- Disable size filtering for the extreme test: the orchestrator
          picks random IMDB Top 50 movies whose releases vary widely in size
          (e.g. 1962's Harakiri ships well under 10 GB), and the test's
@@ -60,7 +56,7 @@
          behaviour under test. -->
     <setting id="filter_min_size">0</setting>
     <setting id="filter_max_size">0</setting>
-    <setting id="max_results">25</setting>
+    <setting id="max_results">250</setting>
     <setting id="auto_select_best" default="true">true</setting>
     <setting id="poll_interval">1</setting>
     <setting id="download_timeout">3600</setting>

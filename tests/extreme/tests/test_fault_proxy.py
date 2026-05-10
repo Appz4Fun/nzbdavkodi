@@ -166,7 +166,7 @@ def proxy_with_upstream(fake_upstream, monkeypatch, tmp_path):
 
 def _request_large_range(proxy_url):
     req = urllib.request.Request(
-        f"{proxy_url}/dav/content/movie.mkv",
+        f"{proxy_url}/content/movie.mkv",
         headers={"Range": "bytes=2097152-"},
     )
     return urllib.request.urlopen(req, timeout=10)
