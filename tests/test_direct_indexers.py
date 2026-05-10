@@ -250,6 +250,17 @@ def test_build_search_url_preserves_existing_api_endpoint():
     assert url.startswith("https://api.nzbgeek.info/api?")
 
 
+def test_build_search_url_merges_existing_query_parameters():
+    from resources.lib.direct_indexers import build_search_url
+
+    url = build_search_url(
+        "https://indexer.example/api?foo=bar&apikey=old",
+        {"apikey": "secret", "t": "movie", "o": "xml"},
+    )
+
+    assert url == "https://indexer.example/api?foo=bar&apikey=secret&t=movie&o=xml"
+
+
 def test_build_search_url_preserves_nonstandard_newznab_endpoint_paths():
     from resources.lib.direct_indexers import build_search_url
 

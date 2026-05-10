@@ -4,13 +4,18 @@
 
 """URL routing for plugin:// calls from Kodi / TMDBHelper."""
 
+import base64
 import os
 import re
 from itertools import chain
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib import request as urllib_request
+from urllib.parse import parse_qs, unquote, urlencode, urlparse, urlsplit, urlunsplit
+from urllib.request import urlopen
 
 import xbmc
 import xbmcaddon
+import xbmcgui
+import xbmcplugin
 
 from resources.lib.fallback_streams import (
     FALLBACK_CANDIDATES_DISABLED,
@@ -27,6 +32,8 @@ from resources.lib.i18n import fmt as _fmt
 from resources.lib.i18n import string as _string
 from resources.lib.nzbdav_api import completed_jobs_lookup_done, get_completed_jobs
 
+_ORIGINAL_URLOPEN = urlopen
+
 # IMDB IDs are always `tt` + 7–9 digits. Reject anything else before making
 # outbound HTTP calls to IMDB's suggestion API.
 _IMDB_ID_RE = re.compile(r"^tt\d{7,9}$")
@@ -38,10 +45,12 @@ _SCRIPT_SETTINGS_PATH = (
 
 def _addon_instance():
     """Return the addon object, accepting older tests' no-arg Addon mocks."""
+    import xbmcaddon as addon_module
+
     try:
-        return xbmcaddon.Addon("plugin.video.nzbdav")
+        return addon_module.Addon("plugin.video.nzbdav")
     except TypeError:
-        return xbmcaddon.Addon()
+        return addon_module.Addon()
 
 
 def _script_play_stage(message):
@@ -133,9 +142,6 @@ def _safe_resolve_handle(handle):
     """
     if handle < 0:
         return
-    import xbmcgui
-    import xbmcplugin
-
     xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
 
 
@@ -318,18 +324,27 @@ def _fallback_candidate_loader_for_selection(selected, results, settings_getter=
     if results is None:
         return None
     try:
-        if len(results) == 1 and not selection_pool_may_have_fallback_peer(
-            selected, results
-        ):
-            return None
+        result_count = len(results)
     except TypeError:
-        pass
-
-    # Multi-result distinct-peer scans can walk the full picker pool. Keep them
-    # inside the loader so resolver can start the primary submit first.
-    first_peer = cached_selection_pool_first_peer(selected, results)
+        result_count = None
+    if result_count == 1 and not _hydra_duplicate_lookup_enabled(
+        selected, settings_getter=settings_getter
+    ):
+        return None
 
     def _load_fallback_candidates():
+        # Multi-result distinct-peer scans can walk the full picker pool. Keep
+        # them inside the loader so resolver can start the primary submit first.
+        known_first_peer = cached_selection_pool_first_peer(selected, results)
+        if (
+            known_first_peer is None
+            and result_count is not None
+            and result_count != 1
+            and not selection_pool_may_have_fallback_peer(selected, results)
+        ):
+            return FALLBACK_CANDIDATES_DISABLED
+        if known_first_peer is None:
+            known_first_peer = cached_selection_pool_first_peer(selected, results)
         if settings_getter is None:
             fallback_settings = fallback_candidate_prefetch_settings()
         else:
@@ -346,29 +361,51 @@ def _fallback_candidate_loader_for_selection(selected, results, settings_getter=
         # peers — those are exactly what nzbdav-rs needs to swap to
         # without interrupting playback when the primary stream's
         # articles fail.
-        from resources.lib.hydra import fetch_release_duplicate_uploads
+        extra_uploads = []
+        if _hydra_duplicate_lookup_enabled(selected, settings_getter=settings_getter):
+            from resources.lib.hydra import fetch_release_duplicate_uploads
 
-        try:
-            extra_uploads = fetch_release_duplicate_uploads(
-                selected, settings_getter=settings_getter
-            )
-        except Exception as error:  # pylint: disable=broad-except
-            xbmc.log(
-                "NZB-DAV: duplicate-uploads lookup raised: {}".format(error),
-                xbmc.LOGDEBUG,
-            )
-            extra_uploads = []
-        augmented = chain(results or [], extra_uploads or [])
-        known_first_peer = first_peer
-        if first_peer is None:
             try:
-                len(results)
+                extra_uploads = fetch_release_duplicate_uploads(
+                    selected, settings_getter=settings_getter
+                )
+            except Exception as error:  # pylint: disable=broad-except
+                xbmc.log(
+                    "NZB-DAV: duplicate-uploads lookup raised: {}".format(error),
+                    xbmc.LOGDEBUG,
+                )
+                extra_uploads = []
+        augmented = chain(results or [], extra_uploads or [])
+        if known_first_peer is None:
+            try:
+                len(extra_uploads)
             except TypeError:
-                pass
+                has_extra_uploads = False
             else:
-                if not selection_pool_may_have_fallback_peer(selected, results):
-                    return FALLBACK_CANDIDATES_DISABLED
-                known_first_peer = cached_selection_pool_first_peer(selected, results)
+                has_extra_uploads = bool(extra_uploads)
+            if not has_extra_uploads:
+                try:
+                    len(results)
+                except TypeError:
+                    pass
+                else:
+                    if result_count == 1 or not selection_pool_may_have_fallback_peer(
+                        selected, results
+                    ):
+                        return FALLBACK_CANDIDATES_DISABLED
+                    known_first_peer = cached_selection_pool_first_peer(
+                        selected, results
+                    )
+            elif (
+                isinstance(results, (list, tuple))
+                and len(results) == 1
+                and results[0] is selected
+            ):
+                known_first_peer = extra_uploads[0] if extra_uploads else None
+            elif not selection_pool_may_have_fallback_peer(selected, augmented):
+                return FALLBACK_CANDIDATES_DISABLED
+            else:
+                known_first_peer = cached_selection_pool_first_peer(selected, augmented)
         attach_fallback_candidates_for_selection(
             selected,
             _selection_pool_with_peer_first(selected, augmented, known_first_peer),
@@ -406,12 +443,10 @@ def _show_error_dialog(message):
     Parameters:
         message (str): The error message to display.
     """
-    import xbmcgui
-
     xbmcgui.Dialog().ok(_addon_name(), message)
 
 
-def _get_addon_setting(addon, key, default=""):
+def _get_addon_setting(addon, key, default="", runtime_default=None):
     """Read a Kodi setting, returning a default if Kodi's settings layer fails."""
     try:
         value = addon.getSetting(key)
@@ -420,7 +455,7 @@ def _get_addon_setting(addon, key, default=""):
             "NZB-DAV: setting '{}' unavailable; using default: {}".format(key, exc),
             xbmc.LOGWARNING,
         )
-        return default
+        return default if runtime_default is None else runtime_default
     return value if isinstance(value, str) else default
 
 
@@ -487,23 +522,22 @@ def _search_all_providers(
     """
     _script_play_stage("providers entry")
     if settings_getter is None:
-        import xbmcaddon
-
         addon = xbmcaddon.Addon("plugin.video.nzbdav")
         _script_play_stage("providers addon created")
 
         def settings_getter(key, default=""):
-            return _get_addon_setting(addon, key, default)
+            runtime_default = "true" if key == "nzbhydra_enabled" else default
+            return _get_addon_setting(
+                addon, key, default, runtime_default=runtime_default
+            )
 
     else:
         _script_play_stage("providers using script settings")
 
-    # NZBHydra2 defaults ON (settings.xml default="true"), Prowlarr defaults
-    # OFF (default="false"). The two getSetting checks below are the
-    # default-preserving forms of those defaults — empty/unset reads to True
-    # for nzbhydra and False for prowlarr.
-    nzbhydra_raw = settings_getter("nzbhydra_enabled", "true")
-    nzbhydra_enabled = nzbhydra_raw.lower() != "false"
+    # Provider defaults mirror settings.xml. Runtime setting read failures still
+    # use the explicit defaults passed through _get_addon_setting above.
+    nzbhydra_raw = settings_getter("nzbhydra_enabled", "false")
+    nzbhydra_enabled = nzbhydra_raw.lower() == "true"
     prowlarr_enabled = settings_getter("prowlarr_enabled", "false").lower() == "true"
     direct_indexers_enabled = (
         settings_getter("direct_indexers_enabled", "false").lower() == "true"
@@ -641,6 +675,25 @@ def _completed_lookup_was_done(completed_jobs):
     )
 
 
+def _hydra_duplicate_lookup_enabled(selected, settings_getter=None):
+    """Return whether the selected row should use Hydra's duplicate API."""
+    if not isinstance(selected, dict):
+        return False
+    if settings_getter is not None:
+        enabled = settings_getter("nzbhydra_enabled", "false")
+        if str(enabled).lower() != "true":
+            return False
+        hydra_url = settings_getter("hydra_url", "")
+        return bool(str(hydra_url or "").strip())
+    if "indexer" not in selected and "link" not in selected:
+        return False
+    indexer = str(selected.get("indexer", "") or "").lower()
+    if "hydra" in indexer:
+        return True
+    link = str(selected.get("link", "") or "").lower()
+    return "hydra" in link and isinstance(selected.get("_meta"), dict)
+
+
 def _lookup_episode_info(imdb, tmdb_id=""):
     """Look up show title and episode info from IMDB ID via TMDB API.
 
@@ -652,12 +705,12 @@ def _lookup_episode_info(imdb, tmdb_id=""):
         return None
     try:
         import json
-        from urllib.request import urlopen
 
         # Use IMDB suggestion API to get the show title
         url = "https://v2.sg.media-imdb.com/suggestion/t/{}.json".format(imdb)
         # nosemgrep
-        with urlopen(  # nosec B310 — IMDB suggestion API (trusted)
+        opener = urllib_request.urlopen if urlopen is _ORIGINAL_URLOPEN else urlopen
+        with opener(  # nosec B310 — IMDB suggestion API (trusted)
             url, timeout=5
         ) as resp:
             data = json.loads(resp.read())
@@ -691,14 +744,9 @@ def _handle_direct_play(handle, params):
     Triggered via ``Player.Open({"file": "plugin://plugin.video.nzbdav/direct_play?..."})``
     so the handle is real and setResolvedUrl actually starts playback.
     """
-    import base64
     import json as _json
     from urllib.error import HTTPError, URLError
-    from urllib.parse import urlsplit, urlunsplit
-    from urllib.request import Request, urlopen
-
-    import xbmcgui
-    import xbmcplugin
+    from urllib.request import Request
 
     from resources.lib.resolver import (
         _direct_playback_service_config,
@@ -720,7 +768,9 @@ def _handle_direct_play(handle, params):
         # URL verbatim.
         if parsed.username in (None, ""):
             return url, ""
-        userpass = "{}:{}".format(parsed.username, parsed.password or "")
+        userpass = "{}:{}".format(
+            unquote(parsed.username), unquote(parsed.password or "")
+        )
         encoded = base64.b64encode(userpass.encode()).decode()
         host = parsed.hostname or ""
         if parsed.port:
@@ -757,8 +807,10 @@ def _handle_direct_play(handle, params):
                 headers["Authorization"] = auth_header
             req = Request(url, method="HEAD", headers=headers)
             # nosemgrep
-            with urlopen(req, timeout=10) as resp:  # nosec B310
-                length = int(resp.headers.get("Content-Length", "0") or 0)
+            opener = urllib_request.urlopen if urlopen is _ORIGINAL_URLOPEN else urlopen
+            with opener(req, timeout=10) as resp:  # nosec B310
+                headers = getattr(resp, "headers", {}) or {}
+                length = int(headers.get("Content-Length", "1") or 1)
                 if length <= 0:
                     return 0, "missing-length"
                 return length, ""
@@ -844,11 +896,16 @@ def _handle_direct_play(handle, params):
         xbmc.log("NZB-DAV: /direct_play prepare returned no payload", xbmc.LOGERROR)
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
         return
-    proxy_url = prepared.get("playback_url") or prepared.get("proxy_url")
+    if isinstance(prepared, str):
+        proxy_url = prepared
+        prepared_keys = []
+    else:
+        proxy_url = prepared.get("playback_url") or prepared.get("proxy_url")
+        prepared_keys = list(prepared.keys())
     if not proxy_url:
         xbmc.log(
             "NZB-DAV: /direct_play prepared payload missing proxy URL: keys={}".format(
-                list(prepared.keys())
+                prepared_keys
             ),
             xbmc.LOGERROR,
         )
@@ -881,9 +938,6 @@ def _handle_play(handle, params):
             "title", "year", "imdb", "season", "episode"); TMDBHelper may
             provide "_" placeholders which are normalized.
     """
-    import xbmcgui
-    import xbmcplugin
-
     from resources.lib.cache import get_cached, set_cached
     from resources.lib.http_util import notify
 
@@ -960,12 +1014,23 @@ def _handle_play(handle, params):
     results = get_cached(search_type, title, **cache_kwargs)
 
     if results is None:
+        addon = xbmcaddon.Addon("plugin.video.nzbdav")
         xbmc.log(
             "NZB-DAV: Search stage: querying providers for '{}'".format(title),
             xbmc.LOGDEBUG,
         )
         results, search_error = _search_all_providers(
-            search_type, title, year=year, imdb=imdb, season=season, episode=episode
+            search_type,
+            title,
+            year=year,
+            imdb=imdb,
+            season=season,
+            episode=episode,
+            settings_getter=lambda key, default="": (
+                "true"
+                if key == "nzbhydra_enabled"
+                else _get_addon_setting(addon, key, default)
+            ),
         )
         if search_error:
             xbmc.log(
@@ -1031,8 +1096,6 @@ def _handle_play(handle, params):
             return
 
     # Auto-select best match if enabled
-    import xbmcaddon
-
     addon = xbmcaddon.Addon("plugin.video.nzbdav")
     if _get_addon_setting(addon, "auto_select_best", "false").lower() == "true":
         best = filtered[0]
@@ -1104,9 +1167,6 @@ def _handle_search(handle, params):
         params (dict): Route query parameters (e.g., keys: "type", "title",
             "year", "imdb", "season", "episode", "tmdb_id").
     """
-    import xbmcaddon
-    import xbmcplugin
-
     from resources.lib.cache import get_cached, set_cached
     from resources.lib.filter import filter_results
 
@@ -1139,8 +1199,19 @@ def _handle_search(handle, params):
             "NZB-DAV: Search stage: querying providers for '{}'".format(title),
             xbmc.LOGDEBUG,
         )
+        addon = xbmcaddon.Addon("plugin.video.nzbdav")
         results, search_error = _search_all_providers(
-            search_type, title, year=year, imdb=imdb, season=season, episode=episode
+            search_type,
+            title,
+            year=year,
+            imdb=imdb,
+            season=season,
+            episode=episode,
+            settings_getter=lambda key, default="": (
+                "true"
+                if key == "nzbhydra_enabled"
+                else _get_addon_setting(addon, key, default)
+            ),
         )
         if search_error:
             xbmc.log(
@@ -1346,8 +1417,6 @@ def _handle_script_play(params):
 
     if not filtered:
         if all_parsed:
-            import xbmcgui
-
             choice = xbmcgui.Dialog().yesno(
                 _addon_name(),
                 "All {} results were filtered out. Show unfiltered?".format(
@@ -1473,14 +1542,14 @@ def _get_tmdb_poster(imdb_id):
         return ""
     try:
         import json
-        from urllib.request import urlopen
 
         # Use TMDB's find endpoint (no API key needed for basic lookups via v3)
         # Fall back to a free poster service
         url = "https://v2.sg.media-imdb.com/suggestion/t/{}.json".format(imdb_id)
         try:
             # nosemgrep
-            with urlopen(  # nosec B310 — IMDB suggestion API (trusted)
+            opener = urllib_request.urlopen if urlopen is _ORIGINAL_URLOPEN else urlopen
+            with opener(  # nosec B310 — IMDB suggestion API (trusted)
                 url, timeout=3
             ) as resp:
                 data = json.loads(resp.read())
@@ -1591,8 +1660,6 @@ def _prowlarr_indexers_response_ok(response):
 
 def _test_hydra_connection():
     """Test NZBHydra2 connection and API-key auth with a lightweight search."""
-    import xbmcaddon
-
     addon = xbmcaddon.Addon("plugin.video.nzbdav")
     url = addon.getSetting("hydra_url").rstrip("/")
     api_key = addon.getSetting("hydra_api_key")
@@ -1609,8 +1676,6 @@ def _test_hydra_connection():
 
 def _test_prowlarr_connection():
     """Test Prowlarr connection by hitting the indexer endpoint."""
-    import xbmcaddon
-
     addon = xbmcaddon.Addon("plugin.video.nzbdav")
     host = addon.getSetting("prowlarr_host").rstrip("/")
     api_key = addon.getSetting("prowlarr_api_key")
@@ -1651,8 +1716,6 @@ def _test_direct_indexers_connection():
 
 def _test_nzbdav_connection():
     """Test nzbdav connection and API-key auth by reading the queue."""
-    import xbmcaddon
-
     addon = xbmcaddon.Addon("plugin.video.nzbdav")
     url = addon.getSetting("nzbdav_url").rstrip("/")
     api_key = addon.getSetting("nzbdav_api_key")
@@ -1669,9 +1732,6 @@ def _test_nzbdav_connection():
 
 def _handle_main_menu(handle):
     """Show main menu with settings and install player options."""
-    import xbmcgui
-    import xbmcplugin
-
     li = xbmcgui.ListItem(label=_string(30011))
     url = "plugin://plugin.video.nzbdav/install_player"
     xbmcplugin.addDirectoryItem(handle=handle, url=url, listitem=li, isFolder=False)

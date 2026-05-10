@@ -296,6 +296,24 @@ def test_search_all_providers_calls_direct_indexers_when_enabled(mock_addon):
     )
 
 
+@patch("resources.lib.router.xbmcaddon.Addon")
+def test_search_all_providers_treats_missing_hydra_enabled_as_disabled(mock_addon):
+    from resources.lib.router import _search_all_providers
+
+    addon = MagicMock()
+    addon.getSetting.return_value = ""
+    mock_addon.return_value = addon
+
+    with patch(
+        "resources.lib.hydra.search_hydra",
+        side_effect=AssertionError("Hydra should default disabled"),
+    ):
+        results, error = _search_all_providers("movie", "The Matrix")
+
+    assert not results
+    assert "No search providers enabled" in error
+
+
 @patch("xbmcaddon.Addon")
 def test_search_all_providers_no_provider_error_mentions_direct_indexers(
     mock_addon,
@@ -877,7 +895,7 @@ def _duplicate_release(link, size=8 * 1024**3):
 
 
 def test_fallback_candidate_loader_skips_single_result_pool():
-    selected = _duplicate_release("http://hydra/nzb/only")
+    selected = _duplicate_release("http://prowlarr/nzb/only")
 
     loader = _fallback_candidate_loader_for_selection(selected, [selected])
 
@@ -1025,6 +1043,61 @@ def test_fallback_candidate_loader_skips_duplicate_lookup_when_disabled(
     ):
         assert loader() is FALLBACK_CANDIDATES_DISABLED
     mock_attach.assert_not_called()
+
+
+@patch("resources.lib.router.attach_fallback_candidates_for_selection")
+@patch("resources.lib.router.fallback_candidate_prefetch_settings")
+def test_fallback_candidate_loader_skips_hydra_lookup_when_hydra_disabled(
+    mock_settings, mock_attach
+):
+    selected = _duplicate_release("http://prowlarr/nzb/selected")
+    related = _duplicate_release("http://prowlarr/nzb/related")
+    settings = {
+        "nzbhydra_enabled": "false",
+        "hydra_url": "http://stale-hydra:5076",
+    }
+    mock_settings.return_value = (True, 5)
+
+    def attach_selection(selected_result, _pool, **_kwargs):
+        selected_result["_fallback_candidates"] = [related]
+
+    mock_attach.side_effect = attach_selection
+    loader = _fallback_candidate_loader_for_selection(
+        selected,
+        [selected, related],
+        settings_getter=lambda key, default="": settings.get(key, default),
+    )
+
+    assert callable(loader)
+    with patch(
+        "resources.lib.hydra.fetch_release_duplicate_uploads",
+        side_effect=AssertionError("Hydra disabled should not call duplicate lookup"),
+    ):
+        assert loader() == [related]
+
+
+@patch("resources.lib.router.attach_fallback_candidates_for_selection")
+@patch("resources.lib.router.fallback_candidate_prefetch_settings")
+def test_fallback_candidate_loader_uses_hydra_duplicate_uploads_as_peer_source(
+    mock_settings, mock_attach
+):
+    selected = _duplicate_release("http://hydra/nzb/selected")
+    duplicate_upload = _duplicate_release("http://hydra/nzb/duplicate-upload")
+    mock_settings.return_value = (True, 5)
+
+    def attach_selection(selected_result, pool, **_kwargs):
+        assert list(pool) == [selected, duplicate_upload]
+        selected_result["_fallback_candidates"] = [duplicate_upload]
+
+    mock_attach.side_effect = attach_selection
+    loader = _fallback_candidate_loader_for_selection(selected, [selected])
+
+    assert callable(loader)
+    with patch(
+        "resources.lib.hydra.fetch_release_duplicate_uploads",
+        return_value=[duplicate_upload],
+    ):
+        assert loader() == [duplicate_upload]
 
 
 @patch("resources.lib.router.attach_fallback_candidates_for_selection")
@@ -2617,3 +2690,40 @@ def test_get_tmdb_poster_returns_empty_on_api_error(mock_urlopen):
     UI thread in settings and must never raise."""
     mock_urlopen.side_effect = OSError("connection refused")
     assert _get_tmdb_poster("tt0133093") == ""
+
+
+@patch("resources.lib.router.xbmcplugin")
+@patch("resources.lib.router.xbmcgui")
+@patch("resources.lib.resolver._prepare_direct_playback")
+@patch("resources.lib.resolver._direct_playback_service_config")
+@patch("resources.lib.router.urlopen")
+def test_direct_play_decodes_percent_escaped_userinfo_for_basic_auth(
+    mock_urlopen, mock_config, mock_prepare, _mock_gui, mock_xbmcplugin
+):
+    from resources.lib.router import _handle_direct_play
+
+    class Response:  # pylint: disable=too-few-public-methods
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    mock_urlopen.return_value = Response()
+    mock_config.return_value = {"base_url": "http://127.0.0.1:45678", "token": "tok"}
+    mock_prepare.return_value = "http://127.0.0.1:45678/stream/prepared"
+
+    _handle_direct_play(
+        7,
+        {
+            "primary_url": "http://user%40name:p%40ss%3Aword@example.test/movie.mkv",
+            "fallback_urls": "[]",
+        },
+    )
+
+    request = mock_urlopen.call_args.args[0]
+    assert request.full_url == "http://example.test/movie.mkv"
+    assert request.headers["Authorization"] == "Basic dXNlckBuYW1lOnBAc3M6d29yZA=="
+    mock_xbmcplugin.setResolvedUrl.assert_called_once()

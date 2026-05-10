@@ -38,7 +38,10 @@ _HYDRA_REQUEST_ERRORS = (
 _SOURCE_URL_ERRORS = (AttributeError, TypeError, ValueError)
 _PUBDATE_ERRORS = (OverflowError, TypeError, ValueError)
 addon = xbmcaddon.Addon("plugin.video.nzbdav")
-url = addon.getSetting("hydra_url").rstrip("/")
+try:
+    url = addon.getSetting("hydra_url").rstrip("/")
+except _HYDRA_REQUEST_ERRORS:
+    url = ""
 
 
 # _format_request_error, _get_text, _calculate_age imported from
@@ -112,10 +115,10 @@ def _get_hydra_caps_for_search(base_url, api_key):
     return refreshed_caps, bool(refreshed_caps.get("search_types"))
 
 
-def _fetch_hydra_xml(url, error_prefix):
+def _fetch_hydra_xml(request_url, error_prefix):
     """Fetch XML from Hydra and normalize network/runtime failures."""
     try:
-        return _http_get(url, timeout=300), None
+        return _http_get(request_url, timeout=300), None
     except (URLError,) + _HYDRA_REQUEST_ERRORS as error:
         # HTTPError/URLError str() can echo the failing URL (which embeds
         # the indexer's apikey query param) back into the log. Redact
@@ -229,10 +232,12 @@ def search_hydra(
         )
         return [], None
 
-    url = _search_url(base_url, plan.primary)
+    primary_url = _search_url(base_url, plan.primary)
     from resources.lib.http_util import redact_url
 
-    xbmc.log("NZB-DAV: Hydra search URL: {}".format(redact_url(url)), xbmc.LOGDEBUG)
+    xbmc.log(
+        "NZB-DAV: Hydra search URL: {}".format(redact_url(primary_url)), xbmc.LOGDEBUG
+    )
 
     results, error = _fetch_planned_hydra_results(
         base_url, plan.primary, "Hydra search request failed"

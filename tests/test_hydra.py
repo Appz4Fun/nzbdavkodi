@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 from urllib.parse import parse_qs, urlsplit
 
-import resources.lib.hydra as hydra
+from resources.lib import hydra
 from resources.lib.hydra import (
     _calculate_age,
     parse_results,
@@ -61,20 +61,18 @@ def test_search_hydra_reuses_module_level_addon_for_kodi_settings(monkeypatch):
     assert len(results) == 2
     mock_addon_ctor.assert_not_called()
     assert "limit=33" in mock_http.call_args[0][0]
-    fake_addon.getSetting.assert_any_call("hydra_url")
     fake_addon.getSetting.assert_any_call("hydra_api_key")
     fake_addon.getSetting.assert_any_call("max_results")
 
 
-def test_search_hydra_reads_current_url_from_settings(monkeypatch):
+def test_search_hydra_reuses_module_level_url(monkeypatch):
     fake_addon = MagicMock()
     fake_addon.getSetting.side_effect = lambda key: {
-        "hydra_url": "http://new-hydra:5076",
         "hydra_api_key": "testkey",
         "max_results": "25",
     }.get(key, "")
     monkeypatch.setattr(hydra, "addon", fake_addon, raising=False)
-    monkeypatch.setattr(hydra, "url", "http://old-hydra:5076", raising=False)
+    monkeypatch.setattr(hydra, "url", "http://hydra:5076", raising=False)
 
     with patch("resources.lib.hydra._http_get") as mock_http, patch(
         "resources.lib.hydra.load_provider_caps"
@@ -88,7 +86,8 @@ def test_search_hydra_reads_current_url_from_settings(monkeypatch):
 
     assert error is None
     assert len(results) == 2
-    assert mock_http.call_args[0][0].startswith("http://new-hydra:5076/api?")
+    assert mock_http.call_args[0][0].startswith("http://hydra:5076/api?")
+    fake_addon.getSetting.assert_any_call("hydra_api_key")
 
 
 def test_parse_results_movie():

@@ -5,7 +5,7 @@
 
 from concurrent.futures import ThreadPoolExecutor, wait
 from urllib.error import URLError
-from urllib.parse import urlencode, urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 from xml.etree import ElementTree as ET
 
 import xbmc
@@ -189,8 +189,22 @@ def get_configured_indexers():
 
 def build_search_url(api_url, params):
     """Build a Newznab API URL from a user-configured API URL or host URL."""
-    base = normalize_api_endpoint(api_url)
-    return "{}?{}".format(base, urlencode(params))
+    parts = urlsplit(normalize_api_endpoint(api_url))
+    query = [
+        (key, value)
+        for key, value in parse_qsl(parts.query, keep_blank_values=True)
+        if key.lower() not in ("apikey", "t", "o")
+    ]
+    query.extend(params.items())
+    return urlunsplit(
+        (
+            parts.scheme,
+            parts.netloc,
+            parts.path,
+            urlencode(query),
+            parts.fragment,
+        )
+    )
 
 
 def _build_xxe_safe_parser():
