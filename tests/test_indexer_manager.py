@@ -269,7 +269,59 @@ def test_delete_indexer_persists_removal(monkeypatch):
 
     assert deleted == first
     assert error is None
-    save_indexers.assert_called_once_with([second])
+    save_indexers.assert_called_once_with(
+        [
+            {
+                **first,
+                "api_key": "",
+                "enabled": False,
+                "deleted": True,
+            },
+            second,
+        ]
+    )
+
+
+def test_deleted_migrated_legacy_indexer_does_not_reappear(monkeypatch):
+    legacy = {
+        "id": "custom1",
+        "label": "Static Custom",
+        "api_url": "https://static.example/newznab",
+        "api_key": "custom-key",
+        "caps": {},
+    }
+    stored = [
+        {
+            "id": "custom1",
+            "preset_id": "custom1",
+            "name": "Static Custom",
+            "api_url": "https://static.example/newznab",
+            "api_key": "custom-key",
+            "enabled": True,
+            "caps": {},
+        }
+    ]
+
+    def load_indexers():
+        return list(stored)
+
+    def save_indexers(indexers):
+        stored[:] = [indexer_manager.normalize_indexer(indexer) for indexer in indexers]
+
+    monkeypatch.setattr(indexer_manager, "load_indexers", load_indexers)
+    monkeypatch.setattr(indexer_manager, "save_indexers", save_indexers)
+    monkeypatch.setattr(
+        indexer_manager,
+        "get_legacy_configured_indexers",
+        MagicMock(return_value=[legacy]),
+    )
+
+    deleted, error = indexer_manager.delete_indexer("custom1")
+    indexers = indexer_manager.load_managed_indexers()
+
+    assert deleted["id"] == "custom1"
+    assert error is None
+    assert indexers == []
 
 
 def test_retest_indexer_updates_caps_and_saves_on_success(monkeypatch):
@@ -455,7 +507,16 @@ def test_open_indexer_manager_delete_action_requires_confirmation(monkeypatch):
     indexer_manager.open_indexer_manager()
 
     assert save_indexers.call_count == 1
-    save_indexers.assert_called_with([])
+    save_indexers.assert_called_with(
+        [
+            {
+                **indexer,
+                "api_key": "",
+                "enabled": False,
+                "deleted": True,
+            }
+        ]
+    )
 
 
 def test_open_indexer_manager_stale_selection_returns_without_crashing(monkeypatch):

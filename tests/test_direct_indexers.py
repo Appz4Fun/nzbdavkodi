@@ -194,6 +194,38 @@ def test_get_configured_indexers_disabled_json_row_blocks_legacy_static_fallback
     assert not get_configured_indexers()
 
 
+@patch("resources.lib.direct_indexers.load_indexers")
+@patch("resources.lib.direct_indexers.xbmcaddon")
+def test_get_configured_indexers_deleted_json_row_blocks_legacy_static_fallback(
+    mock_xbmcaddon, mock_load_indexers
+):
+    from resources.lib.direct_indexers import get_configured_indexers
+
+    mock_xbmcaddon.Addon.return_value = _addon_with_settings(
+        {
+            "direct_indexers_enabled": "true",
+            "direct_indexer_custom1_enabled": "true",
+            "direct_indexer_custom1_name": "Static Custom",
+            "direct_indexer_custom1_url": "https://static.example/newznab",
+            "direct_indexer_custom1_api_key": "custom-key",
+        }
+    )
+    mock_load_indexers.return_value = [
+        {
+            "id": "custom1",
+            "preset_id": "custom1",
+            "name": "Static Custom",
+            "api_url": "https://static.example/newznab",
+            "api_key": "",
+            "enabled": False,
+            "deleted": True,
+            "caps": {},
+        }
+    ]
+
+    assert not get_configured_indexers()
+
+
 def test_build_search_url_appends_api_when_missing():
     from resources.lib.direct_indexers import build_search_url
 
