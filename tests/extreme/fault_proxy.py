@@ -41,6 +41,21 @@ VALID_FAULT_TYPES = {
 }
 
 
+def _send_safe_header(handler, name, value) -> None:
+    if not isinstance(name, str) or not isinstance(value, str):
+        return
+    if "\r" in name or "\n" in name or "\r" in value or "\n" in value:
+        return
+    if name.lower() in ("connection", "transfer-encoding"):
+        return
+    handler.send_header(name, value)
+
+
+def _forward_upstream_headers(handler, resp) -> None:
+    for name, value in resp.getheaders():
+        _send_safe_header(handler, name, value)
+
+
 @dataclasses.dataclass
 class ScheduledEvent:
     at_seconds: float
@@ -171,10 +186,7 @@ def _apply_connection_reset(handler, resp, range_header, state) -> None:
         }
     )
     handler.send_response(resp.status, resp.reason)
-    for k, v in resp.getheaders():
-        if k.lower() in ("connection", "transfer-encoding"):
-            continue
-        handler.send_header(k, v)
+    _forward_upstream_headers(handler, resp)
     handler.send_header("Connection", "close")
     handler.close_connection = True
     handler.end_headers()
@@ -215,10 +227,7 @@ def _apply_http_500(handler, resp, range_header, state) -> None:
 def _apply_slow_upstream(handler, resp, range_header, state) -> None:
     """Throttle the response to SLOW_BPS for SLOW_DURATION seconds, then full speed."""
     handler.send_response(resp.status, resp.reason)
-    for k, v in resp.getheaders():
-        if k.lower() in ("connection", "transfer-encoding"):
-            continue
-        handler.send_header(k, v)
+    _forward_upstream_headers(handler, resp)
     handler.send_header("Connection", "close")
     handler.close_connection = True
     handler.end_headers()
@@ -267,10 +276,7 @@ def _apply_truncated_response(handler, resp, range_header, state) -> None:
     then send only FAIL_BYTES of body and close, causing a premature EOF.
     """
     handler.send_response(resp.status, resp.reason)
-    for k, v in resp.getheaders():
-        if k.lower() in ("connection", "transfer-encoding"):
-            continue
-        handler.send_header(k, v)
+    _forward_upstream_headers(handler, resp)
     handler.send_header("Connection", "close")
     handler.close_connection = True
     handler.end_headers()
@@ -305,10 +311,7 @@ def _apply_corrupted_bytes(handler, resp, range_header, state) -> None:
     then stream the remainder of the body unmodified.
     """
     handler.send_response(resp.status, resp.reason)
-    for k, v in resp.getheaders():
-        if k.lower() in ("connection", "transfer-encoding"):
-            continue
-        handler.send_header(k, v)
+    _forward_upstream_headers(handler, resp)
     handler.send_header("Connection", "close")
     handler.close_connection = True
     handler.end_headers()
@@ -492,10 +495,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _passthrough(self, resp, head_only=False):
         self.send_response(resp.status, resp.reason)
-        for k, v in resp.getheaders():
-            if k.lower() in ("connection", "transfer-encoding"):
-                continue
-            self.send_header(k, v)
+        _forward_upstream_headers(self, resp)
         self.send_header("Connection", "close")
         # BaseHTTPRequestHandler owns this connection flag.
         # pylint: disable-next=attribute-defined-outside-init

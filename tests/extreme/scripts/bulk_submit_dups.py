@@ -48,7 +48,9 @@ def _load_movie_list():
 
 IMDB_TOP_50_MOVIES = _load_movie_list()
 
-HYDRA_URL = os.environ.get("HYDRA_URL", "http://192.168.1.93:5076").rstrip("/")
+HYDRA_URL = os.environ.get("HYDRA_URL", "").rstrip("/")
+if not HYDRA_URL:
+    raise RuntimeError("HYDRA_URL is required")
 HYDRA_API_KEY = os.environ["HYDRA_API_KEY"]
 NZBDAV_URL = os.environ.get("NZBDAV_URL", "http://localhost:8180").rstrip("/")
 NZBDAV_API_KEY = os.environ["NZBDAV_API_KEY"]

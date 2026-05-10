@@ -53,6 +53,8 @@ def discover_cinefile_storages(
 ) -> list[tuple[str, str]]:
     """Return up to ``limit`` ``(storage, mkv_path)`` pairs whose
     release-folder basename starts with ``target_prefix``."""
+    if limit <= 0:
+        return []
     nzbdav_url = (
         nzbdav_url or os.environ.get("NZBDAV_URL", "http://localhost:8180")
     ).rstrip("/")

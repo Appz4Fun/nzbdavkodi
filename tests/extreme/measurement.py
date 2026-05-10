@@ -167,14 +167,19 @@ def correlate(timeline: list[dict], fault_events: list[dict]) -> list[dict]:
     in the spec's Measurement section.
     """
     sorted_timeline = sorted(timeline, key=lambda t: t["t_wall"])
+    playable_ticks = [
+        t
+        for t in sorted_timeline
+        if "time_sec" in t and "speed" in t and isinstance(t.get("t_wall"), (int, float))
+    ]
     out = []
     for idx, fault in enumerate(fault_events, start=1):
         f_t = fault["t_wall"]
         # State at fault: last tick at or before f_t
-        before = [t for t in sorted_timeline if t["t_wall"] <= f_t]
+        before = [t for t in playable_ticks if t["t_wall"] <= f_t]
         state_at_fault = before[-1] if before else None
         # Window for resume detection: [f_t, f_t + 30s]
-        window = [t for t in sorted_timeline if f_t <= t["t_wall"] <= f_t + 30.0]
+        window = [t for t in playable_ticks if f_t <= t["t_wall"] <= f_t + 30.0]
         resume_t_wall = None
         if state_at_fault is not None and window:
             ref_time_sec = state_at_fault["time_sec"]
@@ -215,7 +220,7 @@ def correlate(timeline: list[dict], fault_events: list[dict]) -> list[dict]:
             resume_t_wall + 30.0 if resume_t_wall else f_t + 60.0, f_t + 60.0
         )
         freeze_window = [
-            t for t in sorted_timeline if f_t <= t["t_wall"] <= end_window_t
+            t for t in playable_ticks if f_t <= t["t_wall"] <= end_window_t
         ]
         freeze_segments = []
         seg_start = None
@@ -299,6 +304,7 @@ def write_summary(events: list[dict], out_json: Path, out_md: Path) -> None:
         "events": events,
     }
     out_json.parent.mkdir(parents=True, exist_ok=True)
+    out_md.parent.mkdir(parents=True, exist_ok=True)
     out_json.write_text(json.dumps(summary, indent=2, default=str))
 
     rows = [
