@@ -459,7 +459,10 @@ def test_open_indexer_manager_edit_action_updates_fields_and_caps(monkeypatch):
         "API URL",
         "https://api.nzbgeek.info",
     )
-    assert dialog.input.call_args_list[2].args[:2] == ("API key", "")
+    assert dialog.input.call_args_list[2].args[:2] == (
+        "API key",
+        indexer_manager._KEEP_CURRENT,  # pylint: disable=protected-access
+    )
     assert (
         dialog.input.call_args_list[2].kwargs["option"]
         == indexer_manager.xbmcgui.ALPHANUM_HIDE_INPUT
@@ -471,3 +474,24 @@ def test_open_indexer_manager_edit_action_updates_fields_and_caps(monkeypatch):
         api_key="new-secret",
     )
     dialog.notification.assert_called_once()
+
+
+def test_open_indexer_manager_edit_cancel_aborts_without_saving(monkeypatch):
+    indexer = _indexer()
+    dialog = MagicMock()
+    dialog.select.side_effect = [2, 1]
+    dialog.input.side_effect = ["Renamed", ""]
+    update = MagicMock()
+    monkeypatch.setattr(
+        indexer_manager.xbmcgui, "Dialog", MagicMock(return_value=dialog)
+    )
+    monkeypatch.setattr(
+        indexer_manager, "load_indexers", MagicMock(return_value=[indexer])
+    )
+    monkeypatch.setattr(indexer_manager, "update_indexer", update)
+
+    indexer_manager.open_indexer_manager()
+
+    update.assert_not_called()
+    dialog.notification.assert_not_called()
+    dialog.ok.assert_not_called()

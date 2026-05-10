@@ -18,6 +18,7 @@ _TEST = "Test"
 _EDIT = "Edit"
 _DELETE = "Delete"
 _NOT_FOUND = "Indexer not found"
+_KEEP_CURRENT = "<keep current>"
 
 
 def _preset_id(preset):
@@ -277,19 +278,30 @@ def _indexer_actions(indexer):
     return [_TEST, _EDIT, toggle_label, _DELETE]
 
 
-def _input_or_current(dialog, heading, current, hidden=False):
+def _input_or_cancel(dialog, heading, current, hidden=False):
     kwargs = {"option": xbmcgui.ALPHANUM_HIDE_INPUT} if hidden else {}
-    value = dialog.input(heading, "" if hidden else current, **kwargs)
-    return value if value else current
+    default_value = _KEEP_CURRENT if hidden else current
+    value = dialog.input(heading, default_value, **kwargs)
+    if value == "":
+        return None
+    if value == _KEEP_CURRENT:
+        return current
+    return value
 
 
 def _edit_indexer_flow(dialog, indexer):
     current_name = str(indexer.get("name") or "")
     current_url = str(indexer.get("api_url") or "")
     current_key = str(indexer.get("api_key") or "")
-    name = _input_or_current(dialog, "Display name", current_name)
-    api_url = _input_or_current(dialog, "API URL", current_url)
-    api_key = _input_or_current(dialog, "API key", current_key, hidden=True)
+    name = _input_or_cancel(dialog, "Display name", current_name)
+    if name is None:
+        return
+    api_url = _input_or_cancel(dialog, "API URL", current_url)
+    if api_url is None:
+        return
+    api_key = _input_or_cancel(dialog, "API key", current_key, hidden=True)
+    if api_key is None:
+        return
 
     updated, error = update_indexer(
         _indexer_id(indexer),
