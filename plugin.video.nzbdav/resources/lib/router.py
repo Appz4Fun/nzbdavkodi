@@ -256,13 +256,21 @@ def route(argv):
             _test_prowlarr_connection()
         elif path == "/test_direct_indexers":
             _test_direct_indexers_connection()
+        elif path == "/manage_indexers":
+            from resources.lib.indexer_manager import open_indexer_manager
+
+            open_indexer_manager()
         elif path == "/test_webdav":
             _test_webdav_connection()
         elif path == "/test_nzbdav":
             _test_nzbdav_connection()
-        else:
+        elif path == "/menu":
             _handle_main_menu(handle)
             return
+        else:
+            import xbmcaddon
+
+            xbmcaddon.Addon().openSettings()
     except Exception as e:
         xbmc.log(
             "NZB-DAV: Unhandled error in route for path='{}': {}".format(path, e),

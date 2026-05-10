@@ -133,6 +133,31 @@ def test_settings_include_direct_indexers_category():
         )
         is not None
     )
+    manage_action = indexers_category.find(
+        ".//setting[@action='RunPlugin(plugin://plugin.video.nzbdav/manage_indexers)']"
+    )
+    assert manage_action is not None
+    assert manage_action.get("label") == "30195"
+    assert manage_action.get("option") == "close"
+    assert (
+        manage_action.get("visible")
+        == "Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)"
+    )
+
+
+def test_settings_ids_are_unique():
+    settings_xml = REPO_ROOT / "plugin.video.nzbdav" / "resources" / "settings.xml"
+    root = ET.parse(settings_xml).getroot()
+
+    seen = set()
+    duplicates = []
+    for setting in root.findall(".//setting[@id]"):
+        setting_id = setting.get("id")
+        if setting_id in seen:
+            duplicates.append(setting_id)
+        seen.add(setting_id)
+
+    assert not duplicates
 
 
 def test_community_health_files_exist():

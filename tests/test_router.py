@@ -433,9 +433,21 @@ def test_safe_resolve_handle_skips_runplugin_handle(mock_resolved):
 @patch("resources.lib.router._handle_main_menu")
 def test_route_main_menu_does_not_call_safe_resolve(mock_menu, mock_resolved):
     """Main-menu dispatch (directory) must not also call setResolvedUrl."""
-    route(["plugin://plugin.video.nzbdav/", "1", ""])
+    route(["plugin://plugin.video.nzbdav/menu", "1", ""])
     mock_menu.assert_called_once_with(1)
     mock_resolved.assert_not_called()
+
+
+@patch("xbmcplugin.setResolvedUrl")
+def test_route_root_opens_settings_and_resolves_handle(mock_resolved):
+    """Bare add-on clicks should open settings without Kodi's add-on-info dialog."""
+    fake_addon = MagicMock()
+    with patch.dict("sys.modules", {"xbmcaddon": MagicMock(Addon=lambda: fake_addon)}):
+        route(["plugin://plugin.video.nzbdav/", "3", ""])
+    fake_addon.openSettings.assert_called_once()
+    assert mock_resolved.called, "setResolvedUrl must be called for bare root settings"
+    assert mock_resolved.call_args[0][0] == 3
+    assert mock_resolved.call_args[0][1] is False
 
 
 @patch("xbmcplugin.setResolvedUrl")
@@ -595,6 +607,25 @@ def test_route_test_direct_indexers_resolves_handle(mock_resolved):
     test_configured.assert_called_once()
     assert mock_resolved.called
     assert mock_resolved.call_args[0][0] == 12
+    assert mock_resolved.call_args[0][1] is False
+
+
+@patch("xbmcplugin.setResolvedUrl")
+def test_route_manage_indexers_resolves_handle(mock_resolved):
+    """Route /manage_indexers and resolve the action handle."""
+    open_indexer_manager = MagicMock()
+    with patch.dict(
+        "sys.modules",
+        {
+            "resources.lib.indexer_manager": MagicMock(
+                open_indexer_manager=open_indexer_manager
+            )
+        },
+    ):
+        route(["plugin://plugin.video.nzbdav/manage_indexers", "13", ""])
+    open_indexer_manager.assert_called_once()
+    assert mock_resolved.called
+    assert mock_resolved.call_args[0][0] == 13
     assert mock_resolved.call_args[0][1] is False
 
 

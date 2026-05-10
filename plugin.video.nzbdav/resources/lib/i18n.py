@@ -95,6 +95,8 @@ _FALLBACK_STRINGS = {
     30190: "WebDAV authentication failed. Check credentials.",
     30191: "WebDAV server error. Check server logs.",
     30192: "WebDAV connection error. Check server.",
+    30195: "Manage Indexers",
+    30196: "Refresh NZBHydra2 Caps",
 }
 
 
