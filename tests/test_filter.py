@@ -950,6 +950,20 @@ def test_get_filter_settings_unparseable_input_falls_back_to_default():
     assert settings["max_size"] == 0
 
 
+def test_get_filter_settings_non_finite_float_input_falls_back_to_default():
+    from resources.lib.filter import _get_filter_settings
+
+    overrides = {"filter_min_size": "1e309", "filter_max_size": "nan"}
+
+    def getter(key, default=""):
+        return overrides.get(key, default)
+
+    settings = _get_filter_settings(settings_getter=getter)
+
+    assert settings["min_size"] == 0
+    assert settings["max_size"] == 0
+
+
 def test_get_filter_settings_valid_range_unchanged():
     """A normal min<max configuration must pass through cleanly."""
     from resources.lib.filter import _get_filter_settings

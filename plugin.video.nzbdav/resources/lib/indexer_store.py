@@ -74,9 +74,12 @@ def normalize_caps(caps):
 def normalize_indexer(item):
     item = item if isinstance(item, dict) else {}
     deleted = bool(item.get("deleted"))
-    enabled = (
-        False if deleted else _bool_setting(item.get("enabled")) if "enabled" in item else True
-    )
+    if deleted:
+        enabled = False
+    elif "enabled" in item:
+        enabled = _bool_setting(item.get("enabled"))
+    else:
+        enabled = True
     normalized = {
         "id": _text(item.get("id")),
         "preset_id": _text(item.get("preset_id")),

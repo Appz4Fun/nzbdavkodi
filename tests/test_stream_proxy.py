@@ -3,6 +3,7 @@
 
 """Unit tests for stream_proxy.py remux and range-serving logic."""
 
+import concurrent.futures
 import io
 import json
 import subprocess

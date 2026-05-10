@@ -12,6 +12,7 @@ from resources.lib.nzbdav_api import (
     _sanitize_server_message,
     cancel_job,
     completed_jobs_lookup_done,
+    find_terminal_by_name,
     find_queued_by_name,
     get_completed_jobs,
     get_completed_names,
@@ -77,6 +78,20 @@ def test_submit_nzb_uses_settings_getter_without_kodi_addon(mock_http, mock_addo
     assert call_url.startswith("http://nzbdav:3000/api?")
     assert "apikey=scriptkey" in call_url
     assert mock_http.call_args.kwargs["timeout"] == 12
+
+
+@patch("resources.lib.nzbdav_api._get_settings", return_value=("http://nzbdav", "key"))
+@patch("resources.lib.nzbdav_api._history_slots")
+def test_find_terminal_by_name_returns_newest_matching_slot(mock_slots, _mock_settings):
+    mock_slots.return_value = [
+        {"name": "Movie", "status": "Failed", "nzo_id": "older-failed"},
+        {"name": "Movie", "status": "Completed", "nzo_id": "newer-completed"},
+    ]
+
+    result = find_terminal_by_name("Movie")
+
+    assert result["status"] == "Completed"
+    assert result["nzo_id"] == "newer-completed"
 
 
 @patch("resources.lib.nzbdav_api.xbmcaddon")

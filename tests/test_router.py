@@ -1006,6 +1006,26 @@ def test_fallback_candidate_loader_skips_prefetch_when_fallback_disabled(
 
 
 @patch("resources.lib.router.attach_fallback_candidates_for_selection")
+@patch("resources.lib.router.fallback_candidate_prefetch_settings")
+def test_fallback_candidate_loader_skips_duplicate_lookup_when_disabled(
+    mock_settings, mock_attach
+):
+    selected = _duplicate_release("http://hydra/nzb/selected")
+    related = _duplicate_release("http://hydra/nzb/related")
+    mock_settings.return_value = (False, 5)
+
+    loader = _fallback_candidate_loader_for_selection(selected, [selected, related])
+
+    assert callable(loader)
+    with patch(
+        "resources.lib.hydra.fetch_release_duplicate_uploads",
+        side_effect=AssertionError("disabled fallback should not call Hydra"),
+    ):
+        assert loader() is FALLBACK_CANDIDATES_DISABLED
+    mock_attach.assert_not_called()
+
+
+@patch("resources.lib.router.attach_fallback_candidates_for_selection")
 @patch(
     "resources.lib.router.first_prefetchable_fallback_peer",
     side_effect=AssertionError("post-picker loader construction scanned peers"),

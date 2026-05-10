@@ -5,6 +5,7 @@ from resources.lib.indexer_presets import (
     DIRECT_FALLBACK_HOSTS,
     DOGNZB_TVSEARCH_FALLBACK_HOSTS,
     get_preset,
+    host_contains,
     list_newznab_presets,
     slugify_preset_id,
 )
@@ -52,6 +53,10 @@ def test_hydra_host_fallback_hints_are_available():
     assert "dognzb" in DIRECT_FALLBACK_HOSTS
     assert "nzbplanet" in DIRECT_FALLBACK_HOSTS
     assert "dognzb" in DOGNZB_TVSEARCH_FALLBACK_HOSTS
+
+
+def test_host_contains_matches_mixed_case_needles():
+    assert host_contains("api.dognzb.cr", ("DOGNZB",))
 
 
 # ---------------------------------------------------------------------------
