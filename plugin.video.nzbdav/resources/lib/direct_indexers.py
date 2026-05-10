@@ -29,6 +29,8 @@ from resources.lib.http_util import (
 from resources.lib.http_util import (
     redact_url as _redact_url,
 )
+from resources.lib.indexer_store import load_indexers
+from resources.lib.search_planner import plan_newznab_search
 
 PRESET_INDEXERS = (
     ("nzblife", "NZB.life / NZB.su", "https://api.nzb.su/api"),
@@ -77,7 +79,13 @@ def _configured_preset(addon, indexer_id, label, default_url):
             xbmc.LOGDEBUG,
         )
         return None
-    return {"id": indexer_id, "label": label, "api_url": url, "api_key": api_key}
+    return {
+        "id": indexer_id,
+        "label": label,
+        "api_url": url,
+        "api_key": api_key,
+        "caps": {},
+    }
 
 
 def _configured_custom(addon, slot_id):
@@ -94,7 +102,26 @@ def _configured_custom(addon, slot_id):
             xbmc.LOGDEBUG,
         )
         return None
-    return {"id": slot_id, "label": name, "api_url": url, "api_key": api_key}
+    return {
+        "id": slot_id,
+        "label": name,
+        "api_url": url,
+        "api_key": api_key,
+        "caps": {},
+    }
+
+
+def _configured_json_indexer(item):
+    if not item.get("enabled") or not item.get("api_url") or not item.get("api_key"):
+        return None
+    indexer_id = item.get("id") or item.get("preset_id")
+    return {
+        "id": indexer_id,
+        "label": item.get("name") or indexer_id,
+        "api_url": item["api_url"],
+        "api_key": item["api_key"],
+        "caps": item.get("caps", {}),
+    }
 
 
 def get_configured_indexers():
@@ -102,6 +129,14 @@ def get_configured_indexers():
     addon = xbmcaddon.Addon()
     if not _setting_enabled(addon, "direct_indexers_enabled"):
         return []
+
+    json_configured = []
+    for item in load_indexers():
+        configured = _configured_json_indexer(item)
+        if configured:
+            json_configured.append(configured)
+    if json_configured:
+        return json_configured
 
     configured = []
     for indexer_id, label, default_url in PRESET_INDEXERS:
@@ -213,29 +248,6 @@ def _read_max_results():
     return max(1, min(max_results, 100))
 
 
-def _search_params(
-    search_type, title, api_key, max_results, imdb="", season="", episode=""
-):
-    params = {"apikey": api_key, "o": "xml", "limit": max_results}
-    if search_type == "episode":
-        params["t"] = "tvsearch"
-        if imdb:
-            params["imdbid"] = imdb
-        else:
-            params["q"] = title
-        if season:
-            params["season"] = season
-        if episode:
-            params["ep"] = episode
-    else:
-        params["t"] = "movie"
-        if imdb:
-            params["imdbid"] = imdb
-        else:
-            params["q"] = title
-    return params
-
-
 def _indexer_unavailable_error(indexer, error):
     return "Direct indexer {} unavailable: {}".format(
         indexer["label"], _format_request_error(error)
@@ -321,15 +333,28 @@ def _fetch_indexer(indexer, params, error_prefix):
 def _search_one_indexer(
     indexer, search_type, title, max_results, imdb="", season="", episode=""
 ):
-    params = _search_params(
-        search_type,
-        title,
-        indexer["api_key"],
-        max_results,
+    plan = plan_newznab_search(
+        provider_kind="direct",
+        host=indexer["api_url"],
+        search_type=search_type,
+        title=title,
         imdb=imdb,
         season=season,
         episode=episode,
+        caps=indexer.get("caps", {}),
+        api_key=indexer["api_key"],
+        max_results=max_results,
     )
+    params = plan.primary
+    if not params:
+        xbmc.log(
+            "NZB-DAV: Direct indexer {} has no supported search query; skipping".format(
+                indexer["label"]
+            ),
+            xbmc.LOGDEBUG,
+        )
+        return [], None
+
     xml_text, request_error = _fetch_indexer(
         indexer, params, "Direct indexer {} search failed".format(indexer["label"])
     )
@@ -339,12 +364,11 @@ def _search_one_indexer(
     if parse_error:
         return [], parse_error
 
-    if not results and imdb and title:
-        params.pop("imdbid", None)
-        params["q"] = title
+    fallback = plan.fallback
+    if not results and fallback and fallback != params:
         xml_text, request_error = _fetch_indexer(
             indexer,
-            params,
+            fallback,
             "Direct indexer {} title fallback failed".format(indexer["label"]),
         )
         if request_error:
