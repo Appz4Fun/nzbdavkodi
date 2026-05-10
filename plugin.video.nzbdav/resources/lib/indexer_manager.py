@@ -8,12 +8,14 @@ import xbmcgui
 
 from resources.lib.hydra import refresh_hydra_caps
 from resources.lib.i18n import addon_name, string
-from resources.lib.indexer_presets import list_newznab_presets
+from resources.lib.indexer_presets import list_newznab_presets, slugify_preset_id
 from resources.lib.indexer_store import load_indexers, normalize_indexer, save_indexers
 from resources.lib.newznab_caps import fetch_caps
 
 _ADD_NEWZNAB = "Add Newznab Indexer"
+_CUSTOM_NEWZNAB = "Custom Newznab"
 _TEST = "Test"
+_EDIT = "Edit"
 _DELETE = "Delete"
 _NOT_FOUND = "Indexer not found"
 
@@ -46,6 +48,20 @@ def _normalized_preset_entry(preset, api_key, caps):
     )
 
 
+def _normalized_custom_entry(name, api_url, api_key, caps):
+    return normalize_indexer(
+        {
+            "id": slugify_preset_id(name),
+            "preset_id": "custom",
+            "name": name,
+            "api_url": api_url,
+            "api_key": api_key,
+            "enabled": True,
+            "caps": caps,
+        }
+    )
+
+
 def _replace_indexer(indexers, indexer):
     return [
         existing
@@ -68,6 +84,17 @@ def add_preset_indexer(preset, api_key):
         return None, error
 
     indexer = _normalized_preset_entry(preset, api_key, caps)
+    save_indexers(_replace_indexer(load_indexers(), indexer))
+    return indexer, None
+
+
+def add_custom_indexer(name, api_url, api_key):
+    """Fetch caps and persist an enabled custom Newznab indexer."""
+    caps, error = fetch_caps(api_url, api_key)
+    if error:
+        return None, error
+
+    indexer = _normalized_custom_entry(name, api_url, api_key, caps)
     save_indexers(_replace_indexer(load_indexers(), indexer))
     return indexer, None
 
@@ -151,6 +178,35 @@ def retest_indexer(indexer_id):
     return caps, None
 
 
+def update_indexer(indexer_id, name=None, api_url=None, api_key=None):
+    """Update editable indexer fields, refreshing caps when connection changes."""
+    indexers = load_indexers()
+    position, indexer = _find_indexer(indexers, indexer_id)
+    if indexer is None:
+        return None, _NOT_FOUND
+
+    updated = dict(indexer)
+    if name is not None:
+        updated["name"] = name
+    if api_url is not None:
+        updated["api_url"] = api_url
+    if api_key is not None:
+        updated["api_key"] = api_key
+
+    connection_changed = updated.get("api_url") != indexer.get(
+        "api_url"
+    ) or updated.get("api_key") != indexer.get("api_key")
+    if connection_changed:
+        caps, error = fetch_caps(updated.get("api_url"), updated.get("api_key"))
+        if error:
+            return None, error
+        updated["caps"] = caps
+
+    indexers[position] = normalize_indexer(updated)
+    save_indexers(indexers)
+    return indexers[position], None
+
+
 def _notify(dialog, message, time=3000):
     dialog.notification(addon_name(), message, time=time)
 
@@ -168,15 +224,16 @@ def _show_result(dialog, success_message, error):
 
 def _add_preset_flow(dialog):
     presets = list_newznab_presets()
-    if not presets:
-        _ok(dialog, "No Newznab presets available")
-        return
+    options = [_CUSTOM_NEWZNAB] + [preset.get("name", "") for preset in presets]
 
-    choice = dialog.select(_ADD_NEWZNAB, [preset.get("name", "") for preset in presets])
+    choice = dialog.select(_ADD_NEWZNAB, options)
     if choice < 0:
         return
+    if choice == 0:
+        _add_custom_flow(dialog)
+        return
 
-    preset = presets[choice]
+    preset = presets[choice - 1]
     api_key = dialog.input(
         "{} API key".format(preset.get("name", "")),
         "",
@@ -192,6 +249,24 @@ def _add_preset_flow(dialog):
         _notify(dialog, "Added {}".format(_indexer_label(indexer)))
 
 
+def _add_custom_flow(dialog):
+    name = dialog.input("Indexer name", "")
+    if not name:
+        return
+    api_url = dialog.input("API URL", "")
+    if not api_url:
+        return
+    api_key = dialog.input("API key", "", option=xbmcgui.ALPHANUM_HIDE_INPUT)
+    if not api_key:
+        return
+
+    indexer, error = add_custom_indexer(name, api_url, api_key)
+    if error:
+        _ok(dialog, error)
+    else:
+        _notify(dialog, "Added {}".format(_indexer_label(indexer)))
+
+
 def _refresh_hydra_flow(dialog):
     _caps, error = refresh_hydra_provider_caps()
     _show_result(dialog, "NZBHydra2 caps refreshed", error)
@@ -199,7 +274,33 @@ def _refresh_hydra_flow(dialog):
 
 def _indexer_actions(indexer):
     toggle_label = "Disable" if indexer.get("enabled") else "Enable"
-    return [_TEST, toggle_label, _DELETE]
+    return [_TEST, _EDIT, toggle_label, _DELETE]
+
+
+def _input_or_current(dialog, heading, current, hidden=False):
+    kwargs = {"option": xbmcgui.ALPHANUM_HIDE_INPUT} if hidden else {}
+    value = dialog.input(heading, "" if hidden else current, **kwargs)
+    return value if value else current
+
+
+def _edit_indexer_flow(dialog, indexer):
+    current_name = str(indexer.get("name") or "")
+    current_url = str(indexer.get("api_url") or "")
+    current_key = str(indexer.get("api_key") or "")
+    name = _input_or_current(dialog, "Display name", current_name)
+    api_url = _input_or_current(dialog, "API URL", current_url)
+    api_key = _input_or_current(dialog, "API key", current_key, hidden=True)
+
+    updated, error = update_indexer(
+        _indexer_id(indexer),
+        name=name,
+        api_url=api_url,
+        api_key=api_key,
+    )
+    if error:
+        _ok(dialog, error)
+    else:
+        _notify(dialog, "Updated {}".format(_indexer_label(updated)))
 
 
 def _existing_indexer_flow(dialog, indexer):
@@ -212,13 +313,15 @@ def _existing_indexer_flow(dialog, indexer):
         _caps, error = retest_indexer(indexer_id)
         _show_result(dialog, "{} caps OK".format(_indexer_label(indexer)), error)
     elif choice == 1:
+        _edit_indexer_flow(dialog, indexer)
+    elif choice == 2:
         updated, error = toggle_indexer_enabled(indexer_id)
         if error:
             _ok(dialog, error)
         else:
             state = "enabled" if updated.get("enabled") else "disabled"
             _notify(dialog, "{} {}".format(_indexer_label(updated), state))
-    elif choice == 2 and dialog.yesno(
+    elif choice == 3 and dialog.yesno(
         addon_name(), "Delete {}?".format(_indexer_label(indexer))
     ):
         _deleted, error = delete_indexer(indexer_id)
@@ -239,5 +342,5 @@ def open_indexer_manager():
         _add_preset_flow(dialog)
     elif choice == 1:
         _refresh_hydra_flow(dialog)
-    else:
+    elif choice - 2 < len(indexers):
         _existing_indexer_flow(dialog, indexers[choice - 2])
