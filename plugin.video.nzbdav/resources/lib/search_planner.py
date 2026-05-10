@@ -106,21 +106,34 @@ def _direct_episode_fallback(provider_kind, host):
     )
 
 
-def _generic_search(base, title):
-    return _params(base, "search", q=title)
+def _no_query_plan():
+    return NewznabSearchPlan({}, None, "no_supported_query")
+
+
+def _generic_search(base, title, caps=None):
+    if _missing_caps(caps):
+        return _params(base, "search", q=title)
+    if not _supports(caps, "search"):
+        return None
+    if title and _supports(caps, "search", "q"):
+        return _params(base, "search", q=title)
+    return _params(base, "search")
 
 
 def _movie_title_params(base, provider_kind, host, title, caps):
     if _direct_movie_title_fallback(provider_kind, host):
-        return _generic_search(base, title), "direct_movie_title_search_fallback"
+        return (
+            _generic_search(base, title, caps),
+            "direct_movie_title_search_fallback",
+        )
     if _supports(caps, "movie", "q"):
         return _params(base, "movie", q=title), "movie_title"
-    return _generic_search(base, title), "movie_title_search_fallback"
+    return _generic_search(base, title, caps), "movie_title_search_fallback"
 
 
 def _movie_plan(base, provider_kind, host, title, imdb, caps):
     imdbid = _imdb_digits(imdb)
-    fallback = _generic_search(base, title) if title else None
+    fallback = _generic_search(base, title, caps) if title else None
     if imdbid and _supports(caps, "movie", "imdbid"):
         return NewznabSearchPlan(
             _params(base, "movie", imdbid=imdbid),
@@ -129,14 +142,18 @@ def _movie_plan(base, provider_kind, host, title, imdb, caps):
         )
 
     primary, reason = _movie_title_params(base, provider_kind, host, title, caps)
+    if primary is None:
+        return _no_query_plan()
     return NewznabSearchPlan(primary, fallback, reason)
 
 
 def _episode_plan(base, provider_kind, host, title, imdb, season, episode, caps):
-    fallback = _generic_search(base, title) if title else None
+    fallback = _generic_search(base, title, caps) if title else None
     if _direct_episode_fallback(provider_kind, host) or not _supports(caps, "tvsearch"):
+        if fallback is None:
+            return _no_query_plan()
         return NewznabSearchPlan(
-            _generic_search(base, title), fallback, "episode_search_fallback"
+            fallback, fallback, "episode_search_fallback"
         )
 
     params = _params(base, "tvsearch")

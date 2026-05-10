@@ -149,3 +149,61 @@ def test_missing_caps_keeps_conservative_defaults():
         "ep": "5",
     }
     assert episode.reason == "missing_caps_episode_default"
+
+
+def test_movie_title_without_supported_search_returns_no_query():
+    plan = plan_newznab_search(
+        provider_kind="direct",
+        host="https://api.example.test",
+        search_type="movie",
+        title="The Matrix",
+        caps={
+            "search_types": ["movie"],
+            "supported_params": {"movie": ["imdbid"]},
+        },
+        api_key="secret",
+        max_results=25,
+    )
+
+    assert plan.primary == {}
+    assert plan.fallback is None
+    assert plan.reason == "no_supported_query"
+
+
+def test_episode_without_tvsearch_or_search_returns_no_query():
+    plan = plan_newznab_search(
+        provider_kind="direct",
+        host="https://api.example.test",
+        search_type="episode",
+        title="Silo",
+        caps={
+            "search_types": ["movie"],
+            "supported_params": {"movie": ["q", "imdbid"]},
+        },
+        api_key="secret",
+        max_results=25,
+    )
+
+    assert plan.primary == {}
+    assert plan.fallback is None
+    assert plan.reason == "no_supported_query"
+
+
+def test_generic_search_without_q_does_not_include_unsupported_q():
+    plan = plan_newznab_search(
+        provider_kind="direct",
+        host="https://api.nzbgeek.info",
+        search_type="movie",
+        title="The Matrix",
+        caps={
+            "search_types": ["search", "movie"],
+            "supported_params": {"search": [], "movie": []},
+        },
+        api_key="secret",
+        max_results=25,
+    )
+
+    assert plan.primary == {"apikey": "secret", "o": "xml", "limit": 25, "t": "search"}
+    assert "q" not in plan.primary
+    assert plan.fallback == plan.primary
+    assert plan.reason == "direct_movie_title_search_fallback"
