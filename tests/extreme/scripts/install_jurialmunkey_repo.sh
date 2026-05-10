@@ -5,11 +5,12 @@ set -euo pipefail
 
 CONTAINER="${1:?usage: install_jurialmunkey_repo.sh <container>}"
 BASE_URL="https://jurialmunkey.github.io/repository.jurialmunkey/"
+CURL_TIMEOUT_OPTS=(--connect-timeout 10 --max-time 60)
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
 
 echo "[jurialmunkey] Discovering latest repo zip from $BASE_URL"
-INDEX_HTML="$(curl -fsSL "$BASE_URL")"
+INDEX_HTML="$(curl -fsSL "${CURL_TIMEOUT_OPTS[@]}" "$BASE_URL")"
 ZIP_NAME="$(echo "$INDEX_HTML" \
   | grep -oE 'repository\.jurialmunkey-[0-9.]+\.zip' \
   | sort -V | tail -n1)"
@@ -21,7 +22,7 @@ fi
 
 ZIP_URL="${BASE_URL}${ZIP_NAME}"
 echo "[jurialmunkey] Downloading $ZIP_URL"
-curl -fsSL -o "$WORKDIR/$ZIP_NAME" "$ZIP_URL"
+curl -fsSL "${CURL_TIMEOUT_OPTS[@]}" -o "$WORKDIR/$ZIP_NAME" "$ZIP_URL"
 
 echo "[jurialmunkey] Extracting on host"
 unzip -q "$WORKDIR/$ZIP_NAME" -d "$WORKDIR/extracted"

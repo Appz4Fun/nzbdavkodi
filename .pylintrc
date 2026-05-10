@@ -51,8 +51,6 @@ disable=
     broad-exception-caught,
     # Duplicate imports from conditional blocks
     reimported,
-    # Lazy Kodi imports intentionally create module cycles in runtime-only paths
-    cyclic-import,
     # Not subscriptable false positives on older Python
     unsubscriptable-object,
     # Raise from handled elsewhere

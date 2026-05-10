@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 nzbdav contributors
+# pylint: disable=cyclic-import
 
 """Resolve flow: submit NZB to nzbdav, poll until stream is ready, play."""
 
