@@ -70,7 +70,7 @@ def _sanitize_server_message(raw):
 
 def _get_settings(settings_getter=None):
     if settings_getter is None:
-        addon = xbmcaddon.Addon()
+        addon = xbmcaddon.Addon("plugin.video.nzbdav")
         url = addon.getSetting("nzbdav_url").rstrip("/")
         api_key = addon.getSetting("nzbdav_api_key")
     else:
@@ -110,7 +110,7 @@ def _get_submit_timeout(settings_getter=None):
     in the Kodi settings UI can't produce a 83-hour timeout."""
     try:
         if settings_getter is None:
-            raw = xbmcaddon.Addon().getSetting("submit_timeout")
+            raw = xbmcaddon.Addon("plugin.video.nzbdav").getSetting("submit_timeout")
         else:
             raw = settings_getter("submit_timeout", "")
         value = int(raw) if raw else _DEFAULT_SUBMIT_TIMEOUT
@@ -135,6 +135,44 @@ def _is_timeout_error(exc):
     if reason is not None and isinstance(reason, socket.timeout):
         return True
     return False
+
+
+def _dump_submitted_nzb(nzb_url, nzb_name):
+    """Save the NZB body that's about to be submitted to nzbdav-rs.
+
+    No-op unless ``NZBDAV_DUMP_NZBS_DIR`` is set in the environment. Used
+    by the extreme functional test to inspect the bytes that went into
+    nzbdav-rs's deobfuscator when a job fails with "no importable video
+    file found", so we can tell whether the NZB itself is malformed (or
+    just unsupported by nzbdav-rs).
+    """
+    import os
+
+    dump_dir = os.environ.get("NZBDAV_DUMP_NZBS_DIR", "").strip()
+    if not dump_dir or not nzb_url:
+        return
+    try:
+        os.makedirs(dump_dir, exist_ok=True)
+        safe_name = (nzb_name or "submission").replace("/", "_")[:200]
+        out_path = os.path.join(dump_dir, "{}.nzb".format(safe_name))
+        # Use _http_get to inherit the addon's HTTP client (timeout,
+        # redirects, retries). Hydra returns NZBs as text/xml.
+        body = _http_get(nzb_url, timeout=30)
+        if isinstance(body, str):
+            body = body.encode("utf-8")
+        with open(out_path, "wb") as fh:
+            fh.write(body)
+        xbmc.log(
+            "NZB-DAV: Dumped submitted NZB '{}' to {}".format(nzb_name, out_path),
+            xbmc.LOGINFO,
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: Failed to dump submitted NZB '{}': {}".format(
+                nzb_name, _redact_text(str(exc))
+            ),
+            xbmc.LOGWARNING,
+        )
 
 
 def submit_nzb(nzb_url, nzb_name="", settings_getter=None, submit_timeout=None):
@@ -164,7 +202,7 @@ def submit_nzb(nzb_url, nzb_name="", settings_getter=None, submit_timeout=None):
           caller may retry.
 
     Side effects:
-        Reads nzbdav settings from Kodi via xbmcaddon.Addon().
+        Reads nzbdav settings from Kodi via xbmcaddon.Addon("plugin.video.nzbdav").
         Performs an HTTP GET to nzbdav /api with mode=addurl.
         Logs submission URLs, successes, and errors to the Kodi log.
     """
@@ -195,6 +233,12 @@ def submit_nzb(nzb_url, nzb_name="", settings_getter=None, submit_timeout=None):
         "NZB-DAV: Submit NZB URL (timeout={}s): {}".format(timeout, redact_url(url)),
         xbmc.LOGDEBUG,
     )
+    # Optional NZB dump for the extreme functional test: when
+    # NZBDAV_DUMP_NZBS_DIR is set, fetch the NZB body the addon is about
+    # to ask nzbdav-rs to download and write it to disk. Lets the test
+    # post-mortem inspect the exact bytes that went into nzbdav-rs's
+    # deobfuscator (e.g. for "no importable video file found" failures).
+    _dump_submitted_nzb(nzb_url, nzb_name)
     try:
         response_text = _http_get(url, timeout=timeout)
         response = _coerce_response_dict(json.loads(response_text))
@@ -417,6 +461,39 @@ def find_completed_by_name(name, settings_getter=None):
     return find_completed_by_names([name], settings_getter=settings_getter).get(name)
 
 
+def find_terminal_by_name(name, settings_getter=None):
+    """Return the most recent terminal (Completed or Failed) history slot by name.
+
+    Used by the resolver's poll loop to detect that nzbdav-rs has finished
+    a job — pass or fail — when its history slot carries a different
+    nzo_id than the addon submitted (the queue→history nzo_id remap).
+    Distinct from ``find_completed_by_name`` which intentionally matches
+    only ``Completed`` rows so callers looking for a ready-to-play stream
+    don't pick up a failure.
+
+    Returns dict with: status, storage, name, nzo_id, fail_message. None
+    if no matching history row is found.
+    """
+    if not name:
+        return None
+    try:
+        base_url, api_key = _get_settings(settings_getter=settings_getter)
+    except Exception:  # pylint: disable=broad-except
+        return None
+    params = {
+        "mode": "history",
+        "apikey": api_key,
+        "output": "json",
+        "limit": 200,
+        "search": _history_search_term(name),
+    }
+    slots = _history_slots(base_url, params, "terminal lookup for '{}'".format(name))
+    for slot in slots:
+        if slot.get("name") == name and slot.get("status") in ("Completed", "Failed"):
+            return _completed_job_from_slot(slot)
+    return None
+
+
 def _unique_names(names):
     """Return non-empty names in first-seen order."""
     unique = []
@@ -443,6 +520,7 @@ def _completed_job_from_slot(slot):
         "storage": slot.get("storage", ""),
         "name": slot.get("name", ""),
         "nzo_id": slot.get("nzo_id", ""),
+        "fail_message": slot.get("fail_message", ""),
     }
 
 
@@ -658,7 +736,7 @@ def get_completed_jobs():
         mapping on any error or when no completed jobs exist.
 
     Side effects:
-        Reads nzbdav settings from Kodi via xbmcaddon.Addon().
+        Reads nzbdav settings from Kodi via xbmcaddon.Addon("plugin.video.nzbdav").
         Performs an HTTP GET to nzbdav /api?mode=history on every call; avoid
         calling this in tight loops.
         Logs the number of names loaded at debug level.

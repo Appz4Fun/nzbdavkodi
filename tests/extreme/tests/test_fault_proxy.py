@@ -1,5 +1,7 @@
 """Unit tests for tests.extreme.fault_proxy."""
 
+# pylint: disable=no-name-in-module,redefined-outer-name
+
 import http.client
 import json
 import socketserver

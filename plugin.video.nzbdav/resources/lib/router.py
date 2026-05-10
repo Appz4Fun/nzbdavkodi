@@ -209,6 +209,18 @@ def route(argv):
                 clean.get("title", ""),
                 params=clean,
             )
+        elif path == "/direct_play":
+            # Test/diagnostic entry: play an explicit primary stream URL
+            # via the addon's stream_proxy (so failover validates each
+            # fallback with the 100×4 KiB SHA256 sweep before swapping
+            # the upstream — Kodi keeps reading from the same proxy
+            # URL, so the user sees no interruption).
+            #
+            # Query params:
+            #   primary_url     — full URL with embedded auth user:pass
+            #   fallback_urls   — JSON array of URLs (with embedded auth)
+            _handle_direct_play(handle, params)
+            return
         elif path == "/install_player":
             from resources.lib.player_installer import install_player
 
@@ -227,7 +239,7 @@ def route(argv):
         elif path == "/settings":
             import xbmcaddon
 
-            xbmcaddon.Addon().openSettings()
+            xbmcaddon.Addon("plugin.video.nzbdav").openSettings()
         elif path == "/configure_preferred_groups":
             from resources.lib.filter import (
                 DEFAULT_PREFERRED_GROUPS,
@@ -270,7 +282,7 @@ def route(argv):
         else:
             import xbmcaddon
 
-            xbmcaddon.Addon().openSettings()
+            xbmcaddon.Addon("plugin.video.nzbdav").openSettings()
     except Exception as e:
         xbmc.log(
             "NZB-DAV: Unhandled error in route for path='{}': {}".format(path, e),
@@ -311,7 +323,28 @@ def _fallback_candidate_loader_for_selection(selected, results, settings_getter=
     first_peer = cached_selection_pool_first_peer(selected, results)
 
     def _load_fallback_candidates():
-        if not selection_pool_may_have_fallback_peer(selected, results):
+        # Augment the picker's deduped pool with same-title alternate
+        # uploads from Hydra's internal API (showSingleResult... = false).
+        # The picker UX still shows one row per release for clean UI, but
+        # the fallback worker needs real same-release/different-upload
+        # peers — those are exactly what nzbdav-rs needs to swap to
+        # without interrupting playback when the primary stream's
+        # articles fail.
+        from resources.lib.hydra import fetch_release_duplicate_uploads
+
+        try:
+            extra_uploads = fetch_release_duplicate_uploads(
+                selected, settings_getter=settings_getter
+            )
+        except Exception as error:  # pylint: disable=broad-except
+            xbmc.log(
+                "NZB-DAV: duplicate-uploads lookup raised: {}".format(error),
+                xbmc.LOGDEBUG,
+            )
+            extra_uploads = []
+        augmented = list(results or []) + list(extra_uploads or [])
+
+        if not selection_pool_may_have_fallback_peer(selected, augmented):
             return FALLBACK_CANDIDATES_DISABLED
         if settings_getter is None:
             fallback_settings = fallback_candidate_prefetch_settings()
@@ -321,11 +354,11 @@ def _fallback_candidate_loader_for_selection(selected, results, settings_getter=
             )
         if not fallback_candidate_prefetch_enabled(fallback_settings):
             return FALLBACK_CANDIDATES_DISABLED
-        known_first_peer = cached_selection_pool_first_peer(selected, results)
+        known_first_peer = cached_selection_pool_first_peer(selected, augmented)
         attach_fallback_candidates_for_selection(
             selected,
             _selection_pool_with_peer_first(
-                selected, results, known_first_peer or first_peer
+                selected, augmented, known_first_peer or first_peer
             ),
             fallback_settings=fallback_settings,
         )
@@ -444,7 +477,7 @@ def _search_all_providers(
     if settings_getter is None:
         import xbmcaddon
 
-        addon = xbmcaddon.Addon()
+        addon = xbmcaddon.Addon("plugin.video.nzbdav")
         _script_play_stage("providers addon created")
 
         def settings_getter(key, default=""):
@@ -633,6 +666,162 @@ def _lookup_episode_info(imdb, tmdb_id=""):
     return None
 
 
+def _handle_direct_play(handle, params):
+    """Resolve a primary stream URL through stream_proxy and hand
+    Kodi the proxy URL via setResolvedUrl.
+
+    Returns a single proxy URL to Kodi — when an article fails on the
+    primary upstream, stream_proxy validates the fallback (HEAD +
+    100×4 KiB SHA256 sweep) and continues serving Kodi the same
+    response stream from the new upstream's matching offset, with no
+    Player.Stop / no rewind to t=0 / no visible blip.
+
+    Triggered via ``Player.Open({"file": "plugin://plugin.video.nzbdav/direct_play?..."})``
+    so the handle is real and setResolvedUrl actually starts playback.
+    """
+    import base64
+    import json as _json
+
+    from urllib.error import HTTPError, URLError
+    from urllib.parse import urlsplit, urlunsplit
+    from urllib.request import Request, urlopen
+
+    import xbmcgui
+    import xbmcplugin
+
+    from resources.lib.resolver import (
+        _direct_playback_service_config,
+        _prepare_direct_playback,
+    )
+
+    def _split_auth(url):
+        """Return (clean_url, auth_header) — Python urllib's name
+        resolver mis-parses ``user:pass@host`` and raises gaierror,
+        so we have to peel off the inline auth and pass it via header."""
+        try:
+            parsed = urlsplit(url)
+        except (ValueError, TypeError):
+            return url, ""
+        if parsed.username is None:
+            return url, ""
+        userpass = "{}:{}".format(parsed.username, parsed.password or "")
+        encoded = base64.b64encode(userpass.encode()).decode()
+        host = parsed.hostname or ""
+        if parsed.port:
+            host = "{}:{}".format(host, parsed.port)
+        clean = urlunsplit(
+            (parsed.scheme, host, parsed.path, parsed.query, parsed.fragment)
+        )
+        return clean, "Basic " + encoded
+
+    primary_url_raw = params.get("primary_url", "")
+    fallback_urls_raw = params.get("fallback_urls", "[]")
+    if not primary_url_raw:
+        xbmc.log("NZB-DAV: /direct_play missing primary_url", xbmc.LOGERROR)
+        xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+        return
+    primary_url, primary_auth = _split_auth(primary_url_raw)
+    try:
+        fallback_urls = _json.loads(fallback_urls_raw)
+    except (TypeError, ValueError):
+        fallback_urls = []
+    if not isinstance(fallback_urls, list):
+        fallback_urls = []
+
+    def _head_length(url, auth_header):
+        try:
+            headers = {}
+            if auth_header:
+                headers["Authorization"] = auth_header
+            req = Request(url, method="HEAD", headers=headers)
+            # nosemgrep
+            with urlopen(req, timeout=10) as resp:  # nosec B310
+                length = int(resp.headers.get("Content-Length", "0") or 0)
+                if length <= 0:
+                    return 0, "missing-length"
+                return length, ""
+        except HTTPError as exc:
+            return 0, "http-{}".format(exc.code)
+        except URLError as exc:
+            return 0, "url-{}".format(exc.reason)
+        except (OSError, ValueError) as exc:
+            return 0, str(exc)[:60]
+
+    primary_len, primary_err = _head_length(primary_url, primary_auth)
+    if primary_err:
+        xbmc.log(
+            "NZB-DAV: /direct_play primary HEAD failed: {}".format(primary_err),
+            xbmc.LOGERROR,
+        )
+        xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+        return
+
+    fallback_sources = []
+    for idx, url_raw in enumerate(fallback_urls):
+        if not isinstance(url_raw, str) or not url_raw:
+            continue
+        url, auth = _split_auth(url_raw)
+        length, err = _head_length(url, auth)
+        if err or length <= 0:
+            xbmc.log(
+                "NZB-DAV: /direct_play skipping unstreamable fallback "
+                "({}): {}".format(err, url[:120]),
+                xbmc.LOGWARNING,
+            )
+            continue
+        stream_headers = {"Authorization": auth} if auth else {}
+        fallback_sources.append(
+            {
+                "title": "direct-play-fallback-{}".format(idx),
+                "nzb_url": "",
+                "job_name": "direct-play-fallback-{}".format(idx),
+                "nzo_id": "direct-play-fallback-{}".format(idx),
+                "stream_url": url,
+                "stream_headers": stream_headers,
+                "content_length": length,
+            }
+        )
+
+    xbmc.log(
+        "NZB-DAV: /direct_play primary={} fallbacks={}".format(
+            primary_url[:120], len(fallback_sources)
+        ),
+        xbmc.LOGINFO,
+    )
+
+    primary_headers = {"Authorization": primary_auth} if primary_auth else {}
+    service_port, prepare_token = _direct_playback_service_config()
+    prepared = _prepare_direct_playback(
+        primary_url,
+        primary_headers,
+        fallback_sources=fallback_sources,
+        service_port=service_port,
+        prepare_token=prepare_token,
+    )
+    if not prepared:
+        xbmc.log("NZB-DAV: /direct_play prepare returned no payload", xbmc.LOGERROR)
+        xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+        return
+    proxy_url = prepared.get("playback_url") or prepared.get("proxy_url")
+    if not proxy_url:
+        xbmc.log(
+            "NZB-DAV: /direct_play prepared payload missing proxy URL: keys={}".format(
+                list(prepared.keys())
+            ),
+            xbmc.LOGERROR,
+        )
+        xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+        return
+    xbmc.log(
+        "NZB-DAV: /direct_play handing Kodi proxy URL: {}".format(proxy_url[:160]),
+        xbmc.LOGINFO,
+    )
+    listitem = xbmcgui.ListItem(path=proxy_url)
+    listitem.setMimeType("video/x-matroska")
+    listitem.setContentLookup(False)
+    xbmcplugin.setResolvedUrl(handle, True, listitem)
+
+
 def _handle_play(handle, params):
     """
     Handle a play request from TMDBHelper by searching configured providers
@@ -802,7 +991,7 @@ def _handle_play(handle, params):
     # Auto-select best match if enabled
     import xbmcaddon
 
-    addon = xbmcaddon.Addon()
+    addon = xbmcaddon.Addon("plugin.video.nzbdav")
     if _get_addon_setting(addon, "auto_select_best", "false").lower() == "true":
         best = filtered[0]
         from resources.lib.resolver import resolve
@@ -978,7 +1167,7 @@ def _handle_search(handle, params):
             return
 
     # Auto-select best match if enabled
-    addon = xbmcaddon.Addon()
+    addon = xbmcaddon.Addon("plugin.video.nzbdav")
     if (
         _get_addon_setting(addon, "auto_select_best", "false").lower() == "true"
         and filtered
@@ -1362,7 +1551,7 @@ def _test_hydra_connection():
     """Test NZBHydra2 connection and API-key auth with a lightweight search."""
     import xbmcaddon
 
-    addon = xbmcaddon.Addon()
+    addon = xbmcaddon.Addon("plugin.video.nzbdav")
     url = addon.getSetting("hydra_url").rstrip("/")
     api_key = addon.getSetting("hydra_api_key")
     params = {
@@ -1380,7 +1569,7 @@ def _test_prowlarr_connection():
     """Test Prowlarr connection by hitting the indexer endpoint."""
     import xbmcaddon
 
-    addon = xbmcaddon.Addon()
+    addon = xbmcaddon.Addon("plugin.video.nzbdav")
     host = addon.getSetting("prowlarr_host").rstrip("/")
     api_key = addon.getSetting("prowlarr_api_key")
 
@@ -1422,7 +1611,7 @@ def _test_nzbdav_connection():
     """Test nzbdav connection and API-key auth by reading the queue."""
     import xbmcaddon
 
-    addon = xbmcaddon.Addon()
+    addon = xbmcaddon.Addon("plugin.video.nzbdav")
     url = addon.getSetting("nzbdav_url").rstrip("/")
     api_key = addon.getSetting("nzbdav_api_key")
     params = {

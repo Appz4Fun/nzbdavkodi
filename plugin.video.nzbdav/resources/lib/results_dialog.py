@@ -195,7 +195,7 @@ def show_results_dialog(results, title="", year="", total_count=0):
         when the user picks one, or ``None`` when the user cancels the
         dialog or no results are available.
     """
-    addon = xbmcaddon.Addon()
+    addon = xbmcaddon.Addon("plugin.video.nzbdav")
     addon_path = addon.getAddonInfo("path")
 
     dialog = ResultsDialog(

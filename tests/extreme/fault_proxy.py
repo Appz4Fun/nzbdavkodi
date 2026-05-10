@@ -497,6 +497,8 @@ class Handler(BaseHTTPRequestHandler):
                 continue
             self.send_header(k, v)
         self.send_header("Connection", "close")
+        # BaseHTTPRequestHandler owns this connection flag.
+        # pylint: disable-next=attribute-defined-outside-init
         self.close_connection = True
         self.end_headers()
         if head_only:

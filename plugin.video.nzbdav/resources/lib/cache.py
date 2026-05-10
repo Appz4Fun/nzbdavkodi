@@ -18,7 +18,7 @@ MAX_CACHE_TTL_SECONDS = 86400
 
 
 def _get_cache_dir():
-    addon = xbmcaddon.Addon()
+    addon = xbmcaddon.Addon("plugin.video.nzbdav")
     profile = xbmcvfs.translatePath(addon.getAddonInfo("profile"))
     cache_dir = os.path.join(profile, "cache")
     # `exist_ok=True` rather than the exists-then-makedirs pattern, which
@@ -56,7 +56,7 @@ def _cache_key(search_type, title, year="", imdb="", season="", episode=""):
 def _get_cache_ttl_seconds():
     """Return the configured cache TTL, falling back if Kodi settings fail."""
     try:
-        addon = xbmcaddon.Addon()
+        addon = xbmcaddon.Addon("plugin.video.nzbdav")
         raw_ttl = addon.getSetting("cache_ttl") or str(DEFAULT_CACHE_TTL_SECONDS)
     except RuntimeError as exc:
         xbmc.log(

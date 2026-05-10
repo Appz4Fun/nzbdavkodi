@@ -65,7 +65,7 @@ def maybe_show_cache_prompt(stream_info):
         return
 
     window = xbmcgui.Window(_HOME_WINDOW_ID)
-    addon = xbmcaddon.Addon()
+    addon = xbmcaddon.Addon("plugin.video.nzbdav")
 
     cache_is_set = has_cache_memorysize_zero()
     session_shown = window.getProperty(_PROP_SHOWN_THIS_SESSION).lower() == "true"

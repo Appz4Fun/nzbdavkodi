@@ -36,4 +36,22 @@ docker exec "$CONTAINER" mkdir -p /root/.kodi/addons /root/.kodi/userdata
 docker cp "$WORKDIR/extracted/repository.jurialmunkey" \
     "$CONTAINER:/root/.kodi/addons/repository.jurialmunkey"
 
-echo "[jurialmunkey] OK (extracted into /root/.kodi/addons/repository.jurialmunkey)"
+# Kodi only scans /root/.kodi/addons/ at startup. Without a restart, the
+# subsequent install_tmdbhelper.sh -> Addons.SetAddonEnabled call returns
+# -32602 Invalid params because the addonid is not yet in Kodi's DB.
+echo "[jurialmunkey] Restarting Kodi container so it discovers the new repo"
+docker restart "$CONTAINER" >/dev/null
+echo "[jurialmunkey] Waiting for Kodi JSON-RPC to come back up"
+deadline=$(( $(date +%s) + 90 ))
+while (( $(date +%s) < deadline )); do
+    if curl -fsS -u kodi:kodi -m 2 -X POST "http://localhost:8082/jsonrpc" \
+         -H "Content-Type: application/json" \
+         -d '{"jsonrpc":"2.0","method":"Application.GetProperties","params":{"properties":["version"]},"id":1}' \
+         2>/dev/null | grep -q '"major":21'; then
+        echo "[jurialmunkey] OK (Kodi back up; repo.jurialmunkey scanned)"
+        exit 0
+    fi
+    sleep 2
+done
+echo "[jurialmunkey] FATAL: Kodi did not return on JSON-RPC within 90s after restart"
+exit 1

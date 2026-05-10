@@ -245,7 +245,7 @@ def _get_filter_settings(settings_getter=None):
     if settings_getter is None:
         import xbmcaddon
 
-        addon = xbmcaddon.Addon()
+        addon = xbmcaddon.Addon("plugin.video.nzbdav")
     else:
         addon = SimpleNamespace(getSetting=lambda key: settings_getter(key, ""))
 
@@ -834,7 +834,7 @@ def configure_groups_dialog(setting_id, title, default_set):
     import xbmcaddon
     import xbmcgui
 
-    addon = xbmcaddon.Addon()
+    addon = xbmcaddon.Addon("plugin.video.nzbdav")
     current = _csv_setting(addon, setting_id)
 
     if current:

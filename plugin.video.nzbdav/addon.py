@@ -1,8 +1,19 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 nzbdav contributors
 
+import faulthandler
 import os
 import sys
+
+# Capture Python+C stack on any signal that aborts the interpreter (SIGSEGV,
+# SIGFPE, SIGABRT, SIGBUS, SIGILL). The trace is written to a fixed path so
+# the extreme functional test can pull it out of the kodi container even if
+# stderr/stdout are dropped on the floor when Kodi crashes.
+try:
+    _fh = open("/tmp/nzbdav-faulthandler.log", "a", buffering=1)
+    faulthandler.enable(file=_fh, all_threads=True)
+except OSError:
+    pass
 
 # Add resources/lib/ to sys.path so vendored libraries (PTT) can resolve
 # their internal imports (e.g. "from ptt.handlers import ...").
