@@ -3,7 +3,7 @@
 
 """Newznab caps parsing and fetching."""
 
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from xml.etree import ElementTree as ET
 
 import xbmc
@@ -13,6 +13,7 @@ from resources.lib.http_util import http_get as _http_get
 
 _REQUEST_ERRORS = (AttributeError, OSError, RuntimeError, TypeError, ValueError)
 _EMPTY_CAPS = {"search_types": [], "supported_params": {}, "categories": []}
+CAPS_MAX_BYTES = 1024 * 1024
 _SEARCH_TAGS = {
     "search": "search",
     "tv-search": "tvsearch",
@@ -23,10 +24,25 @@ _SEARCH_TAGS = {
 
 
 def build_caps_url(api_url, api_key):
-    base = str(api_url or "").rstrip("/")
-    if not base.endswith("/api"):
-        base += "/api"
-    return "{}?{}".format(base, urlencode({"apikey": api_key, "t": "caps", "o": "xml"}))
+    parts = urlsplit(str(api_url or ""))
+    path = parts.path.rstrip("/")
+    if not path.endswith("/api"):
+        path += "/api"
+    query = [
+        (key, value)
+        for key, value in parse_qsl(parts.query, keep_blank_values=True)
+        if key.lower() not in ("apikey", "t", "o")
+    ]
+    query.extend((("apikey", api_key), ("t", "caps"), ("o", "xml")))
+    return urlunsplit(
+        (
+            parts.scheme,
+            parts.netloc,
+            path,
+            urlencode(query),
+            parts.fragment,
+        )
+    )
 
 
 def _empty_caps():
@@ -78,7 +94,7 @@ def parse_caps(xml_text):
 def fetch_caps(api_url, api_key, timeout=15):
     url = build_caps_url(api_url, api_key)
     try:
-        response = _http_get(url, timeout=timeout)
+        response = _http_get(url, timeout=timeout, max_bytes=CAPS_MAX_BYTES)
     except _REQUEST_ERRORS as error:
         formatted_error = format_request_error(error)
         xbmc.log(
