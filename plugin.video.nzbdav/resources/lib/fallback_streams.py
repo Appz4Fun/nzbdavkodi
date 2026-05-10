@@ -64,21 +64,34 @@ def _valid_stream_url(url):
 
 
 def _split_http_url(url):
-    """Parse a URL and return parts only for simple HTTP(S) URLs."""
+    """Parse a URL and return parts only for simple HTTP(S) URLs.
+
+    Returns the parsed ``SplitResult`` on accept, ``None`` on reject —
+    NOT ``False``. Returning a bool here was a contract drift; callers
+    use both truthiness (``if parts:``) and identity checks
+    (``parts is None``) and the latter silently miss-classified rejected
+    URLs as valid.
+    """
     if not isinstance(url, str) or any(ord(char) < 0x20 for char in url):
-        return False
+        return None
     try:
         parts = urlsplit(url)
         if parts.scheme.lower() not in _ALLOWED_STREAM_SCHEMES:
-            return False
+            return None
         if not parts.netloc or not parts.hostname:
-            return False
+            return None
+        # urlsplit accepts whitespace inside netloc (e.g. "http:// host /")
+        # — `parts.hostname` silently strips it, masking a malformed URL
+        # that would never resolve. Reject any whitespace in the raw
+        # netloc explicitly.
+        if any(ch.isspace() for ch in parts.netloc):
+            return None
         if parts.username or parts.password:
-            return False
+            return None
         # Accessing .port validates that any explicit port is numeric/ranged.
         _port = parts.port
     except ValueError:
-        return False
+        return None
     return parts
 
 
