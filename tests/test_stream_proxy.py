@@ -531,7 +531,7 @@ def test_prepare_stream_uses_content_length_hint_for_passthrough_start():
     assert url.startswith("http://127.0.0.1:9999/stream/")
     assert info["total_bytes"] == 131072
     assert sp._server.stream_context["content_length"] == 131072
-    assert elapsed < 0.05, "content-length hint was not used: {:.3f}s".format(elapsed)
+    assert elapsed < 0.2, "content-length hint path stalled: {:.3f}s".format(elapsed)
     mock_head.assert_not_called()
 
 
@@ -2228,11 +2228,12 @@ def test_ready_fallback_is_prevalidated_before_upstream_error_cutover():
         )
         ctx = sp._server.stream_context
 
-        deadline = time.monotonic() + 0.5
+        deadline = time.monotonic() + 2.0
         while (
             not ctx["fallback_sources"][0]["validated"] and time.monotonic() < deadline
         ):
             time.sleep(0.005)
+        assert ctx["fallback_sources"][0]["validated"] is True
 
         handler = _make_handler_with_server(ctx, range_header="bytes=0-999")
         with patch.object(

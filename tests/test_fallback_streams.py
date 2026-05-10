@@ -85,6 +85,23 @@ def _fallback_setting(key):
     }.get(key, "")
 
 
+def test_configured_stream_bases_use_schema_defaults_without_kodi_fallback():
+    from resources.lib import fallback_streams
+
+    with patch(
+        "resources.lib.router._get_script_setting",
+        side_effect=lambda _key, default="": default,
+    ), patch(
+        "resources.lib.fallback_streams.xbmcaddon.Addon",
+        side_effect=AssertionError("script probe setup should not call Kodi settings"),
+    ):
+        bases = fallback_streams._configured_stream_bases()
+
+    rendered = [(item.scheme, item.netloc, item.path) for item in bases]
+    assert ("http", "localhost:8080", "") in rendered
+    assert ("http", "localhost:3000", "") in rendered
+
+
 def _manifest(kind, name, size, digest, article_count=2):
     manifest = {
         "payload_kind": kind,

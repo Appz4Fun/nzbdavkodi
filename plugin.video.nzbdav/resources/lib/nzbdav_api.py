@@ -504,7 +504,7 @@ def find_terminal_by_name(name, settings_getter=None):
     ]
     if not matches:
         return None
-    return _completed_job_from_slot(max(matches, key=_slot_completed_sort_key))
+    return _completed_job_from_slot(max(matches, key=_terminal_slot_sort_key))
 
 
 def _unique_names(names):
@@ -547,6 +547,11 @@ def _slot_completed_sort_key(slot):
         return int(slot.get("completed"))
     except (TypeError, ValueError):
         return -1
+
+
+def _terminal_slot_sort_key(slot):
+    """Sort terminal history rows, preferring rows with usable timestamps."""
+    return _slot_completed_sort_key(slot)
 
 
 def _record_completed_name_matches(slots, target_names, found):

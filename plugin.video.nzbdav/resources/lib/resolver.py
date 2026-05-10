@@ -2616,6 +2616,7 @@ def _handle_history_result(
     max_no_video_retries,
     monitor=None,
     settings_getter=None,
+    modal_failures=True,
 ):
     """Handle history-based completion and failure states.
 
@@ -2642,7 +2643,11 @@ def _handle_history_result(
             xbmc.LOGERROR,
         )
         error_text = fail_msg if fail_msg else _string(30100)
-        xbmcgui.Dialog().ok(_addon_name(), redact_text(error_text))
+        error_text = redact_text(error_text)
+        if modal_failures:
+            xbmcgui.Dialog().ok(_addon_name(), error_text)
+        else:
+            _notify(_addon_name(), error_text, 5000)
         return True, None, None, no_video_retries
 
     if status != "Completed":
@@ -2827,6 +2832,7 @@ def _poll_until_ready(
                 max_no_video_retries,
                 monitor=monitor,
                 settings_getter=settings_getter,
+                modal_failures=settings_getter is None,
             )
         )
         if stream_url:
@@ -2917,7 +2923,12 @@ def resolve(handle, params):
             # Bookmark cleanup does not depend on the accepted nzo_id. Start it
             # before the submit/poll wait so selected-result latency hides the
             # DB scan/write instead of paying it after WebDAV readiness.
-            _start_playback_cleanup_once()
+            # When the picker already performed a completed-history miss,
+            # avoid putting any other pre-submit work back on that fast path;
+            # the primary-submitted callback still starts cleanup before
+            # playback can be handed off.
+            if not picker_completed_lookup_done:
+                _start_playback_cleanup_once()
             stream_url, stream_headers = _poll_until_ready(
                 nzb_url,
                 title,
@@ -3040,7 +3051,12 @@ def resolve_and_play(nzb_url, title, params=None):
             # Bookmark cleanup does not depend on the accepted nzo_id. Start it
             # before the submit/poll wait so selected-result latency hides the
             # DB scan/write instead of paying it after WebDAV readiness.
-            _start_playback_cleanup_once()
+            # When the picker already performed a completed-history miss,
+            # avoid putting any other pre-submit work back on that fast path;
+            # the primary-submitted callback still starts cleanup before
+            # playback can be handed off.
+            if not picker_completed_lookup_done:
+                _start_playback_cleanup_once()
             _resolve_stage("poll until ready start")
             stream_url, stream_headers = _poll_until_ready(
                 nzb_url,

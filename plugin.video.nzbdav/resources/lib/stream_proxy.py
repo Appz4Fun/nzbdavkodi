@@ -3509,8 +3509,9 @@ class _StreamHandler(BaseHTTPRequestHandler):
         # in-flight probes.
         executor = ThreadPoolExecutor(max_workers=workers)
 
+        fallback_futures = {}
+        primary_futures = {}
         try:
-            fallback_futures = {}
             for start, end in ranges:
                 if current_range and current_range[:2] == (start, end):
                     fallback_digests[(start, end)] = current_range[2]
@@ -3534,7 +3535,6 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     return False
                 fallback_digests[(start, end)] = digest
 
-            primary_futures = {}
             for start, end in ranges:
                 primary_futures[
                     executor.submit(

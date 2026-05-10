@@ -5,6 +5,7 @@
 """Conservative grouping for duplicate releases usable as fallback streams."""
 
 import hashlib
+import os
 import re
 import threading
 import time
@@ -15,6 +16,7 @@ from types import SimpleNamespace
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
+from xml.etree import ElementTree as ET
 
 import xbmc
 import xbmcaddon
@@ -78,6 +80,9 @@ _FALLBACK_MANIFEST_STALL_SPECULATION_SECONDS = 0.05
 _FALLBACK_MANIFEST_OPTIONAL_TAIL_WAIT_SECONDS = 0.1
 _ALLOWED_STREAM_SCHEMES = frozenset(("http", "https"))
 _METADATA_ONLY_MANIFEST_REASONS = frozenset(("too_large",))
+_ADDON_SETTINGS_SCHEMA = (
+    "special://home/addons/plugin.video.nzbdav/resources/settings.xml"
+)
 _INDEXER_SIZE_SYNTHETIC_MANIFEST_REASONS = frozenset(("invalid_xml", "no_video_file"))
 _INDEXER_SIZE_SYNTHETIC_MIN_BYTES = 100 * 1024 * 1024
 _PrecomputedProbeBase = namedtuple("_PrecomputedProbeBase", "parts origin path")
@@ -166,6 +171,33 @@ def _path_is_under_base(path, base_path):
     return path == prefix or path.startswith(prefix + "/")
 
 
+def _schema_setting_default(setting_id):
+    """Read a default from resources/settings.xml without Kodi settings APIs."""
+    try:
+        import xbmcvfs
+
+        schema_path = xbmcvfs.translatePath(_ADDON_SETTINGS_SCHEMA)
+    except Exception:  # pylint: disable=broad-except
+        schema_path = ""
+    if not isinstance(schema_path, str):
+        schema_path = ""
+    candidate_paths = []
+    if schema_path:
+        candidate_paths.append(schema_path)
+    candidate_paths.append(
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "settings.xml"))
+    )
+    for path in candidate_paths:
+        try:
+            root = ET.parse(path).getroot()
+        except (OSError, ET.ParseError):
+            continue
+        for setting in root.findall(".//setting"):
+            if setting.get("id") == setting_id:
+                return setting.get("default", "") or ""
+    return ""
+
+
 def _configured_stream_bases():
     """Return configured WebDAV/nzbdav bases that fallback probes may hit.
 
@@ -198,6 +230,11 @@ def _configured_stream_bases():
             )
         except Exception:  # pylint: disable=broad-except
             raw_bases = ()
+    if not any(raw_bases):
+        raw_bases = (
+            _schema_setting_default("webdav_url"),
+            _schema_setting_default("nzbdav_url"),
+        )
 
     bases = []
     for raw_base in raw_bases:
@@ -1258,6 +1295,13 @@ def _attach_selection_candidates_streaming(
         ):
             speculative_slots = min(misses_seen[0], max_candidates - len(candidates))
 
+    def _start_stall_speculation():
+        active_before = active_candidates[0]
+        while _can_start_stall_speculation() and _start_candidate_fetch():
+            if active_candidates[0] == active_before:
+                break
+            active_before = active_candidates[0]
+
     def _can_start_stall_speculation():
         return (
             selected_ready[0]
@@ -1316,7 +1360,7 @@ def _attach_selection_candidates_streaming(
         except Empty:
             if _optional_tail_wait_remaining() is not None:
                 return True
-            _start_candidate_fetch()
+            _start_stall_speculation()
             continue
         active[0] -= 1
         if kind == "candidate":

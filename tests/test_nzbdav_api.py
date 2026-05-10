@@ -104,6 +104,31 @@ def test_find_terminal_by_name_returns_newest_matching_slot(mock_slots, _mock_se
     assert result["nzo_id"] == "newer-completed"
 
 
+@patch("resources.lib.nzbdav_api._get_settings", return_value=("http://nzbdav", "key"))
+@patch("resources.lib.nzbdav_api._history_slots")
+def test_find_terminal_by_name_returns_newest_acceptable_completed_slot(
+    mock_slots, _mock_settings
+):
+    mock_slots.return_value = [
+        {
+            "name": "Movie",
+            "status": "Completed",
+            "nzo_id": "missing-completed-timestamp",
+        },
+        {
+            "name": "Movie",
+            "status": "Completed",
+            "nzo_id": "newer-completed",
+            "completed": 200,
+        },
+    ]
+
+    result = find_terminal_by_name("Movie")
+
+    assert result["nzo_id"] == "newer-completed"
+    assert result["completed"] == 200
+
+
 @patch("resources.lib.nzbdav_api.xbmcaddon")
 def test_get_submit_timeout_reads_setting(mock_xbmcaddon):
     """_get_submit_timeout returns the parsed setting value."""

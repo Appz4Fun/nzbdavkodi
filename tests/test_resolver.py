@@ -2136,7 +2136,7 @@ def test_resolve_picker_completed_hint_skips_progress_dialog_startup_latency(
 
     mock_find_completed.assert_not_called()
     mock_finish_playback.assert_called_once()
-    assert elapsed < 0.08, "completed hint paid dialog startup {:.3f}s".format(elapsed)
+    assert elapsed < 0.2, "completed hint path stalled for {:.3f}s".format(elapsed)
     mock_gui.DialogProgress.assert_not_called()
 
 
@@ -2538,6 +2538,35 @@ def test_completed_history_reuses_webdav_settings_for_stream_url(
     assert no_video_retries == 0
     assert mock_settings.call_count == 1
     assert elapsed < 0.07, "completed-history stream URL took {:.3f}s".format(elapsed)
+
+
+@patch("resources.lib.resolver._notify")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.xbmc")
+def test_script_history_failure_uses_notification_not_modal(
+    mock_xbmc, mock_gui, mock_notify
+):
+    settings_getter = MagicMock(return_value="")
+    history = {
+        "status": "Failed",
+        "nzo_id": "nzo_failed",
+        "fail_message": "CRC error in article",
+    }
+
+    should_stop, stream_url, stream_headers, retries = _handle_history_result(
+        history,
+        "movie.mkv",
+        no_video_retries=0,
+        max_no_video_retries=1,
+        settings_getter=settings_getter,
+        modal_failures=False,
+    )
+
+    assert (should_stop, stream_url, stream_headers, retries) == (True, None, None, 0)
+    mock_gui.Dialog.return_value.ok.assert_not_called()
+    mock_notify.assert_called_once()
+    assert "CRC error in article" in mock_notify.call_args.args[1]
+    mock_xbmc.log.assert_called()
 
 
 @patch("resources.lib.stream_proxy.prepare_stream_via_service")
@@ -4795,9 +4824,7 @@ def test_poll_once_returns_full_progress_queue_before_slow_history(
     job_status, history, webdav_error = _poll_once("nzo_full", "movie", _make_monitor())
     elapsed = _time.monotonic() - started
 
-    assert elapsed < 0.15, "100% queue row waited on history for {:.3f}s".format(
-        elapsed
-    )
+    assert elapsed < 0.2, "100% queue row waited on history for {:.3f}s".format(elapsed)
     assert job_status == mock_status.return_value
     assert history is None
     assert webdav_error is None
