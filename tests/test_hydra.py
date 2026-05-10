@@ -44,7 +44,10 @@ def test_search_hydra_reuses_module_level_addon_for_kodi_settings(monkeypatch):
             "nzbhydra2": {
                 "base_url": "http://hydra:5076",
                 "checked_at": "2026-05-10T00:00:00Z",
-                "caps": {"search_types": ["movie"], "supported_params": {}},
+                "caps": {
+                    "search_types": ["movie"],
+                    "supported_params": {"movie": ["imdbid"]},
+                },
             }
         }
         mock_http.return_value = _load_fixture("hydra_movie_response.xml")
