@@ -416,6 +416,39 @@ def test_search_direct_indexers_uses_planner_for_host_fallback(
 @patch("resources.lib.direct_indexers.get_configured_indexers")
 @patch("resources.lib.direct_indexers.xbmcaddon")
 @patch("resources.lib.direct_indexers._http_get")
+def test_search_direct_indexers_passes_supported_movie_year_to_planner(
+    mock_http, mock_xbmcaddon, mock_configured
+):
+    from resources.lib.direct_indexers import search_direct_indexers
+
+    mock_configured.return_value = [
+        {
+            "id": "custom",
+            "label": "Custom",
+            "api_url": "https://custom.example/api",
+            "api_key": "custom-key",
+            "caps": {
+                "search_types": ["movie"],
+                "supported_params": {"movie": ["q", "year"]},
+            },
+        }
+    ]
+    mock_xbmcaddon.Addon.return_value = _addon_with_settings({"max_results": "25"})
+    mock_http.return_value = ONE_RESULT_RSS
+
+    results, error = search_direct_indexers("movie", "The Odyssey", year="2026")
+
+    assert error is None
+    assert len(results) == 1
+    call_url = mock_http.call_args[0][0]
+    assert "t=movie" in call_url
+    assert "q=The+Odyssey" in call_url or "q=The%20Odyssey" in call_url
+    assert "year=2026" in call_url
+
+
+@patch("resources.lib.direct_indexers.get_configured_indexers")
+@patch("resources.lib.direct_indexers.xbmcaddon")
+@patch("resources.lib.direct_indexers._http_get")
 def test_search_direct_indexers_skips_when_caps_have_no_supported_query(
     mock_http, mock_xbmcaddon, mock_configured
 ):

@@ -32,7 +32,6 @@ def plan_newznab_search(
     api_key="",
     max_results=25,
 ):
-    del year
     base = {"apikey": api_key, "o": "xml", "limit": max_results}
     if _missing_caps(caps):
         return _missing_caps_plan(base, search_type, title, imdb, season, episode)
@@ -41,7 +40,7 @@ def plan_newznab_search(
         return _episode_plan(
             base, provider_kind, host, title, imdb, season, episode, caps
         )
-    return _movie_plan(base, provider_kind, host, title, imdb, caps)
+    return _movie_plan(base, provider_kind, host, title, year, imdb, caps)
 
 
 def _missing_caps(caps):
@@ -110,30 +109,38 @@ def _no_query_plan():
     return NewznabSearchPlan({}, None, "no_supported_query")
 
 
-def _generic_search(base, title, caps=None):
+def _generic_search(base, title, caps=None, year=None):
     if _missing_caps(caps):
         return _params(base, "search", q=title)
     if not _supports(caps, "search"):
         return None
+    items = {}
     if title and _supports(caps, "search", "q"):
-        return _params(base, "search", q=title)
-    return _params(base, "search")
+        items["q"] = title
+    if year and _supports(caps, "search", "year"):
+        items["year"] = year
+    return _params(base, "search", **items)
 
 
-def _movie_title_params(base, provider_kind, host, title, caps):
+def _movie_title_params(base, provider_kind, host, title, year, caps):
     if _direct_movie_title_fallback(provider_kind, host):
         return (
-            _generic_search(base, title, caps),
+            _generic_search(base, title, caps, year=year),
             "direct_movie_title_search_fallback",
         )
+    items = {}
     if _supports(caps, "movie", "q"):
-        return _params(base, "movie", q=title), "movie_title"
-    return _generic_search(base, title, caps), "movie_title_search_fallback"
+        items["q"] = title
+    if year and _supports(caps, "movie", "year"):
+        items["year"] = year
+    if items:
+        return _params(base, "movie", **items), "movie_title"
+    return _generic_search(base, title, caps, year=year), "movie_title_search_fallback"
 
 
-def _movie_plan(base, provider_kind, host, title, imdb, caps):
+def _movie_plan(base, provider_kind, host, title, year, imdb, caps):
     imdbid = _imdb_digits(imdb)
-    fallback = _generic_search(base, title, caps) if title else None
+    fallback = _generic_search(base, title, caps, year=year) if title else None
     if imdbid and _supports(caps, "movie", "imdbid"):
         return NewznabSearchPlan(
             _params(base, "movie", imdbid=imdbid),
@@ -141,7 +148,7 @@ def _movie_plan(base, provider_kind, host, title, imdb, caps):
             "movie_imdb",
         )
 
-    primary, reason = _movie_title_params(base, provider_kind, host, title, caps)
+    primary, reason = _movie_title_params(base, provider_kind, host, title, year, caps)
     if primary is None:
         return _no_query_plan()
     return NewznabSearchPlan(primary, fallback, reason)

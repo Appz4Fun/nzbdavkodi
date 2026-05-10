@@ -232,10 +232,23 @@ def _csv_setting(addon, key):
 
 
 def _int_setting(addon, key, default):
-    """Read an integer Kodi setting with a safe fallback."""
+    """Read an integer Kodi setting with a safe fallback.
+
+    Tries plain ``int()`` first so a clean integer string like "500"
+    parses without floating-point noise; on failure (e.g. user typed
+    "1.5" because the size field accepts decimals on some Kodi
+    skins), falls through to ``int(float(raw))`` so the caller sees
+    a clear truncated value (1) instead of the silent default (0).
+    """
     raw = addon.getSetting(key)
+    if raw in (None, ""):
+        return default
     try:
-        return int(raw if raw not in (None, "") else default)
+        return int(raw)
+    except (TypeError, ValueError):
+        pass
+    try:
+        return int(float(raw))
     except (TypeError, ValueError):
         return default
 
@@ -320,6 +333,17 @@ def _get_filter_settings(settings_getter=None):
         ],
     )
 
+    min_size = _int_setting(addon, "filter_min_size", 0)
+    max_size = _int_setting(addon, "filter_max_size", 0)
+    if 0 < max_size < min_size:
+        xbmc.log(
+            "NZB-DAV: filter_min_size={} exceeds filter_max_size={}; "
+            "disabling size filter".format(min_size, max_size),
+            xbmc.LOGWARNING,
+        )
+        min_size = 0
+        max_size = 0
+
     return {
         "resolutions": resolutions,
         "hdr": hdr,
@@ -338,8 +362,8 @@ def _get_filter_settings(settings_getter=None):
         "exclude_release_group": [
             g.lower() for g in _csv_setting(addon, "filter_exclude_release_group")
         ],
-        "min_size": _int_setting(addon, "filter_min_size", 0),
-        "max_size": _int_setting(addon, "filter_max_size", 0),
+        "min_size": min_size,
+        "max_size": max_size,
         "sort_order": _int_setting(addon, "sort_order", 0),
         "max_results": _int_setting(addon, "max_results", 25),
     }

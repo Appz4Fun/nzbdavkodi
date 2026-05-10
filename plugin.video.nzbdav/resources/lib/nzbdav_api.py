@@ -311,7 +311,9 @@ def submit_nzb(nzb_url, nzb_name="", settings_getter=None, submit_timeout=None):
     # inside its rejection payload (e.g. "Failed to fetch <url>"), which
     # would otherwise land in the Kodi log.
     xbmc.log(
-        "NZB-DAV: Submit NZB rejected by nzbdav: {}".format(_redact_text(str(response))),
+        "NZB-DAV: Submit NZB rejected by nzbdav: {}".format(
+            _redact_text(str(response))
+        ),
         xbmc.LOGERROR,
     )
     return None, {

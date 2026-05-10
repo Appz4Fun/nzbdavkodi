@@ -122,9 +122,7 @@ def _verify_streamable(mkv_path: str) -> bool:
                     {"playerid": pid, "properties": ["streamdetails"]},
                 )
                 details = (
-                    resp.get("result", {})
-                    .get("item", {})
-                    .get("streamdetails", {})
+                    resp.get("result", {}).get("item", {}).get("streamdetails", {})
                 )
                 video = details.get("video", []) or []
                 audio = details.get("audio", []) or []
@@ -200,11 +198,7 @@ def find_two_streamable_urls() -> list[str]:
             print("  PROPFIND miss:  {}".format(storage))
             continue
         ok = _verify_streamable(mkv_path)
-        print(
-            "  {} streamable={}  {}".format(
-                "OK" if ok else "BAD", ok, mkv_path
-            )
-        )
+        print("  {} streamable={}  {}".format("OK" if ok else "BAD", ok, mkv_path))
         if ok:
             streamable.append(mkv_path)
         if len(streamable) >= 2:
@@ -322,9 +316,7 @@ def main():
         target_start = test_start + i * INTERVAL_SECONDS
         wait = target_start - time.time()
         if wait > 0:
-            print(
-                "[iter {}] sleeping {:.1f}s until next 2-min mark".format(i, wait)
-            )
+            print("[iter {}] sleeping {:.1f}s until next 2-min mark".format(i, wait))
             time.sleep(wait)
         print("[iter {}] start (+{:.0f}s)".format(i, time.time() - test_start))
         stop_player()
@@ -340,7 +332,10 @@ def main():
         }
         summaries.append(summary)
         print(
-            "[iter {}] A: t_final={}s stall_max={}s progressed={} | B: t_final={}s stall_max={}s progressed={}".format(
+            (
+                "[iter {}] A: t_final={}s stall_max={}s progressed={} | "
+                "B: t_final={}s stall_max={}s progressed={}"
+            ).format(
                 i,
                 a_metrics["final_t_sec"],
                 a_metrics["max_stall_seconds"],

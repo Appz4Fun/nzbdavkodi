@@ -169,9 +169,7 @@ def main():
         log.unlink()
     pairs = discover_cinefile_storages(limit=2)
     if len(pairs) < 2:
-        raise SystemExit(
-            "FATAL: need 2 CiNEFiLE storages, got {}".format(len(pairs))
-        )
+        raise SystemExit("FATAL: need 2 CiNEFiLE storages, got {}".format(len(pairs)))
     a = _build_kodi_url(pairs[0][1])
     b = _build_kodi_url(pairs[1][1])
     print("A: {}".format(a))
@@ -182,9 +180,7 @@ def main():
         target_start = test_start + i * INTERVAL_SECONDS
         wait = target_start - time.time()
         if wait > 0:
-            print(
-                "[iter {}] sleeping {:.1f}s until next 2-min mark".format(i, wait)
-            )
+            print("[iter {}] sleeping {:.1f}s until next 2-min mark".format(i, wait))
             time.sleep(wait)
         print("[iter {}] start (+{:.0f}s)".format(i, time.time() - test_start))
         stop_player()
@@ -200,7 +196,10 @@ def main():
         }
         summaries.append(summary)
         print(
-            "[iter {}] A: t_final={}s player={} progressed={} | B: t_final={}s player={} progressed={}".format(
+            (
+                "[iter {}] A: t_final={}s player={} progressed={} | "
+                "B: t_final={}s player={} progressed={}"
+            ).format(
                 i,
                 a_metrics["final_t_sec"],
                 a_metrics["player_type"],

@@ -188,9 +188,7 @@ def _wait_for_dialog_select(timeout=30):
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            resp = _kodi_rpc(
-                "GUI.GetProperties", {"properties": ["currentwindow"]}
-            )
+            resp = _kodi_rpc("GUI.GetProperties", {"properties": ["currentwindow"]})
             window = resp.get("result", {}).get("currentwindow", {})
             if int(window.get("id", -1)) == 12000:
                 return True

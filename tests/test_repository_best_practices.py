@@ -79,7 +79,7 @@ def test_prowlarr_api_key_label_is_not_reused_for_test_action():
 
     api_key_setting = root.find(".//setting[@id='prowlarr_api_key']")
     assert api_key_setting is not None
-    assert api_key_setting.get("label") == "30003"
+    assert api_key_setting.get("label") == "30129"
 
     test_action = root.find(
         ".//setting[@action='RunPlugin(plugin://plugin.video.nzbdav/test_prowlarr)']"

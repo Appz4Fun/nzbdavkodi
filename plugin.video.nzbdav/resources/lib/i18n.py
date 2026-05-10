@@ -103,8 +103,8 @@ _FALLBACK_STRINGS = {
 def addon():
     """Return the active addon instance, or None if Kodi isn't fully up yet.
 
-    Early in service startup, `xbmcaddon.Addon("plugin.video.nzbdav")` can raise RuntimeError
-    ("unknown addon id") because the plugin subsystem hasn't finished
+    Early in service startup, `xbmcaddon.Addon("plugin.video.nzbdav")` can raise
+    RuntimeError ("unknown addon id") because the plugin subsystem hasn't finished
     registering us. Return None so callers fall through to their fallback
     instead of crashing the service entry point.
     """
@@ -124,13 +124,32 @@ def addon_name():
 
 
 def string(msg_id):
-    """Return a localized string by numeric id."""
+    """Return a localized string by numeric id.
+
+    When neither Kodi nor _FALLBACK_STRINGS knows the id, return a
+    visible sentinel ``"#<id>"`` and log a warning, so missing keys
+    surface in both the UI and the logs instead of being silently
+    dropped (which used to leave dialogs / notifications with empty
+    bodies and no clue what was wrong).
+    """
     a = addon()
     if a is not None:
         value = a.getLocalizedString(msg_id)
         if isinstance(value, str) and value:
             return value
-    return _FALLBACK_STRINGS.get(msg_id, "")
+    fallback = _FALLBACK_STRINGS.get(msg_id, "")
+    if fallback:
+        return fallback
+    try:
+        import xbmc
+
+        xbmc.log(
+            "NZB-DAV: missing localized string id={}".format(msg_id),
+            xbmc.LOGWARNING,
+        )
+    except Exception:  # pylint: disable=broad-except
+        pass
+    return "#{}".format(msg_id)
 
 
 def fmt(msg_id, *args, **kwargs):
@@ -145,6 +164,13 @@ def fmt(msg_id, *args, **kwargs):
     so the bad string can be fixed.
     """
     template = string(msg_id)
+    # If string() returned the missing-key sentinel (#<id>) or "" (for
+    # the legacy code path), the template has no placeholders. Surface
+    # the id and the args the caller passed instead of producing the
+    # leading-space gibberish (e.g. " ('foo',)") that the suffix branch
+    # used to emit on an empty template.
+    if not template or template.startswith("#"):
+        return "#{} args={}".format(msg_id, args)
     try:
         return template.format(*args, **kwargs)
     except (IndexError, KeyError, ValueError) as exc:

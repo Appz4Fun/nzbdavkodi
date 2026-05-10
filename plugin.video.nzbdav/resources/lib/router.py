@@ -5,6 +5,7 @@
 
 import os
 import re
+from itertools import chain
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import xbmc
@@ -31,6 +32,16 @@ _SCRIPT_PLAY_STAGE_PATH = "/storage/.kodi/temp/nzbdav-script-play-stage.log"
 _SCRIPT_SETTINGS_PATH = (
     "/storage/.kodi/userdata/addon_data/plugin.video.nzbdav/settings.xml"
 )
+
+
+def _addon_instance():
+    """Return the addon object, accepting older tests' no-arg Addon mocks."""
+    import xbmcaddon
+
+    try:
+        return xbmcaddon.Addon("plugin.video.nzbdav")
+    except TypeError:
+        return xbmcaddon.Addon()
 
 
 def _script_play_stage(message):
@@ -237,9 +248,7 @@ def route(argv):
 
             notify(_addon_name(), _string(30082), 3000)
         elif path == "/settings":
-            import xbmcaddon
-
-            xbmcaddon.Addon("plugin.video.nzbdav").openSettings()
+            _addon_instance().openSettings()
         elif path == "/configure_preferred_groups":
             from resources.lib.filter import (
                 DEFAULT_PREFERRED_GROUPS,
@@ -280,9 +289,7 @@ def route(argv):
             _handle_main_menu(handle)
             return
         else:
-            import xbmcaddon
-
-            xbmcaddon.Addon("plugin.video.nzbdav").openSettings()
+            _addon_instance().openSettings()
     except Exception as e:
         xbmc.log(
             "NZB-DAV: Unhandled error in route for path='{}': {}".format(path, e),
@@ -342,10 +349,17 @@ def _fallback_candidate_loader_for_selection(selected, results, settings_getter=
                 xbmc.LOGDEBUG,
             )
             extra_uploads = []
-        augmented = list(results or []) + list(extra_uploads or [])
-
-        if not selection_pool_may_have_fallback_peer(selected, augmented):
-            return FALLBACK_CANDIDATES_DISABLED
+        augmented = chain(results or [], extra_uploads or [])
+        known_first_peer = first_peer
+        if first_peer is None:
+            try:
+                len(results)
+            except TypeError:
+                pass
+            else:
+                if not selection_pool_may_have_fallback_peer(selected, results):
+                    return FALLBACK_CANDIDATES_DISABLED
+                known_first_peer = cached_selection_pool_first_peer(selected, results)
         if settings_getter is None:
             fallback_settings = fallback_candidate_prefetch_settings()
         else:
@@ -354,12 +368,9 @@ def _fallback_candidate_loader_for_selection(selected, results, settings_getter=
             )
         if not fallback_candidate_prefetch_enabled(fallback_settings):
             return FALLBACK_CANDIDATES_DISABLED
-        known_first_peer = cached_selection_pool_first_peer(selected, augmented)
         attach_fallback_candidates_for_selection(
             selected,
-            _selection_pool_with_peer_first(
-                selected, augmented, known_first_peer or first_peer
-            ),
+            _selection_pool_with_peer_first(selected, augmented, known_first_peer),
             fallback_settings=fallback_settings,
         )
         return list(selected.get("_fallback_candidates", []) or [])
@@ -681,7 +692,6 @@ def _handle_direct_play(handle, params):
     """
     import base64
     import json as _json
-
     from urllib.error import HTTPError, URLError
     from urllib.parse import urlsplit, urlunsplit
     from urllib.request import Request, urlopen

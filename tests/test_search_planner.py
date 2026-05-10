@@ -111,6 +111,51 @@ def test_hydra_uses_provider_caps_without_direct_host_fallback():
     assert plan.reason == "movie_title"
 
 
+def test_movie_title_includes_year_when_provider_supports_it():
+    caps = _supported_caps()
+    caps["supported_params"]["movie"] = ["q", "year"]
+
+    plan = plan_newznab_search(
+        provider_kind="direct",
+        host="https://api.example.test",
+        search_type="movie",
+        title="The Odyssey",
+        year="2026",
+        caps=caps,
+        api_key="secret",
+        max_results=25,
+    )
+
+    assert plan.primary["t"] == "movie"
+    assert plan.primary["q"] == "The Odyssey"
+    assert plan.primary["year"] == "2026"
+    assert plan.reason == "movie_title"
+
+
+def test_generic_movie_fallback_includes_year_when_supported():
+    caps = _supported_caps()
+    caps["supported_params"]["search"] = ["q", "year"]
+    caps["supported_params"]["movie"] = ["imdbid"]
+
+    plan = plan_newznab_search(
+        provider_kind="direct",
+        host="https://api.example.test",
+        search_type="movie",
+        title="The Odyssey",
+        year="2026",
+        imdb="tt33764258",
+        caps=caps,
+        api_key="secret",
+        max_results=25,
+    )
+
+    assert plan.primary["t"] == "movie"
+    assert plan.primary["imdbid"] == "33764258"
+    assert plan.fallback["t"] == "search"
+    assert plan.fallback["q"] == "The Odyssey"
+    assert plan.fallback["year"] == "2026"
+
+
 def test_missing_caps_keeps_conservative_defaults():
     movie = plan_newznab_search(
         provider_kind="direct",

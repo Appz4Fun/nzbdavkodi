@@ -230,3 +230,60 @@ def test_maybe_show_skips_when_persistent_dismissed(
     maybe_show_cache_prompt({"remux": True, "total_bytes": 58 * 1024**3})
 
     dialog.yesnocustom.assert_not_called()
+
+
+@patch("resources.lib.cache_prompt.xbmcgui")
+@patch("resources.lib.cache_prompt.xbmcaddon")
+@patch("resources.lib.cache_prompt.has_cache_memorysize_zero")
+def test_maybe_show_handles_none_from_getproperty_and_getsetting(
+    mock_has_cache, mock_xbmcaddon, mock_xbmcgui
+):
+    """Kodi can return None from window.getProperty / addon.getSetting
+    after addon-reload races. The bare ``.lower()`` call would raise
+    AttributeError, which isn't in _SUPPRESSED_EXCEPTIONS and would
+    break playback resolution. The fix coerces with
+    ``(... or "").strip().lower()`` so the dialog still surfaces."""
+    mock_has_cache.return_value = False
+    addon = MagicMock()
+    addon.getSetting.return_value = None  # bug trigger
+    mock_xbmcaddon.Addon.return_value = addon
+    window = MagicMock()
+    window.getProperty.return_value = None  # bug trigger
+    mock_xbmcgui.Window.return_value = window
+    dialog = MagicMock()
+    dialog.yesnocustom.return_value = 0
+    mock_xbmcgui.Dialog.return_value = dialog
+
+    # Without the fix this raises AttributeError on .lower().
+    maybe_show_cache_prompt({"remux": True, "total_bytes": 58 * 1024**3})
+
+    # not-shown + not-dismissed -> dialog fires.
+    dialog.yesnocustom.assert_called_once()
+
+
+@patch("resources.lib.cache_prompt.xbmcgui")
+@patch("resources.lib.cache_prompt.xbmcaddon")
+@patch("resources.lib.cache_prompt.has_cache_memorysize_zero")
+def test_maybe_show_clamps_negative_total_bytes(
+    mock_has_cache, mock_xbmcaddon, mock_xbmcgui
+):
+    """Buggy upstream sizers (e.g. Newznab returning -1 for unknown)
+    previously made the dialog body show "-2.3 GB". The clamp via
+    ``max(0, int(...))`` falls negatives through to the size-less
+    message (id 30154) instead of formatting -GB into 30153."""
+    mock_has_cache.return_value = False
+    mock_xbmcaddon.Addon.return_value = _make_addon(dismissed="false")
+    mock_xbmcgui.Window.return_value = _make_window(shown=False)
+    dialog = MagicMock()
+    dialog.yesnocustom.return_value = 0
+    mock_xbmcgui.Dialog.return_value = dialog
+
+    maybe_show_cache_prompt({"remux": True, "total_bytes": -(2 * 1024**3 + 500)})
+
+    dialog.yesnocustom.assert_called_once()
+    # Inspect the body argument; must NOT contain a negative GB value.
+    args = dialog.yesnocustom.call_args.args
+    body = args[1] if len(args) > 1 else ""
+    assert (
+        "-" not in str(body).split("GB", maxsplit=1)[0]
+    ), "negative size leaked into dialog body: {!r}".format(body)

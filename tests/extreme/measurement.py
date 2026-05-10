@@ -40,12 +40,12 @@ class PlayerPoller(threading.Thread):
         )
         self.interval = interval
         self.output_path = Path(output_path)
-        self._stop = threading.Event()
+        self._stop_event = threading.Event()
         self.exception_count = 0
         self.start_t_wall: float | None = None
 
     def stop(self) -> None:
-        self._stop.set()
+        self._stop_event.set()
 
     def _rpc(
         self, method: str, params: dict | None = None, request_id: int = 1
@@ -74,7 +74,7 @@ class PlayerPoller(threading.Thread):
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
         self.start_t_wall = time.time()
         with self.output_path.open("a") as fh:
-            while not self._stop.is_set():
+            while not self._stop_event.is_set():
                 tick_start = time.monotonic()
                 try:
                     players = self._rpc("Player.GetActivePlayers", request_id=1)
@@ -154,7 +154,7 @@ class PlayerPoller(threading.Thread):
                 # Wait until interval elapses or stop signal
                 elapsed = time.monotonic() - tick_start
                 remaining = max(0.0, self.interval - elapsed)
-                if self._stop.wait(remaining):
+                if self._stop_event.wait(remaining):
                     return
 
 

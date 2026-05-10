@@ -57,12 +57,8 @@ OUT_DIR = Path(os.environ.get("CINEFILE_OUT_DIR", "/tmp/cinefile_proxy")).resolv
 # other as fallback-direct so the cutover happens. PATH_A / PATH_B
 # come from runtime PROPFIND (see ``main()``) — they're not hardcoded
 # any more so a re-seeded run with different UUIDs still works.
-HOST_FAULTPROXY = os.environ.get(
-    "FAULT_PROXY_HOST", "nzbdav-extreme-fault-proxy:8280"
-)
-HOST_DIRECT = os.environ.get(
-    "NZBDAV_DIRECT_HOST", "nzbdav-extreme-nzbdav:8080"
-)
+HOST_FAULTPROXY = os.environ.get("FAULT_PROXY_HOST", "nzbdav-extreme-fault-proxy:8280")
+HOST_DIRECT = os.environ.get("NZBDAV_DIRECT_HOST", "nzbdav-extreme-nzbdav:8080")
 
 
 def _kodi_rpc(method: str, params: dict | None = None, timeout: int = 10):
@@ -142,9 +138,7 @@ def trigger_direct_play(primary_url: str, fallback_urls: list[str]):
         }
     )
     plugin_url = "plugin://plugin.video.nzbdav/direct_play?{}".format(qs)
-    return _kodi_rpc(
-        "Player.Open", {"item": {"file": plugin_url}}
-    )
+    return _kodi_rpc("Player.Open", {"item": {"file": plugin_url}})
 
 
 def player_status() -> dict:
@@ -254,9 +248,7 @@ def _discover_paths() -> tuple[str, str]:
     """Find two CiNEFiLE mkv paths to alternate as primary/fallback."""
     pairs = discover_cinefile_storages(limit=2)
     if len(pairs) < 2:
-        raise SystemExit(
-            "FATAL: need 2 CiNEFiLE storages, got {}".format(len(pairs))
-        )
+        raise SystemExit("FATAL: need 2 CiNEFiLE storages, got {}".format(len(pairs)))
     # _propfind_mkv_path returns an already-quoted href ("/dav/content/...");
     # url_with_auth takes the path component verbatim, so just pass it
     # through.

@@ -8,7 +8,8 @@ py-version=3.8
 # helpers, throwaway repro scripts) that aren't part of the shipped addon.
 ignore-paths=
     plugin.video.nzbdav/resources/lib/ptt,
-    dev/
+    dev/,
+    tmdbhelper-warmup-rs/
 
 [MESSAGES CONTROL]
 disable=
@@ -50,6 +51,8 @@ disable=
     broad-exception-caught,
     # Duplicate imports from conditional blocks
     reimported,
+    # Lazy Kodi imports intentionally create module cycles in runtime-only paths
+    cyclic-import,
     # Not subscriptable false positives on older Python
     unsubscriptable-object,
     # Raise from handled elsewhere

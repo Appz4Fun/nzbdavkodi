@@ -869,3 +869,94 @@ def test_filter_results_uses_script_settings_getter_without_kodi_addon(mock_addo
     mock_addon.assert_not_called()
     assert filtered == results
     assert all_parsed == results
+
+
+# --- Fix #5: cross-validate min_size / max_size + decimal parse ----------
+
+
+def _build_size_settings(min_raw, max_raw):
+    """Lookup table for ``settings_getter`` style filter resolution.
+
+    Only the size keys are populated; everything else defaults to "" so
+    every other filter is disabled and we isolate the size handling.
+    """
+    overrides = {
+        "filter_min_size": str(min_raw),
+        "filter_max_size": str(max_raw),
+    }
+
+    def _getter(key, default=""):
+        return overrides.get(key, default)
+
+    return _getter
+
+
+def test_get_filter_settings_inverted_range_zeros_both_bounds():
+    """min_size > max_size silently rejected everything before Fix #5.
+    Now both bounds zero out (filter disabled) and we log a warning."""
+    from resources.lib.filter import _get_filter_settings
+
+    getter = _build_size_settings(min_raw=10000, max_raw=5000)
+
+    with patch("resources.lib.filter.xbmc") as mock_xbmc:
+        settings = _get_filter_settings(settings_getter=getter)
+
+    assert settings["min_size"] == 0
+    assert settings["max_size"] == 0
+    log_lines = [c.args[0] for c in mock_xbmc.log.call_args_list]
+    assert any("filter_min_size=10000" in line for line in log_lines)
+    assert any("filter_max_size=5000" in line for line in log_lines)
+
+
+def test_get_filter_settings_open_ended_floor_preserved():
+    """min>0 with max=0 (no upper bound) is a valid configuration —
+    the inverted-range check must NOT zero it out."""
+    from resources.lib.filter import _get_filter_settings
+
+    getter = _build_size_settings(min_raw=1000, max_raw=0)
+
+    settings = _get_filter_settings(settings_getter=getter)
+
+    assert settings["min_size"] == 1000
+    assert settings["max_size"] == 0
+
+
+def test_get_filter_settings_decimal_input_truncates_to_int():
+    """A user typing "1.5" into a number field must parse as 1, not
+    silently fall back to 0 (the old behavior). Fix #5."""
+    from resources.lib.filter import _get_filter_settings
+
+    getter = _build_size_settings(min_raw="1.5", max_raw="100.9")
+
+    settings = _get_filter_settings(settings_getter=getter)
+
+    assert settings["min_size"] == 1
+    assert settings["max_size"] == 100
+
+
+def test_get_filter_settings_unparseable_input_falls_back_to_default():
+    """Garbage input (still) falls back to the documented default
+    rather than crashing."""
+    from resources.lib.filter import _get_filter_settings
+
+    overrides = {"filter_min_size": "abc", "filter_max_size": "xyz"}
+
+    def getter(key, default=""):
+        return overrides.get(key, default)
+
+    settings = _get_filter_settings(settings_getter=getter)
+
+    assert settings["min_size"] == 0
+    assert settings["max_size"] == 0
+
+
+def test_get_filter_settings_valid_range_unchanged():
+    """A normal min<max configuration must pass through cleanly."""
+    from resources.lib.filter import _get_filter_settings
+
+    getter = _build_size_settings(min_raw=1000, max_raw=10000)
+
+    settings = _get_filter_settings(settings_getter=getter)
+
+    assert settings["min_size"] == 1000
+    assert settings["max_size"] == 10000

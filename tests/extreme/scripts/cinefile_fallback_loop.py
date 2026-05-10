@@ -60,9 +60,7 @@ def _kodi_rpc(method: str, params: dict | None = None, timeout: int = 10):
     auth = urllib.parse.quote(user) + ":" + urllib.parse.quote(pw)
     import base64
 
-    req.add_header(
-        "Authorization", "Basic " + base64.b64encode(auth.encode()).decode()
-    )
+    req.add_header("Authorization", "Basic " + base64.b64encode(auth.encode()).decode())
     with urllib.request.urlopen(req, timeout=timeout) as r:  # nosec B310
         return json.loads(r.read())
 
@@ -286,16 +284,15 @@ def run_iteration(iteration: int, urls: list[str], log: Path) -> dict:
             t_sec = time_to_seconds(props.get("time", {}))
             if t_sec > last_t_sec + 0.05:
                 stall = time.time() - last_progress_t
-                if stall > max_stall_seconds and last_t_sec > 0:
-                    max_stall_seconds = stall
+                if last_t_sec > 0:
+                    max_stall_seconds = max(max_stall_seconds, stall)
                 last_progress_t = time.time()
                 last_t_sec = t_sec
                 if elapsed > PRIMARY_PLAY_SECONDS + 1:
                     progress_post_fault = True
             elif elapsed > PRIMARY_PLAY_SECONDS + 1:
                 stall = time.time() - last_progress_t
-                if stall > max_stall_seconds:
-                    max_stall_seconds = stall
+                max_stall_seconds = max(max_stall_seconds, stall)
             if elapsed >= PRIMARY_PLAY_SECONDS and progress_at_fault is None:
                 progress_at_fault = t_sec
             record(
@@ -341,9 +338,7 @@ def main():
         if wait > 0:
             print("[iter {}] sleeping {:.1f}s until next 2-min mark".format(i, wait))
             time.sleep(wait)
-        print(
-            "[iter {}] starting at +{:.0f}s".format(i, time.time() - test_start)
-        )
+        print("[iter {}] starting at +{:.0f}s".format(i, time.time() - test_start))
         s = run_iteration(i, urls, log)
         summaries.append(s)
         elapsed = s["finished_at"] - s["started_at"]

@@ -13,14 +13,12 @@ tests, not in 3-min Kodi runs.
 
 from __future__ import annotations
 
-import os
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from resources.lib.fallback_streams import (
-    _PrecomputedProbeBase,
     _origin_key,
+    _PrecomputedProbeBase,
     _split_http_url,
     _validated_probe_url,
     fingerprint_ranges,
@@ -59,8 +57,8 @@ def test_fingerprint_ranges_small_file_returns_single_range():
 def test_fingerprint_ranges_zero_content_length_returns_empty():
     """No ranges to validate against when the upstream reports no
     bytes — prevalidation must not produce a false "validated" mark."""
-    assert fingerprint_ranges(0) == []
-    assert fingerprint_ranges(-1) == []
+    assert not fingerprint_ranges(0)
+    assert not fingerprint_ranges(-1)
 
 
 # 4: primary fails before first frame — at session prepare time the
@@ -105,7 +103,9 @@ def test_direct_play_skips_unstreamable_fallbacks():
         resolver_mod, "_prepare_direct_playback", new=fake_prepare_direct_playback
     ), patch.object(
         resolver_mod, "_direct_playback_service_config", return_value=(12345, "tok")
-    ), patch("urllib.request.urlopen", side_effect=fake_urlopen):
+    ), patch(
+        "urllib.request.urlopen", side_effect=fake_urlopen
+    ):
         _handle_direct_play(
             handle=1,
             params={
@@ -128,9 +128,10 @@ def test_validated_probe_url_rejects_off_origin_when_only_global_bases():
     is the safety net for unknown peers."""
     base_parts = _split_http_url("http://nzbdav-rs:8080/")
     base = _PrecomputedProbeBase(base_parts, _origin_key(base_parts), "/")
-    assert _validated_probe_url(
-        "http://127.0.0.1:5001/movie.mkv", probe_bases=(base,)
-    ) is None
+    assert (
+        _validated_probe_url("http://127.0.0.1:5001/movie.mkv", probe_bases=(base,))
+        is None
+    )
 
 
 # 6: fallback hash mismatch — `_validated_probe_url` must accept URLs
@@ -172,9 +173,7 @@ def test_find_terminal_by_name_returns_failed_slot():
     fake_get = MagicMock(return_value=__import__("json").dumps(response))
     fake_settings = MagicMock(return_value=("http://nzbdav:8080", "k"))
 
-    with patch(
-        "resources.lib.nzbdav_api._http_get", fake_get
-    ), patch(
+    with patch("resources.lib.nzbdav_api._http_get", fake_get), patch(
         "resources.lib.nzbdav_api._get_settings", fake_settings
     ):
         result = find_terminal_by_name("Movie.Title.x264.mkv")
@@ -203,9 +202,7 @@ def test_find_completed_by_name_excludes_failed():
     fake_get = MagicMock(return_value=__import__("json").dumps(response))
     fake_settings = MagicMock(return_value=("http://nzbdav:8080", "k"))
 
-    with patch(
-        "resources.lib.nzbdav_api._http_get", fake_get
-    ), patch(
+    with patch("resources.lib.nzbdav_api._http_get", fake_get), patch(
         "resources.lib.nzbdav_api._get_settings", fake_settings
     ):
         result = find_completed_by_name("Movie")
@@ -223,7 +220,7 @@ def test_dump_submitted_nzb_no_op_without_env(monkeypatch, tmp_path):
     _dump_submitted_nzb("http://example.com/x.nzb", "name")
     # No exception, no files; assertion is the lack of side effects.
     assert tmp_path.exists()  # tmp_path stayed empty as expected.
-    assert list(tmp_path.iterdir()) == []
+    assert not list(tmp_path.iterdir())
 
 
 # 10: empty fallback set — when all candidates dedup to the picked
@@ -265,7 +262,8 @@ def test_fallback_loader_short_circuits_for_lone_picked_link(monkeypatch):
         "ftp://server/",
         "javascript:alert(1)",
         "http://user:pass@host/",  # auth in URL is rejected by design
-        "http:// host /",  # space in netloc → ValueError on urlsplit (raises in some Python versions)
+        # Space in netloc can raise ValueError on some Python versions.
+        "http:// host /",
         "http://[invalid::ipv6/",  # malformed v6 → ValueError
         "http://host:not-a-port/",
         "http://\rhost/",  # control char
