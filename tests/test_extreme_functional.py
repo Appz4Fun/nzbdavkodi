@@ -456,6 +456,9 @@ def test_extreme_fallback_run(stack_ready, run_dir):
     assert (
         len(fault_events) == 5
     ), f"expected 5 fault events, proxy log has {len(fault_events)}"
+    assert (
+        len(correlated) == 5
+    ), f"expected 5 correlated fault events, got {len(correlated)}"
     for ev in correlated:
         assert (
             ev["resume_seconds"] is not None

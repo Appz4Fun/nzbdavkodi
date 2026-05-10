@@ -145,6 +145,25 @@ def test_search_prowlarr_title_query_when_no_imdb(mock_http, mock_settings):
     assert "imdbid" not in call_url
 
 
+@patch("xbmcaddon.Addon")
+@patch("resources.lib.prowlarr._get_settings")
+@patch("resources.lib.prowlarr._http_get")
+def test_search_prowlarr_invalid_max_results_uses_default(
+    mock_http, mock_settings, mock_addon
+):
+    addon = mock_addon.return_value
+    addon.getSetting.return_value = "many"
+    mock_settings.return_value = ("http://prowlarr:9696", "testkey", ["1"])
+    mock_http.return_value = _load_fixture("prowlarr_movie_response.xml")
+
+    results, error = search_prowlarr("movie", "The Matrix")
+
+    assert error is None
+    assert len(results) == 2
+    call_url = mock_http.call_args[0][0]
+    assert "limit=25" in call_url
+
+
 @patch("resources.lib.prowlarr._get_settings")
 @patch("resources.lib.prowlarr._http_get")
 def test_search_prowlarr_connection_error(mock_http, mock_settings):

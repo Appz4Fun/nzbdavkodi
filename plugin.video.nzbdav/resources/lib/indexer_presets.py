@@ -63,4 +63,4 @@ def get_preset(indexer_id):
 
 def host_contains(host, needles):
     lowered = str(host or "").lower()
-    return any(needle in lowered for needle in needles)
+    return any(str(needle).lower() in lowered for needle in needles)

@@ -3,6 +3,7 @@
 
 """Result filtering and sorting using PTT for title parsing."""
 
+import math
 from types import SimpleNamespace
 
 import xbmc
@@ -250,8 +251,11 @@ def _int_setting(addon, key, default):
     except (TypeError, ValueError):
         pass
     try:
-        return int(float(raw))
-    except (TypeError, ValueError):
+        parsed = float(raw)
+        if not math.isfinite(parsed):
+            return default
+        return int(parsed)
+    except (OverflowError, TypeError, ValueError):
         return default
 
 

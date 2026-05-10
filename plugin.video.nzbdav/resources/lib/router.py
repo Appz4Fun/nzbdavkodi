@@ -10,6 +10,7 @@ from itertools import chain
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import xbmc
+import xbmcaddon
 
 from resources.lib.fallback_streams import (
     FALLBACK_CANDIDATES_DISABLED,
@@ -37,8 +38,6 @@ _SCRIPT_SETTINGS_PATH = (
 
 def _addon_instance():
     """Return the addon object, accepting older tests' no-arg Addon mocks."""
-    import xbmcaddon
-
     try:
         return xbmcaddon.Addon("plugin.video.nzbdav")
     except TypeError:
