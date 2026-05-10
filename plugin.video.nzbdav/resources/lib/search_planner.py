@@ -152,9 +152,7 @@ def _episode_plan(base, provider_kind, host, title, imdb, season, episode, caps)
     if _direct_episode_fallback(provider_kind, host) or not _supports(caps, "tvsearch"):
         if fallback is None:
             return _no_query_plan()
-        return NewznabSearchPlan(
-            fallback, fallback, "episode_search_fallback"
-        )
+        return NewznabSearchPlan(fallback, fallback, "episode_search_fallback")
 
     params = _params(base, "tvsearch")
     if title and _supports(caps, "tvsearch", "q"):
