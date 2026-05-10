@@ -32,6 +32,56 @@ def test_requested_proxy_timeout_defaults():
     assert stream_proxy._PROBE_DEADLINE_SECONDS == 30.0
 
 
+def test_parallel_fallback_fingerprint_shutdown_works_on_python38_executor():
+    from resources.lib import stream_proxy
+
+    class Python38Executor:
+        def __init__(self, max_workers):
+            self._executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=max_workers
+            )
+            self.cancelled = False
+
+        def submit(self, *args, **kwargs):
+            return self._executor.submit(*args, **kwargs)
+
+        def shutdown(self, wait=True):
+            self.cancelled = True
+            return self._executor.shutdown(wait=wait)
+
+    created = []
+
+    def make_executor(max_workers):
+        executor = Python38Executor(max_workers)
+        created.append(executor)
+        return executor
+
+    handler = _make_handler()
+    ctx = {}
+    ranges = ((0, 3), (4, 7))
+
+    def digest(_url, _auth, start, end, **_kwargs):
+        return "digest-{}-{}".format(start, end)
+
+    with patch.object(
+        stream_proxy, "ThreadPoolExecutor", side_effect=make_executor
+    ), patch.object(handler, "_fetch_fallback_range_digest", side_effect=digest):
+        assert handler._validate_fallback_fingerprint_parallel(
+            ctx,
+            ranges,
+            content_length=8,
+            probe_bases=(),
+            current_range=None,
+            primary_url="http://primary/video.mkv",
+            fallback_url="http://fallback/video.mkv",
+            fallback_auth=None,
+            primary_auth=None,
+        )
+
+    assert created
+    assert created[0].cancelled is True
+
+
 # ---------------------------------------------------------------------------
 # _StreamHandler._is_safe_ffmpeg_cmd — argv shape + CR/LF gating
 # ---------------------------------------------------------------------------
