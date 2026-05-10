@@ -1262,8 +1262,26 @@ def _poll_once(nzo_id, title, monitor, settings_getter=None):
     # Only probe WebDAV for errors after both APIs returned no data within the
     # bounded wait, so we don't falsely conclude the job is missing.
     if history_status[0] is None and job_status[0] is None:
-        _, error = probe_webdav_reachable(monitor=monitor, max_retries=1, retry_delay=1)
-        error_type[0] = error
+        # nzbdav-rs can reassign nzo_ids internally: the id returned by addurl
+        # may not match the id stored in history, so get_job_history's exact
+        # nzo_id match silently misses the completed entry.  When both APIs
+        # return nothing, try a name-based history lookup as a recovery path
+        # before treating the situation as a WebDAV connectivity problem.
+        name_hit = find_completed_by_name(
+            title, **_settings_getter_kwargs(settings_getter)
+        )
+        if _history_status_is_terminal(name_hit):
+            history_status[0] = name_hit
+            xbmc.log(
+                "NZB-DAV: nzo_id={} not in history by id; recovered '{}' via "
+                "name match (nzbdav-rs nzo_id reassignment)".format(nzo_id, title),
+                xbmc.LOGDEBUG,
+            )
+        else:
+            _, error = probe_webdav_reachable(
+                monitor=monitor, max_retries=1, retry_delay=1
+            )
+            error_type[0] = error
 
     xbmc.log(
         "NZB-DAV: Poll result - job_status={} history_status={} error_type={}".format(

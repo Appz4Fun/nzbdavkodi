@@ -199,6 +199,7 @@ def _main():
     # Import AFTER mocks + settings are installed (modules run xbmc.log
     # at import time in some cases).
     from resources.lib.nzbdav_api import (  # noqa: E402
+        find_completed_by_name,
         get_job_history,
         get_job_status,
         submit_nzb,
@@ -270,6 +271,42 @@ def _main():
             else:
                 _log(line, level=0)
         else:
+            # nzbdav-rs can reassign nzo_ids internally, so the exact nzo_id
+            # returned by addurl may not match what ends up in history.
+            # Fall back to name-based history lookup when both API calls miss.
+            name_hit = find_completed_by_name(title)
+            if name_hit and name_hit.get("status") in ("Completed", "Failed"):
+                # Process inline — don't loop back, get_job_history would
+                # re-overwrite hist with None on the next iteration.
+                hist_status = name_hit.get("status")
+                if hist_status == "Completed":
+                    storage = name_hit["storage"]
+                    _log("job Completed (name match); storage={}".format(storage))
+                    folder = _storage_to_webdav_path(storage)
+                    _log("resolving video under {}".format(folder))
+                    video_path = find_video_file(folder)
+                    if not video_path:
+                        _log(
+                            "completed but no playable file found at {}".format(folder),
+                            level=3,
+                        )
+                        sys.exit(1)
+                    _, headers = get_webdav_stream_url_for_path(video_path)
+                    display_url = _stream_url_for_display(webdav_url, video_path)
+                    print("\n=== STREAM READY ===")
+                    print("webdav file: {}".format(video_path))
+                    print("stream url : {}".format(display_url))
+                    if headers:
+                        print("auth header: <redacted>")
+                    print("\nplay in vlc:")
+                    print('  vlc "{}"'.format(display_url))
+                    return
+                else:
+                    _log(
+                        "download failed: {}".format(name_hit.get("fail_message", "")),
+                        level=3,
+                    )
+                    sys.exit(1)
             _log("  (not in queue yet — nzbdav still fetching/parsing)", level=0)
 
         time.sleep(args.poll_interval)
