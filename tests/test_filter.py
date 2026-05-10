@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 nzbdav contributors
 
+import ast
+from pathlib import Path
 from unittest.mock import patch
 
 from resources.lib.filter import (
@@ -8,6 +10,15 @@ from resources.lib.filter import (
     filter_results,
     matches_filters,
     parse_title_metadata,
+)
+
+
+FILTER_MODULE = (
+    Path(__file__).resolve().parents[1]
+    / "plugin.video.nzbdav"
+    / "resources"
+    / "lib"
+    / "filter.py"
 )
 
 
@@ -20,6 +31,27 @@ def _make_result(title, size="5000000000", pubdate="", link="http://example.com/
         "pubdate": pubdate,
         "age": "1 day",
     }
+
+
+def test_filter_uses_module_scope_kodi_imports():
+    tree = ast.parse(FILTER_MODULE.read_text())
+    kodi_modules = {"xbmc", "xbmcaddon", "xbmcgui"}
+    module_imports = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    }
+    local_imports = [
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import) and node not in tree.body
+        for alias in node.names
+        if alias.name in kodi_modules
+    ]
+
+    assert kodi_modules <= module_imports
+    assert local_imports == []
 
 
 # --- parse_title_metadata with real PTT (not mocked) ---

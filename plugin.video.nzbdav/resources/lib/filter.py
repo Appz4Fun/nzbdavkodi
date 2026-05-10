@@ -6,6 +6,8 @@
 from types import SimpleNamespace
 
 import xbmc
+import xbmcaddon
+import xbmcgui
 
 # ---------------------------------------------------------------------------
 # Known release groups — master list for multiselect dialogs
@@ -256,8 +258,6 @@ def _int_setting(addon, key, default):
 def _get_filter_settings(settings_getter=None):
     """Read filter settings from Kodi addon config."""
     if settings_getter is None:
-        import xbmcaddon
-
         addon = xbmcaddon.Addon("plugin.video.nzbdav")
     else:
         addon = SimpleNamespace(getSetting=lambda key: settings_getter(key, ""))
@@ -855,9 +855,6 @@ def configure_groups_dialog(setting_id, title, default_set):
         title: Dialog title string.
         default_set: Set of group names to preselect when setting is empty.
     """
-    import xbmcaddon
-    import xbmcgui
-
     addon = xbmcaddon.Addon("plugin.video.nzbdav")
     current = _csv_setting(addon, setting_id)
 

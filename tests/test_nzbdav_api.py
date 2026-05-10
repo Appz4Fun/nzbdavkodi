@@ -84,8 +84,18 @@ def test_submit_nzb_uses_settings_getter_without_kodi_addon(mock_http, mock_addo
 @patch("resources.lib.nzbdav_api._history_slots")
 def test_find_terminal_by_name_returns_newest_matching_slot(mock_slots, _mock_settings):
     mock_slots.return_value = [
-        {"name": "Movie", "status": "Failed", "nzo_id": "older-failed"},
-        {"name": "Movie", "status": "Completed", "nzo_id": "newer-completed"},
+        {
+            "name": "Movie",
+            "status": "Failed",
+            "nzo_id": "older-failed",
+            "completed": 100,
+        },
+        {
+            "name": "Movie",
+            "status": "Completed",
+            "nzo_id": "newer-completed",
+            "completed": 200,
+        },
     ]
 
     result = find_terminal_by_name("Movie")

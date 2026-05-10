@@ -1017,6 +1017,8 @@ def test_fallback_candidate_loader_skips_duplicate_lookup_when_disabled(
     loader = _fallback_candidate_loader_for_selection(selected, [selected, related])
 
     assert callable(loader)
+    from resources.lib.fallback_streams import FALLBACK_CANDIDATES_DISABLED
+
     with patch(
         "resources.lib.hydra.fetch_release_duplicate_uploads",
         side_effect=AssertionError("disabled fallback should not call Hydra"),
