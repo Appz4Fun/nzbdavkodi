@@ -6,6 +6,7 @@
 import xbmcaddon
 import xbmcgui
 
+from resources.lib.direct_indexers import get_legacy_configured_indexers
 from resources.lib.hydra import refresh_hydra_caps
 from resources.lib.i18n import addon_name, string
 from resources.lib.indexer_presets import list_newznab_presets, slugify_preset_id
@@ -63,6 +64,22 @@ def _normalized_custom_entry(name, api_url, api_key, caps):
     )
 
 
+def _normalized_legacy_entry(indexer):
+    indexer_id = str(indexer.get("id") or "").strip()
+    label = str(indexer.get("label") or indexer_id).strip()
+    return normalize_indexer(
+        {
+            "id": indexer_id,
+            "preset_id": indexer_id,
+            "name": label,
+            "api_url": indexer.get("api_url"),
+            "api_key": indexer.get("api_key"),
+            "enabled": True,
+            "caps": indexer.get("caps", {}),
+        }
+    )
+
+
 def _replace_indexer(indexers, indexer):
     return [
         existing
@@ -76,6 +93,29 @@ def _find_indexer(indexers, indexer_id):
         if _indexer_id(indexer) == indexer_id:
             return position, indexer
     return -1, None
+
+
+def load_managed_indexers():
+    """Load JSON indexers and migrate complete legacy static settings once."""
+    indexers = load_indexers()
+    existing_ids = {_indexer_id(indexer) for indexer in indexers}
+    existing_urls = {
+        str(indexer.get("api_url") or "").rstrip("/") for indexer in indexers
+    }
+    migrated = []
+    for legacy in get_legacy_configured_indexers():
+        indexer_id = str(legacy.get("id") or "").strip()
+        api_url = str(legacy.get("api_url") or "").rstrip("/")
+        if not indexer_id or indexer_id in existing_ids:
+            continue
+        if api_url and api_url in existing_urls:
+            continue
+        migrated.append(_normalized_legacy_entry(legacy))
+
+    if migrated:
+        indexers = indexers + migrated
+        save_indexers(indexers)
+    return indexers
 
 
 def add_preset_indexer(preset, api_key):
@@ -343,7 +383,7 @@ def _existing_indexer_flow(dialog, indexer):
 def open_indexer_manager():
     """Open a simple Kodi dialog for managing configured direct indexers."""
     dialog = xbmcgui.Dialog()
-    indexers = load_indexers()
+    indexers = load_managed_indexers()
     options = [_ADD_NEWZNAB, string(30196)]
     options.extend(_indexer_label(indexer) for indexer in indexers)
 

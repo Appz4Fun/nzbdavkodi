@@ -83,15 +83,34 @@ def refresh_hydra_caps(base_url, api_key):
 
 def _hydra_provider_caps(base_url):
     """Return cached Hydra provider caps for the current base URL."""
-    provider = load_provider_caps().get("nzbhydra2", {})
+    providers = load_provider_caps()
+    if "nzbhydra2" not in providers:
+        return {}, "missing"
+    provider = providers.get("nzbhydra2", {})
     if not isinstance(provider, dict):
-        return {}
+        return {}, "missing"
     stored_base_url = str(provider.get("base_url") or "").rstrip("/")
     current_base_url = str(base_url or "").rstrip("/")
     if stored_base_url != current_base_url:
-        return {}
+        return {}, "mismatch"
     caps = provider.get("caps")
-    return caps if isinstance(caps, dict) else {}
+    return (caps, "current") if isinstance(caps, dict) else ({}, "missing")
+
+
+def _get_hydra_caps_for_search(base_url, api_key):
+    caps, cache_status = _hydra_provider_caps(base_url)
+    if cache_status == "current" and caps.get("search_types"):
+        return caps, True
+    if cache_status == "mismatch":
+        return {}, False
+    refreshed_caps, error = refresh_hydra_caps(base_url, api_key)
+    if error:
+        xbmc.log(
+            "NZB-DAV: Hydra caps refresh failed before search: {}".format(error),
+            xbmc.LOGDEBUG,
+        )
+        return {}, False
+    return refreshed_caps, bool(refreshed_caps.get("search_types"))
 
 
 def _fetch_hydra_xml(url, error_prefix):
@@ -192,7 +211,7 @@ def search_hydra(
     except (TypeError, ValueError):
         max_results = 25
     max_results = max(1, min(max_results, 10000))
-    caps = _hydra_provider_caps(base_url)
+    caps, has_provider_caps = _get_hydra_caps_for_search(base_url, api_key)
     plan = plan_newznab_search(
         provider_kind="nzbhydra2",
         host=base_url,
@@ -225,7 +244,9 @@ def search_hydra(
         return [], error
 
     fallback = (
-        plan.fallback if caps else _legacy_hydra_title_fallback(plan.primary, title)
+        plan.fallback
+        if has_provider_caps
+        else _legacy_hydra_title_fallback(plan.primary, title)
     )
     if not results and fallback and fallback != plan.primary:
         xbmc.log(

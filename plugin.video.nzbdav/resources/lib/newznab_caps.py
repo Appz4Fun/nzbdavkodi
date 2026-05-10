@@ -23,11 +23,25 @@ _SEARCH_TAGS = {
 }
 
 
-def build_caps_url(api_url, api_key):
+def normalize_api_endpoint(api_url):
+    """Return a Newznab API endpoint from either a host URL or endpoint URL."""
     parts = urlsplit(str(api_url or ""))
     path = parts.path.rstrip("/")
-    if not path.endswith("/api"):
-        path += "/api"
+    if not path:
+        path = "/api"
+    return urlunsplit(
+        (
+            parts.scheme,
+            parts.netloc,
+            path,
+            parts.query,
+            parts.fragment,
+        )
+    )
+
+
+def build_caps_url(api_url, api_key):
+    parts = urlsplit(normalize_api_endpoint(api_url))
     query = [
         (key, value)
         for key, value in parse_qsl(parts.query, keep_blank_values=True)
@@ -38,7 +52,7 @@ def build_caps_url(api_url, api_key):
         (
             parts.scheme,
             parts.netloc,
-            path,
+            parts.path,
             urlencode(query),
             parts.fragment,
         )

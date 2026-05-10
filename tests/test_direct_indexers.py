@@ -73,7 +73,9 @@ def test_get_configured_indexers_reads_enabled_custom_slot(mock_xbmcaddon):
 
 @patch("resources.lib.direct_indexers.load_indexers")
 @patch("resources.lib.direct_indexers.xbmcaddon")
-def test_get_configured_indexers_reads_json_store(mock_xbmcaddon, mock_load_indexers):
+def test_get_configured_indexers_merges_json_store_and_legacy_static_settings(
+    mock_xbmcaddon, mock_load_indexers
+):
     from resources.lib.direct_indexers import get_configured_indexers
 
     mock_xbmcaddon.Addon.return_value = _addon_with_settings(
@@ -82,6 +84,10 @@ def test_get_configured_indexers_reads_json_store(mock_xbmcaddon, mock_load_inde
             "direct_indexer_nzbgeek_enabled": "true",
             "direct_indexer_nzbgeek_url": "https://api.nzbgeek.info/api",
             "direct_indexer_nzbgeek_api_key": "static-key",
+            "direct_indexer_custom1_enabled": "true",
+            "direct_indexer_custom1_name": "Static Custom",
+            "direct_indexer_custom1_url": "https://static.example/newznab",
+            "direct_indexer_custom1_api_key": "custom-key",
         }
     )
     mock_load_indexers.return_value = [
@@ -142,7 +148,50 @@ def test_get_configured_indexers_reads_json_store(mock_xbmcaddon, mock_load_inde
             "api_key": "unnamed-key",
             "caps": {},
         },
+        {
+            "id": "nzbgeek",
+            "label": "NZBGeek",
+            "api_url": "https://api.nzbgeek.info/api",
+            "api_key": "static-key",
+            "caps": {},
+        },
+        {
+            "id": "custom1",
+            "label": "Static Custom",
+            "api_url": "https://static.example/newznab",
+            "api_key": "custom-key",
+            "caps": {},
+        },
     ]
+
+
+@patch("resources.lib.direct_indexers.load_indexers")
+@patch("resources.lib.direct_indexers.xbmcaddon")
+def test_get_configured_indexers_disabled_json_row_blocks_legacy_static_fallback(
+    mock_xbmcaddon, mock_load_indexers
+):
+    from resources.lib.direct_indexers import get_configured_indexers
+
+    mock_xbmcaddon.Addon.return_value = _addon_with_settings(
+        {
+            "direct_indexers_enabled": "true",
+            "direct_indexer_nzbgeek_enabled": "true",
+            "direct_indexer_nzbgeek_url": "https://api.nzbgeek.info/api",
+            "direct_indexer_nzbgeek_api_key": "static-key",
+        }
+    )
+    mock_load_indexers.return_value = [
+        {
+            "id": "nzbgeek",
+            "name": "NZBGeek",
+            "api_url": "https://api.nzbgeek.info/api",
+            "api_key": "json-key",
+            "enabled": False,
+            "caps": {},
+        }
+    ]
+
+    assert not get_configured_indexers()
 
 
 def test_build_search_url_appends_api_when_missing():
@@ -167,6 +216,22 @@ def test_build_search_url_preserves_existing_api_endpoint():
     )
 
     assert url.startswith("https://api.nzbgeek.info/api?")
+
+
+def test_build_search_url_preserves_nonstandard_newznab_endpoint_paths():
+    from resources.lib.direct_indexers import build_search_url
+
+    tabula = build_search_url(
+        "https://tabula-rasa.pw/api/v1/",
+        {"apikey": "secret", "t": "movie", "o": "xml"},
+    )
+    torbox = build_search_url(
+        "https://torbox.app/newznab",
+        {"apikey": "secret", "t": "search", "o": "xml"},
+    )
+
+    assert tabula.startswith("https://tabula-rasa.pw/api/v1?")
+    assert torbox.startswith("https://torbox.app/newznab?")
 
 
 def test_parse_results_uses_configured_label_when_xml_omits_indexer():
