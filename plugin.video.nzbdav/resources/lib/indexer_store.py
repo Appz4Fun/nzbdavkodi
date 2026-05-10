@@ -41,6 +41,18 @@ def _list(value):
     return value if isinstance(value, list) else []
 
 
+def _bool_setting(value, default=False):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ("true", "1", "yes", "on"):
+            return True
+        if normalized in ("false", "0", "no", "off", ""):
+            return False
+    return default if value is None else bool(value)
+
+
 def normalize_caps(caps):
     if not isinstance(caps, dict):
         return {}
@@ -63,7 +75,7 @@ def normalize_indexer(item):
     item = item if isinstance(item, dict) else {}
     deleted = bool(item.get("deleted"))
     enabled = (
-        False if deleted else bool(item.get("enabled")) if "enabled" in item else True
+        False if deleted else _bool_setting(item.get("enabled")) if "enabled" in item else True
     )
     normalized = {
         "id": _text(item.get("id")),
