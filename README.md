@@ -287,6 +287,9 @@ With **Auto-select best match** enabled, the dialog is skipped and the top resul
 
 ## Development
 
+For a contributor-facing map of the search, resolve, and stream proxy paths, see
+the [architecture overview](docs/architecture.md).
+
 ### Prerequisites
 
 - Python 3.10+ for local test tooling
