@@ -930,9 +930,7 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
     )
 
     assert call_order == ["poll"]
-    mock_snapshot.assert_called_once_with(
-        fallback_state, wait_seconds=8.0
-    )
+    mock_snapshot.assert_called_once_with(fallback_state, wait_seconds=8.0)
     mock_start_fallback.assert_called_once_with(
         fallback_candidates, candidate_loader=None
     )
@@ -1013,9 +1011,7 @@ def test_resolve_attaches_fallback_handoff_for_mkv_streams(
         },
     )
 
-    mock_snapshot.assert_called_once_with(
-        fallback_state, wait_seconds=8.0
-    )
+    mock_snapshot.assert_called_once_with(fallback_state, wait_seconds=8.0)
     mock_start_prepare.assert_called_once_with(
         "http://webdav/content/primary/movie.mkv",
         {"Authorization": "Basic primary"},
@@ -1812,9 +1808,7 @@ def test_resolve_and_play_attaches_fallback_handoff_for_mkv_streams(
         params={"_fallback_candidates": [{"title": "Fallback A"}]},
     )
 
-    mock_snapshot.assert_called_once_with(
-        fallback_state, wait_seconds=8.0
-    )
+    mock_snapshot.assert_called_once_with(fallback_state, wait_seconds=8.0)
     mock_start_prepare.assert_called_once_with(
         "http://webdav/content/primary/movie.mkv",
         {"Authorization": "Basic primary"},

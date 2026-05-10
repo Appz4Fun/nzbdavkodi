@@ -170,7 +170,9 @@ def correlate(timeline: list[dict], fault_events: list[dict]) -> list[dict]:
     playable_ticks = [
         t
         for t in sorted_timeline
-        if "time_sec" in t and "speed" in t and isinstance(t.get("t_wall"), (int, float))
+        if "time_sec" in t
+        and "speed" in t
+        and isinstance(t.get("t_wall"), (int, float))
     ]
     out = []
     for idx, fault in enumerate(fault_events, start=1):
