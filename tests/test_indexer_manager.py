@@ -99,9 +99,8 @@ def test_add_preset_indexer_fetch_error_does_not_save(monkeypatch):
 
 def test_add_custom_indexer_saves_enabled_custom_entry(monkeypatch):
     saved = []
-    monkeypatch.setattr(
-        indexer_manager, "fetch_caps", MagicMock(return_value=(CAPS, None))
-    )
+    fetch_caps = MagicMock(return_value=(CAPS, None))
+    monkeypatch.setattr(indexer_manager, "fetch_caps", fetch_caps)
     monkeypatch.setattr(indexer_manager, "load_indexers", MagicMock(return_value=[]))
     monkeypatch.setattr(indexer_manager, "save_indexers", saved.append)
 
@@ -119,9 +118,7 @@ def test_add_custom_indexer_saves_enabled_custom_entry(monkeypatch):
         "enabled": True,
         "caps": CAPS,
     }
-    indexer_manager.fetch_caps.assert_called_once_with(
-        "https://indexer.example/api", "custom-secret"
-    )
+    fetch_caps.assert_called_once_with("https://indexer.example/api", "custom-secret")
     assert saved == [[indexer]]
 
 
@@ -132,9 +129,8 @@ def test_update_indexer_refetches_caps_when_url_or_key_changes(monkeypatch):
         indexer_manager, "load_indexers", MagicMock(return_value=[indexer])
     )
     monkeypatch.setattr(indexer_manager, "save_indexers", save_indexers)
-    monkeypatch.setattr(
-        indexer_manager, "fetch_caps", MagicMock(return_value=(CAPS, None))
-    )
+    fetch_caps = MagicMock(return_value=(CAPS, None))
+    monkeypatch.setattr(indexer_manager, "fetch_caps", fetch_caps)
 
     updated, error = indexer_manager.update_indexer(
         "nzbgeek",
@@ -151,9 +147,7 @@ def test_update_indexer_refetches_caps_when_url_or_key_changes(monkeypatch):
         "api_key": "new-secret",
         "caps": CAPS,
     }
-    indexer_manager.fetch_caps.assert_called_once_with(
-        "https://new.example/api", "new-secret"
-    )
+    fetch_caps.assert_called_once_with("https://new.example/api", "new-secret")
     save_indexers.assert_called_once_with([updated])
 
 
@@ -182,19 +176,14 @@ def test_refresh_hydra_provider_caps_reads_hydra_settings(monkeypatch):
     monkeypatch.setattr(
         indexer_manager.xbmcaddon, "Addon", MagicMock(return_value=addon)
     )
-    monkeypatch.setattr(
-        indexer_manager,
-        "refresh_hydra_caps",
-        MagicMock(return_value=(CAPS, None)),
-    )
+    refresh_hydra_caps = MagicMock(return_value=(CAPS, None))
+    monkeypatch.setattr(indexer_manager, "refresh_hydra_caps", refresh_hydra_caps)
 
     caps, error = indexer_manager.refresh_hydra_provider_caps()
 
     assert caps == CAPS
     assert error is None
-    indexer_manager.refresh_hydra_caps.assert_called_once_with(
-        "http://hydra:5076", "hydra-secret"
-    )
+    refresh_hydra_caps.assert_called_once_with("http://hydra:5076", "hydra-secret")
 
 
 def test_set_indexer_enabled_persists_new_enabled_value(monkeypatch):
@@ -256,17 +245,14 @@ def test_retest_indexer_updates_caps_and_saves_on_success(monkeypatch):
         indexer_manager, "load_indexers", MagicMock(return_value=[indexer])
     )
     monkeypatch.setattr(indexer_manager, "save_indexers", save_indexers)
-    monkeypatch.setattr(
-        indexer_manager, "fetch_caps", MagicMock(return_value=(CAPS, None))
-    )
+    fetch_caps = MagicMock(return_value=(CAPS, None))
+    monkeypatch.setattr(indexer_manager, "fetch_caps", fetch_caps)
 
     caps, error = indexer_manager.retest_indexer("nzbgeek")
 
     assert caps == CAPS
     assert error is None
-    indexer_manager.fetch_caps.assert_called_once_with(
-        "https://api.nzbgeek.info", "secret"
-    )
+    fetch_caps.assert_called_once_with("https://api.nzbgeek.info", "secret")
     save_indexers.assert_called_once_with([{**indexer, "caps": CAPS}])
 
 
@@ -283,7 +269,7 @@ def test_retest_indexer_does_not_save_on_fetch_error(monkeypatch):
 
     caps, error = indexer_manager.retest_indexer("nzbgeek")
 
-    assert caps == {}
+    assert not caps
     assert error == "network down"
     save_indexers.assert_not_called()
 
