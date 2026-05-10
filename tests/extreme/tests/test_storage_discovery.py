@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 nzbdav contributors
 
-from tests.extreme.scripts import _storage_discovery
+import importlib
+
+_storage_discovery = importlib.import_module("tests.extreme.scripts._storage_discovery")
 
 
 def test_discover_cinefile_storages_non_positive_limit_skips_propfind(monkeypatch):

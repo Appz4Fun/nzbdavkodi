@@ -151,6 +151,10 @@ setup-extreme-functional-test:
         printf '%s' "$answer"
     }
 
+    emit_env() {
+        printf '%s=%q\n' "$1" "$2"
+    }
+
     echo "--- NZBHydra2 indexer ---"
     HYDRA_URL=$(ask "Hydra URL" "http://192.168.1.93:5076")
     HYDRA_API_KEY=$(ask_required "Hydra API key" secret)
@@ -185,25 +189,25 @@ setup-extreme-functional-test:
         echo "# Mode 600. Do not commit."
         echo ""
         echo "# NZBHydra2 instance"
-        echo "HYDRA_URL=$HYDRA_URL"
-        echo "HYDRA_API_KEY=$HYDRA_API_KEY"
+        emit_env "HYDRA_URL" "$HYDRA_URL"
+        emit_env "HYDRA_API_KEY" "$HYDRA_API_KEY"
         echo ""
         echo "# nzbdav-rs API key (must match docker-compose env)"
-        echo "NZBDAV_API_KEY=$NZBDAV_API_KEY"
+        emit_env "NZBDAV_API_KEY" "$NZBDAV_API_KEY"
         echo ""
         echo "# NNTP provider"
-        echo "NNTP_HOST=$NNTP_HOST"
-        echo "NNTP_PORT=$NNTP_PORT"
-        echo "NNTP_USER=$NNTP_USER"
-        echo "NNTP_PASS=$NNTP_PASS"
-        echo "NNTP_CONNS=$NNTP_CONNS"
+        emit_env "NNTP_HOST" "$NNTP_HOST"
+        emit_env "NNTP_PORT" "$NNTP_PORT"
+        emit_env "NNTP_USER" "$NNTP_USER"
+        emit_env "NNTP_PASS" "$NNTP_PASS"
+        emit_env "NNTP_CONNS" "$NNTP_CONNS"
         echo ""
         echo "# WebDAV credentials served by nzbdav-rs"
-        echo "WEBDAV_USERNAME=$WEBDAV_USERNAME"
-        echo "WEBDAV_PASSWORD=$WEBDAV_PASSWORD"
+        emit_env "WEBDAV_USERNAME" "$WEBDAV_USERNAME"
+        emit_env "WEBDAV_PASSWORD" "$WEBDAV_PASSWORD"
         echo ""
         echo "# TMDB API key (TMDBHelper requires this)"
-        echo "TMDB_API_KEY=$TMDB_API_KEY"
+        emit_env "TMDB_API_KEY" "$TMDB_API_KEY"
         echo ""
         echo "# Optional knobs (uncomment to use):"
         echo "# EXTREME_SEED=42"

@@ -59,6 +59,15 @@ def test_justfile_has_setup_extreme_functional_test_recipe():
     assert "setup-extreme-functional-test:" in contents
 
 
+def test_setup_extreme_functional_test_shell_quotes_env_values():
+    contents = Path(__file__).resolve().parents[1].joinpath("justfile").read_text()
+    body = _recipe_body(contents, "setup-extreme-functional-test")
+
+    assert "emit_env()" in body
+    assert "printf '%s=%q\\n'" in body
+    assert 'echo "HYDRA_API_KEY=$HYDRA_API_KEY"' not in body
+
+
 def test_test_recipe_excludes_extreme_marker():
     contents = Path(__file__).resolve().parents[1].joinpath("justfile").read_text()
     test_block = re.search(r"^test:\n(?:    .+\n)+", contents, re.MULTILINE)
