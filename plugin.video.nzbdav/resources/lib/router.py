@@ -330,6 +330,15 @@ def _fallback_candidate_loader_for_selection(selected, results, settings_getter=
     first_peer = cached_selection_pool_first_peer(selected, results)
 
     def _load_fallback_candidates():
+        if settings_getter is None:
+            fallback_settings = fallback_candidate_prefetch_settings()
+        else:
+            fallback_settings = fallback_candidate_prefetch_settings(
+                settings_getter=settings_getter
+            )
+        if not fallback_candidate_prefetch_enabled(fallback_settings):
+            return FALLBACK_CANDIDATES_DISABLED
+
         # Augment the picker's deduped pool with same-title alternate
         # uploads from Hydra's internal API (showSingleResult... = false).
         # The picker UX still shows one row per release for clean UI, but
@@ -360,14 +369,6 @@ def _fallback_candidate_loader_for_selection(selected, results, settings_getter=
                 if not selection_pool_may_have_fallback_peer(selected, results):
                     return FALLBACK_CANDIDATES_DISABLED
                 known_first_peer = cached_selection_pool_first_peer(selected, results)
-        if settings_getter is None:
-            fallback_settings = fallback_candidate_prefetch_settings()
-        else:
-            fallback_settings = fallback_candidate_prefetch_settings(
-                settings_getter=settings_getter
-            )
-        if not fallback_candidate_prefetch_enabled(fallback_settings):
-            return FALLBACK_CANDIDATES_DISABLED
         attach_fallback_candidates_for_selection(
             selected,
             _selection_pool_with_peer_first(selected, augmented, known_first_peer),

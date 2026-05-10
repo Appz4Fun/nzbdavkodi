@@ -9,7 +9,6 @@ from unittest.mock import MagicMock, patch
 from resources.lib.resolver import (
     _DOWNLOAD_TIMEOUT_MAX,
     _DOWNLOAD_TIMEOUT_MIN,
-    _PLAYBACK_PREPARE_HANDOFF_GRACE_SECONDS,
     _POLL_INTERVAL_MAX,
     _POLL_INTERVAL_MIN,
     MAX_POLL_ITERATIONS,
@@ -932,7 +931,7 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
 
     assert call_order == ["poll"]
     mock_snapshot.assert_called_once_with(
-        fallback_state, wait_seconds=_PLAYBACK_PREPARE_HANDOFF_GRACE_SECONDS
+        fallback_state, wait_seconds=8.0
     )
     mock_start_fallback.assert_called_once_with(
         fallback_candidates, candidate_loader=None
@@ -1015,7 +1014,7 @@ def test_resolve_attaches_fallback_handoff_for_mkv_streams(
     )
 
     mock_snapshot.assert_called_once_with(
-        fallback_state, wait_seconds=_PLAYBACK_PREPARE_HANDOFF_GRACE_SECONDS
+        fallback_state, wait_seconds=8.0
     )
     mock_start_prepare.assert_called_once_with(
         "http://webdav/content/primary/movie.mkv",
@@ -1814,7 +1813,7 @@ def test_resolve_and_play_attaches_fallback_handoff_for_mkv_streams(
     )
 
     mock_snapshot.assert_called_once_with(
-        fallback_state, wait_seconds=_PLAYBACK_PREPARE_HANDOFF_GRACE_SECONDS
+        fallback_state, wait_seconds=8.0
     )
     mock_start_prepare.assert_called_once_with(
         "http://webdav/content/primary/movie.mkv",

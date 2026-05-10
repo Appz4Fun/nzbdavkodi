@@ -8,10 +8,34 @@ CONTAINER="${1:?usage: install_nzbdav_addon.sh <container> <jsonrpc-url> <user:p
 KODI_URL="${2:?usage}"
 KODI_AUTH="${3:?usage}"
 TEMPLATE_PATH="${4:?usage}"
+REQUIRED_KODI_MAJOR=21
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
+
+kodi_version_supported() {
+    local payload="${1:-}"
+    local major=""
+
+    if command -v jq >/dev/null 2>&1; then
+        major="$(
+            printf '%s\n' "$payload" \
+                | jq -r '.result.version.major // empty' 2>/dev/null \
+                || true
+        )"
+    fi
+
+    if [[ -z "$major" || "$major" == "null" ]]; then
+        major="$(
+            printf '%s\n' "$payload" \
+                | sed -n 's/.*"major"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
+                | sed -n '1p'
+        )"
+    fi
+
+    [[ "$major" =~ ^[0-9]+$ ]] && (( 10#$major >= REQUIRED_KODI_MAJOR ))
+}
 
 echo "[nzbdav-addon] just repo-zip"
 ( cd "$REPO_ROOT" && just repo-zip )
@@ -69,10 +93,11 @@ docker restart "$CONTAINER" >/dev/null
 echo "[nzbdav-addon] Waiting for Kodi JSON-RPC to come back up"
 deadline=$(( $(date +%s) + 90 ))
 while (( $(date +%s) < deadline )); do
-    if curl -fsS -u "$KODI_AUTH" -m 2 -X POST "$KODI_URL/jsonrpc" \
+    response="$(curl -fsS -u "$KODI_AUTH" -m 2 -X POST "$KODI_URL/jsonrpc" \
          -H "Content-Type: application/json" \
          -d '{"jsonrpc":"2.0","method":"Application.GetProperties","params":{"properties":["version"]},"id":1}' \
-         2>/dev/null | grep -q '"major":21'; then
+         2>/dev/null || true)"
+    if kodi_version_supported "$response"; then
         break
     fi
     sleep 2

@@ -3,9 +3,10 @@
 
 import os
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from urllib.parse import parse_qs, urlsplit
 
+import resources.lib.hydra as hydra
 from resources.lib.hydra import (
     _calculate_age,
     parse_results,
@@ -22,6 +23,42 @@ def _load_fixture(name):
 
 def _query_params(url):
     return {key: values[-1] for key, values in parse_qs(urlsplit(url).query).items()}
+
+
+def test_search_hydra_reuses_module_level_addon_for_kodi_settings(monkeypatch):
+    fake_addon = MagicMock()
+    fake_addon.getSetting.side_effect = lambda key: {
+        "hydra_api_key": "testkey",
+        "max_results": "33",
+    }.get(key, "")
+    monkeypatch.setattr(hydra, "addon", fake_addon, raising=False)
+    monkeypatch.setattr(hydra, "url", "http://hydra:5076", raising=False)
+
+    with patch(
+        "resources.lib.hydra.xbmcaddon.Addon",
+        side_effect=RuntimeError("should reuse module-level addon"),
+    ) as mock_addon_ctor, patch("resources.lib.hydra._http_get") as mock_http, patch(
+        "resources.lib.hydra.load_provider_caps"
+    ) as mock_load_provider_caps:
+        mock_load_provider_caps.return_value = {
+            "nzbhydra2": {
+                "base_url": "http://hydra:5076",
+                "checked_at": "2026-05-10T00:00:00Z",
+                "caps": {"search_types": ["movie"], "supported_params": {}},
+            }
+        }
+        mock_http.return_value = _load_fixture("hydra_movie_response.xml")
+
+        results, error = hydra.search_hydra(
+            "movie", "The Matrix", year="1999", imdb="tt0133093"
+        )
+
+    assert error is None
+    assert len(results) == 2
+    mock_addon_ctor.assert_not_called()
+    assert "limit=33" in mock_http.call_args[0][0]
+    fake_addon.getSetting.assert_any_call("hydra_api_key")
+    fake_addon.getSetting.assert_any_call("max_results")
 
 
 def test_parse_results_movie():

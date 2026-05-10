@@ -22,6 +22,7 @@ import shutil
 import socket as _socket
 import struct
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -41,6 +42,8 @@ try:
     import xbmcaddon
 except ImportError:
     xbmcaddon = None
+
+_EXECUTOR_SHUTDOWN_SUPPORTS_CANCEL_FUTURES = sys.version_info >= (3, 9)
 
 # mp4_parser functions are imported here so tests can patch them at this
 # module's namespace.  They have no Kodi dependencies, so the import is safe

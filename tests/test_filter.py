@@ -12,7 +12,6 @@ from resources.lib.filter import (
     parse_title_metadata,
 )
 
-
 FILTER_MODULE = (
     Path(__file__).resolve().parents[1]
     / "plugin.video.nzbdav"

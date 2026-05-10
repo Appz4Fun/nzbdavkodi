@@ -497,10 +497,14 @@ def find_terminal_by_name(name, settings_getter=None):
         "search": _history_search_term(name),
     }
     slots = _history_slots(base_url, params, "terminal lookup for '{}'".format(name))
-    for slot in slots:
-        if slot.get("name") == name and slot.get("status") in ("Completed", "Failed"):
-            return _completed_job_from_slot(slot)
-    return None
+    matches = [
+        slot
+        for slot in slots
+        if slot.get("name") == name and slot.get("status") in ("Completed", "Failed")
+    ]
+    if not matches:
+        return None
+    return _completed_job_from_slot(max(matches, key=_slot_completed_sort_key))
 
 
 def _unique_names(names):
@@ -536,6 +540,13 @@ def _completed_job_from_slot(slot):
         # false positives on resubmit.
         "completed": slot.get("completed"),
     }
+
+
+def _slot_completed_sort_key(slot):
+    try:
+        return int(slot.get("completed"))
+    except (TypeError, ValueError):
+        return -1
 
 
 def _record_completed_name_matches(slots, target_names, found):

@@ -3,12 +3,8 @@ import subprocess
 import textwrap
 from pathlib import Path
 
-
 SCRIPT = (
-    Path(__file__).resolve().parent
-    / "extreme"
-    / "scripts"
-    / "install_nzbdav_addon.sh"
+    Path(__file__).resolve().parent / "extreme" / "scripts" / "install_nzbdav_addon.sh"
 )
 
 
@@ -29,14 +25,12 @@ def _extract_shell_function(script: str, name: str) -> str:
 
 def _run_version_check(payload: str) -> subprocess.CompletedProcess:
     function = _extract_shell_function(SCRIPT.read_text(), "kodi_version_supported")
-    program = textwrap.dedent(
-        f"""
+    program = textwrap.dedent(f"""
         set -euo pipefail
         REQUIRED_KODI_MAJOR=21
         {function}
         kodi_version_supported "$1"
-        """
-    )
+        """)
     env = os.environ.copy()
     env["PATH"] = "/usr/bin:/bin"
     return subprocess.run(
