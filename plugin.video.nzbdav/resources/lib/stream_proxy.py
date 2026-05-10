@@ -3925,6 +3925,13 @@ class _StreamHandler(BaseHTTPRequestHandler):
                         )
                         ctx.pop("upstream_down_notified", None)
                         ctx.pop("upstream_unreachable_error", None)
+                        # Reset throughput watchdog window so the new
+                        # upstream gets a fresh stall window — otherwise
+                        # the prior peer's wedge-induced low B/s would
+                        # carry over and trip the watchdog mid-handshake
+                        # against the healthy peer.
+                        ctx["passthrough_window_t0"] = time.monotonic()
+                        ctx["passthrough_window_bytes"] = 0
                         active_ctx = ctx
                         ctx["fallback_switch_count"] = (
                             int(ctx.get("fallback_switch_count", 0) or 0) + 1

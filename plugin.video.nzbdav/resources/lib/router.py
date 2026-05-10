@@ -702,7 +702,12 @@ def _handle_direct_play(handle, params):
             parsed = urlsplit(url)
         except (ValueError, TypeError):
             return url, ""
-        if parsed.username is None:
+        # Empty username (``://:pass@host`` or ``://@host``) is not a
+        # legitimate auth credential; emitting ``Basic OnBhc3M=`` would
+        # send a malformed header that some upstreams accept and some
+        # reject. Treat it as "no auth" and let the caller forward the
+        # URL verbatim.
+        if parsed.username in (None, ""):
             return url, ""
         userpass = "{}:{}".format(parsed.username, parsed.password or "")
         encoded = base64.b64encode(userpass.encode()).decode()
@@ -728,6 +733,12 @@ def _handle_direct_play(handle, params):
     if not isinstance(fallback_urls, list):
         fallback_urls = []
 
+    # Reject non-http(s) URLs before any HEAD: urlopen will happily
+    # dereference file:// (reading arbitrary local files) and ftp://,
+    # and a junk scheme can throw deep inside urllib. _validate_url
+    # is shared with stream_proxy so the policy stays consistent.
+    from resources.lib.stream_proxy import _validate_url
+
     def _head_length(url, auth_header):
         try:
             headers = {}
@@ -747,6 +758,16 @@ def _handle_direct_play(handle, params):
         except (OSError, ValueError) as exc:
             return 0, str(exc)[:60]
 
+    try:
+        _validate_url(primary_url)
+    except (ValueError, TypeError):
+        xbmc.log(
+            "NZB-DAV: /direct_play rejecting non-http(s) primary",
+            xbmc.LOGERROR,
+        )
+        xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+        return
+
     primary_len, primary_err = _head_length(primary_url, primary_auth)
     if primary_err:
         xbmc.log(
@@ -761,6 +782,16 @@ def _handle_direct_play(handle, params):
         if not isinstance(url_raw, str) or not url_raw:
             continue
         url, auth = _split_auth(url_raw)
+        try:
+            _validate_url(url)
+        except (ValueError, TypeError):
+            xbmc.log(
+                "NZB-DAV: /direct_play skipping non-http(s) fallback: {}".format(
+                    url_raw[:120]
+                ),
+                xbmc.LOGWARNING,
+            )
+            continue
         length, err = _head_length(url, auth)
         if err or length <= 0:
             xbmc.log(

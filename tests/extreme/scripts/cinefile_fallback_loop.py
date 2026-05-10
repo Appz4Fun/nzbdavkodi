@@ -164,6 +164,22 @@ def schedule_fault(at_seconds: float, fault_type: str = "connection_reset"):
         return json.loads(r.read())
 
 
+def clear_fault_schedule():
+    """POST an empty schedule so prior iterations' faults don't fire."""
+    body = json.dumps({"events": []}).encode("utf-8")
+    req = urllib.request.Request(
+        "{}/control/schedule".format(FAULT_PROXY_CONTROL),
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:  # nosec B310
+            return json.loads(r.read())
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def stop_player():
     try:
         resp = _kodi_rpc("Player.GetActivePlayers")
@@ -190,7 +206,11 @@ def play_via_direct_play(primary_url: str, fallback_urls: list[str]):
         }
     )
     plugin_url = "plugin://plugin.video.nzbdav/direct_play?{}".format(qs)
-    return _kodi_rpc("Addons.ExecuteAddon", {"addonid": "plugin.video.nzbdav", "params": plugin_url})
+    # Addons.ExecuteAddon doesn't dispatch a route URL — only Player.Open
+    # actually triggers setResolvedUrl + start playback for plugin://
+    # paths. Match the pattern used by cinefile_proxy_swap_loop.py and
+    # cinefile_user_two.py.
+    return _kodi_rpc("Player.Open", {"item": {"file": plugin_url}})
 
 
 def player_status() -> dict:
@@ -240,6 +260,7 @@ def run_iteration(iteration: int, urls: list[str], log: Path) -> dict:
             fh.write(json.dumps({"iter": iteration, **rec}) + "\n")
 
     stop_player()
+    clear_fault_schedule()
     record("schedule_fault")
     schedule_fault(PRIMARY_PLAY_SECONDS, "connection_reset")
     record("play_via_direct_play", primary=primary, fallback_count=len(fallback_pool))

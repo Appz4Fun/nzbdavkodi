@@ -2702,13 +2702,15 @@ def test_build_prepare_fallback_payload_preserves_completed_and_standby_jobs():
     ]
 
 
-def test_fingerprint_ranges_uses_20_deterministic_4096_byte_samples_for_large_files():
+def test_fingerprint_ranges_uses_100_deterministic_4096_byte_samples_for_large_files():
+    """Fingerprint count was raised 20 → 100 to give the cutover a denser
+    byte-equivalence proof per fallback (still 4096 bytes per range)."""
     content_length = 10 * 1024 * 1024 * 1024
 
     ranges = fingerprint_ranges(content_length)
 
-    assert len(ranges) == 20
-    assert len(set(ranges)) == 20
+    assert len(ranges) == 100
+    assert len(set(ranges)) == 100
     assert ranges == fingerprint_ranges(content_length)
     assert ranges[0] == (0, 4095)
     assert ranges[-1] == (content_length - 4096, content_length - 1)

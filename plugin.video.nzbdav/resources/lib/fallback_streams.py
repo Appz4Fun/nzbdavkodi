@@ -115,6 +115,14 @@ def _configured_stream_bases():
             _get_script_setting("nzbdav_url", ""),
         )
     except Exception:  # pylint: disable=broad-except
+        raw_bases = ()
+    # If the script-mode settings.xml read returned nothing (no profile
+    # yet, or addon hasn't saved settings), fall back to the addon API.
+    # In script-mode this is the very SIGSEGV path we're trying to avoid,
+    # but with raw_bases populated from disk above we never get here in
+    # the script-mode case — only on a fresh GUI invocation where the
+    # binding is safe.
+    if not any(raw_bases):
         try:
             addon = xbmcaddon.Addon("plugin.video.nzbdav")
             raw_bases = (
