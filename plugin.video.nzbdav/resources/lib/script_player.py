@@ -35,7 +35,7 @@ def parse_script_args(args):
             else:
                 value = _clean_script_value(arg)
                 params[current_key] = value
-    return params
+    return {key: _clean_script_value(value) for key, value in params.items()}
 
 
 def run_tmdb_play(args):

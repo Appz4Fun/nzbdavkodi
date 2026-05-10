@@ -42,6 +42,22 @@ def test_parse_script_args_preserves_commas_in_titles():
     assert params["year"] == "2000"
 
 
+def test_parse_script_args_unwraps_quoted_titles_split_on_commas():
+    from resources.lib.script_player import parse_script_args
+
+    params = parse_script_args(
+        [
+            "type=movie",
+            'title="Crouching Tiger',
+            ' Hidden Dragon"',
+            "year=2000",
+        ]
+    )
+
+    assert params["title"] == "Crouching Tiger, Hidden Dragon"
+    assert params["year"] == "2000"
+
+
 def test_parse_script_args_unwraps_quoted_titles():
     from resources.lib.script_player import parse_script_args
 
