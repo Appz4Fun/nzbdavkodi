@@ -94,8 +94,8 @@ def test_load_provider_caps_missing_or_corrupt_returns_empty(tmp_path):
     corrupt = tmp_path / "provider_caps.json"
     corrupt.write_text("{bad", encoding="utf-8")
 
-    assert load_provider_caps(str(missing)) == {}
-    assert load_provider_caps(str(corrupt)) == {}
+    assert not load_provider_caps(str(missing))
+    assert not load_provider_caps(str(corrupt))
 
 
 def test_save_and_load_provider_caps_round_trip(tmp_path):
