@@ -87,6 +87,18 @@ def url_with_auth(host: str, path: str) -> str:
     )
 
 
+def redact_url(url: str) -> str:
+    parts = urllib.parse.urlsplit(url)
+    if not parts.netloc:
+        return url
+    host = parts.hostname or ""
+    if parts.port:
+        host = "{}:{}".format(host, parts.port)
+    return urllib.parse.urlunsplit(
+        (parts.scheme, host, parts.path, parts.query, parts.fragment)
+    )
+
+
 def schedule_fault(at_seconds: float, fault_type: str = "connection_reset"):
     body = json.dumps(
         {"events": [{"at_seconds": at_seconds, "fault_type": fault_type}]}
@@ -182,8 +194,8 @@ def run_iteration(iteration: int, path_a: str, path_b: str, log: Path) -> dict:
         "iteration": iteration,
         "started_at": time.time(),
         "primary_label": "A" if iteration % 2 == 0 else "B",
-        "primary_url": primary_url[:200],
-        "fallback_url": fallback_url[:200],
+        "primary_url": redact_url(primary_url),
+        "fallback_url": redact_url(fallback_url),
         "events": [],
     }
 

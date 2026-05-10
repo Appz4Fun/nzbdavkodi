@@ -38,6 +38,18 @@ PER_STREAM_PLAY_SECONDS = int(os.environ.get("CINEFILE_PLAY_SECONDS", "60"))
 OUT_DIR = Path(os.environ.get("CINEFILE_OUT_DIR", "/tmp/cinefile_user_two")).resolve()
 
 
+def redact_url(url: str) -> str:
+    parts = urllib.parse.urlsplit(url)
+    if not parts.netloc:
+        return url
+    host = parts.hostname or ""
+    if parts.port:
+        host = "{}:{}".format(host, parts.port)
+    return urllib.parse.urlunsplit(
+        (parts.scheme, host, parts.path, parts.query, parts.fragment)
+    )
+
+
 def _kodi_rpc(method: str, params: dict | None = None, timeout: int = 10):
     body = json.dumps(
         {"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}}
@@ -129,7 +141,7 @@ def play_window(url: str, label: str, log: Path, iteration: int) -> dict:
                     "iter": iteration,
                     "label": label,
                     "type": "play",
-                    "url": url[:200],
+                    "url": redact_url(url),
                     "play_resp": play_resp,
                     "t": started_at,
                 }
@@ -152,7 +164,7 @@ def play_window(url: str, label: str, log: Path, iteration: int) -> dict:
         time.sleep(0.5)
     return {
         "label": label,
-        "url": url[:200],
+        "url": redact_url(url),
         "started_at": started_at,
         "duration": round(time.time() - started_at, 2),
         "final_t_sec": round(last_t_sec, 2),
@@ -172,8 +184,8 @@ def main():
         raise SystemExit("FATAL: need 2 CiNEFiLE storages, got {}".format(len(pairs)))
     a = _build_kodi_url(pairs[0][1])
     b = _build_kodi_url(pairs[1][1])
-    print("A: {}".format(a))
-    print("B: {}".format(b))
+    print("A: {}".format(redact_url(a)))
+    print("B: {}".format(redact_url(b)))
     summaries = []
     test_start = time.time()
     for i in range(ITERATIONS):

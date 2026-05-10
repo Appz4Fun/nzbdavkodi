@@ -78,6 +78,18 @@ def _build_base_with_auth() -> str:
 WEBDAV_BASE_WITH_AUTH = _build_base_with_auth()
 
 
+def redact_url(url: str) -> str:
+    parts = urllib.parse.urlsplit(url)
+    if not parts.netloc:
+        return url
+    host = parts.hostname or ""
+    if parts.port:
+        host = "{}:{}".format(host, parts.port)
+    return urllib.parse.urlunsplit(
+        (parts.scheme, host, parts.path, parts.query, parts.fragment)
+    )
+
+
 def _propfind_mkv_path(storage: str) -> str:
     safe = urllib.parse.quote(storage, safe="/") + "/"
     url = "{}/dav{}".format(NZBDAV_URL, safe)
@@ -263,7 +275,7 @@ def play_window(url: str, label: str, log: Path, iteration: int) -> dict:
                     "iter": iteration,
                     "label": label,
                     "type": "play",
-                    "url": url[:160],
+                    "url": redact_url(url),
                     "play_resp": play_resp,
                     "t": started_at,
                 }
@@ -286,7 +298,7 @@ def play_window(url: str, label: str, log: Path, iteration: int) -> dict:
         time.sleep(0.5)
     return {
         "label": label,
-        "url": url[:160],
+        "url": redact_url(url),
         "started_at": started_at,
         "duration": round(time.time() - started_at, 2),
         "final_t_sec": round(last_t_sec, 2),
@@ -307,8 +319,8 @@ def main():
         print("FATAL: need 2 streamable URLs, got {}".format(len(urls)))
         sys.exit(2)
     a, b = urls[0], urls[1]
-    print("\nA: {}".format(a))
-    print("B: {}".format(b))
+    print("\nA: {}".format(redact_url(a)))
+    print("B: {}".format(redact_url(b)))
 
     summaries = []
     test_start = time.time()

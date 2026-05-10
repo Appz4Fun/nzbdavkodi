@@ -46,6 +46,18 @@ PRIMARY_PLAY_SECONDS = float(os.environ.get("CINEFILE_PLAY_SECONDS", "10"))
 OUT_DIR = Path(os.environ.get("CINEFILE_OUT_DIR", "/tmp/cinefile_loop")).resolve()
 
 
+def redact_url(url: str) -> str:
+    parts = urllib.parse.urlsplit(url)
+    if not parts.netloc:
+        return url
+    host = parts.hostname or ""
+    if parts.port:
+        host = "{}:{}".format(host, parts.port)
+    return urllib.parse.urlunsplit(
+        (parts.scheme, host, parts.path, parts.query, parts.fragment)
+    )
+
+
 def _kodi_rpc(method: str, params: dict | None = None, timeout: int = 10):
     body = json.dumps(
         {"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}}
@@ -246,8 +258,8 @@ def run_iteration(iteration: int, urls: list[str], log: Path) -> dict:
     summary = {
         "iteration": iteration,
         "started_at": time.time(),
-        "primary": primary,
-        "fallback_pool": fallback_pool,
+        "primary": redact_url(primary),
+        "fallback_pool": [redact_url(url) for url in fallback_pool],
         "events": [],
     }
 
@@ -261,7 +273,11 @@ def run_iteration(iteration: int, urls: list[str], log: Path) -> dict:
     clear_fault_schedule()
     record("schedule_fault")
     schedule_fault(PRIMARY_PLAY_SECONDS, "connection_reset")
-    record("play_via_direct_play", primary=primary, fallback_count=len(fallback_pool))
+    record(
+        "play_via_direct_play",
+        primary=redact_url(primary),
+        fallback_count=len(fallback_pool),
+    )
     play_resp = play_via_direct_play(primary, fallback_pool)
     record("play_response", body=play_resp)
 
@@ -328,7 +344,7 @@ def main():
     urls = [storage_to_stream_url(s) for s in storages if storage_to_stream_url(s)]
     print("Found {} CiNEFiLE WebDAV URLs:".format(len(urls)))
     for u in urls:
-        print("  {}".format(u))
+        print("  {}".format(redact_url(u)))
 
     summaries = []
     test_start = time.time()
