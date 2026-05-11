@@ -104,8 +104,13 @@ def test_ci_and_release_workflows_exclude_extreme_marker():
 
     for workflow in (".github/workflows/ci.yml", ".github/workflows/release.yml"):
         contents = root.joinpath(workflow).read_text(encoding="utf-8")
+        marker_match = re.search(r'(?<!\S)-m\s+(["\'])(?P<marker>.*?)\1', contents)
 
-        assert '-m "not integration and not functional and not extreme"' in contents
+        assert marker_match is not None
+        marker = marker_match.group("marker")
+        assert "not integration" in marker
+        assert "not functional" in marker
+        assert "not extreme" in marker
 
 
 def test_extreme_functional_test_recipe_preserves_exported_env_overrides():
