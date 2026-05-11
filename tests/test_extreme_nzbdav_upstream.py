@@ -55,6 +55,7 @@ def test_extreme_addon_fixture_prefers_same_framestor_avc_profile_as_preflight()
         '<setting id="filter_av1">false</setting>',
         '<setting id="filter_require_keywords">framestor,1080p,avc,remux</setting>',
         '<setting id="max_results">250</setting>',
+        '<setting id="fallback_streams_max">5</setting>',
     ]:
         assert expected in template
 

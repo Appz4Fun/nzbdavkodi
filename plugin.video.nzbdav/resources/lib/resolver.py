@@ -58,7 +58,7 @@ _POLL_FULL_PROGRESS_HISTORY_GRACE_SECONDS = 0.14
 _POLL_NEAR_COMPLETE_FAST_REPOLL_SECONDS = 0.1
 _POLL_NEAR_COMPLETE_FAST_REPOLL_COUNT = 5
 _PLAYBACK_CLEANUP_HANDOFF_GRACE_SECONDS = 0.25
-_PLAYBACK_PREPARE_HANDOFF_GRACE_SECONDS = 8.0
+_PLAYBACK_PREPARE_HANDOFF_GRACE_SECONDS = 15.0
 # HTTP status codes the submit retry loop treats as transient and worth
 # retrying. RFC 9110 explicitly calls 408 retry-friendly ("client may
 # assume the server closed the connection due to inactivity and retry").

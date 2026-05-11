@@ -930,7 +930,7 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
     )
 
     assert call_order == ["poll"]
-    mock_snapshot.assert_called_once_with(fallback_state, wait_seconds=8.0)
+    mock_snapshot.assert_called_once_with(fallback_state, wait_seconds=15.0)
     mock_start_fallback.assert_called_once_with(
         fallback_candidates, candidate_loader=None
     )
@@ -1011,7 +1011,7 @@ def test_resolve_attaches_fallback_handoff_for_mkv_streams(
         },
     )
 
-    mock_snapshot.assert_called_once_with(fallback_state, wait_seconds=8.0)
+    mock_snapshot.assert_called_once_with(fallback_state, wait_seconds=15.0)
     mock_start_prepare.assert_called_once_with(
         "http://webdav/content/primary/movie.mkv",
         {"Authorization": "Basic primary"},
@@ -1808,7 +1808,7 @@ def test_resolve_and_play_attaches_fallback_handoff_for_mkv_streams(
         params={"_fallback_candidates": [{"title": "Fallback A"}]},
     )
 
-    mock_snapshot.assert_called_once_with(fallback_state, wait_seconds=8.0)
+    mock_snapshot.assert_called_once_with(fallback_state, wait_seconds=15.0)
     mock_start_prepare.assert_called_once_with(
         "http://webdav/content/primary/movie.mkv",
         {"Authorization": "Basic primary"},
@@ -2351,6 +2351,49 @@ def test_fallback_submit_jobs_snapshot_waits_briefly_for_active_worker_jobs():
         worker.join(timeout=1)
 
 
+def test_fallback_submit_jobs_snapshot_covers_upstream_submit_latency():
+    """Playback handoff should wait long enough for nzbdav fallback addurl."""
+    from resources.lib.resolver import _PLAYBACK_PREPARE_HANDOFF_GRACE_SECONDS
+
+    finished = threading.Event()
+    release_job = threading.Event()
+    lock = threading.Lock()
+    jobs = []
+    job = {
+        "title": "Fallback A",
+        "nzb_url": "http://hydra/fallback-a",
+        "job_name": "Fallback A [fallback-1-5c5fd5e4]",
+        "nzo_id": "SABnzbd_nzo_fallback",
+    }
+
+    def worker_target():
+        release_job.wait(timeout=1)
+        with lock:
+            jobs.append(job)
+        finished.set()
+
+    worker = threading.Thread(target=worker_target)
+    state = {
+        "lock": lock,
+        "jobs": jobs,
+        "thread": worker,
+        "stop": threading.Event(),
+        "finished": finished,
+    }
+    worker.start()
+    timer = threading.Timer(0.1, release_job.set)
+    timer.start()
+    try:
+        assert _PLAYBACK_PREPARE_HANDOFF_GRACE_SECONDS >= 15.0
+        assert _fallback_submit_jobs_snapshot(
+            state, wait_seconds=_PLAYBACK_PREPARE_HANDOFF_GRACE_SECONDS
+        ) == [job]
+    finally:
+        release_job.set()
+        timer.cancel()
+        worker.join(timeout=1)
+
+
 @patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
 @patch("resources.lib.resolver._finish_player_playback")
 @patch("resources.lib.resolver._wait_direct_playback_prepare")
@@ -2453,6 +2496,12 @@ def test_resolve_and_play_passes_settings_snapshot_to_proxy_prepare(
     )
 
     values = {
+        "nzbdav_url": "http://nzbdav:3000",
+        "nzbdav_api_key": "api-secret",
+        "webdav_url": "http://webdav/content",
+        "webdav_username": "webdav-user",
+        "webdav_password": "webdav-pass",
+        "webdav_content_root": "content",
         "force_remux_threshold_mb": "15000",
         "force_remux_mode": "0",
         "force_remux_mode_v2_migrated": "false",

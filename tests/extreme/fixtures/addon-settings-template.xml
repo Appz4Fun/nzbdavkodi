@@ -66,7 +66,7 @@
     <setting id="stream_max_retries">3</setting>
     <setting id="stream_retry_delay">5</setting>
     <setting id="fallback_streams_enabled">true</setting>
-    <setting id="fallback_streams_max">8</setting>
+    <setting id="fallback_streams_max">5</setting>
     <setting id="proxy_convert_subs">true</setting>
     <setting id="force_remux_threshold_mb">15000</setting>
     <setting id="strict_contract_mode">1</setting>

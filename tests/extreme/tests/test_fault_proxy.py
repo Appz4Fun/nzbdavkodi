@@ -200,6 +200,12 @@ def test_connection_reset_fault_records_state_before_close(proxy_with_upstream):
     assert state.fired_events[0]["fault_type"] == "connection_reset"
 
 
+def test_large_playback_range_allows_matrix_late_offsets():
+    matrix_range_after_one_gib = "bytes=1500000000-29259824423"
+
+    assert fault_proxy._is_large_playback_range(matrix_range_after_one_gib)
+
+
 def test_slow_upstream_fault_throttles(proxy_with_upstream, monkeypatch):
     proxy_url, state, _ = proxy_with_upstream
     # Use a 1-second slow window with 64 KiB/s so the test stays fast.

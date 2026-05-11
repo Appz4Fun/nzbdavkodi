@@ -27,7 +27,7 @@ SLOW_BPS = int(os.environ.get("FAULT_PROXY_SLOW_BPS", str(50 * 1024)))
 SLOW_DURATION = float(os.environ.get("FAULT_PROXY_SLOW_DURATION", "30"))
 MIN_FAIL_START = int(os.environ.get("FAULT_PROXY_MIN_FAIL_START", str(1024 * 1024)))
 MAX_FAIL_START = int(
-    os.environ.get("FAULT_PROXY_MAX_FAIL_START", str(1024 * 1024 * 1024))
+    os.environ.get("FAULT_PROXY_MAX_FAIL_START", str(2**63 - 1))
 )
 LOG_PATH = os.environ.get("FAULT_PROXY_LOG", "/var/log/fault-proxy/full.log")
 EVENTS_PATH = os.environ.get("FAULT_PROXY_EVENTS", "/var/log/fault-proxy/events.jsonl")

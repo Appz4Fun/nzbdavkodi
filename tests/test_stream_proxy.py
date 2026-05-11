@@ -687,6 +687,12 @@ def test_prepare_stream_uses_settings_snapshot_without_kodi_setting_reads():
     sp.port = 9999
 
     settings_snapshot = {
+        "nzbdav_url": "http://nzbdav:3000",
+        "nzbdav_api_key": "api-secret",
+        "webdav_url": "http://webdav/content",
+        "webdav_username": "webdav-user",
+        "webdav_password": "webdav-pass",
+        "webdav_content_root": "content",
         "force_remux_threshold_mb": "15000",
         "force_remux_mode": "0",
         "force_remux_mode_v2_migrated": "false",
@@ -717,6 +723,7 @@ def test_prepare_stream_uses_settings_snapshot_without_kodi_setting_reads():
     assert info["remux"] is False
     assert ctx["remux"] is False
     assert ctx["content_length"] == 21 * 1024 * 1024
+    assert ctx["settings_snapshot"] == settings_snapshot
     assert ctx[stream_proxy._PASSTHROUGH_RUNTIME_SETTINGS_KEY] == {
         "contract_mode": "warn",
         "density_breaker_enabled": False,
@@ -1522,6 +1529,12 @@ def test_do_post_passes_content_length_hint_to_prepare_stream():
 
 def test_do_post_passes_settings_snapshot_to_prepare_stream():
     settings_snapshot = {
+        "nzbdav_url": "http://nzbdav:3000",
+        "nzbdav_api_key": "api-secret",
+        "webdav_url": "http://webdav/content",
+        "webdav_username": "webdav-user",
+        "webdav_password": "webdav-pass",
+        "webdav_content_root": "content",
         "force_remux_threshold_mb": "15000",
         "force_remux_mode": "0",
         "force_remux_mode_v2_migrated": "false",
@@ -2247,6 +2260,193 @@ def test_ready_fallback_is_prevalidated_before_upstream_error_cutover():
     assert ctx["fallback_switch_count"] == 1
     assert ctx["fallback_active_index"] == 0
     assert cutover_elapsed < 0.04, "cutover took {:.3f}s".format(cutover_elapsed)
+
+
+def test_standby_nzo_id_fallback_is_refreshed_during_prevalidation():
+    """Background prevalidation must resolve standby jobs before a fault hits."""
+    handler = _make_handler()
+    settings_snapshot = {
+        "nzbdav_url": "http://nzbdav:3000",
+        "nzbdav_api_key": "api-secret",
+        "webdav_url": "http://webdav/content",
+        "webdav_username": "webdav-user",
+        "webdav_password": "webdav-pass",
+    }
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_type": "video/x-matroska",
+        "content_length": 8192,
+        "settings_snapshot": settings_snapshot,
+        "fallback_sources": [
+            {
+                "nzo_id": "nzo-fallback",
+                "stream_url": "",
+                "stream_headers": {},
+                "content_length": 0,
+                "validated": False,
+                "failed": False,
+            }
+        ],
+    }
+
+    observed_settings = {}
+
+    def history(_nzo_id, settings_getter=None):
+        assert settings_getter is not None
+        observed_settings["history"] = {
+            "nzbdav_url": settings_getter("nzbdav_url"),
+            "nzbdav_api_key": settings_getter("nzbdav_api_key"),
+        }
+        return {
+            "status": "Completed",
+            "storage": "/mnt/nzbdav/completed-symlinks/movies/fallback",
+        }
+
+    def find_video_file(_path, settings_getter=None, **_kwargs):
+        assert settings_getter is not None
+        observed_settings["find"] = {
+            "webdav_url": settings_getter("webdav_url"),
+            "webdav_username": settings_getter("webdav_username"),
+            "webdav_password": settings_getter("webdav_password"),
+        }
+        return "/content/movies/fallback/movie.mkv"
+
+    def stream_url_for_path(_path, settings_getter=None):
+        assert settings_getter is not None
+        observed_settings["stream_url"] = {
+            "webdav_url": settings_getter("webdav_url"),
+            "webdav_username": settings_getter("webdav_username"),
+            "webdav_password": settings_getter("webdav_password"),
+        }
+        return (
+            "http://webdav/content/fallback.mkv",
+            {"Authorization": "Basic fallback"},
+        )
+
+    with patch(
+        "resources.lib.nzbdav_api.get_job_history", side_effect=history
+    ), patch(
+        "resources.lib.webdav.find_video_file",
+        side_effect=find_video_file,
+    ), patch(
+        "resources.lib.webdav.get_webdav_stream_url_for_path",
+        side_effect=stream_url_for_path,
+    ), patch(
+        "resources.lib.fallback_streams.fetch_content_length", return_value=8192
+    ), patch(
+        "resources.lib.nzbdav_api.xbmcaddon.Addon",
+        side_effect=AssertionError("Kodi settings API must not be used here"),
+    ), patch.object(
+        handler, "_validate_fallback_fingerprint", return_value=True
+    ) as validate:
+        assert handler._prevalidate_ready_fallback_sources(ctx) == 1
+
+    source = ctx["fallback_sources"][0]
+    assert source["stream_url"] == "http://webdav/content/fallback.mkv"
+    assert source["stream_headers"] == {"Authorization": "Basic fallback"}
+    assert source["content_length"] == 8192
+    assert source["validated"] is True
+    assert observed_settings == {
+        "history": {
+            "nzbdav_url": "http://nzbdav:3000",
+            "nzbdav_api_key": "api-secret",
+        },
+        "find": {
+            "webdav_url": "http://webdav/content",
+            "webdav_username": "webdav-user",
+            "webdav_password": "webdav-pass",
+        },
+        "stream_url": {
+            "webdav_url": "http://webdav/content",
+            "webdav_username": "webdav-user",
+            "webdav_password": "webdav-pass",
+        },
+    }
+    validate.assert_called_once()
+
+
+def test_standby_nzo_id_fallback_starts_background_prevalidation():
+    """nzo_id-only fallback jobs should not be skipped as ineligible."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_type": "video/x-matroska",
+        "content_length": 8192,
+        "fallback_sources": [
+            {
+                "nzo_id": "nzo-fallback",
+                "stream_url": "",
+                "stream_headers": {},
+                "content_length": 0,
+                "validated": False,
+                "failed": False,
+            }
+        ],
+    }
+
+    def prevalidate_once(active_ctx):
+        active_ctx["fallback_sources"][0]["failed"] = True
+
+    with patch.object(
+        sp, "_prevalidate_fallback_sources", side_effect=prevalidate_once
+    ) as prevalidate:
+        sp._start_fallback_prevalidation(ctx)
+        thread = ctx.get("_fallback_prevalidation_thread")
+        assert thread is not None
+        thread.join(timeout=1)
+
+    assert not thread.is_alive()
+    prevalidate.assert_called_once_with(ctx)
+
+
+def test_standby_nzo_id_prevalidation_retries_until_backup_ready():
+    """A standby job that finishes after prepare should still be warmed."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_type": "video/x-matroska",
+        "content_length": 8192,
+        "fallback_sources": [
+            {
+                "nzo_id": "nzo-fallback",
+                "stream_url": "",
+                "stream_headers": {},
+                "content_length": 0,
+                "validated": False,
+                "failed": False,
+            }
+        ],
+    }
+    attempts = {"count": 0}
+
+    def prevalidate_until_ready(active_ctx):
+        attempts["count"] += 1
+        if attempts["count"] >= 3:
+            active_ctx["fallback_sources"][0]["validated"] = True
+
+    with patch.object(
+        sp, "_prevalidate_fallback_sources", side_effect=prevalidate_until_ready
+    ), patch(
+        "resources.lib.stream_proxy._FALLBACK_PREVALIDATION_RETRY_INTERVAL_SECONDS",
+        0.01,
+    ):
+        sp._start_fallback_prevalidation(ctx)
+        thread = ctx.get("_fallback_prevalidation_thread")
+        assert thread is not None
+        thread.join(timeout=1)
+
+    assert not thread.is_alive()
+    assert attempts["count"] == 3
+    assert ctx["fallback_sources"][0]["validated"] is True
 
 
 def test_prevalidated_fallback_reuses_current_probe_for_first_fallback_bytes():
@@ -7317,6 +7517,69 @@ def test_serve_proxy_survives_five_stream_outages_with_backup_sources():
     mock_notify.assert_called_once()
 
 
+def test_serve_proxy_recovers_repeated_resets_on_single_backup_source():
+    """A transient reset on the active backup should reopen that backup."""
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_OK,
+        _UPSTREAM_RANGE_UPSTREAM_ERROR,
+    )
+
+    segment_size = 4
+    reset_count = 5
+    content_length = segment_size * (reset_count + 1)
+    fallback_source = {
+        "nzo_id": "nzo-backup",
+        "stream_url": "http://webdav/backup.mkv",
+        "stream_headers": {"Authorization": "Basic backup"},
+        "content_length": content_length,
+        "validated": True,
+        "failed": False,
+    }
+    ctx = {
+        "remote_url": "http://webdav/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_type": "video/x-matroska",
+        "content_length": content_length,
+        "fallback_sources": [fallback_source],
+        "fallback_switch_count": 0,
+    }
+    handler = _make_handler_with_server(
+        ctx, range_header="bytes=0-{}".format(content_length - 1)
+    )
+    fallback_failures = 0
+
+    def stream_range(stream_ctx, start, end, contract_mode=None):
+        nonlocal fallback_failures
+        del contract_mode
+        if stream_ctx["remote_url"] == "http://webdav/primary.mkv":
+            return _UPSTREAM_RANGE_UPSTREAM_ERROR, 0
+        if fallback_failures < reset_count - 1:
+            fallback_failures += 1
+            handler.wfile.write(b"S" * segment_size)
+            return _UPSTREAM_RANGE_UPSTREAM_ERROR, segment_size
+        remaining = end - start + 1
+        handler.wfile.write(b"S" * remaining)
+        return _UPSTREAM_RANGE_OK, remaining
+
+    with patch.object(
+        handler, "_stream_upstream_range", side_effect=stream_range
+    ), patch.object(
+        handler, "_probe_fallback_current_range", return_value=True
+    ) as probe_current, patch(
+        "resources.lib.stream_proxy._notify"
+    ) as mock_notify:
+        handler._serve_proxy(ctx)
+
+    assert ctx["remote_url"] == "http://webdav/backup.mkv"
+    assert ctx["auth_header"] == "Basic backup"
+    assert ctx["fallback_switch_count"] == reset_count
+    assert ctx["fallback_active_index"] == 0
+    assert fallback_source["failed"] is False
+    assert probe_current.call_count == reset_count
+    assert _collect_written(handler) == b"S" * content_length
+    mock_notify.assert_called_once()
+
+
 def test_serve_proxy_starts_fallback_stream_before_slow_switch_notification():
     """A slow Kodi notification must not delay the first fallback read."""
     from resources.lib.stream_proxy import (
@@ -10171,27 +10434,36 @@ def test_standby_refresh_reuses_probe_bases_for_content_length_checks():
         }
         for index in range(5)
     ]
-    ctx = {"fallback_sources": sources}
+    ctx = {
+        "settings_snapshot": {
+            "webdav_url": "http://webdav/content",
+            "nzbdav_url": "http://nzbdav:3000",
+        },
+        "fallback_sources": sources,
+    }
 
-    def setting(key):
+    def setting(key, default=""):
         return {
             "webdav_url": "http://webdav/content",
             "nzbdav_url": "http://nzbdav:3000",
-        }.get(key, "")
+        }.get(key, default)
 
-    def history(nzo_id):
+    def history(nzo_id, settings_getter=None):
+        assert settings_getter("nzbdav_url") == "http://nzbdav:3000"
         return {
             "status": "Completed",
             "storage": "/mnt/nzbdav/completed-symlinks/movies/{}".format(nzo_id),
         }
 
-    def stream_url(path):
+    def stream_url(path, settings_getter=None):
+        assert settings_getter("webdav_url") == "http://webdav/content"
         return (
             "http://webdav/content/{}".format(path.rsplit("/", 1)[-1]),
             {"Authorization": "Basic fallback"},
         )
 
-    def find_video_path(path):
+    def find_video_path(path, settings_getter=None):
+        assert settings_getter("webdav_url") == "http://webdav/content"
         return "{}movie.mkv".format(path)
 
     with patch(
@@ -10213,7 +10485,7 @@ def test_standby_refresh_reuses_probe_bases_for_content_length_checks():
 
     assert mock_history.call_count == 5
     assert mock_urlopen.call_count == 5
-    assert mock_setting.call_count == 2
+    mock_setting.assert_not_called()
     assert [source["content_length"] for source in sources] == [10, 10, 10, 10, 10]
 
 
@@ -12041,6 +12313,12 @@ def test_prepare_stream_via_service_sends_settings_snapshot():
     resp.__enter__ = MagicMock(return_value=resp)
     resp.__exit__ = MagicMock(return_value=False)
     settings_snapshot = {
+        "nzbdav_url": "http://nzbdav:3000",
+        "nzbdav_api_key": "api-secret",
+        "webdav_url": "http://webdav/content",
+        "webdav_username": "webdav-user",
+        "webdav_password": "webdav-pass",
+        "webdav_content_root": "content",
         "force_remux_threshold_mb": "15000",
         "force_remux_mode": "0",
         "force_remux_mode_v2_migrated": "false",
