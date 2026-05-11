@@ -299,7 +299,7 @@ the [architecture overview](docs/architecture.md).
 ### Commands
 
 ```bash
-just test              # Run all 695 unit tests (integration tests excluded)
+just test              # Run unit tests (integration/functional/extreme excluded)
 just test-verbose      # Run unit tests with full output
 just test-integration  # Run integration tests against a real ffmpeg binary
 just lint              # Check ruff + black formatting
