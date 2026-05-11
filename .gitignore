@@ -71,3 +71,6 @@ gha-creds-*.json
 
 # Extreme functional test reports
 docs/reports/
+
+# Ralph autonomous bug-fix loop (local infra + logs + journal)
+/.ralph/
