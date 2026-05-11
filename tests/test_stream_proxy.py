@@ -32,6 +32,30 @@ def test_requested_proxy_timeout_defaults():
     assert stream_proxy._PROBE_DEADLINE_SECONDS == 30.0
 
 
+def test_settings_getter_from_partial_snapshot_falls_back_to_script_defaults():
+    from resources.lib import stream_proxy
+
+    def script_setting(key, default=""):
+        values = {
+            "nzbdav_url": "http://nzbdav:3000",
+            "webdav_content_root": "content",
+        }
+        return values.get(key, default)
+
+    with patch("resources.lib.router._get_script_setting", side_effect=script_setting):
+        getter = stream_proxy._settings_getter_from_snapshot(
+            {
+                "webdav_url": "http://webdav/content",
+                "nzbdav_url": "",
+            }
+        )
+
+    assert getter("webdav_url") == "http://webdav/content"
+    assert getter("nzbdav_url") == "http://nzbdav:3000"
+    assert getter("webdav_content_root") == "content"
+    assert getter("missing", "fallback") == "fallback"
+
+
 def test_parallel_fallback_fingerprint_shutdown_works_on_python38_executor():
     from resources.lib import stream_proxy
 
@@ -2269,6 +2293,7 @@ def test_standby_nzo_id_fallback_is_refreshed_during_prevalidation():
         "nzbdav_url": "http://nzbdav:3000",
         "nzbdav_api_key": "api-secret",
         "webdav_url": "http://webdav/content",
+        "webdav_content_root": "content",
         "webdav_username": "webdav-user",
         "webdav_password": "webdav-pass",
     }
@@ -2307,6 +2332,7 @@ def test_standby_nzo_id_fallback_is_refreshed_during_prevalidation():
         assert settings_getter is not None
         observed_settings["find"] = {
             "webdav_url": settings_getter("webdav_url"),
+            "webdav_content_root": settings_getter("webdav_content_root"),
             "webdav_username": settings_getter("webdav_username"),
             "webdav_password": settings_getter("webdav_password"),
         }
@@ -2316,6 +2342,7 @@ def test_standby_nzo_id_fallback_is_refreshed_during_prevalidation():
         assert settings_getter is not None
         observed_settings["stream_url"] = {
             "webdav_url": settings_getter("webdav_url"),
+            "webdav_content_root": settings_getter("webdav_content_root"),
             "webdav_username": settings_getter("webdav_username"),
             "webdav_password": settings_getter("webdav_password"),
         }
@@ -2324,9 +2351,7 @@ def test_standby_nzo_id_fallback_is_refreshed_during_prevalidation():
             {"Authorization": "Basic fallback"},
         )
 
-    with patch(
-        "resources.lib.nzbdav_api.get_job_history", side_effect=history
-    ), patch(
+    with patch("resources.lib.nzbdav_api.get_job_history", side_effect=history), patch(
         "resources.lib.webdav.find_video_file",
         side_effect=find_video_file,
     ), patch(
@@ -2354,16 +2379,107 @@ def test_standby_nzo_id_fallback_is_refreshed_during_prevalidation():
         },
         "find": {
             "webdav_url": "http://webdav/content",
+            "webdav_content_root": "content",
             "webdav_username": "webdav-user",
             "webdav_password": "webdav-pass",
         },
         "stream_url": {
             "webdav_url": "http://webdav/content",
+            "webdav_content_root": "content",
             "webdav_username": "webdav-user",
             "webdav_password": "webdav-pass",
         },
     }
     validate.assert_called_once()
+
+
+def test_standby_prevalidation_keeps_transient_length_mismatch_retryable():
+    """Prevalidation should not permanently fail a standby on a transient HEAD."""
+    handler = _make_handler()
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_type": "video/x-matroska",
+        "content_length": 8192,
+        "_fallback_probe_bases": (),
+        "settings_snapshot": {
+            "nzbdav_url": "http://nzbdav:3000",
+            "webdav_url": "http://webdav/content",
+        },
+        "fallback_sources": [
+            {
+                "nzo_id": "nzo-fallback",
+                "stream_url": "",
+                "stream_headers": {},
+                "content_length": 0,
+                "validated": False,
+                "failed": False,
+            }
+        ],
+    }
+
+    with patch(
+        "resources.lib.nzbdav_api.get_job_history",
+        return_value={
+            "status": "Completed",
+            "storage": "/mnt/nzbdav/completed-symlinks/movies/fallback",
+        },
+    ), patch(
+        "resources.lib.webdav.find_video_file",
+        return_value="/content/movies/fallback/movie.mkv",
+    ), patch(
+        "resources.lib.webdav.get_webdav_stream_url_for_path",
+        return_value=(
+            "http://webdav/content/fallback.mkv",
+            {"Authorization": "Basic fallback"},
+        ),
+    ), patch(
+        "resources.lib.fallback_streams.fetch_content_length", return_value=0
+    ), patch.object(
+        handler, "_validate_fallback_fingerprint"
+    ) as validate:
+        assert handler._prevalidate_ready_fallback_sources(ctx) == 0
+
+    from resources.lib.stream_proxy import StreamProxy
+
+    source = ctx["fallback_sources"][0]
+    assert source["stream_url"] == "http://webdav/content/fallback.mkv"
+    assert source["content_length"] == 0
+    assert source["failed"] is False
+    assert StreamProxy._fallback_prevalidation_should_retry(ctx) is True
+    validate.assert_not_called()
+
+
+def test_standby_prevalidation_does_not_touch_live_selection_hints():
+    """Background validation should not publish selector-only hint state."""
+    handler = _make_handler()
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_type": "video/x-matroska",
+        "content_length": 8192,
+        "_fallback_probe_bases": (),
+        "fallback_sources": [
+            {
+                "nzo_id": "nzo-fallback",
+                "stream_url": "http://webdav/content/fallback.mkv",
+                "stream_headers": {"Authorization": "Basic fallback"},
+                "content_length": 8192,
+                "validated": False,
+                "failed": False,
+            }
+        ],
+    }
+
+    with patch.object(handler, "_validate_fallback_fingerprint", return_value=True):
+        assert handler._prevalidate_ready_fallback_sources(ctx) == 1
+
+    assert ctx["fallback_sources"][0]["validated"] is True
+    assert "_fallback_source_content_length_hint" not in ctx
+    assert "_fallback_source_auth_hint" not in ctx
+    assert "_fallback_source_stream_url_hint" not in ctx
+    assert "_fallback_primary_url_hint" not in ctx
+    assert "_fallback_primary_auth_hint" not in ctx
 
 
 def test_standby_nzo_id_fallback_starts_background_prevalidation():
@@ -2404,8 +2520,30 @@ def test_standby_nzo_id_fallback_starts_background_prevalidation():
     prevalidate.assert_called_once_with(ctx)
 
 
+def test_standby_prevalidation_retries_unvalidated_refreshed_source():
+    """A refreshed standby URL should retry after a transient fingerprint miss."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    ctx = {
+        "fallback_sources": [
+            {
+                "nzo_id": "nzo-fallback",
+                "stream_url": "http://webdav/content/fallback.mkv",
+                "validated": False,
+                "failed": False,
+            }
+        ],
+    }
+
+    assert StreamProxy._fallback_prevalidation_should_retry(ctx) is True
+
+    ctx["fallback_sources"][0]["validated"] = True
+    assert StreamProxy._fallback_prevalidation_should_retry(ctx) is False
+
+
 def test_standby_nzo_id_prevalidation_retries_until_backup_ready():
     """A standby job that finishes after prepare should still be warmed."""
+    from resources.lib import stream_proxy
     from resources.lib.stream_proxy import StreamProxy
 
     sp = StreamProxy.__new__(StreamProxy)
@@ -2427,17 +2565,26 @@ def test_standby_nzo_id_prevalidation_retries_until_backup_ready():
         ],
     }
     attempts = {"count": 0}
+    wait_calls = []
 
     def prevalidate_until_ready(active_ctx):
         attempts["count"] += 1
         if attempts["count"] >= 3:
             active_ctx["fallback_sources"][0]["validated"] = True
 
+    def wait_for_abort(delay):
+        wait_calls.append(delay)
+        return False
+
     with patch.object(
         sp, "_prevalidate_fallback_sources", side_effect=prevalidate_until_ready
     ), patch(
         "resources.lib.stream_proxy._FALLBACK_PREVALIDATION_RETRY_INTERVAL_SECONDS",
         0.01,
+    ), patch.object(
+        stream_proxy.xbmc.Monitor.return_value,
+        "waitForAbort",
+        side_effect=wait_for_abort,
     ):
         sp._start_fallback_prevalidation(ctx)
         thread = ctx.get("_fallback_prevalidation_thread")
@@ -2446,6 +2593,7 @@ def test_standby_nzo_id_prevalidation_retries_until_backup_ready():
 
     assert not thread.is_alive()
     assert attempts["count"] == 3
+    assert wait_calls == [0.01, 0.01]
     assert ctx["fallback_sources"][0]["validated"] is True
 
 

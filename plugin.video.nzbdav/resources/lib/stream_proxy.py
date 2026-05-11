@@ -467,18 +467,34 @@ def build_settings_snapshot(settings_getter=None):
 
 def _settings_getter_from_snapshot(snapshot):
     """Return a settings getter backed by the prepare-time snapshot."""
+    if not isinstance(snapshot, dict):
+        return None
+
     normalized = normalize_settings_snapshot(snapshot)
     if not normalized:
-        try:
-            from resources.lib.router import _get_script_setting
+        return None
 
-            return _get_script_setting
+    fallback_getter = None
+    try:
+        from resources.lib.router import _get_script_setting
+
+        fallback_getter = _get_script_setting
+    except Exception:  # pylint: disable=broad-except
+        pass
+
+    def _fallback(key, default):
+        if fallback_getter is None:
+            return default
+        try:
+            return fallback_getter(key, default)
         except Exception:  # pylint: disable=broad-except
-            pass
+            return default
 
     def _get(key, default=""):
         value = normalized.get(key)
-        return value if isinstance(value, str) else default
+        if isinstance(value, str) and value != "":
+            return value
+        return _fallback(key, default)
 
     return _get
 
@@ -2850,11 +2866,17 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 if primary_auth_for_url is _AUTH_HEADER_NOT_PROVIDED:
                     primary_auth_for_url = ctx.get("auth_header")
                 primary_auth = primary_auth_for_url
-                if source_auth == primary_auth and not self._fallback_source_is_active(
-                    ctx, source
-                ):
-                    source["failed"] = True
-                    continue
+                if source_auth == primary_auth:
+                    if not self._fallback_source_is_active(ctx, source):
+                        source["failed"] = True
+                        continue
+                    if any(
+                        not candidate.get("failed")
+                        and (candidate.get("stream_url") or candidate.get("nzo_id"))
+                        for candidate in sources[index + 1 :]
+                    ):
+                        source["failed"] = True
+                        continue
             if expected_length > 0:
                 try:
                     source_length = int(source.get("content_length", 0) or 0)
@@ -2934,6 +2956,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
         nzo_id=None,
         known_stream_url=_FALLBACK_SOURCE_STATE_NOT_PROVIDED,
         known_failed=_FALLBACK_SOURCE_STATE_NOT_PROVIDED,
+        mark_failed_on_mismatch=True,
     ):
         """Resolve one completed standby nzo_id into a WebDAV stream URL."""
         existing_stream_url = (
@@ -2954,12 +2977,15 @@ class _StreamHandler(BaseHTTPRequestHandler):
             return False
 
         settings_getter = _settings_getter_from_snapshot(ctx.get("settings_snapshot"))
+        settings_kwargs = {}
+        if settings_getter is not None:
+            settings_kwargs["settings_getter"] = settings_getter
 
         from resources.lib.fallback_streams import fetch_content_length
         from resources.lib.nzbdav_api import get_job_history
         from resources.lib.webdav import find_video_file, get_webdav_stream_url_for_path
 
-        history = get_job_history(nzo_id, settings_getter=settings_getter)
+        history = get_job_history(nzo_id, **settings_kwargs)
         history_status = history.get("status") if isinstance(history, dict) else ""
         if history_status != "Completed":
             if (
@@ -2972,12 +2998,12 @@ class _StreamHandler(BaseHTTPRequestHandler):
         if not storage:
             return False
         video_path = find_video_file(
-            _storage_to_webdav_path(storage), settings_getter=settings_getter
+            _storage_to_webdav_path(storage), **settings_kwargs
         )
         if not video_path:
             return False
         stream_url, stream_headers = get_webdav_stream_url_for_path(
-            video_path, settings_getter=settings_getter
+            video_path, **settings_kwargs
         )
         auth_header = stream_headers.get("Authorization") if stream_headers else None
         if not stream_url:
@@ -3026,7 +3052,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
         else:
             expected_length = self._fallback_expected_content_length(ctx)
         if expected_length > 0 and content_length != expected_length:
-            source["failed"] = True
+            if mark_failed_on_mismatch:
+                source["failed"] = True
             return False
         ctx["_fallback_source_content_length_hint"] = (id(source), content_length)
         ctx["_fallback_source_auth_hint"] = (id(source), auth_header)
@@ -3125,7 +3152,9 @@ class _StreamHandler(BaseHTTPRequestHandler):
             if source.get("failed") or source.get("validated"):
                 continue
             if not source.get("stream_url") and source.get("nzo_id"):
-                self._refresh_standby_fallback_source(ctx, source)
+                self._refresh_standby_fallback_source(
+                    ctx, source, mark_failed_on_mismatch=False
+                )
             source_url = source.get("stream_url")
             if not source_url or source.get("failed"):
                 continue
@@ -3139,67 +3168,19 @@ class _StreamHandler(BaseHTTPRequestHandler):
             if source_url == primary_url and source_auth == primary_auth:
                 continue
 
-            hint_key = "_fallback_source_content_length_hint"
-            auth_hint_key = "_fallback_source_auth_hint"
-            stream_url_hint_key = _FALLBACK_SOURCE_STREAM_URL_HINT_KEY
-            primary_url_hint_key = _FALLBACK_PRIMARY_URL_HINT_KEY
-            primary_auth_hint_key = _FALLBACK_PRIMARY_AUTH_HINT_KEY
-            had_hint = hint_key in ctx
-            had_auth_hint = auth_hint_key in ctx
-            had_stream_url_hint = stream_url_hint_key in ctx
-            had_primary_url_hint = primary_url_hint_key in ctx
-            had_primary_auth_hint = primary_auth_hint_key in ctx
-            previous_hint = ctx.get(hint_key) if had_hint else None
-            previous_auth_hint = ctx.get(auth_hint_key) if had_auth_hint else None
-            previous_stream_url_hint = (
-                ctx.get(stream_url_hint_key) if had_stream_url_hint else None
-            )
-            previous_primary_url_hint = (
-                ctx.get(primary_url_hint_key) if had_primary_url_hint else None
-            )
-            previous_primary_auth_hint = (
-                ctx.get(primary_auth_hint_key) if had_primary_auth_hint else None
-            )
-            ctx[hint_key] = (id(source), source_length)
-            ctx[stream_url_hint_key] = (id(source), source_url)
-            ctx[primary_url_hint_key] = primary_url
-            ctx[auth_hint_key] = (id(source), source_auth)
-            ctx[primary_auth_hint_key] = primary_auth
-            try:
-                if self._validate_fallback_fingerprint(
-                    ctx,
-                    source,
-                    expected_length,
-                    probe_bases,
-                    primary_url=primary_url,
-                    fallback_url=source_url,
-                    fallback_auth=source_auth,
-                    primary_auth=primary_auth,
-                    cache_fallback_range_bytes=True,
-                ):
-                    source["validated"] = True
-                    validated += 1
-            finally:
-                if had_hint:
-                    ctx[hint_key] = previous_hint
-                else:
-                    ctx.pop(hint_key, None)
-                if had_auth_hint:
-                    ctx[auth_hint_key] = previous_auth_hint
-                else:
-                    ctx.pop(auth_hint_key, None)
-                if had_stream_url_hint:
-                    ctx[stream_url_hint_key] = previous_stream_url_hint
-                else:
-                    ctx.pop(stream_url_hint_key, None)
-                if had_primary_url_hint:
-                    ctx[primary_url_hint_key] = previous_primary_url_hint
-                else:
-                    ctx.pop(primary_url_hint_key, None)
-                if had_primary_auth_hint:
-                    ctx[primary_auth_hint_key] = previous_primary_auth_hint
-                else:
-                    ctx.pop(primary_auth_hint_key, None)
+            if self._validate_fallback_fingerprint(
+                ctx,
+                source,
+                expected_length,
+                probe_bases,
+                primary_url=primary_url,
+                fallback_url=source_url,
+                fallback_auth=source_auth,
+                primary_auth=primary_auth,
+                cache_fallback_range_bytes=True,
+            ):
+                source["validated"] = True
+                validated += 1
         return validated
 
     @staticmethod
@@ -3297,7 +3278,9 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 parts = _split_http_url(str(snapshot.get(key, "") or "").rstrip("/"))
                 if parts:
                     bases.append(
-                        _PrecomputedProbeBase(parts, _origin_key(parts), parts.path or "/")
+                        _PrecomputedProbeBase(
+                            parts, _origin_key(parts), parts.path or "/"
+                        )
                     )
             if not bases:
                 bases = list(configured_stream_probe_bases())
@@ -6213,6 +6196,7 @@ class StreamProxy:
                     prefetch_thread.join()
                 except RuntimeError:
                     pass
+            monitor = xbmc.Monitor()
             deadline = time.monotonic() + _FALLBACK_PREVALIDATION_RETRY_SECONDS
             while True:
                 self._prevalidate_fallback_sources(ctx)
@@ -6220,7 +6204,8 @@ class StreamProxy:
                     return
                 if ctx.get("_cleanup_started") or time.monotonic() >= deadline:
                     return
-                time.sleep(_FALLBACK_PREVALIDATION_RETRY_INTERVAL_SECONDS)
+                if monitor.waitForAbort(_FALLBACK_PREVALIDATION_RETRY_INTERVAL_SECONDS):
+                    return
 
         thread = threading.Thread(
             target=_prevalidate_after_initial_prefetch,
@@ -6241,7 +6226,7 @@ class StreamProxy:
             if source.get("validated"):
                 warmed = True
                 continue
-            if source.get("nzo_id") and not source.get("stream_url"):
+            if source.get("nzo_id"):
                 standby = True
         return standby and not warmed
 

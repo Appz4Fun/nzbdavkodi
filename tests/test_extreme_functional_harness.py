@@ -25,11 +25,14 @@ def test_extreme_fault_schedule_is_five_resets_in_first_six_playback_minutes():
 
 
 def test_extreme_harness_requires_a_standby_backup_stream():
-    assert extreme.os.environ["FUNCTIONAL_MIN_FALLBACK_CANDIDATES"] == "1"
-    assert extreme.EXTREME_FILTER_SETTINGS["fallback_streams_max"] == "5"
+    expected = extreme.EXTREME_REQUIRED_FALLBACKS
+
+    assert extreme.os.environ["FUNCTIONAL_MIN_FALLBACK_CANDIDATES"] == expected
+    assert extreme.EXTREME_FILTER_SETTINGS["fallback_streams_max"] == expected
 
 
-def test_extreme_observe_window_covers_last_fault_plus_recovery_margin():
+def test_extreme_observe_window_covers_last_fault_plus_recovery_margin(monkeypatch):
+    monkeypatch.delenv("EXTREME_OBSERVE_SECONDS", raising=False)
     schedule = [
         {"at_seconds": 60.0, "fault_type": "connection_reset"},
         {"at_seconds": 600.0, "fault_type": "connection_reset"},

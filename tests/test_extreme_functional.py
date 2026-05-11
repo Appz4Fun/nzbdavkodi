@@ -12,8 +12,8 @@ Import notes (adjusted from plan):
   not a flat list. The plan code was corrected to unpack it.
 - LIVE_FALLBACK_REQUIRED_COUNT has no effect in the existing helpers; the
   actual knob is FUNCTIONAL_MIN_FALLBACK_CANDIDATES (used by
-  _required_fallback_candidate_count()). The setdefault call below uses
-  the correct env var name.
+  _required_fallback_candidate_count()). The assignment below uses the
+  correct env var name.
 - KODI_HOST_PORT / FAULT_PROXY_CONTROL_HOST_PORT from conftest are strings.
 
 DEVIATIONS from the spec/plan:
@@ -63,13 +63,14 @@ from tests.extreme.conftest import (
 pytest_plugins = ["tests.extreme.conftest"]
 
 pytestmark = pytest.mark.extreme
+EXTREME_REQUIRED_FALLBACKS = "5"
 
 # Wider candidate pool than just functional-test-top-imdb. Setting these via
 # os.environ affects the existing helpers in test_functional_fallback_playback.
 os.environ.setdefault("LIVE_FALLBACK_POOL_LIMIT", "100")
 # The actual knob consumed by _required_fallback_candidate_count() is
 # FUNCTIONAL_MIN_FALLBACK_CANDIDATES, not LIVE_FALLBACK_REQUIRED_COUNT.
-os.environ.setdefault("FUNCTIONAL_MIN_FALLBACK_CANDIDATES", "1")
+os.environ["FUNCTIONAL_MIN_FALLBACK_CANDIDATES"] = EXTREME_REQUIRED_FALLBACKS
 
 # _live_env() (imported below) requires NZBDAV_URL, WEBDAV_URL, WEBDAV_API_KEY
 # in addition to HYDRA_*/WEBDAV_USERNAME/WEBDAV_PASSWORD. The extreme test
@@ -122,7 +123,7 @@ EXTREME_FILTER_SETTINGS = {
     "max_results": "250",
     "auto_select_best": "true",
     "fallback_streams_enabled": "true",
-    "fallback_streams_max": "5",
+    "fallback_streams_max": EXTREME_REQUIRED_FALLBACKS,
 }
 
 
@@ -516,15 +517,18 @@ def test_extreme_fallback_run(stack_ready, run_dir):
         run_dir / "summary.json",
         run_dir / "summary.md",
     )
+    expected_fallback_switches = int(EXTREME_FILTER_SETTINGS["fallback_streams_max"])
     fallback_switch_count = _read_fallback_switch_count(run_dir / "kodi-temp.log")
 
     # Assertions (observability mode: only check basics + opt-in bounds)
     assert (
         len(fault_events) == 5
     ), f"expected 5 fault events, proxy log has {len(fault_events)}"
-    assert fallback_switch_count >= 5, (
-        "expected at least 5 transparent fallback switches, "
-        f"kodi log has {fallback_switch_count}"
+    assert fallback_switch_count >= expected_fallback_switches, (
+        "expected at least {} transparent fallback switches, ".format(
+            expected_fallback_switches
+        )
+        + f"kodi log has {fallback_switch_count}"
     )
     assert len(correlated) == len(
         fault_events
