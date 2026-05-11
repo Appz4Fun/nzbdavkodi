@@ -175,6 +175,8 @@ def test_generate_repo_preserves_legacy_addon_zips_for_cached_kodi_metadata(
         tmp_path / "dist" / "plugin.video.nzbdav" / "plugin.video.nzbdav-1.0.5.zip"
     ).exists()
     assert (tmp_path / "dist" / "plugin.video.nzbdav-1.0.5.zip").exists()
+    root_index = (tmp_path / "dist" / "index.html").read_text(encoding="utf-8")
+    assert 'href="plugin.video.nzbdav-1.0.5.zip"' in root_index
 
 
 def test_generate_repo_writes_repository_zip_aliases_for_cached_kodi_metadata(

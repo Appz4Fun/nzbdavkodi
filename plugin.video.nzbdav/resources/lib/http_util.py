@@ -196,6 +196,23 @@ def format_request_error(error):
     return redact_text(str(error))
 
 
+def xml_local_name(tag):
+    """Return an XML tag name without its namespace."""
+    return tag.rsplit("}", 1)[-1] if isinstance(tag, str) else ""
+
+
+def find_xml_children(element, tag):
+    """Return direct children whose local tag name matches ``tag``."""
+    return [child for child in list(element) if xml_local_name(child.tag) == tag]
+
+
+def find_xml_child(element, tag):
+    """Return the first direct child whose local tag name matches ``tag``."""
+    for child in find_xml_children(element, tag):
+        return child
+    return None
+
+
 def get_xml_text(element, tag):
     """Return the stripped text of a child element, or ``""`` when missing.
 
@@ -204,7 +221,7 @@ def get_xml_text(element, tag):
     parse loops simple: missing fields land as empty strings rather than
     exceptions.
     """
-    child = element.find(tag)
+    child = find_xml_child(element, tag)
     if child is not None and child.text:
         return child.text
     return ""

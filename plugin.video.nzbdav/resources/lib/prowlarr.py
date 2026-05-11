@@ -48,6 +48,32 @@ def _build_xxe_safe_parser():
 # hydra.py ↔ prowlarr.py duplication.
 
 
+def _parse_newznab_attrs(item):
+    """Return (size, indexer) from Newznab attributes on an item.
+
+    Prowlarr responses usually namespace ``attr`` elements with the
+    canonical Newznab URI, but compatible feeds may emit unqualified attrs
+    or a custom namespace. Match by local tag name so size/indexer metadata
+    survives those variants.
+    """
+    size = ""
+    indexer = ""
+    for attr in item.iter():
+        tag = attr.tag
+        if not isinstance(tag, str):
+            continue
+        local = tag.rsplit("}", 1)[-1]
+        if local != "attr":
+            continue
+        name = attr.get("name", "")
+        if name == "size":
+            size = attr.get("value", "")
+        elif name in ("indexer", "source", "hydraIndexerName"):
+            if not indexer:
+                indexer = attr.get("value", "")
+    return size, indexer
+
+
 def _prowlarr_unavailable_error(error):
     """
     Format an error into a standardized "Prowlarr unavailable" message.
@@ -281,15 +307,7 @@ def _parse_results_checked(xml_text):
         link = _get_text(item, "link")
         pubdate = _get_text(item, "pubDate")
 
-        size = ""
-        indexer = ""
-        for attr in item.iter("{%s}attr" % NEWZNAB_NS):
-            name = attr.get("name", "")
-            if name == "size":
-                size = attr.get("value", "")
-            elif name in ("indexer", "source", "hydraIndexerName"):
-                if not indexer:
-                    indexer = attr.get("value", "")
+        size, indexer = _parse_newznab_attrs(item)
 
         if not indexer:
             indexer = _get_text(item, "source")

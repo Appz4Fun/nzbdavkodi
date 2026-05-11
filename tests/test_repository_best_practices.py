@@ -3,6 +3,7 @@
 
 """Regression checks for repository and Kodi addon best-practice files."""
 
+import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -155,3 +156,16 @@ def test_community_health_files_exist():
     ]
     for path in expected:
         assert path.exists(), "{} is missing".format(path)
+
+
+def test_root_debug_imdb_script_is_gitignored():
+    result = subprocess.run(
+        ["git", "check-ignore", "debug_imdb.py"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "debug_imdb.py"
