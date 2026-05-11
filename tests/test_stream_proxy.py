@@ -39,6 +39,7 @@ def test_settings_getter_from_partial_snapshot_falls_back_to_script_defaults():
         values = {
             "nzbdav_url": "http://nzbdav:3000",
             "webdav_content_root": "content",
+            "webdav_username": "live-user",
         }
         return values.get(key, default)
 
@@ -46,14 +47,14 @@ def test_settings_getter_from_partial_snapshot_falls_back_to_script_defaults():
         getter = stream_proxy._settings_getter_from_snapshot(
             {
                 "webdav_url": "http://webdav/content",
-                "nzbdav_url": "",
+                "webdav_username": "",
             }
         )
-
-    assert getter("webdav_url") == "http://webdav/content"
-    assert getter("nzbdav_url") == "http://nzbdav:3000"
-    assert getter("webdav_content_root") == "content"
-    assert getter("missing", "fallback") == "fallback"
+        assert getter("webdav_url") == "http://webdav/content"
+        assert getter("webdav_username") == ""
+        assert getter("nzbdav_url") == "http://nzbdav:3000"
+        assert getter("webdav_content_root") == "content"
+        assert getter("missing", "fallback") == "fallback"
 
 
 def test_parallel_fallback_fingerprint_shutdown_works_on_python38_executor():
@@ -2443,11 +2444,74 @@ def test_standby_prevalidation_keeps_transient_length_mismatch_retryable():
     from resources.lib.stream_proxy import StreamProxy
 
     source = ctx["fallback_sources"][0]
-    assert source["stream_url"] == "http://webdav/content/fallback.mkv"
+    assert source["stream_url"] == ""
+    assert not source["stream_headers"]
     assert source["content_length"] == 0
     assert source["failed"] is False
     assert StreamProxy._fallback_prevalidation_should_retry(ctx) is True
     validate.assert_not_called()
+
+
+def test_standby_prevalidation_retries_length_mismatch_until_ready():
+    """A transient standby HEAD mismatch should be retried from job state."""
+    handler = _make_handler()
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_type": "video/x-matroska",
+        "content_length": 8192,
+        "_fallback_probe_bases": (),
+        "settings_snapshot": {
+            "nzbdav_url": "http://nzbdav:3000",
+            "webdav_url": "http://webdav/content",
+        },
+        "fallback_sources": [
+            {
+                "nzo_id": "nzo-fallback",
+                "stream_url": "",
+                "stream_headers": {},
+                "content_length": 0,
+                "validated": False,
+                "failed": False,
+            }
+        ],
+    }
+
+    with patch(
+        "resources.lib.nzbdav_api.get_job_history",
+        return_value={
+            "status": "Completed",
+            "storage": "/mnt/nzbdav/completed-symlinks/movies/fallback",
+        },
+    ), patch(
+        "resources.lib.webdav.find_video_file",
+        return_value="/content/movies/fallback/movie.mkv",
+    ), patch(
+        "resources.lib.webdav.get_webdav_stream_url_for_path",
+        return_value=(
+            "http://webdav/content/fallback.mkv",
+            {"Authorization": "Basic fallback"},
+        ),
+    ), patch(
+        "resources.lib.fallback_streams.fetch_content_length",
+        side_effect=[0, 8192],
+    ), patch.object(
+        handler, "_validate_fallback_fingerprint", return_value=True
+    ) as validate:
+        assert handler._prevalidate_ready_fallback_sources(ctx) == 0
+        source = ctx["fallback_sources"][0]
+        assert source["stream_url"] == ""
+        assert source["content_length"] == 0
+        assert source["failed"] is False
+
+        assert handler._prevalidate_ready_fallback_sources(ctx) == 1
+
+    source = ctx["fallback_sources"][0]
+    assert source["stream_url"] == "http://webdav/content/fallback.mkv"
+    assert source["stream_headers"] == {"Authorization": "Basic fallback"}
+    assert source["content_length"] == 8192
+    assert source["validated"] is True
+    validate.assert_called_once()
 
 
 def test_standby_prevalidation_does_not_touch_live_selection_hints():
@@ -7713,7 +7777,11 @@ def test_serve_proxy_recovers_repeated_resets_on_single_backup_source():
         handler, "_stream_upstream_range", side_effect=stream_range
     ), patch.object(
         handler, "_probe_fallback_current_range", return_value=True
-    ) as probe_current, patch(
+    ) as probe_current, patch.object(
+        handler,
+        "_select_live_fallback_source",
+        wraps=handler._select_live_fallback_source,
+    ) as select_fallback, patch(
         "resources.lib.stream_proxy._notify"
     ) as mock_notify:
         handler._serve_proxy(ctx)
@@ -7724,6 +7792,7 @@ def test_serve_proxy_recovers_repeated_resets_on_single_backup_source():
     assert ctx["fallback_active_index"] == 0
     assert fallback_source["failed"] is False
     assert probe_current.call_count == reset_count
+    assert select_fallback.call_count == 1
     assert _collect_written(handler) == b"S" * content_length
     mock_notify.assert_called_once()
 

@@ -491,9 +491,8 @@ def _settings_getter_from_snapshot(snapshot):
             return default
 
     def _get(key, default=""):
-        value = normalized.get(key)
-        if isinstance(value, str) and value != "":
-            return value
+        if key in normalized:
+            return normalized[key]
         return _fallback(key, default)
 
     return _get
@@ -3054,11 +3053,49 @@ class _StreamHandler(BaseHTTPRequestHandler):
         if expected_length > 0 and content_length != expected_length:
             if mark_failed_on_mismatch:
                 source["failed"] = True
+            else:
+                source.update(
+                    {
+                        "stream_url": "",
+                        "stream_headers": {},
+                        "content_length": 0,
+                    }
+                )
             return False
         ctx["_fallback_source_content_length_hint"] = (id(source), content_length)
         ctx["_fallback_source_auth_hint"] = (id(source), auth_header)
         ctx[_FALLBACK_SOURCE_STREAM_URL_HINT_KEY] = (id(source), stream_url)
         return bool(stream_url)
+
+    def _active_fallback_source_for_retry(self, ctx, failed_byte, range_end):
+        """Return the currently active fallback when it can retry this range."""
+        sources = ctx.get("fallback_sources") or []
+        try:
+            active_index = int(ctx.get("fallback_active_index", -1))
+        except (TypeError, ValueError):
+            return None
+        if active_index < 0 or active_index >= len(sources):
+            return None
+
+        source = sources[active_index]
+        if source.get("failed"):
+            return None
+        source_url = source.get("stream_url")
+        if not source_url or source_url != ctx.get("remote_url"):
+            return None
+        source_auth = (source.get("stream_headers") or {}).get("Authorization")
+        if source_auth != ctx.get("auth_header"):
+            return None
+        if any(
+            not candidate.get("failed")
+            and (candidate.get("stream_url") or candidate.get("nzo_id"))
+            for candidate in sources[active_index + 1 :]
+        ):
+            return None
+        if self._fallback_source_matches(ctx, source, failed_byte, range_end):
+            return source
+        source["failed"] = True
+        return None
 
     def _fallback_source_matches(self, ctx, source, failed_byte, range_end):
         """Return True when a fallback looks like the same file and can resume."""
@@ -4034,7 +4071,9 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE,
                     _UPSTREAM_RANGE_UPSTREAM_ERROR,
                 ):
-                    fallback = self._select_live_fallback_source(ctx, current, end)
+                    fallback = self._active_fallback_source_for_retry(ctx, current, end)
+                    if fallback is None:
+                        fallback = self._select_live_fallback_source(ctx, current, end)
                     if fallback:
                         ctx["remote_url"] = fallback["stream_url"]
                         ctx["auth_header"] = (fallback.get("stream_headers") or {}).get(
