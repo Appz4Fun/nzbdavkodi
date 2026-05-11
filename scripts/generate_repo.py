@@ -137,13 +137,14 @@ def _copy_addon_artifacts(output_dir, addon_id, main_addon, addon_zip=None):
 
 def _copy_legacy_addon_zips(output_dir, addon_id, legacy_addon_zip_dir=None):
     if not legacy_addon_zip_dir:
-        return
+        return []
     if not os.path.isdir(legacy_addon_zip_dir):
         raise SystemExit(
             "generate_repo: legacy addon zip directory not found: {!r}".format(
                 legacy_addon_zip_dir
             )
         )
+    zip_names = []
     for name in sorted(os.listdir(legacy_addon_zip_dir)):
         zip_path = os.path.join(legacy_addon_zip_dir, name)
         if not os.path.isfile(zip_path) or not name.endswith(".zip"):
@@ -158,7 +159,9 @@ def _copy_legacy_addon_zips(output_dir, addon_id, legacy_addon_zip_dir=None):
                     zip_path, exc
                 )
             )
+        zip_names.append(zip_name)
         print("Copied legacy addon zip {}".format(zip_name))
+    return zip_names
 
 
 def generate_repo(
@@ -209,7 +212,16 @@ def generate_repo(
     addon_zip_name = _copy_addon_artifacts(
         output_dir, main_addon_id, main_addon, addon_zip
     )
-    _copy_legacy_addon_zips(output_dir, main_addon_id, legacy_addon_zip_dir)
+    addon_zip_names = []
+    if addon_zip_name:
+        addon_zip_names.append(addon_zip_name)
+    addon_zip_names.extend(
+        name
+        for name in _copy_legacy_addon_zips(
+            output_dir, main_addon_id, legacy_addon_zip_dir
+        )
+        if name not in addon_zip_names
+    )
 
     # Build repository addon zip and copy into output
     repo_dir = "repo/repository.nzbdav"
@@ -258,7 +270,7 @@ def generate_repo(
     write_pages_index(
         output_dir,
         repo_version,
-        addon_zip_names=[addon_zip_name] if addon_zip_name else None,
+        addon_zip_names=addon_zip_names,
     )
 
 
