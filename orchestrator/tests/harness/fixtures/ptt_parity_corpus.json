@@ -1,0 +1,1442 @@
+[
+  {
+    "input": "Inception.2010.1080p.BluRay.x264-FGT",
+    "parsed": {
+      "codec": "avc",
+      "episodes": [],
+      "group": "FGT",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Inception",
+      "year": 2010
+    }
+  },
+  {
+    "input": "The.Matrix.1999.1080p.BluRay.x264-YIFY",
+    "parsed": {
+      "codec": "avc",
+      "episodes": [],
+      "group": "YIFY",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "The Matrix",
+      "year": 1999
+    }
+  },
+  {
+    "input": "Spider-Man.No.Way.Home.2021.1080p.BluRay.x264-SPARKS",
+    "parsed": {
+      "codec": "avc",
+      "episodes": [],
+      "group": "SPARKS",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Spider-Man No Way Home",
+      "year": 2021
+    }
+  },
+  {
+    "input": "Movie.2024.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+    "parsed": {
+      "codec": "hevc",
+      "episodes": [],
+      "group": "GROUP",
+      "hdr": [
+        "DV"
+      ],
+      "languages": [],
+      "quality": "BluRay REMUX",
+      "resolution": "2160p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Once.Upon.a.Time.in.the.West.1968.PROPER.UHD.BluRay.2160p.DTS-HD.MA.5.1.DV.HEVC.HYBRID.REMUX-FraMeSToR",
+    "parsed": {
+      "audio": [
+        "DTS Lossless"
+      ],
+      "channels": [
+        "5.1"
+      ],
+      "codec": "hevc",
+      "episodes": [],
+      "group": "FraMeSToR",
+      "hdr": [
+        "DV"
+      ],
+      "languages": [],
+      "proper": true,
+      "quality": "BluRay REMUX",
+      "resolution": "2160p",
+      "seasons": [],
+      "title": "Once Upon a Time in the West",
+      "year": 1968
+    }
+  },
+  {
+    "input": "Movie.2024.2160p.UHD.BluRay.HDR.HDR10.HEVC-GROUP",
+    "parsed": {
+      "bit_depth": "10bit",
+      "codec": "hevc",
+      "episodes": [],
+      "group": "GROUP",
+      "hdr": [
+        "HDR"
+      ],
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "2160p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.2160p.UHD.BluRay.HDR10+.HEVC-GROUP",
+    "parsed": {
+      "bit_depth": "10bit",
+      "codec": "hevc",
+      "episodes": [],
+      "group": "GROUP",
+      "hdr": [
+        "HDR10+"
+      ],
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "2160p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.2160p.UHD.BluRay.Dolby.Vision.HDR10.HEVC-GROUP",
+    "parsed": {
+      "bit_depth": "10bit",
+      "codec": "hevc",
+      "episodes": [],
+      "group": "GROUP",
+      "hdr": [
+        "DV",
+        "HDR"
+      ],
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "2160p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.1080p.BluRay.x264.DTS-HD.MA.7.1-GROUP",
+    "parsed": {
+      "audio": [
+        "DTS Lossless"
+      ],
+      "channels": [
+        "7.1"
+      ],
+      "codec": "avc",
+      "episodes": [],
+      "group": "GROUP",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.1080p.BluRay.x264.DDP5.1.Atmos-GROUP",
+    "parsed": {
+      "audio": [
+        "Atmos",
+        "Dolby Digital Plus"
+      ],
+      "channels": [
+        "5.1"
+      ],
+      "codec": "avc",
+      "episodes": [],
+      "group": "GROUP",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.1080p.BluRay.x264.TrueHD.Atmos.7.1-GROUP",
+    "parsed": {
+      "audio": [
+        "Atmos",
+        "TrueHD"
+      ],
+      "channels": [
+        "7.1"
+      ],
+      "codec": "avc",
+      "episodes": [],
+      "group": "GROUP",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.1080p.BluRay.x264.AC3.2.0-GROUP",
+    "parsed": {
+      "audio": [
+        "Dolby Digital"
+      ],
+      "channels": [
+        "2.0"
+      ],
+      "codec": "avc",
+      "episodes": [],
+      "group": "GROUP",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.1080p.BluRay.x264.AAC2.0-GROUP",
+    "parsed": {
+      "audio": [
+        "AAC"
+      ],
+      "channels": [
+        "2.0"
+      ],
+      "codec": "avc",
+      "episodes": [],
+      "group": "GROUP",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.1080p.BluRay.x264.FLAC.5.1-GROUP",
+    "parsed": {
+      "audio": [
+        "FLAC"
+      ],
+      "channels": [
+        "5.1"
+      ],
+      "codec": "avc",
+      "episodes": [],
+      "group": "GROUP",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.1080p.BluRay.x264.DTS-X-GROUP",
+    "parsed": {
+      "audio": [
+        "DTS Lossless"
+      ],
+      "codec": "avc",
+      "episodes": [],
+      "group": "GROUP",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.Extended.Cut.1080p.BluRay.x264-GROUP",
+    "parsed": {
+      "codec": "avc",
+      "edition": "Extended Edition",
+      "episodes": [],
+      "group": "GROUP",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.Directors.Cut.1080p.BluRay.x264-GROUP",
+    "parsed": {
+      "codec": "avc",
+      "edition": "Directors Cut",
+      "episodes": [],
+      "group": "GROUP",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.Theatrical.1080p.BluRay.x264-GROUP",
+    "parsed": {
+      "codec": "avc",
+      "edition": "Theatrical",
+      "episodes": [],
+      "group": "GROUP",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.Unrated.1080p.BluRay.x264-GROUP",
+    "parsed": {
+      "codec": "avc",
+      "episodes": [],
+      "group": "GROUP",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "unrated": true,
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.IMAX.1080p.BluRay.x264-GROUP",
+    "parsed": {
+      "codec": "avc",
+      "edition": "IMAX",
+      "episodes": [],
+      "group": "GROUP",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.Criterion.Collection.1080p.BluRay.x264-GROUP",
+    "parsed": {
+      "codec": "avc",
+      "episodes": [],
+      "group": "GROUP",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.2160p.WEB-DL.HEVC.AI.Upscale-GROUP",
+    "parsed": {
+      "codec": "hevc",
+      "episodes": [],
+      "group": "GROUP",
+      "languages": [],
+      "quality": "WEB-DL",
+      "resolution": "2160p",
+      "seasons": [],
+      "title": "Movie",
+      "upscaled": true,
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.1080p.BluRay.x264.mkv",
+    "parsed": {
+      "codec": "avc",
+      "container": "mkv",
+      "episodes": [],
+      "extension": "mkv",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.1080p.BluRay.x264.mp4",
+    "parsed": {
+      "codec": "avc",
+      "container": "mp4",
+      "episodes": [],
+      "extension": "mp4",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.MULTi.1080p.BluRay.x264-GROUP",
+    "parsed": {
+      "codec": "avc",
+      "dubbed": true,
+      "episodes": [],
+      "group": "GROUP",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.German.1080p.BluRay.x264-GROUP",
+    "parsed": {
+      "codec": "avc",
+      "episodes": [],
+      "group": "GROUP",
+      "languages": [
+        "de"
+      ],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.GER.SUBS.1080p.BluRay.x264-GROUP",
+    "parsed": {
+      "codec": "avc",
+      "episodes": [],
+      "group": "GROUP",
+      "languages": [
+        "de"
+      ],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [],
+      "subbed": true,
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.FRENCH.1080p.BluRay.x264-GROUP",
+    "parsed": {
+      "codec": "avc",
+      "episodes": [],
+      "group": "GROUP",
+      "languages": [
+        "fr"
+      ],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.ITALIAN.1080p.BluRay.x264-GROUP",
+    "parsed": {
+      "codec": "avc",
+      "episodes": [],
+      "group": "GROUP",
+      "languages": [
+        "it"
+      ],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.iTA.ENG.1080p.BluRay.x264-GROUP",
+    "parsed": {
+      "codec": "avc",
+      "episodes": [],
+      "group": "GROUP",
+      "languages": [
+        "en",
+        "it"
+      ],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.PROPER.REPACK.1080p.BluRay.x264-GROUP",
+    "parsed": {
+      "codec": "avc",
+      "episodes": [],
+      "group": "GROUP",
+      "languages": [],
+      "proper": true,
+      "quality": "BluRay",
+      "repack": true,
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.REPACK2.1080p.BluRay.x264-GROUP",
+    "parsed": {
+      "codec": "avc",
+      "episodes": [],
+      "group": "GROUP",
+      "languages": [],
+      "quality": "BluRay",
+      "repack": true,
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Breaking.Bad.S05E14.1080p.BluRay.x265.DTS-HD.MA-NTb",
+    "parsed": {
+      "audio": [
+        "DTS Lossless"
+      ],
+      "codec": "hevc",
+      "episodes": [
+        14
+      ],
+      "group": "NTb",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [
+        5
+      ],
+      "title": "Breaking Bad"
+    }
+  },
+  {
+    "input": "Breaking.Bad.S01.1080p.BluRay.x264-GROUP",
+    "parsed": {
+      "codec": "avc",
+      "episodes": [],
+      "group": "GROUP",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [
+        1
+      ],
+      "title": "Breaking Bad"
+    }
+  },
+  {
+    "input": "The.Office.S09E23.720p.WEB-DL.AAC2.0.H.264-NTb",
+    "parsed": {
+      "audio": [
+        "AAC"
+      ],
+      "channels": [
+        "2.0"
+      ],
+      "codec": "avc",
+      "episodes": [
+        23
+      ],
+      "group": "NTb",
+      "languages": [],
+      "quality": "WEB-DL",
+      "resolution": "720p",
+      "seasons": [
+        9
+      ],
+      "title": "The Office"
+    }
+  },
+  {
+    "input": "Game.of.Thrones.S08E06.1080p.AMZN.WEB-DL.DDP5.1.H.264-GROUP",
+    "parsed": {
+      "audio": [
+        "Dolby Digital Plus"
+      ],
+      "channels": [
+        "5.1"
+      ],
+      "codec": "avc",
+      "episodes": [
+        6
+      ],
+      "group": "GROUP",
+      "languages": [],
+      "network": "Amazon",
+      "quality": "WEB-DL",
+      "resolution": "1080p",
+      "seasons": [
+        8
+      ],
+      "title": "Game of Thrones"
+    }
+  },
+  {
+    "input": "Movie.2024.CAM.x264-JUNK",
+    "parsed": {
+      "codec": "avc",
+      "episodes": [],
+      "group": "JUNK",
+      "languages": [],
+      "quality": "CAM",
+      "seasons": [],
+      "title": "Movie",
+      "trash": true,
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.TS.x264-JUNK",
+    "parsed": {
+      "codec": "avc",
+      "episodes": [],
+      "group": "JUNK",
+      "languages": [],
+      "quality": "TeleSync",
+      "seasons": [],
+      "title": "Movie",
+      "trash": true,
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.HDTC.x264-JUNK",
+    "parsed": {
+      "codec": "avc",
+      "episodes": [],
+      "group": "JUNK",
+      "languages": [],
+      "quality": "TeleCine",
+      "seasons": [],
+      "title": "Movie",
+      "trash": true,
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.WEBRip.x264-GROUP",
+    "parsed": {
+      "codec": "avc",
+      "episodes": [],
+      "group": "GROUP",
+      "languages": [],
+      "quality": "WEBRip",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.HDTV.x264-GROUP",
+    "parsed": {
+      "codec": "avc",
+      "episodes": [],
+      "group": "GROUP",
+      "languages": [],
+      "quality": "HDTV",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.DVDRip.x264-GROUP",
+    "parsed": {
+      "codec": "avc",
+      "episodes": [],
+      "group": "GROUP",
+      "languages": [],
+      "quality": "DVDRip",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.1080p.BluRay.H265-GROUP",
+    "parsed": {
+      "codec": "hevc",
+      "episodes": [],
+      "group": "GROUP",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.1080p.BluRay.H.264-GROUP",
+    "parsed": {
+      "codec": "avc",
+      "episodes": [],
+      "group": "GROUP",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.1080p.BluRay.AV1-GROUP",
+    "parsed": {
+      "codec": "av1",
+      "episodes": [],
+      "group": "GROUP",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.1080p.BluRay.XviD-GROUP",
+    "parsed": {
+      "codec": "xvid",
+      "episodes": [],
+      "group": "GROUP",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.1080p.WEB-DL.x264-GROUP-NAME",
+    "parsed": {
+      "codec": "avc",
+      "episodes": [],
+      "group": "NAME",
+      "languages": [],
+      "quality": "WEB-DL",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.1080p.WEB-DL.x264-GROUP_NAME",
+    "parsed": {
+      "codec": "avc",
+      "episodes": [],
+      "languages": [],
+      "quality": "WEB-DL",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.1080p.WEB-DL.x264-rarbg",
+    "parsed": {
+      "codec": "avc",
+      "episodes": [],
+      "group": "rarbg",
+      "languages": [],
+      "quality": "WEB-DL",
+      "resolution": "1080p",
+      "seasons": [],
+      "site": "rarbg",
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "",
+    "parsed": {
+      "episodes": [],
+      "languages": [],
+      "seasons": [],
+      "title": ""
+    }
+  },
+  {
+    "input": "Some.Random.Title-GROUP",
+    "parsed": {
+      "episodes": [],
+      "group": "GROUP",
+      "languages": [],
+      "seasons": [],
+      "title": "Some Random Title"
+    }
+  },
+  {
+    "input": "Bad",
+    "parsed": {
+      "episodes": [],
+      "languages": [],
+      "seasons": [],
+      "title": "Bad"
+    }
+  },
+  {
+    "input": "Bourne.Identity.2002.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+    "parsed": {
+      "codec": "hevc",
+      "episodes": [],
+      "group": "GROUP",
+      "hdr": [
+        "DV"
+      ],
+      "languages": [],
+      "quality": "BluRay REMUX",
+      "resolution": "2160p",
+      "seasons": [],
+      "title": "Bourne Identity",
+      "year": 2002
+    }
+  },
+  {
+    "input": "Another.2023.2160p.UHD.BluRay.HEVC-SPARKS",
+    "parsed": {
+      "codec": "hevc",
+      "episodes": [],
+      "group": "SPARKS",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "2160p",
+      "seasons": [],
+      "title": "Another",
+      "year": 2023
+    }
+  },
+  {
+    "input": "Another.Release.HDTV.x264-GRP",
+    "parsed": {
+      "codec": "avc",
+      "episodes": [],
+      "group": "GRP",
+      "languages": [],
+      "quality": "HDTV",
+      "seasons": [],
+      "title": "Another Release"
+    }
+  },
+  {
+    "input": "Breaking.Bad.S05E14.Ozymandias.1080p.BluRay.x265.DTS-HD.MA-NTb",
+    "parsed": {
+      "audio": [
+        "DTS Lossless"
+      ],
+      "codec": "hevc",
+      "episodes": [
+        14
+      ],
+      "group": "NTb",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [
+        5
+      ],
+      "title": "Breaking Bad"
+    }
+  },
+  {
+    "input": "Breaking.Bad.S05E14.Ozymandias.2160p.BluRay.HEVC-SPARKS",
+    "parsed": {
+      "codec": "hevc",
+      "episodes": [
+        14
+      ],
+      "group": "SPARKS",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "2160p",
+      "seasons": [
+        5
+      ],
+      "title": "Breaking Bad"
+    }
+  },
+  {
+    "input": "Breaking.Bad.S05E14.Ozymandias.720p.WEB-DL.x264-GRP",
+    "parsed": {
+      "codec": "avc",
+      "episodes": [
+        14
+      ],
+      "group": "GRP",
+      "languages": [],
+      "quality": "WEB-DL",
+      "resolution": "720p",
+      "seasons": [
+        5
+      ],
+      "title": "Breaking Bad"
+    }
+  },
+  {
+    "input": "Dune.Part.Two.2024.2160p.WEB-DL.DDP5.1.Atmos.DV.HDR.H.265-FLUX",
+    "parsed": {
+      "audio": [
+        "Atmos",
+        "Dolby Digital Plus"
+      ],
+      "channels": [
+        "5.1"
+      ],
+      "codec": "hevc",
+      "episodes": [],
+      "group": "FLUX",
+      "hdr": [
+        "DV",
+        "HDR"
+      ],
+      "languages": [],
+      "quality": "WEB-DL",
+      "resolution": "2160p",
+      "seasons": [],
+      "title": "Dune Part Two",
+      "year": 2024
+    }
+  },
+  {
+    "input": "First",
+    "parsed": {
+      "episodes": [],
+      "languages": [],
+      "seasons": [],
+      "title": "First"
+    }
+  },
+  {
+    "input": "Good.Movie-GRP",
+    "parsed": {
+      "episodes": [],
+      "group": "GRP",
+      "languages": [],
+      "seasons": [],
+      "title": "Good Movie"
+    }
+  },
+  {
+    "input": "Huge.Movie-GRP",
+    "parsed": {
+      "episodes": [],
+      "group": "GRP",
+      "languages": [],
+      "seasons": [],
+      "title": "Huge Movie"
+    }
+  },
+  {
+    "input": "Large",
+    "parsed": {
+      "episodes": [],
+      "languages": [],
+      "seasons": [],
+      "title": "Large"
+    }
+  },
+  {
+    "input": "Movie.2024.1080p-GRP",
+    "parsed": {
+      "episodes": [],
+      "group": "GRP",
+      "languages": [],
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.1080p.BluRay.HEVC.AAC-GRP",
+    "parsed": {
+      "audio": [
+        "AAC"
+      ],
+      "codec": "hevc",
+      "episodes": [],
+      "group": "GRP",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.1080p.BluRay.HEVC.DTS-HD.MA.7.1-GRP",
+    "parsed": {
+      "audio": [
+        "DTS Lossless"
+      ],
+      "channels": [
+        "7.1"
+      ],
+      "codec": "hevc",
+      "episodes": [],
+      "group": "GRP",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.1080p.BluRay.REMUX.HEVC-GRP",
+    "parsed": {
+      "codec": "hevc",
+      "episodes": [],
+      "group": "GRP",
+      "languages": [],
+      "quality": "BluRay REMUX",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.1080p.BluRay.x264-GRP",
+    "parsed": {
+      "codec": "avc",
+      "episodes": [],
+      "group": "GRP",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.1080p.BluRay.x264-OTHER",
+    "parsed": {
+      "codec": "avc",
+      "episodes": [],
+      "group": "OTHER",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.1080p.BluRay.x264-SPARKS",
+    "parsed": {
+      "codec": "avc",
+      "episodes": [],
+      "group": "SPARKS",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.1080p.BluRay.x264-YIFY",
+    "parsed": {
+      "codec": "avc",
+      "episodes": [],
+      "group": "YIFY",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.1080p.BluRay.x264.DTS-HD.MA-GRP",
+    "parsed": {
+      "audio": [
+        "DTS Lossless"
+      ],
+      "codec": "avc",
+      "episodes": [],
+      "group": "GRP",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.1080p.H264-GRP",
+    "parsed": {
+      "codec": "avc",
+      "episodes": [],
+      "group": "GRP",
+      "languages": [],
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.2160p.BluRay.HEVC-GRP",
+    "parsed": {
+      "codec": "hevc",
+      "episodes": [],
+      "group": "GRP",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "2160p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.2160p.REMUX-GRP",
+    "parsed": {
+      "episodes": [],
+      "group": "GRP",
+      "languages": [],
+      "quality": "REMUX",
+      "resolution": "2160p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.2160p.UHD.BluRay.HEVC-GRP",
+    "parsed": {
+      "codec": "hevc",
+      "episodes": [],
+      "group": "GRP",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "2160p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.720p.BluRay.HEVC.DTS-HD.MA-GRP",
+    "parsed": {
+      "audio": [
+        "DTS Lossless"
+      ],
+      "codec": "hevc",
+      "episodes": [],
+      "group": "GRP",
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "720p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.720p.WEB-DL.x264-GRP",
+    "parsed": {
+      "codec": "avc",
+      "episodes": [],
+      "group": "GRP",
+      "languages": [],
+      "quality": "WEB-DL",
+      "resolution": "720p",
+      "seasons": [],
+      "title": "Movie",
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.2024.CAM.x264-GRP",
+    "parsed": {
+      "codec": "avc",
+      "episodes": [],
+      "group": "GRP",
+      "languages": [],
+      "quality": "CAM",
+      "seasons": [],
+      "title": "Movie",
+      "trash": true,
+      "year": 2024
+    }
+  },
+  {
+    "input": "Movie.{}.1080p-GRP",
+    "parsed": {
+      "episodes": [],
+      "group": "GRP",
+      "languages": [],
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "Movie"
+    }
+  },
+  {
+    "input": "Mr.Robot.S04E13.Series.Finale.Part.2.1080p.AMZN.WEB-DL.DDP5.1.H.264-NTG",
+    "parsed": {
+      "audio": [
+        "Dolby Digital Plus"
+      ],
+      "channels": [
+        "5.1"
+      ],
+      "codec": "avc",
+      "episodes": [
+        13
+      ],
+      "group": "NTG",
+      "languages": [],
+      "network": "Amazon",
+      "quality": "WEB-DL",
+      "resolution": "1080p",
+      "seasons": [
+        4
+      ],
+      "title": "Mr Robot"
+    }
+  },
+  {
+    "input": "Second",
+    "parsed": {
+      "episodes": [],
+      "languages": [],
+      "seasons": [],
+      "title": "Second"
+    }
+  },
+  {
+    "input": "Small",
+    "parsed": {
+      "episodes": [],
+      "languages": [],
+      "seasons": [],
+      "title": "Small"
+    }
+  },
+  {
+    "input": "Small.Movie-GRP",
+    "parsed": {
+      "episodes": [],
+      "group": "GRP",
+      "languages": [],
+      "seasons": [],
+      "title": "Small Movie"
+    }
+  },
+  {
+    "input": "Some.Old.Movie.DVDRip.x264-GRP",
+    "parsed": {
+      "codec": "avc",
+      "episodes": [],
+      "group": "GRP",
+      "languages": [],
+      "quality": "DVDRip",
+      "seasons": [],
+      "title": "Some Old Movie"
+    }
+  },
+  {
+    "input": "The.Dark.Knight.2008.2160p.UHD.BluRay.REMUX.HDR.HEVC.TrueHD.Atmos.7.1-GROUP",
+    "parsed": {
+      "audio": [
+        "Atmos",
+        "TrueHD"
+      ],
+      "channels": [
+        "7.1"
+      ],
+      "codec": "hevc",
+      "episodes": [],
+      "group": "GROUP",
+      "hdr": [
+        "HDR"
+      ],
+      "languages": [],
+      "quality": "BluRay REMUX",
+      "resolution": "2160p",
+      "seasons": [],
+      "title": "The Dark Knight",
+      "year": 2008
+    }
+  },
+  {
+    "input": "The.Matrix.1999.1080p.BluRay.x264.DTS-FGT",
+    "parsed": {
+      "audio": [
+        "DTS Lossy"
+      ],
+      "codec": "avc",
+      "episodes": [],
+      "languages": [],
+      "quality": "BluRay",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "The Matrix",
+      "year": 1999
+    }
+  },
+  {
+    "input": "The.Matrix.1999.2160p.BluRay.REMUX.HEVC.DTS-HD.MA.7.1-GROUP",
+    "parsed": {
+      "audio": [
+        "DTS Lossless"
+      ],
+      "channels": [
+        "7.1"
+      ],
+      "codec": "hevc",
+      "episodes": [],
+      "group": "GROUP",
+      "languages": [],
+      "quality": "BluRay REMUX",
+      "resolution": "2160p",
+      "seasons": [],
+      "title": "The Matrix",
+      "year": 1999
+    }
+  },
+  {
+    "input": "The.Matrix.1999.2160p.UHD.BluRay.REMUX.HDR.HEVC.DTS-HD.MA.7.1-FraMeSToR",
+    "parsed": {
+      "audio": [
+        "DTS Lossless"
+      ],
+      "channels": [
+        "7.1"
+      ],
+      "codec": "hevc",
+      "episodes": [],
+      "group": "FraMeSToR",
+      "hdr": [
+        "HDR"
+      ],
+      "languages": [],
+      "quality": "BluRay REMUX",
+      "resolution": "2160p",
+      "seasons": [],
+      "title": "The Matrix",
+      "year": 1999
+    }
+  },
+  {
+    "input": "The.Matrix.1999.720p.WEB-DL.x264-GRP",
+    "parsed": {
+      "codec": "avc",
+      "episodes": [],
+      "group": "GRP",
+      "languages": [],
+      "quality": "WEB-DL",
+      "resolution": "720p",
+      "seasons": [],
+      "title": "The Matrix",
+      "year": 1999
+    }
+  },
+  {
+    "input": "The.Matrix.1999.CAM.x264-JUNK",
+    "parsed": {
+      "codec": "avc",
+      "episodes": [],
+      "group": "JUNK",
+      "languages": [],
+      "quality": "CAM",
+      "seasons": [],
+      "title": "The Matrix",
+      "trash": true,
+      "year": 1999
+    }
+  },
+  {
+    "input": "The.Odyssey.2026.1080p.WEB-DL.DDP5.1.H.265-GROUP.mkv",
+    "parsed": {
+      "audio": [
+        "Dolby Digital Plus"
+      ],
+      "channels": [
+        "5.1"
+      ],
+      "codec": "hevc",
+      "container": "mkv",
+      "episodes": [],
+      "extension": "mkv",
+      "group": "GROUP",
+      "languages": [],
+      "quality": "WEB-DL",
+      "resolution": "1080p",
+      "seasons": [],
+      "title": "The Odyssey",
+      "year": 2026
+    }
+  },
+  {
+    "input": "Third",
+    "parsed": {
+      "episodes": [],
+      "languages": [],
+      "seasons": [],
+      "title": "Third"
+    }
+  }
+]
