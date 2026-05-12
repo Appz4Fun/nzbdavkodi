@@ -1,0 +1,28 @@
+[package]
+name = "orchestrator-filter"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Rust port of plugin.video.nzbdav/resources/lib/filter.py — release-title parsing, filtering, and ranking."
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = ["provider-types"]
+# When orchestrator-providers ships, drop this feature and import
+# `Candidate` from there. Until then, the type lives in this crate's
+# `types` module so the filter crate can compile in isolation.
+provider-types = []
+
+[dependencies]
+orchestrator-release-parser = { path = "../orchestrator-release-parser" }
+once_cell = "1"
+regex = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
