@@ -156,5 +156,12 @@
 		     matters for users with a non-standard reverse-proxy mount. Read by
 		     webdav.probe_webdav_reachable. -->
 		<setting id="webdav_content_root" type="text" default="" visible="false" />
+		<!-- Phase 0 of the Rust migration (docs/rust-migration-plan.md):
+		     when true, service.py spawns the orchestrator binary out of
+		     addon_data/bin/ and routes /v1/* calls to it instead of the
+		     in-process Python path. Default false; flipped after each
+		     phase's exit criteria pass. -->
+		<setting label="30197" type="lsep" />
+		<setting id="use_orchestrator" label="30198" type="bool" default="false" />
 	</category>
 </settings>

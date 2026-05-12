@@ -505,6 +505,80 @@ def check_cache_warning(state):
     return None
 
 
+def _ensure_orchestrator(state):
+    """Spawn the bundled Rust orchestrator when ``use_orchestrator`` is on.
+
+    Phase 0 of docs/rust-migration-plan.md. Called lazily from the
+    service main loop — never during ``service.main()`` startup —
+    because an eager ``xbmcaddon.Addon()`` call there can wedge Kodi
+    startup (see test_main_noop_cache_warning_does_not_touch_addon).
+    Once the orchestrator is running ``state["started"]`` flips True
+    so subsequent ticks short-circuit.
+
+    Bootstrap failures are logged at LOGWARNING but never block the
+    service — when the orchestrator is unavailable the addon falls
+    back to the existing Python code paths.
+    """
+    if state.get("proc") is not None or state.get("disabled"):
+        return state.get("proc")
+
+    # First N ticks are part of Kodi's startup window — defer any
+    # xbmcaddon.Addon() call out of it to avoid the startup-hang bug
+    # tracked by test_main_noop_cache_warning_does_not_touch_addon.
+    remaining = state.get("defer_ticks", 0)
+    if remaining > 0:
+        state["defer_ticks"] = remaining - 1
+        return None
+
+    try:
+        from resources.lib import orchestrator_bootstrap  # noqa: WPS433
+    except Exception as exc:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: orchestrator bootstrap import failed (continuing): {}".format(
+                exc
+            ),
+            xbmc.LOGWARNING,
+        )
+        state["disabled"] = True
+        return None
+
+    if not orchestrator_bootstrap.is_enabled():
+        state["disabled"] = True
+        return None
+
+    try:
+        proc = orchestrator_bootstrap.start()
+    except orchestrator_bootstrap.OrchestratorUnavailable as exc:
+        xbmc.log(
+            "NZB-DAV: orchestrator unavailable reason={} message={}".format(
+                exc.reason, exc
+            ),
+            xbmc.LOGWARNING,
+        )
+        state["disabled"] = True
+        return None
+    except Exception as exc:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: orchestrator bootstrap raised {}".format(exc),
+            xbmc.LOGERROR,
+        )
+        state["disabled"] = True
+        return None
+
+    if proc is None:
+        state["disabled"] = True
+        return None
+
+    xbmc.log(
+        "NZB-DAV: orchestrator started addr={} binary={}".format(
+            proc.addr, proc.binary_path
+        ),
+        xbmc.LOGINFO,
+    )
+    state["proc"] = proc
+    return proc
+
+
 def main():
     """Service entry point — runs for the lifetime of Kodi."""
     monitor = xbmc.Monitor()
@@ -526,6 +600,17 @@ def main():
             _HOME_WINDOW.clearProperty(stale_prop)
         except Exception:  # noqa: BLE001 — best-effort, never block startup
             pass
+
+    # Phase 0 of the Rust migration: lifetime state for the bundled
+    # orchestrator binary. Actually starting it happens lazily on the
+    # first service tick AFTER Kodi has cleared its startup window so
+    # service.main() never makes an eager ``xbmcaddon.Addon()`` call
+    # during startup (closes the Kodi startup-hang invariant pinned
+    # by test_main_noop_cache_warning_does_not_touch_addon). The
+    # ``defer_ticks`` counter postpones the first settings read until
+    # the service loop has been running for several ticks — by then
+    # the addon system is fully initialised.
+    orchestrator_state = {"proc": None, "disabled": False, "defer_ticks": 3}
 
     # Start the stream proxy in this long-lived service process.
     # Plugin scripts are short-lived — their daemon threads get killed
@@ -553,6 +638,15 @@ def main():
         while not monitor.abortRequested():
             if monitor.waitForAbort(5):
                 break
+        if orchestrator_state.get("proc") is not None:
+            try:
+                orchestrator_state["proc"].stop()
+            except Exception as exc:  # pylint: disable=broad-except
+                xbmc.log(
+                    "NZB-DAV: orchestrator stop raised on proxy-failure "
+                    "shutdown: {!r}".format(exc),
+                    xbmc.LOGWARNING,
+                )
         return
     _HOME_WINDOW.setProperty(_PROP_PROXY_PORT, str(proxy.port))
     _HOME_WINDOW.setProperty(_PROP_PROXY_TOKEN, proxy.prepare_token)
@@ -636,6 +730,18 @@ def main():
             )
 
         try:
+            _ensure_orchestrator(orchestrator_state)
+        except Exception as e:  # pylint: disable=broad-except
+            # _ensure_orchestrator already swallows its known failure
+            # modes; this catch is purely defensive so an unforeseen
+            # exception (e.g. an OSError raised from inside the bundled
+            # module's import path) can never wedge the service loop.
+            xbmc.log(
+                "NZB-DAV: orchestrator ensure raised (continuing): {!r}".format(e),
+                xbmc.LOGERROR,
+            )
+
+        try:
             player.tick()
             consecutive_tick_failures = 0
         except Exception as e:  # pylint: disable=broad-except
@@ -675,6 +781,16 @@ def main():
         )
     _HOME_WINDOW.clearProperty(_PROP_PROXY_PORT)
     _HOME_WINDOW.clearProperty(_PROP_PROXY_TOKEN)
+
+    if orchestrator_state.get("proc") is not None:
+        try:
+            orchestrator_state["proc"].stop()
+        except Exception as exc:  # pylint: disable=broad-except
+            xbmc.log(
+                "NZB-DAV: orchestrator stop raised (continuing): {!r}".format(exc),
+                xbmc.LOGWARNING,
+            )
+
     xbmc.log("NZB-DAV: Service stopped", xbmc.LOGINFO)
 
 
