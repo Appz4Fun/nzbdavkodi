@@ -17,14 +17,19 @@ path = "src/lib.rs"
 anyhow.workspace = true
 axum.workspace = true
 clap.workspace = true
+futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 time.workspace = true
 tokio.workspace = true
 tower.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 ulid.workspace = true
+
+orchestrator-filter = { path = "../orchestrator-filter" }
+orchestrator-providers = { path = "../orchestrator-providers" }
 
 [dev-dependencies]
 reqwest = { workspace = true }

@@ -22,7 +22,7 @@ const PROWLARR_SEARCH_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Prowlarr connection config. The Python module reads this from
 /// `xbmcaddon.Addon().getSetting(...)`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct ProwlarrConfig {
     /// Base URL — `https://prowlarr.local`. Trailing slash is OK; the
     /// client strips it.

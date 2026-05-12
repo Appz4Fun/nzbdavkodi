@@ -15,5 +15,6 @@
 
 pub mod logging;
 pub mod routes;
+pub mod search;
 
 pub use routes::{router, HealthPayload};

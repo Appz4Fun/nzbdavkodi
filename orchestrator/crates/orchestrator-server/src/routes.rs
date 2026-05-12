@@ -6,7 +6,10 @@
 
 use std::time::Instant;
 
-use axum::{routing::get, Json, Router};
+use axum::{
+    routing::{get, post},
+    Json, Router,
+};
 use serde::Serialize;
 use tracing::info;
 
@@ -39,7 +42,9 @@ async fn health() -> Json<HealthPayload> {
 }
 
 pub fn router() -> Router {
-    Router::new().route("/v1/health", get(health))
+    Router::new()
+        .route("/v1/health", get(health))
+        .route("/v1/search", post(crate::search::search))
 }
 
 #[cfg(test)]

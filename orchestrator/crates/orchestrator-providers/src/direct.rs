@@ -31,7 +31,7 @@ const DIRECT_FETCH_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// One configured direct Newznab indexer. Equivalent to the dicts
 /// `get_configured_indexers` produces in Python.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct DirectIndexer {
     /// Stable id used both as a logging tag and as the per-row
     /// `Candidate.indexer` fallback when caps don't advertise one.

@@ -26,7 +26,7 @@ const HYDRA_SEARCH_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Inputs the caller passes into the client. The Python version reads
 /// these from `xbmcaddon.Addon().getSetting(...)`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct HydraConfig {
     /// Base URL, e.g. `https://hydra.local:5076`. Trailing slash is OK;
     /// the client strips it.
