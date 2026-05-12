@@ -52,6 +52,11 @@ def build_zip(addon_dir="plugin.video.nzbdav", output_dir="."):
     skip_files = {".DS_Store"}
     skip_ext = {".pyc"}
     FILE_ATTR = 0o100644 << 16
+    # Orchestrator binaries under bin/ need the executable bit
+    # preserved at extraction time — Kodi's addon installer respects
+    # POSIX mode bits stored in the zip's external_attr field.
+    EXEC_ATTR = 0o100755 << 16
+    bin_dir = os.path.join(addon_dir, "bin").replace(os.sep, "/") + "/"
 
     os.makedirs(output_dir, exist_ok=True)
     if os.path.exists(zip_path):
@@ -67,7 +72,9 @@ def build_zip(addon_dir="plugin.video.nzbdav", output_dir="."):
                 arcname = filepath.replace(os.sep, "/")
                 info = zipfile.ZipInfo(arcname)
                 info.compress_type = zipfile.ZIP_DEFLATED
-                info.external_attr = FILE_ATTR
+                info.external_attr = (
+                    EXEC_ATTR if arcname.startswith(bin_dir) else FILE_ATTR
+                )
                 with open(filepath, "rb") as fh:
                     zf.writestr(info, fh.read())
 

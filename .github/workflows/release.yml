@@ -10,9 +10,78 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  CARGO_TERM_COLOR: always
 
 jobs:
+  # Cross-compile the orchestrator binary to the three target triples
+  # the addon bootstrap supports (plan §6 phase 0): aarch64-musl
+  # (CoreELEC ARM64 — the canonical target), armv7-musl (older
+  # 32-bit ARM CoreELEC boxes), x86_64-musl (LibreELEC/desktop Kodi).
+  # Each job uploads its binary as an artifact; the release job
+  # below downloads all three before calling build_zip.py.
+  build-orchestrator:
+    name: orchestrator (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: aarch64-unknown-linux-musl
+            bundle_name: orchestrator-aarch64-musl
+          - target: armv7-unknown-linux-musleabihf
+            bundle_name: orchestrator-armv7-musl
+          - target: x86_64-unknown-linux-musl
+            bundle_name: orchestrator-x86_64-musl
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Rust + target
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add ${{ matrix.target }}
+          rustc --version
+          cargo --version
+
+      - name: Install cross
+        # `cross` runs the build inside a target-matched container
+        # so we don't have to maintain a per-target sysroot on the
+        # runner. Pin the version so a future cross release can't
+        # silently change behaviour mid-release.
+        run: cargo install cross --version 0.2.5 --locked
+
+      - name: Build release binary
+        working-directory: orchestrator
+        run: cross build --release --target ${{ matrix.target }} --bin orchestrator
+
+      - name: Rename + stage binary
+        run: |
+          set -euo pipefail
+          src="orchestrator/target/${{ matrix.target }}/release/orchestrator"
+          if [ ! -f "$src" ]; then
+            echo "expected binary not found at $src" >&2
+            ls -la "orchestrator/target/${{ matrix.target }}/release/" || true
+            exit 1
+          fi
+          mkdir -p staged
+          cp "$src" "staged/${{ matrix.bundle_name }}"
+          chmod +x "staged/${{ matrix.bundle_name }}"
+          file "staged/${{ matrix.bundle_name }}" || true
+          du -h "staged/${{ matrix.bundle_name }}"
+
+      - name: Upload binary artifact
+        # SHA-pinned to v4 by dependabot once this lands on main; using
+        # the major-version tag here so the workflow is correct as
+        # written without inventing a SHA the agent didn't verify.
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.bundle_name }}
+          path: staged/${{ matrix.bundle_name }}
+          if-no-files-found: error
+          retention-days: 7
+
   release:
+    needs: build-orchestrator
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -46,7 +115,28 @@ jobs:
             exit 1
           fi
 
+      - name: Download orchestrator binaries
+        # SHA-pinned by dependabot once this lands on main.
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/orchestrator-bins
+          merge-multiple: true
+
+      - name: Stage binaries into addon
+        run: |
+          set -euo pipefail
+          mkdir -p plugin.video.nzbdav/bin
+          for f in /tmp/orchestrator-bins/orchestrator-*; do
+            [ -f "$f" ] || continue
+            cp "$f" "plugin.video.nzbdav/bin/$(basename "$f")"
+            chmod +x "plugin.video.nzbdav/bin/$(basename "$f")"
+          done
+          ls -la plugin.video.nzbdav/bin/
+
       - name: Build addon zip
+        # build_zip.py preserves +x for files under plugin.video.nzbdav/bin/
+        # via the EXEC_ATTR external_attr branch so Kodi extracts the
+        # binaries already executable on every CoreELEC box.
         run: python3 scripts/build_zip.py
 
       - name: Generate repository metadata
