@@ -1,0 +1,33 @@
+[package]
+name = "fault-proxy"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Rust port of tests/extreme/fault_proxy.py — WebDAV fault-injection proxy."
+
+[[bin]]
+name = "fault-proxy"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+axum = { workspace = true, features = ["http1", "tokio", "json"] }
+bytes.workspace = true
+clap.workspace = true
+futures.workspace = true
+reqwest = { workspace = true, default-features = false, features = ["rustls-tls", "stream"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+tower.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+reqwest = { workspace = true }
