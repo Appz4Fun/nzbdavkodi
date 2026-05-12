@@ -89,6 +89,9 @@ def normalize_indexer(item):
         "enabled": enabled,
         "caps": normalize_caps(item.get("caps")),
     }
+    checked_at = _text(item.get("checked_at"))
+    if checked_at:
+        normalized["checked_at"] = checked_at
     if item.get("deleted"):
         normalized["deleted"] = True
     return normalized

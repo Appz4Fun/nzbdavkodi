@@ -2,7 +2,13 @@
 # Copyright (C) 2026 nzbdav contributors
 
 import time
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
+
+
+def _recent_checked_at(hours_ago=1):
+    dt = datetime.now(timezone.utc) - timedelta(hours=hours_ago)
+    return dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _addon_with_settings(values):
@@ -441,6 +447,7 @@ def test_search_direct_indexers_uses_planner_for_host_fallback(
                 "search_types": ["movie", "search"],
                 "supported_params": {"movie": ["q"], "search": ["q"]},
             },
+            "checked_at": _recent_checked_at(),
         }
     ]
     mock_xbmcaddon.Addon.return_value = _addon_with_settings({"max_results": "25"})
@@ -546,11 +553,18 @@ def test_search_direct_indexers_skips_when_caps_have_no_supported_query(
     mock_http.assert_not_called()
 
 
+_CAPS_FETCH_ERROR = (
+    {"search_types": [], "supported_params": {}, "categories": []},
+    "caps unavailable",
+)
+
+
+@patch("resources.lib.direct_indexers.fetch_caps", return_value=_CAPS_FETCH_ERROR)
 @patch("resources.lib.direct_indexers.get_configured_indexers")
 @patch("resources.lib.direct_indexers.xbmcaddon")
 @patch("resources.lib.direct_indexers._http_get")
 def test_search_direct_indexers_partial_failure_keeps_successful_results(
-    mock_http, mock_xbmcaddon, mock_configured
+    mock_http, mock_xbmcaddon, mock_configured, _mock_fetch_caps
 ):
     from resources.lib.direct_indexers import search_direct_indexers
 
