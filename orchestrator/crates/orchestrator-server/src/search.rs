@@ -59,6 +59,11 @@ pub struct SearchBody {
 pub struct SearchResponse {
     pub search_id: String,
     pub total_candidates: usize,
+    /// Every candidate the provider fan-out produced, before the
+    /// filter rules ran. The Python addon needs this when it owns
+    /// the downstream filter + picker dialog and just wants the
+    /// orchestrator's merged provider output.
+    pub candidates: Vec<Candidate>,
     pub filtered: FilterOutput,
     /// Per-provider outcome — error reasons surface here so the
     /// caller can render a clear "Hydra unavailable" notice without
@@ -162,6 +167,7 @@ pub async fn search(
     Ok(Json(SearchResponse {
         search_id: request_id,
         total_candidates,
+        candidates: all_candidates,
         filtered,
         providers: outcomes,
     }))

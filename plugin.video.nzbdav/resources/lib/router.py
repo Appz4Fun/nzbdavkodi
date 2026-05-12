@@ -534,6 +534,34 @@ def _search_all_providers(
     else:
         _script_play_stage("providers using script settings")
 
+    # Phase 1 toggle (docs/rust-migration-plan.md §6). When the
+    # use_orchestrator setting is on AND the orchestrator child
+    # process is running, route the search through its /v1/search
+    # endpoint. Any failure (orchestrator off, transport, non-200,
+    # bad JSON) silently falls back to the legacy Python pipeline
+    # below so a misconfigured orchestrator never breaks search.
+    try:
+        from resources.lib.orchestrator_client import search_via_orchestrator
+    except Exception:  # pylint: disable=broad-except
+        search_via_orchestrator = None  # type: ignore[assignment]
+
+    if search_via_orchestrator is not None:
+        orch_results, orch_reason = search_via_orchestrator(
+            search_type,
+            title,
+            year=year,
+            imdb=imdb,
+            season=season,
+            episode=episode,
+            settings_getter=settings_getter,
+        )
+        if orch_results is not None:
+            _script_play_stage(
+                "orchestrator search done count={}".format(len(orch_results))
+            )
+            return orch_results, None
+        _script_play_stage("orchestrator fallback reason={}".format(orch_reason))
+
     # Provider defaults mirror settings.xml. Runtime setting read failures still
     # use the explicit defaults passed through _get_addon_setting above.
     nzbhydra_raw = settings_getter("nzbhydra_enabled", "false")
