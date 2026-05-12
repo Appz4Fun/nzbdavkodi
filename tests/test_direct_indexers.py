@@ -1020,3 +1020,107 @@ def test_check_one_indexer_caps_failure_does_not_save_and_returns_error(
     assert ok is False
     assert error == "Direct indexer One unavailable: caps unavailable"
     mock_save.assert_not_called()
+
+
+# ── US-004: Integration tests — caps flow from fetch through to search URL ────
+
+_TV_CAPS = (
+    {
+        "search_types": ["tvsearch"],
+        "supported_params": {"tvsearch": ["q", "season", "ep", "imdbid"]},
+        "categories": [],
+    },
+    None,
+)
+
+_MOVIE_CAPS = (
+    {
+        "search_types": ["movie"],
+        "supported_params": {"movie": ["q", "imdbid"]},
+        "categories": [],
+    },
+    None,
+)
+
+_STALE_INDEXER = {
+    "id": "nzbgeek",
+    "label": "NZBGeek",
+    "api_url": "https://api.nzbgeek.info/api",
+    "api_key": "geek-key",
+    "caps": {},
+}
+
+
+@patch("resources.lib.direct_indexers.save_indexers")
+@patch("resources.lib.direct_indexers.load_indexers")
+@patch("resources.lib.direct_indexers.get_configured_indexers")
+@patch("resources.lib.direct_indexers.xbmcaddon")
+@patch("resources.lib.direct_indexers._http_get", return_value=ONE_RESULT_RSS)
+@patch("resources.lib.direct_indexers.fetch_caps", return_value=_TV_CAPS)
+def test_integration_tvsearch_with_imdbid_uses_tvsearch_and_imdbid_param(
+    _mock_fetch, mock_http, mock_xbmcaddon, mock_configured, mock_load, _mock_save
+):
+    from resources.lib.direct_indexers import search_direct_indexers
+
+    mock_configured.return_value = [dict(_STALE_INDEXER)]
+    mock_xbmcaddon.Addon.return_value = _addon_with_settings({"max_results": "25"})
+    mock_load.return_value = []
+
+    results, error = search_direct_indexers(
+        "episode", "Breaking Bad", season="5", episode="14", imdb="tt1232227"
+    )
+
+    assert error is None
+    assert len(results) == 1
+    call_url = mock_http.call_args[0][0]
+    assert "t=tvsearch" in call_url
+    assert "imdbid=1232227" in call_url
+    assert "tt" not in call_url.split("imdbid=")[1].split("&")[0]
+
+
+@patch("resources.lib.direct_indexers.save_indexers")
+@patch("resources.lib.direct_indexers.load_indexers")
+@patch("resources.lib.direct_indexers.get_configured_indexers")
+@patch("resources.lib.direct_indexers.xbmcaddon")
+@patch("resources.lib.direct_indexers._http_get", return_value=ONE_RESULT_RSS)
+@patch("resources.lib.direct_indexers.fetch_caps", return_value=_MOVIE_CAPS)
+def test_integration_movie_with_imdbid_uses_movie_type_and_imdbid_param(
+    _mock_fetch, mock_http, mock_xbmcaddon, mock_configured, mock_load, _mock_save
+):
+    from resources.lib.direct_indexers import search_direct_indexers
+
+    mock_configured.return_value = [dict(_STALE_INDEXER)]
+    mock_xbmcaddon.Addon.return_value = _addon_with_settings({"max_results": "25"})
+    mock_load.return_value = []
+
+    results, error = search_direct_indexers("movie", "The Matrix", imdb="tt0133093")
+
+    assert error is None
+    assert len(results) == 1
+    call_url = mock_http.call_args[0][0]
+    assert "t=movie" in call_url
+    assert "imdbid=0133093" in call_url
+    assert "tt" not in call_url.split("imdbid=")[1].split("&")[0]
+
+
+@patch("resources.lib.direct_indexers.get_configured_indexers")
+@patch("resources.lib.direct_indexers.xbmcaddon")
+@patch("resources.lib.direct_indexers._http_get", return_value=ONE_RESULT_RSS)
+@patch(
+    "resources.lib.direct_indexers.fetch_caps",
+    side_effect=OSError("network unreachable"),
+)
+def test_integration_fetch_caps_oserror_search_still_executes(
+    _mock_fetch, mock_http, mock_xbmcaddon, mock_configured
+):
+    from resources.lib.direct_indexers import search_direct_indexers
+
+    mock_configured.return_value = [dict(_STALE_INDEXER)]
+    mock_xbmcaddon.Addon.return_value = _addon_with_settings({"max_results": "25"})
+
+    results, error = search_direct_indexers("movie", "The Matrix")
+
+    assert error is None
+    assert len(results) == 1
+    call_url = mock_http.call_args[0][0]
+    assert call_url

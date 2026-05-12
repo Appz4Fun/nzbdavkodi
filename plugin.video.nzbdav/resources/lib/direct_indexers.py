@@ -403,7 +403,14 @@ def _caps_are_stale(indexer):
 def _maybe_refresh_caps(indexer):
     if not _caps_are_stale(indexer):
         return indexer
-    caps, error = fetch_caps(indexer["api_url"], indexer["api_key"])
+    try:
+        caps, error = fetch_caps(indexer["api_url"], indexer["api_key"])
+    except Exception as exc:  # noqa: BLE001
+        xbmc.log(
+            "NZB-DAV: Direct indexer caps refresh failed: {}".format(exc),
+            xbmc.LOGWARNING,
+        )
+        return indexer
     if error:
         xbmc.log(
             "NZB-DAV: Direct indexer caps refresh failed: {}".format(error),
