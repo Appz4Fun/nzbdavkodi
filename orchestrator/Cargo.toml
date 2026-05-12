@@ -1,7 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
+<<<<<<< HEAD
     "crates/orchestrator-providers",
+=======
+    "crates/orchestrator-filter",
+>>>>>>> 1e46a2a (orchestrator: add orchestrator-filter to workspace members)
     "crates/orchestrator-release-parser",
     "crates/orchestrator-server",
     "tests/harness/crates/fault-proxy",
