@@ -33,3 +33,4 @@ orchestrator-providers = { path = "../orchestrator-providers" }
 
 [dev-dependencies]
 reqwest = { workspace = true }
+tempfile = "3"

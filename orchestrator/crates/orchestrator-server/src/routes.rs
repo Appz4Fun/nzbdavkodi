@@ -47,6 +47,14 @@ pub fn router() -> Router {
         .route("/v1/search", post(crate::search::search))
 }
 
+/// Same as [`router`] but with the `/v1/admin/indexers` CRUD routes
+/// mounted against a real on-disk store. The binary path uses this;
+/// tests that only exercise the stateless routes (search, health)
+/// can still use [`router`] to keep their setup free of temp dirs.
+pub fn router_with_admin(admin: crate::admin::AdminState) -> Router {
+    router().merge(crate::admin::admin_router(admin))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

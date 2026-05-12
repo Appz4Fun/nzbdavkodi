@@ -11,7 +11,12 @@ use std::time::Instant;
 
 use anyhow::Context;
 use clap::Parser;
-use orchestrator_server::{logging::LogEnvelopeLayer, logging::Outcome, router};
+use orchestrator_server::{
+    admin::{AdminState, IndexerStore},
+    logging::LogEnvelopeLayer,
+    logging::Outcome,
+    router_with_admin,
+};
 use tokio::signal;
 use tracing::info;
 use tracing_subscriber::prelude::*;
@@ -35,6 +40,19 @@ struct Args {
     /// route /v1/* calls when port=0 was used.
     #[arg(long, env = "ORCHESTRATOR_ADDR_FILE")]
     addr_file: Option<std::path::PathBuf>,
+
+    /// JSON-on-disk indexer store. Same shape as the Python
+    /// `indexer_store.py` writer so the two readers/writers can
+    /// round-trip during the migration. Defaults to
+    /// `./indexers.json` next to the binary which is fine for
+    /// development; the addon spawn always sets
+    /// ORCHESTRATOR_INDEXER_STORE_PATH explicitly.
+    #[arg(
+        long,
+        env = "ORCHESTRATOR_INDEXER_STORE_PATH",
+        default_value = "indexers.json"
+    )]
+    indexer_store_path: std::path::PathBuf,
 }
 
 #[tokio::main]
@@ -86,7 +104,13 @@ async fn main() -> anyhow::Result<()> {
         "orchestrator listening"
     );
 
-    let app = router();
+    let store = IndexerStore::new(args.indexer_store_path.clone()).with_context(|| {
+        format!(
+            "loading indexer store from {}",
+            args.indexer_store_path.display()
+        )
+    })?;
+    let app = router_with_admin(AdminState { store });
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await

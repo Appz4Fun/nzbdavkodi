@@ -13,8 +13,9 @@
 //! Re-exported below so binary and tests share the same `router()` and
 //! `LogEnvelopeLayer` without duplication.
 
+pub mod admin;
 pub mod logging;
 pub mod routes;
 pub mod search;
 
-pub use routes::{router, HealthPayload};
+pub use routes::{router, router_with_admin, HealthPayload};
