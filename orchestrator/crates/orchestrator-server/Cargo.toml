@@ -1,0 +1,30 @@
+[package]
+name = "orchestrator-server"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "nzbdav-orchestrator HTTP server — Phase 0 skeleton (/v1/health)."
+
+[[bin]]
+name = "orchestrator"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+time.workspace = true
+tokio.workspace = true
+tower.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+ulid.workspace = true
+
+[dev-dependencies]
+reqwest = { workspace = true }
