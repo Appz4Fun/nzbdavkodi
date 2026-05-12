@@ -1,0 +1,19 @@
+[package]
+name = "orchestrator-release-parser"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Hand-port of the vendored Python PTT (parse-torrent-title) used by filter.py."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+once_cell = "1"
+regex = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
