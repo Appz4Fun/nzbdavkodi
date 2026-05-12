@@ -100,9 +100,37 @@ def _provider_config(settings_getter) -> dict:
             "search_timeout_secs": 15,
         }
 
-    # Direct indexers: keep the per-slot reading in router.py for
-    # now. Phase 1 ships the toggle; the direct indexer plumbing
-    # comes in a follow-up commit alongside the admin store.
+    if _g("direct_indexers_enabled", "false").lower() == "true":
+        # Reads the unified list `direct_indexers.get_configured_indexers`
+        # returns — managed indexers from addon_data/indexers.json plus
+        # any legacy slots still set in settings.xml. The Python helper
+        # already handles the dedup + caps lookup, so all we do here is
+        # reshape each entry into the DirectIndexer JSON the
+        # orchestrator expects.
+        try:
+            from resources.lib.direct_indexers import get_configured_indexers
+        except Exception:  # pylint: disable=broad-except
+            get_configured_indexers = None  # type: ignore[assignment]
+
+        direct_entries: list = []
+        if get_configured_indexers is not None:
+            try:
+                for entry in get_configured_indexers() or ():
+                    direct_entries.append(
+                        {
+                            "id": entry.get("id") or "",
+                            "label": entry.get("label") or entry.get("id") or "",
+                            "api_url": entry.get("api_url") or "",
+                            "api_key": entry.get("api_key") or "",
+                            "caps": entry.get("caps") or None,
+                        }
+                    )
+            except Exception:  # pylint: disable=broad-except
+                direct_entries = []
+
+        if direct_entries:
+            out["direct"] = direct_entries
+
     return out
 
 

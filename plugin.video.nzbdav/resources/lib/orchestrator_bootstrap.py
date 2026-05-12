@@ -266,6 +266,14 @@ def _spawn(binary_path: str) -> OrchestratorProcess:
     env.setdefault("ORCHESTRATOR_BIND", "127.0.0.1")
     env.setdefault("ORCHESTRATOR_PORT", "0")
     env["ORCHESTRATOR_ADDR_FILE"] = addr_file
+    # The orchestrator's /v1/admin/indexers store reads/writes the
+    # same indexers.json the Python `indexer_store.py` already
+    # manages, so the two readers/writers stay consistent during
+    # the migration and no separate settings-migration step is
+    # required (plan §9 risk-row "Settings migration"). When the
+    # file doesn't exist yet the orchestrator starts with an empty
+    # store and the first POST creates it.
+    env["ORCHESTRATOR_INDEXER_STORE_PATH"] = os.path.join(addon_data, "indexers.json")
 
     try:
         popen = subprocess.Popen(  # noqa: S603 - launching our own binary
