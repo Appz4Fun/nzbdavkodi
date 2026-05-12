@@ -305,3 +305,29 @@ ci: lint test
 # Clean everything including dist
 dist-clean: clean
     rm -rf dist/
+
+# --- Rust orchestrator (docs/rust-migration-plan.md phase 0+) ----------------
+
+# Unit-test the Rust workspace (cargo test). Pure logic only — no
+# docker, no Hydra credentials. Mirrors plan §12.5 `just harness-unit`.
+harness-unit:
+    cd orchestrator && cargo fmt --all -- --check
+    cd orchestrator && cargo clippy --workspace --all-targets -- -D warnings
+    cd orchestrator && cargo test --workspace
+
+# Run the in-process harness scenarios — no docker-compose, no Kodi.
+# Phase 0 ships `golden_path`; later phases extend Scenario::all().
+# Plan §12.5 `just harness-fast`.
+harness-fast:
+    cd orchestrator && cargo run --quiet --bin harness-runner
+
+# Run a single named scenario for fast iteration.
+harness-scenario name:
+    cd orchestrator && cargo run --quiet --bin harness-runner -- {{name}}
+
+# Build a release-mode orchestrator binary (host arch only — for
+# cross-compile see release.yml). Useful when manually testing the
+# bundled-binary path on a CoreELEC box mounted over NFS.
+orchestrator-build:
+    cd orchestrator && cargo build --release --bin orchestrator
+    @echo "Built: orchestrator/target/release/orchestrator"
