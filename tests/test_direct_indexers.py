@@ -694,9 +694,9 @@ def test_search_direct_indexers_all_failures_return_error(
 
 
 @patch("resources.lib.direct_indexers.get_configured_indexers")
-@patch("resources.lib.direct_indexers._http_get")
+@patch("resources.lib.direct_indexers.fetch_caps")
 def test_test_configured_indexers_marks_incomplete_futures_timed_out(
-    mock_http, mock_configured
+    mock_fetch_caps, mock_configured
 ):
     from resources.lib.direct_indexers import test_configured_indexers
 
@@ -711,9 +711,9 @@ def test_test_configured_indexers_marks_incomplete_futures_timed_out(
 
     def slow_caps(*_args, **_kwargs):
         time.sleep(0.2)
-        return "<caps></caps>"
+        return _CAPS_FRESH
 
-    mock_http.side_effect = slow_caps
+    mock_fetch_caps.side_effect = slow_caps
 
     with patch(
         "resources.lib.direct_indexers._DIRECT_FANOUT_TIMEOUT", 0.05, create=True
@@ -730,9 +730,13 @@ def test_test_configured_indexers_marks_incomplete_futures_timed_out(
     assert elapsed < 0.15
 
 
+@patch("resources.lib.direct_indexers.save_indexers")
+@patch("resources.lib.direct_indexers.load_indexers")
+@patch("resources.lib.direct_indexers.fetch_caps")
 @patch("resources.lib.direct_indexers.get_configured_indexers")
-@patch("resources.lib.direct_indexers._http_get")
-def test_test_configured_indexers_counts_caps_success(mock_http, mock_configured):
+def test_test_configured_indexers_counts_caps_success(
+    mock_configured, mock_fetch_caps, mock_load, _mock_save
+):
     from resources.lib.direct_indexers import test_configured_indexers
 
     mock_configured.return_value = [
@@ -749,7 +753,11 @@ def test_test_configured_indexers_counts_caps_success(mock_http, mock_configured
             "api_key": "two",
         },
     ]
-    mock_http.side_effect = ["<caps></caps>", RuntimeError("down")]
+    mock_load.return_value = []
+    mock_fetch_caps.side_effect = [
+        _CAPS_FRESH,
+        ({"search_types": [], "supported_params": {}, "categories": []}, "down"),
+    ]
 
     ok_count, total_count, errors = test_configured_indexers()
 
@@ -952,3 +960,63 @@ def test_search_one_indexer_fetch_caps_failure_search_still_executes(
     assert error is None
     assert len(results) == 1
     assert mock_plan.call_args.kwargs["caps"] == {}
+
+
+# ── US-003: _check_one_indexer_caps ──────────────────────────────────────────
+
+
+@patch("resources.lib.direct_indexers.save_indexers")
+@patch("resources.lib.direct_indexers.load_indexers")
+@patch("resources.lib.direct_indexers.fetch_caps", return_value=_CAPS_FRESH)
+def test_check_one_indexer_caps_success_saves_caps_to_store(
+    _mock_fetch, mock_load, mock_save
+):
+    from resources.lib.direct_indexers import _check_one_indexer_caps
+
+    mock_load.return_value = [
+        {
+            "id": "one",
+            "name": "One",
+            "api_url": "https://one.example/api",
+            "api_key": "one",
+            "enabled": True,
+            "caps": {},
+        }
+    ]
+    indexer = {
+        "id": "one",
+        "label": "One",
+        "api_url": "https://one.example/api",
+        "api_key": "one",
+    }
+
+    ok, error = _check_one_indexer_caps(indexer)
+
+    assert ok is True
+    assert error is None
+    mock_save.assert_called_once()
+    saved = mock_save.call_args[0][0]
+    entry = next(e for e in saved if e.get("id") == "one")
+    assert entry["caps"] == _CAPS_FRESH[0]
+    assert "checked_at" in entry
+
+
+@patch("resources.lib.direct_indexers.save_indexers")
+@patch("resources.lib.direct_indexers.fetch_caps", return_value=_CAPS_FETCH_ERROR)
+def test_check_one_indexer_caps_failure_does_not_save_and_returns_error(
+    _mock_fetch, mock_save
+):
+    from resources.lib.direct_indexers import _check_one_indexer_caps
+
+    indexer = {
+        "id": "one",
+        "label": "One",
+        "api_url": "https://one.example/api",
+        "api_key": "one",
+    }
+
+    ok, error = _check_one_indexer_caps(indexer)
+
+    assert ok is False
+    assert error == "Direct indexer One unavailable: caps unavailable"
+    mock_save.assert_not_called()

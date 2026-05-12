@@ -539,15 +539,42 @@ def search_direct_indexers(search_type, title, year="", imdb="", season="", epis
 
 
 def _check_one_indexer_caps(indexer):
-    params = {"apikey": indexer["api_key"], "t": "caps", "o": "xml"}
-    url = build_search_url(indexer["api_url"], params)
-    try:
-        response = _http_get(url, timeout=15)
-        if "<caps" in response or "<server" in response or "<rss" in response:
-            return True, None
-        return False, "Direct indexer {} unexpected response".format(indexer["label"])
-    except _DIRECT_REQUEST_ERRORS as error:
-        return False, _indexer_unavailable_error(indexer, error)
+    caps, error = fetch_caps(indexer["api_url"], indexer["api_key"])
+    if error:
+        return False, "Direct indexer {} unavailable: {}".format(
+            indexer["label"], error
+        )
+    checked_at = (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+    with _caps_store_lock:
+        indexers = load_indexers()
+        indexer_id = str(indexer.get("id") or "").strip()
+        found = False
+        for i, entry in enumerate(indexers):
+            if str(entry.get("id") or "").strip() == indexer_id:
+                indexers[i] = dict(entry)
+                indexers[i]["caps"] = caps
+                indexers[i]["checked_at"] = checked_at
+                found = True
+                break
+        if not found:
+            indexers.append(
+                {
+                    "id": indexer.get("id", ""),
+                    "name": indexer.get("label", ""),
+                    "api_url": indexer.get("api_url", ""),
+                    "api_key": indexer.get("api_key", ""),
+                    "enabled": True,
+                    "caps": caps,
+                    "checked_at": checked_at,
+                }
+            )
+        save_indexers(indexers)
+    return True, None
 
 
 def test_configured_indexers():
