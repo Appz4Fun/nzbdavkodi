@@ -1,0 +1,60 @@
+name: Orchestrator (Rust)
+
+# Phase 0 of docs/rust-migration-plan.md. Builds + tests the
+# orchestrator/ Cargo workspace on every push and PR. Cross-compile
+# + addon-zip bundling lives in release.yml (those run on tag pushes
+# so dev-loop turnaround stays fast).
+
+on:
+  push:
+    branches: [main, "feat/rust-orchestrator"]
+    paths:
+      - "orchestrator/**"
+      - ".github/workflows/orchestrator.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "orchestrator/**"
+      - ".github/workflows/orchestrator.yml"
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: cargo fmt / clippy / test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: orchestrator
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Rust toolchain
+        # The orchestrator/rust-toolchain.toml file pins `channel = "stable"`
+        # and selects rustfmt + clippy components, so a no-op `cargo --version`
+        # invocation inside orchestrator/ is enough to materialise the
+        # toolchain on the runner.
+        run: cargo --version && rustc --version
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy -D warnings
+        # `--all-targets` covers binaries, lib, tests and benches; the
+        # workspace `RUSTFLAGS=-D warnings` makes any clippy lint fail
+        # the build.
+        run: cargo clippy --workspace --all-targets
+
+      - name: cargo test
+        run: cargo test --workspace --no-fail-fast
