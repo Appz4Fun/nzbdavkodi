@@ -55,8 +55,7 @@ def test_bin_files_are_marked_executable(tmp_path: Path, monkeypatch):
         # external_attr stores the POSIX st_mode in the high 16 bits;
         # mask down to the permission triplet for a clean comparison.
         modes = {
-            info.filename: (info.external_attr >> 16) & 0o7777
-            for info in zf.infolist()
+            info.filename: (info.external_attr >> 16) & 0o7777 for info in zf.infolist()
         }
 
     binary_path = "plugin.video.nzbdav/bin/orchestrator-x86_64-musl"
