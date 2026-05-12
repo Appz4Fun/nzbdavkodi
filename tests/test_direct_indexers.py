@@ -756,3 +756,199 @@ def test_test_configured_indexers_counts_caps_success(mock_http, mock_configured
     assert ok_count == 1
     assert total_count == 2
     assert errors == ["Direct indexer Two unavailable: down"]
+
+
+# ── US-002: _caps_are_stale ────────────────────────────────────────────────────
+
+
+def test_caps_are_stale_returns_true_for_empty_caps_dict():
+    from resources.lib.direct_indexers import _caps_are_stale
+
+    assert _caps_are_stale({"caps": {}}) is True
+
+
+def test_caps_are_stale_returns_true_for_empty_search_types():
+    from resources.lib.direct_indexers import _caps_are_stale
+
+    assert _caps_are_stale({"caps": {"search_types": []}}) is True
+
+
+def test_caps_are_stale_returns_true_when_checked_at_absent():
+    from resources.lib.direct_indexers import _caps_are_stale
+
+    assert _caps_are_stale({"caps": {"search_types": ["search"]}}) is True
+
+
+def test_caps_are_stale_returns_true_when_checked_at_is_25_hours_ago():
+    from resources.lib.direct_indexers import _caps_are_stale
+
+    old = _recent_checked_at(hours_ago=25)
+    assert (
+        _caps_are_stale({"caps": {"search_types": ["search"]}, "checked_at": old})
+        is True
+    )
+
+
+def test_caps_are_stale_returns_false_when_checked_at_is_1_hour_ago():
+    from resources.lib.direct_indexers import _caps_are_stale
+
+    fresh = _recent_checked_at(hours_ago=1)
+    assert (
+        _caps_are_stale({"caps": {"search_types": ["search"]}, "checked_at": fresh})
+        is False
+    )
+
+
+# ── US-002: _maybe_refresh_caps ───────────────────────────────────────────────
+
+_CAPS_FRESH = (
+    {
+        "search_types": ["tvsearch", "movie", "search"],
+        "supported_params": {
+            "search": ["q"],
+            "tvsearch": ["q", "season", "ep"],
+            "movie": ["q", "imdbid"],
+        },
+        "categories": [],
+    },
+    None,
+)
+
+_INDEXER_STALE = {
+    "id": "nzbgeek",
+    "label": "NZBGeek",
+    "api_url": "https://api.nzbgeek.info/api",
+    "api_key": "geek-key",
+    "caps": {},
+}
+
+
+@patch("resources.lib.direct_indexers.save_indexers")
+@patch("resources.lib.direct_indexers.load_indexers")
+@patch("resources.lib.direct_indexers.fetch_caps", return_value=_CAPS_FRESH)
+def test_maybe_refresh_caps_success_writes_caps_to_store(
+    _mock_fetch, mock_load, mock_save
+):
+    from resources.lib.direct_indexers import _maybe_refresh_caps
+
+    mock_load.return_value = [
+        {
+            "id": "nzbgeek",
+            "name": "NZBGeek",
+            "api_url": "https://api.nzbgeek.info/api",
+            "api_key": "geek-key",
+            "enabled": True,
+            "caps": {},
+        }
+    ]
+
+    updated = _maybe_refresh_caps(dict(_INDEXER_STALE))
+
+    mock_save.assert_called_once()
+    saved = mock_save.call_args[0][0]
+    entry = next(e for e in saved if e.get("id") == "nzbgeek")
+    assert entry["caps"] == _CAPS_FRESH[0]
+    assert "checked_at" in entry
+    assert updated["caps"] == _CAPS_FRESH[0]
+
+
+@patch("resources.lib.direct_indexers.save_indexers")
+@patch("resources.lib.direct_indexers.load_indexers")
+@patch("resources.lib.direct_indexers.fetch_caps", return_value=_CAPS_FRESH)
+def test_maybe_refresh_caps_legacy_indexer_not_in_store_inserts_new_entry(
+    _mock_fetch, mock_load, mock_save
+):
+    from resources.lib.direct_indexers import _maybe_refresh_caps
+
+    mock_load.return_value = []
+
+    indexer = {
+        "id": "legacy-id",
+        "label": "Legacy",
+        "api_url": "https://legacy.example/api",
+        "api_key": "legacy-key",
+        "caps": {},
+    }
+    _maybe_refresh_caps(indexer)
+
+    mock_save.assert_called_once()
+    saved = mock_save.call_args[0][0]
+    matching = [e for e in saved if str(e.get("id")) == "legacy-id"]
+    assert len(matching) == 1
+    assert matching[0]["caps"] == _CAPS_FRESH[0]
+    assert "checked_at" in matching[0]
+
+
+@patch("resources.lib.direct_indexers.save_indexers")
+@patch("resources.lib.direct_indexers.fetch_caps", return_value=_CAPS_FETCH_ERROR)
+def test_maybe_refresh_caps_failure_does_not_save_and_returns_original(
+    _mock_fetch, mock_save
+):
+    from resources.lib.direct_indexers import _maybe_refresh_caps
+
+    indexer = dict(_INDEXER_STALE)
+    result = _maybe_refresh_caps(indexer)
+
+    mock_save.assert_not_called()
+    assert result is indexer
+
+
+# ── US-002: _search_one_indexer caps flow ─────────────────────────────────────
+
+
+@patch("resources.lib.direct_indexers.save_indexers")
+@patch("resources.lib.direct_indexers.load_indexers")
+@patch("resources.lib.direct_indexers._http_get", return_value=ONE_RESULT_RSS)
+@patch("resources.lib.direct_indexers.plan_newznab_search")
+@patch("resources.lib.direct_indexers.fetch_caps", return_value=_CAPS_FRESH)
+def test_search_one_indexer_empty_caps_triggers_fetch_and_passes_caps_to_planner(
+    mock_fetch, mock_plan, _mock_http, mock_load, _mock_save
+):
+    from resources.lib.direct_indexers import _search_one_indexer
+
+    mock_load.return_value = []
+    plan_result = MagicMock()
+    plan_result.primary = {
+        "t": "tvsearch",
+        "q": "Breaking Bad",
+        "apikey": "geek-key",
+        "o": "xml",
+        "limit": "25",
+    }
+    plan_result.fallback = None
+    mock_plan.return_value = plan_result
+
+    _search_one_indexer(
+        dict(_INDEXER_STALE), "episode", "Breaking Bad", 25, season="1", episode="1"
+    )
+
+    mock_fetch.assert_called_once_with("https://api.nzbgeek.info/api", "geek-key")
+    assert mock_plan.call_args.kwargs["caps"] == _CAPS_FRESH[0]
+
+
+@patch("resources.lib.direct_indexers._http_get", return_value=ONE_RESULT_RSS)
+@patch("resources.lib.direct_indexers.plan_newznab_search")
+@patch("resources.lib.direct_indexers.fetch_caps", return_value=_CAPS_FETCH_ERROR)
+def test_search_one_indexer_fetch_caps_failure_search_still_executes(
+    _mock_fetch, mock_plan, _mock_http
+):
+    from resources.lib.direct_indexers import _search_one_indexer
+
+    plan_result = MagicMock()
+    plan_result.primary = {
+        "t": "search",
+        "q": "The Matrix",
+        "apikey": "geek-key",
+        "o": "xml",
+        "limit": "25",
+    }
+    plan_result.fallback = None
+    mock_plan.return_value = plan_result
+
+    results, error = _search_one_indexer(
+        dict(_INDEXER_STALE), "movie", "The Matrix", 25
+    )
+
+    assert error is None
+    assert len(results) == 1
+    assert mock_plan.call_args.kwargs["caps"] == {}
