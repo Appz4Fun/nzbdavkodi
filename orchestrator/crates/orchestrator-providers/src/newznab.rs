@@ -225,9 +225,7 @@ pub(crate) fn parse_newznab_items(
             Ok(Event::CData(t)) => {
                 if let Some(item) = current_item.as_mut() {
                     if let Some(target) = item.next_text_target.clone() {
-                        let value = std::str::from_utf8(t.as_ref())
-                            .unwrap_or("")
-                            .to_string();
+                        let value = std::str::from_utf8(t.as_ref()).unwrap_or("").to_string();
                         match target {
                             TextTarget::Title => item.title.push_str(&value),
                             TextTarget::Link => item.link.push_str(&value),
@@ -305,10 +303,8 @@ fn parse_newznab_attr(item: &mut ItemInProgress, attrs: &[(Vec<u8>, String)]) {
     }
     match name.as_str() {
         "size" => item.attr_size = value.clone(),
-        "indexer" | "source" | "hydraIndexerName" => {
-            if item.attr_indexer.is_empty() {
-                item.attr_indexer = value.clone();
-            }
+        "indexer" | "source" | "hydraIndexerName" if item.attr_indexer.is_empty() => {
+            item.attr_indexer = value.clone();
         }
         "category" => {
             if let Ok(id) = value.parse::<u32>() {

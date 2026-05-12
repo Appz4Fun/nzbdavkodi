@@ -53,10 +53,7 @@ impl ProwlarrClient {
     /// Run a search. Returns an empty `Vec` (not an error) when no
     /// indexer IDs are configured, matching the Python behaviour where
     /// "Prowlarr disabled" isn't a failure mode.
-    pub async fn search(
-        &self,
-        request: &SearchRequest,
-    ) -> Result<Vec<Candidate>, ProviderError> {
+    pub async fn search(&self, request: &SearchRequest) -> Result<Vec<Candidate>, ProviderError> {
         if self.config.indexer_ids.is_empty() {
             info!(
                 event = "search.candidate_returned",
@@ -82,7 +79,11 @@ impl ProwlarrClient {
 
         // Title fallback: if the imdb search returned nothing, retry
         // with q=title. Only meaningful when both were present.
-        let has_imdb = request.imdb_id.as_deref().map(|s| !s.is_empty()).unwrap_or(false);
+        let has_imdb = request
+            .imdb_id
+            .as_deref()
+            .map(|s| !s.is_empty())
+            .unwrap_or(false);
         if results.is_empty() && has_imdb && !request.title.is_empty() {
             params = self.build_params(request, /*force_title=*/ true);
             let fallback_url = self.build_url(&params);
@@ -108,11 +109,7 @@ impl ProwlarrClient {
     /// Build the parameter list for a single Prowlarr call. Prowlarr
     /// speaks the Newznab dialect but the URL is `/api/v1/search`, not
     /// `/api`.
-    fn build_params(
-        &self,
-        request: &SearchRequest,
-        force_title: bool,
-    ) -> Vec<(String, String)> {
+    fn build_params(&self, request: &SearchRequest, force_title: bool) -> Vec<(String, String)> {
         let mut params = vec![
             ("apikey".into(), self.config.api_key.clone()),
             ("limit".into(), self.clamped_max_results().to_string()),

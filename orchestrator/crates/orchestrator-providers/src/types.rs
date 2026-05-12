@@ -108,34 +108,22 @@ pub enum ProviderError {
     /// TLS, timeout, or transport-level breakdown. Maps to the
     /// `provider_timeout` and `provider_http_error` reasons.
     #[error("{provider} HTTP error: {message}")]
-    Http {
-        provider: String,
-        message: String,
-    },
+    Http { provider: String, message: String },
 
     /// The provider returned HTTP, but the status code wasn't 2xx.
     #[error("{provider} returned HTTP {status}")]
-    HttpStatus {
-        provider: String,
-        status: u16,
-    },
+    HttpStatus { provider: String, status: u16 },
 
     /// The XML body either didn't parse or didn't look like a Newznab
     /// RSS feed. Reason `provider_xml_invalid`.
     #[error("{provider} returned an invalid XML response: {message}")]
-    InvalidResponse {
-        provider: String,
-        message: String,
-    },
+    InvalidResponse { provider: String, message: String },
 
     /// Caller-side misconfiguration — empty URL, malformed URL, missing
     /// API key when required. Distinct from upstream errors because we
     /// never even attempted a request.
     #[error("{provider} configuration error: {message}")]
-    Config {
-        provider: String,
-        message: String,
-    },
+    Config { provider: String, message: String },
 }
 
 impl ProviderError {

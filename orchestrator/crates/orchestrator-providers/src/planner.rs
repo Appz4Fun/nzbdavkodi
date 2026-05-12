@@ -117,10 +117,7 @@ fn params_with_kind(
     out
 }
 
-fn missing_caps_plan(
-    base: Vec<(String, String)>,
-    request: &SearchRequest,
-) -> NewznabSearchPlan {
+fn missing_caps_plan(base: Vec<(String, String)>, request: &SearchRequest) -> NewznabSearchPlan {
     match request.kind {
         SearchKind::Tv => {
             let fallback = if !request.title.is_empty() {
@@ -200,7 +197,9 @@ fn generic_search(
 
 fn host_contains(host: &str, needles: &[&str]) -> bool {
     let lower = host.to_ascii_lowercase();
-    needles.iter().any(|n| lower.contains(&n.to_ascii_lowercase()))
+    needles
+        .iter()
+        .any(|n| lower.contains(&n.to_ascii_lowercase()))
 }
 
 fn direct_movie_title_fallback(kind: ProviderKind, host: &str) -> bool {
@@ -208,8 +207,7 @@ fn direct_movie_title_fallback(kind: ProviderKind, host: &str) -> bool {
 }
 
 fn direct_episode_fallback(kind: ProviderKind, host: &str) -> bool {
-    matches!(kind, ProviderKind::Direct)
-        && host_contains(host, DOGNZB_TVSEARCH_FALLBACK_HOSTS)
+    matches!(kind, ProviderKind::Direct) && host_contains(host, DOGNZB_TVSEARCH_FALLBACK_HOSTS)
 }
 
 fn movie_title_params(
@@ -252,7 +250,12 @@ fn movie_plan(
 ) -> NewznabSearchPlan {
     let imdbid = imdb_digits(request.imdb_id.as_deref());
     let fallback = if !request.title.is_empty() {
-        Some(generic_search(&base, &request.title, Some(caps), request.year))
+        Some(generic_search(
+            &base,
+            &request.title,
+            Some(caps),
+            request.year,
+        ))
     } else {
         None
     };

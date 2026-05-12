@@ -22,8 +22,8 @@
 
 pub mod caps;
 pub mod direct;
-pub mod hydra;
 mod http;
+pub mod hydra;
 mod newznab;
 pub mod planner;
 pub mod prowlarr;
@@ -35,3 +35,38 @@ pub use hydra::HydraClient;
 pub use planner::{plan_newznab_search, NewznabSearchPlan};
 pub use prowlarr::ProwlarrClient;
 pub use types::{Candidate, ProviderError, SearchKind, SearchRequest};
+
+/// Test-only helpers that re-export the crate-private newznab parser
+/// under each provider's [`IndexerNameMode`]. Not part of the public
+/// API contract — exposed so the parity integration tests can drive
+/// each mode without re-implementing the parser glue. Hidden from
+/// rustdoc and gated to make it a clear "do not use".
+#[doc(hidden)]
+pub mod __test_helpers {
+    use crate::newznab::{parse_newznab_items, IndexerNameMode};
+    use crate::types::{Candidate, ProviderError};
+
+    pub fn parse_newznab_items_hydra(xml: &str) -> Vec<Candidate> {
+        parse_newznab_items("nzbhydra2", xml, &IndexerNameMode::HydraSource).expect("xml")
+    }
+
+    pub fn parse_newznab_items_prowlarr(xml: &str) -> Vec<Candidate> {
+        parse_newznab_items(
+            "prowlarr",
+            xml,
+            &IndexerNameMode::PrefixedStatic {
+                prefix: "prowlarr".to_string(),
+                fallback: String::new(),
+            },
+        )
+        .expect("xml")
+    }
+
+    pub fn parse_newznab_items_direct(xml: &str, label: &str) -> Vec<Candidate> {
+        parse_newznab_items("direct", xml, &IndexerNameMode::Static(label.into())).expect("xml")
+    }
+
+    pub fn try_parse_hydra(xml: &str) -> Result<Vec<Candidate>, ProviderError> {
+        parse_newznab_items("nzbhydra2", xml, &IndexerNameMode::HydraSource)
+    }
+}

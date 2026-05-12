@@ -103,10 +103,7 @@ impl DirectIndexerClient {
                         indexer_id: indexer.id.clone(),
                         indexer_label: indexer.label.clone(),
                         candidates: Vec::new(),
-                        error: Some(format!(
-                            "Direct indexer {} unavailable: {e}",
-                            indexer.label
-                        )),
+                        error: Some(format!("Direct indexer {} unavailable: {e}", indexer.label)),
                     },
                     Err(_) => IndexerOutcome {
                         indexer_id: indexer.id.clone(),
@@ -148,11 +145,9 @@ impl DirectIndexerClient {
         let futures = self.indexers.iter().map(|indexer| {
             let indexer = indexer.clone();
             async move {
-                let result = tokio::time::timeout(
-                    DIRECT_FANOUT_TIMEOUT,
-                    Self::check_one_caps(&indexer),
-                )
-                .await;
+                let result =
+                    tokio::time::timeout(DIRECT_FANOUT_TIMEOUT, Self::check_one_caps(&indexer))
+                        .await;
                 (indexer, result)
             }
         });
@@ -168,10 +163,9 @@ impl DirectIndexerClient {
                     "Direct indexer {} unexpected response",
                     indexer.label
                 )),
-                Ok(Err(e)) => errors.push(format!(
-                    "Direct indexer {} unavailable: {e}",
-                    indexer.label
-                )),
+                Ok(Err(e)) => {
+                    errors.push(format!("Direct indexer {} unavailable: {e}", indexer.label))
+                }
                 Err(_) => errors.push(format!(
                     "Direct indexer {} unavailable: timed out after {}s",
                     indexer.label,
@@ -234,10 +228,7 @@ impl DirectIndexerClient {
         Ok(candidates)
     }
 
-    async fn fetch(
-        url: &str,
-        indexer: &DirectIndexer,
-    ) -> Result<Vec<Candidate>, ProviderError> {
+    async fn fetch(url: &str, indexer: &DirectIndexer) -> Result<Vec<Candidate>, ProviderError> {
         let body = match http_get("direct", url, DIRECT_FETCH_TIMEOUT).await {
             Ok(b) => b,
             Err(e) => {
@@ -342,10 +333,7 @@ mod tests {
 
     #[test]
     fn search_url_normalises_host_only_input() {
-        let url = build_search_url(
-            "https://api.example.com",
-            &[("apikey".into(), "K".into())],
-        );
+        let url = build_search_url("https://api.example.com", &[("apikey".into(), "K".into())]);
         assert!(url.starts_with("https://api.example.com/api"), "got {url}");
     }
 }

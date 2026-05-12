@@ -90,7 +90,11 @@ pub fn normalize_api_endpoint(api_url: &str) -> String {
         },
     };
     let path = parsed.path().trim_end_matches('/').to_string();
-    let new_path = if path.is_empty() { "/api" } else { path.as_str() };
+    let new_path = if path.is_empty() {
+        "/api"
+    } else {
+        path.as_str()
+    };
     parsed.set_path(new_path);
     parsed.to_string()
 }

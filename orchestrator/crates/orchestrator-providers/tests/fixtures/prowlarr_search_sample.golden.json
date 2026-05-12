@@ -1,0 +1,35 @@
+[
+  {
+    "nzb_url": "http://prowlarr.local/1/download?apikey=K2&guid=prow-1",
+    "indexer": "prowlarr:DrunkenSlug",
+    "title": "Show.S01E02.1080p.WEB.x264-GROUP",
+    "size": 2147483648,
+    "age_days": 860,
+    "pubdate": "Tue, 02 Jan 2024 14:15:00 +0000",
+    "guid": "prow-1",
+    "categories": [
+      5030
+    ],
+    "extra": {
+      "category": "5030",
+      "indexer": "DrunkenSlug",
+      "size": "2147483648"
+    }
+  },
+  {
+    "nzb_url": "http://prowlarr.local/2/download?apikey=K2&guid=prow-2",
+    "indexer": "prowlarr",
+    "title": "Show.S01E02.2160p.UHD.WEB.x265-GROUP",
+    "size": 10737418240,
+    "age_days": 859,
+    "pubdate": "Wed, 03 Jan 2024 18:30:00 +0000",
+    "guid": "prow-2",
+    "categories": [
+      5040
+    ],
+    "extra": {
+      "category": "5040",
+      "size": "10737418240"
+    }
+  }
+]

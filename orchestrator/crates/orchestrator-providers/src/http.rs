@@ -189,7 +189,7 @@ pub fn redact_text(text: &str) -> String {
         let mut matched_name: Option<&'static str> = None;
         for name in REDACT_PARAM_NAMES {
             let nbytes = name.as_bytes();
-            if i + nbytes.len() + 1 <= bytes.len()
+            if i + nbytes.len() < bytes.len()
                 && bytes[i + nbytes.len()] == b'='
                 && bytes[i..i + nbytes.len()].eq_ignore_ascii_case(nbytes)
                 && !is_name_char(prev_byte(bytes, i))
@@ -202,9 +202,12 @@ pub fn redact_text(text: &str) -> String {
             out.push_str(name);
             out.push_str("=REDACTED");
             i += name.len() + 1; // past `name=`
-            // Skip the value until terminator.
+                                 // Skip the value until terminator.
             while i < bytes.len()
-                && !matches!(bytes[i], b'&' | b' ' | b'\t' | b'\n' | b'\r' | b'"' | b'\'' | b'<' | b'>')
+                && !matches!(
+                    bytes[i],
+                    b'&' | b' ' | b'\t' | b'\n' | b'\r' | b'"' | b'\'' | b'<' | b'>'
+                )
             {
                 i += 1;
             }

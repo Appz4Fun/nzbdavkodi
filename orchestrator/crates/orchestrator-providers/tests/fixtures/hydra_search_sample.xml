@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:newznab="http://www.newznab.com/DTD/2010/feeds/attributes/">
+  <channel>
+    <title>NZBHydra2</title>
+    <link>http://hydra.local/</link>
+    <description>NZBHydra2 search results</description>
+    <atom:link rel="self" href="http://hydra.local/api"/>
+    <item>
+      <title>The.Matrix.1999.1080p.BluRay.x264-GROUP</title>
+      <guid isPermaLink="false">hydra-1</guid>
+      <link>http://hydra.local/getnzb/abc?apikey=K1</link>
+      <pubDate>Mon, 01 Jan 2024 12:00:00 +0000</pubDate>
+      <source url="http://nzbgeek.info"/>
+      <enclosure url="http://hydra.local/getnzb/abc?apikey=K1" length="9876543210" type="application/x-nzb"/>
+      <newznab:attr name="size" value="9876543210"/>
+      <newznab:attr name="indexer" value="NZBgeek"/>
+      <newznab:attr name="category" value="2040"/>
+      <newznab:attr name="category" value="2000"/>
+      <newznab:attr name="grabs" value="123"/>
+    </item>
+    <item>
+      <title>The.Matrix.1999.2160p.UHD.BluRay.HDR.x265-GROUP</title>
+      <guid isPermaLink="false">hydra-2</guid>
+      <link>http://hydra.local/getnzb/xyz?apikey=K1</link>
+      <pubDate>Sun, 14 Apr 2024 09:30:00 +0000</pubDate>
+      <source>DrunkenSlug</source>
+      <enclosure url="http://hydra.local/getnzb/xyz?apikey=K1" length="52428800000" type="application/x-nzb"/>
+      <newznab:attr name="size" value="52428800000"/>
+      <newznab:attr name="category" value="2050"/>
+    </item>
+    <item>
+      <title>NoSizeAttr.2024.720p.WEB.x264-MISC</title>
+      <guid isPermaLink="false">hydra-3</guid>
+      <link>http://hydra.local/getnzb/def?apikey=K1</link>
+      <pubDate>Wed, 03 Jul 2024 06:00:00 +0000</pubDate>
+      <source url="https://omgwtfnzbs.org/some/path"/>
+      <enclosure url="http://hydra.local/getnzb/def?apikey=K1" length="1234567890"/>
+    </item>
+  </channel>
+</rss>
