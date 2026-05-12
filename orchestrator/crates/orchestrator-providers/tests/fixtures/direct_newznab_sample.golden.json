@@ -1,0 +1,30 @@
+[
+  {
+    "nzb_url": "https://api.nzbgeek.info/getnzb?id=abc&apikey=KGEEK",
+    "indexer": "NZBgeek",
+    "title": "Movie.2024.1080p.BluRay.x264-RELEASE",
+    "size": 5368709120,
+    "age_days": 756,
+    "pubdate": "Mon, 15 Apr 2024 10:00:00 +0000",
+    "guid": "direct-1",
+    "categories": [
+      2040
+    ],
+    "extra": {
+      "category": "2040",
+      "grabs": "42",
+      "size": "5368709120"
+    }
+  },
+  {
+    "nzb_url": "https://api.nzbgeek.info/getnzb?id=def&apikey=KGEEK",
+    "indexer": "NZBgeek",
+    "title": "Movie.2024.MissingSizeAttr.WEB-DL",
+    "size": 1073741824,
+    "age_days": null,
+    "pubdate": "not-a-date",
+    "guid": "direct-2",
+    "categories": [],
+    "extra": {}
+  }
+]

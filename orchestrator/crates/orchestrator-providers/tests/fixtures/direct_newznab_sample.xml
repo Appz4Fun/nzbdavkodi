@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2010/feeds/attributes/">
+  <channel>
+    <title>NZBgeek</title>
+    <link>https://api.nzbgeek.info/</link>
+    <description>Direct Newznab indexer feed</description>
+    <item>
+      <title>Movie.2024.1080p.BluRay.x264-RELEASE</title>
+      <guid isPermaLink="false">direct-1</guid>
+      <link>https://api.nzbgeek.info/getnzb?id=abc&amp;apikey=KGEEK</link>
+      <pubDate>Mon, 15 Apr 2024 10:00:00 +0000</pubDate>
+      <enclosure url="https://api.nzbgeek.info/getnzb?id=abc&amp;apikey=KGEEK" length="5368709120" type="application/x-nzb"/>
+      <newznab:attr name="size" value="5368709120"/>
+      <newznab:attr name="category" value="2040"/>
+      <newznab:attr name="grabs" value="42"/>
+    </item>
+    <item>
+      <title>Movie.2024.MissingSizeAttr.WEB-DL</title>
+      <guid isPermaLink="false">direct-2</guid>
+      <link>https://api.nzbgeek.info/getnzb?id=def&amp;apikey=KGEEK</link>
+      <pubDate>not-a-date</pubDate>
+      <enclosure url="https://api.nzbgeek.info/getnzb?id=def&amp;apikey=KGEEK" length="1073741824"/>
+    </item>
+  </channel>
+</rss>

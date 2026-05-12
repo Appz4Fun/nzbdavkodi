@@ -1,0 +1,48 @@
+[
+  {
+    "nzb_url": "http://hydra.local/getnzb/abc?apikey=K1",
+    "indexer": "NZBgeek",
+    "title": "The.Matrix.1999.1080p.BluRay.x264-GROUP",
+    "size": 9876543210,
+    "age_days": 861,
+    "pubdate": "Mon, 01 Jan 2024 12:00:00 +0000",
+    "guid": "hydra-1",
+    "categories": [
+      2040,
+      2000
+    ],
+    "extra": {
+      "category": "2000",
+      "grabs": "123",
+      "indexer": "NZBgeek",
+      "size": "9876543210"
+    }
+  },
+  {
+    "nzb_url": "http://hydra.local/getnzb/xyz?apikey=K1",
+    "indexer": "DrunkenSlug",
+    "title": "The.Matrix.1999.2160p.UHD.BluRay.HDR.x265-GROUP",
+    "size": 52428800000,
+    "age_days": 757,
+    "pubdate": "Sun, 14 Apr 2024 09:30:00 +0000",
+    "guid": "hydra-2",
+    "categories": [
+      2050
+    ],
+    "extra": {
+      "category": "2050",
+      "size": "52428800000"
+    }
+  },
+  {
+    "nzb_url": "http://hydra.local/getnzb/def?apikey=K1",
+    "indexer": "omgwtfnzbs.org",
+    "title": "NoSizeAttr.2024.720p.WEB.x264-MISC",
+    "size": 1234567890,
+    "age_days": 677,
+    "pubdate": "Wed, 03 Jul 2024 06:00:00 +0000",
+    "guid": "hydra-3",
+    "categories": [],
+    "extra": {}
+  }
+]
