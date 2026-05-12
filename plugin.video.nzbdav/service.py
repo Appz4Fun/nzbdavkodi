@@ -575,6 +575,14 @@ def _ensure_orchestrator(state):
         ),
         xbmc.LOGINFO,
     )
+    # Mirror event per plan §11.6: every Python ↔ orchestrator HTTP
+    # call gets one ``orchestrator.call`` line in kodi.log even when
+    # the orchestrator's own stdout isn't being captured. The first
+    # call is the boot-time /v1/health probe inside start().
+    xbmc.log(
+        'NZB-DAV: orchestrator.call endpoint="/v1/health" outcome=ok',
+        xbmc.LOGINFO,
+    )
     state["proc"] = proc
     return proc
 

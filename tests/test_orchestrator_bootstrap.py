@@ -30,6 +30,32 @@ import pytest
 from resources.lib import orchestrator_bootstrap
 
 
+class _FakeHealthResponse:
+    """Minimal urlopen response covering the attributes the probe reads."""
+
+    def __init__(self, status=200, body=b'{"status":"ok","version":"0.1.0"}'):
+        self.status = status
+        self._body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def read(self):
+        return self._body
+
+
+def _patch_health_probe_ok(monkeypatch):
+    """Replace urlopen with a stub that returns a passing /v1/health body."""
+    monkeypatch.setattr(
+        orchestrator_bootstrap.urllib.request,
+        "urlopen",
+        lambda req, timeout=None: _FakeHealthResponse(),
+    )
+
+
 @pytest.fixture
 def addon(tmp_path, monkeypatch):
     """Wire xbmcaddon + xbmcvfs to point at a writable tmp dir.
@@ -124,7 +150,7 @@ def test_addr_file_timeout_kills_child(addon, monkeypatch):
 
 
 def test_successful_spawn_returns_process_with_addr(addon, monkeypatch):
-    """End-to-end happy path with a faked Popen + addr-file."""
+    """End-to-end happy path with a faked Popen + addr-file + health probe."""
     addon_mock, install, profile = addon
     addon_mock.getSetting.return_value = "true"
     monkeypatch.setattr(orchestrator_bootstrap.platform, "machine", lambda: "x86_64")
@@ -156,6 +182,7 @@ def test_successful_spawn_returns_process_with_addr(addon, monkeypatch):
         "Popen",
         MagicMock(side_effect=_spawn_writes_addr_file),
     )
+    _patch_health_probe_ok(monkeypatch)
 
     proc = orchestrator_bootstrap.start()
     assert proc is not None
@@ -165,6 +192,67 @@ def test_successful_spawn_returns_process_with_addr(addon, monkeypatch):
     materialised = profile / "bin" / "orchestrator"
     assert materialised.is_file()
     assert materialised.stat().st_mode & stat.S_IXUSR
+
+
+def test_health_probe_failure_stops_process(addon, monkeypatch):
+    """If /v1/health fails after spawn, start() must kill the child and raise."""
+    addon_mock, install, _profile = addon
+    addon_mock.getSetting.return_value = "true"
+    monkeypatch.setattr(orchestrator_bootstrap.platform, "machine", lambda: "x86_64")
+
+    bin_dir = install / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "orchestrator-x86_64-musl").write_bytes(b"\x7fELF")
+
+    fake_popen = MagicMock()
+    fake_popen.poll.return_value = None
+    fake_popen.stdout = None
+    fake_popen.terminate = MagicMock()
+
+    def _spawn(*args, **kwargs):
+        env = kwargs.get("env", {})
+        with open(env["ORCHESTRATOR_ADDR_FILE"], "w", encoding="utf-8") as fh:
+            fh.write("127.0.0.1:1\n")
+        return fake_popen
+
+    monkeypatch.setattr(
+        orchestrator_bootstrap.subprocess, "Popen", MagicMock(side_effect=_spawn)
+    )
+
+    def _broken_urlopen(req, timeout=None):
+        raise orchestrator_bootstrap.urllib.error.URLError("boom")
+
+    monkeypatch.setattr(
+        orchestrator_bootstrap.urllib.request, "urlopen", _broken_urlopen
+    )
+
+    with pytest.raises(orchestrator_bootstrap.OrchestratorUnavailable) as excinfo:
+        orchestrator_bootstrap.start()
+    assert excinfo.value.reason == "health_probe_unreachable"
+    fake_popen.terminate.assert_called_once()
+
+
+def test_health_probe_returns_parsed_body():
+    """Direct unit test for health_probe — no spawn machinery involved."""
+    captured: dict = {}
+
+    def _fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        captured["timeout"] = timeout
+        return _FakeHealthResponse(
+            body=b'{"status":"ok","version":"9.9.9","phase":"phase-0"}'
+        )
+
+    import unittest.mock
+
+    with unittest.mock.patch.object(
+        orchestrator_bootstrap.urllib.request, "urlopen", side_effect=_fake_urlopen
+    ):
+        parsed = orchestrator_bootstrap.health_probe("127.0.0.1:9999")
+
+    assert parsed["status"] == "ok"
+    assert parsed["version"] == "9.9.9"
+    assert captured["url"] == "http://127.0.0.1:9999/v1/health"
 
 
 def test_stop_is_idempotent(addon, monkeypatch):
@@ -191,6 +279,7 @@ def test_stop_is_idempotent(addon, monkeypatch):
     monkeypatch.setattr(
         orchestrator_bootstrap.subprocess, "Popen", MagicMock(side_effect=_spawn)
     )
+    _patch_health_probe_ok(monkeypatch)
     proc = orchestrator_bootstrap.start()
 
     proc.stop()

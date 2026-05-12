@@ -23,6 +23,7 @@ phases route real traffic.
 
 from __future__ import annotations
 
+import json
 import os
 import platform
 import shutil
@@ -30,6 +31,8 @@ import stat
 import subprocess
 import threading
 import time
+import urllib.error
+import urllib.request
 from typing import Optional
 
 import xbmc
@@ -60,6 +63,11 @@ _BINARY_BY_MACHINE = {
 # realistic CoreELEC box. Beyond that the spawn is treated as failed.
 _ADDR_FILE_TIMEOUT_S = 5.0
 _ADDR_FILE_POLL_S = 0.1
+
+# Health-probe timeout. Tight enough that a broken orchestrator
+# doesn't stall the service tick; loose enough that a slow-booting
+# binary on cold cache still answers.
+_HEALTH_PROBE_TIMEOUT_S = 2.0
 
 
 class OrchestratorUnavailable(RuntimeError):
@@ -317,6 +325,55 @@ def is_enabled() -> bool:
         return False
 
 
+def health_probe(addr: str) -> dict:
+    """Hit ``GET http://<addr>/v1/health`` and return the parsed body.
+
+    Raises :class:`OrchestratorUnavailable` with a structured reason
+    on any failure (HTTP error, JSON parse error, missing fields) so
+    callers can mirror it to a ``orchestrator.error`` event.
+    """
+    url = "http://{}/v1/health".format(addr)
+    request = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(  # noqa: S310 - loopback only
+            request, timeout=_HEALTH_PROBE_TIMEOUT_S
+        ) as resp:
+            body = resp.read()
+            status = resp.status
+    except urllib.error.URLError as e:
+        raise OrchestratorUnavailable(
+            "health_probe_unreachable",
+            "GET {} failed: {}".format(url, e),
+        ) from e
+    except OSError as e:
+        raise OrchestratorUnavailable(
+            "health_probe_io_error",
+            "GET {} failed: {}".format(url, e),
+        ) from e
+
+    if status != 200:
+        raise OrchestratorUnavailable(
+            "health_probe_non_200",
+            "GET {} returned {}".format(url, status),
+        )
+
+    try:
+        parsed = json.loads(body.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as e:
+        raise OrchestratorUnavailable(
+            "health_probe_bad_json",
+            "GET {} body was not valid JSON: {}".format(url, e),
+        ) from e
+
+    if parsed.get("status") != "ok":
+        raise OrchestratorUnavailable(
+            "health_probe_status_not_ok",
+            "GET {} returned status={!r}".format(url, parsed.get("status")),
+        )
+
+    return parsed
+
+
 def start() -> Optional[OrchestratorProcess]:
     """Bootstrap and spawn the orchestrator if enabled.
 
@@ -324,8 +381,20 @@ def start() -> Optional[OrchestratorProcess]:
     :class:`OrchestratorUnavailable` on hard failures so the caller can
     log a structured ``orchestrator.error`` event and continue running
     the legacy Python pipeline.
+
+    After a successful spawn the function hits ``/v1/health`` once and
+    only returns the process once the probe passes — exit criterion
+    for plan §6 phase 0 ("addon boots → spawns orchestrator → hits
+    /v1/health"). The probe outcome is logged by the caller through
+    the ``orchestrator.call`` mirror event.
     """
     if not is_enabled():
         return None
     binary = _materialise_binary()
-    return _spawn(binary)
+    proc = _spawn(binary)
+    try:
+        health_probe(proc.addr)
+    except OrchestratorUnavailable:
+        proc.stop()
+        raise
+    return proc
