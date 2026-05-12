@@ -497,9 +497,16 @@ fn add_season_episode(p: &mut Parser) {
 fn add_group(p: &mut Parser) {
     // Hyphen-suffixed scene group at the tail. PTT chooses the
     // trailing -GROUP pattern; we approximate.
+    //
+    // The character class deliberately excludes `.` so a tail like
+    // `DTS-HD.MA.7.1-GROUP` only captures the final `GROUP`, not
+    // `HD.MA.7.1-GROUP` (which would happen if `.` were allowed and
+    // the regex engine matched the leftmost `-`). Hyphens and
+    // underscores are kept so multi-segment groups like `GROUP-NAME`
+    // or `GROUP_NAME` survive.
     p.add_regex(
         "group",
-        Regex::new(r"-([A-Za-z0-9][A-Za-z0-9._-]{1,30})(?:\.[a-z0-9]+)?$").unwrap(),
+        Regex::new(r"-([A-Za-z0-9][A-Za-z0-9_-]{0,30})(?:\.[a-z0-9]+)?$").unwrap(),
         Transformer::None_,
         keep(),
     );

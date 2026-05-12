@@ -111,8 +111,7 @@ pub enum Handler {
     Custom(CustomHandler),
 }
 
-pub type CustomRunner =
-    Box<dyn Fn(&mut HandlerCtx) -> Option<HandlerEffect> + Send + Sync>;
+pub type CustomRunner = Box<dyn Fn(&mut HandlerCtx) -> Option<HandlerEffect> + Send + Sync>;
 
 pub struct CustomHandler {
     pub name: &'static str,
