@@ -399,3 +399,64 @@ harness-up:
 # Stop the stack and remove volumes.
 harness-down:
     cd orchestrator/tests/harness && docker compose down -v
+
+# --- Docker Compose live harness (real Hydra2 + real nzbdav-rs) --------------
+#
+# Credentials are read from .env (repo root). Run `just setup-extreme-functional-test`
+# to populate it if needed.
+#
+# First-time only: configure Hydra2 with at least one indexer:
+#   just harness-live-init          # start hydra2 + nzbdav-rs on localhost:5076 / 8180
+#   open http://localhost:5076 → add indexer
+#   just harness-live-init-down     # stop; hydra-config volume persists
+#
+# Fast tests (health + Hydra search, no download):
+#   just harness-live-build         # build orchestrator image (reuses harness cache)
+#   just harness-live-test          # run fast tests; volumes preserved for next run
+#
+# Full test including real NZB download (10-30 min):
+#   LIVE_FULL_RESOLVE=1 just harness-live-test
+#
+# Teardown:
+#   just harness-live-down          # stop services; volumes kept (Hydra config survives)
+#   just harness-live-reset         # stop + delete ALL volumes (full reset)
+
+_LIVE := "orchestrator/tests/harness/live"
+_LIVE_ENV := ".env"
+
+# Build live harness Docker images (orchestrator + test-runner).
+harness-live-build:
+    cd {{_LIVE}} && docker compose --env-file ../../../../{{_LIVE_ENV}} build
+
+# One-time init: start just hydra2 + nzbdav-rs so you can configure Hydra2 in the browser.
+harness-live-init:
+    cd {{_LIVE}} && docker compose --env-file ../../../../{{_LIVE_ENV}} up -d hydra2 nzbdav-rs
+    @echo ""
+    @echo "Hydra2 UI: http://localhost:5076"
+    @echo "nzbdav-rs: http://localhost:8180"
+    @echo "Add an indexer in Hydra2, then run: just harness-live-init-down"
+
+# Stop the init services (volumes are preserved).
+harness-live-init-down:
+    cd {{_LIVE}} && docker compose --env-file ../../../../{{_LIVE_ENV}} down
+
+# Run the live E2E test suite. Volumes are preserved so Hydra2 config survives.
+# On success the stack is stopped (down without -v keeps volumes).
+# On failure the stack stays up for debugging — use just harness-live-down to stop.
+# Set LIVE_FULL_RESOLVE=1 to include the full NZB download test.
+harness-live-test:
+    cd {{_LIVE}} && \
+        docker compose --env-file ../../../../{{_LIVE_ENV}} run --rm test-runner && \
+        docker compose --env-file ../../../../{{_LIVE_ENV}} down
+
+# Start the live stack and leave it running for manual exploration.
+harness-live-up:
+    cd {{_LIVE}} && docker compose --env-file ../../../../{{_LIVE_ENV}} up -d --wait
+
+# Stop the live stack without removing volumes (Hydra2 config survives).
+harness-live-down:
+    cd {{_LIVE}} && docker compose --env-file ../../../../{{_LIVE_ENV}} down
+
+# Stop the live stack and delete ALL volumes (full reset; re-init required).
+harness-live-reset:
+    cd {{_LIVE}} && docker compose --env-file ../../../../{{_LIVE_ENV}} down -v

@@ -1,0 +1,110 @@
+name: nzbdav-live
+
+# Live E2E stack — real NZBHydra2, real nzbdav-rs, orchestrator under test.
+#
+# Credentials are loaded from ../../../../.env (repo root).  Run
+# `just harness-live-test` which passes --env-file automatically.
+#
+# First-time setup (one-off — Hydra2 needs indexers configured):
+#   just harness-live-init          # starts hydra2 + nzbdav-rs only
+#   open http://localhost:5076 → add indexer (e.g. omgwtfnzbs)
+#   just harness-live-init-down     # stop; hydra-config volume persists
+#
+# Subsequent runs:
+#   just harness-live-test          # seeds nzbdav-rs and runs pytest
+#   just harness-live-down          # stop services (volumes preserved)
+#   just harness-live-reset         # stop and remove ALL volumes (full reset)
+#
+# Port map:
+#   localhost:5076  → Hydra2 web UI + Newznab API
+#   localhost:8180  → nzbdav-rs SABnzbd API + WebDAV
+#   localhost:4000  → orchestrator HTTP API
+
+services:
+
+  hydra2:
+    image: linuxserver/nzbhydra2:latest
+    container_name: nzbdav-live-hydra2
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      TZ: ${TZ:-Etc/UTC}
+    ports:
+      - "5076:5076"
+    volumes:
+      - hydra-config:/config
+    # No healthcheck — Hydra2 startup is slow and the test fixture waits
+    # manually via HTTP poll before running.
+
+  nzbdav-rs:
+    image: nzbdav/nzbdav:latest
+    container_name: nzbdav-live-nzbdav
+    environment:
+      NZBDAV_API_KEY: ${NZBDAV_API_KEY}
+      FRONTEND_BACKEND_API_KEY: ${NZBDAV_API_KEY}
+      WEBDAV_USER: ${WEBDAV_USERNAME}
+      WEBDAV_PASS: ${WEBDAV_PASSWORD}
+      HTTP_PROXY: ""
+      http_proxy: ""
+      HTTPS_PROXY: ""
+      https_proxy: ""
+    ports:
+      - "8180:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    volumes:
+      - nzbdav-data:/data
+
+  orchestrator:
+    build:
+      # Context is repo root so COPY can reach the orchestrator/ workspace.
+      context: ../../../..
+      dockerfile: orchestrator/tests/harness/Dockerfile.orchestrator
+    container_name: nzbdav-live-orchestrator
+    environment:
+      ORCHESTRATOR_BIND: "0.0.0.0"
+      ORCHESTRATOR_PORT: "4000"
+      ORCHESTRATOR_INDEXER_STORE_PATH: /tmp/indexers.json
+      ORCHESTRATOR_PEER_POOL_DB_PATH: /tmp/peer_pool.sqlite3
+      ORCHESTRATOR_PEER_POOL_CACHE_MAX_AGE_SECS: "300"
+      ORCHESTRATOR_LOG: "orchestrator=debug,orchestrator_server=debug,warn"
+    ports:
+      - "4000:4000"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:4000/v1/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    depends_on:
+      nzbdav-rs:
+        condition: service_healthy
+
+  test-runner:
+    build: ./test_runner
+    container_name: nzbdav-live-test-runner
+    environment:
+      ORCHESTRATOR_URL: "http://orchestrator:4000"
+      NZBDAV_URL: "http://nzbdav-rs:8080"
+      HYDRA_URL: "http://hydra2:5076"
+      HYDRA_API_KEY: ${HYDRA_API_KEY}
+      NZBDAV_API_KEY: ${NZBDAV_API_KEY}
+      WEBDAV_USERNAME: ${WEBDAV_USERNAME}
+      WEBDAV_PASSWORD: ${WEBDAV_PASSWORD}
+      NNTP_HOST: ${NNTP_HOST}
+      NNTP_PORT: ${NNTP_PORT:-563}
+      NNTP_USE_SSL: ${NNTP_USE_SSL:-true}
+      NNTP_USER: ${NNTP_USER}
+      NNTP_PASS: ${NNTP_PASS}
+      NNTP_CONNS: ${NNTP_CONNS:-80}
+      LIVE_FULL_RESOLVE: ${LIVE_FULL_RESOLVE:-0}
+      LIVE_IMDB_ID: ${EXTREME_TEST_IMDB_ID:-tt0468569}
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+
+volumes:
+  hydra-config:
+  nzbdav-data:
