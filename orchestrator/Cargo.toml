@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/orchestrator-core",
     "crates/orchestrator-filter",
     "crates/orchestrator-providers",
     "crates/orchestrator-release-parser",

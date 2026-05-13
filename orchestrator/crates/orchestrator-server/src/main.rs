@@ -15,10 +15,11 @@ use orchestrator_server::{
     admin::{AdminState, IndexerStore},
     logging::LogEnvelopeLayer,
     logging::Outcome,
-    router_with_admin,
+    peer_pool::{PeerPoolCachePolicy, PeerPoolStore},
+    router_with_admin_peer_pool_and_policy,
 };
 use tokio::signal;
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
 use ulid::Ulid;
@@ -53,6 +54,26 @@ struct Args {
         default_value = "indexers.json"
     )]
     indexer_store_path: std::path::PathBuf,
+
+    /// SQLite peer-pool cache. Phase 3 persists validated resolve
+    /// responses here so `/v1/peers/<resolve_id>` and `/v1/health`
+    /// survive process restarts.
+    #[arg(
+        long,
+        env = "ORCHESTRATOR_PEER_POOL_DB_PATH",
+        default_value = "peer_pool.sqlite3"
+    )]
+    peer_pool_db_path: std::path::PathBuf,
+
+    /// Maximum age for peer-pool cache hits. A value of 0 disables
+    /// cache hits; stale entries fall through to live resolve and are
+    /// overwritten when validation succeeds.
+    #[arg(
+        long,
+        env = "ORCHESTRATOR_PEER_POOL_CACHE_MAX_AGE_SECS",
+        default_value_t = PeerPoolCachePolicy::DEFAULT_MAX_AGE_SECS
+    )]
+    peer_pool_cache_max_age_secs: u64,
 }
 
 #[tokio::main]
@@ -110,7 +131,33 @@ async fn main() -> anyhow::Result<()> {
             args.indexer_store_path.display()
         )
     })?;
-    let app = router_with_admin(AdminState { store });
+    let peer_pool = PeerPoolStore::open(args.peer_pool_db_path.clone()).with_context(|| {
+        format!(
+            "opening peer-pool database at {}",
+            args.peer_pool_db_path.display()
+        )
+    })?;
+    let cache_policy = PeerPoolCachePolicy::from_max_age_secs(args.peer_pool_cache_max_age_secs);
+    match peer_pool.prune_stale(cache_policy) {
+        Ok(stats) => {
+            info!(
+                event = "peer_pool.pruned",
+                outcome = Outcome::Ok.as_str(),
+                peer_pools_deleted = stats.peer_pools_deleted,
+                resolve_events_deleted = stats.resolve_events_deleted,
+                "peer-pool stale cache cleanup completed"
+            );
+        }
+        Err(error) => {
+            warn!(
+                event = "peer_pool.prune_failed",
+                outcome = Outcome::Error.as_str(),
+                reason = %error,
+                "peer-pool stale cache cleanup failed; continuing"
+            );
+        }
+    }
+    let app = router_with_admin_peer_pool_and_policy(AdminState { store }, peer_pool, cache_policy);
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await
@@ -154,5 +201,33 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = ctrl_c => {},
         _ = terminate => {},
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli_accepts_peer_pool_db_path() {
+        let args = Args::try_parse_from([
+            "orchestrator",
+            "--peer-pool-db-path",
+            "/tmp/nzbdav-peer-pool.sqlite3",
+        ])
+        .unwrap();
+
+        assert_eq!(
+            args.peer_pool_db_path,
+            std::path::PathBuf::from("/tmp/nzbdav-peer-pool.sqlite3")
+        );
+    }
+
+    #[test]
+    fn cli_accepts_peer_pool_cache_max_age() {
+        let args = Args::try_parse_from(["orchestrator", "--peer-pool-cache-max-age-secs", "120"])
+            .unwrap();
+
+        assert_eq!(args.peer_pool_cache_max_age_secs, 120);
     }
 }

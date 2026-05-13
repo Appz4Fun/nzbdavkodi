@@ -1,0 +1,25 @@
+[package]
+name = "orchestrator-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Core resolve and WebDAV logic for nzbdav-orchestrator."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+base64 = "0.22"
+futures = { workspace = true }
+percent-encoding = "2"
+quick-xml = "0.36"
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.10"
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+ulid = { workspace = true }
+url = "2"
