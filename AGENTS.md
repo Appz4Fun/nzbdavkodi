@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Orientation for agents (Claude, Copilot, Codex, etc.) working in this repo. User-facing install / config / usage docs live in [README.md](README.md); outstanding work and architecture deep-dives live in [TODO.md](TODO.md).
+Orientation for agents (Claude, Copilot, Codex, etc.) working in this repo. User-facing install / config / usage docs live in [README.md](README.md); active backlog lives in [TODO.md](TODO.md); architecture deep-dives live in [docs/](docs/).
 
 ## Pre-Push
 

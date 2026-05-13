@@ -66,7 +66,7 @@ The proxy picks one of four paths based on the container, fallback metadata, fil
 
 If ffmpeg isn't installed, the proxy degrades gracefully to pass-through.
 
-> **Architecture deep-dive:** [`TODO.md` Part C](TODO.md#part-c--stream-proxy-architecture-reference-proxymd) documents the full session lifecycle, how the proxy interacts with `resolver.py` / `service.py` / `router.py` / `mp4_parser.py`, the HLS producer internals, and where to look when debugging playback failures. (The former standalone `PROXY.md` was consolidated into `TODO.md` on 2026-04-24.)
+> **Architecture deep-dive:** [docs/proxy-architecture.md](docs/proxy-architecture.md) documents the full session lifecycle, how the proxy interacts with `resolver.py` / `service.py` / `router.py` / `mp4_parser.py`, the HLS producer internals, and where to look when debugging playback failures.
 
 ### Live Fallback Streams
 
@@ -266,6 +266,7 @@ These tune stream-proxy behaviour. Defaults are safe; only flip these if you hav
 | Zero-fill budget | Cap total per-stream zero-fill bytes; stream terminates with a clean error when the budget is hit | On |
 | Retry ladder | Re-issue the original Range request with backoff on transient upstream errors before falling back to skip-fill | On |
 | Send 200 for no-range pass-through | Send `200 OK` instead of always `206 Partial Content` when Kodi requests a full object. **Off by default** until validated on the target build. | Off |
+| Use Rust orchestrator (experimental) | Delegate search/resolve/peer-validation work to the bundled Rust sidecar when available. Falls back to the Python path if the sidecar is disabled or unavailable. | Off |
 
 1. Open **TMDBHelper** and browse to a movie or TV episode
 2. Select **Play with NZB-DAV**
@@ -288,29 +289,38 @@ With **Auto-select best match** enabled, the dialog is skipped and the top resul
 ## Development
 
 For a contributor-facing map of the search, resolve, and stream proxy paths, see
-the [architecture overview](docs/architecture.md).
+the [architecture overview](docs/architecture.md). The experimental Rust
+sidecar migration is tracked in [docs/rust-migration-plan.md](docs/rust-migration-plan.md).
 
 ### Prerequisites
 
 - Python 3.10+ for local test tooling
 - Kodi addon runtime remains Python 3.8+
 - [just](https://github.com/casey/just) (command runner)
+- [uv](https://docs.astral.sh/uv/) for opt-in local multi-version checks
 
 ### Commands
 
 ```bash
-just test              # Run all 695 unit tests (integration tests excluded)
+just test              # Run unit tests (integration tests excluded)
 just test-verbose      # Run unit tests with full output
-just test-integration  # Run integration tests against a real ffmpeg binary
+just test-integration  # Run opt-in integration tests (ffmpeg, Rust sidecar)
+just ci-matrix         # Run CI's Python 3.10/3.12 lint+test matrix locally
+just python38-import-check # Compile/import shipped addon modules on Python 3.8
 just lint              # Check ruff + black formatting
 just lint-fix          # Auto-fix lint issues
 just release           # Build plugin.video.nzbdav.zip
 just ship              # Run tests then build release
 just repo              # Build release + generate Kodi repo in dist/
+just repo-smoke        # Build/validate release + Pages repo layout in a temp dir
 just repo-zip          # Build repo + copy repository zip to cwd
 just clean             # Remove build artifacts
 just dist-clean        # Remove build artifacts + dist/
 ```
+
+`just ci` intentionally stays the quick local pre-push target (`lint + test`).
+Use `ci-matrix`, `python38-import-check`, and `repo-smoke` when validating local
+parity with the broader CI/release surfaces.
 
 ### Project Structure
 
@@ -349,6 +359,13 @@ plugin.video.nzbdav/
 scripts/
   build_zip.py           # Addon zip builder
   generate_repo.py       # Kodi repo metadata generator
+  python_runtime_import_check.py # Python 3.8 runtime-floor import check
+  repo_smoke.py          # Temp-dir release/repo Pages parity smoke check
+orchestrator/
+  Cargo.toml             # Rust sidecar workspace
+  crates/
+    orchestrator-server/ # axum HTTP API, routes, persistence wiring
+    orchestrator-core/   # resolve, WebDAV probe, peer validation foundation
 repo/
   repository.nzbdav/     # Repository addon (points to GitHub Pages)
 .github/workflows/
@@ -359,9 +376,11 @@ repo/
   bandit.yml             # Bandit security scan
 tests/
   conftest.py                       # Kodi module mocks
-  test_*.py                         # 695 unit tests
+  test_*.py                         # Unit tests
   test_integration_hls_ffmpeg.py    # 2 integration tests (real ffmpeg, opt-in)
-TODO.md                             # Consolidated roadmap + architecture (Parts A–E)
+  test_orchestrator_sse_integration.py # Python/Rust SSE integration test
+docs/rust-migration-plan.md         # Rust sidecar migration plan and current status
+TODO.md                             # Active backlog; detailed plans live in docs/
 ```
 
 ### Releasing

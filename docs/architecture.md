@@ -3,7 +3,30 @@
 This document gives contributors a high-level map of the addon paths that turn a
 TMDBHelper play request into a Kodi stream. User-facing setup and usage stay in
 the [README](../README.md); detailed proxy internals stay in
-[proxy-architecture.md](proxy-architecture.md).
+[proxy-architecture.md](proxy-architecture.md). The Rust migration plan and
+current phase status live in [rust-migration-plan.md](rust-migration-plan.md).
+
+## Rust Orchestrator Status
+
+`use_orchestrator` is an experimental setting that lets the addon delegate
+service-shaped work to the Rust sidecar in `orchestrator/`. The legacy Python
+paths remain the fallback and still own playback handoff to Kodi.
+
+Currently implemented on the orchestrator path:
+
+- Search can be routed through `POST /v1/search` and converted back into the
+  legacy Python result shape.
+- Resolve can be routed through `POST /v1/resolve` with a caller-supplied
+  `resolve_id`.
+- Resolve progress is persisted and streamed over
+  `/v1/resolve/<resolve_id>/events?tail=true`; Python tails this SSE stream in
+  a background thread and updates the existing Kodi progress dialog.
+- Peer-pool cache hits use a finite max-age policy. Stale cache entries are not
+  returned; resolve falls through to live validation and overwrites the cache on
+  success. Server startup prunes stale peer-pool rows and their persisted
+  progress events, then asks SQLite to optimize the database.
+- Rust-validated ready peers can be handed back to the Python proxy as fallback
+  sources. The Python stream proxy still serves playback.
 
 ## Search Flow
 
@@ -11,7 +34,11 @@ the [README](../README.md); detailed proxy internals stay in
 flowchart TD
     A[TMDBHelper player URL] --> B[addon.py]
     B --> C[router.py]
-    C --> D{Search provider settings}
+    C --> O{use_orchestrator}
+    O -->|true| P[orchestrator_client.py]
+    P --> Q[POST /v1/search]
+    Q --> H
+    O -->|false| D{Search provider settings}
     D -->|NZBHydra2| E[hydra.py]
     D -->|Prowlarr| F[prowlarr.py]
     D -->|Direct Newznab| G[direct_indexers.py]
@@ -32,7 +59,12 @@ result picker returns the NZB the user wants to play.
 ```mermaid
 flowchart TD
     A[Selected NZB] --> B[resolver.py]
-    B --> C[nzbdav_api.py]
+    B --> O{use_orchestrator}
+    O -->|true| P[orchestrator_client.py]
+    P -->|POST /v1/resolve| R[Rust orchestrator]
+    P -->|Tail SSE events| S[Kodi progress dialog]
+    R -->|Ready stream + validated peers| G[Remote WebDAV stream URL]
+    O -->|false| C[nzbdav_api.py]
     C -->|Submit NZB| D[nzbdav]
     B -->|Poll status| D
     D -->|Ready folder| E[webdav.py]
@@ -45,8 +77,11 @@ flowchart TD
 
 The resolver submits the selected NZB, waits for nzbdav to expose a playable
 file over WebDAV, asks the background service to prepare a local proxy URL, and
-then resolves the Kodi handle. Failure paths still resolve the handle with a
-failed item so Kodi does not hang waiting for playback.
+then resolves the Kodi handle. When `use_orchestrator=true`, the Rust sidecar
+owns submit/poll/WebDAV probing and peer validation, while Python still owns the
+Kodi progress dialog, fallback to legacy resolve on orchestrator failure, local
+proxy preparation, and `setResolvedUrl`. Failure paths still resolve the handle
+with a failed item so Kodi does not hang waiting for playback.
 
 ## Stream Proxy Flow
 
@@ -80,6 +115,8 @@ playback, and can use ffmpeg when the configured remux path is needed.
 | `filter.py` | Parses release metadata, filters results, and sorts candidates. |
 | `results_dialog.py` | Displays filtered results and returns the selected NZB. |
 | `resolver.py` | Submits the NZB, polls nzbdav, prepares playback, and resolves Kodi handles. |
+| `orchestrator/` | Rust sidecar workspace for search, resolve, peer-pool persistence, and progress SSE. |
+| `orchestrator_client.py` | Python HTTP client for experimental Rust search/resolve/progress routes. |
 | `webdav.py` | Discovers playable files and builds WebDAV stream URLs. |
 | `service.py` | Runs the background proxy service and playback monitoring. |
 | `stream_proxy.py` | Serves local playback URLs and handles pass-through, MP4 rewrite, remux, and recovery paths. |

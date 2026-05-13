@@ -1,6 +1,85 @@
 # Rust Migration Plan — nzbdavkodi → nzbdav-orchestrator + thin Kodi addon
 
-Status: proposal, 2026-05-12. Author: review pass against current `main` (addon 1.0.8).
+Status: in development, updated 2026-05-13. Author: review pass against current `main` (addon 1.0.8), updated on branch `feat/rust-orchestrator`.
+
+---
+
+## 0. Current checkpoint (2026-05-13)
+
+Development has resumed after the Phase 2/3 resolve-progress slice. The worktree is intentionally dirty; no commit has been made.
+
+Delivered so far:
+- **Phase 0:** Rust workspace and server skeleton exist under `orchestrator/`; the addon has bootstrap coverage for spawning and addressing the orchestrator.
+- **Phase 1:** Search/admin/filter-facing bridge work is present behind `use_orchestrator`, with Python client tests covering the toggle/fallback contract and candidate shape conversion.
+- **Phase 2:** Rust `/v1/resolve` owns nzbdav submit, poll, and WebDAV probe for the orchestrator path. Python can delegate resolve to Rust while preserving legacy fallback when the orchestrator is disabled or unavailable.
+- **Phase 3 foundation:** Rust peer cohort selection, article-overlap scoring, content-length and byte-sample validation, SQLite peer-pool persistence, cache-key lookup, peer endpoints, and resolve event persistence are in place.
+- **Live progress:** Rust emits finite and tailing SSE resolve events on `/v1/resolve/<resolve_id>/events?tail=true`. Python now generates a request-scoped `resolve_id`, passes it to `/v1/resolve`, tails SSE in a daemon thread while the blocking resolve call runs, and updates the existing Kodi progress dialog with submit/WebDAV/peer-validation/ready messages.
+- **Validated peer handoff:** Python extracts only Rust-validated ready peers (`validation_state == "byte_sample_validated_phase_3"`) and passes them directly to the existing local proxy fallback-source path, skipping the legacy Python fallback submit worker for orchestrator-validated peers.
+- **Cache-hit progress correlation:** Cached peer-pool resolve hits now emit `resolve.cache_hit` under the caller's request-scoped `resolve_id`, with `cached_resolve_id` in the event payload. This keeps Python's live SSE tail useful even when Rust short-circuits `/v1/resolve` from SQLite.
+- **Runtime SSE integration coverage:** `tests/test_orchestrator_sse_integration.py` starts the real Rust server, drives Python `resolve_via_orchestrator`, and verifies Python receives the Rust SSE `resolve.cache_hit` event over localhost HTTP.
+- **Peer-pool stale-cache policy and cleanup:** peer-pool cache hits now have a finite max age (default 6 hours, configurable with `--peer-pool-cache-max-age-secs` or `ORCHESTRATOR_PEER_POOL_CACHE_MAX_AGE_SECS`). Stale entries are treated as misses, so `/v1/resolve` falls through to live validation and overwrites the cache on success. Server startup prunes stale peer-pool rows, deletes their persisted progress events, and runs SQLite `PRAGMA optimize`. Background revalidation is intentionally deferred; the request that observes staleness performs the revalidation synchronously.
+- **Local tooling gaps closed:** `just ci-matrix` now runs CI's Python 3.10/3.12 lint+test matrix locally, `just python38-import-check` compiles/imports shipped addon modules under Python 3.8 without the pytest toolchain, and `just repo-smoke` builds release/repository artifacts in a temp dir and validates the GitHub Pages shape. CI and release pytest marker expressions now exclude `extreme` tests like `just test`.
+- **Bug-hunt seeds resolved:** stream-proxy HLS readiness now waits for current-generation init artifacts, original-range retry accounting advances past bytes already written by retry attempts, cancelled submits start late nzbdav job cleanup, restricted metadata filters reject unparsed resolution/audio/codec values, WebDAV 401/403/5xx errors stay typed through resolve handling, and playback IPC window properties use a per-session id so stale stop/end callbacks cannot clear a newer handoff.
+
+Verification at current checkpoint:
+- Rust after live progress/cache-hit work: `cargo fmt --check`, `cargo test`, and `cargo clippy --workspace -- -D warnings` passed.
+- Python before the latest live progress slice: `PATH=.venv/bin:$PATH just lint` and full `just test` passed (`1408 passed, 5 skipped, 11 deselected`).
+- Python after the latest live progress slice:
+  - `pytest tests/test_orchestrator_client.py -q` passed (`10 passed`).
+  - `pytest tests/test_resolver.py::test_poll_until_ready_uses_orchestrator_when_enabled tests/test_resolver.py::test_poll_until_ready_forwards_peer_pool_cache_key tests/test_resolver.py::test_poll_until_ready_tails_orchestrator_progress_events -q` passed (`3 passed`).
+  - `pytest tests/test_orchestrator_client.py tests/test_resolver.py -q` passed (`168 passed`).
+- Python after formatting: `PATH=/home/sprooty/Working/Active/apps/nzbdavkodi/.venv/bin:$PATH just lint` passed, and `PATH=/home/sprooty/Working/Active/apps/nzbdavkodi/.venv/bin:$PATH just test` passed (`1411 passed, 5 skipped, 11 deselected`).
+- Current stale-cache/SSE slice:
+  - `PATH=/home/sprooty/Working/Active/apps/nzbdavkodi/.venv/bin:$PATH just lint` passed.
+  - `PATH=/home/sprooty/Working/Active/apps/nzbdavkodi/.venv/bin:$PATH just test` passed (`1411 passed, 5 skipped, 12 deselected`).
+  - `PATH=/home/sprooty/Working/Active/apps/nzbdavkodi/.venv/bin:$PATH just test-integration` passed (`1 passed, 3 skipped, 1424 deselected`).
+  - `cargo fmt --check`, `cargo test`, and `cargo clippy --workspace -- -D warnings` passed.
+- Current peer-cache cleanup slice targeted check:
+  - `cargo test -p orchestrator-server` passed (`26 passed` across lib/bin).
+- Current tooling cleanup slice:
+  - `pytest tests/test_tooling_scripts.py -q` passed (`3 passed`).
+  - `just repo-smoke` passed.
+  - `just python38-import-check` passed with uv-managed Python 3.8.20 (`40 files, 39 imported modules`).
+  - `just ci-matrix` passed across uv-managed Python 3.10.20 and 3.12.13. Each pytest pass reported `1414 passed, 5 skipped, 12 deselected`.
+- Final verification after docs/tooling updates:
+  - `git diff --check` passed.
+  - `PATH=/home/sprooty/Working/Active/apps/nzbdavkodi/.venv/bin:$PATH just lint` passed.
+  - `PATH=/home/sprooty/Working/Active/apps/nzbdavkodi/.venv/bin:$PATH just test` passed (`1414 passed, 5 skipped, 12 deselected`).
+  - `PATH=/home/sprooty/Working/Active/apps/nzbdavkodi/.venv/bin:$PATH just test-integration` passed (`1 passed, 3 skipped, 1427 deselected`).
+  - `cargo fmt --check`, `cargo test`, and `cargo clippy --workspace -- -D warnings` passed.
+  - `just repo-smoke` passed.
+- Current bug-hardening slice:
+  - `pytest tests/test_resolver.py::test_submit_ui_pump_cancels_job_returned_after_dialog_cancel -q` passed.
+  - `pytest tests/test_resolver.py -q -k 'submit_ui_pump or resolve_submit_timeout or poll_until_ready_cleanup'` passed (`25 passed`).
+  - `pytest tests/test_filter.py -q` passed (`52 passed`).
+  - `pytest tests/test_webdav.py tests/test_resolver.py -q -k 'webdav_auth_http_error or webdav_server_http_error or find_video_file_preserves'` passed (`60 passed, 140 deselected`).
+  - `pytest tests/test_service.py -q -k 'stale_stop or stream_proxy_is_alive or playback_failure or check_active'` passed (`4 passed`).
+  - `pytest tests/test_resolver.py -q -k 'direct_playback or proxy_prepare or orchestrator_fallback_sources'` passed (`6 passed, 155 deselected`).
+  - `git diff --check` passed.
+  - `PATH=/home/sprooty/Working/Active/apps/nzbdavkodi/.venv/bin:$PATH just lint` passed.
+  - `PATH=/home/sprooty/Working/Active/apps/nzbdavkodi/.venv/bin:$PATH just test` passed (`1422 passed, 5 skipped, 12 deselected`).
+  - `PATH=/home/sprooty/Working/Active/apps/nzbdavkodi/.venv/bin:$PATH just test-integration` passed (`1 passed, 3 skipped, 1435 deselected`).
+  - `cargo fmt --check`, `cargo test`, and `cargo clippy --workspace -- -D warnings` passed.
+  - `just repo-smoke` passed.
+
+Known state:
+- Black formatting is clean after formatting the new tooling and stream-proxy tests.
+- Full `just lint`, full `just test`, full `just test-integration`, `cargo fmt --check`, `cargo test`, `cargo clippy --workspace -- -D warnings`, and `just repo-smoke` have been rerun after the current bug-hardening slice.
+- Contributor/user README notes have been updated for the experimental `use_orchestrator` setting and workspace layout. Release changelogs (`CHANGELOG.md`, Kodi changelog) have not been updated because this is unreleased migration work.
+- Live CoreELEC/Kodi validation is still a non-local blocker from this workspace: `ssh -o BatchMode=yes -o ConnectTimeout=5 root@coreelec.local true` failed on 2026-05-13 because `coreelec.local` did not resolve. The sidecar path needs to be exercised on the target box with `use_orchestrator=true` once the host is reachable.
+
+Next steps:
+1. Exercise the orchestrator path on Kodi/CoreELEC with `use_orchestrator=true`: confirm live progress dialog updates, validated peer count appears, cache-hit progress appears, and the local proxy receives Rust-validated fallback sources.
+2. Continue Phase 3 beyond cache freshness: decide whether a future async background refresh is worth the added state once live CoreELEC behavior is observed.
+3. Rerun verification before the next handoff:
+   ```bash
+   PATH=/home/sprooty/Working/Active/apps/nzbdavkodi/.venv/bin:$PATH just lint
+   PATH=/home/sprooty/Working/Active/apps/nzbdavkodi/.venv/bin:$PATH just test
+   cargo fmt --check
+   cargo test
+   cargo clippy --workspace -- -D warnings
+   just repo-smoke
+   ```
 
 ---
 
@@ -135,9 +214,13 @@ POST /v1/search
   → 200 { search_id, candidates: [{nzb_url, indexer, size, title, age, ...}] }
 
 POST /v1/resolve
-  body: { search_id, selected_nzb_url, fallback_count: 3 }
+  body: { resolve_id?, search_id?, selected_nzb_url|nzb_url, fallback_count: 3, candidate_peers?, peer_pool_cache_key?, nzbdav }
   → 200 { resolve_id, primary_peer_id, peers: [{peer_id, validation_state}] }
-  → streams validation progress over SSE on /v1/resolve/<resolve_id>/events
+  → streams validation progress over SSE on /v1/resolve/<resolve_id>/events?tail=true
+
+GET  /v1/resolve/<resolve_id>/events?tail=true
+  → text/event-stream; replays persisted events, then tails live events
+     until the client disconnects or the server emits resolve.completed
 
 GET  /v1/peers/<resolve_id>
   → 200 { peers: [{peer_id, state: "validating"|"ready"|"failed", reason, content_length, sample_hash}] }

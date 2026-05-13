@@ -2,30 +2,21 @@
 
 Active backlog only. Completed work, old audit details, rejected designs, and long research notes live in git history.
 
-Last reviewed: 2026-05-05
+Last reviewed: 2026-05-13
 Current addon version in this checkout: 1.0.8
 
 ## Actual TODOs
 
-Yes. Only two areas are active right now:
+Active areas:
 
-1. Close local/CI tooling gaps.
-2. Keep a small bug-hunt seed list for the next focused review.
-
-## Tooling Gaps
-
-- Add a local Python 3.10 + 3.12 test matrix, or document why CI-only is enough.
-- Add a true Python 3.8 import/runtime check, or keep relying on `.pylintrc` `py-version=3.8`.
-- Add a build/repo smoke target for Pages parity without making `just ci` too noisy.
+1. Continue the Rust sidecar migration on branch `feat/rust-orchestrator`.
+   Current status and next steps live in
+   [`docs/rust-migration-plan.md`](docs/rust-migration-plan.md).
 
 ## Future Bug-Hunt Seeds
 
-- `_retry_original_range` may retry already-written byte boundaries.
-- `HlsProducer.prepare()` may accept a file before ffmpeg has fully flushed it.
-- Force-quit during submit can orphan an nzbdav job.
-- Metadata filters may be too permissive when PTT cannot parse a release title.
-- WebDAV 401/403/5xx handling should stay typed and visible, not collapsed to "not found".
-- Session/window-property races should be reviewed before larger concurrency changes.
+No current seeds. Add new entries here only after a focused review identifies a
+concrete risk worth investigating.
 
 ## Backburner
 
