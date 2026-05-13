@@ -67,15 +67,47 @@ test:
 test-verbose:
     python3 -m pytest tests/ -v --tb=long -m "not integration and not functional and not extreme"
 
-# Run integration tests against a real ffmpeg binary. Spawns the
-# actual fmp4 HLS producer pipeline against a tiny test MKV
-# generated on the fly via ffmpeg lavfi sources, validates that
-# init.mp4 + segments are produced and well-formed. Catches every
-# class of bug we've hit on this spike (absolute path, -strict -2,
-# analyzeduration, delay_moov, codec frame size) at PR time. Skips
-# automatically if no ffmpeg is on PATH.
+# Run opt-in integration tests. These spawn local dependencies such
+# as a real ffmpeg binary for HLS coverage or the Rust orchestrator
+# binary for Python/Rust HTTP bridge coverage.
 test-integration:
     python3 -m pytest tests/ -v --tb=long -m integration
+
+# Run the same Python 3.10/3.12 lint+test matrix as .github/workflows/ci.yml.
+# Uses uv so the matrix does not depend on the active shell's virtualenv.
+ci-matrix:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! command -v uv >/dev/null 2>&1; then
+        echo "FATAL: just ci-matrix requires uv (https://docs.astral.sh/uv/)." >&2
+        exit 2
+    fi
+    export UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/nzbdavkodi-uv-cache}"
+    for py in 3.10 3.12; do
+        echo "== Python ${py}: ruff =="
+        uv run --python "${py}" --no-project --with-requirements requirements-test.txt --with "ruff>=0.15" --with "black>=24" ruff check plugin.video.nzbdav/ tests/ --exclude="plugin.video.nzbdav/resources/lib/ptt/"
+        echo "== Python ${py}: black =="
+        uv run --python "${py}" --no-project --with-requirements requirements-test.txt --with "ruff>=0.15" --with "black>=24" black --check plugin.video.nzbdav/ tests/ --exclude="ptt/"
+        echo "== Python ${py}: pytest =="
+        uv run --python "${py}" --no-project --with-requirements requirements-test.txt --with "ruff>=0.15" --with "black>=24" python -m pytest tests/ -v --tb=short -m "not integration and not functional and not extreme"
+    done
+
+# Compile every shipped addon .py file and import service/library modules under
+# Python 3.8. This catches runtime-floor drift without needing pytest on 3.8.
+python38-import-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ -n "${PYTHON38:-}" ]]; then
+        "${PYTHON38}" scripts/python_runtime_import_check.py
+    elif command -v python3.8 >/dev/null 2>&1; then
+        python3.8 scripts/python_runtime_import_check.py
+    elif command -v uv >/dev/null 2>&1; then
+        export UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/nzbdavkodi-uv-cache}"
+        uv run --python 3.8 --no-project python scripts/python_runtime_import_check.py
+    else
+        echo "FATAL: install python3.8, set PYTHON38=/path/to/python3.8, or install uv." >&2
+        exit 2
+    fi
 
 # Run dev-box functional tests against live configured services.
 # Requires local .env credentials and may use real Hydra/indexer responses.
@@ -287,6 +319,11 @@ ship: test release
 # Generate Kodi repository in dist/
 repo: release
     python3 scripts/generate_repo.py --output-dir dist
+
+# Build addon + repository artifacts in a temp dir and validate the GitHub Pages
+# layout without touching dist/ or making the default CI target noisier.
+repo-smoke:
+    python3 scripts/repo_smoke.py
 
 # Copy the repository zip to cwd for easy access
 repo-zip: repo

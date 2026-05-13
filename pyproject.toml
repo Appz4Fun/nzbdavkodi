@@ -31,7 +31,7 @@ extend-exclude = "ptt/"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
-    "integration: tests that spawn a real ffmpeg binary against a generated MKV; skipped by default, run via `just test-integration`",
+    "integration: tests that spawn local integration dependencies such as real ffmpeg or the Rust orchestrator; skipped by default, run via `just test-integration`",
     "functional: dev-box tests that use live services plus local playback simulation; skipped by default, run via `just functional-test`",
     "extreme: extreme functional test (20+ minutes, real services); skipped by default, run via `just extreme-functional-test`",
 ]
