@@ -196,6 +196,7 @@ def _start_orchestrator(tmp_path, profile, peer_pool_db):
     orchestrator_dir = repo_root / "orchestrator"
     if not orchestrator_dir.exists():
         pytest.skip("orchestrator workspace is not present")
+        raise AssertionError("unreachable after pytest.skip")
 
     env = os.environ.copy()
     env.setdefault("ORCHESTRATOR_LOG", "error")
@@ -238,6 +239,7 @@ def _start_orchestrator(tmp_path, profile, peer_pool_db):
         time.sleep(0.05)
     _stop_process(proc)
     pytest.fail("orchestrator did not write addr file before timeout")
+    raise AssertionError("unreachable after pytest.fail")
 
 
 def _stop_process(proc):

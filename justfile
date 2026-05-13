@@ -417,6 +417,11 @@ harness-down:
 # Full test including real NZB download (10-30 min):
 #   LIVE_FULL_RESOLVE=1 just harness-live-test
 #
+# No-Kodi live extreme search/report run:
+#   just harness-live-extreme
+# Full no-Kodi live extreme resolve/peer-validation run:
+#   LIVE_EXTREME_FULL_RESOLVE=1 just harness-live-extreme
+#
 # Teardown:
 #   just harness-live-down          # stop services; volumes kept (Hydra config survives)
 #   just harness-live-reset         # stop + delete ALL volumes (full reset)
@@ -447,6 +452,16 @@ harness-live-init-down:
 harness-live-test:
     cd {{_LIVE}} && \
         docker compose --env-file ../../../../{{_LIVE_ENV}} run --rm test-runner && \
+        docker compose --env-file ../../../../{{_LIVE_ENV}} down
+
+# Run the no-Kodi live extreme harness. Default mode searches the IMDb
+# corpus sample and writes docs/reports/live-harness-*/. Set
+# LIVE_EXTREME_FULL_RESOLVE=1 to include real nzbdav-rs downloads and
+# peer-validation assertions.
+harness-live-extreme:
+    cd {{_LIVE}} && \
+        docker compose --env-file ../../../../{{_LIVE_ENV}} build test-runner && \
+        LIVE_EXTREME=1 docker compose --env-file ../../../../{{_LIVE_ENV}} run --rm test-runner pytest /tests/test_live_extreme.py -v --tb=short --no-header && \
         docker compose --env-file ../../../../{{_LIVE_ENV}} down
 
 # Start the live stack and leave it running for manual exploration.

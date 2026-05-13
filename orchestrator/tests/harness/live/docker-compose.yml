@@ -100,8 +100,18 @@ services:
       NNTP_PASS: ${NNTP_PASS}
       NNTP_CONNS: ${NNTP_CONNS:-80}
       LIVE_FULL_RESOLVE: ${LIVE_FULL_RESOLVE:-0}
+      LIVE_EXTREME: ${LIVE_EXTREME:-0}
+      LIVE_EXTREME_SAMPLE_SIZE: ${LIVE_EXTREME_SAMPLE_SIZE:-3}
+      LIVE_EXTREME_MIN_VALIDATED_PEERS: ${LIVE_EXTREME_MIN_VALIDATED_PEERS:-1}
+      LIVE_EXTREME_FULL_RESOLVE: ${LIVE_EXTREME_FULL_RESOLVE:-0}
+      LIVE_EXTREME_IMDB_ID: ${LIVE_EXTREME_IMDB_ID:-}
+      LIVE_REPORT_ROOT: /reports
       LIVE_IMDB_ID: ${EXTREME_TEST_IMDB_ID:-tt0468569}
+    volumes:
+      - ../../../../docs/reports:/reports
     depends_on:
+      hydra2:
+        condition: service_started
       orchestrator:
         condition: service_healthy
 
