@@ -1,0 +1,20 @@
+# Multi-stage build — context must be the repo root so COPY can reach
+# orchestrator/. docker-compose.yml sets context: ../../.. (repo root).
+FROM rust:1.82-slim AS builder
+
+# No system OpenSSL needed: reqwest uses rustls; rusqlite uses bundled SQLite.
+RUN apt-get update && apt-get install -y --no-install-recommends pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY orchestrator/ ./orchestrator/
+WORKDIR /build/orchestrator
+
+RUN cargo build --release --bin orchestrator
+
+# ---- runtime ----
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /build/orchestrator/target/release/orchestrator /usr/local/bin/orchestrator
+ENTRYPOINT ["orchestrator"]

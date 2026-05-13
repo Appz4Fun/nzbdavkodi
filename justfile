@@ -368,3 +368,34 @@ harness-scenario name:
 orchestrator-build:
     cd orchestrator && cargo build --release --bin orchestrator
     @echo "Built: orchestrator/target/release/orchestrator"
+
+# --- Docker Compose E2E harness (plan §12, no Kodi / no NNTP) ---------------
+#
+# All four services (mock-indexer, mock-nzbdav, orchestrator, test-runner)
+# run in Docker.  The first build is slow because of the Rust compile;
+# subsequent builds are fast via Docker layer cache.
+#
+# Usage:
+#   just harness-build   # build images (run once, or after code changes)
+#   just harness-test    # run the pytest suite; exit code mirrors pytest
+#   just harness-down    # stop + remove containers and anonymous volumes
+
+# Build all harness Docker images.
+harness-build:
+    cd orchestrator/tests/harness && docker compose build
+
+# Run the E2E suite inside Docker.  Exits with pytest's exit code so CI
+# can gate on it.  Tears down the stack on completion.
+harness-test:
+    cd orchestrator/tests/harness && \
+        docker compose run --rm test-runner && \
+        docker compose down -v
+
+# Start the stack and leave it running (useful for manual exploration /
+# curl against the orchestrator on localhost:4000).
+harness-up:
+    cd orchestrator/tests/harness && docker compose up -d --wait
+
+# Stop the stack and remove volumes.
+harness-down:
+    cd orchestrator/tests/harness && docker compose down -v

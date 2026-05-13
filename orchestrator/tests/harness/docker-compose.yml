@@ -1,0 +1,68 @@
+name: nzbdav-harness
+
+# Self-contained E2E stack — no Kodi, no NNTP, no live indexer.
+#
+#   mock-indexer  Newznab stub: caps XML + canned search results + NZB fixtures
+#   mock-nzbdav   SABnzbd API stub + WebDAV serving a generated sample.mkv
+#   orchestrator  our Rust binary under test
+#   test-runner   pytest suite that drives the orchestrator HTTP API
+#
+# Usage:
+#   just harness-build   # build all images (slow first time; Rust compile)
+#   just harness-test    # run the full suite; exits with pytest's exit code
+#   just harness-down    # tear down + remove volumes
+
+services:
+
+  mock-indexer:
+    build: ./stubs/mock_indexer
+    volumes:
+      - ./fixtures:/fixtures:ro
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5076/api?t=caps"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mock-nzbdav:
+    build: ./stubs/mock_nzbdav
+    # No fixture bind-mount needed — sample.mkv is generated at image build time.
+    healthcheck:
+      test: ["CMD", "curl", "-sf",
+             "http://localhost:8080/api?mode=queue&apikey=test&output=json"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  orchestrator:
+    build:
+      # Context is the repo root so COPY can reach the orchestrator/ workspace.
+      context: ../../..
+      dockerfile: orchestrator/tests/harness/Dockerfile.orchestrator
+    environment:
+      ORCHESTRATOR_BIND: "0.0.0.0"
+      ORCHESTRATOR_PORT: "4000"
+      ORCHESTRATOR_INDEXER_STORE_PATH: /tmp/indexers.json
+      ORCHESTRATOR_PEER_POOL_DB_PATH: /tmp/peer_pool.sqlite3
+      ORCHESTRATOR_PEER_POOL_CACHE_MAX_AGE_SECS: "300"
+      ORCHESTRATOR_LOG: "orchestrator=debug,orchestrator_server=debug,warn"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:4000/v1/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    depends_on:
+      mock-indexer:
+        condition: service_healthy
+      mock-nzbdav:
+        condition: service_healthy
+
+  test-runner:
+    build: ./test_runner
+    environment:
+      ORCHESTRATOR_URL: "http://orchestrator:4000"
+      MOCK_INDEXER_URL: "http://mock-indexer:5076"
+      MOCK_NZBDAV_URL: "http://mock-nzbdav:8080"
+    depends_on:
+      orchestrator:
+        condition: service_healthy
