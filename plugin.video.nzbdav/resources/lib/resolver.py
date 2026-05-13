@@ -4,11 +4,14 @@
 
 """Resolve flow: submit NZB to nzbdav, poll until stream is ready, play."""
 
+import hashlib
 import http.client
+import json
 import socket
 import threading
 import time
-from urllib.error import URLError
+import uuid
+from urllib.error import HTTPError, URLError
 from urllib.parse import unquote
 
 import xbmc
@@ -59,6 +62,7 @@ _POLL_NEAR_COMPLETE_FAST_REPOLL_SECONDS = 0.1
 _POLL_NEAR_COMPLETE_FAST_REPOLL_COUNT = 5
 _PLAYBACK_CLEANUP_HANDOFF_GRACE_SECONDS = 0.25
 _PLAYBACK_PREPARE_HANDOFF_GRACE_SECONDS = 8.0
+_ORCHESTRATOR_PROGRESS_JOIN_TIMEOUT = 0.25
 # HTTP status codes the submit retry loop treats as transient and worth
 # retrying. RFC 9110 explicitly calls 408 retry-friendly ("client may
 # assume the server closed the connection due to inactivity and retry").
@@ -99,6 +103,10 @@ _CLAMP_LOGGED = set()
 _DIALOG_UPDATE_LOCK = threading.Lock()
 _DIALOG_UPDATE_INFLIGHT = {}
 _SCRIPT_PLAY_STAGE_PATH = "/storage/.kodi/temp/nzbdav-script-play-stage.log"
+_PROP_STREAM_SESSION_ID = "nzbdav.stream_session_id"
+_PROP_STREAM_URL = "nzbdav.stream_url"
+_PROP_STREAM_TITLE = "nzbdav.stream_title"
+_PROP_ACTIVE = "nzbdav.active"
 
 
 def _resolve_stage(message):
@@ -215,6 +223,28 @@ def _cache_bust_url(url):
     )
     rebuilt = "{}{}nzbdav_play={}".format(base, separator, counter)
     return rebuilt + ("#" + fragment if fragment else "")
+
+
+def _peer_pool_cache_key(params, title):
+    """Return a stable, conservative cache key for Rust peer pools."""
+    params = params if isinstance(params, dict) else {}
+
+    def _norm(value):
+        return " ".join(str(value or "").strip().lower().split())
+
+    payload = {
+        "type": _norm(params.get("type", "")),
+        "imdb": _norm(params.get("imdb", "")),
+        "tmdb_id": _norm(params.get("tmdb_id", "")),
+        "year": _norm(params.get("year", "")),
+        "season": _norm(params.get("season", "") or params.get("ep_season", "")),
+        "episode": _norm(params.get("episode", "") or params.get("ep_episode", "")),
+        "release_title": _norm(title),
+    }
+    if not payload["release_title"]:
+        return ""
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return "v1:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _clear_kodi_playback_state(params=None):
@@ -468,6 +498,13 @@ def _make_playable_listitem(url, headers):
     return li
 
 
+def _write_playback_window_properties(home, play_url, title):
+    home.setProperty(_PROP_STREAM_SESSION_ID, uuid.uuid4().hex)
+    home.setProperty(_PROP_STREAM_URL, play_url)
+    home.setProperty(_PROP_STREAM_TITLE, title)
+    home.setProperty(_PROP_ACTIVE, "true")
+
+
 def _apply_proxy_mime(li, stream_url, stream_info):
     """Set mime type and any info metadata on a proxy ListItem."""
     proxy_url = li.getPath()
@@ -706,6 +743,113 @@ def _settings_getter_kwargs(settings_getter):
     return {"settings_getter": settings_getter} if settings_getter is not None else {}
 
 
+def _new_orchestrator_resolve_id():
+    return uuid.uuid4().hex.upper()
+
+
+def _orchestrator_enabled(settings_getter=None):
+    try:
+        if settings_getter is None:
+            value = xbmcaddon.Addon("plugin.video.nzbdav").getSetting(
+                "use_orchestrator"
+            )
+        else:
+            value = settings_getter("use_orchestrator", "false")
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return False
+    return str(value or "").lower() == "true"
+
+
+def _orchestrator_event_payload(event):
+    payload = event.get("payload") if isinstance(event, dict) else {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _handle_orchestrator_progress_event(dialog, event, counts=None):
+    if not isinstance(event, dict):
+        return False
+    counts = counts if isinstance(counts, dict) else {}
+    event_type = event.get("event")
+    payload = _orchestrator_event_payload(event)
+
+    if event_type == "submit.accepted":
+        return _safe_dialog_update(dialog, 5, _string(30199))
+    if event_type == "webdav.probe":
+        return _safe_dialog_update(dialog, 70, _string(30200))
+    if event_type == "peer.admitted":
+        counts["validated"] = int(counts.get("validated") or 0) + 1
+        return _safe_dialog_update(dialog, 80, _fmt(30201, counts["validated"]))
+    if event_type in ("peer.rejected", "submit.rejected"):
+        return _safe_dialog_update(dialog, 60, _string(30202))
+    if event_type in ("resolve.completed", "resolve.cache_hit"):
+        peer_count = payload.get("peer_count")
+        if peer_count:
+            return _safe_dialog_update(dialog, 100, _fmt(30203, peer_count))
+        return _safe_dialog_update(dialog, 100, _string(30204))
+    return False
+
+
+def _start_orchestrator_progress_tail(resolve_id, dialog, settings_getter=None):
+    if not resolve_id or not _orchestrator_enabled(settings_getter):
+        return None
+
+    stop = threading.Event()
+    done = threading.Event()
+    counts = {"validated": 0}
+    state = {"stop": stop, "done": done, "thread": None}
+
+    def _worker():
+        try:
+            from resources.lib.orchestrator_client import tail_resolve_events
+
+            reason = tail_resolve_events(
+                resolve_id,
+                lambda event: _handle_orchestrator_progress_event(
+                    dialog, event, counts
+                ),
+                settings_getter=settings_getter,
+                stop_event=stop,
+            )
+            if reason and reason != "orchestrator_disabled":
+                xbmc.log(
+                    "NZB-DAV: orchestrator progress tail ended: {}".format(reason),
+                    xbmc.LOGDEBUG,
+                )
+        except Exception as error:  # pylint: disable=broad-except
+            xbmc.log(
+                "NZB-DAV: orchestrator progress tail failed: {}".format(error),
+                xbmc.LOGDEBUG,
+            )
+        finally:
+            done.set()
+
+    thread = threading.Thread(
+        target=_worker, name="nzbdav-orchestrator-progress-tail", daemon=True
+    )
+    state["thread"] = thread
+    try:
+        thread.start()
+    except RuntimeError as error:
+        done.set()
+        xbmc.log(
+            "NZB-DAV: orchestrator progress tail thread failed: {}".format(error),
+            xbmc.LOGDEBUG,
+        )
+        return None
+    return state
+
+
+def _stop_orchestrator_progress_tail(state):
+    if not state:
+        return
+    stop = state.get("stop")
+    if stop is not None:
+        stop.set()
+    done = state.get("done")
+    if done is not None:
+        done.wait(_ORCHESTRATOR_PROGRESS_JOIN_TIMEOUT)
+
+
 def _safe_dialog_update(dialog, progress, message):
     """Best-effort progress update that cannot block the resolver loop."""
     key = id(dialog)
@@ -874,9 +1018,9 @@ def _finish_direct_playback(handle, prepared):
             bust_url = _cache_bust_url(stream_url)
             li = _make_playable_listitem(bust_url, stream_headers)
             play_url = _build_play_url(bust_url, stream_headers)
-            home.setProperty("nzbdav.stream_url", play_url)
-            home.setProperty("nzbdav.stream_title", stream_url.rsplit("/", 1)[-1])
-            home.setProperty("nzbdav.active", "true")
+            _write_playback_window_properties(
+                home, play_url, stream_url.rsplit("/", 1)[-1]
+            )
             xbmcplugin.setResolvedUrl(handle, True, li)
             return
 
@@ -884,9 +1028,9 @@ def _finish_direct_playback(handle, prepared):
         li.setContentLookup(False)
         _apply_proxy_mime(li, stream_url, stream_info)
 
-        home.setProperty("nzbdav.stream_url", proxy_url)
-        home.setProperty("nzbdav.stream_title", stream_url.rsplit("/", 1)[-1])
-        home.setProperty("nzbdav.active", "true")
+        _write_playback_window_properties(
+            home, proxy_url, stream_url.rsplit("/", 1)[-1]
+        )
         xbmcplugin.setResolvedUrl(handle, True, li)
         return
 
@@ -899,9 +1043,7 @@ def _finish_direct_playback(handle, prepared):
 
     li = _make_playable_listitem(bust_url, stream_headers)
     home = xbmcgui.Window(10000)
-    home.setProperty("nzbdav.stream_url", play_url)
-    home.setProperty("nzbdav.stream_title", stream_url.rsplit("/", 1)[-1])
-    home.setProperty("nzbdav.active", "true")
+    _write_playback_window_properties(home, play_url, stream_url.rsplit("/", 1)[-1])
     xbmcplugin.setResolvedUrl(handle, True, li)
 
 
@@ -925,18 +1067,14 @@ def _finish_player_playback(prepared):
             bust_url = _cache_bust_url(stream_url)
             li = _make_playable_listitem(bust_url, stream_headers)
             play_url = _build_play_url(bust_url, stream_headers)
-            home.setProperty("nzbdav.stream_url", play_url)
-            home.setProperty("nzbdav.stream_title", title)
-            home.setProperty("nzbdav.active", "true")
+            _write_playback_window_properties(home, play_url, title)
             xbmc.Player().play(li.getPath(), li)
             return
 
         li = xbmcgui.ListItem(path=proxy_url)
         li.setContentLookup(False)
         _apply_proxy_mime(li, stream_url, stream_info)
-        home.setProperty("nzbdav.stream_url", proxy_url)
-        home.setProperty("nzbdav.stream_title", title)
-        home.setProperty("nzbdav.active", "true")
+        _write_playback_window_properties(home, proxy_url, title)
         xbmc.Player().play(proxy_url, li)
         _show_cache_prompt_after_playback(stream_info)
         return
@@ -945,9 +1083,7 @@ def _finish_player_playback(prepared):
     li = _make_playable_listitem(bust_url, stream_headers)
     play_url = _build_play_url(bust_url, stream_headers)
     xbmc.log("NZB-DAV: Playing direct (no proxy): {}".format(stream_url), xbmc.LOGINFO)
-    home.setProperty("nzbdav.stream_url", play_url)
-    home.setProperty("nzbdav.stream_title", title)
-    home.setProperty("nzbdav.active", "true")
+    _write_playback_window_properties(home, play_url, title)
     xbmc.Player().play(li.getPath(), li)
 
 
@@ -1654,6 +1790,7 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor, settings_getter=No
     adoption_status = [""]
     queue_hit_lock = threading.Lock()
     adopted_during_submit = [False]
+    abort_cleanup_reason = [""]
     queue_stop = threading.Event()
     first_queue_probe_done = threading.Event()
 
@@ -1846,10 +1983,12 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor, settings_getter=No
                     "NZB-DAV: User cancelled during submit for '{}'".format(title),
                     xbmc.LOGINFO,
                 )
+                abort_cleanup_reason[0] = "dialog cancel"
                 return None, {"status": "cancelled", "message": ""}
             if _wait_for_submit_activity_or_abort(
                 _SUBMIT_ADOPTION_CHECK_INTERVAL_SECONDS
             ):
+                abort_cleanup_reason[0] = "Kodi shutdown"
                 return None, {"status": "shutdown", "message": ""}
             probe_result = _probe_adoption_result()
             if probe_result:
@@ -1907,6 +2046,15 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor, settings_getter=No
                     "NZB-DAV: Resolver worker join failed: {}".format(e),
                     xbmc.LOGDEBUG,
                 )
+        if abort_cleanup_reason[0]:
+            _start_submit_abort_cleanup(
+                title,
+                submit_result,
+                submit_done,
+                abort_cleanup_reason[0],
+                submit_timeout_seconds,
+                settings_getter=settings_getter,
+            )
 
 
 def _get_submit_timeout_seconds(settings_getter=None):
@@ -1958,6 +2106,106 @@ def _adopt_queued_or_completed_job(title, monitor, settings_getter=None):
             if monitor.waitForAbort(_SUBMIT_ADOPT_POLL_INTERVAL_SECONDS):
                 return None
     return None
+
+
+def _cancel_submit_abort_job(nzo_id, title, reason, settings_getter=None):
+    try:
+        if settings_getter is None:
+            cancel_job(nzo_id)
+        else:
+            cancel_job(nzo_id, settings_getter=settings_getter)
+        xbmc.log(
+            "NZB-DAV: Cancelled nzbdav job nzo_id={} for '{}' after {}".format(
+                nzo_id, title, reason
+            ),
+            xbmc.LOGINFO,
+        )
+        return True
+    except Exception as error:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: Failed to cancel late submit job nzo_id={} for '{}': {}".format(
+                nzo_id, title, error
+            ),
+            xbmc.LOGWARNING,
+        )
+        return False
+
+
+def _cleanup_submit_abort_job(
+    title, submit_result, submit_done, reason, wait_seconds, settings_getter=None
+):
+    """Cancel a job accepted by nzbdav after the user aborts submit."""
+    deadline = time.monotonic() + max(0, wait_seconds)
+    while True:
+        nzo_id = submit_result[0] or _find_adoptable_job_during_submit(
+            title, settings_getter=settings_getter
+        )
+        if nzo_id:
+            return _cancel_submit_abort_job(
+                nzo_id, title, reason, settings_getter=settings_getter
+            )
+        if submit_done.is_set():
+            return False
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            xbmc.log(
+                "NZB-DAV: Late submit cleanup timed out for '{}' after {}".format(
+                    title, reason
+                ),
+                xbmc.LOGWARNING,
+            )
+            return False
+        threading.Event().wait(min(_SUBMIT_QUEUE_PROBE_INTERVAL_SECONDS, remaining))
+
+
+def _start_submit_abort_cleanup(
+    title,
+    submit_result,
+    submit_done,
+    reason,
+    submit_timeout_seconds,
+    settings_getter=None,
+):
+    cleanup_seconds = submit_timeout_seconds + (
+        _SUBMIT_ADOPT_POLL_COUNT * _SUBMIT_ADOPT_POLL_INTERVAL_SECONDS
+    )
+    if submit_done.is_set():
+        _cleanup_submit_abort_job(
+            title,
+            submit_result,
+            submit_done,
+            reason,
+            0,
+            settings_getter=settings_getter,
+        )
+        return None
+
+    thread = threading.Thread(
+        target=_cleanup_submit_abort_job,
+        args=(title, submit_result, submit_done, reason, cleanup_seconds),
+        kwargs={"settings_getter": settings_getter},
+        name="nzbdav-submit-abort-cleanup",
+        daemon=True,
+    )
+    try:
+        thread.start()
+        return thread
+    except RuntimeError as error:
+        xbmc.log(
+            "NZB-DAV: Could not start submit abort cleanup for '{}': {}".format(
+                title, error
+            ),
+            xbmc.LOGWARNING,
+        )
+        _cleanup_submit_abort_job(
+            title,
+            submit_result,
+            submit_done,
+            reason,
+            0,
+            settings_getter=settings_getter,
+        )
+        return None
 
 
 def _submit_nzb_with_retries(
@@ -2615,6 +2863,15 @@ def _find_completed_video_stream_with_rechecks(
     return None, None, None
 
 
+def _webdav_http_error_type(error):
+    status = getattr(error, "code", None)
+    if status in (401, 403):
+        return "auth_failed"
+    if isinstance(status, int) and status >= 500:
+        return "server_error"
+    return None
+
+
 def _handle_history_result(
     history,
     title,
@@ -2663,9 +2920,20 @@ def _handle_history_result(
     if not storage:
         return False, None, None, no_video_retries
     webdav_folder = _storage_to_webdav_path(storage)
-    video_path, stream_url, stream_headers = _find_completed_video_stream_with_rechecks(
-        webdav_folder, monitor=monitor, settings_getter=settings_getter
-    )
+    try:
+        video_path, stream_url, stream_headers = (
+            _find_completed_video_stream_with_rechecks(
+                webdav_folder, monitor=monitor, settings_getter=settings_getter
+            )
+        )
+    except HTTPError as error:
+        error_type = _webdav_http_error_type(error)
+        if error_type:
+            should_stop = _handle_webdav_error(
+                history.get("nzo_id", "unknown"), error_type
+            )
+            return should_stop, None, None, no_video_retries
+        raise
     if video_path:
         xbmc.log(
             "NZB-DAV: File available, streaming '{}' via WebDAV".format(video_path),
@@ -2721,6 +2989,56 @@ def _handle_webdav_error(nzo_id, webdav_error):
     return False
 
 
+def _resolve_via_orchestrator_if_available(
+    nzb_url,
+    title,
+    poll_interval,
+    download_timeout,
+    fallback_candidates=None,
+    peer_pool_cache_key=None,
+    settings_getter=None,
+    resolve_id=None,
+):
+    """Try Phase-2 Rust resolve, returning the legacy tuple shape.
+
+    ``resolve_via_orchestrator`` never raises on transport/JSON failures,
+    but this wrapper also catches import/runtime errors so a broken
+    orchestrator bridge cannot strand Kodi without a legacy fallback.
+    """
+    try:
+        from resources.lib.orchestrator_client import resolve_via_orchestrator
+    except Exception as error:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: orchestrator resolve bridge unavailable: {}".format(error),
+            xbmc.LOGWARNING,
+        )
+        return None, None, [], "orchestrator_import_error"
+
+    try:
+        kwargs = {
+            "poll_interval": poll_interval,
+            "download_timeout": download_timeout,
+            "fallback_candidates": fallback_candidates,
+            "settings_getter": settings_getter,
+        }
+        if peer_pool_cache_key:
+            kwargs["peer_pool_cache_key"] = peer_pool_cache_key
+        if resolve_id:
+            kwargs["resolve_id"] = resolve_id
+        kwargs["return_fallback_sources"] = True
+        result = resolve_via_orchestrator(nzb_url, title, **kwargs)
+        if len(result) == 3:
+            stream_url, stream_headers, reason = result
+            return stream_url, stream_headers, [], reason
+        return result
+    except Exception as error:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: orchestrator resolve bridge failed: {}".format(error),
+            xbmc.LOGWARNING,
+        )
+        return None, None, [], "orchestrator_bridge_error"
+
+
 def _handle_resolve_exception(label, error, handle=None):
     """Log and surface a non-fatal resolve error to Kodi."""
     from resources.lib.http_util import redact_text
@@ -2748,6 +3066,9 @@ def _poll_until_ready(
     completed_job_lookup_done=False,
     settings_getter=None,
     selected_indexer=None,
+    fallback_candidates=None,
+    peer_pool_cache_key=None,
+    on_orchestrator_fallback_sources=None,
 ):
     """Submit NZB and poll until download completes.
 
@@ -2756,6 +3077,48 @@ def _poll_until_ready(
     notifications are issued inside this function; the caller only needs to
     decide what to do with the resulting stream URL.
     """
+    orchestrator_resolve_id = None
+    orchestrator_progress_state = None
+    if _orchestrator_enabled(settings_getter):
+        orchestrator_resolve_id = _new_orchestrator_resolve_id()
+        orchestrator_progress_state = _start_orchestrator_progress_tail(
+            orchestrator_resolve_id,
+            dialog,
+            settings_getter=settings_getter,
+        )
+    try:
+        stream_url, stream_headers, orch_fallback_sources, orch_reason = (
+            _resolve_via_orchestrator_if_available(
+                nzb_url,
+                title,
+                poll_interval,
+                download_timeout,
+                fallback_candidates=fallback_candidates,
+                peer_pool_cache_key=peer_pool_cache_key,
+                settings_getter=settings_getter,
+                resolve_id=orchestrator_resolve_id,
+            )
+        )
+    finally:
+        _stop_orchestrator_progress_tail(orchestrator_progress_state)
+    if stream_url:
+        if orch_fallback_sources and on_orchestrator_fallback_sources is not None:
+            try:
+                on_orchestrator_fallback_sources(orch_fallback_sources)
+            except Exception as error:  # pylint: disable=broad-except
+                xbmc.log(
+                    "NZB-DAV: orchestrator fallback source handoff failed: {}".format(
+                        error
+                    ),
+                    xbmc.LOGWARNING,
+                )
+        return stream_url, stream_headers or {}
+    if orch_reason and orch_reason != "orchestrator_disabled":
+        xbmc.log(
+            "NZB-DAV: orchestrator resolve fallback reason={}".format(orch_reason),
+            xbmc.LOGWARNING,
+        )
+
     existing_stream = _existing_completed_stream(
         title,
         on_existing_completed=on_existing_completed,
@@ -2887,6 +3250,7 @@ def resolve(handle, params):
     title = unquote(params.get("title", ""))
     fallback_state = None
     playback_cleanup_state = None
+    orchestrator_fallback_sources = []
 
     if not nzb_url:
         xbmcgui.Dialog().ok(_addon_name(), _string(30096))
@@ -2916,6 +3280,10 @@ def resolve(handle, params):
                     fallback_candidates,
                     candidate_loader=fallback_candidate_loader,
                 )
+
+        def _capture_orchestrator_fallback_sources(sources):
+            nonlocal orchestrator_fallback_sources
+            orchestrator_fallback_sources = list(sources or [])
 
         completed_stream = _picker_completed_stream(
             title, params, on_existing_completed=_start_playback_cleanup_once
@@ -2950,17 +3318,26 @@ def resolve(handle, params):
                 ),
                 completed_job_lookup_done=picker_completed_lookup_done,
                 selected_indexer=selected_indexer,
-            )
-        if stream_url:
-            if fallback_state is None:
-                _start_fallback_after_primary(None)
-            fallback_sources = _playback_fallback_sources_for_stream(
-                stream_url,
-                _fallback_submit_jobs_snapshot(
-                    fallback_state,
-                    wait_seconds=_PLAYBACK_PREPARE_HANDOFF_GRACE_SECONDS,
+                fallback_candidates=fallback_candidates,
+                peer_pool_cache_key=_peer_pool_cache_key(params, title),
+                on_orchestrator_fallback_sources=(
+                    _capture_orchestrator_fallback_sources
                 ),
             )
+        if stream_url:
+            if orchestrator_fallback_sources:
+                _start_playback_cleanup_once()
+                fallback_sources = list(orchestrator_fallback_sources)
+            else:
+                if fallback_state is None:
+                    _start_fallback_after_primary(None)
+                fallback_sources = _playback_fallback_sources_for_stream(
+                    stream_url,
+                    _fallback_submit_jobs_snapshot(
+                        fallback_state,
+                        wait_seconds=_PLAYBACK_PREPARE_HANDOFF_GRACE_SECONDS,
+                    ),
+                )
             playback_prepare_state = _start_direct_playback_prepare(
                 stream_url,
                 stream_headers,
@@ -3004,6 +3381,7 @@ def resolve_and_play(nzb_url, title, params=None):
     dialog = None
     fallback_state = None
     playback_cleanup_state = None
+    orchestrator_fallback_sources = []
     try:
         _resolve_stage("enter resolve_and_play")
         resolve_params = params or {}
@@ -3034,6 +3412,10 @@ def resolve_and_play(nzb_url, title, params=None):
                     fallback_candidates,
                     **fallback_submit_kwargs,
                 )
+
+        def _capture_orchestrator_fallback_sources(sources):
+            nonlocal orchestrator_fallback_sources
+            orchestrator_fallback_sources = list(sources or [])
 
         completed_stream = _picker_completed_stream(
             title,
@@ -3080,18 +3462,27 @@ def resolve_and_play(nzb_url, title, params=None):
                 completed_job_lookup_done=picker_completed_lookup_done,
                 settings_getter=settings_getter,
                 selected_indexer=selected_indexer,
+                fallback_candidates=fallback_candidates,
+                peer_pool_cache_key=_peer_pool_cache_key(resolve_params, title),
+                on_orchestrator_fallback_sources=(
+                    _capture_orchestrator_fallback_sources
+                ),
             )
             _resolve_stage("poll until ready done stream={}".format(bool(stream_url)))
         if stream_url:
-            if fallback_state is None:
-                _start_fallback_after_primary(None)
-            fallback_sources = _playback_fallback_sources_for_stream(
-                stream_url,
-                _fallback_submit_jobs_snapshot(
-                    fallback_state,
-                    wait_seconds=_PLAYBACK_PREPARE_HANDOFF_GRACE_SECONDS,
-                ),
-            )
+            if orchestrator_fallback_sources:
+                _start_playback_cleanup_once()
+                fallback_sources = list(orchestrator_fallback_sources)
+            else:
+                if fallback_state is None:
+                    _start_fallback_after_primary(None)
+                fallback_sources = _playback_fallback_sources_for_stream(
+                    stream_url,
+                    _fallback_submit_jobs_snapshot(
+                        fallback_state,
+                        wait_seconds=_PLAYBACK_PREPARE_HANDOFF_GRACE_SECONDS,
+                    ),
+                )
             _resolve_stage("prepare playback start")
             prepare_kwargs = {
                 "fallback_sources": fallback_sources,

@@ -757,3 +757,27 @@ msgstr "Experimental"
 msgctxt "#30198"
 msgid "Use Rust orchestrator (experimental)"
 msgstr "Use Rust orchestrator (experimental)"
+
+msgctxt "#30199"
+msgid "Submitted to nzbdav..."
+msgstr "Submitted to nzbdav..."
+
+msgctxt "#30200"
+msgid "WebDAV stream ready..."
+msgstr "WebDAV stream ready..."
+
+msgctxt "#30201"
+msgid "Validated peer {}"
+msgstr "Validated peer {}"
+
+msgctxt "#30202"
+msgid "Checking fallback peers..."
+msgstr "Checking fallback peers..."
+
+msgctxt "#30203"
+msgid "Ready with {} peers"
+msgstr "Ready with {} peers"
+
+msgctxt "#30204"
+msgid "Ready"
+msgstr "Ready"

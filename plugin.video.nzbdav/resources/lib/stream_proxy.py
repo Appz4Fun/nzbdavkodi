@@ -5363,16 +5363,27 @@ class HlsProducer:
         return cmd
 
     # How long prepare() will wait for ffmpeg to actually produce
-    # init.mp4 + the first segment before declaring the fmp4 path
+    # init.mp4 + a complete first segment before declaring the fmp4 path
     # broken and falling back to matroska. Has to comfortably exceed
     # ffmpeg's analyzeduration (15 s) plus header write time, plus a
     # safety margin for slow upstream reads. 30 s is the smallest
     # value that doesn't false-trip on a healthy 50 Mbps WEB-DL.
     _PREPARE_PRODUCTION_TIMEOUT_SECONDS = 30.0
 
+    def _prepare_outputs_ready(self):
+        """Return True when fMP4 prepare has enough complete output.
+
+        `seg_000000.m4s` can exist while ffmpeg is still writing it, so
+        existence alone is not a safe readiness signal. Reuse the normal
+        segment-completion guard: segment 0 is complete once segment 1 exists
+        for the same generation, or when it is the final segment and ffmpeg
+        has exited.
+        """
+        return self._init_file_complete() and self._segment_complete(0)
+
     def prepare(self):
         """Eagerly spawn ffmpeg AND wait for it to actually produce
-        init.mp4 + first segment before returning.
+        init.mp4 + a complete first segment before returning.
 
         Called from _register_session right after construction. For
         mpegts producers (the legacy lazy path) this is a no-op.
@@ -5393,7 +5404,7 @@ class HlsProducer:
            anything" failures: absolute path bug (a547a2d), -strict
            -2 missing (b8f09d6), analysis hang (1a56c36), and any
            future ffmpeg/source combo where output stalls after
-           launch. Polls for init.mp4 + seg_000000.m4s on disk.
+           launch. Polls for init.mp4 + complete seg_000000.m4s output.
            If neither is on disk by the deadline, OR if ffmpeg has
            exited with non-zero rc in the meantime, raises so
            _register_session rewrites ctx to the matroska shape.
@@ -5412,8 +5423,6 @@ class HlsProducer:
         if self.segment_format != "fmp4":
             return  # mpegts is lazy-spawned, no eager validation
         self._ensure_ffmpeg_headed_for(0)
-        init_path = os.path.join(self.session_dir, "init.mp4")
-        first_seg_path = os.path.join(self.session_dir, "seg_000000.m4s")
 
         # Window 1: argument-rejection poll (500 ms).
         # An early exit with rc != 0 is a hard failure (bad argv,
@@ -5440,13 +5449,13 @@ class HlsProducer:
                     )
                 early_exit = True
                 break
-            if os.path.exists(init_path) and os.path.exists(first_seg_path):
+            if self._prepare_outputs_ready():
                 xbmc.log(
                     "NZB-DAV: HlsProducer.prepare confirmed init.mp4 "
-                    "and seg_000000.m4s on disk during argv window",
+                    "and complete seg_000000.m4s during argv window",
                     xbmc.LOGINFO,
                 )
-                return  # healthy — both files are on disk
+                return  # healthy — init and first segment are complete
             # Monitor.waitForAbort instead of bare time.sleep so a Kodi
             # shutdown during HLS warmup unblocks the prepare argv-loop
             # immediately. TODO.md §H.3.
@@ -5461,19 +5470,19 @@ class HlsProducer:
         # them once instead of waiting.
         prod_deadline = time.monotonic() + self._PREPARE_PRODUCTION_TIMEOUT_SECONDS
         while time.monotonic() < prod_deadline:
-            if os.path.exists(init_path) and os.path.exists(first_seg_path):
+            if self._prepare_outputs_ready():
                 xbmc.log(
                     "NZB-DAV: HlsProducer.prepare confirmed init.mp4 "
-                    "and seg_000000.m4s on disk",
+                    "and complete seg_000000.m4s",
                     xbmc.LOGINFO,
                 )
-                return  # healthy — both files are on disk
+                return  # healthy — init and first segment are complete
             if early_exit:
                 # ffmpeg already finished; if the files aren't here,
                 # they're never going to be. Fail immediately
                 # instead of waiting for the full deadline.
                 raise RuntimeError(
-                    "ffmpeg exited cleanly but produced no init.mp4 / "
+                    "ffmpeg exited cleanly but produced no complete init.mp4 / "
                     "seg_000000.m4s — check ffmpeg.log"
                 )
             with self._lock:
@@ -5498,7 +5507,7 @@ class HlsProducer:
             if xbmc.Monitor().waitForAbort(0.25):
                 raise RuntimeError("Kodi abort requested during HLS prepare")
         raise RuntimeError(
-            "ffmpeg did not produce init.mp4 + seg_000000.m4s within "
+            "ffmpeg did not produce init.mp4 + complete seg_000000.m4s within "
             "{:.0f}s — check ffmpeg.log".format(
                 self._PREPARE_PRODUCTION_TIMEOUT_SECONDS
             )

@@ -97,6 +97,12 @@ _FALLBACK_STRINGS = {
     30192: "WebDAV connection error. Check server.",
     30195: "Manage Indexers",
     30196: "Refresh NZBHydra2 Caps",
+    30199: "Submitted to nzbdav...",
+    30200: "WebDAV stream ready...",
+    30201: "Validated peer {}",
+    30202: "Checking fallback peers...",
+    30203: "Ready with {} peers",
+    30204: "Ready",
 }
 
 

@@ -211,6 +211,10 @@ _CODEC_MAP = {
     "mpeg2": "MPEG-2",
 }
 
+_FILTER_RESOLUTIONS = frozenset(("2160p", "1080p", "720p", "480p"))
+_FILTER_AUDIO = frozenset(("Atmos", "TrueHD", "DTS-HD MA", "DTS:X", "DD+", "DD", "AAC"))
+_FILTER_CODECS = frozenset(("x265/HEVC", "x264/AVC", "AV1", "VP9", "MPEG-2"))
+
 
 def _collect_enabled(addon, pairs):
     """Return labels for settings that are enabled (true).
@@ -506,9 +510,14 @@ def matches_filters(result, meta, settings):
     """
     title_lower = result["title"].lower()
 
+    def _is_restricted_filter(enabled, full_set):
+        return bool(enabled) and not full_set.issubset(set(enabled))
+
     if settings["resolutions"] and meta["resolution"]:
         if meta["resolution"] not in settings["resolutions"]:
             return False
+    elif _is_restricted_filter(settings["resolutions"], _FILTER_RESOLUTIONS):
+        return False
 
     if settings["hdr"] and meta["hdr"]:
         if not any(h in settings["hdr"] for h in meta["hdr"]):
@@ -519,10 +528,14 @@ def matches_filters(result, meta, settings):
     if settings["audio"] and meta["audio"]:
         if not any(a in settings["audio"] for a in meta["audio"]):
             return False
+    elif _is_restricted_filter(settings["audio"], _FILTER_AUDIO):
+        return False
 
     if settings["codecs"] and meta["codec"]:
         if meta["codec"] not in settings["codecs"]:
             return False
+    elif _is_restricted_filter(settings["codecs"], _FILTER_CODECS):
+        return False
 
     if settings["languages"] and meta["languages"]:
         if not any(lang in settings["languages"] for lang in meta["languages"]):

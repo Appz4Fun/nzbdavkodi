@@ -451,11 +451,31 @@ def find_video_file(
             return result
 
         return None
+    except HTTPError as e:
+        if e.code in (401, 403) or e.code >= 500:
+            xbmc.log(
+                "NZB-DAV: WebDAV PROPFIND failed for '{}' with HTTP {}".format(
+                    folder_path, e.code
+                ),
+                xbmc.LOGERROR if e.code in (401, 403) else xbmc.LOGWARNING,
+            )
+            raise
+        error_detail = "{}".format(e)
+        if "404" in error_detail or "Not Found" in error_detail:
+            error_detail += (
+                " — WebDAV folder not found, check nzbdav is creating "
+                "/content/ symlinks"
+            )
+        xbmc.log(
+            "NZB-DAV: Error browsing WebDAV folder '{}': {} ({})".format(
+                folder_path, error_detail, type(e).__name__
+            ),
+            xbmc.LOGERROR,
+        )
+        return None
     except Exception as e:
         error_detail = "{}".format(e)
-        if "401" in error_detail or "Unauthorized" in error_detail:
-            error_detail += " — Check WebDAV username/password in addon settings"
-        elif "404" in error_detail or "Not Found" in error_detail:
+        if "404" in error_detail or "Not Found" in error_detail:
             error_detail += (
                 " — WebDAV folder not found, check nzbdav is creating "
                 "/content/ symlinks"
