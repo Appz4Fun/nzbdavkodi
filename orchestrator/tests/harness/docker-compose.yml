@@ -18,6 +18,8 @@ services:
     build: ./stubs/mock_indexer
     volumes:
       - ./fixtures:/fixtures:ro
+    ports:
+      - "5076:5076"
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:5076/api?t=caps"]
       interval: 5s
@@ -27,6 +29,8 @@ services:
   mock-nzbdav:
     build: ./stubs/mock_nzbdav
     # No fixture bind-mount needed — sample.mkv is generated at image build time.
+    ports:
+      - "8080:8080"
     healthcheck:
       test: ["CMD", "curl", "-sf",
              "http://localhost:8080/api?mode=queue&apikey=test&output=json"]
@@ -46,6 +50,8 @@ services:
       ORCHESTRATOR_PEER_POOL_DB_PATH: /tmp/peer_pool.sqlite3
       ORCHESTRATOR_PEER_POOL_CACHE_MAX_AGE_SECS: "300"
       ORCHESTRATOR_LOG: "orchestrator=debug,orchestrator_server=debug,warn"
+    ports:
+      - "4000:4000"
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:4000/v1/health"]
       interval: 5s
