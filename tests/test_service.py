@@ -14,8 +14,8 @@ from service import NzbdavPlayer, PlaybackState, check_cache_warning
 def test_check_active_reads_window_properties(mock_window):
     """Service picks up stream info from window properties.
 
-    All three of nzbdav.active / stream_url / stream_title are cleared
-    after the values are snapshotted onto the player instance — see
+    The active flag, stream metadata, and session id are cleared after the
+    values are snapshotted onto the player instance — see
     TODO.md §H.2-L29 for why we don't leave URL/title around after
     consumption.
     """
@@ -34,6 +34,7 @@ def test_check_active_reads_window_properties(mock_window):
     cleared_keys = {call.args[0] for call in mock_window.clearProperty.call_args_list}
     assert cleared_keys == {
         "nzbdav.active",
+        "nzbdav.stream_session_id",
         "nzbdav.stream_url",
         "nzbdav.stream_title",
     }
@@ -82,6 +83,29 @@ def test_on_playback_stopped_tears_down_proxy_session():
     player.onPlayBackStopped()
 
     proxy.clear_sessions.assert_called_once()
+
+
+@patch("service._HOME_WINDOW")
+def test_stale_stop_does_not_clear_new_session_window_properties(mock_window):
+    props = {
+        "nzbdav.stream_session_id": "new-session",
+        "nzbdav.stream_url": "http://127.0.0.1:57800/stream/new",
+        "nzbdav.stream_title": "new.mkv",
+    }
+    mock_window.getProperty.side_effect = lambda key: props.get(key, "")
+    mock_window.clearProperty.side_effect = lambda key: props.pop(key, None)
+
+    player = NzbdavPlayer()
+    player._state = PlaybackState.MONITORING
+    player._stream_session_id = "old-session"
+    player._stream_url = "http://127.0.0.1:57800/stream/old"
+    player._title = "old.mkv"
+
+    player.onPlayBackStopped()
+
+    assert props["nzbdav.stream_session_id"] == "new-session"
+    assert props["nzbdav.stream_url"] == "http://127.0.0.1:57800/stream/new"
+    assert props["nzbdav.stream_title"] == "new.mkv"
 
 
 def test_on_playback_ended_tears_down_proxy_session():

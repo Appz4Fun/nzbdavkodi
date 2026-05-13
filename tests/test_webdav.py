@@ -5,6 +5,7 @@ import time
 from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
 
+import pytest
 from resources.lib.webdav import (
     find_video_file,
     find_video_stream_for_folder,
@@ -323,8 +324,7 @@ def test_find_video_file_returns_none_on_error(mock_urlopen, mock_settings):
 
 @patch("resources.lib.webdav._get_settings")
 @patch("resources.lib.webdav.urlopen")
-def test_find_video_file_returns_none_on_403(mock_urlopen, mock_settings):
-    """find_video_file returns None (not raise) on HTTP 403 auth failure."""
+def test_find_video_file_preserves_auth_http_error(mock_urlopen, mock_settings):
     mock_settings.return_value = _SETTINGS_WITH_AUTH
     mock_urlopen.side_effect = HTTPError(
         url="http://webdav:8080/content/forbidden/",
@@ -334,8 +334,28 @@ def test_find_video_file_returns_none_on_403(mock_urlopen, mock_settings):
         fp=None,
     )
 
-    path = find_video_file("/content/uncategorized/Forbidden/")
-    assert path is None
+    with pytest.raises(HTTPError) as exc:
+        find_video_file("/content/uncategorized/Forbidden/")
+
+    assert exc.value.code == 403
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_preserves_server_http_error(mock_urlopen, mock_settings):
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    mock_urlopen.side_effect = HTTPError(
+        url="http://webdav:8080/content/unavailable/",
+        code=503,
+        msg="Service Unavailable",
+        hdrs=None,
+        fp=None,
+    )
+
+    with pytest.raises(HTTPError) as exc:
+        find_video_file("/content/uncategorized/Unavailable/")
+
+    assert exc.value.code == 503
 
 
 # --- get_webdav_stream_url_for_path tests ---

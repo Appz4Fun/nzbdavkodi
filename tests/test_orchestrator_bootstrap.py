@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 nzbdav contributors
+# pylint: disable=redefined-outer-name
 
 """Unit tests for the Rust orchestrator bootstrap module.
 

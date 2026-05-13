@@ -5,6 +5,7 @@ import sys
 import threading
 import time as _time
 from unittest.mock import MagicMock, patch
+from urllib.error import HTTPError
 
 from resources.lib.resolver import (
     _DOWNLOAD_TIMEOUT_MAX,
@@ -24,6 +25,7 @@ from resources.lib.resolver import (
     _handle_job_status,
     _handle_resolve_exception,
     _make_playable_listitem,
+    _peer_pool_cache_key,
     _play_direct,
     _play_via_proxy,
     _poll_once,
@@ -262,6 +264,223 @@ def test_get_submit_timeout_seconds_uses_requested_default_for_empty_setting():
         assert _get_submit_timeout_seconds() == 300
     finally:
         sys.modules["xbmcaddon"].Addon.return_value = original
+
+
+@patch("resources.lib.resolver._submit_nzb_with_retries")
+def test_poll_until_ready_uses_orchestrator_when_enabled(mock_submit, monkeypatch):
+    from resources.lib import orchestrator_client
+    from resources.lib import resolver as resolver_module
+
+    mock_submit.side_effect = AssertionError("legacy submit should not be called")
+    resolve_mock = MagicMock(
+        return_value=(
+            "http://webdav/content/Movie/Movie.mkv",
+            {"Authorization": "Basic dXNlcjpwYXNz"},
+            None,
+        )
+    )
+    monkeypatch.setattr(orchestrator_client, "resolve_via_orchestrator", resolve_mock)
+    monkeypatch.setattr(
+        resolver_module, "_new_orchestrator_resolve_id", lambda: "01PYPROGRESS"
+    )
+
+    dialog = MagicMock()
+    dialog.iscanceled.return_value = False
+
+    def settings_getter(key, default=""):
+        return "true" if key == "use_orchestrator" else default
+
+    stream_url, stream_headers = _poll_until_ready(
+        "http://hydra/api?t=get&id=1",
+        "Inception.2010.1080p.BluRay.x264-FGT",
+        dialog,
+        poll_interval=2,
+        download_timeout=120,
+        fallback_candidates=[{"link": "http://hydra/api?t=get&id=2"}],
+        completed_job_lookup_done=True,
+        settings_getter=settings_getter,
+    )
+
+    assert stream_url == "http://webdav/content/Movie/Movie.mkv"
+    assert stream_headers == {"Authorization": "Basic dXNlcjpwYXNz"}
+    resolve_mock.assert_called_once_with(
+        "http://hydra/api?t=get&id=1",
+        "Inception.2010.1080p.BluRay.x264-FGT",
+        poll_interval=2,
+        download_timeout=120,
+        fallback_candidates=[{"link": "http://hydra/api?t=get&id=2"}],
+        settings_getter=settings_getter,
+        resolve_id="01PYPROGRESS",
+        return_fallback_sources=True,
+    )
+    mock_submit.assert_not_called()
+
+
+def test_peer_pool_cache_key_is_stable_and_release_specific():
+    params = {
+        "type": "movie",
+        "imdb": "tt1375666",
+        "tmdb_id": "27205",
+        "year": "2010",
+    }
+
+    key = _peer_pool_cache_key(
+        params,
+        "Inception.2010.1080p.BluRay.x264-FGT",
+    )
+
+    assert key.startswith("v1:")
+    assert key == _peer_pool_cache_key(
+        dict(reversed(list(params.items()))),
+        "Inception.2010.1080p.BluRay.x264-FGT",
+    )
+    assert key != _peer_pool_cache_key(
+        params,
+        "Inception.2010.2160p.UHD.BluRay.HEVC-SPARKS",
+    )
+
+
+@patch("resources.lib.resolver._submit_nzb_with_retries")
+def test_poll_until_ready_forwards_peer_pool_cache_key(mock_submit, monkeypatch):
+    from resources.lib import orchestrator_client
+    from resources.lib import resolver as resolver_module
+
+    mock_submit.side_effect = AssertionError("legacy submit should not be called")
+    resolve_mock = MagicMock(
+        return_value=(
+            "http://webdav/content/Movie/Movie.mkv",
+            {},
+            None,
+        )
+    )
+    monkeypatch.setattr(orchestrator_client, "resolve_via_orchestrator", resolve_mock)
+    monkeypatch.setattr(
+        resolver_module, "_new_orchestrator_resolve_id", lambda: "01PYPROGRESS"
+    )
+
+    dialog = MagicMock()
+    dialog.iscanceled.return_value = False
+
+    def settings_getter(key, default=""):
+        return "true" if key == "use_orchestrator" else default
+
+    _poll_until_ready(
+        "http://hydra/api?t=get&id=1",
+        "Inception.2010.1080p.BluRay.x264-FGT",
+        dialog,
+        poll_interval=2,
+        download_timeout=120,
+        completed_job_lookup_done=True,
+        settings_getter=settings_getter,
+        peer_pool_cache_key="v1:abc123",
+    )
+
+    resolve_mock.assert_called_once_with(
+        "http://hydra/api?t=get&id=1",
+        "Inception.2010.1080p.BluRay.x264-FGT",
+        poll_interval=2,
+        download_timeout=120,
+        fallback_candidates=None,
+        peer_pool_cache_key="v1:abc123",
+        settings_getter=settings_getter,
+        resolve_id="01PYPROGRESS",
+        return_fallback_sources=True,
+    )
+    mock_submit.assert_not_called()
+
+
+@patch("resources.lib.resolver._submit_nzb_with_retries")
+def test_poll_until_ready_tails_orchestrator_progress_events(mock_submit, monkeypatch):
+    from resources.lib import orchestrator_client
+    from resources.lib import resolver as resolver_module
+
+    mock_submit.side_effect = AssertionError("legacy submit should not be called")
+    tail_started = threading.Event()
+    updates = []
+    tail_calls = []
+
+    def _fake_tail(resolve_id, on_event, settings_getter=None, stop_event=None):
+        tail_calls.append(
+            {
+                "resolve_id": resolve_id,
+                "settings_getter": settings_getter,
+                "stop_event": stop_event,
+            }
+        )
+        tail_started.set()
+        on_event(
+            {
+                "event": "submit.accepted",
+                "state": "submitted",
+                "peer_id": "01PEER",
+                "payload": {"nzo_id": "nzo-1"},
+            }
+        )
+        on_event(
+            {
+                "event": "peer.admitted",
+                "state": "ready",
+                "peer_id": "01FALLBACK",
+                "payload": {"validation_state": "byte_sample_validated_phase_3"},
+            }
+        )
+
+    def _fake_resolve(*args, **kwargs):
+        assert tail_started.wait(1.0)
+        return (
+            "http://webdav/content/Movie/Movie.mkv",
+            {},
+            [],
+            None,
+        )
+
+    monkeypatch.setattr(orchestrator_client, "tail_resolve_events", _fake_tail)
+    resolve_mock = MagicMock(side_effect=_fake_resolve)
+    monkeypatch.setattr(orchestrator_client, "resolve_via_orchestrator", resolve_mock)
+    monkeypatch.setattr(
+        resolver_module, "_new_orchestrator_resolve_id", lambda: "01PYPROGRESS"
+    )
+    monkeypatch.setattr(
+        resolver_module,
+        "_safe_dialog_update",
+        lambda _dialog, progress, message: updates.append((progress, message)) or True,
+    )
+
+    dialog = MagicMock()
+    dialog.iscanceled.return_value = False
+
+    def settings_getter(key, default=""):
+        return "true" if key == "use_orchestrator" else default
+
+    stream_url, stream_headers = _poll_until_ready(
+        "http://hydra/api?t=get&id=1",
+        "Inception.2010.1080p.BluRay.x264-FGT",
+        dialog,
+        poll_interval=2,
+        download_timeout=120,
+        completed_job_lookup_done=True,
+        settings_getter=settings_getter,
+    )
+
+    assert stream_url == "http://webdav/content/Movie/Movie.mkv"
+    assert stream_headers == {}
+    assert tail_calls
+    assert tail_calls[0]["resolve_id"] == "01PYPROGRESS"
+    assert tail_calls[0]["settings_getter"] is settings_getter
+    assert tail_calls[0]["stop_event"] is not None
+    resolve_mock.assert_called_once_with(
+        "http://hydra/api?t=get&id=1",
+        "Inception.2010.1080p.BluRay.x264-FGT",
+        poll_interval=2,
+        download_timeout=120,
+        fallback_candidates=None,
+        settings_getter=settings_getter,
+        resolve_id="01PYPROGRESS",
+        return_fallback_sources=True,
+    )
+    assert (5, "Submitted to nzbdav...") in updates
+    assert (80, "Validated peer 1") in updates
+    mock_submit.assert_not_called()
 
 
 def test_direct_playback_service_config_reads_proxy_window_once_for_fast_start():
@@ -953,6 +1172,83 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
     mock_wait_prepare.assert_called_once_with(prepare_state)
     mock_finish_playback.assert_called_once_with(1, prepared_playback)
     mock_stop_fallback.assert_not_called()
+
+
+@patch("resources.lib.resolver._fallback_submit_jobs_snapshot")
+@patch("resources.lib.resolver._finish_direct_playback")
+@patch("resources.lib.resolver._wait_direct_playback_prepare")
+@patch("resources.lib.resolver._start_direct_playback_prepare")
+@patch("resources.lib.resolver._start_fallback_submit_worker")
+@patch("resources.lib.resolver._poll_until_ready")
+@patch("resources.lib.resolver._clear_kodi_playback_state")
+@patch("resources.lib.resolver.xbmc")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.xbmcplugin")
+@patch("resources.lib.resolver._get_poll_settings")
+def test_resolve_uses_orchestrator_fallback_sources_without_legacy_submit_worker(
+    mock_poll_settings,
+    _mock_plugin,
+    mock_gui,
+    mock_xbmc,
+    _mock_clear_state,
+    mock_poll_until_ready,
+    mock_start_fallback,
+    mock_start_prepare,
+    mock_wait_prepare,
+    mock_finish_playback,
+    mock_snapshot,
+):
+    mock_poll_settings.return_value = (2, 60)
+    mock_start_prepare.return_value = {"state": "prepare"}
+    mock_wait_prepare.return_value = {"state": "prepared"}
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    mock_gui.DialogProgress.return_value = MagicMock()
+    validated_sources = [
+        {
+            "title": "Fallback.Valid.2026-GROUP",
+            "nzb_url": "http://hydra/getnzb/fallback-valid",
+            "job_name": "",
+            "nzo_id": "nzo-valid",
+            "stream_url": "http://webdav/content/fallback/Fallback.mkv",
+            "stream_headers": {"Authorization": "Basic fallback"},
+            "content_length": 1234,
+            "validated": True,
+        }
+    ]
+
+    def poll_ready(*_args, **kwargs):
+        kwargs["on_orchestrator_fallback_sources"](validated_sources)
+        return (
+            "http://webdav/content/primary/Primary.mkv",
+            {"Authorization": "Basic primary"},
+        )
+
+    mock_poll_until_ready.side_effect = poll_ready
+
+    resolve(
+        1,
+        {
+            "nzburl": "http://hydra/getnzb/primary",
+            "title": "Primary.mkv",
+            "_fallback_candidates": [
+                {
+                    "title": "Fallback.Valid.2026-GROUP",
+                    "link": "http://hydra/getnzb/fallback-valid",
+                }
+            ],
+        },
+    )
+
+    mock_start_fallback.assert_not_called()
+    mock_snapshot.assert_not_called()
+    mock_start_prepare.assert_called_once_with(
+        "http://webdav/content/primary/Primary.mkv",
+        {"Authorization": "Basic primary"},
+        fallback_sources=validated_sources,
+        service_config_state=None,
+    )
+    mock_wait_prepare.assert_called_once_with({"state": "prepare"})
+    mock_finish_playback.assert_called_once_with(1, {"state": "prepared"})
 
 
 @patch("resources.lib.resolver._fallback_submit_jobs_snapshot")
@@ -4167,6 +4463,32 @@ def test_submit_ui_pump_reads_submit_timeout_once_per_attempt(
     mock_submit_timeout.assert_called_once_with()
 
 
+@patch("resources.lib.resolver.cancel_job")
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.find_queued_by_name", return_value=None)
+@patch("resources.lib.resolver.submit_nzb")
+def test_submit_ui_pump_cancels_job_returned_after_dialog_cancel(
+    mock_submit, _mock_find_queued, _mock_find_completed, mock_cancel_job
+):
+    def delayed_submit(_nzb_url, _title):
+        _time.sleep(0.02)
+        return "SABnzbd_nzo_cancelled_late", None
+
+    mock_submit.side_effect = delayed_submit
+    dialog = MagicMock()
+    dialog.iscanceled.return_value = True
+    monitor = MagicMock()
+    monitor.abortRequested.return_value = False
+
+    nzo_id, submit_error = _submit_nzb_with_ui_pump(
+        "http://hydra/getnzb/abc", "movie.mkv", dialog, monitor
+    )
+
+    assert nzo_id is None
+    assert submit_error == {"status": "cancelled", "message": ""}
+    mock_cancel_job.assert_called_once_with("SABnzbd_nzo_cancelled_late")
+
+
 @patch("resources.lib.stream_proxy.get_service_proxy_port", return_value=0)
 @patch("resources.lib.stream_proxy.get_proxy")
 @patch("resources.lib.resolver.find_completed_by_name")
@@ -5353,6 +5675,72 @@ def test_poll_until_ready_no_video_after_retries(
     assert url is None
     assert headers is None
     mock_gui.Dialog.return_value.ok.assert_called_once()
+
+
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.find_video_file")
+@patch("resources.lib.resolver.xbmcgui")
+def test_handle_history_result_webdav_auth_http_error_is_terminal(
+    mock_gui, mock_find_video, _mock_find_completed
+):
+    mock_find_video.side_effect = HTTPError(
+        url="http://webdav/content/movie/",
+        code=403,
+        msg="Forbidden",
+        hdrs=None,
+        fp=None,
+    )
+
+    should_stop, stream_url, stream_headers, retries = _handle_history_result(
+        {
+            "status": "Completed",
+            "nzo_id": "nzo_auth",
+            "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/movie",
+        },
+        "movie.mkv",
+        no_video_retries=0,
+        max_no_video_retries=2,
+    )
+
+    assert should_stop is True
+    assert stream_url is None
+    assert stream_headers is None
+    assert retries == 0
+    mock_gui.Dialog.return_value.ok.assert_called_once()
+    dialog_message = mock_gui.Dialog.return_value.ok.call_args[0][1]
+    assert "WebDAV authentication failed" in dialog_message
+
+
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.find_video_file")
+@patch("resources.lib.resolver.xbmcgui")
+def test_handle_history_result_webdav_server_http_error_is_retryable(
+    mock_gui, mock_find_video, _mock_find_completed
+):
+    mock_find_video.side_effect = HTTPError(
+        url="http://webdav/content/movie/",
+        code=503,
+        msg="Service Unavailable",
+        hdrs=None,
+        fp=None,
+    )
+
+    should_stop, stream_url, stream_headers, retries = _handle_history_result(
+        {
+            "status": "Completed",
+            "nzo_id": "nzo_server",
+            "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/movie",
+        },
+        "movie.mkv",
+        no_video_retries=1,
+        max_no_video_retries=2,
+    )
+
+    assert should_stop is False
+    assert stream_url is None
+    assert stream_headers is None
+    assert retries == 1
+    mock_gui.Dialog.return_value.ok.assert_not_called()
 
 
 @patch("resources.lib.resolver.find_completed_by_name", return_value=None)

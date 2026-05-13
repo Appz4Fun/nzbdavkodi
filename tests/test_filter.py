@@ -578,6 +578,26 @@ def test_filter_no_resolution_detected_passes_when_all_enabled(mock_settings):
 
 
 @patch("resources.lib.filter._get_filter_settings")
+def test_filter_rejects_unparsed_title_when_resolution_filter_is_restricted(
+    mock_settings,
+):
+    settings = _all_pass_settings()
+    settings["resolutions"] = ["1080p"]
+    mock_settings.return_value = settings
+    results = [
+        _make_result("Movie.2024.1080p.BluRay.x264-GRP"),
+        _make_result("Ambiguous.Release.Name-GRP"),
+    ]
+
+    with patch("resources.lib.ptt.parse_title", return_value={}):
+        filtered, _ = filter_results(results)
+
+    assert [result["title"] for result in filtered] == [
+        "Movie.2024.1080p.BluRay.x264-GRP"
+    ]
+
+
+@patch("resources.lib.filter._get_filter_settings")
 def test_filter_combined_resolution_audio_codec(mock_settings):
     """Combined resolution + audio + codec filters should all apply simultaneously."""
     mock_settings.return_value = {

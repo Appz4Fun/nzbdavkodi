@@ -32,6 +32,7 @@ from resources.lib.stream_proxy import StreamProxy  # noqa: E402
 # Window property keys for IPC between plugin and service
 _PROP_STREAM_URL = "nzbdav.stream_url"
 _PROP_STREAM_TITLE = "nzbdav.stream_title"
+_PROP_STREAM_SESSION_ID = "nzbdav.stream_session_id"
 _PROP_ACTIVE = "nzbdav.active"
 _PROP_PROXY_PORT = "nzbdav.proxy_port"
 _PROP_PROXY_TOKEN = "nzbdav.proxy_token"
@@ -125,6 +126,7 @@ class NzbdavPlayer(xbmc.Player):
         self._state = PlaybackState.IDLE
         self._stream_url = ""
         self._title = ""
+        self._stream_session_id = ""
         self._last_position = 0.0
         self._retry_count = 0
         self._av_started = False
@@ -191,6 +193,7 @@ class NzbdavPlayer(xbmc.Player):
         if active != "true":
             return
         with self._state_lock:
+            self._stream_session_id = _HOME_WINDOW.getProperty(_PROP_STREAM_SESSION_ID)
             self._stream_url = _HOME_WINDOW.getProperty(_PROP_STREAM_URL)
             self._title = _HOME_WINDOW.getProperty(_PROP_STREAM_TITLE)
             self._state = PlaybackState.MONITORING
@@ -209,11 +212,7 @@ class NzbdavPlayer(xbmc.Player):
         # (network blip, _play_via_proxy crash) doesn't leak the prior
         # session's URL/title into the next monitor cycle. The values we
         # need are now snapshotted onto self.* fields. TODO.md §H.2-L29.
-        for prop in (_PROP_ACTIVE, _PROP_STREAM_URL, _PROP_STREAM_TITLE):
-            try:
-                _HOME_WINDOW.clearProperty(prop)
-            except _PLAYER_RUNTIME_ERRORS:
-                pass
+        self._clear_stream_properties(include_active=True)
         xbmc.log(
             "NZB-DAV: Service monitoring stream '{}'".format(title),
             xbmc.LOGINFO,
@@ -233,7 +232,7 @@ class NzbdavPlayer(xbmc.Player):
             xbmc.LOGINFO,
         )
 
-    def _clear_stream_properties(self):
+    def _clear_stream_properties(self, include_active=False):
         """Erase the IPC window properties for this stream.
 
         Without this, ``nzbdav.stream_url`` and ``nzbdav.stream_title``
@@ -242,7 +241,20 @@ class NzbdavPlayer(xbmc.Player):
         up the previous session's URL/title if ``nzbdav.active="true"``
         is ever re-set by a stale/racing writer.
         """
-        for prop in (_PROP_STREAM_URL, _PROP_STREAM_TITLE):
+        try:
+            current_session_id = _HOME_WINDOW.getProperty(_PROP_STREAM_SESSION_ID)
+        except _PLAYER_RUNTIME_ERRORS:
+            current_session_id = ""
+        if (
+            self._stream_session_id
+            and current_session_id
+            and current_session_id != self._stream_session_id
+        ):
+            return
+        props = [_PROP_STREAM_URL, _PROP_STREAM_TITLE, _PROP_STREAM_SESSION_ID]
+        if include_active:
+            props.insert(0, _PROP_ACTIVE)
+        for prop in props:
             try:
                 _HOME_WINDOW.clearProperty(prop)
             except _PLAYER_RUNTIME_ERRORS:
@@ -600,6 +612,7 @@ def main():
     # service starts from a clean slate. TODO.md §H.2-M34.
     for stale_prop in (
         _PROP_ACTIVE,
+        _PROP_STREAM_SESSION_ID,
         _PROP_STREAM_URL,
         _PROP_STREAM_TITLE,
         _PROP_PROXY_TOKEN,

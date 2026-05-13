@@ -5257,6 +5257,58 @@ def test_hls_producer_fmp4_live_segment_requires_next_segment_signal(tmp_path):
         producer.close()
 
 
+def test_hls_producer_prepare_rejects_unfinished_first_fmp4_segment(tmp_path):
+    """prepare() must not accept a merely-created first fMP4 segment.
+
+    ffmpeg opens seg_000000.m4s before the segment is complete. Returning the
+    HLS URL at that point bypasses the matroska late fallback, then Kodi waits
+    on an incomplete first segment. The first segment needs the same completion
+    proof as normal segment requests.
+    """
+    import os as _os
+    import time as _time
+
+    from resources.lib.stream_proxy import HlsProducer
+
+    ctx = {
+        "session_id": "sess-prepare-partial",
+        "remote_url": "http://host/film.mkv",
+        "auth_header": None,
+        "ffmpeg_path": "/usr/bin/ffmpeg",
+        "duration_seconds": 600.0,
+        "hls_segment_duration": 6.0,
+        "hls_segment_format": "fmp4",
+    }
+    producer = HlsProducer(ctx, str(tmp_path))
+    try:
+        proc = MagicMock()
+        proc.poll.return_value = None
+        producer._proc = proc
+        producer._spawn_time = _time.time() - 1
+
+        init_path = _os.path.join(producer.session_dir, "init.mp4")
+        with open(init_path, "wb") as f:
+            f.write(b"INIT")
+        with open(producer.segment_path(0), "wb") as f:
+            f.write(b"PARTIAL-FIRST-SEGMENT")
+
+        monotonic_values = iter([0.0, 0.1, 0.6, 0.61, 0.63])
+        with patch.object(producer, "_ensure_ffmpeg_headed_for"), patch.object(
+            producer, "_PREPARE_PRODUCTION_TIMEOUT_SECONDS", 0.01
+        ), patch(
+            "resources.lib.stream_proxy.time.monotonic",
+            side_effect=lambda: next(monotonic_values),
+        ), patch(
+            "resources.lib.stream_proxy.xbmc.Monitor.return_value.waitForAbort",
+            return_value=False,
+        ), pytest.raises(
+            RuntimeError
+        ):
+            producer.prepare()
+    finally:
+        producer.close()
+
+
 def test_hls_producer_fmp4_final_segment_complete_after_ffmpeg_exit(tmp_path):
     import os as _os
     import time as _time
@@ -5594,9 +5646,9 @@ def test_hls_producer_prepare_returns_when_init_and_first_segment_appear(
     tmp_path,
 ):
     """fmp4 producer; Popen returns a mock whose poll() returns None
-    (alive). prepare() must wait for init.mp4 + seg_000000.m4s on
-    disk before returning. We simulate ffmpeg's output by writing
-    those files mid-prepare via a side-effect on Popen."""
+    (alive). prepare() must wait for init.mp4 + a complete
+    seg_000000.m4s before returning. We simulate ffmpeg's output by
+    writing those files mid-prepare via a side-effect on Popen."""
     import os as _os
     import threading as _threading
 
@@ -5626,6 +5678,8 @@ def test_hls_producer_prepare_returns_when_init_and_first_segment_appear(
                 f.write(b"INIT")
             with open(_os.path.join(producer.session_dir, "seg_000000.m4s"), "wb") as f:
                 f.write(b"SEG0")
+            with open(_os.path.join(producer.session_dir, "seg_000001.m4s"), "wb") as f:
+                f.write(b"SEG1")
 
         def spy_popen(*args, **kwargs):
             _threading.Thread(target=write_files_after_delay, daemon=True).start()
@@ -11852,6 +11906,48 @@ def test_retry_original_range_short_circuits_when_upstream_marked_down():
     assert current == 0
     mock_urlopen.assert_not_called()
     mock_sleep.assert_not_called()
+
+
+def test_retry_original_range_advances_past_bytes_written_by_retry_attempts():
+    """Retry attempts must resume at the first still-unwritten byte.
+
+    A short read can still write data to Kodi. The next retry must start
+    after those bytes, not at the original failed offset, or Kodi would
+    receive duplicate bytes for the same response range.
+    """
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_OK,
+        _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE,
+    )
+
+    ctx = {
+        "remote_url": "http://nzbdav/movie.mkv",
+        "auth_header": None,
+        "content_length": 4096,
+    }
+    handler = _make_handler_with_server(ctx)
+
+    with patch.object(
+        handler,
+        "_stream_upstream_range",
+        side_effect=[
+            (_UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, 512),
+            (_UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, 256),
+            (_UPSTREAM_RANGE_OK, 256),
+        ],
+    ) as mock_stream, patch("resources.lib.stream_proxy.time.sleep"):
+        result, written, current = handler._retry_original_range(
+            ctx, 1024, 2047, "warn"
+        )
+
+    assert result == _UPSTREAM_RANGE_OK
+    assert written == 1024
+    assert current == 2048
+    assert [call.args[1:3] for call in mock_stream.call_args_list] == [
+        (1024, 2047),
+        (1536, 2047),
+        (1792, 2047),
+    ]
 
 
 # --- ServiceProxyUnavailableError + prepare_stream_via_service wrapping ---
