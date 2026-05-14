@@ -8,6 +8,18 @@ SCRIPT = (
 )
 
 
+def _bash_executable() -> str:
+    git_bash = (
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+        / "Git"
+        / "bin"
+        / "bash.exe"
+    )
+    if os.name == "nt" and git_bash.exists():
+        return str(git_bash)
+    return "bash"
+
+
 def _extract_shell_function(script: str, name: str) -> str:
     start = script.find(f"{name}() {{")
     assert start != -1, f"{name} function not found"
@@ -29,12 +41,13 @@ def _run_version_check(payload: str) -> subprocess.CompletedProcess:
         set -euo pipefail
         REQUIRED_KODI_MAJOR=21
         {function}
-        kodi_version_supported "$1"
+        kodi_version_supported "$KODI_VERSION_PAYLOAD"
         """)
     env = os.environ.copy()
     env["PATH"] = "/usr/bin:/bin"
+    env["KODI_VERSION_PAYLOAD"] = payload
     return subprocess.run(
-        ["bash", "-c", program, "bash", payload],
+        [_bash_executable(), "-c", program],
         check=False,
         env=env,
         capture_output=True,
