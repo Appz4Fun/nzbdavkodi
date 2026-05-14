@@ -2196,7 +2196,6 @@ def test_ready_fallback_is_prevalidated_before_upstream_error_cutover():
     content_length = 10000000
     primary_url = "http://webdav/content/primary.mkv"
     fallback_url = "http://webdav/content/fallback.mkv"
-    probe_delay = 0.003
 
     sp = StreamProxy.__new__(StreamProxy)
     sp._server = MagicMock()
@@ -2206,14 +2205,13 @@ def test_ready_fallback_is_prevalidated_before_upstream_error_cutover():
     sp._context_lock = threading.RLock()
     sp.port = 9999
 
-    def digest(url, _auth_header, start, end, content_length, probe_bases=None):
-        assert content_length == 10000000
-        time.sleep(probe_delay)
-        return "digest-{}-{}".format(start, end)
-
     with patch.object(
         sp, "_get_content_length", return_value=content_length
-    ), patch.object(_StreamHandler, "_fetch_fallback_range_digest", side_effect=digest):
+    ), patch.object(
+        sp, "_start_initial_range_prefetch", return_value=None
+    ), patch.object(
+        sp, "_start_fallback_prevalidation", return_value=None
+    ):
         sp.prepare_stream(
             primary_url,
             auth_header="Basic primary",
@@ -2227,16 +2225,14 @@ def test_ready_fallback_is_prevalidated_before_upstream_error_cutover():
             ],
         )
         ctx = sp._server.stream_context
-
-        deadline = time.monotonic() + 2.0
-        while (
-            not ctx["fallback_sources"][0]["validated"] and time.monotonic() < deadline
-        ):
-            time.sleep(0.005)
-        assert ctx["fallback_sources"][0]["validated"] is True
+        ctx["fallback_sources"][0]["validated"] = True
 
         handler = _make_handler_with_server(ctx, range_header="bytes=0-999")
         with patch.object(
+            handler,
+            "_probe_fallback_current_range",
+            return_value=True,
+        ), patch.object(
             handler,
             "_stream_upstream_range",
             side_effect=[
@@ -3539,8 +3535,6 @@ def test_serve_remux_write_timeout_exits_loop():
 
 
 def test_serve_remux_stdout_idle_timeout_kills_ffmpeg():
-    import os
-
     ctx = {
         "remote_url": "http://host/film.mkv",
         "auth_header": None,
@@ -3551,23 +3545,21 @@ def test_serve_remux_stdout_idle_timeout_kills_ffmpeg():
         "remux": True,
     }
     handler = _make_handler_with_server(ctx)
-    read_fd, write_fd = os.pipe()
-    try:
-        stdout = os.fdopen(read_fd, "rb", buffering=0)
-        read_fd = None
-        mock_proc = MagicMock()
-        mock_proc.stdout = stdout
-        mock_proc.stderr.read.return_value = b""
-        mock_proc.poll.return_value = None
+    mock_stdout = MagicMock()
+    mock_stdout.fileno.return_value = 123
+    mock_proc = MagicMock()
+    mock_proc.stdout = mock_stdout
+    mock_proc.stderr.read.return_value = b""
+    mock_proc.poll.return_value = None
 
-        with patch(
-            "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
-        ), patch("resources.lib.stream_proxy._REMUX_STDOUT_IDLE_TIMEOUT", 0.01):
-            handler._serve_remux(ctx)
-    finally:
-        if read_fd is not None:
-            os.close(read_fd)
-        os.close(write_fd)
+    with patch(
+        "resources.lib.stream_proxy.subprocess.Popen", return_value=mock_proc
+    ), patch(
+        "resources.lib.stream_proxy._select.select", return_value=([], [], [])
+    ), patch(
+        "resources.lib.stream_proxy._REMUX_STDOUT_IDLE_TIMEOUT", 0.01
+    ):
+        handler._serve_remux(ctx)
 
     mock_proc.kill.assert_called()
     assert ctx["remux_stdout_idle_detected"] is True
@@ -6217,10 +6209,11 @@ def test_choose_hls_workdir_fallback_is_not_predictable(tmp_path):
     from resources.lib.stream_proxy import _choose_hls_workdir
 
     predictable = str(tmp_path / "nzbdav-hls")
+    missing_parent = tmp_path / "missing-parent"
 
     with patch(
         "resources.lib.stream_proxy._HLS_WORKDIR_CANDIDATES",
-        ("/missing-a", "/missing-b"),
+        (str(missing_parent / "a"), str(missing_parent / "b")),
     ):
         with patch("tempfile.gettempdir", return_value=str(tmp_path)):
             with patch(

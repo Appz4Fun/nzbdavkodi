@@ -1,1 +1,1 @@
-v1.2.3: Harden proxy fallback and repo installs.
+v1.2.3: Test harness fixes for stream proxy and HLS workdir fallback.
