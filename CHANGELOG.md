@@ -66,8 +66,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Test harness now isolates stream-proxy prevalidation and remux idle-timeout
-  checks on Windows, and the HLS workdir fallback no longer assumes POSIX temp
-  paths.
+  checks on Windows, locates Git Bash for install-script checks, falls back when
+  `SIGKILL` is unavailable, and avoids POSIX-only HLS workdir assumptions.
 - **SIGSEGV when `addon.getSetting()` runs in script-mode interpreter.** Reading
   Kodi addon settings from the C++ binding inside a `RunScript` /
   `Player.Open(plugin://...)` invocation crashed Kodi without a Python

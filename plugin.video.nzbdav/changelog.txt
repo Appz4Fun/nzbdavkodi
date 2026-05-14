@@ -1,1 +1,1 @@
-v1.2.3: Test harness fixes for stream proxy and HLS workdir fallback.
+v1.2.3: Windows test harness fixes for stream proxy, Bash, and SIGKILL.

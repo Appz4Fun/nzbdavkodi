@@ -187,7 +187,7 @@ def _force_teardown_hls_producer(producer):
     proc = getattr(producer, "_proc", None)
     if proc is not None and proc.poll() is None:
         try:
-            proc.send_signal(signal.SIGKILL)
+            proc.send_signal(getattr(signal, "SIGKILL", signal.SIGTERM))
         except (OSError, ProcessLookupError):
             pass
     session_dir = getattr(producer, "session_dir", None)
