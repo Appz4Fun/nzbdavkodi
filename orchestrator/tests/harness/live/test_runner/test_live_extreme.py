@@ -39,8 +39,8 @@ def stack_ready():
     seed_nzbdav()
 
 
-@pytest.fixture(scope="session")
-def run_dir():
+@pytest.fixture(scope="session", name="run_dir")
+def _live_extreme_run_dir():
     path = report_dir()
     print(f"[live-extreme] reports={path}")
     return path

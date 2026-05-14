@@ -291,6 +291,8 @@ With **Auto-select best match** enabled, the dialog is skipped and the top resul
 For a contributor-facing map of the search, resolve, and stream proxy paths, see
 the [architecture overview](docs/architecture.md). The experimental Rust
 sidecar migration is tracked in [docs/rust-migration-plan.md](docs/rust-migration-plan.md).
+Live Docker Compose harness status and rerun steps are tracked in
+[docs/live-harness-testing.md](docs/live-harness-testing.md).
 
 ### Prerequisites
 
@@ -380,6 +382,7 @@ tests/
   test_integration_hls_ffmpeg.py    # 2 integration tests (real ffmpeg, opt-in)
   test_orchestrator_sse_integration.py # Python/Rust SSE integration test
 docs/rust-migration-plan.md         # Rust sidecar migration plan and current status
+docs/live-harness-testing.md        # Live Docker harness status and rerun steps
 TODO.md                             # Active backlog; detailed plans live in docs/
 ```
 
