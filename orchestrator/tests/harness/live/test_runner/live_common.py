@@ -34,6 +34,8 @@ NZBDAV_CFG = {
     "base_url": NZBDAV_URL,
     "api_key": NZBDAV_API_KEY,
     "webdav_url": NZBDAV_URL,
+    "webdav_username": WEBDAV_USERNAME,
+    "webdav_password": WEBDAV_PASSWORD,
     "webdav_content_root": "content",
 }
 

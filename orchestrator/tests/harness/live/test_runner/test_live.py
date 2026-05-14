@@ -57,6 +57,8 @@ _NZBDAV_CFG = {
     "base_url": NZBDAV_URL,
     "api_key": NZBDAV_API_KEY,
     "webdav_url": NZBDAV_URL,
+    "webdav_username": WEBDAV_USERNAME,
+    "webdav_password": WEBDAV_PASSWORD,
     "webdav_content_root": "content",
 }
 
@@ -219,8 +221,8 @@ def test_full_resolve_returns_stream_url():
     assert d.get("stream_url"), "stream_url missing"
     assert d["stream_url"].startswith("http"), f"unexpected stream_url: {d['stream_url']}"
 
-    # Verify the stream URL actually serves bytes.
-    stream_r = requests.get(
+    # Verify the stream URL serves content — HEAD avoids downloading the full file.
+    stream_r = requests.head(
         d["stream_url"],
         headers=d.get("stream_headers", {}),
         timeout=30,

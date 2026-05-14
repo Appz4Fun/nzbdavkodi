@@ -10,7 +10,7 @@ use futures::future::join_all;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tracing::info;
+use tracing::{debug, info};
 use ulid::Ulid;
 
 use crate::nzb_manifest::{
@@ -445,6 +445,41 @@ async fn select_peer_cohort(resolve_id: &str, req: &ResolveRequest) -> Vec<PeerC
             "candidate cohort selected"
         );
         return Vec::new();
+    }
+
+    // Log Jaccard scores for all fetched candidates (including below-threshold).
+    // This is the primary diagnostic for "why no peers?".
+    {
+        let primary_ids = &primary_manifest.article_ids;
+        let mut all_scores: Vec<(usize, f64, usize)> = manifests
+            .iter()
+            .enumerate()
+            .map(|(i, manifest)| {
+                let shared = primary_ids.intersection(&manifest.article_ids).count();
+                let union = primary_ids.len() + manifest.article_ids.len() - shared;
+                let jaccard = if union > 0 { shared as f64 / union as f64 } else { 0.0 };
+                (manifest_candidates[i], jaccard, shared)
+            })
+            .collect();
+        all_scores.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let top_n = all_scores.len().min(5);
+        for (rank, (candidate_idx, jaccard, shared)) in
+            all_scores.iter().enumerate().take(top_n)
+        {
+            let candidate = &req.candidate_peers[*candidate_idx];
+            debug!(
+                event = "peer.candidate_scored",
+                resolve_id = %resolve_id,
+                rank = rank as u64,
+                candidate_index = *candidate_idx as u64,
+                title = %candidate.title,
+                jaccard,
+                shared_articles = *shared as u64,
+                primary_articles = primary_ids.len() as u64,
+                admitted = *jaccard >= 0.25,
+                "candidate Jaccard score"
+            );
+        }
     }
 
     let limit = req
