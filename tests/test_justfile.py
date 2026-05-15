@@ -104,7 +104,10 @@ def test_ci_and_release_workflows_exclude_extreme_marker():
 
     for workflow in (".github/workflows/ci.yml", ".github/workflows/release.yml"):
         contents = root.joinpath(workflow).read_text(encoding="utf-8")
-        marker_match = re.search(r'(?<!\S)-m\s+(["\'])(?P<marker>.*?)\1', contents)
+        marker_match = re.search(
+            r"python\s+-m\s+pytest\s+.*?(?<!\S)-m\s+([\"'])(?P<marker>.*?)\1",
+            contents,
+        )
 
         assert marker_match is not None
         marker = marker_match.group("marker")
