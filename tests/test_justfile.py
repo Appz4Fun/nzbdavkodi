@@ -99,6 +99,13 @@ def test_test_recipe_excludes_extreme_marker():
     assert "not extreme" in test_block.group(0)
 
 
+def test_ci_and_release_workflows_exclude_extreme_marker():
+    repo_root = Path(__file__).resolve().parents[1]
+    for workflow in ("ci.yml", "release.yml"):
+        contents = repo_root.joinpath(".github", "workflows", workflow).read_text()
+        assert "not integration and not functional and not extreme" in contents
+
+
 def test_extreme_functional_test_recipe_preserves_exported_env_overrides():
     contents = Path(__file__).resolve().parents[1].joinpath("justfile").read_text()
     body = _recipe_body(contents, "extreme-functional-test")
