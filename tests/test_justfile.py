@@ -99,6 +99,18 @@ def test_test_recipe_excludes_extreme_marker():
     assert "not extreme" in test_block.group(0)
 
 
+def test_github_workflows_exclude_extreme_marker_from_default_pytest_runs():
+    root = Path(__file__).resolve().parents[1]
+    workflow_paths = [
+        root / ".github" / "workflows" / "ci.yml",
+        root / ".github" / "workflows" / "release.yml",
+    ]
+
+    for workflow_path in workflow_paths:
+        contents = workflow_path.read_text(encoding="utf-8")
+        assert '-m "not integration and not functional and not extreme"' in contents
+
+
 def test_extreme_functional_test_recipe_preserves_exported_env_overrides():
     contents = Path(__file__).resolve().parents[1].joinpath("justfile").read_text()
     body = _recipe_body(contents, "extreme-functional-test")
