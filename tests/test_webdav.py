@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 nzbdav contributors
-import unittest.mock
-
 import time
+import unittest.mock
 from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
 
@@ -944,7 +943,9 @@ def test_check_file_in_folder_returns_not_found_when_missing(mock_find):
     assert path is None
     assert err == "not_found"
 
+
 # --- Extra coverage for _get_settings and _http_head ---
+
 
 @patch("xbmcaddon.Addon")
 def test_get_settings_without_getter(mock_addon_cls):
@@ -952,6 +953,7 @@ def test_get_settings_without_getter(mock_addon_cls):
     from resources.lib.webdav import _get_settings
 
     mock_addon = MagicMock()
+
     # Mock getSetting to return string values and test non-string default
     def mock_get_setting(key):
         if key == "webdav_url":
@@ -973,11 +975,12 @@ def test_get_settings_without_getter(mock_addon_cls):
     assert settings["username"] == "legacy_user"
     assert settings["password"] == "legacy_pass"
 
+
 @patch("resources.lib.webdav.urlopen")
 def test_http_head_with_credentials(mock_urlopen):
     """Test _http_head generates correct basic auth header."""
+
     from resources.lib.webdav import _http_head
-    import base64
 
     response = MagicMock()
     response.__enter__ = MagicMock(return_value=response)
@@ -991,20 +994,24 @@ def test_http_head_with_credentials(mock_urlopen):
     assert req.has_header("Authorization")
     auth_header = req.get_header("Authorization")
 
-    assert auth_header == "Basic dXNlcjpwYXNz"  # base64.b64encode(b"user:pass").decode()
+    assert (
+        auth_header == "Basic dXNlcjpwYXNz"
+    )  # base64.b64encode(b"user:pass").decode()
+
 
 @patch("resources.lib.webdav.urlopen")
 def test_http_head_httperror(mock_urlopen):
     """Test _http_head handles urllib.error.HTTPError."""
-    from resources.lib.webdav import _http_head
     from urllib.error import HTTPError
+
+    from resources.lib.webdav import _http_head
 
     mock_urlopen.side_effect = HTTPError(
         url="http://nzbdav:3000/content/",
         code=401,
         msg="Unauthorized",
         hdrs=None,
-        fp=None
+        fp=None,
     )
 
     status = _http_head("http://nzbdav:3000/content/")
@@ -1013,10 +1020,13 @@ def test_http_head_httperror(mock_urlopen):
 
 # --- Extra coverage for probe_webdav_reachable ---
 
+
 @patch("resources.lib.webdav._get_settings")
 @patch("resources.lib.webdav._http_head")
-def test_probe_reachable_settings_getter_content_root_exception(mock_head, mock_settings):
-    """Test probe_webdav_reachable falls back to 'content' when settings_getter raises."""
+def test_probe_reachable_settings_getter_content_root_exception(
+    mock_head, mock_settings
+):
+    """Test fallback to 'content' when settings_getter raises."""
     from resources.lib.webdav import probe_webdav_reachable
 
     mock_settings.return_value = _SETTINGS_WITH_AUTH
@@ -1031,10 +1041,13 @@ def test_probe_reachable_settings_getter_content_root_exception(mock_head, mock_
     called_url = mock_head.call_args[0][0]
     assert called_url == "http://nzbdav:3000/content/"
 
+
 @patch("resources.lib.webdav._get_settings")
 @patch("xbmcaddon.Addon")
 @patch("resources.lib.webdav._http_head")
-def test_probe_reachable_addon_content_root_exception(mock_head, mock_addon_cls, mock_settings):
+def test_probe_reachable_addon_content_root_exception(
+    mock_head, mock_addon_cls, mock_settings
+):
     """Test probe_webdav_reachable falls back to 'content' when xbmcaddon raises."""
     from resources.lib.webdav import probe_webdav_reachable
 
@@ -1052,8 +1065,10 @@ def test_probe_reachable_addon_content_root_exception(mock_head, mock_addon_cls,
 
 @patch("resources.lib.webdav._get_settings")
 @patch("resources.lib.webdav._http_head")
-def test_probe_reachable_settings_getter_content_root_invalid_type(mock_head, mock_settings):
-    """Test probe_webdav_reachable falls back to 'content' when settings_getter returns non-string."""
+def test_probe_reachable_settings_getter_content_root_invalid_type(
+    mock_head, mock_settings
+):
+    """Test fallback to 'content' when settings_getter returns non-string."""
     from resources.lib.webdav import probe_webdav_reachable
 
     mock_settings.return_value = _SETTINGS_WITH_AUTH
@@ -1071,6 +1086,7 @@ def test_probe_reachable_settings_getter_content_root_invalid_type(mock_head, mo
 
 # --- Extra coverage for _find_video_file_in_subdirs ---
 
+
 @patch("resources.lib.webdav.find_video_file")
 def test_find_video_file_in_subdirs_worker_exception(mock_find):
     """Test worker thread exceptions are caught and result is None."""
@@ -1081,6 +1097,7 @@ def test_find_video_file_in_subdirs_worker_exception(mock_find):
     result = _find_video_file_in_subdirs(["/content/A/"], 1, set(), _SETTINGS_WITH_AUTH)
     assert result is None
 
+
 @patch("resources.lib.webdav.find_video_file")
 def test_find_video_file_in_subdirs_no_result(mock_find):
     """Test when no subdirs contain a video, returns None."""
@@ -1088,15 +1105,21 @@ def test_find_video_file_in_subdirs_no_result(mock_find):
 
     mock_find.return_value = None
 
-    result = _find_video_file_in_subdirs(["/content/A/", "/content/B/"], 1, set(), _SETTINGS_WITH_AUTH)
+    result = _find_video_file_in_subdirs(
+        ["/content/A/", "/content/B/"], 1, set(), _SETTINGS_WITH_AUTH
+    )
     assert result is None
 
 
 # --- Extra coverage for size hints ---
 
+
 def test_remember_video_file_size_hint_invalid_types():
     """Test _remember_video_file_size_hint with invalid values."""
-    from resources.lib.webdav import _remember_video_file_size_hint, get_video_file_size_hint, _VIDEO_FILE_SIZE_HINTS
+    from resources.lib.webdav import (
+        _VIDEO_FILE_SIZE_HINTS,
+        _remember_video_file_size_hint,
+    )
 
     # Invalid size types
     _remember_video_file_size_hint("/content/movie.mkv", "not_a_number")
@@ -1116,9 +1139,14 @@ def test_remember_video_file_size_hint_invalid_types():
     _remember_video_file_size_hint("", 1000)
     assert "" not in _VIDEO_FILE_SIZE_HINTS
 
+
 def test_remember_video_file_size_hint_max_eviction():
     """Test _remember_video_file_size_hint evicts oldest entry."""
-    from resources.lib.webdav import _remember_video_file_size_hint, _VIDEO_FILE_SIZE_HINTS, _VIDEO_FILE_SIZE_HINTS_MAX
+    from resources.lib.webdav import (
+        _VIDEO_FILE_SIZE_HINTS,
+        _VIDEO_FILE_SIZE_HINTS_MAX,
+        _remember_video_file_size_hint,
+    )
 
     _VIDEO_FILE_SIZE_HINTS.clear()
 
@@ -1128,15 +1156,17 @@ def test_remember_video_file_size_hint_max_eviction():
     assert len(_VIDEO_FILE_SIZE_HINTS) == _VIDEO_FILE_SIZE_HINTS_MAX
     assert "/content/movie0.mkv" not in _VIDEO_FILE_SIZE_HINTS
 
+
 def test_get_video_file_size_hint_invalid():
-    """Test get_video_file_size_hint handling of non-integer entries if they somehow got in."""
-    from resources.lib.webdav import get_video_file_size_hint, _VIDEO_FILE_SIZE_HINTS
+    """Test get_video_file_size_hint handling of non-integer entries."""
+    from resources.lib.webdav import _VIDEO_FILE_SIZE_HINTS, get_video_file_size_hint
 
     _VIDEO_FILE_SIZE_HINTS["/content/corrupt.mkv"] = "not_a_number"
     assert get_video_file_size_hint("/content/corrupt.mkv") == 0
 
 
 # --- Extra coverage for find_video_file ---
+
 
 @patch("resources.lib.webdav.urlopen")
 def test_find_video_file_depth_limit(mock_urlopen):
@@ -1145,6 +1175,7 @@ def test_find_video_file_depth_limit(mock_urlopen):
 
     # Passing _depth=3 should return immediately with None
     assert find_video_file("/content/", _depth=3) is None
+
 
 @patch("resources.lib.webdav.urlopen")
 def test_find_video_file_visited_skip(mock_urlopen):
@@ -1169,6 +1200,7 @@ def test_find_video_file_url_append_slash(mock_urlopen, mock_settings):
     find_video_file("/content/no_slash")
     req = mock_urlopen.call_args[0][0]
     assert req.full_url.endswith("/")
+
 
 @patch("resources.lib.webdav._get_settings")
 @patch("resources.lib.webdav.urlopen")
@@ -1195,6 +1227,7 @@ def test_find_video_file_missing_href_node(mock_urlopen, mock_settings):
     mock_urlopen.return_value = mock_resp
 
     assert find_video_file("/content/missing/") is None
+
 
 @patch("resources.lib.webdav._get_settings")
 @patch("resources.lib.webdav.urlopen")
@@ -1228,6 +1261,7 @@ def test_find_video_file_cross_host_href_ignored(mock_urlopen, mock_settings):
     path = find_video_file("/content/cross_host/")
     assert path == "/content/Movie/movie.mkv"
 
+
 @patch("resources.lib.webdav._get_settings")
 @patch("resources.lib.webdav.urlopen")
 def test_find_video_file_malformed_href_exception(mock_urlopen, mock_settings):
@@ -1260,6 +1294,7 @@ def test_find_video_file_malformed_href_exception(mock_urlopen, mock_settings):
 
         assert find_video_file("/content/Movie/") is None
 
+
 @patch("resources.lib.webdav._get_settings")
 @patch("resources.lib.webdav.urlopen")
 def test_find_video_file_non_numeric_size(mock_urlopen, mock_settings):
@@ -1289,15 +1324,8 @@ def test_find_video_file_non_numeric_size(mock_urlopen, mock_settings):
     mock_urlopen.return_value = mock_resp
 
     path = find_video_file("/content/Movie/")
-    # Size parsing fails, so size=0 is used. Since best_size starts at 0, 0 > 0 is False, so no file is chosen
-    # Wait, the code says: if size > best_size: best_size = size; best_file = href_path
-    # If size is 0, it won't update best_file if best_size is 0.
-    # Actually wait: best_size = 0, size = 0. size > best_size is False. best_file is None.
-    # Oh interesting! So it won't be returned unless there's another file.
-    # Let me add another file with size=0. Wait, best_size is initialized to 0. It must be >0 to be returned in normal flow if only one file.
-    # Actually, I just want the exception block covered.
-    # We can just check that it parses without crashing.
     assert path is None
+
 
 @patch("resources.lib.webdav._get_settings")
 @patch("resources.lib.webdav.urlopen")
@@ -1309,6 +1337,7 @@ def test_find_video_file_error_formatting_401(mock_urlopen, mock_settings):
     mock_urlopen.side_effect = Exception("HTTP Error 401: Unauthorized")
 
     assert find_video_file("/content/") is None
+
 
 @patch("resources.lib.webdav._get_settings")
 @patch("resources.lib.webdav.urlopen")
@@ -1329,9 +1358,6 @@ def test_find_video_file_urlparse_exception(mock_urlopen, mock_settings):
     from resources.lib.webdav import find_video_file
 
     mock_settings.return_value = _SETTINGS_WITH_AUTH
-
-    # We will mock urlparse to raise an Exception for a specific href, but not for the root url parsing
-    # The parsing we want to fail is: parsed_href_obj = urlparse(href_text)
 
     malformed_href_response = """<?xml version="1.0" encoding="utf-8"?>
 <D:multistatus xmlns:D="DAV:">
@@ -1354,6 +1380,7 @@ def test_find_video_file_urlparse_exception(mock_urlopen, mock_settings):
     mock_urlopen.return_value = mock_resp
 
     import urllib.parse
+
     real_urlparse = urllib.parse.urlparse
 
     def failing_urlparse(url_str, *args, **kwargs):
@@ -1368,7 +1395,9 @@ def test_find_video_file_urlparse_exception(mock_urlopen, mock_settings):
 @patch("resources.lib.webdav._get_settings")
 @patch("resources.lib.webdav.urlopen")
 @patch("xml.etree.ElementTree.XMLParser")
-def test_find_video_file_xml_parser_attribute_error(mock_xml_parser, mock_urlopen, mock_settings):
+def test_find_video_file_xml_parser_attribute_error(
+    mock_xml_parser, mock_urlopen, mock_settings
+):
     """Test XMLParser attribute error handling."""
     from resources.lib.webdav import find_video_file
 
@@ -1376,7 +1405,9 @@ def test_find_video_file_xml_parser_attribute_error(mock_xml_parser, mock_urlope
 
     # Mock XMLParser to raise AttributeError when .parser is accessed
     mock_parser_instance = MagicMock()
-    type(mock_parser_instance).parser = unittest.mock.PropertyMock(side_effect=AttributeError("No parser"))
+    type(mock_parser_instance).parser = unittest.mock.PropertyMock(
+        side_effect=AttributeError("No parser")
+    )
     mock_xml_parser.return_value = mock_parser_instance
 
     valid_response = """<?xml version="1.0" encoding="utf-8"?>
@@ -1399,9 +1430,6 @@ def test_find_video_file_xml_parser_attribute_error(mock_xml_parser, mock_urlope
     mock_resp.read.return_value = valid_response.encode("utf-8")
     mock_urlopen.return_value = mock_resp
 
-    # With python's built in mock, it doesn't parse XML but we are bypassing that by mocking fromstring.
-    # Actually wait ET.fromstring won't work on our Mock unless we mock it too.
-    # We will just patch ET.fromstring as well
     with patch("xml.etree.ElementTree.fromstring") as mock_fromstring:
         mock_root = MagicMock()
         mock_root.findall.return_value = []
@@ -1412,6 +1440,7 @@ def test_find_video_file_xml_parser_attribute_error(mock_xml_parser, mock_urlope
 
 
 # --- Extra coverage for find_video_stream_for_folder ---
+
 
 @patch("resources.lib.webdav.find_video_file")
 @patch("resources.lib.webdav._get_settings")

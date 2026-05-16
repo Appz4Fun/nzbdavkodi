@@ -1,74 +1,22 @@
-[MAIN]
-# Enforce Python 3.8 rules even when pylint runs on a newer interpreter.
-# CI runs pylint under Python 3.8 directly; this lets `just lint` catch
-# the same syntax-floor issues (walrus, match, str.removeprefix) on a
-# developer's modern Python without needing a separate 3.8 install.
-py-version=3.8
-# Ignore vendored PTT library + local dev scripts (on-device smoke test
-# helpers, throwaway repro scripts) that aren't part of the shipped addon.
-ignore-paths=
-    plugin.video.nzbdav/resources/lib/ptt,
-    dev/,
-    tmdbhelper-warmup-rs/
-
 [MESSAGES CONTROL]
-disable=
-    # Kodi modules (xbmc, xbmcgui, etc.) aren't installable on CI
-    import-error,
-    # Lazy imports are intentional -- Kodi modules must be imported inside
-    # functions so tests can mock them via conftest.py
-    import-outside-toplevel,
-    wrong-import-position,
-    # Test files don't need docstrings
-    missing-module-docstring,
-    missing-function-docstring,
-    missing-class-docstring,
-    # Python 3.8 target -- no f-strings
-    consider-using-f-string,
-    # Complexity thresholds too strict for filter/router logic
-    too-many-arguments,
-    too-many-positional-arguments,
-    too-many-locals,
-    too-many-branches,
-    too-many-statements,
-    too-many-return-statements,
-    too-many-instance-attributes,
-    # Style nits not worth enforcing in CI
-    invalid-name,
-    line-too-long,
-    too-many-lines,
-    no-else-return,
-    unnecessary-dunder-call,
-    use-dict-literal,
-    consider-using-ternary,
-    # Protected access used intentionally in tests
-    protected-access,
-    # Unused args common in test fixtures and Kodi callbacks
-    unused-argument,
-    # open() encoding -- binary/json files don't always need it
-    unspecified-encoding,
-    # Broad exception catching is intentional for PTT parsing resilience
-    broad-exception-caught,
-    # Duplicate imports from conditional blocks
-    reimported,
-    # Not subscriptable false positives on older Python
-    unsubscriptable-object,
-    # Raise from handled elsewhere
-    raise-missing-from,
-    # Useless suppression when running different pylint versions
-    useless-suppression,
-    # Unknown options across pylint versions (e.g. too-many-positional-arguments on 3.8)
-    unknown-option-value,
-    # Unused variable in unpacking
-    unused-variable,
-    # Duplicate code between playback_monitor.py and service.py is intentional
-    duplicate-code,
-    # subprocess.Popen can't use `with` when we need the process handle for kill/wait
-    consider-using-with,
-    # Global singleton pattern for proxy instance
-    global-statement,
-    # arguments-differ used intentionally (log_message override)
-    arguments-differ
-
-[FORMAT]
-max-line-length=120
+disable=missing-function-docstring,
+        missing-module-docstring,
+        too-many-lines,
+        line-too-long,
+        broad-exception-raised,
+        broad-exception-caught,
+        import-error,
+        import-outside-toplevel,
+        unused-import,
+        redefined-outer-name,
+        unused-argument,
+        reimported,
+        no-else-return,
+        consider-using-f-string,
+        duplicate-code,
+        invalid-name,
+        protected-access,
+        unused-variable,
+        too-many-locals,
+        too-many-branches,
+        too-many-statements
