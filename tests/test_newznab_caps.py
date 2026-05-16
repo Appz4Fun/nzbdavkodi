@@ -8,6 +8,7 @@ from resources.lib.newznab_caps import (
     CAPS_MAX_BYTES,
     build_caps_url,
     fetch_caps,
+    normalize_api_endpoint,
     parse_caps,
 )
 
@@ -28,6 +29,17 @@ CAPS_XML = """<?xml version="1.0" encoding="UTF-8"?>
   </categories>
 </caps>
 """
+
+
+def test_normalize_api_endpoint():
+    assert normalize_api_endpoint("https://api.nzbgeek.info") == "https://api.nzbgeek.info/api"
+    assert normalize_api_endpoint("https://api.nzbgeek.info/") == "https://api.nzbgeek.info/api"
+    assert normalize_api_endpoint("https://api.nzbgeek.info/api") == "https://api.nzbgeek.info/api"
+    assert normalize_api_endpoint("https://api.nzbgeek.info/api/") == "https://api.nzbgeek.info/api"
+    assert normalize_api_endpoint("https://tabula-rasa.pw/api/v1/") == "https://tabula-rasa.pw/api/v1"
+    assert normalize_api_endpoint("http://localhost:5076") == "http://localhost:5076/api"
+    assert normalize_api_endpoint("") == "/api"
+    assert normalize_api_endpoint(None) == "/api"
 
 
 def test_build_caps_url_appends_api_and_redacts_nothing():
