@@ -99,21 +99,40 @@ def _copy_root_zips(output_dir, root_dir):
             shutil.copy2(os.path.join(output_dir, name), os.path.join(root_dir, name))
 
 
+def _copy_root_addon_zip(output_dir, root_dir, addon_zip_name):
+    if not addon_zip_name or os.path.abspath(output_dir) == os.path.abspath(root_dir):
+        return
+    src = os.path.join(output_dir, addon_zip_name)
+    if os.path.isfile(src):
+        shutil.copy2(src, os.path.join(root_dir, addon_zip_name))
+
+
+def _write_html_index(path, links):
+    html = "<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n</head>\n<body>\n"
+    for name in links:
+        html += '<a href="{n}">{n}</a><br>\n'.format(n=name)
+    html += "</body>\n</html>\n"
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(html)
+
+
 def write_pages_index(output_dir, repo_version="1.0.0", addon_zip_names=None):
     """Write a Kodi-browsable directory listing for the root."""
     index_path = os.path.join(output_dir, "index.html")
     zip_name = "repository.nzbdav-{}.zip".format(repo_version)
-    html = "<html><body>\n"
-    html += '<a href="{z}">{z}</a><br>\n'.format(z=zip_name)
-    for addon_zip_name in addon_zip_names or ():
-        html += '<a href="{z}">{z}</a><br>\n'.format(z=addon_zip_name)
-    html += "</body></html>\n"
-    with open(index_path, "w", encoding="utf-8") as f:
-        f.write(html)
+    _write_html_index(index_path, [zip_name] + list(addon_zip_names or ()))
 
     nojekyll_path = os.path.join(output_dir, ".nojekyll")
     with open(nojekyll_path, "w", encoding="utf-8") as f:
         f.write("")
+
+
+def _copy_legacy_root_metadata(output_dir, root_dir):
+    if os.path.abspath(output_dir) == os.path.abspath(root_dir):
+        return
+    os.makedirs(root_dir, exist_ok=True)
+    for name in ("addons.xml", "addons.xml.md5"):
+        shutil.copy2(os.path.join(output_dir, name), os.path.join(root_dir, name))
 
 
 def _copy_addon_artifacts(output_dir, addon_id, main_addon, addon_zip=None):
@@ -188,6 +207,7 @@ def generate_repo(
     addon_zip=None,
     legacy_addon_zip_dir=None,
     repo_zip_alias_versions=None,
+    legacy_root_metadata=False,
 ):
     os.makedirs(output_dir, exist_ok=True)
     root_dir = _root_dir_for_output(output_dir)
@@ -279,9 +299,13 @@ def generate_repo(
             _write_dir_index(subdir_path)
 
     _copy_root_zips(output_dir, root_dir)
+    _copy_root_addon_zip(output_dir, root_dir, addon_zip_name)
+    if legacy_root_metadata:
+        _copy_legacy_root_metadata(output_dir, root_dir)
     write_pages_index(
         root_dir,
         repo_version,
+        addon_zip_names=[addon_zip_name] if addon_zip_name else None,
     )
 
 
@@ -292,10 +316,8 @@ def _write_dir_index(dir_path):
     for name in files:
         if name == "index.html":
             continue
-        links.append('<a href="{n}">{n}</a><br>'.format(n=name))
-    html = "<html><body>\n{}\n</body></html>\n".format("\n".join(links))
-    with open(os.path.join(dir_path, "index.html"), "w", encoding="utf-8") as f:
-        f.write(html)
+        links.append(name)
+    _write_html_index(os.path.join(dir_path, "index.html"), links)
 
 
 if __name__ == "__main__":
@@ -316,9 +338,18 @@ if __name__ == "__main__":
         default=None,
         help="Directory of older addon release zips to keep published",
     )
+    parser.add_argument(
+        "--legacy-root-metadata",
+        action="store_true",
+        help=(
+            "Also publish addons.xml and addons.xml.md5 at the Pages root for "
+            "repository addons installed before the raw-GitHub migration"
+        ),
+    )
     args = parser.parse_args()
     generate_repo(
         output_dir=args.output_dir,
         addon_zip=args.addon_zip,
         legacy_addon_zip_dir=args.legacy_addon_zip_dir,
+        legacy_root_metadata=args.legacy_root_metadata,
     )

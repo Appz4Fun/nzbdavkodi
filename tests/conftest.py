@@ -5,6 +5,7 @@
 
 import contextlib
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -133,10 +134,15 @@ class _FakePlayer:
 
 sys.modules["xbmc"].Player = _FakePlayer
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
 # Add repo/plugin.video.nzbdav to the path so imports work
-sys.path.insert(0, "repo/plugin.video.nzbdav")
+sys.path.insert(0, str(REPO_ROOT / "repo" / "plugin.video.nzbdav"))
 # Add resources/lib so PTT's internal imports resolve
-sys.path.insert(0, "repo/plugin.video.nzbdav/resources/lib")
+sys.path.insert(
+    0,
+    str(REPO_ROOT / "repo" / "plugin.video.nzbdav" / "resources" / "lib"),
+)
 
 
 @pytest.fixture
