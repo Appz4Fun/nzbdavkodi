@@ -275,9 +275,10 @@ def _clear_kodi_playback_state(params=None):
                 # files/settings/streamdetails rows stay intact — Kodi will
                 # treat the file as "never resumed" on the next play, which is
                 # exactly the state we want.
-                cur.executemany(
-                    "DELETE FROM bookmark WHERE idFile = ?",
-                    [(id_file,) for id_file in target_ids],
+                placeholders = ",".join("?" for _ in target_ids)
+                cur.execute(
+                    "DELETE FROM bookmark WHERE idFile IN ({})".format(placeholders),
+                    tuple(sorted(target_ids)),
                 )
 
         xbmc.log(

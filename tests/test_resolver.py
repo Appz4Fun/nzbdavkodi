@@ -633,6 +633,63 @@ def test_clear_kodi_playback_state_deletes_tmdb_helper_url(mock_xbmc, tmp_path):
 
 
 @patch("resources.lib.resolver.xbmc")
+def test_clear_kodi_playback_state_uses_single_delete_for_multiple_targets(
+    mock_xbmc, tmp_path
+):
+    """Multiple bookmark targets should be deleted with one SQL statement."""
+    import sqlite3
+
+    mock_xbmc.Player.return_value.isPlayingVideo.return_value = False
+    db = _build_fake_videos_db(tmp_path)
+    conn = sqlite3.connect(str(db))
+    cur = conn.cursor()
+    tmdb_base = "plugin://plugin.video.themoviedb.helper/?info=play"
+    urls = [
+        "plugin://plugin.video.nzbdav/play?type=movie&tmdb_id=389",
+        tmdb_base + "&tmdb_type=movie&tmdb_id=389",
+        tmdb_base + "&tmdb_id=389&tmdb_type=movie",
+        "plugin://plugin.video.nzbdav/play?type=movie&title=Other",
+    ]
+    for i, url in enumerate(urls, start=1):
+        cur.execute(
+            "INSERT INTO files (idFile, idPath, strFilename) VALUES (?, 1, ?)",
+            (i, url),
+        )
+        cur.execute(
+            "INSERT INTO bookmark (idFile, timeInSeconds) VALUES (?, 100.0)", (i,)
+        )
+    conn.commit()
+    conn.close()
+
+    trace = []
+    real_connect = sqlite3.connect
+
+    def traced_connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        if args and args[0] == str(db):
+            conn.set_trace_callback(trace.append)
+        return conn
+
+    fake_argv = [
+        "plugin://plugin.video.nzbdav/play",
+        "1",
+        "?type=movie&tmdb_id=389",
+    ]
+    with patch("sqlite3.connect", side_effect=traced_connect):
+        with patch("resources.lib.resolver.xbmcvfs") as mock_vfs:
+            mock_vfs.translatePath.return_value = str(tmp_path) + "/"
+            with patch.object(sys, "argv", fake_argv):
+                _clear_kodi_playback_state({"tmdb_id": "389", "type": "movie"})
+
+    delete_statements = [
+        statement for statement in trace if statement.startswith("DELETE FROM bookmark")
+    ]
+    assert delete_statements == [
+        "DELETE FROM bookmark WHERE idFile IN (1,2,3)"
+    ], delete_statements
+
+
+@patch("resources.lib.resolver.xbmc")
 def test_clear_kodi_playback_state_deletes_own_plugin_url(mock_xbmc, tmp_path):
     """Clearing without tmdb_id deletes the bookmark for our own plugin URL.
 
