@@ -6,7 +6,16 @@
 from datetime import datetime, timezone
 from urllib.error import URLError
 from urllib.parse import urlencode, urlparse
-from xml.etree import ElementTree as element_tree
+
+try:
+    from defusedxml import ElementTree as element_tree
+    from defusedxml.common import DefusedXmlException as _UnsafeXmlError
+except ImportError:  # pragma: no cover - Kodi installs may not bundle defusedxml
+    from xml.etree import ElementTree as element_tree
+
+    class _UnsafeXmlError(ValueError):
+        """Raised when stdlib fallback rejects DTD/entity declarations."""
+
 
 import xbmc
 import xbmcaddon
@@ -458,13 +467,31 @@ def _build_xxe_safe_parser():
     return parser
 
 
+def _contains_xml_declaration_markup(xml_text):
+    """Return true when XML text declares a DTD/entity block."""
+    if isinstance(xml_text, bytes):
+        probe = xml_text.lower()
+        return b"<!doctype" in probe or b"<!entity" in probe
+    probe = str(xml_text).lower()
+    return "<!doctype" in probe or "<!entity" in probe
+
+
+def _parse_hydra_xml(xml_text):
+    """Parse Hydra XML with DTD/entity expansion disabled."""
+    if getattr(element_tree, "__name__", "").startswith("defusedxml."):
+        return element_tree.fromstring(xml_text)
+    if _contains_xml_declaration_markup(xml_text):
+        raise _UnsafeXmlError("DTD and entity declarations are not allowed")
+    return element_tree.fromstring(
+        xml_text, parser=_build_xxe_safe_parser()
+    )  # nosec B314 — declarations rejected above and entities disabled when possible
+
+
 def _parse_results_checked(xml_text):
     """Parse Newznab XML and return (results, error_message)."""
     try:
-        root = element_tree.fromstring(
-            xml_text, parser=_build_xxe_safe_parser()
-        )  # nosec B314 — entities disabled in _build_xxe_safe_parser
-    except element_tree.ParseError as error:
+        root = _parse_hydra_xml(xml_text)
+    except (element_tree.ParseError, _UnsafeXmlError) as error:
         xbmc.log(
             "NZB-DAV: Failed to parse Hydra XML response: {}".format(error),
             xbmc.LOGERROR,
