@@ -1,7 +1,7 @@
 import inspect
 import re
 import re as regex
-from typing import Any, Callable, Dict, List, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 from .transformers import none
 
@@ -89,13 +89,16 @@ BEFORE_TITLE_MATCH_REGEX = re.compile(r"^\[([^[\]]+)]")
 DEBUG_HANDLER = False
 
 
-def extend_options(options: Dict[str, Any] = {}) -> Dict[str, Any]:
+def extend_options(options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Extend the options dictionary with default values.
 
     :param options: The original options dictionary.
     :return: The extended options dictionary.
     """
+    if options is None:
+        options = {}
+
     default_options = {
         "skipIfAlreadyFound": True,
         "skipFromTitle": False,
