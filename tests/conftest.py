@@ -133,10 +133,10 @@ class _FakePlayer:
 
 sys.modules["xbmc"].Player = _FakePlayer
 
-# Add plugin.video.nzbdav to the path so imports work
-sys.path.insert(0, "plugin.video.nzbdav")
+# Add repo/plugin.video.nzbdav to the path so imports work
+sys.path.insert(0, "repo/plugin.video.nzbdav")
 # Add resources/lib so PTT's internal imports resolve
-sys.path.insert(0, "plugin.video.nzbdav/resources/lib")
+sys.path.insert(0, "repo/plugin.video.nzbdav/resources/lib")
 
 
 @pytest.fixture

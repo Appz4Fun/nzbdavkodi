@@ -268,14 +268,14 @@ extreme-functional-test:
 
 # Lint the codebase (matches GitHub CI: ruff + black + pylint)
 lint:
-    ruff check plugin.video.nzbdav/ tests/ --exclude="plugin.video.nzbdav/resources/lib/ptt/"
-    black --check plugin.video.nzbdav/ tests/ --exclude="ptt/"
+    ruff check repo/plugin.video.nzbdav/ tests/ --exclude="repo/plugin.video.nzbdav/resources/lib/ptt/"
+    black --check repo/plugin.video.nzbdav/ tests/ --exclude="ptt/"
     pylint $(git ls-files '*.py')
 
 # Auto-fix lint issues
 lint-fix:
-    ruff check plugin.video.nzbdav/ tests/ --exclude="plugin.video.nzbdav/resources/lib/ptt/" --fix
-    black plugin.video.nzbdav/ tests/ --exclude="ptt/"
+    ruff check repo/plugin.video.nzbdav/ tests/ --exclude="repo/plugin.video.nzbdav/resources/lib/ptt/" --fix
+    black repo/plugin.video.nzbdav/ tests/ --exclude="ptt/"
 
 # Build the addon zip for Kodi installation
 release:
@@ -284,13 +284,13 @@ release:
 # Run tests then build release
 ship: test release
 
-# Generate Kodi repository in dist/
+# Generate Kodi repository in repo/zips/
 repo: release
-    python3 scripts/generate_repo.py --output-dir dist
+    python3 scripts/generate_repo.py
 
 # Copy the repository zip to cwd for easy access
 repo-zip: repo
-    cp dist/repository.nzbdav/repository.nzbdav-*.zip .
+    cp repo/zips/repository.nzbdav/repository.nzbdav-*.zip .
     @ls -lh repository.nzbdav-*.zip
 
 # Clean build artifacts
@@ -302,6 +302,6 @@ clean:
 # Run the same checks as GitHub CI (lint + test)
 ci: lint test
 
-# Clean everything including dist
+# Clean everything including generated repository zips
 dist-clean: clean
-    rm -rf dist/
+    rm -rf repo/zips/

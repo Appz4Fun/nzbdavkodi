@@ -14,6 +14,7 @@ from resources.lib.filter import (
 
 FILTER_MODULE = (
     Path(__file__).resolve().parents[1]
+    / "repo"
     / "plugin.video.nzbdav"
     / "resources"
     / "lib"

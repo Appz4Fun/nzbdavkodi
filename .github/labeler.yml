@@ -1,6 +1,6 @@
 addon:
   - changed-files:
-    - any-glob-to-any-file: 'plugin.video.nzbdav/**'
+    - any-glob-to-any-file: 'repo/plugin.video.nzbdav/**'
 
 tests:
   - changed-files:

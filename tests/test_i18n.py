@@ -162,6 +162,7 @@ def test_strings_po_has_added_orphan_ids():
     import os
 
     po_path = os.path.join(
+        "repo",
         "plugin.video.nzbdav",
         "resources",
         "language",
@@ -187,7 +188,9 @@ def test_settings_xml_uses_30129_for_prowlarr_api_key():
     import os
     import re
 
-    settings_path = os.path.join("plugin.video.nzbdav", "resources", "settings.xml")
+    settings_path = os.path.join(
+        "repo", "plugin.video.nzbdav", "resources", "settings.xml"
+    )
     with open(settings_path, encoding="utf-8") as fh:
         content = fh.read()
     match = re.search(r'id="prowlarr_api_key"[^>]*label="(\d+)"', content)

@@ -20,7 +20,7 @@ def _parse_local_xml(path):
     return ET.ElementTree(ET.fromstring(xml_bytes))
 
 
-def build_zip(addon_dir="plugin.video.nzbdav", output_dir="."):
+def build_zip(addon_dir="repo/plugin.video.nzbdav", output_dir="."):
     addon_id = os.path.basename(addon_dir)
 
     # Read version from addon.xml for versioned zip filename. Surface
@@ -64,7 +64,9 @@ def build_zip(addon_dir="plugin.video.nzbdav", output_dir="."):
                 if f in skip_files or os.path.splitext(f)[1] in skip_ext:
                     continue
                 filepath = os.path.join(root, f)
-                arcname = filepath.replace(os.sep, "/")
+                arcname = os.path.relpath(
+                    filepath, os.path.dirname(addon_dir)
+                ).replace(os.sep, "/")
                 info = zipfile.ZipInfo(arcname)
                 info.compress_type = zipfile.ZIP_DEFLATED
                 info.external_attr = FILE_ATTR

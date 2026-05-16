@@ -46,8 +46,8 @@ jobs:
 
       - name: Lint
         run: |
-          ruff check plugin.video.nzbdav/ tests/ --exclude="plugin.video.nzbdav/resources/lib/ptt/"
-          black --check plugin.video.nzbdav/ tests/ --exclude="ptt/"
+          ruff check repo/plugin.video.nzbdav/ tests/ --exclude="repo/plugin.video.nzbdav/resources/lib/ptt/"
+          black --check repo/plugin.video.nzbdav/ tests/ --exclude="ptt/"
 
       - name: Test
         run: python -m pytest tests/ -v --tb=short -m "not integration and not functional and not extreme"
