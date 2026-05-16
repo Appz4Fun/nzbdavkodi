@@ -314,7 +314,7 @@ just dist-clean        # Remove build artifacts + repo/zips/
 
 ### Project Structure
 
-```
+```text
 repo/plugin.video.nzbdav/
   addon.xml              # Kodi addon manifest
   addon.py               # Entry point
@@ -371,7 +371,7 @@ TODO.md                             # Consolidated roadmap + architecture (Parts
 2. Run `just repo` to refresh `repo/zips/` for raw GitHub repository metadata.
 3. Stage the version bump plus generated repository metadata and zips:
    `git add repo/plugin.video.nzbdav/addon.xml repo/zips/`
-4. Commit: `git commit -am "release: v0.X.0"`
+4. Commit: `git commit -m "release: v0.X.0"`
 5. Tag and push: `git tag v0.X.0 && git push origin main v0.X.0`
 6. GitHub Actions builds the zip and creates a GitHub Release
 7. Kodi picks up the update automatically from the repository metadata in `repo/zips/`

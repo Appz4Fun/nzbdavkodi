@@ -135,6 +135,20 @@ def _copy_legacy_root_metadata(output_dir, root_dir):
         shutil.copy2(os.path.join(output_dir, name), os.path.join(root_dir, name))
 
 
+def _copy_legacy_root_addon_dirs(output_dir, root_dir):
+    if os.path.abspath(output_dir) == os.path.abspath(root_dir):
+        return
+    os.makedirs(root_dir, exist_ok=True)
+    for name in os.listdir(output_dir):
+        source = os.path.join(output_dir, name)
+        if not (os.path.isdir(source) and "." in name):
+            continue
+        target = os.path.join(root_dir, name)
+        if os.path.exists(target):
+            shutil.rmtree(target)
+        shutil.copytree(source, target)
+
+
 def _copy_addon_artifacts(output_dir, addon_id, main_addon, addon_zip=None):
     if addon_zip:
         _version, dest_dir, zip_name = _copy_addon_zip(output_dir, addon_id, addon_zip)
@@ -302,6 +316,7 @@ def generate_repo(
     _copy_root_addon_zip(output_dir, root_dir, addon_zip_name)
     if legacy_root_metadata:
         _copy_legacy_root_metadata(output_dir, root_dir)
+        _copy_legacy_root_addon_dirs(output_dir, root_dir)
     write_pages_index(
         root_dir,
         repo_version,
