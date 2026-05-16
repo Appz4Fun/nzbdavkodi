@@ -39,6 +39,17 @@ def test_build_caps_url_appends_api_and_redacts_nothing():
     assert "o=xml" in url
 
 
+def test_build_caps_url_empty_api_url():
+    url_none = build_caps_url(None, "secret")
+    url_empty = build_caps_url("", "secret")
+
+    assert url_none.startswith("/api?")
+    assert "apikey=secret" in url_none
+
+    assert url_empty.startswith("/api?")
+    assert "apikey=secret" in url_empty
+
+
 def test_build_caps_url_preserves_nonstandard_api_endpoint_paths():
     tabula = build_caps_url("https://tabula-rasa.pw/api/v1/", "secret")
     torbox = build_caps_url("https://torbox.app/newznab", "secret")
@@ -86,6 +97,19 @@ def test_parse_caps_invalid_xml_returns_empty_caps_and_error():
     assert caps == {"search_types": [], "supported_params": {}, "categories": []}
 
 
+def test_parse_caps_ignores_invalid_category_id():
+    caps = parse_caps("""<?xml version="1.0" encoding="UTF-8"?>
+<caps>
+  <categories>
+    <category id="bad" name="Movies" />
+    <category id="2000" name="Valid" />
+  </categories>
+</caps>
+""")
+
+    assert caps["categories"] == [{"id": 2000, "name": "Valid"}]
+
+
 @patch("resources.lib.newznab_caps._http_get")
 def test_fetch_caps_uses_caps_url(mock_http):
     mock_http.return_value = CAPS_XML
@@ -104,3 +128,17 @@ def test_fetch_caps_limits_caps_response_size(mock_http):
     fetch_caps("https://api.nzbgeek.info", "secret")
 
     assert mock_http.call_args.kwargs["max_bytes"] == CAPS_MAX_BYTES
+
+
+@patch("resources.lib.newznab_caps.xbmc")
+@patch("resources.lib.newznab_caps._http_get")
+def test_fetch_caps_handles_request_errors(mock_http, mock_xbmc):
+    mock_http.side_effect = RuntimeError("network timeout")
+
+    caps, error = fetch_caps("https://api.nzbgeek.info", "secret")
+
+    assert caps == {"search_types": [], "supported_params": {}, "categories": []}
+    assert "network timeout" in error
+    mock_xbmc.log.assert_called_once()
+    assert "network timeout" in mock_xbmc.log.call_args[0][0]
+    assert mock_xbmc.LOGWARNING == mock_xbmc.log.call_args[0][1]
