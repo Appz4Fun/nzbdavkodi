@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 from xml.sax.saxutils import quoteattr
 
 import pytest
+from resources.lib import fallback_streams as fallback_streams_module
 from resources.lib.fallback_streams import (
     _SAFE_JOB_RE,
     _fallback_settings,
@@ -2016,24 +2017,34 @@ def test_selection_fallback_starts_followup_fetch_before_first_wave_tail_finishe
             "video", "the matrix 1999 remux.mkv", 60000000000, "match-4"
         ),
     }
-    third_started = threading.Event()
+    third_scheduled = threading.Event()
     release_slow_second = threading.Event()
     slow_second_saw_third = [False]
+    real_start_selection_manifest_fetch = (
+        fallback_streams_module._start_selection_manifest_fetch
+    )
+
+    def start_fetch(kind, index, target, result_queue):
+        if kind == "candidate" and target is candidates[2]:
+            third_scheduled.set()
+        return real_start_selection_manifest_fetch(kind, index, target, result_queue)
 
     def fetch(url, **_kwargs):
-        if url == candidates[2]["link"]:
-            third_started.set()
         if url == candidates[1]["link"]:
-            slow_second_saw_third[0] = third_started.wait(timeout=0.2)
+            slow_second_saw_third[0] = third_scheduled.wait(timeout=0.2)
             release_slow_second.wait(timeout=1)
         return manifests[url]
 
     mock_fetch.side_effect = fetch
 
-    try:
-        attach_fallback_candidates_for_selection(selected, [selected] + candidates)
-    finally:
-        release_slow_second.set()
+    with patch(
+        "resources.lib.fallback_streams._start_selection_manifest_fetch",
+        side_effect=start_fetch,
+    ):
+        try:
+            attach_fallback_candidates_for_selection(selected, [selected] + candidates)
+        finally:
+            release_slow_second.set()
 
     assert slow_second_saw_third[0]
     assert selected["_fallback_candidates"] == [candidates[2], candidates[3]]
