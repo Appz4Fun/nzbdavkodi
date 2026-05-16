@@ -18,11 +18,10 @@ from resources.lib.ptt.parse import clean_title
         ("-Movie Title-", "Movie Title"),
         ("[Movie Title]", "Movie Title"),
         ("...Movie Title...", "Movie Title"),
-        # STAR_REGEX removals. The regex handles removing stars at the start
-        # or end. It leaves one character if there is space.
+        # STAR_REGEX removals. The regex handles removing stars at start/end.
+        # It leaves one character if there is space
         # e.g. '★ The Dark Knight ★' -> 'The Dark Knight ★'
-        # Looking at STAR_REGEX_1 =
-        # re.compile(r"^[\[【★].*[\]】★][ .]?(.+)")
+        # Looking at STAR_REGEX_1 = re.compile(r"^[\[【★].*[\]】★][ .]?(.+)")
         # It expects the title after the star block.
         # e.g. "★ Some tag ★ The Title" -> "The Title"
         ("★ Tag ★ The Dark Knight", "The Dark Knight"),
@@ -48,10 +47,7 @@ from resources.lib.ptt.parse import clean_title
         ("Movie Title [2020", "Movie Title 2020"),
         # Dots replaced with space if no space exists
         ("The.Matrix.1999", "The Matrix 1999"),
-        (
-            "The.Matrix 1999",
-            "The.Matrix 1999",
-        ),  # Has space, shouldn't replace dots
+        ("The.Matrix 1999", "The.Matrix 1999"),  # Has space, shouldn't replace dots
         # REDUNDANT_SYMBOLS_AT_END removals
         ("Movie Title -", "Movie Title"),
         ("Movie Title :", "Movie Title"),

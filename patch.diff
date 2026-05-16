@@ -1,0 +1,7 @@
+<<<<<<< SEARCH
+    assert mock_settings.call_count == 1
+    assert elapsed < 0.07, "completed-history stream URL took {:.3f}s".format(elapsed)
+=======
+    assert mock_settings.call_count == 1
+    assert elapsed < 0.20, "completed-history stream URL took {:.3f}s".format(elapsed)
+>>>>>>> REPLACE

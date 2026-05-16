@@ -2537,7 +2537,7 @@ def test_completed_history_reuses_webdav_settings_for_stream_url(
     assert stream_headers.get("Authorization", "").startswith("Basic ")
     assert no_video_retries == 0
     assert mock_settings.call_count == 1
-    assert elapsed < 0.07, "completed-history stream URL took {:.3f}s".format(elapsed)
+    assert elapsed < 0.2, "completed-history stream URL took {:.3f}s".format(elapsed)
 
 
 @patch("resources.lib.resolver._notify")

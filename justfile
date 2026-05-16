@@ -10,7 +10,7 @@ make-dev:
     if python3 -m pip install --help | grep -q -- "--break-system-packages"; then
         pip_flags+=(--break-system-packages)
     fi
-    python3 -m pip install ${pip_flags+"${pip_flags[@]}"} -r requirements-test.txt "ruff>=0.15" "black>=24"
+    python3 -m pip install "${pip_flags[@]}" -r requirements-test.txt "ruff>=0.15" "black>=24"
 
     if [[ "$(uname -s)" == "Darwin" ]]; then
         if ! command -v brew >/dev/null 2>&1; then
@@ -268,14 +268,14 @@ extreme-functional-test:
 
 # Lint the codebase (matches GitHub CI: ruff + black + pylint)
 lint:
-    ruff check repo/plugin.video.nzbdav/ tests/ --exclude="repo/plugin.video.nzbdav/resources/lib/ptt/"
-    black --check repo/plugin.video.nzbdav/ tests/ --exclude="ptt/"
+    ruff check plugin.video.nzbdav/ tests/ --exclude="plugin.video.nzbdav/resources/lib/ptt/"
+    black --check plugin.video.nzbdav/ tests/ --exclude="ptt/"
     pylint $(git ls-files '*.py')
 
 # Auto-fix lint issues
 lint-fix:
-    ruff check repo/plugin.video.nzbdav/ tests/ --exclude="repo/plugin.video.nzbdav/resources/lib/ptt/" --fix
-    black repo/plugin.video.nzbdav/ tests/ --exclude="ptt/"
+    ruff check plugin.video.nzbdav/ tests/ --exclude="plugin.video.nzbdav/resources/lib/ptt/" --fix
+    black plugin.video.nzbdav/ tests/ --exclude="ptt/"
 
 # Build the addon zip for Kodi installation
 release:
@@ -284,13 +284,13 @@ release:
 # Run tests then build release
 ship: test release
 
-# Generate Kodi repository in repo/zips/
+# Generate Kodi repository in dist/
 repo: release
-    python3 scripts/generate_repo.py
+    python3 scripts/generate_repo.py --output-dir dist
 
 # Copy the repository zip to cwd for easy access
 repo-zip: repo
-    cp repo/zips/repository.nzbdav/repository.nzbdav-*.zip .
+    cp dist/repository.nzbdav/repository.nzbdav-*.zip .
     @ls -lh repository.nzbdav-*.zip
 
 # Clean build artifacts
@@ -302,6 +302,6 @@ clean:
 # Run the same checks as GitHub CI (lint + test)
 ci: lint test
 
-# Clean everything including generated repository zips
+# Clean everything including dist
 dist-clean: clean
-    rm -rf repo/zips/
+    rm -rf dist/
