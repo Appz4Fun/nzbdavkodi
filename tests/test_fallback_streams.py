@@ -2030,15 +2030,22 @@ def test_selection_fallback_starts_followup_fetch_before_first_wave_tail_finishe
         ),
     }
     slow_second_started = threading.Event()
+    slow_second_finished = threading.Event()
     release_slow_second = threading.Event()
-    third_started_before_slow_release = [False]
+    third_started_while_slow_second_blocked = [False]
 
     def fetch(url, **_kwargs):
         if url == candidates[1]["link"]:
             slow_second_started.set()
-            release_slow_second.wait(timeout=1)
+            try:
+                release_slow_second.wait(timeout=1)
+            finally:
+                slow_second_finished.set()
         if url == candidates[2]["link"]:
-            third_started_before_slow_release[0] = not release_slow_second.is_set()
+            third_started_while_slow_second_blocked[0] = (
+                slow_second_started.is_set() and not slow_second_finished.is_set()
+            )
+            release_slow_second.set()
         return manifests[url]
 
     mock_fetch.side_effect = fetch
@@ -2049,7 +2056,7 @@ def test_selection_fallback_starts_followup_fetch_before_first_wave_tail_finishe
         release_slow_second.set()
 
     assert slow_second_started.is_set()
-    assert third_started_before_slow_release[0]
+    assert third_started_while_slow_second_blocked[0]
     assert selected["_fallback_candidates"] == [candidates[2], candidates[3]]
 
 
