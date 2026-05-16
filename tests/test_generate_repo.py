@@ -78,6 +78,39 @@ def test_generate_repo_can_publish_legacy_root_metadata(tmp_path, monkeypatch):
     ).read_bytes()
 
 
+def test_generate_repo_legacy_root_metadata_mirrors_addon_directories(
+    tmp_path, monkeypatch
+):
+    module = _load_generate_repo_module()
+    monkeypatch.chdir(REPO_ROOT)
+    release_zip = tmp_path / "plugin.video.nzbdav-1.2.1.zip"
+    legacy_zip_dir = tmp_path / "legacy-zips"
+    legacy_zip_dir.mkdir()
+    legacy_zip = legacy_zip_dir / "plugin.video.nzbdav-1.0.5.zip"
+
+    for zip_path, version in ((release_zip, "1.2.1"), (legacy_zip, "1.0.5")):
+        addon_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+            '<addon id="plugin.video.nzbdav" name="NZB-DAV" version="{}" />'
+        ).format(version)
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("plugin.video.nzbdav/addon.xml", addon_xml)
+
+    output_dir = tmp_path / "repo" / "zips"
+    module.generate_repo(
+        output_dir=str(output_dir),
+        addon_zip=str(release_zip),
+        legacy_addon_zip_dir=str(legacy_zip_dir),
+        repo_zip_alias_versions=("1.0.6",),
+        legacy_root_metadata=True,
+    )
+
+    assert (tmp_path / "plugin.video.nzbdav" / "plugin.video.nzbdav-1.2.1.zip").exists()
+    assert (tmp_path / "plugin.video.nzbdav" / "plugin.video.nzbdav-1.0.5.zip").exists()
+    assert (tmp_path / "repository.nzbdav" / "repository.nzbdav-1.1.0.zip").exists()
+    assert (tmp_path / "repository.nzbdav" / "repository.nzbdav-1.0.6.zip").exists()
+
+
 def test_generate_repo_html_indexes_use_standards_doctype(tmp_path, monkeypatch):
     module = _load_generate_repo_module()
     monkeypatch.chdir(REPO_ROOT)
