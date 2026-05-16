@@ -369,10 +369,12 @@ TODO.md                             # Consolidated roadmap + architecture (Parts
 
 1. Bump `version` in `repo/plugin.video.nzbdav/addon.xml`
 2. Run `just repo` to refresh `repo/zips/` for raw GitHub repository metadata.
-3. Commit: `git commit -am "release: v0.X.0"`
-4. Tag and push: `git tag v0.X.0 && git push origin main v0.X.0`
-5. GitHub Actions builds the zip and creates a GitHub Release
-6. Kodi picks up the update automatically from the repository metadata in `repo/zips/`
+3. Stage the version bump plus generated repository metadata and zips:
+   `git add repo/plugin.video.nzbdav/addon.xml repo/zips/`
+4. Commit: `git commit -am "release: v0.X.0"`
+5. Tag and push: `git tag v0.X.0 && git push origin main v0.X.0`
+6. GitHub Actions builds the zip and creates a GitHub Release
+7. Kodi picks up the update automatically from the repository metadata in `repo/zips/`
 
 ---
 

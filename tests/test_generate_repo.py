@@ -43,7 +43,9 @@ def test_generate_repo_writes_pages_root_files(tmp_path, monkeypatch):
 def test_generate_repo_root_index_links_current_addon_zip(tmp_path, monkeypatch):
     module = _load_generate_repo_module()
     monkeypatch.chdir(REPO_ROOT)
-    release_zip = tmp_path / "plugin.video.nzbdav-1.2.1.zip"
+    release_zip_dir = tmp_path / "release-input"
+    release_zip_dir.mkdir()
+    release_zip = release_zip_dir / "plugin.video.nzbdav-1.2.1.zip"
     release_addon_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="plugin.video.nzbdav" name="NZB-DAV" version="1.2.1" />
 """
@@ -54,10 +56,51 @@ def test_generate_repo_root_index_links_current_addon_zip(tmp_path, monkeypatch)
     module.generate_repo(output_dir=str(output_dir), addon_zip=str(release_zip))
 
     contents = (tmp_path / "index.html").read_text(encoding="utf-8")
-    assert "plugin.video.nzbdav-1.2.1.zip" not in contents
+    assert "plugin.video.nzbdav-1.2.1.zip" in contents
+    assert (tmp_path / "plugin.video.nzbdav-1.2.1.zip").exists()
     assert (
         output_dir / "plugin.video.nzbdav" / "plugin.video.nzbdav-1.2.1.zip"
     ).exists()
+
+
+def test_generate_repo_can_publish_legacy_root_metadata(tmp_path, monkeypatch):
+    module = _load_generate_repo_module()
+    monkeypatch.chdir(REPO_ROOT)
+
+    output_dir = tmp_path / "repo" / "zips"
+    module.generate_repo(output_dir=str(output_dir), legacy_root_metadata=True)
+
+    assert (tmp_path / "addons.xml").read_bytes() == (
+        output_dir / "addons.xml"
+    ).read_bytes()
+    assert (tmp_path / "addons.xml.md5").read_bytes() == (
+        output_dir / "addons.xml.md5"
+    ).read_bytes()
+
+
+def test_generate_repo_html_indexes_use_standards_doctype(tmp_path, monkeypatch):
+    module = _load_generate_repo_module()
+    monkeypatch.chdir(REPO_ROOT)
+    release_zip = tmp_path / "plugin.video.nzbdav-1.2.1.zip"
+    release_addon_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<addon id="plugin.video.nzbdav" name="NZB-DAV" version="1.2.1" />
+"""
+    with zipfile.ZipFile(release_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("plugin.video.nzbdav/addon.xml", release_addon_xml)
+
+    output_dir = tmp_path / "repo" / "zips"
+    module.generate_repo(output_dir=str(output_dir), addon_zip=str(release_zip))
+
+    index_paths = [
+        tmp_path / "index.html",
+        output_dir / "plugin.video.nzbdav" / "index.html",
+        output_dir / "repository.nzbdav" / "index.html",
+    ]
+    for index_path in index_paths:
+        contents = index_path.read_text(encoding="utf-8").lower()
+        assert contents.startswith("<!doctype html>\n")
+        assert "<head>" in contents
+        assert "<body>" in contents
 
 
 def test_generate_repo_omits_full_changelog_from_repo_index(tmp_path, monkeypatch):
@@ -141,7 +184,7 @@ def test_generate_repo_can_publish_release_zip_instead_of_worktree_addon(
     assert (
         output_dir / "plugin.video.nzbdav" / "plugin.video.nzbdav-1.0.3.zip"
     ).exists()
-    assert not (tmp_path / "plugin.video.nzbdav-1.0.3.zip").exists()
+    assert (tmp_path / "plugin.video.nzbdav-1.0.3.zip").exists()
     assert not (output_dir / "plugin.video.nzbdav" / "release-addon.zip").exists()
     assert (
         output_dir / "plugin.video.nzbdav" / "resources" / "icon.png"
