@@ -162,7 +162,7 @@ def probe_webdav_reachable(
             if mon.waitForAbort(retry_delay):
                 return False, "connection_error"
     # Unreachable in normal flow — defensive safety net for static analysis.
-    return False, "connection_error"
+    return False, "connection_error"  # pragma: no cover
 
 
 def _find_video_file_in_subdirs(subdirs, depth, visited, settings):
@@ -333,7 +333,7 @@ def find_video_file(
         try:
             _xml_parser.parser.DefaultHandler = lambda _d: None
             _xml_parser.parser.ExternalEntityRefHandler = lambda *_: False
-        except AttributeError:  # pragma: no cover — non-expat parser backend
+        except AttributeError:  # pragma: no cover
             pass
         root = ET.fromstring(
             body, parser=_xml_parser
