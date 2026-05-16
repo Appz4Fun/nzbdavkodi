@@ -614,6 +614,23 @@ def test_parse_results_html_entities_in_title():
     ), "Title should contain decoded ampersand"
 
 
+def test_parse_results_rejects_declared_xml_entities():
+    xml_text = """<?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE rss [<!ENTITY leaked "SHOULD_NOT_APPEAR">]>
+    <rss version="2.0">
+        <channel>
+            <item>
+                <title>&leaked;</title>
+                <link>http://hydra:5076/getnzb/entity?apikey=testkey</link>
+            </item>
+        </channel>
+    </rss>"""
+
+    results = parse_results(xml_text)
+
+    assert not results
+
+
 @patch("resources.lib.hydra._get_settings")
 @patch("resources.lib.hydra._http_get")
 def test_search_hydra_movie_no_imdb_falls_back_to_title(mock_http, mock_settings):
