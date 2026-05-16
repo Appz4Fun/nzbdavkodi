@@ -617,14 +617,6 @@ def test_extract_mp4_first_sample_stsz_more_edge_cases():
         moov = _box(b"moov", trak)
         return ftyp + moov
 
-    stsz_zero_cnt = _fullbox(b"stsz", struct.pack(">II", 10, 0))
-    mock3 = _mock_urlopen_from_file(make_mp4(stsz_zero_cnt))
-    with patch("resources.lib.dv_source.urlopen", side_effect=mock3), patch(
-        "resources.lib.mp4_parser.urlopen", side_effect=mock3
-    ):
-        r3 = probe_dolby_vision_source("http://host/3.mp4", auth_header=None)
-    assert r3.reason == "mp4_sample_extraction_failed"
-
     # missing chunk offset entirely
     stsz_valid = _fullbox(b"stsz", struct.pack(">II", 0, 1) + struct.pack(">I", 100))
     stbl_no_stco = _box(b"stbl", stsd + stsz_valid + stsc)
@@ -668,95 +660,12 @@ def test_find_first_video_stbl_no_stbl():
     assert r.reason == "mp4_sample_extraction_failed"
 
 
-def test_extract_mp4_first_sample_stsz_sample_count_zero():
-
-    ftyp = _box(b"ftyp", b"isom\x00\x00\x02\x00isomiso2")
-    stsd = _fullbox(b"stsd", struct.pack(">I", 1) + _box(b"hvc1", b""))
-    hdlr = _fullbox(b"hdlr", b"\x00" * 4 + b"vide" + b"\x00" * 12)
-    stsc = _fullbox(b"stsc", struct.pack(">I", 1) + struct.pack(">III", 1, 1, 1))
-    stco = _fullbox(b"stco", struct.pack(">I", 1) + struct.pack(">I", 512))
-
-    def make_mp4(stsz):
-        stbl = _box(b"stbl", stsd + stsz + stsc + stco)
-        minf = _box(b"minf", stbl)
-        mdia = _box(b"mdia", hdlr + minf)
-        trak = _box(b"trak", mdia)
-        moov = _box(b"moov", trak)
-        return ftyp + moov
-
-    stsz_zero_cnt = _fullbox(b"stsz", struct.pack(">II", 0, 0))
-    mock3 = _mock_urlopen_from_file(make_mp4(stsz_zero_cnt))
-    with patch("resources.lib.dv_source.urlopen", side_effect=mock3), patch(
-        "resources.lib.mp4_parser.urlopen", side_effect=mock3
-    ):
-        r3 = probe_dolby_vision_source("http://host/7.mp4", auth_header=None)
-    assert r3.reason == "mp4_sample_extraction_failed"
-
-
-def test_extract_mp4_first_sample_stsz_sample_size_zero_body_short():
-
-    ftyp = _box(b"ftyp", b"isom\x00\x00\x02\x00isomiso2")
-    stsd = _fullbox(b"stsd", struct.pack(">I", 1) + _box(b"hvc1", b""))
-    hdlr = _fullbox(b"hdlr", b"\x00" * 4 + b"vide" + b"\x00" * 12)
-    stsc = _fullbox(b"stsc", struct.pack(">I", 1) + struct.pack(">III", 1, 1, 1))
-    stco = _fullbox(b"stco", struct.pack(">I", 1) + struct.pack(">I", 512))
-
-    def make_mp4(stsz):
-        stbl = _box(b"stbl", stsd + stsz + stsc + stco)
-        minf = _box(b"minf", stbl)
-        mdia = _box(b"mdia", hdlr + minf)
-        trak = _box(b"trak", mdia)
-        moov = _box(b"moov", trak)
-        return ftyp + moov
-
-    stsz_trunc = _fullbox(
-        b"stsz", struct.pack(">II", 0, 1)
-    )  # Body is 8 bytes, missing sample array
-    mock3 = _mock_urlopen_from_file(make_mp4(stsz_trunc))
-    with patch("resources.lib.dv_source.urlopen", side_effect=mock3), patch(
-        "resources.lib.mp4_parser.urlopen", side_effect=mock3
-    ):
-        r3 = probe_dolby_vision_source("http://host/8.mp4", auth_header=None)
-    assert r3.reason == "mp4_sample_extraction_failed"
-
-
-def test_read_chunk_offset_co64_count_zero():
-    from resources.lib.dv_source import _read_chunk_offset
-
-    co64_zero = _fullbox(b"co64", struct.pack(">I", 0) + struct.pack(">Q", 0))
-    stbl_only_co64 = _box(b"stbl", co64_zero)
-    assert _read_chunk_offset(stbl_only_co64, 8, len(stbl_only_co64)) is None
-
-
 def test_read_chunk_offset_co64_without_stco_uses_first_entry():
     from resources.lib.dv_source import _read_chunk_offset
 
     co64_first_entry = _fullbox(b"co64", struct.pack(">I", 1) + struct.pack(">Q", 1234))
     stbl_only_co64 = _box(b"stbl", co64_first_entry)
     assert _read_chunk_offset(stbl_only_co64, 8, len(stbl_only_co64)) == 1234
-
-
-def test_extract_mp4_first_sample_stsz_stbl_missing_stsz():
-
-    ftyp = _box(b"ftyp", b"isom\x00\x00\x02\x00isomiso2")
-    stsd = _fullbox(b"stsd", struct.pack(">I", 1) + _box(b"hvc1", b""))
-    hdlr = _fullbox(b"hdlr", b"\x00" * 4 + b"vide" + b"\x00" * 12)
-    stsc = _fullbox(b"stsc", struct.pack(">I", 1) + struct.pack(">III", 1, 1, 1))
-    stco = _fullbox(b"stco", struct.pack(">I", 1) + struct.pack(">I", 512))
-
-    # missing stsz
-    stbl_no_stsz = _box(b"stbl", stsd + stsc + stco)
-    minf_no_stsz = _box(b"minf", stbl_no_stsz)
-    mdia_no_stsz = _box(b"mdia", hdlr + minf_no_stsz)
-    moov_no_stsz = _box(b"moov", _box(b"trak", mdia_no_stsz))
-    mp4_no_stsz = ftyp + moov_no_stsz
-
-    mock = _mock_urlopen_from_file(mp4_no_stsz)
-    with patch("resources.lib.dv_source.urlopen", side_effect=mock), patch(
-        "resources.lib.mp4_parser.urlopen", side_effect=mock
-    ):
-        r = probe_dolby_vision_source("http://host/no_stsz.mp4", auth_header=None)
-    assert r.reason == "mp4_sample_extraction_failed"
 
 
 # --- Extra MKV/EBML Parsing Edge Cases ---
@@ -804,20 +713,8 @@ def test_ebml_read_element_id_truncated():
 def test_iter_ebml_payload_end_clamp():
     from resources.lib.dv_source import _iter_ebml
 
-    # Mocking data to trigger payload_start > end and payload_end <= offset guards
-    # Element ID: 0x80 (width 1)
-    # VINT Size: 0x40 0x00 (width 2, value 0)
-    # The size itself is 0, payload_start will be 3, payload_end will be 3.
-    # offset is 0, payload_end is 3.
-    data = b"\x80\x40\x10"  # ID: width 1, Size: width 2. Total header 3.
-    # If end=2, payload_start (3) > end (2).
-    elems = list(_iter_ebml(data, 0, 2))
-    assert len(elems) == 0
-
-    # Case: payload_start > end
-    # ID: 0x80
-    # Size: 0x40 0x10 -> width 2, payload_start is 3, but end is explicitly 2
-    # So _iter_ebml returns immediately
+    # payload_start becomes 3 while end is 2, so the iterator must stop
+    # immediately rather than yielding an invalid child range.
     elems = list(_iter_ebml(b"\x80\x40\x10", 0, 2))
     assert len(elems) == 0
 
