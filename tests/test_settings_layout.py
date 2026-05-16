@@ -27,6 +27,7 @@ import pytest
 
 _SETTINGS_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "repo",
     "plugin.video.nzbdav",
     "resources",
     "settings.xml",

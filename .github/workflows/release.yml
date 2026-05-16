@@ -38,7 +38,7 @@ jobs:
         run: |
           xml_version=$(python3 -c "
           import xml.etree.ElementTree as ET
-          tree = ET.parse('plugin.video.nzbdav/addon.xml')
+          tree = ET.parse('repo/plugin.video.nzbdav/addon.xml')
           print(tree.getroot().get('version'))
           ")
           if [ "$xml_version" != "${{ steps.version.outputs.version }}" ]; then
@@ -50,7 +50,7 @@ jobs:
         run: python3 scripts/build_zip.py
 
       - name: Generate repository metadata
-        run: python3 scripts/generate_repo.py --output-dir dist
+        run: python3 scripts/generate_repo.py
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v2

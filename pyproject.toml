@@ -18,7 +18,7 @@ classifiers = [
 
 [tool.ruff]
 target-version = "py38"
-exclude = ["plugin.video.nzbdav/resources/lib/ptt/"]
+exclude = ["repo/plugin.video.nzbdav/resources/lib/ptt/"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]

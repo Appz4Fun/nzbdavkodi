@@ -78,7 +78,7 @@ def hydra_search(movie: dict) -> list[dict]:
         return json.load(r).get("searchResults", []) or []
 
 
-# Mirrors plugin.video.nzbdav/resources/lib/fallback_streams.py:
+# Mirrors repo/plugin.video.nzbdav/resources/lib/fallback_streams.py:
 # _PEER_BYTES_TOLERANCE_FRACTION = 0.20. Two uploads of the same release
 # carry near-identical playable bytes; the small slack absorbs yEnc
 # segmentation noise and the cosmetic .par2/extra-script trailers some

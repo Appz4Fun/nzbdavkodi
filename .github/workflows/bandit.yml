@@ -35,8 +35,8 @@ jobs:
 
       - name: Run Bandit
         run: >-
-          bandit -r plugin.video.nzbdav/
-          --exclude plugin.video.nzbdav/resources/lib/ptt
+          bandit -r repo/plugin.video.nzbdav/
+          --exclude repo/plugin.video.nzbdav/resources/lib/ptt
           --skip B107,B110,B310,B314,B404,B405,B603
           -f sarif -o bandit.sarif --exit-zero
 

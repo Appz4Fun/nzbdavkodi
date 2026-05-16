@@ -77,6 +77,28 @@ def _copy_addon_zip(output_dir, addon_id, addon_zip):
     return version, dest_dir, zip_name
 
 
+def _root_dir_for_output(output_dir):
+    normalized = os.path.normpath(output_dir)
+    if os.path.basename(normalized) == "zips" and os.path.basename(
+        os.path.dirname(normalized)
+    ) == "repo":
+        return os.path.dirname(os.path.dirname(normalized)) or "."
+    return normalized
+
+
+def _copy_root_zips(output_dir, root_dir):
+    if os.path.abspath(output_dir) == os.path.abspath(root_dir):
+        return
+    os.makedirs(root_dir, exist_ok=True)
+    for name in os.listdir(output_dir):
+        if (
+            name.startswith("repository.")
+            and name.endswith(".zip")
+            and os.path.isfile(os.path.join(output_dir, name))
+        ):
+            shutil.copy2(os.path.join(output_dir, name), os.path.join(root_dir, name))
+
+
 def write_pages_index(output_dir, repo_version="1.0.0", addon_zip_names=None):
     """Write a Kodi-browsable directory listing for the root."""
     index_path = os.path.join(output_dir, "index.html")
@@ -125,7 +147,7 @@ def _copy_addon_artifacts(output_dir, addon_id, main_addon, addon_zip=None):
         shutil.copy2(zip_name, os.path.join(output_dir, zip_name))
         shutil.copy2(main_addon, os.path.join(dest_dir, "addon.xml"))
         for asset in ["resources/icon.png", "resources/fanart.jpg"]:
-            src = os.path.join(addon_id, asset)
+            src = os.path.join(os.path.dirname(main_addon), asset)
             if os.path.exists(src):
                 asset_dest = os.path.join(dest_dir, asset)
                 os.makedirs(os.path.dirname(asset_dest), exist_ok=True)
@@ -162,16 +184,17 @@ def _copy_legacy_addon_zips(output_dir, addon_id, legacy_addon_zip_dir=None):
 
 
 def generate_repo(
-    output_dir="dist",
+    output_dir="repo/zips",
     addon_zip=None,
     legacy_addon_zip_dir=None,
     repo_zip_alias_versions=None,
 ):
     os.makedirs(output_dir, exist_ok=True)
+    root_dir = _root_dir_for_output(output_dir)
 
     addon_xmls = []
 
-    main_addon = "plugin.video.nzbdav/addon.xml"
+    main_addon = "repo/plugin.video.nzbdav/addon.xml"
     main_addon_id = "plugin.video.nzbdav"
     if addon_zip:
         addon_xmls.append(_read_addon_xml_from_zip(addon_zip, main_addon_id))
@@ -231,7 +254,7 @@ def generate_repo(
         repo_icon = os.path.join(repo_dir, "icon.png")
         if os.path.exists(repo_icon):
             shutil.copy2(repo_icon, os.path.join(repo_out, "icon.png"))
-        # Also copy repo zip to root so Kodi can install from the source URL
+        # Also copy repo zip to the zips root for raw GitHub hosting.
         root_repo_zip = os.path.join(
             output_dir, "repository.nzbdav-{}.zip".format(repo_version)
         )
@@ -255,10 +278,10 @@ def generate_repo(
         if os.path.isdir(subdir_path):
             _write_dir_index(subdir_path)
 
+    _copy_root_zips(output_dir, root_dir)
     write_pages_index(
-        output_dir,
+        root_dir,
         repo_version,
-        addon_zip_names=[addon_zip_name] if addon_zip_name else None,
     )
 
 
@@ -278,7 +301,7 @@ def _write_dir_index(dir_path):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--output-dir", default="dist", help="Output directory for repo"
+        "--output-dir", default="repo/zips", help="Output directory for repo"
     )
     parser.add_argument(
         "--addon-zip",

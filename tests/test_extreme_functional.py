@@ -399,7 +399,7 @@ def test_extreme_fallback_run(stack_ready, run_dir):
 
     try:
         # nzbdav's resolver polls until the NZB download completes before
-        # invoking the player (see plugin.video.nzbdav/resources/lib/
+        # invoking the player (see repo/plugin.video.nzbdav/resources/lib/
         # resolver.py:_poll_until_ready). For a 1080p release that's
         # multiple GB over NNTP the wait can be several minutes; 60s is
         # too tight. The 20-min test body tolerates most of that wait
