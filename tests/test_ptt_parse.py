@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 nzbdav contributors
 
-import pytest
 from resources.lib.ptt.parse import extend_options
+
 
 def test_extend_options_empty():
     options = {}
@@ -13,7 +13,9 @@ def test_extend_options_empty():
         "skipIfFirst": False,
         "remove": False,
     }
+    # extend_options mutates the options dictionary and returns it
     assert result is options
+
 
 def test_extend_options_default_arg():
     result1 = extend_options()
@@ -27,6 +29,7 @@ def test_extend_options_default_arg():
         "skipIfFirst": False,
         "remove": False,
     }
+
 
 def test_extend_options_override_defaults():
     options = {
@@ -42,7 +45,9 @@ def test_extend_options_override_defaults():
         "skipIfFirst": True,
         "remove": True,
     }
+    # extend_options mutates the options dictionary and returns it
     assert result is options
+
 
 def test_extend_options_partial_override():
     options = {"remove": True}
@@ -53,6 +58,7 @@ def test_extend_options_partial_override():
         "skipIfFirst": False,
         "remove": True,
     }
+
 
 def test_extend_options_extra_keys():
     options = {"extra_key": "value"}

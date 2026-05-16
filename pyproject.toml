@@ -35,3 +35,4 @@ markers = [
     "functional: dev-box tests that use live services plus local playback simulation; skipped by default, run via `just functional-test`",
     "extreme: extreme functional test (20+ minutes, real services); skipped by default, run via `just extreme-functional-test`",
 ]
+pythonpath = "plugin.video.nzbdav"
