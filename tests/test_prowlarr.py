@@ -294,6 +294,23 @@ def test_parse_results_enclosure_length_fills_in_when_attr_size_missing():
     assert results[0]["size"] == "987654321"
 
 
+def test_parse_results_prefers_enclosure_when_exact_link_is_empty():
+    xml_text = """<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+<channel>
+<item>
+<title>Movie.2024.mkv</title>
+<link />
+<atom:link>https://feed.example/rss</atom:link>
+<enclosure url="http://prowlarr/dl/4" length="987654321" type="application/x-nzb" />
+</item>
+</channel>
+</rss>"""
+    results = parse_results(xml_text)
+    assert len(results) == 1
+    assert results[0]["link"] == "http://prowlarr/dl/4"
+
+
 def test_parse_results_handles_unqualified_newznab_attrs():
     xml_text = """<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0">

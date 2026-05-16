@@ -212,6 +212,18 @@ def _iter_xml_children_by_preference(element, tag):
             yield child
 
 
+def _xml_children_by_match_type(element, tag):
+    """Return (exact_matches, namespace_fallback_matches) for ``tag``."""
+    exact = []
+    fallback = []
+    for child in element:
+        if child.tag == tag:
+            exact.append(child)
+        elif xml_local_name(child.tag) == tag:
+            fallback.append(child)
+    return exact, fallback
+
+
 def find_xml_children(element, tag):
     """Return direct children whose local tag name matches ``tag``."""
     return list(_iter_xml_children_by_preference(element, tag))
@@ -230,9 +242,14 @@ def get_xml_text(element, tag):
     Small wrapper used by the XML-parsing paths in hydra.py and
     prowlarr.py. Returning `""` instead of raising keeps the per-item
     parse loops simple: missing fields land as empty strings rather than
-    exceptions.
+    exceptions. Exact child matches own the lookup when present; we only
+    fall back to namespaced local-name matches when the item has no exact
+    child for ``tag`` at all. That preserves later parser fallbacks like
+    ``<enclosure url=...>`` when an RSS ``<link/>`` exists but is empty.
     """
-    for child in _iter_xml_children_by_preference(element, tag):
+    exact_children, fallback_children = _xml_children_by_match_type(element, tag)
+    children = exact_children if exact_children else fallback_children
+    for child in children:
         text = (child.text or "").strip()
         if text:
             return text

@@ -217,6 +217,25 @@ def test_get_xml_text_uses_rss_text_after_empty_namespaced_extension():
     assert get_xml_text(item, "link") == "https://indexer.example/download/abc.nzb"
 
 
+def test_get_xml_text_ignores_namespaced_fallback_when_exact_link_exists():
+    item = ET.fromstring("""<item xmlns:atom="http://www.w3.org/2005/Atom">
+        <link />
+        <atom:link>https://feed.example/rss</atom:link>
+        </item>""")
+
+    assert get_xml_text(item, "link") == ""
+
+
+def test_get_xml_text_uses_later_nonempty_exact_match_before_namespace_fallback():
+    item = ET.fromstring("""<item xmlns:atom="http://www.w3.org/2005/Atom">
+        <link />
+        <link>https://indexer.example/download/abc.nzb</link>
+        <atom:link>https://feed.example/rss</atom:link>
+        </item>""")
+
+    assert get_xml_text(item, "link") == "https://indexer.example/download/abc.nzb"
+
+
 def test_redact_url_hides_apikey():
     """redact_url should replace apikey values with ***."""
     url = "http://hydra:5076/api?apikey=secretkey123&t=movie&imdbid=tt1234567"
