@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 nzbdav contributors
+
 from resources.lib.ptt.parse import LANGUAGES_TRANSLATION_TABLE, translate_langs
 
 
