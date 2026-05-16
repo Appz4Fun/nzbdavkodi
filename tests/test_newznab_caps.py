@@ -32,12 +32,29 @@ CAPS_XML = """<?xml version="1.0" encoding="UTF-8"?>
 
 
 def test_normalize_api_endpoint():
-    assert normalize_api_endpoint("https://api.nzbgeek.info") == "https://api.nzbgeek.info/api"
-    assert normalize_api_endpoint("https://api.nzbgeek.info/") == "https://api.nzbgeek.info/api"
-    assert normalize_api_endpoint("https://api.nzbgeek.info/api") == "https://api.nzbgeek.info/api"
-    assert normalize_api_endpoint("https://api.nzbgeek.info/api/") == "https://api.nzbgeek.info/api"
-    assert normalize_api_endpoint("https://tabula-rasa.pw/api/v1/") == "https://tabula-rasa.pw/api/v1"
-    assert normalize_api_endpoint("http://localhost:5076") == "http://localhost:5076/api"
+    assert (
+        normalize_api_endpoint("https://api.nzbgeek.info")
+        == "https://api.nzbgeek.info/api"
+    )
+    assert (
+        normalize_api_endpoint("https://api.nzbgeek.info/")
+        == "https://api.nzbgeek.info/api"
+    )
+    assert (
+        normalize_api_endpoint("https://api.nzbgeek.info/api")
+        == "https://api.nzbgeek.info/api"
+    )
+    assert (
+        normalize_api_endpoint("https://api.nzbgeek.info/api/")
+        == "https://api.nzbgeek.info/api"
+    )
+    assert (
+        normalize_api_endpoint("https://tabula-rasa.pw/api/v1/")
+        == "https://tabula-rasa.pw/api/v1"
+    )
+    assert (
+        normalize_api_endpoint("http://localhost:5076") == "http://localhost:5076/api"
+    )
     assert normalize_api_endpoint("") == "/api"
     assert normalize_api_endpoint(None) == "/api"
 
