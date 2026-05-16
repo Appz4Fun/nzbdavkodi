@@ -1882,26 +1882,39 @@ def test_selection_fallback_pipelines_second_manifest_wave_after_underfill(
                 "video", "the matrix 1999 remux.mkv", 60000000000, digest
             )
 
-    seventh_started = threading.Event()
-    fourth_saw_seventh = [False]
+    fourth_started = threading.Event()
+    fourth_finished = threading.Event()
+    release_fourth = threading.Event()
+    seventh_started_while_fourth_blocked = [False]
 
     def fetch(url, **_kwargs):
-        if url == candidates[6]["link"]:
-            seventh_started.set()
         if url == candidates[3]["link"]:
-            fourth_saw_seventh[0] = seventh_started.wait(0.2)
+            fourth_started.set()
+            try:
+                release_fourth.wait(timeout=1)
+            finally:
+                fourth_finished.set()
+        if url == candidates[6]["link"]:
+            seventh_started_while_fourth_blocked[0] = (
+                fourth_started.is_set() and not fourth_finished.is_set()
+            )
+            release_fourth.set()
         return manifests[url]
 
     mock_fetch.side_effect = fetch
 
-    attach_fallback_candidates_for_selection(selected, [selected] + candidates)
+    try:
+        attach_fallback_candidates_for_selection(selected, [selected] + candidates)
+    finally:
+        release_fourth.set()
 
     assert selected["_fallback_candidates"] == [
         candidates[0],
         candidates[6],
         candidates[7],
     ]
-    assert fourth_saw_seventh[0]
+    assert fourth_started.is_set()
+    assert seventh_started_while_fourth_blocked[0]
 
 
 @patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
