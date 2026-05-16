@@ -1,5 +1,5 @@
-import pytest
-from resources.lib.ptt.parse import translate_langs, LANGUAGES_TRANSLATION_TABLE
+from resources.lib.ptt.parse import LANGUAGES_TRANSLATION_TABLE, translate_langs
+
 
 def test_translate_langs_basic():
     """Test standard language code translations."""
