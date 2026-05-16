@@ -18,6 +18,7 @@ def test_parse_title_metadata_exception(mock_xbmc, mock_parse_title):
     assert mock_xbmc.log.called
     assert result["year"] == 2024
 
+
 @patch("resources.lib.ptt.parse_title")
 @patch("resources.lib.filter.xbmc")
 def test_parse_title_metadata_type_error_correct(mock_xbmc, mock_parse_title):
@@ -28,6 +29,7 @@ def test_parse_title_metadata_type_error_correct(mock_xbmc, mock_parse_title):
     result = parse_title_metadata("Test Title (2024)")
     assert mock_xbmc.log.called
     assert result["year"] == 2024
+
 
 @patch("resources.lib.ptt.parse_title")
 def test_parse_title_metadata_strings(mock_parse_title):
@@ -47,6 +49,7 @@ def test_parse_title_metadata_strings(mock_parse_title):
     assert result["audio"] == ["Atmos"]
     assert result["languages"] == ["en"]
     assert result["channels"] == "5.1"
+
 
 def test_matches_filters_hdr_and_languages():
     settings = {
@@ -90,9 +93,11 @@ def test_matches_filters_hdr_and_languages():
     }
     assert not matches_filters({"title": "Test"}, meta_wrong_lang, settings)
 
+
 def test_pubdate_sort_key_invalid():
     assert _pubdate_sort_key({"pubdate": "invalid date"}) == 0.0
     assert _pubdate_sort_key({"pubdate": "Mon, 99 Jan 2006 15:04:05 GMT"}) == 0.0
+
 
 def test_sort_results_combos():
     results = [
@@ -117,6 +122,7 @@ def test_sort_results_combos():
     settings["sort_order"] = 4
     sorted_res_4 = _sort_results(results_dates, settings)
     assert sorted_res_4[0]["title"] == "Old"
+
 
 def test_fallback_parse_comprehensive():
     title = (
@@ -152,6 +158,7 @@ def test_fallback_parse_comprehensive():
     assert _fallback_parse("Movie (2024) DDP5.1")["audio"] == ["DD+"]
     assert _fallback_parse("Movie (2024) EAC3")["audio"] == ["DD+"]
 
+
 @patch("resources.lib.filter.xbmcaddon.Addon")
 @patch("resources.lib.filter.xbmcgui.Dialog")
 @patch("resources.lib.filter.ALL_RELEASE_GROUPS", ["GRP1", "GRP2", "GRP3"])
@@ -166,6 +173,7 @@ def test_configure_groups_dialog(mock_dialog, mock_addon_class):
 
     dialog_instance.multiselect.assert_called_once()
     mock_addon.setSetting.assert_called_with("test_setting", "GRP1,GRP3")
+
 
 @patch("resources.lib.filter.xbmcaddon.Addon")
 @patch("resources.lib.filter.xbmcgui.Dialog")

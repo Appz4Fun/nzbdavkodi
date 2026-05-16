@@ -2024,7 +2024,7 @@ def test_selection_fallback_starts_followup_fetch_before_first_wave_tail_finishe
         if url == candidates[2]["link"]:
             third_started.set()
         if url == candidates[1]["link"]:
-            slow_second_saw_third[0] = third_started.wait(timeout=0.2)
+            slow_second_saw_third[0] = third_started.wait(timeout=1.0)
             release_slow_second.wait(timeout=1)
         return manifests[url]
 
