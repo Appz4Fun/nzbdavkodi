@@ -7620,6 +7620,9 @@ def test_live_fallback_selection_reuses_validated_probe_urls_for_range_reads():
 
 def test_live_fallback_selection_parallelizes_fingerprint_samples_for_cutover_speed():
     """Successful fallback cutover should not wait on serial fingerprint probes."""
+    from resources.lib import stream_proxy
+    from resources.lib.fallback_streams import fingerprint_ranges
+
     handler = _make_handler()
     content_length = 10000000
     failed_byte = 1234567
@@ -7656,9 +7659,18 @@ def test_live_fallback_selection_parallelizes_fingerprint_samples_for_cutover_sp
         source = handler._select_live_fallback_source(ctx, failed_byte, range_end)
         elapsed = time.monotonic() - started
 
+    fingerprint_count = len(fingerprint_ranges(content_length))
+    parallel_waves = (
+        fingerprint_count + stream_proxy._FALLBACK_FINGERPRINT_WORKERS - 1
+    ) // stream_proxy._FALLBACK_FINGERPRINT_WORKERS
+    # One failed-range probe happens before the two parallel fingerprint phases.
+    # Keep the budget tight enough to reject serial work while tolerating
+    # scheduler jitter across machines.
+    budget = per_probe_delay * (1 + parallel_waves * 2) + 0.04
+
     assert source is ctx["fallback_sources"][0]
     assert ctx["fallback_sources"][0]["validated"] is True
-    assert elapsed < 0.16, "cutover validation took {:.3f}s".format(elapsed)
+    assert elapsed < budget, "cutover validation took {:.3f}s".format(elapsed)
 
 
 def test_live_fallback_selection_keeps_slow_rtt_cutover_under_budget():
