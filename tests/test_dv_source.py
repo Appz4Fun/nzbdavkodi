@@ -527,16 +527,16 @@ def test_read_chunk_offset_edge_cases():
     stco_trunc = _box(b"stco", b"123")
     assert _read_chunk_offset(stco_trunc, 0, len(stco_trunc)) is None
 
-    # stco count < 1
-    stco_zero = _fullbox(b"stco", struct.pack(">I", 0))
+    # stco count < 1 with enough body bytes to reach the count check
+    stco_zero = _fullbox(b"stco", struct.pack(">II", 0, 0))
     assert _read_chunk_offset(stco_zero, 0, len(stco_zero)) is None
 
     # co64 truncated body
     co64_trunc = _box(b"co64", b"1234567")
     assert _read_chunk_offset(co64_trunc, 0, len(co64_trunc)) is None
 
-    # co64 count < 1
-    co64_zero = _fullbox(b"co64", struct.pack(">I", 0))
+    # co64 count < 1 with enough body bytes to reach the count check
+    co64_zero = _fullbox(b"co64", struct.pack(">I", 0) + struct.pack(">Q", 0))
     assert _read_chunk_offset(co64_zero, 0, len(co64_zero)) is None
 
 
@@ -599,16 +599,6 @@ def test_extract_mp4_first_sample_stsz_edge_cases():
     ):
         r4 = probe_dolby_vision_source("http://host/4.mp4", auth_header=None)
     assert r4.reason == "mp4_sample_extraction_failed"
-
-
-def test_read_chunk_offset_more_edge_cases():
-    from resources.lib.dv_source import _read_chunk_offset
-
-    stco_zero = _fullbox(b"stco", struct.pack(">I", 0) + struct.pack(">I", 0))
-    assert _read_chunk_offset(stco_zero, 0, len(stco_zero)) is None
-
-    co64_zero = _fullbox(b"co64", struct.pack(">I", 0) + struct.pack(">I", 0))
-    assert _read_chunk_offset(co64_zero, 0, len(co64_zero)) is None
 
 
 def test_extract_mp4_first_sample_stsz_more_edge_cases():
@@ -703,15 +693,6 @@ def test_extract_mp4_first_sample_stsz_sample_count_zero():
     assert r3.reason == "mp4_sample_extraction_failed"
 
 
-def test_read_chunk_offset_stco_co64_edge_cases():
-    from resources.lib.dv_source import _read_chunk_offset
-
-    # co64 with count < 1 (needs to skip stco)
-    stco_missing_co64_zero = _fullbox(b"co64", struct.pack(">II", 0, 0))
-    stbl_only_co64 = _box(b"stbl", stco_missing_co64_zero)
-    assert _read_chunk_offset(stbl_only_co64, 8, len(stbl_only_co64)) is None
-
-
 def test_extract_mp4_first_sample_stsz_sample_size_zero_body_short():
 
     ftyp = _box(b"ftyp", b"isom\x00\x00\x02\x00isomiso2")
@@ -742,19 +723,17 @@ def test_extract_mp4_first_sample_stsz_sample_size_zero_body_short():
 def test_read_chunk_offset_co64_count_zero():
     from resources.lib.dv_source import _read_chunk_offset
 
-    # co64 with count < 1 (needs to skip stco)
-    co64_zero = _fullbox(b"co64", struct.pack(">I", 0))
+    co64_zero = _fullbox(b"co64", struct.pack(">I", 0) + struct.pack(">Q", 0))
     stbl_only_co64 = _box(b"stbl", co64_zero)
     assert _read_chunk_offset(stbl_only_co64, 8, len(stbl_only_co64)) is None
 
 
-def test_read_chunk_offset_co64_count_zero2():
+def test_read_chunk_offset_co64_without_stco_uses_first_entry():
     from resources.lib.dv_source import _read_chunk_offset
 
-    # Needs a co64 with a valid count but no stco
-    co64_zero_count = _fullbox(b"co64", struct.pack(">I", 0) + struct.pack(">Q", 1234))
-    stbl_only_co64 = _box(b"stbl", co64_zero_count)
-    assert _read_chunk_offset(stbl_only_co64, 8, len(stbl_only_co64)) is None
+    co64_first_entry = _fullbox(b"co64", struct.pack(">I", 1) + struct.pack(">Q", 1234))
+    stbl_only_co64 = _box(b"stbl", co64_first_entry)
+    assert _read_chunk_offset(stbl_only_co64, 8, len(stbl_only_co64)) == 1234
 
 
 def test_extract_mp4_first_sample_stsz_stbl_missing_stsz():
