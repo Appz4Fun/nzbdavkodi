@@ -467,15 +467,15 @@ def test_split_length_prefixed_nals_edge_cases():
 
     # nal_length_size == 3 (invalid, defaults to 1 per else block)
     sample_invalid_len = b"\x04123"
-    assert list(_split_length_prefixed_nals(sample_invalid_len, 3)) == []
+    assert not list(_split_length_prefixed_nals(sample_invalid_len, 3))
 
     # out of bounds size
     sample_oob = struct.pack(">H", 10) + b"1234"
-    assert list(_split_length_prefixed_nals(sample_oob, 2)) == []
+    assert not list(_split_length_prefixed_nals(sample_oob, 2))
 
     # zero size
     sample_zero = struct.pack(">H", 0) + b"1234"
-    assert list(_split_length_prefixed_nals(sample_zero, 2)) == []
+    assert not list(_split_length_prefixed_nals(sample_zero, 2))
 
 
 def test_find_stbl_missing_boxes():
@@ -541,7 +541,6 @@ def test_read_chunk_offset_edge_cases():
 
 
 def test_extract_mp4_first_sample_stsz_edge_cases():
-    from resources.lib.dv_source import probe_dolby_vision_source
 
     ftyp = _box(b"ftyp", b"isom\x00\x00\x02\x00isomiso2")
     stsd = _fullbox(b"stsd", struct.pack(">I", 1) + _box(b"hvc1", b""))
@@ -613,7 +612,6 @@ def test_read_chunk_offset_more_edge_cases():
 
 
 def test_extract_mp4_first_sample_stsz_more_edge_cases():
-    from resources.lib.dv_source import probe_dolby_vision_source
 
     ftyp = _box(b"ftyp", b"isom\x00\x00\x02\x00isomiso2")
     stsd = _fullbox(b"stsd", struct.pack(">I", 1) + _box(b"hvc1", b""))
@@ -663,7 +661,6 @@ def test_iter_boxes_offset_end():
 
 
 def test_find_first_video_stbl_no_stbl():
-    from resources.lib.dv_source import probe_dolby_vision_source
 
     ftyp = _box(b"ftyp", b"isom\x00\x00\x02\x00isomiso2")
     hdlr = _fullbox(b"hdlr", b"\x00" * 4 + b"vide" + b"\x00" * 12)
@@ -682,7 +679,6 @@ def test_find_first_video_stbl_no_stbl():
 
 
 def test_extract_mp4_first_sample_stsz_sample_count_zero():
-    from resources.lib.dv_source import probe_dolby_vision_source
 
     ftyp = _box(b"ftyp", b"isom\x00\x00\x02\x00isomiso2")
     stsd = _fullbox(b"stsd", struct.pack(">I", 1) + _box(b"hvc1", b""))
@@ -717,7 +713,6 @@ def test_read_chunk_offset_stco_co64_edge_cases():
 
 
 def test_extract_mp4_first_sample_stsz_sample_size_zero_body_short():
-    from resources.lib.dv_source import probe_dolby_vision_source
 
     ftyp = _box(b"ftyp", b"isom\x00\x00\x02\x00isomiso2")
     stsd = _fullbox(b"stsd", struct.pack(">I", 1) + _box(b"hvc1", b""))
@@ -763,7 +758,6 @@ def test_read_chunk_offset_co64_count_zero2():
 
 
 def test_extract_mp4_first_sample_stsz_stbl_missing_stsz():
-    from resources.lib.dv_source import probe_dolby_vision_source
 
     ftyp = _box(b"ftyp", b"isom\x00\x00\x02\x00isomiso2")
     stsd = _fullbox(b"stsd", struct.pack(">I", 1) + _box(b"hvc1", b""))
@@ -836,35 +830,10 @@ def test_iter_ebml_payload_end_clamp():
     # VINT Size: 0x40 0x00 (width 2, value 0)
     # The size itself is 0, payload_start will be 3, payload_end will be 3.
     # offset is 0, payload_end is 3.
-
-    # Case: payload_end <= offset (zero or negative size element to prevent infinite loop)
-    # 0x80 (ID 1 byte) + Size indicating a negative progression? Actually we just need payload_end <= offset.
-    # offset is 0. payload_start = id_len + size_len.
-    # To make payload_end <= 0, we need size to be negative, but VINT is unsigned.
-    # What if end is < payload_start? Then payload_end is clamped to end. If end <= offset...
-    # So if we pass end=0, offset=0, it will never enter the while loop.
-    # But to hit payload_end <= offset we need to enter the loop, so offset < end.
-    # Say offset=0, end=2. id_len=1, size_len=1, size=0 -> payload_start=2. payload_end = 2.
-    # Then min(2, 2) = 2. payload_end (2) <= offset (0) is False.
-    # How to make payload_end <= offset?
-    # If end = 0 somehow inside the loop? We start with offset < end.
-    # What if the size is so large that payload_start + size wraps around? Python ints don't wrap.
-    # What if end < offset? The while condition offset < end prevents it.
-    # What if payload_end becomes <= offset due to min(payload_end, end) and end <= offset? But end > offset always.
-    # So the only way is if payload_start + size <= offset.
-    # offset = 0. payload_start = 2. size = -2? VINT size is read as unsigned.
-    # Wait, size is unsigned, so payload_start + size >= payload_start > offset.
-    # So payload_end <= offset is impossible unless min(payload_end, end) <= offset. But end > offset.
-    # Wait! If id_len=0 or size_len=0? Not possible, width >= 1.
-    # So `if payload_end <= offset:` is actually impossible with valid inputs, it's just a failsafe.
-    # Let's hit `payload_start > end`:
     data = b"\x80\x40\x10"  # ID: width 1, Size: width 2. Total header 3.
     # If end=2, payload_start (3) > end (2).
     elems = list(_iter_ebml(data, 0, 2))
     assert len(elems) == 0
-
-    # Hit payload_end <= offset failsafe manually if possible.
-    # Maybe we can mock it? Or just hit `if payload_start > end` to get the first branch.
 
     # Case: payload_start > end
     # ID: 0x80
@@ -899,7 +868,7 @@ def test_find_hevc_track_number_none():
 def test_extract_mkv_frame_from_segment_order():
     from resources.lib.dv_source import _extract_mkv_frame_from_segment
 
-    # Order: Cluster then Tracks (Should return None, or not find it until both are processed)
+    # Order: Cluster then Tracks
     codec_id = _elm(b"\x86", b"V_MPEGH/ISO/HEVC")
     track_number = _elm(b"\xd7", b"\x01")
     track_entry = _elm(b"\xae", track_number + codec_id)
@@ -907,9 +876,7 @@ def test_extract_mkv_frame_from_segment_order():
 
     # Empty Cluster
     cluster = _elm(b"\x1f\x43\xb6\x75", b"")
-
-    # Mkv allows any order, but the code requires Track to be parsed before Cluster is evaluated.
-    # So a Cluster appearing BEFORE Tracks will be skipped, but if a second Cluster appears AFTER Tracks, it should find it.
+    # Track must be parsed before Cluster is evaluated.
     # Our function scans linearly, so:
     segment = cluster + tracks
 
@@ -927,16 +894,12 @@ def test_try_read_block_frame_track_mismatch():
 
 
 def test_iter_ebml_payload_end_failsafe():
-    from unittest.mock import patch
 
-    import resources.lib.dv_source as dvs
     from resources.lib.dv_source import _iter_ebml
 
     # We want to force payload_end <= offset.
     # We can mock _read_vint_size to return a negative size.
     data = b"\x80\x80"  # normal header
-
-    original_read = dvs._read_vint_size
 
     def mock_read(data, offset):
         return -100, 1
@@ -950,10 +913,6 @@ def test_iter_ebml_payload_end_failsafe():
 
 
 def test_probe_mp4_extraction_exceptions():
-    import struct
-    from unittest.mock import patch
-
-    from resources.lib.dv_source import probe_dolby_vision_source
 
     # Force _extract_mp4_first_sample to raise expected exceptions
     exceptions = [
@@ -973,9 +932,6 @@ def test_probe_mp4_extraction_exceptions():
 
 
 def test_probe_mp4_no_sample_returned():
-    from unittest.mock import patch
-
-    from resources.lib.dv_source import probe_dolby_vision_source
 
     with patch("resources.lib.dv_source._extract_mp4_first_sample", return_value=b""):
         result = probe_dolby_vision_source("http://host/1.mp4", auth_header=None)
@@ -984,9 +940,6 @@ def test_probe_mp4_no_sample_returned():
 
 
 def test_probe_mp4_no_rpu_nal():
-    from unittest.mock import patch
-
-    from resources.lib.dv_source import probe_dolby_vision_source
 
     with patch(
         "resources.lib.dv_source._extract_mp4_first_sample", return_value=b"sample_data"
@@ -998,9 +951,6 @@ def test_probe_mp4_no_rpu_nal():
 
 
 def test_probe_mp4_rpu_parse_failed():
-    from unittest.mock import patch
-
-    from resources.lib.dv_source import probe_dolby_vision_source
 
     exceptions = [
         ValueError("val"),
@@ -1028,10 +978,6 @@ def test_probe_mp4_rpu_parse_failed():
 
 
 def test_probe_mkv_extraction_exceptions():
-    import struct
-    from unittest.mock import patch
-
-    from resources.lib.dv_source import probe_dolby_vision_source
 
     exceptions = [
         OSError("test io"),
@@ -1050,9 +996,6 @@ def test_probe_mkv_extraction_exceptions():
 
 
 def test_probe_mkv_no_sample_returned():
-    from unittest.mock import patch
-
-    from resources.lib.dv_source import probe_dolby_vision_source
 
     with patch("resources.lib.dv_source._extract_mkv_first_sample", return_value=b""):
         result = probe_dolby_vision_source("http://host/1.mkv", auth_header=None)
@@ -1061,9 +1004,6 @@ def test_probe_mkv_no_sample_returned():
 
 
 def test_probe_mkv_no_rpu_nal():
-    from unittest.mock import patch
-
-    from resources.lib.dv_source import probe_dolby_vision_source
 
     with patch(
         "resources.lib.dv_source._extract_mkv_first_sample", return_value=b"sample_data"
@@ -1075,9 +1015,6 @@ def test_probe_mkv_no_rpu_nal():
 
 
 def test_probe_mkv_rpu_parse_failed():
-    from unittest.mock import patch
-
-    from resources.lib.dv_source import probe_dolby_vision_source
 
     exceptions = [
         ValueError("val"),
@@ -1113,7 +1050,6 @@ def test_iter_boxes_end_is_none():
 
 
 def test_extract_mp4_first_sample_stbl_is_none():
-    from unittest.mock import patch
 
     from resources.lib.dv_source import _extract_mp4_first_sample
 
@@ -1125,7 +1061,6 @@ def test_extract_mp4_first_sample_stbl_is_none():
 
 
 def test_extract_mp4_first_sample_stsz_is_none():
-    from unittest.mock import patch
 
     from resources.lib.dv_source import _extract_mp4_first_sample
 
@@ -1140,7 +1075,6 @@ def test_extract_mp4_first_sample_stsz_is_none():
 
 
 def test_extract_mp4_first_sample_stsz_short_body():
-    from unittest.mock import patch
 
     from resources.lib.dv_source import _extract_mp4_first_sample
 
@@ -1158,8 +1092,6 @@ def test_extract_mp4_first_sample_stsz_short_body():
 
 
 def test_extract_mp4_first_sample_stsz_zero_count():
-    import struct
-    from unittest.mock import patch
 
     from resources.lib.dv_source import _extract_mp4_first_sample
 
@@ -1172,7 +1104,7 @@ def test_extract_mp4_first_sample_stsz_zero_count():
             "resources.lib.dv_source._find_first_video_stbl",
             return_value=(b"stbl", 0, 100),
         ):
-            # body_start = 0, so unpack from 4 gets sample_size, unpack from 8 gets sample_count
+            # body_start = 0, unpacks offsets
             with patch(
                 "resources.lib.dv_source._find_child", return_value=(b"stsz", 0, 20)
             ):
@@ -1180,8 +1112,6 @@ def test_extract_mp4_first_sample_stsz_zero_count():
 
 
 def test_extract_mp4_first_sample_stsz_zero_size_short_body():
-    import struct
-    from unittest.mock import patch
 
     from resources.lib.dv_source import _extract_mp4_first_sample
 
@@ -1203,8 +1133,6 @@ def test_extract_mp4_first_sample_stsz_zero_size_short_body():
 
 
 def test_extract_mp4_first_sample_chunk_offset_none():
-    import struct
-    from unittest.mock import patch
 
     from resources.lib.dv_source import _extract_mp4_first_sample
 
@@ -1228,12 +1156,11 @@ def test_extract_mp4_first_sample_chunk_offset_none():
 
 
 def test_log_debug_xbmc_exception():
-    from unittest.mock import patch
 
     from resources.lib.dv_source import _log_debug
 
     # Ensure mock covers the xbmc.log Exception branch exactly.
-    class MockXbmc:
+    class MockXbmc:  # pylint: disable=too-few-public-methods
         LOGDEBUG = 1
 
         def log(self, msg, level):
