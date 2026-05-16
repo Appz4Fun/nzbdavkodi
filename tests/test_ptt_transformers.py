@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 nzbdav contributors
 
-import pytest
 
 from ptt.transformers import transform_resolution
 
