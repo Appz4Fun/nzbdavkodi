@@ -190,9 +190,20 @@ def get_configured_indexers():
 def build_search_url(api_url, params):
     """Build a Newznab API URL from a user-configured API URL or host URL."""
     parts = urlsplit(normalize_api_endpoint(api_url))
+    query_str = parts.query
+    if not query_str:
+        return urlunsplit(
+            (
+                parts.scheme,
+                parts.netloc,
+                parts.path,
+                urlencode(params),
+                parts.fragment,
+            )
+        )
     query = [
         (key, value)
-        for key, value in parse_qsl(parts.query, keep_blank_values=True)
+        for key, value in parse_qsl(query_str, keep_blank_values=True)
         if key.lower() not in ("apikey", "t", "o")
     ]
     query.extend(params.items())

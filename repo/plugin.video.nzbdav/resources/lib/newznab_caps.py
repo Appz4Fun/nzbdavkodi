@@ -42,9 +42,20 @@ def normalize_api_endpoint(api_url):
 
 def build_caps_url(api_url, api_key):
     parts = urlsplit(normalize_api_endpoint(api_url))
+    query_str = parts.query
+    if not query_str:
+        return urlunsplit(
+            (
+                parts.scheme,
+                parts.netloc,
+                parts.path,
+                urlencode((("apikey", api_key), ("t", "caps"), ("o", "xml"))),
+                parts.fragment,
+            )
+        )
     query = [
         (key, value)
-        for key, value in parse_qsl(parts.query, keep_blank_values=True)
+        for key, value in parse_qsl(query_str, keep_blank_values=True)
         if key.lower() not in ("apikey", "t", "o")
     ]
     query.extend((("apikey", api_key), ("t", "caps"), ("o", "xml")))
