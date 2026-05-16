@@ -21,7 +21,8 @@ from resources.lib.ptt.parse import clean_title
         # STAR_REGEX removals. The regex handles removing stars at start/end.
         # It leaves one character if there is space
         # e.g. '★ The Dark Knight ★' -> 'The Dark Knight ★'
-        # Looking at STAR_REGEX_1 = re.compile(r"^[\[【★].*[\]】★][ .]?(.+)")
+        # Looking at STAR_REGEX_1 =
+        # re.compile(r"^[\[【★].*[\]】★][ .]?(.+)")
         # It expects the title after the star block.
         # e.g. "★ Some tag ★ The Title" -> "The Title"
         ("★ Tag ★ The Dark Knight", "The Dark Knight"),
