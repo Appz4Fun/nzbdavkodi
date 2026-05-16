@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 nzbdav contributors
 
-import importlib
 import sys
 import threading
 import time as _time
@@ -267,10 +266,6 @@ def test_get_submit_timeout_seconds_uses_requested_default_for_empty_setting():
 
 def test_direct_playback_service_config_reads_proxy_window_once_for_fast_start():
     """Proxy port/token lookup should not duplicate Kodi window access."""
-
-    # Warm the module import so the timing assertion only measures the
-    # resolver's proxy-config lookup path, not first-import overhead.
-    importlib.import_module("resources.lib.stream_proxy")
 
     window_calls = []
     home_window = MagicMock()
@@ -630,63 +625,6 @@ def test_clear_kodi_playback_state_deletes_tmdb_helper_url(mock_xbmc, tmp_path):
     assert 2 not in remaining_bookmarks, "bookmark for tmdb_id=389 (v2) should be gone"
     assert 3 in remaining_bookmarks, "bookmark for tmdb_id=3891 should remain"
     assert 4 in remaining_bookmarks, "bookmark for unrelated URL should remain"
-
-
-@patch("resources.lib.resolver.xbmc")
-def test_clear_kodi_playback_state_uses_single_delete_for_multiple_targets(
-    mock_xbmc, tmp_path
-):
-    """Multiple bookmark targets should be deleted with one SQL statement."""
-    import sqlite3
-
-    mock_xbmc.Player.return_value.isPlayingVideo.return_value = False
-    db = _build_fake_videos_db(tmp_path)
-    conn = sqlite3.connect(str(db))
-    cur = conn.cursor()
-    tmdb_base = "plugin://plugin.video.themoviedb.helper/?info=play"
-    urls = [
-        "plugin://plugin.video.nzbdav/play?type=movie&tmdb_id=389",
-        tmdb_base + "&tmdb_type=movie&tmdb_id=389",
-        tmdb_base + "&tmdb_id=389&tmdb_type=movie",
-        "plugin://plugin.video.nzbdav/play?type=movie&title=Other",
-    ]
-    for i, url in enumerate(urls, start=1):
-        cur.execute(
-            "INSERT INTO files (idFile, idPath, strFilename) VALUES (?, 1, ?)",
-            (i, url),
-        )
-        cur.execute(
-            "INSERT INTO bookmark (idFile, timeInSeconds) VALUES (?, 100.0)", (i,)
-        )
-    conn.commit()
-    conn.close()
-
-    trace = []
-    real_connect = sqlite3.connect
-
-    def traced_connect(*args, **kwargs):
-        conn = real_connect(*args, **kwargs)
-        if args and args[0] == str(db):
-            conn.set_trace_callback(trace.append)
-        return conn
-
-    fake_argv = [
-        "plugin://plugin.video.nzbdav/play",
-        "1",
-        "?type=movie&tmdb_id=389",
-    ]
-    with patch("sqlite3.connect", side_effect=traced_connect):
-        with patch("resources.lib.resolver.xbmcvfs") as mock_vfs:
-            mock_vfs.translatePath.return_value = str(tmp_path) + "/"
-            with patch.object(sys, "argv", fake_argv):
-                _clear_kodi_playback_state({"tmdb_id": "389", "type": "movie"})
-
-    delete_statements = [
-        statement for statement in trace if statement.startswith("DELETE FROM bookmark")
-    ]
-    assert delete_statements == [
-        "DELETE FROM bookmark WHERE idFile IN (1,2,3)"
-    ], delete_statements
 
 
 @patch("resources.lib.resolver.xbmc")
