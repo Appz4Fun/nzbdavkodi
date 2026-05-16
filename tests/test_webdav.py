@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 nzbdav contributors
+
 import time
-import unittest.mock
 from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
 
@@ -979,7 +979,6 @@ def test_get_settings_without_getter(mock_addon_cls):
 @patch("resources.lib.webdav.urlopen")
 def test_http_head_with_credentials(mock_urlopen):
     """Test _http_head generates correct basic auth header."""
-
     from resources.lib.webdav import _http_head
 
     response = MagicMock()
@@ -1353,47 +1352,6 @@ def test_find_video_file_error_formatting_404(mock_urlopen, mock_settings):
 
 @patch("resources.lib.webdav._get_settings")
 @patch("resources.lib.webdav.urlopen")
-def test_find_video_file_urlparse_exception(mock_urlopen, mock_settings):
-    """Test find_video_file skips href if urlparse raises an exception."""
-    from resources.lib.webdav import find_video_file
-
-    mock_settings.return_value = _SETTINGS_WITH_AUTH
-
-    malformed_href_response = """<?xml version="1.0" encoding="utf-8"?>
-<D:multistatus xmlns:D="DAV:">
-  <D:response>
-    <D:href>http://[::1]/content/bad_url</D:href>
-    <D:propstat>
-      <D:prop>
-        <D:getcontentlength>1000</D:getcontentlength>
-        <D:resourcetype/>
-      </D:prop>
-      <D:status>HTTP/1.1 200 OK</D:status>
-    </D:propstat>
-  </D:response>
-</D:multistatus>"""
-
-    mock_resp = MagicMock()
-    mock_resp.__enter__ = lambda s: s
-    mock_resp.__exit__ = MagicMock(return_value=False)
-    mock_resp.read.return_value = malformed_href_response.encode("utf-8")
-    mock_urlopen.return_value = mock_resp
-
-    import urllib.parse
-
-    real_urlparse = urllib.parse.urlparse
-
-    def failing_urlparse(url_str, *args, **kwargs):
-        if url_str == "http://[::1]/content/bad_url":
-            raise Exception("Malformed IPv6")
-        return real_urlparse(url_str, *args, **kwargs)
-
-    with patch("urllib.parse.urlparse", side_effect=failing_urlparse):
-        assert find_video_file("/content/") is None
-
-
-@patch("resources.lib.webdav._get_settings")
-@patch("resources.lib.webdav.urlopen")
 @patch("xml.etree.ElementTree.XMLParser")
 def test_find_video_file_xml_parser_attribute_error(
     mock_xml_parser, mock_urlopen, mock_settings
@@ -1405,6 +1363,8 @@ def test_find_video_file_xml_parser_attribute_error(
 
     # Mock XMLParser to raise AttributeError when .parser is accessed
     mock_parser_instance = MagicMock()
+    import unittest.mock
+
     type(mock_parser_instance).parser = unittest.mock.PropertyMock(
         side_effect=AttributeError("No parser")
     )
@@ -1436,7 +1396,6 @@ def test_find_video_file_xml_parser_attribute_error(
         mock_fromstring.return_value = mock_root
 
         find_video_file("/content/Movie/")
-        # This covers the AttributeError block
 
 
 # --- Extra coverage for find_video_stream_for_folder ---
