@@ -7663,6 +7663,9 @@ def test_live_fallback_selection_parallelizes_fingerprint_samples_for_cutover_sp
 
 def test_live_fallback_selection_keeps_slow_rtt_cutover_under_budget():
     """Slow-but-healthy fallback probes should still validate inside budget."""
+    from resources.lib import stream_proxy
+    from resources.lib.fallback_streams import fingerprint_ranges
+
     handler = _make_handler()
     content_length = 10000000
     failed_byte = 1234567
@@ -7696,9 +7699,18 @@ def test_live_fallback_selection_keeps_slow_rtt_cutover_under_budget():
         source = handler._select_live_fallback_source(ctx, failed_byte, range_end)
         elapsed = time.monotonic() - started
 
+    fingerprint_count = len(fingerprint_ranges(content_length))
+    parallel_waves = (
+        fingerprint_count + stream_proxy._FALLBACK_FINGERPRINT_WORKERS - 1
+    ) // stream_proxy._FALLBACK_FINGERPRINT_WORKERS
+    # One failed-range probe happens before the two parallel fingerprint phases.
+    # Leave modest scheduler slack here; the neighboring overlap tests already
+    # prove the selector is actually pipelining concurrent work.
+    budget = per_probe_delay * (1 + parallel_waves * 2) + 0.12
+
     assert source is ctx["fallback_sources"][0]
     assert ctx["fallback_sources"][0]["validated"] is True
-    assert elapsed < 0.17, "cutover validation took {:.3f}s".format(elapsed)
+    assert elapsed < budget, "cutover validation took {:.3f}s".format(elapsed)
 
 
 def test_live_fallback_selection_reuses_primary_fingerprint_across_candidates():

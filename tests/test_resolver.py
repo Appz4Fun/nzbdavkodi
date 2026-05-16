@@ -4526,7 +4526,10 @@ def test_resolve_poll_interval_respected(
     poll_interval = 7
     mock_poll.return_value = (poll_interval, 3600)
     mock_submit.return_value = ("SABnzbd_nzo_poll123", None)
-    mock_status.return_value = {"status": "Downloading", "percentage": "50"}
+    mock_status.side_effect = [
+        {"status": "Downloading", "percentage": "50"},
+        {"status": "Failed", "percentage": "50"},
+    ]
     mock_history.return_value = None
 
     dialog = MagicMock()

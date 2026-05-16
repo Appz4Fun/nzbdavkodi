@@ -7,18 +7,22 @@ def test_translate_langs_basic():
     assert translate_langs(["de", "it"]) == ["German", "Italian"]
     assert translate_langs(["ru"]) == ["Russian"]
 
+
 def test_translate_langs_empty():
     """Test empty list."""
     assert translate_langs([]) == []
+
 
 def test_translate_langs_unknown():
     """Test unknown language codes are omitted."""
     assert translate_langs(["xx", "yy"]) == []
     assert translate_langs(["en", "xx", "fr"]) == ["English", "French"]
 
+
 def test_translate_langs_mixed():
     """Test a mix of known, unknown, and duplicated codes."""
     assert translate_langs(["en", "en", "xx", "fr"]) == ["English", "English", "French"]
+
 
 def test_translate_langs_all():
     """Test all keys in translation table."""
