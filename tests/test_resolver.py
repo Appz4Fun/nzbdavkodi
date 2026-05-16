@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 nzbdav contributors
 
+import importlib
 import sys
 import threading
 import time as _time
@@ -266,6 +267,10 @@ def test_get_submit_timeout_seconds_uses_requested_default_for_empty_setting():
 
 def test_direct_playback_service_config_reads_proxy_window_once_for_fast_start():
     """Proxy port/token lookup should not duplicate Kodi window access."""
+
+    # Warm the module import so the timing assertion only measures the
+    # resolver's proxy-config lookup path, not first-import overhead.
+    importlib.import_module("resources.lib.stream_proxy")
 
     window_calls = []
     home_window = MagicMock()
