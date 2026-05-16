@@ -201,14 +201,25 @@ def xml_local_name(tag):
     return tag.rsplit("}", 1)[-1] if isinstance(tag, str) else ""
 
 
+def _iter_xml_children_by_preference(element, tag):
+    """Yield exact child matches before namespace local-name fallbacks."""
+    children = list(element)
+    for child in children:
+        if child.tag == tag:
+            yield child
+    for child in children:
+        if child.tag != tag and xml_local_name(child.tag) == tag:
+            yield child
+
+
 def find_xml_children(element, tag):
     """Return direct children whose local tag name matches ``tag``."""
-    return [child for child in list(element) if xml_local_name(child.tag) == tag]
+    return list(_iter_xml_children_by_preference(element, tag))
 
 
 def find_xml_child(element, tag):
     """Return the first direct child whose local tag name matches ``tag``."""
-    for child in find_xml_children(element, tag):
+    for child in _iter_xml_children_by_preference(element, tag):
         return child
     return None
 
@@ -221,9 +232,10 @@ def get_xml_text(element, tag):
     parse loops simple: missing fields land as empty strings rather than
     exceptions.
     """
-    child = find_xml_child(element, tag)
-    if child is not None and child.text:
-        return child.text
+    for child in _iter_xml_children_by_preference(element, tag):
+        text = (child.text or "").strip()
+        if text:
+            return text
     return ""
 
 

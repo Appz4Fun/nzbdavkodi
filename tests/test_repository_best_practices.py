@@ -3,9 +3,12 @@
 
 """Regression checks for repository and Kodi addon best-practice files."""
 
+import shutil
 import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -158,13 +161,38 @@ def test_community_health_files_exist():
         assert path.exists(), "{} is missing".format(path)
 
 
+def _require_git_working_tree():
+    git = shutil.which("git")
+    if git is None:
+        pytest.skip("git executable is required for gitignore checks")
+
+    try:
+        result = subprocess.run(
+            [git, "rev-parse", "--is-inside-work-tree"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        pytest.skip("git working tree check failed: {}".format(error))
+
+    if result.returncode != 0 or result.stdout.strip() != "true":
+        pytest.skip("git working tree is required for gitignore checks")
+    return git
+
+
 def test_root_debug_imdb_script_is_gitignored():
+    git = _require_git_working_tree()
+
     result = subprocess.run(
-        ["git", "check-ignore", "debug_imdb.py"],
+        [git, "check-ignore", "debug_imdb.py"],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
         check=False,
+        timeout=5,
     )
 
     assert result.returncode == 0, result.stderr

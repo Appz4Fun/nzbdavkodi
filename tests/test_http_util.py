@@ -1,9 +1,16 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 nzbdav contributors
 
+import xml.etree.ElementTree as ET
 from unittest.mock import MagicMock, patch
 
-from resources.lib.http_util import HttpResponseTooLarge, http_get, notify, redact_url
+from resources.lib.http_util import (
+    HttpResponseTooLarge,
+    get_xml_text,
+    http_get,
+    notify,
+    redact_url,
+)
 
 
 @patch("resources.lib.http_util.urlopen")
@@ -199,6 +206,15 @@ def test_notify_escapes_builtin_metacharacters():
     assert "Body, also );" not in cmd
     # And the escaped lookalikes are present in their stead.
     assert "،" in cmd or "❩" in cmd
+
+
+def test_get_xml_text_uses_rss_text_after_empty_namespaced_extension():
+    item = ET.fromstring("""<item xmlns:atom="http://www.w3.org/2005/Atom">
+        <atom:link href="https://feed.example/rss" />
+        <link>https://indexer.example/download/abc.nzb</link>
+        </item>""")
+
+    assert get_xml_text(item, "link") == "https://indexer.example/download/abc.nzb"
 
 
 def test_redact_url_hides_apikey():
