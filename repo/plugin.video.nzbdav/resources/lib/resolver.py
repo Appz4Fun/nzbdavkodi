@@ -16,32 +16,22 @@ import xbmcaddon
 import xbmcgui
 import xbmcplugin
 import xbmcvfs
-
-from resources.lib.fallback_streams import (
-    FALLBACK_CANDIDATES_DISABLED,
-    build_fallback_job_name,
-    build_prepare_fallback_payload,
-)
+from resources.lib.fallback_streams import (FALLBACK_CANDIDATES_DISABLED,
+                                            build_fallback_job_name,
+                                            build_prepare_fallback_payload)
 from resources.lib.http_util import notify as _notify
 from resources.lib.i18n import addon_name as _addon_name
 from resources.lib.i18n import fmt as _fmt
 from resources.lib.i18n import string as _string
-from resources.lib.nzbdav_api import (
-    cancel_job,
-    find_completed_by_name,
-    find_completed_by_names,
-    find_queued_by_name,
-    find_queued_by_names,
-    get_job_history,
-    get_job_status,
-    submit_nzb,
-)
-from resources.lib.webdav import (
-    find_video_file,
-    find_video_stream_for_folder,
-    get_webdav_stream_url_for_path,
-    probe_webdav_reachable,
-)
+from resources.lib.nzbdav_api import (cancel_job, find_completed_by_name,
+                                      find_completed_by_names,
+                                      find_queued_by_name,
+                                      find_queued_by_names, get_job_history,
+                                      get_job_status, submit_nzb)
+from resources.lib.webdav import (find_video_file,
+                                  find_video_stream_for_folder,
+                                  get_webdav_stream_url_for_path,
+                                  probe_webdav_reachable)
 
 _POLL_INTERVAL_MIN = 1
 _POLL_INTERVAL_MAX = 60
@@ -275,8 +265,10 @@ def _clear_kodi_playback_state(params=None):
                 # files/settings/streamdetails rows stay intact — Kodi will
                 # treat the file as "never resumed" on the next play, which is
                 # exactly the state we want.
-                for id_file in target_ids:
-                    cur.execute("DELETE FROM bookmark WHERE idFile = ?", (id_file,))
+                cur.executemany(
+                    "DELETE FROM bookmark WHERE idFile = ?",
+                    [(id_file,) for id_file in target_ids],
+                )
 
         xbmc.log(
             "NZB-DAV: Cleared bookmark for {} file(s)".format(len(target_ids)),
@@ -522,11 +514,9 @@ def _prepare_direct_playback(
     settings_getter=None,
 ):
     """Prepare resolver playback without touching Kodi UI state."""
-    from resources.lib.stream_proxy import (
-        build_settings_snapshot,
-        get_service_proxy_port,
-        prepare_stream_via_service,
-    )
+    from resources.lib.stream_proxy import (build_settings_snapshot,
+                                            get_service_proxy_port,
+                                            prepare_stream_via_service)
 
     if service_port is None:
         service_port = get_service_proxy_port()
@@ -567,10 +557,8 @@ def _direct_playback_service_config():
     ):
         return stream_proxy.get_service_proxy_config()
 
-    from resources.lib.stream_proxy import (
-        get_service_proxy_port,
-        get_service_proxy_token,
-    )
+    from resources.lib.stream_proxy import (get_service_proxy_port,
+                                            get_service_proxy_token)
 
     service_port = get_service_proxy_port()
     prepare_token = get_service_proxy_token() if service_port else ""
