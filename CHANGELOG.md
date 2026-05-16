@@ -65,6 +65,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `just make-dev` now works on macOS Bash 3.2 when no pip compatibility flags
+  are needed, instead of failing under `set -u` on an empty `pip_flags` array.
 - Test harness now isolates stream-proxy prevalidation and remux idle-timeout
   checks on Windows, locates Git Bash for install-script checks, falls back when
   `SIGKILL` is unavailable, and avoids POSIX-only HLS workdir assumptions.

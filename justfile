@@ -10,7 +10,7 @@ make-dev:
     if python3 -m pip install --help | grep -q -- "--break-system-packages"; then
         pip_flags+=(--break-system-packages)
     fi
-    python3 -m pip install "${pip_flags[@]}" -r requirements-test.txt "ruff>=0.15" "black>=24"
+    python3 -m pip install ${pip_flags[@]+"${pip_flags[@]}"} -r requirements-test.txt "ruff>=0.15" "black>=24"
 
     if [[ "$(uname -s)" == "Darwin" ]]; then
         if ! command -v brew >/dev/null 2>&1; then

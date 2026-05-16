@@ -37,6 +37,15 @@ def test_make_dev_installs_dependencies_for_all_just_recipes():
     assert "ffmpeg -version" in body
 
 
+def test_make_dev_pip_flags_expansion_is_bash32_nounset_safe():
+    justfile_text = Path("justfile").read_text(encoding="utf-8")
+
+    body = _recipe_body(justfile_text, "make-dev")
+
+    assert 'pip install "${pip_flags[@]}" -r requirements-test.txt' not in body
+    assert '${pip_flags[@]+"${pip_flags[@]}"}' in body
+
+
 def test_functional_test_recipe_is_dev_only_and_not_in_default_test():
     justfile_text = Path("justfile").read_text(encoding="utf-8")
 
