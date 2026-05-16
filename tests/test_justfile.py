@@ -2,6 +2,7 @@
 # Copyright (C) 2026 nzbdav contributors
 
 import re
+import subprocess
 from pathlib import Path
 
 
@@ -35,6 +36,27 @@ def test_make_dev_installs_dependencies_for_all_just_recipes():
     assert "brew reinstall" in body
     assert "ffmpeg_formula" in body
     assert "ffmpeg -version" in body
+
+
+def test_make_dev_pip_flags_expansion_is_bash32_nounset_safe():
+    justfile_text = Path("justfile").read_text(encoding="utf-8")
+
+    body = _recipe_body(justfile_text, "make-dev")
+
+    assert 'pip install "${pip_flags[@]}" -r requirements-test.txt' not in body
+    assert '${pip_flags+"${pip_flags[@]}"}' in body
+
+    bash = Path("/bin/bash")
+    if bash.exists():
+        subprocess.run(
+            [
+                str(bash),
+                "-uc",
+                'pip_flags=(); args=(${pip_flags+"${pip_flags[@]}"}); '
+                "[[ ${#args[@]} -eq 0 ]]",
+            ],
+            check=True,
+        )
 
 
 def test_functional_test_recipe_is_dev_only_and_not_in_default_test():
