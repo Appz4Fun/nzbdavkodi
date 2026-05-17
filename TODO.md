@@ -2,12 +2,11 @@
 
 Active backlog only. Completed work, old audit details, rejected designs, and long research notes live in git history.
 
-Last reviewed: 2026-05-05
-Current addon version in this checkout: 1.0.8
+Current addon version: see `repo/plugin.video.nzbdav/addon.xml`.
 
-## Actual TODOs
+## Active Areas
 
-Yes. Only two areas are active right now:
+Only two areas are active right now:
 
 1. Close local/CI tooling gaps.
 2. Keep a small bug-hunt seed list for the next focused review.

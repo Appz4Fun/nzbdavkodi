@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Orientation for agents (Claude, Copilot, Codex, etc.) working in this repo. User-facing install / config / usage docs live in [README.md](README.md); outstanding work and architecture deep-dives live in [TODO.md](TODO.md).
+Orientation for agents (Claude, Copilot, Codex, etc.) working in this repo. User-facing install / config / usage docs start in [README.md](README.md), [docs/quickstart.md](docs/quickstart.md), and [docs/troubleshooting.md](docs/troubleshooting.md). Contributor architecture docs live in [docs/architecture.md](docs/architecture.md) and [docs/proxy-architecture.md](docs/proxy-architecture.md). Active backlog lives in [TODO.md](TODO.md).
 
 ## Pre-Push
 
@@ -8,7 +8,7 @@ Before any `git commit` or `git push`, run the same tooling the GitHub workflow 
 
 ```bash
 just lint    # ruff + black format check
-just test    # full pytest suite
+just test    # default non-integration pytest suite
 ```
 
 Both must pass cleanly. If `just lint` reports formatting issues, run `just lint-fix` and re-run `just lint` before committing.
@@ -43,7 +43,7 @@ The background service (`service.py`) runs a `StreamProxy` HTTP server that remu
 ## Commands
 
 ```bash
-just test          # Run all 670 tests (~2s)
+just test          # Run the default non-integration pytest suite
 just lint          # ruff + black check
 just lint-fix      # Auto-fix lint issues
 just release       # Build plugin.video.nzbdav.zip
