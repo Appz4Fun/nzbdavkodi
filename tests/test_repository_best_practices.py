@@ -39,6 +39,21 @@ def test_repository_addon_uses_live_pages_metadata_urls():
     assert repo_dir.findtext("datadir") == "https://appz4fun.github.io/nzbdavkodi/"
 
 
+def test_issue_template_contact_links_use_canonical_owner():
+    issue_template = (
+        REPO_ROOT / ".github" / "ISSUE_TEMPLATE" / "config.yml"
+    ).read_text(encoding="utf-8")
+
+    assert (
+        "https://github.com/Appz4Fun/nzbdavkodi/blob/main/SUPPORT.md" in issue_template
+    )
+    assert (
+        "https://github.com/Appz4Fun/nzbdavkodi/security/advisories/new"
+        in issue_template
+    )
+    assert "https://github.com/xbmc4lyfe/nzbdavkodi" not in issue_template
+
+
 def test_addon_news_metadata_is_tiny_current_release_summary():
     addon_xml = ADDON_DIR / "addon.xml"
     root = ET.parse(addon_xml).getroot()
