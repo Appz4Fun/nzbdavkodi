@@ -43,11 +43,13 @@ def test_build_caps_url_empty_api_url():
     url_none = build_caps_url(None, "secret")
     url_empty = build_caps_url("", "secret")
 
-    assert url_none.startswith("/api?")
-    assert "apikey=secret" in url_none
-
-    assert url_empty.startswith("/api?")
-    assert "apikey=secret" in url_empty
+    for url in (url_none, url_empty):
+        parts = urlsplit(url)
+        query = parse_qs(parts.query)
+        assert parts.path == "/api"
+        assert query["apikey"] == ["secret"]
+        assert query["t"] == ["caps"]
+        assert query["o"] == ["xml"]
 
 
 def test_build_caps_url_preserves_nonstandard_api_endpoint_paths():
@@ -141,4 +143,4 @@ def test_fetch_caps_handles_request_errors(mock_http, mock_xbmc):
     assert "network timeout" in error
     mock_xbmc.log.assert_called_once()
     assert "network timeout" in mock_xbmc.log.call_args[0][0]
-    assert mock_xbmc.LOGWARNING == mock_xbmc.log.call_args[0][1]
+    assert mock_xbmc.log.call_args[0][1] is mock_xbmc.LOGWARNING
