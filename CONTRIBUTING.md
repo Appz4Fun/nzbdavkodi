@@ -5,6 +5,7 @@
 - Open an issue first for substantial changes so the scope is clear.
 - Keep changes focused. Separate refactors from behavior changes.
 - Do not include generated ZIP artifacts in normal pull requests.
+- Adding a new filter? Follow `docs/EXTENDING_FILTERS.md` so the setting is wired through parsing and tests.
 
 ## Local workflow
 
