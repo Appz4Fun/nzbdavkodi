@@ -757,6 +757,11 @@ def test_get_completed_jobs_marks_successful_empty_lookup(mock_http, mock_settin
 
     assert jobs == {}
     assert completed_jobs_lookup_done(jobs) is True
+    mock_http.assert_called_once()
+    history_url = mock_http.call_args.args[0]
+    assert history_url.startswith("http://nzbdav:3000/api?")
+    assert "mode=history" in history_url
+    assert "apikey=testkey" in history_url
 
 
 @patch("resources.lib.nzbdav_api._get_settings")

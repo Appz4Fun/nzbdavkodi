@@ -1484,9 +1484,9 @@ def _handle_script_play(params):
     )
     resolver_params["_fallback_candidate_loader"] = fallback_loader
     resolver_params["_settings_getter"] = _get_script_setting
-    completed_job = selected.get(
-        "_completed_job"
-    ) or _script_completed_job_for_selection(selected)
+    completed_job = selected.get("_completed_job")
+    if not completed_job and not _completed_lookup_was_done(completed_jobs):
+        completed_job = _script_completed_job_for_selection(selected)
     if completed_job:
         resolver_params["_completed_job"] = completed_job
     elif _completed_lookup_was_done(completed_jobs):
