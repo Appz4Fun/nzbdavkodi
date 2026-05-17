@@ -10,6 +10,7 @@ import pytest
 
 _RESULTS_DIALOG_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "repo",
     "plugin.video.nzbdav",
     "resources",
     "skins",
@@ -19,8 +20,8 @@ _RESULTS_DIALOG_PATH = os.path.join(
 )
 
 
-@pytest.fixture(scope="module")
-def results_dialog_root():
+@pytest.fixture(name="results_dialog_root", scope="module")
+def _results_dialog_root():
     return ET.parse(_RESULTS_DIALOG_PATH).getroot()
 
 
