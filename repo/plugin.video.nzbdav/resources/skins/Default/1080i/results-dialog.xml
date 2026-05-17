@@ -64,8 +64,9 @@
 
     <!-- Results list — 2 lines per item, 66px each -->
     <control type="list" id="50">
-      <left>0</left><top>60</top><width>1920</width><height>975</height>
+      <left>0</left><top>60</top><width>1910</width><height>975</height>
       <orientation>vertical</orientation>
+      <pagecontrol>60</pagecontrol>
       <scrolltime>200</scrolltime>
 
       <!-- ==================== UNFOCUSED ROW ==================== -->
@@ -225,6 +226,18 @@
           <texture>white.png</texture><colordiffuse>FF18181C</colordiffuse>
         </control>
       </focusedlayout>
+    </control>
+
+    <!-- Scrollbar for the results list -->
+    <control type="scrollbar" id="60">
+      <left>1910</left><top>60</top><width>10</width><height>975</height>
+      <orientation>vertical</orientation>
+      <showonepage>false</showonepage>
+      <texturesliderbackground colordiffuse="00FFFFFF">white.png</texturesliderbackground>
+      <texturesliderbar colordiffuse="FF4A5568">white.png</texturesliderbar>
+      <texturesliderbarfocus colordiffuse="FF4A9EFF">white.png</texturesliderbarfocus>
+      <textureslidernib></textureslidernib>
+      <textureslidernibfocus></textureslidernibfocus>
     </control>
 
     <!-- Footer background -->
