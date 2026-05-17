@@ -11,26 +11,19 @@
 
 A Kodi 21 (Omega) player/resolver addon that enables Usenet-based streaming through NZBHydra2 (or Prowlarr) and nzbdav. Works as a TMDBHelper player -- search for a movie or TV episode, pick an NZB, and stream it directly through nzbdav's WebDAV server.
 
-> **Current release: `v1.2.3`** on `main`. Highlights on this branch:
->
-> - **Proxy fallback hardening**: MKV playback can now carry standby fallback sources through the local proxy, survive repeated upstream outages, and use prepare-time settings snapshots instead of unsafe service-thread Kodi setting reads.
-> - **Kodi repository install fix**: repository metadata now publishes a strict 32-byte `addons.xml.md5`, matching Kodi's checksum reader and fixing "Could not connect to repository" after installing the repo zip from GitHub Pages.
-> - **RunScript setting/path reliability**: script playback reads translated profile settings paths and writes stage logs through Kodi's temp path before falling back to the CoreELEC temp path.
-> - **WebDAV URL encoding**: stream URLs now encode spaces and plus signs from PROPFIND paths before playback.
-> - **Kodi add-on info hotfix**: the Kodi-visible release notes are kept to a short current-release summary so opening the add-on info dialog does not load the oversized historical changelog that froze CoreELEC/Kodi builds.
-> - **Broader fallback discovery**: unsupported or obfuscated candidate NZBs can use the indexer's reported size as conservative fallback evidence, while a +/-25% indexer-size prefetch gate skips obvious mismatches before downloading large NZBs.
-> - **Faster repeated manifest checks**: raw NZB downloads are cached with a small LRU, but each caller still reparses the bytes so health checks can select different valid files.
-> - **Cleaner nzbdav failure handling**: terminal failed history rows now beat stale active queue progress, avoiding the stuck-at-an-old-percentage dialog after article-not-found failures.
-> - **RunScript fallback discovery**: TMDBHelper script-mode picks now submit duplicate-release standby streams the same way the plugin-handle picker path does, with a thread-safe settings getter plumbed through every fallback path so the work runs cleanly off the main thread.
-> - **TMDBHelper RunScript playback handoff**: TMDBHelper enters the addon through a script-mode player path that avoids the plugin-handle resolver freeze while still routing playback through the local proxy.
-> - **Pass-through-first proxy**: MKV and other non-MP4 streams use byte pass-through by default, preserving native source seeking and zero-fill recovery. Force-remux is now optional, with threshold `0` meaning fully off.
-> - **Live fallback streams**: duplicate NZB releases are enabled by default with up to 5 standby submissions, grouped by NZB manifest payload metadata, and validated with exact content length plus 1000 sampled byte ranges before switching.
-> - **MP4 rewrite remains first-class**: moov-at-tail MP4s are rewritten in pure Python for native Kodi seek; already-faststart MP4s use the local pass-through proxy so fallback/rescue session handling stays available by default.
-> - **Prowlarr support** as an alternative indexer to NZBHydra2.
-> - **Dolby Vision routing matrix**: P5 / P7 FEL / P8 / unknown DV are routed to matroska automatically; P7 MEL and non-DV go to fmp4 HLS when that mode is selected.
-> - **Hardening**: probe-thread starvation survival on submit, NZBHydra2 search cap raised to 10000, co64 chunk-offset support for MP4s ≥ 4 GB, MKV SimpleBlock-lacing rejection, ffmpeg `-headers` CR/LF stripping, cross-origin PROPFIND href trust path.
->
-> See [CHANGELOG.md](CHANGELOG.md) for the full per-release record.
+## Start Here
+
+If you already have NZBHydra2 or Prowlarr and nzbdav running, follow the
+[Quickstart](docs/quickstart.md) first. It covers the setup order that matters:
+install NZB-DAV, enter service credentials, install the TMDBHelper player file,
+refresh TMDBHelper players, set movie and TV defaults, and verify first
+playback.
+
+If something does not appear in TMDBHelper or playback does not start, use the
+[Troubleshooting guide](docs/troubleshooting.md).
+
+See [CHANGELOG.md](CHANGELOG.md) for the current release notes and full
+per-release history.
 
 ## How It Works
 
@@ -48,39 +41,6 @@ flowchart LR
 ```
 
 No separate SABnzbd needed -- nzbdav handles both downloading and serving.
-
-## Stream Proxy
-
-Every playback request is routed through a local HTTP proxy (`stream_proxy.py`) running on a random port in the background service. Kodi never talks to the WebDAV server directly, which sidesteps a PROPFIND parent-directory scan that caused `Open - Unhandled exception` errors on several Kodi builds.
-
-The proxy picks one of four paths based on the container, fallback metadata, file size, and the configured `force_remux_mode`:
-
-1. **MP4 (already faststart)** -- served through the local pass-through proxy, preserving native range seeking while keeping proxy session tracking available for fallback/rescue handling.
-2. **MP4 (moov at tail)** -- parsed in pure Python via HTTP range requests, `stco` and `co64` chunk offsets rewritten (so 4 GB+ MP4s work on 32-bit Kodi), and served as a virtual faststart MP4 with `Accept-Ranges: bytes`. If parsing fails, falls back to an ffmpeg tempfile remux.
-3. **MKV and other containers (default path)** -- served as a byte pass-through with ranged upstream fetches. Kodi gets native seeking from the source file's real Cues, and the proxy layers zero-fill recovery on top: when an upstream read fails mid-stream, it probes forward to the next readable offset, writes zero bytes across the gap, and keeps streaming.
-4. **Optional force-remux tier** -- when `force_remux_mode` is set to matroska or fMP4 HLS and the stream is above the non-zero threshold, the proxy uses ffmpeg:
-   - **Piped Matroska (DV-safe)** -- `ffmpeg -c copy -f matroska pipe:1`, unsized. Known-good on Dolby Vision HEVC + TrueHD/Atmos 100 GB REMUXes. Seek is approximate (each seek respawns ffmpeg with `-ss`).
-   - **Fragmented MP4 HLS (experimental, opt-in)** -- produces an HLS VOD playlist with per-segment `hvc1`-tagged fMP4 + a canonical `init.mp4` that survives seek respawns. Gives full random seek across multi-hundred-gigabyte sources. **Self-healing**: if ffmpeg fails to start or doesn't produce a valid init segment within 30 s, the proxy automatically rewrites the session to the matroska branch *before* Kodi sees a broken URL.
-
-**Dolby Vision routing matrix** (applied within the force-remux tier): P5, P7 FEL, P8, and unknown-DV sources are routed to **matroska** (the safest option on Amlogic CAMLCodec). P7 MEL and confirmed non-DV are eligible for **fmp4 HLS** when that mode is selected. P7 FEL specifically is forced to matroska because fmp4 cannot carry dual-layer HEVC.
-
-If ffmpeg isn't installed, the proxy degrades gracefully to pass-through.
-
-> **Architecture deep-dive:** [`TODO.md` Part C](TODO.md#part-c--stream-proxy-architecture-reference-proxymd) documents the full session lifecycle, how the proxy interacts with `resolver.py` / `service.py` / `router.py` / `mp4_parser.py`, the HLS producer internals, and where to look when debugging playback failures. (The former standalone `PROXY.md` was consolidated into `TODO.md` on 2026-04-24.)
-
-### Live Fallback Streams
-
-When **Submit duplicate releases as live fallbacks** is enabled, the resolver attaches conservative duplicate candidates from the result list and submits them after the primary NZB is accepted. This is enabled by default. Standby submits run in a background worker so primary playback can continue polling immediately. Once playback starts, the proxy keeps the fallback job metadata with the session and can switch to another prepared stream if the active source becomes unrecoverable.
-
-Fallback grouping is based on the NZB manifest's selected payload entry, not the search result size. The addon fetches each candidate NZB, prefers the main video filename and file-level segment-byte total when visible, and falls back to a provisional archive/RAR grouping key when only archive parts are visible. If the parser cannot extract a usable video entry from an otherwise plausible candidate, the addon can synthesize conservative video evidence from the indexer's reported size when it is at least 100 MB. Candidates with the same selected payload Article Message-IDs, or the same link-derived synthetic digest, are treated as mirrored copies of the same NZB and are not used as fallbacks.
-
-Before fetching a candidate NZB for selection-time fallback evidence, the addon also rejects candidates whose indexer-reported sizes are more than +/-25% away from the selected result. This is intentionally wider than the manifest match gate because indexer sizes can include RAR/PAR2 overhead, but it avoids downloading large NZBs for obvious size mismatches.
-
-Runtime switching still requires exact WebDAV `Content-Length` equality and 1000 pseudo-random 4096-byte fingerprint samples before the proxy switches to a fallback source. **Maximum fallback releases** caps how many standby submits are attached per primary result and defaults to `5`.
-
-Fallback recovery is the only rescue path for fallback sessions: if no validated fallback source can resume the failed range, the proxy closes the stream instead of retrying the original source, zero-filling, or probing forward to skip bytes.
-
-Force-remux remains available for environments that need ffmpeg compatibility paths, but pass-through is the default. Setting **Force ffmpeg remux above (MB, 0=off)** to `0` disables non-MP4 force-remux entirely, including unknown-length streams.
 
 ## Requirements
 
@@ -105,50 +65,26 @@ Install through the NZB-DAV repository for automatic updates:
 
 ### Manual Install
 
-1. Download the addon zip from the [releases page](../../releases)
+1. Download the addon zip from the [releases page](https://github.com/xbmc4lyfe/nzbdavkodi/releases)
 2. In Kodi: **Settings > Add-ons > Install from zip file** > select `plugin.video.nzbdav.zip`
 
 ---
 
 ## TMDBHelper Setup
 
-NZB-DAV works as a player for TMDBHelper, which provides the movie/TV browsing interface. If you don't have TMDBHelper installed yet:
+For first-time setup, follow the [Quickstart](docs/quickstart.md). The important
+order is:
 
-### 1. Install TMDBHelper
+1. Install TMDBHelper.
+2. Configure NZB-DAV service credentials.
+3. In NZB-DAV settings, click **Install TMDBHelper Player**.
+4. Restart Kodi or run TMDBHelper **Players > Update players**.
+5. Set **Default player (Movies)** and **Default player (TV Shows)** to
+   **NZB-DAV**.
+6. Verify by playing one known movie or episode from TMDBHelper.
 
-TMDBHelper is available from the official Kodi repository:
-
-1. **Settings > Add-ons > Install from repository > Kodi Add-on repository > Video add-ons > TheMovieDb Helper**
-2. Click **Install** and wait for the notification
-
-If it's not in the official repo for your Kodi version, install from the [TMDBHelper GitHub releases](https://github.com/jurialmunkey/plugin.video.themoviedb.helper/releases):
-
-1. Download the latest `plugin.video.themoviedb.helper` zip
-2. **Settings > Add-ons > Install from zip file** > select the downloaded zip
-
-### 2. Configure TMDBHelper
-
-1. Open TMDBHelper settings: **Add-ons > My add-ons > Video add-ons > TheMovieDb Helper > Configure**
-2. Under **API Keys**, enter a [TMDB API key](https://www.themoviedb.org/settings/api) (free account required)
-3. Under **Players**, set **Default player** to **NZB-DAV** for both Movies and TV Shows
-
-### 3. Install the NZB-DAV Player File
-
-The player file tells TMDBHelper how to call NZB-DAV:
-
-1. Open NZB-DAV settings: **Add-ons > My add-ons > Video add-ons > NZB-DAV > Configure**
-2. Click **Install Player File** (installs directly to TMDBHelper)
-3. Restart Kodi (or go to TMDBHelper settings > **Players** > **Update players**)
-
-### 4. Set NZB-DAV as the Default Player
-
-1. Open TMDBHelper settings > **Players**
-2. Set **Default player (Movies)** to **NZB-DAV**
-3. Set **Default player (TV Shows)** to **NZB-DAV**
-
-With this configured, selecting any movie or episode in TMDBHelper will automatically search and stream via NZB-DAV without a player selection prompt.
-
-> **Tip:** If you want to keep multiple players available (e.g., NZB-DAV + a Debrid service), leave the default player as **Choose** and you'll get a player selection dialog each time.
+If NZB-DAV does not appear as a player, see
+[Troubleshooting](docs/troubleshooting.md#nzb-dav-does-not-appear-in-tmdbhelper).
 
 ---
 
@@ -162,10 +98,12 @@ Open the addon settings (**Add-ons > My add-ons > Video add-ons > NZB-DAV > Conf
 
 | Setting | Where to find it |
 |---------|-----------------|
+| Enable NZBHydra2 | Enable if you use NZBHydra2 |
 | NZBHydra2 URL | URL to your NZBHydra2 instance (e.g., `http://192.168.1.100:5076`) |
 | NZBHydra2 API Key | NZBHydra2 web UI > `http://<hydra>:5076/config/main` > **Security** section > **API key** |
 | nzbdav URL | URL to your nzbdav instance (e.g., `http://192.168.1.100:3333`) |
 | nzbdav API Key | nzbdav web UI > `http://<nzbdav>/settings` > **Usenet** tab > **API Key** |
+| WebDAV URL | Your nzbdav WebDAV base URL, if different from the nzbdav URL |
 | WebDAV Username | nzbdav web UI > `http://<nzbdav>/settings` > **WebDAV** tab > **Username** |
 | WebDAV Password | nzbdav web UI > `http://<nzbdav>/settings` > **WebDAV** tab > **Password** |
 
@@ -185,7 +123,7 @@ Enable **Prowlarr** in addon settings to use Prowlarr as the search backend inst
 
 ### Player Installation
 
-Click **Install Player File** to install the `nzbdav.json` player to TMDBHelper. This registers NZB-DAV as a playback source in TMDBHelper's player selection menu. The player is installed directly to TMDBHelper's players directory.
+Click **Install TMDBHelper Player** to install the `nzbdav.json` player to TMDBHelper. This registers NZB-DAV as a playback source in TMDBHelper's player selection menu. The player is installed directly to TMDBHelper's players directory.
 
 ### Quality Filters
 
@@ -233,9 +171,9 @@ When sorted by relevance, results are ranked by priority:
 
 | Setting | Description | Default |
 |---------|-------------|---------|
-| Poll interval | Seconds between status checks | 5 |
+| Poll interval | Seconds between status checks | 1 |
 | Download timeout | Max wait time in seconds | 3600 |
-| Submit timeout | Max wait for nzbdav submit-NZB API to respond (seconds) | 120 |
+| Submit timeout | Max wait for nzbdav submit-NZB API to respond (seconds) | 300 |
 
 ### Search Cache
 
@@ -256,16 +194,20 @@ These tune stream-proxy behaviour. Defaults are safe; only flip these if you hav
 
 | Setting | Description | Default |
 |---------|-------------|---------|
-| Submit duplicate releases as live fallbacks | Submit conservative duplicate releases in the background and keep them as standby streams for live proxy switching | On |
-| Maximum fallback releases | Maximum standby releases attached per primary result | 5 |
-| Force remux output format | `Direct pass-through (default)` / `Fragmented MP4 HLS (compatibility, experimental)` / `Piped Matroska (seek limited, DV-safe)` | Direct pass-through |
+| Enable fallback streams | Submit conservative duplicate releases in the background and keep them as standby streams for live proxy switching | On |
+| Maximum standby fallback streams | Maximum standby releases attached per primary result | 5 |
+| Large non-MP4 stream mode | `Direct pass-through (default)` / `fMP4 HLS (compatibility, experimental)` / `Matroska remux (compatibility)` | Direct pass-through |
 | Force ffmpeg remux above (MB, 0=off) | File size above which the proxy switches to the optional force-remux tier; `0` disables non-MP4 force-remux entirely, including unknown-length streams | 15000 (~15 GB) |
 | Convert MP4 subtitles to SRT | mov_text → SRT during remux so embedded subs survive the matroska/HLS pipeline | On |
-| Strict contract mode | How to react when nzbdav responds with HTTP shapes that violate the strict Range/Content-Length contract: `Off` / `Warn only` / `Enforce` | Warn only |
-| Density breaker | Abort streams where recovery zero-fill exceeds 50% of a sliding window (catches dead releases early) | Off |
-| Zero-fill budget | Cap total per-stream zero-fill bytes; stream terminates with a clean error when the budget is hit | On |
-| Retry ladder | Re-issue the original Range request with backoff on transient upstream errors before falling back to skip-fill | On |
+| Strict upstream contract mode | How to react when nzbdav responds with HTTP shapes that violate the strict Range/Content-Length contract: `Off` / `Warn only` / `Enforce` | Warn only |
+| Enable density breaker | Abort streams where recovery zero-fill exceeds 50% of a sliding window (catches dead releases early) | Off |
+| Enable zero-fill budget | Cap total per-stream zero-fill bytes; stream terminates with a clean error when the budget is hit | On |
+| Enable retry ladder before skip probe | Re-issue the original Range request with backoff on transient upstream errors before falling back to skip-fill | On |
 | Send 200 for no-range pass-through | Send `200 OK` instead of always `206 Partial Content` when Kodi requests a full object. **Off by default** until validated on the target build. | Off |
+
+---
+
+## Playing A Title
 
 1. Open **TMDBHelper** and browse to a movie or TV episode
 2. Select **Play with NZB-DAV**
@@ -282,6 +224,54 @@ The results dialog shows all matching NZBs with color-coded quality labels, sort
 The status bar at the bottom shows how many sources passed your filters. Use **Enter** to download and play, **C** for the context menu, or **Esc** to go back.
 
 With **Auto-select best match** enabled, the dialog is skipped and the top result plays automatically.
+
+---
+
+## Stream Proxy
+
+Every playback request is routed through a local HTTP proxy (`stream_proxy.py`) running on a random port in the background service. Kodi never talks to the WebDAV server directly, which sidesteps a PROPFIND parent-directory scan that caused `Open - Unhandled exception` errors on several Kodi builds.
+
+The proxy picks one of four paths based on the container, fallback metadata, file size, and the configured large non-MP4 stream mode:
+
+1. **MP4 (already faststart)** -- served through the local pass-through proxy, preserving native range seeking while keeping proxy session tracking available for fallback/rescue handling.
+2. **MP4 (moov at tail)** -- parsed in pure Python via HTTP range requests, `stco` and `co64` chunk offsets rewritten (so 4 GB+ MP4s work on 32-bit Kodi), and served as a virtual faststart MP4 with `Accept-Ranges: bytes`. If parsing fails, falls back to an ffmpeg tempfile remux.
+3. **MKV and other containers (default path)** -- served as a byte pass-through with ranged upstream fetches. Kodi gets native seeking from the source file's real Cues, and the proxy layers zero-fill recovery on top: when an upstream read fails mid-stream, it probes forward to the next readable offset, writes zero bytes across the gap, and keeps streaming.
+4. **Optional compatibility tier** -- when **Large non-MP4 stream mode** is set to Matroska remux or fMP4 HLS and the stream is above the non-zero threshold, the proxy uses ffmpeg:
+   - **Matroska remux** -- `ffmpeg -c copy -f matroska pipe:1`, unsized. Known-good on Dolby Vision HEVC + TrueHD/Atmos 100 GB REMUXes. Seek is approximate (each seek respawns ffmpeg with `-ss`).
+   - **fMP4 HLS** -- produces an HLS VOD playlist with per-segment `hvc1`-tagged fMP4 + a canonical `init.mp4` that survives seek respawns. Gives full random seek across multi-hundred-gigabyte sources. **Self-healing**: if ffmpeg fails to start or doesn't produce a valid init segment within 30 s, the proxy automatically rewrites the session to the matroska branch *before* Kodi sees a broken URL.
+
+**Dolby Vision routing matrix** (applied within the compatibility tier): P5, P7 FEL, P8, and unknown-DV sources are routed to **matroska** (the safest option on Amlogic CAMLCodec). P7 MEL and confirmed non-DV are eligible for **fMP4 HLS** when that mode is selected. P7 FEL specifically is forced to matroska because fMP4 cannot carry dual-layer HEVC.
+
+If ffmpeg isn't installed, the proxy degrades gracefully to pass-through.
+
+> **Architecture deep-dive:** [`docs/proxy-architecture.md`](docs/proxy-architecture.md)
+> documents the full session lifecycle, proxy tier selection, HLS producer
+> internals, and debugging entry points. That page is contributor-level
+> internals with historical context; this README remains the current
+> user-facing behavior summary.
+
+### Live Fallback Streams
+
+When **Enable fallback streams** is enabled, the resolver attaches conservative duplicate candidates from the result list and submits them after the primary NZB is accepted. This is enabled by default. Standby submits run in a background worker so primary playback can continue polling immediately. Once playback starts, the proxy keeps the fallback job metadata with the session and can switch to another prepared stream if the active source becomes unrecoverable.
+
+Fallback grouping is based on the NZB manifest's selected payload entry, not the search result size. The addon fetches each candidate NZB, prefers the main video filename and file-level segment-byte total when visible, and falls back to a provisional archive/RAR grouping key when only archive parts are visible. If the parser cannot extract a usable video entry from an otherwise plausible candidate, the addon can synthesize conservative video evidence from the indexer's reported size when it is at least 100 MB. Candidates with the same selected payload Article Message-IDs, or the same link-derived synthetic digest, are treated as mirrored copies of the same NZB and are not used as fallbacks.
+
+Before fetching a candidate NZB for selection-time fallback evidence, the addon also rejects candidates whose indexer-reported sizes are more than +/-25% away from the selected result. This is intentionally wider than the manifest match gate because indexer sizes can include RAR/PAR2 overhead, but it avoids downloading large NZBs for obvious size mismatches.
+
+Runtime switching still requires exact WebDAV `Content-Length` equality and 1000 pseudo-random 4096-byte fingerprint samples before the proxy switches to a fallback source. **Maximum standby fallback streams** caps how many standby submits are attached per primary result and defaults to `5`.
+
+Fallback recovery is the only rescue path for fallback sessions: if no validated fallback source can resume the failed range, the proxy closes the stream instead of retrying the original source, zero-filling, or probing forward to skip bytes.
+
+Compatibility remux remains available for environments that need ffmpeg compatibility paths, but pass-through is the default. Setting **Force ffmpeg remux above (MB, 0=off)** to `0` disables non-MP4 remux entirely, including unknown-length streams.
+
+---
+
+## More Documentation
+
+- [Quickstart](docs/quickstart.md) - first-time setup with existing backend services.
+- [Troubleshooting](docs/troubleshooting.md) - common setup, search, WebDAV, and playback issues.
+- [Architecture overview](docs/architecture.md) - contributor map of search, resolve, and proxy flows.
+- [Proxy architecture](docs/proxy-architecture.md) - deep internals for playback/proxy work.
 
 ---
 
