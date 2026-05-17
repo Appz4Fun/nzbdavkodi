@@ -22,7 +22,7 @@ Have these ready:
 2. Enter `https://xbmc4lyfe.github.io/nzbdavkodi/`.
 3. Name the source `nzbdav`.
 4. Open **Settings > Add-ons > Install from zip file**.
-5. Choose `nzbdav` > `repository.nzbdav` > `repository.nzbdav-1.1.0.zip`.
+5. Choose `nzbdav` > the latest `repository.nzbdav-*.zip` shown at the source root.
 6. Open **Install from repository > NZB-DAV Repository > Video add-ons > NZB-DAV**.
 7. Install **NZB-DAV**.
 
@@ -42,7 +42,7 @@ Enter the connection settings for the services you use:
 | Prowlarr API Key | Prowlarr API key |
 | nzbdav URL | Your nzbdav base URL, such as `http://192.168.1.100:3333` |
 | nzbdav API Key | nzbdav API key |
-| WebDAV URL | Your nzbdav WebDAV base URL, if different from the nzbdav URL |
+| WebDAV URL | Clear this field when WebDAV uses the nzbdav URL; only enter a separate WebDAV base URL if your nzbdav setup exposes one |
 | WebDAV Username | nzbdav WebDAV username |
 | WebDAV Password | nzbdav WebDAV password |
 
