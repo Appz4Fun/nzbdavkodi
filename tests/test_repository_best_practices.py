@@ -7,11 +7,10 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-ADDON_DIR = REPO_ROOT / "repo" / "plugin.video.nzbdav"
 
 
 def test_addon_metadata_includes_repo_links_and_disclaimer():
-    addon_xml = ADDON_DIR / "addon.xml"
+    addon_xml = REPO_ROOT / "plugin.video.nzbdav" / "addon.xml"
     root = ET.parse(addon_xml).getroot()
     metadata = root.find("./extension[@point='xbmc.addon.metadata']")
 
@@ -23,7 +22,7 @@ def test_addon_metadata_includes_repo_links_and_disclaimer():
 
 
 def test_addon_news_metadata_is_tiny_current_release_summary():
-    addon_xml = ADDON_DIR / "addon.xml"
+    addon_xml = REPO_ROOT / "plugin.video.nzbdav" / "addon.xml"
     root = ET.parse(addon_xml).getroot()
     metadata = root.find("./extension[@point='xbmc.addon.metadata']")
 
@@ -37,10 +36,12 @@ def test_addon_news_metadata_is_tiny_current_release_summary():
 
 
 def test_kodi_visible_changelog_is_tiny_current_release_summary():
-    addon_xml = ADDON_DIR / "addon.xml"
+    addon_xml = REPO_ROOT / "plugin.video.nzbdav" / "addon.xml"
     root = ET.parse(addon_xml).getroot()
     version = root.get("version")
-    changelog = (ADDON_DIR / "changelog.txt").read_text(encoding="utf-8")
+    changelog = (REPO_ROOT / "plugin.video.nzbdav" / "changelog.txt").read_text(
+        encoding="utf-8"
+    )
     summary = changelog.strip()
 
     assert summary.startswith("v{}: ".format(version))
@@ -57,7 +58,7 @@ def test_repo_changelog_keeps_full_release_history():
 
 
 def test_settings_labels_use_localized_string_ids():
-    settings_xml = ADDON_DIR / "resources" / "settings.xml"
+    settings_xml = REPO_ROOT / "plugin.video.nzbdav" / "resources" / "settings.xml"
     root = ET.parse(settings_xml).getroot()
 
     for category in root.findall("category"):
@@ -73,7 +74,7 @@ def test_settings_labels_use_localized_string_ids():
 
 
 def test_prowlarr_api_key_label_is_not_reused_for_test_action():
-    settings_xml = ADDON_DIR / "resources" / "settings.xml"
+    settings_xml = REPO_ROOT / "plugin.video.nzbdav" / "resources" / "settings.xml"
     root = ET.parse(settings_xml).getroot()
 
     api_key_setting = root.find(".//setting[@id='prowlarr_api_key']")
@@ -88,7 +89,7 @@ def test_prowlarr_api_key_label_is_not_reused_for_test_action():
 
 
 def test_settings_include_webdav_test_action():
-    settings_xml = ADDON_DIR / "resources" / "settings.xml"
+    settings_xml = REPO_ROOT / "plugin.video.nzbdav" / "resources" / "settings.xml"
     root = ET.parse(settings_xml).getroot()
 
     test_action = root.find(
@@ -100,7 +101,12 @@ def test_settings_include_webdav_test_action():
 
 def test_language_file_exists_for_kodi_strings():
     strings_po = (
-        ADDON_DIR / "resources" / "language" / "resource.language.en_gb" / "strings.po"
+        REPO_ROOT
+        / "plugin.video.nzbdav"
+        / "resources"
+        / "language"
+        / "resource.language.en_gb"
+        / "strings.po"
     )
     assert strings_po.exists()
     contents = strings_po.read_text(encoding="utf-8")
@@ -109,7 +115,7 @@ def test_language_file_exists_for_kodi_strings():
 
 
 def test_settings_include_direct_indexers_category():
-    settings_xml = ADDON_DIR / "resources" / "settings.xml"
+    settings_xml = REPO_ROOT / "plugin.video.nzbdav" / "resources" / "settings.xml"
     root = ET.parse(settings_xml).getroot()
 
     indexers_category = root.find("./category[@label='30163']")

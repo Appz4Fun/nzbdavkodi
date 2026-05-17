@@ -296,16 +296,16 @@ just lint              # Check ruff + black formatting
 just lint-fix          # Auto-fix lint issues
 just release           # Build plugin.video.nzbdav.zip
 just ship              # Run tests then build release
-just repo              # Build release + generate Kodi repo in repo/zips/
+just repo              # Build release + generate Kodi repo in dist/
 just repo-zip          # Build repo + copy repository zip to cwd
 just clean             # Remove build artifacts
-just dist-clean        # Remove build artifacts + repo/zips/
+just dist-clean        # Remove build artifacts + dist/
 ```
 
 ### Project Structure
 
-```text
-repo/plugin.video.nzbdav/
+```
+plugin.video.nzbdav/
   addon.xml              # Kodi addon manifest
   addon.py               # Entry point
   service.py             # Background service (stream proxy + playback monitor)
@@ -340,8 +340,7 @@ scripts/
   build_zip.py           # Addon zip builder
   generate_repo.py       # Kodi repo metadata generator
 repo/
-  repository.nzbdav/     # Repository addon (points to raw GitHub)
-  zips/                  # Generated Kodi repository metadata and zips
+  repository.nzbdav/     # Repository addon (points to GitHub Pages)
 .github/workflows/
   ci.yml                 # Test + lint on push/PR (Python 3.10/3.12)
   release.yml            # Build + deploy on version tags
@@ -357,14 +356,11 @@ TODO.md                             # Active backlog
 
 ### Releasing
 
-1. Bump `version` in `repo/plugin.video.nzbdav/addon.xml`
-2. Run `just repo` to refresh `repo/zips/` for raw GitHub repository metadata.
-3. Stage the version bump plus generated repository metadata and zips:
-   `git add repo/plugin.video.nzbdav/addon.xml repo/zips/`
-4. Commit: `git commit -m "release: v0.X.0"`
-5. Tag and push: `git tag v0.X.0 && git push origin main v0.X.0`
-6. GitHub Actions builds the zip and creates a GitHub Release
-7. Kodi picks up the update automatically from the repository metadata in `repo/zips/`
+1. Bump `version` in `plugin.video.nzbdav/addon.xml`
+2. Commit: `git commit -am "release: v0.X.0"`
+3. Tag and push: `git tag v0.X.0 && git push origin main v0.X.0`
+4. GitHub Actions builds the zip, creates a GitHub Release, and updates the Kodi repo on GitHub Pages
+5. Kodi picks up the update automatically via the repository
 
 ---
 

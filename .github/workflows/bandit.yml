@@ -35,13 +35,13 @@ jobs:
 
       - name: Run Bandit
         run: >-
-          bandit -r repo/plugin.video.nzbdav/
-          --exclude repo/plugin.video.nzbdav/resources/lib/ptt
+          bandit -r plugin.video.nzbdav/
+          --exclude plugin.video.nzbdav/resources/lib/ptt
           --skip B107,B110,B310,B314,B404,B405,B603
           -f sarif -o bandit.sarif --exit-zero
 
       - name: Upload SARIF
-        uses: github/codeql-action/upload-sarif@68bde559dea0fdcac2102bfdf6230c5f70eb485e # v4
+        uses: github/codeql-action/upload-sarif@e46ed2cbd01164d986452f91f178727624ae40d7 # v4
         with:
           sarif_file: bandit.sarif
         if: always()

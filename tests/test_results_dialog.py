@@ -5,7 +5,6 @@ from unittest.mock import MagicMock, patch
 
 from resources.lib.results_dialog import (
     _AVAILABLE_LABEL,
-    _available_text,
     _format_date,
     _format_size,
     _lang_short,
@@ -36,10 +35,6 @@ def _make_result(**overrides):
 def test_available_label_is_ascii_for_skin_compatibility():
     assert _AVAILABLE_LABEL == "DL"
     assert _AVAILABLE_LABEL.isascii()
-
-
-def test_available_label_renders_green():
-    assert _available_text() == "[COLOR FF22C55E]DL[/COLOR]"
 
 
 # ---------------------------------------------------------------------------

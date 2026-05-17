@@ -56,10 +56,6 @@ ACTION_CONTEXT_MENU = 117
 LIST_ID = 50
 
 
-def _available_text():
-    return _c(_AVAILABLE_LABEL, "FF22C55E")
-
-
 class ResultsDialog(xbmcgui.WindowXMLDialog):
     """Full-screen NZB results selection dialog."""
 
@@ -143,7 +139,7 @@ class ResultsDialog(xbmcgui.WindowXMLDialog):
 
             # Already downloaded indicator
             if result.get("_available"):
-                li.setProperty("available", _available_text())
+                li.setProperty("available", _c(_AVAILABLE_LABEL, "FF00FF88"))
 
             # Alternating row background
             li.setProperty("row_bg", _BG_A if i % 2 == 0 else _BG_B)

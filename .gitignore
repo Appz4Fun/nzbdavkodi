@@ -13,7 +13,6 @@ uv.lock
 
 # Build
 dist/
-pages-dist/
 build/
 plugin.video.nzbdav.zip
 
@@ -52,8 +51,6 @@ run-ralphforever.sh
 # Build zips (versioned)
 plugin.video.nzbdav-*.zip
 repository.nzbdav-*.zip
-!repository.nzbdav-*.zip
-!repo/zips/**/*.zip
 
 # dev docs
 devdocs
@@ -62,7 +59,6 @@ devdocs
 .*
 -*
 !/.gitignore
-!/.nojekyll
 !.env.example
 
 
