@@ -169,4 +169,3 @@ can follow one path from README to quickstart and understand:
 - How to set NZB-DAV as the default player for both movies and TV shows.
 - What success looks like on first playback.
 - Where to go when NZB-DAV does not appear in TMDBHelper.
-
