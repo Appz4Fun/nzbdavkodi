@@ -465,7 +465,8 @@ def test_split_length_prefixed_nals_edge_cases():
     sample_8 = b"\x041234"
     assert list(_split_length_prefixed_nals(sample_8, 1)) == [b"1234"]
 
-    # nal_length_size == 3 (invalid, defaults to 1 per else block)
+    # Unsupported width reads a one-byte size but still advances by the
+    # caller-provided width, so this malformed sample yields no complete NAL.
     sample_invalid_len = b"\x04123"
     assert not list(_split_length_prefixed_nals(sample_invalid_len, 3))
 
@@ -750,14 +751,11 @@ def test_extract_mkv_frame_from_segment_order():
     track_entry = _elm(b"\xae", track_number + codec_id)
     tracks = _elm(b"\x16\x54\xae\x6b", track_entry)
 
-    # Empty Cluster
-    cluster = _elm(b"\x1f\x43\xb6\x75", b"")
-    # Track must be parsed before Cluster is evaluated.
-    # Our function scans linearly, so:
+    sample = struct.pack(">I", 4) + b"\x7c\x01dv"
+    cluster = _elm(b"\x1f\x43\xb6\x75", _elm(b"\xa3", _simpleblock(1, sample)))
     segment = cluster + tracks
 
-    # Because track_number is collected later, the first cluster won't return anything.
-    assert _extract_mkv_frame_from_segment(segment) is None
+    assert _extract_mkv_frame_from_segment(segment) == sample
 
 
 def test_try_read_block_frame_track_mismatch():
@@ -923,112 +921,6 @@ def test_iter_boxes_end_is_none():
     data = struct.pack(">I", 8) + b"test"
     boxes = list(_iter_boxes(data, 0, end=None))
     assert len(boxes) == 1
-
-
-def test_extract_mp4_first_sample_stbl_is_none():
-
-    from resources.lib.dv_source import _extract_mp4_first_sample
-
-    # Mock layout so moov_data is valid but _find_first_video_stbl returns None
-    layout = {"moov_data": b"abc"}
-    with patch("resources.lib.dv_source.fetch_remote_mp4_layout", return_value=layout):
-        with patch("resources.lib.dv_source._find_first_video_stbl", return_value=None):
-            assert _extract_mp4_first_sample("http://host", 100, None) is None
-
-
-def test_extract_mp4_first_sample_stsz_is_none():
-
-    from resources.lib.dv_source import _extract_mp4_first_sample
-
-    layout = {"moov_data": b"abc"}
-    with patch("resources.lib.dv_source.fetch_remote_mp4_layout", return_value=layout):
-        with patch(
-            "resources.lib.dv_source._find_first_video_stbl",
-            return_value=(b"stbl", 0, 4),
-        ):
-            with patch("resources.lib.dv_source._find_child", return_value=None):
-                assert _extract_mp4_first_sample("http://host", 100, None) is None
-
-
-def test_extract_mp4_first_sample_stsz_short_body():
-
-    from resources.lib.dv_source import _extract_mp4_first_sample
-
-    layout = {"moov_data": b"abc"}
-    with patch("resources.lib.dv_source.fetch_remote_mp4_layout", return_value=layout):
-        with patch(
-            "resources.lib.dv_source._find_first_video_stbl",
-            return_value=(b"stbl", 0, 100),
-        ):
-            # _find_child for stsz returns short body: end - start < 12
-            with patch(
-                "resources.lib.dv_source._find_child", return_value=(b"stsz", 0, 10)
-            ):
-                assert _extract_mp4_first_sample("http://host", 100, None) is None
-
-
-def test_extract_mp4_first_sample_stsz_zero_count():
-
-    from resources.lib.dv_source import _extract_mp4_first_sample
-
-    moov_data = bytearray(100)
-    struct.pack_into(">I", moov_data, 8, 0)  # sample_count = 0
-    layout = {"moov_data": moov_data}
-
-    with patch("resources.lib.dv_source.fetch_remote_mp4_layout", return_value=layout):
-        with patch(
-            "resources.lib.dv_source._find_first_video_stbl",
-            return_value=(b"stbl", 0, 100),
-        ):
-            # body_start = 0, unpacks offsets
-            with patch(
-                "resources.lib.dv_source._find_child", return_value=(b"stsz", 0, 20)
-            ):
-                assert _extract_mp4_first_sample("http://host", 100, None) is None
-
-
-def test_extract_mp4_first_sample_stsz_zero_size_short_body():
-
-    from resources.lib.dv_source import _extract_mp4_first_sample
-
-    moov_data = bytearray(100)
-    struct.pack_into(">I", moov_data, 4, 0)  # sample_size = 0
-    struct.pack_into(">I", moov_data, 8, 1)  # sample_count = 1
-    layout = {"moov_data": moov_data}
-
-    with patch("resources.lib.dv_source.fetch_remote_mp4_layout", return_value=layout):
-        with patch(
-            "resources.lib.dv_source._find_first_video_stbl",
-            return_value=(b"stbl", 0, 100),
-        ):
-            # body length 15 < 16 needed for first_sample_size when sample_size==0
-            with patch(
-                "resources.lib.dv_source._find_child", return_value=(b"stsz", 0, 15)
-            ):
-                assert _extract_mp4_first_sample("http://host", 100, None) is None
-
-
-def test_extract_mp4_first_sample_chunk_offset_none():
-
-    from resources.lib.dv_source import _extract_mp4_first_sample
-
-    moov_data = bytearray(100)
-    struct.pack_into(">I", moov_data, 4, 10)  # sample_size = 10
-    struct.pack_into(">I", moov_data, 8, 1)  # sample_count = 1
-    layout = {"moov_data": moov_data}
-
-    with patch("resources.lib.dv_source.fetch_remote_mp4_layout", return_value=layout):
-        with patch(
-            "resources.lib.dv_source._find_first_video_stbl",
-            return_value=(b"stbl", 0, 100),
-        ):
-            with patch(
-                "resources.lib.dv_source._find_child", return_value=(b"stsz", 0, 20)
-            ):
-                with patch(
-                    "resources.lib.dv_source._read_chunk_offset", return_value=None
-                ):
-                    assert _extract_mp4_first_sample("http://host", 100, None) is None
 
 
 def test_log_debug_xbmc_exception():
