@@ -289,7 +289,7 @@ the [architecture overview](docs/architecture.md).
 ### Commands
 
 ```bash
-just test              # Run all 695 unit tests (integration tests excluded)
+just test              # Run the default non-integration pytest suite
 just test-verbose      # Run unit tests with full output
 just test-integration  # Run integration tests against a real ffmpeg binary
 just lint              # Check ruff + black formatting
@@ -350,9 +350,9 @@ repo/
   bandit.yml             # Bandit security scan
 tests/
   conftest.py                       # Kodi module mocks
-  test_*.py                         # 695 unit tests
+  test_*.py                         # Default unit test suite
   test_integration_hls_ffmpeg.py    # 2 integration tests (real ffmpeg, opt-in)
-TODO.md                             # Consolidated roadmap + architecture (Parts A–E)
+TODO.md                             # Active backlog
 ```
 
 ### Releasing
