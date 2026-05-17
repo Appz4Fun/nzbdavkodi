@@ -309,6 +309,26 @@ def test_parse_results_reports_invalid_xml():
     assert error.startswith("Direct indexer returned an invalid response:")
 
 
+def test_parse_results_rejects_declared_xml_entities():
+    from resources.lib.direct_indexers import parse_results
+
+    xml_text = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE rss [<!ENTITY leaked "SHOULD_NOT_APPEAR">]>
+<rss version="2.0">
+<channel>
+<item>
+<title>&leaked;</title>
+<link>https://indexer.example/api?t=get&amp;id=abc&amp;apikey=secret</link>
+</item>
+</channel>
+</rss>"""
+
+    results, error = parse_results(xml_text, "My Indexer")
+
+    assert not results
+    assert "DTD and entity declarations are not allowed" in error
+
+
 EMPTY_RSS = """<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2010/feeds/attributes/">
 <channel><newznab:response offset="0" total="0"/></channel>

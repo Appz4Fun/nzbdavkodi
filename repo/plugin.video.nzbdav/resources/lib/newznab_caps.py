@@ -23,6 +23,10 @@ _SEARCH_TAGS = {
 }
 
 
+class UnsafeNewznabXmlError(ValueError):
+    """Raised when an untrusted Newznab XML response declares DTD/entities."""
+
+
 def normalize_api_endpoint(api_url):
     """Return a Newznab API endpoint from either a host URL or endpoint URL."""
     parts = urlsplit(str(api_url or ""))
@@ -86,10 +90,34 @@ def _params(value):
     return [item.strip() for item in str(value or "").split(",") if item.strip()]
 
 
+def _contains_xml_declaration_markup(xml_text):
+    if isinstance(xml_text, bytes):
+        probe = xml_text.lower()
+        return b"<!doctype" in probe or b"<!entity" in probe
+    probe = str(xml_text).lower()
+    return "<!doctype" in probe or "<!entity" in probe
+
+
+def _build_xxe_safe_parser():
+    parser = ET.XMLParser()  # nosec B314 - declarations rejected below
+    try:
+        parser.parser.DefaultHandler = lambda _d: None
+        parser.parser.ExternalEntityRefHandler = lambda *_: False
+    except AttributeError:  # pragma: no cover - non-expat parser backend
+        pass
+    return parser
+
+
+def parse_untrusted_newznab_xml(xml_text):
+    if _contains_xml_declaration_markup(xml_text):
+        raise UnsafeNewznabXmlError("DTD and entity declarations are not allowed")
+    return ET.fromstring(xml_text, parser=_build_xxe_safe_parser())  # nosec B314
+
+
 def parse_caps(xml_text):
     try:
-        root = ET.fromstring(xml_text)  # nosec B314 - Python 3.8+ disables entities
-    except (ET.ParseError, TypeError):
+        root = parse_untrusted_newznab_xml(xml_text)
+    except (ET.ParseError, TypeError, UnsafeNewznabXmlError):
         return _empty_caps()
 
     search_types = []

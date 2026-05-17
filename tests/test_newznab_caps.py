@@ -112,6 +112,21 @@ def test_parse_caps_ignores_invalid_category_id():
     assert caps["categories"] == [{"id": 2000, "name": "Valid"}]
 
 
+def test_parse_caps_rejects_declared_xml_entities():
+    xml_text = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE caps [<!ENTITY params "q,imdbid">]>
+<caps>
+  <searching>
+    <search available="yes" supportedParams="&params;" />
+  </searching>
+</caps>
+"""
+
+    caps = parse_caps(xml_text)
+
+    assert caps == {"search_types": [], "supported_params": {}, "categories": []}
+
+
 @patch("resources.lib.newznab_caps._http_get")
 def test_fetch_caps_uses_caps_url(mock_http):
     mock_http.return_value = CAPS_XML

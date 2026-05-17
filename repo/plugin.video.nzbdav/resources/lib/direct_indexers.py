@@ -30,7 +30,11 @@ from resources.lib.http_util import (
     redact_url as _redact_url,
 )
 from resources.lib.indexer_store import load_indexers
-from resources.lib.newznab_caps import normalize_api_endpoint
+from resources.lib.newznab_caps import (
+    UnsafeNewznabXmlError,
+    normalize_api_endpoint,
+    parse_untrusted_newznab_xml,
+)
 from resources.lib.search_planner import plan_newznab_search
 
 PRESET_INDEXERS = (
@@ -218,10 +222,6 @@ def build_search_url(api_url, params):
     )
 
 
-def _build_xxe_safe_parser():
-    return ET.XMLParser()  # nosec B314 - Python 3.8+ disables external entities
-
-
 def _parse_newznab_attrs(item):
     size = ""
     indexer = ""
@@ -283,8 +283,8 @@ def _build_result(item, fallback_indexer):
 def parse_results(xml_text, fallback_indexer):
     """Parse Newznab XML into the existing normalized result shape."""
     try:
-        root = ET.fromstring(xml_text, parser=_build_xxe_safe_parser())  # nosec B314
-    except ET.ParseError as error:
+        root = parse_untrusted_newznab_xml(xml_text)
+    except (ET.ParseError, UnsafeNewznabXmlError) as error:
         xbmc.log(
             "NZB-DAV: Failed to parse direct indexer XML: {}".format(error),
             xbmc.LOGERROR,
