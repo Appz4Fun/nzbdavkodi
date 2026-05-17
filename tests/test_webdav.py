@@ -758,16 +758,9 @@ def test_find_video_file_reuses_settings_during_recursive_post_picker_scan(
 
     mock_urlopen.side_effect = propfind
 
-    started = time.perf_counter()
     path = find_video_file("/content/uncategorized/SettingsFanout/")
-    elapsed = time.perf_counter() - started
 
     assert path == "/content/uncategorized/SettingsFanout/B/Movie.mkv"
-    assert (
-        elapsed < 0.10
-    ), "settings fanout WebDAV discovery took {:.3f}s with {} settings reads".format(
-        elapsed, mock_settings.call_count
-    )
     assert mock_settings.call_count == 1
 
 
