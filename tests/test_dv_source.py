@@ -46,6 +46,16 @@ def _minimal_mp4(sample_bytes):
     return bytes(file_bytes)
 
 
+def _minimal_mp4_with_stbl(stbl_children):
+    ftyp = _box(b"ftyp", b"isom\x00\x00\x02\x00isomiso2")
+    hdlr = _fullbox(b"hdlr", b"\x00" * 4 + b"vide" + b"\x00" * 12)
+    stbl = _box(b"stbl", stbl_children)
+    minf = _box(b"minf", stbl)
+    mdia = _box(b"mdia", hdlr + minf)
+    moov = _box(b"moov", _box(b"trak", mdia))
+    return ftyp + moov
+
+
 class _MockResponse:
     def __init__(self, data):
         self._data = data
@@ -543,26 +553,15 @@ def test_read_chunk_offset_edge_cases():
 
 def test_extract_mp4_first_sample_stsz_edge_cases():
 
-    ftyp = _box(b"ftyp", b"isom\x00\x00\x02\x00isomiso2")
     stsd = _fullbox(b"stsd", struct.pack(">I", 1) + _box(b"hvc1", b""))
-    hdlr = _fullbox(b"hdlr", b"\x00" * 4 + b"vide" + b"\x00" * 12)
     stsc = _fullbox(b"stsc", struct.pack(">I", 1) + struct.pack(">III", 1, 1, 1))
     stco = _fullbox(b"stco", struct.pack(">I", 1) + struct.pack(">I", 512))
 
     def make_mp4(stsz):
-        stbl = _box(b"stbl", stsd + stsz + stsc + stco)
-        minf = _box(b"minf", stbl)
-        mdia = _box(b"mdia", hdlr + minf)
-        trak = _box(b"trak", mdia)
-        moov = _box(b"moov", trak)
-        return ftyp + moov
+        return _minimal_mp4_with_stbl(stsd + stsz + stsc + stco)
 
     # missing stsz
-    stbl_no_stsz = _box(b"stbl", stsd + stsc + stco)
-    minf_no_stsz = _box(b"minf", stbl_no_stsz)
-    mdia_no_stsz = _box(b"mdia", hdlr + minf_no_stsz)
-    moov_no_stsz = _box(b"moov", _box(b"trak", mdia_no_stsz))
-    mp4_no_stsz = ftyp + moov_no_stsz
+    mp4_no_stsz = _minimal_mp4_with_stbl(stsd + stsc + stco)
 
     mock1 = _mock_urlopen_from_file(mp4_no_stsz)
     with patch("resources.lib.dv_source.urlopen", side_effect=mock1), patch(
@@ -604,27 +603,12 @@ def test_extract_mp4_first_sample_stsz_edge_cases():
 
 def test_extract_mp4_first_sample_stsz_more_edge_cases():
 
-    ftyp = _box(b"ftyp", b"isom\x00\x00\x02\x00isomiso2")
     stsd = _fullbox(b"stsd", struct.pack(">I", 1) + _box(b"hvc1", b""))
-    hdlr = _fullbox(b"hdlr", b"\x00" * 4 + b"vide" + b"\x00" * 12)
     stsc = _fullbox(b"stsc", struct.pack(">I", 1) + struct.pack(">III", 1, 1, 1))
-    stco = _fullbox(b"stco", struct.pack(">I", 1) + struct.pack(">I", 512))
-
-    def make_mp4(stsz):
-        stbl = _box(b"stbl", stsd + stsz + stsc + stco)
-        minf = _box(b"minf", stbl)
-        mdia = _box(b"mdia", hdlr + minf)
-        trak = _box(b"trak", mdia)
-        moov = _box(b"moov", trak)
-        return ftyp + moov
 
     # missing chunk offset entirely
     stsz_valid = _fullbox(b"stsz", struct.pack(">II", 0, 1) + struct.pack(">I", 100))
-    stbl_no_stco = _box(b"stbl", stsd + stsz_valid + stsc)
-    minf_no_stco = _box(b"minf", stbl_no_stco)
-    mdia_no_stco = _box(b"mdia", hdlr + minf_no_stco)
-    moov_no_stco = _box(b"moov", _box(b"trak", mdia_no_stco))
-    mp4_no_stco = ftyp + moov_no_stco
+    mp4_no_stco = _minimal_mp4_with_stbl(stsd + stsz_valid + stsc)
 
     mock5 = _mock_urlopen_from_file(mp4_no_stco)
     with patch("resources.lib.dv_source.urlopen", side_effect=mock5), patch(
