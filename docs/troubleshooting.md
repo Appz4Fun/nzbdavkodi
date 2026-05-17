@@ -58,12 +58,15 @@ Check nzbdav before changing NZB-DAV settings:
 NZB-DAV needs both the nzbdav API credentials and the WebDAV credentials.
 
 1. Confirm **nzbdav URL** points to the nzbdav server.
-2. Confirm **WebDAV URL** points to the WebDAV endpoint if you configured one
-   separately.
-3. Under **WebDAV**, confirm **Username** and **Password** match nzbdav's WebDAV
+2. If WebDAV uses the same endpoint as **nzbdav URL**, clear **WebDAV URL** so
+   NZB-DAV falls back to the nzbdav URL. Do not leave the default
+   `http://localhost:8080` unless Kodi can reach WebDAV there.
+3. If you configured a separate WebDAV endpoint, confirm **WebDAV URL** points
+   to it.
+4. Under **WebDAV**, confirm **Username** and **Password** match nzbdav's WebDAV
    settings.
-4. Run the WebDAV test action in NZB-DAV settings.
-5. Check for 401 or 403 errors in `kodi.log`.
+5. Run the WebDAV test action in NZB-DAV settings.
+6. Check for 401 or 403 errors in `kodi.log`.
 
 ## Playback Starts Then Fails
 

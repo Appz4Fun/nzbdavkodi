@@ -59,7 +59,7 @@ No separate SABnzbd needed -- nzbdav handles both downloading and serving.
 Install through the NZB-DAV repository for automatic updates:
 
 1. In Kodi: **Settings > File Manager > Add source** > enter `https://xbmc4lyfe.github.io/nzbdavkodi/` > name it `nzbdav`
-2. **Settings > Add-ons > Install from zip file** > `nzbdav` > `repository.nzbdav` > `repository.nzbdav-1.1.0.zip`
+2. **Settings > Add-ons > Install from zip file** > `nzbdav` > the latest `repository.nzbdav-*.zip` shown at the source root
 3. **Settings > Add-ons > Install from repository > NZB-DAV Repository > Video add-ons > NZB-DAV**
 4. Future updates are installed automatically
 
@@ -103,7 +103,7 @@ Open the addon settings (**Add-ons > My add-ons > Video add-ons > NZB-DAV > Conf
 | NZBHydra2 API Key | NZBHydra2 web UI > `http://<hydra>:5076/config/main` > **Security** section > **API key** |
 | nzbdav URL | URL to your nzbdav instance (e.g., `http://192.168.1.100:3333`) |
 | nzbdav API Key | nzbdav web UI > `http://<nzbdav>/settings` > **Usenet** tab > **API Key** |
-| WebDAV URL | Your nzbdav WebDAV base URL, if different from the nzbdav URL |
+| WebDAV URL | Clear this field when WebDAV uses the nzbdav URL; only enter a separate WebDAV base URL if your nzbdav setup exposes one |
 | WebDAV Username | nzbdav web UI > `http://<nzbdav>/settings` > **WebDAV** tab > **Username** |
 | WebDAV Password | nzbdav web UI > `http://<nzbdav>/settings` > **WebDAV** tab > **Password** |
 
