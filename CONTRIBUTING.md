@@ -13,6 +13,12 @@
 3. If you touch Kodi UI or playback flows, test in Kodi 21 as well.
 4. Update `README.md`, `SECURITY.md`, or `plugin.video.nzbdav/changelog.txt` when user-facing behavior changes.
 
+## Adding new filter criteria
+
+Filters involve changes across multiple files. Follow the step-by-step guide in
+[docs/EXTENDING_FILTERS.md](docs/EXTENDING_FILTERS.md) to avoid silent failures or
+runtime crashes.
+
 ## Pull requests
 
 - Fill out the pull request template.
