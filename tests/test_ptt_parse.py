@@ -3,17 +3,25 @@
 
 from resources.lib.ptt.parse import extend_options
 
+DEFAULT_OPTIONS = {
+    "skipIfAlreadyFound": True,
+    "skipFromTitle": False,
+    "skipIfFirst": False,
+    "remove": False,
+}
 
-def test_extend_options_empty():
+
+def expected_options(**overrides):
+    expected = DEFAULT_OPTIONS.copy()
+    expected.update(overrides)
+    return expected
+
+
+def test_extend_options_mutates_provided_empty_dict():
     options = {}
     result = extend_options(options)
-    assert result == {
-        "skipIfAlreadyFound": True,
-        "skipFromTitle": False,
-        "skipIfFirst": False,
-        "remove": False,
-    }
-    # extend_options mutates the options dictionary and returns it
+    assert result == expected_options()
+    # Preserve existing behavior for callers that pass a dict: fill it in place.
     assert result is options
 
 
@@ -23,15 +31,10 @@ def test_extend_options_default_arg():
     result2 = extend_options()
     assert "mutation" not in result2, "Default argument mutation detected!"
 
-    assert result2 == {
-        "skipIfAlreadyFound": True,
-        "skipFromTitle": False,
-        "skipIfFirst": False,
-        "remove": False,
-    }
+    assert result2 == expected_options()
 
 
-def test_extend_options_override_defaults():
+def test_extend_options_preserves_full_overrides_in_place():
     options = {
         "skipIfAlreadyFound": False,
         "skipFromTitle": True,
@@ -39,34 +42,23 @@ def test_extend_options_override_defaults():
         "remove": True,
     }
     result = extend_options(options)
-    assert result == {
-        "skipIfAlreadyFound": False,
-        "skipFromTitle": True,
-        "skipIfFirst": True,
-        "remove": True,
-    }
-    # extend_options mutates the options dictionary and returns it
+    assert result == expected_options(
+        skipIfAlreadyFound=False,
+        skipFromTitle=True,
+        skipIfFirst=True,
+        remove=True,
+    )
+    # Preserve existing behavior for callers that pass a dict: fill it in place.
     assert result is options
 
 
 def test_extend_options_partial_override():
     options = {"remove": True}
     result = extend_options(options)
-    assert result == {
-        "skipIfAlreadyFound": True,
-        "skipFromTitle": False,
-        "skipIfFirst": False,
-        "remove": True,
-    }
+    assert result == expected_options(remove=True)
 
 
 def test_extend_options_extra_keys():
     options = {"extra_key": "value"}
     result = extend_options(options)
-    assert result == {
-        "skipIfAlreadyFound": True,
-        "skipFromTitle": False,
-        "skipIfFirst": False,
-        "remove": False,
-        "extra_key": "value",
-    }
+    assert result == expected_options(extra_key="value")
