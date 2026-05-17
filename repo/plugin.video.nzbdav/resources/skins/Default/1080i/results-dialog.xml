@@ -70,9 +70,9 @@
       <scrolltime>200</scrolltime>
 
       <!-- ==================== UNFOCUSED ROW ==================== -->
-      <itemlayout width="1920" height="66">
+      <itemlayout width="1910" height="66">
         <control type="image">
-          <left>0</left><top>0</top><width>1920</width><height>66</height>
+          <left>0</left><top>0</top><width>1910</width><height>66</height>
           <texture>white.png</texture>
           <colordiffuse>FF0C0C10</colordiffuse>
         </control>
@@ -143,15 +143,15 @@
 
         <!-- Row separator -->
         <control type="image">
-          <left>0</left><top>65</top><width>1920</width><height>1</height>
+          <left>0</left><top>65</top><width>1910</width><height>1</height>
           <texture>white.png</texture><colordiffuse>FF18181C</colordiffuse>
         </control>
       </itemlayout>
 
       <!-- ==================== FOCUSED ROW ==================== -->
-      <focusedlayout width="1920" height="66">
+      <focusedlayout width="1910" height="66">
         <control type="image">
-          <left>0</left><top>0</top><width>1920</width><height>66</height>
+          <left>0</left><top>0</top><width>1910</width><height>66</height>
           <texture>white.png</texture>
           <colordiffuse>FF182538</colordiffuse>
         </control>
@@ -222,7 +222,7 @@
 
         <!-- Row separator -->
         <control type="image">
-          <left>0</left><top>65</top><width>1920</width><height>1</height>
+          <left>0</left><top>65</top><width>1910</width><height>1</height>
           <texture>white.png</texture><colordiffuse>FF18181C</colordiffuse>
         </control>
       </focusedlayout>
