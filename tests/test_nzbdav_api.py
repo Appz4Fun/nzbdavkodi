@@ -728,6 +728,22 @@ def test_get_completed_jobs_returns_completed_job_map(mock_http, mock_settings):
 
 @patch("resources.lib.nzbdav_api._get_settings")
 @patch("resources.lib.nzbdav_api._http_get")
+def test_get_completed_jobs_uses_supplied_settings_getter(mock_http, mock_settings):
+    mock_http.return_value = json.dumps({"history": {"slots": []}})
+
+    def settings_getter(key, default=""):
+        return {
+            "nzbdav_url": "http://nzbdav:3000",
+            "nzbdav_api_key": "scriptkey",
+        }.get(key, default)
+
+    get_completed_jobs(settings_getter=settings_getter)
+
+    mock_settings.assert_called_once_with(settings_getter=settings_getter)
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
 def test_get_completed_jobs_marks_successful_empty_lookup(mock_http, mock_settings):
     mock_settings.return_value = ("http://nzbdav:3000", "testkey")
     mock_http.return_value = json.dumps({"history": {"slots": []}})

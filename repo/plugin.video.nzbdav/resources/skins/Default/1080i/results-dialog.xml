@@ -78,12 +78,12 @@
 
         <!-- LINE 1: Available indicator + Filename + Size + Age + Indexer + Group -->
         <control type="label">
-          <left>6</left><top>4</top><width>20</width><height>30</height>
+          <left>6</left><top>4</top><width>32</width><height>30</height>
           <font>font12</font><textcolor>FFFFFFFF</textcolor>
           <label>$INFO[ListItem.Property(available)]</label><aligny>center</aligny>
         </control>
         <control type="label">
-          <left>24</left><top>4</top><width>1146</width><height>30</height>
+          <left>40</left><top>4</top><width>1140</width><height>30</height>
           <font>font13</font><textcolor>FFD4D4D8</textcolor>
           <label>$INFO[ListItem.Label]</label><aligny>center</aligny>
         </control>
@@ -157,12 +157,12 @@
 
         <!-- LINE 1: Available indicator + Filename + Size + Age + Indexer + Group -->
         <control type="label">
-          <left>6</left><top>4</top><width>20</width><height>30</height>
+          <left>6</left><top>4</top><width>32</width><height>30</height>
           <font>font12</font><textcolor>FFFFFFFF</textcolor>
           <label>$INFO[ListItem.Property(available)]</label><aligny>center</aligny>
         </control>
         <control type="label">
-          <left>24</left><top>4</top><width>1146</width><height>30</height>
+          <left>40</left><top>4</top><width>1140</width><height>30</height>
           <font>font13</font><textcolor>FFFFFFFF</textcolor>
           <label>$INFO[ListItem.Label]</label><aligny>center</aligny>
         </control>

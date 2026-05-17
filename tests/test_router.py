@@ -1667,6 +1667,21 @@ def test_tag_available_attaches_completed_job_hint(mock_completed_jobs):
     assert "_completed_job" not in results[1]
 
 
+@patch("resources.lib.router.get_completed_jobs")
+def test_tag_available_uses_supplied_settings_getter(mock_completed_jobs):
+    def settings_getter(key, default=""):
+        return default
+
+    mock_completed_jobs.return_value = {}
+
+    _tag_available(
+        [{"title": "Matrix.1999.mkv", "link": "http://hydra/nzb/x"}],
+        settings_getter=settings_getter,
+    )
+
+    mock_completed_jobs.assert_called_once_with(settings_getter=settings_getter)
+
+
 @patch("xbmcaddon.Addon")
 @patch("xbmcplugin.setResolvedUrl")
 @patch("xbmcgui.ListItem")
@@ -1905,17 +1920,17 @@ def test_handle_script_play_uses_picker_without_plugin_handle_resolution(
     resolver_params = dict(kwargs["params"])
     assert callable(resolver_params.pop("_settings_getter"))
     assert callable(resolver_params.pop("_fallback_candidate_loader"))
+    _, tag_kwargs = mock_tag.call_args
+    assert tag_kwargs["settings_getter"] is not None
     assert resolver_params == {
         "type": "movie",
         "title": "The Odyssey",
         "year": "2026",
         "tmdb_id": "1368337",
         "_fallback_candidates": [],
-        "_completed_job_lookup_done": True,
         "_selected_indexer": "NZBFinder",
     }
     mock_addon.assert_not_called()
-    mock_tag.assert_not_called()
     mock_end.assert_not_called()
     mock_set_resolved.assert_not_called()
 
