@@ -9,7 +9,7 @@ cases `_fallback_parse()` when introducing new metadata fields.
 
 ## Architecture overview
 
-```
+```text
 settings.xml             ← Kodi UI control, stores user's choice
       ↓
 _get_filter_settings()   ← reads setting into a Python dict
