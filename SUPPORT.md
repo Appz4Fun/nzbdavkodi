@@ -4,7 +4,8 @@
 
 - Bug reports: open a GitHub issue with Kodi version, addon version, reproduction steps, and relevant `kodi.log` lines.
 - Security issues: do not file a public issue. Use the private reporting path in [SECURITY.md](SECURITY.md).
-- Setup questions: check [README.md](README.md) and [troubleshooting.md](troubleshooting.md) first.
+- Setup questions: start with the [Quickstart](docs/quickstart.md), then check
+  [Troubleshooting](docs/troubleshooting.md).
 
 ## What to include
 

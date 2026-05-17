@@ -646,7 +646,7 @@ def _search_all_providers(
     return deduped, None
 
 
-def _tag_available(results):
+def _tag_available(results, settings_getter=None):
     """
     Mark result entries that already exist in nzbdav by setting the `_available` flag.
 
@@ -657,7 +657,7 @@ def _tag_available(results):
     """
     if not results:
         return {}
-    completed = get_completed_jobs()
+    completed = get_completed_jobs(settings_getter=settings_getter)
     if not completed:
         return completed
     for result in results:
@@ -1453,7 +1453,16 @@ def _handle_script_play(params):
         _script_play_stage("resolve returned")
         return
 
-    _script_play_stage("tag available skipped")
+    completed_jobs = None
+    try:
+        completed_jobs = _tag_available(filtered, settings_getter=_get_script_setting)
+        _script_play_stage("tag available done")
+    except Exception as error:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: Script completed-history tagging failed: {}".format(error),
+            xbmc.LOGDEBUG,
+        )
+        _script_play_stage("tag available failed")
 
     from resources.lib.results_dialog import show_results_dialog
 
@@ -1474,14 +1483,14 @@ def _handle_script_play(params):
         selected, filtered, settings_getter=_get_script_setting
     )
     resolver_params["_fallback_candidate_loader"] = fallback_loader
-    resolver_params["_completed_job_lookup_done"] = True
     resolver_params["_settings_getter"] = _get_script_setting
-    completed_job = selected.get(
-        "_completed_job"
-    ) or _script_completed_job_for_selection(selected)
+    completed_job = selected.get("_completed_job")
+    if not completed_job and not _completed_lookup_was_done(completed_jobs):
+        completed_job = _script_completed_job_for_selection(selected)
     if completed_job:
-        resolver_params.pop("_completed_job_lookup_done", None)
         resolver_params["_completed_job"] = completed_job
+    elif _completed_lookup_was_done(completed_jobs):
+        resolver_params["_completed_job_lookup_done"] = True
     _attach_selected_indexer(resolver_params, selected)
     _script_play_stage("resolve start '{}'".format(selected.get("title", "")))
     resolve_and_play(selected["link"], selected["title"], params=resolver_params)

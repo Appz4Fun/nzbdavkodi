@@ -20,8 +20,8 @@
         <disclaimer lang="en">Requires your own NZBHydra2 and nzbdav instances plus valid API/WebDAV access. No content is provided.</disclaimer>
         <platform>all</platform>
         <license>GPL-3.0-or-later</license>
-        <source>https://github.com/xbmc4lyfe/nzbdavkodi</source>
-        <website>https://xbmc4lyfe.github.io/nzbdavkodi/</website>
+        <source>https://github.com/Appz4Fun/nzbdavkodi</source>
+        <website>https://appz4fun.github.io/nzbdavkodi/</website>
         <news>v1.2.3: Harden proxy fallback and repo installs.</news>
         <assets>
             <icon>resources/icon.png</icon>

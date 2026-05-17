@@ -758,7 +758,7 @@ def completed_jobs_lookup_done(completed_jobs):
     return getattr(completed_jobs, "_lookup_done", False) is True
 
 
-def get_completed_jobs():
+def get_completed_jobs(settings_getter=None):
     """Fetch completed downloads from nzbdav history keyed by exact name.
 
     Returns:
@@ -766,13 +766,14 @@ def get_completed_jobs():
         mapping on any error or when no completed jobs exist.
 
     Side effects:
-        Reads nzbdav settings from Kodi via xbmcaddon.Addon("plugin.video.nzbdav").
+        Reads nzbdav settings from Kodi via xbmcaddon.Addon("plugin.video.nzbdav")
+        unless ``settings_getter`` is supplied.
         Performs an HTTP GET to nzbdav /api?mode=history on every call; avoid
         calling this in tight loops.
         Logs the number of names loaded at debug level.
     """
     try:
-        base_url, api_key = _get_settings()
+        base_url, api_key = _get_settings(settings_getter=settings_getter)
     except Exception as e:  # pylint: disable=broad-except
         xbmc.log(
             "NZB-DAV: Settings read failed in get_completed_jobs: {}".format(

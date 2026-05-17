@@ -8,6 +8,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ADDON_DIR = REPO_ROOT / "repo" / "plugin.video.nzbdav"
+REPO_ADDON_DIR = REPO_ROOT / "repo" / "repository.nzbdav"
 
 
 def test_addon_metadata_includes_repo_links_and_disclaimer():
@@ -16,10 +17,26 @@ def test_addon_metadata_includes_repo_links_and_disclaimer():
     metadata = root.find("./extension[@point='xbmc.addon.metadata']")
 
     assert metadata is not None
-    assert metadata.findtext("source") == "https://github.com/xbmc4lyfe/nzbdavkodi"
-    assert metadata.findtext("website") == "https://xbmc4lyfe.github.io/nzbdavkodi/"
+    assert metadata.findtext("source") == "https://github.com/Appz4Fun/nzbdavkodi"
+    assert metadata.findtext("website") == "https://appz4fun.github.io/nzbdavkodi/"
     disclaimers = metadata.findall("disclaimer")
     assert len(disclaimers) >= 2
+
+
+def test_repository_addon_uses_live_pages_metadata_urls():
+    addon_xml = REPO_ADDON_DIR / "addon.xml"
+    root = ET.parse(addon_xml).getroot()
+    repo_dir = root.find("./extension[@point='xbmc.addon.repository']/dir")
+
+    assert repo_dir is not None
+    assert (
+        repo_dir.findtext("info") == "https://appz4fun.github.io/nzbdavkodi/addons.xml"
+    )
+    assert (
+        repo_dir.findtext("checksum")
+        == "https://appz4fun.github.io/nzbdavkodi/addons.xml.md5"
+    )
+    assert repo_dir.findtext("datadir") == "https://appz4fun.github.io/nzbdavkodi/"
 
 
 def test_addon_news_metadata_is_tiny_current_release_summary():

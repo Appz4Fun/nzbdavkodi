@@ -5,7 +5,7 @@ All notable changes to the **NZB-DAV Kodi addon** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-[![Latest Release](https://img.shields.io/github/v/release/xbmc4lyfe/nzbdavkodi?label=latest&color=FF570A)](https://github.com/xbmc4lyfe/nzbdavkodi/releases/latest)
+[![Latest Release](https://img.shields.io/github/v/release/Appz4Fun/nzbdavkodi?label=latest&color=FF570A)](https://github.com/Appz4Fun/nzbdavkodi/releases/latest)
 
 ---
 
@@ -1160,43 +1160,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[1.2.1]: https://github.com/xbmc4lyfe/nzbdavkodi/compare/v1.2.0...v1.2.1
-[1.2.0]: https://github.com/xbmc4lyfe/nzbdavkodi/compare/v1.1.0...v1.2.0
-[1.1.0]: https://github.com/xbmc4lyfe/nzbdavkodi/compare/v1.0.9...v1.1.0
-[1.0.9]: https://github.com/xbmc4lyfe/nzbdavkodi/compare/v1.0.8...v1.0.9
-[1.0.8]: https://github.com/xbmc4lyfe/nzbdavkodi/compare/v1.0.7...v1.0.8
-[1.0.7]: https://github.com/xbmc4lyfe/nzbdavkodi/compare/v1.0.6...v1.0.7
-[1.0.6]: https://github.com/xbmc4lyfe/nzbdavkodi/compare/v1.0.5...v1.0.6
-[1.0.5]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v1.0.5
-[1.0.4]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v1.0.4
-[1.0.3]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v1.0.3
-[1.0.2]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v1.0.2
-[1.0.1]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v1.0.1
-[1.0.0-pre-alpha]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v1.0.0-pre-alpha
-[0.6.21]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.6.21
-[0.6.20]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.6.20
-[0.6.19]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.6.19
-[0.6.18]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.6.18
-[0.6.17]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.6.17
-[0.6.16]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.6.16
-[0.6.15]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.6.15
-[0.6.14]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.6.14
-[0.6.13]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.6.13
-[0.6.12]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.6.12
-[0.6.11]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.6.11
-[0.6.10]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.6.10
-[0.6.9]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.6.9
-[0.6.8]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.6.8
-[0.6.7]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.6.7
-[0.6.6]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.6.6
-[0.6.5]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.6.5
-[0.6.2]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.6.2
-[0.6.1]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.6.1
-[0.6.0]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.6.0
-[0.5.0]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.5.0
-[0.4.3]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.4.3
-[0.4.1]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.4.1
-[0.4.0]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.4.0
-[0.3.0]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.3.0
-[0.2.0]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.2.0
-[0.1.0]: https://github.com/xbmc4lyfe/nzbdavkodi/releases/tag/v0.1.0
+[1.2.1]: https://github.com/Appz4Fun/nzbdavkodi/compare/v1.2.0...v1.2.1
+[1.2.0]: https://github.com/Appz4Fun/nzbdavkodi/compare/v1.1.0...v1.2.0
+[1.1.0]: https://github.com/Appz4Fun/nzbdavkodi/compare/v1.0.9...v1.1.0
+[1.0.9]: https://github.com/Appz4Fun/nzbdavkodi/compare/v1.0.8...v1.0.9
+[1.0.8]: https://github.com/Appz4Fun/nzbdavkodi/compare/v1.0.7...v1.0.8
+[1.0.7]: https://github.com/Appz4Fun/nzbdavkodi/compare/v1.0.6...v1.0.7
+[1.0.6]: https://github.com/Appz4Fun/nzbdavkodi/compare/v1.0.5...v1.0.6
+[1.0.5]: https://github.com/Appz4Fun/nzbdavkodi/releases/tag/v1.0.5
+[1.0.4]: https://github.com/Appz4Fun/nzbdavkodi/releases/tag/v1.0.4
+[1.0.3]: https://github.com/Appz4Fun/nzbdavkodi/releases/tag/v1.0.3
+[1.0.2]: https://github.com/Appz4Fun/nzbdavkodi/releases/tag/v1.0.2
+[1.0.1]: https://github.com/Appz4Fun/nzbdavkodi/releases/tag/v1.0.1
+[1.0.0-pre-alpha]: https://github.com/Appz4Fun/nzbdavkodi/releases/tag/v1.0.0-pre-alpha
+[0.6.21]: https://github.com/Appz4Fun/nzbdavkodi/releases/tag/v0.6.21
+[0.6.20]: https://github.com/Appz4Fun/nzbdavkodi/releases/tag/v0.6.20
+[0.6.19]: https://github.com/Appz4Fun/nzbdavkodi/releases/tag/v0.6.19
+[0.6.18]: https://github.com/Appz4Fun/nzbdavkodi/releases/tag/v0.6.18
+[0.6.17]: https://github.com/Appz4Fun/nzbdavkodi/releases/tag/v0.6.17
+[0.6.16]: https://github.com/Appz4Fun/nzbdavkodi/releases/tag/v0.6.16
+[0.6.15]: https://github.com/Appz4Fun/nzbdavkodi/releases/tag/v0.6.15
+[0.6.14]: https://github.com/Appz4Fun/nzbdavkodi/releases/tag/v0.6.14
+[0.6.13]: https://github.com/Appz4Fun/nzbdavkodi/releases/tag/v0.6.13
+[0.6.12]: https://github.com/Appz4Fun/nzbdavkodi/releases/tag/v0.6.12
+[0.6.11]: https://github.com/Appz4Fun/nzbdavkodi/releases/tag/v0.6.11
+[0.6.10]: https://github.com/Appz4Fun/nzbdavkodi/releases/tag/v0.6.10
+[0.6.9]: https://github.com/Appz4Fun/nzbdavkodi/releases/tag/v0.6.9
+[0.6.8]: https://github.com/Appz4Fun/nzbdavkodi/releases/tag/v0.6.8
+[0.6.7]: https://github.com/Appz4Fun/nzbdavkodi/releases/tag/v0.6.7
+[0.6.6]: https://github.com/Appz4Fun/nzbdavkodi/releases/tag/v0.6.6
+[0.6.5]: https://github.com/Appz4Fun/nzbdavkodi/releases/tag/v0.6.5
+[0.6.2]: https://github.com/Appz4Fun/nzbdavkodi/releases/tag/v0.6.2
+[0.6.1]: https://github.com/Appz4Fun/nzbdavkodi/releases/tag/v0.6.1
+[0.6.0]: https://github.com/Appz4Fun/nzbdavkodi/releases/tag/v0.6.0
+[0.5.0]: https://github.com/Appz4Fun/nzbdavkodi/releases/tag/v0.5.0
+[0.4.3]: https://github.com/Appz4Fun/nzbdavkodi/releases/tag/v0.4.3
+[0.4.1]: https://github.com/Appz4Fun/nzbdavkodi/releases/tag/v0.4.1
+[0.4.0]: https://github.com/Appz4Fun/nzbdavkodi/releases/tag/v0.4.0
+[0.3.0]: https://github.com/Appz4Fun/nzbdavkodi/releases/tag/v0.3.0
+[0.2.0]: https://github.com/Appz4Fun/nzbdavkodi/releases/tag/v0.2.0
+[0.1.0]: https://github.com/Appz4Fun/nzbdavkodi/releases/tag/v0.1.0

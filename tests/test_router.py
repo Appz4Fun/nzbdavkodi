@@ -1667,6 +1667,21 @@ def test_tag_available_attaches_completed_job_hint(mock_completed_jobs):
     assert "_completed_job" not in results[1]
 
 
+@patch("resources.lib.router.get_completed_jobs")
+def test_tag_available_uses_supplied_settings_getter(mock_completed_jobs):
+    def settings_getter(key, default=""):
+        return default
+
+    mock_completed_jobs.return_value = {}
+
+    _tag_available(
+        [{"title": "Matrix.1999.mkv", "link": "http://hydra/nzb/x"}],
+        settings_getter=settings_getter,
+    )
+
+    mock_completed_jobs.assert_called_once_with(settings_getter=settings_getter)
+
+
 @patch("xbmcaddon.Addon")
 @patch("xbmcplugin.setResolvedUrl")
 @patch("xbmcgui.ListItem")
@@ -1905,17 +1920,17 @@ def test_handle_script_play_uses_picker_without_plugin_handle_resolution(
     resolver_params = dict(kwargs["params"])
     assert callable(resolver_params.pop("_settings_getter"))
     assert callable(resolver_params.pop("_fallback_candidate_loader"))
+    _, tag_kwargs = mock_tag.call_args
+    assert tag_kwargs["settings_getter"] is not None
     assert resolver_params == {
         "type": "movie",
         "title": "The Odyssey",
         "year": "2026",
         "tmdb_id": "1368337",
         "_fallback_candidates": [],
-        "_completed_job_lookup_done": True,
         "_selected_indexer": "NZBFinder",
     }
     mock_addon.assert_not_called()
-    mock_tag.assert_not_called()
     mock_end.assert_not_called()
     mock_set_resolved.assert_not_called()
 
@@ -2030,6 +2045,56 @@ def test_handle_script_play_picker_fallback_loader_uses_script_settings_getter(
     loader = resolver_params["_fallback_candidate_loader"]
     assert loader() == [duplicate]
     mock_fallback_settings.assert_called_once()
+
+
+@patch("xbmcaddon.Addon", side_effect=RuntimeError("Kodi settings unavailable"))
+@patch("xbmcplugin.endOfDirectory")
+@patch("xbmcplugin.setResolvedUrl")
+@patch("resources.lib.resolver.resolve_and_play")
+@patch("resources.lib.results_dialog.show_results_dialog")
+@patch("resources.lib.filter.filter_results")
+@patch("resources.lib.router._search_all_providers")
+@patch("resources.lib.nzbdav_api.find_completed_by_name")
+@patch("resources.lib.router._tag_available")
+def test_handle_script_play_empty_completed_snapshot_skips_post_picker_history_lookup(
+    mock_tag,
+    mock_find_completed,
+    mock_search,
+    mock_filter,
+    mock_dialog,
+    mock_resolve_and_play,
+    mock_set_resolved,
+    mock_end,
+    mock_addon,
+):
+    from resources.lib.router import _handle_script_play
+
+    class SuccessfulCompletedJobs(dict):
+        _lookup_done = True
+
+    chosen = {"title": "Wuthering.Heights.2026.mkv", "link": "http://hydra/nzb/wh"}
+    mock_tag.return_value = SuccessfulCompletedJobs()
+    mock_find_completed.return_value = None
+    mock_search.return_value = ([chosen], None)
+    mock_filter.return_value = ([chosen], [chosen])
+    mock_dialog.return_value = chosen
+
+    _handle_script_play(
+        {
+            "type": "movie",
+            "title": "Wuthering Heights",
+            "year": "2026",
+            "tmdb_id": "1316092",
+        }
+    )
+
+    mock_find_completed.assert_not_called()
+    resolver_params = dict(mock_resolve_and_play.call_args.kwargs["params"])
+    assert resolver_params["_completed_job_lookup_done"] is True
+    assert "_completed_job" not in resolver_params
+    mock_addon.assert_not_called()
+    mock_end.assert_not_called()
+    mock_set_resolved.assert_not_called()
 
 
 @patch("xbmcaddon.Addon", side_effect=RuntimeError("Kodi settings unavailable"))
