@@ -1,6 +1,13 @@
 name: Pages
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/pages.yml"
+      - "repo/repository.nzbdav/**"
+      - "repo/plugin.video.nzbdav/addon.xml"
+      - "scripts/generate_repo.py"
   workflow_run:
     workflows: ["Release"]
     types: [completed]

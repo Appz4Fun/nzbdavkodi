@@ -21,7 +21,7 @@ Before cutting a new versioned release:
 2. Update `CHANGELOG.md` (repo-level) with the full version notes.
 3. Update `repo/plugin.video.nzbdav/changelog.txt` (the addon's Kodi-visible changelog) with only a short, sweet release summary under 80 characters.
 4. **ONLY** bump the addon version in `repo/plugin.video.nzbdav/addon.xml` to the new semver. Do NOT bump repository version—this allows users with the Kodi repo already installed to see the addon version upgrade without re-adding the repository.
-5. Run `just repo` so `repo/zips/` reflects the new addon release for raw GitHub hosting.
+5. Run `just repo` so `repo/zips/` reflects the new addon release for GitHub Pages hosting.
 6. Commit and push to `main`.
 7. Tag with the new semver and push the tag: `git tag vX.Y.Z && git push origin vX.Y.Z` (the Release workflow takes over from there).
 
@@ -59,7 +59,7 @@ just dist-clean    # clean + remove repo/zips/
 - `repo/plugin.video.nzbdav/resources/lib/` -- All Python modules
 - `repo/plugin.video.nzbdav/resources/lib/ptt/` -- Vendored PTT library (DO NOT EDIT unless fixing compatibility)
 - `scripts/` -- Build and repo generation scripts (`build_zip.py`, `generate_repo.py`)
-- `repo/repository.nzbdav/` -- Kodi repository addon descriptor (points to raw GitHub)
+- `repo/repository.nzbdav/` -- Kodi repository addon descriptor (points to GitHub Pages)
 - `repo/zips/` -- Generated Kodi repository metadata and zips
 - `.github/workflows/` -- CI (test+lint on push/PR), Release (build+deploy on `v*` tags)
 - `tests/` -- pytest tests with Kodi module mocks in conftest.py
@@ -68,7 +68,7 @@ just dist-clean    # clean + remove repo/zips/
 
 - **CI** runs on every push to main and PRs: tests across Python 3.10/3.12, ruff, black
 - **Release** triggers on `v*` tags: runs tests, verifies addon.xml version matches tag, builds zip, creates GitHub Release
-- **Kodi repo metadata** served from raw GitHub at `https://raw.githubusercontent.com/xbmc4lyfe/nzbdavkodi/main/repo/zips/`
+- **Kodi repo metadata** served from GitHub Pages at `https://appz4fun.github.io/nzbdavkodi/`
 - To release: bump version in `repo/plugin.video.nzbdav/addon.xml`, run `just repo`, commit, `git tag v0.X.0 && git push origin main v0.X.0`
 
 ## Key Patterns

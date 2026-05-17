@@ -18,8 +18,8 @@
         <disclaimer lang="en">Requires your own NZBHydra2 and nzbdav instances plus valid API/WebDAV access. No content is provided.</disclaimer>
         <platform>all</platform>
         <license>GPL-3.0-or-later</license>
-        <source>https://github.com/xbmc4lyfe/nzbdavkodi</source>
-        <website>https://xbmc4lyfe.github.io/nzbdavkodi/</website>
+        <source>https://github.com/Appz4Fun/nzbdavkodi</source>
+        <website>https://appz4fun.github.io/nzbdavkodi/</website>
         <assets>
             <icon>resources/icon.png</icon>
             <fanart>resources/fanart.jpg</fanart>
@@ -32,9 +32,9 @@
     </requires>
     <extension point="xbmc.addon.repository" name="NZB-DAV Repository">
         <dir>
-            <info compressed="false">https://raw.githubusercontent.com/xbmc4lyfe/nzbdavkodi/main/repo/zips/addons.xml</info>
-            <checksum>https://raw.githubusercontent.com/xbmc4lyfe/nzbdavkodi/main/repo/zips/addons.xml.md5</checksum>
-            <datadir zip="true">https://raw.githubusercontent.com/xbmc4lyfe/nzbdavkodi/main/repo/zips/</datadir>
+            <info compressed="false">https://appz4fun.github.io/nzbdavkodi/addons.xml</info>
+            <checksum>https://appz4fun.github.io/nzbdavkodi/addons.xml.md5</checksum>
+            <datadir zip="true">https://appz4fun.github.io/nzbdavkodi/</datadir>
         </dir>
     </extension>
     <extension point="xbmc.addon.metadata">

@@ -111,6 +111,18 @@ def test_github_workflows_exclude_extreme_marker_from_default_pytest_runs():
         assert '-m "not integration and not functional and not extreme"' in contents
 
 
+def test_pages_workflow_deploys_repository_metadata_on_main_push():
+    root = Path(__file__).resolve().parents[1]
+    contents = (root / ".github" / "workflows" / "pages.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "push:" in contents
+    assert "branches: [main]" in contents
+    assert "repo/repository.nzbdav/**" in contents
+    assert "scripts/generate_repo.py" in contents
+
+
 def test_extreme_functional_test_recipe_preserves_exported_env_overrides():
     contents = Path(__file__).resolve().parents[1].joinpath("justfile").read_text()
     body = _recipe_body(contents, "extreme-functional-test")
