@@ -19,7 +19,7 @@ Have these ready:
 ## 1. Install NZB-DAV
 
 1. In Kodi, open **Settings > File Manager > Add source**.
-2. Enter `https://xbmc4lyfe.github.io/nzbdavkodi/`.
+2. Enter `https://appz4fun.github.io/nzbdavkodi/`.
 3. Name the source `nzbdav`.
 4. Open **Settings > Add-ons > Install from zip file**.
 5. Choose `nzbdav` > the latest `repository.nzbdav-*.zip` shown at the source root.

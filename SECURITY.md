@@ -5,7 +5,7 @@
 If you discover a security vulnerability in this project, please report it responsibly:
 
 1. **Do not** open a public issue
-2. Email the maintainer or use [GitHub's private vulnerability reporting](https://github.com/xbmc4lyfe/nzbdavkodi/security/advisories/new)
+2. Email the maintainer or use [GitHub's private vulnerability reporting](https://github.com/Appz4Fun/nzbdavkodi/security/advisories/new)
 3. Include steps to reproduce and any relevant details
 
 We will respond within 72 hours and work to release a fix promptly.

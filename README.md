@@ -1,10 +1,10 @@
 # NZB-DAV Kodi Addon
 
-[![CI](https://github.com/xbmc4lyfe/nzbdavkodi/actions/workflows/ci.yml/badge.svg)](https://github.com/xbmc4lyfe/nzbdavkodi/actions/workflows/ci.yml)
-[![Pylint](https://github.com/xbmc4lyfe/nzbdavkodi/actions/workflows/pylint.yml/badge.svg)](https://github.com/xbmc4lyfe/nzbdavkodi/actions/workflows/pylint.yml)
-[![CodeQL](https://github.com/xbmc4lyfe/nzbdavkodi/actions/workflows/codeql.yml/badge.svg)](https://github.com/xbmc4lyfe/nzbdavkodi/actions/workflows/codeql.yml)
-[![Release](https://github.com/xbmc4lyfe/nzbdavkodi/actions/workflows/release.yml/badge.svg)](https://github.com/xbmc4lyfe/nzbdavkodi/actions/workflows/release.yml)
-[![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/xbmc4lyfe/nzbdavkodi?utm_source=oss&utm_medium=github&utm_campaign=xbmc4lyfe%2Fnzbdavkodi&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)](https://coderabbit.ai)
+[![CI](https://github.com/Appz4Fun/nzbdavkodi/actions/workflows/ci.yml/badge.svg)](https://github.com/Appz4Fun/nzbdavkodi/actions/workflows/ci.yml)
+[![Pylint](https://github.com/Appz4Fun/nzbdavkodi/actions/workflows/pylint.yml/badge.svg)](https://github.com/Appz4Fun/nzbdavkodi/actions/workflows/pylint.yml)
+[![CodeQL](https://github.com/Appz4Fun/nzbdavkodi/actions/workflows/codeql.yml/badge.svg)](https://github.com/Appz4Fun/nzbdavkodi/actions/workflows/codeql.yml)
+[![Release](https://github.com/Appz4Fun/nzbdavkodi/actions/workflows/release.yml/badge.svg)](https://github.com/Appz4Fun/nzbdavkodi/actions/workflows/release.yml)
+[![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/Appz4Fun/nzbdavkodi?utm_source=oss&utm_medium=github&utm_campaign=Appz4Fun%2Fnzbdavkodi&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)](https://coderabbit.ai)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Kodi](https://img.shields.io/badge/Kodi-21%20Omega-blue.svg)](https://kodi.tv/)
 [![Python](https://img.shields.io/badge/Python-3.8%2B-blue.svg)](https://www.python.org/)
@@ -58,14 +58,14 @@ No separate SABnzbd needed -- nzbdav handles both downloading and serving.
 
 Install through the NZB-DAV repository for automatic updates:
 
-1. In Kodi: **Settings > File Manager > Add source** > enter `https://xbmc4lyfe.github.io/nzbdavkodi/` > name it `nzbdav`
+1. In Kodi: **Settings > File Manager > Add source** > enter `https://appz4fun.github.io/nzbdavkodi/` > name it `nzbdav`
 2. **Settings > Add-ons > Install from zip file** > `nzbdav` > the latest `repository.nzbdav-*.zip` shown at the source root
 3. **Settings > Add-ons > Install from repository > NZB-DAV Repository > Video add-ons > NZB-DAV**
 4. Future updates are installed automatically
 
 ### Manual Install
 
-1. Download the addon zip from the [releases page](https://github.com/xbmc4lyfe/nzbdavkodi/releases)
+1. Download the addon zip from the [releases page](https://github.com/Appz4Fun/nzbdavkodi/releases)
 2. In Kodi: **Settings > Add-ons > Install from zip file** > select `plugin.video.nzbdav.zip`
 
 ---
@@ -340,7 +340,7 @@ scripts/
   build_zip.py           # Addon zip builder
   generate_repo.py       # Kodi repo metadata generator
 repo/
-  repository.nzbdav/     # Repository addon (points to raw GitHub)
+  repository.nzbdav/     # Repository addon (points to GitHub Pages)
   zips/                  # Generated Kodi repository metadata and zips
 .github/workflows/
   ci.yml                 # Test + lint on push/PR (Python 3.10/3.12)
@@ -358,13 +358,13 @@ TODO.md                             # Active backlog
 ### Releasing
 
 1. Bump `version` in `repo/plugin.video.nzbdav/addon.xml`
-2. Run `just repo` to refresh `repo/zips/` for raw GitHub repository metadata.
+2. Run `just repo` to refresh `repo/zips/` for GitHub Pages repository metadata.
 3. Stage the version bump plus generated repository metadata and zips:
    `git add repo/plugin.video.nzbdav/addon.xml repo/zips/`
 4. Commit: `git commit -m "release: v0.X.0"`
 5. Tag and push: `git tag v0.X.0 && git push origin main v0.X.0`
 6. GitHub Actions builds the zip and creates a GitHub Release
-7. Kodi picks up the update automatically from the repository metadata in `repo/zips/`
+7. Kodi picks up the update automatically from the GitHub Pages repository metadata
 
 ---
 

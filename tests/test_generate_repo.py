@@ -165,7 +165,7 @@ def test_generate_repo_includes_repository_checksum_url(tmp_path, monkeypatch):
     assert repo_dir is not None
     assert (
         repo_dir.findtext("checksum")
-        == "https://raw.githubusercontent.com/xbmc4lyfe/nzbdavkodi/main/repo/zips/addons.xml.md5"
+        == "https://appz4fun.github.io/nzbdavkodi/addons.xml.md5"
     )
 
 
