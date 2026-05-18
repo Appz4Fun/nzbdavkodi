@@ -204,9 +204,11 @@ def get_xml_text(element, tag):
     parse loops simple: missing fields land as empty strings rather than
     exceptions.
     """
-    child = element.find(tag)
-    if child is not None and child.text:
-        return child.text
+    for child in element:
+        if child.tag == tag:
+            text = (child.text or "").strip()
+            if text:
+                return text
     return ""
 
 
