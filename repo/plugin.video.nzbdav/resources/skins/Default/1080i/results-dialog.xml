@@ -34,7 +34,7 @@
       <left>20</left><top>34</top><width>600</width><height>20</height>
       <label>NZB-DAV · NZBHydra2</label>
       <font>font10</font>
-      <textcolor>FF666666</textcolor>
+      <textcolor>FF9CA3AF</textcolor>
     </control>
 
     <!-- Header: Source count -->
@@ -51,7 +51,7 @@
       <left>1400</left><top>34</top><width>500</width><height>20</height>
       <label>$INFO[Window.Property(sort_info)]</label>
       <font>font10</font>
-      <textcolor>FF555555</textcolor>
+      <textcolor>FF9CA3AF</textcolor>
       <align>right</align>
     </control>
 
@@ -244,7 +244,7 @@
       <left>20</left><top>1040</top><width>800</width><height>30</height>
       <label>$INFO[Window.Property(filter_info)]</label>
       <font>font10</font>
-      <textcolor>FF4A5568</textcolor>
+      <textcolor>FF9CA3AF</textcolor>
       <aligny>center</aligny>
     </control>
 
@@ -253,7 +253,7 @@
       <left>800</left><top>1040</top><width>1100</width><height>30</height>
       <label>[Enter] Download &amp; Play     [Esc] Back</label>
       <font>font10</font>
-      <textcolor>FF4A5568</textcolor>
+      <textcolor>FF9CA3AF</textcolor>
       <align>right</align>
       <aligny>center</aligny>
     </control>

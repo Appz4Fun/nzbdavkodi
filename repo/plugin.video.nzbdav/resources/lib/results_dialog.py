@@ -106,7 +106,7 @@ class ResultsDialog(xbmcgui.WindowXMLDialog):
             if hdr_list:
                 li.setProperty("hdr", _c(" ".join(hdr_list), "FFFBBF24"))
             else:
-                li.setProperty("hdr", _c("SDR", "FF333333"))
+                li.setProperty("hdr", _c("SDR", "FF6B7280"))
 
             # Codec
             codec = meta.get("codec", "")
