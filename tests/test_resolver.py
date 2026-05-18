@@ -733,6 +733,76 @@ def test_clear_kodi_playback_state_escapes_like_wildcards(mock_xbmc, tmp_path):
 
 
 @patch("resources.lib.resolver.xbmc")
+def test_clear_kodi_playback_state_deletes_bookmarks_with_executemany(
+    mock_xbmc, tmp_path
+):
+    import sqlite3
+
+    mock_xbmc.Player.return_value.isPlayingVideo.return_value = False
+    db = _build_fake_videos_db(tmp_path)
+    conn = sqlite3.connect(str(db))
+    cur = conn.cursor()
+    tmdb_base = "plugin://plugin.video.themoviedb.helper/?info=play"
+    for i in range(1, 4):
+        cur.execute(
+            "INSERT INTO files (idFile, idPath, strFilename) VALUES (?, 1, ?)",
+            (i, tmdb_base + "&tmdb_type=movie&tmdb_id=389"),
+        )
+        cur.execute(
+            "INSERT INTO bookmark (idFile, timeInSeconds) VALUES (?, 100.0)", (i,)
+        )
+    conn.commit()
+    conn.close()
+
+    execute_calls = []
+    executemany_calls = []
+
+    class TrackingCursor(sqlite3.Cursor):
+        def execute(self, sql, parameters=()):
+            if sql == "DELETE FROM bookmark WHERE idFile = ?":
+                execute_calls.append((sql, parameters))
+            return super().execute(sql, parameters)
+
+        def executemany(self, sql, seq_of_parameters):
+            params = list(seq_of_parameters)
+            if sql == "DELETE FROM bookmark WHERE idFile = ?":
+                executemany_calls.append((sql, params))
+            return super().executemany(sql, params)
+
+    class TrackingConnection(
+        sqlite3.Connection
+    ):  # pylint: disable=too-few-public-methods
+        def cursor(self, *args, **kwargs):
+            kwargs["factory"] = TrackingCursor
+            return super().cursor(*args, **kwargs)
+
+    real_connect = sqlite3.connect
+
+    def connect_tracking(path, *args, **kwargs):
+        kwargs["factory"] = TrackingConnection
+        return real_connect(path, *args, **kwargs)
+
+    with patch("sqlite3.connect", side_effect=connect_tracking):
+        with patch("resources.lib.resolver.xbmcvfs") as mock_vfs:
+            mock_vfs.translatePath.return_value = str(tmp_path) + "/"
+            _clear_kodi_playback_state({"tmdb_id": "389", "type": "movie"})
+
+    assert not execute_calls
+    assert executemany_calls == [
+        (
+            "DELETE FROM bookmark WHERE idFile = ?",
+            [(1,), (2,), (3,)],
+        )
+    ]
+
+    conn = sqlite3.connect(str(db))
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM bookmark")
+    assert cur.fetchone()[0] == 0
+    conn.close()
+
+
+@patch("resources.lib.resolver.xbmc")
 def test_clear_kodi_playback_state_handles_db_busy(mock_xbmc, tmp_path):
     """A sqlite3.OperationalError (DB locked) must be caught, not propagated."""
     import sqlite3
