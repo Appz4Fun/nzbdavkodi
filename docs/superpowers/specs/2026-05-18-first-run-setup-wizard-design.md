@@ -12,6 +12,7 @@ Pages:
 
 1. Welcome
    - Explain that users should have service IP addresses or hostnames, ports, usernames/passwords, and API keys available.
+   - Tell users they should already have TMDBHelper installed before continuing.
 2. nzbdav
    - Edit `nzbdav_url`.
    - Edit hidden `nzbdav_api_key`.
@@ -100,7 +101,7 @@ Add localized strings for:
 
 - Setup Wizard menu item.
 - Wizard page titles.
-- Welcome instructions.
+- Welcome instructions, including service connection details and the TMDBHelper prerequisite.
 - Generic navigation labels.
 - Edit/test field action labels where existing strings are not enough.
 - TMDBHelper install page title and install action.
