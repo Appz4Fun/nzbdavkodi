@@ -4,6 +4,19 @@
 import time
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _caps_fetch_fails_closed_by_default(monkeypatch):
+    from resources.lib import direct_indexers
+
+    monkeypatch.setattr(
+        direct_indexers,
+        "fetch_caps",
+        lambda *_args, **_kwargs: ({}, "caps unavailable"),
+    )
+
 
 def _addon_with_settings(values):
     addon = MagicMock()
@@ -325,6 +338,188 @@ ONE_RESULT_RSS = """<?xml version="1.0" encoding="UTF-8"?>
 </item>
 </channel>
 </rss>"""
+
+CAPS_MOVIE_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<caps>
+<searching>
+<search available="yes" supportedParams="q" />
+<movie-search available="yes" supportedParams="q,imdbid" />
+</searching>
+</caps>"""
+
+
+def test_caps_are_stale_when_missing_empty_or_expired():
+    from resources.lib.direct_indexers import _caps_are_stale
+
+    fresh = "2026-05-17T12:00:00Z"
+    now = "2026-05-17T13:00:00Z"
+
+    assert _caps_are_stale({}, now=now)
+    assert _caps_are_stale({"caps": {}}, now=now)
+    assert _caps_are_stale(
+        {
+            "caps": {"search_types": [], "supported_params": {}, "categories": []},
+            "checked_at": fresh,
+        },
+        now=now,
+    )
+    assert _caps_are_stale(
+        {
+            "caps": {"search_types": ["movie"]},
+            "checked_at": "2026-05-16T11:59:59Z",
+        },
+        now=now,
+    )
+    assert not _caps_are_stale(
+        {"caps": {"search_types": ["movie"]}, "checked_at": fresh},
+        now=now,
+    )
+
+
+@patch("resources.lib.direct_indexers.load_indexers")
+@patch("resources.lib.direct_indexers.save_indexers")
+@patch("resources.lib.direct_indexers.get_configured_indexers")
+@patch("resources.lib.direct_indexers.xbmcaddon")
+@patch("resources.lib.direct_indexers._http_get")
+@patch("resources.lib.direct_indexers.fetch_caps")
+def test_search_direct_indexers_refreshes_stale_caps_and_saves(
+    mock_fetch_caps,
+    mock_http,
+    mock_xbmcaddon,
+    mock_configured,
+    mock_save_indexers,
+    mock_load_indexers,
+):
+    from resources.lib.direct_indexers import search_direct_indexers
+
+    refreshed_caps = {
+        "search_types": ["movie", "search"],
+        "supported_params": {"movie": ["imdbid"], "search": ["q"]},
+        "categories": [],
+    }
+    mock_fetch_caps.return_value = (refreshed_caps, None)
+    mock_configured.return_value = [
+        {
+            "id": "nzbgeek",
+            "label": "NZBGeek",
+            "api_url": "https://api.nzbgeek.info/api",
+            "api_key": "geek-key",
+            "caps": {},
+        }
+    ]
+    mock_load_indexers.return_value = []
+    mock_xbmcaddon.Addon.return_value = _addon_with_settings({"max_results": "25"})
+    mock_http.return_value = ONE_RESULT_RSS
+
+    results, error = search_direct_indexers(
+        "movie", "The Matrix", year="1999", imdb="tt0133093"
+    )
+
+    assert error is None
+    assert len(results) == 1
+    call_url = mock_http.call_args[0][0]
+    assert "t=movie" in call_url
+    assert "imdbid=0133093" in call_url
+    assert "q=The+Matrix" not in call_url
+    mock_fetch_caps.assert_called_once_with(
+        "https://api.nzbgeek.info/api", "geek-key", timeout=15
+    )
+    saved = mock_save_indexers.call_args[0][0]
+    assert saved[0]["id"] == "nzbgeek"
+    assert saved[0]["name"] == "NZBGeek"
+    assert saved[0]["api_url"] == "https://api.nzbgeek.info/api"
+    assert saved[0]["api_key"] == "geek-key"
+    assert saved[0]["enabled"] is True
+    assert saved[0]["caps"] == refreshed_caps
+    assert saved[0]["checked_at"].endswith("Z")
+
+
+@patch("resources.lib.direct_indexers.load_indexers")
+@patch("resources.lib.direct_indexers.save_indexers")
+@patch("resources.lib.direct_indexers.get_configured_indexers")
+@patch("resources.lib.direct_indexers.xbmcaddon")
+@patch("resources.lib.direct_indexers._http_get")
+@patch("resources.lib.direct_indexers.fetch_caps")
+def test_search_direct_indexers_falls_back_when_caps_refresh_fails(
+    mock_fetch_caps,
+    mock_http,
+    mock_xbmcaddon,
+    mock_configured,
+    mock_save_indexers,
+    mock_load_indexers,
+):
+    from resources.lib.direct_indexers import search_direct_indexers
+
+    mock_fetch_caps.return_value = ({}, "caps down")
+    mock_configured.return_value = [
+        {
+            "id": "nzbgeek",
+            "label": "NZBGeek",
+            "api_url": "https://api.nzbgeek.info/api",
+            "api_key": "geek-key",
+            "caps": {},
+        }
+    ]
+    mock_load_indexers.return_value = []
+    mock_xbmcaddon.Addon.return_value = _addon_with_settings({"max_results": "25"})
+    mock_http.return_value = ONE_RESULT_RSS
+
+    results, error = search_direct_indexers(
+        "movie", "The Matrix", year="1999", imdb="tt0133093"
+    )
+
+    assert error is None
+    assert len(results) == 1
+    call_url = mock_http.call_args[0][0]
+    assert "t=movie" in call_url
+    assert "imdbid=0133093" in call_url
+    mock_save_indexers.assert_not_called()
+
+
+@patch("resources.lib.direct_indexers.load_indexers")
+@patch("resources.lib.direct_indexers.save_indexers")
+@patch("resources.lib.direct_indexers.fetch_caps")
+def test_check_one_indexer_caps_fetches_and_persists_caps(
+    mock_fetch_caps, mock_save_indexers, mock_load_indexers
+):
+    from resources.lib.direct_indexers import _check_one_indexer_caps
+
+    refreshed_caps = {"search_types": ["search"], "supported_params": {"search": ["q"]}}
+    mock_fetch_caps.return_value = (refreshed_caps, None)
+    mock_load_indexers.return_value = [
+        {
+            "id": "custom1",
+            "name": "Old Name",
+            "api_url": "https://old.example/api",
+            "api_key": "old-key",
+            "enabled": True,
+            "caps": {},
+        }
+    ]
+
+    ok, error = _check_one_indexer_caps(
+        {
+            "id": "custom1",
+            "label": "Custom",
+            "api_url": "https://custom.example/api",
+            "api_key": "custom-key",
+            "caps": {},
+        }
+    )
+
+    assert ok is True
+    assert error is None
+    mock_fetch_caps.assert_called_once_with(
+        "https://custom.example/api", "custom-key", timeout=15
+    )
+    saved = mock_save_indexers.call_args[0][0]
+    assert saved[0]["id"] == "custom1"
+    assert saved[0]["name"] == "Custom"
+    assert saved[0]["api_url"] == "https://custom.example/api"
+    assert saved[0]["api_key"] == "custom-key"
+    assert saved[0]["enabled"] is True
+    assert saved[0]["caps"] == refreshed_caps
+    assert saved[0]["checked_at"].endswith("Z")
 
 
 @patch("resources.lib.direct_indexers.get_configured_indexers")
@@ -680,9 +875,9 @@ def test_search_direct_indexers_all_failures_return_error(
 
 
 @patch("resources.lib.direct_indexers.get_configured_indexers")
-@patch("resources.lib.direct_indexers._http_get")
+@patch("resources.lib.direct_indexers.fetch_caps")
 def test_test_configured_indexers_marks_incomplete_futures_timed_out(
-    mock_http, mock_configured
+    mock_fetch_caps, mock_configured
 ):
     from resources.lib.direct_indexers import test_configured_indexers
 
@@ -697,9 +892,9 @@ def test_test_configured_indexers_marks_incomplete_futures_timed_out(
 
     def slow_caps(*_args, **_kwargs):
         time.sleep(0.2)
-        return "<caps></caps>"
+        return ({"search_types": ["search"]}, None)
 
-    mock_http.side_effect = slow_caps
+    mock_fetch_caps.side_effect = slow_caps
 
     with patch(
         "resources.lib.direct_indexers._DIRECT_FANOUT_TIMEOUT", 0.05, create=True
@@ -717,8 +912,8 @@ def test_test_configured_indexers_marks_incomplete_futures_timed_out(
 
 
 @patch("resources.lib.direct_indexers.get_configured_indexers")
-@patch("resources.lib.direct_indexers._http_get")
-def test_test_configured_indexers_counts_caps_success(mock_http, mock_configured):
+@patch("resources.lib.direct_indexers.fetch_caps")
+def test_test_configured_indexers_counts_caps_success(mock_fetch_caps, mock_configured):
     from resources.lib.direct_indexers import test_configured_indexers
 
     mock_configured.return_value = [
@@ -735,7 +930,10 @@ def test_test_configured_indexers_counts_caps_success(mock_http, mock_configured
             "api_key": "two",
         },
     ]
-    mock_http.side_effect = ["<caps></caps>", RuntimeError("down")]
+    mock_fetch_caps.side_effect = [
+        ({"search_types": ["search"]}, None),
+        ({}, "down"),
+    ]
 
     ok_count, total_count, errors = test_configured_indexers()
 

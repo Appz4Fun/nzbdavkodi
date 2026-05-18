@@ -3,7 +3,9 @@
 
 """Direct Newznab-compatible indexer provider."""
 
+import threading
 from concurrent.futures import ThreadPoolExecutor, wait
+from datetime import datetime, timedelta, timezone
 from urllib.error import URLError
 from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 from xml.etree import ElementTree as ET
@@ -29,8 +31,8 @@ from resources.lib.http_util import (
 from resources.lib.http_util import (
     redact_url as _redact_url,
 )
-from resources.lib.indexer_store import load_indexers
-from resources.lib.newznab_caps import normalize_api_endpoint
+from resources.lib.indexer_store import load_indexers, save_indexers
+from resources.lib.newznab_caps import fetch_caps, normalize_api_endpoint
 from resources.lib.search_planner import plan_newznab_search
 
 PRESET_INDEXERS = (
@@ -54,6 +56,8 @@ _DIRECT_REQUEST_ERRORS = (
 )
 _DIRECT_FANOUT_MAX_WORKERS = 4
 _DIRECT_FANOUT_TIMEOUT = 20
+_CAPS_TTL = timedelta(hours=24)
+_CAPS_REFRESH_LOCK = threading.Lock()
 
 
 def _setting_enabled(addon, setting_id):
@@ -121,13 +125,16 @@ def _configured_json_indexer(item):
     ):
         return None
     indexer_id = item.get("id") or item.get("preset_id")
-    return {
+    configured = {
         "id": indexer_id,
         "label": item.get("name") or indexer_id,
         "api_url": item["api_url"],
         "api_key": item["api_key"],
         "caps": item.get("caps", {}),
     }
+    if "checked_at" in item:
+        configured["checked_at"] = item.get("checked_at", "")
+    return configured
 
 
 def get_legacy_configured_indexers(addon=None):
@@ -316,6 +323,94 @@ def _indexer_timeout_error(indexer, timeout_seconds):
     )
 
 
+def _utcnow():
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _format_caps_checked_at(moment):
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _parse_caps_checked_at(value):
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return None
+
+
+def _caps_are_stale(indexer, now=None):
+    caps = indexer.get("caps", {})
+    search_types = caps.get("search_types") if isinstance(caps, dict) else None
+    if not search_types:
+        return True
+    checked_at = _parse_caps_checked_at(indexer.get("checked_at", ""))
+    if checked_at is None:
+        return True
+    current = _parse_caps_checked_at(now) if isinstance(now, str) else now
+    current = current or _utcnow()
+    return current - checked_at >= _CAPS_TTL
+
+
+def _stored_indexer_from_runtime(indexer):
+    indexer_id = indexer.get("id", "")
+    return {
+        "id": indexer_id,
+        "preset_id": indexer_id,
+        "name": indexer.get("label", "") or indexer_id,
+        "api_url": indexer.get("api_url", ""),
+        "api_key": indexer.get("api_key", ""),
+        "enabled": True,
+        "caps": indexer.get("caps", {}),
+        "checked_at": indexer.get("checked_at", ""),
+    }
+
+
+def _persist_refreshed_caps(indexer):
+    with _CAPS_REFRESH_LOCK:
+        stored = load_indexers()
+        matched = False
+        updated = []
+        target_id = str(indexer.get("id", "") or "").strip()
+        for item in stored:
+            item_id = str(item.get("id") or item.get("preset_id") or "").strip()
+            if item_id == target_id:
+                updated.append(_stored_indexer_from_runtime(indexer))
+                matched = True
+            else:
+                updated.append(item)
+        if not matched:
+            updated.append(_stored_indexer_from_runtime(indexer))
+        save_indexers(updated)
+
+
+def _refresh_indexer_caps(indexer):
+    caps, error = fetch_caps(indexer["api_url"], indexer["api_key"], timeout=15)
+    if error:
+        return indexer, error
+    updated = dict(indexer)
+    updated["caps"] = caps
+    updated["checked_at"] = _format_caps_checked_at(_utcnow())
+    _persist_refreshed_caps(updated)
+    return updated, None
+
+
+def _maybe_refresh_caps(indexer):
+    if not _caps_are_stale(indexer):
+        return indexer
+    updated, error = _refresh_indexer_caps(indexer)
+    if error:
+        xbmc.log(
+            "NZB-DAV: Direct indexer {} caps refresh failed: {}".format(
+                indexer["label"], _redact_text(error)
+            ),
+            xbmc.LOGWARNING,
+        )
+        return indexer
+    return updated
+
+
 def _worker_count(total_count):
     return max(1, min(total_count, _DIRECT_FANOUT_MAX_WORKERS))
 
@@ -380,6 +475,7 @@ def _fetch_indexer(indexer, params, error_prefix):
 def _search_one_indexer(
     indexer, search_type, title, max_results, year="", imdb="", season="", episode=""
 ):
+    indexer = _maybe_refresh_caps(indexer)
     plan = plan_newznab_search(
         provider_kind="direct",
         host=indexer["api_url"],
@@ -463,15 +559,10 @@ def search_direct_indexers(search_type, title, year="", imdb="", season="", epis
 
 
 def _check_one_indexer_caps(indexer):
-    params = {"apikey": indexer["api_key"], "t": "caps", "o": "xml"}
-    url = build_search_url(indexer["api_url"], params)
-    try:
-        response = _http_get(url, timeout=15)
-        if "<caps" in response or "<server" in response or "<rss" in response:
-            return True, None
-        return False, "Direct indexer {} unexpected response".format(indexer["label"])
-    except _DIRECT_REQUEST_ERRORS as error:
-        return False, _indexer_unavailable_error(indexer, error)
+    _updated, error = _refresh_indexer_caps(indexer)
+    if error:
+        return False, _indexer_unavailable_error(indexer, RuntimeError(error))
+    return True, None
 
 
 def test_configured_indexers():

@@ -147,6 +147,7 @@ def test_save_and_load_indexers_round_trip(tmp_path):
                 "api_key": "secret",
                 "enabled": True,
                 "caps": {"search_types": ["movie"]},
+                "checked_at": "2026-05-17T12:34:56Z",
             }
         ],
         str(path),
@@ -156,6 +157,7 @@ def test_save_and_load_indexers_round_trip(tmp_path):
     assert loaded[0]["id"] == "nzbgeek"
     assert loaded[0]["enabled"] is True
     assert loaded[0]["caps"]["search_types"] == ["movie"]
+    assert loaded[0]["checked_at"] == "2026-05-17T12:34:56Z"
 
 
 def test_save_and_load_indexers_preserves_deleted_marker(tmp_path):
