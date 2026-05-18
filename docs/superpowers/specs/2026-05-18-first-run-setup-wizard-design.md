@@ -35,6 +35,11 @@ Pages:
    - Toggle `filter_hevc`, `filter_avc`, `filter_av1`, `filter_vp9`, and `filter_mpeg2`.
 8. Languages
    - Toggle the existing language filter settings from `filter_english` through `filter_hindi`.
+9. TMDBHelper player
+   - Show an Install Player button for TMDBHelper.
+   - Check whether `plugin.video.themoviedb.helper` is installed before attempting installation.
+   - If TMDBHelper is installed, run the existing TMDBHelper player install path.
+   - If TMDBHelper is not installed, show a message telling the user to install TMDBHelper before installing the NZB-DAV player.
    - Finish saves the wizard-completed marker.
 
 ## Architecture
@@ -47,6 +52,7 @@ The module will:
 - Read and write existing settings with `xbmcaddon.Addon("plugin.video.nzbdav")`.
 - Keep all runtime code Python 3.8 compatible and pure Python.
 - Reuse the existing connection-test behavior instead of duplicating HTTP details.
+- Reuse the existing TMDBHelper player installer instead of duplicating player JSON behavior.
 - Avoid changing resolver, playback, WebDAV Range, or stream proxy behavior.
 
 Add a hidden setting, `setup_wizard_completed`, to `resources/settings.xml`. The addon will auto-run the wizard when the setting is not `true`.
@@ -68,8 +74,9 @@ Each wizard page will show an action menu:
 - Previous, except on the welcome page.
 - Edit page fields when the page has editable settings.
 - Test Connection when the page has credentials.
-- Next, except on the language page.
-- Finish on the language page.
+- Install Player on the TMDBHelper player page.
+- Next, except on the TMDBHelper player page.
+- Finish on the TMDBHelper player page.
 - Cancel.
 
 This keeps the implementation compatible with Kodi's standard dialogs while still providing explicit page navigation.
@@ -96,6 +103,8 @@ Add localized strings for:
 - Welcome instructions.
 - Generic navigation labels.
 - Edit/test field action labels where existing strings are not enough.
+- TMDBHelper install page title and install action.
+- TMDBHelper missing message.
 - Finish and cancellation messages if needed.
 
 All visible labels in `settings.xml` must continue to use localized string IDs.
@@ -105,6 +114,8 @@ All visible labels in `settings.xml` must continue to use localized string IDs.
 - Cancel must not mark setup complete.
 - Connection-test failures must keep the user on the current page and show the existing error message.
 - Empty URLs should produce the existing "URL not configured" style messages.
+- The TMDBHelper player page must not attempt to write player files when TMDBHelper is not installed.
+- A missing TMDBHelper install should show a clear message and leave the user on the player page so they can go back, finish, or cancel.
 - Finish marks `setup_wizard_completed` as `true`.
 - Unexpected wizard exceptions should be logged and shown as a short dialog error without exposing credentials.
 
@@ -119,6 +130,8 @@ Add focused tests for:
 - Finish sets `setup_wizard_completed`.
 - Search provider selection enables one provider and disables the other.
 - nzbdav, WebDAV, NZBHydra2, and Prowlarr wizard test actions call the same underlying test paths or shared helpers.
+- TMDBHelper player page calls the existing player installer when TMDBHelper is installed.
+- TMDBHelper player page shows the missing-addon message and does not call the installer when TMDBHelper is not installed.
 - Repository best-practice checks cover localized labels for any new settings entries.
 
 Run `just lint` and `just test` before committing implementation work.
