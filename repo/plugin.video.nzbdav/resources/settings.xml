@@ -63,6 +63,7 @@
 	<category label="30010">
 		<setting label="30011" type="action" action="RunPlugin(plugin://plugin.video.nzbdav/install_player)" />
 		<setting label="30160" type="action" action="RunPlugin(plugin://plugin.video.nzbdav/install_player_other)" />
+		<setting label="30197" type="action" action="RunPlugin(plugin://plugin.video.nzbdav/setup_wizard)" option="close" />
 	</category>
 	<category label="30012">
 		<setting label="30013" type="lsep" />
@@ -151,6 +152,7 @@
 		<setting id="send_200_no_range" label="30151" type="bool" default="false" />
 		<setting id="cache_warning_shown" type="bool" default="false" visible="false" />
 		<setting id="cache_dialog_dismissed" type="bool" default="false" visible="false" />
+		<setting id="setup_wizard_completed" type="bool" default="false" visible="false" />
 		<!-- Power-user override: nzbdav content-root path segment (default "content").
 		     Hidden because the standard nzbdav layout uses "content" and this only
 		     matters for users with a non-standard reverse-proxy mount. Read by

@@ -171,6 +171,216 @@ def test_settings_include_direct_indexers_category():
     )
 
 
+def test_settings_include_hidden_setup_wizard_completion_marker():
+    settings_xml = ADDON_DIR / "resources" / "settings.xml"
+    root = ET.parse(settings_xml).getroot()
+
+    setting = root.find(".//setting[@id='setup_wizard_completed']")
+    assert setting is not None
+    assert setting.get("type") == "bool"
+    assert setting.get("default") == "false"
+    assert setting.get("visible") == "false"
+
+
+def test_settings_include_setup_wizard_action():
+    settings_xml = ADDON_DIR / "resources" / "settings.xml"
+    root = ET.parse(settings_xml).getroot()
+
+    action = root.find(
+        ".//setting[@action='RunPlugin(plugin://plugin.video.nzbdav/setup_wizard)']"
+    )
+    assert action is not None
+    assert action.get("label") == "30197"
+    assert action.get("option") == "close"
+
+
+def test_setup_wizard_xml_skin_exists_with_expected_controls():
+    skin_xml = (
+        ADDON_DIR / "resources" / "skins" / "Default" / "1080i" / ("setup-wizard.xml")
+    )
+    root = ET.parse(skin_xml).getroot()
+
+    control_ids = {
+        control.get("id")
+        for control in root.findall(".//control")
+        if control.get("id") is not None
+    }
+    for control_id in ("50", "101", "102", "103", "104", "106", "107"):
+        assert control_id in control_ids
+
+    for removed_id in ("105", "108", "109", "110", "111", "112", "113"):
+        assert removed_id not in control_ids
+
+
+def test_setup_wizard_footer_buttons_are_keyboard_navigable():
+    skin_xml = (
+        ADDON_DIR / "resources" / "skins" / "Default" / "1080i" / ("setup-wizard.xml")
+    )
+    root = ET.parse(skin_xml).getroot()
+
+    expected_nav = {
+        "50": {"ondown": "102"},
+        "101": {"onup": "50", "onright": "104"},
+        "104": {"onup": "50", "onleft": "101", "onright": "102"},
+        "102": {"onup": "50", "onleft": "104", "onright": "103"},
+        "103": {"onup": "50", "onleft": "102"},
+    }
+
+    for control_id, nav in expected_nav.items():
+        control = root.find(".//control[@id='{}']".format(control_id))
+        assert control is not None
+        for direction, target_id in nav.items():
+            assert control.findtext(direction) == target_id
+
+
+def test_setup_wizard_footer_uses_only_one_stable_button_set():
+    skin_xml = (
+        ADDON_DIR / "resources" / "skins" / "Default" / "1080i" / ("setup-wizard.xml")
+    )
+    root = ET.parse(skin_xml).getroot()
+
+    previous = root.find(".//control[@id='101']")
+    test = root.find(".//control[@id='104']")
+    next_or_finish = root.find(".//control[@id='102']")
+    cancel = root.find(".//control[@id='103']")
+
+    assert previous is not None
+    assert previous.findtext("visible") == (
+        "String.IsEqual(Window.Property(wizard.previous_visible),true)"
+    )
+    assert test is not None
+    assert test.findtext("visible") == (
+        "String.IsEqual(Window.Property(wizard.test_visible),true)"
+    )
+    assert next_or_finish is not None
+    assert next_or_finish.findtext("visible") == (
+        "String.IsEqual(Window.Property(wizard.next_visible),true)"
+    )
+    assert cancel is not None
+    assert cancel.findtext("visible") == (
+        "String.IsEqual(Window.Property(wizard.cancel_visible),true)"
+    )
+
+
+def test_setup_wizard_buttons_are_tall_and_centered():
+    skin_xml = (
+        ADDON_DIR / "resources" / "skins" / "Default" / "1080i" / ("setup-wizard.xml")
+    )
+    root = ET.parse(skin_xml).getroot()
+
+    for control_id in ("101", "102", "103", "104"):
+        control = root.find(".//control[@id='{}']".format(control_id))
+        assert control is not None
+        assert int(control.findtext("height")) == 120
+        assert control.findtext("align") == "center"
+        assert control.findtext("aligny") == "center"
+
+
+def test_setup_wizard_heading_and_welcome_text_are_centered():
+    skin_xml = (
+        ADDON_DIR / "resources" / "skins" / "Default" / "1080i" / ("setup-wizard.xml")
+    )
+    root = ET.parse(skin_xml).getroot()
+
+    title = root.find(".//control[@id='1']")
+    welcome = root.find(".//control[@id='6']")
+    warning = root.find(".//control[@id='107']")
+
+    assert title is not None
+    assert title.findtext("align") == "center"
+    assert welcome is not None
+    assert welcome.findtext("align") == "center"
+    assert welcome.findtext("visible") == (
+        "String.IsEqual(Window.Property(wizard.welcome_visible),true)"
+    )
+    assert warning is not None
+    assert warning.findtext("align") == "center"
+
+
+def test_setup_wizard_action_button_has_wide_focus_area():
+    skin_xml = (
+        ADDON_DIR / "resources" / "skins" / "Default" / "1080i" / ("setup-wizard.xml")
+    )
+    root = ET.parse(skin_xml).getroot()
+
+    action = root.find(".//control[@id='104']")
+
+    assert action is not None
+    assert int(action.findtext("width")) >= 280
+
+
+def test_setup_wizard_next_button_stays_visible_for_finish_page():
+    skin_xml = (
+        ADDON_DIR / "resources" / "skins" / "Default" / "1080i" / ("setup-wizard.xml")
+    )
+    root = ET.parse(skin_xml).getroot()
+
+    next_button = root.find(".//control[@id='102']")
+
+    assert next_button is not None
+    assert next_button.findtext("visible") == (
+        "String.IsEqual(Window.Property(wizard.next_visible),true)"
+    )
+
+
+def test_setup_wizard_final_page_uses_next_button_as_finish():
+    skin_xml = (
+        ADDON_DIR / "resources" / "skins" / "Default" / "1080i" / ("setup-wizard.xml")
+    )
+    root = ET.parse(skin_xml).getroot()
+
+    test_button = root.find(".//control[@id='104']")
+    previous_button = root.find(".//control[@id='101']")
+    next_button = root.find(".//control[@id='102']")
+    cancel_button = root.find(".//control[@id='103']")
+
+    assert previous_button is not None
+    assert previous_button.findtext("onright") == "104"
+    assert test_button is not None
+    assert test_button.findtext("onleft") == "101"
+    assert test_button.findtext("onright") == "102"
+    assert test_button.findtext("visible") == (
+        "String.IsEqual(Window.Property(wizard.test_visible),true)"
+    )
+    assert next_button is not None
+    assert next_button.findtext("onleft") == "104"
+    assert next_button.findtext("onright") == "103"
+    assert next_button.findtext("visible") == (
+        "String.IsEqual(Window.Property(wizard.next_visible),true)"
+    )
+    assert cancel_button is not None
+    assert cancel_button.findtext("onleft") == "102"
+
+
+def test_setup_wizard_list_rows_do_not_render_secondary_kind_text():
+    skin_xml = (
+        ADDON_DIR / "resources" / "skins" / "Default" / "1080i" / ("setup-wizard.xml")
+    )
+    contents = skin_xml.read_text(encoding="utf-8")
+
+    assert "ListItem.Property(kind)" not in contents
+
+
+def test_setup_wizard_uses_modal_connection_feedback_not_inline_status_labels():
+    skin_xml = (
+        ADDON_DIR / "resources" / "skins" / "Default" / "1080i" / ("setup-wizard.xml")
+    )
+    contents = skin_xml.read_text(encoding="utf-8")
+
+    assert "wizard.status" not in contents
+    assert "wizard.status_kind" not in contents
+
+
+def test_wizard_strings_exist():
+    strings_po = (
+        ADDON_DIR / "resources" / "language" / "resource.language.en_gb" / "strings.po"
+    )
+    contents = strings_po.read_text(encoding="utf-8")
+
+    for string_id in range(30197, 30232):
+        assert 'msgctxt "#{}"'.format(string_id) in contents
+
+
 def test_community_health_files_exist():
     expected = [
         REPO_ROOT / "CONTRIBUTING.md",

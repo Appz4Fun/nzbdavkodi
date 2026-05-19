@@ -6,13 +6,14 @@ Add a first-run setup wizard for `plugin.video.nzbdav` that guides new users thr
 
 ## User Flow
 
-The wizard is a page-by-page Kodi dialog flow with Previous, Next, and Cancel actions on each page. The final page uses Finish instead of Next. Cancel exits the wizard without marking setup complete.
+The wizard is a page-by-page custom Kodi XML dialog flow with Previous, Next, and Cancel buttons on each page. The final page uses Finish instead of Next. Cancel exits the wizard without marking setup complete.
 
 Pages:
 
 1. Welcome
    - Explain that users should have service IP addresses or hostnames, ports, usernames/passwords, and API keys available.
    - Tell users they should already have TMDBHelper installed before continuing.
+   - Show a red warning at the bottom saying "please install tmdb helper before continuing" when `plugin.video.themoviedb.helper` is not detected.
 2. nzbdav
    - Edit `nzbdav_url`.
    - Edit hidden `nzbdav_api_key`.
@@ -34,9 +35,11 @@ Pages:
    - Toggle `filter_hdr10`, `filter_hdr10plus`, `filter_dolby_vision`, `filter_hlg`, and `filter_sdr`.
 7. Video codecs
    - Toggle `filter_hevc`, `filter_avc`, `filter_av1`, `filter_vp9`, and `filter_mpeg2`.
-8. Languages
+8. Audio
+   - Toggle `filter_atmos`, `filter_truehd`, `filter_dtshd_ma`, `filter_dtsx`, `filter_ddplus`, `filter_dd`, and `filter_aac`.
+9. Languages
    - Toggle the existing language filter settings from `filter_english` through `filter_hindi`.
-9. TMDBHelper player
+10. TMDBHelper player
    - Show an Install Player button for TMDBHelper.
    - Check whether `plugin.video.themoviedb.helper` is installed before attempting installation.
    - If TMDBHelper is installed, run the existing TMDBHelper player install path.
@@ -45,11 +48,12 @@ Pages:
 
 ## Architecture
 
-Implement the wizard in a new runtime module, `resources/lib/setup_wizard.py`.
+Implement the wizard in a new runtime module, `resources/lib/setup_wizard.py`, backed by a new skin file at `resources/skins/Default/1080i/setup-wizard.xml`.
 
 The module will:
 
-- Use `xbmcgui.Dialog` for standard Kodi input, select, multiselect, yes/no, and notification dialogs.
+- Use `xbmcgui.WindowXMLDialog` for the wizard frame, page rendering, page navigation, focused buttons, status text, and first-run TMDBHelper warning.
+- Use standard `xbmcgui.Dialog().input()` only for text/password field entry, because Kodi XML controls do not provide a secure, portable password editor on their own.
 - Read and write existing settings with `xbmcaddon.Addon("plugin.video.nzbdav")`.
 - Keep all runtime code Python 3.8 compatible and pure Python.
 - Reuse the existing connection-test behavior instead of duplicating HTTP details.
@@ -68,19 +72,24 @@ For first launch, `_handle_main_menu()` should call a lightweight helper before 
 - If the user cancels, continue showing the normal menu.
 - If the user finishes, continue showing the normal menu with saved settings.
 
-## Navigation Model
+## XML Dialog Model
 
-Each wizard page will show an action menu:
+The XML dialog will render one page at a time with fixed control IDs for:
 
-- Previous, except on the welcome page.
-- Edit page fields when the page has editable settings.
-- Test Connection when the page has credentials.
-- Install Player on the TMDBHelper player page.
-- Next, except on the TMDBHelper player page.
-- Finish on the TMDBHelper player page.
-- Cancel.
+- Page title.
+- Page body text.
+- Field/action list.
+- Previous button.
+- Next or Finish button.
+- Cancel button.
+- Test Connection button, visible only on connection pages.
+- Install Player button, visible only on the TMDBHelper player page.
+- Red TMDBHelper warning label on the welcome page when TMDBHelper is missing.
+- Status/feedback text near the footer.
 
-This keeps the implementation compatible with Kodi's standard dialogs while still providing explicit page navigation.
+The Python dialog class will set `Window.Property(...)` values for page title, body, button labels, warning visibility/text, status text, and page count. A list control will hold page-specific editable rows. Selecting a text row opens a standard Kodi input dialog and saves the corresponding existing setting immediately. Selecting a toggle row flips the existing boolean setting and refreshes the list row label.
+
+Previous, Next, Cancel, Test Connection, Install Player, and Finish are true XML buttons handled through `onClick()`. Remote back/menu actions are treated as Cancel.
 
 ## Connection Tests
 

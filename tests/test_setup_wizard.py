@@ -1,0 +1,554 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 nzbdav contributors
+
+from unittest.mock import MagicMock, patch
+
+import pytest
+from resources.lib import setup_wizard
+
+
+def _addon_with_settings(values=None):
+    values = dict(values or {})
+    addon = MagicMock()
+    addon.getSetting.side_effect = lambda key: values.get(key, "")
+    return addon
+
+
+def test_should_auto_run_until_completed():
+    assert setup_wizard.should_auto_run(
+        _addon_with_settings({"setup_wizard_completed": "false"})
+    )
+    assert setup_wizard.should_auto_run(_addon_with_settings({}))
+    assert not setup_wizard.should_auto_run(
+        _addon_with_settings({"setup_wizard_completed": "true"})
+    )
+
+
+def test_run_setup_wizard_marks_completed_only_on_finish():
+    addon = _addon_with_settings()
+
+    with patch("resources.lib.setup_wizard.xbmcaddon.Addon", return_value=addon):
+        with patch("resources.lib.setup_wizard.SetupWizardDialog") as dialog_cls:
+            dialog = MagicMock()
+            dialog.was_finished.return_value = True
+            dialog_cls.return_value = dialog
+
+            assert setup_wizard.run_setup_wizard()
+
+    addon.setSetting.assert_called_once_with("setup_wizard_completed", "true")
+    dialog.doModal.assert_called_once()
+
+
+def test_run_setup_wizard_does_not_mark_completed_on_cancel():
+    addon = _addon_with_settings()
+
+    with patch("resources.lib.setup_wizard.xbmcaddon.Addon", return_value=addon):
+        with patch("resources.lib.setup_wizard.SetupWizardDialog") as dialog_cls:
+            dialog = MagicMock()
+            dialog.was_finished.return_value = False
+            dialog_cls.return_value = dialog
+
+            assert not setup_wizard.run_setup_wizard()
+
+    addon.setSetting.assert_not_called()
+
+
+def test_page_sequence_matches_requested_setup_sections():
+    titles = [page["title_id"] for page in setup_wizard.PAGES]
+
+    assert titles == [
+        30198,
+        30216,
+        30217,
+        30218,
+        30207,
+        30208,
+        30225,
+        30209,
+        30210,
+        30211,
+    ]
+
+
+def test_wizard_copy_uses_requested_polish():
+    assert setup_wizard._string(30198) == "NZB-DAV Kodi Addon"
+    assert setup_wizard._string(30227) == "Step {0} of {1}"
+    assert setup_wizard._string(30226) == "PLEASE INSTALL TMDBHELPER BEFORE CONTINUING"
+    assert "streams NZB search results through nzbdav" in setup_wizard._string(30199)
+    assert "URLs" in setup_wizard._string(30199)
+    assert "API keys" in setup_wizard._string(30199)
+    assert "credentials" in setup_wizard._string(30199)
+
+
+def test_connection_pages_have_test_actions():
+    pages_by_key = {page["key"]: page for page in setup_wizard.PAGES}
+
+    assert pages_by_key["nzbdav"]["test"] == "nzbdav"
+    assert pages_by_key["webdav"]["test"] == "webdav"
+    assert pages_by_key["index_manager"]["test"] == "index_manager"
+
+
+def test_final_page_copy_explains_finish_installs_tmdbhelper_player():
+    pages_by_key = {page["key"]: page for page in setup_wizard.PAGES}
+    body = setup_wizard._string(pages_by_key["tmdbhelper"]["body_id"])
+
+    assert "Click Finish to complete setup" in body
+    assert "install" in body
+    assert "TMDBHelper" in body
+
+
+def test_final_page_uses_finish_label_for_install_action():
+    addon = _addon_with_settings()
+    dialog = setup_wizard.SetupWizardDialog(
+        "setup-wizard.xml",
+        "",
+        "Default",
+        "1080i",
+        addon=addon,
+    )
+    dialog.page_index = len(setup_wizard.PAGES) - 1
+
+    dialog._render_page()
+
+    assert dialog.getProperty("wizard.next_label") == setup_wizard._string(30203)
+    assert dialog.getProperty("wizard.next_visible") == "true"
+    assert dialog.getProperty("wizard.test_visible") == "false"
+    assert dialog.getProperty("wizard.cancel_visible") == "true"
+    assert dialog._focus_id == setup_wizard.NEXT_BUTTON_ID
+
+
+def test_welcome_page_focuses_next_button_because_it_has_no_rows():
+    addon = _addon_with_settings()
+    dialog = setup_wizard.SetupWizardDialog(
+        "setup-wizard.xml",
+        "",
+        "Default",
+        "1080i",
+        addon=addon,
+    )
+
+    with patch("resources.lib.setup_wizard._tmdbhelper_installed", return_value=True):
+        dialog.onInit()
+
+    assert dialog._focus_id == setup_wizard.NEXT_BUTTON_ID
+
+
+def test_test_page_down_on_last_row_leaves_list_navigation_to_kodi():
+    addon = _addon_with_settings()
+    dialog = setup_wizard.SetupWizardDialog(
+        "setup-wizard.xml",
+        "",
+        "Default",
+        "1080i",
+        addon=addon,
+    )
+    dialog.page_index = 1
+    dialog._render_page()
+    dialog._focus_id = setup_wizard.LIST_ID
+    dialog.getControl(setup_wizard.LIST_ID).getSelectedPosition.return_value = (
+        len(dialog._visible_rows) - 1
+    )
+    dialog.setFocusId = MagicMock(
+        side_effect=lambda control_id: setattr(dialog, "_focus_id", control_id)
+    )
+
+    action = MagicMock()
+    action.getId.return_value = setup_wizard.ACTION_MOVE_DOWN
+
+    dialog.onAction(action)
+
+    dialog.setFocusId.assert_not_called()
+    assert dialog._focus_id == setup_wizard.LIST_ID
+
+
+def test_test_page_footer_directional_keys_work_with_rows():
+    dialog = setup_wizard.SetupWizardDialog.__new__(setup_wizard.SetupWizardDialog)
+    dialog.addon = _addon_with_settings()
+    dialog.page_index = 1
+    dialog._focus_id = setup_wizard.NEXT_BUTTON_ID
+    dialog.setFocusId = MagicMock(
+        side_effect=lambda control_id: setattr(dialog, "_focus_id", control_id)
+    )
+
+    action = MagicMock()
+    action.getId.return_value = setup_wizard.ACTION_MOVE_LEFT
+
+    dialog.onAction(action)
+
+    dialog.setFocusId.assert_not_called()
+
+
+def test_test_page_syncs_native_footer_navigation_through_test_button():
+    addon = _addon_with_settings()
+    dialog = setup_wizard.SetupWizardDialog(
+        "setup-wizard.xml",
+        "",
+        "Default",
+        "1080i",
+        addon=addon,
+    )
+    dialog.page_index = 1
+
+    dialog._render_page()
+
+    previous = dialog.getControl(setup_wizard.PREVIOUS_BUTTON_ID)
+    test = dialog.getControl(setup_wizard.TEST_BUTTON_ID)
+    next_button = dialog.getControl(setup_wizard.NEXT_BUTTON_ID)
+    cancel = dialog.getControl(setup_wizard.CANCEL_BUTTON_ID)
+
+    previous.controlRight.assert_called_with(test)
+    test.controlLeft.assert_called_with(previous)
+    test.controlRight.assert_called_with(next_button)
+    next_button.controlLeft.assert_called_with(test)
+    next_button.controlRight.assert_called_with(cancel)
+    cancel.controlLeft.assert_called_with(next_button)
+
+
+def test_last_page_syncs_native_footer_navigation_through_finish_button():
+    addon = _addon_with_settings()
+    dialog = setup_wizard.SetupWizardDialog(
+        "setup-wizard.xml",
+        "",
+        "Default",
+        "1080i",
+        addon=addon,
+    )
+    dialog.page_index = len(setup_wizard.PAGES) - 1
+
+    dialog._render_page()
+
+    previous = dialog.getControl(setup_wizard.PREVIOUS_BUTTON_ID)
+    finish = dialog.getControl(setup_wizard.NEXT_BUTTON_ID)
+    cancel = dialog.getControl(setup_wizard.CANCEL_BUTTON_ID)
+
+    previous.controlRight.assert_called_with(finish)
+    finish.controlLeft.assert_called_with(previous)
+    finish.controlRight.assert_called_with(cancel)
+    cancel.controlLeft.assert_called_with(finish)
+
+
+def test_footer_directional_action_does_not_override_native_kodi_navigation():
+    dialog = setup_wizard.SetupWizardDialog.__new__(setup_wizard.SetupWizardDialog)
+    dialog.page_index = len(setup_wizard.PAGES) - 1
+    dialog._focus_id = setup_wizard.CANCEL_BUTTON_ID
+    dialog.getFocusId = MagicMock(return_value=setup_wizard.PREVIOUS_BUTTON_ID)
+    dialog.setFocusId = MagicMock(
+        side_effect=lambda control_id: setattr(dialog, "_focus_id", control_id)
+    )
+
+    action = MagicMock()
+    action.getId.return_value = setup_wizard.ACTION_MOVE_LEFT
+
+    dialog.onAction(action)
+
+    dialog.setFocusId.assert_not_called()
+
+
+def test_on_focus_tracks_current_control_id():
+    dialog = setup_wizard.SetupWizardDialog.__new__(setup_wizard.SetupWizardDialog)
+
+    dialog.onFocus(setup_wizard.NEXT_BUTTON_ID)
+
+    assert dialog._focus_id == setup_wizard.NEXT_BUTTON_ID
+
+
+def test_select_provider_enables_one_provider_and_disables_the_other():
+    addon = _addon_with_settings()
+
+    setup_wizard._select_provider(addon, "prowlarr")
+
+    addon.setSetting.assert_any_call("prowlarr_enabled", "true")
+    addon.setSetting.assert_any_call("nzbhydra_enabled", "false")
+
+    addon.reset_mock()
+    setup_wizard._select_provider(addon, "hydra")
+
+    addon.setSetting.assert_any_call("nzbhydra_enabled", "true")
+    addon.setSetting.assert_any_call("prowlarr_enabled", "false")
+
+
+def test_test_page_dispatches_selected_provider_connection_check():
+    addon = _addon_with_settings({"prowlarr_enabled": "true"})
+    dialog = setup_wizard.SetupWizardDialog.__new__(setup_wizard.SetupWizardDialog)
+    dialog.addon = addon
+    dialog.page_index = 3
+
+    with patch(
+        "resources.lib.setup_wizard._connection_check", return_value=(True, "")
+    ) as check:
+        dialog._test_current_page()
+
+    check.assert_called_once_with("index_manager", addon)
+
+
+def test_test_page_shows_success_modal_on_successful_connection_check():
+    addon = _addon_with_settings({"prowlarr_enabled": "true"})
+    dialog = setup_wizard.SetupWizardDialog.__new__(setup_wizard.SetupWizardDialog)
+    dialog.addon = addon
+    dialog.page_index = 3
+
+    with patch(
+        "resources.lib.setup_wizard._connection_check", return_value=(True, "")
+    ), patch("resources.lib.setup_wizard.xbmcgui.Dialog") as dialog_cls:
+        dialog._test_current_page()
+
+    dialog_cls.return_value.ok.assert_called_once_with(
+        "Search Provider", "Connection successful."
+    )
+
+
+def test_test_page_shows_failure_modal_with_reason_on_failed_connection_check():
+    addon = _addon_with_settings({"prowlarr_enabled": "true"})
+    dialog = setup_wizard.SetupWizardDialog.__new__(setup_wizard.SetupWizardDialog)
+    dialog.addon = addon
+    dialog.page_index = 3
+
+    with patch(
+        "resources.lib.setup_wizard._connection_check",
+        return_value=(False, "API key denied"),
+    ), patch("resources.lib.setup_wizard.xbmcgui.Dialog") as dialog_cls:
+        dialog._test_current_page()
+
+    dialog_cls.return_value.ok.assert_called_once_with(
+        "Search Provider", "Connection failed: API key denied"
+    )
+
+
+def test_connection_check_reports_empty_url_reason():
+    addon = _addon_with_settings({"nzbdav_url": "", "nzbdav_api_key": "secret"})
+
+    assert setup_wizard._connection_check("nzbdav", addon) == (
+        False,
+        "URL not configured",
+    )
+
+
+def test_connection_check_reports_api_key_denied_for_http_auth_errors():
+    from urllib.error import HTTPError
+
+    addon = _addon_with_settings(
+        {"nzbdav_url": "http://nzbdav.local", "nzbdav_api_key": "secret"}
+    )
+    error = HTTPError("http://nzbdav.local/api", 403, "Forbidden", {}, None)
+
+    with patch("resources.lib.http_util.http_get", side_effect=error):
+        assert setup_wizard._connection_check("nzbdav", addon) == (
+            False,
+            "API key denied",
+        )
+
+
+def test_toggle_preserves_selected_row_position():
+    addon = _addon_with_settings({"filter_2160p": "true", "filter_1080p": "true"})
+    dialog = setup_wizard.SetupWizardDialog(
+        "setup-wizard.xml",
+        "",
+        "Default",
+        "1080i",
+        addon=addon,
+    )
+    dialog.page_index = 4
+    dialog._render_page()
+    list_control = dialog.getControl(setup_wizard.LIST_ID)
+    list_control.getSelectedPosition.return_value = 1
+    list_control.selectItem.reset_mock()
+
+    dialog._activate_selected_row()
+
+    addon.setSetting.assert_called_with("filter_1080p", "false")
+    list_control.selectItem.assert_called_with(1)
+    assert dialog._focus_id == setup_wizard.LIST_ID
+
+
+def test_tmdbhelper_missing_install_shows_message_without_installing():
+    dialog = setup_wizard.SetupWizardDialog.__new__(setup_wizard.SetupWizardDialog)
+    dialog.addon = _addon_with_settings()
+    dialog._finished = False
+    dialog.close = MagicMock()
+
+    with patch("resources.lib.setup_wizard._tmdbhelper_installed", return_value=False):
+        with patch("resources.lib.player_installer.install_player") as install, patch(
+            "resources.lib.setup_wizard.xbmcgui.Dialog"
+        ) as dialog_cls:
+            dialog._install_player()
+
+    install.assert_not_called()
+    dialog_cls.return_value.ok.assert_called_once()
+    assert dialog._finished is False
+    dialog.addon.setSetting.assert_not_called()
+    dialog.close.assert_called_once()
+
+
+def test_tmdbhelper_present_install_uses_existing_player_installer():
+    dialog = setup_wizard.SetupWizardDialog.__new__(setup_wizard.SetupWizardDialog)
+    dialog.addon = _addon_with_settings()
+    dialog._finished = False
+    dialog.close = MagicMock()
+
+    with patch("resources.lib.setup_wizard._tmdbhelper_installed", return_value=True):
+        with patch("resources.lib.player_installer.install_player") as install, patch(
+            "resources.lib.setup_wizard.xbmcgui.Dialog"
+        ) as dialog_cls:
+            dialog._install_player()
+
+    install.assert_called_once()
+    dialog_cls.return_value.ok.assert_called_once()
+    assert dialog._finished is True
+    dialog.addon.setSetting.assert_called_once_with("setup_wizard_completed", "true")
+    dialog.close.assert_called_once()
+
+
+def test_install_button_completion_marks_wizard_completed():
+    addon = _addon_with_settings()
+    dialog = setup_wizard.SetupWizardDialog.__new__(setup_wizard.SetupWizardDialog)
+    dialog.addon = addon
+    dialog._finished = False
+    dialog.close = MagicMock()
+
+    with patch("resources.lib.setup_wizard._tmdbhelper_installed", return_value=True):
+        with patch("resources.lib.player_installer.install_player"), patch(
+            "resources.lib.setup_wizard.xbmcgui.Dialog"
+        ):
+            dialog._install_player()
+
+    addon.setSetting.assert_called_once_with("setup_wizard_completed", "true")
+
+
+@pytest.mark.parametrize(
+    "page_index,expected_footer_ids",
+    [
+        (0, [setup_wizard.NEXT_BUTTON_ID, setup_wizard.CANCEL_BUTTON_ID]),
+        (
+            1,
+            [
+                setup_wizard.PREVIOUS_BUTTON_ID,
+                setup_wizard.TEST_BUTTON_ID,
+                setup_wizard.NEXT_BUTTON_ID,
+                setup_wizard.CANCEL_BUTTON_ID,
+            ],
+        ),
+        (
+            4,
+            [
+                setup_wizard.PREVIOUS_BUTTON_ID,
+                setup_wizard.NEXT_BUTTON_ID,
+                setup_wizard.CANCEL_BUTTON_ID,
+            ],
+        ),
+        (
+            len(setup_wizard.PAGES) - 1,
+            [
+                setup_wizard.PREVIOUS_BUTTON_ID,
+                setup_wizard.NEXT_BUTTON_ID,
+                setup_wizard.CANCEL_BUTTON_ID,
+            ],
+        ),
+    ],
+)
+def test_footer_control_ids_use_one_stable_footer(page_index, expected_footer_ids):
+    dialog = setup_wizard.SetupWizardDialog.__new__(setup_wizard.SetupWizardDialog)
+    dialog.page_index = page_index
+
+    assert (
+        dialog._footer_control_ids(setup_wizard.PAGES[page_index])
+        == expected_footer_ids
+    )
+
+
+@pytest.mark.parametrize(
+    "start_focus,action_id",
+    [
+        (setup_wizard.PREVIOUS_BUTTON_ID, setup_wizard.ACTION_MOVE_RIGHT),
+        (setup_wizard.CANCEL_BUTTON_ID, setup_wizard.ACTION_MOVE_LEFT),
+        (setup_wizard.NEXT_BUTTON_ID, setup_wizard.ACTION_MOVE_UP),
+        (setup_wizard.NEXT_BUTTON_ID, setup_wizard.ACTION_MOVE_DOWN),
+        (setup_wizard.NEXT_BUTTON_ID, setup_wizard.ACTION_MOVE_LEFT),
+        (setup_wizard.NEXT_BUTTON_ID, setup_wizard.ACTION_MOVE_RIGHT),
+    ],
+)
+def test_last_page_directional_keys_are_left_to_native_kodi_navigation(
+    start_focus, action_id
+):
+    dialog = setup_wizard.SetupWizardDialog.__new__(setup_wizard.SetupWizardDialog)
+    dialog.page_index = len(setup_wizard.PAGES) - 1
+    dialog._focus_id = start_focus
+    dialog.setFocusId = MagicMock(
+        side_effect=lambda control_id: setattr(dialog, "_focus_id", control_id)
+    )
+
+    action = MagicMock()
+    action.getId.return_value = action_id
+
+    dialog.onAction(action)
+
+    dialog.setFocusId.assert_not_called()
+
+
+def test_last_page_native_navigation_links_cancel_left_to_finish_button():
+    addon = _addon_with_settings()
+    dialog = setup_wizard.SetupWizardDialog(
+        "setup-wizard.xml",
+        "",
+        "Default",
+        "1080i",
+        addon=addon,
+    )
+    dialog.page_index = len(setup_wizard.PAGES) - 1
+
+    dialog._render_page()
+
+    cancel = dialog.getControl(setup_wizard.CANCEL_BUTTON_ID)
+    finish = dialog.getControl(setup_wizard.NEXT_BUTTON_ID)
+
+    cancel.controlLeft.assert_called_with(finish)
+
+
+def test_nav_back_cancels_wizard():
+    dialog = setup_wizard.SetupWizardDialog.__new__(setup_wizard.SetupWizardDialog)
+    dialog._cancel = MagicMock()
+
+    action = MagicMock()
+    action.getId.return_value = setup_wizard.ACTION_NAV_BACK
+
+    dialog.onAction(action)
+
+    dialog._cancel.assert_called_once_with()
+
+
+def test_welcome_page_directional_keys_keep_focus_on_next_when_no_rows():
+    dialog = setup_wizard.SetupWizardDialog.__new__(setup_wizard.SetupWizardDialog)
+    dialog.page_index = 0
+    dialog._focus_id = setup_wizard.NEXT_BUTTON_ID
+    dialog.setFocusId = MagicMock(
+        side_effect=lambda control_id: setattr(dialog, "_focus_id", control_id)
+    )
+
+    action = MagicMock()
+    action.getId.return_value = setup_wizard.ACTION_MOVE_UP
+
+    dialog.onAction(action)
+
+    dialog.setFocusId.assert_not_called()
+
+
+def test_finish_without_tmdbhelper_shows_reminder_before_closing():
+    dialog = setup_wizard.SetupWizardDialog.__new__(setup_wizard.SetupWizardDialog)
+    dialog.addon = _addon_with_settings()
+    dialog.page_index = len(setup_wizard.PAGES) - 1
+    dialog._finished = False
+    dialog._set_status = MagicMock()
+    dialog.close = MagicMock()
+
+    with patch("resources.lib.setup_wizard._tmdbhelper_installed", return_value=False):
+        with patch("resources.lib.setup_wizard.xbmcgui.Dialog") as dialog_cls:
+            dialog._next_or_finish()
+
+    dialog_cls.return_value.ok.assert_called_once()
+    assert dialog._finished is False
+    dialog.addon.setSetting.assert_not_called()
+    dialog.close.assert_called_once()
+
+
+def test_unknown_provider_selection_is_rejected():
+    with pytest.raises(ValueError):
+        setup_wizard._select_provider(_addon_with_settings(), "unknown")

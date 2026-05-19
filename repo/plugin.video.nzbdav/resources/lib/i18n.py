@@ -97,6 +97,53 @@ _FALLBACK_STRINGS = {
     30192: "WebDAV connection error. Check server.",
     30195: "Manage Indexers",
     30196: "Refresh NZBHydra2 Caps",
+    30197: "Setup Wizard",
+    30198: "NZB-DAV Kodi Addon",
+    30199: (
+        "Welcome. This addon streams NZB search results through nzbdav so "
+        "Kodi can play them from your WebDAV server.\n\nBefore you start, "
+        "gather the URLs, ports, API keys, usernames, passwords, and other "
+        "credentials for nzbdav, WebDAV, and your index manager. TMDBHelper "
+        "should already be installed before you continue."
+    ),
+    30200: "Previous",
+    30201: "Next",
+    30202: "Cancel",
+    30203: "Finish",
+    30204: "Edit Settings",
+    30205: "Test Connection",
+    30206: "Select Search Provider",
+    30207: "Resolutions",
+    30208: "HDR Formats",
+    30209: "Video Codecs",
+    30210: "Languages",
+    30211: "TMDBHelper Player",
+    30212: (
+        "Click Finish to complete setup.\n\nFinish will also install the "
+        "NZB-DAV player into TMDBHelper for you."
+    ),
+    30213: (
+        "TMDBHelper is not installed. Install TMDBHelper, then rerun this "
+        "wizard or use Install TMDBHelper Player from the addon menu."
+    ),
+    30214: "Setup wizard cancelled",
+    30215: "Setup wizard complete",
+    30216: "nzbdav Settings",
+    30217: "WebDAV Settings",
+    30218: "Search Provider",
+    30219: "NZBHydra2",
+    30220: "Prowlarr",
+    30221: "Back",
+    30222: "Done",
+    30223: "No changes",
+    30224: "Choose enabled options",
+    30225: "Audio",
+    30226: "PLEASE INSTALL TMDBHELPER BEFORE CONTINUING",
+    30227: "Step {0} of {1}",
+    30228: "TMDBHelper is installed. You can continue.",
+    30229: "Edit",
+    30230: "Enabled",
+    30231: "Disabled",
 }
 
 

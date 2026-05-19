@@ -1,0 +1,172 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<window type="dialog" id="1200">
+  <defaultcontrol always="false">102</defaultcontrol>
+  <coordinates>
+    <system>1</system>
+  </coordinates>
+  <controls>
+    <control type="image">
+      <left>0</left><top>0</top><width>1920</width><height>1080</height>
+      <texture>white.png</texture>
+      <colordiffuse>FF090B10</colordiffuse>
+    </control>
+
+    <control type="image">
+      <left>0</left><top>0</top><width>1920</width><height>76</height>
+      <texture>white.png</texture>
+      <colordiffuse>FF151923</colordiffuse>
+    </control>
+
+    <control type="label" id="1">
+      <left>335</left><top>12</top><width>1250</width><height>38</height>
+      <font>font14</font>
+      <textcolor>FFFFFFFF</textcolor>
+      <label>$INFO[Window.Property(wizard.title)]</label>
+      <align>center</align>
+      <aligny>center</aligny>
+    </control>
+
+    <control type="label" id="2">
+      <left>1320</left><top>20</top><width>540</width><height>26</height>
+      <font>font12</font>
+      <textcolor>FF9CA3AF</textcolor>
+      <label>$INFO[Window.Property(wizard.page)]</label>
+      <align>right</align>
+      <aligny>center</aligny>
+    </control>
+
+    <control type="textbox" id="3">
+      <left>72</left><top>125</top><width>720</width><height>610</height>
+      <font>font13</font>
+      <textcolor>FFD4D4D8</textcolor>
+      <label>$INFO[Window.Property(wizard.body)]</label>
+      <autoscroll>false</autoscroll>
+      <visible>!String.IsEqual(Window.Property(wizard.welcome_visible),true)</visible>
+    </control>
+
+    <control type="textbox" id="6">
+      <left>410</left><top>290</top><width>1100</width><height>350</height>
+      <font>font13</font>
+      <textcolor>FFD4D4D8</textcolor>
+      <label>$INFO[Window.Property(wizard.body)]</label>
+      <align>center</align>
+      <aligny>center</aligny>
+      <autoscroll>false</autoscroll>
+      <visible>String.IsEqual(Window.Property(wizard.welcome_visible),true)</visible>
+    </control>
+
+    <control type="label" id="107">
+      <left>360</left><top>700</top><width>1200</width><height>56</height>
+      <font>font14</font>
+      <textcolor>FFFF4444</textcolor>
+      <label>$INFO[Window.Property(wizard.warning)]</label>
+      <align>center</align>
+      <aligny>center</aligny>
+      <visible>!String.IsEmpty(Window.Property(wizard.warning))</visible>
+    </control>
+
+    <control type="list" id="50">
+      <left>860</left><top>125</top><width>960</width><height>710</height>
+      <ondown>102</ondown>
+      <orientation>vertical</orientation>
+      <scrolltime>160</scrolltime>
+      <itemlayout width="960" height="48">
+        <control type="image">
+          <left>0</left><top>0</top><width>960</width><height>46</height>
+          <texture>white.png</texture>
+          <colordiffuse>FF121722</colordiffuse>
+        </control>
+        <control type="label">
+          <left>24</left><top>5</top><width>620</width><height>36</height>
+          <font>font12</font>
+          <textcolor>FFE5E7EB</textcolor>
+          <label>$INFO[ListItem.Label]</label>
+          <aligny>center</aligny>
+        </control>
+        <control type="label">
+          <left>650</left><top>5</top><width>280</width><height>36</height>
+          <font>font12</font>
+          <textcolor>FF60A5FA</textcolor>
+          <label>$INFO[ListItem.Property(value)]</label>
+          <align>right</align>
+          <aligny>center</aligny>
+        </control>
+      </itemlayout>
+      <focusedlayout width="960" height="48">
+        <control type="image">
+          <left>0</left><top>0</top><width>960</width><height>46</height>
+          <texture>white.png</texture>
+          <colordiffuse>FF1D3552</colordiffuse>
+        </control>
+        <control type="label">
+          <left>24</left><top>5</top><width>620</width><height>36</height>
+          <font>font12</font>
+          <textcolor>FFFFFFFF</textcolor>
+          <label>$INFO[ListItem.Label]</label>
+          <aligny>center</aligny>
+        </control>
+        <control type="label">
+          <left>650</left><top>5</top><width>280</width><height>36</height>
+          <font>font12</font>
+          <textcolor>FF93C5FD</textcolor>
+          <label>$INFO[ListItem.Property(value)]</label>
+          <align>right</align>
+          <aligny>center</aligny>
+        </control>
+      </focusedlayout>
+    </control>
+
+    <control type="button" id="101">
+      <left>72</left><top>915</top><width>210</width><height>120</height>
+      <onup>50</onup>
+      <onright>104</onright>
+      <label>$INFO[Window.Property(wizard.previous_label)]</label>
+      <font>font12</font>
+      <align>center</align>
+      <aligny>center</aligny>
+      <visible>String.IsEqual(Window.Property(wizard.previous_visible),true)</visible>
+    </control>
+
+    <control type="button" id="104">
+      <left>950</left><top>915</top><width>300</width><height>120</height>
+      <onup>50</onup>
+      <onleft>101</onleft>
+      <onright>102</onright>
+      <label>$INFO[Window.Property(wizard.action_label)]</label>
+      <font>font12</font>
+      <align>center</align>
+      <aligny>center</aligny>
+      <visible>String.IsEqual(Window.Property(wizard.test_visible),true)</visible>
+    </control>
+
+    <control type="button" id="102">
+      <left>1250</left><top>915</top><width>240</width><height>120</height>
+      <onup>50</onup>
+      <onleft>104</onleft>
+      <onright>103</onright>
+      <label>$INFO[Window.Property(wizard.next_label)]</label>
+      <font>font12</font>
+      <align>center</align>
+      <aligny>center</aligny>
+      <visible>String.IsEqual(Window.Property(wizard.next_visible),true)</visible>
+    </control>
+
+    <control type="button" id="103">
+      <left>1500</left><top>915</top><width>210</width><height>120</height>
+      <onup>50</onup>
+      <onleft>102</onleft>
+      <label>$INFO[Window.Property(wizard.cancel_label)]</label>
+      <font>font12</font>
+      <align>center</align>
+      <aligny>center</aligny>
+      <visible>String.IsEqual(Window.Property(wizard.cancel_visible),true)</visible>
+    </control>
+
+    <control type="button" id="106">
+      <left>1710</left><top>965</top><width>110</width><height>50</height>
+      <label>$LOCALIZE[10000]</label>
+      <font>font12</font>
+      <visible>false</visible>
+    </control>
+  </controls>
+</window>
