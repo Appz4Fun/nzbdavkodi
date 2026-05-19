@@ -745,7 +745,9 @@ _FALLBACK_DV_RE = re.compile(r"(?i)\b(dv|dovi|dolby[. ]?vision)\b")
 _FALLBACK_HDR10PLUS_RE = re.compile(r"(?i)\b(hdr10\+|hdr10plus)\b")
 _FALLBACK_HDR10_RE = re.compile(r"(?i)\bhdr10\b")
 _FALLBACK_HLG_RE = re.compile(r"(?i)\bhlg\b")
-_FALLBACK_QUALITY_RE = re.compile(r"(?i)\b(remux|blu[-. ]?ray|bdrip|web[-. ]?dl|webrip|hdtv|dvdrip|hdrip)\b")
+_FALLBACK_QUALITY_RE = re.compile(
+    r"(?i)\b(remux|blu[-. ]?ray|bdrip|web[-. ]?dl|webrip|hdtv|dvdrip|hdrip)\b"
+)
 _FALLBACK_EDITION_RE = re.compile(
     r"(?i)\b(uncut|unrated|director'?s[. ]?cut|extended[. ]?cut"
     r"|recut|theatrical|imax|special[. ]?edition)\b"
