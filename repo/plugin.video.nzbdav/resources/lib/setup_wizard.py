@@ -24,10 +24,6 @@ TEST_BUTTON_ID = 104
 
 ACTION_PREVIOUS_MENU = 10
 ACTION_NAV_BACK = 92
-ACTION_MOVE_LEFT = 1
-ACTION_MOVE_RIGHT = 2
-ACTION_MOVE_UP = 3
-ACTION_MOVE_DOWN = 4
 
 COMPLETED_SETTING = "setup_wizard_completed"
 
@@ -178,7 +174,6 @@ PAGES = [
         "title_id": 30211,
         "body_id": 30212,
         "rows": [],
-        "install": True,
     },
 ]
 
@@ -244,9 +239,10 @@ def _http_failure_reason(error):
 
 def _connection_check(test_key, addon):
     from resources.lib.http_util import http_get
-    from resources.lib.webdav import probe_webdav_reachable
 
     if test_key == "webdav":
+        from resources.lib.webdav import probe_webdav_reachable
+
         reachable, error = probe_webdav_reachable(max_retries=0)
         if reachable:
             return True, ""
@@ -289,7 +285,9 @@ def _connection_check(test_key, addon):
 
             url = addon.getSetting("prowlarr_host").rstrip("/")
             api_key = addon.getSetting("prowlarr_api_key")
-            test_url = "{}/api/v1/indexer?apikey={}".format(url, api_key)
+            test_url = "{}/api/v1/indexer?{}".format(
+                url, urlencode({"apikey": api_key})
+            )
             ok_condition = _prowlarr_indexers_response_ok
         else:
             return False, "Unknown connection type"
@@ -352,9 +350,8 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
     def __init__(self, *args, **kwargs):
         self.addon = kwargs.get("addon") or xbmcaddon.Addon("plugin.video.nzbdav")
         self.page_index = 0
+        self._focus_id = 0
         self._finished = False
-        self._status = ""
-        self._status_kind = ""
         self._visible_rows = []
         super().__init__(*args)
 
@@ -378,8 +375,6 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
 
     def onAction(self, action):
         action_id = action.getId()
-        if self._handle_directional_action(action_id):
-            return
         if action_id in (ACTION_PREVIOUS_MENU, ACTION_NAV_BACK):
             self._cancel()
 
@@ -398,8 +393,7 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
         next_label_id = 30203 if self._is_last() else 30201
         self.setProperty("wizard.next_label", _string(next_label_id))
         self.setProperty("wizard.cancel_label", _string(30202))
-        action_label_id = 30205
-        self.setProperty("wizard.action_label", _string(action_label_id))
+        self.setProperty("wizard.action_label", _string(30205))
         previous_visible = self.page_index > 0
         self.setProperty(
             "wizard.previous_visible", "true" if previous_visible else "false"
@@ -431,7 +425,7 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
                 list_control.selectItem(selected_position)
             self.setFocusId(LIST_ID)
         else:
-            self.setFocusId(self._default_footer_focus_id(page))
+            self.setFocusId(self._default_footer_focus_id())
 
     def _rows_for_page(self, page):
         provider = _selected_provider(self.addon)
@@ -467,7 +461,6 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
         if row["kind"] == "bool":
             current = _get_bool(self.addon, row["setting"])
             _set_bool(self.addon, row["setting"], not current)
-            self._set_status("", "")
         elif row["kind"] == "provider":
             self._choose_provider()
         elif row["kind"] == "text":
@@ -489,7 +482,6 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
         if value is None:
             return
         self.addon.setSetting(row["setting"], value)
-        self._set_status("")
 
     def _choose_provider(self):
         choices = [_string(30219), _string(30220)]
@@ -524,7 +516,6 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
     def _previous_page(self):
         if self.page_index > 0:
             self.page_index -= 1
-            self._set_status("", "")
             self._render_page()
 
     def _next_or_finish(self):
@@ -532,7 +523,6 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
             self._install_player()
             return
         self.page_index += 1
-        self._set_status("", "")
         self._render_page()
 
     def _cancel(self):
@@ -546,24 +536,10 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
         self.addon.setSetting(COMPLETED_SETTING, "true")
         self._finished = True
 
-    def _handle_directional_action(self, action_id):
-        return False
-
     def _page_has_visible_rows(self, page):
         if not page.get("rows"):
             return False
-        if hasattr(self, "_visible_rows"):
-            return bool(self._visible_rows)
-        return bool(self._rows_for_page(page))
-
-    def _current_focus_id(self):
-        tracked_focus_id = getattr(self, "_focus_id", 0)
-        if tracked_focus_id:
-            return tracked_focus_id
-        try:
-            return self.getFocusId()
-        except Exception:  # pylint: disable=broad-except
-            return 0
+        return bool(getattr(self, "_visible_rows", None) or self._rows_for_page(page))
 
     def _sync_native_navigation(self, page):
         footer_ids = self._footer_control_ids(page)
@@ -605,7 +581,7 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
 
         if list_control is not None:
             default_footer = footer_controls[
-                footer_ids.index(self._default_footer_focus_id(page))
+                footer_ids.index(self._default_footer_focus_id())
             ]
             self._set_control_navigation(
                 list_control, list_control, list_control, list_control, default_footer
@@ -633,22 +609,10 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
         footer_ids.append(CANCEL_BUTTON_ID)
         return footer_ids
 
-    def _default_footer_focus_id(self, page):
+    def _default_footer_focus_id(self):
         return NEXT_BUTTON_ID
 
     def _warning_text(self, page):
         if page["key"] == "welcome" and not _tmdbhelper_installed():
             return _string(30226)
         return ""
-
-    def _set_status(self, text, kind=""):
-        self._status = text
-        self._status_kind = kind
-        try:
-            self.setProperty("wizard.status", text)
-            self.setProperty("wizard.status_kind", kind)
-        except Exception as e:  # pylint: disable=broad-except
-            xbmc.log(
-                "NZB-DAV: Failed to update setup wizard status: {}".format(e),
-                xbmc.LOGDEBUG,
-            )
