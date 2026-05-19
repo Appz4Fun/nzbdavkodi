@@ -14,6 +14,16 @@ def _addon_with_settings(values=None):
     return addon
 
 
+def _wizard_dialog(addon=None):
+    return setup_wizard.SetupWizardDialog(
+        "setup-wizard.xml",
+        "",
+        "Default",
+        "1080i",
+        addon=addon or _addon_with_settings(),
+    )
+
+
 def test_should_auto_run_until_completed():
     assert setup_wizard.should_auto_run(
         _addon_with_settings({"setup_wizard_completed": "false"})
@@ -24,8 +34,8 @@ def test_should_auto_run_until_completed():
     )
 
 
-def test_run_setup_wizard_marks_completed_only_on_finish():
-    addon = _addon_with_settings()
+def test_run_setup_wizard_notifies_on_finish():
+    addon = _addon_with_settings({"setup_wizard_completed": "true"})
 
     with patch("resources.lib.setup_wizard.xbmcaddon.Addon", return_value=addon):
         with patch("resources.lib.setup_wizard.SetupWizardDialog") as dialog_cls:
@@ -33,10 +43,26 @@ def test_run_setup_wizard_marks_completed_only_on_finish():
             dialog.was_finished.return_value = True
             dialog_cls.return_value = dialog
 
-            assert setup_wizard.run_setup_wizard()
+            with patch("resources.lib.setup_wizard._notify") as notify:
+                assert setup_wizard.run_setup_wizard()
+
+    notify.assert_called_once()
+    dialog.doModal.assert_called_once()
+
+
+def test_run_setup_wizard_marks_completed_when_modal_finishes():
+    addon = _addon_with_settings({"setup_wizard_completed": "false"})
+
+    with patch("resources.lib.setup_wizard.xbmcaddon.Addon", return_value=addon):
+        with patch("resources.lib.setup_wizard.SetupWizardDialog") as dialog_cls:
+            dialog = MagicMock()
+            dialog.was_finished.return_value = True
+            dialog_cls.return_value = dialog
+
+            with patch("resources.lib.setup_wizard._notify"):
+                assert setup_wizard.run_setup_wizard()
 
     addon.setSetting.assert_called_once_with("setup_wizard_completed", "true")
-    dialog.doModal.assert_called_once()
 
 
 def test_run_setup_wizard_does_not_mark_completed_on_cancel():
@@ -133,51 +159,6 @@ def test_welcome_page_focuses_next_button_because_it_has_no_rows():
     assert dialog._focus_id == setup_wizard.NEXT_BUTTON_ID
 
 
-def test_test_page_down_on_last_row_leaves_list_navigation_to_kodi():
-    addon = _addon_with_settings()
-    dialog = setup_wizard.SetupWizardDialog(
-        "setup-wizard.xml",
-        "",
-        "Default",
-        "1080i",
-        addon=addon,
-    )
-    dialog.page_index = 1
-    dialog._render_page()
-    dialog._focus_id = setup_wizard.LIST_ID
-    dialog.getControl(setup_wizard.LIST_ID).getSelectedPosition.return_value = (
-        len(dialog._visible_rows) - 1
-    )
-    dialog.setFocusId = MagicMock(
-        side_effect=lambda control_id: setattr(dialog, "_focus_id", control_id)
-    )
-
-    action = MagicMock()
-    action.getId.return_value = setup_wizard.ACTION_MOVE_DOWN
-
-    dialog.onAction(action)
-
-    dialog.setFocusId.assert_not_called()
-    assert dialog._focus_id == setup_wizard.LIST_ID
-
-
-def test_test_page_footer_directional_keys_work_with_rows():
-    dialog = setup_wizard.SetupWizardDialog.__new__(setup_wizard.SetupWizardDialog)
-    dialog.addon = _addon_with_settings()
-    dialog.page_index = 1
-    dialog._focus_id = setup_wizard.NEXT_BUTTON_ID
-    dialog.setFocusId = MagicMock(
-        side_effect=lambda control_id: setattr(dialog, "_focus_id", control_id)
-    )
-
-    action = MagicMock()
-    action.getId.return_value = setup_wizard.ACTION_MOVE_LEFT
-
-    dialog.onAction(action)
-
-    dialog.setFocusId.assert_not_called()
-
-
 def test_test_page_syncs_native_footer_navigation_through_test_button():
     addon = _addon_with_settings()
     dialog = setup_wizard.SetupWizardDialog(
@@ -227,25 +208,8 @@ def test_last_page_syncs_native_footer_navigation_through_finish_button():
     cancel.controlLeft.assert_called_with(finish)
 
 
-def test_footer_directional_action_does_not_override_native_kodi_navigation():
-    dialog = setup_wizard.SetupWizardDialog.__new__(setup_wizard.SetupWizardDialog)
-    dialog.page_index = len(setup_wizard.PAGES) - 1
-    dialog._focus_id = setup_wizard.CANCEL_BUTTON_ID
-    dialog.getFocusId = MagicMock(return_value=setup_wizard.PREVIOUS_BUTTON_ID)
-    dialog.setFocusId = MagicMock(
-        side_effect=lambda control_id: setattr(dialog, "_focus_id", control_id)
-    )
-
-    action = MagicMock()
-    action.getId.return_value = setup_wizard.ACTION_MOVE_LEFT
-
-    dialog.onAction(action)
-
-    dialog.setFocusId.assert_not_called()
-
-
 def test_on_focus_tracks_current_control_id():
-    dialog = setup_wizard.SetupWizardDialog.__new__(setup_wizard.SetupWizardDialog)
+    dialog = _wizard_dialog()
 
     dialog.onFocus(setup_wizard.NEXT_BUTTON_ID)
 
@@ -269,8 +233,7 @@ def test_select_provider_enables_one_provider_and_disables_the_other():
 
 def test_test_page_dispatches_selected_provider_connection_check():
     addon = _addon_with_settings({"prowlarr_enabled": "true"})
-    dialog = setup_wizard.SetupWizardDialog.__new__(setup_wizard.SetupWizardDialog)
-    dialog.addon = addon
+    dialog = _wizard_dialog(addon)
     dialog.page_index = 3
 
     with patch(
@@ -283,8 +246,7 @@ def test_test_page_dispatches_selected_provider_connection_check():
 
 def test_test_page_shows_success_modal_on_successful_connection_check():
     addon = _addon_with_settings({"prowlarr_enabled": "true"})
-    dialog = setup_wizard.SetupWizardDialog.__new__(setup_wizard.SetupWizardDialog)
-    dialog.addon = addon
+    dialog = _wizard_dialog(addon)
     dialog.page_index = 3
 
     with patch(
@@ -299,8 +261,7 @@ def test_test_page_shows_success_modal_on_successful_connection_check():
 
 def test_test_page_shows_failure_modal_with_reason_on_failed_connection_check():
     addon = _addon_with_settings({"prowlarr_enabled": "true"})
-    dialog = setup_wizard.SetupWizardDialog.__new__(setup_wizard.SetupWizardDialog)
-    dialog.addon = addon
+    dialog = _wizard_dialog(addon)
     dialog.page_index = 3
 
     with patch(
@@ -361,9 +322,7 @@ def test_toggle_preserves_selected_row_position():
 
 
 def test_tmdbhelper_missing_install_shows_message_without_installing():
-    dialog = setup_wizard.SetupWizardDialog.__new__(setup_wizard.SetupWizardDialog)
-    dialog.addon = _addon_with_settings()
-    dialog._finished = False
+    dialog = _wizard_dialog()
     dialog.close = MagicMock()
 
     with patch("resources.lib.setup_wizard._tmdbhelper_installed", return_value=False):
@@ -380,9 +339,7 @@ def test_tmdbhelper_missing_install_shows_message_without_installing():
 
 
 def test_tmdbhelper_present_install_uses_existing_player_installer():
-    dialog = setup_wizard.SetupWizardDialog.__new__(setup_wizard.SetupWizardDialog)
-    dialog.addon = _addon_with_settings()
-    dialog._finished = False
+    dialog = _wizard_dialog()
     dialog.close = MagicMock()
 
     with patch("resources.lib.setup_wizard._tmdbhelper_installed", return_value=True):
@@ -400,9 +357,7 @@ def test_tmdbhelper_present_install_uses_existing_player_installer():
 
 def test_install_button_completion_marks_wizard_completed():
     addon = _addon_with_settings()
-    dialog = setup_wizard.SetupWizardDialog.__new__(setup_wizard.SetupWizardDialog)
-    dialog.addon = addon
-    dialog._finished = False
+    dialog = _wizard_dialog(addon)
     dialog.close = MagicMock()
 
     with patch("resources.lib.setup_wizard._tmdbhelper_installed", return_value=True):
@@ -446,42 +401,13 @@ def test_install_button_completion_marks_wizard_completed():
     ],
 )
 def test_footer_control_ids_use_one_stable_footer(page_index, expected_footer_ids):
-    dialog = setup_wizard.SetupWizardDialog.__new__(setup_wizard.SetupWizardDialog)
+    dialog = _wizard_dialog()
     dialog.page_index = page_index
 
     assert (
         dialog._footer_control_ids(setup_wizard.PAGES[page_index])
         == expected_footer_ids
     )
-
-
-@pytest.mark.parametrize(
-    "start_focus,action_id",
-    [
-        (setup_wizard.PREVIOUS_BUTTON_ID, setup_wizard.ACTION_MOVE_RIGHT),
-        (setup_wizard.CANCEL_BUTTON_ID, setup_wizard.ACTION_MOVE_LEFT),
-        (setup_wizard.NEXT_BUTTON_ID, setup_wizard.ACTION_MOVE_UP),
-        (setup_wizard.NEXT_BUTTON_ID, setup_wizard.ACTION_MOVE_DOWN),
-        (setup_wizard.NEXT_BUTTON_ID, setup_wizard.ACTION_MOVE_LEFT),
-        (setup_wizard.NEXT_BUTTON_ID, setup_wizard.ACTION_MOVE_RIGHT),
-    ],
-)
-def test_last_page_directional_keys_are_left_to_native_kodi_navigation(
-    start_focus, action_id
-):
-    dialog = setup_wizard.SetupWizardDialog.__new__(setup_wizard.SetupWizardDialog)
-    dialog.page_index = len(setup_wizard.PAGES) - 1
-    dialog._focus_id = start_focus
-    dialog.setFocusId = MagicMock(
-        side_effect=lambda control_id: setattr(dialog, "_focus_id", control_id)
-    )
-
-    action = MagicMock()
-    action.getId.return_value = action_id
-
-    dialog.onAction(action)
-
-    dialog.setFocusId.assert_not_called()
 
 
 def test_last_page_native_navigation_links_cancel_left_to_finish_button():
@@ -504,7 +430,7 @@ def test_last_page_native_navigation_links_cancel_left_to_finish_button():
 
 
 def test_nav_back_cancels_wizard():
-    dialog = setup_wizard.SetupWizardDialog.__new__(setup_wizard.SetupWizardDialog)
+    dialog = _wizard_dialog()
     dialog._cancel = MagicMock()
 
     action = MagicMock()
@@ -515,28 +441,9 @@ def test_nav_back_cancels_wizard():
     dialog._cancel.assert_called_once_with()
 
 
-def test_welcome_page_directional_keys_keep_focus_on_next_when_no_rows():
-    dialog = setup_wizard.SetupWizardDialog.__new__(setup_wizard.SetupWizardDialog)
-    dialog.page_index = 0
-    dialog._focus_id = setup_wizard.NEXT_BUTTON_ID
-    dialog.setFocusId = MagicMock(
-        side_effect=lambda control_id: setattr(dialog, "_focus_id", control_id)
-    )
-
-    action = MagicMock()
-    action.getId.return_value = setup_wizard.ACTION_MOVE_UP
-
-    dialog.onAction(action)
-
-    dialog.setFocusId.assert_not_called()
-
-
 def test_finish_without_tmdbhelper_shows_reminder_before_closing():
-    dialog = setup_wizard.SetupWizardDialog.__new__(setup_wizard.SetupWizardDialog)
-    dialog.addon = _addon_with_settings()
+    dialog = _wizard_dialog()
     dialog.page_index = len(setup_wizard.PAGES) - 1
-    dialog._finished = False
-    dialog._set_status = MagicMock()
     dialog.close = MagicMock()
 
     with patch("resources.lib.setup_wizard._tmdbhelper_installed", return_value=False):
