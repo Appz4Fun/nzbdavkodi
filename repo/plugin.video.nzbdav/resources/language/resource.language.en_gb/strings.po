@@ -749,3 +749,143 @@ msgstr "Manage Indexers"
 msgctxt "#30196"
 msgid "Refresh NZBHydra2 Caps"
 msgstr "Refresh NZBHydra2 Caps"
+
+msgctxt "#30197"
+msgid "Setup Wizard"
+msgstr "Setup Wizard"
+
+msgctxt "#30198"
+msgid "NZB-DAV Kodi Addon"
+msgstr "NZB-DAV Kodi Addon"
+
+msgctxt "#30199"
+msgid "Welcome. This addon streams NZB search results through nzbdav so Kodi can play them from your WebDAV server.\n\nBefore you start, gather the URLs, ports, API keys, usernames, passwords, and other credentials for nzbdav, WebDAV, and your index manager. TMDBHelper should already be installed before you continue."
+msgstr "Welcome. This addon streams NZB search results through nzbdav so Kodi can play them from your WebDAV server.\n\nBefore you start, gather the URLs, ports, API keys, usernames, passwords, and other credentials for nzbdav, WebDAV, and your index manager. TMDBHelper should already be installed before you continue."
+
+msgctxt "#30200"
+msgid "Previous"
+msgstr "Previous"
+
+msgctxt "#30201"
+msgid "Next"
+msgstr "Next"
+
+msgctxt "#30202"
+msgid "Cancel"
+msgstr "Cancel"
+
+msgctxt "#30203"
+msgid "Finish"
+msgstr "Finish"
+
+msgctxt "#30204"
+msgid "Edit Settings"
+msgstr "Edit Settings"
+
+msgctxt "#30205"
+msgid "Test Connection"
+msgstr "Test Connection"
+
+msgctxt "#30206"
+msgid "Select Search Provider"
+msgstr "Select Search Provider"
+
+msgctxt "#30207"
+msgid "Resolutions"
+msgstr "Resolutions"
+
+msgctxt "#30208"
+msgid "HDR Formats"
+msgstr "HDR Formats"
+
+msgctxt "#30209"
+msgid "Video Codecs"
+msgstr "Video Codecs"
+
+msgctxt "#30210"
+msgid "Languages"
+msgstr "Languages"
+
+msgctxt "#30211"
+msgid "TMDBHelper Player"
+msgstr "TMDBHelper Player"
+
+msgctxt "#30212"
+msgid "Click Finish to complete setup.\n\nFinish will also install the NZB-DAV player into TMDBHelper for you."
+msgstr "Click Finish to complete setup.\n\nFinish will also install the NZB-DAV player into TMDBHelper for you."
+
+msgctxt "#30213"
+msgid "TMDBHelper is not installed. Install TMDBHelper, then rerun this wizard or use Install TMDBHelper Player from the addon menu."
+msgstr "TMDBHelper is not installed. Install TMDBHelper, then rerun this wizard or use Install TMDBHelper Player from the addon menu."
+
+msgctxt "#30214"
+msgid "Setup wizard cancelled"
+msgstr "Setup wizard cancelled"
+
+msgctxt "#30215"
+msgid "Setup wizard complete"
+msgstr "Setup wizard complete"
+
+msgctxt "#30216"
+msgid "nzbdav Settings"
+msgstr "nzbdav Settings"
+
+msgctxt "#30217"
+msgid "WebDAV Settings"
+msgstr "WebDAV Settings"
+
+msgctxt "#30218"
+msgid "Search Provider"
+msgstr "Search Provider"
+
+msgctxt "#30219"
+msgid "NZBHydra2"
+msgstr "NZBHydra2"
+
+msgctxt "#30220"
+msgid "Prowlarr"
+msgstr "Prowlarr"
+
+msgctxt "#30221"
+msgid "Back"
+msgstr "Back"
+
+msgctxt "#30222"
+msgid "Done"
+msgstr "Done"
+
+msgctxt "#30223"
+msgid "No changes"
+msgstr "No changes"
+
+msgctxt "#30224"
+msgid "Choose enabled options"
+msgstr "Choose enabled options"
+
+msgctxt "#30225"
+msgid "Audio"
+msgstr "Audio"
+
+msgctxt "#30226"
+msgid "PLEASE INSTALL TMDBHELPER BEFORE CONTINUING"
+msgstr "PLEASE INSTALL TMDBHELPER BEFORE CONTINUING"
+
+msgctxt "#30227"
+msgid "Step {0} of {1}"
+msgstr "Step {0} of {1}"
+
+msgctxt "#30228"
+msgid "TMDBHelper is installed. You can continue."
+msgstr "TMDBHelper is installed. You can continue."
+
+msgctxt "#30229"
+msgid "Edit"
+msgstr "Edit"
+
+msgctxt "#30230"
+msgid "Enabled"
+msgstr "Enabled"
+
+msgctxt "#30231"
+msgid "Disabled"
+msgstr "Disabled"

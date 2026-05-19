@@ -246,6 +246,10 @@ def route(argv):
             from resources.lib.player_installer import install_player_other
 
             install_player_other()
+        elif path == "/setup_wizard":
+            from resources.lib.setup_wizard import run_setup_wizard
+
+            run_setup_wizard()
         elif path == "/clear_cache":
             from resources.lib.cache import clear_cache
 
@@ -1741,12 +1745,20 @@ def _test_nzbdav_connection():
 
 def _handle_main_menu(handle):
     """Show main menu with settings and install player options."""
+    from resources.lib.setup_wizard import maybe_auto_run
+
+    maybe_auto_run()
+
     li = xbmcgui.ListItem(label=_string(30011))
     url = "plugin://plugin.video.nzbdav/install_player"
     xbmcplugin.addDirectoryItem(handle=handle, url=url, listitem=li, isFolder=False)
 
     li = xbmcgui.ListItem(label=_string(30160))
     url = "plugin://plugin.video.nzbdav/install_player_other"
+    xbmcplugin.addDirectoryItem(handle=handle, url=url, listitem=li, isFolder=False)
+
+    li = xbmcgui.ListItem(label=_string(30197))
+    url = "plugin://plugin.video.nzbdav/setup_wizard"
     xbmcplugin.addDirectoryItem(handle=handle, url=url, listitem=li, isFolder=False)
 
     li = xbmcgui.ListItem(label=_string(30091))
