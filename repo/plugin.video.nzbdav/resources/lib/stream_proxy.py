@@ -5872,6 +5872,8 @@ class StreamProxy:
         if not ffmpeg_path:
             return False
         cmd = [ffmpeg_path, "-hide_banner", "-h", "muxer=hls"]
+        if not _StreamHandler._is_safe_ffmpeg_cmd(cmd):
+            return False
         try:
             proc = subprocess.Popen(
                 cmd,
@@ -6767,6 +6769,8 @@ class StreamProxy:
                     input_url,
                 ]
             )
+            if not _StreamHandler._is_safe_ffmpeg_cmd(cmd):
+                return None
             proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.DEVNULL,
@@ -6839,6 +6843,8 @@ class StreamProxy:
             cmd.extend(auth_args)
         cmd.extend(["-i", input_url, "-f", "null", "-"])
 
+        if not _StreamHandler._is_safe_ffmpeg_cmd(cmd):
+            return None
         try:
             proc = subprocess.Popen(
                 cmd,
@@ -6961,6 +6967,10 @@ class StreamProxy:
                 temp_path,
             ]
         )
+
+        if not _StreamHandler._is_safe_ffmpeg_cmd(cmd):
+            xbmc.log("NZB-DAV: Temp faststart unsafe cmd rejected", xbmc.LOGWARNING)
+            return None
 
         proc = None
         try:
