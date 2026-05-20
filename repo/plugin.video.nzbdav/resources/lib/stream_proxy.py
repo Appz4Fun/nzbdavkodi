@@ -1508,7 +1508,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
             # rigorously validated by _validate_url above, shell=False prevents
             # shell injection, and _is_safe_ffmpeg_cmd ensures the executable
             # is genuinely ffmpeg and guards against NUL byte execve injection.
-            proc = subprocess.Popen(  # lgtm [py/command-line-injection]
+            proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
@@ -2009,6 +2009,13 @@ class _StreamHandler(BaseHTTPRequestHandler):
         ffmpeg = ctx["ffmpeg_path"]
         input_url = ctx["remote_url"]
         _validate_url(input_url)
+
+        # Explicitly guard against option injection for CodeQL. _validate_url
+        # strictly enforces the scheme, which guarantees it cannot start with
+        # a hyphen, but this assert proves it locally for the taint analyzer.
+        if input_url.startswith("-"):
+            raise ValueError("URL cannot start with a hyphen")
+
         auth_args = _ffmpeg_auth_args(ctx.get("auth_header"))
         output_format = ctx.get("output_format", "matroska")
 
@@ -5205,6 +5212,13 @@ class HlsProducer:
         seek Kodi expects a discontinuity anyway.
         """
         _validate_url(self.remote_url)
+
+        # Explicitly guard against option injection for CodeQL. _validate_url
+        # strictly enforces the scheme, which guarantees it cannot start with
+        # a hyphen, but this assert proves it locally for the taint analyzer.
+        if self.remote_url.startswith("-"):
+            raise ValueError("URL cannot start with a hyphen")
+
         # Pass auth via -headers (not URL-embedded) so credentials
         # don't leak into argv / ffmpeg.log / error messages. See
         # _ffmpeg_auth_args for the rationale.
@@ -6755,6 +6769,8 @@ class StreamProxy:
     @staticmethod
     def _probe_duration_ffprobe(ffprobe_path, input_url, auth_args=None):
         """Run ffprobe to get duration. Returns seconds or None."""
+        if input_url.startswith("-"):
+            return None
         try:
             cmd = [
                 ffprobe_path,
@@ -6839,6 +6855,8 @@ class StreamProxy:
         with ``_embed_auth_in_url`` should leave this None; new
         callers should prefer the ``-headers`` form.
         """
+        if input_url.startswith("-"):
+            return None
         cmd = [ffmpeg_path, "-v", "info"]
         if auth_args:
             cmd.extend(auth_args)
@@ -6934,6 +6952,9 @@ class StreamProxy:
             return None
 
         _validate_url(url)
+        if url.startswith("-"):
+            return None
+
         auth_args = _ffmpeg_auth_args(auth_header)
         fd, temp_path = tempfile.mkstemp(
             prefix="nzbdav_faststart_",
