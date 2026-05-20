@@ -340,7 +340,7 @@ scripts/
   build_zip.py           # Addon zip builder
   generate_repo.py       # Kodi repo metadata generator
 repo/
-  repository.nzbdav/     # Repository addon (points to GitHub Pages)
+  repository.nzbdav/     # Repository addon (points to raw repo/zips metadata)
   zips/                  # Generated Kodi repository metadata and zips
 .github/workflows/
   ci.yml                 # Test + lint on push/PR (Python 3.10/3.12)
@@ -358,7 +358,7 @@ TODO.md                             # Active backlog
 ### Releasing
 
 1. Bump `version` in `repo/plugin.video.nzbdav/addon.xml`
-2. Run `just repo` to refresh `repo/zips/` for GitHub Pages repository metadata.
+2. Run `just repo` to refresh `repo/zips/` for raw GitHub repository metadata.
 3. Stage the version bump plus generated repository metadata and zips:
    `git add repo/plugin.video.nzbdav/addon.xml repo/zips/`
 4. Commit: `git commit -m "release: v0.X.0"`
