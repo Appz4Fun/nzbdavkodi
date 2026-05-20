@@ -1508,7 +1508,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
             # rigorously validated by _validate_url above, shell=False prevents
             # shell injection, and _is_safe_ffmpeg_cmd ensures the executable
             # is genuinely ffmpeg and guards against NUL byte execve injection.
-            proc = subprocess.Popen(  # codeql[py/command-line-injection]
+            proc = subprocess.Popen(  # lgtm [py/command-line-injection]
                 cmd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
