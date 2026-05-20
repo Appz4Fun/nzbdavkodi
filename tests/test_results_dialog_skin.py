@@ -6,7 +6,7 @@
 import os
 import xml.etree.ElementTree as ET
 
-_DIALOG_XML_PATH = os.path.join(
+_SKIN_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "repo",
     "plugin.video.nzbdav",
@@ -14,8 +14,13 @@ _DIALOG_XML_PATH = os.path.join(
     "skins",
     "Default",
     "1080i",
-    "results-dialog.xml",
 )
+
+_DIALOG_XML_PATHS = [
+    os.path.join(_SKIN_DIR, "results-dialog.xml"),
+    os.path.join(_SKIN_DIR, "results-dialog-ranked.xml"),
+    os.path.join(_SKIN_DIR, "results-dialog-split.xml"),
+]
 
 
 def _control(root, control_type, control_id):
@@ -26,13 +31,20 @@ def _control(root, control_type, control_id):
 
 
 def test_results_dialog_scrollbar_is_linked_to_results_list():
-    root = ET.parse(_DIALOG_XML_PATH).getroot()
+    for dialog_xml_path in _DIALOG_XML_PATHS:
+        root = ET.parse(dialog_xml_path).getroot()
 
-    results_list = _control(root, "list", "50")
-    scrollbar = _control(root, "scrollbar", "60")
+        results_list = _control(root, "list", "50")
+        scrollbar = _control(root, "scrollbar", "60")
 
-    assert results_list is not None, "results list control id=50 missing"
-    assert scrollbar is not None, "results scrollbar control id=60 missing"
-    assert results_list.findtext("pagecontrol") == "60"
-    assert scrollbar.findtext("orientation") == "vertical"
-    assert scrollbar.findtext("showonepage") == "false"
+        assert results_list is not None, "{} results list control id=50 missing".format(
+            os.path.basename(dialog_xml_path)
+        )
+        assert (
+            scrollbar is not None
+        ), "{} results scrollbar control id=60 missing".format(
+            os.path.basename(dialog_xml_path)
+        )
+        assert results_list.findtext("pagecontrol") == "60"
+        assert scrollbar.findtext("orientation") == "vertical"
+        assert scrollbar.findtext("showonepage") == "false"

@@ -1,0 +1,260 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<window type="dialog" id="1100">
+  <defaultcontrol always="true">50</defaultcontrol>
+  <coordinates>
+    <system>1</system>
+  </coordinates>
+  <controls>
+
+    <control type="image">
+      <left>0</left><top>0</top><width>1920</width><height>1080</height>
+      <texture>white.png</texture>
+      <colordiffuse>FF090A0D</colordiffuse>
+    </control>
+
+    <control type="image">
+      <left>0</left><top>0</top><width>1920</width><height>92</height>
+      <texture>white.png</texture>
+      <colordiffuse>FF151820</colordiffuse>
+    </control>
+    <control type="label" id="1">
+      <left>54</left><top>18</top><width>1240</width><height>36</height>
+      <label>$INFO[Window.Property(title)]</label>
+      <font>font13</font>
+      <textcolor>FFFFFFFF</textcolor>
+      <aligny>center</aligny>
+    </control>
+    <control type="label" id="2">
+      <left>54</left><top>54</top><width>760</width><height>24</height>
+      <label>$INFO[Window.Property(filter_info)]</label>
+      <font>font10</font>
+      <textcolor>FFB7BEC8</textcolor>
+      <aligny>center</aligny>
+    </control>
+    <control type="label" id="3">
+      <left>1300</left><top>18</top><width>566</width><height>32</height>
+      <label>$INFO[Window.Property(count)]</label>
+      <font>font12</font>
+      <textcolor>FF6BB6FF</textcolor>
+      <align>right</align>
+      <aligny>center</aligny>
+    </control>
+    <control type="label" id="4">
+      <left>1020</left><top>54</top><width>846</width><height>24</height>
+      <label>$INFO[Window.Property(sort_info)]</label>
+      <font>font10</font>
+      <textcolor>FFB7BEC8</textcolor>
+      <align>right</align>
+      <aligny>center</aligny>
+    </control>
+    <control type="image">
+      <left>0</left><top>91</top><width>1920</width><height>1</height>
+      <texture>white.png</texture>
+      <colordiffuse>FF242936</colordiffuse>
+    </control>
+
+    <control type="list" id="50">
+      <left>54</left><top>116</top><width>1040</width><height>860</height>
+      <orientation>vertical</orientation>
+      <pagecontrol>60</pagecontrol>
+      <scrolltime>200</scrolltime>
+
+      <itemlayout width="1040" height="92">
+        <control type="image">
+          <left>0</left><top>0</top><width>1040</width><height>82</height>
+          <texture>white.png</texture>
+          <colordiffuse>FF11141A</colordiffuse>
+        </control>
+        <control type="label">
+          <left>18</left><top>14</top><width>36</width><height>28</height>
+          <label>$INFO[ListItem.Property(available)]</label>
+          <font>font12</font>
+          <textcolor>FF8FE388</textcolor>
+          <aligny>center</aligny>
+        </control>
+        <control type="label">
+          <left>62</left><top>10</top><width>650</width><height>34</height>
+          <label>$INFO[ListItem.Label]</label>
+          <font>font12</font>
+          <textcolor>FFE8EDF5</textcolor>
+          <aligny>center</aligny>
+        </control>
+        <control type="label">
+          <left>720</left><top>10</top><width>292</width><height>34</height>
+          <label>$INFO[ListItem.Property(primary_badges)]</label>
+          <font>font10</font>
+          <textcolor>FFFFFFFF</textcolor>
+          <align>right</align>
+          <aligny>center</aligny>
+        </control>
+        <control type="label">
+          <left>62</left><top>45</top><width>950</width><height>26</height>
+          <label>$INFO[ListItem.Property(details_line)]</label>
+          <font>font10</font>
+          <textcolor>FFB7BEC8</textcolor>
+          <aligny>center</aligny>
+        </control>
+      </itemlayout>
+
+      <focusedlayout width="1040" height="92">
+        <control type="image">
+          <left>0</left><top>0</top><width>1040</width><height>82</height>
+          <texture>white.png</texture>
+          <colordiffuse>FF1B2C44</colordiffuse>
+        </control>
+        <control type="image">
+          <left>0</left><top>0</top><width>6</width><height>82</height>
+          <texture>white.png</texture>
+          <colordiffuse>FF6BB6FF</colordiffuse>
+        </control>
+        <control type="label">
+          <left>18</left><top>14</top><width>36</width><height>28</height>
+          <label>$INFO[ListItem.Property(available)]</label>
+          <font>font12</font>
+          <textcolor>FFB8F2B4</textcolor>
+          <aligny>center</aligny>
+        </control>
+        <control type="label">
+          <left>62</left><top>10</top><width>650</width><height>34</height>
+          <label>$INFO[ListItem.Label]</label>
+          <font>font12</font>
+          <textcolor>FFFFFFFF</textcolor>
+          <aligny>center</aligny>
+        </control>
+        <control type="label">
+          <left>720</left><top>10</top><width>292</width><height>34</height>
+          <label>$INFO[ListItem.Property(primary_badges)]</label>
+          <font>font10</font>
+          <textcolor>FFFFFFFF</textcolor>
+          <align>right</align>
+          <aligny>center</aligny>
+        </control>
+        <control type="label">
+          <left>62</left><top>45</top><width>950</width><height>26</height>
+          <label>$INFO[ListItem.Property(details_line)]</label>
+          <font>font10</font>
+          <textcolor>FFE1E7F0</textcolor>
+          <aligny>center</aligny>
+        </control>
+      </focusedlayout>
+    </control>
+
+    <control type="scrollbar" id="60">
+      <left>1110</left><top>116</top><width>12</width><height>860</height>
+      <orientation>vertical</orientation>
+      <showonepage>false</showonepage>
+      <texturesliderbackground colordiffuse="221C2430">white.png</texturesliderbackground>
+      <texturesliderbar colordiffuse="FF596272">white.png</texturesliderbar>
+      <texturesliderbarfocus colordiffuse="FF6BB6FF">white.png</texturesliderbarfocus>
+      <textureslidernib></textureslidernib>
+      <textureslidernibfocus></textureslidernibfocus>
+    </control>
+
+    <control type="image">
+      <left>1152</left><top>116</top><width>714</width><height>860</height>
+      <texture>white.png</texture>
+      <colordiffuse>FF11141A</colordiffuse>
+    </control>
+    <control type="image">
+      <left>1152</left><top>116</top><width>714</width><height>1</height>
+      <texture>white.png</texture>
+      <colordiffuse>FF242936</colordiffuse>
+    </control>
+    <control type="label">
+      <left>1192</left><top>154</top><width>634</width><height>46</height>
+      <label>$INFO[Container(50).ListItem.Property(detail_title)]</label>
+      <font>font13</font>
+      <textcolor>FFFFFFFF</textcolor>
+      <aligny>center</aligny>
+    </control>
+    <control type="label">
+      <left>1192</left><top>230</top><width>634</width><height>34</height>
+      <label>$INFO[Container(50).ListItem.Property(detail_status)]</label>
+      <font>font12</font>
+      <textcolor>FF8FE388</textcolor>
+      <aligny>center</aligny>
+    </control>
+    <control type="label">
+      <left>1192</left><top>318</top><width>220</width><height>28</height>
+      <label>Video</label>
+      <font>font10</font>
+      <textcolor>FF8C96A6</textcolor>
+      <aligny>center</aligny>
+    </control>
+    <control type="label">
+      <left>1390</left><top>318</top><width>436</width><height>28</height>
+      <label>$INFO[Container(50).ListItem.Property(detail_video)]</label>
+      <font>font12</font>
+      <textcolor>FFE8EDF5</textcolor>
+      <align>right</align>
+      <aligny>center</aligny>
+    </control>
+    <control type="label">
+      <left>1192</left><top>382</top><width>220</width><height>28</height>
+      <label>Audio</label>
+      <font>font10</font>
+      <textcolor>FF8C96A6</textcolor>
+      <aligny>center</aligny>
+    </control>
+    <control type="label">
+      <left>1390</left><top>382</top><width>436</width><height>28</height>
+      <label>$INFO[Container(50).ListItem.Property(detail_audio)]</label>
+      <font>font12</font>
+      <textcolor>FFE8EDF5</textcolor>
+      <align>right</align>
+      <aligny>center</aligny>
+    </control>
+    <control type="label">
+      <left>1192</left><top>446</top><width>220</width><height>28</height>
+      <label>Source</label>
+      <font>font10</font>
+      <textcolor>FF8C96A6</textcolor>
+      <aligny>center</aligny>
+    </control>
+    <control type="label">
+      <left>1390</left><top>446</top><width>436</width><height>28</height>
+      <label>$INFO[Container(50).ListItem.Property(detail_source)]</label>
+      <font>font12</font>
+      <textcolor>FFE8EDF5</textcolor>
+      <align>right</align>
+      <aligny>center</aligny>
+    </control>
+    <control type="label">
+      <left>1192</left><top>510</top><width>220</width><height>28</height>
+      <label>Origin</label>
+      <font>font10</font>
+      <textcolor>FF8C96A6</textcolor>
+      <aligny>center</aligny>
+    </control>
+    <control type="label">
+      <left>1390</left><top>510</top><width>436</width><height>28</height>
+      <label>$INFO[Container(50).ListItem.Property(detail_origin)]</label>
+      <font>font12</font>
+      <textcolor>FFE8EDF5</textcolor>
+      <align>right</align>
+      <aligny>center</aligny>
+    </control>
+
+    <control type="image">
+      <left>0</left><top>1008</top><width>1920</width><height>72</height>
+      <texture>white.png</texture>
+      <colordiffuse>FF11141A</colordiffuse>
+    </control>
+    <control type="label" id="5">
+      <left>54</left><top>1028</top><width>880</width><height>30</height>
+      <label>$INFO[Window.Property(filter_info)]</label>
+      <font>font10</font>
+      <textcolor>FF9FA8B6</textcolor>
+      <aligny>center</aligny>
+    </control>
+    <control type="label" id="6">
+      <left>1020</left><top>1028</top><width>846</width><height>30</height>
+      <label>[Enter] Download &amp; Play     [Esc] Back</label>
+      <font>font10</font>
+      <textcolor>FF9FA8B6</textcolor>
+      <align>right</align>
+      <aligny>center</aligny>
+    </control>
+
+  </controls>
+</window>

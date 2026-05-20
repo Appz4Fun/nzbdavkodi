@@ -8,7 +8,7 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
-_RESULTS_DIALOG_PATH = os.path.join(
+_SKIN_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "repo",
     "plugin.video.nzbdav",
@@ -16,13 +16,29 @@ _RESULTS_DIALOG_PATH = os.path.join(
     "skins",
     "Default",
     "1080i",
-    "results-dialog.xml",
 )
+
+_RESULTS_DIALOG_PATHS = [
+    os.path.join(_SKIN_DIR, "results-dialog.xml"),
+    os.path.join(_SKIN_DIR, "results-dialog-ranked.xml"),
+    os.path.join(_SKIN_DIR, "results-dialog-split.xml"),
+]
+
+_RANKED_DIALOG_PATH = os.path.join(_SKIN_DIR, "results-dialog-ranked.xml")
+_SPLIT_DIALOG_PATH = os.path.join(_SKIN_DIR, "results-dialog-split.xml")
 
 
 @pytest.fixture(name="results_dialog_root", scope="module")
 def _results_dialog_root():
-    return ET.parse(_RESULTS_DIALOG_PATH).getroot()
+    return ET.parse(_RESULTS_DIALOG_PATHS[0]).getroot()
+
+
+@pytest.fixture(name="new_results_dialog_roots", scope="module")
+def _new_results_dialog_roots():
+    return {
+        os.path.basename(path): ET.parse(path).getroot()
+        for path in (_RANKED_DIALOG_PATH, _SPLIT_DIALOG_PATH)
+    }
 
 
 def _property_label_control(layout, property_name):
@@ -41,7 +57,14 @@ def _list_item_label_control(layout):
     raise AssertionError("missing filename label")
 
 
-def test_results_dialog_has_no_temporary_debug_controls(results_dialog_root):
+def _all_labels(root):
+    return [label.text or "" for label in root.iter("label")]
+
+
+def test_results_dialog_has_no_temporary_debug_controls(
+    results_dialog_root,
+    new_results_dialog_roots,
+):
     debug_band_colors = {
         "FFFF00FF",
         "FF2563EB",
@@ -51,9 +74,11 @@ def test_results_dialog_has_no_temporary_debug_controls(results_dialog_root):
         "FF14B8A6",
     }
 
-    for control in results_dialog_root.iter("control"):
-        assert control.findtext("label") != "LAYOUT DEBUG"
-        assert control.findtext("colordiffuse") not in debug_band_colors
+    roots = [results_dialog_root] + list(new_results_dialog_roots.values())
+    for root in roots:
+        for control in root.iter("control"):
+            assert control.findtext("label") != "LAYOUT DEBUG"
+            assert control.findtext("colordiffuse") not in debug_band_colors
 
 
 def test_results_dialog_dl_indicator_has_room_in_both_row_layouts(
@@ -78,3 +103,42 @@ def test_results_dialog_dl_indicator_has_room_in_both_row_layouts(
         assert int(age.findtext("width")) == 140
         assert int(indexer.findtext("left")) == 1470
         assert int(indexer.findtext("width")) == 200
+
+
+def test_ranked_results_dialog_uses_shared_list_item_properties():
+    root = ET.parse(_RANKED_DIALOG_PATH).getroot()
+    labels = _all_labels(root)
+
+    for property_name in ("primary_badges", "details_line", "available"):
+        assert "$INFO[ListItem.Property({})]".format(property_name) in labels
+
+
+def test_split_results_dialog_has_focused_detail_panel_bindings():
+    root = ET.parse(_SPLIT_DIALOG_PATH).getroot()
+    labels = _all_labels(root)
+
+    for property_name in (
+        "detail_title",
+        "detail_video",
+        "detail_audio",
+        "detail_source",
+        "detail_origin",
+        "detail_status",
+    ):
+        assert (
+            "$INFO[Container(50).ListItem.Property({})]".format(property_name) in labels
+        )
+
+
+def test_split_results_dialog_left_list_uses_shared_row_properties():
+    root = ET.parse(_SPLIT_DIALOG_PATH).getroot()
+    list_control = root.find(".//control[@type='list'][@id='50']")
+    layouts = [
+        list_control.find("itemlayout"),
+        list_control.find("focusedlayout"),
+    ]
+
+    for layout in layouts:
+        _property_label_control(layout, "available")
+        _property_label_control(layout, "primary_badges")
+        _list_item_label_control(layout)

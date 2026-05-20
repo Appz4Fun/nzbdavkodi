@@ -60,6 +60,37 @@ def _available_text():
     return _c(_AVAILABLE_LABEL, "FF22C55E")
 
 
+def _resolve_layout_xml(raw_value):
+    """Return the results dialog XML filename for a stored layout setting."""
+    if raw_value is None:
+        return "results-dialog-ranked.xml"
+    try:
+        value = str(raw_value).strip()
+    except Exception:
+        value = ""
+    if value == "1":
+        return "results-dialog-split.xml"
+    return "results-dialog-ranked.xml"
+
+
+def _plain_text(value):
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _join_tokens(value):
+    if not value:
+        return ""
+    if isinstance(value, (list, tuple)):
+        return " ".join(_plain_text(item) for item in value if _plain_text(item))
+    return _plain_text(value)
+
+
+def _join_parts(separator, parts):
+    return separator.join(part for part in parts if part)
+
+
 class ResultsDialog(xbmcgui.WindowXMLDialog):
     """Full-screen NZB results selection dialog."""
 
@@ -98,28 +129,32 @@ class ResultsDialog(xbmcgui.WindowXMLDialog):
 
             # Resolution — colored inline
             res = meta.get("resolution", "")
+            res_text = _plain_text(res)
             res_color = _RES_COLORS.get(res, "FFEEEEEE")
             li.setProperty("resolution", _c(res, res_color))
 
             # HDR — colored inline
             hdr_list = meta.get("hdr", [])
+            hdr_text = _join_tokens(hdr_list) if hdr_list else "SDR"
             if hdr_list:
-                li.setProperty("hdr", _c(" ".join(hdr_list), "FFFBBF24"))
+                li.setProperty("hdr", _c(hdr_text, "FFFBBF24"))
             else:
                 li.setProperty("hdr", _c("SDR", "FF6B7280"))
 
             # Codec
             codec = meta.get("codec", "")
+            codec_text = _plain_text(codec)
             li.setProperty("codec", _c(codec, "FF94A3B8"))
 
             # Audio
             audio_list = meta.get("audio", [])
-            audio_str = " ".join(audio_list) if audio_list else ""
+            audio_str = _join_tokens(audio_list)
             li.setProperty("audio", _c(audio_str, "FFE879A8"))
 
             # Source / Quality — colored inline
             quality = meta.get("quality", "")
             src_display = _SRC_SHORT.get(quality, quality)
+            src_text = _plain_text(src_display)
             src_color = _SRC_COLORS.get(quality, "FFAAAAAA")
             li.setProperty("quality", _c(src_display, src_color))
 
@@ -130,16 +165,42 @@ class ResultsDialog(xbmcgui.WindowXMLDialog):
             li.setProperty("container", _c(container, container_color))
 
             # Size
-            li.setProperty("size", _c(_format_size(result.get("size")), "FFA1A1AA"))
+            size_text = _format_size(result.get("size"))
+            li.setProperty("size", _c(size_text, "FFA1A1AA"))
 
             # Age
-            li.setProperty("age", _c(result.get("age", ""), "FF6B7280"))
+            age_text = _plain_text(result.get("age", ""))
+            li.setProperty("age", _c(age_text, "FF6B7280"))
 
             # Indexer
-            li.setProperty("indexer", _c(result.get("indexer", ""), "FF4A9EFF"))
+            indexer_text = _plain_text(result.get("indexer", ""))
+            li.setProperty("indexer", _c(indexer_text, "FF4A9EFF"))
 
             # Group
-            li.setProperty("group", _c(meta.get("group", ""), "FF34D399"))
+            group_text = _plain_text(meta.get("group", ""))
+            li.setProperty("group", _c(group_text, "FF34D399"))
+
+            details_line = _join_parts(
+                " · ",
+                [size_text, age_text, indexer_text, group_text],
+            )
+            li.setProperty(
+                "primary_badges",
+                _join_parts(
+                    " · ",
+                    [res_text, hdr_text, codec_text, audio_str, src_text, container],
+                ),
+            )
+            li.setProperty("details_line", details_line)
+            li.setProperty("detail_title", filename)
+            li.setProperty("detail_video", _join_parts(" ", [res_text, codec_text]))
+            li.setProperty("detail_audio", audio_str)
+            li.setProperty("detail_source", _join_parts(" ", [src_text, container]))
+            li.setProperty("detail_origin", details_line)
+            li.setProperty(
+                "detail_status",
+                "Downloaded" if result.get("_available") else "",
+            )
 
             # Already downloaded indicator
             if result.get("_available"):
@@ -201,9 +262,13 @@ def show_results_dialog(results, title="", year="", total_count=0):
     """
     addon = xbmcaddon.Addon("plugin.video.nzbdav")
     addon_path = addon.getAddonInfo("path")
+    try:
+        layout_setting = addon.getSetting("results_layout")
+    except Exception:
+        layout_setting = None
 
     dialog = ResultsDialog(
-        "results-dialog.xml",
+        _resolve_layout_xml(layout_setting),
         addon_path,
         "Default",
         "1080i",

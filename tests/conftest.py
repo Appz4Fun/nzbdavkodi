@@ -85,6 +85,16 @@ def _install_monitor_defaults():
 
 _install_monitor_defaults()
 
+
+class _FakeWindowXMLDialog:  # pylint: disable=too-few-public-methods
+    """Minimal base class so dialog tests can instantiate Kodi XML dialogs."""
+
+    def __init__(self, *_args, **_kwargs):
+        pass
+
+
+sys.modules["xbmcgui"].WindowXMLDialog = _FakeWindowXMLDialog
+
 # xbmc.Player must be a real class so that subclassing works correctly
 # (MagicMock subclasses swallow attribute assignments in __init__)
 

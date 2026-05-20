@@ -749,3 +749,15 @@ msgstr "Manage Indexers"
 msgctxt "#30196"
 msgid "Refresh NZBHydra2 Caps"
 msgstr "Refresh NZBHydra2 Caps"
+
+msgctxt "#30197"
+msgid "Results layout"
+msgstr "Results layout"
+
+msgctxt "#30198"
+msgid "Ranked cards"
+msgstr "Ranked cards"
+
+msgctxt "#30199"
+msgid "Split detail"
+msgstr "Split detail"

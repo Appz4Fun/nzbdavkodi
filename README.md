@@ -217,7 +217,7 @@ These tune stream-proxy behaviour. Defaults are safe; only flip these if you hav
 
 ### Results Dialog
 
-The results dialog shows all matching NZBs with color-coded quality labels, sorted by relevance. Each row displays the release name, resolution, codec, audio format, release type, file size, age, indexer, and release group.
+The results dialog shows all matching NZBs sorted by relevance. In Sorting settings, choose either the default **Ranked cards** layout for larger rows with release metadata badges, or **Split detail** for a compact list with a focused-result details panel.
 
 ![NZB Results Dialog](docs/images/results-dialog.png)
 
