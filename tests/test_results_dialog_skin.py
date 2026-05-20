@@ -36,3 +36,9 @@ def test_results_dialog_scrollbar_is_linked_to_results_list():
     assert results_list.findtext("pagecontrol") == "60"
     assert scrollbar.findtext("orientation") == "vertical"
     assert scrollbar.findtext("showonepage") == "false"
+
+    # Verify directional remote/keyboard navigation is mapped correctly
+    assert results_list.findtext("onleft") == "60"
+    assert results_list.findtext("onright") == "60"
+    assert scrollbar.findtext("onleft") == "50"
+    assert scrollbar.findtext("onright") == "50"
