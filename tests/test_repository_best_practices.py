@@ -23,20 +23,16 @@ def test_addon_metadata_includes_repo_links_and_disclaimer():
     assert len(disclaimers) >= 2
 
 
-def test_repository_addon_uses_live_pages_metadata_urls():
+def test_repository_addon_uses_raw_repo_zips_metadata_urls():
     addon_xml = REPO_ADDON_DIR / "addon.xml"
     root = ET.parse(addon_xml).getroot()
     repo_dir = root.find("./extension[@point='xbmc.addon.repository']/dir")
+    repo_base = "https://raw.githubusercontent.com/xbmc4lyfe/nzbdavkodi/main/repo/zips"
 
     assert repo_dir is not None
-    assert (
-        repo_dir.findtext("info") == "https://appz4fun.github.io/nzbdavkodi/addons.xml"
-    )
-    assert (
-        repo_dir.findtext("checksum")
-        == "https://appz4fun.github.io/nzbdavkodi/addons.xml.md5"
-    )
-    assert repo_dir.findtext("datadir") == "https://appz4fun.github.io/nzbdavkodi/"
+    assert repo_dir.findtext("info") == "{}/addons.xml".format(repo_base)
+    assert repo_dir.findtext("checksum") == "{}/addons.xml.md5".format(repo_base)
+    assert repo_dir.findtext("datadir") == "{}/".format(repo_base)
 
 
 def test_issue_template_contact_links_use_canonical_owner():

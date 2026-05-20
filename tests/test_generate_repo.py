@@ -162,11 +162,11 @@ def test_generate_repo_includes_repository_checksum_url(tmp_path, monkeypatch):
     repo = tree.find("./addon[@id='repository.nzbdav']")
     assert repo is not None
     repo_dir = repo.find("./extension[@point='xbmc.addon.repository']/dir")
+    repo_base = "https://raw.githubusercontent.com/xbmc4lyfe/nzbdavkodi/main/repo/zips"
     assert repo_dir is not None
-    assert (
-        repo_dir.findtext("checksum")
-        == "https://appz4fun.github.io/nzbdavkodi/addons.xml.md5"
-    )
+    assert repo_dir.findtext("info") == "{}/addons.xml".format(repo_base)
+    assert repo_dir.findtext("checksum") == "{}/addons.xml.md5".format(repo_base)
+    assert repo_dir.findtext("datadir") == "{}/".format(repo_base)
 
 
 def test_generate_repo_writes_strict_md5_payload(tmp_path, monkeypatch):
