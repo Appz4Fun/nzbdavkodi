@@ -11,6 +11,7 @@ import xbmcaddon
 import xbmcgui
 
 from resources.lib.http_util import notify as _notify
+from resources.lib.http_util import redact_text, redact_url
 from resources.lib.i18n import addon_name as _addon_name
 from resources.lib.i18n import fmt as _fmt
 from resources.lib.i18n import string as _string
@@ -237,6 +238,10 @@ def _http_failure_reason(error):
     return "Could not connect: {}".format(str(error)[:80])
 
 
+def _redact_connection_log_value(value):
+    return redact_text(redact_url(str(value)))
+
+
 def _connection_check(test_key, addon):
     from resources.lib.http_util import http_get
 
@@ -300,7 +305,8 @@ def _connection_check(test_key, addon):
     except Exception as e:  # pylint: disable=broad-except
         xbmc.log(
             "NZB-DAV: setup wizard connection check failed for {}: {}".format(
-                test_key, e
+                _redact_connection_log_value(test_key),
+                _redact_connection_log_value(e),
             ),
             xbmc.LOGDEBUG,
         )

@@ -114,13 +114,14 @@ def test_connection_pages_have_test_actions():
     assert pages_by_key["index_manager"]["test"] == "index_manager"
 
 
-def test_final_page_copy_explains_finish_installs_tmdbhelper_player():
+def test_final_page_copy_explains_finish_completes_setup_only():
     pages_by_key = {page["key"]: page for page in setup_wizard.PAGES}
     body = setup_wizard._string(pages_by_key["tmdbhelper"]["body_id"])
 
     assert "Click Finish to complete setup" in body
-    assert "install" in body
-    assert "TMDBHelper" in body
+    assert "To install the NZB-DAV player into TMDBHelper" in body
+    assert "use the Install step in the wizard" in body
+    assert "Finish will also install" not in body
 
 
 def test_final_page_uses_finish_label_for_install_action():
@@ -297,6 +298,24 @@ def test_connection_check_reports_api_key_denied_for_http_auth_errors():
             False,
             "API key denied",
         )
+
+
+def test_connection_check_redacts_secrets_from_failure_log():
+    addon = _addon_with_settings(
+        {"hydra_url": "http://hydra.local", "hydra_api_key": "SUPERSECRET123"}
+    )
+    error = RuntimeError(
+        "failed URL http://hydra.local/api?apikey=SUPERSECRET123&t=movie"
+    )
+
+    with patch("resources.lib.http_util.http_get", side_effect=error), patch(
+        "resources.lib.setup_wizard.xbmc"
+    ) as mock_xbmc:
+        setup_wizard._connection_check("hydra", addon)
+
+    logged = mock_xbmc.log.call_args.args[0]
+    assert "SUPERSECRET123" not in logged
+    assert "apikey=REDACTED" in logged
 
 
 def test_toggle_preserves_selected_row_position():
