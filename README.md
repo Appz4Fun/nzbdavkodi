@@ -364,7 +364,7 @@ TODO.md                             # Active backlog
 4. Commit: `git commit -m "release: v0.X.0"`
 5. Tag and push: `git tag v0.X.0 && git push origin main v0.X.0`
 6. GitHub Actions builds the zip and creates a GitHub Release
-7. Kodi picks up the update automatically from the GitHub Pages repository metadata
+7. Kodi picks up the update automatically from the generated `repo/zips/` repository metadata
 
 ---
 
