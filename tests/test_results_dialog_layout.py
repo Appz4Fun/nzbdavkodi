@@ -26,6 +26,7 @@ _RESULTS_DIALOG_PATHS = [
 
 _RANKED_DIALOG_PATH = os.path.join(_SKIN_DIR, "results-dialog-ranked.xml")
 _SPLIT_DIALOG_PATH = os.path.join(_SKIN_DIR, "results-dialog-split.xml")
+_MEDIA_DIR = os.path.join(os.path.dirname(_SKIN_DIR), "media")
 
 
 @pytest.fixture(name="results_dialog_root", scope="module")
@@ -129,6 +130,23 @@ def test_ranked_results_dialog_keeps_first_line_filename_only():
             except AssertionError:
                 continue
             assert int(control.findtext("top")) != filename_top
+
+
+def test_ranked_results_dialog_uses_rounded_card_textures():
+    root = ET.parse(_RANKED_DIALOG_PATH).getroot()
+    list_control = root.find(".//control[@type='list'][@id='50']")
+
+    assert os.path.exists(os.path.join(_MEDIA_DIR, "results-card.png"))
+    assert os.path.exists(os.path.join(_MEDIA_DIR, "results-card-focus.png"))
+
+    layouts = (
+        (list_control.find("itemlayout"), "results-card.png"),
+        (list_control.find("focusedlayout"), "results-card-focus.png"),
+    )
+    for layout, texture_name in layouts:
+        background = layout.find("./control[@type='image'][width='1770'][height='120']")
+        assert background is not None
+        assert background.findtext("texture") == texture_name
 
 
 def test_split_results_dialog_has_focused_detail_panel_bindings():

@@ -62,8 +62,7 @@
       <itemlayout width="1770" height="132">
         <control type="image">
           <left>0</left><top>0</top><width>1770</width><height>120</height>
-          <texture>white.png</texture>
-          <colordiffuse>FF11141A</colordiffuse>
+          <texture>results-card.png</texture>
         </control>
         <control type="label">
           <left>28</left><top>22</top><width>42</width><height>34</height>
@@ -96,8 +95,7 @@
       <focusedlayout width="1770" height="132">
         <control type="image">
           <left>0</left><top>0</top><width>1770</width><height>120</height>
-          <texture>white.png</texture>
-          <colordiffuse>FF1B2C44</colordiffuse>
+          <texture>results-card-focus.png</texture>
         </control>
         <control type="image">
           <left>0</left><top>0</top><width>8</width><height>120</height>
