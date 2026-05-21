@@ -81,7 +81,7 @@
         </control>
         <control type="label">
           <left>82</left><top>61</top><width>1648</width><height>34</height>
-          <label>$INFO[ListItem.Property(ranked_details_line)]</label>
+          <label>$INFO[ListItem.Property(summary_line_colored)]</label>
           <font>font12</font>
           <textcolor>FFB7BEC8</textcolor>
           <aligny>center</aligny>
@@ -120,7 +120,7 @@
         </control>
         <control type="label">
           <left>82</left><top>61</top><width>1648</width><height>34</height>
-          <label>$INFO[ListItem.Property(ranked_details_line)]</label>
+          <label>$INFO[ListItem.Property(summary_line_colored)]</label>
           <font>font12</font>
           <textcolor>FFE1E7F0</textcolor>
           <aligny>center</aligny>

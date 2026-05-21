@@ -133,50 +133,59 @@ class ResultsDialog(xbmcgui.WindowXMLDialog):
             res = meta.get("resolution", "")
             res_text = _plain_text(res)
             res_color = _RES_COLORS.get(res, "FFEEEEEE")
-            li.setProperty("resolution", _c(res, res_color))
+            res_colored = _c(res, res_color)
+            li.setProperty("resolution", res_colored)
 
             # HDR — colored inline
             hdr_list = meta.get("hdr", [])
             hdr_text = _join_tokens(hdr_list) if hdr_list else "SDR"
             if hdr_list:
-                li.setProperty("hdr", _c(hdr_text, "FFFBBF24"))
+                hdr_colored = _c(hdr_text, "FFFBBF24")
             else:
-                li.setProperty("hdr", _c("SDR", "FF6B7280"))
+                hdr_colored = _c("SDR", "FF6B7280")
+            li.setProperty("hdr", hdr_colored)
 
             # Codec
             codec = meta.get("codec", "")
             codec_text = _plain_text(codec)
-            li.setProperty("codec", _c(codec, "FF94A3B8"))
+            codec_colored = _c(codec, "FF94A3B8")
+            li.setProperty("codec", codec_colored)
 
             # Audio
             audio_list = meta.get("audio", [])
             audio_str = _join_tokens(audio_list)
-            li.setProperty("audio", _c(audio_str, "FFE879A8"))
+            audio_colored = _c(audio_str, "FFE879A8")
+            li.setProperty("audio", audio_colored)
 
             # Source / Quality — colored inline
             quality = meta.get("quality", "")
             src_display = _SRC_SHORT.get(quality, quality)
             src_text = _plain_text(src_display)
             src_color = _SRC_COLORS.get(quality, "FFAAAAAA")
-            li.setProperty("quality", _c(src_display, src_color))
+            src_colored = _c(src_display, src_color)
+            li.setProperty("quality", src_colored)
 
             # Container (MKV, MP4, etc.) — default to MKV since most
             # scene releases are MKV and only MP4 releases tag the title.
             container = (meta.get("container", "") or "MKV").upper()
             container_color = "FF34D399" if container == "MKV" else "FFEF4444"
-            li.setProperty("container", _c(container, container_color))
+            container_colored = _c(container, container_color)
+            li.setProperty("container", container_colored)
 
             # Size
             size_text = _format_size(result.get("size"))
-            li.setProperty("size", _c(size_text, "FFA1A1AA"))
+            size_colored = _c(size_text, "FFA1A1AA")
+            li.setProperty("size", size_colored)
 
             # Age
             age_text = _plain_text(result.get("age", ""))
-            li.setProperty("age", _c(age_text, "FF6B7280"))
+            age_colored = _c(age_text, "FF6B7280")
+            li.setProperty("age", age_colored)
 
             # Indexer
             indexer_text = _plain_text(result.get("indexer", ""))
-            li.setProperty("indexer", _c(indexer_text, "FF4A9EFF"))
+            indexer_colored = _c(indexer_text, "FF4A9EFF")
+            li.setProperty("indexer", indexer_colored)
 
             # Group
             group_text = _plain_text(meta.get("group", ""))
@@ -198,9 +207,29 @@ class ResultsDialog(xbmcgui.WindowXMLDialog):
                     size_text,
                 ],
             )
+            technical_summary_colored = _join_parts(
+                " · ",
+                [
+                    res_colored,
+                    hdr_colored,
+                    codec_colored,
+                    audio_colored,
+                    src_colored,
+                    container_colored,
+                    size_colored,
+                ],
+            )
+            meta_origin_colored = _join_parts(
+                " · ",
+                [age_colored, indexer_colored],
+            )
             ranked_details_line = _join_parts(
                 " · ",
                 [age_text, indexer_text, technical_summary],
+            )
+            summary_line_colored = _join_parts(
+                " · ",
+                [meta_origin_colored, technical_summary_colored],
             )
             li.setProperty(
                 "primary_badges",
@@ -211,6 +240,9 @@ class ResultsDialog(xbmcgui.WindowXMLDialog):
             )
             li.setProperty("details_line", details_line)
             li.setProperty("technical_summary", technical_summary)
+            li.setProperty("technical_summary_colored", technical_summary_colored)
+            li.setProperty("meta_origin_colored", meta_origin_colored)
+            li.setProperty("summary_line_colored", summary_line_colored)
             li.setProperty("ranked_details_line", ranked_details_line)
             li.setProperty("detail_title", filename)
             li.setProperty("detail_video", _join_parts(" ", [res_text, codec_text]))

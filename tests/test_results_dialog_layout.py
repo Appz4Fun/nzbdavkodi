@@ -109,8 +109,10 @@ def test_ranked_results_dialog_uses_shared_list_item_properties():
     root = ET.parse(_RANKED_DIALOG_PATH).getroot()
     labels = _all_labels(root)
 
-    for property_name in ("ranked_details_line", "available"):
+    for property_name in ("summary_line_colored", "available"):
         assert "$INFO[ListItem.Property({})]".format(property_name) in labels
+
+    assert "$INFO[ListItem.Property(ranked_details_line)]" not in labels
 
 
 def test_ranked_results_dialog_keeps_first_line_filename_only():
