@@ -70,6 +70,8 @@ def _resolve_layout_xml(raw_value):
         value = ""
     if value == "1":
         return "results-dialog-split.xml"
+    if value == "2":
+        return "results-dialog.xml"
     return "results-dialog-ranked.xml"
 
 

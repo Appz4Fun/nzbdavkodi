@@ -60,8 +60,13 @@ def test_resolve_layout_xml_uses_split_detail_for_value_one():
     assert _resolve_layout_xml(" 1 ") == "results-dialog-split.xml"
 
 
+def test_resolve_layout_xml_uses_classic_rows_for_value_two():
+    assert _resolve_layout_xml("2") == "results-dialog.xml"
+    assert _resolve_layout_xml(" 2 ") == "results-dialog.xml"
+
+
 def test_resolve_layout_xml_falls_back_to_ranked_for_invalid_values():
-    assert _resolve_layout_xml("2") == "results-dialog-ranked.xml"
+    assert _resolve_layout_xml("3") == "results-dialog-ranked.xml"
     assert _resolve_layout_xml("ranked_cards") == "results-dialog-ranked.xml"
     assert _resolve_layout_xml(0) == "results-dialog-ranked.xml"
 
@@ -125,6 +130,31 @@ def test_show_results_dialog_uses_split_detail_layout_setting():
     assert result == selected
     assert MockDialog.call_args.args[:4] == (
         "results-dialog-split.xml",
+        "/addon/path",
+        "Default",
+        "1080i",
+    )
+
+
+def test_show_results_dialog_uses_classic_rows_layout_setting():
+    selected = _make_result(link="http://nzb/123")
+    results = [selected]
+
+    with patch("resources.lib.results_dialog.ResultsDialog") as MockDialog:
+        mock_instance = MagicMock()
+        mock_instance.get_selected_index.return_value = 0
+        MockDialog.return_value = mock_instance
+
+        with patch("resources.lib.results_dialog.xbmcaddon") as mock_addon_mod:
+            addon = mock_addon_mod.Addon.return_value
+            addon.getAddonInfo.return_value = "/addon/path"
+            addon.getSetting.return_value = "2"
+
+            result = show_results_dialog(results, title="Movie", total_count=1)
+
+    assert result == selected
+    assert MockDialog.call_args.args[:4] == (
+        "results-dialog.xml",
         "/addon/path",
         "Default",
         "1080i",
@@ -315,7 +345,7 @@ def test_results_layout_setting_defaults_to_ranked_cards():
     assert setting.get("type") == "enum"
     assert setting.get("default") == "0"
     assert setting.get("label") == "30197"
-    assert setting.get("lvalues") == "30198|30199"
+    assert setting.get("lvalues") == "30198|30199|30200"
 
 
 def test_results_layout_setting_is_between_max_results_and_auto_select_separator():
@@ -352,6 +382,8 @@ def test_results_layout_language_strings_exist():
     assert 'msgid "Ranked cards"' in text
     assert 'msgctxt "#30199"' in text
     assert 'msgid "Split detail"' in text
+    assert 'msgctxt "#30200"' in text
+    assert 'msgid "Classic rows"' in text
 
 
 # ---------------------------------------------------------------------------
