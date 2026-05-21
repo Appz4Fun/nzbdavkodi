@@ -109,8 +109,24 @@ def test_ranked_results_dialog_uses_shared_list_item_properties():
     root = ET.parse(_RANKED_DIALOG_PATH).getroot()
     labels = _all_labels(root)
 
-    for property_name in ("primary_badges", "details_line", "available"):
+    for property_name in ("ranked_details_line", "available"):
         assert "$INFO[ListItem.Property({})]".format(property_name) in labels
+
+
+def test_ranked_results_dialog_keeps_first_line_filename_only():
+    root = ET.parse(_RANKED_DIALOG_PATH).getroot()
+    list_control = root.find(".//control[@type='list'][@id='50']")
+    first_line_properties = {"primary_badges", "size", "age", "indexer", "details_line"}
+
+    for layout in (list_control.find("itemlayout"), list_control.find("focusedlayout")):
+        filename = _list_item_label_control(layout)
+        filename_top = int(filename.findtext("top"))
+        for property_name in first_line_properties:
+            try:
+                control = _property_label_control(layout, property_name)
+            except AssertionError:
+                continue
+            assert int(control.findtext("top")) != filename_top
 
 
 def test_split_results_dialog_has_focused_detail_panel_bindings():

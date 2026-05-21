@@ -184,6 +184,22 @@ class ResultsDialog(xbmcgui.WindowXMLDialog):
                 " · ",
                 [size_text, age_text, indexer_text, group_text],
             )
+            technical_summary = _join_parts(
+                " · ",
+                [
+                    res_text,
+                    hdr_text,
+                    codec_text,
+                    audio_str,
+                    src_text,
+                    container,
+                    size_text,
+                ],
+            )
+            ranked_details_line = _join_parts(
+                " · ",
+                [age_text, indexer_text, technical_summary],
+            )
             li.setProperty(
                 "primary_badges",
                 _join_parts(
@@ -192,6 +208,8 @@ class ResultsDialog(xbmcgui.WindowXMLDialog):
                 ),
             )
             li.setProperty("details_line", details_line)
+            li.setProperty("technical_summary", technical_summary)
+            li.setProperty("ranked_details_line", ranked_details_line)
             li.setProperty("detail_title", filename)
             li.setProperty("detail_video", _join_parts(" ", [res_text, codec_text]))
             li.setProperty("detail_audio", audio_str)

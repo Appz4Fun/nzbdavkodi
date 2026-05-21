@@ -73,23 +73,15 @@
           <aligny>center</aligny>
         </control>
         <control type="label">
-          <left>82</left><top>18</top><width>1160</width><height>40</height>
+          <left>82</left><top>18</top><width>1648</width><height>40</height>
           <label>$INFO[ListItem.Label]</label>
           <font>font13</font>
           <textcolor>FFE8EDF5</textcolor>
           <aligny>center</aligny>
         </control>
         <control type="label">
-          <left>1270</left><top>18</top><width>460</width><height>40</height>
-          <label>$INFO[ListItem.Property(primary_badges)]</label>
-          <font>font12</font>
-          <textcolor>FFFFFFFF</textcolor>
-          <align>right</align>
-          <aligny>center</aligny>
-        </control>
-        <control type="label">
           <left>82</left><top>61</top><width>1648</width><height>34</height>
-          <label>$INFO[ListItem.Property(details_line)]</label>
+          <label>$INFO[ListItem.Property(ranked_details_line)]</label>
           <font>font12</font>
           <textcolor>FFB7BEC8</textcolor>
           <aligny>center</aligny>
@@ -120,23 +112,15 @@
           <aligny>center</aligny>
         </control>
         <control type="label">
-          <left>82</left><top>18</top><width>1160</width><height>40</height>
+          <left>82</left><top>18</top><width>1648</width><height>40</height>
           <label>$INFO[ListItem.Label]</label>
           <font>font13</font>
           <textcolor>FFFFFFFF</textcolor>
           <aligny>center</aligny>
         </control>
         <control type="label">
-          <left>1270</left><top>18</top><width>460</width><height>40</height>
-          <label>$INFO[ListItem.Property(primary_badges)]</label>
-          <font>font12</font>
-          <textcolor>FFFFFFFF</textcolor>
-          <align>right</align>
-          <aligny>center</aligny>
-        </control>
-        <control type="label">
           <left>82</left><top>61</top><width>1648</width><height>34</height>
-          <label>$INFO[ListItem.Property(details_line)]</label>
+          <label>$INFO[ListItem.Property(ranked_details_line)]</label>
           <font>font12</font>
           <textcolor>FFE1E7F0</textcolor>
           <aligny>center</aligny>

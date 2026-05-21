@@ -251,6 +251,13 @@ def test_results_dialog_sets_shared_display_properties(monkeypatch):
     assert "2160p" in item.getProperty("primary_badges")
     assert "DV HDR10" in item.getProperty("primary_badges")
     assert "72.0 GB" in item.getProperty("details_line")
+    assert item.getProperty("technical_summary") == (
+        "2160p · DV HDR10 · HEVC · TrueHD Atmos · REMUX · MKV · 72.0 GB"
+    )
+    assert item.getProperty("ranked_details_line") == (
+        "4 years · Hydra · 2160p · DV HDR10 · HEVC · TrueHD Atmos · "
+        "REMUX · MKV · 72.0 GB"
+    )
     assert item.getProperty("detail_title") == (
         "Movie.2024.2160p.UHD.BluRay.REMUX-FraMeSToR"
     )
@@ -283,6 +290,8 @@ def test_results_dialog_display_properties_tolerate_missing_metadata(monkeypatch
     item = list_control.items[0]
     assert item.getProperty("primary_badges") == "SDR · MKV"
     assert item.getProperty("details_line") == ""
+    assert item.getProperty("technical_summary") == "SDR · MKV"
+    assert item.getProperty("ranked_details_line") == "SDR · MKV"
     assert item.getProperty("detail_status") == ""
 
 
