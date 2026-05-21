@@ -1677,6 +1677,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
         for arg in cmd:
             if "\x00" in arg:
                 return False
+            if prev_arg == "-i" and arg.startswith("-"):
+                return False
             if prev_arg == "-headers":
                 if not arg.endswith("\r\n"):
                     return False
