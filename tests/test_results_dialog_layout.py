@@ -177,6 +177,34 @@ def test_ranked_results_dialog_has_no_bottom_divider_lines():
             assert image_control.findtext("height") != "1"
 
 
+def test_ranked_results_dialog_keeps_item_and_focus_geometry_symmetric():
+    root = ET.parse(_RANKED_DIALOG_PATH).getroot()
+    list_control = root.find(".//control[@type='list'][@id='50']")
+    item_layout = list_control.find("itemlayout")
+    focused_layout = list_control.find("focusedlayout")
+
+    assert item_layout.get("width") == focused_layout.get("width")
+    assert item_layout.get("height") == focused_layout.get("height")
+
+    labels = (
+        "$INFO[ListItem.Label]",
+        "$INFO[ListItem.Property(summary_line_colored)]",
+    )
+    for label in labels:
+        item_control = next(
+            control
+            for control in item_layout.findall("./control[@type='label']")
+            if control.findtext("label") == label
+        )
+        focus_control = next(
+            control
+            for control in focused_layout.findall("./control[@type='label']")
+            if control.findtext("label") == label
+        )
+        for dimension in ("left", "top", "width", "height", "font", "aligny"):
+            assert item_control.findtext(dimension) == focus_control.findtext(dimension)
+
+
 def test_split_results_dialog_has_focused_detail_panel_bindings():
     root = ET.parse(_SPLIT_DIALOG_PATH).getroot()
     labels = _all_labels(root)

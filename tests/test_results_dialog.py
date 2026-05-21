@@ -8,9 +8,11 @@ from unittest.mock import MagicMock, patch
 from resources.lib.results_dialog import (
     _AVAILABLE_LABEL,
     _available_text,
+    _build_display_fields,
     _format_date,
     _format_size,
     _lang_short,
+    _metadata_part,
     _resolve_layout_xml,
     show_results_dialog,
 )
@@ -43,6 +45,19 @@ def test_available_label_is_ascii_for_skin_compatibility():
 
 def test_available_label_renders_green():
     assert _available_text() == "[COLOR FF22C55E]DL[/COLOR]"
+
+
+def test_metadata_part_returns_plain_and_colored_text():
+    part = _metadata_part("2160p", "FFA78BFA")
+
+    assert part["plain"] == "2160p"
+    assert part["colored"] == "[COLOR FFA78BFA]2160p[/COLOR]"
+
+
+def test_metadata_part_omits_color_for_blank_text():
+    part = _metadata_part("", "FFA78BFA")
+
+    assert part == {"plain": "", "colored": ""}
 
 
 # ---------------------------------------------------------------------------
@@ -284,10 +299,9 @@ def test_results_dialog_sets_shared_display_properties(monkeypatch):
     assert item.getProperty("technical_summary") == (
         "2160p · DV HDR10 · HEVC · TrueHD Atmos · REMUX · MKV · 72.0 GB"
     )
-    assert item.getProperty("ranked_details_line") == (
-        "Downloaded · 4 years · Hydra · 2160p · DV HDR10 · HEVC · "
-        "TrueHD Atmos · REMUX · MKV · 72.0 GB"
-    )
+    assert item.getProperty("ranked_details_line") == ""
+    assert item.getProperty("downloaded_badge") == "[COLOR FF22C55E]DL[/COLOR]"
+    assert item.getProperty("available") == "[COLOR FF22C55E]DL[/COLOR]"
     assert item.getProperty("meta_origin_colored") == (
         "[COLOR FF6B7280]4 years[/COLOR] · [COLOR FF4A9EFF]Hydra[/COLOR]"
     )
@@ -338,7 +352,7 @@ def test_results_dialog_display_properties_tolerate_missing_metadata(monkeypatch
     assert item.getProperty("primary_badges") == "SDR · MKV"
     assert item.getProperty("details_line") == ""
     assert item.getProperty("technical_summary") == "SDR · MKV"
-    assert item.getProperty("ranked_details_line") == "SDR · MKV"
+    assert item.getProperty("ranked_details_line") == ""
     assert item.getProperty("meta_origin_colored") == ""
     assert item.getProperty("technical_summary_colored") == (
         "[COLOR FF6B7280]SDR[/COLOR] · [COLOR FF34D399]MKV[/COLOR]"
@@ -347,6 +361,23 @@ def test_results_dialog_display_properties_tolerate_missing_metadata(monkeypatch
         "[COLOR FF6B7280]SDR[/COLOR] · [COLOR FF34D399]MKV[/COLOR]"
     )
     assert item.getProperty("detail_status") == ""
+
+
+def test_build_display_fields_omits_unused_ranked_details_line():
+    fields = _build_display_fields(
+        _make_result(
+            age="1 day",
+            indexer="Hydra",
+            _available=True,
+        )
+    )
+
+    assert "ranked_details_line" not in fields
+    assert fields["downloaded_badge"] == "[COLOR FF22C55E]DL[/COLOR]"
+    assert fields["available"] == fields["downloaded_badge"]
+    assert fields["summary_line_colored"].startswith(
+        "[COLOR FF22C55E]Downloaded[/COLOR] · [COLOR FF6B7280]1 day[/COLOR]"
+    )
 
 
 # ---------------------------------------------------------------------------

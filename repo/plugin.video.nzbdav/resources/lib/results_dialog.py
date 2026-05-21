@@ -10,21 +10,43 @@ from resources.lib.http_util import format_size as _format_size
 from resources.lib.i18n import fmt as _fmt
 from resources.lib.i18n import string as _string
 
-# Color constants matching the mockup
+COLOR_RESOLUTION_DEFAULT = "FFEEEEEE"
+COLOR_RESOLUTION_2160P = "FFA78BFA"
+COLOR_RESOLUTION_1080P = "FF60A5FA"
+COLOR_RESOLUTION_720P = "FF4ADE80"
+COLOR_RESOLUTION_480P = "FFFBBF24"
+COLOR_HDR = "FFFBBF24"
+COLOR_SDR = "FF6B7280"
+COLOR_CODEC = "FF94A3B8"
+COLOR_AUDIO = "FFE879A8"
+COLOR_SOURCE_DEFAULT = "FFAAAAAA"
+COLOR_SOURCE_BLUE = "FF60A5FA"
+COLOR_SOURCE_GREEN = "FF4ADE80"
+COLOR_SOURCE_PURPLE = "FFC084FC"
+COLOR_SOURCE_PINK = "FFF0ABFC"
+COLOR_SOURCE_YELLOW = "FFFDE68A"
+COLOR_CONTAINER_MKV = "FF34D399"
+COLOR_CONTAINER_OTHER = "FFEF4444"
+COLOR_SIZE = "FFA1A1AA"
+COLOR_AGE = "FF6B7280"
+COLOR_INDEXER = "FF4A9EFF"
+COLOR_GROUP = "FF34D399"
+COLOR_DOWNLOADED = "FF22C55E"
+
 _RES_COLORS = {
-    "2160p": "FFA78BFA",
-    "1080p": "FF60A5FA",
-    "720p": "FF4ADE80",
-    "480p": "FFFBBF24",
+    "2160p": COLOR_RESOLUTION_2160P,
+    "1080p": COLOR_RESOLUTION_1080P,
+    "720p": COLOR_RESOLUTION_720P,
+    "480p": COLOR_RESOLUTION_480P,
 }
 
 _SRC_COLORS = {
-    "BluRay REMUX": "FF60A5FA",
-    "REMUX": "FF60A5FA",
-    "BluRay": "FF4ADE80",
-    "WEB-DL": "FFC084FC",
-    "WEBRip": "FFF0ABFC",
-    "HDTV": "FFFDE68A",
+    "BluRay REMUX": COLOR_SOURCE_BLUE,
+    "REMUX": COLOR_SOURCE_BLUE,
+    "BluRay": COLOR_SOURCE_GREEN,
+    "WEB-DL": COLOR_SOURCE_PURPLE,
+    "WEBRip": COLOR_SOURCE_PINK,
+    "HDTV": COLOR_SOURCE_YELLOW,
 }
 
 _SRC_SHORT = {
@@ -58,7 +80,7 @@ LIST_ID = 50
 
 
 def _available_text():
-    return _c(_AVAILABLE_LABEL, "FF22C55E")
+    return _c(_AVAILABLE_LABEL, COLOR_DOWNLOADED)
 
 
 def _resolve_layout_xml(raw_value):
@@ -94,6 +116,129 @@ def _join_parts(separator, parts):
     return separator.join(part for part in parts if part)
 
 
+def _metadata_part(text, color):
+    plain = _plain_text(text)
+    return {"plain": plain, "colored": _c(plain, color)}
+
+
+def _build_display_fields(result):
+    """Return Kodi ListItem properties for one search result."""
+    meta = result.get("_meta", {})
+    if not isinstance(meta, dict):
+        meta = {}
+
+    resolution_text = meta.get("resolution", "")
+    resolution = _metadata_part(
+        resolution_text,
+        _RES_COLORS.get(_plain_text(resolution_text), COLOR_RESOLUTION_DEFAULT),
+    )
+
+    hdr_list = meta.get("hdr", [])
+    hdr_text = _join_tokens(hdr_list) if hdr_list else "SDR"
+    hdr = _metadata_part(hdr_text, COLOR_HDR if hdr_list else COLOR_SDR)
+
+    codec = _metadata_part(meta.get("codec", ""), COLOR_CODEC)
+
+    audio_list = meta.get("audio", [])
+    audio = _metadata_part(_join_tokens(audio_list), COLOR_AUDIO)
+
+    quality = meta.get("quality", "")
+    src_display = _SRC_SHORT.get(quality, quality)
+    source = _metadata_part(src_display, _SRC_COLORS.get(quality, COLOR_SOURCE_DEFAULT))
+
+    container = (meta.get("container", "") or "MKV").upper()
+    container_part = _metadata_part(
+        container, COLOR_CONTAINER_MKV if container == "MKV" else COLOR_CONTAINER_OTHER
+    )
+
+    size = _metadata_part(_format_size(result.get("size")), COLOR_SIZE)
+    age = _metadata_part(result.get("age", ""), COLOR_AGE)
+    indexer = _metadata_part(result.get("indexer", ""), COLOR_INDEXER)
+    group = _metadata_part(meta.get("group", ""), COLOR_GROUP)
+
+    details_line = _join_parts(
+        " · ",
+        [size["plain"], age["plain"], indexer["plain"], group["plain"]],
+    )
+    primary_badges = _join_parts(
+        " · ",
+        [
+            resolution["plain"],
+            hdr["plain"],
+            codec["plain"],
+            audio["plain"],
+            source["plain"],
+            container_part["plain"],
+        ],
+    )
+    technical_summary = _join_parts(
+        " · ",
+        [
+            resolution["plain"],
+            hdr["plain"],
+            codec["plain"],
+            audio["plain"],
+            source["plain"],
+            container_part["plain"],
+            size["plain"],
+        ],
+    )
+    technical_summary_colored = _join_parts(
+        " · ",
+        [
+            resolution["colored"],
+            hdr["colored"],
+            codec["colored"],
+            audio["colored"],
+            source["colored"],
+            container_part["colored"],
+            size["colored"],
+        ],
+    )
+    meta_origin_colored = _join_parts(" · ", [age["colored"], indexer["colored"]])
+
+    if result.get("_available"):
+        status_colored = _c(_DOWNLOADED_LABEL, COLOR_DOWNLOADED)
+        downloaded_badge = _available_text()
+        detail_status = _DOWNLOADED_LABEL
+    else:
+        status_colored = ""
+        downloaded_badge = ""
+        detail_status = ""
+
+    summary_line_colored = _join_parts(
+        " · ",
+        [status_colored, meta_origin_colored, technical_summary_colored],
+    )
+
+    return {
+        "resolution": resolution["colored"],
+        "hdr": hdr["colored"],
+        "codec": codec["colored"],
+        "audio": audio["colored"],
+        "quality": source["colored"],
+        "container": container_part["colored"],
+        "size": size["colored"],
+        "age": age["colored"],
+        "indexer": indexer["colored"],
+        "group": group["colored"],
+        "primary_badges": primary_badges,
+        "details_line": details_line,
+        "technical_summary": technical_summary,
+        "technical_summary_colored": technical_summary_colored,
+        "meta_origin_colored": meta_origin_colored,
+        "summary_line_colored": summary_line_colored,
+        "detail_video": _join_parts(" ", [resolution["plain"], codec["plain"]]),
+        "detail_audio": audio["plain"],
+        "detail_source": _join_parts(" ", [source["plain"], container_part["plain"]]),
+        "detail_origin": details_line,
+        "detail_status": detail_status,
+        "downloaded_badge": downloaded_badge,
+        # Compatibility alias used by the classic and split skin layouts.
+        "available": downloaded_badge,
+    }
+
+
 class ResultsDialog(xbmcgui.WindowXMLDialog):
     """Full-screen NZB results selection dialog."""
 
@@ -125,145 +270,12 @@ class ResultsDialog(xbmcgui.WindowXMLDialog):
 
         items = []
         for i, result in enumerate(self.results):
-            meta = result.get("_meta", {})
             filename = result.get("title", "")
 
             li = xbmcgui.ListItem(label=filename)
-
-            # Resolution — colored inline
-            res = meta.get("resolution", "")
-            res_text = _plain_text(res)
-            res_color = _RES_COLORS.get(res, "FFEEEEEE")
-            res_colored = _c(res, res_color)
-            li.setProperty("resolution", res_colored)
-
-            # HDR — colored inline
-            hdr_list = meta.get("hdr", [])
-            hdr_text = _join_tokens(hdr_list) if hdr_list else "SDR"
-            if hdr_list:
-                hdr_colored = _c(hdr_text, "FFFBBF24")
-            else:
-                hdr_colored = _c("SDR", "FF6B7280")
-            li.setProperty("hdr", hdr_colored)
-
-            # Codec
-            codec = meta.get("codec", "")
-            codec_text = _plain_text(codec)
-            codec_colored = _c(codec, "FF94A3B8")
-            li.setProperty("codec", codec_colored)
-
-            # Audio
-            audio_list = meta.get("audio", [])
-            audio_str = _join_tokens(audio_list)
-            audio_colored = _c(audio_str, "FFE879A8")
-            li.setProperty("audio", audio_colored)
-
-            # Source / Quality — colored inline
-            quality = meta.get("quality", "")
-            src_display = _SRC_SHORT.get(quality, quality)
-            src_text = _plain_text(src_display)
-            src_color = _SRC_COLORS.get(quality, "FFAAAAAA")
-            src_colored = _c(src_display, src_color)
-            li.setProperty("quality", src_colored)
-
-            # Container (MKV, MP4, etc.) — default to MKV since most
-            # scene releases are MKV and only MP4 releases tag the title.
-            container = (meta.get("container", "") or "MKV").upper()
-            container_color = "FF34D399" if container == "MKV" else "FFEF4444"
-            container_colored = _c(container, container_color)
-            li.setProperty("container", container_colored)
-
-            # Size
-            size_text = _format_size(result.get("size"))
-            size_colored = _c(size_text, "FFA1A1AA")
-            li.setProperty("size", size_colored)
-
-            # Age
-            age_text = _plain_text(result.get("age", ""))
-            age_colored = _c(age_text, "FF6B7280")
-            li.setProperty("age", age_colored)
-
-            # Indexer
-            indexer_text = _plain_text(result.get("indexer", ""))
-            indexer_colored = _c(indexer_text, "FF4A9EFF")
-            li.setProperty("indexer", indexer_colored)
-
-            # Group
-            group_text = _plain_text(meta.get("group", ""))
-            li.setProperty("group", _c(group_text, "FF34D399"))
-
-            details_line = _join_parts(
-                " · ",
-                [size_text, age_text, indexer_text, group_text],
-            )
-            technical_summary = _join_parts(
-                " · ",
-                [
-                    res_text,
-                    hdr_text,
-                    codec_text,
-                    audio_str,
-                    src_text,
-                    container,
-                    size_text,
-                ],
-            )
-            technical_summary_colored = _join_parts(
-                " · ",
-                [
-                    res_colored,
-                    hdr_colored,
-                    codec_colored,
-                    audio_colored,
-                    src_colored,
-                    container_colored,
-                    size_colored,
-                ],
-            )
-            meta_origin_colored = _join_parts(
-                " · ",
-                [age_colored, indexer_colored],
-            )
-            if result.get("_available"):
-                status_text = _DOWNLOADED_LABEL
-                status_colored = _c(_DOWNLOADED_LABEL, "FF22C55E")
-            else:
-                status_text = ""
-                status_colored = ""
-            ranked_details_line = _join_parts(
-                " · ",
-                [status_text, age_text, indexer_text, technical_summary],
-            )
-            summary_line_colored = _join_parts(
-                " · ",
-                [status_colored, meta_origin_colored, technical_summary_colored],
-            )
-            li.setProperty(
-                "primary_badges",
-                _join_parts(
-                    " · ",
-                    [res_text, hdr_text, codec_text, audio_str, src_text, container],
-                ),
-            )
-            li.setProperty("details_line", details_line)
-            li.setProperty("technical_summary", technical_summary)
-            li.setProperty("technical_summary_colored", technical_summary_colored)
-            li.setProperty("meta_origin_colored", meta_origin_colored)
-            li.setProperty("summary_line_colored", summary_line_colored)
-            li.setProperty("ranked_details_line", ranked_details_line)
+            for key, value in _build_display_fields(result).items():
+                li.setProperty(key, value)
             li.setProperty("detail_title", filename)
-            li.setProperty("detail_video", _join_parts(" ", [res_text, codec_text]))
-            li.setProperty("detail_audio", audio_str)
-            li.setProperty("detail_source", _join_parts(" ", [src_text, container]))
-            li.setProperty("detail_origin", details_line)
-            li.setProperty(
-                "detail_status",
-                _DOWNLOADED_LABEL if result.get("_available") else "",
-            )
-
-            # Already downloaded indicator
-            if result.get("_available"):
-                li.setProperty("available", _available_text())
 
             # Alternating row background
             li.setProperty("row_bg", _BG_A if i % 2 == 0 else _BG_B)
