@@ -65,30 +65,18 @@
           <texture>results-card.png</texture>
         </control>
         <control type="label">
-          <left>28</left><top>22</top><width>42</width><height>34</height>
-          <label>$INFO[ListItem.Property(available)]</label>
-          <font>font13</font>
-          <textcolor>FF8FE388</textcolor>
-          <aligny>center</aligny>
-        </control>
-        <control type="label">
-          <left>82</left><top>18</top><width>1648</width><height>40</height>
+          <left>42</left><top>18</top><width>1688</width><height>40</height>
           <label>$INFO[ListItem.Label]</label>
           <font>font13</font>
           <textcolor>FFE8EDF5</textcolor>
           <aligny>center</aligny>
         </control>
         <control type="label">
-          <left>82</left><top>61</top><width>1648</width><height>34</height>
+          <left>42</left><top>61</top><width>1688</width><height>34</height>
           <label>$INFO[ListItem.Property(summary_line_colored)]</label>
           <font>font12</font>
           <textcolor>FFB7BEC8</textcolor>
           <aligny>center</aligny>
-        </control>
-        <control type="image">
-          <left>0</left><top>119</top><width>1770</width><height>1</height>
-          <texture>white.png</texture>
-          <colordiffuse>FF202532</colordiffuse>
         </control>
       </itemlayout>
 
@@ -97,36 +85,19 @@
           <left>0</left><top>0</top><width>1770</width><height>120</height>
           <texture>results-card-focus.png</texture>
         </control>
-        <control type="image">
-          <left>0</left><top>0</top><width>8</width><height>120</height>
-          <texture>white.png</texture>
-          <colordiffuse>FF6BB6FF</colordiffuse>
-        </control>
         <control type="label">
-          <left>28</left><top>22</top><width>42</width><height>34</height>
-          <label>$INFO[ListItem.Property(available)]</label>
-          <font>font13</font>
-          <textcolor>FFB8F2B4</textcolor>
-          <aligny>center</aligny>
-        </control>
-        <control type="label">
-          <left>82</left><top>18</top><width>1648</width><height>40</height>
+          <left>42</left><top>18</top><width>1688</width><height>40</height>
           <label>$INFO[ListItem.Label]</label>
           <font>font13</font>
           <textcolor>FFFFFFFF</textcolor>
           <aligny>center</aligny>
         </control>
         <control type="label">
-          <left>82</left><top>61</top><width>1648</width><height>34</height>
+          <left>42</left><top>61</top><width>1688</width><height>34</height>
           <label>$INFO[ListItem.Property(summary_line_colored)]</label>
           <font>font12</font>
           <textcolor>FFE1E7F0</textcolor>
           <aligny>center</aligny>
-        </control>
-        <control type="image">
-          <left>0</left><top>119</top><width>1770</width><height>1</height>
-          <texture>white.png</texture>
-          <colordiffuse>FF2E5C8A</colordiffuse>
         </control>
       </focusedlayout>
     </control>

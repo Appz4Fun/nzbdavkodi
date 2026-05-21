@@ -47,6 +47,7 @@ def _c(text, color):
 _BG_A = "FF0C0C10"
 _BG_B = "FF141417"
 _AVAILABLE_LABEL = "DL"
+_DOWNLOADED_LABEL = "Downloaded"
 
 ACTION_SELECT = 7
 ACTION_PREVIOUS_MENU = 10
@@ -223,13 +224,19 @@ class ResultsDialog(xbmcgui.WindowXMLDialog):
                 " · ",
                 [age_colored, indexer_colored],
             )
+            if result.get("_available"):
+                status_text = _DOWNLOADED_LABEL
+                status_colored = _c(_DOWNLOADED_LABEL, "FF22C55E")
+            else:
+                status_text = ""
+                status_colored = ""
             ranked_details_line = _join_parts(
                 " · ",
-                [age_text, indexer_text, technical_summary],
+                [status_text, age_text, indexer_text, technical_summary],
             )
             summary_line_colored = _join_parts(
                 " · ",
-                [meta_origin_colored, technical_summary_colored],
+                [status_colored, meta_origin_colored, technical_summary_colored],
             )
             li.setProperty(
                 "primary_badges",
@@ -251,7 +258,7 @@ class ResultsDialog(xbmcgui.WindowXMLDialog):
             li.setProperty("detail_origin", details_line)
             li.setProperty(
                 "detail_status",
-                "Downloaded" if result.get("_available") else "",
+                _DOWNLOADED_LABEL if result.get("_available") else "",
             )
 
             # Already downloaded indicator

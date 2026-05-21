@@ -110,10 +110,20 @@ def test_ranked_results_dialog_uses_shared_list_item_properties():
     root = ET.parse(_RANKED_DIALOG_PATH).getroot()
     labels = _all_labels(root)
 
-    for property_name in ("summary_line_colored", "available"):
+    for property_name in ("summary_line_colored",):
         assert "$INFO[ListItem.Property({})]".format(property_name) in labels
 
+    assert "$INFO[ListItem.Property(available)]" not in labels
     assert "$INFO[ListItem.Property(ranked_details_line)]" not in labels
+
+
+def test_ranked_results_dialog_has_no_side_downloaded_indicator():
+    root = ET.parse(_RANKED_DIALOG_PATH).getroot()
+    list_control = root.find(".//control[@type='list'][@id='50']")
+
+    for layout in (list_control.find("itemlayout"), list_control.find("focusedlayout")):
+        with pytest.raises(AssertionError):
+            _property_label_control(layout, "available")
 
 
 def test_ranked_results_dialog_keeps_first_line_filename_only():
@@ -147,6 +157,24 @@ def test_ranked_results_dialog_uses_rounded_card_textures():
         background = layout.find("./control[@type='image'][width='1770'][height='120']")
         assert background is not None
         assert background.findtext("texture") == texture_name
+
+
+def test_ranked_results_dialog_has_no_left_focus_accent_bar():
+    root = ET.parse(_RANKED_DIALOG_PATH).getroot()
+    list_control = root.find(".//control[@type='list'][@id='50']")
+    focused_layout = list_control.find("focusedlayout")
+
+    for image_control in focused_layout.findall("./control[@type='image']"):
+        assert image_control.findtext("width") != "8"
+
+
+def test_ranked_results_dialog_has_no_bottom_divider_lines():
+    root = ET.parse(_RANKED_DIALOG_PATH).getroot()
+    list_control = root.find(".//control[@type='list'][@id='50']")
+
+    for layout in (list_control.find("itemlayout"), list_control.find("focusedlayout")):
+        for image_control in layout.findall("./control[@type='image']"):
+            assert image_control.findtext("height") != "1"
 
 
 def test_split_results_dialog_has_focused_detail_panel_bindings():

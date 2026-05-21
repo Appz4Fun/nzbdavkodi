@@ -285,8 +285,8 @@ def test_results_dialog_sets_shared_display_properties(monkeypatch):
         "2160p · DV HDR10 · HEVC · TrueHD Atmos · REMUX · MKV · 72.0 GB"
     )
     assert item.getProperty("ranked_details_line") == (
-        "4 years · Hydra · 2160p · DV HDR10 · HEVC · TrueHD Atmos · "
-        "REMUX · MKV · 72.0 GB"
+        "Downloaded · 4 years · Hydra · 2160p · DV HDR10 · HEVC · "
+        "TrueHD Atmos · REMUX · MKV · 72.0 GB"
     )
     assert item.getProperty("meta_origin_colored") == (
         "[COLOR FF6B7280]4 years[/COLOR] · [COLOR FF4A9EFF]Hydra[/COLOR]"
@@ -298,7 +298,8 @@ def test_results_dialog_sets_shared_display_properties(monkeypatch):
         "[COLOR FFA1A1AA]72.0 GB[/COLOR]"
     )
     assert item.getProperty("summary_line_colored") == (
-        "[COLOR FF6B7280]4 years[/COLOR] · [COLOR FF4A9EFF]Hydra[/COLOR] · "
+        "[COLOR FF22C55E]Downloaded[/COLOR] · [COLOR FF6B7280]4 years[/COLOR] · "
+        "[COLOR FF4A9EFF]Hydra[/COLOR] · "
         "[COLOR FFA78BFA]2160p[/COLOR] · [COLOR FFFBBF24]DV HDR10[/COLOR] · "
         "[COLOR FF94A3B8]HEVC[/COLOR] · [COLOR FFE879A8]TrueHD Atmos[/COLOR] · "
         "[COLOR FF60A5FA]REMUX[/COLOR] · [COLOR FF34D399]MKV[/COLOR] · "
