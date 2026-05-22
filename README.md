@@ -217,7 +217,7 @@ These tune stream-proxy behaviour. Defaults are safe; only flip these if you hav
 
 ### Results Dialog
 
-The results dialog shows all matching NZBs sorted by relevance. In Sorting settings, choose the default **Ranked cards** layout, **Split detail** for a compact list with a focused-result details panel, or **Classic rows** for the original full-width row view.
+The results dialog shows all matching NZBs sorted by relevance. In Sorting settings, choose the default **Ranked cards** layout, **Split detail** for a compact list with a focused-result details panel, **Classic rows** for the original full-width row view, or **Compact ranked cards** for dense card tiles with minimal spacing and higher information density.
 
 ![NZB Results Dialog](docs/images/results-dialog.png)
 
