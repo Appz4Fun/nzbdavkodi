@@ -19,6 +19,7 @@ _SKIN_DIR = os.path.join(
 _DIALOG_XML_PATHS = [
     os.path.join(_SKIN_DIR, "results-dialog.xml"),
     os.path.join(_SKIN_DIR, "results-dialog-ranked.xml"),
+    os.path.join(_SKIN_DIR, "results-dialog-ranked-compact.xml"),
     os.path.join(_SKIN_DIR, "results-dialog-split.xml"),
 ]
 
