@@ -66,9 +66,9 @@ def test_metadata_part_omits_color_for_blank_text():
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_layout_xml_defaults_to_ranked_cards():
-    assert _resolve_layout_xml("") == "results-dialog-ranked.xml"
-    assert _resolve_layout_xml(None) == "results-dialog-ranked.xml"
+def test_resolve_layout_xml_defaults_to_classic_rows():
+    assert _resolve_layout_xml("") == "results-dialog.xml"
+    assert _resolve_layout_xml(None) == "results-dialog.xml"
 
 
 def test_resolve_layout_xml_uses_split_detail_for_value_one():
@@ -86,9 +86,9 @@ def test_resolve_layout_xml_uses_compact_ranked_cards_for_value_three():
     assert _resolve_layout_xml(" 3 ") == "results-dialog-ranked-compact.xml"
 
 
-def test_resolve_layout_xml_falls_back_to_ranked_for_invalid_values():
-    assert _resolve_layout_xml("4") == "results-dialog-ranked.xml"
-    assert _resolve_layout_xml("ranked_cards") == "results-dialog-ranked.xml"
+def test_resolve_layout_xml_falls_back_to_classic_rows_for_invalid_values():
+    assert _resolve_layout_xml("4") == "results-dialog.xml"
+    assert _resolve_layout_xml("ranked_cards") == "results-dialog.xml"
     assert _resolve_layout_xml(0) == "results-dialog-ranked.xml"
 
 
@@ -144,7 +144,7 @@ def test_show_results_dialog_returns_selected():
         result = show_results_dialog(results, title="Movie", year="2024", total_count=1)
         assert result == selected
         assert MockDialog.call_args.args[:4] == (
-            "results-dialog-ranked.xml",
+            "results-dialog.xml",
             "",
             "Default",
             "1080i",
@@ -201,7 +201,7 @@ def test_show_results_dialog_uses_classic_rows_layout_setting():
     )
 
 
-def test_show_results_dialog_defaults_to_ranked_when_layout_setting_read_fails():
+def test_show_results_dialog_defaults_to_classic_rows_when_layout_setting_read_fails():
     selected = _make_result(link="http://nzb/123")
     results = [selected]
 
@@ -219,7 +219,7 @@ def test_show_results_dialog_defaults_to_ranked_when_layout_setting_read_fails()
 
     assert result == selected
     assert MockDialog.call_args.args[:4] == (
-        "results-dialog-ranked.xml",
+        "results-dialog.xml",
         "/addon/path",
         "Default",
         "1080i",
@@ -410,7 +410,7 @@ def test_build_display_fields_omits_unused_ranked_details_line():
 # ---------------------------------------------------------------------------
 
 
-def test_results_layout_setting_defaults_to_ranked_cards():
+def test_results_layout_setting_defaults_to_classic_rows():
     settings_path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         "repo",
@@ -423,7 +423,7 @@ def test_results_layout_setting_defaults_to_ranked_cards():
 
     assert setting is not None
     assert setting.get("type") == "enum"
-    assert setting.get("default") == "0"
+    assert setting.get("default") == "2"
     assert setting.get("label") == "30197"
     assert setting.get("lvalues") == "|".join(
         str(option["label_id"]) for option in results_dialog_module._LAYOUT_OPTIONS

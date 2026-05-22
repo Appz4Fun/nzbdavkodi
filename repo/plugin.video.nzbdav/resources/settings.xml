@@ -121,7 +121,7 @@
 	<category label="30062">
 		<setting id="sort_order" label="30063" type="enum" default="0" lvalues="30077|30078|30079|30080|30081" />
 		<setting id="max_results" label="30064" type="number" default="25" />
-		<setting id="results_layout" label="30197" type="enum" default="0" lvalues="30198|30199|30200|30201" />
+		<setting id="results_layout" label="30197" type="enum" default="2" lvalues="30198|30199|30200|30201" />
 		<setting label="30065" type="lsep" />
 		<setting id="auto_select_best" label="30066" type="bool" default="false" />
 	</category>

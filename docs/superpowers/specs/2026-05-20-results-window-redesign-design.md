@@ -29,9 +29,9 @@ Use one shared Python dialog class with multiple skin XML files.
 `show_results_dialog()` will read a new Kodi setting named `results_layout` and
 map it to a skin XML file:
 
-- `0` or missing/invalid: `results-dialog-ranked.xml`
+- `0`: `results-dialog-ranked.xml`
 - `1`: `results-dialog-split.xml`
-- `2`: `results-dialog.xml`
+- `2` or missing/invalid: `results-dialog.xml`
 - `3`: `results-dialog-ranked-compact.xml`
 
 The existing `results-dialog.xml` remains in the repo as the legacy dense-table
@@ -46,7 +46,7 @@ will add richer normalized item properties that both new skins can consume.
 Add an enum setting in the existing Sorting category:
 
 ```xml
-<setting id="results_layout" label="30197" type="enum" default="0" lvalues="30198|30199|30200|30201" />
+<setting id="results_layout" label="30197" type="enum" default="2" lvalues="30198|30199|30200|30201" />
 ```
 
 Add English strings:
@@ -57,8 +57,8 @@ Add English strings:
 - `30200`: `Classic rows`
 - `30201`: `Compact ranked cards`
 
-The default is ranked cards for new installs. If Kodi returns an empty, unknown,
-or malformed value, the dialog will fall back to ranked cards.
+The default is Classic rows for new installs. If Kodi returns an empty, unknown,
+or malformed value, the dialog will fall back to Classic rows.
 
 ## Shared Item Properties
 
@@ -124,9 +124,9 @@ stream lookup, or proxy behavior.
 
 Add focused tests for:
 
-- `show_results_dialog()` chooses ranked cards by default.
+- `show_results_dialog()` chooses Classic rows by default.
 - Setting value `1` chooses split detail.
-- Invalid setting values fall back to ranked cards.
+- Invalid setting values fall back to Classic rows.
 - New item-property formatting handles missing metadata without crashing.
 - Both new XML skins contain list id `50`, scrollbar id `60`, and link the list
   to the scrollbar.
