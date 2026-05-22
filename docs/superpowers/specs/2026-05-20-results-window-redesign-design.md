@@ -10,11 +10,14 @@ selection:
 - Settings schema: `repo/plugin.video.nzbdav/resources/settings.xml`
 
 The current dense table is useful for scanning, but it is cramped from a couch.
-The redesign adds two selectable layouts:
+The redesign adds four selectable layouts:
 
 - Ranked cards, the new default.
 - Split detail, for users who want a compact list plus a larger focused-result
   detail panel.
+- Classic rows, preserving the original dense row style as an explicit option.
+- Compact ranked cards, showing the ranked-card metadata with shorter rows for
+  users who want more results visible at once.
 
 Selection semantics stay unchanged: Enter selects the focused result, Esc/back
 cancels, and context menu cancels.
@@ -28,10 +31,11 @@ map it to a skin XML file:
 
 - `0` or missing/invalid: `results-dialog-ranked.xml`
 - `1`: `results-dialog-split.xml`
+- `2`: `results-dialog.xml`
+- `3`: `results-dialog-ranked-compact.xml`
 
 The existing `results-dialog.xml` remains in the repo as the legacy dense-table
-skin and as a compatibility reference, but it is not exposed as a setting option
-for this change.
+skin and is exposed as the `Classic rows` setting option.
 
 `ResultsDialog` remains the common `xbmcgui.WindowXMLDialog` implementation. It
 will continue to populate the list control with `xbmcgui.ListItem` instances and
@@ -42,14 +46,16 @@ will add richer normalized item properties that both new skins can consume.
 Add an enum setting in the existing Sorting category:
 
 ```xml
-<setting id="results_layout" label="30196" type="enum" default="0" lvalues="30197|30198" />
+<setting id="results_layout" label="30197" type="enum" default="0" lvalues="30198|30199|30200|30201" />
 ```
 
 Add English strings:
 
-- `30196`: `Results layout`
-- `30197`: `Ranked cards`
-- `30198`: `Split detail`
+- `30197`: `Results layout`
+- `30198`: `Ranked cards`
+- `30199`: `Split detail`
+- `30200`: `Classic rows`
+- `30201`: `Compact ranked cards`
 
 The default is ranked cards for new installs. If Kodi returns an empty, unknown,
 or malformed value, the dialog will fall back to ranked cards.
