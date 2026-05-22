@@ -5,6 +5,7 @@ import os
 import xml.etree.ElementTree as ET
 from unittest.mock import MagicMock, patch
 
+from resources.lib import results_dialog as results_dialog_module
 from resources.lib.results_dialog import (
     _AVAILABLE_LABEL,
     _available_text,
@@ -80,10 +81,34 @@ def test_resolve_layout_xml_uses_classic_rows_for_value_two():
     assert _resolve_layout_xml(" 2 ") == "results-dialog.xml"
 
 
+def test_resolve_layout_xml_uses_compact_ranked_cards_for_value_three():
+    assert _resolve_layout_xml("3") == "results-dialog-ranked-compact.xml"
+    assert _resolve_layout_xml(" 3 ") == "results-dialog-ranked-compact.xml"
+
+
 def test_resolve_layout_xml_falls_back_to_ranked_for_invalid_values():
-    assert _resolve_layout_xml("3") == "results-dialog-ranked.xml"
+    assert _resolve_layout_xml("4") == "results-dialog-ranked.xml"
     assert _resolve_layout_xml("ranked_cards") == "results-dialog-ranked.xml"
     assert _resolve_layout_xml(0) == "results-dialog-ranked.xml"
+
+
+def test_layout_options_define_setting_values_and_xml_files():
+    assert hasattr(results_dialog_module, "_LAYOUT_OPTIONS")
+    layout_options = results_dialog_module._LAYOUT_OPTIONS
+
+    assert [option["value"] for option in layout_options] == ["0", "1", "2", "3"]
+    assert [option["label_id"] for option in layout_options] == [
+        30198,
+        30199,
+        30200,
+        30201,
+    ]
+    assert [option["xml"] for option in layout_options] == [
+        "results-dialog-ranked.xml",
+        "results-dialog-split.xml",
+        "results-dialog.xml",
+        "results-dialog-ranked-compact.xml",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -400,7 +425,9 @@ def test_results_layout_setting_defaults_to_ranked_cards():
     assert setting.get("type") == "enum"
     assert setting.get("default") == "0"
     assert setting.get("label") == "30197"
-    assert setting.get("lvalues") == "30198|30199|30200"
+    assert setting.get("lvalues") == "|".join(
+        str(option["label_id"]) for option in results_dialog_module._LAYOUT_OPTIONS
+    )
 
 
 def test_results_layout_setting_is_between_max_results_and_auto_select_separator():
@@ -439,6 +466,8 @@ def test_results_layout_language_strings_exist():
     assert 'msgid "Split detail"' in text
     assert 'msgctxt "#30200"' in text
     assert 'msgid "Classic rows"' in text
+    assert 'msgctxt "#30201"' in text
+    assert 'msgid "Compact ranked cards"' in text
 
 
 # ---------------------------------------------------------------------------

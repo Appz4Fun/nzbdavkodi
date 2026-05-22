@@ -71,6 +71,36 @@ _BG_B = "FF141417"
 _AVAILABLE_LABEL = "DL"
 _DOWNLOADED_LABEL = "Downloaded"
 
+LAYOUT_RANKED_CARDS = "0"
+LAYOUT_SPLIT_DETAIL = "1"
+LAYOUT_CLASSIC_ROWS = "2"
+LAYOUT_COMPACT_RANKED_CARDS = "3"
+
+_LAYOUT_OPTIONS = (
+    {
+        "value": LAYOUT_RANKED_CARDS,
+        "label_id": 30198,
+        "xml": "results-dialog-ranked.xml",
+    },
+    {
+        "value": LAYOUT_SPLIT_DETAIL,
+        "label_id": 30199,
+        "xml": "results-dialog-split.xml",
+    },
+    {
+        "value": LAYOUT_CLASSIC_ROWS,
+        "label_id": 30200,
+        "xml": "results-dialog.xml",
+    },
+    {
+        "value": LAYOUT_COMPACT_RANKED_CARDS,
+        "label_id": 30201,
+        "xml": "results-dialog-ranked-compact.xml",
+    },
+)
+_LAYOUT_XML_BY_VALUE = {option["value"]: option["xml"] for option in _LAYOUT_OPTIONS}
+_DEFAULT_LAYOUT_XML = _LAYOUT_XML_BY_VALUE[LAYOUT_RANKED_CARDS]
+
 ACTION_SELECT = 7
 ACTION_PREVIOUS_MENU = 10
 ACTION_NAV_BACK = 92
@@ -86,16 +116,12 @@ def _available_text():
 def _resolve_layout_xml(raw_value):
     """Return the results dialog XML filename for a stored layout setting."""
     if raw_value is None:
-        return "results-dialog-ranked.xml"
+        return _DEFAULT_LAYOUT_XML
     try:
         value = str(raw_value).strip()
     except Exception:
         value = ""
-    if value == "1":
-        return "results-dialog-split.xml"
-    if value == "2":
-        return "results-dialog.xml"
-    return "results-dialog-ranked.xml"
+    return _LAYOUT_XML_BY_VALUE.get(value, _DEFAULT_LAYOUT_XML)
 
 
 def _plain_text(value):

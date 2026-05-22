@@ -4,9 +4,11 @@
 """Structural assertions over the custom results dialog skin."""
 
 import os
+import re
 import xml.etree.ElementTree as ET
 
 import pytest
+from resources.lib.results_dialog import _build_display_fields
 
 _SKIN_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -21,10 +23,14 @@ _SKIN_DIR = os.path.join(
 _RESULTS_DIALOG_PATHS = [
     os.path.join(_SKIN_DIR, "results-dialog.xml"),
     os.path.join(_SKIN_DIR, "results-dialog-ranked.xml"),
+    os.path.join(_SKIN_DIR, "results-dialog-ranked-compact.xml"),
     os.path.join(_SKIN_DIR, "results-dialog-split.xml"),
 ]
 
 _RANKED_DIALOG_PATH = os.path.join(_SKIN_DIR, "results-dialog-ranked.xml")
+_COMPACT_RANKED_DIALOG_PATH = os.path.join(
+    _SKIN_DIR, "results-dialog-ranked-compact.xml"
+)
 _SPLIT_DIALOG_PATH = os.path.join(_SKIN_DIR, "results-dialog-split.xml")
 _MEDIA_DIR = os.path.join(os.path.dirname(_SKIN_DIR), "media")
 
@@ -36,10 +42,12 @@ def _results_dialog_root():
 
 @pytest.fixture(name="new_results_dialog_roots", scope="module")
 def _new_results_dialog_roots():
-    return {
-        os.path.basename(path): ET.parse(path).getroot()
-        for path in (_RANKED_DIALOG_PATH, _SPLIT_DIALOG_PATH)
-    }
+    paths = (
+        _RANKED_DIALOG_PATH,
+        _COMPACT_RANKED_DIALOG_PATH,
+        _SPLIT_DIALOG_PATH,
+    )
+    return {os.path.basename(path): ET.parse(path).getroot() for path in paths}
 
 
 def _property_label_control(layout, property_name):
@@ -62,6 +70,14 @@ def _all_labels(root):
     return [label.text or "" for label in root.iter("label")]
 
 
+def _all_listitem_properties(root):
+    names = set()
+    pattern = re.compile(r"ListItem\.Property\(([^)]+)\)")
+    for label in _all_labels(root):
+        names.update(pattern.findall(label))
+    return names
+
+
 def test_results_dialog_has_no_temporary_debug_controls(
     results_dialog_root,
     new_results_dialog_roots,
@@ -80,6 +96,17 @@ def test_results_dialog_has_no_temporary_debug_controls(
         for control in root.iter("control"):
             assert control.findtext("label") != "LAYOUT DEBUG"
             assert control.findtext("colordiffuse") not in debug_band_colors
+
+
+def test_results_dialog_layout_properties_are_backed_by_display_fields():
+    known_external_properties = {"detail_title"}
+    produced_properties = (
+        set(_build_display_fields({}).keys()) | known_external_properties
+    )
+
+    for path in _RESULTS_DIALOG_PATHS:
+        root = ET.parse(path).getroot()
+        assert _all_listitem_properties(root) <= produced_properties
 
 
 def test_results_dialog_dl_indicator_has_room_in_both_row_layouts(
@@ -203,6 +230,32 @@ def test_ranked_results_dialog_keeps_item_and_focus_geometry_symmetric():
         )
         for dimension in ("left", "top", "width", "height", "font", "aligny"):
             assert item_control.findtext(dimension) == focus_control.findtext(dimension)
+
+
+def test_compact_ranked_results_dialog_fits_more_rows():
+    root = ET.parse(_COMPACT_RANKED_DIALOG_PATH).getroot()
+    list_control = root.find(".//control[@type='list'][@id='50']")
+    item_layout = list_control.find("itemlayout")
+    focused_layout = list_control.find("focusedlayout")
+
+    assert int(item_layout.get("height")) == 92
+    assert focused_layout.get("height") == item_layout.get("height")
+
+    normal_root = ET.parse(_RANKED_DIALOG_PATH).getroot()
+    normal_list = normal_root.find(".//control[@type='list'][@id='50']")
+    assert int(item_layout.get("height")) < int(
+        normal_list.find("itemlayout").get("height")
+    )
+
+    for layout in (item_layout, focused_layout):
+        background = layout.find("./control[@type='image'][width='1770'][height='82']")
+        assert background is not None
+        assert background.findtext("texture") in (
+            "results-card.png",
+            "results-card-focus.png",
+        )
+        _list_item_label_control(layout)
+        _property_label_control(layout, "summary_line_colored")
 
 
 def test_split_results_dialog_has_focused_detail_panel_bindings():

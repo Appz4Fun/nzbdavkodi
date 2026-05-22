@@ -765,3 +765,7 @@ msgstr "Split detail"
 msgctxt "#30200"
 msgid "Classic rows"
 msgstr "Classic rows"
+
+msgctxt "#30201"
+msgid "Compact ranked cards"
+msgstr "Compact ranked cards"
