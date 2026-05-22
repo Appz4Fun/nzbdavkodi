@@ -4,6 +4,7 @@
 """Result filtering and sorting using PTT for title parsing."""
 
 import math
+import re
 from types import SimpleNamespace
 
 import xbmc
@@ -210,6 +211,40 @@ _CODEC_MAP = {
     "MPEG-2": "MPEG-2",
     "mpeg2": "MPEG-2",
 }
+
+# Pre-compiled regular expressions for fallback parsing
+_FB_RES_RE = re.compile(r"\b(2160p|1080p|1080i|720p|480p|4K)\b", re.IGNORECASE)
+_FB_CODEC_RE = re.compile(
+    r"\b(x265|h\.?265|hevc|x264|h\.?264|avc|av1|vp9)\b", re.IGNORECASE
+)
+_FB_ATMOS_RE = re.compile(r"\batmos\b", re.IGNORECASE)
+_FB_TRUEHD_RE = re.compile(r"\btruehd\b", re.IGNORECASE)
+_FB_DTSHD_RE = re.compile(r"\bdts[-. ]?hd[-. ]?ma\b", re.IGNORECASE)
+_FB_DDPLUS_RE = re.compile(
+    r"\bddp?5[. ]1|eac3|dd\+|dolby.digital.plus\b", re.IGNORECASE
+)
+_FB_DD_RE = re.compile(r"\bac3|dd[. ]?5[. ]1|dolby.digital\b", re.IGNORECASE)
+_FB_AAC_RE = re.compile(r"\baac\b", re.IGNORECASE)
+_FB_DTS_RE = re.compile(r"\bdts\b", re.IGNORECASE)
+
+_FB_DV_RE = re.compile(r"\b(dv|dovi|dolby[. ]?vision)\b", re.IGNORECASE)
+_FB_HDR10PLUS_RE = re.compile(r"\b(hdr10\+|hdr10plus)\b", re.IGNORECASE)
+_FB_HDR10_RE = re.compile(r"\bhdr10\b", re.IGNORECASE)
+_FB_HLG_RE = re.compile(r"\bhlg\b", re.IGNORECASE)
+
+_FB_QUALITY_RE = re.compile(
+    r"\b(remux|blu[-. ]?ray|bdrip|web[-. ]?dl|webrip|hdtv|dvdrip|hdrip)\b",
+    re.IGNORECASE,
+)
+_FB_EDITION_RE = re.compile(
+    r"\b(uncut|unrated|director'?s[. ]?cut|extended[. ]?cut"
+    r"|recut|theatrical|imax|special[. ]?edition)\b",
+    re.IGNORECASE,
+)
+_FB_CHANNELS_RE = re.compile(r"\b(7\.1|5\.1|2\.0)\b")
+_FB_YEAR_RE = re.compile(r"[. (](\d{4})[. )]")
+_FB_UPSCALED_RE = re.compile(r"\bupscale[d]?\b", re.IGNORECASE)
+_FB_GROUP_RE = re.compile(r"-([A-Za-z0-9][A-Za-z0-9_-]*)(?:\.[a-z]{2,4})?$")
 
 
 def _collect_enabled(addon, pairs):
@@ -733,8 +768,6 @@ def _sort_results(results, settings):
 
 def _fallback_parse(title):
     """Simple regex fallback when PTT fails or returns empty."""
-    import re
-
     result = {
         "resolution": "",
         "codec": "",
@@ -752,52 +785,50 @@ def _fallback_parse(title):
     t = title.replace("[", ".").replace("]", ".").replace("(", ".").replace(")", ".")
 
     # Resolution
-    m = re.search(r"(?i)\b(2160p|1080p|1080i|720p|480p|4K)\b", t)
+    m = _FB_RES_RE.search(t)
     if m:
         result["resolution"] = m.group(1)
 
     # Codec
-    m = re.search(r"(?i)\b(x265|h\.?265|hevc|x264|h\.?264|avc|av1|vp9)\b", t)
+    m = _FB_CODEC_RE.search(t)
     if m:
         result["codec"] = m.group(1).lower()
 
     # Audio
     audio = []
-    if re.search(r"(?i)\batmos\b", t):
+    if _FB_ATMOS_RE.search(t):
         audio.append("Atmos")
-    if re.search(r"(?i)\btruehd\b", t):
+    if _FB_TRUEHD_RE.search(t):
         audio.append("TrueHD")
-    if re.search(r"(?i)\bdts[-. ]?hd[-. ]?ma\b", t):
+    if _FB_DTSHD_RE.search(t):
         audio.append("DTS-HD MA")
-    if re.search(r"(?i)\bddp?5[. ]1|eac3|dd\+|dolby.digital.plus\b", t):
+    if _FB_DDPLUS_RE.search(t):
         audio.append("DD+")
-    if re.search(r"(?i)\bac3|dd[. ]?5[. ]1|dolby.digital\b", t):
+    if _FB_DD_RE.search(t):
         audio.append("DD")
-    if re.search(r"(?i)\baac\b", t):
+    if _FB_AAC_RE.search(t):
         audio.append("AAC")
-    if re.search(r"(?i)\bdts\b", t) and not audio:
+    if _FB_DTS_RE.search(t) and not audio:
         audio.append("DTS")
     result["audio"] = audio
 
     # HDR
     hdr = []
-    if re.search(r"(?i)\b(dv|dovi|dolby[. ]?vision)\b", t):
+    if _FB_DV_RE.search(t):
         hdr.append("DV")
     # HDR10+ alternation needs both branches anchored to a leading word
     # boundary so we don't pick up substrings inside another token.
-    if re.search(r"(?i)\b(hdr10\+|hdr10plus)\b", t):
+    if _FB_HDR10PLUS_RE.search(t):
         hdr.append("HDR10+")
     # `hdr10` without the optional `0` would match `hdr1`; require the digit.
-    elif re.search(r"(?i)\bhdr10\b", t):
+    elif _FB_HDR10_RE.search(t):
         hdr.append("HDR10")
-    if re.search(r"(?i)\bhlg\b", t):
+    if _FB_HLG_RE.search(t):
         hdr.append("HLG")
     result["hdr"] = hdr
 
     # Quality / Source
-    m = re.search(
-        r"(?i)\b(remux|blu[-. ]?ray|bdrip|web[-. ]?dl|webrip|hdtv|dvdrip|hdrip)\b", t
-    )
+    m = _FB_QUALITY_RE.search(t)
     if m:
         raw_q = m.group(1).upper().replace(" ", "").replace(".", "").replace("-", "")
         if "REMUX" in raw_q:
@@ -814,16 +845,12 @@ def _fallback_parse(title):
             result["quality"] = raw_q
 
     # Edition
-    _ed_re = (
-        r"(?i)\b(uncut|unrated|director'?s[. ]?cut|extended[. ]?cut"
-        r"|recut|theatrical|imax|special[. ]?edition)\b"
-    )
-    m = re.search(_ed_re, t)
+    m = _FB_EDITION_RE.search(t)
     if m:
         result["edition"] = m.group(1).replace(".", " ")
 
     # Channels
-    m = re.search(r"\b(7\.1|5\.1|2\.0)\b", t)
+    m = _FB_CHANNELS_RE.search(t)
     if m:
         result["channels"] = m.group(1)
 
@@ -832,19 +859,19 @@ def _fallback_parse(title):
     # time we forget to bump it (TODO.md §H.2-M44 was the previous
     # bump — 2030 turned out to be too tight). 2100 is well past any
     # plausible release window for content this addon would index.
-    m = re.search(r"[. (](\d{4})[. )]", t)
+    m = _FB_YEAR_RE.search(t)
     if m:
         yr = int(m.group(1))
         if 1920 <= yr <= 2100:
             result["year"] = yr
 
     # Upscaled
-    if re.search(r"(?i)\bupscale[d]?\b", t):
+    if _FB_UPSCALED_RE.search(t):
         result["upscaled"] = True
 
     # Group (last segment after hyphen). Scene groups can contain hyphens and
     # underscores, e.g. GROUP-NAME or GROUP_NAME.
-    m = re.search(r"-([A-Za-z0-9][A-Za-z0-9_-]*)(?:\.[a-z]{2,4})?$", title)
+    m = _FB_GROUP_RE.search(title)
     if m:
         result["group"] = m.group(1)
 
