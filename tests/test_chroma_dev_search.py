@@ -13,6 +13,8 @@ from scripts.chroma_dev_search import (
     SPARSE_EMBEDDING_KEY,
     _sdk_search_object,
     build_hybrid_search_payload,
+    build_index_parser,
+    build_search_parser,
     chunk_text,
     load_env_file,
 )
@@ -95,12 +97,17 @@ def test_semantic_block_packing_overlaps_contiguous_chunks():
     )
 
     assert len(chunks) > 1
-    assert any(
-        "func_{}".format(index) in chunks[i].document
-        and "func_{}".format(index) in chunks[i + 1].document
-        for i in range(len(chunks) - 1)
-        for index in range(8)
-    )
+    overlapping_functions = []
+    for i in range(len(chunks) - 1):
+        for index in range(8):
+            function_name = "func_{}".format(index)
+            if (
+                function_name in chunks[i].document
+                and function_name in chunks[i + 1].document
+            ):
+                overlapping_functions.append(function_name)
+
+    assert overlapping_functions
 
 
 def test_semantic_overlap_never_pushes_chunk_over_hard_limit():
@@ -124,6 +131,29 @@ def test_semantic_overlap_never_pushes_chunk_over_hard_limit():
     )
 
     assert all(len(chunk.document.encode("utf-8")) <= 1000 for chunk in chunks)
+
+
+def test_oversized_single_source_line_is_rejected():
+    source = "value = '{}'\n".format("x" * 2000)
+
+    with pytest.raises(ValueError, match="single source line"):
+        chunk_text(
+            Path("scripts/oversized.py"),
+            source,
+            max_document_bytes=1000,
+            target_document_bytes=700,
+        )
+
+
+def test_cli_parsers_reject_non_positive_counts():
+    with pytest.raises(SystemExit):
+        build_index_parser().parse_args(["--batch-size", "0"])
+
+    search_parser = build_search_parser()
+    with pytest.raises(SystemExit):
+        search_parser.parse_args(["resolver", "--limit", "0"])
+    with pytest.raises(SystemExit):
+        search_parser.parse_args(["resolver", "--candidates", "-1"])
 
 
 def test_build_hybrid_search_payload_uses_rrf_sparse_group_by():

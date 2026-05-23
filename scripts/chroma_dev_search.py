@@ -566,12 +566,17 @@ def _split_large_block(
                 symbol=block.symbol,
             )
             size = _block_document_bytes(path, [candidate])
-            if size > max_document_bytes and len(candidate_lines) > 1:
+            if size > max_document_bytes:
+                if len(candidate_lines) == 1:
+                    line_number = block.start_line + end_offset
+                    raise ValueError(
+                        "single source line at {}:{} exceeds max_document_bytes".format(
+                            path, line_number
+                        )
+                    )
                 candidate_lines.pop()
                 break
             end_offset += 1
-            if size > max_document_bytes:
-                break
 
         if not candidate_lines:
             candidate_lines = [block.lines[start_offset]]
@@ -1143,11 +1148,18 @@ def search_repo(args: argparse.Namespace) -> int:
     return 0
 
 
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
 def build_index_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Index this repo into Chroma Cloud")
     parser.add_argument("--root", default=".", help="Repository root to index")
     parser.add_argument("--env-file", default=".env", help="Local env file")
-    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--batch-size", type=_positive_int, default=64)
     parser.add_argument(
         "--reset", action="store_true", help="Delete/recreate collection first"
     )
@@ -1161,8 +1173,8 @@ def build_search_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Search the Chroma repo index")
     parser.add_argument("query")
     parser.add_argument("--env-file", default=".env", help="Local env file")
-    parser.add_argument("--limit", type=int, default=10)
-    parser.add_argument("--candidates", type=int, default=200)
+    parser.add_argument("--limit", type=_positive_int, default=10)
+    parser.add_argument("--candidates", type=_positive_int, default=200)
     parser.add_argument("--no-group-by", action="store_true")
     parser.add_argument("--json", action="store_true")
     return parser
