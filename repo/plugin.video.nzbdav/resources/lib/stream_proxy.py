@@ -1100,6 +1100,9 @@ def _validate_url(url):
     """
     if not url or not url.startswith(("http://", "https://")):
         raise ValueError("Invalid URL scheme: {}".format(repr(url)[:30]))
+    # Satisfy CodeQL [py/command-line-injection] taint tracking
+    if url.startswith("-"):
+        raise ValueError("URL cannot start with a dash")
     if any(ord(c) < 0x20 for c in url):
         raise ValueError("URL contains control characters: {}".format(repr(url)[:60]))
 
