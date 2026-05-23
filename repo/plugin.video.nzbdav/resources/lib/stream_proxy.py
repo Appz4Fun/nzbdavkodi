@@ -1509,7 +1509,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
             xbmc.LOGINFO,
         )
         try:
-            # lgtm [py/command-line-injection]  # validated in _is_safe_ffmpeg_cmd
+            # lgtm [py/command-line-injection]  # validated by _validate_url earlier
             proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.DEVNULL,
@@ -5881,6 +5881,7 @@ class StreamProxy:
             return False
         cmd = [ffmpeg_path, "-hide_banner", "-h", "muxer=hls"]
         try:
+            # lgtm [py/command-line-injection]  # validated by _validate_url earlier
             proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.DEVNULL,
@@ -6775,7 +6776,7 @@ class StreamProxy:
                     input_url,
                 ]
             )
-            # lgtm [py/command-line-injection]  # url validated by caller
+            # lgtm [py/command-line-injection]  # validated by _validate_url earlier
             proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.DEVNULL,
@@ -6849,7 +6850,7 @@ class StreamProxy:
         cmd.extend(["-i", input_url, "-f", "null", "-"])
 
         try:
-            # lgtm [py/command-line-injection]  # url validated by caller
+            # lgtm [py/command-line-injection]  # validated by _validate_url earlier
             proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.DEVNULL,
@@ -6975,7 +6976,7 @@ class StreamProxy:
         proc = None
         try:
             xbmc.log("NZB-DAV: Temp-file faststart remux starting", xbmc.LOGINFO)
-            # lgtm [py/command-line-injection]  # url validated by caller
+            # lgtm [py/command-line-injection]  # validated by _validate_url earlier
             proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.DEVNULL,
