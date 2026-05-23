@@ -87,6 +87,29 @@ functional-test:
 functional-test-top-imdb:
     python3 -m pytest tests/test_functional_fallback_playback.py::test_functional_imdb_top50_random_sample_fallback_playback -v -s --tb=long -m functional
 
+# Install Python 3.14 dev-only Chroma Cloud dependencies.
+chroma-install:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    py="${CHROMA_PYTHON:-python3.14}"
+    pip_flags=()
+    if "$py" -m pip install --help | grep -q -- "--break-system-packages"; then
+        pip_flags+=(--break-system-packages)
+    fi
+    "$py" -m pip install ${pip_flags+"${pip_flags[@]}"} -r requirements-dev-chroma.txt
+
+# Index this repo into Chroma Cloud for Codex/dev search. Pass `--reset` to rebuild.
+chroma-index *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    "${CHROMA_PYTHON:-python3.14}" scripts/chroma_index_repo.py {{args}}
+
+# Search the Chroma Cloud dev index. Quote multi-word queries.
+chroma-search query *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    "${CHROMA_PYTHON:-python3.14}" scripts/chroma_search_repo.py "{{query}}" {{args}}
+
 # Interactively create the .env file consumed by `just extreme-functional-test`.
 # Asks for NNTP credentials, NZBHydra2 URL+API key, WebDAV credentials, and
 # TMDB API key. Defaults shown in [brackets]; press enter to accept. Secrets
