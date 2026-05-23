@@ -18,12 +18,14 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, TypeVar
 
 MAX_DOCUMENT_BYTES = 16 * 1024
 TARGET_DOCUMENT_BYTES = 12 * 1024
 OVERLAP_FRACTION = 0.15
+COLLECTION_GET_PAGE_SIZE = 1000
 SPARSE_EMBEDDING_KEY = "sparse_embedding"
+T = TypeVar("T")
 DEFAULT_COLLECTION_NAME = "nzb"
 DEFAULT_CHROMA_HOST = "api.trychroma.com"
 DEFAULT_CHROMA_TENANT = "eb3e5a60-028d-4f18-95fd-c9495fb8ddaa"
@@ -1326,11 +1328,38 @@ def get_or_create_collection(client, config: Dict[str, str], *, reset: bool = Fa
     )
 
 
-def batched(
-    items: Sequence[ChromaChunk], batch_size: int
-) -> Iterable[Sequence[ChromaChunk]]:
+def batched(items: Sequence[T], batch_size: int) -> Iterable[Sequence[T]]:
     for index in range(0, len(items), batch_size):
         yield items[index : index + batch_size]
+
+
+def _existing_indexed_chunk_ids(collection) -> Set[str]:
+    existing_ids = set()
+    offset = 0
+    while True:
+        results = collection.get(
+            include=["metadatas"],
+            limit=COLLECTION_GET_PAGE_SIZE,
+            offset=offset,
+        )
+        ids = results.get("ids") or []
+        metadatas = results.get("metadatas") or []
+        for index, row_id in enumerate(ids):
+            metadata = metadatas[index] if index < len(metadatas) else {}
+            if isinstance(metadata, dict) and metadata.get("source_doc_id"):
+                existing_ids.add(row_id)
+        if len(ids) < COLLECTION_GET_PAGE_SIZE:
+            break
+        offset += len(ids)
+    return existing_ids
+
+
+def _delete_stale_indexed_chunks(collection, chunks: Sequence[ChromaChunk]) -> int:
+    current_ids = {chunk.chunk_id for chunk in chunks}
+    stale_ids = sorted(_existing_indexed_chunk_ids(collection) - current_ids)
+    for batch in batched(stale_ids, COLLECTION_GET_PAGE_SIZE):
+        collection.delete(ids=list(batch))
+    return len(stale_ids)
 
 
 def index_repo(args: argparse.Namespace) -> int:
@@ -1351,11 +1380,20 @@ def index_repo(args: argparse.Namespace) -> int:
     config = chroma_config_from_env()
     client = chroma_client(config)
     collection = get_or_create_collection(client, config, reset=args.reset)
+    deleted_count = 0
+    if not args.reset:
+        deleted_count = _delete_stale_indexed_chunks(collection, chunks)
     for batch in batched(chunks, args.batch_size):
         collection.upsert(
             ids=[chunk.chunk_id for chunk in batch],
             documents=[chunk.document for chunk in batch],
             metadatas=[chunk.metadata for chunk in batch],
+        )
+    if deleted_count:
+        print(
+            "Deleted {} stale chunks from Chroma collection {!r}".format(
+                deleted_count, collection_name
+            )
         )
     print(
         "Indexed {} chunks into Chroma collection {!r}".format(
