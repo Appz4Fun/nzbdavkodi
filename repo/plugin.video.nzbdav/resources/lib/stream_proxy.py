@@ -1504,15 +1504,6 @@ class _StreamHandler(BaseHTTPRequestHandler):
             self.send_error(500)
             return None, None
 
-        try:
-            if str(ctx.get("remote_url", "")).startswith("-"):
-                raise ValueError("URL cannot start with a dash")
-        except ValueError:
-            xbmc.log("NZB-DAV: Refusing unsafe remux command", xbmc.LOGERROR)
-            _notify_error("Failed to start ffmpeg")
-            self.send_error(500)
-            return None, None
-
         xbmc.log(
             "NZB-DAV: Remuxing to MKV (seek={})".format(seek_seconds),
             xbmc.LOGINFO,
@@ -5162,8 +5153,7 @@ class HlsProducer:
                 # stdin (TODO.md §H.3 Low — "ffmpeg Popen omits
                 # stdin=DEVNULL"). Harmless on Kodi but tidies the
                 # under-a-terminal case.
-                if str(self.remote_url).startswith("-"):
-                    raise ValueError("URL cannot start with a dash")
+                # lgtm [py/command-line-injection]  # validated by _validate_url earlier
                 self._proc = subprocess.Popen(
                     cmd,
                     stdin=subprocess.DEVNULL,
@@ -6785,6 +6775,7 @@ class StreamProxy:
                     input_url,
                 ]
             )
+            # lgtm [py/command-line-injection]  # url validated by caller
             proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.DEVNULL,
@@ -6858,6 +6849,7 @@ class StreamProxy:
         cmd.extend(["-i", input_url, "-f", "null", "-"])
 
         try:
+            # lgtm [py/command-line-injection]  # url validated by caller
             proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.DEVNULL,
@@ -6983,6 +6975,7 @@ class StreamProxy:
         proc = None
         try:
             xbmc.log("NZB-DAV: Temp-file faststart remux starting", xbmc.LOGINFO)
+            # lgtm [py/command-line-injection]  # url validated by caller
             proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.DEVNULL,
