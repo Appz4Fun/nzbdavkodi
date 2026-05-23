@@ -120,7 +120,7 @@ chroma-index *args:
     @bash -euo pipefail -c '"${CHROMA_PYTHON:-python3.14}" scripts/chroma_index_repo.py "$@"' bash "$@"
 
 # Search the Chroma Cloud dev index. Quote multi-word queries.
-chroma-search query *args:
+chroma-search *args:
     @bash -euo pipefail -c '"${CHROMA_PYTHON:-python3.14}" scripts/chroma_search_repo.py "$@"' bash "$@"
 
 # Verify local Codex Chroma MCP and skill wiring.
