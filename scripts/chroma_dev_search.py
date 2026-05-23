@@ -382,7 +382,7 @@ def check_agent_chroma_setup(
     missing_skills = []
     for label, relative_path in AGENT_SKILL_PATHS:
         path = home / relative_path
-        if path.exists() or path.is_symlink():
+        if path.exists():
             print("{}: present".format(label))
         else:
             print("{}: missing ({})".format(label, path.as_posix()))
@@ -1071,11 +1071,19 @@ def chunk_text(
     )
 
 
+def _is_excluded_repo_path(path: Path) -> bool:
+    rel_posix = path.as_posix()
+    for excluded in EXCLUDED_DIRS:
+        if "/" in excluded:
+            if rel_posix == excluded or rel_posix.startswith("{}/".format(excluded)):
+                return True
+        elif excluded in path.parts:
+            return True
+    return False
+
+
 def _is_excluded_dir(root: Path, path: Path) -> bool:
-    rel = path.relative_to(root).as_posix()
-    if rel in EXCLUDED_DIRS:
-        return True
-    return path.name in EXCLUDED_DIRS
+    return _is_excluded_repo_path(path.relative_to(root))
 
 
 def _is_text_candidate(path: Path) -> bool:
@@ -1107,7 +1115,7 @@ def iter_repo_files(root: Path) -> Iterable[Path]:
         rel = Path(raw_path.decode("utf-8", errors="replace"))
         if rel.is_absolute() or ".." in rel.parts:
             continue
-        if any(part in EXCLUDED_DIRS for part in rel.parts[:-1]):
+        if _is_excluded_repo_path(rel.parent):
             continue
         if not _is_text_candidate(rel):
             continue
