@@ -428,6 +428,76 @@ def test_search_repo_uses_document_contains_filter(monkeypatch, capsys):
     assert "needle" in output
 
 
+def test_index_repo_deletes_stale_indexed_records_before_upsert(monkeypatch):
+    class FakeCollection:  # pylint: disable=too-few-public-methods
+        def __init__(self):
+            self.calls = []
+
+        def get(self, **kwargs):
+            self.calls.append(("get", kwargs))
+            return {
+                "ids": ["keep-chunk", "stale-chunk", "foreign-chunk"],
+                "metadatas": [
+                    {"source_doc_id": "tracked.py"},
+                    {"source_doc_id": "deleted.py"},
+                    {"external": "leave-alone"},
+                ],
+            }
+
+        def delete(self, ids):
+            self.calls.append(("delete", list(ids)))
+
+        def upsert(self, ids, documents, metadatas):
+            self.calls.append(("upsert", list(ids), documents, metadatas))
+
+    chunks = [
+        chroma_dev_search.ChromaChunk(
+            chunk_id="keep-chunk",
+            document="File: tracked.py\nold content replaced\n",
+            metadata={"source_doc_id": "tracked.py", "path": "tracked.py"},
+        ),
+        chroma_dev_search.ChromaChunk(
+            chunk_id="new-chunk",
+            document="File: tracked.py\nnew content\n",
+            metadata={"source_doc_id": "tracked.py", "path": "tracked.py"},
+        ),
+    ]
+    collection = FakeCollection()
+    monkeypatch.setenv("CHROMA_COLLECTION", "repo_code")
+    monkeypatch.setattr(chroma_dev_search, "apply_env_file", lambda _path: None)
+    monkeypatch.setattr(chroma_dev_search, "collect_chunks", lambda _root: chunks)
+    monkeypatch.setattr(
+        chroma_dev_search,
+        "chroma_config_from_env",
+        lambda: {"collection": "repo_code"},
+    )
+    monkeypatch.setattr(chroma_dev_search, "chroma_client", lambda _config: object())
+    monkeypatch.setattr(
+        chroma_dev_search,
+        "get_or_create_collection",
+        lambda _client, _config, reset=False: collection,
+    )
+
+    result = chroma_dev_search.index_repo(
+        Namespace(
+            env_file=".env",
+            root=".",
+            dry_run=False,
+            reset=False,
+            batch_size=64,
+        )
+    )
+
+    assert result == 0
+    assert collection.calls[0] == (
+        "get",
+        {"include": ["metadatas"], "limit": 1000, "offset": 0},
+    )
+    assert collection.calls[1] == ("delete", ["stale-chunk"])
+    assert collection.calls[2][0] == "upsert"
+    assert collection.calls[2][1] == ["keep-chunk", "new-chunk"]
+
+
 def test_load_env_file_reads_chroma_values_without_dotenv(tmp_path):
     env_path = tmp_path / ".env"
     env_path.write_text(

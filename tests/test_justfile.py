@@ -236,3 +236,11 @@ def test_chroma_dev_docs_describe_shared_defaults_and_agent_check():
     assert "just chroma-agent-check" in docs
     assert "codex mcp list" in docs
     assert "Restart Codex" in docs
+
+
+def test_chroma_env_example_uses_shared_collection_default():
+    env_example = Path(".env.example").read_text(encoding="utf-8")
+    env_lines = set(env_example.splitlines())
+
+    assert "CHROMA_COLLECTION=nzb" in env_lines
+    assert "CHROMA_COLLECTION=nzbdavkodi_code" not in env_lines
