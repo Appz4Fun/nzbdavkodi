@@ -1504,9 +1504,11 @@ class _StreamHandler(BaseHTTPRequestHandler):
             self.send_error(500)
             return None, None
 
-        input_url = ctx.get("remote_url", "")
-        if input_url.startswith("-"):
-            xbmc.log("NZB-DAV: Refusing unsafe remote_url", xbmc.LOGERROR)
+        try:
+            if str(ctx.get("remote_url", "")).startswith("-"):
+                raise ValueError("URL cannot start with a dash")
+        except ValueError:
+            xbmc.log("NZB-DAV: Refusing unsafe remux command", xbmc.LOGERROR)
             _notify_error("Failed to start ffmpeg")
             self.send_error(500)
             return None, None
@@ -5160,6 +5162,8 @@ class HlsProducer:
                 # stdin (TODO.md §H.3 Low — "ffmpeg Popen omits
                 # stdin=DEVNULL"). Harmless on Kodi but tidies the
                 # under-a-terminal case.
+                if str(self.remote_url).startswith("-"):
+                    raise ValueError("URL cannot start with a dash")
                 self._proc = subprocess.Popen(
                     cmd,
                     stdin=subprocess.DEVNULL,
