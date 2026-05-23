@@ -831,6 +831,7 @@ def test_ensure_chroma_config_rewrites_empty_defaults_without_prompt(
 def test_ensure_chroma_config_appends_effective_exported_values(tmp_path, monkeypatch):
     env_path = tmp_path / ".env"
     env_path.write_text("CHROMA_API_KEY=ck-existing\n", encoding="utf-8")
+    monkeypatch.delenv("CHROMA_API_KEY", raising=False)
     monkeypatch.setenv("CHROMA_HOST", "custom.trychroma.test")
     monkeypatch.setenv("CHROMA_TENANT", "tenant-from-env")
     monkeypatch.setenv("CHROMA_DATABASE", "database-from-env")
