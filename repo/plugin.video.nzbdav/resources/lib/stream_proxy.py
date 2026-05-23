@@ -2010,6 +2010,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
         """
         ffmpeg = ctx["ffmpeg_path"]
         input_url = ctx["remote_url"]
+        if str(input_url).startswith("-"):
+            raise ValueError("URL cannot start with a dash")
         _validate_url(input_url)
         auth_args = _ffmpeg_auth_args(ctx.get("auth_header"))
         output_format = ctx.get("output_format", "matroska")
@@ -2618,6 +2620,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
         """
         ffmpeg = ctx["ffmpeg_path"]
         input_url = ctx["remote_url"]
+        if str(input_url).startswith("-"):
+            raise ValueError("URL cannot start with a dash")
         _validate_url(input_url)
         auth_args = _ffmpeg_auth_args(ctx.get("auth_header"))
         cmd = [
@@ -5153,6 +5157,8 @@ class HlsProducer:
                 # stdin (TODO.md §H.3 Low — "ffmpeg Popen omits
                 # stdin=DEVNULL"). Harmless on Kodi but tidies the
                 # under-a-terminal case.
+                if str(self.remote_url).startswith("-"):
+                    raise ValueError("URL cannot start with a dash")
                 # lgtm [py/command-line-injection]  # validated by _validate_url earlier
                 self._proc = subprocess.Popen(
                     cmd,
@@ -5881,7 +5887,7 @@ class StreamProxy:
             return False
         cmd = [ffmpeg_path, "-hide_banner", "-h", "muxer=hls"]
         try:
-            # lgtm [py/command-line-injection]  # validated by _validate_url earlier
+            # lgtm [py/command-line-injection]  # static command
             proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.DEVNULL,
