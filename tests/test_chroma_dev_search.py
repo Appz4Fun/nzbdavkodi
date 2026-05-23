@@ -3,6 +3,8 @@
 
 """Tests for the dev-only Chroma repo search tooling."""
 
+import os
+import subprocess
 import sys
 import types
 from argparse import Namespace
@@ -12,14 +14,23 @@ import pytest
 
 from scripts import chroma_dev_search
 from scripts.chroma_dev_search import (
+    AGENT_CHROMA_MCP_SERVERS,
+    DEFAULT_CHROMA_DATABASE,
+    DEFAULT_CHROMA_TENANT,
+    DEFAULT_COLLECTION_NAME,
     SPARSE_EMBEDDING_KEY,
     _normalize_search_argv,
+    _parse_codex_mcp_names,
     _sdk_search_object,
+    apply_env_file,
     build_hybrid_search_payload,
     build_index_parser,
     build_search_parser,
+    check_agent_chroma_setup,
+    chroma_config_from_env,
     chunk_text,
     ensure_chroma_config,
+    iter_repo_files,
     load_env_file,
     missing_chroma_config_keys,
     search_repo,
@@ -149,6 +160,20 @@ def test_oversized_single_source_line_is_rejected():
             max_document_bytes=1000,
             target_document_bytes=700,
         )
+
+
+def test_chunk_ids_stay_stable_when_content_changes():
+    original = "def resolve():\n    return 'old'\n"
+    changed = "def resolve():\n    return 'new'\n"
+
+    original_chunk = chunk_text(Path("scripts/example.py"), original)[0]
+    changed_chunk = chunk_text(Path("scripts/example.py"), changed)[0]
+
+    assert original_chunk.chunk_id == changed_chunk.chunk_id
+    assert (
+        original_chunk.metadata["content_hash"]
+        != changed_chunk.metadata["content_hash"]
+    )
 
 
 def test_cli_parsers_reject_non_positive_counts():
@@ -427,6 +452,43 @@ def test_load_env_file_reads_chroma_values_without_dotenv(tmp_path):
     assert "IGNORED_LINE" not in loaded
 
 
+def test_apply_env_file_ignores_empty_values_so_defaults_survive(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "CHROMA_API_KEY=ck-file",
+                "CHROMA_TENANT=",
+                "CHROMA_DATABASE=",
+                "CHROMA_COLLECTION=",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    for key in chroma_dev_search.CHROMA_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+    apply_env_file(env_path)
+
+    assert os.environ["CHROMA_API_KEY"] == "ck-file"
+    assert "CHROMA_DATABASE" not in os.environ
+    assert chroma_config_from_env()["database"] == DEFAULT_CHROMA_DATABASE
+
+
+def test_chroma_config_from_env_uses_shared_defaults(monkeypatch):
+    for key in chroma_dev_search.CHROMA_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("CHROMA_API_KEY", "ck-env")
+
+    config = chroma_config_from_env()
+
+    assert config["host"] == "api.trychroma.com"
+    assert config["tenant"] == DEFAULT_CHROMA_TENANT
+    assert config["database"] == DEFAULT_CHROMA_DATABASE
+    assert config["collection"] == DEFAULT_COLLECTION_NAME
+
+
 def test_missing_chroma_config_reads_env_file_and_environment(tmp_path, monkeypatch):
     env_path = tmp_path / ".env"
     env_path.write_text("CHROMA_TENANT=file-tenant\n", encoding="utf-8")
@@ -435,7 +497,17 @@ def test_missing_chroma_config_reads_env_file_and_environment(tmp_path, monkeypa
     assert missing_chroma_config_keys(env_path) == []
 
 
-def test_ensure_chroma_config_prompts_and_appends_missing_values(tmp_path, monkeypatch):
+def test_missing_chroma_config_uses_shared_defaults(tmp_path, monkeypatch):
+    monkeypatch.delenv("CHROMA_API_KEY", raising=False)
+    monkeypatch.delenv("CHROMA_TENANT", raising=False)
+    monkeypatch.delenv("CHROMA_COLLECTION", raising=False)
+
+    assert missing_chroma_config_keys(tmp_path / ".env") == ["CHROMA_API_KEY"]
+
+
+def test_ensure_chroma_config_prompts_for_key_and_appends_shared_defaults(
+    tmp_path, monkeypatch
+):
     env_path = tmp_path / ".env"
     monkeypatch.delenv("CHROMA_API_KEY", raising=False)
     monkeypatch.delenv("CHROMA_TENANT", raising=False)
@@ -460,17 +532,221 @@ def test_ensure_chroma_config_prompts_and_appends_missing_values(tmp_path, monke
     assert result == 0
     loaded = load_env_file(env_path)
     assert loaded["CHROMA_API_KEY"] == "ck-from-user"
-    assert loaded["CHROMA_TENANT"] == "tenant-from-user"
+    assert loaded["CHROMA_TENANT"] == DEFAULT_CHROMA_TENANT
     assert loaded["CHROMA_HOST"] == "api.trychroma.com"
     assert loaded["CHROMA_DATABASE"] == "cdb"
-    assert loaded["CHROMA_COLLECTION"] == "nzbdavkodi_code"
-    assert any("Chroma API key" in prompt for prompt in prompted)
-    assert any("Chroma tenant ID" in prompt for prompt in prompted)
+    assert loaded["CHROMA_COLLECTION"] == DEFAULT_COLLECTION_NAME == "nzb"
+    assert prompted == ["Chroma API key (ask farmfresh, required): "]
+
+
+def test_ensure_chroma_config_migrates_legacy_collection_default(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "CHROMA_API_KEY=ck-existing",
+                "CHROMA_COLLECTION=nzbdavkodi_code",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("CHROMA_COLLECTION", raising=False)
+
+    result = ensure_chroma_config(env_path, prompt=False, interactive=False)
+
+    assert result == 0
+    loaded = load_env_file(env_path)
+    assert loaded["CHROMA_API_KEY"] == "ck-existing"
+    assert loaded["CHROMA_COLLECTION"] == DEFAULT_COLLECTION_NAME == "nzb"
+    assert "nzbdavkodi_code" not in env_path.read_text(encoding="utf-8")
+
+
+def test_ensure_chroma_config_rewrites_empty_placeholders(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "CHROMA_HOST=",
+                "CHROMA_API_KEY=",
+                "CHROMA_TENANT=",
+                "CHROMA_DATABASE=",
+                "CHROMA_COLLECTION=",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    for key in chroma_dev_search.CHROMA_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+    result = ensure_chroma_config(
+        env_path,
+        prompt=True,
+        interactive=True,
+        secret_func=lambda _prompt: "ck-from-user",
+    )
+
+    assert result == 0
+    loaded = load_env_file(env_path)
+    assert loaded["CHROMA_HOST"] == "api.trychroma.com"
+    assert loaded["CHROMA_API_KEY"] == "ck-from-user"
+    assert loaded["CHROMA_TENANT"] == DEFAULT_CHROMA_TENANT
+    assert loaded["CHROMA_DATABASE"] == DEFAULT_CHROMA_DATABASE
+    assert loaded["CHROMA_COLLECTION"] == DEFAULT_COLLECTION_NAME
+
+
+def test_ensure_chroma_config_rewrites_empty_defaults_without_prompt(
+    tmp_path, monkeypatch
+):
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "CHROMA_API_KEY=ck-existing",
+                "CHROMA_TENANT=",
+                "CHROMA_DATABASE=",
+                "CHROMA_COLLECTION=",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    for key in chroma_dev_search.CHROMA_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+    result = ensure_chroma_config(env_path, prompt=False, interactive=False)
+
+    assert result == 0
+    loaded = load_env_file(env_path)
+    assert loaded["CHROMA_API_KEY"] == "ck-existing"
+    assert loaded["CHROMA_TENANT"] == DEFAULT_CHROMA_TENANT
+    assert loaded["CHROMA_DATABASE"] == DEFAULT_CHROMA_DATABASE
+    assert loaded["CHROMA_COLLECTION"] == DEFAULT_COLLECTION_NAME
 
 
 def test_ensure_chroma_config_fails_noninteractive_when_missing(tmp_path, monkeypatch):
     monkeypatch.delenv("CHROMA_API_KEY", raising=False)
     monkeypatch.delenv("CHROMA_TENANT", raising=False)
 
-    with pytest.raises(SystemExit, match="Missing Chroma configuration"):
+    with pytest.raises(SystemExit, match="CHROMA_API_KEY"):
         ensure_chroma_config(tmp_path / ".env", prompt=True, interactive=False)
+
+
+def test_iter_repo_files_limits_indexing_to_git_tracked_files(tmp_path):
+    tracked = tmp_path / "tracked.py"
+    untracked = tmp_path / "scratch_secret.py"
+    tracked.write_text("print('tracked')\n", encoding="utf-8")
+    untracked.write_text("SECRET = 'do-not-index'\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "init"],
+        cwd=str(tmp_path),
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "add", "tracked.py"],
+        cwd=str(tmp_path),
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    files = set(iter_repo_files(tmp_path))
+
+    assert Path("tracked.py") in files
+    assert Path("scratch_secret.py") not in files
+
+
+def test_parse_codex_mcp_names_reads_table_output():
+    output = """Name            Command  Args
+chroma          uvx      chroma-mcp --client-type cloud
+chroma-docs     npx      mcp-remote https://docs.trychroma.com/mcp
+package-search  npx      mcp-remote https://mcp.trychroma.com/package-search/v1
+"""
+
+    assert _parse_codex_mcp_names(output) == {
+        "chroma",
+        "chroma-docs",
+        "package-search",
+    }
+
+
+def test_check_agent_chroma_setup_reports_missing_mcp_and_skill(
+    tmp_path, monkeypatch, capsys
+):
+    env_path = tmp_path / ".env"
+    env_path.write_text("CHROMA_API_KEY=ck-test\n", encoding="utf-8")
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".codex" / "skills" / "chroma").mkdir(parents=True)
+    (home / ".codex" / "skills" / "chroma" / "SKILL.md").write_text(
+        "# Chroma\n", encoding="utf-8"
+    )
+
+    def runner(_cmd):
+        return types.SimpleNamespace(
+            returncode=0,
+            stdout="Name            Command\nchroma          uvx\n",
+            stderr="",
+        )
+
+    result = check_agent_chroma_setup(
+        env_path,
+        home=home,
+        which_func=lambda name: "/usr/local/bin/codex" if name == "codex" else None,
+        runner=runner,
+    )
+
+    assert result == 1
+    output = capsys.readouterr().out
+    assert "collection=nzb" in output
+    assert "Chroma skill" in output
+    assert "Superpowers skill symlink" in output
+    assert "missing: chroma-docs, package-search" in output
+    assert "codex mcp add chroma-docs" in output
+    assert "codex mcp add package-search" in output
+    assert "ck-test" not in output
+
+
+def test_check_agent_chroma_setup_passes_when_agent_bits_are_present(
+    tmp_path, monkeypatch, capsys
+):
+    env_path = tmp_path / ".env"
+    env_path.write_text("CHROMA_API_KEY=ck-test\n", encoding="utf-8")
+    home = tmp_path / "home"
+    (home / ".codex" / "skills" / "chroma").mkdir(parents=True)
+    (home / ".codex" / "skills" / "chroma" / "SKILL.md").write_text(
+        "# Chroma\n", encoding="utf-8"
+    )
+    (home / ".agents" / "skills").mkdir(parents=True)
+    (home / ".agents" / "skills" / "superpowers").symlink_to(
+        home / ".codex" / "superpowers" / "skills"
+    )
+
+    def runner(_cmd):
+        return types.SimpleNamespace(
+            returncode=0,
+            stdout="\n".join(
+                ["Name            Command"]
+                + [
+                    "{}          command".format(name)
+                    for name in AGENT_CHROMA_MCP_SERVERS
+                ]
+            ),
+            stderr="",
+        )
+
+    result = check_agent_chroma_setup(
+        env_path,
+        home=home,
+        which_func=lambda name: "/usr/local/bin/codex" if name == "codex" else None,
+        runner=runner,
+    )
+
+    assert result == 0
+    output = capsys.readouterr().out
+    assert "MCP servers: present" in output

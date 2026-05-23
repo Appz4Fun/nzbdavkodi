@@ -13,18 +13,20 @@ import hashlib
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set
 
 MAX_DOCUMENT_BYTES = 16 * 1024
 TARGET_DOCUMENT_BYTES = 12 * 1024
 OVERLAP_FRACTION = 0.15
 SPARSE_EMBEDDING_KEY = "sparse_embedding"
-DEFAULT_COLLECTION_NAME = "nzbdavkodi_code"
+DEFAULT_COLLECTION_NAME = "nzb"
 DEFAULT_CHROMA_HOST = "api.trychroma.com"
+DEFAULT_CHROMA_TENANT = "eb3e5a60-028d-4f18-95fd-c9495fb8ddaa"
 DEFAULT_CHROMA_DATABASE = "cdb"
 CHROMA_ENV_KEYS = (
     "CHROMA_HOST",
@@ -33,11 +35,41 @@ CHROMA_ENV_KEYS = (
     "CHROMA_DATABASE",
     "CHROMA_COLLECTION",
 )
-REQUIRED_CHROMA_ENV_KEYS = ("CHROMA_API_KEY", "CHROMA_TENANT")
+REQUIRED_CHROMA_ENV_KEYS = ("CHROMA_API_KEY",)
 CHROMA_ENV_DEFAULTS = {
     "CHROMA_HOST": DEFAULT_CHROMA_HOST,
+    "CHROMA_TENANT": DEFAULT_CHROMA_TENANT,
     "CHROMA_DATABASE": DEFAULT_CHROMA_DATABASE,
     "CHROMA_COLLECTION": DEFAULT_COLLECTION_NAME,
+}
+CHROMA_ENV_MIGRATIONS = {
+    "CHROMA_COLLECTION": {
+        "nzbdavkodi_code": DEFAULT_COLLECTION_NAME,
+    },
+}
+AGENT_CHROMA_MCP_SERVERS = ("chroma", "chroma-docs", "package-search")
+AGENT_SKILL_PATHS = (
+    ("Chroma skill", ".codex/skills/chroma/SKILL.md"),
+    ("Superpowers skill symlink", ".agents/skills/superpowers"),
+)
+AGENT_MCP_INSTALL_HINTS = {
+    "chroma": (
+        'codex mcp add chroma --env CHROMA_CLIENT_TYPE=cloud '
+        '--env CHROMA_HOST="$CHROMA_HOST" '
+        '--env CHROMA_API_KEY="$CHROMA_API_KEY" '
+        '--env CHROMA_TENANT="$CHROMA_TENANT" '
+        '--env CHROMA_DATABASE="$CHROMA_DATABASE" -- '
+        "uvx chroma-mcp --client-type cloud"
+    ),
+    "chroma-docs": (
+        "codex mcp add chroma-docs -- "
+        "npx mcp-remote https://docs.trychroma.com/mcp"
+    ),
+    "package-search": (
+        'codex mcp add package-search --env X_CHROMA_TOKEN="$CHROMA_API_KEY" -- '
+        "npx mcp-remote https://mcp.trychroma.com/package-search/v1 "
+        "--header 'x-chroma-token: ${X_CHROMA_TOKEN}'"
+    ),
 }
 
 EXCLUDED_DIRS = {
@@ -151,6 +183,8 @@ def load_env_file(path: Path) -> Dict[str, str]:
 def apply_env_file(path: Path) -> None:
     """Load .env values into os.environ without overriding existing values."""
     for key, value in load_env_file(path).items():
+        if not value:
+            continue
         os.environ.setdefault(key, value)
 
 
@@ -196,6 +230,27 @@ def _append_chroma_env(path: Path, values: Dict[str, str]) -> None:
     path.chmod(0o600)
 
 
+def _rewrite_chroma_env(path: Path, values: Dict[str, str]) -> None:
+    lines = []
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        key = raw_line.split("=", 1)[0].strip() if "=" in raw_line else ""
+        if key in values:
+            lines.append("{}={}".format(key, _quote_env_value(values[key])))
+        else:
+            lines.append(raw_line)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+
+
+def _migrated_chroma_env_values(values: Dict[str, str]) -> Dict[str, str]:
+    migrated = {}
+    for key, replacements in CHROMA_ENV_MIGRATIONS.items():
+        value = values.get(key)
+        if value in replacements:
+            migrated[key] = replacements[value]
+    return migrated
+
+
 def _prompt_for_required_chroma_values(
     missing: Sequence[str],
     *,
@@ -205,7 +260,7 @@ def _prompt_for_required_chroma_values(
     prompted = {}
     for key in missing:
         if key == "CHROMA_API_KEY":
-            value = secret_func("Chroma API key (required): ").strip()
+            value = secret_func("Chroma API key (ask farmfresh, required): ").strip()
         elif key == "CHROMA_TENANT":
             value = input_func("Chroma tenant ID (required): ").strip()
         else:
@@ -251,24 +306,116 @@ def ensure_chroma_config(
         )
 
     existing_env_file = load_env_file(env_file)
+    values_to_migrate = _migrated_chroma_env_values(existing_env_file)
+    values_to_rewrite = dict(values_to_migrate)
     values_to_append = {}
     for key in CHROMA_ENV_KEYS:
-        if key in existing_env_file:
+        value = prompted.get(key, CHROMA_ENV_DEFAULTS.get(key, ""))
+        if key in existing_env_file and existing_env_file[key]:
             continue
-        if key in prompted:
-            values_to_append[key] = prompted[key]
-        elif key in CHROMA_ENV_DEFAULTS:
-            values_to_append[key] = CHROMA_ENV_DEFAULTS[key]
+        if not value:
+            continue
+        if key in existing_env_file:
+            values_to_rewrite[key] = value
+        else:
+            values_to_append[key] = value
+    if values_to_rewrite:
+        _rewrite_chroma_env(env_file, values_to_rewrite)
     if values_to_append:
         _append_chroma_env(env_file, values_to_append)
+    if values_to_rewrite or values_to_append:
         print(
-            "Updated {} with missing Chroma dev search keys.".format(
-                env_file.as_posix()
-            )
+            "Updated {} with Chroma dev search keys.".format(env_file.as_posix())
         )
     else:
         print("Chroma dev search configuration is present.")
     return 0
+
+
+def _parse_codex_mcp_names(output: str) -> Set[str]:
+    names = set()
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("Name "):
+            continue
+        names.add(line.split(None, 1)[0])
+    return names
+
+
+def _run_codex_mcp_list(codex_path: str):
+    return subprocess.run(
+        [codex_path, "mcp", "list"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def check_agent_chroma_setup(
+    env_file: Path,
+    *,
+    home: Optional[Path] = None,
+    which_func: Callable[[str], Optional[str]] = shutil.which,
+    runner: Callable[[str], object] = _run_codex_mcp_list,
+) -> int:
+    """Check repo Chroma config plus Codex-side Chroma MCP/skill wiring."""
+    env_file = Path(env_file)
+    home = Path.home() if home is None else Path(home)
+    status = 0
+
+    missing_config = missing_chroma_config_keys(env_file)
+    if missing_config:
+        print("Chroma config: missing {}".format(", ".join(missing_config)))
+        status = 1
+    else:
+        config = merged_chroma_config(env_file)
+        print(
+            "Chroma config: present "
+            "host={host} tenant={tenant} database={database} collection={collection}".format(
+                host=config["CHROMA_HOST"],
+                tenant=config["CHROMA_TENANT"],
+                database=config["CHROMA_DATABASE"],
+                collection=config["CHROMA_COLLECTION"],
+            )
+        )
+
+    missing_skills = []
+    for label, relative_path in AGENT_SKILL_PATHS:
+        path = home / relative_path
+        if path.exists() or path.is_symlink():
+            print("{}: present".format(label))
+        else:
+            print("{}: missing ({})".format(label, path.as_posix()))
+            missing_skills.append(label)
+    if missing_skills:
+        status = 1
+
+    codex_path = which_func("codex")
+    if not codex_path:
+        print("Codex MCP: codex CLI missing; cannot verify MCP servers.")
+        return 1
+
+    result = runner(codex_path)
+    if getattr(result, "returncode", 1) != 0:
+        print("Codex MCP: `codex mcp list` failed.")
+        stderr = getattr(result, "stderr", "")
+        if stderr:
+            print(stderr.strip())
+        return 1
+
+    configured_names = _parse_codex_mcp_names(getattr(result, "stdout", ""))
+    missing_servers = [
+        name for name in AGENT_CHROMA_MCP_SERVERS if name not in configured_names
+    ]
+    if missing_servers:
+        print("MCP servers: missing: {}".format(", ".join(missing_servers)))
+        print("Install missing Chroma MCP servers with:")
+        for name in missing_servers:
+            print("  {}".format(AGENT_MCP_INSTALL_HINTS[name]))
+        status = 1
+    else:
+        print("MCP servers: present")
+    return status
 
 
 def _relative_path(path: Path) -> str:
@@ -591,9 +738,8 @@ def _format_document(
     return "\n".join(header + [text.rstrip(), ""])
 
 
-def _chunk_id(path: Path, chunk_index: int, document: str) -> str:
-    digest = hashlib.sha256(document.encode("utf-8")).hexdigest()[:16]
-    raw = "{}:{}:{}".format(_relative_path(path), chunk_index, digest)
+def _chunk_id(path: Path, chunk_index: int) -> str:
+    raw = "{}:{}".format(_relative_path(path), chunk_index)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -638,7 +784,7 @@ def _make_chunk(
     document = _format_document(path, start_line, end_line, context, text)
     metadata = _metadata_for_blocks(path, blocks, chunk_index, document, git_commit)
     return ChromaChunk(
-        chunk_id=_chunk_id(path, chunk_index, document),
+        chunk_id=_chunk_id(path, chunk_index),
         document=document,
         metadata=metadata,
     )
@@ -941,20 +1087,32 @@ def _is_text_candidate(path: Path) -> bool:
 
 
 def iter_repo_files(root: Path) -> Iterable[Path]:
-    """Yield indexable repo files."""
-    for current_root, dirs, files in os.walk(root):
-        current_path = Path(current_root)
-        dirs[:] = [
-            item
-            for item in sorted(dirs)
-            if not _is_excluded_dir(root, current_path / item)
-        ]
-        for filename in sorted(files):
-            path = current_path / filename
-            rel = path.relative_to(root)
-            if not _is_text_candidate(rel):
-                continue
-            yield rel
+    """Yield tracked, indexable repo files."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-z"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise SystemExit(
+            "Unable to list tracked files with git ls-files for {}".format(root)
+        ) from error
+
+    paths = []
+    for raw_path in result.stdout.split(b"\0"):
+        if not raw_path:
+            continue
+        rel = Path(raw_path.decode("utf-8", errors="replace"))
+        if rel.is_absolute() or ".." in rel.parts:
+            continue
+        if any(part in EXCLUDED_DIRS for part in rel.parts[:-1]):
+            continue
+        if not _is_text_candidate(rel):
+            continue
+        paths.append(rel)
+    yield from sorted(paths)
 
 
 def read_text_file(path: Path) -> Optional[str]:
@@ -1070,11 +1228,11 @@ def _require_chromadb():
 
 def chroma_config_from_env() -> Dict[str, str]:
     required = {
-        "host": os.environ.get("CHROMA_HOST", DEFAULT_CHROMA_HOST),
+        "host": os.environ.get("CHROMA_HOST") or DEFAULT_CHROMA_HOST,
         "api_key": os.environ.get("CHROMA_API_KEY", ""),
-        "tenant": os.environ.get("CHROMA_TENANT", ""),
-        "database": os.environ.get("CHROMA_DATABASE", DEFAULT_CHROMA_DATABASE),
-        "collection": os.environ.get("CHROMA_COLLECTION", DEFAULT_COLLECTION_NAME),
+        "tenant": os.environ.get("CHROMA_TENANT") or DEFAULT_CHROMA_TENANT,
+        "database": os.environ.get("CHROMA_DATABASE") or DEFAULT_CHROMA_DATABASE,
+        "collection": os.environ.get("CHROMA_COLLECTION") or DEFAULT_COLLECTION_NAME,
     }
     missing = [name for name in ("api_key", "tenant", "database") if not required[name]]
     if missing:
@@ -1387,6 +1545,19 @@ def build_check_config_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def build_agent_check_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Check Chroma dev config plus local Codex MCP/skill wiring"
+    )
+    parser.add_argument("--env-file", default=".env", help="Local env file")
+    parser.add_argument(
+        "--soft",
+        action="store_true",
+        help="Print diagnostics but return success so bootstrap can continue",
+    )
+    return parser
+
+
 def main_index(argv: Optional[Sequence[str]] = None) -> int:
     return index_repo(build_index_parser().parse_args(argv))
 
@@ -1398,6 +1569,12 @@ def main_search(argv: Optional[Sequence[str]] = None) -> int:
 def main_check_config(argv: Optional[Sequence[str]] = None) -> int:
     args = build_check_config_parser().parse_args(argv)
     return ensure_chroma_config(Path(args.env_file), prompt=args.prompt)
+
+
+def main_agent_check(argv: Optional[Sequence[str]] = None) -> int:
+    args = build_agent_check_parser().parse_args(argv)
+    status = check_agent_chroma_setup(Path(args.env_file))
+    return 0 if args.soft else status
 
 
 if __name__ == "__main__":
