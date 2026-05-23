@@ -12,6 +12,21 @@ make-dev:
     fi
     python3 -m pip install ${pip_flags+"${pip_flags[@]}"} -r requirements-test.txt "ruff>=0.15" "black>=24"
 
+    echo "Installing Python 3.14 Chroma dev dependencies..."
+    chroma_py="${CHROMA_PYTHON:-python3.14}"
+    if ! command -v "$chroma_py" >/dev/null 2>&1; then
+        echo "Python 3.14 is required for Chroma dev tooling." >&2
+        echo "Install Python 3.14 or set CHROMA_PYTHON to a compatible Python 3.14 executable." >&2
+        exit 1
+    fi
+    chroma_pip_flags=()
+    if "$chroma_py" -m pip install --help | grep -q -- "--break-system-packages"; then
+        chroma_pip_flags+=(--break-system-packages)
+    fi
+    "$chroma_py" -m pip install ${chroma_pip_flags+"${chroma_pip_flags[@]}"} -r requirements-dev-chroma.txt
+    "$chroma_py" -c "import chromadb"
+    "$chroma_py" scripts/chroma_check_config.py --env-file .env --prompt
+
     if [[ "$(uname -s)" == "Darwin" ]]; then
         if ! command -v brew >/dev/null 2>&1; then
             echo "Homebrew is required on macOS to install ffmpeg/x265." >&2
