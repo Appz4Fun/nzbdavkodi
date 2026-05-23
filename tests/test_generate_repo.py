@@ -116,9 +116,10 @@ def test_generate_repo_html_indexes_use_standards_doctype(tmp_path, monkeypatch)
 def test_generate_repo_omits_full_changelog_from_repo_index(tmp_path, monkeypatch):
     module = _load_generate_repo_module()
     monkeypatch.chdir(REPO_ROOT)
+    release_zip = _write_release_zip(tmp_path)
 
     output_dir = tmp_path / "pages"
-    module.generate_repo(output_dir=str(output_dir))
+    module.generate_repo(output_dir=str(output_dir), addon_zip=str(release_zip))
 
     tree = _parse_generated_addons_xml(output_dir)
     addon = tree.find("./addon[@id='plugin.video.nzbdav']")
@@ -126,6 +127,20 @@ def test_generate_repo_omits_full_changelog_from_repo_index(tmp_path, monkeypatc
     metadata = addon.find("./extension[@point='xbmc.addon.metadata']")
     assert metadata is not None
     assert metadata.find("news") is None
+
+
+def test_generate_repo_without_addon_zip_omits_missing_plugin_metadata(
+    tmp_path, monkeypatch
+):
+    module = _load_generate_repo_module()
+    monkeypatch.chdir(REPO_ROOT)
+
+    output_dir = tmp_path / "pages"
+    module.generate_repo(output_dir=str(output_dir))
+
+    tree = _parse_generated_addons_xml(output_dir)
+    assert tree.find("./addon[@id='plugin.video.nzbdav']") is None
+    assert tree.find("./addon[@id='repository.nzbdav']") is not None
 
 
 def test_generate_repo_includes_pages_repository_urls(tmp_path, monkeypatch):
@@ -256,6 +271,12 @@ def test_generate_repo_can_publish_release_zip_instead_of_worktree_addon(
     assert (
         output_dir / "plugin.video.nzbdav" / "plugin.video.nzbdav-1.0.3.zip"
     ).read_bytes() == release_zip.read_bytes()
+    assert (
+        output_dir / "plugin.video.nzbdav" / "resources" / "icon.png"
+    ).read_bytes() == b"icon"
+    assert (
+        output_dir / "plugin.video.nzbdav" / "resources" / "fanart.jpg"
+    ).read_bytes() == b"fanart"
     checksum_path = (
         output_dir / "plugin.video.nzbdav" / "plugin.video.nzbdav-1.0.3.zip.sha256"
     )

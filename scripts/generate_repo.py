@@ -90,10 +90,24 @@ def _verify_sha256_file(path):
 def _copy_addon_zip_for_pages(output_dir, addon_zip, addon_id, version):
     relative_path = _addon_zip_relative_path(addon_id, version)
     output_path = os.path.join(output_dir, relative_path)
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    output_addon_dir = os.path.dirname(output_path)
+    os.makedirs(output_addon_dir, exist_ok=True)
     shutil.copy2(addon_zip, output_path)
     _write_sha256_file(output_path)
-    _write_dir_index(os.path.dirname(output_path))
+    with zipfile.ZipFile(addon_zip) as zf:
+        for member in (
+            "{}/resources/icon.png".format(addon_id),
+            "{}/resources/fanart.jpg".format(addon_id),
+        ):
+            try:
+                data = zf.read(member)
+            except KeyError:
+                continue
+            target = os.path.join(output_dir, member)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(target, "wb") as fh:
+                fh.write(data)
+    _write_dir_index(output_addon_dir)
     return relative_path
 
 
@@ -297,12 +311,22 @@ def generate_repo(
         )
     elif os.path.exists(main_addon):
         release_version = _parse_local_xml(main_addon).getroot().attrib["version"]
-        addon_xmls.append(
-            read_addon_xml(
-                main_addon,
-                _addon_zip_relative_path(main_addon_id, release_version),
+        local_addon_zip = "{}-{}.zip".format(main_addon_id, release_version)
+        if os.path.isfile(local_addon_zip):
+            metadata_url = _copy_addon_zip_for_pages(
+                output_dir,
+                local_addon_zip,
+                main_addon_id,
+                release_version,
             )
-        )
+            addon_xmls.append(read_addon_xml(main_addon, metadata_url))
+        else:
+            print(
+                "generate_repo: skipping {} metadata because addon zip not found: {!r}".format(
+                    main_addon_id, local_addon_zip
+                ),
+                file=sys.stderr,
+            )
 
     addon_xmls.append(read_addon_xml(repo_addon))
     _write_addons_xml(output_dir, addon_xmls)
