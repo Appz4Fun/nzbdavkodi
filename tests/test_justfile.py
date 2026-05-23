@@ -7,7 +7,9 @@ from pathlib import Path
 
 
 def _recipe_body(justfile_text, recipe_name):
-    match = re.search(r"^{}:$".format(re.escape(recipe_name)), justfile_text, re.M)
+    match = re.search(
+        r"^{}(?:\s+[^:]*)?:$".format(re.escape(recipe_name)), justfile_text, re.M
+    )
     assert match is not None
     start = match.start()
     lines = justfile_text[start:].splitlines()
@@ -130,3 +132,20 @@ def test_extreme_functional_test_recipe_preserves_exported_env_overrides():
     assert "env_snapshot" in body
     assert 'source "$env_file"' in body
     assert 'source "$env_snapshot"' in body
+
+
+def test_chroma_dev_recipes_use_python314_and_dev_requirements():
+    contents = Path(__file__).resolve().parents[1].joinpath("justfile").read_text()
+
+    install_body = _recipe_body(contents, "chroma-install")
+    index_body = _recipe_body(contents, "chroma-index")
+    search_body = _recipe_body(contents, "chroma-search")
+
+    assert "requirements-dev-chroma.txt" in install_body
+    assert "--break-system-packages" in install_body
+    assert '${pip_flags+"${pip_flags[@]}"}' in install_body
+    assert "${CHROMA_PYTHON:-python3.14}" in install_body
+    assert "scripts/chroma_index_repo.py" in index_body
+    assert "scripts/chroma_search_repo.py" in search_body
+    assert "${CHROMA_PYTHON:-python3.14}" in index_body
+    assert "${CHROMA_PYTHON:-python3.14}" in search_body
