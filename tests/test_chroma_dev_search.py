@@ -150,6 +150,47 @@ def test_semantic_overlap_never_pushes_chunk_over_hard_limit():
     assert all(len(chunk.document.encode("utf-8")) <= 1000 for chunk in chunks)
 
 
+def test_pack_does_not_emit_overlap_tail_as_standalone_chunk(monkeypatch):
+    path = Path("scripts/packed.py")
+    overlap_block = chroma_dev_search.SemanticBlock(
+        lines=["overlap = '{}'".format("x" * 10)],
+        start_line=1,
+        end_line=1,
+        kind="module",
+        symbol="overlap",
+        structural_context="overlap",
+    )
+    second_block = chroma_dev_search.SemanticBlock(
+        lines=["second = '{}'".format("y" * 160)],
+        start_line=2,
+        end_line=2,
+        kind="module",
+        symbol="second",
+        structural_context="second",
+    )
+    original_fit = chroma_dev_search._fit_overlap_before_block
+    fit_calls = []
+
+    def flaky_fit(path_arg, overlap, block, max_document_bytes):
+        fit_calls.append(None)
+        if len(fit_calls) == 1:
+            return list(overlap)
+        return original_fit(path_arg, overlap, block, max_document_bytes)
+
+    monkeypatch.setattr(chroma_dev_search, "_fit_overlap_before_block", flaky_fit)
+
+    chunks = chroma_dev_search._pack_semantic_blocks(
+        path,
+        [overlap_block, second_block],
+        git_commit="",
+        max_document_bytes=250,
+        target_document_bytes=200,
+        overlap_fraction=0.5,
+    )
+
+    assert [chunk.metadata["symbol"] for chunk in chunks] == ["overlap", "second"]
+
+
 def test_oversized_single_source_line_is_rejected():
     source = "value = '{}'\n".format("x" * 2000)
 
@@ -209,6 +250,13 @@ def test_search_parser_accepts_just_split_contains_filter():
     )
 
     assert " ".join(args.contains) == "must be a positive integer"
+
+
+def test_search_parser_allows_contains_without_dummy_query():
+    args = build_search_parser().parse_args(["--contains", "needle"])
+
+    assert args.query is None
+    assert args.contains == ["needle"]
 
 
 def test_search_argv_normalizer_allows_option_like_contains_literals():
@@ -426,6 +474,28 @@ def test_search_repo_uses_document_contains_filter(monkeypatch, capsys):
     assert "scripts/example.py:10-12" in output
     assert "function example" in output
     assert "needle" in output
+
+
+def test_search_repo_requires_query_or_contains_before_chroma_config(monkeypatch):
+    monkeypatch.setattr(chroma_dev_search, "apply_env_file", lambda _path: None)
+    monkeypatch.setattr(
+        chroma_dev_search,
+        "chroma_config_from_env",
+        lambda: pytest.fail("Chroma config should not be loaded without input"),
+    )
+
+    with pytest.raises(SystemExit, match="query is required unless --contains is used"):
+        search_repo(
+            Namespace(
+                query=None,
+                contains=[],
+                env_file=".env",
+                limit=5,
+                candidates=20,
+                no_group_by=False,
+                json=False,
+            )
+        )
 
 
 def test_index_repo_deletes_stale_indexed_records_before_upsert(monkeypatch):
@@ -778,6 +848,33 @@ def test_iter_repo_files_excludes_composite_directory_prefixes(tmp_path):
     assert Path("tracked.py") in files
     assert Path("repo/zips/generated.txt") not in files
     assert Path("docs/reports/report.md") not in files
+
+
+def test_collect_chunks_skips_tracked_symlinks(tmp_path):
+    outside = tmp_path.parent / "outside-secret.txt"
+    outside.write_text("SECRET = 'do-not-index'\n", encoding="utf-8")
+    linked = tmp_path / "linked.txt"
+    linked.symlink_to(outside)
+    subprocess.run(
+        ["git", "init"],
+        cwd=str(tmp_path),
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "add", "linked.txt"],
+        cwd=str(tmp_path),
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    chunks = chroma_dev_search.collect_chunks(tmp_path)
+
+    assert not chunks
 
 
 def test_parse_codex_mcp_names_reads_table_output():
