@@ -1028,14 +1028,17 @@ def _pack_semantic_blocks(
             continue
 
         tentative = current + [block]
+        flushed_for_target = False
         if current and _block_document_bytes(path, tentative) > target_document_bytes:
             flush_current()
+            flushed_for_target = True
             current = _fit_overlap_before_block(
                 path, current, block, max_document_bytes
             )
             tentative = current + [block]
         if _block_document_bytes(path, tentative) > max_document_bytes:
-            flush_current()
+            if not flushed_for_target:
+                flush_current()
             current = _fit_overlap_before_block(
                 path, current, block, max_document_bytes
             )
@@ -1160,7 +1163,10 @@ def collect_chunks(root: Path) -> List[ChromaChunk]:
     git_commit = current_git_commit(root)
     chunks = []
     for rel_path in iter_repo_files(root):
-        text = read_text_file(root / rel_path)
+        full_path = root / rel_path
+        if full_path.is_symlink():
+            continue
+        text = read_text_file(full_path)
         if text is None:
             continue
         chunks.extend(chunk_text(rel_path, text, git_commit=git_commit))
@@ -1474,11 +1480,13 @@ def _contains_text(value) -> str:
 
 
 def search_repo(args: argparse.Namespace) -> int:
+    contains = _contains_text(args.contains)
+    if not contains and not args.query:
+        raise SystemExit("query is required unless --contains is used")
     apply_env_file(Path(args.env_file))
     config = chroma_config_from_env()
     client = chroma_client(config)
     collection = client.get_collection(name=config["collection"])
-    contains = _contains_text(args.contains)
     if contains:
         results = collection.get(
             where_document={"$contains": contains},
@@ -1546,7 +1554,7 @@ def build_index_parser() -> argparse.ArgumentParser:
 
 def build_search_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Search the Chroma repo index")
-    parser.add_argument("query")
+    parser.add_argument("query", nargs="?", default=None)
     parser.add_argument("--env-file", default=".env", help="Local env file")
     parser.add_argument("--limit", type=_positive_int, default=10)
     parser.add_argument("--candidates", type=_positive_int, default=200)
