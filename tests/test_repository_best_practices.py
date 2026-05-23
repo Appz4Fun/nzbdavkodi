@@ -23,16 +23,29 @@ def test_addon_metadata_includes_repo_links_and_disclaimer():
     assert len(disclaimers) >= 2
 
 
-def test_repository_addon_uses_raw_repo_zips_metadata_urls():
+def test_repository_addon_uses_pages_sha256_metadata_urls():
     addon_xml = REPO_ADDON_DIR / "addon.xml"
     root = ET.parse(addon_xml).getroot()
     repo_dir = root.find("./extension[@point='xbmc.addon.repository']/dir")
-    repo_base = "https://raw.githubusercontent.com/xbmc4lyfe/nzbdavkodi/main/repo/zips"
+    repo_base = "https://appz4fun.github.io/nzbdavkodi"
 
     assert repo_dir is not None
-    assert repo_dir.findtext("info") == "{}/addons.xml".format(repo_base)
-    assert repo_dir.findtext("checksum") == "{}/addons.xml.md5".format(repo_base)
-    assert repo_dir.findtext("datadir") == "{}/".format(repo_base)
+    info = repo_dir.find("info")
+    checksum = repo_dir.find("checksum")
+    datadir = repo_dir.find("datadir")
+    artdir = repo_dir.find("artdir")
+    assert info is not None
+    assert info.text == "{}/addons.xml.gz".format(repo_base)
+    assert "compressed" not in info.attrib
+    assert checksum is not None
+    assert checksum.text == "{}/addons.xml.gz.sha256".format(repo_base)
+    assert checksum.get("verify") == "sha256"
+    assert datadir is not None
+    assert datadir.text == repo_base
+    assert "zip" not in datadir.attrib
+    assert artdir is not None
+    assert artdir.text == repo_base
+    assert repo_dir.findtext("hashes") == "sha256"
 
 
 def test_issue_template_contact_links_use_canonical_owner():
