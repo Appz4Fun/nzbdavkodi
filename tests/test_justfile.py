@@ -222,6 +222,50 @@ def test_chroma_search_recipe_does_not_glob_contains_literals(tmp_path):
     ]
 
 
+def test_chroma_search_recipe_delegates_optional_query_validation_to_python(tmp_path):
+    just = shutil.which("just")
+    if just is None:
+        pytest.skip("just executable is not installed")
+
+    root = Path(__file__).resolve().parents[1]
+    fake_python = tmp_path / "python"
+    argv_file = tmp_path / "argv.txt"
+    fake_python.write_text(
+        "\n".join(
+            [
+                "#!/usr/bin/env bash",
+                'printf \'<%s>\\n\' "$@" > "$ARGV_FILE"',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
+    env = dict(os.environ)
+    env["CHROMA_PYTHON"] = str(fake_python)
+    env["ARGV_FILE"] = str(argv_file)
+
+    subprocess.run(
+        [
+            just,
+            "--justfile",
+            str(root / "justfile"),
+            "--working-directory",
+            str(tmp_path),
+            "chroma-search",
+        ],
+        env=env,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    assert argv_file.read_text(encoding="utf-8").splitlines() == [
+        "<scripts/chroma_search_repo.py>",
+    ]
+
+
 def test_chroma_dev_docs_describe_shared_defaults_and_agent_check():
     docs = (
         Path(__file__)
