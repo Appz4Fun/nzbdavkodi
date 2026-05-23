@@ -661,6 +661,45 @@ def test_iter_repo_files_limits_indexing_to_git_tracked_files(tmp_path):
     assert Path("scratch_secret.py") not in files
 
 
+def test_iter_repo_files_excludes_composite_directory_prefixes(tmp_path):
+    included = tmp_path / "tracked.py"
+    generated_zip_entry = tmp_path / "repo" / "zips" / "generated.txt"
+    report_entry = tmp_path / "docs" / "reports" / "report.md"
+    included.write_text("print('tracked')\n", encoding="utf-8")
+    generated_zip_entry.parent.mkdir(parents=True)
+    generated_zip_entry.write_text("generated\n", encoding="utf-8")
+    report_entry.parent.mkdir(parents=True)
+    report_entry.write_text("# report\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "init"],
+        cwd=str(tmp_path),
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "add",
+            "tracked.py",
+            "repo/zips/generated.txt",
+            "docs/reports/report.md",
+        ],
+        cwd=str(tmp_path),
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    files = set(iter_repo_files(tmp_path))
+
+    assert Path("tracked.py") in files
+    assert Path("repo/zips/generated.txt") not in files
+    assert Path("docs/reports/report.md") not in files
+
+
 def test_parse_codex_mcp_names_reads_table_output():
     output = """Name            Command  Args
 chroma          uvx      chroma-mcp --client-type cloud
@@ -712,6 +751,47 @@ def test_check_agent_chroma_setup_reports_missing_mcp_and_skill(
     assert "ck-test" not in output
 
 
+def test_check_agent_chroma_setup_reports_broken_skill_symlink(
+    tmp_path, monkeypatch, capsys
+):
+    env_path = tmp_path / ".env"
+    env_path.write_text("CHROMA_API_KEY=ck-test\n", encoding="utf-8")
+    home = tmp_path / "home"
+    (home / ".codex" / "skills" / "chroma").mkdir(parents=True)
+    (home / ".codex" / "skills" / "chroma" / "SKILL.md").write_text(
+        "# Chroma\n", encoding="utf-8"
+    )
+    (home / ".agents" / "skills").mkdir(parents=True)
+    (home / ".agents" / "skills" / "superpowers").symlink_to(
+        home / ".codex" / "superpowers" / "skills"
+    )
+
+    def runner(_cmd):
+        return types.SimpleNamespace(
+            returncode=0,
+            stdout="\n".join(
+                ["Name            Command"]
+                + [
+                    "{}          command".format(name)
+                    for name in AGENT_CHROMA_MCP_SERVERS
+                ]
+            ),
+            stderr="",
+        )
+
+    result = check_agent_chroma_setup(
+        env_path,
+        home=home,
+        which_func=lambda name: "/usr/local/bin/codex" if name == "codex" else None,
+        runner=runner,
+    )
+
+    assert result == 1
+    output = capsys.readouterr().out
+    assert "Superpowers skill symlink: missing" in output
+    assert "MCP servers: present" in output
+
+
 def test_check_agent_chroma_setup_passes_when_agent_bits_are_present(
     tmp_path, monkeypatch, capsys
 ):
@@ -722,6 +802,7 @@ def test_check_agent_chroma_setup_passes_when_agent_bits_are_present(
     (home / ".codex" / "skills" / "chroma" / "SKILL.md").write_text(
         "# Chroma\n", encoding="utf-8"
     )
+    (home / ".codex" / "superpowers" / "skills").mkdir(parents=True)
     (home / ".agents" / "skills").mkdir(parents=True)
     (home / ".agents" / "skills" / "superpowers").symlink_to(
         home / ".codex" / "superpowers" / "skills"
