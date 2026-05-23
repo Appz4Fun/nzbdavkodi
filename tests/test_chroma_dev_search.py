@@ -546,6 +546,16 @@ def test_apply_env_file_ignores_empty_values_so_defaults_survive(tmp_path, monke
     assert chroma_config_from_env()["database"] == DEFAULT_CHROMA_DATABASE
 
 
+def test_apply_env_file_treats_empty_environment_values_as_unset(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text("CHROMA_API_KEY=ck-file\n", encoding="utf-8")
+    monkeypatch.setenv("CHROMA_API_KEY", "")
+
+    apply_env_file(env_path)
+
+    assert os.environ["CHROMA_API_KEY"] == "ck-file"
+
+
 def test_chroma_config_from_env_uses_shared_defaults(monkeypatch):
     for key in chroma_dev_search.CHROMA_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
