@@ -309,12 +309,16 @@ def ensure_chroma_config(
         )
 
     existing_env_file = load_env_file(env_file)
-    values_to_migrate = _migrated_chroma_env_values(existing_env_file)
-    values_to_rewrite = dict(values_to_migrate)
+    effective_values = merged_chroma_config(env_file)
+    effective_values.update(prompted)
+    effective_values.update(_migrated_chroma_env_values(effective_values))
+    values_to_rewrite = {}
     values_to_append = {}
     for key in CHROMA_ENV_KEYS:
-        value = prompted.get(key, CHROMA_ENV_DEFAULTS.get(key, ""))
+        value = effective_values.get(key, "")
         if key in existing_env_file and existing_env_file[key]:
+            if existing_env_file[key] in CHROMA_ENV_MIGRATIONS.get(key, {}):
+                values_to_rewrite[key] = value
             continue
         if not value:
             continue
@@ -1313,14 +1317,27 @@ def chroma_client(config: Dict[str, str]):
     )
 
 
+def _is_chroma_not_found_error(error: Exception) -> bool:
+    if error.__class__.__name__ == "NotFoundError":
+        return True
+    code = getattr(error, "code", None)
+    if callable(code):
+        try:
+            return code() == 404
+        except Exception:  # pylint: disable=broad-except
+            return False
+    return False
+
+
 def get_or_create_collection(client, config: Dict[str, str], *, reset: bool = False):
     """Get the configured collection, creating it with the hybrid schema."""
     name = config["collection"]
     if reset:
         try:
             client.delete_collection(name=name)
-        except Exception:  # pylint: disable=broad-except
-            pass
+        except Exception as exc:  # pylint: disable=broad-except
+            if not _is_chroma_not_found_error(exc):
+                raise
     schema = create_chroma_schema()
     metadata = {
         "project": "nzbdavkodi",

@@ -568,6 +568,59 @@ def test_index_repo_deletes_stale_indexed_records_before_upsert(monkeypatch):
     assert collection.calls[2][1] == ["keep-chunk", "new-chunk"]
 
 
+def test_get_or_create_collection_raises_when_reset_delete_fails(monkeypatch):
+    class FakeClient:  # pylint: disable=too-few-public-methods
+        def delete_collection(self, name):
+            raise RuntimeError("auth failed")
+
+        def get_or_create_collection(self, **_kwargs):
+            return object()
+
+    def fake_schema():
+        return object()
+
+    monkeypatch.setattr(chroma_dev_search, "create_chroma_schema", fake_schema)
+
+    with pytest.raises(RuntimeError, match="auth failed"):
+        chroma_dev_search.get_or_create_collection(
+            FakeClient(), {"collection": "repo_code"}, reset=True
+        )
+
+
+def test_get_or_create_collection_ignores_missing_collection_on_reset(monkeypatch):
+    class NotFoundError(Exception):
+        pass
+
+    class FakeClient:  # pylint: disable=too-few-public-methods
+        def __init__(self):
+            self.calls = []
+
+        def delete_collection(self, name):
+            self.calls.append(("delete_collection", name))
+            raise NotFoundError("collection missing")
+
+        def get_or_create_collection(self, **kwargs):
+            self.calls.append(("get_or_create_collection", kwargs["name"]))
+            return "collection"
+
+    client = FakeClient()
+
+    def fake_schema():
+        return object()
+
+    monkeypatch.setattr(chroma_dev_search, "create_chroma_schema", fake_schema)
+
+    result = chroma_dev_search.get_or_create_collection(
+        client, {"collection": "repo_code"}, reset=True
+    )
+
+    assert result == "collection"
+    assert client.calls == [
+        ("delete_collection", "repo_code"),
+        ("get_or_create_collection", "repo_code"),
+    ]
+
+
 def test_load_env_file_reads_chroma_values_without_dotenv(tmp_path):
     env_path = tmp_path / ".env"
     env_path.write_text(
@@ -773,6 +826,25 @@ def test_ensure_chroma_config_rewrites_empty_defaults_without_prompt(
     assert loaded["CHROMA_TENANT"] == DEFAULT_CHROMA_TENANT
     assert loaded["CHROMA_DATABASE"] == DEFAULT_CHROMA_DATABASE
     assert loaded["CHROMA_COLLECTION"] == DEFAULT_COLLECTION_NAME
+
+
+def test_ensure_chroma_config_appends_effective_exported_values(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text("CHROMA_API_KEY=ck-existing\n", encoding="utf-8")
+    monkeypatch.setenv("CHROMA_HOST", "custom.trychroma.test")
+    monkeypatch.setenv("CHROMA_TENANT", "tenant-from-env")
+    monkeypatch.setenv("CHROMA_DATABASE", "database-from-env")
+    monkeypatch.setenv("CHROMA_COLLECTION", "collection-from-env")
+
+    result = ensure_chroma_config(env_path, prompt=False, interactive=False)
+
+    assert result == 0
+    loaded = load_env_file(env_path)
+    assert loaded["CHROMA_HOST"] == "custom.trychroma.test"
+    assert loaded["CHROMA_API_KEY"] == "ck-existing"
+    assert loaded["CHROMA_TENANT"] == "tenant-from-env"
+    assert loaded["CHROMA_DATABASE"] == "database-from-env"
+    assert loaded["CHROMA_COLLECTION"] == "collection-from-env"
 
 
 def test_ensure_chroma_config_fails_noninteractive_when_missing(tmp_path, monkeypatch):
