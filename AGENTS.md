@@ -77,12 +77,12 @@ just dist-clean    # clean + remove repo/zips/
 
 Before broad repo exploration, use Chroma semantic search first.
 
-- Prefer the native Chroma MCP server when available: query the `nzbdavkodi_code` collection with `mcp__chroma__.chroma_query_documents`.
+- Prefer the native Chroma MCP server when available: query the `nzb` collection with `mcp__chroma__.chroma_query_documents`.
 - For normal repo lookup, request minimal fields such as `include=["documents"]` and `n_results=5` so results stay readable and do not dump embedding metadata.
 - Use `rg` afterward for exact symbols, strings, and call sites.
 - Fall back to `just chroma-search "<task concept>" --limit 5` only when the MCP tool is unavailable or returns an unusable result.
 - Refresh the repo index with `just chroma-index --reset` after substantial code changes.
-- Use `chroma-docs` for Chroma product docs, `package-search` for third-party package source lookup, and `nzbdavkodi_code` for this repo.
+- Use `chroma-docs` for Chroma product docs, `package-search` for third-party package source lookup, and `nzb` for this repo.
 - Do not print `.env`, Chroma API keys, tokens, or raw config values.
 
 ## Architecture Snapshot

@@ -1,4 +1,5 @@
 # NZB-DAV Kodi Addon
+set positional-arguments
 
 # Install local development dependencies needed by the other recipes
 make-dev:
@@ -26,6 +27,7 @@ make-dev:
     "$chroma_py" -m pip install ${chroma_pip_flags+"${chroma_pip_flags[@]}"} -r requirements-dev-chroma.txt
     "$chroma_py" -c "import chromadb"
     "$chroma_py" scripts/chroma_check_config.py --env-file .env --prompt
+    "$chroma_py" scripts/chroma_agent_check.py --env-file .env --soft
 
     if [[ "$(uname -s)" == "Darwin" ]]; then
         if ! command -v brew >/dev/null 2>&1; then
@@ -115,15 +117,15 @@ chroma-install:
 
 # Index this repo into Chroma Cloud for Codex/dev search. Pass `--reset` to rebuild.
 chroma-index *args:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    "${CHROMA_PYTHON:-python3.14}" scripts/chroma_index_repo.py {{args}}
+    @bash -euo pipefail -c '"${CHROMA_PYTHON:-python3.14}" scripts/chroma_index_repo.py "$@"' bash "$@"
 
 # Search the Chroma Cloud dev index. Quote multi-word queries.
 chroma-search query *args:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    "${CHROMA_PYTHON:-python3.14}" scripts/chroma_search_repo.py "{{query}}" {{args}}
+    @bash -euo pipefail -c '"${CHROMA_PYTHON:-python3.14}" scripts/chroma_search_repo.py "$@"' bash "$@"
+
+# Verify local Codex Chroma MCP and skill wiring.
+chroma-agent-check *args:
+    @bash -euo pipefail -c '"${CHROMA_PYTHON:-python3.14}" scripts/chroma_agent_check.py "$@"' bash "$@"
 
 # Interactively create the .env file consumed by `just extreme-functional-test`.
 # Asks for NNTP credentials, NZBHydra2 URL+API key, WebDAV credentials, and
