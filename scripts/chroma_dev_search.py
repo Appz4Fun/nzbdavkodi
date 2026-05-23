@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import argparse
 import ast
+import getpass
 import hashlib
 import json
 import os
+import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -24,6 +26,19 @@ SPARSE_EMBEDDING_KEY = "sparse_embedding"
 DEFAULT_COLLECTION_NAME = "nzbdavkodi_code"
 DEFAULT_CHROMA_HOST = "api.trychroma.com"
 DEFAULT_CHROMA_DATABASE = "cdb"
+CHROMA_ENV_KEYS = (
+    "CHROMA_HOST",
+    "CHROMA_API_KEY",
+    "CHROMA_TENANT",
+    "CHROMA_DATABASE",
+    "CHROMA_COLLECTION",
+)
+REQUIRED_CHROMA_ENV_KEYS = ("CHROMA_API_KEY", "CHROMA_TENANT")
+CHROMA_ENV_DEFAULTS = {
+    "CHROMA_HOST": DEFAULT_CHROMA_HOST,
+    "CHROMA_DATABASE": DEFAULT_CHROMA_DATABASE,
+    "CHROMA_COLLECTION": DEFAULT_COLLECTION_NAME,
+}
 
 EXCLUDED_DIRS = {
     ".git",
@@ -105,6 +120,12 @@ class ChromaChunk:
 
 def _strip_shell_quotes(value: str) -> str:
     value = value.strip()
+    try:
+        parts = shlex.split(value, comments=False, posix=True)
+    except ValueError:
+        parts = []
+    if len(parts) == 1:
+        return parts[0]
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
         return value[1:-1]
     return value
@@ -131,6 +152,123 @@ def apply_env_file(path: Path) -> None:
     """Load .env values into os.environ without overriding existing values."""
     for key, value in load_env_file(path).items():
         os.environ.setdefault(key, value)
+
+
+def merged_chroma_config(path: Path) -> Dict[str, str]:
+    """Return Chroma config from .env plus environment, with safe defaults."""
+    values = {
+        key: value
+        for key, value in load_env_file(path).items()
+        if key in CHROMA_ENV_KEYS and value
+    }
+    for key in CHROMA_ENV_KEYS:
+        if os.environ.get(key):
+            values[key] = os.environ[key]
+    for key, value in CHROMA_ENV_DEFAULTS.items():
+        values.setdefault(key, value)
+    return values
+
+
+def missing_chroma_config_keys(path: Path) -> List[str]:
+    """Return required Chroma config keys absent from both .env and environment."""
+    config = merged_chroma_config(path)
+    return [key for key in REQUIRED_CHROMA_ENV_KEYS if not config.get(key)]
+
+
+def _quote_env_value(value: str) -> str:
+    return shlex.quote(value)
+
+
+def _append_chroma_env(path: Path, values: Dict[str, str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing = load_env_file(path)
+    lines = []
+    if path.exists() and path.stat().st_size > 0:
+        lines.append("")
+    lines.append("# Chroma Cloud dev search")
+    for key in CHROMA_ENV_KEYS:
+        if key in existing or key not in values:
+            continue
+        lines.append("{}={}".format(key, _quote_env_value(values[key])))
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write("\n".join(lines))
+        handle.write("\n")
+    path.chmod(0o600)
+
+
+def _prompt_for_required_chroma_values(
+    missing: Sequence[str],
+    *,
+    input_func=input,
+    secret_func=getpass.getpass,
+) -> Dict[str, str]:
+    prompted = {}
+    for key in missing:
+        if key == "CHROMA_API_KEY":
+            value = secret_func("Chroma API key (required): ").strip()
+        elif key == "CHROMA_TENANT":
+            value = input_func("Chroma tenant ID (required): ").strip()
+        else:
+            value = input_func("{} (required): ".format(key)).strip()
+        if not value:
+            raise SystemExit(
+                "Missing Chroma configuration: {}. Re-run and provide a value.".format(
+                    key
+                )
+            )
+        prompted[key] = value
+    return prompted
+
+
+def ensure_chroma_config(
+    env_file: Path,
+    *,
+    prompt: bool = False,
+    interactive: Optional[bool] = None,
+    input_func=input,
+    secret_func=getpass.getpass,
+) -> int:
+    """Ensure .env/environment contain enough Chroma config for dev tooling."""
+    env_file = Path(env_file)
+    missing = missing_chroma_config_keys(env_file)
+    if interactive is None:
+        interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    if missing and (not prompt or not interactive):
+        raise SystemExit(
+            "Missing Chroma configuration: {}. Set these in .env or the shell, "
+            "then re-run just make-dev.".format(", ".join(missing))
+        )
+
+    prompted = {}
+    if missing:
+        print(
+            "Chroma Cloud dev search needs configuration before indexing/searching."
+        )
+        prompted = _prompt_for_required_chroma_values(
+            missing,
+            input_func=input_func,
+            secret_func=secret_func,
+        )
+
+    existing_env_file = load_env_file(env_file)
+    values_to_append = {}
+    for key in CHROMA_ENV_KEYS:
+        if key in existing_env_file:
+            continue
+        if key in prompted:
+            values_to_append[key] = prompted[key]
+        elif key in CHROMA_ENV_DEFAULTS:
+            values_to_append[key] = CHROMA_ENV_DEFAULTS[key]
+    if values_to_append:
+        _append_chroma_env(env_file, values_to_append)
+        print(
+            "Updated {} with missing Chroma dev search keys.".format(
+                env_file.as_posix()
+            )
+        )
+    else:
+        print("Chroma dev search configuration is present.")
+    return 0
 
 
 def _relative_path(path: Path) -> str:
@@ -1107,19 +1245,51 @@ def _rows_from_results(results) -> List[Dict[str, object]]:
     return rows
 
 
+def _rows_from_get_results(results) -> List[Dict[str, object]]:
+    ids = results.get("ids") or []
+    documents = results.get("documents") or []
+    metadatas = results.get("metadatas") or []
+    rows = []
+    for index, row_id in enumerate(ids):
+        rows.append(
+            {
+                "id": row_id,
+                "document": documents[index] if index < len(documents) else "",
+                "metadata": metadatas[index] if index < len(metadatas) else {},
+                "score": None,
+            }
+        )
+    return rows
+
+
+def _contains_text(value) -> str:
+    if isinstance(value, str):
+        return value
+    return " ".join(str(part) for part in value if str(part)).strip()
+
+
 def search_repo(args: argparse.Namespace) -> int:
     apply_env_file(Path(args.env_file))
     config = chroma_config_from_env()
     client = chroma_client(config)
     collection = client.get_collection(name=config["collection"])
-    search = _sdk_search_object(
-        args.query,
-        limit=args.limit,
-        candidates=args.candidates,
-        group_by_source=not args.no_group_by,
-    )
-    results = collection.search(search)
-    rows = _rows_from_results(results)
+    contains = _contains_text(args.contains)
+    if contains:
+        results = collection.get(
+            where_document={"$contains": contains},
+            include=["documents", "metadatas"],
+            limit=args.limit,
+        )
+        rows = _rows_from_get_results(results)
+    else:
+        search = _sdk_search_object(
+            args.query,
+            limit=args.limit,
+            candidates=args.candidates,
+            group_by_source=not args.no_group_by,
+        )
+        results = collection.search(search)
+        rows = _rows_from_results(results)
     if args.json:
         print(json.dumps(rows, indent=2, sort_keys=True))
         return 0
@@ -1175,8 +1345,45 @@ def build_search_parser() -> argparse.ArgumentParser:
     parser.add_argument("--env-file", default=".env", help="Local env file")
     parser.add_argument("--limit", type=_positive_int, default=10)
     parser.add_argument("--candidates", type=_positive_int, default=200)
+    parser.add_argument(
+        "--contains",
+        nargs="+",
+        default=[],
+        metavar="TEXT",
+        help="Return chunks whose indexed document contains this exact text",
+    )
     parser.add_argument("--no-group-by", action="store_true")
     parser.add_argument("--json", action="store_true")
+    return parser
+
+
+def _normalize_search_argv(
+    argv: Optional[Sequence[str]],
+) -> Optional[List[str]]:
+    if argv is None:
+        return None
+    normalized = list(argv)
+    try:
+        contains_index = normalized.index("--contains")
+    except ValueError:
+        return normalized
+    sentinel_index = contains_index + 1
+    if sentinel_index >= len(normalized) or normalized[sentinel_index] != "--":
+        return normalized
+    return (
+        normalized[:sentinel_index]
+        + [" ".join(normalized[sentinel_index + 1 :]).strip()]
+    )
+
+
+def build_check_config_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Check Chroma Cloud dev config")
+    parser.add_argument("--env-file", default=".env", help="Local env file")
+    parser.add_argument(
+        "--prompt",
+        action="store_true",
+        help="Prompt for missing required Chroma values when attached to a TTY",
+    )
     return parser
 
 
@@ -1185,7 +1392,12 @@ def main_index(argv: Optional[Sequence[str]] = None) -> int:
 
 
 def main_search(argv: Optional[Sequence[str]] = None) -> int:
-    return search_repo(build_search_parser().parse_args(argv))
+    return search_repo(build_search_parser().parse_args(_normalize_search_argv(argv)))
+
+
+def main_check_config(argv: Optional[Sequence[str]] = None) -> int:
+    args = build_check_config_parser().parse_args(argv)
+    return ensure_chroma_config(Path(args.env_file), prompt=args.prompt)
 
 
 if __name__ == "__main__":

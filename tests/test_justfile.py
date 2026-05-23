@@ -137,10 +137,15 @@ def test_extreme_functional_test_recipe_preserves_exported_env_overrides():
 def test_chroma_dev_recipes_use_python314_and_dev_requirements():
     contents = Path(__file__).resolve().parents[1].joinpath("justfile").read_text()
 
+    make_dev_body = _recipe_body(contents, "make-dev")
     install_body = _recipe_body(contents, "chroma-install")
     index_body = _recipe_body(contents, "chroma-index")
     search_body = _recipe_body(contents, "chroma-search")
 
+    assert "requirements-dev-chroma.txt" in make_dev_body
+    assert "${CHROMA_PYTHON:-python3.14}" in make_dev_body
+    assert "scripts/chroma_check_config.py --env-file .env --prompt" in make_dev_body
+    assert "import chromadb" in make_dev_body
     assert "requirements-dev-chroma.txt" in install_body
     assert "--break-system-packages" in install_body
     assert '${pip_flags+"${pip_flags[@]}"}' in install_body

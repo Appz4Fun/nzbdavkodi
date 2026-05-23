@@ -5,18 +5,24 @@
 
 import sys
 import types
+from argparse import Namespace
 from pathlib import Path
 
 import pytest
 
+from scripts import chroma_dev_search
 from scripts.chroma_dev_search import (
     SPARSE_EMBEDDING_KEY,
+    _normalize_search_argv,
     _sdk_search_object,
     build_hybrid_search_payload,
     build_index_parser,
     build_search_parser,
     chunk_text,
+    ensure_chroma_config,
     load_env_file,
+    missing_chroma_config_keys,
+    search_repo,
 )
 
 
@@ -156,6 +162,51 @@ def test_cli_parsers_reject_non_positive_counts():
         search_parser.parse_args(["resolver", "--candidates", "-1"])
 
 
+def test_search_parser_accepts_exact_contains_filter():
+    args = build_search_parser().parse_args(
+        ["resolver fallback", "--contains", "must be a positive integer"]
+    )
+
+    assert " ".join(args.contains) == "must be a positive integer"
+
+
+def test_search_parser_accepts_just_split_contains_filter():
+    args = build_search_parser().parse_args(
+        [
+            "resolver fallback",
+            "--contains",
+            "must",
+            "be",
+            "a",
+            "positive",
+            "integer",
+        ]
+    )
+
+    assert " ".join(args.contains) == "must be a positive integer"
+
+
+def test_search_argv_normalizer_allows_option_like_contains_literals():
+    argv = _normalize_search_argv(
+        [
+            "make dev",
+            "--limit",
+            "1",
+            "--contains",
+            "--",
+            "scripts/chroma_check_config.py",
+            "--env-file",
+            ".env",
+            "--prompt",
+        ]
+    )
+
+    args = build_search_parser().parse_args(argv)
+
+    assert args.limit == 1
+    assert args.contains == ["scripts/chroma_check_config.py --env-file .env --prompt"]
+
+
 def test_build_hybrid_search_payload_uses_rrf_sparse_group_by():
     payload = build_hybrid_search_payload(
         "resolver fallback",
@@ -285,6 +336,73 @@ def test_sdk_search_object_imports_group_by_from_sdk_submodule(monkeypatch):
     assert isinstance(search.group_by_value.aggregate, FakeMinK)
 
 
+def test_search_repo_uses_document_contains_filter(monkeypatch, capsys):
+    class FakeCollection:  # pylint: disable=too-few-public-methods
+        def __init__(self):
+            self.get_call = None
+            self.search_called = False
+
+        def get(self, **kwargs):
+            self.get_call = kwargs
+            return {
+                "ids": ["chunk-1"],
+                "documents": ["File: scripts/example.py\nneedle\n"],
+                "metadatas": [
+                    {
+                        "path": "scripts/example.py",
+                        "start_line": 10,
+                        "end_line": 12,
+                        "structural_context": "function example",
+                    }
+                ],
+            }
+
+        def search(self, _search):
+            self.search_called = True
+            return {"ids": [[]]}
+
+    class FakeClient:  # pylint: disable=too-few-public-methods
+        def __init__(self):
+            self.collection = FakeCollection()
+
+        def get_collection(self, name):
+            assert name == "repo_code"
+            return self.collection
+
+    fake_client = FakeClient()
+    monkeypatch.setattr(chroma_dev_search, "apply_env_file", lambda _path: None)
+    monkeypatch.setattr(
+        chroma_dev_search,
+        "chroma_config_from_env",
+        lambda: {"collection": "repo_code"},
+    )
+    monkeypatch.setattr(chroma_dev_search, "chroma_client", lambda _config: fake_client)
+
+    result = search_repo(
+        Namespace(
+            query="broad query",
+            contains="needle",
+            env_file=".env",
+            limit=5,
+            candidates=20,
+            no_group_by=False,
+            json=False,
+        )
+    )
+
+    assert result == 0
+    assert fake_client.collection.get_call == {
+        "where_document": {"$contains": "needle"},
+        "include": ["documents", "metadatas"],
+        "limit": 5,
+    }
+    assert fake_client.collection.search_called is False
+    output = capsys.readouterr().out
+    assert "scripts/example.py:10-12" in output
+    assert "function example" in output
+    assert "needle" in output
+
+
 def test_load_env_file_reads_chroma_values_without_dotenv(tmp_path):
     env_path = tmp_path / ".env"
     env_path.write_text(
@@ -307,3 +425,52 @@ def test_load_env_file_reads_chroma_values_without_dotenv(tmp_path):
     assert loaded["CHROMA_TENANT"] == "tenant-id"
     assert loaded["CHROMA_DATABASE"] == "cdb"
     assert "IGNORED_LINE" not in loaded
+
+
+def test_missing_chroma_config_reads_env_file_and_environment(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text("CHROMA_TENANT=file-tenant\n", encoding="utf-8")
+    monkeypatch.setenv("CHROMA_API_KEY", "ck-env")
+
+    assert missing_chroma_config_keys(env_path) == []
+
+
+def test_ensure_chroma_config_prompts_and_appends_missing_values(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    monkeypatch.delenv("CHROMA_API_KEY", raising=False)
+    monkeypatch.delenv("CHROMA_TENANT", raising=False)
+    prompted = []
+
+    def input_value(prompt):
+        prompted.append(prompt)
+        return "tenant-from-user"
+
+    def secret_value(prompt):
+        prompted.append(prompt)
+        return "ck-from-user"
+
+    result = ensure_chroma_config(
+        env_path,
+        prompt=True,
+        interactive=True,
+        input_func=input_value,
+        secret_func=secret_value,
+    )
+
+    assert result == 0
+    loaded = load_env_file(env_path)
+    assert loaded["CHROMA_API_KEY"] == "ck-from-user"
+    assert loaded["CHROMA_TENANT"] == "tenant-from-user"
+    assert loaded["CHROMA_HOST"] == "api.trychroma.com"
+    assert loaded["CHROMA_DATABASE"] == "cdb"
+    assert loaded["CHROMA_COLLECTION"] == "nzbdavkodi_code"
+    assert any("Chroma API key" in prompt for prompt in prompted)
+    assert any("Chroma tenant ID" in prompt for prompt in prompted)
+
+
+def test_ensure_chroma_config_fails_noninteractive_when_missing(tmp_path, monkeypatch):
+    monkeypatch.delenv("CHROMA_API_KEY", raising=False)
+    monkeypatch.delenv("CHROMA_TENANT", raising=False)
+
+    with pytest.raises(SystemExit, match="Missing Chroma configuration"):
+        ensure_chroma_config(tmp_path / ".env", prompt=True, interactive=False)
