@@ -9,9 +9,15 @@ flow, playback resolver, or release artifact.
 Use `just make-dev` for first-time setup. It installs the normal test/lint
 dependencies plus the Python 3.14 Chroma dev SDK, verifies `import chromadb`,
 then checks `.env` and the current environment for Chroma Cloud configuration.
-If the required Chroma values are missing in an interactive shell, it stops and
-prompts for them without echoing the API key. In non-interactive shells, it
-exits with a clear missing-config message instead of hanging.
+If the Chroma API key is missing in an interactive shell, it prompts for it
+without echoing the value. The prompt intentionally says to ask farmfresh for
+the key. In non-interactive shells, it exits with a clear missing-config
+message instead of hanging.
+
+After `.env` is present, `make-dev` also runs a soft local agent check. That
+check verifies Codex MCP and skill wiring when available, prints missing setup
+commands, and returns success so a developer without Codex can still install
+repo dependencies.
 
 ```bash
 just make-dev
@@ -32,13 +38,37 @@ These are the Chroma values it understands:
 
 ```bash
 CHROMA_HOST=api.trychroma.com
-CHROMA_API_KEY=...
-CHROMA_TENANT=...
+CHROMA_API_KEY=<ask farmfresh>
+CHROMA_TENANT=eb3e5a60-028d-4f18-95fd-c9495fb8ddaa
 CHROMA_DATABASE=cdb
-CHROMA_COLLECTION=nzbdavkodi_code
+CHROMA_COLLECTION=nzb
 ```
 
+`CHROMA_HOST`, `CHROMA_TENANT`, `CHROMA_DATABASE`, and `CHROMA_COLLECTION`
+have repo defaults. `CHROMA_API_KEY` is the only required secret.
+
 `.env` is gitignored. Do not put real Chroma keys in committed files.
+
+## Agent Check
+
+Run the local agent check directly when you want a hard pass/fail after
+bootstrap:
+
+```bash
+just chroma-agent-check --env-file .env
+```
+
+It checks:
+
+- `.env` or exported shell variables have enough Chroma Cloud config;
+- the native Chroma skill exists at `~/.codex/skills/chroma/SKILL.md`;
+- the Superpowers skill symlink exists at `~/.agents/skills/superpowers`;
+- `codex mcp list` includes `chroma`, `chroma-docs`, and `package-search`.
+
+The check never prints API keys. If MCP servers are missing, it prints
+`codex mcp add ...` commands that use environment variables instead of raw
+secrets. Restart Codex after adding or changing MCP servers; the running agent
+only sees MCP tools discovered at startup.
 
 ## Index
 
@@ -76,7 +106,7 @@ For normal agent development, prefer the native Chroma MCP server first:
 
 ```python
 mcp__chroma__.chroma_query_documents(
-    collection_name="nzbdavkodi_code",
+    collection_name="nzb",
     query_texts=["stream proxy fallback validation"],
     n_results=5,
     include=["documents"],
@@ -132,7 +162,7 @@ Use Chroma as the first map, not as a replacement for reading code:
 
    ```python
    mcp__chroma__.chroma_query_documents(
-       collection_name="nzbdavkodi_code",
+       collection_name="nzb",
        query_texts=["resolver WebDAV authentication failure user message"],
        n_results=5,
        include=["documents"],
@@ -166,13 +196,30 @@ found.
 
 ## Codex MCP
 
-The local Codex config includes:
+Fully configured Codex should have:
 
-- native Chroma Cloud MCP for this repo's `nzbdavkodi_code` collection;
+- native Chroma Cloud MCP for this repo's `nzb` collection;
 - `chroma-docs` for Chroma product documentation;
 - `package-search` for third-party package source lookup.
 
 Use the repo collection for `nzbdavkodi` source search, `chroma-docs` for Chroma
 API behavior, and `package-search` for external package source.
 
-Restart Codex after MCP config changes so the server is discovered at startup.
+Verify the live Codex config:
+
+```bash
+codex mcp list
+```
+
+Expected server names:
+
+```text
+chroma
+chroma-docs
+package-search
+```
+
+The repo does not silently edit global Codex config from `make-dev`. Use the
+commands printed by `just chroma-agent-check --env-file .env` to add missing
+servers, then restart Codex after MCP config changes so the servers are
+discovered at startup.
