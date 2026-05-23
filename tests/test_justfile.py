@@ -3,8 +3,11 @@
 
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
+
+import pytest
 
 
 def _recipe_body(justfile_text, recipe_name):
@@ -169,6 +172,10 @@ def test_chroma_dev_recipes_use_python314_and_dev_requirements():
 
 
 def test_chroma_search_recipe_does_not_glob_contains_literals(tmp_path):
+    just = shutil.which("just")
+    if just is None:
+        pytest.skip("just executable is not installed")
+
     root = Path(__file__).resolve().parents[1]
     fake_python = tmp_path / "python"
     argv_file = tmp_path / "argv.txt"
@@ -190,7 +197,7 @@ def test_chroma_search_recipe_does_not_glob_contains_literals(tmp_path):
 
     subprocess.run(
         [
-            "just",
+            just,
             "--justfile",
             str(root / "justfile"),
             "--working-directory",
