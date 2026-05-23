@@ -284,13 +284,25 @@ release:
 # Run tests then build release
 ship: test release
 
-# Generate Kodi repository in repo/zips/
+# Generate a local GitHub Pages/Kodi repository preview in pages-dist/
 repo: release
-    python3 scripts/generate_repo.py
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    addon_version="$(
+        python3 -c 'import sys, xml.etree.ElementTree as ET; version = ET.parse("repo/plugin.video.nzbdav/addon.xml").getroot().attrib.get("version"); sys.exit("addon.xml is missing a version attribute") if not version else print(version)'
+    )"
+    addon_zip="plugin.video.nzbdav-${addon_version}.zip"
+    if [[ ! -f "${addon_zip}" ]]; then
+        echo "Expected release zip not found: ${addon_zip}" >&2
+        exit 1
+    fi
+    rm -rf pages-dist/
+    python3 scripts/generate_repo.py --output-dir pages-dist --addon-zip "${addon_zip}" --smoke-check
 
 # Copy the repository zip to cwd for easy access
 repo-zip: repo
-    cp repo/zips/repository.nzbdav/repository.nzbdav-*.zip .
+    cp pages-dist/repository.nzbdav-*.zip .
     @ls -lh repository.nzbdav-*.zip
 
 # Clean build artifacts
@@ -302,6 +314,6 @@ clean:
 # Run the same checks as GitHub CI (lint + test)
 ci: lint test
 
-# Clean everything including generated repository zips
+# Clean everything including generated Pages/repo output
 dist-clean: clean
-    rm -rf repo/zips/
+    rm -rf repo/zips/ pages-dist/
