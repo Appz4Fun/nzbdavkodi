@@ -43,6 +43,16 @@ def _load_generate_repo_module():
     return module
 
 
+def _write_release_zip(tmp_path, version="1.2.1"):
+    release_zip = tmp_path / "plugin.video.nzbdav-{}.zip".format(version)
+    release_addon_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<addon id="plugin.video.nzbdav" name="NZB-DAV" version="{version}" />
+""".format(version=version)
+    with zipfile.ZipFile(release_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("plugin.video.nzbdav/addon.xml", release_addon_xml)
+    return release_zip
+
+
 def test_generate_repo_writes_minimal_pages_root_files(tmp_path, monkeypatch):
     module = _load_generate_repo_module()
     monkeypatch.chdir(REPO_ROOT)
@@ -87,12 +97,7 @@ def test_generate_repo_pages_root_index_lists_repository_metadata_files(
 def test_generate_repo_html_indexes_use_standards_doctype(tmp_path, monkeypatch):
     module = _load_generate_repo_module()
     monkeypatch.chdir(REPO_ROOT)
-    release_zip = tmp_path / "plugin.video.nzbdav-1.2.1.zip"
-    release_addon_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<addon id="plugin.video.nzbdav" name="NZB-DAV" version="1.2.1" />
-"""
-    with zipfile.ZipFile(release_zip, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("plugin.video.nzbdav/addon.xml", release_addon_xml)
+    release_zip = _write_release_zip(tmp_path)
 
     output_dir = tmp_path / "pages"
     module.generate_repo(output_dir=str(output_dir), addon_zip=str(release_zip))
@@ -334,12 +339,7 @@ def test_generate_repo_writes_release_path_to_all_metadata_extensions(
 def test_generate_repo_smoke_check_passes_for_generated_pages(tmp_path, monkeypatch):
     module = _load_generate_repo_module()
     monkeypatch.chdir(REPO_ROOT)
-    release_zip = tmp_path / "plugin.video.nzbdav-1.2.1.zip"
-    release_addon_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<addon id="plugin.video.nzbdav" name="NZB-DAV" version="1.2.1" />
-"""
-    with zipfile.ZipFile(release_zip, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("plugin.video.nzbdav/addon.xml", release_addon_xml)
+    release_zip = _write_release_zip(tmp_path)
 
     output_dir = tmp_path / "pages"
     module.generate_repo(output_dir=str(output_dir), addon_zip=str(release_zip))
@@ -350,9 +350,10 @@ def test_generate_repo_smoke_check_passes_for_generated_pages(tmp_path, monkeypa
 def test_generate_repo_smoke_check_rejects_copied_addon_zip(tmp_path, monkeypatch):
     module = _load_generate_repo_module()
     monkeypatch.chdir(REPO_ROOT)
+    release_zip = _write_release_zip(tmp_path)
 
     output_dir = tmp_path / "pages"
-    module.generate_repo(output_dir=str(output_dir))
+    module.generate_repo(output_dir=str(output_dir), addon_zip=str(release_zip))
     (output_dir / "plugin.video.nzbdav-9.9.9.zip").write_bytes(b"bad")
 
     with pytest.raises(SystemExit) as excinfo:
@@ -366,9 +367,10 @@ def test_generate_repo_smoke_check_rejects_copied_addon_zip(tmp_path, monkeypatc
 def test_generate_repo_smoke_check_rejects_empty_sha256_checksum(tmp_path, monkeypatch):
     module = _load_generate_repo_module()
     monkeypatch.chdir(REPO_ROOT)
+    release_zip = _write_release_zip(tmp_path)
 
     output_dir = tmp_path / "pages"
-    module.generate_repo(output_dir=str(output_dir))
+    module.generate_repo(output_dir=str(output_dir), addon_zip=str(release_zip))
     (output_dir / "addons.xml.gz.sha256").write_text("", encoding="utf-8")
 
     with pytest.raises(SystemExit) as excinfo:
@@ -384,9 +386,10 @@ def test_generate_repo_smoke_check_rejects_index_missing_root_checksum_link(
 ):
     module = _load_generate_repo_module()
     monkeypatch.chdir(REPO_ROOT)
+    release_zip = _write_release_zip(tmp_path)
 
     output_dir = tmp_path / "pages"
-    module.generate_repo(output_dir=str(output_dir))
+    module.generate_repo(output_dir=str(output_dir), addon_zip=str(release_zip))
     index_path = output_dir / "index.html"
     index_path.write_text(
         index_path.read_text(encoding="utf-8").replace(
@@ -403,14 +406,44 @@ def test_generate_repo_smoke_check_rejects_index_missing_root_checksum_link(
     )
 
 
+def test_generate_repo_smoke_check_requires_explicit_repository_zip_anchor(
+    tmp_path, monkeypatch
+):
+    module = _load_generate_repo_module()
+    monkeypatch.chdir(REPO_ROOT)
+    release_zip = _write_release_zip(tmp_path)
+
+    output_dir = tmp_path / "pages"
+    module.generate_repo(output_dir=str(output_dir), addon_zip=str(release_zip))
+    index_path = output_dir / "index.html"
+    repository_zip_anchor = '<a href="{0}">{0}</a><br>\n'.format(
+        "repository.nzbdav-1.1.1.zip"
+    )
+    index_path.write_text(
+        index_path.read_text(encoding="utf-8").replace(
+            repository_zip_anchor,
+            "",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        module.smoke_check_pages(str(output_dir))
+
+    assert str(excinfo.value) == (
+        "generate_repo: index.html must link repository.nzbdav-1.1.1.zip"
+    )
+
+
 def test_generate_repo_smoke_check_rejects_missing_addon_zip_sha256(
     tmp_path, monkeypatch
 ):
     module = _load_generate_repo_module()
     monkeypatch.chdir(REPO_ROOT)
+    release_zip = _write_release_zip(tmp_path)
 
     output_dir = tmp_path / "pages"
-    module.generate_repo(output_dir=str(output_dir))
+    module.generate_repo(output_dir=str(output_dir), addon_zip=str(release_zip))
     (output_dir / "repository.nzbdav" / "repository.nzbdav-1.1.1.zip.sha256").unlink(
         missing_ok=True
     )
@@ -423,14 +456,36 @@ def test_generate_repo_smoke_check_rejects_missing_addon_zip_sha256(
     )
 
 
+def test_generate_repo_smoke_check_rejects_missing_addon_zip_directory(
+    tmp_path, monkeypatch
+):
+    module = _load_generate_repo_module()
+    monkeypatch.chdir(REPO_ROOT)
+    release_zip = _write_release_zip(tmp_path)
+
+    output_dir = tmp_path / "pages"
+    module.generate_repo(output_dir=str(output_dir), addon_zip=str(release_zip))
+    for path in (output_dir / "plugin.video.nzbdav").iterdir():
+        path.unlink()
+    (output_dir / "plugin.video.nzbdav").rmdir()
+
+    with pytest.raises(SystemExit) as excinfo:
+        module.smoke_check_pages(str(output_dir))
+
+    assert str(excinfo.value) == (
+        "generate_repo: plugin.video.nzbdav zip missing from repository datadir"
+    )
+
+
 def test_generate_repo_smoke_check_rejects_absolute_addon_metadata_path(
     tmp_path, monkeypatch
 ):
     module = _load_generate_repo_module()
     monkeypatch.chdir(REPO_ROOT)
+    release_zip = _write_release_zip(tmp_path)
 
     output_dir = tmp_path / "pages"
-    module.generate_repo(output_dir=str(output_dir))
+    module.generate_repo(output_dir=str(output_dir), addon_zip=str(release_zip))
     tree = _parse_generated_addons_xml(output_dir)
     addon = tree.find("./addon[@id='plugin.video.nzbdav']")
     metadata = addon.find("./extension[@point='xbmc.addon.metadata']")
@@ -461,9 +516,10 @@ def test_generate_repo_smoke_check_rejects_non_repository_relative_addon_metadat
 ):
     module = _load_generate_repo_module()
     monkeypatch.chdir(REPO_ROOT)
+    release_zip = _write_release_zip(tmp_path)
 
     output_dir = tmp_path / "pages"
-    module.generate_repo(output_dir=str(output_dir))
+    module.generate_repo(output_dir=str(output_dir), addon_zip=str(release_zip))
     tree = _parse_generated_addons_xml(output_dir)
     addon = tree.find("./addon[@id='plugin.video.nzbdav']")
     metadata = addon.find("./extension[@point='xbmc.addon.metadata']")
@@ -478,12 +534,21 @@ def test_generate_repo_smoke_check_rejects_non_repository_relative_addon_metadat
     )
 
 
+def test_repository_relative_path_rejects_parent_traversal_with_backslashes():
+    module = _load_generate_repo_module()
+
+    assert not module._is_repository_relative_path(
+        "plugin.video.nzbdav\\..\\plugin.video.nzbdav-1.2.1.zip"
+    )
+
+
 def test_generate_repo_smoke_check_rejects_stale_repository_zip(tmp_path, monkeypatch):
     module = _load_generate_repo_module()
     monkeypatch.chdir(REPO_ROOT)
+    release_zip = _write_release_zip(tmp_path)
 
     output_dir = tmp_path / "pages"
-    module.generate_repo(output_dir=str(output_dir))
+    module.generate_repo(output_dir=str(output_dir), addon_zip=str(release_zip))
     stale_zip = output_dir / "repository.nzbdav" / "repository.nzbdav-0.0.1.zip"
     stale_zip.write_bytes(b"bad")
 
@@ -501,6 +566,7 @@ def test_generate_repo_smoke_check_supports_non_default_repository_id(
 ):
     module = _load_generate_repo_module()
     monkeypatch.chdir(REPO_ROOT)
+    release_zip = _write_release_zip(tmp_path)
     repository_addon_dir = tmp_path / "repo" / "repository.custom"
     repository_addon_dir.mkdir(parents=True)
     (repository_addon_dir / "addon.xml").write_text(
@@ -523,6 +589,7 @@ def test_generate_repo_smoke_check_supports_non_default_repository_id(
     output_dir = tmp_path / "pages"
     module.generate_repo(
         output_dir=str(output_dir),
+        addon_zip=str(release_zip),
         repository_addon_dir=str(repository_addon_dir),
     )
 

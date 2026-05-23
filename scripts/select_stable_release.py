@@ -67,9 +67,22 @@ def _asset_download_url(asset):
     )
 
 
+def _flatten_paginated_releases(releases):
+    if not isinstance(releases, list):
+        return releases
+    flattened = []
+    for item in releases:
+        if isinstance(item, list):
+            flattened.extend(item)
+        else:
+            flattened.append(item)
+    return flattened
+
+
 def select_stable_release(releases):
     """Return tagName, assetName, and downloadUrl for the highest stable release."""
     stable = []
+    releases = _flatten_paginated_releases(releases)
     for release in releases:
         if _is_prerelease(release) or _is_draft(release):
             continue
