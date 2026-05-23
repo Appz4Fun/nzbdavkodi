@@ -183,11 +183,12 @@ def load_env_file(path: Path) -> Dict[str, str]:
 
 
 def apply_env_file(path: Path) -> None:
-    """Load .env values into os.environ without overriding existing values."""
+    """Load .env values into os.environ without overriding non-empty values."""
     for key, value in load_env_file(path).items():
         if not value:
             continue
-        os.environ.setdefault(key, value)
+        if not os.environ.get(key):
+            os.environ[key] = value
 
 
 def merged_chroma_config(path: Path) -> Dict[str, str]:
