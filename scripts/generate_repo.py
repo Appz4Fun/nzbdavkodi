@@ -58,9 +58,10 @@ def _addon_zip_relative_path(addon_id, version):
 def _is_repository_relative_path(path):
     if urlparse(path).scheme or os.path.isabs(path):
         return False
-    if os.pardir in path.split(os.sep):
+    normalized_input = path.replace("\\", "/")
+    if os.pardir in normalized_input.split("/"):
         return False
-    normalized = os.path.normpath(path)
+    normalized = os.path.normpath(normalized_input)
     if normalized == os.pardir or normalized.startswith(os.pardir + os.sep):
         return False
     return True
@@ -370,14 +371,11 @@ def smoke_check_pages(output_dir, repository_addon_dir="repo/repository.nzbdav")
                 "plugin.video.nzbdav",
                 "plugin.video.nzbdav-{}.zip".format(addon.attrib["version"]),
             )
-        if os.path.exists(os.path.dirname(addon_zip_path)) and not os.path.isfile(
-            addon_zip_path
-        ):
+        if not os.path.isfile(addon_zip_path):
             raise SystemExit(
                 "generate_repo: plugin.video.nzbdav zip missing from repository datadir"
             )
-        if os.path.isfile(addon_zip_path):
-            _verify_sha256_file(addon_zip_path)
+        _verify_sha256_file(addon_zip_path)
 
     repo_id, _repo_version = _read_repository_identity(repository_addon_dir)
     index = open(index_path, "r", encoding="utf-8").read()
@@ -386,8 +384,13 @@ def smoke_check_pages(output_dir, repository_addon_dir="repo/repository.nzbdav")
         for name in os.listdir(output_dir)
         if name.startswith("{}-".format(repo_id)) and name.endswith(".zip")
     ]
-    if len(repo_zip_names) != 1 or repo_zip_names[0] not in index:
+    if len(repo_zip_names) != 1:
         raise SystemExit("generate_repo: index.html must link one repository zip")
+    repo_zip_link = '<a href="{0}">{0}</a>'.format(repo_zip_names[0])
+    if repo_zip_link not in index:
+        raise SystemExit(
+            "generate_repo: index.html must link {}".format(repo_zip_names[0])
+        )
 
     repo_zip_path = os.path.join(output_dir, repo_zip_names[0])
     _verify_sha256_file(repo_zip_path)
@@ -395,6 +398,7 @@ def smoke_check_pages(output_dir, repository_addon_dir="repo/repository.nzbdav")
         "addons.xml",
         "addons.xml.gz",
         "addons.xml.gz.sha256",
+        repo_zip_names[0],
         repo_zip_names[0] + ".sha256",
     ]
     for name in expected_index_links:

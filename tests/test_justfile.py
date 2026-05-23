@@ -122,7 +122,10 @@ def test_pages_workflow_deploys_repository_metadata_on_main_push():
     assert "repo/repository.nzbdav/**" in contents
     assert "scripts/select_stable_release.py" in contents
     assert "repo/repository.nzbdav.releases" not in contents
-    assert 'gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100"' in contents
+    assert (
+        'gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100"'
+        in contents
+    )
     assert "python3 scripts/select_stable_release.py releases.json" in contents
     assert "rm -rf pages-dist" in contents
     assert "--output-dir pages-dist" in contents

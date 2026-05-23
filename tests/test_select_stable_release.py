@@ -206,3 +206,21 @@ def test_main_prints_github_output_lines(tmp_path, capsys):
         "asset_name=plugin.video.nzbdav-1.0.0.zip\n"
         "download_url=https://example.test/v1.0.0.zip\n"
     )
+
+
+def test_main_accepts_slurped_paginated_release_pages(tmp_path, capsys):
+    module = _load_select_stable_release_module()
+    releases_path = tmp_path / "releases.json"
+    releases_path.write_text(
+        json.dumps([[_release("v1.0.0")], [_release("v1.2.0")]]),
+        encoding="utf-8",
+    )
+
+    exit_code = module.main([str(releases_path)])
+
+    assert exit_code == 0
+    assert capsys.readouterr().out == (
+        "tag=v1.2.0\n"
+        "asset_name=plugin.video.nzbdav-1.2.0.zip\n"
+        "download_url=https://example.test/v1.2.0.zip\n"
+    )

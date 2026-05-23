@@ -50,7 +50,7 @@ jobs:
       - name: Read GitHub releases
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" > releases.json
+        run: gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" > releases.json
 
       - name: Select latest stable addon release
         id: stable_release
