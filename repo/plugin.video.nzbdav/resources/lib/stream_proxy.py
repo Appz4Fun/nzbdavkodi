@@ -1098,11 +1098,13 @@ def _validate_url(url):
       outbound request, and a URL with ``\\n`` in an ffmpeg ``-i``
       could be mis-parsed as a separate argv entry on older ffmpeg.
     """
-    if not url or not url.startswith(("http://", "https://")):
+    if not url:
         raise ValueError("Invalid URL scheme: {}".format(repr(url)[:30]))
     # Satisfy CodeQL [py/command-line-injection] taint tracking
     if url.startswith("-"):
-        raise ValueError("URL cannot start with a dash")
+        raise ValueError("URL cannot start with a dash: {}".format(repr(url)[:30]))
+    if not url.startswith(("http://", "https://")):
+        raise ValueError("Invalid URL scheme: {}".format(repr(url)[:30]))
     if any(ord(c) < 0x20 for c in url):
         raise ValueError("URL contains control characters: {}".format(repr(url)[:60]))
 
@@ -1501,11 +1503,20 @@ class _StreamHandler(BaseHTTPRequestHandler):
             _notify_error("Failed to start ffmpeg")
             self.send_error(500)
             return None, None
+
+        input_url = ctx.get("remote_url", "")
+        if input_url.startswith("-"):
+            xbmc.log("NZB-DAV: Refusing unsafe remote_url", xbmc.LOGERROR)
+            _notify_error("Failed to start ffmpeg")
+            self.send_error(500)
+            return None, None
+
         xbmc.log(
             "NZB-DAV: Remuxing to MKV (seek={})".format(seek_seconds),
             xbmc.LOGINFO,
         )
         try:
+            # lgtm [py/command-line-injection]  # validated in _is_safe_ffmpeg_cmd
             proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.DEVNULL,
