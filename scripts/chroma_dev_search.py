@@ -1027,13 +1027,14 @@ def batched(
 def index_repo(args: argparse.Namespace) -> int:
     apply_env_file(Path(args.env_file))
     root = Path(args.root).resolve()
+    collection_name = os.environ.get("CHROMA_COLLECTION", DEFAULT_COLLECTION_NAME)
     chunks = collect_chunks(root)
     if args.dry_run:
         print(
             "Prepared {} chunks from {} files for collection {!r}".format(
                 len(chunks),
                 len(list(iter_repo_files(root))),
-                os.environ.get("CHROMA_COLLECTION", DEFAULT_COLLECTION_NAME),
+                collection_name,
             )
         )
         return 0
@@ -1049,7 +1050,7 @@ def index_repo(args: argparse.Namespace) -> int:
         )
     print(
         "Indexed {} chunks into Chroma collection {!r}".format(
-            len(chunks), config["collection"]
+            len(chunks), collection_name
         )
     )
     return 0
