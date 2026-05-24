@@ -102,11 +102,43 @@ def test_rejects_semver_prerelease_suffixes(tag):
 
 def test_allows_build_metadata_without_treating_it_as_prerelease():
     module = _load_select_stable_release_module()
-    releases = [_release("v1.2.3+build.7"), _release("v1.2.2")]
+    assets = [
+        {
+            "name": "plugin.video.nzbdav-1.2.3.zip",
+            "browser_download_url": "https://example.test/v1.2.3+build.7.zip",
+        }
+    ]
+    releases = [_release("v1.2.3+build.7", assets=assets), _release("v1.2.2")]
 
     selected = module.select_stable_release(releases)
 
     assert selected["tagName"] == "v1.2.3+build.7"
+    assert selected["assetName"] == "plugin.video.nzbdav-1.2.3.zip"
+
+
+def test_selects_valid_asset_when_highest_semver_tags_tie():
+    module = _load_select_stable_release_module()
+    releases = [
+        _release("v1.2.3", assets=[]),
+        _release(
+            "1.2.3",
+            assets=[
+                {
+                    "name": "plugin.video.nzbdav-1.2.3.zip",
+                    "browser_download_url": "https://example.test/1.2.3.zip",
+                }
+            ],
+        ),
+        _release("v1.2.2"),
+    ]
+
+    selected = module.select_stable_release(releases)
+
+    assert selected == {
+        "tagName": "1.2.3",
+        "assetName": "plugin.video.nzbdav-1.2.3.zip",
+        "downloadUrl": "https://example.test/1.2.3.zip",
+    }
 
 
 def test_tolerates_github_snake_case_release_fields():

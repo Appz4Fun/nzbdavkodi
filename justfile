@@ -354,6 +354,6 @@ clean:
 # Run the same checks as GitHub CI (lint + test)
 ci: lint test
 
-# Clean everything including generated Pages/repo output
+# Clean everything including generated Pages output
 dist-clean: clean
-    rm -rf repo/zips/ pages-dist/
+    rm -rf pages-dist/

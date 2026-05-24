@@ -14,6 +14,9 @@ import xml.etree.ElementTree as ET
 import zipfile
 from urllib.parse import urlparse
 
+_ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
+_ZIP_FILE_MODE = 0o100644 << 16
+
 
 def _parse_local_xml(path):
     """Parse trusted repo XML without enabling DTD/entity declarations."""
@@ -244,13 +247,19 @@ def _build_repository_zip(output_dir, repository_addon_dir):
     repo_zip_name = "{}-{}.zip".format(repo_id, repo_version)
     repo_zip_path = os.path.join(repo_out, repo_zip_name)
     with zipfile.ZipFile(repo_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for root, _dirs, files in os.walk(repository_addon_dir):
-            for filename in files:
+        for root, dirs, files in os.walk(repository_addon_dir):
+            dirs.sort()
+            for filename in sorted(files):
                 filepath = os.path.join(root, filename)
                 arcname = os.path.relpath(
                     filepath, os.path.dirname(repository_addon_dir)
                 ).replace(os.sep, "/")
-                zf.write(filepath, arcname)
+                info = zipfile.ZipInfo(arcname)
+                info.date_time = _ZIP_EPOCH
+                info.compress_type = zipfile.ZIP_DEFLATED
+                info.external_attr = _ZIP_FILE_MODE
+                with open(filepath, "rb") as fh:
+                    zf.writestr(info, fh.read())
 
     shutil.copy2(repo_zip_path, os.path.join(output_dir, repo_zip_name))
     _write_sha256_file(repo_zip_path)
