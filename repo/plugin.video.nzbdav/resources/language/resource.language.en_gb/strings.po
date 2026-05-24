@@ -811,8 +811,8 @@ msgid "TMDBHelper Player"
 msgstr "TMDBHelper Player"
 
 msgctxt "#30212"
-msgid "Click Finish to complete setup.\n\nTo install the NZB-DAV player into TMDBHelper, use the Install step in the wizard."
-msgstr "Click Finish to complete setup.\n\nTo install the NZB-DAV player into TMDBHelper, use the Install step in the wizard."
+msgid "Click Finish to complete setup.\n\nTo install the NZB-DAV player into TMDBHelper, use Install NZB-DAV Player in addon settings."
+msgstr "Click Finish to complete setup.\n\nTo install the NZB-DAV player into TMDBHelper, use Install NZB-DAV Player in addon settings."
 
 msgctxt "#30213"
 msgid "TMDBHelper is not installed. Install TMDBHelper, then rerun this wizard or use Install TMDBHelper Player from the addon menu."

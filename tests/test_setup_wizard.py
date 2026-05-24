@@ -34,6 +34,40 @@ def test_should_auto_run_until_completed():
     )
 
 
+def test_should_auto_run_skips_existing_configured_installations():
+    assert not setup_wizard.should_auto_run(
+        _addon_with_settings(
+            {
+                "setup_wizard_completed": "false",
+                "nzbdav_api_key": "nzbdav-secret",
+                "hydra_api_key": "hydra-secret",
+            }
+        )
+    )
+    assert not setup_wizard.should_auto_run(
+        _addon_with_settings(
+            {
+                "setup_wizard_completed": "false",
+                "prowlarr_enabled": "true",
+            }
+        )
+    )
+
+
+def test_should_auto_run_keeps_fresh_default_installations_enabled():
+    assert setup_wizard.should_auto_run(
+        _addon_with_settings(
+            {
+                "setup_wizard_completed": "false",
+                "nzbdav_url": "http://localhost:3000",
+                "webdav_url": "http://localhost:8080",
+                "hydra_url": "http://localhost:5076",
+                "prowlarr_host": "http://localhost:9696",
+            }
+        )
+    )
+
+
 def test_run_setup_wizard_notifies_on_finish():
     addon = _addon_with_settings({"setup_wizard_completed": "true"})
 
@@ -119,8 +153,8 @@ def test_final_page_copy_explains_finish_completes_setup_only():
     body = setup_wizard._string(pages_by_key["tmdbhelper"]["body_id"])
 
     assert "Click Finish to complete setup" in body
-    assert "To install the NZB-DAV player into TMDBHelper" in body
-    assert "use the Install step in the wizard" in body
+    assert "Install NZB-DAV Player" in body
+    assert "addon settings" in body
     assert "Finish will also install" not in body
 
 
@@ -340,6 +374,30 @@ def test_toggle_preserves_selected_row_position():
     assert dialog._focus_id == setup_wizard.LIST_ID
 
 
+def test_cancelled_text_edit_preserves_existing_setting():
+    addon = _addon_with_settings({"nzbdav_api_key": "existing-secret"})
+    dialog = _wizard_dialog(addon)
+    row = {"kind": "text", "setting": "nzbdav_api_key", "label_id": 30003}
+
+    with patch("resources.lib.setup_wizard.xbmcgui.Dialog") as dialog_cls:
+        dialog_cls.return_value.input.return_value = ""
+        dialog._edit_text(row)
+
+    addon.setSetting.assert_not_called()
+
+
+def test_empty_text_edit_can_clear_empty_setting():
+    addon = _addon_with_settings({"hydra_api_key": ""})
+    dialog = _wizard_dialog(addon)
+    row = {"kind": "text", "setting": "hydra_api_key", "label_id": 30003}
+
+    with patch("resources.lib.setup_wizard.xbmcgui.Dialog") as dialog_cls:
+        dialog_cls.return_value.input.return_value = ""
+        dialog._edit_text(row)
+
+    addon.setSetting.assert_called_once_with("hydra_api_key", "")
+
+
 def test_tmdbhelper_missing_install_shows_message_without_installing():
     dialog = _wizard_dialog()
     dialog.close = MagicMock()
@@ -460,18 +518,22 @@ def test_nav_back_cancels_wizard():
     dialog._cancel.assert_called_once_with()
 
 
-def test_finish_without_tmdbhelper_shows_reminder_before_closing():
+def test_finish_without_tmdbhelper_completes_without_installing_player():
     dialog = _wizard_dialog()
     dialog.page_index = len(setup_wizard.PAGES) - 1
     dialog.close = MagicMock()
 
-    with patch("resources.lib.setup_wizard._tmdbhelper_installed", return_value=False):
-        with patch("resources.lib.setup_wizard.xbmcgui.Dialog") as dialog_cls:
+    with patch("resources.lib.setup_wizard._tmdbhelper_installed") as installed:
+        with patch("resources.lib.player_installer.install_player") as install, patch(
+            "resources.lib.setup_wizard.xbmcgui.Dialog"
+        ) as dialog_cls:
             dialog._next_or_finish()
 
-    dialog_cls.return_value.ok.assert_called_once()
-    assert dialog._finished is False
-    dialog.addon.setSetting.assert_not_called()
+    installed.assert_not_called()
+    install.assert_not_called()
+    dialog_cls.return_value.ok.assert_not_called()
+    assert dialog._finished is True
+    dialog.addon.setSetting.assert_called_once_with("setup_wizard_completed", "true")
     dialog.close.assert_called_once()
 
 

@@ -27,6 +27,17 @@ ACTION_PREVIOUS_MENU = 10
 ACTION_NAV_BACK = 92
 
 COMPLETED_SETTING = "setup_wizard_completed"
+DIRECT_INDEXER_KEYS = (
+    "nzblife",
+    "nzbgeek",
+    "nzbfinder",
+    "drunkenslug",
+    "nzbplanet",
+    "dognzb",
+    "custom1",
+    "custom2",
+    "custom3",
+)
 
 PAGES = [
     {
@@ -242,6 +253,35 @@ def _redact_connection_log_value(value):
     return redact_text(redact_url(str(value)))
 
 
+def _has_setting_value(addon, setting_id):
+    return bool(str(addon.getSetting(setting_id) or "").strip())
+
+
+def _has_existing_configuration(addon):
+    if _has_setting_value(addon, "nzbdav_api_key"):
+        return True
+    if _has_setting_value(addon, "webdav_username"):
+        return True
+    if _has_setting_value(addon, "webdav_password"):
+        return True
+    if _get_bool(addon, "nzbhydra_enabled", default=False):
+        return True
+    if _has_setting_value(addon, "hydra_api_key"):
+        return True
+    if _get_bool(addon, "prowlarr_enabled", default=False):
+        return True
+    if _has_setting_value(addon, "prowlarr_api_key"):
+        return True
+    if _get_bool(addon, "direct_indexers_enabled", default=False):
+        return True
+    for key in DIRECT_INDEXER_KEYS:
+        if _get_bool(addon, "direct_indexer_{}_enabled".format(key), default=False):
+            return True
+        if _has_setting_value(addon, "direct_indexer_{}_api_key".format(key)):
+            return True
+    return False
+
+
 def _connection_check(test_key, addon):
     from resources.lib.http_util import http_get
 
@@ -316,7 +356,9 @@ def _connection_check(test_key, addon):
 def should_auto_run(addon=None):
     if addon is None:
         addon = xbmcaddon.Addon("plugin.video.nzbdav")
-    return not _get_bool(addon, COMPLETED_SETTING, default=False)
+    if _get_bool(addon, COMPLETED_SETTING, default=False):
+        return False
+    return not _has_existing_configuration(addon)
 
 
 def maybe_auto_run(addon=None):
@@ -485,7 +527,7 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
             type=input_type,
             option=option,
         )
-        if value is None:
+        if value is None or (value == "" and current != ""):
             return
         self.addon.setSetting(row["setting"], value)
 
@@ -526,7 +568,8 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
 
     def _next_or_finish(self):
         if self._is_last():
-            self._install_player()
+            self._complete_wizard()
+            self.close()
             return
         self.page_index += 1
         self._render_page()
