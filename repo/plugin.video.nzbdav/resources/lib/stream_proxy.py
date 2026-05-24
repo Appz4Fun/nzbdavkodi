@@ -1300,8 +1300,9 @@ def _reap_process_async(proc, label):
             proc.wait(timeout=2)
         except subprocess.TimeoutExpired:
             xbmc.log(
-                "NZB-DAV: {} pid={} did not exit within 2 s; "
-                "leaking to OS reap".format(label, getattr(proc, "pid", "?")),
+                "NZB-DAV: {} pid={} did not exit within 2 s; leaking to OS reap".format(
+                    label, getattr(proc, "pid", "?")
+                ),
                 xbmc.LOGWARNING,
             )
         except OSError:
@@ -1504,7 +1505,11 @@ class _StreamHandler(BaseHTTPRequestHandler):
         )
         try:
             proc = subprocess.Popen(
-                cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                shell=False,
             )
         except OSError as error:
             xbmc.log("NZB-DAV: Failed to start ffmpeg: {}".format(error), xbmc.LOGERROR)
@@ -2522,9 +2527,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
         # pins the underlying inode even if the dir entry is later
         # unlinked, so Content-Length stays in sync with what we read.
         try:
-            seg_file = open(
-                segment_path, "rb"
-            )  # noqa: SIM115 — closed in finally below
+            seg_file = open(segment_path, "rb")  # noqa: SIM115 — closed in finally below
         except OSError as e:
             xbmc.log(
                 "NZB-DAV: HLS seg {} open failed: {}".format(seg_n, e),
@@ -4313,10 +4316,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
         observed_at = time.time()
         try:
             # nosemgrep
-            resp = (
-                urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
-                    req, timeout=_UPSTREAM_OPEN_TIMEOUT
-                )
+            resp = urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
+                req, timeout=_UPSTREAM_OPEN_TIMEOUT
             )
         except (OSError, ValueError) as e:
             if _is_terminal_http_client_error(e):
@@ -4945,8 +4946,7 @@ class HlsProducer:
                         )
                     except OSError as e:
                         xbmc.log(
-                            "NZB-DAV: Failed to cache canonical "
-                            "init.mp4: {}".format(e),
+                            "NZB-DAV: Failed to cache canonical init.mp4: {}".format(e),
                             xbmc.LOGWARNING,
                         )
                 return init_path
@@ -6962,7 +6962,11 @@ class StreamProxy:
         try:
             xbmc.log("NZB-DAV: Temp-file faststart remux starting", xbmc.LOGINFO)
             proc = subprocess.Popen(
-                cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                shell=False,
             )
             _, stderr = proc.communicate(timeout=600)  # 10 min timeout
             if proc.returncode != 0:
