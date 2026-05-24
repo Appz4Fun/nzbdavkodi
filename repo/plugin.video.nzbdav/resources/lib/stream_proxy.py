@@ -2527,7 +2527,9 @@ class _StreamHandler(BaseHTTPRequestHandler):
         # pins the underlying inode even if the dir entry is later
         # unlinked, so Content-Length stays in sync with what we read.
         try:
-            seg_file = open(segment_path, "rb")  # noqa: SIM115 — closed in finally below
+            seg_file = open(
+                segment_path, "rb"
+            )  # noqa: SIM115 — closed in finally below
         except OSError as e:
             xbmc.log(
                 "NZB-DAV: HLS seg {} open failed: {}".format(seg_n, e),
@@ -4316,8 +4318,10 @@ class _StreamHandler(BaseHTTPRequestHandler):
         observed_at = time.time()
         try:
             # nosemgrep
-            resp = urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
-                req, timeout=_UPSTREAM_OPEN_TIMEOUT
+            resp = (
+                urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
+                    req, timeout=_UPSTREAM_OPEN_TIMEOUT
+                )
             )
         except (OSError, ValueError) as e:
             if _is_terminal_http_client_error(e):
