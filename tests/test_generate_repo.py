@@ -6,6 +6,8 @@
 import gzip
 import hashlib
 import importlib.util
+import os
+import shutil
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
@@ -229,6 +231,33 @@ def test_generate_repo_writes_sha256_payloads_for_repository_zip_files(
         assert checksum_path.read_text(encoding="ascii") == "{}  {}".format(
             expected, zip_path.name
         )
+
+
+def test_generate_repo_builds_deterministic_repository_zip(tmp_path, monkeypatch):
+    module = _load_generate_repo_module()
+    monkeypatch.chdir(REPO_ROOT)
+
+    outputs = []
+    for index, name in enumerate(("first", "second")):
+        repository_addon_dir = tmp_path / name / "repo" / "repository.nzbdav"
+        shutil.copytree(REPO_ADDON_DIR, repository_addon_dir)
+        timestamp = 1700000000 + index * 86400
+        for root, dirs, files in os.walk(repository_addon_dir):
+            for entry in dirs + files:
+                os.utime(Path(root) / entry, (timestamp, timestamp))
+
+        output_dir = tmp_path / name
+        module.generate_repo(
+            output_dir=str(output_dir),
+            repository_addon_dir=str(repository_addon_dir),
+        )
+        outputs.append(
+            (
+                output_dir / "repository.nzbdav" / "repository.nzbdav-1.1.1.zip"
+            ).read_bytes()
+        )
+
+    assert outputs[0] == outputs[1]
 
 
 def test_generate_repo_can_publish_release_zip_instead_of_worktree_addon(

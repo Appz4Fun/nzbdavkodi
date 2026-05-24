@@ -44,6 +44,17 @@ def _stable_semver_key(tag):
     )
 
 
+def _stable_semver_core(tag):
+    match = _STABLE_SEMVER_RE.match(tag or "")
+    if not match:
+        return None
+    return "{}.{}.{}".format(
+        match.group("major"),
+        match.group("minor"),
+        match.group("patch"),
+    )
+
+
 def _matching_assets(release):
     matches = []
     for asset in release.get("assets") or ():
@@ -54,7 +65,9 @@ def _matching_assets(release):
 
 
 def _expected_asset_name(tag):
-    version = tag[1:] if tag.startswith("v") else tag
+    version = _stable_semver_core(tag)
+    if version is None:
+        version = tag[1:] if tag.startswith("v") else tag
     return "{}-{}.zip".format(ADDON_ID, version)
 
 
@@ -79,6 +92,38 @@ def _flatten_paginated_releases(releases):
     return flattened
 
 
+def _validated_release(release, tag):
+    matches = _matching_assets(release)
+    if len(matches) != 1:
+        return None, (
+            "Stable release {} must have exactly one {}-*.zip asset; found {}".format(
+                tag, ADDON_ID, len(matches)
+            )
+        )
+
+    asset = matches[0]
+    expected_name = _expected_asset_name(tag)
+    actual_name = asset.get("name", "")
+    if actual_name != expected_name:
+        return None, (
+            "Stable release {} asset must be named {}; found {}".format(
+                tag, expected_name, actual_name
+            )
+        )
+    download_url = _asset_download_url(asset)
+    if not download_url:
+        return None, (
+            "Stable release {} asset {} must include a download URL".format(
+                tag, actual_name
+            )
+        )
+    return {
+        "tagName": tag,
+        "assetName": actual_name,
+        "downloadUrl": download_url,
+    }, None
+
+
 def select_stable_release(releases):
     """Return tagName, assetName, and downloadUrl for the highest stable release."""
     stable = []
@@ -95,37 +140,18 @@ def select_stable_release(releases):
     if not stable:
         raise SystemExit("No stable {} release found".format(ADDON_ID))
 
-    key, release, tag = max(stable, key=lambda item: item[0])
-    del key
-    matches = _matching_assets(release)
-    if len(matches) != 1:
-        raise SystemExit(
-            "Stable release {} must have exactly one {}-*.zip asset; found {}".format(
-                tag, ADDON_ID, len(matches)
-            )
-        )
+    highest_key = max(item[0] for item in stable)
+    first_error = None
+    for key, release, tag in stable:
+        if key != highest_key:
+            continue
+        selected, error = _validated_release(release, tag)
+        if selected:
+            return selected
+        if first_error is None:
+            first_error = error
 
-    asset = matches[0]
-    expected_name = _expected_asset_name(tag)
-    actual_name = asset.get("name", "")
-    if actual_name != expected_name:
-        raise SystemExit(
-            "Stable release {} asset must be named {}; found {}".format(
-                tag, expected_name, actual_name
-            )
-        )
-    download_url = _asset_download_url(asset)
-    if not download_url:
-        raise SystemExit(
-            "Stable release {} asset {} must include a download URL".format(
-                tag, actual_name
-            )
-        )
-    return {
-        "tagName": tag,
-        "assetName": actual_name,
-        "downloadUrl": download_url,
-    }
+    raise SystemExit(first_error)
 
 
 def main(argv=None):
