@@ -466,12 +466,13 @@ def test_route_main_menu_does_not_call_safe_resolve(mock_menu, mock_resolved):
 
 
 @patch("xbmcplugin.setResolvedUrl")
-def test_route_root_opens_settings_and_resolves_handle(mock_resolved):
+@patch("resources.lib.router.xbmc")
+def test_route_root_opens_settings_and_resolves_handle(mock_xbmc, mock_resolved):
     """Bare add-on clicks should open settings without Kodi's add-on-info dialog."""
-    fake_addon = MagicMock()
-    with patch.dict("sys.modules", {"xbmcaddon": MagicMock(Addon=lambda: fake_addon)}):
-        route(["plugin://plugin.video.nzbdav/", "3", ""])
-    fake_addon.openSettings.assert_called_once()
+    route(["plugin://plugin.video.nzbdav/", "3", ""])
+    mock_xbmc.executebuiltin.assert_called_once_with(
+        "Addon.OpenSettings(plugin.video.nzbdav)"
+    )
     assert mock_resolved.called, "setResolvedUrl must be called for bare root settings"
     assert mock_resolved.call_args[0][0] == 3
     assert mock_resolved.call_args[0][1] is False
@@ -559,15 +560,47 @@ def test_route_clear_cache_resolves_handle(mock_notify, mock_resolved):
 
 
 @patch("xbmcplugin.setResolvedUrl")
-def test_route_settings_resolves_handle(mock_resolved):
+@patch("resources.lib.router.xbmc")
+def test_route_settings_resolves_handle(mock_xbmc, mock_resolved):
     """/settings must resolve the handle after openSettings returns."""
-    fake_addon = MagicMock()
-    with patch.dict("sys.modules", {"xbmcaddon": MagicMock(Addon=lambda: fake_addon)}):
-        route(["plugin://plugin.video.nzbdav/settings", "3", ""])
-    fake_addon.openSettings.assert_called_once()
+    route(["plugin://plugin.video.nzbdav/settings", "3", ""])
+    mock_xbmc.executebuiltin.assert_called_once_with(
+        "Addon.OpenSettings(plugin.video.nzbdav)"
+    )
     assert mock_resolved.called, "setResolvedUrl must be called for /settings"
     assert mock_resolved.call_args[0][0] == 3
     assert mock_resolved.call_args[0][1] is False
+
+
+@patch("xbmcplugin.setResolvedUrl")
+@patch("resources.lib.router.xbmc")
+def test_route_settings_uses_kodi_builtin_for_fresh_settings_dialog(
+    mock_xbmc, _mock_resolved
+):
+    """Opening config after the wizard must not reuse stale Addon settings state."""
+    fake_addon = MagicMock()
+
+    with patch.dict("sys.modules", {"xbmcaddon": MagicMock(Addon=lambda: fake_addon)}):
+        route(["plugin://plugin.video.nzbdav/settings", "3", ""])
+
+    mock_xbmc.executebuiltin.assert_called_once_with(
+        "Addon.OpenSettings(plugin.video.nzbdav)"
+    )
+    fake_addon.openSettings.assert_not_called()
+
+
+@patch("xbmcplugin.setResolvedUrl")
+@patch("resources.lib.router.xbmc")
+def test_route_settings_falls_back_to_addon_open_settings_when_builtin_unavailable(
+    mock_xbmc, _mock_resolved
+):
+    fake_addon = MagicMock()
+    mock_xbmc.executebuiltin.side_effect = AttributeError("missing builtin")
+
+    with patch.dict("sys.modules", {"xbmcaddon": MagicMock(Addon=lambda: fake_addon)}):
+        route(["plugin://plugin.video.nzbdav/settings", "3", ""])
+
+    fake_addon.openSettings.assert_called_once()
 
 
 @patch("xbmcplugin.setResolvedUrl")
