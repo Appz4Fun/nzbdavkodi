@@ -99,6 +99,32 @@ def test_run_setup_wizard_marks_completed_when_modal_finishes():
     addon.setSetting.assert_called_once_with("setup_wizard_completed", "true")
 
 
+def test_run_setup_wizard_replays_changed_settings_after_modal_closes():
+    addon = _addon_with_settings(
+        {
+            "setup_wizard_completed": "true",
+            "nzbdav_url": "http://updated:3000",
+            "filter_720p": "false",
+        }
+    )
+    fresh_addon = MagicMock()
+
+    with patch("resources.lib.setup_wizard.xbmcaddon.Addon", return_value=fresh_addon):
+        with patch("resources.lib.setup_wizard.SetupWizardDialog") as dialog_cls:
+            dialog = MagicMock()
+            dialog.was_finished.return_value = True
+            dialog.changed_setting_ids.return_value = ["nzbdav_url", "filter_720p"]
+            dialog_cls.return_value = dialog
+
+            with patch("resources.lib.setup_wizard._notify"), patch(
+                "resources.lib.setup_wizard._addon_name", return_value="NZB-DAV"
+            ), patch("resources.lib.setup_wizard._string", return_value="done"):
+                assert setup_wizard.run_setup_wizard(addon)
+
+    fresh_addon.setSetting.assert_any_call("nzbdav_url", "http://updated:3000")
+    fresh_addon.setSetting.assert_any_call("filter_720p", "false")
+
+
 def test_run_setup_wizard_does_not_mark_completed_on_cancel():
     addon = _addon_with_settings()
 
@@ -111,6 +137,26 @@ def test_run_setup_wizard_does_not_mark_completed_on_cancel():
             assert not setup_wizard.run_setup_wizard()
 
     addon.setSetting.assert_not_called()
+
+
+def test_dialog_tracks_settings_changed_inside_wizard():
+    addon = _addon_with_settings()
+    dialog = _wizard_dialog(addon)
+
+    dialog._set_setting("nzbdav_url", "http://updated:3000")
+    dialog._set_bool("filter_720p", False)
+    with patch("resources.lib.setup_wizard._select_provider") as select_provider:
+        dialog._select_provider("prowlarr")
+
+    addon.setSetting.assert_any_call("nzbdav_url", "http://updated:3000")
+    addon.setSetting.assert_any_call("filter_720p", "false")
+    select_provider.assert_called_once_with(addon, "prowlarr")
+    assert dialog.changed_setting_ids() == [
+        "filter_720p",
+        "nzbdav_url",
+        "nzbhydra_enabled",
+        "prowlarr_enabled",
+    ]
 
 
 def test_page_sequence_matches_requested_setup_sections():

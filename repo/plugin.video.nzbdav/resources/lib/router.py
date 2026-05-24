@@ -53,6 +53,14 @@ def _addon_instance():
         return addon_module.Addon()
 
 
+def _open_addon_settings():
+    """Open settings through Kodi so recently written values are reloaded."""
+    try:
+        xbmc.executebuiltin("Addon.OpenSettings(plugin.video.nzbdav)")
+    except (AttributeError, RuntimeError, TypeError):
+        _addon_instance().openSettings()
+
+
 def _script_play_stage(message):
     xbmc.log("NZB-DAV: Script play stage: {}".format(message), xbmc.LOGINFO)
     for stage_path in _script_stage_paths():
@@ -258,7 +266,7 @@ def route(argv):
 
             notify(_addon_name(), _string(30082), 3000)
         elif path == "/settings":
-            _addon_instance().openSettings()
+            _open_addon_settings()
         elif path == "/configure_preferred_groups":
             from resources.lib.filter import (
                 DEFAULT_PREFERRED_GROUPS,
@@ -299,7 +307,7 @@ def route(argv):
             _handle_main_menu(handle)
             return
         else:
-            _addon_instance().openSettings()
+            _open_addon_settings()
     except Exception as e:
         xbmc.log(
             "NZB-DAV: Unhandled error in route for path='{}': {}".format(path, e),

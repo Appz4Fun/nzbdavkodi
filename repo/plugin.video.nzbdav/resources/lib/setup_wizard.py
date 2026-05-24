@@ -384,12 +384,41 @@ def run_setup_wizard(addon=None):
     )
     dialog.doModal()
     finished = dialog.was_finished()
+    changed_setting_ids = _dialog_changed_setting_ids(dialog)
     del dialog
     if finished:
         if not _get_bool(addon, COMPLETED_SETTING, default=False):
             addon.setSetting(COMPLETED_SETTING, "true")
+        _replay_changed_settings(addon, changed_setting_ids)
         _notify(_addon_name(), _string(30215), 3000)
     return finished
+
+
+def _dialog_changed_setting_ids(dialog):
+    changed = getattr(dialog, "changed_setting_ids", None)
+    if not callable(changed):
+        return []
+    try:
+        return list(changed() or [])
+    except TypeError:
+        return []
+
+
+def _fresh_addon_instance():
+    try:
+        return xbmcaddon.Addon("plugin.video.nzbdav")
+    except TypeError:
+        return xbmcaddon.Addon()
+
+
+def _replay_changed_settings(source_addon, setting_ids):
+    """Rewrite touched values after the wizard closes to refresh Kodi's dialog cache."""
+    setting_ids = sorted(set(setting_ids or []))
+    if not setting_ids:
+        return
+    fresh_addon = _fresh_addon_instance()
+    for setting_id in setting_ids:
+        fresh_addon.setSetting(setting_id, source_addon.getSetting(setting_id))
 
 
 class SetupWizardDialog(xbmcgui.WindowXMLDialog):
@@ -400,6 +429,7 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
         self.page_index = 0
         self._focus_id = 0
         self._finished = False
+        self._changed_setting_ids = set()
         self._visible_rows = []
         super().__init__(*args)
 
@@ -428,6 +458,21 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
 
     def was_finished(self):
         return self._finished
+
+    def changed_setting_ids(self):
+        return sorted(self._changed_setting_ids)
+
+    def _set_setting(self, setting_id, value):
+        self.addon.setSetting(setting_id, value)
+        self._changed_setting_ids.add(setting_id)
+
+    def _set_bool(self, setting_id, enabled):
+        self._set_setting(setting_id, "true" if enabled else "false")
+
+    def _select_provider(self, provider):
+        _select_provider(self.addon, provider)
+        self._changed_setting_ids.add("nzbhydra_enabled")
+        self._changed_setting_ids.add("prowlarr_enabled")
 
     def _page(self):
         return PAGES[self.page_index]
@@ -512,7 +557,7 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
         row = self._visible_rows[selected]
         if row["kind"] == "bool":
             current = _get_bool(self.addon, row["setting"])
-            _set_bool(self.addon, row["setting"], not current)
+            self._set_bool(row["setting"], not current)
         elif row["kind"] == "provider":
             self._choose_provider()
         elif row["kind"] == "text":
@@ -530,7 +575,7 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
             if selected < 0:
                 return
             if selected == 1:
-                self.addon.setSetting(row["setting"], "")
+                self._set_setting(row["setting"], "")
                 return
         input_type = getattr(xbmcgui, "INPUT_ALPHANUM", 0)
         option = 0
@@ -544,15 +589,15 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
         )
         if value is None or (value == "" and current != ""):
             return
-        self.addon.setSetting(row["setting"], value)
+        self._set_setting(row["setting"], value)
 
     def _choose_provider(self):
         choices = [_string(30219), _string(30220)]
         selected = xbmcgui.Dialog().select(_string(30206), choices)
         if selected == 0:
-            _select_provider(self.addon, "hydra")
+            self._select_provider("hydra")
         elif selected == 1:
-            _select_provider(self.addon, "prowlarr")
+            self._select_provider("prowlarr")
 
     def _test_current_page(self):
         test_key = self._page().get("test")
@@ -597,7 +642,7 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
         return self.page_index == len(PAGES) - 1
 
     def _complete_wizard(self):
-        self.addon.setSetting(COMPLETED_SETTING, "true")
+        self._set_setting(COMPLETED_SETTING, "true")
         self._finished = True
 
     def _page_has_visible_rows(self, page):
