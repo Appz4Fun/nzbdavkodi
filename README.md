@@ -368,7 +368,7 @@ TODO.md                             # Active backlog
 7. The Pages workflow republishes the tagged stable release into Kodi repository metadata.
 8. Kodi picks up the update automatically from the GitHub Pages repository.
 
-Prerelease tags such as `v0.X.0-beta.1` may create GitHub Release artifacts, but
+Prerelease tags such as `v1.2.3-beta.1` may create GitHub Release artifacts, but
 the Pages workflow skips publishing them to the public Kodi repository.
 
 ---
