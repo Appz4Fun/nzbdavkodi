@@ -339,11 +339,13 @@ repo/plugin.video.nzbdav/
 scripts/
   build_zip.py           # Addon zip builder
   generate_repo.py       # Kodi repo metadata generator
+  select_stable_release.py  # Pages workflow release selector
 repo/
   repository.nzbdav/     # Repository addon descriptor pointing to Pages metadata
 .github/workflows/
   ci.yml                 # Test + lint on push/PR (Python 3.10/3.12)
-  release.yml            # Build + deploy on version tags
+  release.yml            # Build GitHub Releases on version tags
+  pages.yml              # Publish Kodi repository metadata to GitHub Pages
   pylint.yml             # Pylint analysis (Python 3.8 to validate runtime compat)
   codeql.yml             # CodeQL analysis
   bandit.yml             # Bandit security scan
@@ -363,7 +365,7 @@ TODO.md                             # Active backlog
 4. Commit: `git commit -m "release: v0.X.0"`
 5. Tag and push: `git tag v0.X.0 && git push origin main v0.X.0`
 6. GitHub Actions builds the zip and creates a GitHub Release.
-7. The Pages workflow republishes the latest stable release into Kodi repository metadata.
+7. The Pages workflow republishes the tagged stable release into Kodi repository metadata.
 8. Kodi picks up the update automatically from the GitHub Pages repository.
 
 ---

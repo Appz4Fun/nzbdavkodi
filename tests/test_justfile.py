@@ -132,18 +132,31 @@ def test_pages_workflow_deploys_repository_metadata_on_main_push():
         'gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100"'
         in contents
     )
-    assert "python3 scripts/select_stable_release.py releases.json" in contents
+    assert "selected_tag=" in contents
+    assert "github.event.workflow_run.head_branch" in contents
+    assert (
+        'python3 scripts/select_stable_release.py releases.json --tag "$selected_tag"'
+        in contents
+    )
     assert "--clobber" in contents
     assert "rm -rf pages-dist" in contents
     assert "--output-dir pages-dist" in contents
     assert "--addon-zip release-addon.zip" in contents
-    assert (
-        '--release-asset-url "${{ steps.stable_release.outputs.download_url }}"'
-        in contents
-    )
+    assert "--release-asset-url" not in contents
     assert "--smoke-check" in contents
     assert "--repository-addon-dir" not in contents
     assert "scripts/generate_repo.py" in contents
+
+
+def test_release_workflow_does_not_generate_unpublished_repository_metadata():
+    root = Path(__file__).resolve().parents[1]
+    contents = (root / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Create GitHub Release" in contents
+    assert "Generate repository metadata" not in contents
+    assert "scripts/generate_repo.py" not in contents
 
 
 def test_extreme_functional_test_recipe_preserves_exported_env_overrides():
