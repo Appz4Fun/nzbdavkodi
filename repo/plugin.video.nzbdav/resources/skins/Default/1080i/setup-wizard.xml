@@ -36,10 +36,11 @@
     </control>
 
     <control type="textbox" id="3">
-      <left>72</left><top>125</top><width>720</width><height>610</height>
+      <left>500</left><top>120</top><width>920</width><height>170</height>
       <font>font13</font>
       <textcolor>FFD4D4D8</textcolor>
       <label>$INFO[Window.Property(wizard.body)]</label>
+      <align>center</align>
       <autoscroll>false</autoscroll>
       <visible>!String.IsEqual(Window.Property(wizard.welcome_visible),true)</visible>
     </control>
@@ -56,7 +57,7 @@
     </control>
 
     <control type="label" id="107">
-      <left>360</left><top>700</top><width>1200</width><height>56</height>
+      <left>360</left><top>805</top><width>1200</width><height>56</height>
       <font>font14</font>
       <textcolor>FFFF4444</textcolor>
       <label>$INFO[Window.Property(wizard.warning)]</label>
@@ -66,49 +67,68 @@
     </control>
 
     <control type="list" id="50">
-      <left>860</left><top>125</top><width>960</width><height>710</height>
+      <left>500</left><top>330</top><width>920</width><height>500</height>
       <ondown>102</ondown>
       <orientation>vertical</orientation>
       <scrolltime>160</scrolltime>
-      <itemlayout width="960" height="48">
+      <itemlayout width="920" height="76">
         <control type="image">
-          <left>0</left><top>0</top><width>960</width><height>46</height>
+          <left>0</left><top>0</top><width>920</width><height>68</height>
           <texture>white.png</texture>
-          <colordiffuse>FF121722</colordiffuse>
+          <colordiffuse>FF11141A</colordiffuse>
         </control>
         <control type="label">
-          <left>24</left><top>5</top><width>620</width><height>36</height>
+          <left>24</left><top>8</top><width>570</width><height>30</height>
           <font>font12</font>
-          <textcolor>FFE5E7EB</textcolor>
+          <textcolor>FFE8EDF5</textcolor>
           <label>$INFO[ListItem.Label]</label>
           <aligny>center</aligny>
         </control>
         <control type="label">
-          <left>650</left><top>5</top><width>280</width><height>36</height>
+          <left>24</left><top>40</top><width>570</width><height>22</height>
+          <font>font10</font>
+          <textcolor>FF8C96A6</textcolor>
+          <label>$INFO[ListItem.Property(helper)]</label>
+          <aligny>center</aligny>
+        </control>
+        <control type="label">
+          <left>620</left><top>18</top><width>270</width><height>32</height>
           <font>font12</font>
-          <textcolor>FF60A5FA</textcolor>
+          <textcolor>FF6BB6FF</textcolor>
           <label>$INFO[ListItem.Property(value)]</label>
           <align>right</align>
           <aligny>center</aligny>
         </control>
       </itemlayout>
-      <focusedlayout width="960" height="48">
+      <focusedlayout width="920" height="76">
         <control type="image">
-          <left>0</left><top>0</top><width>960</width><height>46</height>
+          <left>0</left><top>0</top><width>920</width><height>68</height>
           <texture>white.png</texture>
-          <colordiffuse>FF1D3552</colordiffuse>
+          <colordiffuse>FF1B2C44</colordiffuse>
+        </control>
+        <control type="image">
+          <left>0</left><top>0</top><width>6</width><height>68</height>
+          <texture>white.png</texture>
+          <colordiffuse>FF6BB6FF</colordiffuse>
         </control>
         <control type="label">
-          <left>24</left><top>5</top><width>620</width><height>36</height>
+          <left>24</left><top>8</top><width>570</width><height>30</height>
           <font>font12</font>
           <textcolor>FFFFFFFF</textcolor>
           <label>$INFO[ListItem.Label]</label>
           <aligny>center</aligny>
         </control>
         <control type="label">
-          <left>650</left><top>5</top><width>280</width><height>36</height>
+          <left>24</left><top>40</top><width>570</width><height>22</height>
+          <font>font10</font>
+          <textcolor>FFE1E7F0</textcolor>
+          <label>$INFO[ListItem.Property(helper)]</label>
+          <aligny>center</aligny>
+        </control>
+        <control type="label">
+          <left>620</left><top>18</top><width>270</width><height>32</height>
           <font>font12</font>
-          <textcolor>FF93C5FD</textcolor>
+          <textcolor>FFFFFFFF</textcolor>
           <label>$INFO[ListItem.Property(value)]</label>
           <align>right</align>
           <aligny>center</aligny>
@@ -117,7 +137,7 @@
     </control>
 
     <control type="button" id="101">
-      <left>72</left><top>915</top><width>210</width><height>120</height>
+      <left>480</left><top>915</top><width>210</width><height>120</height>
       <onup>50</onup>
       <onright>104</onright>
       <label>$INFO[Window.Property(wizard.previous_label)]</label>
@@ -128,7 +148,7 @@
     </control>
 
     <control type="button" id="104">
-      <left>950</left><top>915</top><width>300</width><height>120</height>
+      <left>710</left><top>915</top><width>300</width><height>120</height>
       <onup>50</onup>
       <onleft>101</onleft>
       <onright>102</onright>
@@ -140,7 +160,7 @@
     </control>
 
     <control type="button" id="102">
-      <left>1250</left><top>915</top><width>240</width><height>120</height>
+      <left>1030</left><top>915</top><width>240</width><height>120</height>
       <onup>50</onup>
       <onleft>104</onleft>
       <onright>103</onright>
@@ -152,7 +172,7 @@
     </control>
 
     <control type="button" id="103">
-      <left>1500</left><top>915</top><width>210</width><height>120</height>
+      <left>1290</left><top>915</top><width>210</width><height>120</height>
       <onup>50</onup>
       <onleft>102</onleft>
       <label>$INFO[Window.Property(wizard.cancel_label)]</label>

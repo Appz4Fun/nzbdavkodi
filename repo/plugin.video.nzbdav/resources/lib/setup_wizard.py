@@ -465,6 +465,7 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
         for row in self._visible_rows:
             li = xbmcgui.ListItem(label=_string(row["label_id"]))
             li.setProperty("value", self._row_value(row))
+            li.setProperty("helper", self._row_helper(row))
             items.append(li)
         list_control.addItems(items)
         if items:
@@ -498,6 +499,16 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
             if row.get("secret") and value:
                 return "*" * 8
             return value or _string(30223)
+        return ""
+
+    def _row_helper(self, row):
+        kind = row["kind"]
+        if kind == "bool":
+            return "Toggle filter"
+        if kind == "provider":
+            return "Choose search service"
+        if kind == "text":
+            return "Connection setting"
         return ""
 
     def _activate_selected_row(self):
