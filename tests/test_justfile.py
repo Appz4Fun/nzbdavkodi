@@ -133,6 +133,7 @@ def test_pages_workflow_deploys_repository_metadata_on_main_push():
         in contents
     )
     assert "python3 scripts/select_stable_release.py releases.json" in contents
+    assert "--clobber" in contents
     assert "rm -rf pages-dist" in contents
     assert "--output-dir pages-dist" in contents
     assert "--addon-zip release-addon.zip" in contents
