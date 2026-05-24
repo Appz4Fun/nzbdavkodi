@@ -289,6 +289,20 @@ def test_setup_wizard_field_list_is_centered_single_column_layout():
     assert _int_text(field_list, "top") > 250
 
 
+def test_setup_wizard_field_list_fits_audio_page_without_scrolling():
+    root = _setup_wizard_skin_root()
+    field_list = root.find(".//control[@id='50']")
+    item_layout = root.find(".//control[@id='50']/itemlayout")
+
+    assert field_list is not None
+    assert item_layout is not None
+    audio_row_count = 7
+
+    assert _int_text(field_list, "height") >= (
+        int(item_layout.get("height")) * audio_row_count
+    )
+
+
 def test_setup_wizard_rows_have_label_helper_value_columns():
     root = _setup_wizard_skin_root()
     item_layout = root.find(".//control[@id='50']/itemlayout")
@@ -303,6 +317,25 @@ def test_setup_wizard_rows_have_label_helper_value_columns():
         assert "$INFO[ListItem.Label]" in label_infos
         assert "$INFO[ListItem.Property(helper)]" in label_infos
         assert "$INFO[ListItem.Property(value)]" in label_infos
+
+
+def test_setup_wizard_value_column_is_wide_enough_for_urls():
+    root = _setup_wizard_skin_root()
+    item_layout = root.find(".//control[@id='50']/itemlayout")
+    focused_layout = root.find(".//control[@id='50']/focusedlayout")
+
+    assert item_layout is not None
+    assert focused_layout is not None
+    for layout in (item_layout, focused_layout):
+        value_label = None
+        for label in layout.findall("control[@type='label']"):
+            if label.findtext("label") == "$INFO[ListItem.Property(value)]":
+                value_label = label
+                break
+
+        assert value_label is not None
+        assert _int_text(value_label, "left") <= 460
+        assert _int_text(value_label, "width") >= 430
 
 
 def test_setup_wizard_focused_row_uses_results_style_left_accent():

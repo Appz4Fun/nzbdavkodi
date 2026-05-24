@@ -501,14 +501,7 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
             return value or _string(30223)
         return ""
 
-    def _row_helper(self, row):
-        kind = row["kind"]
-        if kind == "bool":
-            return "Toggle filter"
-        if kind == "provider":
-            return "Choose search service"
-        if kind == "text":
-            return "Connection setting"
+    def _row_helper(self, _row):
         return ""
 
     def _activate_selected_row(self):
@@ -651,9 +644,8 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
             self._set_control_navigation(control, left, right, up, control)
 
         if list_control is not None:
-            default_footer = footer_controls[
-                footer_ids.index(self._default_footer_focus_id())
-            ]
+            default_footer_id = TEST_BUTTON_ID if page.get("test") else NEXT_BUTTON_ID
+            default_footer = footer_controls[footer_ids.index(default_footer_id)]
             self._set_control_navigation(
                 list_control, list_control, list_control, list_control, default_footer
             )
