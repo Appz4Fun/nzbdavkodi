@@ -391,6 +391,8 @@ def test_wizard_strings_exist():
         30228,
         30230,
         30231,
+        30232,
+        30233,
     )
     for string_id in expected_ids:
         assert 'msgctxt "#{}"'.format(string_id) in contents

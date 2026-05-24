@@ -517,11 +517,22 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
 
     def _edit_text(self, row):
         current = self.addon.getSetting(row["setting"])
+        dialog = xbmcgui.Dialog()
+        if current:
+            selected = dialog.select(
+                _string(row["label_id"]),
+                [_string(30232), _string(30233)],
+            )
+            if selected < 0:
+                return
+            if selected == 1:
+                self.addon.setSetting(row["setting"], "")
+                return
         input_type = getattr(xbmcgui, "INPUT_ALPHANUM", 0)
         option = 0
         if row.get("secret"):
             option = getattr(xbmcgui, "ALPHANUM_HIDE_INPUT", 0)
-        value = xbmcgui.Dialog().input(
+        value = dialog.input(
             _string(row["label_id"]),
             defaultt=current,
             type=input_type,
