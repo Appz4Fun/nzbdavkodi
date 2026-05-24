@@ -380,10 +380,24 @@ def test_cancelled_text_edit_preserves_existing_setting():
     row = {"kind": "text", "setting": "nzbdav_api_key", "label_id": 30003}
 
     with patch("resources.lib.setup_wizard.xbmcgui.Dialog") as dialog_cls:
+        dialog_cls.return_value.select.return_value = 0
         dialog_cls.return_value.input.return_value = ""
         dialog._edit_text(row)
 
     addon.setSetting.assert_not_called()
+
+
+def test_populated_text_edit_can_be_explicitly_cleared():
+    addon = _addon_with_settings({"webdav_password": "existing-password"})
+    dialog = _wizard_dialog(addon)
+    row = {"kind": "text", "setting": "webdav_password", "label_id": 30009}
+
+    with patch("resources.lib.setup_wizard.xbmcgui.Dialog") as dialog_cls:
+        dialog_cls.return_value.select.return_value = 1
+        dialog._edit_text(row)
+
+    dialog_cls.return_value.input.assert_not_called()
+    addon.setSetting.assert_called_once_with("webdav_password", "")
 
 
 def test_empty_text_edit_can_clear_empty_setting():

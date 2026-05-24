@@ -873,3 +873,11 @@ msgstr "Enabled"
 msgctxt "#30231"
 msgid "Disabled"
 msgstr "Disabled"
+
+msgctxt "#30232"
+msgid "Edit"
+msgstr "Edit"
+
+msgctxt "#30233"
+msgid "Clear"
+msgstr "Clear"

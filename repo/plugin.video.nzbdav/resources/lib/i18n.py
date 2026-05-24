@@ -140,6 +140,8 @@ _FALLBACK_STRINGS = {
     30228: "TMDBHelper is installed. You can continue.",
     30230: "Enabled",
     30231: "Disabled",
+    30232: "Edit",
+    30233: "Clear",
 }
 
 
