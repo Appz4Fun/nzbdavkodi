@@ -22,6 +22,7 @@ PREVIOUS_BUTTON_ID = 101
 NEXT_BUTTON_ID = 102
 CANCEL_BUTTON_ID = 103
 TEST_BUTTON_ID = 104
+ADDON_SETTINGS_DIALOG_ID = 10140
 
 ACTION_PREVIOUS_MENU = 10
 ACTION_NAV_BACK = 92
@@ -385,11 +386,13 @@ def run_setup_wizard(addon=None):
     dialog.doModal()
     finished = dialog.was_finished()
     changed_setting_ids = _dialog_changed_setting_ids(dialog)
+    changed_settings = _dialog_changed_settings(dialog)
     del dialog
     if finished:
         if not _get_bool(addon, COMPLETED_SETTING, default=False):
             addon.setSetting(COMPLETED_SETTING, "true")
-        _replay_changed_settings(addon, changed_setting_ids)
+        _wait_for_native_settings_dialog_to_close()
+        _replay_changed_settings(addon, changed_setting_ids, changed_settings)
         _notify(_addon_name(), _string(30215), 3000)
     return finished
 
@@ -404,6 +407,46 @@ def _dialog_changed_setting_ids(dialog):
         return []
 
 
+def _dialog_changed_settings(dialog):
+    changed = getattr(dialog, "changed_settings", None)
+    if not callable(changed):
+        return {}
+    try:
+        values = changed() or {}
+    except TypeError:
+        return {}
+    return dict(values) if hasattr(values, "items") else {}
+
+
+def _native_settings_dialog_active():
+    try:
+        visible = xbmc.getCondVisibility(
+            "Window.IsActive({})".format(ADDON_SETTINGS_DIALOG_ID)
+        )
+    except (AttributeError, RuntimeError, TypeError):
+        return False
+    if isinstance(visible, str):
+        return visible.lower() == "true"
+    return visible is True
+
+
+def _wait_for_native_settings_dialog_to_close(timeout_seconds=1.0):
+    """Let Kodi finish closing its settings dialog before replaying values.
+
+    Kodi routes ``xbmcaddon.Addon().setSetting`` into the active add-on
+    settings dialog instead of saving immediately. The setup wizard can be
+    launched from that dialog, so wait briefly before doing the final replay.
+    """
+    monitor = xbmc.Monitor()
+    interval = 0.05
+    remaining = timeout_seconds
+    while remaining > 0 and _native_settings_dialog_active():
+        if monitor.waitForAbort(interval):
+            return False
+        remaining -= interval
+    return not _native_settings_dialog_active()
+
+
 def _fresh_addon_instance():
     try:
         return xbmcaddon.Addon("plugin.video.nzbdav")
@@ -411,14 +454,19 @@ def _fresh_addon_instance():
         return xbmcaddon.Addon()
 
 
-def _replay_changed_settings(source_addon, setting_ids):
+def _replay_changed_settings(source_addon, setting_ids, setting_values=None):
     """Rewrite touched values after the wizard closes to refresh Kodi's dialog cache."""
     setting_ids = sorted(set(setting_ids or []))
     if not setting_ids:
         return
+    missing = object()
+    setting_values = dict(setting_values or {})
     fresh_addon = _fresh_addon_instance()
     for setting_id in setting_ids:
-        fresh_addon.setSetting(setting_id, source_addon.getSetting(setting_id))
+        value = setting_values.get(setting_id, missing)
+        if value is missing:
+            value = source_addon.getSetting(setting_id)
+        fresh_addon.setSetting(setting_id, value)
 
 
 class SetupWizardDialog(xbmcgui.WindowXMLDialog):
@@ -430,6 +478,7 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
         self._focus_id = 0
         self._finished = False
         self._changed_setting_ids = set()
+        self._changed_settings = {}
         self._visible_rows = []
         super().__init__(*args)
 
@@ -462,20 +511,46 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
     def changed_setting_ids(self):
         return sorted(self._changed_setting_ids)
 
+    def changed_settings(self):
+        return dict(self._changed_settings)
+
     def _set_setting(self, setting_id, value):
         self.addon.setSetting(setting_id, value)
         self._changed_setting_ids.add(setting_id)
+        self._changed_settings[setting_id] = value
 
     def _set_bool(self, setting_id, enabled):
         self._set_setting(setting_id, "true" if enabled else "false")
 
     def _select_provider(self, provider):
         _select_provider(self.addon, provider)
-        self._changed_setting_ids.add("nzbhydra_enabled")
-        self._changed_setting_ids.add("prowlarr_enabled")
+        if provider == "hydra":
+            values = {"nzbhydra_enabled": "true", "prowlarr_enabled": "false"}
+        else:
+            values = {"nzbhydra_enabled": "false", "prowlarr_enabled": "true"}
+        self._changed_setting_ids.update(values)
+        self._changed_settings.update(values)
 
     def _page(self):
         return PAGES[self.page_index]
+
+    def _setting_value(self, setting_id):
+        if setting_id in self._changed_settings:
+            return self._changed_settings[setting_id]
+        return self.addon.getSetting(setting_id)
+
+    def _bool_value(self, setting_id, default=True):
+        raw = self._setting_value(setting_id)
+        if raw == "":
+            return default
+        return str(raw).lower() == "true"
+
+    def _selected_provider(self):
+        prowlarr = self._changed_settings.get("prowlarr_enabled")
+        hydra = self._changed_settings.get("nzbhydra_enabled")
+        if prowlarr is not None or hydra is not None:
+            return "prowlarr" if str(prowlarr).lower() == "true" else "hydra"
+        return _selected_provider(self.addon)
 
     def _render_page(self, selected_position=None):
         page = self._page()
@@ -522,7 +597,7 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
             self.setFocusId(self._default_footer_focus_id())
 
     def _rows_for_page(self, page):
-        provider = _selected_provider(self.addon)
+        provider = self._selected_provider()
         rows = []
         for row in page.get("rows", []):
             if row.get("provider") and row.get("provider") != provider:
@@ -533,14 +608,14 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
     def _row_value(self, row):
         kind = row["kind"]
         if kind == "bool":
-            return _string(30230 if _get_bool(self.addon, row["setting"]) else 30231)
+            return _string(30230 if self._bool_value(row["setting"]) else 30231)
         if kind == "provider":
             provider_label_id = (
-                30220 if _selected_provider(self.addon) == "prowlarr" else 30219
+                30220 if self._selected_provider() == "prowlarr" else 30219
             )
             return _string(provider_label_id)
         if kind == "text":
-            value = self.addon.getSetting(row["setting"])
+            value = self._setting_value(row["setting"])
             if row.get("secret") and value:
                 return "*" * 8
             return value or _string(30223)
@@ -556,7 +631,7 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
             return
         row = self._visible_rows[selected]
         if row["kind"] == "bool":
-            current = _get_bool(self.addon, row["setting"])
+            current = self._bool_value(row["setting"])
             self._set_bool(row["setting"], not current)
         elif row["kind"] == "provider":
             self._choose_provider()
@@ -565,7 +640,7 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
         self._render_page(selected_position=selected)
 
     def _edit_text(self, row):
-        current = self.addon.getSetting(row["setting"])
+        current = self._setting_value(row["setting"])
         dialog = xbmcgui.Dialog()
         if current:
             selected = dialog.select(

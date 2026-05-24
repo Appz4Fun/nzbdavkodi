@@ -125,6 +125,36 @@ def test_run_setup_wizard_replays_changed_settings_after_modal_closes():
     fresh_addon.setSetting.assert_any_call("filter_720p", "false")
 
 
+def test_run_setup_wizard_replays_captured_values_when_addon_reads_are_stale():
+    addon = _addon_with_settings(
+        {
+            "setup_wizard_completed": "true",
+            "nzbdav_url": "http://old:3000",
+            "filter_720p": "true",
+        }
+    )
+    fresh_addon = MagicMock()
+
+    with patch("resources.lib.setup_wizard.xbmcaddon.Addon", return_value=fresh_addon):
+        with patch("resources.lib.setup_wizard.SetupWizardDialog") as dialog_cls:
+            dialog = MagicMock()
+            dialog.was_finished.return_value = True
+            dialog.changed_setting_ids.return_value = ["nzbdav_url", "filter_720p"]
+            dialog.changed_settings.return_value = {
+                "nzbdav_url": "http://updated:3000",
+                "filter_720p": "false",
+            }
+            dialog_cls.return_value = dialog
+
+            with patch("resources.lib.setup_wizard._notify"), patch(
+                "resources.lib.setup_wizard._addon_name", return_value="NZB-DAV"
+            ), patch("resources.lib.setup_wizard._string", return_value="done"):
+                assert setup_wizard.run_setup_wizard(addon)
+
+    fresh_addon.setSetting.assert_any_call("nzbdav_url", "http://updated:3000")
+    fresh_addon.setSetting.assert_any_call("filter_720p", "false")
+
+
 def test_run_setup_wizard_does_not_mark_completed_on_cancel():
     addon = _addon_with_settings()
 
