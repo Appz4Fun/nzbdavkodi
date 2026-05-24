@@ -150,6 +150,45 @@ def test_tolerates_github_snake_case_release_fields():
     assert selected["tagName"] == "v1.0.0"
 
 
+def test_selects_requested_stable_release_tag_instead_of_highest():
+    module = _load_select_stable_release_module()
+    releases = [
+        _release("v1.0.0"),
+        _release("v2.0.0"),
+    ]
+
+    selected = module.select_stable_release(releases, requested_tag="v1.0.0")
+
+    assert selected == {
+        "tagName": "v1.0.0",
+        "assetName": "plugin.video.nzbdav-1.0.0.zip",
+        "downloadUrl": "https://example.test/v1.0.0.zip",
+    }
+
+
+def test_requested_release_tag_must_be_stable():
+    module = _load_select_stable_release_module()
+
+    with pytest.raises(SystemExit) as excinfo:
+        module.select_stable_release(
+            [_release("v1.0.0-beta.1")],
+            requested_tag="v1.0.0-beta.1",
+        )
+
+    assert str(excinfo.value) == (
+        "Requested release v1.0.0-beta.1 is not a stable semver release"
+    )
+
+
+def test_requested_release_tag_must_exist():
+    module = _load_select_stable_release_module()
+
+    with pytest.raises(SystemExit) as excinfo:
+        module.select_stable_release([_release("v1.0.0")], requested_tag="v2.0.0")
+
+    assert str(excinfo.value) == "Requested release v2.0.0 was not found"
+
+
 def test_rejects_asset_name_that_does_not_match_release_tag():
     module = _load_select_stable_release_module()
     assets = [
@@ -255,4 +294,22 @@ def test_main_accepts_slurped_paginated_release_pages(tmp_path, capsys):
         "tag=v1.2.0\n"
         "asset_name=plugin.video.nzbdav-1.2.0.zip\n"
         "download_url=https://example.test/v1.2.0.zip\n"
+    )
+
+
+def test_main_accepts_requested_tag(tmp_path, capsys):
+    module = _load_select_stable_release_module()
+    releases_path = tmp_path / "releases.json"
+    releases_path.write_text(
+        json.dumps([_release("v1.0.0"), _release("v1.2.0")]),
+        encoding="utf-8",
+    )
+
+    exit_code = module.main([str(releases_path), "--tag", "v1.0.0"])
+
+    assert exit_code == 0
+    assert capsys.readouterr().out == (
+        "tag=v1.0.0\n"
+        "asset_name=plugin.video.nzbdav-1.0.0.zip\n"
+        "download_url=https://example.test/v1.0.0.zip\n"
     )

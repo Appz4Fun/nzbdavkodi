@@ -124,7 +124,7 @@ def _validated_release(release, tag):
     }, None
 
 
-def select_stable_release(releases):
+def select_stable_release(releases, requested_tag=None):
     """Return tagName, assetName, and downloadUrl for the highest stable release."""
     stable = []
     releases = _flatten_paginated_releases(releases)
@@ -136,6 +136,22 @@ def select_stable_release(releases):
         if key is None:
             continue
         stable.append((key, release, tag))
+
+    if requested_tag:
+        if _stable_semver_key(requested_tag) is None:
+            raise SystemExit(
+                "Requested release {} is not a stable semver release".format(
+                    requested_tag
+                )
+            )
+        for _key, release, tag in stable:
+            if tag != requested_tag:
+                continue
+            selected, error = _validated_release(release, tag)
+            if selected:
+                return selected
+            raise SystemExit(error)
+        raise SystemExit("Requested release {} was not found".format(requested_tag))
 
     if not stable:
         raise SystemExit("No stable {} release found".format(ADDON_ID))
@@ -159,12 +175,17 @@ def main(argv=None):
         description="Select the latest stable plugin.video.nzbdav release asset."
     )
     parser.add_argument("releases_json", help="Path to gh release JSON output")
+    parser.add_argument(
+        "--tag",
+        default=None,
+        help="Select this exact stable release tag instead of the highest stable tag",
+    )
     args = parser.parse_args(argv)
 
     with open(args.releases_json, "r", encoding="utf-8") as fh:
         releases = json.load(fh)
 
-    selected = select_stable_release(releases)
+    selected = select_stable_release(releases, requested_tag=args.tag)
     print("tag={}".format(selected["tagName"]))
     print("asset_name={}".format(selected["assetName"]))
     print("download_url={}".format(selected["downloadUrl"]))

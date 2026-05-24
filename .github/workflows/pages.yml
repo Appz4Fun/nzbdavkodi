@@ -54,7 +54,13 @@ jobs:
 
       - name: Select latest stable addon release
         id: stable_release
-        run: python3 scripts/select_stable_release.py releases.json >> "$GITHUB_OUTPUT"
+        run: |
+          selected_tag="${{ github.event.workflow_run.head_branch || '' }}"
+          if [[ "$selected_tag" == v* ]]; then
+            python3 scripts/select_stable_release.py releases.json --tag "$selected_tag" >> "$GITHUB_OUTPUT"
+          else
+            python3 scripts/select_stable_release.py releases.json >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Download selected addon release
         env:
@@ -81,7 +87,6 @@ jobs:
           python3 scripts/generate_repo.py \
             --output-dir pages-dist \
             --addon-zip release-addon.zip \
-            --release-asset-url "${{ steps.stable_release.outputs.download_url }}" \
             --smoke-check
 
       - name: Upload Pages artifact

@@ -46,13 +46,6 @@ def _strip_repo_metadata_news(root):
                 metadata.remove(news)
 
 
-def _github_release_asset_url(addon_id, version):
-    zip_name = "{}-{}.zip".format(addon_id, version)
-    return "https://github.com/Appz4Fun/nzbdavkodi/releases/download/v{}/{}".format(
-        version, zip_name
-    )
-
-
 def _addon_zip_relative_path(addon_id, version):
     zip_name = "{}-{}.zip".format(addon_id, version)
     return "{}/{}".format(addon_id, zip_name)
@@ -271,19 +264,9 @@ def _build_repository_zip(output_dir, repository_addon_dir):
 def generate_repo(
     output_dir="pages-dist",
     addon_zip=None,
-    release_asset_url=None,
     repository_addon_dir="repo/repository.nzbdav",
 ):
-    """Generate Pages metadata.
-
-    release_asset_url is deprecated and ignored; addon zips are copied into
-    the repository datadir and referenced by repository-relative paths.
-    """
-    if release_asset_url:
-        print(
-            "generate_repo: release_asset_url is deprecated and ignored",
-            file=sys.stderr,
-        )
+    """Generate Pages metadata."""
 
     if not os.path.isdir(repository_addon_dir):
         raise SystemExit(
@@ -473,11 +456,6 @@ def main(argv=None):
         "--addon-zip", default=None, help="Use this addon release zip for metadata"
     )
     parser.add_argument(
-        "--release-asset-url",
-        default=None,
-        help="Deprecated/no-op; addon zips are copied into the Pages datadir",
-    )
-    parser.add_argument(
         "--repository-addon-dir",
         default="repo/repository.nzbdav",
         help="Repository addon directory to include and package",
@@ -491,7 +469,6 @@ def main(argv=None):
     generate_repo(
         output_dir=args.output_dir,
         addon_zip=args.addon_zip,
-        release_asset_url=args.release_asset_url,
         repository_addon_dir=args.repository_addon_dir,
     )
     if args.smoke_check:
