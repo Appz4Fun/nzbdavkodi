@@ -3,7 +3,9 @@
 
 """Regression checks for repository and Kodi addon best-practice files."""
 
+import hashlib
 import xml.etree.ElementTree as ET
+import zipfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -34,16 +36,72 @@ def test_addon_metadata_includes_repo_links_and_disclaimer():
     assert len(disclaimers) >= 2
 
 
-def test_repository_addon_uses_raw_repo_zips_metadata_urls():
+def test_repository_addon_uses_pages_sha256_metadata_urls():
     addon_xml = REPO_ADDON_DIR / "addon.xml"
     root = ET.parse(addon_xml).getroot()
     repo_dir = root.find("./extension[@point='xbmc.addon.repository']/dir")
-    repo_base = "https://raw.githubusercontent.com/xbmc4lyfe/nzbdavkodi/main/repo/zips"
+    repo_base = "https://appz4fun.github.io/nzbdavkodi"
 
     assert repo_dir is not None
-    assert repo_dir.findtext("info") == "{}/addons.xml".format(repo_base)
-    assert repo_dir.findtext("checksum") == "{}/addons.xml.md5".format(repo_base)
-    assert repo_dir.findtext("datadir") == "{}/".format(repo_base)
+    info = repo_dir.find("info")
+    checksum = repo_dir.find("checksum")
+    datadir = repo_dir.find("datadir")
+    artdir = repo_dir.find("artdir")
+    assert info is not None
+    assert info.text == "{}/addons.xml.gz".format(repo_base)
+    assert "compressed" not in info.attrib
+    assert checksum is not None
+    assert checksum.text == "{}/addons.xml.gz.sha256".format(repo_base)
+    assert checksum.get("verify") == "sha256"
+    assert datadir is not None
+    assert datadir.text == repo_base
+    assert "zip" not in datadir.attrib
+    assert artdir is not None
+    assert artdir.text == repo_base
+    assert repo_dir.findtext("hashes") == "sha256"
+
+
+def test_legacy_raw_repo_zips_endpoint_migrates_to_pages_repository():
+    legacy_dir = REPO_ROOT / "repo" / "zips"
+    addons_xml = legacy_dir / "addons.xml"
+    checksum = legacy_dir / "addons.xml.md5"
+    repository_zip = legacy_dir / "repository.nzbdav-1.1.1.zip"
+
+    assert addons_xml.exists()
+    assert checksum.exists()
+    assert repository_zip.exists()
+    assert (
+        checksum.read_text(encoding="ascii")
+        == hashlib.md5(addons_xml.read_bytes()).hexdigest()
+    )
+
+    root = ET.parse(addons_xml).getroot()
+    repo = root.find("./addon[@id='repository.nzbdav']")
+    assert repo is not None
+    assert repo.get("version") == "1.1.1"
+
+    repo_dir = repo.find("./extension[@point='xbmc.addon.repository']/dir")
+    repo_base = "https://appz4fun.github.io/nzbdavkodi"
+    assert repo_dir is not None
+    assert repo_dir.findtext("info") == "{}/addons.xml.gz".format(repo_base)
+    assert repo_dir.findtext("checksum") == "{}/addons.xml.gz.sha256".format(repo_base)
+    assert repo_dir.find("checksum").get("verify") == "sha256"
+    assert repo_dir.findtext("datadir") == repo_base
+    assert repo_dir.findtext("artdir") == repo_base
+    assert repo_dir.findtext("hashes") == "sha256"
+
+    with zipfile.ZipFile(repository_zip) as zf:
+        assert "repository.nzbdav/addon.xml" in zf.namelist()
+
+
+def test_agents_release_guidance_uses_pages_not_raw_repo_zips():
+    agents = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+
+    assert "raw.githubusercontent.com" not in agents
+    assert "regenerate it with `just repo`" not in agents
+    assert "generate Kodi repo in repo/zips" not in agents
+    assert "served from GitHub Pages" in agents
+    assert "legacy migration endpoint" in agents
 
 
 def test_issue_template_contact_links_use_canonical_owner():
