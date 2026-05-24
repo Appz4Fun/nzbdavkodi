@@ -151,6 +151,28 @@ def test_pages_workflow_deploys_repository_metadata_on_main_push():
     assert "scripts/generate_repo.py" in contents
 
 
+def test_pages_workflow_skips_prerelease_release_runs_without_deploying():
+    root = Path(__file__).resolve().parents[1]
+    contents = (root / ".github" / "workflows" / "pages.yml").read_text(
+        encoding="utf-8"
+    )
+    skip_guard = "if: ${{ steps.stable_release.outputs.skip_deploy != 'true' }}"
+
+    def assert_step_has_skip_guard(step_name):
+        pattern = (r"- name: {}\n" r"(?:        [^\n]*\n)*?" r"        {}\n").format(
+            re.escape(step_name), re.escape(skip_guard)
+        )
+        assert re.search(pattern, contents) is not None
+
+    assert "skip_deploy=true" in contents
+    assert "Skipping Pages deploy for non-stable release tag" in contents
+    assert "skip_deploy=false" in contents
+    assert_step_has_skip_guard("Download selected addon release")
+    assert_step_has_skip_guard("Generate Pages repository")
+    assert_step_has_skip_guard("Upload Pages artifact")
+    assert_step_has_skip_guard("Deploy to GitHub Pages")
+
+
 def test_release_workflow_does_not_generate_unpublished_repository_metadata():
     root = Path(__file__).resolve().parents[1]
     contents = (root / ".github" / "workflows" / "release.yml").read_text(
