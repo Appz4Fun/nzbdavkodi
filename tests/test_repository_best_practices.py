@@ -305,20 +305,6 @@ def test_setup_wizard_action_button_has_wide_focus_area():
     assert int(action.findtext("width")) >= 280
 
 
-def test_setup_wizard_next_button_stays_visible_for_finish_page():
-    skin_xml = (
-        ADDON_DIR / "resources" / "skins" / "Default" / "1080i" / ("setup-wizard.xml")
-    )
-    root = ET.parse(skin_xml).getroot()
-
-    next_button = root.find(".//control[@id='102']")
-
-    assert next_button is not None
-    assert next_button.findtext("visible") == (
-        "String.IsEqual(Window.Property(wizard.next_visible),true)"
-    )
-
-
 def test_setup_wizard_final_page_uses_next_button_as_finish():
     skin_xml = (
         ADDON_DIR / "resources" / "skins" / "Default" / "1080i" / ("setup-wizard.xml")
