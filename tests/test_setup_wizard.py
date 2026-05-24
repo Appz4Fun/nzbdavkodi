@@ -148,6 +148,20 @@ def test_connection_pages_have_test_actions():
     assert pages_by_key["index_manager"]["test"] == "index_manager"
 
 
+def test_populated_rows_include_helper_text_property():
+    addon = _addon_with_settings({"nzbdav_url": "http://nzbdav.local"})
+    dialog = _wizard_dialog(addon)
+    dialog.page_index = 1
+
+    dialog._render_page()
+
+    list_control = dialog.getControl(setup_wizard.LIST_ID)
+    first_item = list_control.addItems.call_args.args[0][0]
+
+    first_item.setProperty.assert_any_call("value", "http://nzbdav.local")
+    first_item.setProperty.assert_any_call("helper", "Connection setting")
+
+
 def test_final_page_copy_explains_finish_completes_setup_only():
     pages_by_key = {page["key"]: page for page in setup_wizard.PAGES}
     body = setup_wizard._string(pages_by_key["tmdbhelper"]["body_id"])

@@ -11,6 +11,17 @@ ADDON_DIR = REPO_ROOT / "repo" / "plugin.video.nzbdav"
 REPO_ADDON_DIR = REPO_ROOT / "repo" / "repository.nzbdav"
 
 
+def _setup_wizard_skin_root():
+    skin_xml = (
+        ADDON_DIR / "resources" / "skins" / "Default" / "1080i" / "setup-wizard.xml"
+    )
+    return ET.parse(skin_xml).getroot()
+
+
+def _int_text(element, child_name):
+    return int(element.findtext(child_name))
+
+
 def test_addon_metadata_includes_repo_links_and_disclaimer():
     addon_xml = ADDON_DIR / "addon.xml"
     root = ET.parse(addon_xml).getroot()
@@ -191,10 +202,7 @@ def test_settings_include_setup_wizard_action():
 
 
 def test_setup_wizard_xml_skin_exists_with_expected_controls():
-    skin_xml = (
-        ADDON_DIR / "resources" / "skins" / "Default" / "1080i" / ("setup-wizard.xml")
-    )
-    root = ET.parse(skin_xml).getroot()
+    root = _setup_wizard_skin_root()
 
     control_ids = {
         control.get("id")
@@ -208,11 +216,68 @@ def test_setup_wizard_xml_skin_exists_with_expected_controls():
         assert removed_id not in control_ids
 
 
+def test_setup_wizard_field_list_is_centered_single_column_layout():
+    root = _setup_wizard_skin_root()
+    field_list = root.find(".//control[@id='50']")
+
+    assert field_list is not None
+    left = _int_text(field_list, "left")
+    width = _int_text(field_list, "width")
+    center = left + (width / 2)
+
+    assert 900 <= center <= 1020
+    assert left < 700
+    assert width >= 760
+    assert _int_text(field_list, "top") > 250
+
+
+def test_setup_wizard_rows_have_label_helper_value_columns():
+    root = _setup_wizard_skin_root()
+    item_layout = root.find(".//control[@id='50']/itemlayout")
+    focused_layout = root.find(".//control[@id='50']/focusedlayout")
+
+    assert item_layout is not None
+    assert focused_layout is not None
+    for layout in (item_layout, focused_layout):
+        labels = layout.findall("control[@type='label']")
+        label_infos = [label.findtext("label") for label in labels]
+
+        assert "$INFO[ListItem.Label]" in label_infos
+        assert "$INFO[ListItem.Property(helper)]" in label_infos
+        assert "$INFO[ListItem.Property(value)]" in label_infos
+
+
+def test_setup_wizard_focused_row_uses_results_style_left_accent():
+    root = _setup_wizard_skin_root()
+    focused_layout = root.find(".//control[@id='50']/focusedlayout")
+
+    assert focused_layout is not None
+    accent = None
+    for image in focused_layout.findall("control[@type='image']"):
+        if image.findtext("colordiffuse") == "FF6BB6FF":
+            accent = image
+            break
+
+    assert accent is not None
+    assert _int_text(accent, "left") == 0
+    assert _int_text(accent, "width") == 6
+
+
+def test_setup_wizard_skin_uses_xml_drawn_square_rows_only():
+    root = _setup_wizard_skin_root()
+    textures = [
+        texture.text or ""
+        for texture in root.findall(".//texture")
+        if texture.text is not None
+    ]
+
+    assert textures
+    assert set(textures) == {"white.png"}
+    assert not any("round" in texture.lower() for texture in textures)
+
+
 def test_setup_wizard_footer_buttons_are_keyboard_navigable():
-    skin_xml = (
-        ADDON_DIR / "resources" / "skins" / "Default" / "1080i" / ("setup-wizard.xml")
-    )
-    root = ET.parse(skin_xml).getroot()
+    root = _setup_wizard_skin_root()
 
     expected_nav = {
         "50": {"ondown": "102"},
@@ -230,10 +295,7 @@ def test_setup_wizard_footer_buttons_are_keyboard_navigable():
 
 
 def test_setup_wizard_footer_uses_only_one_stable_button_set():
-    skin_xml = (
-        ADDON_DIR / "resources" / "skins" / "Default" / "1080i" / ("setup-wizard.xml")
-    )
-    root = ET.parse(skin_xml).getroot()
+    root = _setup_wizard_skin_root()
 
     previous = root.find(".//control[@id='101']")
     test = root.find(".//control[@id='104']")
