@@ -148,8 +148,13 @@ def test_connection_pages_have_test_actions():
     assert pages_by_key["index_manager"]["test"] == "index_manager"
 
 
-def test_populated_rows_include_helper_text_property():
-    addon = _addon_with_settings({"nzbdav_url": "http://nzbdav.local"})
+def test_populated_rows_do_not_include_inline_helper_text():
+    addon = _addon_with_settings(
+        {
+            "nzbdav_url": "http://nzbdav.local",
+            "webdav_url": "http://webdav.local",
+        }
+    )
     dialog = _wizard_dialog(addon)
     dialog.page_index = 1
 
@@ -159,7 +164,15 @@ def test_populated_rows_include_helper_text_property():
     first_item = list_control.addItems.call_args.args[0][0]
 
     first_item.setProperty.assert_any_call("value", "http://nzbdav.local")
-    first_item.setProperty.assert_any_call("helper", "Connection setting")
+    first_item.setProperty.assert_any_call("helper", "")
+
+    dialog.page_index = 2
+    dialog._render_page()
+
+    webdav_items = list_control.addItems.call_args.args[0]
+    webdav_items[0].setProperty.assert_any_call("value", "http://webdav.local")
+    webdav_items[0].setProperty.assert_any_call("helper", "")
+    webdav_items[1].setProperty.assert_any_call("helper", "")
 
 
 def test_final_page_copy_explains_finish_completes_setup_only():
@@ -232,6 +245,44 @@ def test_test_page_syncs_native_footer_navigation_through_test_button():
     next_button.controlLeft.assert_called_with(test)
     next_button.controlRight.assert_called_with(cancel)
     cancel.controlLeft.assert_called_with(next_button)
+
+
+def test_test_page_moves_down_from_rows_to_test_button():
+    addon = _addon_with_settings()
+    dialog = setup_wizard.SetupWizardDialog(
+        "setup-wizard.xml",
+        "",
+        "Default",
+        "1080i",
+        addon=addon,
+    )
+    dialog.page_index = 1
+
+    dialog._render_page()
+
+    list_control = dialog.getControl(setup_wizard.LIST_ID)
+    test = dialog.getControl(setup_wizard.TEST_BUTTON_ID)
+
+    list_control.controlDown.assert_called_with(test)
+
+
+def test_non_test_page_moves_down_from_rows_to_next_button():
+    addon = _addon_with_settings()
+    dialog = setup_wizard.SetupWizardDialog(
+        "setup-wizard.xml",
+        "",
+        "Default",
+        "1080i",
+        addon=addon,
+    )
+    dialog.page_index = 4
+
+    dialog._render_page()
+
+    list_control = dialog.getControl(setup_wizard.LIST_ID)
+    next_button = dialog.getControl(setup_wizard.NEXT_BUTTON_ID)
+
+    list_control.controlDown.assert_called_with(next_button)
 
 
 def test_last_page_syncs_native_footer_navigation_through_finish_button():
