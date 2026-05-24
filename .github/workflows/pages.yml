@@ -64,6 +64,7 @@ jobs:
             if gh release download "${{ steps.stable_release.outputs.tag }}" \
               --repo "$GITHUB_REPOSITORY" \
               --pattern "${{ steps.stable_release.outputs.asset_name }}" \
+              --clobber \
               --output release-addon.zip; then
               break
             fi
