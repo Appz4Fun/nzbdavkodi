@@ -134,6 +134,9 @@ def test_pages_workflow_deploys_repository_metadata_on_main_push():
     )
     assert "selected_tag=" in contents
     assert "github.event.workflow_run.head_branch" in contents
+    assert "WORKFLOW_HEAD_BRANCH:" in contents
+    assert 'selected_tag="$WORKFLOW_HEAD_BRANCH"' in contents
+    assert 'selected_tag="${{ github.event.workflow_run.head_branch' not in contents
     assert (
         'python3 scripts/select_stable_release.py releases.json --tag "$selected_tag"'
         in contents
