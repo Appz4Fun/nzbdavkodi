@@ -49,9 +49,6 @@ jobs:
       - name: Build addon zip
         run: python3 scripts/build_zip.py
 
-      - name: Generate repository metadata
-        run: python3 scripts/generate_repo.py
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v2
         with:
