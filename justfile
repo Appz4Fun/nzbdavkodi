@@ -1,4 +1,5 @@
 # NZB-DAV Kodi Addon
+set positional-arguments
 
 # Install local development dependencies needed by the other recipes
 make-dev:
@@ -11,6 +12,22 @@ make-dev:
         pip_flags+=(--break-system-packages)
     fi
     python3 -m pip install ${pip_flags+"${pip_flags[@]}"} -r requirements-test.txt "ruff>=0.15" "black>=24"
+
+    echo "Installing Python 3.14 Chroma dev dependencies..."
+    chroma_py="${CHROMA_PYTHON:-python3.14}"
+    if ! command -v "$chroma_py" >/dev/null 2>&1; then
+        echo "Python 3.14 is required for Chroma dev tooling." >&2
+        echo "Install Python 3.14 or set CHROMA_PYTHON to a compatible Python 3.14 executable." >&2
+        exit 1
+    fi
+    chroma_pip_flags=()
+    if "$chroma_py" -m pip install --help | grep -q -- "--break-system-packages"; then
+        chroma_pip_flags+=(--break-system-packages)
+    fi
+    "$chroma_py" -m pip install ${chroma_pip_flags+"${chroma_pip_flags[@]}"} -r requirements-dev-chroma.txt
+    "$chroma_py" -c "import chromadb"
+    "$chroma_py" scripts/chroma_check_config.py --env-file .env --prompt
+    "$chroma_py" scripts/chroma_agent_check.py --env-file .env --soft
 
     if [[ "$(uname -s)" == "Darwin" ]]; then
         if ! command -v brew >/dev/null 2>&1; then
@@ -86,6 +103,29 @@ functional-test:
 # Prefer FrameStor/FraMeSToR releases; otherwise use the most duplicated group.
 functional-test-top-imdb:
     python3 -m pytest tests/test_functional_fallback_playback.py::test_functional_imdb_top50_random_sample_fallback_playback -v -s --tb=long -m functional
+
+# Install Python 3.14 dev-only Chroma Cloud dependencies.
+chroma-install:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    py="${CHROMA_PYTHON:-python3.14}"
+    pip_flags=()
+    if "$py" -m pip install --help | grep -q -- "--break-system-packages"; then
+        pip_flags+=(--break-system-packages)
+    fi
+    "$py" -m pip install ${pip_flags+"${pip_flags[@]}"} -r requirements-dev-chroma.txt
+
+# Index this repo into Chroma Cloud for Codex/dev search. Pass `--reset` to rebuild.
+chroma-index *args:
+    @bash -euo pipefail -c '"${CHROMA_PYTHON:-python3.14}" scripts/chroma_index_repo.py "$@"' bash "$@"
+
+# Search the Chroma Cloud dev index. Quote multi-word queries.
+chroma-search *args:
+    @bash -euo pipefail -c '"${CHROMA_PYTHON:-python3.14}" scripts/chroma_search_repo.py "$@"' bash "$@"
+
+# Verify local Codex Chroma MCP and skill wiring.
+chroma-agent-check *args:
+    @bash -euo pipefail -c '"${CHROMA_PYTHON:-python3.14}" scripts/chroma_agent_check.py "$@"' bash "$@"
 
 # Interactively create the .env file consumed by `just extreme-functional-test`.
 # Asks for NNTP credentials, NZBHydra2 URL+API key, WebDAV credentials, and
@@ -284,13 +324,25 @@ release:
 # Run tests then build release
 ship: test release
 
-# Generate Kodi repository in repo/zips/
+# Generate a local GitHub Pages/Kodi repository preview in pages-dist/
 repo: release
-    python3 scripts/generate_repo.py
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    addon_version="$(
+        python3 -c 'import sys, xml.etree.ElementTree as ET; version = ET.parse("repo/plugin.video.nzbdav/addon.xml").getroot().attrib.get("version"); sys.exit("addon.xml is missing a version attribute") if not version else print(version)'
+    )"
+    addon_zip="plugin.video.nzbdav-${addon_version}.zip"
+    if [[ ! -f "${addon_zip}" ]]; then
+        echo "Expected release zip not found: ${addon_zip}" >&2
+        exit 1
+    fi
+    rm -rf pages-dist/
+    python3 scripts/generate_repo.py --output-dir pages-dist --addon-zip "${addon_zip}" --smoke-check
 
 # Copy the repository zip to cwd for easy access
 repo-zip: repo
-    cp repo/zips/repository.nzbdav/repository.nzbdav-*.zip .
+    cp pages-dist/repository.nzbdav-*.zip .
     @ls -lh repository.nzbdav-*.zip
 
 # Clean build artifacts
@@ -302,6 +354,6 @@ clean:
 # Run the same checks as GitHub CI (lint + test)
 ci: lint test
 
-# Clean everything including generated repository zips
+# Clean everything including generated Pages output
 dist-clean: clean
-    rm -rf repo/zips/
+    rm -rf pages-dist/

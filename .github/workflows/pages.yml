@@ -8,6 +8,7 @@ on:
       - "repo/repository.nzbdav/**"
       - "repo/plugin.video.nzbdav/addon.xml"
       - "scripts/generate_repo.py"
+      - "scripts/select_stable_release.py"
   workflow_run:
     workflows: ["Release"]
     types: [completed]
@@ -46,63 +47,67 @@ jobs:
       - name: Configure Pages
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
-      - name: Download release addon zips
+      - name: Read GitHub releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" > releases.json
+
+      - name: Select latest stable addon release
+        id: stable_release
+        env:
+          WORKFLOW_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch || '' }}
+        run: |
+          selected_tag="$WORKFLOW_HEAD_BRANCH"
+          # Keep in sync with _STABLE_SEMVER_RE in scripts/select_stable_release.py.
+          stable_tag_re='^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+          if [[ "$selected_tag" == v* && ! "$selected_tag" =~ $stable_tag_re ]]; then
+            echo "skip_deploy=true" >> "$GITHUB_OUTPUT"
+            echo "Skipping Pages deploy for non-stable release tag: $selected_tag"
+            exit 0
+          fi
+          echo "skip_deploy=false" >> "$GITHUB_OUTPUT"
+          if [[ "$selected_tag" == v* ]]; then
+            python3 scripts/select_stable_release.py releases.json --tag "$selected_tag" >> "$GITHUB_OUTPUT"
+          else
+            python3 scripts/select_stable_release.py releases.json >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download selected addon release
+        if: ${{ steps.stable_release.outputs.skip_deploy != 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir -p release-zips
-          gh release list \
-            --repo "$GITHUB_REPOSITORY" \
-            --limit 100 \
-            --json tagName \
-            --jq '.[].tagName' |
-          while read -r tag; do
-            gh release download "$tag" \
-              --repo "$GITHUB_REPOSITORY" \
-              --pattern 'plugin.video.nzbdav-*.zip' \
-              --dir release-zips \
-              --clobber || echo "No addon zip found for $tag"
-          done
-          target_tag="${{ github.event.workflow_run.head_branch || '' }}"
-          case "$target_tag" in
-            v*) ;;
-            *)
-              target_tag=$(gh release view \
-                --repo "$GITHUB_REPOSITORY" \
-                --json tagName \
-                --jq '.tagName')
-              ;;
-          esac
-          echo "Publishing addon release $target_tag"
-          rm -f release-addon.zip
           for attempt in 1 2 3 4 5; do
-            if gh release download \
-              "$target_tag" \
+            if gh release download "${{ steps.stable_release.outputs.tag }}" \
               --repo "$GITHUB_REPOSITORY" \
-              --pattern 'plugin.video.nzbdav-*.zip' \
+              --pattern "${{ steps.stable_release.outputs.asset_name }}" \
+              --clobber \
               --output release-addon.zip; then
               break
             fi
             if [ "$attempt" -eq 5 ]; then
-              echo "Failed to download addon zip for $target_tag" >&2
+              echo "Failed to download selected addon release asset" >&2
               exit 1
             fi
             sleep 15
           done
 
-      - name: Generate repository metadata
-        run: >-
-          python3 scripts/generate_repo.py
-          --output-dir pages-dist/repo/zips
-          --addon-zip release-addon.zip
-          --legacy-addon-zip-dir release-zips
-          --legacy-root-metadata
+      - name: Generate Pages repository
+        if: ${{ steps.stable_release.outputs.skip_deploy != 'true' }}
+        run: |
+          rm -rf pages-dist
+          python3 scripts/generate_repo.py \
+            --output-dir pages-dist \
+            --addon-zip release-addon.zip \
+            --smoke-check
 
       - name: Upload Pages artifact
+        if: ${{ steps.stable_release.outputs.skip_deploy != 'true' }}
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: ./pages-dist
 
       - name: Deploy to GitHub Pages
+        if: ${{ steps.stable_release.outputs.skip_deploy != 'true' }}
         id: deployment
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
