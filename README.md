@@ -296,10 +296,10 @@ just lint              # Check ruff + black formatting
 just lint-fix          # Auto-fix lint issues
 just release           # Build plugin.video.nzbdav.zip
 just ship              # Run tests then build release
-just repo              # Build release + generate Kodi repo in repo/zips/
+just repo              # Build release + generate local Pages preview in pages-dist/
 just repo-zip          # Build repo + copy repository zip to cwd
 just clean             # Remove build artifacts
-just dist-clean        # Remove build artifacts + repo/zips/
+just dist-clean        # Remove build artifacts + generated Pages preview
 ```
 
 ### Project Structure
@@ -339,12 +339,13 @@ repo/plugin.video.nzbdav/
 scripts/
   build_zip.py           # Addon zip builder
   generate_repo.py       # Kodi repo metadata generator
+  select_stable_release.py  # Pages workflow release selector
 repo/
-  repository.nzbdav/     # Repository addon (points to raw repo/zips metadata)
-  zips/                  # Generated Kodi repository metadata and zips
+  repository.nzbdav/     # Repository addon descriptor pointing to Pages metadata
 .github/workflows/
   ci.yml                 # Test + lint on push/PR (Python 3.10/3.12)
-  release.yml            # Build + deploy on version tags
+  release.yml            # Build GitHub Releases on version tags
+  pages.yml              # Publish Kodi repository metadata to GitHub Pages
   pylint.yml             # Pylint analysis (Python 3.8 to validate runtime compat)
   codeql.yml             # CodeQL analysis
   bandit.yml             # Bandit security scan
@@ -358,13 +359,17 @@ TODO.md                             # Active backlog
 ### Releasing
 
 1. Bump `version` in `repo/plugin.video.nzbdav/addon.xml`
-2. Run `just repo` to refresh `repo/zips/` for raw GitHub repository metadata.
-3. Stage the version bump plus generated repository metadata and zips:
-   `git add repo/plugin.video.nzbdav/addon.xml repo/zips/`
+2. Run `just lint` and `just test`.
+3. Commit the version bump:
+   `git add repo/plugin.video.nzbdav/addon.xml`
 4. Commit: `git commit -m "release: v0.X.0"`
 5. Tag and push: `git tag v0.X.0 && git push origin main v0.X.0`
-6. GitHub Actions builds the zip and creates a GitHub Release
-7. Kodi picks up the update automatically from the generated `repo/zips/` repository metadata
+6. GitHub Actions builds the zip and creates a GitHub Release.
+7. The Pages workflow republishes the tagged stable release into Kodi repository metadata.
+8. Kodi picks up the update automatically from the GitHub Pages repository.
+
+Prerelease tags such as `v1.2.3-beta.1` may create GitHub Release artifacts, but
+the Pages workflow skips publishing them to the public Kodi repository.
 
 ---
 

@@ -126,7 +126,62 @@ def test_pages_workflow_deploys_repository_metadata_on_main_push():
     assert "push:" in contents
     assert "branches: [main]" in contents
     assert "repo/repository.nzbdav/**" in contents
+    assert "scripts/select_stable_release.py" in contents
+    assert "repo/repository.nzbdav.releases" not in contents
+    assert (
+        'gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100"'
+        in contents
+    )
+    assert "selected_tag=" in contents
+    assert "github.event.workflow_run.head_branch" in contents
+    assert "WORKFLOW_HEAD_BRANCH:" in contents
+    assert 'selected_tag="$WORKFLOW_HEAD_BRANCH"' in contents
+    assert 'selected_tag="${{ github.event.workflow_run.head_branch' not in contents
+    assert (
+        'python3 scripts/select_stable_release.py releases.json --tag "$selected_tag"'
+        in contents
+    )
+    assert "--clobber" in contents
+    assert "rm -rf pages-dist" in contents
+    assert "--output-dir pages-dist" in contents
+    assert "--addon-zip release-addon.zip" in contents
+    assert "--release-asset-url" not in contents
+    assert "--smoke-check" in contents
+    assert "--repository-addon-dir" not in contents
     assert "scripts/generate_repo.py" in contents
+
+
+def test_pages_workflow_skips_prerelease_release_runs_without_deploying():
+    root = Path(__file__).resolve().parents[1]
+    contents = (root / ".github" / "workflows" / "pages.yml").read_text(
+        encoding="utf-8"
+    )
+    skip_guard = "if: ${{ steps.stable_release.outputs.skip_deploy != 'true' }}"
+
+    def assert_step_has_skip_guard(step_name):
+        pattern = (r"- name: {}\n" r"(?:        [^\n]*\n)*?" r"        {}\n").format(
+            re.escape(step_name), re.escape(skip_guard)
+        )
+        assert re.search(pattern, contents) is not None
+
+    assert "skip_deploy=true" in contents
+    assert "Skipping Pages deploy for non-stable release tag" in contents
+    assert "skip_deploy=false" in contents
+    assert_step_has_skip_guard("Download selected addon release")
+    assert_step_has_skip_guard("Generate Pages repository")
+    assert_step_has_skip_guard("Upload Pages artifact")
+    assert_step_has_skip_guard("Deploy to GitHub Pages")
+
+
+def test_release_workflow_does_not_generate_unpublished_repository_metadata():
+    root = Path(__file__).resolve().parents[1]
+    contents = (root / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Create GitHub Release" in contents
+    assert "Generate repository metadata" not in contents
+    assert "scripts/generate_repo.py" not in contents
 
 
 def test_extreme_functional_test_recipe_preserves_exported_env_overrides():
