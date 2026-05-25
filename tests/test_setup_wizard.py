@@ -25,6 +25,14 @@ def _wizard_dialog(addon=None):
     )
 
 
+def _localized_string(string_id):
+    return "localized-{}".format(string_id)
+
+
+def _localized_fmt(string_id, value):
+    return "localized-{}: {}".format(string_id, value)
+
+
 def test_should_auto_run_until_completed():
     assert setup_wizard.should_auto_run(
         _addon_with_settings({"setup_wizard_completed": "false"})
@@ -190,6 +198,29 @@ def test_run_setup_wizard_force_closes_lingering_native_settings_before_replay()
     fresh_addon.setSetting.assert_any_call("nzbdav_url", "http://updated:3000")
 
 
+def test_run_setup_wizard_skips_replay_when_native_settings_stays_open():
+    addon = _addon_with_settings({"setup_wizard_completed": "true"})
+
+    with patch("resources.lib.setup_wizard.SetupWizardDialog") as dialog_cls:
+        dialog = MagicMock()
+        dialog.was_finished.return_value = True
+        dialog.changed_setting_ids.return_value = ["nzbdav_url"]
+        dialog.changed_settings.return_value = {"nzbdav_url": "http://updated:3000"}
+        dialog_cls.return_value = dialog
+
+        with patch(
+            "resources.lib.setup_wizard._ensure_native_settings_dialog_closed",
+            return_value=False,
+        ), patch(
+            "resources.lib.setup_wizard._replay_changed_settings"
+        ) as replay, patch(
+            "resources.lib.setup_wizard._notify"
+        ):
+            assert setup_wizard.run_setup_wizard(addon)
+
+    replay.assert_not_called()
+
+
 def test_run_setup_wizard_closes_stale_addon_info_after_finish():
     addon = _addon_with_settings({"setup_wizard_completed": "true"})
 
@@ -294,6 +325,16 @@ def test_dialog_tracks_settings_changed_inside_wizard():
     ]
 
 
+def test_cancel_marks_wizard_completed_to_skip_future_auto_run():
+    addon = _addon_with_settings()
+    dialog = _wizard_dialog(addon)
+
+    dialog._cancel()
+
+    addon.setSetting.assert_called_once_with("setup_wizard_completed", "true")
+    assert not dialog.was_finished()
+
+
 def test_dialog_reads_persisted_setting_when_addon_setting_is_stale(tmp_path):
     profile = tmp_path / "profile"
     profile.mkdir()
@@ -308,6 +349,39 @@ def test_dialog_reads_persisted_setting_when_addon_setting_is_stale(tmp_path):
     dialog = _wizard_dialog(addon)
 
     assert dialog._setting_value("nzbdav_url") == "http://disk:3000"
+
+
+def test_dialog_caches_persisted_settings_for_session(tmp_path):
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    (profile / "settings.xml").write_text(
+        (
+            '<settings version="2">'
+            '<setting id="nzbdav_url">http://disk:3000</setting>'
+            '<setting id="webdav_url">http://disk:8080</setting>'
+            "</settings>"
+        ),
+        encoding="utf-8",
+    )
+    addon = _addon_with_settings(
+        {
+            "nzbdav_url": "http://stale:3000",
+            "webdav_url": "http://stale:8080",
+        }
+    )
+    addon.getAddonInfo.side_effect = lambda key: (
+        str(profile) if key == "profile" else ""
+    )
+    dialog = _wizard_dialog(addon)
+
+    with patch(
+        "resources.lib.setup_wizard.element_tree.parse",
+        wraps=setup_wizard.element_tree.parse,
+    ) as parse:
+        assert dialog._setting_value("nzbdav_url") == "http://disk:3000"
+        assert dialog._setting_value("webdav_url") == "http://disk:8080"
+
+    parse.assert_called_once()
 
 
 def test_dialog_translates_special_profile_before_reading_persisted_setting(tmp_path):
@@ -697,7 +771,8 @@ def test_cancel_reverts_settings_changed_inside_wizard():
 
     dialog._cancel()
 
-    addon.setSetting.assert_called_once_with("nzbdav_url", "http://old:3000")
+    addon.setSetting.assert_any_call("nzbdav_url", "http://old:3000")
+    addon.setSetting.assert_any_call("setup_wizard_completed", "true")
     assert dialog._finished is False
     dialog.close.assert_called_once()
 
@@ -725,11 +800,14 @@ def test_test_page_shows_success_modal_on_successful_connection_check():
 
     with patch(
         "resources.lib.setup_wizard._connection_check", return_value=(True, "")
-    ), patch("resources.lib.setup_wizard.xbmcgui.Dialog") as dialog_cls:
+    ), patch("resources.lib.setup_wizard.xbmcgui.Dialog") as dialog_cls, patch(
+        "resources.lib.setup_wizard._string",
+        side_effect=_localized_string,
+    ):
         dialog._test_current_page()
 
     dialog_cls.return_value.ok.assert_called_once_with(
-        "Search Provider", "Connection successful."
+        "localized-30218", "localized-30235"
     )
 
 
@@ -740,13 +818,47 @@ def test_test_page_shows_failure_modal_with_reason_on_failed_connection_check():
 
     with patch(
         "resources.lib.setup_wizard._connection_check",
-        return_value=(False, "API key denied"),
-    ), patch("resources.lib.setup_wizard.xbmcgui.Dialog") as dialog_cls:
+        return_value=(False, "localized-30241"),
+    ), patch("resources.lib.setup_wizard.xbmcgui.Dialog") as dialog_cls, patch(
+        "resources.lib.setup_wizard._fmt",
+        side_effect=_localized_fmt,
+    ), patch(
+        "resources.lib.setup_wizard._string",
+        side_effect=_localized_string,
+    ):
         dialog._test_current_page()
 
     dialog_cls.return_value.ok.assert_called_once_with(
-        "Search Provider", "Connection failed: API key denied"
+        "localized-30218", "localized-30236: localized-30241"
     )
+
+
+def test_connection_check_uses_localized_failure_reasons():
+    addon = _addon_with_settings({"nzbdav_url": "", "nzbdav_api_key": "secret"})
+
+    with patch(
+        "resources.lib.setup_wizard._string",
+        side_effect=_localized_string,
+    ):
+        assert setup_wizard._connection_check("nzbdav", addon) == (
+            False,
+            "localized-30243",
+        )
+
+
+def test_http_failure_reason_uses_localized_templates():
+    from urllib.error import HTTPError
+
+    error = HTTPError("http://nzbdav.local/api", 500, "Oops", {}, None)
+
+    with patch(
+        "resources.lib.setup_wizard._string",
+        side_effect=_localized_string,
+    ), patch(
+        "resources.lib.setup_wizard._fmt",
+        side_effect=_localized_fmt,
+    ):
+        assert setup_wizard._http_failure_reason(error) == "localized-30239: 500"
 
 
 def test_connection_check_reports_empty_url_reason():

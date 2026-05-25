@@ -143,6 +143,19 @@ _FALLBACK_STRINGS = {
     30232: "Edit",
     30233: "Clear",
     30234: "TMDBHelper player already installed. Select Finish to complete setup.",
+    30235: "Connection successful.",
+    30236: "Connection failed: {0}",
+    30237: "Authentication failed",
+    30238: "Server error",
+    30239: "Server error: HTTP {0}",
+    30240: "Unexpected response: HTTP {0}",
+    30241: "Could not connect: {0}",
+    30242: "Could not connect",
+    30243: "URL not configured",
+    30244: "Unknown connection type",
+    30245: "API key denied",
+    30246: "API key denied or service returned an unexpected response",
+    30247: "Unexpected response",
 }
 
 
