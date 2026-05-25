@@ -70,6 +70,32 @@ def _addon_label(addon_id):
     return addon_id
 
 
+def _tmdbhelper_player_file_path():
+    real_path = xbmcvfs.translatePath(TMDBHELPER_PLAYER_PATH)
+    return os.path.join(real_path, PLAYER_FILENAME)
+
+
+def tmdbhelper_player_installed():
+    """Return True when the current TMDBHelper NZB-DAV player is installed."""
+    try:
+        file_path = _tmdbhelper_player_file_path()
+        if not xbmcvfs.exists(file_path):
+            return False
+        existing_f = xbmcvfs.File(file_path, "r")
+        try:
+            existing_text = existing_f.read()
+        finally:
+            existing_f.close()
+        existing = json.loads(existing_text)
+        return existing.get("schema_version") == _PLAYER_SCHEMA_VERSION
+    except Exception as e:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: Could not check TMDBHelper player install state: {}".format(e),
+            xbmc.LOGDEBUG,
+        )
+        return False
+
+
 def discover_other_player_targets():
     """Return non-TMDBHelper addon_data player folders that already exist."""
     try:

@@ -66,6 +66,41 @@
       <visible>!String.IsEmpty(Window.Property(wizard.warning))</visible>
     </control>
 
+    <control type="button" id="105">
+      <left>760</left><top>455</top><width>400</width><height>120</height>
+      <onup>105</onup>
+      <ondown>102</ondown>
+      <onleft>105</onleft>
+      <onright>105</onright>
+      <label>$INFO[Window.Property(wizard.install_label)]</label>
+      <font>font12</font>
+      <align>center</align>
+      <aligny>center</aligny>
+      <visible>String.IsEqual(Window.Property(wizard.install_visible),true)</visible>
+    </control>
+
+    <control type="textbox" id="108">
+      <left>520</left><top>430</top><width>880</width><height>150</height>
+      <font>font13</font>
+      <textcolor>FFFF4444</textcolor>
+      <label>$INFO[Window.Property(wizard.tmdb_missing_text)]</label>
+      <align>center</align>
+      <aligny>center</aligny>
+      <autoscroll>false</autoscroll>
+      <visible>String.IsEqual(Window.Property(wizard.tmdb_missing_visible),true)</visible>
+    </control>
+
+    <control type="textbox" id="114">
+      <left>520</left><top>430</top><width>880</width><height>150</height>
+      <font>font13</font>
+      <textcolor>FF45D483</textcolor>
+      <label>$INFO[Window.Property(wizard.tmdb_player_installed_text)]</label>
+      <align>center</align>
+      <aligny>center</aligny>
+      <autoscroll>false</autoscroll>
+      <visible>String.IsEqual(Window.Property(wizard.tmdb_player_installed_visible),true)</visible>
+    </control>
+
     <control type="list" id="50">
       <left>500</left><top>330</top><width>920</width><height>548</height>
       <ondown>102</ondown>

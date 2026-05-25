@@ -24,6 +24,7 @@ PREVIOUS_BUTTON_ID = 101
 NEXT_BUTTON_ID = 102
 CANCEL_BUTTON_ID = 103
 TEST_BUTTON_ID = 104
+INSTALL_BUTTON_ID = 105
 ADDON_SETTINGS_DIALOG_ID = 10140
 ADDON_INFO_DIALOG_ID = 10146
 
@@ -229,6 +230,12 @@ def _tmdbhelper_installed():
         return True
     except Exception:  # pylint: disable=broad-except
         return False
+
+
+def _tmdbhelper_player_installed():
+    from resources.lib.player_installer import tmdbhelper_player_installed
+
+    return tmdbhelper_player_installed()
 
 
 def _webdav_failure_reason(error):
@@ -561,6 +568,9 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
         self._changed_setting_ids = set()
         self._changed_settings = {}
         self._visible_rows = []
+        self._current_install_button_visible = False
+        self._current_tmdb_missing_visible = False
+        self._current_tmdb_player_installed_visible = False
         super().__init__(*args)
 
     def onInit(self):
@@ -577,6 +587,8 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
             self._cancel()
         elif controlId == TEST_BUTTON_ID:
             self._test_current_page()
+        elif controlId == INSTALL_BUTTON_ID:
+            self._install_player()
 
     def onFocus(self, controlId):
         self._focus_id = controlId
@@ -646,6 +658,9 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
         self.setProperty("wizard.next_label", _string(next_label_id))
         self.setProperty("wizard.cancel_label", _string(30202))
         self.setProperty("wizard.action_label", _string(30205))
+        self.setProperty("wizard.install_label", _string(30011))
+        self.setProperty("wizard.tmdb_missing_text", _string(30213))
+        self.setProperty("wizard.tmdb_player_installed_text", _string(30234))
         previous_visible = self.page_index > 0
         self.setProperty(
             "wizard.previous_visible", "true" if previous_visible else "false"
@@ -654,8 +669,21 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
             "wizard.welcome_visible", "true" if page["key"] == "welcome" else "false"
         )
         is_test = bool(page.get("test"))
+        self._set_tmdbhelper_page_state(page)
         self.setProperty("wizard.next_visible", "true")
         self.setProperty("wizard.test_visible", "true" if is_test else "false")
+        self.setProperty(
+            "wizard.install_visible",
+            "true" if self._install_button_visible(page) else "false",
+        )
+        self.setProperty(
+            "wizard.tmdb_missing_visible",
+            "true" if self._tmdb_missing_message_visible(page) else "false",
+        )
+        self.setProperty(
+            "wizard.tmdb_player_installed_visible",
+            "true" if self._tmdb_player_installed_message_visible(page) else "false",
+        )
         self.setProperty("wizard.cancel_visible", "true")
         self.setProperty("wizard.warning", self._warning_text(page))
         self._populate_rows(page, selected_position)
@@ -771,14 +799,12 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
         if not _tmdbhelper_installed():
             xbmcgui.Dialog().ok(_string(30211), _string(30213))
             self._finished = False
-            self.close()
             return
         from resources.lib.player_installer import install_player
 
         install_player()
         xbmcgui.Dialog().ok(_string(30211), _string(30228))
-        self._complete_wizard()
-        self.close()
+        self._render_page()
 
     def _previous_page(self):
         if self.page_index > 0:
@@ -844,7 +870,7 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
                 right = footer_controls[index + 1]
             else:
                 right = control
-            up = list_control if list_control is not None else control
+            up = self._up_control_for_footer(page, list_control, control)
             self._set_control_navigation(control, left, right, up, control)
 
         if list_control is not None:
@@ -853,6 +879,41 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
             self._set_control_navigation(
                 list_control, list_control, list_control, list_control, default_footer
             )
+
+        if self._install_button_visible(page):
+            try:
+                install_control = self.getControl(INSTALL_BUTTON_ID)
+            except Exception as e:  # pylint: disable=broad-except
+                xbmc.log(
+                    "NZB-DAV: setup wizard could not read install control: {}".format(
+                        e
+                    ),
+                    xbmc.LOGDEBUG,
+                )
+                return
+            finish_control = footer_controls[footer_ids.index(NEXT_BUTTON_ID)]
+            self._set_control_navigation(
+                install_control,
+                install_control,
+                install_control,
+                install_control,
+                finish_control,
+            )
+
+    def _up_control_for_footer(self, page, list_control, fallback_control):
+        if list_control is not None:
+            return list_control
+        if self._install_button_visible(page):
+            try:
+                return self.getControl(INSTALL_BUTTON_ID)
+            except Exception as e:  # pylint: disable=broad-except
+                xbmc.log(
+                    "NZB-DAV: setup wizard could not read install control: {}".format(
+                        e
+                    ),
+                    xbmc.LOGDEBUG,
+                )
+        return fallback_control
 
     def _set_control_navigation(self, control, left, right, up, down):
         try:
@@ -877,9 +938,40 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
         return footer_ids
 
     def _default_footer_focus_id(self):
+        if self._install_button_visible(self._page()):
+            return INSTALL_BUTTON_ID
         return NEXT_BUTTON_ID
 
     def _warning_text(self, page):
         if page["key"] == "welcome" and not _tmdbhelper_installed():
             return _string(30226)
         return ""
+
+    def _install_button_visible(self, page):
+        if page["key"] != "tmdbhelper":
+            return False
+        return self._current_install_button_visible
+
+    def _tmdb_missing_message_visible(self, page):
+        if page["key"] != "tmdbhelper":
+            return False
+        return self._current_tmdb_missing_visible
+
+    def _tmdb_player_installed_message_visible(self, page):
+        if page["key"] != "tmdbhelper":
+            return False
+        return self._current_tmdb_player_installed_visible
+
+    def _set_tmdbhelper_page_state(self, page):
+        self._current_install_button_visible = False
+        self._current_tmdb_missing_visible = False
+        self._current_tmdb_player_installed_visible = False
+        if page["key"] != "tmdbhelper":
+            return
+        if not _tmdbhelper_installed():
+            self._current_tmdb_missing_visible = True
+            return
+        if _tmdbhelper_player_installed():
+            self._current_tmdb_player_installed_visible = True
+            return
+        self._current_install_button_visible = True

@@ -389,17 +389,16 @@ def test_populated_rows_do_not_include_inline_helper_text():
     webdav_items[1].setProperty.assert_any_call("helper", "")
 
 
-def test_final_page_copy_explains_finish_completes_setup_only():
+def test_final_page_copy_explains_install_then_finish_flow():
     pages_by_key = {page["key"]: page for page in setup_wizard.PAGES}
     body = setup_wizard._string(pages_by_key["tmdbhelper"]["body_id"])
 
-    assert "Click Finish to complete setup" in body
-    assert "Install NZB-DAV Player" in body
-    assert "addon settings" in body
+    assert "Click Install TMDBHelper Player" in body
+    assert "then click Finish" in body
     assert "Finish will also install" not in body
 
 
-def test_final_page_uses_finish_label_for_install_action():
+def test_final_page_shows_center_install_button_when_tmdbhelper_is_installed():
     addon = _addon_with_settings()
     dialog = setup_wizard.SetupWizardDialog(
         "setup-wizard.xml",
@@ -410,12 +409,122 @@ def test_final_page_uses_finish_label_for_install_action():
     )
     dialog.page_index = len(setup_wizard.PAGES) - 1
 
-    dialog._render_page()
+    with patch("resources.lib.setup_wizard._tmdbhelper_installed", return_value=True):
+        with patch(
+            "resources.lib.setup_wizard._tmdbhelper_player_installed",
+            return_value=False,
+        ):
+            dialog._render_page()
 
     assert dialog.getProperty("wizard.next_label") == setup_wizard._string(30203)
     assert dialog.getProperty("wizard.next_visible") == "true"
-    assert dialog.getProperty("wizard.test_visible") == "false"
+    assert dialog.getProperty("wizard.install_visible") == "true"
+    assert dialog.getProperty("wizard.tmdb_missing_visible") == "false"
+    assert dialog.getProperty("wizard.tmdb_player_installed_visible") == "false"
     assert dialog.getProperty("wizard.cancel_visible") == "true"
+    assert dialog._focus_id == setup_wizard.INSTALL_BUTTON_ID
+
+
+def test_final_page_replaces_install_button_with_green_installed_message():
+    dialog = _wizard_dialog()
+    dialog.page_index = len(setup_wizard.PAGES) - 1
+
+    with patch("resources.lib.setup_wizard._tmdbhelper_installed", return_value=True):
+        with patch(
+            "resources.lib.setup_wizard._tmdbhelper_player_installed",
+            return_value=True,
+        ):
+            dialog._render_page()
+
+    assert dialog.getProperty("wizard.install_visible") == "false"
+    assert dialog.getProperty("wizard.tmdb_missing_visible") == "false"
+    assert dialog.getProperty("wizard.tmdb_player_installed_visible") == "true"
+    installed_text = dialog.getProperty("wizard.tmdb_player_installed_text")
+    assert installed_text == setup_wizard._string(30234)
+    assert dialog._focus_id == setup_wizard.NEXT_BUTTON_ID
+
+
+def test_final_page_installed_message_takes_precedence_over_install_button():
+    dialog = _wizard_dialog()
+    dialog.page_index = len(setup_wizard.PAGES) - 1
+
+    with patch("resources.lib.setup_wizard._tmdbhelper_installed", return_value=True):
+        with patch(
+            "resources.lib.setup_wizard._tmdbhelper_player_installed",
+            return_value=True,
+        ):
+            dialog._render_page()
+
+    finish = dialog.getControl(setup_wizard.NEXT_BUTTON_ID)
+    finish.controlUp.assert_called_with(finish)
+
+
+def test_final_page_rechecks_installed_player_after_install_click():
+    dialog = _wizard_dialog()
+    dialog.page_index = len(setup_wizard.PAGES) - 1
+    dialog.close = MagicMock()
+
+    with patch("resources.lib.setup_wizard._tmdbhelper_installed", return_value=True):
+        with patch(
+            "resources.lib.setup_wizard._tmdbhelper_player_installed",
+            side_effect=[False, True],
+        ):
+            with patch("resources.lib.player_installer.install_player") as install:
+                with patch("resources.lib.setup_wizard.xbmcgui.Dialog"):
+                    dialog._render_page()
+                    dialog.onClick(setup_wizard.INSTALL_BUTTON_ID)
+
+    install.assert_called_once()
+    assert dialog.getProperty("wizard.install_visible") == "false"
+    assert dialog.getProperty("wizard.tmdb_player_installed_visible") == "true"
+
+
+def test_final_page_shows_center_install_button_when_tmdbhelper_player_is_absent():
+    addon = _addon_with_settings()
+    dialog = setup_wizard.SetupWizardDialog(
+        "setup-wizard.xml",
+        "",
+        "Default",
+        "1080i",
+        addon=addon,
+    )
+    dialog.page_index = len(setup_wizard.PAGES) - 1
+
+    with patch("resources.lib.setup_wizard._tmdbhelper_installed", return_value=True):
+        with patch(
+            "resources.lib.setup_wizard._tmdbhelper_player_installed",
+            return_value=False,
+        ):
+            dialog._render_page()
+
+    assert dialog.getProperty("wizard.install_visible") == "true"
+    assert dialog.getProperty("wizard.tmdb_player_installed_visible") == "false"
+    assert dialog._focus_id == setup_wizard.INSTALL_BUTTON_ID
+
+
+def test_final_page_does_not_check_player_file_when_tmdbhelper_is_missing():
+    dialog = _wizard_dialog()
+    dialog.page_index = len(setup_wizard.PAGES) - 1
+
+    with patch("resources.lib.setup_wizard._tmdbhelper_installed", return_value=False):
+        with patch(
+            "resources.lib.setup_wizard._tmdbhelper_player_installed"
+        ) as player_installed:
+            dialog._render_page()
+
+    player_installed.assert_not_called()
+
+
+def test_final_page_replaces_install_button_with_red_tmdbhelper_message_when_missing():
+    dialog = _wizard_dialog()
+    dialog.page_index = len(setup_wizard.PAGES) - 1
+
+    with patch("resources.lib.setup_wizard._tmdbhelper_installed", return_value=False):
+        dialog._render_page()
+
+    assert dialog.getProperty("wizard.install_visible") == "false"
+    assert dialog.getProperty("wizard.tmdb_missing_visible") == "true"
+    assert dialog.getProperty("wizard.tmdb_missing_text") == setup_wizard._string(30213)
     assert dialog._focus_id == setup_wizard.NEXT_BUTTON_ID
 
 
@@ -499,7 +608,7 @@ def test_non_test_page_moves_down_from_rows_to_next_button():
     list_control.controlDown.assert_called_with(next_button)
 
 
-def test_last_page_syncs_native_footer_navigation_through_finish_button():
+def test_last_page_keeps_install_button_separate_above_footer():
     addon = _addon_with_settings()
     dialog = setup_wizard.SetupWizardDialog(
         "setup-wizard.xml",
@@ -513,6 +622,7 @@ def test_last_page_syncs_native_footer_navigation_through_finish_button():
     dialog._render_page()
 
     previous = dialog.getControl(setup_wizard.PREVIOUS_BUTTON_ID)
+    install = dialog.getControl(setup_wizard.INSTALL_BUTTON_ID)
     finish = dialog.getControl(setup_wizard.NEXT_BUTTON_ID)
     cancel = dialog.getControl(setup_wizard.CANCEL_BUTTON_ID)
 
@@ -520,6 +630,8 @@ def test_last_page_syncs_native_footer_navigation_through_finish_button():
     finish.controlLeft.assert_called_with(previous)
     finish.controlRight.assert_called_with(cancel)
     cancel.controlLeft.assert_called_with(finish)
+    install.controlDown.assert_called_with(finish)
+    install.controlUp.assert_called_with(install)
 
 
 def test_on_focus_tracks_current_control_id():
@@ -705,10 +817,10 @@ def test_tmdbhelper_missing_install_shows_message_without_installing():
     dialog_cls.return_value.ok.assert_called_once()
     assert dialog._finished is False
     dialog.addon.setSetting.assert_not_called()
-    dialog.close.assert_called_once()
+    dialog.close.assert_not_called()
 
 
-def test_tmdbhelper_present_install_uses_existing_player_installer():
+def test_tmdbhelper_present_install_uses_existing_player_installer_without_finishing():
     dialog = _wizard_dialog()
     dialog.close = MagicMock()
 
@@ -720,23 +832,25 @@ def test_tmdbhelper_present_install_uses_existing_player_installer():
 
     install.assert_called_once()
     dialog_cls.return_value.ok.assert_called_once()
-    assert dialog._finished is True
-    dialog.addon.setSetting.assert_called_once_with("setup_wizard_completed", "true")
-    dialog.close.assert_called_once()
+    assert dialog._finished is False
+    dialog.addon.setSetting.assert_not_called()
+    dialog.close.assert_not_called()
 
 
-def test_install_button_completion_marks_wizard_completed():
+def test_clicking_center_install_button_runs_player_install():
     addon = _addon_with_settings()
     dialog = _wizard_dialog(addon)
     dialog.close = MagicMock()
 
     with patch("resources.lib.setup_wizard._tmdbhelper_installed", return_value=True):
-        with patch("resources.lib.player_installer.install_player"), patch(
+        with patch("resources.lib.player_installer.install_player") as install, patch(
             "resources.lib.setup_wizard.xbmcgui.Dialog"
         ):
-            dialog._install_player()
+            dialog.onClick(setup_wizard.INSTALL_BUTTON_ID)
 
-    addon.setSetting.assert_called_once_with("setup_wizard_completed", "true")
+    install.assert_called_once()
+    addon.setSetting.assert_not_called()
+    dialog.close.assert_not_called()
 
 
 @pytest.mark.parametrize(
