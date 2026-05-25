@@ -11,6 +11,7 @@ def _addon_with_settings(values=None):
     values = dict(values or {})
     addon = MagicMock()
     addon.getSetting.side_effect = lambda key: values.get(key, "")
+    addon.getAddonInfo.side_effect = lambda key: "" if key == "profile" else ""
     return addon
 
 
@@ -155,6 +156,110 @@ def test_run_setup_wizard_replays_captured_values_when_addon_reads_are_stale():
     fresh_addon.setSetting.assert_any_call("filter_720p", "false")
 
 
+def test_run_setup_wizard_force_closes_lingering_native_settings_before_replay():
+    addon = _addon_with_settings({"setup_wizard_completed": "true"})
+    fresh_addon = MagicMock()
+
+    with patch("resources.lib.setup_wizard.xbmcaddon.Addon", return_value=fresh_addon):
+        with patch("resources.lib.setup_wizard.SetupWizardDialog") as dialog_cls:
+            dialog = MagicMock()
+            dialog.was_finished.return_value = True
+            dialog.changed_setting_ids.return_value = ["nzbdav_url"]
+            dialog.changed_settings.return_value = {"nzbdav_url": "http://updated:3000"}
+            dialog_cls.return_value = dialog
+
+            close_requested = {"value": False}
+
+            def active_dialog():
+                return not close_requested["value"]
+
+            def close_dialog(_command):
+                close_requested["value"] = True
+
+            with patch("resources.lib.setup_wizard._notify"), patch(
+                "resources.lib.setup_wizard._native_settings_dialog_active",
+                side_effect=active_dialog,
+            ), patch("resources.lib.setup_wizard.xbmc.Monitor") as monitor_cls, patch(
+                "resources.lib.setup_wizard.xbmc.executebuiltin"
+            ) as executebuiltin:
+                executebuiltin.side_effect = close_dialog
+                monitor_cls.return_value.waitForAbort.return_value = False
+                assert setup_wizard.run_setup_wizard(addon)
+
+    executebuiltin.assert_any_call("Dialog.Close(addonsettings,true)")
+    fresh_addon.setSetting.assert_any_call("nzbdav_url", "http://updated:3000")
+
+
+def test_run_setup_wizard_closes_stale_addon_info_after_finish():
+    addon = _addon_with_settings({"setup_wizard_completed": "true"})
+
+    with patch("resources.lib.setup_wizard.SetupWizardDialog") as dialog_cls:
+        dialog = MagicMock()
+        dialog.was_finished.return_value = True
+        dialog_cls.return_value = dialog
+
+        with patch("resources.lib.setup_wizard._notify"), patch(
+            "resources.lib.setup_wizard.xbmc.executebuiltin"
+        ) as executebuiltin:
+            assert setup_wizard.run_setup_wizard(addon)
+
+    executebuiltin.assert_any_call("Dialog.Close(addoninformation,true)")
+
+
+def test_run_setup_wizard_reopens_fresh_settings_after_replay():
+    addon = _addon_with_settings({"setup_wizard_completed": "true"})
+    fresh_addon = MagicMock()
+    calls = []
+
+    with patch("resources.lib.setup_wizard.xbmcaddon.Addon", return_value=fresh_addon):
+        with patch("resources.lib.setup_wizard.SetupWizardDialog") as dialog_cls:
+            dialog = MagicMock()
+            dialog.was_finished.return_value = True
+            dialog.changed_setting_ids.return_value = ["nzbdav_url"]
+            dialog.changed_settings.return_value = {"nzbdav_url": "http://updated:3000"}
+            dialog_cls.return_value = dialog
+
+            def record_close_info():
+                calls.append("close-info")
+
+            def record_replay(_addon, _ids, _values):
+                calls.append("replay")
+
+            def record_reopen():
+                calls.append("reopen")
+
+            with patch("resources.lib.setup_wizard._notify"), patch(
+                "resources.lib.setup_wizard._ensure_native_settings_dialog_closed"
+            ), patch(
+                "resources.lib.setup_wizard._should_reopen_fresh_settings_dialog",
+                return_value=True,
+            ), patch(
+                "resources.lib.setup_wizard._close_stale_addon_info_dialog",
+                side_effect=record_close_info,
+            ), patch(
+                "resources.lib.setup_wizard._replay_changed_settings",
+                side_effect=record_replay,
+            ), patch(
+                "resources.lib.setup_wizard._reopen_fresh_settings_dialog",
+                side_effect=record_reopen,
+            ):
+                assert setup_wizard.run_setup_wizard(addon)
+
+    assert calls == ["replay", "close-info", "reopen"]
+
+
+def test_reopen_fresh_settings_dialog_uses_addon_open_settings():
+    with patch("resources.lib.setup_wizard.xbmc.Monitor") as monitor_cls, patch(
+        "resources.lib.setup_wizard.xbmc.executebuiltin"
+    ) as executebuiltin:
+        monitor_cls.return_value.waitForAbort.return_value = False
+
+        assert setup_wizard._reopen_fresh_settings_dialog()
+
+    monitor_cls.return_value.waitForAbort.assert_called_once_with(0.1)
+    executebuiltin.assert_called_once_with("Addon.OpenSettings(plugin.video.nzbdav)")
+
+
 def test_run_setup_wizard_does_not_mark_completed_on_cancel():
     addon = _addon_with_settings()
 
@@ -187,6 +292,39 @@ def test_dialog_tracks_settings_changed_inside_wizard():
         "nzbhydra_enabled",
         "prowlarr_enabled",
     ]
+
+
+def test_dialog_reads_persisted_setting_when_addon_setting_is_stale(tmp_path):
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    (profile / "settings.xml").write_text(
+        '<settings version="2"><setting id="nzbdav_url">http://disk:3000</setting></settings>',
+        encoding="utf-8",
+    )
+    addon = _addon_with_settings({"nzbdav_url": "http://stale:3000"})
+    addon.getAddonInfo.side_effect = lambda key: (
+        str(profile) if key == "profile" else ""
+    )
+    dialog = _wizard_dialog(addon)
+
+    assert dialog._setting_value("nzbdav_url") == "http://disk:3000"
+
+
+def test_dialog_translates_special_profile_before_reading_persisted_setting(tmp_path):
+    profile = tmp_path / "translated-profile"
+    profile.mkdir()
+    (profile / "settings.xml").write_text(
+        '<settings version="2"><setting id="nzbdav_url">http://translated:3000</setting></settings>',
+        encoding="utf-8",
+    )
+    addon = _addon_with_settings({"nzbdav_url": "http://stale:3000"})
+    addon.getAddonInfo.side_effect = lambda key: (
+        "special://profile/addon_data/plugin.video.nzbdav/" if key == "profile" else ""
+    )
+    dialog = _wizard_dialog(addon)
+
+    with patch("xbmcvfs.translatePath", return_value=str(profile)):
+        assert dialog._setting_value("nzbdav_url") == "http://translated:3000"
 
 
 def test_page_sequence_matches_requested_setup_sections():
