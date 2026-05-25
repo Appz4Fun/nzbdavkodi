@@ -34,7 +34,7 @@
       <left>20</left><top>34</top><width>600</width><height>20</height>
       <label>NZB-DAV · NZBHydra2</label>
       <font>font10</font>
-      <textcolor>FF666666</textcolor>
+      <textcolor>FF9CA3AF</textcolor>
     </control>
 
     <!-- Header: Source count -->
@@ -51,7 +51,7 @@
       <left>1400</left><top>34</top><width>500</width><height>20</height>
       <label>$INFO[Window.Property(sort_info)]</label>
       <font>font10</font>
-      <textcolor>FF555555</textcolor>
+      <textcolor>FF9CA3AF</textcolor>
       <align>right</align>
     </control>
 
@@ -64,14 +64,15 @@
 
     <!-- Results list — 2 lines per item, 66px each -->
     <control type="list" id="50">
-      <left>0</left><top>60</top><width>1920</width><height>975</height>
+      <left>0</left><top>60</top><width>1910</width><height>975</height>
       <orientation>vertical</orientation>
+      <pagecontrol>60</pagecontrol>
       <scrolltime>200</scrolltime>
 
       <!-- ==================== UNFOCUSED ROW ==================== -->
-      <itemlayout width="1920" height="66">
+      <itemlayout width="1910" height="66">
         <control type="image">
-          <left>0</left><top>0</top><width>1920</width><height>66</height>
+          <left>0</left><top>0</top><width>1910</width><height>66</height>
           <texture>white.png</texture>
           <colordiffuse>FF0C0C10</colordiffuse>
         </control>
@@ -142,15 +143,15 @@
 
         <!-- Row separator -->
         <control type="image">
-          <left>0</left><top>65</top><width>1920</width><height>1</height>
+          <left>0</left><top>65</top><width>1910</width><height>1</height>
           <texture>white.png</texture><colordiffuse>FF18181C</colordiffuse>
         </control>
       </itemlayout>
 
       <!-- ==================== FOCUSED ROW ==================== -->
-      <focusedlayout width="1920" height="66">
+      <focusedlayout width="1910" height="66">
         <control type="image">
-          <left>0</left><top>0</top><width>1920</width><height>66</height>
+          <left>0</left><top>0</top><width>1910</width><height>66</height>
           <texture>white.png</texture>
           <colordiffuse>FF182538</colordiffuse>
         </control>
@@ -221,10 +222,22 @@
 
         <!-- Row separator -->
         <control type="image">
-          <left>0</left><top>65</top><width>1920</width><height>1</height>
+          <left>0</left><top>65</top><width>1910</width><height>1</height>
           <texture>white.png</texture><colordiffuse>FF18181C</colordiffuse>
         </control>
       </focusedlayout>
+    </control>
+
+    <!-- Scrollbar for the results list -->
+    <control type="scrollbar" id="60">
+      <left>1910</left><top>60</top><width>10</width><height>975</height>
+      <orientation>vertical</orientation>
+      <showonepage>false</showonepage>
+      <texturesliderbackground colordiffuse="00FFFFFF">white.png</texturesliderbackground>
+      <texturesliderbar colordiffuse="FF4A5568">white.png</texturesliderbar>
+      <texturesliderbarfocus colordiffuse="FF4A9EFF">white.png</texturesliderbarfocus>
+      <textureslidernib></textureslidernib>
+      <textureslidernibfocus></textureslidernibfocus>
     </control>
 
     <!-- Footer background -->
@@ -244,7 +257,7 @@
       <left>20</left><top>1040</top><width>800</width><height>30</height>
       <label>$INFO[Window.Property(filter_info)]</label>
       <font>font10</font>
-      <textcolor>FF4A5568</textcolor>
+      <textcolor>FF9CA3AF</textcolor>
       <aligny>center</aligny>
     </control>
 
@@ -253,7 +266,7 @@
       <left>800</left><top>1040</top><width>1100</width><height>30</height>
       <label>[Enter] Download &amp; Play     [Esc] Back</label>
       <font>font10</font>
-      <textcolor>FF4A5568</textcolor>
+      <textcolor>FF9CA3AF</textcolor>
       <align>right</align>
       <aligny>center</aligny>
     </control>
