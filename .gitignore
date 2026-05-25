@@ -75,3 +75,4 @@ gha-creds-*.json
 
 # Extreme functional test reports
 docs/reports/
+venv/
