@@ -667,7 +667,55 @@ def test_test_page_dispatches_selected_provider_connection_check():
     ) as check:
         dialog._test_current_page()
 
-    check.assert_called_once_with("index_manager", addon)
+    assert check.call_args.args[0] == "index_manager"
+
+
+def test_test_page_uses_pending_wizard_values_for_connection_check():
+    addon = _addon_with_settings({"nzbdav_url": "http://old:3000"})
+    dialog = _wizard_dialog(addon)
+    dialog.page_index = 1
+    dialog._set_setting("nzbdav_url", "http://pending:3000")
+    checked_values = {}
+
+    def _check(_test_key, settings):
+        checked_values["nzbdav_url"] = settings.getSetting("nzbdav_url")
+        return True, ""
+
+    with patch("resources.lib.setup_wizard._connection_check", side_effect=_check):
+        dialog._test_current_page()
+
+    assert checked_values["nzbdav_url"] == "http://pending:3000"
+
+
+def test_cancel_reverts_settings_changed_inside_wizard():
+    addon = _addon_with_settings({"nzbdav_url": "http://old:3000"})
+    dialog = _wizard_dialog(addon)
+    dialog.close = MagicMock()
+
+    dialog._set_setting("nzbdav_url", "http://pending:3000")
+    addon.setSetting.reset_mock()
+
+    dialog._cancel()
+
+    addon.setSetting.assert_called_once_with("nzbdav_url", "http://old:3000")
+    assert dialog._finished is False
+    dialog.close.assert_called_once()
+
+
+def test_cancel_reverts_provider_selection_changed_inside_wizard():
+    addon = _addon_with_settings(
+        {"nzbhydra_enabled": "false", "prowlarr_enabled": "true"}
+    )
+    dialog = _wizard_dialog(addon)
+    dialog.close = MagicMock()
+
+    dialog._select_provider("hydra")
+    addon.setSetting.reset_mock()
+
+    dialog._cancel()
+
+    addon.setSetting.assert_any_call("nzbhydra_enabled", "false")
+    addon.setSetting.assert_any_call("prowlarr_enabled", "true")
 
 
 def test_test_page_shows_success_modal_on_successful_connection_check():
@@ -940,8 +988,44 @@ def test_finish_without_tmdbhelper_completes_without_installing_player():
     install.assert_not_called()
     dialog_cls.return_value.ok.assert_not_called()
     assert dialog._finished is True
-    dialog.addon.setSetting.assert_called_once_with("setup_wizard_completed", "true")
+    dialog.addon.setSetting.assert_any_call("setup_wizard_completed", "true")
     dialog.close.assert_called_once()
+
+
+def test_finish_persists_visible_default_hydra_provider_selection():
+    addon = _addon_with_settings(
+        {"nzbhydra_enabled": "false", "prowlarr_enabled": "false"}
+    )
+    dialog = _wizard_dialog(addon)
+    dialog.page_index = len(setup_wizard.PAGES) - 1
+    dialog.close = MagicMock()
+
+    dialog._next_or_finish()
+
+    addon.setSetting.assert_any_call("nzbhydra_enabled", "true")
+    addon.setSetting.assert_any_call("prowlarr_enabled", "false")
+    addon.setSetting.assert_any_call("setup_wizard_completed", "true")
+    assert dialog.changed_settings()["nzbhydra_enabled"] == "true"
+
+
+def test_finish_on_completed_rerun_does_not_force_default_provider_when_untouched():
+    addon = _addon_with_settings(
+        {
+            "setup_wizard_completed": "true",
+            "nzbhydra_enabled": "false",
+            "prowlarr_enabled": "false",
+        }
+    )
+    dialog = _wizard_dialog(addon)
+    dialog.page_index = len(setup_wizard.PAGES) - 1
+    dialog.close = MagicMock()
+
+    dialog._next_or_finish()
+
+    assert ("nzbhydra_enabled", "true") not in [
+        call.args for call in addon.setSetting.call_args_list
+    ]
+    addon.setSetting.assert_called_once_with("setup_wizard_completed", "true")
 
 
 def test_unknown_provider_selection_is_rejected():
