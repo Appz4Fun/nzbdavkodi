@@ -249,24 +249,24 @@ def _tmdbhelper_player_installed():
 
 def _webdav_failure_reason(error):
     if error == "auth_failed":
-        return "Authentication failed"
+        return _string(30237)
     if error == "server_error":
-        return "Server error"
+        return _string(30238)
     if error == "connection_error":
-        return "Could not connect"
-    return "Unexpected response"
+        return _string(30242)
+    return _string(30247)
 
 
 def _http_failure_reason(error):
     if isinstance(error, HTTPError):
         if error.code in (401, 403):
-            return "API key denied"
+            return _string(30245)
         if error.code >= 500:
-            return "Server error: HTTP {}".format(error.code)
-        return "Unexpected response: HTTP {}".format(error.code)
+            return _fmt(30239, error.code)
+        return _fmt(30240, error.code)
     if isinstance(error, URLError):
-        return "Could not connect: {}".format(str(error.reason)[:80])
-    return "Could not connect: {}".format(str(error)[:80])
+        return _fmt(30241, str(error.reason)[:80])
+    return _fmt(30241, str(error)[:80])
 
 
 def _redact_connection_log_value(value):
@@ -357,13 +357,13 @@ def _connection_check(test_key, addon):
             )
             ok_condition = _prowlarr_indexers_response_ok
         else:
-            return False, "Unknown connection type"
+            return False, _string(30244)
 
         if not url:
-            return False, "URL not configured"
+            return False, _string(30243)
         if ok_condition(http_get(test_url)):
             return True, ""
-        return False, "API key denied or service returned an unexpected response"
+        return False, _string(30246)
     except Exception as e:  # pylint: disable=broad-except
         xbmc.log(
             "NZB-DAV: setup wizard connection check failed for {}: {}".format(
@@ -413,10 +413,17 @@ def run_setup_wizard(addon=None):
         reopen_settings = _should_reopen_fresh_settings_dialog()
         if not _get_bool(addon, COMPLETED_SETTING, default=False):
             addon.setSetting(COMPLETED_SETTING, "true")
-        _ensure_native_settings_dialog_closed()
-        _replay_changed_settings(addon, changed_setting_ids, changed_settings)
+        settings_dialog_closed = _ensure_native_settings_dialog_closed()
+        if settings_dialog_closed:
+            _replay_changed_settings(addon, changed_setting_ids, changed_settings)
+        else:
+            xbmc.log(
+                "NZB-DAV: setup wizard skipped final settings replay because "
+                "Kodi's native settings dialog is still active",
+                xbmc.LOGWARNING,
+            )
         _close_stale_addon_info_dialog()
-        if reopen_settings:
+        if reopen_settings and settings_dialog_closed:
             _reopen_fresh_settings_dialog()
         _notify(_addon_name(), _string(30215), 3000)
     return finished
@@ -567,20 +574,26 @@ def _profile_settings_path(addon):
     return os.path.join(profile, "settings.xml")
 
 
-def _persisted_setting(addon, setting_id):
+def _persisted_settings(addon):
     settings_path = _profile_settings_path(addon)
     if not settings_path:
-        return None
+        return {}
     try:
         # Kodi owns this local profile settings file; it is not remote XML.
         root = element_tree.parse(settings_path).getroot()  # nosemgrep
     except (OSError, element_tree.ParseError):
-        return None
+        return {}
+    values = {}
     for setting in root.findall(".//setting"):
-        if setting.get("id") == setting_id:
+        setting_id = setting.get("id")
+        if setting_id:
             value = setting.text
-            return value if isinstance(value, str) else ""
-    return None
+            values[setting_id] = value if isinstance(value, str) else ""
+    return values
+
+
+def _persisted_setting(addon, setting_id):
+    return _persisted_settings(addon).get(setting_id)
 
 
 class SetupWizardDialog(xbmcgui.WindowXMLDialog):
@@ -594,6 +607,7 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
         self._changed_setting_ids = set()
         self._changed_settings = {}
         self._original_settings = {}
+        self._persisted_settings = None
         self._visible_rows = []
         self._current_install_button_visible = False
         self._current_tmdb_missing_visible = False
@@ -660,9 +674,10 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
     def _setting_value(self, setting_id):
         if setting_id in self._changed_settings:
             return self._changed_settings[setting_id]
-        persisted = _persisted_setting(self.addon, setting_id)
-        if persisted is not None:
-            return persisted
+        if self._persisted_settings is None:
+            self._persisted_settings = _persisted_settings(self.addon)
+        if setting_id in self._persisted_settings:
+            return self._persisted_settings[setting_id]
         return self.addon.getSetting(setting_id)
 
     def _bool_value(self, setting_id, default=True):
@@ -804,6 +819,8 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
             type=input_type,
             option=option,
         )
+        # Empty input cancels edits to populated fields; use Clear for
+        # intentional wipes.
         if value is None or (value == "" and current != ""):
             return
         self._set_setting(row["setting"], value)
@@ -822,14 +839,13 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
         ok, reason = _connection_check(test_key, settings)
         title = _string(self._page()["title_id"])
         if ok:
-            xbmcgui.Dialog().ok(title, "Connection successful.")
+            xbmcgui.Dialog().ok(title, _string(30235))
         else:
-            xbmcgui.Dialog().ok(title, "Connection failed: {}".format(reason))
+            xbmcgui.Dialog().ok(title, _fmt(30236, reason))
 
     def _install_player(self):
         if not _tmdbhelper_installed():
             xbmcgui.Dialog().ok(_string(30211), _string(30213))
-            self._finished = False
             return
         from resources.lib.player_installer import install_player
 
@@ -853,6 +869,7 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
 
     def _cancel(self):
         self._revert_changed_settings()
+        self.addon.setSetting(COMPLETED_SETTING, "true")
         self._finished = False
         self.close()
 

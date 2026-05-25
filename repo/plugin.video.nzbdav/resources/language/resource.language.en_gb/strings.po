@@ -885,3 +885,55 @@ msgstr "Clear"
 msgctxt "#30234"
 msgid "TMDBHelper player already installed. Select Finish to complete setup."
 msgstr "TMDBHelper player already installed. Select Finish to complete setup."
+
+msgctxt "#30235"
+msgid "Connection successful."
+msgstr "Connection successful."
+
+msgctxt "#30236"
+msgid "Connection failed: {0}"
+msgstr "Connection failed: {0}"
+
+msgctxt "#30237"
+msgid "Authentication failed"
+msgstr "Authentication failed"
+
+msgctxt "#30238"
+msgid "Server error"
+msgstr "Server error"
+
+msgctxt "#30239"
+msgid "Server error: HTTP {0}"
+msgstr "Server error: HTTP {0}"
+
+msgctxt "#30240"
+msgid "Unexpected response: HTTP {0}"
+msgstr "Unexpected response: HTTP {0}"
+
+msgctxt "#30241"
+msgid "Could not connect: {0}"
+msgstr "Could not connect: {0}"
+
+msgctxt "#30242"
+msgid "Could not connect"
+msgstr "Could not connect"
+
+msgctxt "#30243"
+msgid "URL not configured"
+msgstr "URL not configured"
+
+msgctxt "#30244"
+msgid "Unknown connection type"
+msgstr "Unknown connection type"
+
+msgctxt "#30245"
+msgid "API key denied"
+msgstr "API key denied"
+
+msgctxt "#30246"
+msgid "API key denied or service returned an unexpected response"
+msgstr "API key denied or service returned an unexpected response"
+
+msgctxt "#30247"
+msgid "Unexpected response"
+msgstr "Unexpected response"
