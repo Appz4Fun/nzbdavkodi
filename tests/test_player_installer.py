@@ -71,7 +71,7 @@ def test_install_player_writes_file(mock_vfs, mock_notify):
     mock_file = MagicMock()
     mock_vfs.File.return_value = mock_file
 
-    install_player()
+    assert install_player()
 
     # Installer may read the existing file first (schema-version check) and
     # then write. Assert the write happened and that each File call was
@@ -97,7 +97,7 @@ def test_install_player_creates_directory_when_missing(mock_vfs, mock_notify):
     mock_file = MagicMock()
     mock_vfs.File.return_value = mock_file
 
-    install_player()
+    assert install_player()
 
     mock_vfs.mkdirs.assert_called_once()
 
@@ -112,7 +112,7 @@ def test_install_player_handles_write_failure(mock_vfs, mock_notify):
     mock_vfs.exists.return_value = True
     mock_vfs.File.side_effect = OSError("Disk full")
 
-    install_player()
+    assert not install_player()
 
     notify_calls = [str(c) for c in mock_notify.call_args_list]
     assert any("Failed" in s or "failed" in s for s in notify_calls)

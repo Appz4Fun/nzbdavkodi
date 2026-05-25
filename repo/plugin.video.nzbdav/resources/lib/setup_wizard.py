@@ -51,6 +51,7 @@ PROVIDER_SETTING_IDS = {
     "prowlarr_host",
     "prowlarr_api_key",
 }
+PROVIDER_CHOICE_SETTING_IDS = {"nzbhydra_enabled", "prowlarr_enabled"}
 
 PAGES = [
     {
@@ -832,8 +833,8 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
             return
         from resources.lib.player_installer import install_player
 
-        install_player()
-        xbmcgui.Dialog().ok(_string(30211), _string(30228))
+        if install_player():
+            xbmcgui.Dialog().ok(_string(30211), _string(30228))
         self._render_page()
 
     def _previous_page(self):
@@ -864,7 +865,7 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
 
     def _persist_selected_provider(self):
         if _get_bool(self.addon, COMPLETED_SETTING, default=False):
-            if self._changed_setting_ids.isdisjoint(PROVIDER_SETTING_IDS):
+            if self._changed_setting_ids.isdisjoint(PROVIDER_CHOICE_SETTING_IDS):
                 return
         self._select_provider(self._selected_provider())
 

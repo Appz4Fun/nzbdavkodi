@@ -885,6 +885,19 @@ def test_tmdbhelper_present_install_uses_existing_player_installer_without_finis
     dialog.close.assert_not_called()
 
 
+def test_tmdbhelper_install_failure_does_not_show_success_dialog():
+    dialog = _wizard_dialog()
+
+    with patch("resources.lib.setup_wizard._tmdbhelper_installed", return_value=True):
+        with patch(
+            "resources.lib.player_installer.install_player", return_value=False
+        ) as install, patch("resources.lib.setup_wizard.xbmcgui.Dialog") as dialog_cls:
+            dialog._install_player()
+
+    install.assert_called_once()
+    dialog_cls.return_value.ok.assert_not_called()
+
+
 def test_clicking_center_install_button_runs_player_install():
     addon = _addon_with_settings()
     dialog = _wizard_dialog(addon)
@@ -1026,6 +1039,32 @@ def test_finish_on_completed_rerun_does_not_force_default_provider_when_untouche
         call.args for call in addon.setSetting.call_args_list
     ]
     addon.setSetting.assert_called_once_with("setup_wizard_completed", "true")
+
+
+def test_finish_on_completed_rerun_does_not_force_provider_for_url_edit():
+    addon = _addon_with_settings(
+        {
+            "setup_wizard_completed": "true",
+            "nzbhydra_enabled": "false",
+            "prowlarr_enabled": "false",
+            "hydra_url": "http://old-hydra",
+        }
+    )
+    dialog = _wizard_dialog(addon)
+    dialog.page_index = len(setup_wizard.PAGES) - 1
+    dialog.close = MagicMock()
+
+    dialog._set_setting("hydra_url", "http://new-hydra")
+    dialog._next_or_finish()
+
+    assert ("nzbhydra_enabled", "true") not in [
+        call.args for call in addon.setSetting.call_args_list
+    ]
+    assert ("prowlarr_enabled", "false") not in [
+        call.args for call in addon.setSetting.call_args_list
+    ]
+    addon.setSetting.assert_any_call("hydra_url", "http://new-hydra")
+    addon.setSetting.assert_any_call("setup_wizard_completed", "true")
 
 
 def test_unknown_provider_selection_is_rejected():
