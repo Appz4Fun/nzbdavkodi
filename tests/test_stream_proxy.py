@@ -588,6 +588,32 @@ def test_prepare_stream_proxies_mkv():
     assert ctx["content_length"] == 100000
 
 
+def test_prepare_stream_logs_timing_for_successful_prepare():
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 9999
+
+    with patch.object(sp, "_get_content_length", return_value=100000), patch(
+        "resources.lib.stream_proxy.telemetry.log_timing"
+    ) as mock_log_timing:
+        url, info = sp.prepare_stream("http://host/film.mkv")
+
+    assert url.startswith("http://127.0.0.1:9999/stream/")
+    assert info["remux"] is False
+    assert mock_log_timing.call_count == 1
+    label, elapsed_ms = mock_log_timing.call_args.args
+    assert label == "prepare_stream"
+    assert elapsed_ms >= 0
+    assert mock_log_timing.call_args.kwargs == {
+        "content_type": "video/x-matroska",
+        "faststart": False,
+        "remux": False,
+    }
+
+
 def test_prepare_stream_uses_content_length_hint_for_passthrough_start():
     """A PROPFIND size hint is passed through for stream-side validation."""
     from resources.lib.stream_proxy import StreamProxy

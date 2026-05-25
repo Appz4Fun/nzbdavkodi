@@ -7,6 +7,7 @@
 import base64
 import os
 import re
+import time
 from itertools import chain
 from urllib import request as urllib_request
 from urllib.parse import parse_qs, unquote, urlencode, urlparse, urlsplit, urlunsplit
@@ -17,6 +18,7 @@ import xbmcaddon
 import xbmcgui
 import xbmcplugin
 
+from resources.lib import telemetry
 from resources.lib.fallback_streams import (
     FALLBACK_CANDIDATES_DISABLED,
     attach_fallback_candidates_for_selection,
@@ -562,20 +564,36 @@ def _search_all_providers(
         from resources.lib.hydra import search_hydra
 
         _script_play_stage("hydra search start")
-        hydra_results, hydra_error = search_hydra(
-            search_type,
-            title,
-            year=year,
-            imdb=imdb,
-            season=season,
-            episode=episode,
-            settings_getter=settings_getter,
-        )
-        _script_play_stage(
-            "hydra search done count={} error={}".format(
-                len(hydra_results or []), bool(hydra_error)
+        provider_started = time.monotonic()
+        hydra_results = []
+        hydra_error = None
+        provider_failed = False
+        try:
+            hydra_results, hydra_error = search_hydra(
+                search_type,
+                title,
+                year=year,
+                imdb=imdb,
+                season=season,
+                episode=episode,
+                settings_getter=settings_getter,
             )
-        )
+            _script_play_stage(
+                "hydra search done count={} error={}".format(
+                    len(hydra_results or []), bool(hydra_error)
+                )
+            )
+        except Exception:
+            provider_failed = True
+            raise
+        finally:
+            telemetry.log_timing(
+                "provider_search",
+                (time.monotonic() - provider_started) * 1000.0,
+                provider="hydra",
+                count=len(hydra_results or []),
+                error=provider_failed or bool(hydra_error),
+            )
         if hydra_error:
             xbmc.log(
                 "NZB-DAV: NZBHydra2 search error: {}".format(hydra_error),
@@ -589,14 +607,35 @@ def _search_all_providers(
         from resources.lib.prowlarr import search_prowlarr
 
         _script_play_stage("prowlarr search start")
-        prowlarr_results, prowlarr_error = search_prowlarr(
-            search_type, title, year=year, imdb=imdb, season=season, episode=episode
-        )
-        _script_play_stage(
-            "prowlarr search done count={} error={}".format(
-                len(prowlarr_results or []), bool(prowlarr_error)
+        provider_started = time.monotonic()
+        prowlarr_results = []
+        prowlarr_error = None
+        provider_failed = False
+        try:
+            prowlarr_results, prowlarr_error = search_prowlarr(
+                search_type,
+                title,
+                year=year,
+                imdb=imdb,
+                season=season,
+                episode=episode,
             )
-        )
+            _script_play_stage(
+                "prowlarr search done count={} error={}".format(
+                    len(prowlarr_results or []), bool(prowlarr_error)
+                )
+            )
+        except Exception:
+            provider_failed = True
+            raise
+        finally:
+            telemetry.log_timing(
+                "provider_search",
+                (time.monotonic() - provider_started) * 1000.0,
+                provider="prowlarr",
+                count=len(prowlarr_results or []),
+                error=provider_failed or bool(prowlarr_error),
+            )
         if prowlarr_error:
             xbmc.log(
                 "NZB-DAV: Prowlarr search error: {}".format(prowlarr_error),
@@ -610,14 +649,35 @@ def _search_all_providers(
         from resources.lib.direct_indexers import search_direct_indexers
 
         _script_play_stage("direct indexers search start")
-        direct_results, direct_error = search_direct_indexers(
-            search_type, title, year=year, imdb=imdb, season=season, episode=episode
-        )
-        _script_play_stage(
-            "direct indexers search done count={} error={}".format(
-                len(direct_results or []), bool(direct_error)
+        provider_started = time.monotonic()
+        direct_results = []
+        direct_error = None
+        provider_failed = False
+        try:
+            direct_results, direct_error = search_direct_indexers(
+                search_type,
+                title,
+                year=year,
+                imdb=imdb,
+                season=season,
+                episode=episode,
             )
-        )
+            _script_play_stage(
+                "direct indexers search done count={} error={}".format(
+                    len(direct_results or []), bool(direct_error)
+                )
+            )
+        except Exception:
+            provider_failed = True
+            raise
+        finally:
+            telemetry.log_timing(
+                "provider_search",
+                (time.monotonic() - provider_started) * 1000.0,
+                provider="direct_indexers",
+                count=len(direct_results or []),
+                error=provider_failed or bool(direct_error),
+            )
         if direct_error:
             xbmc.log(
                 "NZB-DAV: Direct indexer search error: {}".format(direct_error),
