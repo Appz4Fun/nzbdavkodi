@@ -3,8 +3,10 @@
 
 """First-run XML setup wizard for NZB-DAV."""
 
+import os
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
+from xml.etree import ElementTree as element_tree
 
 import xbmc
 import xbmcaddon
@@ -23,6 +25,7 @@ NEXT_BUTTON_ID = 102
 CANCEL_BUTTON_ID = 103
 TEST_BUTTON_ID = 104
 ADDON_SETTINGS_DIALOG_ID = 10140
+ADDON_INFO_DIALOG_ID = 10146
 
 ACTION_PREVIOUS_MENU = 10
 ACTION_NAV_BACK = 92
@@ -389,10 +392,14 @@ def run_setup_wizard(addon=None):
     changed_settings = _dialog_changed_settings(dialog)
     del dialog
     if finished:
+        reopen_settings = _should_reopen_fresh_settings_dialog()
         if not _get_bool(addon, COMPLETED_SETTING, default=False):
             addon.setSetting(COMPLETED_SETTING, "true")
-        _wait_for_native_settings_dialog_to_close()
+        _ensure_native_settings_dialog_closed()
         _replay_changed_settings(addon, changed_setting_ids, changed_settings)
+        _close_stale_addon_info_dialog()
+        if reopen_settings:
+            _reopen_fresh_settings_dialog()
         _notify(_addon_name(), _string(30215), 3000)
     return finished
 
@@ -419,10 +426,16 @@ def _dialog_changed_settings(dialog):
 
 
 def _native_settings_dialog_active():
+    return _window_active(ADDON_SETTINGS_DIALOG_ID)
+
+
+def _addon_info_dialog_active():
+    return _window_active(ADDON_INFO_DIALOG_ID)
+
+
+def _window_active(window_id):
     try:
-        visible = xbmc.getCondVisibility(
-            "Window.IsActive({})".format(ADDON_SETTINGS_DIALOG_ID)
-        )
+        visible = xbmc.getCondVisibility("Window.IsActive({})".format(window_id))
     except (AttributeError, RuntimeError, TypeError):
         return False
     if isinstance(visible, str):
@@ -447,6 +460,41 @@ def _wait_for_native_settings_dialog_to_close(timeout_seconds=1.0):
     return not _native_settings_dialog_active()
 
 
+def _ensure_native_settings_dialog_closed():
+    """Force-close a lingering native settings dialog before final setSetting calls."""
+    if _wait_for_native_settings_dialog_to_close():
+        return True
+    try:
+        xbmc.executebuiltin("Dialog.Close(addonsettings,true)")
+    except (AttributeError, RuntimeError, TypeError):
+        return False
+    return _wait_for_native_settings_dialog_to_close(timeout_seconds=2.0)
+
+
+def _close_stale_addon_info_dialog():
+    """Close add-on info so its Configure button cannot reopen stale settings."""
+    try:
+        xbmc.executebuiltin("Dialog.Close(addoninformation,true)")
+    except (AttributeError, RuntimeError, TypeError):
+        return False
+    return True
+
+
+def _should_reopen_fresh_settings_dialog():
+    return _native_settings_dialog_active() or _addon_info_dialog_active()
+
+
+def _reopen_fresh_settings_dialog():
+    """Open a new settings dialog after Kodi's stale add-on window is gone."""
+    try:
+        monitor = xbmc.Monitor()
+        monitor.waitForAbort(0.1)
+        xbmc.executebuiltin("Addon.OpenSettings(plugin.video.nzbdav)")
+    except (AttributeError, RuntimeError, TypeError):
+        return False
+    return True
+
+
 def _fresh_addon_instance():
     try:
         return xbmcaddon.Addon("plugin.video.nzbdav")
@@ -467,6 +515,39 @@ def _replay_changed_settings(source_addon, setting_ids, setting_values=None):
         if value is missing:
             value = source_addon.getSetting(setting_id)
         fresh_addon.setSetting(setting_id, value)
+
+
+def _profile_settings_path(addon):
+    try:
+        profile = addon.getAddonInfo("profile")
+    except (AttributeError, RuntimeError, TypeError):
+        profile = ""
+    if not isinstance(profile, str) or not profile:
+        return ""
+    try:
+        import xbmcvfs
+
+        translated = xbmcvfs.translatePath(profile)
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        translated = ""
+    if isinstance(translated, str) and translated:
+        profile = translated
+    return os.path.join(profile, "settings.xml")
+
+
+def _persisted_setting(addon, setting_id):
+    settings_path = _profile_settings_path(addon)
+    if not settings_path:
+        return None
+    try:
+        root = element_tree.parse(settings_path).getroot()
+    except (OSError, element_tree.ParseError):
+        return None
+    for setting in root.findall(".//setting"):
+        if setting.get("id") == setting_id:
+            value = setting.text
+            return value if isinstance(value, str) else ""
+    return None
 
 
 class SetupWizardDialog(xbmcgui.WindowXMLDialog):
@@ -537,6 +618,9 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
     def _setting_value(self, setting_id):
         if setting_id in self._changed_settings:
             return self._changed_settings[setting_id]
+        persisted = _persisted_setting(self.addon, setting_id)
+        if persisted is not None:
+            return persisted
         return self.addon.getSetting(setting_id)
 
     def _bool_value(self, setting_id, default=True):
