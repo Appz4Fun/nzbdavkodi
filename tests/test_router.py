@@ -409,6 +409,139 @@ def test_search_all_providers_uses_script_settings_getter_without_kodi_addon(
     assert hydra_search.call_args.kwargs["settings_getter"] is setting
 
 
+@patch("resources.lib.router.telemetry.log_timing")
+def test_search_all_providers_logs_provider_timing(mock_log_timing):
+    from resources.lib.router import _search_all_providers
+
+    def setting(provider_key):
+        def getter(key, default=""):
+            return {
+                "nzbhydra_enabled": "true" if provider_key == "hydra" else "false",
+                "prowlarr_enabled": ("true" if provider_key == "prowlarr" else "false"),
+                "direct_indexers_enabled": (
+                    "true" if provider_key == "direct_indexers" else "false"
+                ),
+            }.get(key, default)
+
+        return getter
+
+    provider_cases = [
+        (
+            "hydra",
+            "resources.lib.hydra.search_hydra",
+            "https://hydra/getnzb/1",
+        ),
+        (
+            "prowlarr",
+            "resources.lib.prowlarr.search_prowlarr",
+            "https://prowlarr/getnzb/1",
+        ),
+        (
+            "direct_indexers",
+            "resources.lib.direct_indexers.search_direct_indexers",
+            "https://direct/getnzb/1",
+        ),
+    ]
+
+    for provider_key, patch_path, link in provider_cases:
+        mock_log_timing.reset_mock()
+        search_mock = MagicMock(
+            return_value=(
+                [
+                    {
+                        "title": "The.Matrix.1999.1080p-GRP",
+                        "link": link,
+                        "size": "123",
+                        "indexer": provider_key,
+                        "pubdate": "",
+                        "age": "",
+                    }
+                ],
+                None,
+            )
+        )
+
+        with patch(patch_path, search_mock):
+            results, error = _search_all_providers(
+                "movie", "The Matrix", settings_getter=setting(provider_key)
+            )
+
+        assert error is None
+        assert len(results) == 1
+        assert mock_log_timing.call_count == 1
+        label, elapsed_ms = mock_log_timing.call_args.args
+        assert label == "provider_search"
+        assert elapsed_ms >= 0
+        assert mock_log_timing.call_args.kwargs == {
+            "provider": provider_key,
+            "count": 1,
+            "error": False,
+        }
+
+
+@patch("resources.lib.router.telemetry.log_timing")
+def test_search_all_providers_logs_provider_timing_for_errors(mock_log_timing):
+    from resources.lib.router import _search_all_providers
+
+    def setting(key, default=""):
+        return {
+            "nzbhydra_enabled": "true",
+            "prowlarr_enabled": "false",
+            "direct_indexers_enabled": "false",
+        }.get(key, default)
+
+    hydra_search = MagicMock(return_value=([], "hydra unavailable"))
+
+    with patch("resources.lib.hydra.search_hydra", hydra_search):
+        results, error = _search_all_providers(
+            "movie", "The Matrix", settings_getter=setting
+        )
+
+    assert not results
+    assert error == "hydra unavailable"
+    assert mock_log_timing.call_count == 1
+    label, elapsed_ms = mock_log_timing.call_args.args
+    assert label == "provider_search"
+    assert elapsed_ms >= 0
+    assert mock_log_timing.call_args.kwargs == {
+        "provider": "hydra",
+        "count": 0,
+        "error": True,
+    }
+
+
+@patch("resources.lib.router.telemetry.log_timing")
+def test_search_all_providers_logs_provider_timing_for_exceptions(mock_log_timing):
+    from resources.lib.router import _search_all_providers
+
+    def setting(key, default=""):
+        return {
+            "nzbhydra_enabled": "true",
+            "prowlarr_enabled": "false",
+            "direct_indexers_enabled": "false",
+        }.get(key, default)
+
+    hydra_search = MagicMock(side_effect=RuntimeError("boom"))
+
+    try:
+        with patch("resources.lib.hydra.search_hydra", hydra_search):
+            _search_all_providers("movie", "The Matrix", settings_getter=setting)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("expected provider exception")
+
+    assert mock_log_timing.call_count == 1
+    label, elapsed_ms = mock_log_timing.call_args.args
+    assert label == "provider_search"
+    assert elapsed_ms >= 0
+    assert mock_log_timing.call_args.kwargs == {
+        "provider": "hydra",
+        "count": 0,
+        "error": True,
+    }
+
+
 def test_get_script_setting_reads_translated_profile_settings(tmp_path):
     from resources.lib import router
 
