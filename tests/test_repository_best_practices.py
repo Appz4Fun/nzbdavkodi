@@ -267,10 +267,10 @@ def test_setup_wizard_xml_skin_exists_with_expected_controls():
         for control in root.findall(".//control")
         if control.get("id") is not None
     }
-    for control_id in ("50", "101", "102", "103", "104", "106", "107"):
+    for control_id in ("50", "101", "102", "103", "104", "105", "106", "107", "108"):
         assert control_id in control_ids
 
-    for removed_id in ("105", "108", "109", "110", "111", "112", "113"):
+    for removed_id in ("109", "110", "111", "112", "113"):
         assert removed_id not in control_ids
 
 
@@ -374,6 +374,7 @@ def test_setup_wizard_footer_buttons_are_keyboard_navigable():
         "50": {"ondown": "102"},
         "101": {"onup": "50", "onright": "104"},
         "104": {"onup": "50", "onleft": "101", "onright": "102"},
+        "105": {"onup": "105", "ondown": "102", "onleft": "105", "onright": "105"},
         "102": {"onup": "50", "onleft": "104", "onright": "103"},
         "103": {"onup": "50", "onleft": "102"},
     }
@@ -417,7 +418,7 @@ def test_setup_wizard_buttons_are_tall_and_centered():
     )
     root = ET.parse(skin_xml).getroot()
 
-    for control_id in ("101", "102", "103", "104"):
+    for control_id in ("101", "102", "103", "104", "105"):
         control = root.find(".//control[@id='{}']".format(control_id))
         assert control is not None
         assert int(control.findtext("height")) == 120
@@ -465,6 +466,7 @@ def test_setup_wizard_final_page_uses_next_button_as_finish():
     root = ET.parse(skin_xml).getroot()
 
     test_button = root.find(".//control[@id='104']")
+    install_button = root.find(".//control[@id='105']")
     previous_button = root.find(".//control[@id='101']")
     next_button = root.find(".//control[@id='102']")
     cancel_button = root.find(".//control[@id='103']")
@@ -476,6 +478,13 @@ def test_setup_wizard_final_page_uses_next_button_as_finish():
     assert test_button.findtext("onright") == "102"
     assert test_button.findtext("visible") == (
         "String.IsEqual(Window.Property(wizard.test_visible),true)"
+    )
+    assert install_button is not None
+    assert install_button.findtext("ondown") == "102"
+    assert install_button.findtext("onleft") == "105"
+    assert install_button.findtext("onright") == "105"
+    assert install_button.findtext("visible") == (
+        "String.IsEqual(Window.Property(wizard.install_visible),true)"
     )
     assert next_button is not None
     assert next_button.findtext("onleft") == "104"

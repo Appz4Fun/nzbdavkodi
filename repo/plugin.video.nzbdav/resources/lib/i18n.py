@@ -119,12 +119,12 @@ _FALLBACK_STRINGS = {
     30210: "Languages",
     30211: "TMDBHelper Player",
     30212: (
-        "Click Finish to complete setup.\n\nTo install the NZB-DAV player "
-        "into TMDBHelper, use Install NZB-DAV Player in addon settings."
+        "Click Install TMDBHelper Player to install the NZB-DAV player into "
+        "TMDBHelper, then click Finish to complete setup."
     ),
     30213: (
         "TMDBHelper is not installed. Install TMDBHelper, then rerun this "
-        "wizard or use Install TMDBHelper Player from the addon menu."
+        "wizard or install the player from the configuration menu."
     ),
     30215: "Setup wizard complete",
     30216: "nzbdav Settings",
@@ -142,6 +142,7 @@ _FALLBACK_STRINGS = {
     30231: "Disabled",
     30232: "Edit",
     30233: "Clear",
+    30234: "TMDBHelper player already installed. Select Finish to complete setup.",
 }
 
 
