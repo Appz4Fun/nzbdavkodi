@@ -5,11 +5,14 @@
 
 import math
 import re
+import time
 from types import SimpleNamespace
 
 import xbmc
 import xbmcaddon
 import xbmcgui
+
+from resources.lib import telemetry
 
 # ---------------------------------------------------------------------------
 # Known release groups — master list for multiselect dialogs
@@ -598,6 +601,7 @@ def filter_results(results, settings_getter=None):
     ``filtered`` is the subset that passed every filter, truncated
     to ``settings["max_results"]`` if that is non-zero.
     """
+    started = time.monotonic()
     settings = _get_filter_settings(settings_getter=settings_getter)
 
     all_parsed = []
@@ -626,6 +630,13 @@ def filter_results(results, settings_getter=None):
             len(all_parsed), len(filtered)
         )
     xbmc.log(message, xbmc.LOGDEBUG)
+    telemetry.log_timing(
+        "filter_results",
+        (time.monotonic() - started) * 1000.0,
+        input=len(all_parsed),
+        matched=matched_count,
+        shown=len(filtered),
+    )
     return filtered, all_parsed
 
 

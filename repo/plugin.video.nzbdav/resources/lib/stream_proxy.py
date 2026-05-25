@@ -58,6 +58,7 @@ except (ImportError, ModuleNotFoundError):
     build_faststart_layout = None  # type: ignore[assignment]
     fetch_remote_mp4_layout = None  # type: ignore[assignment]
 
+from resources.lib import telemetry
 from resources.lib.dv_source import probe_dolby_vision_source
 from resources.lib.http_util import HTTP_USER_AGENT
 from resources.lib.http_util import notify as _notify
@@ -6278,6 +6279,7 @@ class StreamProxy:
         stream_info_dict contains duration_seconds, total_bytes, seekable, remux,
         faststart, and virtual_size.
         """
+        started = time.monotonic()
         _validate_url(remote_url)
         auth_header = _validate_auth_header(auth_header)
         fallback_sources = _normalize_fallback_sources(fallback_sources)
@@ -6701,6 +6703,13 @@ class StreamProxy:
         }
         _attach_fallback_context_fields(
             stream_info, ctx.get("fallback_sources", fallback_sources)
+        )
+        telemetry.log_timing(
+            "prepare_stream",
+            (time.monotonic() - started) * 1000.0,
+            content_type=ctx.get("content_type"),
+            faststart=ctx.get("faststart", False),
+            remux=ctx.get("remux", False),
         )
         return local_url, stream_info
 

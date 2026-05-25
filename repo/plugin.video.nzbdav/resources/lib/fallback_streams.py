@@ -22,6 +22,7 @@ from xml.etree import ElementTree as ET
 import xbmc
 import xbmcaddon
 
+from resources.lib import telemetry
 from resources.lib.nzb_manifest import fetch_nzb_video_manifest, make_empty_manifest
 
 
@@ -1160,10 +1161,26 @@ def _pool_has_distinct_nzb_links(results):
 
 def _ensure_fallback_manifests(results):
     """Fetch missing NZB manifests for fallback grouping."""
+    started = time.monotonic()
     manifest_cache = {}
+    input_count = 0
     for result in results:
+        input_count += 1
         _ensure_fallback_manifest(result, manifest_cache)
+    telemetry.log_timing(
+        "fallback_manifests",
+        (time.monotonic() - started) * 1000.0,
+        input=input_count,
+        fetched=len(manifest_cache),
+    )
     return manifest_cache
+
+
+def _safe_len(value):
+    try:
+        return len(value)
+    except TypeError:
+        return "unknown"
 
 
 def _ensure_fallback_manifest(result, manifest_cache):
@@ -1612,14 +1629,23 @@ def attach_fallback_candidates_for_selection(selected, results, fallback_setting
             seen_prefetch_links.add(candidate_link)
             yield candidate
 
+    started = time.monotonic()
+    selected_manifest_fetch = not selected_manifest_ready
     _attach_selection_candidates_streaming(
         selected,
         _prefetch_candidates(),
         candidates,
         seen_candidate_links,
         seen_article_digests,
-        include_selected_manifest=not selected_manifest_ready,
+        include_selected_manifest=selected_manifest_fetch,
         max_candidates=max_candidates,
+    )
+    telemetry.log_timing(
+        "fallback_selection_manifests",
+        (time.monotonic() - started) * 1000.0,
+        attached=len(candidates),
+        pool=_safe_len(results or []),
+        selected_manifest_fetch=selected_manifest_fetch,
     )
     selected["_fallback_candidates"] = candidates
     return selected

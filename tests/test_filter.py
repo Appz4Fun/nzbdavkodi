@@ -771,6 +771,33 @@ def test_filter_results_log_counts_before_max_results_truncation(
     assert "Filtered 2 -> 2 results (showing 1)" in logged
 
 
+@patch("resources.lib.filter.telemetry.log_timing")
+@patch("resources.lib.filter._get_filter_settings")
+def test_filter_results_logs_timing(
+    mock_settings,
+    mock_log_timing,
+):
+    mock_settings.return_value = _all_pass_settings()
+    results = [
+        {"title": "Movie.2024.1080p.BluRay.x264-GRP", "size": "5000000000"},
+        {"title": "Other.2024.720p.BluRay.x264-GRP", "size": "3000000000"},
+    ]
+
+    filtered, all_parsed = filter_results(results)
+
+    assert len(filtered) == 2
+    assert len(all_parsed) == 2
+    assert mock_log_timing.call_count == 1
+    label, elapsed_ms = mock_log_timing.call_args.args
+    assert label == "filter_results"
+    assert elapsed_ms >= 0
+    assert mock_log_timing.call_args.kwargs == {
+        "input": 2,
+        "matched": 2,
+        "shown": 2,
+    }
+
+
 # --- _get_filter_settings tests (direct coverage of the Kodi-settings reader) ---
 
 
