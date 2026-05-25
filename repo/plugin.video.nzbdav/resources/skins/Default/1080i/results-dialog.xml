@@ -68,6 +68,7 @@
       <orientation>vertical</orientation>
       <pagecontrol>60</pagecontrol>
       <scrolltime>200</scrolltime>
+      <onright>60</onright>
 
       <!-- ==================== UNFOCUSED ROW ==================== -->
       <itemlayout width="1910" height="66">
@@ -233,6 +234,7 @@
       <left>1910</left><top>60</top><width>10</width><height>975</height>
       <orientation>vertical</orientation>
       <showonepage>false</showonepage>
+      <onleft>50</onleft>
       <texturesliderbackground colordiffuse="00FFFFFF">white.png</texturesliderbackground>
       <texturesliderbar colordiffuse="FF4A5568">white.png</texturesliderbar>
       <texturesliderbarfocus colordiffuse="FF4A9EFF">white.png</texturesliderbarfocus>
