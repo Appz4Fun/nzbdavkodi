@@ -306,6 +306,11 @@ def route(argv):
         elif path == "/menu":
             _handle_main_menu(handle)
             return
+        elif path == "/":
+            from resources.lib.setup_wizard import maybe_auto_run
+
+            if not maybe_auto_run():
+                _open_addon_settings()
         else:
             _open_addon_settings()
     except Exception as e:

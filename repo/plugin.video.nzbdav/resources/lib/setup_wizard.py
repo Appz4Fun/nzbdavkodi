@@ -43,6 +43,14 @@ DIRECT_INDEXER_KEYS = (
     "custom2",
     "custom3",
 )
+PROVIDER_SETTING_IDS = {
+    "nzbhydra_enabled",
+    "prowlarr_enabled",
+    "hydra_url",
+    "hydra_api_key",
+    "prowlarr_host",
+    "prowlarr_api_key",
+}
 
 PAGES = [
     {
@@ -299,7 +307,9 @@ def _connection_check(test_key, addon):
     if test_key == "webdav":
         from resources.lib.webdav import probe_webdav_reachable
 
-        reachable, error = probe_webdav_reachable(max_retries=0)
+        reachable, error = probe_webdav_reachable(
+            max_retries=0, settings_getter=addon.getSetting
+        )
         if reachable:
             return True, ""
         return False, _webdav_failure_reason(error)
@@ -524,6 +534,20 @@ def _replay_changed_settings(source_addon, setting_ids, setting_values=None):
         fresh_addon.setSetting(setting_id, value)
 
 
+class _AddonSettingsOverlay:
+    def __init__(self, addon, values):
+        self._addon = addon
+        self._values = dict(values or {})
+
+    def getSetting(self, setting_id):  # pylint: disable=invalid-name
+        if setting_id in self._values:
+            return self._values[setting_id]
+        return self._addon.getSetting(setting_id)
+
+    def getAddonInfo(self, key):  # pylint: disable=invalid-name
+        return self._addon.getAddonInfo(key)
+
+
 def _profile_settings_path(addon):
     try:
         profile = addon.getAddonInfo("profile")
@@ -547,7 +571,8 @@ def _persisted_setting(addon, setting_id):
     if not settings_path:
         return None
     try:
-        root = element_tree.parse(settings_path).getroot()
+        # Kodi owns this local profile settings file; it is not remote XML.
+        root = element_tree.parse(settings_path).getroot()  # nosemgrep
     except (OSError, element_tree.ParseError):
         return None
     for setting in root.findall(".//setting"):
@@ -567,6 +592,7 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
         self._finished = False
         self._changed_setting_ids = set()
         self._changed_settings = {}
+        self._original_settings = {}
         self._visible_rows = []
         self._current_install_button_visible = False
         self._current_tmdb_missing_visible = False
@@ -608,6 +634,7 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
         return dict(self._changed_settings)
 
     def _set_setting(self, setting_id, value):
+        self._remember_original_setting(setting_id)
         self.addon.setSetting(setting_id, value)
         self._changed_setting_ids.add(setting_id)
         self._changed_settings[setting_id] = value
@@ -616,6 +643,8 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
         self._set_setting(setting_id, "true" if enabled else "false")
 
     def _select_provider(self, provider):
+        self._remember_original_setting("nzbhydra_enabled")
+        self._remember_original_setting("prowlarr_enabled")
         _select_provider(self.addon, provider)
         if provider == "hydra":
             values = {"nzbhydra_enabled": "true", "prowlarr_enabled": "false"}
@@ -788,7 +817,8 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
 
     def _test_current_page(self):
         test_key = self._page().get("test")
-        ok, reason = _connection_check(test_key, self.addon)
+        settings = _AddonSettingsOverlay(self.addon, self._changed_settings)
+        ok, reason = _connection_check(test_key, settings)
         title = _string(self._page()["title_id"])
         if ok:
             xbmcgui.Dialog().ok(title, "Connection successful.")
@@ -813,6 +843,7 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
 
     def _next_or_finish(self):
         if self._is_last():
+            self._persist_selected_provider()
             self._complete_wizard()
             self.close()
             return
@@ -820,6 +851,7 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
         self._render_page()
 
     def _cancel(self):
+        self._revert_changed_settings()
         self._finished = False
         self.close()
 
@@ -829,6 +861,20 @@ class SetupWizardDialog(xbmcgui.WindowXMLDialog):
     def _complete_wizard(self):
         self._set_setting(COMPLETED_SETTING, "true")
         self._finished = True
+
+    def _persist_selected_provider(self):
+        if _get_bool(self.addon, COMPLETED_SETTING, default=False):
+            if self._changed_setting_ids.isdisjoint(PROVIDER_SETTING_IDS):
+                return
+        self._select_provider(self._selected_provider())
+
+    def _remember_original_setting(self, setting_id):
+        if setting_id not in self._original_settings:
+            self._original_settings[setting_id] = self._setting_value(setting_id)
+
+    def _revert_changed_settings(self):
+        for setting_id in sorted(self._original_settings):
+            self.addon.setSetting(setting_id, self._original_settings[setting_id])
 
     def _page_has_visible_rows(self, page):
         if not page.get("rows"):

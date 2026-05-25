@@ -469,13 +469,36 @@ def test_route_main_menu_does_not_call_safe_resolve(mock_menu, mock_resolved):
 @patch("resources.lib.router.xbmc")
 def test_route_root_opens_settings_and_resolves_handle(mock_xbmc, mock_resolved):
     """Bare add-on clicks should open settings without Kodi's add-on-info dialog."""
-    route(["plugin://plugin.video.nzbdav/", "3", ""])
+    maybe_auto_run = MagicMock(return_value=False)
+    with patch.dict(
+        "sys.modules",
+        {"resources.lib.setup_wizard": MagicMock(maybe_auto_run=maybe_auto_run)},
+    ):
+        route(["plugin://plugin.video.nzbdav/", "3", ""])
+    maybe_auto_run.assert_called_once()
     mock_xbmc.executebuiltin.assert_called_once_with(
         "Addon.OpenSettings(plugin.video.nzbdav)"
     )
     assert mock_resolved.called, "setResolvedUrl must be called for bare root settings"
     assert mock_resolved.call_args[0][0] == 3
     assert mock_resolved.call_args[0][1] is False
+
+
+@patch("xbmcplugin.setResolvedUrl")
+@patch("resources.lib.router.xbmc")
+def test_route_root_auto_runs_first_run_wizard_before_settings(
+    mock_xbmc, mock_resolved
+):
+    maybe_auto_run = MagicMock(return_value=True)
+    with patch.dict(
+        "sys.modules",
+        {"resources.lib.setup_wizard": MagicMock(maybe_auto_run=maybe_auto_run)},
+    ):
+        route(["plugin://plugin.video.nzbdav/", "3", ""])
+
+    maybe_auto_run.assert_called_once()
+    mock_xbmc.executebuiltin.assert_not_called()
+    assert mock_resolved.called
 
 
 @patch("xbmcplugin.setResolvedUrl")
