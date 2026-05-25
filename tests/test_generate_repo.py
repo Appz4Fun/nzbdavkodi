@@ -3,7 +3,11 @@
 
 """Tests for repository metadata generation."""
 
+import gzip
+import hashlib
 import importlib.util
+import os
+import shutil
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
@@ -13,6 +17,22 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ADDON_DIR = REPO_ROOT / "repo" / "plugin.video.nzbdav"
 REPO_ADDON_DIR = REPO_ROOT / "repo" / "repository.nzbdav"
+
+
+def _parse_generated_addons_xml(output_dir):
+    with gzip.open(output_dir / "addons.xml.gz", "rb") as fh:
+        return ET.ElementTree(ET.fromstring(fh.read()))
+
+
+def _rewrite_generated_addons_xml(output_dir, tree, module):
+    plain_path = output_dir / "addons.xml"
+    gzip_path = output_dir / "addons.xml.gz"
+    sha256_path = output_dir / "addons.xml.gz.sha256"
+    tree.write(plain_path, encoding="utf-8", xml_declaration=True)
+    with gzip.open(gzip_path, "wb") as fh:
+        fh.write(plain_path.read_bytes())
+    sha256 = module.hashlib.sha256(gzip_path.read_bytes()).hexdigest()
+    sha256_path.write_text("{}  addons.xml.gz".format(sha256), encoding="utf-8")
 
 
 def _load_generate_repo_module():
@@ -25,108 +45,67 @@ def _load_generate_repo_module():
     return module
 
 
-def test_generate_repo_writes_pages_root_files(tmp_path, monkeypatch):
+def _write_release_zip(tmp_path, version="1.2.1"):
+    release_zip = tmp_path / "plugin.video.nzbdav-{}.zip".format(version)
+    release_addon_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<addon id="plugin.video.nzbdav" name="NZB-DAV" version="{version}" />
+""".format(version=version)
+    with zipfile.ZipFile(release_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("plugin.video.nzbdav/addon.xml", release_addon_xml)
+    return release_zip
+
+
+def test_generate_repo_writes_minimal_pages_root_files(tmp_path, monkeypatch):
     module = _load_generate_repo_module()
     monkeypatch.chdir(REPO_ROOT)
 
-    module.generate_repo(output_dir=str(tmp_path / "repo" / "zips"))
+    output_dir = tmp_path / "pages"
+    module.generate_repo(output_dir=str(output_dir))
 
-    index_path = tmp_path / "index.html"
+    index_path = output_dir / "index.html"
     assert index_path.exists()
     contents = index_path.read_text(encoding="utf-8")
     assert "repository.nzbdav-" in contents
     assert ".zip" in contents
-    assert (tmp_path / ".nojekyll").exists()
-    assert (tmp_path / "repo" / "zips" / "addons.xml").exists()
+    assert "plugin.video.nzbdav-" not in contents
+    assert (output_dir / ".nojekyll").exists()
+    assert (output_dir / "addons.xml.gz").exists()
+    assert (output_dir / "addons.xml.gz.sha256").exists()
+    assert not (output_dir / "addons.xml.md5").exists()
+    assert not list(output_dir.glob("plugin.video.nzbdav-*.zip"))
 
 
-def test_generate_repo_root_index_links_current_addon_zip(tmp_path, monkeypatch):
-    module = _load_generate_repo_module()
-    monkeypatch.chdir(REPO_ROOT)
-    release_zip_dir = tmp_path / "release-input"
-    release_zip_dir.mkdir()
-    release_zip = release_zip_dir / "plugin.video.nzbdav-1.2.1.zip"
-    release_addon_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<addon id="plugin.video.nzbdav" name="NZB-DAV" version="1.2.1" />
-"""
-    with zipfile.ZipFile(release_zip, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("plugin.video.nzbdav/addon.xml", release_addon_xml)
-
-    output_dir = tmp_path / "repo" / "zips"
-    module.generate_repo(output_dir=str(output_dir), addon_zip=str(release_zip))
-
-    contents = (tmp_path / "index.html").read_text(encoding="utf-8")
-    assert "plugin.video.nzbdav-1.2.1.zip" in contents
-    assert (tmp_path / "plugin.video.nzbdav-1.2.1.zip").exists()
-    assert (
-        output_dir / "plugin.video.nzbdav" / "plugin.video.nzbdav-1.2.1.zip"
-    ).exists()
-
-
-def test_generate_repo_can_publish_legacy_root_metadata(tmp_path, monkeypatch):
-    module = _load_generate_repo_module()
-    monkeypatch.chdir(REPO_ROOT)
-
-    output_dir = tmp_path / "repo" / "zips"
-    module.generate_repo(output_dir=str(output_dir), legacy_root_metadata=True)
-
-    assert (tmp_path / "addons.xml").read_bytes() == (
-        output_dir / "addons.xml"
-    ).read_bytes()
-    assert (tmp_path / "addons.xml.md5").read_bytes() == (
-        output_dir / "addons.xml.md5"
-    ).read_bytes()
-
-
-def test_generate_repo_legacy_root_metadata_mirrors_addon_directories(
+def test_generate_repo_pages_root_index_lists_repository_metadata_files(
     tmp_path, monkeypatch
 ):
     module = _load_generate_repo_module()
     monkeypatch.chdir(REPO_ROOT)
-    release_zip = tmp_path / "plugin.video.nzbdav-1.2.1.zip"
-    legacy_zip_dir = tmp_path / "legacy-zips"
-    legacy_zip_dir.mkdir()
-    legacy_zip = legacy_zip_dir / "plugin.video.nzbdav-1.0.5.zip"
 
-    for zip_path, version in ((release_zip, "1.2.1"), (legacy_zip, "1.0.5")):
-        addon_xml = (
-            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
-            '<addon id="plugin.video.nzbdav" name="NZB-DAV" version="{}" />'
-        ).format(version)
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("plugin.video.nzbdav/addon.xml", addon_xml)
+    output_dir = tmp_path / "pages"
+    module.generate_repo(output_dir=str(output_dir))
 
-    output_dir = tmp_path / "repo" / "zips"
-    module.generate_repo(
-        output_dir=str(output_dir),
-        addon_zip=str(release_zip),
-        legacy_addon_zip_dir=str(legacy_zip_dir),
-        repo_zip_alias_versions=("1.0.6",),
-        legacy_root_metadata=True,
-    )
-
-    assert (tmp_path / "plugin.video.nzbdav" / "plugin.video.nzbdav-1.2.1.zip").exists()
-    assert (tmp_path / "plugin.video.nzbdav" / "plugin.video.nzbdav-1.0.5.zip").exists()
-    assert (tmp_path / "repository.nzbdav" / "repository.nzbdav-1.1.0.zip").exists()
-    assert (tmp_path / "repository.nzbdav" / "repository.nzbdav-1.0.6.zip").exists()
+    contents = (output_dir / "index.html").read_text(encoding="utf-8")
+    expected_links = [
+        "addons.xml",
+        "addons.xml.gz",
+        "addons.xml.gz.sha256",
+        "repository.nzbdav-1.1.1.zip",
+        "repository.nzbdav-1.1.1.zip.sha256",
+    ]
+    for link in expected_links:
+        assert '<a href="{0}">{0}</a>'.format(link) in contents
 
 
 def test_generate_repo_html_indexes_use_standards_doctype(tmp_path, monkeypatch):
     module = _load_generate_repo_module()
     monkeypatch.chdir(REPO_ROOT)
-    release_zip = tmp_path / "plugin.video.nzbdav-1.2.1.zip"
-    release_addon_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<addon id="plugin.video.nzbdav" name="NZB-DAV" version="1.2.1" />
-"""
-    with zipfile.ZipFile(release_zip, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("plugin.video.nzbdav/addon.xml", release_addon_xml)
+    release_zip = _write_release_zip(tmp_path)
 
-    output_dir = tmp_path / "repo" / "zips"
+    output_dir = tmp_path / "pages"
     module.generate_repo(output_dir=str(output_dir), addon_zip=str(release_zip))
 
     index_paths = [
-        tmp_path / "index.html",
-        output_dir / "plugin.video.nzbdav" / "index.html",
+        output_dir / "index.html",
         output_dir / "repository.nzbdav" / "index.html",
     ]
     for index_path in index_paths:
@@ -139,11 +118,12 @@ def test_generate_repo_html_indexes_use_standards_doctype(tmp_path, monkeypatch)
 def test_generate_repo_omits_full_changelog_from_repo_index(tmp_path, monkeypatch):
     module = _load_generate_repo_module()
     monkeypatch.chdir(REPO_ROOT)
+    release_zip = _write_release_zip(tmp_path)
 
-    output_dir = tmp_path / "repo" / "zips"
-    module.generate_repo(output_dir=str(output_dir))
+    output_dir = tmp_path / "pages"
+    module.generate_repo(output_dir=str(output_dir), addon_zip=str(release_zip))
 
-    tree = ET.parse(output_dir / "addons.xml")
+    tree = _parse_generated_addons_xml(output_dir)
     addon = tree.find("./addon[@id='plugin.video.nzbdav']")
     assert addon is not None
     metadata = addon.find("./extension[@point='xbmc.addon.metadata']")
@@ -151,34 +131,136 @@ def test_generate_repo_omits_full_changelog_from_repo_index(tmp_path, monkeypatc
     assert metadata.find("news") is None
 
 
-def test_generate_repo_includes_repository_checksum_url(tmp_path, monkeypatch):
+def test_generate_repo_without_addon_zip_omits_missing_plugin_metadata(
+    tmp_path, monkeypatch
+):
+    module = _load_generate_repo_module()
+    monkeypatch.chdir(tmp_path)
+
+    output_dir = tmp_path / "pages"
+    module.generate_repo(
+        output_dir=str(output_dir),
+        repository_addon_dir=str(REPO_ADDON_DIR),
+    )
+
+    tree = _parse_generated_addons_xml(output_dir)
+    assert tree.find("./addon[@id='plugin.video.nzbdav']") is None
+    assert tree.find("./addon[@id='repository.nzbdav']") is not None
+
+
+def test_generate_repo_includes_pages_repository_urls(tmp_path, monkeypatch):
     module = _load_generate_repo_module()
     monkeypatch.chdir(REPO_ROOT)
 
-    output_dir = tmp_path / "repo" / "zips"
+    output_dir = tmp_path / "pages"
     module.generate_repo(output_dir=str(output_dir))
 
-    tree = ET.parse(output_dir / "addons.xml")
+    tree = _parse_generated_addons_xml(output_dir)
     repo = tree.find("./addon[@id='repository.nzbdav']")
     assert repo is not None
     repo_dir = repo.find("./extension[@point='xbmc.addon.repository']/dir")
+    repo_base = "https://appz4fun.github.io/nzbdavkodi"
     assert repo_dir is not None
-    assert (
-        repo_dir.findtext("checksum")
-        == "https://appz4fun.github.io/nzbdavkodi/addons.xml.md5"
-    )
+    info = repo_dir.find("info")
+    checksum = repo_dir.find("checksum")
+    assert info is not None
+    assert info.text == "{}/addons.xml.gz".format(repo_base)
+    assert "compressed" not in info.attrib
+    assert checksum is not None
+    assert checksum.text == "{}/addons.xml.gz.sha256".format(repo_base)
+    assert checksum.get("verify") == "sha256"
+    datadir = repo_dir.find("datadir")
+    artdir = repo_dir.find("artdir")
+    assert datadir is not None
+    assert datadir.text == repo_base
+    assert "zip" not in datadir.attrib
+    assert artdir is not None
+    assert artdir.text == repo_base
+    assert repo_dir.findtext("hashes") == "sha256"
 
 
-def test_generate_repo_writes_strict_md5_payload(tmp_path, monkeypatch):
+def test_generate_repo_fails_when_repository_addon_dir_is_missing(
+    tmp_path, monkeypatch
+):
     module = _load_generate_repo_module()
     monkeypatch.chdir(REPO_ROOT)
 
-    output_dir = tmp_path / "repo" / "zips"
+    missing_repo_dir = tmp_path / "missing-repository-addon"
+
+    with pytest.raises(SystemExit) as excinfo:
+        module.generate_repo(
+            output_dir=str(tmp_path / "repo-output"),
+            repository_addon_dir=str(missing_repo_dir),
+        )
+
+    assert str(excinfo.value) == (
+        "generate_repo: repository addon directory not found: {!r}".format(
+            str(missing_repo_dir)
+        )
+    )
+    assert not (tmp_path / "repo-output" / "addons.xml.gz").exists()
+
+
+def test_generate_repo_writes_sha256_payload_for_compressed_metadata(
+    tmp_path, monkeypatch
+):
+    module = _load_generate_repo_module()
+    monkeypatch.chdir(REPO_ROOT)
+
+    output_dir = tmp_path / "pages"
     module.generate_repo(output_dir=str(output_dir))
 
-    md5_payload = (output_dir / "addons.xml.md5").read_bytes()
-    assert len(md5_payload) == 32
-    assert md5_payload.decode("ascii").isalnum()
+    checksum_payload = (output_dir / "addons.xml.gz.sha256").read_text(encoding="ascii")
+    expected = hashlib.sha256((output_dir / "addons.xml.gz").read_bytes()).hexdigest()
+    assert checksum_payload == "{}  addons.xml.gz".format(expected)
+
+
+def test_generate_repo_writes_sha256_payloads_for_repository_zip_files(
+    tmp_path, monkeypatch
+):
+    module = _load_generate_repo_module()
+    monkeypatch.chdir(REPO_ROOT)
+
+    output_dir = tmp_path / "pages"
+    module.generate_repo(output_dir=str(output_dir))
+
+    zip_paths = [
+        output_dir / "repository.nzbdav" / "repository.nzbdav-1.1.1.zip",
+        output_dir / "repository.nzbdav-1.1.1.zip",
+    ]
+    for zip_path in zip_paths:
+        checksum_path = zip_path.with_name(zip_path.name + ".sha256")
+        expected = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+        assert checksum_path.read_text(encoding="ascii") == "{}  {}".format(
+            expected, zip_path.name
+        )
+
+
+def test_generate_repo_builds_deterministic_repository_zip(tmp_path, monkeypatch):
+    module = _load_generate_repo_module()
+    monkeypatch.chdir(REPO_ROOT)
+
+    outputs = []
+    for index, name in enumerate(("first", "second")):
+        repository_addon_dir = tmp_path / name / "repo" / "repository.nzbdav"
+        shutil.copytree(REPO_ADDON_DIR, repository_addon_dir)
+        timestamp = 1700000000 + index * 86400
+        for root, dirs, files in os.walk(repository_addon_dir):
+            for entry in dirs + files:
+                os.utime(Path(root) / entry, (timestamp, timestamp))
+
+        output_dir = tmp_path / name
+        module.generate_repo(
+            output_dir=str(output_dir),
+            repository_addon_dir=str(repository_addon_dir),
+        )
+        outputs.append(
+            (
+                output_dir / "repository.nzbdav" / "repository.nzbdav-1.1.1.zip"
+            ).read_bytes()
+        )
+
+    assert outputs[0] == outputs[1]
 
 
 def test_generate_repo_can_publish_release_zip_instead_of_worktree_addon(
@@ -204,82 +286,331 @@ def test_generate_repo_can_publish_release_zip_instead_of_worktree_addon(
         zf.writestr("plugin.video.nzbdav/resources/icon.png", b"icon")
         zf.writestr("plugin.video.nzbdav/resources/fanart.jpg", b"fanart")
 
-    output_dir = tmp_path / "repo" / "zips"
+    output_dir = tmp_path / "pages"
     module.generate_repo(output_dir=str(output_dir), addon_zip=str(release_zip))
 
-    tree = ET.parse(output_dir / "addons.xml")
+    tree = _parse_generated_addons_xml(output_dir)
     addon = tree.find("./addon[@id='plugin.video.nzbdav']")
     assert addon is not None
     assert addon.attrib["version"] == "1.0.3"
     metadata = addon.find("./extension[@point='xbmc.addon.metadata']")
     assert metadata is not None
     assert metadata.find("news") is None
+    assert metadata.findtext("path") == (
+        "plugin.video.nzbdav/plugin.video.nzbdav-1.0.3.zip"
+    )
+    assert not list(output_dir.glob("plugin.video.nzbdav-*.zip"))
     assert (
         output_dir / "plugin.video.nzbdav" / "plugin.video.nzbdav-1.0.3.zip"
-    ).exists()
-    assert (tmp_path / "plugin.video.nzbdav-1.0.3.zip").exists()
-    assert not (output_dir / "plugin.video.nzbdav" / "release-addon.zip").exists()
+    ).read_bytes() == release_zip.read_bytes()
     assert (
         output_dir / "plugin.video.nzbdav" / "resources" / "icon.png"
     ).read_bytes() == b"icon"
+    assert (
+        output_dir / "plugin.video.nzbdav" / "resources" / "fanart.jpg"
+    ).read_bytes() == b"fanart"
+    checksum_path = (
+        output_dir / "plugin.video.nzbdav" / "plugin.video.nzbdav-1.0.3.zip.sha256"
+    )
+    expected = hashlib.sha256(release_zip.read_bytes()).hexdigest()
+    assert checksum_path.read_text(encoding="ascii") == "{}  {}".format(
+        expected, "plugin.video.nzbdav-1.0.3.zip"
+    )
 
 
-def test_generate_repo_preserves_legacy_addon_zips_for_cached_kodi_metadata(
+def test_generate_repo_writes_release_path_to_all_metadata_extensions(
     tmp_path, monkeypatch
 ):
     module = _load_generate_repo_module()
     monkeypatch.chdir(REPO_ROOT)
-    release_zip = tmp_path / "plugin.video.nzbdav-1.0.8.zip"
-    legacy_zip_dir = tmp_path / "legacy-zips"
-    legacy_zip_dir.mkdir()
-    legacy_zip = legacy_zip_dir / "plugin.video.nzbdav-1.0.5.zip"
+    release_zip = tmp_path / "plugin.video.nzbdav-1.0.4.zip"
+    release_addon_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<addon id="plugin.video.nzbdav" name="NZB-DAV" version="1.0.4">
+    <extension point="xbmc.addon.metadata">
+        <summary lang="en">XBMC metadata</summary>
+    </extension>
+    <extension point="kodi.addon.metadata">
+        <summary lang="en">Kodi metadata</summary>
+    </extension>
+</addon>
+"""
+    with zipfile.ZipFile(release_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("plugin.video.nzbdav/addon.xml", release_addon_xml)
 
-    for zip_path, version in ((release_zip, "1.0.8"), (legacy_zip, "1.0.5")):
-        addon_xml = (
-            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
-            '<addon id="plugin.video.nzbdav" name="NZB-DAV" version="{}" />'
-        ).format(version)
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("plugin.video.nzbdav/addon.xml", addon_xml)
+    output_dir = tmp_path / "pages"
+    module.generate_repo(output_dir=str(output_dir), addon_zip=str(release_zip))
 
-    output_dir = tmp_path / "repo" / "zips"
+    tree = _parse_generated_addons_xml(output_dir)
+    addon = tree.find("./addon[@id='plugin.video.nzbdav']")
+    assert addon is not None
+    expected_path = "plugin.video.nzbdav/plugin.video.nzbdav-1.0.4.zip"
+
+    for point in ("xbmc.addon.metadata", "kodi.addon.metadata"):
+        metadata = addon.find("./extension[@point='{}']".format(point))
+        assert metadata is not None
+        assert metadata.findtext("path") == expected_path
+
+
+def test_generate_repo_smoke_check_passes_for_generated_pages(tmp_path, monkeypatch):
+    module = _load_generate_repo_module()
+    monkeypatch.chdir(REPO_ROOT)
+    release_zip = _write_release_zip(tmp_path)
+
+    output_dir = tmp_path / "pages"
+    module.generate_repo(output_dir=str(output_dir), addon_zip=str(release_zip))
+
+    module.smoke_check_pages(str(output_dir))
+
+
+def test_generate_repo_smoke_check_rejects_copied_addon_zip(tmp_path, monkeypatch):
+    module = _load_generate_repo_module()
+    monkeypatch.chdir(REPO_ROOT)
+    release_zip = _write_release_zip(tmp_path)
+
+    output_dir = tmp_path / "pages"
+    module.generate_repo(output_dir=str(output_dir), addon_zip=str(release_zip))
+    (output_dir / "plugin.video.nzbdav-9.9.9.zip").write_bytes(b"bad")
+
+    with pytest.raises(SystemExit) as excinfo:
+        module.smoke_check_pages(str(output_dir))
+
+    assert str(excinfo.value) == (
+        "generate_repo: Pages root must not contain plugin.video.nzbdav zip files"
+    )
+
+
+def test_generate_repo_smoke_check_rejects_empty_sha256_checksum(tmp_path, monkeypatch):
+    module = _load_generate_repo_module()
+    monkeypatch.chdir(REPO_ROOT)
+    release_zip = _write_release_zip(tmp_path)
+
+    output_dir = tmp_path / "pages"
+    module.generate_repo(output_dir=str(output_dir), addon_zip=str(release_zip))
+    (output_dir / "addons.xml.gz.sha256").write_text("", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as excinfo:
+        module.smoke_check_pages(str(output_dir))
+
+    assert str(excinfo.value) == (
+        "generate_repo: addons.xml.gz.sha256 does not match addons.xml.gz"
+    )
+
+
+def test_generate_repo_smoke_check_rejects_index_missing_root_checksum_link(
+    tmp_path, monkeypatch
+):
+    module = _load_generate_repo_module()
+    monkeypatch.chdir(REPO_ROOT)
+    release_zip = _write_release_zip(tmp_path)
+
+    output_dir = tmp_path / "pages"
+    module.generate_repo(output_dir=str(output_dir), addon_zip=str(release_zip))
+    index_path = output_dir / "index.html"
+    index_path.write_text(
+        index_path.read_text(encoding="utf-8").replace(
+            '<a href="addons.xml.gz.sha256">addons.xml.gz.sha256</a><br>\n', ""
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        module.smoke_check_pages(str(output_dir))
+
+    assert str(excinfo.value) == (
+        "generate_repo: index.html must link addons.xml.gz.sha256"
+    )
+
+
+def test_generate_repo_smoke_check_requires_explicit_repository_zip_anchor(
+    tmp_path, monkeypatch
+):
+    module = _load_generate_repo_module()
+    monkeypatch.chdir(REPO_ROOT)
+    release_zip = _write_release_zip(tmp_path)
+
+    output_dir = tmp_path / "pages"
+    module.generate_repo(output_dir=str(output_dir), addon_zip=str(release_zip))
+    index_path = output_dir / "index.html"
+    repository_zip_anchor = '<a href="{0}">{0}</a><br>\n'.format(
+        "repository.nzbdav-1.1.1.zip"
+    )
+    index_path.write_text(
+        index_path.read_text(encoding="utf-8").replace(
+            repository_zip_anchor,
+            "",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        module.smoke_check_pages(str(output_dir))
+
+    assert str(excinfo.value) == (
+        "generate_repo: index.html must link repository.nzbdav-1.1.1.zip"
+    )
+
+
+def test_generate_repo_smoke_check_rejects_missing_addon_zip_sha256(
+    tmp_path, monkeypatch
+):
+    module = _load_generate_repo_module()
+    monkeypatch.chdir(REPO_ROOT)
+    release_zip = _write_release_zip(tmp_path)
+
+    output_dir = tmp_path / "pages"
+    module.generate_repo(output_dir=str(output_dir), addon_zip=str(release_zip))
+    (output_dir / "repository.nzbdav" / "repository.nzbdav-1.1.1.zip.sha256").unlink(
+        missing_ok=True
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        module.smoke_check_pages(str(output_dir))
+
+    assert str(excinfo.value) == (
+        "generate_repo: missing sha256 checksum for repository.nzbdav-1.1.1.zip"
+    )
+
+
+def test_generate_repo_smoke_check_rejects_missing_addon_zip_directory(
+    tmp_path, monkeypatch
+):
+    module = _load_generate_repo_module()
+    monkeypatch.chdir(REPO_ROOT)
+    release_zip = _write_release_zip(tmp_path)
+
+    output_dir = tmp_path / "pages"
+    module.generate_repo(output_dir=str(output_dir), addon_zip=str(release_zip))
+    for path in (output_dir / "plugin.video.nzbdav").iterdir():
+        path.unlink()
+    (output_dir / "plugin.video.nzbdav").rmdir()
+
+    with pytest.raises(SystemExit) as excinfo:
+        module.smoke_check_pages(str(output_dir))
+
+    assert str(excinfo.value) == (
+        "generate_repo: plugin.video.nzbdav zip missing from repository datadir"
+    )
+
+
+def test_generate_repo_smoke_check_rejects_absolute_addon_metadata_path(
+    tmp_path, monkeypatch
+):
+    module = _load_generate_repo_module()
+    monkeypatch.chdir(REPO_ROOT)
+    release_zip = _write_release_zip(tmp_path)
+
+    output_dir = tmp_path / "pages"
+    module.generate_repo(output_dir=str(output_dir), addon_zip=str(release_zip))
+    tree = _parse_generated_addons_xml(output_dir)
+    addon = tree.find("./addon[@id='plugin.video.nzbdav']")
+    metadata = addon.find("./extension[@point='xbmc.addon.metadata']")
+    metadata.find("path").text = (
+        "https://github.com/Appz4Fun/nzbdavkodi/releases/download/"
+        "v9.9.9/plugin.video.nzbdav-9.9.9.zip"
+    )
+    _rewrite_generated_addons_xml(output_dir, tree, module)
+
+    with pytest.raises(SystemExit) as excinfo:
+        module.smoke_check_pages(str(output_dir))
+
+    assert str(excinfo.value) == (
+        "generate_repo: plugin.video.nzbdav path must be relative to repository datadir"
+    )
+
+
+@pytest.mark.parametrize(
+    "metadata_path",
+    [
+        "/plugin.video.nzbdav/plugin.video.nzbdav-1.0.3.zip",
+        "../plugin.video.nzbdav-1.0.3.zip",
+        "plugin.video.nzbdav/../plugin.video.nzbdav-1.0.3.zip",
+    ],
+)
+def test_generate_repo_smoke_check_rejects_non_repository_relative_addon_metadata_path(
+    tmp_path, monkeypatch, metadata_path
+):
+    module = _load_generate_repo_module()
+    monkeypatch.chdir(REPO_ROOT)
+    release_zip = _write_release_zip(tmp_path)
+
+    output_dir = tmp_path / "pages"
+    module.generate_repo(output_dir=str(output_dir), addon_zip=str(release_zip))
+    tree = _parse_generated_addons_xml(output_dir)
+    addon = tree.find("./addon[@id='plugin.video.nzbdav']")
+    metadata = addon.find("./extension[@point='xbmc.addon.metadata']")
+    metadata.find("path").text = metadata_path
+    _rewrite_generated_addons_xml(output_dir, tree, module)
+
+    with pytest.raises(SystemExit) as excinfo:
+        module.smoke_check_pages(str(output_dir))
+
+    assert str(excinfo.value) == (
+        "generate_repo: plugin.video.nzbdav path must be relative to repository datadir"
+    )
+
+
+def test_repository_relative_path_rejects_parent_traversal_with_backslashes():
+    module = _load_generate_repo_module()
+
+    assert not module._is_repository_relative_path(
+        "plugin.video.nzbdav\\..\\plugin.video.nzbdav-1.2.1.zip"
+    )
+
+
+def test_generate_repo_smoke_check_rejects_stale_repository_zip(tmp_path, monkeypatch):
+    module = _load_generate_repo_module()
+    monkeypatch.chdir(REPO_ROOT)
+    release_zip = _write_release_zip(tmp_path)
+
+    output_dir = tmp_path / "pages"
+    module.generate_repo(output_dir=str(output_dir), addon_zip=str(release_zip))
+    stale_zip = output_dir / "repository.nzbdav" / "repository.nzbdav-0.0.1.zip"
+    stale_zip.write_bytes(b"bad")
+
+    with pytest.raises(SystemExit) as excinfo:
+        module.smoke_check_pages(str(output_dir))
+
+    assert str(excinfo.value) == (
+        "generate_repo: repository.nzbdav directory must contain one matching "
+        "repository zip"
+    )
+
+
+def test_generate_repo_smoke_check_supports_non_default_repository_id(
+    tmp_path, monkeypatch
+):
+    module = _load_generate_repo_module()
+    monkeypatch.chdir(REPO_ROOT)
+    release_zip = _write_release_zip(tmp_path)
+    repository_addon_dir = tmp_path / "repo" / "repository.custom"
+    repository_addon_dir.mkdir(parents=True)
+    (repository_addon_dir / "addon.xml").write_text(
+        """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<addon id="repository.custom" name="Custom Repository" version="1.2.3">
+    <extension point="xbmc.addon.repository" name="Custom Repository">
+        <dir>
+            <info>https://example.test/addons.xml.gz</info>
+            <checksum verify="sha256">https://example.test/addons.xml.gz.sha256</checksum>
+            <datadir>https://example.test</datadir>
+            <artdir>https://example.test</artdir>
+            <hashes>sha256</hashes>
+        </dir>
+    </extension>
+</addon>
+""",
+        encoding="utf-8",
+    )
+
+    output_dir = tmp_path / "pages"
     module.generate_repo(
         output_dir=str(output_dir),
         addon_zip=str(release_zip),
-        legacy_addon_zip_dir=str(legacy_zip_dir),
+        repository_addon_dir=str(repository_addon_dir),
     )
 
-    tree = ET.parse(output_dir / "addons.xml")
-    addon = tree.find("./addon[@id='plugin.video.nzbdav']")
-    assert addon is not None
-    assert addon.attrib["version"] == "1.0.8"
-    assert (
-        output_dir / "plugin.video.nzbdav" / "plugin.video.nzbdav-1.0.8.zip"
-    ).exists()
-    assert (
-        output_dir / "plugin.video.nzbdav" / "plugin.video.nzbdav-1.0.5.zip"
-    ).exists()
-    assert not (tmp_path / "plugin.video.nzbdav-1.0.5.zip").exists()
-
-
-def test_generate_repo_writes_repository_zip_aliases_for_cached_kodi_metadata(
-    tmp_path, monkeypatch
-):
-    module = _load_generate_repo_module()
-    monkeypatch.chdir(REPO_ROOT)
-
-    module.generate_repo(
-        output_dir=str(tmp_path),
-        repo_zip_alias_versions=("1.0.6",),
+    module.smoke_check_pages(
+        str(output_dir), repository_addon_dir=str(repository_addon_dir)
     )
-
-    current_repo_xml = ET.parse(REPO_ADDON_DIR / "addon.xml")
-    current_repo_version = current_repo_xml.getroot().attrib["version"]
-    alias_zip = tmp_path / "repository.nzbdav" / "repository.nzbdav-1.0.6.zip"
-    assert alias_zip.exists()
-    with zipfile.ZipFile(alias_zip) as zf:
-        root = ET.fromstring(zf.read("repository.nzbdav/addon.xml"))
-    assert root.attrib["version"] == current_repo_version
 
 
 def test_parse_local_xml_rejects_doctype(tmp_path):
