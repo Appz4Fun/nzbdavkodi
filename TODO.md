@@ -15,7 +15,6 @@ Only two areas are active right now:
 
 - Add a local Python 3.10 + 3.12 test matrix, or document why CI-only is enough.
 - Add a true Python 3.8 import/runtime check, or keep relying on `.pylintrc` `py-version=3.8`.
-- Add a build/repo smoke target for Pages parity without making `just ci` too noisy.
 
 ## Future Bug-Hunt Seeds
 
