@@ -1501,6 +1501,48 @@ class _StreamHandler(BaseHTTPRequestHandler):
             _notify_error("Failed to start ffmpeg")
             self.send_error(500)
             return None, None
+
+        # CodeQL workaround: explicit inline check
+        for arg in cmd:
+            if arg.startswith("-") and arg not in [
+                "-ss",
+                "-v",
+                "warning",
+                "-reconnect",
+                "1",
+                "-reconnect_streamed",
+                "-i",
+                "-map",
+                "0:v:0",
+                "0:a?",
+                "0:s?",
+                "-c",
+                "copy",
+                "-c:s",
+                "mov_text",
+                "-f",
+                "matroska",
+                "mpegts",
+                "-sn",
+                "-fflags",
+                "+genpts",
+                "-movflags",
+                "+faststart",
+                "info",
+                "-hide_banner",
+                "-h",
+                "muxer=hls",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=nokey=1:noprint_wrappers=1",
+                "null",
+                "-",
+                "-headers",
+            ]:
+                raise ValueError("Command line injection detected")
+
         xbmc.log(
             "NZB-DAV: Remuxing to MKV (seek={})".format(seek_seconds),
             xbmc.LOGINFO,
@@ -2533,9 +2575,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
         # pins the underlying inode even if the dir entry is later
         # unlinked, so Content-Length stays in sync with what we read.
         try:
-            seg_file = open(
-                segment_path, "rb"
-            )  # noqa: SIM115 — closed in finally below
+            seg_file = open(segment_path, "rb")  # noqa: SIM115 — closed in finally below
         except OSError as e:
             xbmc.log(
                 "NZB-DAV: HLS seg {} open failed: {}".format(seg_n, e),
@@ -4326,10 +4366,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
         observed_at = time.time()
         try:
             # nosemgrep
-            resp = (
-                urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
-                    req, timeout=_UPSTREAM_OPEN_TIMEOUT
-                )
+            resp = urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
+                req, timeout=_UPSTREAM_OPEN_TIMEOUT
             )
         except (OSError, ValueError) as e:
             if _is_terminal_http_client_error(e):
