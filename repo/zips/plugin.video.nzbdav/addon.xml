@@ -1,13 +1,15 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<addons>
-<addon id="plugin.video.nzbdav" name="NZB-DAV" version="1.2.3" provider-name="nzbdav">
+<addon id="plugin.video.nzbdav"
+       name="NZB-DAV"
+       version="1.2.3"
+       provider-name="nzbdav">
     <requires>
-        <import addon="xbmc.python" version="3.0.0" />
+        <import addon="xbmc.python" version="3.0.0"/>
     </requires>
     <extension point="xbmc.python.pluginsource" library="addon.py">
         <provides>video</provides>
     </extension>
-    <extension point="xbmc.service" library="service.py" start="startup" />
+    <extension point="xbmc.service" library="service.py" start="startup"/>
 
     <extension point="xbmc.addon.metadata">
         <summary lang="en_GB">Stream Usenet media through TMDBHelper</summary>
@@ -20,30 +22,10 @@
         <license>GPL-3.0-or-later</license>
         <source>https://github.com/Appz4Fun/nzbdavkodi</source>
         <website>https://appz4fun.github.io/nzbdavkodi/</website>
+        <news>v1.2.3: Harden proxy fallback and repo installs.</news>
         <assets>
             <icon>resources/icon.png</icon>
             <fanart>resources/fanart.jpg</fanart>
         </assets>
     </extension>
 </addon>
-<addon id="repository.nzbdav" name="NZB-DAV Repository" version="1.1.0" provider-name="nzbdav">
-    <requires>
-        <import addon="xbmc.python" version="3.0.0" />
-    </requires>
-    <extension point="xbmc.addon.repository" name="NZB-DAV Repository">
-        <dir>
-            <info compressed="false">https://raw.githubusercontent.com/xbmc4lyfe/nzbdavkodi/main/repo/zips/addons.xml</info>
-            <checksum>https://raw.githubusercontent.com/xbmc4lyfe/nzbdavkodi/main/repo/zips/addons.xml.md5</checksum>
-            <datadir zip="true">https://raw.githubusercontent.com/xbmc4lyfe/nzbdavkodi/main/repo/zips/</datadir>
-        </dir>
-    </extension>
-    <extension point="xbmc.addon.metadata">
-        <summary lang="en_GB">NZB-DAV addon repository</summary>
-        <description lang="en_GB">Install and update the NZB-DAV Kodi addon.</description>
-        <platform>all</platform>
-        <assets>
-            <icon>icon.png</icon>
-        </assets>
-    </extension>
-</addon>
-</addons>

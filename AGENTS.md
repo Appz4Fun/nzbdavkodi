@@ -8,7 +8,7 @@ Orientation for agents (Claude, Copilot, Codex, etc.) working in this repo. User
 - Preserve `setResolvedUrl`, `waitForAbort`, and HTTP Range behavior.
 - Follow existing Kodi mock, settings, HTTP helper, and player install patterns.
 - Run `just lint` and `just test` before commit or push.
-- For releases, bump only `repo/plugin.video.nzbdav/addon.xml`; the tag release and Pages workflows publish repo metadata.
+- For releases, bump only `repo/plugin.video.nzbdav/addon.xml` and regenerate repo artifacts with `just repo`.
 
 ## Agent Contract
 
@@ -21,7 +21,7 @@ Follow these rules before making code, release, or deployment changes:
 - Do not edit vendored PTT under `repo/plugin.video.nzbdav/resources/lib/ptt/` unless fixing compatibility.
 - Do not duplicate shared HTTP or notification helpers; use `http_util.py`.
 - Do not bump the repository addon version for normal addon releases. Only bump `repo/plugin.video.nzbdav/addon.xml`.
-- Do not hand-edit generated Pages output under `pages-dist/`. `repo/zips/` is a tracked legacy migration endpoint only.
+- Do not hand-edit `repo/zips/`; regenerate it with `just repo`.
 - Do not commit real API keys, WebDAV credentials, Kodi logs, copied crash logs, or local device artifacts.
 
 ## Critical Invariants
@@ -44,9 +44,9 @@ just lint          # ruff + black check
 just lint-fix      # Auto-fix lint/format issues, then re-run just lint
 just release       # Build plugin.video.nzbdav.zip
 just ship          # test + release
-just repo          # Build release + generate local Pages preview in pages-dist/
+just repo          # Build release + generate Kodi repo in repo/zips/
 just clean         # Remove __pycache__, .pytest_cache, zip
-just dist-clean    # clean + remove pages-dist/
+just dist-clean    # clean + remove repo/zips/
 ```
 
 ## Repository Map
@@ -56,8 +56,7 @@ just dist-clean    # clean + remove pages-dist/
 - `repo/plugin.video.nzbdav/resources/lib/ptt/` -- vendored PTT library
 - `repo/plugin.video.nzbdav/resources/settings.xml` -- Kodi settings schema
 - `repo/repository.nzbdav/` -- Kodi repository addon descriptor
-- `repo/zips/` -- tracked legacy migration endpoint for pre-Pages repository add-ons
-- `pages-dist/` -- generated local GitHub Pages repository preview
+- `repo/zips/` -- generated Kodi repository metadata and zips
 - `scripts/` -- build and repo generation scripts
 - `tests/` -- pytest suite with Kodi module mocks in `conftest.py`
 - `.github/workflows/` -- CI and release workflows
@@ -192,8 +191,7 @@ Prefer evidence first, restart second. If Kodi is actively wedged and logs are a
 
 - CI runs on every push to `main` and PRs: tests across Python 3.10/3.12, ruff, and black.
 - Release workflow triggers on `v*` tags: runs tests, verifies `addon.xml` version matches the tag, builds the zip, and creates a GitHub Release.
-- Kodi repo metadata is served from GitHub Pages at `https://appz4fun.github.io/nzbdavkodi/`.
-- The old raw `repo/zips/` endpoint is retained only as a legacy migration endpoint so installed repository add-ons can update to the Pages-backed descriptor.
+- Kodi repo metadata is served from raw GitHub at `https://raw.githubusercontent.com/xbmc4lyfe/nzbdavkodi/main/repo/zips/`.
 
 ## Release Checklist
 
@@ -204,7 +202,7 @@ Before cutting a new versioned release:
 3. Update `repo/plugin.video.nzbdav/changelog.txt` with only a short Kodi-visible summary under 80 characters.
 4. Bump only the addon version in `repo/plugin.video.nzbdav/addon.xml`.
 5. Do not bump the repository addon version for normal addon releases.
-6. Optionally run `just repo` to smoke-check the local `pages-dist/` preview.
+6. Run `just repo` so `repo/zips/` reflects the new addon release for raw GitHub hosting.
 7. Run `just lint` and `just test`.
 8. Commit and push to `main`.
 9. Tag with the new semver and push the tag: `git tag vX.Y.Z && git push origin main vX.Y.Z`.

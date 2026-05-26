@@ -1100,6 +1100,8 @@ def _validate_url(url):
     """
     if not url or not url.startswith(("http://", "https://")):
         raise ValueError("Invalid URL scheme: {}".format(repr(url)[:30]))
+    if url.startswith("-"):
+        raise ValueError("URL cannot start with a dash")
     if any(ord(c) < 0x20 for c in url):
         raise ValueError("URL contains control characters: {}".format(repr(url)[:60]))
 
@@ -1680,6 +1682,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
             return False
         prev_arg = None
         for arg in cmd:
+            if prev_arg == "-i" and arg.startswith("-"):
+                return False
             if "\x00" in arg:
                 return False
             if prev_arg == "-headers":
@@ -1688,9 +1692,6 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 if "\n" in arg[:-2] or "\r" in arg[:-2]:
                     return False
             elif "\n" in arg or "\r" in arg:
-                return False
-            # Explicitly validate that URL does not start with a dash
-            if prev_arg == "-i" and arg.startswith("-"):
                 return False
             prev_arg = arg
         return True
@@ -2530,7 +2531,9 @@ class _StreamHandler(BaseHTTPRequestHandler):
         # pins the underlying inode even if the dir entry is later
         # unlinked, so Content-Length stays in sync with what we read.
         try:
-            seg_file = open(segment_path, "rb")  # noqa: SIM115 — closed in finally below
+            seg_file = open(
+                segment_path, "rb"
+            )  # noqa: SIM115 — closed in finally below
         except OSError as e:
             xbmc.log(
                 "NZB-DAV: HLS seg {} open failed: {}".format(seg_n, e),
@@ -4319,8 +4322,10 @@ class _StreamHandler(BaseHTTPRequestHandler):
         observed_at = time.time()
         try:
             # nosemgrep
-            resp = urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
-                req, timeout=_UPSTREAM_OPEN_TIMEOUT
+            resp = (
+                urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
+                    req, timeout=_UPSTREAM_OPEN_TIMEOUT
+                )
             )
         except (OSError, ValueError) as e:
             if _is_terminal_http_client_error(e):
