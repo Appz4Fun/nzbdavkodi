@@ -1,0 +1,11 @@
+--- repo/plugin.video.nzbdav/resources/lib/fallback_streams.py
++++ repo/plugin.video.nzbdav/resources/lib/fallback_streams.py
+@@ -70,6 +70,8 @@
+
+ _SAFE_JOB_RE = re.compile(r"^[A-Za-z0-9._ \[\]-]+$")
+ _CONTENT_RANGE_RE = re.compile(r"^bytes\s+(\d+)-(\d+)/(\d+|\*)$")
++_NON_WORD_RE = re.compile(r"[\W_]+")
++_UNSAFE_JOB_CHAR_RE = re.compile(r"[^A-Za-z0-9._ -]+")
+ _FINGERPRINT_SAMPLE_COUNT = 100
+ _FINGERPRINT_SMALL_SAMPLE_COUNT = 20
+ _FINGERPRINT_DENSE_SAMPLE_MIN_BYTES = 1024 * 1024 * 1024

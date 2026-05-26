@@ -1,0 +1,11 @@
+--- repo/plugin.video.nzbdav/resources/lib/stream_proxy.py
++++ repo/plugin.video.nzbdav/resources/lib/stream_proxy.py
+@@ -101,6 +101,8 @@
+     TypeError,
+     ValueError,
+     subprocess.SubprocessError,
+ )
++_NORMALIZE_SEG_RE = re.compile(r"seg_0*(\d+)\.(m4s|ts)")
++_DURATION_RE = re.compile(r"Duration:\s*(\d+):(\d+):(\d+)(?:\.(\d+))?")
+
+ # Common ffmpeg paths on CoreELEC / LibreELEC

@@ -1,0 +1,29 @@
+--- repo/plugin.video.nzbdav/resources/lib/stream_proxy.py
++++ repo/plugin.video.nzbdav/resources/lib/stream_proxy.py
+@@ -101,6 +101,8 @@
+     TypeError,
+     ValueError,
+     subprocess.SubprocessError,
+ )
++_NORMALIZE_SEG_RE = re.compile(r"seg_0*(\d+)\.(m4s|ts)")
++_DURATION_RE = re.compile(r"Duration:\s*(\d+):(\d+):(\d+)(?:\.(\d+))?")
+
+ # Common ffmpeg paths on CoreELEC / LibreELEC
+@@ -1280,7 +1282,7 @@
+
+     Returns duration in seconds as a float, or None if not found.
+     """
+-    match = re.search(r"Duration:\s*(\d+):(\d+):(\d+)(?:\.(\d+))?", stderr_text)
++    match = _DURATION_RE.search(stderr_text)
+     if not match:
+         return None
+     hours, minutes, seconds, frac = match.groups()
+@@ -4763,7 +4765,7 @@
+         def _normalize_segment(match):
+             return "seg_{}.{}".format(int(match.group(1)), match.group(2))
+
+-        text = re.sub(r"seg_0*(\d+)\.(m4s|ts)", _normalize_segment, text)
++        text = _NORMALIZE_SEG_RE.sub(_normalize_segment, text)
+         return text.encode("utf-8")
+
+     def _segment_complete(self, seg_n):

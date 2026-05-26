@@ -1,0 +1,68 @@
+--- repo/plugin.video.nzbdav/resources/lib/nzb_manifest.py
++++ repo/plugin.video.nzbdav/resources/lib/nzb_manifest.py
+@@ -29,6 +29,7 @@
+     r"\.(par2?|nfo|sfv|jpg|jpeg|png|gif|txt|url|lnk|srt|sub|idx|md5|sha\d*)\b",
+     re.I,
+ )
++_NON_WORD_RE = re.compile(r"[\W_]+")
+ _DOMINANT_BLOB_THRESHOLD_FRACTION = 0.80
+ _SPLIT_PAYLOAD_MIN_FILE_COUNT = 10
+ _SPLIT_PAYLOAD_MAX_SIZE_RATIO = 5
+@@ -68,9 +69,9 @@
+         return ""
+     if "." in value:
+         stem, ext = value.rsplit(".", 1)
+-        stem = re.sub(r"[\W_]+", " ", stem.lower())
++        stem = _NON_WORD_RE.sub(" ", stem.lower())
+         return "{}.{}".format(" ".join(stem.split()), ext.lower())
+-    return " ".join(re.sub(r"[\W_]+", " ", value.lower()).split())
++    return " ".join(_NON_WORD_RE.sub(" ", value.lower()).split())
+
+
+ def _strip_namespace(tag):
+@@ -120,7 +121,7 @@
+     if not match:
+         return ""
+     base = match.group(1).strip().strip('"').strip("'")
+-    base = re.sub(r"[\W_]+", " ", base.lower())
++    base = _NON_WORD_RE.sub(" ", base.lower())
+     return " ".join(base.split())
+
+
+--- repo/plugin.video.nzbdav/resources/lib/fallback_streams.py
++++ repo/plugin.video.nzbdav/resources/lib/fallback_streams.py
+@@ -70,6 +70,8 @@
+ # fallback fetch fails, we skip trying the rest.
+ _SAFE_JOB_RE = re.compile(r"^[A-Za-z0-9._ \[\]-]+$")
+ _CONTENT_RANGE_RE = re.compile(r"^bytes\s+(\d+)-(\d+)/(\d+|\*)$")
++_NON_WORD_RE = re.compile(r"[\W_]+")
++_UNSAFE_JOB_CHAR_RE = re.compile(r"[^A-Za-z0-9._ -]+")
+
+
+ class FallbackFailed(Exception):
+@@ -309,7 +311,7 @@
+     """Normalize release titles for conservative duplicate grouping."""
+     if not isinstance(value, str):
+         return ""
+-    normalized = re.sub(r"[\W_]+", " ", value.lower())
++    normalized = _NON_WORD_RE.sub(" ", value.lower())
+     return " ".join(normalized.split())
+
+
+@@ -1555,7 +1557,7 @@
+ def build_fallback_job_name(title, nzb_url, index):
+     """Return a stable, traceable nzbdav job name for a fallback candidate."""
+     clean_title = title if isinstance(title, str) else ""
+-    clean_title = re.sub(r"[^A-Za-z0-9._ -]+", " ", clean_title)
++    clean_title = _UNSAFE_JOB_CHAR_RE.sub(" ", clean_title)
+     clean_title = " ".join(clean_title.split())[:180].strip()
+     if not clean_title:
+         clean_title = "fallback"
+@@ -1563,7 +1565,7 @@
+     digest = hashlib.sha256(str(nzb_url).encode("utf-8")).hexdigest()[:8]
+     job_name = "{} [fallback-{}-{}]".format(clean_title, index, digest)
+     if not _SAFE_JOB_RE.match(job_name):
+-        job_name = re.sub(r"[^A-Za-z0-9._ -]+", " ", job_name)
++        job_name = _UNSAFE_JOB_CHAR_RE.sub(" ", job_name)
+         job_name = " ".join(job_name.split())
+     return job_name
