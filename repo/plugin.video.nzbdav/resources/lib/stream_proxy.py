@@ -1100,6 +1100,8 @@ def _validate_url(url):
     """
     if not url or not url.startswith(("http://", "https://")):
         raise ValueError("Invalid URL scheme: {}".format(repr(url)[:30]))
+    # No need to check for leading hyphen on url since scheme validation
+    # enforces 'http' which never starts with '-'
     if any(ord(c) < 0x20 for c in url):
         raise ValueError("URL contains control characters: {}".format(repr(url)[:60]))
 
@@ -1110,6 +1112,8 @@ def _validate_auth_header(auth_header):
         return None
     if not isinstance(auth_header, str):
         raise ValueError("Authorization header must be a string")
+    if auth_header.startswith("-"):
+        raise ValueError("Authorization header cannot start with a hyphen")
     if any(ord(c) < 0x20 or ord(c) == 0x7F for c in auth_header):
         raise ValueError("Authorization header contains control characters")
     return auth_header
@@ -1671,9 +1675,10 @@ class _StreamHandler(BaseHTTPRequestHandler):
             return False
         exe = cmd[0]
         exe_name = os.path.basename(exe).lower()
-        if exe_name != "ffmpeg":
+        if exe_name not in ("ffmpeg", "ffprobe"):
             return False
         prev_arg = None
+
         for arg in cmd:
             if "\x00" in arg:
                 return False
@@ -1684,6 +1689,12 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     return False
             elif "\n" in arg or "\r" in arg:
                 return False
+
+            # If the previous argument expects a URL/value, ensure
+            # the value doesn't start with a hyphen.
+            if prev_arg == "-i" and arg.startswith("-"):
+                return False
+
             prev_arg = arg
         return True
 
