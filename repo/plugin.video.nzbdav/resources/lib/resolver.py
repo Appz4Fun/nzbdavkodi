@@ -59,6 +59,10 @@ _POLL_NEAR_COMPLETE_FAST_REPOLL_SECONDS = 0.1
 _POLL_NEAR_COMPLETE_FAST_REPOLL_COUNT = 5
 _PLAYBACK_CLEANUP_HANDOFF_GRACE_SECONDS = 0.25
 _PLAYBACK_PREPARE_HANDOFF_GRACE_SECONDS = 8.0
+_STREAM_CONTENT_LENGTH_HINT_TTL_SECONDS = 30.0
+_STREAM_CONTENT_LENGTH_HINTS_MAX = 128
+_STREAM_CONTENT_LENGTH_HINTS = {}
+_STREAM_CONTENT_LENGTH_HINTS_LOCK = threading.Lock()
 # HTTP status codes the submit retry loop treats as transient and worth
 # retrying. RFC 9110 explicitly calls 408 retry-friendly ("client may
 # assume the server closed the connection due to inactivity and retry").
@@ -513,6 +517,59 @@ def _stream_auth_header(stream_headers):
     return None
 
 
+def _stream_content_length_hint_key(stream_url, auth_header):
+    return stream_url, auth_header or ""
+
+
+def _remember_stream_content_length_hint(stream_url, auth_header, size):
+    try:
+        size = int(size or 0)
+    except (TypeError, ValueError):
+        return
+    if not stream_url or size <= 0:
+        return
+    key = _stream_content_length_hint_key(stream_url, auth_header)
+    expires_at = time.monotonic() + _STREAM_CONTENT_LENGTH_HINT_TTL_SECONDS
+    with _STREAM_CONTENT_LENGTH_HINTS_LOCK:
+        _STREAM_CONTENT_LENGTH_HINTS[key] = (expires_at, size)
+        while len(_STREAM_CONTENT_LENGTH_HINTS) > _STREAM_CONTENT_LENGTH_HINTS_MAX:
+            _STREAM_CONTENT_LENGTH_HINTS.pop(
+                min(
+                    _STREAM_CONTENT_LENGTH_HINTS,
+                    key=lambda key: _STREAM_CONTENT_LENGTH_HINTS[key][0],
+                ),
+                None,
+            )
+
+
+def _remember_resolved_stream_content_length_hint(
+    video_path, stream_url, stream_headers
+):
+    try:
+        from resources.lib import webdav as _webdav
+
+        size = _webdav.get_video_file_size_hint(video_path)
+    except Exception:  # pylint: disable=broad-except
+        return
+    _remember_stream_content_length_hint(
+        stream_url, _stream_auth_header(stream_headers), size
+    )
+
+
+def _get_stream_content_length_hint(stream_url, auth_header):
+    now = time.monotonic()
+    key = _stream_content_length_hint_key(stream_url, auth_header)
+    with _STREAM_CONTENT_LENGTH_HINTS_LOCK:
+        cached = _STREAM_CONTENT_LENGTH_HINTS.get(key)
+        if cached is None:
+            return 0
+        expires_at, size = cached
+        if expires_at <= now:
+            _STREAM_CONTENT_LENGTH_HINTS.pop(key, None)
+            return 0
+        return size
+
+
 def _prepare_direct_playback(
     stream_url,
     stream_headers,
@@ -543,6 +600,9 @@ def _prepare_direct_playback(
 
     auth_header = _stream_auth_header(stream_headers)
     prepare_kwargs = {"fallback_sources": fallback_sources}
+    content_length_hint = _get_stream_content_length_hint(stream_url, auth_header)
+    if content_length_hint > 0:
+        prepare_kwargs["content_length_hint"] = content_length_hint
     settings_snapshot = build_settings_snapshot(settings_getter=settings_getter)
     if any(settings_snapshot.values()):
         prepare_kwargs["settings_snapshot"] = settings_snapshot
@@ -1392,9 +1452,14 @@ def _find_video_stream_for_folder(webdav_folder, settings_getter=None):
             and get_webdav_stream_url_for_path is _webdav.get_webdav_stream_url_for_path
         ):
             _resolve_stage("find_video_stream_for_folder_delegated")
-            return find_video_stream_for_folder(
+            video_path, stream_url, stream_headers = find_video_stream_for_folder(
                 webdav_folder, **_settings_getter_kwargs(settings_getter)
             )
+            if video_path:
+                _remember_resolved_stream_content_length_hint(
+                    video_path, stream_url, stream_headers
+                )
+            return video_path, stream_url, stream_headers
     except (AttributeError, ImportError):
         pass
 
@@ -1407,6 +1472,9 @@ def _find_video_stream_for_folder(webdav_folder, settings_getter=None):
     _resolve_stage("get_webdav_stream_url_start")
     stream_url, stream_headers = get_webdav_stream_url_for_path(video_path, **kwargs)
     _resolve_stage("get_webdav_stream_url_done")
+    _remember_resolved_stream_content_length_hint(
+        video_path, stream_url, stream_headers
+    )
     return video_path, stream_url, stream_headers
 
 
