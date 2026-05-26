@@ -4,7 +4,7 @@
 import itertools
 import threading
 import time as _time
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 from urllib.parse import urlencode
 
 from resources.lib.nzb_manifest import make_empty_manifest
@@ -293,6 +293,8 @@ def test_search_all_providers_calls_direct_indexers_when_enabled(mock_addon):
         imdb="tt0903747",
         season="5",
         episode="14",
+        indexers=ANY,
+        max_results=ANY,
     )
 
 
@@ -406,7 +408,8 @@ def test_search_all_providers_uses_script_settings_getter_without_kodi_addon(
     assert len(results) == 1
     mock_addon.assert_not_called()
     hydra_search.assert_called_once()
-    assert hydra_search.call_args.kwargs["settings_getter"] is setting
+    assert hydra_search.call_args.kwargs["settings_getter"] is not setting
+    assert hydra_search.call_args.kwargs["settings_getter"]("hydra_url") == ""
 
 
 @patch("resources.lib.router.telemetry.log_timing")

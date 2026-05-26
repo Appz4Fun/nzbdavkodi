@@ -8,6 +8,7 @@ import base64
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from itertools import chain
 from urllib import request as urllib_request
 from urllib.parse import parse_qs, unquote, urlencode, urlparse, urlsplit, urlunsplit
@@ -43,6 +44,14 @@ _SCRIPT_PLAY_STAGE_PATH = "/storage/.kodi/temp/nzbdav-script-play-stage.log"
 _SCRIPT_SETTINGS_PATH = (
     "/storage/.kodi/userdata/addon_data/plugin.video.nzbdav/settings.xml"
 )
+_PROVIDER_SEARCH_SETTING_DEFAULTS = {
+    "hydra_url": "",
+    "hydra_api_key": "",
+    "prowlarr_host": "",
+    "prowlarr_api_key": "",
+    "prowlarr_indexer_ids": "",
+    "max_results": "25",
+}
 
 
 def _addon_instance():
@@ -479,6 +488,15 @@ def _get_script_setting(key, default=""):
     return default
 
 
+def _snapshot_settings_getter(settings_getter, defaults):
+    snapshot = {key: settings_getter(key, default) for key, default in defaults.items()}
+
+    def get_snapshot_setting(key, default=""):
+        return snapshot.get(key, default)
+
+    return get_snapshot_setting
+
+
 def _script_completed_job_for_selection(selected):
     """Look up completed-history metadata for a RunScript picker selection."""
     title = selected.get("title", "") if isinstance(selected, dict) else ""
@@ -557,116 +575,102 @@ def _search_all_providers(
             "or direct indexers in settings.",
         )
 
-    all_results = []
-    errors = []
+    provider_jobs = []
+    provider_settings_getter = _snapshot_settings_getter(
+        settings_getter, _PROVIDER_SEARCH_SETTING_DEFAULTS
+    )
 
     if nzbhydra_enabled:
         from resources.lib.hydra import search_hydra
 
-        _script_play_stage("hydra search start")
-        provider_started = time.monotonic()
-        hydra_results = []
-        hydra_error = None
-        provider_failed = False
-        try:
-            hydra_results, hydra_error = search_hydra(
-                search_type,
-                title,
-                year=year,
-                imdb=imdb,
-                season=season,
-                episode=episode,
-                settings_getter=settings_getter,
+        provider_jobs.append(
+            (
+                "hydra",
+                "NZBHydra2",
+                search_hydra,
+                (
+                    search_type,
+                    title,
+                ),
+                {
+                    "year": year,
+                    "imdb": imdb,
+                    "season": season,
+                    "episode": episode,
+                    "settings_getter": provider_settings_getter,
+                },
             )
-            _script_play_stage(
-                "hydra search done count={} error={}".format(
-                    len(hydra_results or []), bool(hydra_error)
-                )
-            )
-        except Exception:
-            provider_failed = True
-            raise
-        finally:
-            telemetry.log_timing(
-                "provider_search",
-                (time.monotonic() - provider_started) * 1000.0,
-                provider="hydra",
-                count=len(hydra_results or []),
-                error=provider_failed or bool(hydra_error),
-            )
-        if hydra_error:
-            xbmc.log(
-                "NZB-DAV: NZBHydra2 search error: {}".format(hydra_error),
-                xbmc.LOGWARNING,
-            )
-            errors.append(hydra_error)
-        else:
-            all_results.extend(hydra_results)
+        )
 
     if prowlarr_enabled:
         from resources.lib.prowlarr import search_prowlarr
 
-        _script_play_stage("prowlarr search start")
-        provider_started = time.monotonic()
-        prowlarr_results = []
-        prowlarr_error = None
-        provider_failed = False
-        try:
-            prowlarr_results, prowlarr_error = search_prowlarr(
-                search_type,
-                title,
-                year=year,
-                imdb=imdb,
-                season=season,
-                episode=episode,
+        provider_jobs.append(
+            (
+                "prowlarr",
+                "Prowlarr",
+                search_prowlarr,
+                (
+                    search_type,
+                    title,
+                ),
+                {
+                    "year": year,
+                    "imdb": imdb,
+                    "season": season,
+                    "episode": episode,
+                    "settings_getter": provider_settings_getter,
+                },
             )
-            _script_play_stage(
-                "prowlarr search done count={} error={}".format(
-                    len(prowlarr_results or []), bool(prowlarr_error)
-                )
-            )
-        except Exception:
-            provider_failed = True
-            raise
-        finally:
-            telemetry.log_timing(
-                "provider_search",
-                (time.monotonic() - provider_started) * 1000.0,
-                provider="prowlarr",
-                count=len(prowlarr_results or []),
-                error=provider_failed or bool(prowlarr_error),
-            )
-        if prowlarr_error:
-            xbmc.log(
-                "NZB-DAV: Prowlarr search error: {}".format(prowlarr_error),
-                xbmc.LOGWARNING,
-            )
-            errors.append(prowlarr_error)
-        else:
-            all_results.extend(prowlarr_results)
+        )
 
     if direct_indexers_enabled:
-        from resources.lib.direct_indexers import search_direct_indexers
+        from resources.lib.direct_indexers import (
+            _read_max_results,
+            get_configured_indexers,
+            search_direct_indexers,
+        )
 
-        _script_play_stage("direct indexers search start")
-        provider_started = time.monotonic()
-        direct_results = []
-        direct_error = None
-        provider_failed = False
-        try:
-            direct_results, direct_error = search_direct_indexers(
-                search_type,
-                title,
-                year=year,
-                imdb=imdb,
-                season=season,
-                episode=episode,
+        direct_indexers = get_configured_indexers()
+        direct_max_results = _read_max_results(provider_settings_getter)
+
+        provider_jobs.append(
+            (
+                "direct indexers",
+                "Direct indexer",
+                search_direct_indexers,
+                (
+                    search_type,
+                    title,
+                ),
+                {
+                    "year": year,
+                    "imdb": imdb,
+                    "season": season,
+                    "episode": episode,
+                    "indexers": direct_indexers,
+                    "max_results": direct_max_results,
+                },
             )
+        )
+
+    all_results = []
+    errors = []
+
+    def run_provider(provider_key, _provider_label, search_func, args, kwargs):
+        provider_started = time.monotonic()
+        results = []
+        error = None
+        provider_failed = False
+        _script_play_stage("{} search start".format(provider_key))
+        try:
+            results, error = search_func(*args, **kwargs)
             _script_play_stage(
-                "direct indexers search done count={} error={}".format(
-                    len(direct_results or []), bool(direct_error)
+                "{} search done count={} error={}".format(
+                    provider_key, len(results or []), bool(error)
                 )
             )
+            return results, error
         except Exception:
             provider_failed = True
             raise
@@ -674,18 +678,76 @@ def _search_all_providers(
             telemetry.log_timing(
                 "provider_search",
                 (time.monotonic() - provider_started) * 1000.0,
-                provider="direct_indexers",
-                count=len(direct_results or []),
-                error=provider_failed or bool(direct_error),
+                provider=provider_key.replace(" ", "_"),
+                count=len(results or []),
+                error=provider_failed or bool(error),
             )
-        if direct_error:
+
+    if len(provider_jobs) == 1:
+        provider_key, provider_label, search_func, args, kwargs = provider_jobs[0]
+        try:
+            outcome = run_provider(
+                provider_key,
+                provider_label,
+                search_func,
+                args,
+                kwargs,
+            )
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            outcome = ([], "{} search failed: {}".format(provider_label, error))
+        provider_outcomes = [
+            (
+                provider_label,
+                outcome,
+            )
+        ]
+    else:
+        with ThreadPoolExecutor(max_workers=len(provider_jobs)) as executor:
+            futures = [
+                (
+                    provider_label,
+                    executor.submit(
+                        run_provider,
+                        provider_key,
+                        provider_label,
+                        search_func,
+                        args,
+                        kwargs,
+                    ),
+                )
+                for (
+                    provider_key,
+                    provider_label,
+                    search_func,
+                    args,
+                    kwargs,
+                ) in provider_jobs
+            ]
+            provider_outcomes = []
+            for provider_label, future in futures:
+                try:
+                    provider_outcomes.append((provider_label, future.result()))
+                except Exception as error:  # pylint: disable=broad-exception-caught
+                    provider_outcomes.append(
+                        (
+                            provider_label,
+                            (
+                                [],
+                                "{} search failed: {}".format(provider_label, error),
+                            ),
+                        )
+                    )
+
+    for provider_label, outcome in provider_outcomes:
+        provider_results, provider_error = outcome
+        if provider_error:
             xbmc.log(
-                "NZB-DAV: Direct indexer search error: {}".format(direct_error),
+                "NZB-DAV: {} search error: {}".format(provider_label, provider_error),
                 xbmc.LOGWARNING,
             )
-            errors.append(direct_error)
+            errors.append(provider_error)
         else:
-            all_results.extend(direct_results)
+            all_results.extend(provider_results)
 
     seen_links = set()
     deduped = []
