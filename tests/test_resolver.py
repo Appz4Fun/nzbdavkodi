@@ -3748,7 +3748,8 @@ def test_submit_ui_pump_adopts_existing_queue_without_initial_probe_delay(
     elapsed = _time.perf_counter() - started
 
     assert (nzo_id, submit_error) == ("SABnzbd_nzo_existing_queue", None)
-    assert elapsed < 0.035, "existing queue adoption took {:.3f}s".format(elapsed)
+    monitor.waitForAbort.assert_not_called()
+    assert elapsed < 0.1, "existing queue adoption took {:.3f}s".format(elapsed)
 
 
 @patch("resources.lib.resolver.find_completed_by_name", return_value=None)
