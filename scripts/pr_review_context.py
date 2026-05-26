@@ -6,11 +6,12 @@
 
 import argparse
 import json
+import shlex
 import subprocess
 import sys
 
 PR_JSON_FIELDS = (
-    "number,title,url,baseRefName,headRefName,statusCheckRollup,reviewDecision"
+    "number,title,url,baseRefName,headRefName,statusCheckRollup,reviewDecision,comments"
 )
 FAILING_CHECK_STATES = ("FAILURE", "ERROR", "CANCELLED", "TIMED_OUT")
 PENDING_CHECK_STATES = ("PENDING", "QUEUED", "IN_PROGRESS", "REQUESTED")
@@ -155,6 +156,10 @@ def _changed_file_paths(changed_files):
     return paths
 
 
+def _quote(value):
+    return shlex.quote(str(value))
+
+
 def render_markdown(data):
     pr = data.get("pr")
     lines = ["# PR Review Context", ""]
@@ -225,7 +230,10 @@ def render_markdown(data):
         lines.extend(
             "```bash\n{}\n```".format(
                 "\n".join(
-                    "git diff {}...HEAD -- {}".format(data.get("base_ref", ""), path)
+                    "git diff {} -- {}".format(
+                        _quote("{}...HEAD".format(data.get("base_ref", ""))),
+                        _quote(path),
+                    )
                     for path in file_paths
                 )
             ).splitlines()
