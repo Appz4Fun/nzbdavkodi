@@ -4,6 +4,7 @@
 
 """Conservative grouping for duplicate releases usable as fallback streams."""
 
+import copy
 import hashlib
 import os
 import re
@@ -21,6 +22,7 @@ from xml.etree import ElementTree as ET
 import xbmc
 import xbmcaddon
 
+from resources.lib import telemetry
 from resources.lib.nzb_manifest import fetch_nzb_video_manifest, make_empty_manifest
 
 
@@ -78,6 +80,8 @@ _FINGERPRINT_BYTES = 4096
 _MAX_FALLBACKS = 5
 _FALLBACK_MANIFEST_STALL_SPECULATION_SECONDS = 0.05
 _FALLBACK_MANIFEST_OPTIONAL_TAIL_WAIT_SECONDS = 0.1
+_FALLBACK_MANIFEST_CACHE_TTL_SECONDS = 10.0
+_FALLBACK_MANIFEST_CACHE_MAX_ENTRIES = 128
 _ALLOWED_STREAM_SCHEMES = frozenset(("http", "https"))
 _METADATA_ONLY_MANIFEST_REASONS = frozenset(("too_large",))
 _ADDON_SETTINGS_SCHEMA = (
@@ -86,6 +90,81 @@ _ADDON_SETTINGS_SCHEMA = (
 _INDEXER_SIZE_SYNTHETIC_MANIFEST_REASONS = frozenset(("invalid_xml", "no_video_file"))
 _INDEXER_SIZE_SYNTHETIC_MIN_BYTES = 100 * 1024 * 1024
 _PrecomputedProbeBase = namedtuple("_PrecomputedProbeBase", "parts origin path")
+_FALLBACK_MANIFEST_CACHE = {}
+_FALLBACK_MANIFEST_CACHE_LOCK = threading.Lock()
+
+
+def _fallback_manifest_cache_now():
+    return time.monotonic()
+
+
+def clear_fallback_manifest_cache():
+    """Clear the short-lived fallback manifest cache."""
+    with _FALLBACK_MANIFEST_CACHE_LOCK:
+        _FALLBACK_MANIFEST_CACHE.clear()
+
+
+def _fallback_manifest_cache_key(link):
+    return fetch_nzb_video_manifest, link
+
+
+def _copy_manifest(manifest):
+    return copy.deepcopy(manifest) if isinstance(manifest, dict) else manifest
+
+
+def _cached_fallback_manifest(link, now):
+    key = _fallback_manifest_cache_key(link)
+    with _FALLBACK_MANIFEST_CACHE_LOCK:
+        cached = _FALLBACK_MANIFEST_CACHE.get(key)
+        if cached is None:
+            return None
+        expires_at, manifest = cached
+        if expires_at <= now:
+            _FALLBACK_MANIFEST_CACHE.pop(key, None)
+            return None
+        return _copy_manifest(manifest)
+
+
+def _store_fallback_manifest(link, manifest, now):
+    if not isinstance(manifest, dict):
+        return
+    key = _fallback_manifest_cache_key(link)
+    expires_at = now + _FALLBACK_MANIFEST_CACHE_TTL_SECONDS
+    with _FALLBACK_MANIFEST_CACHE_LOCK:
+        if len(_FALLBACK_MANIFEST_CACHE) >= _FALLBACK_MANIFEST_CACHE_MAX_ENTRIES:
+            expired = [
+                cache_key
+                for cache_key, (cached_expires_at, _manifest) in (
+                    _FALLBACK_MANIFEST_CACHE.items()
+                )
+                if cached_expires_at <= now
+            ]
+            for cache_key in expired:
+                _FALLBACK_MANIFEST_CACHE.pop(cache_key, None)
+            if len(_FALLBACK_MANIFEST_CACHE) >= _FALLBACK_MANIFEST_CACHE_MAX_ENTRIES:
+                oldest_key = min(
+                    _FALLBACK_MANIFEST_CACHE,
+                    key=lambda cache_key: _FALLBACK_MANIFEST_CACHE[cache_key][0],
+                )
+                _FALLBACK_MANIFEST_CACHE.pop(oldest_key, None)
+        _FALLBACK_MANIFEST_CACHE[key] = (expires_at, _copy_manifest(manifest))
+
+
+def _fetch_fallback_manifest(link):
+    now = _fallback_manifest_cache_now()
+    manifest = _cached_fallback_manifest(link, now)
+    if isinstance(manifest, dict):
+        return manifest
+    try:
+        manifest = fetch_nzb_video_manifest(
+            link, health_check=_manifest_candidate_message_ids_are_healthy
+        )
+    except Exception:  # pylint: disable=broad-except
+        manifest = _manifest_error("fetch_error")
+    if not isinstance(manifest, dict):
+        manifest = _manifest_error("fetch_error")
+    _store_fallback_manifest(link, manifest, _fallback_manifest_cache_now())
+    return _copy_manifest(manifest)
 
 
 def _setting_bool(addon, key, default=False):
@@ -1082,10 +1161,26 @@ def _pool_has_distinct_nzb_links(results):
 
 def _ensure_fallback_manifests(results):
     """Fetch missing NZB manifests for fallback grouping."""
+    started = time.monotonic()
     manifest_cache = {}
+    input_count = 0
     for result in results:
+        input_count += 1
         _ensure_fallback_manifest(result, manifest_cache)
+    telemetry.log_timing(
+        "fallback_manifests",
+        (time.monotonic() - started) * 1000.0,
+        input=input_count,
+        fetched=len(manifest_cache),
+    )
     return manifest_cache
+
+
+def _safe_len(value):
+    try:
+        return len(value)
+    except TypeError:
+        return "unknown"
 
 
 def _ensure_fallback_manifest(result, manifest_cache):
@@ -1101,12 +1196,7 @@ def _ensure_fallback_manifest(result, manifest_cache):
         result["_fallback_manifest_error"] = "missing_link"
         return None
     if link not in manifest_cache:
-        try:
-            manifest_cache[link] = fetch_nzb_video_manifest(
-                link, health_check=_manifest_candidate_message_ids_are_healthy
-            )
-        except Exception:  # pylint: disable=broad-except
-            manifest_cache[link] = _manifest_error("fetch_error")
+        manifest_cache[link] = _fetch_fallback_manifest(link)
     manifest = manifest_cache[link]
     if not isinstance(manifest, dict):
         manifest = _manifest_error("fetch_error")
@@ -1539,14 +1629,23 @@ def attach_fallback_candidates_for_selection(selected, results, fallback_setting
             seen_prefetch_links.add(candidate_link)
             yield candidate
 
+    started = time.monotonic()
+    selected_manifest_fetch = not selected_manifest_ready
     _attach_selection_candidates_streaming(
         selected,
         _prefetch_candidates(),
         candidates,
         seen_candidate_links,
         seen_article_digests,
-        include_selected_manifest=not selected_manifest_ready,
+        include_selected_manifest=selected_manifest_fetch,
         max_candidates=max_candidates,
+    )
+    telemetry.log_timing(
+        "fallback_selection_manifests",
+        (time.monotonic() - started) * 1000.0,
+        attached=len(candidates),
+        pool=_safe_len(results or []),
+        selected_manifest_fetch=selected_manifest_fetch,
     )
     selected["_fallback_candidates"] = candidates
     return selected
