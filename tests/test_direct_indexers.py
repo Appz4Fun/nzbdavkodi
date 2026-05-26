@@ -518,9 +518,10 @@ def test_search_direct_indexers_allows_large_result_limit_up_to_ten_thousand(
 
 
 @patch("resources.lib.direct_indexers.get_configured_indexers")
+@patch("resources.lib.direct_indexers.xbmcaddon")
 @patch("resources.lib.direct_indexers._http_get")
 def test_search_direct_indexers_normalizes_injected_max_results(
-    mock_http, mock_configured
+    mock_http, mock_xbmcaddon, mock_configured
 ):
     from resources.lib.direct_indexers import search_direct_indexers
 
@@ -533,6 +534,7 @@ def test_search_direct_indexers_normalizes_injected_max_results(
             "caps": {},
         }
     ]
+    mock_xbmcaddon.Addon.return_value = _addon_with_settings({"max_results": "999"})
     mock_http.return_value = ONE_RESULT_RSS
 
     results, error = search_direct_indexers("movie", "Terminator 2", max_results="many")
@@ -541,6 +543,7 @@ def test_search_direct_indexers_normalizes_injected_max_results(
     assert len(results) == 1
     call_url = mock_http.call_args[0][0]
     assert "limit=25" in call_url
+    assert "limit=999" not in call_url
 
 
 @patch("resources.lib.direct_indexers.get_configured_indexers")
