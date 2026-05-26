@@ -49,6 +49,17 @@ just clean         # Remove __pycache__, .pytest_cache, zip
 just dist-clean    # clean + remove pages-dist/
 ```
 
+## PR Review Helper Scripts
+
+For agent PR review workflows:
+
+- `python3 scripts/pr_agent_context.py --json` -- preferred unified agent context packet.
+- `python3 scripts/pr_review_context.py --json` -- local branch, PR, check, and file context.
+- `python3 scripts/fetch_comments.py --json` -- unresolved GitHub review threads and PR comments.
+
+Use `fetch_comments.py` directly when a skill or workflow expects that helper by name.
+Use `pr_agent_context.py` when starting a PR review or addressing comments from scratch.
+
 ## Repository Map
 
 - `repo/plugin.video.nzbdav/` -- Kodi addon installed via zip
