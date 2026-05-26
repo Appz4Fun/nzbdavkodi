@@ -632,6 +632,180 @@ def test_filter_results_attaches_meta_key(mock_settings):
         assert "group" in meta, "_meta must contain group"
 
 
+@patch("resources.lib.filter._get_filter_settings")
+def test_filter_results_reuses_prefilled_meta(mock_settings):
+    """filter_results should not reparse results that already have metadata."""
+    mock_settings.return_value = _all_pass_settings()
+    meta = {
+        "resolution": "1080p",
+        "hdr": [],
+        "audio": [],
+        "codec": "x264/AVC",
+        "languages": [],
+        "group": "GRP",
+    }
+    result = _make_result("Movie.2024.1080p.BluRay.x264-GRP")
+    result["_meta"] = meta
+
+    with patch(
+        "resources.lib.filter.parse_title_metadata",
+        side_effect=AssertionError("should reuse _meta"),
+    ):
+        filtered, all_parsed = filter_results([result])
+
+    assert filtered == [result]
+    assert all_parsed == [result]
+    assert result["_meta"] is meta
+
+
+@patch("resources.lib.filter._get_filter_settings")
+def test_filter_results_reparses_partial_prefilled_meta(mock_settings):
+    """filter_results should only reuse parse-shaped metadata dicts."""
+    mock_settings.return_value = _all_pass_settings()
+    result = _make_result("Movie.2024.1080p.BluRay.x264-GRP")
+    result["_meta"] = {}
+    meta = {
+        "resolution": "1080p",
+        "hdr": [],
+        "audio": [],
+        "codec": "x264/AVC",
+        "languages": [],
+        "group": "GRP",
+    }
+
+    with patch("resources.lib.filter.parse_title_metadata", return_value=meta) as parse:
+        filtered, all_parsed = filter_results([result])
+
+    assert filtered == [result]
+    assert all_parsed == [result]
+    parse.assert_called_once_with(result["title"])
+    assert result["_meta"] is meta
+
+
+@patch("resources.lib.filter._get_filter_settings")
+def test_filter_results_reparses_malformed_prefilled_meta(mock_settings):
+    """filter_results should reject fully-keyed metadata with unsafe value types."""
+    mock_settings.return_value = _all_pass_settings()
+    result = _make_result("Movie.2024.1080p.BluRay.x264-GRP")
+    result["_meta"] = {
+        "resolution": "1080p",
+        "hdr": "HDR10",
+        "audio": ["DTS"],
+        "codec": "x264/AVC",
+        "languages": "en",
+        "group": object(),
+    }
+    meta = {
+        "resolution": "1080p",
+        "hdr": [],
+        "audio": [],
+        "codec": "x264/AVC",
+        "languages": [],
+        "group": "GRP",
+    }
+
+    with patch("resources.lib.filter.parse_title_metadata", return_value=meta) as parse:
+        filtered, all_parsed = filter_results([result])
+
+    assert filtered == [result]
+    assert all_parsed == [result]
+    parse.assert_called_once_with(result["title"])
+    assert result["_meta"] is meta
+
+
+@patch("resources.lib.filter._get_filter_settings")
+def test_filter_results_reparses_prefilled_meta_with_non_string_list_items(
+    mock_settings,
+):
+    """filter_results should reject cached metadata with unsafe list contents."""
+    mock_settings.return_value = _all_pass_settings()
+    result = _make_result("Movie.2024.1080p.BluRay.x264-GRP")
+    result["_meta"] = {
+        "resolution": "1080p",
+        "hdr": [{}],
+        "audio": ["DTS"],
+        "codec": "x264/AVC",
+        "languages": ["en"],
+        "group": "GRP",
+    }
+    meta = {
+        "resolution": "1080p",
+        "hdr": [],
+        "audio": [],
+        "codec": "x264/AVC",
+        "languages": [],
+        "group": "GRP",
+    }
+
+    with patch("resources.lib.filter.parse_title_metadata", return_value=meta) as parse:
+        filtered, all_parsed = filter_results([result])
+
+    assert filtered == [result]
+    assert all_parsed == [result]
+    parse.assert_called_once_with(result["title"])
+    assert result["_meta"] is meta
+
+
+@patch("resources.lib.filter._get_filter_settings")
+def test_filter_results_caches_duplicate_title_metadata(mock_settings):
+    """filter_results should parse identical titles once per filtering pass."""
+    mock_settings.return_value = _all_pass_settings()
+    title = "Movie.2024.1080p.BluRay.x264-GRP"
+    results = [
+        _make_result(title, link="http://example.com/one.nzb"),
+        _make_result(title, link="http://example.com/two.nzb"),
+    ]
+    meta = {
+        "resolution": "1080p",
+        "hdr": [],
+        "audio": [],
+        "codec": "x264/AVC",
+        "languages": [],
+        "group": "GRP",
+    }
+
+    with patch("resources.lib.filter.parse_title_metadata", return_value=meta) as parse:
+        filtered, all_parsed = filter_results(results)
+
+    assert filtered == results
+    assert all_parsed == results
+    assert parse.call_count == 1
+    assert results[0]["_meta"] is meta
+    assert results[1]["_meta"] == meta
+    assert results[1]["_meta"] is not meta
+    assert results[1]["_meta"]["hdr"] is not meta["hdr"]
+
+
+@patch("resources.lib.filter._get_filter_settings")
+def test_filter_results_seeds_duplicate_title_cache_from_prefilled_meta(mock_settings):
+    """A valid prefilled _meta should satisfy later duplicate titles."""
+    mock_settings.return_value = _all_pass_settings()
+    title = "Movie.2024.1080p.BluRay.x264-GRP"
+    meta = {
+        "resolution": "1080p",
+        "hdr": [],
+        "audio": [],
+        "codec": "x264/AVC",
+        "languages": [],
+        "group": "GRP",
+    }
+    first = _make_result(title, link="http://example.com/one.nzb")
+    first["_meta"] = meta
+    second = _make_result(title, link="http://example.com/two.nzb")
+
+    with patch(
+        "resources.lib.filter.parse_title_metadata",
+        side_effect=AssertionError("should reuse cached _meta"),
+    ):
+        filtered, all_parsed = filter_results([first, second])
+
+    assert filtered == [first, second]
+    assert all_parsed == [first, second]
+    assert first["_meta"] is meta
+    assert second["_meta"] == meta
+    assert second["_meta"] is not meta
+
+
 # --- Size parsing robustness tests ---
 
 
