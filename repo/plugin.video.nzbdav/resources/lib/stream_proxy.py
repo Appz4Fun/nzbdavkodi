@@ -2008,6 +2008,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
         """
         ffmpeg = ctx["ffmpeg_path"]
         input_url = ctx["remote_url"]
+        if input_url.startswith("-"):
+            raise ValueError("URL cannot start with a dash")
         _validate_url(input_url)
         auth_args = _ffmpeg_auth_args(ctx.get("auth_header"))
         output_format = ctx.get("output_format", "matroska")
@@ -2616,6 +2618,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
         """
         ffmpeg = ctx["ffmpeg_path"]
         input_url = ctx["remote_url"]
+        if input_url.startswith("-"):
+            raise ValueError("URL cannot start with a dash")
         _validate_url(input_url)
         auth_args = _ffmpeg_auth_args(ctx.get("auth_header"))
         cmd = [
