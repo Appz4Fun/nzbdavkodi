@@ -3,7 +3,9 @@
 
 """Direct Newznab-compatible indexer provider."""
 
-from concurrent.futures import ThreadPoolExecutor, wait
+import time
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 from urllib.error import URLError
 from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 from xml.etree import ElementTree as ET
@@ -54,6 +56,7 @@ _DIRECT_REQUEST_ERRORS = (
 )
 _DIRECT_FANOUT_MAX_WORKERS = 4
 _DIRECT_FANOUT_TIMEOUT = 20
+_DIRECT_FANOUT_POLL_INTERVAL = 0.005
 
 
 def _setting_enabled(addon, setting_id):
@@ -327,6 +330,20 @@ def _worker_count(total_count):
     return max(1, min(total_count, _DIRECT_FANOUT_MAX_WORKERS))
 
 
+def _wait_for_fanout(futures, timeout_seconds):
+    deadline = time.monotonic() + timeout_seconds
+    sleeper = Event()
+    while True:
+        done = {future for future in futures if future.done()}
+        if len(done) == len(futures):
+            return done, set()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            not_done = set(futures) - done
+            return done, not_done
+        sleeper.wait(min(_DIRECT_FANOUT_POLL_INTERVAL, remaining))
+
+
 def _run_indexer_fanout(indexers, worker, timeout_seconds=None):
     timeout_seconds = (
         _DIRECT_FANOUT_TIMEOUT if timeout_seconds is None else timeout_seconds
@@ -337,8 +354,8 @@ def _run_indexer_fanout(indexers, worker, timeout_seconds=None):
         for indexer in indexers:
             entries.append((indexer, executor.submit(worker, indexer)))
 
-        done, not_done = wait(
-            [future for _indexer, future in entries], timeout=timeout_seconds
+        done, not_done = _wait_for_fanout(
+            [future for _indexer, future in entries], timeout_seconds
         )
         outcomes = []
         for indexer, future in entries:
