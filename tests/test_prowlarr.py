@@ -164,11 +164,14 @@ def test_search_prowlarr_invalid_max_results_uses_default(
     assert "limit=25" in call_url
 
 
+@patch("xbmcaddon.Addon")
 @patch("resources.lib.prowlarr._get_settings")
 @patch("resources.lib.prowlarr._http_get")
 def test_search_prowlarr_getter_error_for_max_results_uses_default(
-    mock_http, mock_settings
+    mock_http, mock_settings, mock_addon
 ):
+    addon = mock_addon.return_value
+    addon.getSetting.return_value = "999"
     mock_settings.return_value = ("http://prowlarr:9696", "testkey", ["1"])
     mock_http.return_value = _load_fixture("prowlarr_movie_response.xml")
 
@@ -185,6 +188,7 @@ def test_search_prowlarr_getter_error_for_max_results_uses_default(
     assert len(results) == 2
     call_url = mock_http.call_args[0][0]
     assert "limit=25" in call_url
+    assert "limit=999" not in call_url
 
 
 @patch("resources.lib.prowlarr._get_settings")

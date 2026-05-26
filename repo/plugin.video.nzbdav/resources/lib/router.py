@@ -489,7 +489,17 @@ def _get_script_setting(key, default=""):
 
 
 def _snapshot_settings_getter(settings_getter, defaults):
-    snapshot = {key: settings_getter(key, default) for key, default in defaults.items()}
+    snapshot = {}
+    for key, default in defaults.items():
+        try:
+            snapshot[key] = settings_getter(key, default)
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            xbmc.log(
+                "NZB-DAV: setting '{}' unavailable during provider snapshot; "
+                "using default: {}".format(key, error),
+                xbmc.LOGWARNING,
+            )
+            snapshot[key] = default
 
     def get_snapshot_setting(key, default=""):
         return snapshot.get(key, default)

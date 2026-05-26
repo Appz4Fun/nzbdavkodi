@@ -370,6 +370,49 @@ def test_search_all_providers_uses_defaults_when_setting_read_raises(mock_addon)
     hydra_search.assert_called_once()
 
 
+def test_search_all_providers_uses_default_for_one_snapshot_setting_failure():
+    from resources.lib.router import _search_all_providers
+
+    def setting(key, default=""):
+        values = {
+            "nzbhydra_enabled": "true",
+            "prowlarr_enabled": "false",
+            "direct_indexers_enabled": "false",
+            "hydra_url": "http://hydra:5076",
+            "hydra_api_key": "secret",
+        }
+        if key == "prowlarr_host":
+            raise RuntimeError("settings unavailable")
+        return values.get(key, default)
+
+    hydra_search = MagicMock(
+        return_value=(
+            [
+                {
+                    "title": "The.Matrix.1999.1080p-GRP",
+                    "link": "https://indexer/api?t=get&id=1&apikey=secret",
+                    "size": "123",
+                    "indexer": "NZBHydra2",
+                    "pubdate": "",
+                    "age": "",
+                }
+            ],
+            None,
+        )
+    )
+
+    with patch("resources.lib.hydra.search_hydra", hydra_search):
+        results, error = _search_all_providers(
+            "movie", "The Matrix", settings_getter=setting
+        )
+
+    assert error is None
+    assert len(results) == 1
+    provider_settings = hydra_search.call_args.kwargs["settings_getter"]
+    assert provider_settings("hydra_url") == "http://hydra:5076"
+    assert provider_settings("prowlarr_host") == ""
+
+
 @patch("xbmcaddon.Addon", side_effect=RuntimeError("no addon context"))
 def test_search_all_providers_uses_script_settings_getter_without_kodi_addon(
     mock_addon,
