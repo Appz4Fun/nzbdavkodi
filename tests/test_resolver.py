@@ -29,6 +29,7 @@ from resources.lib.resolver import (
     _poll_once,
     _poll_until_ready,
     _prefetch_fallback_candidate_loader,
+    _prepare_direct_playback_with_service_config,
     _show_submit_error_dialog,
     _start_direct_playback_prepare,
     _start_fallback_submit_worker,
@@ -2474,6 +2475,91 @@ def test_resolve_and_play_passes_settings_snapshot_to_proxy_prepare(
     )
 
     assert mock_prepare.call_args.kwargs["settings_snapshot"] == values
+
+
+def test_prepare_direct_playback_retry_reuses_settings_snapshot():
+    from resources.lib.stream_proxy import ServiceProxyUnavailableError
+
+    service_config_state = {"done": None, "service_port": 57800, "prepare_token": "old"}
+    values = {
+        "force_remux_threshold_mb": "15000",
+        "force_remux_mode": "0",
+        "force_remux_mode_v2_migrated": "true",
+        "strict_contract_mode": "1",
+        "density_breaker_enabled": "false",
+        "zero_fill_budget_enabled": "true",
+        "retry_ladder_enabled": "true",
+        "send_200_no_range": "false",
+        "proxy_convert_subs": "true",
+    }
+    settings_getter = MagicMock(
+        side_effect=lambda key, default="": values.get(key, default)
+    )
+
+    with patch(
+        "resources.lib.stream_proxy.prepare_stream_via_service",
+        side_effect=[
+            ServiceProxyUnavailableError("stale port"),
+            ("http://127.0.0.1:57801/stream/abc", {"direct": False}),
+        ],
+    ) as mock_prepare, patch(
+        "resources.lib.resolver._direct_playback_service_config",
+        return_value=(57801, "new"),
+    ):
+        prepared = _prepare_direct_playback_with_service_config(
+            "http://webdav/content/movie.mkv",
+            {"Authorization": "Basic abc"},
+            [],
+            service_config_state,
+            settings_getter=settings_getter,
+        )
+
+    assert prepared["proxy_url"] == "http://127.0.0.1:57801/stream/abc"
+    assert settings_getter.call_count == len(values)
+    assert mock_prepare.call_args_list[0].kwargs["settings_snapshot"] == values
+    assert mock_prepare.call_args_list[1].kwargs["settings_snapshot"] == values
+
+
+@patch("resources.lib.stream_proxy.prepare_stream_via_service")
+@patch("resources.lib.resolver._direct_playback_service_config")
+def test_start_direct_playback_prepare_snapshots_settings_in_worker(
+    mock_service_config, mock_prepare
+):
+    mock_service_config.return_value = (57800, "token")
+    mock_prepare.return_value = (
+        "http://127.0.0.1:57800/stream/abc",
+        {"direct": False},
+    )
+    slow_started = threading.Event()
+    release_settings = threading.Event()
+    calls = []
+
+    def settings_getter(key, default=""):
+        calls.append(key)
+        if len(calls) == 1:
+            slow_started.set()
+            release_settings.wait(0.2)
+        return default
+
+    started_at = _time.monotonic()
+    state = _start_direct_playback_prepare(
+        "http://webdav/content/movie.mkv",
+        {"Authorization": "Basic abc"},
+        fallback_sources=[],
+        settings_getter=settings_getter,
+    )
+    elapsed = _time.monotonic() - started_at
+
+    try:
+        assert elapsed < 0.20
+        assert slow_started.wait(0.2)
+        release_settings.set()
+        prepared = _wait_direct_playback_prepare(state)
+    finally:
+        release_settings.set()
+
+    assert prepared["proxy_url"] == "http://127.0.0.1:57800/stream/abc"
+    assert len(calls) == 9
 
 
 @patch("resources.lib.webdav.urlopen")
