@@ -6295,8 +6295,8 @@ class StreamProxy:
         is_mp4 = lower_url.endswith((".mp4", ".m4v"))
 
         if fallback_sources:
-            content_length = content_length_hint or self._get_content_length(
-                remote_url, auth_header
+            content_length = self._get_content_length(
+                remote_url, auth_header, content_length_hint=content_length_hint
             )
             if content_length <= 0:
                 raise OSError(
@@ -6317,8 +6317,8 @@ class StreamProxy:
                 xbmc.LOGINFO,
             )
         elif is_mp4:
-            content_length = content_length_hint or self._get_content_length(
-                remote_url, auth_header
+            content_length = self._get_content_length(
+                remote_url, auth_header, content_length_hint=content_length_hint
             )
             content_length_unknown = content_length <= 0
             faststart = self._try_faststart_layout(
@@ -6439,8 +6439,8 @@ class StreamProxy:
                         "faststart": False,
                     }
         else:
-            content_length = content_length_hint or self._get_content_length(
-                remote_url, auth_header
+            content_length = self._get_content_length(
+                remote_url, auth_header, content_length_hint=content_length_hint
             )
             content_length_unknown = content_length <= 0
             if settings_snapshot:
@@ -7019,8 +7019,29 @@ class StreamProxy:
         return None
 
     @staticmethod
-    def _get_content_length(url, auth_header):
+    def _get_content_length(url, auth_header, content_length_hint=None):
         """Get file size via HEAD or range probe."""
+        content_length_hint = _normalize_content_length_hint(content_length_hint)
+        if content_length_hint > 0:
+            try:
+                req = Request(url)
+                _add_request_headers(req, auth_header)
+                req.add_header("Range", "bytes=0-0")
+                # nosemgrep
+                with urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
+                    req, timeout=10
+                ) as resp:
+                    cr = resp.headers.get("Content-Range", "")
+                    status = getattr(resp, "status", None)
+                    if status is None:
+                        status = resp.getcode()
+                    match = re.match(r"^bytes\s+0-0/(\d+)$", cr.strip())
+                    stream_length = int(match.group(1)) if match else 0
+                    if status == 206 and stream_length == content_length_hint:
+                        return content_length_hint
+            except (OSError, ValueError):
+                pass
+
         req = Request(url, method="HEAD")
         _add_request_headers(req, auth_header)
         try:
