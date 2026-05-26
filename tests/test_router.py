@@ -569,14 +569,13 @@ def test_search_all_providers_logs_provider_timing_for_exceptions(mock_log_timin
 
     hydra_search = MagicMock(side_effect=RuntimeError("boom"))
 
-    try:
-        with patch("resources.lib.hydra.search_hydra", hydra_search):
-            _search_all_providers("movie", "The Matrix", settings_getter=setting)
-    except RuntimeError:
-        pass
-    else:
-        raise AssertionError("expected provider exception")
+    with patch("resources.lib.hydra.search_hydra", hydra_search):
+        results, error = _search_all_providers(
+            "movie", "The Matrix", settings_getter=setting
+        )
 
+    assert not results
+    assert error == "NZBHydra2 search failed: boom"
     assert mock_log_timing.call_count == 1
     label, elapsed_ms = mock_log_timing.call_args.args
     assert label == "provider_search"
