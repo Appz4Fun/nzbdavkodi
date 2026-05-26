@@ -188,6 +188,26 @@ def test_pr_review_context_renders_markdown_packet():
     assert "+print('hello')" in output
 
 
+def test_pr_review_context_quotes_diff_command_paths():
+    data = {
+        "branch": "feature/pr-tools",
+        "base_ref": "origin/main",
+        "head_sha": "abc123",
+        "merge_base": "def456",
+        "pr": None,
+        "status": "UNKNOWN",
+        "changed_files": ["A\tpath with spaces/review helper.py"],
+        "diff_stat": " 1 file changed",
+        "commits": [],
+    }
+
+    output = pr_review_context.render_markdown(data)
+
+    assert (
+        "git diff origin/main...HEAD -- 'path with spaces/review helper.py'" in output
+    )
+
+
 def test_pr_review_context_omits_diff_by_default():
     data = {
         "branch": "feature/pr-tools",
@@ -318,16 +338,6 @@ def test_pr_agent_context_emits_unified_agent_json(tmp_path):
                         "headRefName": "feature/pr-tools",
                         "reviewDecision": "REVIEW_REQUIRED",
                         "statusCheckRollup": [{"state": "SUCCESS"}],
-                    }
-                )
-            )
-        if args[:3] == ["gh", "pr", "view"] and fetch_comments.PR_JSON_FIELDS in args:
-            return completed(
-                json.dumps(
-                    {
-                        "number": 7,
-                        "title": "Add PR helpers",
-                        "url": "https://pr",
                         "comments": [
                             {
                                 "id": "ISSUE_comment",
@@ -340,6 +350,8 @@ def test_pr_agent_context_emits_unified_agent_json(tmp_path):
                     }
                 )
             )
+        if args[:3] == ["gh", "pr", "view"] and fetch_comments.PR_JSON_FIELDS in args:
+            raise AssertionError("wrapper should reuse PR data from local context")
         if args[:3] == ["gh", "repo", "view"]:
             return completed(json.dumps({"nameWithOwner": "owner/repo"}))
         if args[:4] == ["gh", "api", "graphql", "-f"]:
@@ -398,6 +410,74 @@ def test_pr_agent_context_emits_unified_agent_json(tmp_path):
         "python3 scripts/pr_agent_context.py --json"
     )
     assert not payload["errors"]
+
+
+def test_pr_agent_context_preserves_issue_comments_when_threads_fail(tmp_path):
+    def runner(args, cwd=None, check=True):
+        if args[:3] == ["git", "rev-parse", "--show-toplevel"]:
+            return completed(str(tmp_path))
+        if args[:3] == ["git", "rev-parse", "--abbrev-ref"]:
+            return completed("feature/pr-tools")
+        if args[:3] == ["git", "rev-parse", "HEAD"]:
+            return completed("abc123")
+        if args[:4] == ["git", "merge-base", "origin/main", "HEAD"]:
+            return completed("def456")
+        if args[:3] == ["git", "diff", "--name-status"]:
+            return completed("M\tscripts/pr_agent_context.py")
+        if args[:3] == ["git", "diff", "--stat"]:
+            return completed(" 1 file changed, 20 insertions(+)")
+        if args[:3] == ["git", "log", "--oneline"]:
+            return completed("abc123 Add agent PR wrapper")
+        if (
+            args[:3] == ["gh", "pr", "view"]
+            and pr_review_context.PR_JSON_FIELDS in args
+        ):
+            return completed(
+                json.dumps(
+                    {
+                        "number": 7,
+                        "title": "Add PR helpers",
+                        "url": "https://pr",
+                        "baseRefName": "main",
+                        "headRefName": "feature/pr-tools",
+                        "statusCheckRollup": [],
+                        "comments": [
+                            {
+                                "id": "ISSUE_comment",
+                                "author": {"login": "maintainer"},
+                                "body": "Please check CI.",
+                                "createdAt": "2026-05-26T11:00:00Z",
+                                "url": "https://issue-comment",
+                            }
+                        ],
+                    }
+                )
+            )
+        if args[:3] == ["gh", "repo", "view"]:
+            return completed(json.dumps({"nameWithOwner": "owner/repo"}))
+        if args[:4] == ["gh", "api", "graphql", "-f"]:
+            raise subprocess.CalledProcessError(
+                1, args, stderr="GraphQL rate limit exceeded\n"
+            )
+        raise AssertionError("unexpected command: {}".format(args))
+
+    payload = pr_agent_context.collect_agent_context(runner=runner)
+
+    assert payload["comments"]["summary"]["issue_comment_count"] == 1
+    assert payload["comments"]["issue_comments"][0]["id"] == "ISSUE_comment"
+    assert payload["comments"]["summary"]["review_thread_count"] == 0
+    assert payload["errors"][0]["stage"] == "review_threads"
+    assert payload["errors"][0]["command"].startswith(
+        "gh api graphql -f owner=owner -f name=repo -F number=7 -f "
+    )
+    assert payload["errors"][0]["message"] == "GraphQL rate limit exceeded"
+
+
+def test_pr_agent_context_quotes_displayed_commands():
+    commands = pr_agent_context._commands("origin/base branch")
+
+    assert commands["diff_stat"] == "git diff 'origin/base branch...HEAD' --stat"
+    assert commands["diff"] == "git diff 'origin/base branch...HEAD'"
 
 
 def test_pr_agent_context_keeps_local_context_when_comments_fail(tmp_path):
