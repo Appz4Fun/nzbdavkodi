@@ -5,6 +5,7 @@
 
 import math
 import re
+from copy import deepcopy
 from types import SimpleNamespace
 
 import xbmc
@@ -111,6 +112,10 @@ ALL_RELEASE_GROUPS = [
     "XXX",
     "ZAX",
 ]
+
+_FILTER_META_KEYS = frozenset(
+    ("resolution", "hdr", "audio", "codec", "languages", "group")
+)
 
 DEFAULT_PREFERRED_GROUPS = {
     "CiNEPHiLES",
@@ -588,6 +593,22 @@ def matches_filters(result, meta, settings):
     return True
 
 
+def _has_filter_metadata_shape(meta):
+    """Return True when cached metadata has keys filter_results indexes."""
+    if not isinstance(meta, dict) or not _FILTER_META_KEYS <= set(meta):
+        return False
+    for key in ("resolution", "codec", "group"):
+        if not isinstance(meta.get(key), str):
+            return False
+    for key in ("hdr", "audio", "languages"):
+        value = meta.get(key)
+        if not isinstance(value, list):
+            return False
+        if any(not isinstance(item, str) for item in value):
+            return False
+    return True
+
+
 def filter_results(results, settings_getter=None):
     """Apply filters, sort, truncate. Returns (filtered, all_parsed).
 
@@ -600,10 +621,23 @@ def filter_results(results, settings_getter=None):
     """
     settings = _get_filter_settings(settings_getter=settings_getter)
 
+    parsed_by_title = {}
+
     all_parsed = []
     filtered = []
     for result in results:
-        meta = parse_title_metadata(result["title"])
+        meta = result.get("_meta")
+        title = result["title"]
+        if _has_filter_metadata_shape(meta):
+            if title not in parsed_by_title:
+                parsed_by_title[title] = meta
+        else:
+            cached_meta = parsed_by_title.get(title)
+            if cached_meta is not None:
+                meta = deepcopy(cached_meta)
+            else:
+                meta = parse_title_metadata(title)
+                parsed_by_title[title] = meta
         result["_meta"] = meta
         all_parsed.append(result)
         if matches_filters(result, meta, settings):
