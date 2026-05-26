@@ -286,13 +286,20 @@ def parse_results(xml_text, fallback_indexer):
     return [_build_result(item, fallback_indexer) for item in root.iter("item")], None
 
 
-def _read_max_results():
-    raw = xbmcaddon.Addon("plugin.video.nzbdav").getSetting("max_results")
+def _coerce_max_results(raw):
     try:
         max_results = int(raw) if raw not in (None, "") else 25
     except (TypeError, ValueError):
         max_results = 25
     return max(1, min(max_results, 10000))
+
+
+def _read_max_results(settings_getter=None):
+    if settings_getter is None:
+        raw = xbmcaddon.Addon("plugin.video.nzbdav").getSetting("max_results")
+    else:
+        raw = settings_getter("max_results", "25")
+    return _coerce_max_results(raw)
 
 
 def _indexer_unavailable_error(indexer, error):
@@ -428,13 +435,24 @@ def _search_one_indexer(
     return results, None
 
 
-def search_direct_indexers(search_type, title, year="", imdb="", season="", episode=""):
+def search_direct_indexers(
+    search_type,
+    title,
+    year="",
+    imdb="",
+    season="",
+    episode="",
+    indexers=None,
+    max_results=None,
+):
     """Search all configured direct Newznab indexers."""
-    indexers = get_configured_indexers()
+    indexers = get_configured_indexers() if indexers is None else indexers
     if not indexers:
         return [], None
 
-    max_results = _read_max_results()
+    max_results = (
+        _read_max_results() if max_results is None else _coerce_max_results(max_results)
+    )
     all_results = []
     errors = []
 
