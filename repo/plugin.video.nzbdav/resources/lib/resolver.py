@@ -577,6 +577,7 @@ def _prepare_direct_playback(
     service_port=None,
     prepare_token=None,
     settings_getter=None,
+    settings_snapshot=None,
 ):
     """Prepare resolver playback without touching Kodi UI state."""
     from resources.lib.stream_proxy import (
@@ -603,7 +604,8 @@ def _prepare_direct_playback(
     content_length_hint = _get_stream_content_length_hint(stream_url, auth_header)
     if content_length_hint > 0:
         prepare_kwargs["content_length_hint"] = content_length_hint
-    settings_snapshot = build_settings_snapshot(settings_getter=settings_getter)
+    if settings_snapshot is None:
+        settings_snapshot = build_settings_snapshot(settings_getter=settings_getter)
     if any(settings_snapshot.values()):
         prepare_kwargs["settings_snapshot"] = settings_snapshot
     if prepare_token is not None:
@@ -706,9 +708,15 @@ def _prepare_direct_playback_with_service_config(
     fallback_sources,
     service_config_state,
     settings_getter=None,
+    settings_snapshot=None,
 ):
-    from resources.lib.stream_proxy import ServiceProxyUnavailableError
+    from resources.lib.stream_proxy import (
+        ServiceProxyUnavailableError,
+        build_settings_snapshot,
+    )
 
+    if settings_snapshot is None:
+        settings_snapshot = build_settings_snapshot(settings_getter=settings_getter)
     service_port, prepare_token = _wait_direct_playback_service_config(
         service_config_state
     )
@@ -720,6 +728,7 @@ def _prepare_direct_playback_with_service_config(
             service_port=service_port,
             prepare_token=prepare_token,
             settings_getter=settings_getter,
+            settings_snapshot=settings_snapshot,
         )
     except ServiceProxyUnavailableError:
         fresh_service_port, fresh_prepare_token = _direct_playback_service_config()
@@ -732,6 +741,7 @@ def _prepare_direct_playback_with_service_config(
             service_port=fresh_service_port,
             prepare_token=fresh_prepare_token,
             settings_getter=settings_getter,
+            settings_snapshot=settings_snapshot,
         )
 
 
@@ -815,6 +825,8 @@ def _start_direct_playback_prepare(
     settings_getter=None,
 ):
     """Start proxy prepare in the background and return its state."""
+    from resources.lib.stream_proxy import build_settings_snapshot
+
     if service_config_state is None:
         service_port, prepare_token = _direct_playback_service_config()
     else:
@@ -827,6 +839,7 @@ def _start_direct_playback_prepare(
             service_port=service_port,
             prepare_token=prepare_token,
             settings_getter=settings_getter,
+            settings_snapshot={},
         )
         return _ready_direct_playback_prepare_state(prepared)
 
@@ -840,6 +853,7 @@ def _start_direct_playback_prepare(
 
     def _worker():
         try:
+            settings_snapshot = build_settings_snapshot(settings_getter=settings_getter)
             if service_config_state is None:
                 state["prepared"] = _prepare_direct_playback(
                     stream_url,
@@ -848,6 +862,7 @@ def _start_direct_playback_prepare(
                     service_port=service_port,
                     prepare_token=prepare_token,
                     settings_getter=settings_getter,
+                    settings_snapshot=settings_snapshot,
                 )
             else:
                 state["prepared"] = _prepare_direct_playback_with_service_config(
@@ -856,6 +871,7 @@ def _start_direct_playback_prepare(
                     fallback_sources,
                     service_config_state,
                     settings_getter=settings_getter,
+                    settings_snapshot=settings_snapshot,
                 )
         except Exception as error:  # pylint: disable=broad-except
             state["error"] = error
