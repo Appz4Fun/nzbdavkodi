@@ -2569,18 +2569,21 @@ def test_script_history_failure_uses_notification_not_modal(
     mock_xbmc.log.assert_called()
 
 
+@patch("resources.lib.webdav.get_video_file_size_hint")
 @patch("resources.lib.stream_proxy.prepare_stream_via_service")
 @patch("resources.lib.resolver.get_webdav_stream_url_for_path")
 @patch("resources.lib.resolver.find_video_file")
-def test_completed_history_propfind_length_hint_does_not_override_stream_head(
+def test_completed_history_propfind_length_hint_is_passed_to_proxy_prepare(
     mock_find_video,
     mock_stream_url,
     mock_prepare_via_service,
+    mock_size_hint,
 ):
-    """PROPFIND sizes can be stale; proxy prepare must use the HTTP stream HEAD."""
+    """Reuse the PROPFIND getcontentlength so proxy prepare can skip stream HEAD."""
     from resources.lib.resolver import _handle_history_result, _prepare_direct_playback
 
     mock_find_video.return_value = "/content/uncategorized/movie/movie.mkv"
+    mock_size_hint.return_value = 4294967296
     mock_stream_url.return_value = (
         "http://webdav/content/uncategorized/movie/movie.mkv",
         {"Authorization": "Basic primary"},
@@ -2613,7 +2616,65 @@ def test_completed_history_propfind_length_hint_does_not_override_stream_head(
         "http://webdav/content/uncategorized/movie/movie.mkv",
         "Basic primary",
         fallback_sources=None,
+        content_length_hint=4294967296,
         prepare_token="token",
+    )
+
+
+@patch("resources.lib.stream_proxy.prepare_stream_via_service")
+def test_content_length_hint_is_scoped_to_stream_auth(mock_prepare_via_service):
+    from resources.lib import resolver
+    from resources.lib.resolver import _prepare_direct_playback
+
+    with resolver._STREAM_CONTENT_LENGTH_HINTS_LOCK:
+        resolver._STREAM_CONTENT_LENGTH_HINTS.clear()
+    resolver._remember_stream_content_length_hint(
+        "http://webdav/content/movie.mkv", "Basic primary", 4294967296
+    )
+    mock_prepare_via_service.return_value = (
+        "http://127.0.0.1:57800/stream/abc",
+        {"remux": False},
+    )
+
+    _prepare_direct_playback(
+        "http://webdav/content/movie.mkv",
+        {"Authorization": "Basic other"},
+        service_port=57800,
+        prepare_token="token",
+    )
+
+    assert "content_length_hint" not in mock_prepare_via_service.call_args.kwargs
+
+
+@patch("resources.lib.webdav.get_video_file_size_hint", return_value=4294967296)
+def test_delegated_find_video_stream_remembers_content_length_hint(mock_size_hint):
+    from resources.lib import resolver
+    from resources.lib.resolver import _find_video_stream_for_folder
+
+    with resolver._STREAM_CONTENT_LENGTH_HINTS_LOCK:
+        resolver._STREAM_CONTENT_LENGTH_HINTS.clear()
+
+    delegated = MagicMock(
+        return_value=(
+            "/content/uncategorized/movie/movie.mkv",
+            "http://webdav/content/uncategorized/movie/movie.mkv",
+            {"Authorization": "Basic delegated"},
+        )
+    )
+
+    with patch("resources.lib.webdav.find_video_stream_for_folder", delegated):
+        with patch.object(resolver, "find_video_stream_for_folder", delegated):
+            video_path, stream_url, stream_headers = _find_video_stream_for_folder(
+                "/content/uncategorized/movie"
+            )
+
+    assert video_path == "/content/uncategorized/movie/movie.mkv"
+    assert stream_url == "http://webdav/content/uncategorized/movie/movie.mkv"
+    assert stream_headers == {"Authorization": "Basic delegated"}
+    mock_size_hint.assert_called_once_with("/content/uncategorized/movie/movie.mkv")
+    assert (
+        resolver._get_stream_content_length_hint(stream_url, "Basic delegated")
+        == 4294967296
     )
 
 

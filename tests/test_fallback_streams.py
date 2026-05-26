@@ -25,6 +25,15 @@ from resources.lib.fallback_streams import (
 from resources.lib.nzb_manifest import make_empty_manifest
 
 
+@pytest.fixture(autouse=True)
+def _clear_fallback_manifest_cache():
+    from resources.lib import fallback_streams
+
+    fallback_streams.clear_fallback_manifest_cache()
+    yield
+    fallback_streams.clear_fallback_manifest_cache()
+
+
 def _mock_range_response(body, status=206, headers=None):
     resp = MagicMock()
     resp.__enter__ = MagicMock(return_value=resp)
@@ -161,6 +170,41 @@ def test_manifest_grouping_uses_video_name_and_bytes_not_result_size(
     assert primary["_fallback_candidates"] == [duplicate]
     assert duplicate["_fallback_candidates"] == [primary]
     assert unrelated["_fallback_candidates"] == []
+
+
+@patch("resources.lib.fallback_streams.telemetry.log_timing")
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+@patch("resources.lib.fallback_streams._fallback_settings")
+def test_attach_fallback_candidates_logs_manifest_timing(
+    mock_settings, mock_fetch, mock_log_timing
+):
+    mock_settings.return_value = (True, 2)
+    primary = _result(
+        "Example Movie 2026 1080p WEB-DL x265-GROUP",
+        "https://a/nzb",
+        1000,
+    )
+    duplicate = _result(
+        "Example Movie 2026 1080p WEB-DL x265-GROUP",
+        "https://b/nzb",
+        "1001",
+    )
+    manifests = {
+        "https://a/nzb": _manifest("video", "example movie 2026 group.mkv", 8000, "a"),
+        "https://b/nzb": _manifest("video", "example movie 2026 group.mkv", 8000, "b"),
+    }
+    mock_fetch.side_effect = lambda url, **_kwargs: manifests[url]
+
+    attach_fallback_candidates([primary, duplicate])
+
+    assert mock_log_timing.call_count == 1
+    label, elapsed_ms = mock_log_timing.call_args.args
+    assert label == "fallback_manifests"
+    assert elapsed_ms >= 0
+    assert mock_log_timing.call_args.kwargs == {
+        "input": 2,
+        "fetched": 2,
+    }
 
 
 @patch("resources.lib.fallback_streams._fallback_settings")
@@ -890,6 +934,56 @@ def test_selection_fallback_prefilter_skips_manifest_fetch_for_unrelated_candida
         "https://idx/selected.nzb",
         "https://idx/related.nzb",
     ]
+
+
+@patch("resources.lib.fallback_streams.telemetry.log_timing")
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+@patch("resources.lib.fallback_streams._fallback_settings")
+def test_selection_fallback_logs_manifest_timing(
+    mock_settings, mock_fetch, mock_log_timing
+):
+    mock_settings.return_value = (True, 5)
+    selected = _result(
+        "The.Matrix.1999.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/selected-timing.nzb",
+        60000000000,
+        meta={
+            "resolution": "2160p",
+            "quality": "REMUX",
+            "codec": "x265/HEVC",
+            "hdr": ["Dolby Vision"],
+            "audio": ["TrueHD", "Atmos"],
+            "container": "mkv",
+        },
+    )
+    related = _result(
+        "The.Matrix.1999.UHD.BluRay.2160p.DV.HEVC.REMUX-ALT",
+        "https://idx/related-timing.nzb",
+        60000000000,
+        meta=selected["_meta"],
+    )
+    manifests = {
+        "https://idx/selected-timing.nzb": _manifest(
+            "video", "the matrix 1999 remux.mkv", 60000000000, "selected"
+        ),
+        "https://idx/related-timing.nzb": _manifest(
+            "video", "the matrix 1999 remux.mkv", 60000000000, "related"
+        ),
+    }
+    mock_fetch.side_effect = lambda url, **_kwargs: manifests[url]
+
+    attach_fallback_candidates_for_selection(selected, [selected, related])
+
+    assert selected["_fallback_candidates"] == [related]
+    assert mock_log_timing.call_count == 1
+    label, elapsed_ms = mock_log_timing.call_args.args
+    assert label == "fallback_selection_manifests"
+    assert elapsed_ms >= 0
+    assert mock_log_timing.call_args.kwargs == {
+        "attached": 1,
+        "pool": 2,
+        "selected_manifest_fetch": True,
+    }
 
 
 @patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
@@ -2503,6 +2597,194 @@ def test_manifest_fetches_are_cached_per_attach_call(mock_settings, mock_fetch):
     assert first["_fallback_manifest_error"] == ""
     assert second["_fallback_manifest_error"] == ""
     assert duplicate["_fallback_manifest_error"] == ""
+
+
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+@patch("resources.lib.fallback_streams._fallback_settings")
+def test_manifest_fetches_are_cached_across_short_lived_selection_calls(
+    mock_settings, mock_fetch
+):
+    from resources.lib import fallback_streams
+
+    fallback_streams.clear_fallback_manifest_cache()
+    mock_settings.return_value = (True, 1)
+    now = [100.0]
+    manifests = {
+        "https://idx/selected-cache.nzb": _manifest(
+            "video", "the matrix 1999 remux.mkv", 60000000000, "selected"
+        ),
+        "https://idx/related-cache.nzb": _manifest(
+            "video", "the matrix 1999 remux.mkv", 60000000000, "related"
+        ),
+    }
+    mock_fetch.side_effect = lambda url, **_kwargs: manifests[url]
+
+    def result_pair():
+        selected = _result(
+            "The.Matrix.1999.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+            "https://idx/selected-cache.nzb",
+            60000000000,
+            meta={
+                "resolution": "2160p",
+                "quality": "REMUX",
+                "codec": "x265/HEVC",
+                "hdr": ["Dolby Vision"],
+                "audio": ["TrueHD", "Atmos"],
+                "container": "mkv",
+            },
+        )
+        related = _result(
+            "The.Matrix.1999.UHD.BluRay.2160p.DV.HEVC.REMUX-ALT",
+            "https://idx/related-cache.nzb",
+            60000000000,
+            meta=selected["_meta"],
+        )
+        return selected, related
+
+    with patch(
+        "resources.lib.fallback_streams._fallback_manifest_cache_now",
+        side_effect=lambda: now[0],
+    ):
+        first_selected, first_related = result_pair()
+        attach_fallback_candidates_for_selection(
+            first_selected, [first_selected, first_related]
+        )
+        second_selected, second_related = result_pair()
+        attach_fallback_candidates_for_selection(
+            second_selected, [second_selected, second_related]
+        )
+
+    assert first_selected["_fallback_candidates"] == [first_related]
+    assert second_selected["_fallback_candidates"] == [second_related]
+    first_manifest = first_selected["_fallback_manifest"]
+    second_manifest = second_selected["_fallback_manifest"]
+    first_related_manifest = first_related["_fallback_manifest"]
+    second_related_manifest = second_related["_fallback_manifest"]
+    assert first_manifest == second_manifest
+    assert first_manifest is not second_manifest
+    assert first_related_manifest == second_related_manifest
+    assert first_related_manifest is not second_related_manifest
+    first_manifest["skipped_candidates"].append({"subject": "mutated"})
+    first_related_manifest["skipped_candidates"].append({"subject": "mutated"})
+    assert second_manifest["skipped_candidates"] == []
+    assert second_related_manifest["skipped_candidates"] == []
+    assert sorted(call.args[0] for call in mock_fetch.call_args_list) == [
+        "https://idx/related-cache.nzb",
+        "https://idx/selected-cache.nzb",
+    ]
+
+
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+@patch("resources.lib.fallback_streams._fallback_settings")
+def test_short_lived_manifest_cache_expires_between_selection_calls(
+    mock_settings, mock_fetch
+):
+    from resources.lib import fallback_streams
+
+    fallback_streams.clear_fallback_manifest_cache()
+    mock_settings.return_value = (True, 1)
+    now = [100.0]
+    manifests = {
+        "https://idx/selected-expire.nzb": _manifest(
+            "video", "the matrix 1999 remux.mkv", 60000000000, "selected"
+        ),
+        "https://idx/related-expire.nzb": _manifest(
+            "video", "the matrix 1999 remux.mkv", 60000000000, "related"
+        ),
+    }
+    mock_fetch.side_effect = lambda url, **_kwargs: manifests[url]
+
+    def result_pair():
+        selected = _result(
+            "The.Matrix.1999.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+            "https://idx/selected-expire.nzb",
+            60000000000,
+            meta={
+                "resolution": "2160p",
+                "quality": "REMUX",
+                "codec": "x265/HEVC",
+                "hdr": ["Dolby Vision"],
+                "audio": ["TrueHD", "Atmos"],
+                "container": "mkv",
+            },
+        )
+        related = _result(
+            "The.Matrix.1999.UHD.BluRay.2160p.DV.HEVC.REMUX-ALT",
+            "https://idx/related-expire.nzb",
+            60000000000,
+            meta=selected["_meta"],
+        )
+        return selected, related
+
+    with patch(
+        "resources.lib.fallback_streams._fallback_manifest_cache_now",
+        side_effect=lambda: now[0],
+    ):
+        first_selected, first_related = result_pair()
+        attach_fallback_candidates_for_selection(
+            first_selected, [first_selected, first_related]
+        )
+        now[0] += fallback_streams._FALLBACK_MANIFEST_CACHE_TTL_SECONDS + 0.01
+        second_selected, second_related = result_pair()
+        attach_fallback_candidates_for_selection(
+            second_selected, [second_selected, second_related]
+        )
+
+    assert first_selected["_fallback_candidates"] == [first_related]
+    assert second_selected["_fallback_candidates"] == [second_related]
+    assert len(mock_fetch.call_args_list) == 4
+
+
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+def test_manifest_cache_ttl_starts_after_fetch_completes(mock_fetch):
+    from resources.lib import fallback_streams
+
+    fallback_streams.clear_fallback_manifest_cache()
+    now = [100.0]
+    manifest = _manifest("video", "movie.mkv", 1000, "articles")
+
+    def fetch_manifest(_url, **_kwargs):
+        now[0] += fallback_streams._FALLBACK_MANIFEST_CACHE_TTL_SECONDS - 1
+        return manifest
+
+    mock_fetch.side_effect = fetch_manifest
+
+    with patch(
+        "resources.lib.fallback_streams._fallback_manifest_cache_now",
+        side_effect=lambda: now[0],
+    ):
+        first = fallback_streams._fetch_fallback_manifest("https://idx/slow.nzb")
+        now[0] += fallback_streams._FALLBACK_MANIFEST_CACHE_TTL_SECONDS - 0.5
+        second = fallback_streams._fetch_fallback_manifest("https://idx/slow.nzb")
+
+    assert first == second
+    assert mock_fetch.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "fetch_result",
+    [
+        RuntimeError("fetch failed"),
+        None,
+    ],
+)
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+def test_manifest_cache_reuses_normalized_fetch_errors(mock_fetch, fetch_result):
+    from resources.lib import fallback_streams
+
+    fallback_streams.clear_fallback_manifest_cache()
+    if isinstance(fetch_result, Exception):
+        mock_fetch.side_effect = fetch_result
+    else:
+        mock_fetch.return_value = fetch_result
+
+    first = fallback_streams._fetch_fallback_manifest("https://idx/error.nzb")
+    second = fallback_streams._fetch_fallback_manifest("https://idx/error.nzb")
+
+    assert first == make_empty_manifest("fetch_error")
+    assert second == first
+    assert second is not first
+    assert mock_fetch.call_count == 1
 
 
 @patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")

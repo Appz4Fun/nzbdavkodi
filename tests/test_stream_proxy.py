@@ -447,6 +447,89 @@ def test_get_content_length_returns_zero_on_failure():
         assert sp._get_content_length("http://host/file.mp4", None) == 0
 
 
+def test_get_content_length_uses_matching_range_validated_hint_before_head():
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    range_resp = _mock_urlopen_response(
+        [b"x"], headers={"Content-Range": "bytes 0-0/131072"}
+    )
+
+    with patch("resources.lib.stream_proxy.urlopen", return_value=range_resp) as mocked:
+        assert (
+            sp._get_content_length(
+                "http://host/file.mkv", None, content_length_hint=131072
+            )
+            == 131072
+        )
+
+    req = mocked.call_args[0][0]
+    assert req.get_method() == "GET"
+    assert _request_header(req, "Range") == "bytes=0-0"
+
+
+def test_get_content_length_ignores_stale_hint_and_uses_head_total():
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    stale_range_resp = _mock_urlopen_response(
+        [b"x"], headers={"Content-Range": "bytes 0-0/65536"}
+    )
+    head_resp = MagicMock()
+    head_resp.__enter__ = MagicMock(return_value=head_resp)
+    head_resp.__exit__ = MagicMock(return_value=False)
+    head_resp.headers.get.return_value = "65536"
+
+    with patch(
+        "resources.lib.stream_proxy.urlopen",
+        side_effect=[stale_range_resp, head_resp],
+    ) as mocked:
+        assert (
+            sp._get_content_length(
+                "http://host/file.mkv", None, content_length_hint=131072
+            )
+            == 65536
+        )
+
+    assert mocked.call_args_list[1].args[0].get_method() == "HEAD"
+
+
+@pytest.mark.parametrize(
+    ("status", "content_range"),
+    [
+        (200, "bytes 0-0/131072"),
+        (206, "bytes 1-1/131072"),
+        (206, "items 0-0/131072"),
+    ],
+)
+def test_get_content_length_ignores_malformed_matching_hint_validation(
+    status, content_range
+):
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    malformed_range_resp = _mock_urlopen_response(
+        [b"x"], status=status, headers={"Content-Range": content_range}
+    )
+    head_resp = MagicMock()
+    head_resp.__enter__ = MagicMock(return_value=head_resp)
+    head_resp.__exit__ = MagicMock(return_value=False)
+    head_resp.headers.get.return_value = "65536"
+
+    with patch(
+        "resources.lib.stream_proxy.urlopen",
+        side_effect=[malformed_range_resp, head_resp],
+    ) as mocked:
+        assert (
+            sp._get_content_length(
+                "http://host/file.mkv", None, content_length_hint=131072
+            )
+            == 65536
+        )
+
+    assert mocked.call_args_list[1].args[0].get_method() == "HEAD"
+
+
 # ---------------------------------------------------------------------------
 # StreamProxy.prepare_stream — remux vs proxy
 # ---------------------------------------------------------------------------
@@ -505,8 +588,34 @@ def test_prepare_stream_proxies_mkv():
     assert ctx["content_length"] == 100000
 
 
+def test_prepare_stream_logs_timing_for_successful_prepare():
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    sp._server = MagicMock()
+    sp._context_lock = __import__("threading").Lock()
+    sp.port = 9999
+
+    with patch.object(sp, "_get_content_length", return_value=100000), patch(
+        "resources.lib.stream_proxy.telemetry.log_timing"
+    ) as mock_log_timing:
+        url, info = sp.prepare_stream("http://host/film.mkv")
+
+    assert url.startswith("http://127.0.0.1:9999/stream/")
+    assert info["remux"] is False
+    assert mock_log_timing.call_count == 1
+    label, elapsed_ms = mock_log_timing.call_args.args
+    assert label == "prepare_stream"
+    assert elapsed_ms >= 0
+    assert mock_log_timing.call_args.kwargs == {
+        "content_type": "video/x-matroska",
+        "faststart": False,
+        "remux": False,
+    }
+
+
 def test_prepare_stream_uses_content_length_hint_for_passthrough_start():
-    """A PROPFIND size hint should skip the duplicate prepare-time HEAD."""
+    """A PROPFIND size hint is passed through for stream-side validation."""
     from resources.lib.stream_proxy import StreamProxy
 
     sp = StreamProxy.__new__(StreamProxy)
@@ -517,22 +626,17 @@ def test_prepare_stream_uses_content_length_hint_for_passthrough_start():
     sp._context_lock = threading.RLock()
     sp.port = 9999
 
-    def slow_head(*_args, **_kwargs):
-        time.sleep(0.12)
-        return 131072
-
-    with patch.object(sp, "_get_content_length", side_effect=slow_head) as mock_head:
-        started = time.perf_counter()
+    with patch.object(sp, "_get_content_length", return_value=131072) as mock_head:
         url, info = sp.prepare_stream(
             "http://host/movie.mkv", content_length_hint=131072
         )
-        elapsed = time.perf_counter() - started
 
     assert url.startswith("http://127.0.0.1:9999/stream/")
     assert info["total_bytes"] == 131072
     assert sp._server.stream_context["content_length"] == 131072
-    assert elapsed < 0.2, "content-length hint path stalled: {:.3f}s".format(elapsed)
-    mock_head.assert_not_called()
+    mock_head.assert_called_once_with(
+        "http://host/movie.mkv", None, content_length_hint=131072
+    )
 
 
 def test_prepare_stream_matroska_mode_forces_remux_for_large_mkv():
