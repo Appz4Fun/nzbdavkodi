@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 
-from scripts import fetch_comments, pr_review_context
+from scripts import fetch_comments, pr_agent_context, pr_review_context
 
 
 def test_fetch_comments_formats_unresolved_review_threads():
@@ -281,5 +281,235 @@ def test_pr_review_context_collects_bounded_diff_when_requested(tmp_path):
     assert data["diff_truncated"] is True
 
 
+def test_pr_agent_context_emits_unified_agent_json(tmp_path):
+    def runner(args, cwd=None, check=True):
+        if args[:3] == ["git", "rev-parse", "--show-toplevel"]:
+            return completed(str(tmp_path))
+        if args[:3] == ["git", "rev-parse", "--abbrev-ref"]:
+            return completed("feature/pr-tools")
+        if args[:3] == ["git", "rev-parse", "HEAD"]:
+            return completed("abc123")
+        if args[:4] == ["git", "merge-base", "origin/main", "HEAD"]:
+            return completed("def456")
+        if args[:3] == ["git", "diff", "--name-status"]:
+            return completed(
+                "\n".join(
+                    [
+                        "A\tscripts/pr_agent_context.py",
+                        "R100\tscripts/old.py\tscripts/new.py",
+                    ]
+                )
+            )
+        if args[:3] == ["git", "diff", "--stat"]:
+            return completed(" 2 files changed, 100 insertions(+)")
+        if args[:3] == ["git", "log", "--oneline"]:
+            return completed("abc123 Add agent PR wrapper")
+        if (
+            args[:3] == ["gh", "pr", "view"]
+            and pr_review_context.PR_JSON_FIELDS in args
+        ):
+            return completed(
+                json.dumps(
+                    {
+                        "number": 7,
+                        "title": "Add PR helpers",
+                        "url": "https://pr",
+                        "baseRefName": "main",
+                        "headRefName": "feature/pr-tools",
+                        "reviewDecision": "REVIEW_REQUIRED",
+                        "statusCheckRollup": [{"state": "SUCCESS"}],
+                    }
+                )
+            )
+        if args[:3] == ["gh", "pr", "view"] and fetch_comments.PR_JSON_FIELDS in args:
+            return completed(
+                json.dumps(
+                    {
+                        "number": 7,
+                        "title": "Add PR helpers",
+                        "url": "https://pr",
+                        "comments": [
+                            {
+                                "id": "ISSUE_comment",
+                                "author": {"login": "maintainer"},
+                                "body": "Please check CI.",
+                                "createdAt": "2026-05-26T11:00:00Z",
+                                "url": "https://issue-comment",
+                            }
+                        ],
+                    }
+                )
+            )
+        if args[:3] == ["gh", "repo", "view"]:
+            return completed(json.dumps({"nameWithOwner": "owner/repo"}))
+        if args[:4] == ["gh", "api", "graphql", "-f"]:
+            return completed(
+                json.dumps(
+                    {
+                        "data": {
+                            "repository": {
+                                "pullRequest": {
+                                    "reviewThreads": {
+                                        "nodes": [
+                                            {
+                                                "id": "THREAD_one",
+                                                "isResolved": False,
+                                                "path": "scripts/pr_agent_context.py",
+                                                "line": 12,
+                                                "comments": {
+                                                    "nodes": [
+                                                        {
+                                                            "id": "COMMENT_one",
+                                                            "author": {
+                                                                "login": "reviewer"
+                                                            },
+                                                            "body": "Add tests.",
+                                                            "createdAt": (
+                                                                "2026-05-26T12:00:00Z"
+                                                            ),
+                                                            "url": "https://comment",
+                                                        }
+                                                    ]
+                                                },
+                                            }
+                                        ]
+                                    }
+                                }
+                            }
+                        }
+                    }
+                )
+            )
+        raise AssertionError("unexpected command: {}".format(args))
+
+    payload = pr_agent_context.collect_agent_context(runner=runner)
+
+    assert payload["schema_version"] == 1
+    assert payload["pr"]["number"] == 7
+    assert payload["git"]["branch"] == "feature/pr-tools"
+    assert payload["checks"]["status"] == "PASSING"
+    assert payload["files"] == [
+        {"status": "A", "path": "scripts/pr_agent_context.py"},
+        {"status": "R100", "path": "scripts/new.py", "previous_path": "scripts/old.py"},
+    ]
+    assert payload["comments"]["summary"]["issue_comment_count"] == 1
+    assert payload["comments"]["review_threads"][0]["id"] == "THREAD_one"
+    assert payload["commands"]["preferred_json"] == (
+        "python3 scripts/pr_agent_context.py --json"
+    )
+    assert not payload["errors"]
+
+
+def test_pr_agent_context_keeps_local_context_when_comments_fail(tmp_path):
+    def runner(args, cwd=None, check=True):
+        if args[:3] == ["git", "rev-parse", "--show-toplevel"]:
+            return completed(str(tmp_path))
+        if args[:3] == ["git", "rev-parse", "--abbrev-ref"]:
+            return completed("feature/pr-tools")
+        if args[:3] == ["git", "rev-parse", "HEAD"]:
+            return completed("abc123")
+        if args[:4] == ["git", "merge-base", "origin/main", "HEAD"]:
+            return completed("def456")
+        if args[:3] == ["git", "diff", "--name-status"]:
+            return completed("M\tscripts/pr_review_context.py")
+        if args[:3] == ["git", "diff", "--stat"]:
+            return completed(" 1 file changed, 20 insertions(+)")
+        if args[:3] == ["git", "log", "--oneline"]:
+            return completed("abc123 Add agent PR wrapper")
+        if (
+            args[:3] == ["gh", "pr", "view"]
+            and pr_review_context.PR_JSON_FIELDS in args
+        ):
+            return completed(
+                json.dumps(
+                    {
+                        "number": 7,
+                        "title": "Add PR helpers",
+                        "url": "https://pr",
+                        "baseRefName": "main",
+                        "headRefName": "feature/pr-tools",
+                        "statusCheckRollup": [],
+                    }
+                )
+            )
+        if args[:3] == ["gh", "pr", "view"] and fetch_comments.PR_JSON_FIELDS in args:
+            raise subprocess.CalledProcessError(
+                1, args, stderr="gh auth token is unavailable\n"
+            )
+        raise AssertionError("unexpected command: {}".format(args))
+
+    payload = pr_agent_context.collect_agent_context(runner=runner)
+
+    assert payload["git"]["head_sha"] == "abc123"
+    assert payload["comments"]["summary"]["issue_comment_count"] == 0
+    assert payload["comments"]["summary"]["review_thread_count"] == 0
+    assert payload["errors"] == [
+        {
+            "stage": "comments",
+            "command": "gh pr view --json number,title,url,comments",
+            "message": "gh auth token is unavailable",
+        }
+    ]
+
+
+def test_pr_agent_context_renders_markdown_packet():
+    payload = {
+        "schema_version": 1,
+        "pr": {"number": 7, "title": "Add PR helpers", "url": "https://pr"},
+        "git": {
+            "branch": "feature/pr-tools",
+            "base_ref": "origin/main",
+            "head_sha": "abc123",
+            "merge_base": "def456",
+            "commits": ["abc123 Add agent PR wrapper"],
+            "diff_stat": " 1 file changed, 20 insertions(+)",
+        },
+        "checks": {"status": "PASSING", "review_decision": "REVIEW_REQUIRED"},
+        "files": [{"status": "A", "path": "scripts/pr_agent_context.py"}],
+        "comments": {
+            "summary": {"issue_comment_count": 1, "review_thread_count": 1},
+            "issue_comments": [{"id": "ISSUE_comment", "body": "Check CI."}],
+            "review_threads": [
+                {
+                    "id": "THREAD_one",
+                    "path": "scripts/pr_agent_context.py",
+                    "line": 12,
+                    "is_resolved": False,
+                    "comments": [{"id": "COMMENT_one", "body": "Add tests."}],
+                }
+            ],
+        },
+        "commands": {
+            "preferred_json": "python3 scripts/pr_agent_context.py --json",
+            "comments_json": "python3 scripts/fetch_comments.py --json",
+        },
+        "errors": [],
+    }
+
+    output = pr_agent_context.render_markdown(payload)
+
+    assert "# Agent PR Context" in output
+    assert "PR #7 Add PR helpers" in output
+    assert "## Files" in output
+    assert "A\tscripts/pr_agent_context.py" in output
+    assert "## Comments" in output
+    assert "Issue comments: 1" in output
+    assert "Review threads: 1" in output
+    assert "THREAD_one scripts/pr_agent_context.py:12" in output
+    assert "python3 scripts/pr_agent_context.py --json" in output
+
+
+def test_agents_mentions_preferred_pr_agent_context_wrapper():
+    agents = (PROJECT_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+
+    assert "python3 scripts/pr_agent_context.py --json" in agents
+    assert "preferred unified agent context packet" in agents
+    assert "fetch_comments.py" in agents
+    assert "skill or workflow expects that helper by name" in agents
+
+
 def completed(stdout):
     return subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout + "\n")
+
+
+PROJECT_ROOT = __import__("pathlib").Path(__file__).resolve().parents[1]
