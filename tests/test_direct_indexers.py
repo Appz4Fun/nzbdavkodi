@@ -2,6 +2,7 @@
 # Copyright (C) 2026 nzbdav contributors
 
 import time
+from threading import Event, Lock
 from unittest.mock import MagicMock, patch
 
 
@@ -609,10 +610,7 @@ def test_search_direct_indexers_partial_failure_keeps_successful_results(
 
 @patch("resources.lib.direct_indexers.get_configured_indexers")
 @patch("resources.lib.direct_indexers.xbmcaddon")
-@patch("resources.lib.direct_indexers._search_one_indexer")
-def test_search_direct_indexers_fans_out_concurrently(
-    mock_search_one, mock_xbmcaddon, mock_configured
-):
+def test_search_direct_indexers_fans_out_concurrently(mock_xbmcaddon, mock_configured):
     from resources.lib.direct_indexers import search_direct_indexers
 
     mock_configured.return_value = [
@@ -630,20 +628,28 @@ def test_search_direct_indexers_fans_out_concurrently(
         },
     ]
     mock_xbmcaddon.Addon.return_value = _addon_with_settings({"max_results": "25"})
+    both_started = Event()
+    lock = Lock()
+    started_ids = set()
 
     def slow_search(indexer, *_args, **_kwargs):
+        with lock:
+            started_ids.add(indexer["id"])
+            if len(started_ids) == 2:
+                both_started.set()
+        assert both_started.wait(0.5)
         time.sleep(0.2)
         return ([{"title": indexer["label"], "link": indexer["id"]}], None)
 
-    mock_search_one.side_effect = slow_search
-
     started = time.monotonic()
-    results, error = search_direct_indexers("movie", "The Matrix")
+    with patch("resources.lib.direct_indexers._search_one_indexer", new=slow_search):
+        results, error = search_direct_indexers("movie", "The Matrix")
     elapsed = time.monotonic() - started
 
     assert error is None
     assert len(results) == 2
-    assert elapsed < 0.32
+    assert both_started.is_set()
+    assert elapsed < 0.55
 
 
 @patch("resources.lib.direct_indexers.get_configured_indexers")
