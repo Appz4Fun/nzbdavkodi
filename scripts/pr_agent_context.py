@@ -6,6 +6,7 @@
 
 import argparse
 import json
+import shlex
 import subprocess
 import sys
 
@@ -19,7 +20,7 @@ SCHEMA_VERSION = 1
 
 
 def _command_text(args):
-    return " ".join(str(arg) for arg in args)
+    return " ".join(shlex.quote(str(arg)) for arg in args)
 
 
 def _error_payload(stage, exc):
@@ -48,6 +49,10 @@ def _empty_comments(include_resolved=False):
         "issue_comments": [],
         "review_threads": [],
     }
+
+
+def _empty_thread_data():
+    return {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": []}}}}}
 
 
 def _file_payloads(changed_files):
@@ -110,19 +115,48 @@ def _commands(base_ref):
         "preferred_markdown": "python3 scripts/pr_agent_context.py",
         "local_context_json": "python3 scripts/pr_review_context.py --json",
         "comments_json": "python3 scripts/fetch_comments.py --json",
-        "diff_stat": "git diff {} --stat".format(diff_range),
-        "diff": "git diff {}".format(diff_range),
+        "diff_stat": "git diff {} --stat".format(shlex.quote(diff_range)),
+        "diff": "git diff {}".format(shlex.quote(diff_range)),
         "lint": "just lint",
         "test": "just test",
     }
 
 
-def _collect_comments(pr_number, include_resolved, runner):
-    pr = fetch_comments.current_pr(pr_number, runner=runner)
-    owner, name = fetch_comments.current_repo(runner=runner)
-    threads = fetch_comments.review_threads(owner, name, pr["number"], runner=runner)
-    return fetch_comments.build_agent_payload(
-        pr, threads, include_resolved=include_resolved
+def _pr_has_comments(pr):
+    return pr is not None and "comments" in pr
+
+
+def _context_pr_for_comments(context_pr, pr_number):
+    if not _pr_has_comments(context_pr):
+        return None
+    if pr_number is not None and context_pr.get("number") != pr_number:
+        return None
+    return context_pr
+
+
+def _collect_comments(pr_number, include_resolved, runner, context_pr=None):
+    errors = []
+    try:
+        pr = _context_pr_for_comments(context_pr, pr_number)
+        if pr is None:
+            pr = fetch_comments.current_pr(pr_number, runner=runner)
+    except (OSError, subprocess.CalledProcessError, SystemExit) as exc:
+        return _empty_comments(include_resolved=include_resolved), [
+            _error_payload("comments", exc)
+        ]
+
+    try:
+        owner, name = fetch_comments.current_repo(runner=runner)
+        threads = fetch_comments.review_threads(owner, name, pr["number"], runner=runner)
+    except (OSError, subprocess.CalledProcessError, SystemExit) as exc:
+        threads = _empty_thread_data()
+        errors.append(_error_payload("review_threads", exc))
+
+    return (
+        fetch_comments.build_agent_payload(
+            pr, threads, include_resolved=include_resolved
+        ),
+        errors,
     )
 
 
@@ -140,12 +174,12 @@ def collect_agent_context(
         max_diff_lines=max_diff_lines,
         runner=runner,
     )
-    errors = []
-    try:
-        comments = _collect_comments(pr_number, include_resolved, runner)
-    except (OSError, subprocess.CalledProcessError, SystemExit) as exc:
-        comments = _empty_comments(include_resolved=include_resolved)
-        errors.append(_error_payload("comments", exc))
+    comments, errors = _collect_comments(
+        pr_number,
+        include_resolved,
+        runner,
+        context_pr=context.get("pr"),
+    )
 
     return {
         "schema_version": SCHEMA_VERSION,
