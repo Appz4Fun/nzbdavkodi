@@ -166,6 +166,29 @@ def test_search_prowlarr_invalid_max_results_uses_default(
 
 @patch("resources.lib.prowlarr._get_settings")
 @patch("resources.lib.prowlarr._http_get")
+def test_search_prowlarr_getter_error_for_max_results_uses_default(
+    mock_http, mock_settings
+):
+    mock_settings.return_value = ("http://prowlarr:9696", "testkey", ["1"])
+    mock_http.return_value = _load_fixture("prowlarr_movie_response.xml")
+
+    def failing_getter(key, default=""):
+        if key == "max_results":
+            raise RuntimeError("settings unavailable")
+        return default
+
+    results, error = search_prowlarr(
+        "movie", "The Matrix", settings_getter=failing_getter
+    )
+
+    assert error is None
+    assert len(results) == 2
+    call_url = mock_http.call_args[0][0]
+    assert "limit=25" in call_url
+
+
+@patch("resources.lib.prowlarr._get_settings")
+@patch("resources.lib.prowlarr._http_get")
 def test_search_prowlarr_connection_error(mock_http, mock_settings):
     mock_settings.return_value = ("http://prowlarr:9696", "testkey", ["1"])
     mock_http.side_effect = Exception("Connection refused")

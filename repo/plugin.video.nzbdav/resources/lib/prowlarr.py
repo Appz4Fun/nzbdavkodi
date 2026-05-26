@@ -63,7 +63,7 @@ def _prowlarr_unavailable_error(error):
     return "Prowlarr unavailable: {}".format(_format_request_error(error))
 
 
-def _get_settings():
+def _get_settings(settings_getter=None):
     """
     Load Prowlarr connection settings from the Kodi addon configuration.
 
@@ -74,12 +74,17 @@ def _get_settings():
             - indexer_ids: list of configured indexer ID strings; each ID is
                 trimmed and empty entries are omitted.
     """
-    import xbmcaddon
+    if settings_getter is None:
+        import xbmcaddon
 
-    addon = xbmcaddon.Addon("plugin.video.nzbdav")
-    host = addon.getSetting("prowlarr_host").rstrip("/")
-    api_key = addon.getSetting("prowlarr_api_key")
-    ids_raw = addon.getSetting("prowlarr_indexer_ids").strip()
+        addon = xbmcaddon.Addon("plugin.video.nzbdav")
+
+        def settings_getter(key, default=""):
+            return addon.getSetting(key) or default
+
+    host = settings_getter("prowlarr_host", "").rstrip("/")
+    api_key = settings_getter("prowlarr_api_key", "")
+    ids_raw = settings_getter("prowlarr_indexer_ids", "").strip()
     indexer_ids = [i.strip() for i in ids_raw.split(",") if i.strip()]
     return host, api_key, indexer_ids
 
@@ -98,7 +103,15 @@ def _build_search_url(base_url, params, indexer_ids):
     return "{}/api/v1/search?{}".format(base_url, query)
 
 
-def search_prowlarr(search_type, title, year="", imdb="", season="", episode=""):
+def search_prowlarr(
+    search_type,
+    title,
+    year="",
+    imdb="",
+    season="",
+    episode="",
+    settings_getter=None,
+):
     """
     Search Prowlarr for NZB results matching a movie or TV episode.
 
@@ -120,7 +133,7 @@ def search_prowlarr(search_type, title, year="", imdb="", season="", episode="")
             enabled but no indexer IDs are configured.
     """
     try:
-        base_url, api_key, indexer_ids = _get_settings()
+        base_url, api_key, indexer_ids = _get_settings(settings_getter)
     except Exception as e:
         xbmc.log(
             "NZB-DAV: Failed to read Prowlarr settings: {}".format(e), xbmc.LOGERROR
@@ -134,9 +147,15 @@ def search_prowlarr(search_type, title, year="", imdb="", season="", episode="")
         )
         return [], None
 
-    import xbmcaddon
+    if settings_getter is None:
+        import xbmcaddon
 
-    raw_max = xbmcaddon.Addon("plugin.video.nzbdav").getSetting("max_results")
+        raw_max = xbmcaddon.Addon("plugin.video.nzbdav").getSetting("max_results")
+    else:
+        try:
+            raw_max = settings_getter("max_results", "25")
+        except Exception:  # pylint: disable=broad-except
+            raw_max = "25"
     try:
         max_results = int(raw_max) if raw_max not in (None, "") else 25
     except (TypeError, ValueError):

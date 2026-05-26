@@ -3,6 +3,7 @@
 
 """Tests for the combined multi-provider search flow in router.py."""
 
+import threading
 from unittest.mock import MagicMock, patch
 
 from resources.lib.router import _search_all_providers
@@ -123,6 +124,84 @@ def test_both_providers_deduplicates_by_link(mock_addon, mock_prowlarr, mock_hyd
     assert results[0]["link"] == HYDRA_RESULT["link"]
 
 
+@patch("resources.lib.hydra.search_hydra")
+@patch("resources.lib.prowlarr.search_prowlarr")
+@patch("xbmcaddon.Addon")
+def test_both_top_level_providers_run_concurrently(
+    mock_addon, mock_prowlarr, mock_hydra
+):
+    mock_addon.return_value = _mock_addon(
+        nzbhydra_enabled="true", prowlarr_enabled="true"
+    )
+    both_providers_started = threading.Barrier(2, timeout=2)
+    prowlarr_crossed_barrier = []
+
+    def hydra_search(*_args, **_kwargs):
+        both_providers_started.wait()
+        return [HYDRA_RESULT], None
+
+    def prowlarr_search(*_args, **_kwargs):
+        both_providers_started.wait()
+        prowlarr_crossed_barrier.append(True)
+        return [PROWLARR_RESULT], None
+
+    mock_hydra.side_effect = hydra_search
+    mock_prowlarr.side_effect = prowlarr_search
+
+    results, error = _search_all_providers("movie", "The Matrix")
+
+    assert error is None
+    assert len(results) == 2
+    assert prowlarr_crossed_barrier == [True]
+
+
+@patch("resources.lib.hydra.search_hydra")
+@patch("resources.lib.prowlarr.search_prowlarr")
+@patch("xbmcaddon.Addon")
+def test_concurrent_provider_search_uses_snapshot_settings_getter(
+    mock_addon, mock_prowlarr, mock_hydra
+):
+    mock_addon.return_value = _mock_addon(
+        nzbhydra_enabled="true", prowlarr_enabled="true"
+    )
+    main_thread = threading.current_thread()
+    setting_read_threads = []
+
+    def setting(key, default=""):
+        setting_read_threads.append((key, threading.current_thread()))
+        return {
+            "nzbhydra_enabled": "true",
+            "prowlarr_enabled": "true",
+            "direct_indexers_enabled": "false",
+            "hydra_url": "http://hydra:5076",
+            "hydra_api_key": "hydra-key",
+            "prowlarr_host": "http://prowlarr:9696",
+            "prowlarr_api_key": "prowlarr-key",
+            "prowlarr_indexer_ids": "1,2",
+            "max_results": "25",
+        }.get(key, default)
+
+    def hydra_search(*_args, **kwargs):
+        assert kwargs["settings_getter"]("hydra_url") == "http://hydra:5076"
+        return [HYDRA_RESULT], None
+
+    def prowlarr_search(*_args, **kwargs):
+        assert kwargs["settings_getter"]("prowlarr_host") == "http://prowlarr:9696"
+        return [PROWLARR_RESULT], None
+
+    mock_hydra.side_effect = hydra_search
+    mock_prowlarr.side_effect = prowlarr_search
+
+    results, error = _search_all_providers(
+        "movie", "The Matrix", settings_getter=setting
+    )
+
+    assert error is None
+    assert len(results) == 2
+    assert setting_read_threads
+    assert all(thread is main_thread for _key, thread in setting_read_threads)
+
+
 # --- Only one provider enabled ---
 
 
@@ -138,6 +217,19 @@ def test_only_nzbhydra_enabled(mock_addon, mock_hydra):
     assert error is None
     assert len(results) == 1
     assert results[0]["link"] == HYDRA_RESULT["link"]
+
+
+@patch("resources.lib.hydra.search_hydra", side_effect=RuntimeError("boom"))
+@patch("xbmcaddon.Addon")
+def test_single_provider_exception_returns_provider_error(mock_addon, mock_hydra):
+    mock_addon.return_value = _mock_addon(
+        nzbhydra_enabled="true", prowlarr_enabled="false"
+    )
+
+    results, error = _search_all_providers("movie", "The Matrix")
+
+    assert not results
+    assert error == "NZBHydra2 search failed: boom"
 
 
 @patch("resources.lib.prowlarr.search_prowlarr", return_value=([PROWLARR_RESULT], None))
@@ -196,6 +288,23 @@ def test_hydra_fails_prowlarr_succeeds_returns_prowlarr_results(
 )
 @patch("xbmcaddon.Addon")
 def test_prowlarr_fails_hydra_succeeds_returns_hydra_results(
+    mock_addon, mock_prowlarr, mock_hydra
+):
+    mock_addon.return_value = _mock_addon(
+        nzbhydra_enabled="true", prowlarr_enabled="true"
+    )
+
+    results, error = _search_all_providers("movie", "The Matrix")
+
+    assert error is None, "Should not error when at least one provider succeeded"
+    assert len(results) == 1
+    assert results[0]["link"] == HYDRA_RESULT["link"]
+
+
+@patch("resources.lib.hydra.search_hydra", return_value=([HYDRA_RESULT], None))
+@patch("resources.lib.prowlarr.search_prowlarr", side_effect=RuntimeError("boom"))
+@patch("xbmcaddon.Addon")
+def test_provider_exception_preserves_other_provider_results(
     mock_addon, mock_prowlarr, mock_hydra
 ):
     mock_addon.return_value = _mock_addon(
