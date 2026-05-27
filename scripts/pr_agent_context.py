@@ -311,7 +311,7 @@ def build_parser():
     )
     parser.add_argument(
         "--max-diff-lines",
-        type=int,
+        type=pr_review_context.non_negative_int,
         default=400,
         help="Maximum diff lines to emit with --diff. Defaults to 400.",
     )
