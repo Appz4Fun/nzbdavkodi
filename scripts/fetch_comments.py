@@ -13,10 +13,15 @@ import textwrap
 PR_JSON_FIELDS = "number,title,url,comments"
 
 REVIEW_THREADS_QUERY = """
-query($owner: String!, $name: String!, $number: Int!) {
+query(
+  $owner: String!,
+  $name: String!,
+  $number: Int!,
+  $review_threads_after: String
+) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      reviewThreads(first: 100) {
+      reviewThreads(first: 100, after: $review_threads_after) {
         nodes {
           id
           isResolved
@@ -33,7 +38,39 @@ query($owner: String!, $name: String!, $number: Int!) {
               createdAt
               url
             }
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
           }
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+    }
+  }
+}
+"""
+
+REVIEW_THREAD_COMMENTS_QUERY = """
+query($thread_id: ID!, $comments_after: String) {
+  node(id: $thread_id) {
+    ... on PullRequestReviewThread {
+      comments(first: 100, after: $comments_after) {
+        nodes {
+          id
+          author {
+            login
+          }
+          body
+          createdAt
+          url
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
         }
       }
     }
@@ -81,23 +118,102 @@ def current_repo(runner=run_command):
     return split_repo(payload.get("nameWithOwner"))
 
 
+def _graphql(query, variables, runner=run_command):
+    args = ["gh", "api", "graphql"]
+    for name, value in variables:
+        if value is None:
+            continue
+        flag = "-F" if isinstance(value, int) else "-f"
+        args.extend([flag, "{}={}".format(name, value)])
+    args.extend(["-f", "query={}".format(query)])
+    return load_json(runner(args).stdout, "review thread")
+
+
+def _page_info(connection):
+    return connection.get("pageInfo") or {}
+
+
+def _has_next_page(connection):
+    return bool(_page_info(connection).get("hasNextPage"))
+
+
+def _end_cursor(connection):
+    return _page_info(connection).get("endCursor")
+
+
+def _fetch_remaining_comments(thread, runner=run_command):
+    comments = thread.get("comments") or {}
+    if not thread.get("id") or not _has_next_page(comments):
+        return thread
+
+    nodes = list(comments.get("nodes") or [])
+    comments_after = _end_cursor(comments)
+    while comments_after:
+        data = _graphql(
+            REVIEW_THREAD_COMMENTS_QUERY,
+            [
+                ("thread_id", thread["id"]),
+                ("comments_after", comments_after),
+            ],
+            runner=runner,
+        )
+        next_comments = (
+            data.get("data", {}).get("node", {}).get("comments", {})
+        )
+        nodes.extend(next_comments.get("nodes") or [])
+        if not _has_next_page(next_comments):
+            break
+        comments_after = _end_cursor(next_comments)
+
+    comments["nodes"] = nodes
+    comments["pageInfo"] = {"hasNextPage": False, "endCursor": None}
+    thread["comments"] = comments
+    return thread
+
+
 def review_threads(owner, name, number, runner=run_command):
-    result = runner(
-        [
-            "gh",
-            "api",
-            "graphql",
-            "-f",
-            "owner={}".format(owner),
-            "-f",
-            "name={}".format(name),
-            "-F",
-            "number={}".format(number),
-            "-f",
-            "query={}".format(REVIEW_THREADS_QUERY),
-        ]
+    all_threads = []
+    review_threads_after = None
+    last_payload = None
+
+    while True:
+        last_payload = _graphql(
+            REVIEW_THREADS_QUERY,
+            [
+                ("owner", owner),
+                ("name", name),
+                ("number", number),
+                ("review_threads_after", review_threads_after),
+            ],
+            runner=runner,
+        )
+        pull_request = (
+            last_payload.get("data", {})
+            .get("repository", {})
+            .get("pullRequest", {})
+        )
+        connection = pull_request.get("reviewThreads") or {}
+        for thread in connection.get("nodes") or []:
+            all_threads.append(_fetch_remaining_comments(thread, runner=runner))
+
+        if not _has_next_page(connection):
+            break
+        review_threads_after = _end_cursor(connection)
+        if not review_threads_after:
+            break
+
+    if last_payload is None:
+        last_payload = {"data": {"repository": {"pullRequest": {}}}}
+    pull_request = (
+        last_payload.setdefault("data", {})
+        .setdefault("repository", {})
+        .setdefault("pullRequest", {})
     )
-    return load_json(result.stdout, "review thread")
+    pull_request["reviewThreads"] = {
+        "nodes": all_threads,
+        "pageInfo": {"hasNextPage": False, "endCursor": None},
+    }
+    return last_payload
 
 
 def _thread_line(thread):

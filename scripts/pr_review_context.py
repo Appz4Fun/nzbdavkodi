@@ -13,8 +13,9 @@ import sys
 PR_JSON_FIELDS = (
     "number,title,url,baseRefName,headRefName,statusCheckRollup,reviewDecision,comments"
 )
+PR_FALLBACK_JSON_FIELDS = "number,title,url,baseRefName,headRefName,reviewDecision,comments"
 FAILING_CHECK_STATES = ("FAILURE", "ERROR", "CANCELLED", "TIMED_OUT")
-PENDING_CHECK_STATES = ("PENDING", "QUEUED", "IN_PROGRESS", "REQUESTED")
+PENDING_CHECK_STATES = ("PENDING", "QUEUED", "IN_PROGRESS", "REQUESTED", "WAITING")
 PASSING_CHECK_STATES = ("SUCCESS", "COMPLETED", "NEUTRAL", "SKIPPED")
 
 
@@ -48,6 +49,15 @@ def _json_optional(args, runner=run_command, cwd=None):
         return json.loads(result.stdout)
     except json.JSONDecodeError:
         return None
+
+
+def _current_pr(runner=run_command):
+    pr = _json_optional(["gh", "pr", "view", "--json", PR_JSON_FIELDS], runner=runner)
+    if pr is not None:
+        return pr
+    return _json_optional(
+        ["gh", "pr", "view", "--json", PR_FALLBACK_JSON_FIELDS], runner=runner
+    )
 
 
 def _git_stdout(args, runner=run_command, cwd=None):
@@ -85,10 +95,19 @@ def _summarize_checks(pr):
 
 
 def _bounded_text(text, max_lines):
+    if max_lines is not None and max_lines < 0:
+        raise ValueError("max_diff_lines must be >= 0")
     lines = text.splitlines()
     if max_lines is None or len(lines) <= max_lines:
         return text.strip(), False
     return "\n".join(lines[:max_lines]).rstrip(), True
+
+
+def non_negative_int(value):
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be >= 0")
+    return parsed
 
 
 def collect_context(
@@ -99,7 +118,7 @@ def collect_context(
         ["git", "rev-parse", "--abbrev-ref", "HEAD"], runner=runner, cwd=root
     )
     head_sha = _git_stdout(["git", "rev-parse", "HEAD"], runner=runner, cwd=root)
-    pr = _json_optional(["gh", "pr", "view", "--json", PR_JSON_FIELDS], runner=runner)
+    pr = _current_pr(runner=runner)
 
     if base_ref is None:
         if pr and pr.get("baseRefName"):
@@ -214,8 +233,12 @@ def render_markdown(data):
         "```bash\n{}\n```".format(
             "\n".join(
                 [
-                    "git diff {}...HEAD --stat".format(data.get("base_ref", "")),
-                    "git diff {}...HEAD -- <path>".format(data.get("base_ref", "")),
+                    "git diff {} --stat".format(
+                        _quote("{}...HEAD".format(data.get("base_ref", "")))
+                    ),
+                    "git diff {} -- <path>".format(
+                        _quote("{}...HEAD".format(data.get("base_ref", "")))
+                    ),
                     "python3 scripts/fetch_comments.py --json",
                     "just lint",
                     "just test",
@@ -273,7 +296,7 @@ def build_parser():
     )
     parser.add_argument(
         "--max-diff-lines",
-        type=int,
+        type=non_negative_int,
         default=400,
         help="Maximum diff lines to emit with --diff. Defaults to 400.",
     )
