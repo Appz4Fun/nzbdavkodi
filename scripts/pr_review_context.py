@@ -14,8 +14,22 @@ PR_JSON_FIELDS = (
     "number,title,url,baseRefName,headRefName,statusCheckRollup,reviewDecision,comments"
 )
 PR_FALLBACK_JSON_FIELDS = "number,title,url,baseRefName,headRefName,reviewDecision,comments"
-FAILING_CHECK_STATES = ("FAILURE", "ERROR", "CANCELLED", "TIMED_OUT")
-PENDING_CHECK_STATES = ("PENDING", "QUEUED", "IN_PROGRESS", "REQUESTED", "WAITING")
+FAILING_CHECK_STATES = (
+    "FAILURE",
+    "ERROR",
+    "CANCELLED",
+    "TIMED_OUT",
+    "ACTION_REQUIRED",
+    "STARTUP_FAILURE",
+)
+PENDING_CHECK_STATES = (
+    "PENDING",
+    "QUEUED",
+    "IN_PROGRESS",
+    "REQUESTED",
+    "WAITING",
+    "EXPECTED",
+)
 PASSING_CHECK_STATES = ("SUCCESS", "COMPLETED", "NEUTRAL", "SKIPPED")
 
 
