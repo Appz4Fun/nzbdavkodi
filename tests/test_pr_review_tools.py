@@ -148,6 +148,143 @@ def test_fetch_comments_rejects_malformed_repo_name():
         fetch_comments.split_repo("not-a-slash-repo")
 
 
+def test_fetch_comments_paginates_review_threads_and_comments():
+    calls = []
+
+    def runner(args, cwd=None, check=True):
+        calls.append(args)
+        if "thread_id=THREAD_two" in args:
+            assert "comments_after=COMMENT_CURSOR" in args
+            return completed(
+                json.dumps(
+                    {
+                        "data": {
+                            "node": {
+                                "comments": {
+                                    "nodes": [
+                                        {
+                                            "id": "COMMENT_two_b",
+                                            "author": {"login": "reviewer"},
+                                            "body": "Second page comment.",
+                                            "createdAt": "2026-05-26T12:02:00Z",
+                                            "url": "https://comment-two-b",
+                                        }
+                                    ],
+                                    "pageInfo": {
+                                        "hasNextPage": False,
+                                        "endCursor": None,
+                                    },
+                                }
+                            }
+                        }
+                    }
+                )
+            )
+        if "review_threads_after=THREAD_CURSOR" in args:
+            return completed(
+                json.dumps(
+                    {
+                        "data": {
+                            "repository": {
+                                "pullRequest": {
+                                    "reviewThreads": {
+                                        "nodes": [
+                                            {
+                                                "id": "THREAD_two",
+                                                "isResolved": False,
+                                                "path": "scripts/two.py",
+                                                "line": 20,
+                                                "comments": {
+                                                    "nodes": [
+                                                        {
+                                                            "id": "COMMENT_two_a",
+                                                            "author": {
+                                                                "login": "reviewer"
+                                                            },
+                                                            "body": (
+                                                                "First page comment."
+                                                            ),
+                                                            "createdAt": (
+                                                                "2026-05-26T12:01:00Z"
+                                                            ),
+                                                            "url": (
+                                                                "https://comment-two-a"
+                                                            ),
+                                                        }
+                                                    ],
+                                                    "pageInfo": {
+                                                        "hasNextPage": True,
+                                                        "endCursor": "COMMENT_CURSOR",
+                                                    },
+                                                },
+                                            }
+                                        ],
+                                        "pageInfo": {
+                                            "hasNextPage": False,
+                                            "endCursor": None,
+                                        },
+                                    }
+                                }
+                            }
+                        }
+                    }
+                )
+            )
+        return completed(
+            json.dumps(
+                {
+                    "data": {
+                        "repository": {
+                            "pullRequest": {
+                                "reviewThreads": {
+                                    "nodes": [
+                                        {
+                                            "id": "THREAD_one",
+                                            "isResolved": False,
+                                            "path": "scripts/one.py",
+                                            "line": 10,
+                                            "comments": {
+                                                "nodes": [
+                                                    {
+                                                        "id": "COMMENT_one",
+                                                        "author": {"login": "reviewer"},
+                                                        "body": "Only comment.",
+                                                        "createdAt": (
+                                                            "2026-05-26T12:00:00Z"
+                                                        ),
+                                                        "url": "https://comment-one",
+                                                    }
+                                                ],
+                                                "pageInfo": {
+                                                    "hasNextPage": False,
+                                                    "endCursor": None,
+                                                },
+                                            },
+                                        }
+                                    ],
+                                    "pageInfo": {
+                                        "hasNextPage": True,
+                                        "endCursor": "THREAD_CURSOR",
+                                    },
+                                }
+                            }
+                        }
+                    }
+                }
+            )
+        )
+
+    data = fetch_comments.review_threads("owner", "repo", 7, runner=runner)
+    threads = data["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]
+
+    assert [thread["id"] for thread in threads] == ["THREAD_one", "THREAD_two"]
+    assert [comment["id"] for comment in threads[1]["comments"]["nodes"]] == [
+        "COMMENT_two_a",
+        "COMMENT_two_b",
+    ]
+    assert len(calls) == 3
+
+
 def test_pr_review_context_renders_markdown_packet():
     data = {
         "branch": "feature/pr-tools",
@@ -206,6 +343,25 @@ def test_pr_review_context_quotes_diff_command_paths():
     assert (
         "git diff origin/main...HEAD -- 'path with spaces/review helper.py'" in output
     )
+
+
+def test_pr_review_context_quotes_base_ref_in_review_commands():
+    data = {
+        "branch": "feature/pr-tools",
+        "base_ref": "origin/base&branch",
+        "head_sha": "abc123",
+        "merge_base": "def456",
+        "pr": None,
+        "status": "UNKNOWN",
+        "changed_files": [],
+        "diff_stat": " 1 file changed",
+        "commits": [],
+    }
+
+    output = pr_review_context.render_markdown(data)
+
+    assert "git diff 'origin/base&branch...HEAD' --stat" in output
+    assert "git diff 'origin/base&branch...HEAD' -- <path>" in output
 
 
 def test_pr_review_context_omits_diff_by_default():
@@ -271,6 +427,65 @@ def test_pr_review_context_collects_data_with_injected_runner(tmp_path):
     assert ["gh", "pr", "view", "--json", pr_review_context.PR_JSON_FIELDS] in calls
 
 
+def test_pr_review_context_falls_back_when_status_rollup_is_unavailable(tmp_path):
+    calls = []
+
+    def runner(args, cwd=None, check=True):
+        calls.append(args)
+        if args[:3] == ["git", "rev-parse", "--show-toplevel"]:
+            return completed(str(tmp_path))
+        if args[:3] == ["git", "rev-parse", "--abbrev-ref"]:
+            return completed("feature/pr-tools")
+        if args[:3] == ["git", "rev-parse", "HEAD"]:
+            return completed("abc123")
+        if (
+            args[:3] == ["gh", "pr", "view"]
+            and pr_review_context.PR_JSON_FIELDS in args
+        ):
+            raise subprocess.CalledProcessError(
+                1, args, stderr="Field 'statusCheckRollup' doesn't exist\n"
+            )
+        if (
+            args[:3] == ["gh", "pr", "view"]
+            and pr_review_context.PR_FALLBACK_JSON_FIELDS in args
+        ):
+            return completed(
+                json.dumps(
+                    {
+                        "number": 7,
+                        "title": "Add PR helpers",
+                        "url": "https://pr",
+                        "baseRefName": "main",
+                        "headRefName": "feature/pr-tools",
+                        "reviewDecision": "REVIEW_REQUIRED",
+                    }
+                )
+            )
+        if args[:4] == ["git", "merge-base", "origin/main", "HEAD"]:
+            return completed("def456")
+        if args[:3] == ["git", "diff", "--name-status"]:
+            return completed("A\tscripts/fetch_comments.py")
+        if args[:3] == ["git", "diff", "--stat"]:
+            return completed(" 1 file changed, 100 insertions(+)")
+        if args[:3] == ["git", "log", "--oneline"]:
+            return completed("abc123 Add PR helpers")
+        raise AssertionError("unexpected command: {}".format(args))
+
+    data = pr_review_context.collect_context(runner=runner)
+
+    assert data["pr"]["number"] == 7
+    assert data["pr"]["baseRefName"] == "main"
+    assert data["status"] == "UNKNOWN"
+    assert ["gh", "pr", "view", "--json", pr_review_context.PR_JSON_FIELDS] in calls
+    assert [
+        "gh",
+        "pr",
+        "view",
+        "--json",
+        pr_review_context.PR_FALLBACK_JSON_FIELDS,
+    ] in calls
+
+
 def test_pr_review_context_collects_bounded_diff_when_requested(tmp_path):
     def runner(args, cwd=None, check=True):
         if args[:3] == ["git", "rev-parse", "--show-toplevel"]:
@@ -299,6 +514,27 @@ def test_pr_review_context_collects_bounded_diff_when_requested(tmp_path):
 
     assert data["diff"] == "line0\nline1\nline2"
     assert data["diff_truncated"] is True
+
+
+def test_pr_review_context_rejects_negative_max_diff_lines():
+    with pytest.raises(ValueError, match="max_diff_lines"):
+        pr_review_context._bounded_text("line0\nline1", -1)
+
+    with pytest.raises(SystemExit):
+        pr_review_context.build_parser().parse_args(["--max-diff-lines", "-1"])
+
+
+def test_pr_agent_context_rejects_negative_max_diff_lines():
+    with pytest.raises(SystemExit):
+        pr_agent_context.build_parser().parse_args(["--max-diff-lines", "-1"])
+
+
+def test_pr_review_context_treats_waiting_checks_as_pending():
+    status = pr_review_context._summarize_checks(
+        {"statusCheckRollup": [{"state": "WAITING"}]}
+    )
+
+    assert status == "PENDING"
 
 
 def test_pr_agent_context_emits_unified_agent_json(tmp_path):
