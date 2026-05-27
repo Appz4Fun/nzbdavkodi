@@ -54,6 +54,10 @@ def test_parse_route_install_player_other():
     )
 
 
+def test_parse_route_setup_wizard():
+    assert parse_route("plugin://plugin.video.nzbdav/setup_wizard") == "/setup_wizard"
+
+
 def test_parse_params_movie():
     query = "?" + urlencode(
         {"type": "movie", "title": "The Matrix", "year": "1999", "imdb": "tt0133093"}
@@ -640,15 +644,39 @@ def test_route_main_menu_does_not_call_safe_resolve(mock_menu, mock_resolved):
 
 
 @patch("xbmcplugin.setResolvedUrl")
-def test_route_root_opens_settings_and_resolves_handle(mock_resolved):
+@patch("resources.lib.router.xbmc")
+def test_route_root_opens_settings_and_resolves_handle(mock_xbmc, mock_resolved):
     """Bare add-on clicks should open settings without Kodi's add-on-info dialog."""
-    fake_addon = MagicMock()
-    with patch.dict("sys.modules", {"xbmcaddon": MagicMock(Addon=lambda: fake_addon)}):
+    maybe_auto_run = MagicMock(return_value=False)
+    with patch.dict(
+        "sys.modules",
+        {"resources.lib.setup_wizard": MagicMock(maybe_auto_run=maybe_auto_run)},
+    ):
         route(["plugin://plugin.video.nzbdav/", "3", ""])
-    fake_addon.openSettings.assert_called_once()
+    maybe_auto_run.assert_called_once()
+    mock_xbmc.executebuiltin.assert_called_once_with(
+        "Addon.OpenSettings(plugin.video.nzbdav)"
+    )
     assert mock_resolved.called, "setResolvedUrl must be called for bare root settings"
     assert mock_resolved.call_args[0][0] == 3
     assert mock_resolved.call_args[0][1] is False
+
+
+@patch("xbmcplugin.setResolvedUrl")
+@patch("resources.lib.router.xbmc")
+def test_route_root_auto_runs_first_run_wizard_before_settings(
+    mock_xbmc, mock_resolved
+):
+    maybe_auto_run = MagicMock(return_value=True)
+    with patch.dict(
+        "sys.modules",
+        {"resources.lib.setup_wizard": MagicMock(maybe_auto_run=maybe_auto_run)},
+    ):
+        route(["plugin://plugin.video.nzbdav/", "3", ""])
+
+    maybe_auto_run.assert_called_once()
+    mock_xbmc.executebuiltin.assert_not_called()
+    assert mock_resolved.called
 
 
 @patch("xbmcplugin.setResolvedUrl")
@@ -704,6 +732,21 @@ def test_route_install_player_other_resolves_handle(mock_resolved):
 
 
 @patch("xbmcplugin.setResolvedUrl")
+def test_route_setup_wizard_resolves_handle(mock_resolved):
+    """/setup_wizard must resolve the action handle after running."""
+    run_setup_wizard = MagicMock()
+    with patch.dict(
+        "sys.modules",
+        {"resources.lib.setup_wizard": MagicMock(run_setup_wizard=run_setup_wizard)},
+    ):
+        route(["plugin://plugin.video.nzbdav/setup_wizard", "11", ""])
+    run_setup_wizard.assert_called_once()
+    assert mock_resolved.called, "setResolvedUrl must be called for /setup_wizard"
+    assert mock_resolved.call_args[0][0] == 11
+    assert mock_resolved.call_args[0][1] is False
+
+
+@patch("xbmcplugin.setResolvedUrl")
 @patch("resources.lib.http_util.notify")
 def test_route_clear_cache_resolves_handle(mock_notify, mock_resolved):
     """/clear_cache must resolve the handle after running."""
@@ -718,15 +761,47 @@ def test_route_clear_cache_resolves_handle(mock_notify, mock_resolved):
 
 
 @patch("xbmcplugin.setResolvedUrl")
-def test_route_settings_resolves_handle(mock_resolved):
+@patch("resources.lib.router.xbmc")
+def test_route_settings_resolves_handle(mock_xbmc, mock_resolved):
     """/settings must resolve the handle after openSettings returns."""
-    fake_addon = MagicMock()
-    with patch.dict("sys.modules", {"xbmcaddon": MagicMock(Addon=lambda: fake_addon)}):
-        route(["plugin://plugin.video.nzbdav/settings", "3", ""])
-    fake_addon.openSettings.assert_called_once()
+    route(["plugin://plugin.video.nzbdav/settings", "3", ""])
+    mock_xbmc.executebuiltin.assert_called_once_with(
+        "Addon.OpenSettings(plugin.video.nzbdav)"
+    )
     assert mock_resolved.called, "setResolvedUrl must be called for /settings"
     assert mock_resolved.call_args[0][0] == 3
     assert mock_resolved.call_args[0][1] is False
+
+
+@patch("xbmcplugin.setResolvedUrl")
+@patch("resources.lib.router.xbmc")
+def test_route_settings_uses_kodi_builtin_for_fresh_settings_dialog(
+    mock_xbmc, _mock_resolved
+):
+    """Opening config after the wizard must not reuse stale Addon settings state."""
+    fake_addon = MagicMock()
+
+    with patch.dict("sys.modules", {"xbmcaddon": MagicMock(Addon=lambda: fake_addon)}):
+        route(["plugin://plugin.video.nzbdav/settings", "3", ""])
+
+    mock_xbmc.executebuiltin.assert_called_once_with(
+        "Addon.OpenSettings(plugin.video.nzbdav)"
+    )
+    fake_addon.openSettings.assert_not_called()
+
+
+@patch("xbmcplugin.setResolvedUrl")
+@patch("resources.lib.router.xbmc")
+def test_route_settings_falls_back_to_addon_open_settings_when_builtin_unavailable(
+    mock_xbmc, _mock_resolved
+):
+    fake_addon = MagicMock()
+    mock_xbmc.executebuiltin.side_effect = AttributeError("missing builtin")
+
+    with patch.dict("sys.modules", {"xbmcaddon": MagicMock(Addon=lambda: fake_addon)}):
+        route(["plugin://plugin.video.nzbdav/settings", "3", ""])
+
+    fake_addon.openSettings.assert_called_once()
 
 
 @patch("xbmcplugin.setResolvedUrl")
@@ -2898,6 +2973,37 @@ def test_route_dispatches_to_test_webdav(mock_test):
     """Route /test_webdav should call the WebDAV connection test."""
     route(["plugin://plugin.video.nzbdav/test_webdav", "1", ""])
     mock_test.assert_called_once()
+
+
+def test_main_menu_auto_runs_setup_wizard_before_rendering():
+    from resources.lib import router
+
+    with patch("resources.lib.setup_wizard.maybe_auto_run") as maybe_auto_run:
+        with patch("resources.lib.router.xbmcplugin.addDirectoryItem"):
+            with patch("resources.lib.router.xbmcplugin.endOfDirectory"):
+                router._handle_main_menu(1)
+
+    maybe_auto_run.assert_called_once()
+
+
+def test_main_menu_includes_setup_wizard_rerun_entry():
+    from resources.lib import router
+
+    added_urls = []
+
+    def _capture_item(handle, url, listitem, isFolder):
+        added_urls.append(url)
+        return True
+
+    with patch("resources.lib.setup_wizard.maybe_auto_run"):
+        with patch(
+            "resources.lib.router.xbmcplugin.addDirectoryItem",
+            side_effect=_capture_item,
+        ):
+            with patch("resources.lib.router.xbmcplugin.endOfDirectory"):
+                router._handle_main_menu(1)
+
+    assert "plugin://plugin.video.nzbdav/setup_wizard" in added_urls
 
 
 # --- _get_tmdb_poster tests ---

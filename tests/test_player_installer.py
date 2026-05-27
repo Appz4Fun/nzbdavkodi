@@ -10,11 +10,54 @@ from resources.lib.player_installer import (
     discover_other_player_targets,
     install_player,
     install_player_other,
+    tmdbhelper_player_installed,
 )
 
 
 def test_tmdbhelper_path_defined():
     assert "themoviedb.helper" in TMDBHELPER_PLAYER_PATH
+
+
+@patch("resources.lib.player_installer.xbmcvfs")
+def test_tmdbhelper_player_installed_detects_current_schema(mock_vfs):
+    from resources.lib.player_installer import _PLAYER_SCHEMA_VERSION
+
+    mock_vfs.translatePath.side_effect = lambda p: p.replace(
+        "special://profile", "/home/kodi/.kodi/userdata"
+    )
+    mock_vfs.exists.return_value = True
+    mock_file = MagicMock()
+    mock_file.read.return_value = json.dumps({"schema_version": _PLAYER_SCHEMA_VERSION})
+    mock_vfs.File.return_value = mock_file
+
+    assert tmdbhelper_player_installed()
+
+
+@patch("resources.lib.player_installer.xbmcvfs")
+def test_tmdbhelper_player_installed_is_false_when_file_missing(mock_vfs):
+    mock_vfs.translatePath.side_effect = lambda p: p.replace(
+        "special://profile", "/home/kodi/.kodi/userdata"
+    )
+    mock_vfs.exists.return_value = False
+
+    assert not tmdbhelper_player_installed()
+
+
+@patch("resources.lib.player_installer.xbmcvfs")
+def test_tmdbhelper_player_installed_is_false_for_stale_schema(mock_vfs):
+    from resources.lib.player_installer import _PLAYER_SCHEMA_VERSION
+
+    mock_vfs.translatePath.side_effect = lambda p: p.replace(
+        "special://profile", "/home/kodi/.kodi/userdata"
+    )
+    mock_vfs.exists.return_value = True
+    mock_file = MagicMock()
+    mock_file.read.return_value = json.dumps(
+        {"schema_version": _PLAYER_SCHEMA_VERSION - 1}
+    )
+    mock_vfs.File.return_value = mock_file
+
+    assert not tmdbhelper_player_installed()
 
 
 @patch("resources.lib.player_installer._notify")
@@ -28,7 +71,7 @@ def test_install_player_writes_file(mock_vfs, mock_notify):
     mock_file = MagicMock()
     mock_vfs.File.return_value = mock_file
 
-    install_player()
+    assert install_player()
 
     # Installer may read the existing file first (schema-version check) and
     # then write. Assert the write happened and that each File call was
@@ -54,7 +97,7 @@ def test_install_player_creates_directory_when_missing(mock_vfs, mock_notify):
     mock_file = MagicMock()
     mock_vfs.File.return_value = mock_file
 
-    install_player()
+    assert install_player()
 
     mock_vfs.mkdirs.assert_called_once()
 
@@ -69,7 +112,7 @@ def test_install_player_handles_write_failure(mock_vfs, mock_notify):
     mock_vfs.exists.return_value = True
     mock_vfs.File.side_effect = OSError("Disk full")
 
-    install_player()
+    assert not install_player()
 
     notify_calls = [str(c) for c in mock_notify.call_args_list]
     assert any("Failed" in s or "failed" in s for s in notify_calls)

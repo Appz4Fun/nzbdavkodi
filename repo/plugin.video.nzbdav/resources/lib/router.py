@@ -64,6 +64,14 @@ def _addon_instance():
         return addon_module.Addon()
 
 
+def _open_addon_settings():
+    """Open settings through Kodi so recently written values are reloaded."""
+    try:
+        xbmc.executebuiltin("Addon.OpenSettings(plugin.video.nzbdav)")
+    except (AttributeError, RuntimeError, TypeError):
+        _addon_instance().openSettings()
+
+
 def _script_play_stage(message):
     xbmc.log("NZB-DAV: Script play stage: {}".format(message), xbmc.LOGINFO)
     for stage_path in _script_stage_paths():
@@ -257,6 +265,10 @@ def route(argv):
             from resources.lib.player_installer import install_player_other
 
             install_player_other()
+        elif path == "/setup_wizard":
+            from resources.lib.setup_wizard import run_setup_wizard
+
+            run_setup_wizard()
         elif path == "/clear_cache":
             from resources.lib.cache import clear_cache
 
@@ -265,7 +277,7 @@ def route(argv):
 
             notify(_addon_name(), _string(30082), 3000)
         elif path == "/settings":
-            _addon_instance().openSettings()
+            _open_addon_settings()
         elif path == "/configure_preferred_groups":
             from resources.lib.filter import (
                 DEFAULT_PREFERRED_GROUPS,
@@ -305,8 +317,13 @@ def route(argv):
         elif path == "/menu":
             _handle_main_menu(handle)
             return
+        elif path == "/":
+            from resources.lib.setup_wizard import maybe_auto_run
+
+            if not maybe_auto_run():
+                _open_addon_settings()
         else:
-            _addon_instance().openSettings()
+            _open_addon_settings()
     except Exception as e:
         xbmc.log(
             "NZB-DAV: Unhandled error in route for path='{}': {}".format(path, e),
@@ -1873,12 +1890,20 @@ def _test_nzbdav_connection():
 
 def _handle_main_menu(handle):
     """Show main menu with settings and install player options."""
+    from resources.lib.setup_wizard import maybe_auto_run
+
+    maybe_auto_run()
+
     li = xbmcgui.ListItem(label=_string(30011))
     url = "plugin://plugin.video.nzbdav/install_player"
     xbmcplugin.addDirectoryItem(handle=handle, url=url, listitem=li, isFolder=False)
 
     li = xbmcgui.ListItem(label=_string(30160))
     url = "plugin://plugin.video.nzbdav/install_player_other"
+    xbmcplugin.addDirectoryItem(handle=handle, url=url, listitem=li, isFolder=False)
+
+    li = xbmcgui.ListItem(label=_string(30197))
+    url = "plugin://plugin.video.nzbdav/setup_wizard"
     xbmcplugin.addDirectoryItem(handle=handle, url=url, listitem=li, isFolder=False)
 
     li = xbmcgui.ListItem(label=_string(30091))

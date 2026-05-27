@@ -134,6 +134,48 @@ class _FakePlayer:
 
 sys.modules["xbmc"].Player = _FakePlayer
 
+
+class _FakeWindowXMLDialog:
+    """Minimal real base class for custom XML dialog subclasses.
+
+    A raw MagicMock base makes subclasses collapse into MagicMock instances,
+    which prevents tests from exercising dialog methods directly.
+    """
+
+    def __init__(self, *args, **kwargs):
+        self._properties = {}
+        self._controls = {}
+        self._focus_id = None
+        self._closed = False
+
+    def setProperty(self, key, value):
+        self._properties[key] = value
+
+    def getProperty(self, key):
+        return self._properties.get(key, "")
+
+    def getControl(self, control_id):
+        if control_id not in self._controls:
+            control = MagicMock()
+            control.getSelectedPosition.return_value = -1
+            self._controls[control_id] = control
+        return self._controls[control_id]
+
+    def setFocusId(self, control_id):
+        self._focus_id = control_id
+
+    def doModal(self):
+        self.onInit()
+
+    def close(self):
+        self._closed = True
+
+    def onInit(self):
+        pass
+
+
+sys.modules["xbmcgui"].WindowXMLDialog = _FakeWindowXMLDialog
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # Add repo/plugin.video.nzbdav to the path so imports work

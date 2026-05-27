@@ -70,6 +70,32 @@ def _addon_label(addon_id):
     return addon_id
 
 
+def _tmdbhelper_player_file_path():
+    real_path = xbmcvfs.translatePath(TMDBHELPER_PLAYER_PATH)
+    return os.path.join(real_path, PLAYER_FILENAME)
+
+
+def tmdbhelper_player_installed():
+    """Return True when the current TMDBHelper NZB-DAV player is installed."""
+    try:
+        file_path = _tmdbhelper_player_file_path()
+        if not xbmcvfs.exists(file_path):
+            return False
+        existing_f = xbmcvfs.File(file_path, "r")
+        try:
+            existing_text = existing_f.read()
+        finally:
+            existing_f.close()
+        existing = json.loads(existing_text)
+        return existing.get("schema_version") == _PLAYER_SCHEMA_VERSION
+    except Exception as e:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: Could not check TMDBHelper player install state: {}".format(e),
+            xbmc.LOGDEBUG,
+        )
+        return False
+
+
 def discover_other_player_targets():
     """Return non-TMDBHelper addon_data player folders that already exist."""
     try:
@@ -136,7 +162,7 @@ def _install_player_to_path(target_name, target_path):
                 xbmc.LOGERROR,
             )
             _notify(_addon_name(), _fmt(30095, target_name))
-            return
+            return False
 
         if not xbmcvfs.exists(real_path):
             if not xbmcvfs.mkdirs(real_path):
@@ -145,7 +171,7 @@ def _install_player_to_path(target_name, target_path):
                     xbmc.LOGERROR,
                 )
                 _notify(_addon_name(), _fmt(30095, target_name))
-                return
+                return False
 
         file_path = os.path.join(real_path, PLAYER_FILENAME)
 
@@ -168,7 +194,7 @@ def _install_player_to_path(target_name, target_path):
                         xbmc.LOGINFO,
                     )
                     _notify(_addon_name(), _fmt(30094, target_name))
-                    return
+                    return True
                 # Schema change — back up the old file before overwriting.
                 backup_path = os.path.splitext(file_path)[0] + ".bak"
                 try:
@@ -200,11 +226,13 @@ def _install_player_to_path(target_name, target_path):
                 )
             xbmc.log("NZB-DAV: Player installed successfully", xbmc.LOGINFO)
             _notify(_addon_name(), _fmt(30094, target_name))
+            return True
         finally:
             f.close()
     except Exception as e:
         xbmc.log("NZB-DAV: Failed to install player: {}".format(e), xbmc.LOGERROR)
         _notify(_addon_name(), _fmt(30095, target_name))
+        return False
 
 
 def _enable_tmdbhelper_action_player_mode():
@@ -223,7 +251,7 @@ def _enable_tmdbhelper_action_player_mode():
 def install_player():
     """Install player JSON to TMDBHelper."""
     _enable_tmdbhelper_action_player_mode()
-    _install_player_to_path(TMDBHELPER_LABEL, TMDBHELPER_PLAYER_PATH)
+    return _install_player_to_path(TMDBHELPER_LABEL, TMDBHELPER_PLAYER_PATH)
 
 
 def install_player_other():
