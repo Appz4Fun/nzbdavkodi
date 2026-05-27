@@ -10,7 +10,7 @@ import subprocess
 import sys
 import textwrap
 
-PR_JSON_FIELDS = "number,title,url,comments"
+PR_JSON_FIELDS = "number,title,url,comments,reviews"
 
 REVIEW_THREADS_QUERY = """
 query(
@@ -235,6 +235,20 @@ def _comment_payload(comment, fallback_id):
     }
 
 
+def _review_comment_payload(review, fallback_id):
+    body = (review.get("body") or "").strip()
+    state = review.get("state")
+    if state:
+        body = "[{}] {}".format(state, body).strip()
+    return {
+        "id": review.get("id") or fallback_id,
+        "author": _comment_author(review),
+        "body": body,
+        "created_at": review.get("submittedAt", ""),
+        "url": review.get("url", ""),
+    }
+
+
 def _thread_payload(thread, index):
     comments = []
     for comment_index, comment in enumerate(
@@ -268,6 +282,11 @@ def build_agent_payload(pr, thread_data, include_resolved=False):
         issue_comments.append(
             _comment_payload(comment, "issue-comment-{}".format(index))
         )
+    for index, review in enumerate(pr.get("reviews") or [], 1):
+        if (review.get("body") or "").strip():
+            issue_comments.append(
+                _review_comment_payload(review, "review-comment-{}".format(index))
+            )
 
     thread_payloads = []
     for index, thread in enumerate(raw_threads, 1):

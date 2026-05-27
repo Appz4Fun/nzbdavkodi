@@ -143,6 +143,45 @@ def test_fetch_comments_emits_agent_json_with_stable_ids():
     assert payload["review_threads"][0]["line"] == 42
 
 
+def test_fetch_comments_includes_top_level_review_bodies():
+    pr = {
+        "number": 7,
+        "title": "Tighten proxy fallback",
+        "url": "https://pr",
+        "comments": [],
+        "reviews": [
+            {
+                "id": "REVIEW_changes",
+                "author": {"login": "reviewer"},
+                "body": "Please address the deployment note.",
+                "submittedAt": "2026-05-26T13:00:00Z",
+                "state": "CHANGES_REQUESTED",
+            },
+            {
+                "id": "REVIEW_empty",
+                "author": {"login": "reviewer"},
+                "body": "",
+                "submittedAt": "2026-05-26T14:00:00Z",
+                "state": "COMMENTED",
+            },
+        ],
+    }
+    thread_data = {
+        "data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": []}}}}
+    }
+
+    payload = fetch_comments.build_agent_payload(
+        pr, thread_data, include_resolved=False
+    )
+
+    assert payload["summary"]["issue_comment_count"] == 1
+    assert payload["issue_comments"][0]["id"] == "REVIEW_changes"
+    assert payload["issue_comments"][0]["author"] == "reviewer"
+    assert payload["issue_comments"][0]["created_at"] == "2026-05-26T13:00:00Z"
+    assert "[CHANGES_REQUESTED]" in payload["issue_comments"][0]["body"]
+    assert "Please address the deployment note." in payload["issue_comments"][0]["body"]
+
+
 def test_fetch_comments_rejects_malformed_repo_name():
     with pytest.raises(SystemExit, match="OWNER/REPO"):
         fetch_comments.split_repo("not-a-slash-repo")
@@ -537,6 +576,18 @@ def test_pr_review_context_treats_waiting_checks_as_pending():
     assert status == "PENDING"
 
 
+@pytest.mark.parametrize("state", ["EXPECTED", "ACTION_REQUIRED", "STARTUP_FAILURE"])
+def test_pr_review_context_classifies_additional_check_states(state):
+    status = pr_review_context._summarize_checks(
+        {"statusCheckRollup": [{"state": state}]}
+    )
+
+    if state == "EXPECTED":
+        assert status == "PENDING"
+    else:
+        assert status == "FAILING"
+
+
 def test_pr_agent_context_emits_unified_agent_json(tmp_path):
     def runner(args, cwd=None, check=True):
         if args[:3] == ["git", "rev-parse", "--show-toplevel"]:
@@ -762,7 +813,7 @@ def test_pr_agent_context_keeps_local_context_when_comments_fail(tmp_path):
     assert payload["errors"] == [
         {
             "stage": "comments",
-            "command": "gh pr view --json number,title,url,comments",
+            "command": "gh pr view --json number,title,url,comments,reviews",
             "message": "gh auth token is unavailable",
         }
     ]
