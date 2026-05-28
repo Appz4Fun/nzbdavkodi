@@ -5,6 +5,9 @@
 
 import re
 
+_NON_ALPHANUM_RE = re.compile(r"[^A-Za-z0-9]+")
+_UNDERSCORES_RE = re.compile(r"_+")
+
 DIRECT_FALLBACK_HOSTS = ("dognzb", "nzbplanet", "nzbgeek", "6box")
 DOGNZB_TVSEARCH_FALLBACK_HOSTS = ("dognzb",)
 RATE_LIMITED_CAPS_HOSTS = ("nzb.su", "nzb.life")
@@ -36,8 +39,8 @@ _PRESETS = (
 
 
 def slugify_preset_id(name):
-    value = re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_").lower()
-    return re.sub(r"_+", "_", value)
+    value = _NON_ALPHANUM_RE.sub("_", name).strip("_").lower()
+    return _UNDERSCORES_RE.sub("_", value)
 
 
 def _preset(indexer_id, name, api_url):

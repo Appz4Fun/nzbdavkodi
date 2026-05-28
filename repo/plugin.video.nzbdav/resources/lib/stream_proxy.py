@@ -72,6 +72,11 @@ _HLS_PRIVATE_TEMP_ROOT = None
 _HLS_PRIVATE_TEMP_ROOT_LOCK = threading.Lock()
 _MAX_STREAM_SESSIONS = 8
 _SESSION_TTL_SECONDS = 6 * 3600
+
+_DURATION_RE = re.compile(r"Duration:\s*(\d+):(\d+):(\d+)(?:\.(\d+))?")
+_SEGMENT_RE = re.compile(r"seg_0*(\d+)\.(m4s|ts)")
+_BYTES_ZERO_RE = re.compile(r"^bytes\s+0-0/(\d+)$")
+
 _PARSE_ERRORS = (
     ImportError,
     OSError,
@@ -1281,7 +1286,7 @@ def _parse_ffmpeg_duration(stderr_text):
 
     Returns duration in seconds as a float, or None if not found.
     """
-    match = re.search(r"Duration:\s*(\d+):(\d+):(\d+)(?:\.(\d+))?", stderr_text)
+    match = _DURATION_RE.search(stderr_text)
     if not match:
         return None
     hours, minutes, seconds, frac = match.groups()
@@ -4764,7 +4769,7 @@ class HlsProducer:
         def _normalize_segment(match):
             return "seg_{}.{}".format(int(match.group(1)), match.group(2))
 
-        text = re.sub(r"seg_0*(\d+)\.(m4s|ts)", _normalize_segment, text)
+        text = _SEGMENT_RE.sub(_normalize_segment, text)
         return text.encode("utf-8")
 
     def _segment_complete(self, seg_n):
@@ -7044,7 +7049,7 @@ class StreamProxy:
                     status = getattr(resp, "status", None)
                     if status is None:
                         status = resp.getcode()
-                    match = re.match(r"^bytes\s+0-0/(\d+)$", cr.strip())
+                    match = _BYTES_ZERO_RE.match(cr.strip())
                     stream_length = int(match.group(1)) if match else 0
                     if status == 206 and stream_length == content_length_hint:
                         return content_length_hint
