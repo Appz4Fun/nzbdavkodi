@@ -18,6 +18,7 @@ from resources.lib.resolver import (
     _direct_playback_service_config,
     _existing_completed_stream,
     _fallback_submit_jobs_snapshot,
+    _finish_direct_playback,
     _get_poll_settings,
     _get_submit_timeout_seconds,
     _handle_history_result,
@@ -452,6 +453,37 @@ def test_play_direct_mkv_sets_matroska_mime_on_passthrough(
     _play_direct(1, "http://webdav:8080/content/movie/movie.mkv", None)
 
     listitem.setMimeType.assert_called_with("video/x-matroska")
+
+
+@patch("resources.lib.resolver.xbmcplugin")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.xbmc")
+def test_finish_direct_playback_uses_display_title_for_kodi_metadata(
+    _mock_xbmc, mock_gui, mock_plugin
+):
+    listitem = MagicMock()
+    info_tag = MagicMock()
+    listitem.getVideoInfoTag.return_value = info_tag
+    mock_gui.ListItem.return_value = listitem
+    home = MagicMock()
+    mock_gui.Window.return_value = home
+
+    _finish_direct_playback(
+        1,
+        {
+            "stream_url": "http://webdav/content/abc123/hash-name.mkv",
+            "stream_headers": {},
+            "service_port": 57800,
+            "proxy_url": "http://127.0.0.1:57800/stream/session",
+            "stream_info": {},
+            "display_title": "Slow Horses S03E02",
+        },
+    )
+
+    listitem.setLabel.assert_called_once_with("Slow Horses S03E02")
+    info_tag.setTitle.assert_called_once_with("Slow Horses S03E02")
+    home.setProperty.assert_any_call("nzbdav.stream_title", "Slow Horses S03E02")
+    mock_plugin.setResolvedUrl.assert_called_once()
 
 
 @patch("resources.lib.stream_proxy.prepare_stream_via_service")
@@ -1085,6 +1117,57 @@ def test_resolve_routes_plain_mkv_through_proxy_without_fallbacks(
     )
     mock_wait_prepare.assert_called_once_with({"state": "prepare"})
     mock_finish_playback.assert_called_once_with(1, {"state": "prepared"})
+
+
+@patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
+@patch("resources.lib.resolver._finish_direct_playback")
+@patch("resources.lib.resolver._wait_direct_playback_prepare")
+@patch("resources.lib.resolver._start_direct_playback_prepare")
+@patch("resources.lib.resolver._start_fallback_submit_worker")
+@patch("resources.lib.resolver._poll_until_ready")
+@patch("resources.lib.resolver._clear_kodi_playback_state")
+@patch("resources.lib.resolver.xbmc")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.xbmcplugin")
+@patch("resources.lib.resolver._get_poll_settings")
+def test_resolve_passes_display_title_to_direct_playback_handoff(
+    mock_poll_settings,
+    _mock_plugin,
+    mock_gui,
+    mock_xbmc,
+    _mock_clear_state,
+    mock_poll_until_ready,
+    mock_start_fallback,
+    mock_start_prepare,
+    mock_wait_prepare,
+    mock_finish_playback,
+    _mock_snapshot,
+):
+    mock_poll_settings.return_value = (2, 60)
+    mock_start_fallback.return_value = {"state": "fallback"}
+    mock_start_prepare.return_value = {"state": "prepare"}
+    prepared = {"state": "prepared"}
+    mock_wait_prepare.return_value = prepared
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    mock_gui.DialogProgress.return_value = MagicMock()
+    mock_poll_until_ready.return_value = (
+        "http://webdav/content/primary/slow-horses.mkv",
+        {"Authorization": "Basic primary"},
+    )
+
+    resolve(
+        1,
+        {
+            "nzburl": "http://hydra/getnzb/primary",
+            "title": "Slow.Horses.S03E02.2160p.WEB-DL.Atmos.mkv",
+            "_display_title": "Slow Horses S03E02",
+            "_fallback_candidates": [],
+        },
+    )
+
+    mock_finish_playback.assert_called_once_with(
+        1, {"state": "prepared", "display_title": "Slow Horses S03E02"}
+    )
 
 
 @patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
@@ -1756,6 +1839,53 @@ def test_resolve_and_play_routes_plain_mkv_through_proxy_without_fallbacks(
     )
     mock_wait_prepare.assert_called_once_with({"state": "prepare"})
     mock_finish_playback.assert_called_once_with({"state": "prepared"})
+
+
+@patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
+@patch("resources.lib.resolver._finish_player_playback")
+@patch("resources.lib.resolver._wait_direct_playback_prepare")
+@patch("resources.lib.resolver._start_direct_playback_prepare")
+@patch("resources.lib.resolver._start_fallback_submit_worker")
+@patch("resources.lib.resolver._poll_until_ready")
+@patch("resources.lib.resolver._clear_kodi_playback_state")
+@patch("resources.lib.resolver.xbmc")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver._get_poll_settings")
+def test_resolve_and_play_passes_display_title_to_player_handoff(
+    mock_poll_settings,
+    mock_gui,
+    mock_xbmc,
+    _mock_clear_state,
+    mock_poll_until_ready,
+    mock_start_fallback,
+    mock_start_prepare,
+    mock_wait_prepare,
+    mock_finish_playback,
+    _mock_snapshot,
+):
+    mock_poll_settings.return_value = (2, 60)
+    mock_start_fallback.return_value = {"state": "fallback"}
+    mock_start_prepare.return_value = {"state": "prepare"}
+    mock_wait_prepare.return_value = {"state": "prepared"}
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    mock_gui.DialogProgress.return_value = MagicMock()
+    mock_poll_until_ready.return_value = (
+        "http://webdav/content/primary/slow-horses.mkv",
+        {"Authorization": "Basic primary"},
+    )
+
+    resolve_and_play(
+        "http://hydra/getnzb/primary",
+        "Slow.Horses.S03E02.2160p.WEB-DL.Atmos.mkv",
+        params={
+            "_display_title": "Slow Horses S03E02",
+            "_fallback_candidates": [],
+        },
+    )
+
+    mock_finish_playback.assert_called_once_with(
+        {"state": "prepared", "display_title": "Slow Horses S03E02"}
+    )
 
 
 @patch("resources.lib.resolver._fallback_submit_jobs_snapshot")
