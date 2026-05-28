@@ -1103,6 +1103,8 @@ def _validate_url(url):
         raise ValueError("Invalid URL scheme: {}".format(repr(url)[:30]))
     if any(ord(c) < 0x20 for c in url):
         raise ValueError("URL contains control characters: {}".format(repr(url)[:60]))
+    if url.startswith("-"):
+        raise ValueError("URL cannot start with a dash")
 
 
 def _validate_auth_header(auth_header):
