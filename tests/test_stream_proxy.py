@@ -10799,6 +10799,100 @@ def test_serve_proxy_high_water_short_read_waits_instead_of_fallback_exhausted()
     assert mock_urlopen.call_count == 2
 
 
+def test_stream_upstream_range_fault_forces_primary_failure_past_threshold():
+    """Env-gated fault injection: with NZBDAV_FAULT_PRIMARY_FAIL_AFTER_BYTES
+    set, the PRIMARY source fails (UPSTREAM_ERROR, no upstream call) once a
+    range at/after the threshold is requested — so the live fallback cutover
+    can be exercised end-to-end against a real, already-downloaded fallback.
+    """
+    import os
+
+    from resources.lib.stream_proxy import _UPSTREAM_RANGE_UPSTREAM_ERROR
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 10_000_000,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-9999999")
+
+    with patch.dict(
+        os.environ, {"NZBDAV_FAULT_PRIMARY_FAIL_AFTER_BYTES": "1000"}
+    ), patch("resources.lib.stream_proxy.urlopen") as mock_urlopen:
+        result, written = handler._stream_upstream_range(ctx, 2000, 9999999)
+
+    assert result == _UPSTREAM_RANGE_UPSTREAM_ERROR
+    assert written == 0
+    mock_urlopen.assert_not_called()
+
+
+def test_stream_upstream_range_fault_inert_below_threshold_and_off_by_default():
+    """The fault is inert below the threshold, and entirely inert when the
+    env var is unset (so it can live in the code permanently).
+    """
+    import os
+
+    from resources.lib.stream_proxy import _UPSTREAM_RANGE_OK
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 10_000_000,
+    }
+
+    # Below threshold: streams normally.
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-9999999")
+    with patch.dict(
+        os.environ, {"NZBDAV_FAULT_PRIMARY_FAIL_AFTER_BYTES": "5000"}
+    ), patch(
+        "resources.lib.stream_proxy.urlopen",
+        return_value=_mock_urlopen_response([b"A" * 1024]),
+    ):
+        result, _ = handler._stream_upstream_range(ctx, 0, 1023)
+    assert result == _UPSTREAM_RANGE_OK
+
+    # Env var absent: inert even past where a threshold would have fired.
+    handler2 = _make_handler_with_server(ctx, range_header="bytes=0-9999999")
+    env = dict(os.environ)
+    env.pop("NZBDAV_FAULT_PRIMARY_FAIL_AFTER_BYTES", None)
+    with patch.dict(os.environ, env, clear=True), patch(
+        "resources.lib.stream_proxy.urlopen",
+        return_value=_mock_urlopen_response([b"B" * 1024]),
+    ):
+        result2, _ = handler2._stream_upstream_range(ctx, 9_000_000, 9_001_023)
+    assert result2 == _UPSTREAM_RANGE_OK
+
+
+def test_stream_upstream_range_fault_does_not_fail_active_fallback():
+    """Once cut over to a fallback (switch_count>0), the fault no longer
+    fires — otherwise the fallback would be killed too and never play.
+    """
+    import os
+
+    from resources.lib.stream_proxy import _UPSTREAM_RANGE_OK
+
+    ctx = {
+        "remote_url": "http://host/fallback.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 10_000_000,
+        "fallback_switch_count": 1,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-9999999")
+
+    with patch.dict(
+        os.environ, {"NZBDAV_FAULT_PRIMARY_FAIL_AFTER_BYTES": "1000"}
+    ), patch(
+        "resources.lib.stream_proxy.urlopen",
+        return_value=_mock_urlopen_response([b"C" * 1024]),
+    ):
+        result, _ = handler._stream_upstream_range(ctx, 2000, 3023)
+
+    assert result == _UPSTREAM_RANGE_OK
+
+
 @patch("resources.lib.stream_proxy.xbmc")
 def test_serve_proxy_logs_terminal_summary_on_success(mock_xbmc):
     ctx = {
