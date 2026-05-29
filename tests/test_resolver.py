@@ -437,6 +437,28 @@ def test_completed_job_stream_streams_when_midfile_body_available(mock_find_stre
 
 
 @patch("resources.lib.resolver._find_video_stream_for_folder")
+def test_completed_job_stream_rejected_by_fault_env(mock_find_stream):
+    """NZBDAV_FAULT_REJECT_COMPLETED forces the 'already downloaded' path to be
+    rejected (return None -> re-download), so a live fallback cutover can be
+    staged: the re-download path attaches validated fallback sources that the
+    primary-fault hook can then cut over to. Inert unless the env var is set.
+    """
+    import os
+
+    mock_find_stream.return_value = (
+        "/content/uncategorized/movie/movie.mkv",
+        "http://webdav/movie.mkv",
+        {"Authorization": "Basic x"},
+    )
+
+    # No urlopen patch: the env var must short-circuit before any network probe.
+    with patch.dict(os.environ, {"NZBDAV_FAULT_REJECT_COMPLETED": "1"}):
+        stream = _completed_job_stream("movie.mkv", _COMPLETED_JOB)
+
+    assert stream is None
+
+
+@patch("resources.lib.resolver._find_video_stream_for_folder")
 def test_completed_job_stream_fails_open_when_probe_inconclusive(mock_find_stream):
     """A timeout / network error during the probe is ambiguous, not proof of
     a bad file — fail open and stream rather than block a slow-but-valid file.

@@ -237,6 +237,31 @@ _RANGE_RETRY_DELAYS = (2, 4, 8)
 _AUTH_HEADER_NOT_PROVIDED = object()
 _FALLBACK_SOURCE_STATE_NOT_PROVIDED = object()
 _FALLBACK_SOURCE_STREAM_URL_HINT_KEY = "_fallback_source_stream_url_hint"
+
+# Env-gated fault injection for verifying the live fallback cutover end to end.
+# Inert unless NZBDAV_FAULT_PRIMARY_FAIL_AFTER_BYTES is set to a positive int in
+# the addon process environment. When set, the PRIMARY upstream (before any
+# fallback switch) is forced to fail once a range at/after that byte offset is
+# requested, so the cutover path runs against a real, already-downloaded
+# fallback. Off by default — safe to ship permanently.
+_FAULT_PRIMARY_FAIL_AFTER_BYTES_ENV = "NZBDAV_FAULT_PRIMARY_FAIL_AFTER_BYTES"
+
+
+def _fault_forced_primary_failure(ctx, start):
+    raw = os.environ.get(_FAULT_PRIMARY_FAIL_AFTER_BYTES_ENV)
+    if not raw:
+        return False
+    try:
+        threshold = int(raw)
+    except (TypeError, ValueError):
+        return False
+    if threshold <= 0:
+        return False
+    # Only fail the primary; once cut over to a fallback, let it stream so
+    # playback can actually recover.
+    if int(ctx.get("fallback_switch_count", 0) or 0) > 0:
+        return False
+    return start >= threshold
 _FALLBACK_PRIMARY_URL_HINT_KEY = "_fallback_primary_url_hint"
 _FALLBACK_PRIMARY_AUTH_HINT_KEY = "_fallback_primary_auth_hint"
 _FALLBACK_CURRENT_RANGE_CACHE_KEY = "_fallback_current_range_cache"
@@ -4331,6 +4356,15 @@ class _StreamHandler(BaseHTTPRequestHandler):
         BrokenPipeError / ConnectionResetError propagate out so the caller can
         abort cleanly.
         """
+        if _fault_forced_primary_failure(ctx, start):
+            xbmc.log(
+                "NZB-DAV: [FAULT] forcing primary upstream failure at byte {} "
+                "({}) (reason=fault_injection)".format(
+                    start, _FAULT_PRIMARY_FAIL_AFTER_BYTES_ENV
+                ),
+                xbmc.LOGWARNING,
+            )
+            return _UPSTREAM_RANGE_UPSTREAM_ERROR, 0
         requested_start = start
         written = 0
         cached_prefix = self._pop_cached_fallback_range(ctx, start, end)
