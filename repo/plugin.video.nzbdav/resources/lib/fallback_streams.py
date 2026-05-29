@@ -317,7 +317,12 @@ def _configured_stream_bases():
 
     bases = []
     for raw_base in raw_bases:
-        parts = _split_http_url(str(raw_base or "").rstrip("/"))
+        # .strip() (not just .rstrip("/")): a stray trailing space in the
+        # configured nzbdav_url/webdav_url (a common copy-paste artifact) lands
+        # inside the netloc, and _split_http_url rejects any whitespace there —
+        # silently emptying the probe-base allow-list so fallback content-length
+        # probes all return 0 and byte-identical fallbacks fail validation.
+        parts = _split_http_url(str(raw_base or "").strip().rstrip("/"))
         if parts:
             bases.append(parts)
     return bases

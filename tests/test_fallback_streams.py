@@ -111,6 +111,31 @@ def test_configured_stream_bases_use_schema_defaults_without_kodi_fallback():
     assert ("http", "localhost:3000", "") in rendered
 
 
+def test_configured_stream_bases_tolerates_trailing_space_in_url():
+    """A stray trailing space in nzbdav_url must not empty the probe-base
+    allow-list. _split_http_url rejects whitespace in the netloc (an SSRF/
+    homograph guard), so an un-stripped config value silently drops the only
+    allowed origin — which makes fallback content-length probes return 0 and
+    every byte-identical fallback get rejected at cutover.
+    """
+    from resources.lib import fallback_streams
+
+    def _spaced(key):
+        return {
+            "webdav_url": "",
+            "nzbdav_url": "http://192.168.1.93:3000 ",
+        }.get(key, "")
+
+    with patch(
+        "resources.lib.fallback_streams.xbmcaddon.Addon.return_value.getSetting",
+        side_effect=_spaced,
+    ):
+        bases = fallback_streams.configured_stream_probe_bases()
+
+    assert len(bases) == 1
+    assert bases[0].origin == ("http", "192.168.1.93", 3000)
+
+
 def _manifest(kind, name, size, digest, article_count=2):
     manifest = {
         "payload_kind": kind,

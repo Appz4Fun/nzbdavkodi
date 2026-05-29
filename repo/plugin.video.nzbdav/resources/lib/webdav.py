@@ -36,8 +36,13 @@ def _get_settings(settings_getter=None):
             return value if isinstance(value, str) else default
 
     return {
-        "webdav_url": settings_getter("webdav_url", "").rstrip("/"),
-        "nzbdav_url": settings_getter("nzbdav_url", "").rstrip("/"),
+        # .strip() before .rstrip("/"): a stray trailing space in the
+        # configured URL otherwise survives into built stream URLs, where the
+        # strict netloc-whitespace guard in _split_http_url rejects them on the
+        # fallback content-length probe path (urllib tolerates the space, so the
+        # primary plays — only fallback validation breaks).
+        "webdav_url": settings_getter("webdav_url", "").strip().rstrip("/"),
+        "nzbdav_url": settings_getter("nzbdav_url", "").strip().rstrip("/"),
         "username": settings_getter("webdav_username", ""),
         "password": settings_getter("webdav_password", ""),
     }
