@@ -10643,6 +10643,86 @@ def test_passthrough_watchdog_applies_returns_true_only_for_video():
     assert not _passthrough_watchdog_applies({})
 
 
+def test_serve_proxy_arms_explicit_upstream_read_deadline():
+    """The body socket gets a dedicated _UPSTREAM_READ_TIMEOUT recv deadline.
+
+    Guarantees a stalled backend surfaces as a recoverable read (which drives
+    the live fallback cutover) within the deadline, instead of riding the
+    inherited 60 s urlopen timeout and losing the race to the equal 60 s
+    proxy->Kodi write timeout — the wedge that logged as client_disconnected
+    with recoveries=0. See issue #214.
+    """
+    from resources.lib.stream_proxy import _UPSTREAM_READ_TIMEOUT
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 2048,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-2047")
+
+    payload = b"A" * 2048
+    resp = _mock_urlopen_response([payload])
+    fake_sock = MagicMock()
+    resp.fp.raw._sock = fake_sock
+    with patch("resources.lib.stream_proxy.urlopen", return_value=resp):
+        handler._serve_proxy(ctx)
+
+    fake_sock.settimeout.assert_called_once_with(_UPSTREAM_READ_TIMEOUT)
+    assert _collect_written(handler) == payload
+
+
+@patch("resources.lib.stream_proxy.xbmc")
+def test_serve_proxy_trickle_triggers_cutover_when_fallback_attached(mock_xbmc):
+    """A sub-floor trickle with a fallback attached drives live cutover.
+
+    Instead of the blind close/reconnect to the SAME stalled upload
+    (terminal_reason=passthrough_stall), the watchdog returns a recoverable
+    result so _serve_proxy runs the fallback cutover. Here the fallback can't
+    be validated (patched to None), so it surfaces as fallback_exhausted —
+    proving the cutover path ran rather than a blind reconnect. The
+    no-fallback case is covered by
+    test_serve_proxy_stall_watchdog_aborts_on_low_throughput. See issue #214.
+    """
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 1048576,
+        "fallback_sources": [
+            {"nzo_id": "alt", "stream_url": "http://host/alt.mkv"},
+        ],
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-1048575")
+
+    # Same trickle as the abort test: two 1 KB chunks, ~82 B/s over a 25 s
+    # window. Monotonic padded so post-return bookkeeping can't exhaust it.
+    chunks = [b"A" * 1024, b"B" * 1024]
+    monotonic_returns = iter([100.0, 105.0, 125.0] + [125.0] * 30)
+
+    with patch(
+        "resources.lib.stream_proxy.time.monotonic",
+        side_effect=lambda: next(monotonic_returns),
+    ), patch(
+        "resources.lib.stream_proxy.urlopen",
+        return_value=_mock_urlopen_response(chunks),
+    ), patch.object(
+        handler, "_select_live_fallback_source", return_value=None
+    ) as mock_select:
+        handler._serve_proxy(ctx)
+
+    # Cutover was attempted (recoverable return -> _select_live_fallback_source)
+    # rather than the blind passthrough_stall reconnect.
+    mock_select.assert_called()
+    assert ctx.get("passthrough_stall_detected", False) is False
+    logged = "\n".join(call.args[0] for call in mock_xbmc.log.call_args_list)
+    assert "passthrough_stall_fallback" in logged
+    assert "reason=fallback_exhausted" in logged
+    # The blind-reconnect path (outer handler) must NOT have run.
+    assert "Pass-through stall at byte" not in logged
+
+
 @patch("resources.lib.stream_proxy.xbmc")
 def test_serve_proxy_logs_terminal_summary_on_success(mock_xbmc):
     ctx = {
