@@ -9,6 +9,9 @@ DIRECT_FALLBACK_HOSTS = ("dognzb", "nzbplanet", "nzbgeek", "6box")
 DOGNZB_TVSEARCH_FALLBACK_HOSTS = ("dognzb",)
 RATE_LIMITED_CAPS_HOSTS = ("nzb.su", "nzb.life")
 
+_NON_ALPHANUM_PRESET_RE = re.compile(r"[^A-Za-z0-9]+")
+_MULTIPLE_UNDERSCORES_RE = re.compile(r"_+")
+
 _PRESETS = (
     ("abnzb", "abNZB", "https://abnzb.com/"),
     ("althub", "altHUB", "https://api.althub.co.za"),
@@ -36,8 +39,8 @@ _PRESETS = (
 
 
 def slugify_preset_id(name):
-    value = re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_").lower()
-    return re.sub(r"_+", "_", value)
+    value = _NON_ALPHANUM_PRESET_RE.sub("_", name).strip("_").lower()
+    return _MULTIPLE_UNDERSCORES_RE.sub("_", value)
 
 
 def _preset(indexer_id, name, api_url):
