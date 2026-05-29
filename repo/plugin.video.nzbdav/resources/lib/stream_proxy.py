@@ -4359,14 +4359,22 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 )
             else:
                 terminal_reason = "client_disconnected"
+                # client_disconnected is Kodi closing a connection (a demuxer
+                # probe/seek abandoning a range, or a normal stop) — a
+                # client-side event, never an upstream error. Log at INFO so
+                # routine startup-probe churn doesn't masquerade as warnings.
                 xbmc.log(
                     "NZB-DAV: Pass-through write aborted at byte {} "
                     "(client stalled or disconnected, reason={})".format(
                         current, terminal_reason
                     ),
-                    xbmc.LOGWARNING,
+                    xbmc.LOGINFO,
                 )
         finally:
+            # Benign terminal reasons (full success / client closed the
+            # connection) log at INFO; only genuine failures (recovery/
+            # fallback exhausted, upstream errors) warrant WARNING.
+            _benign_summary = terminal_reason in ("complete", "client_disconnected")
             xbmc.log(
                 "NZB-DAV: Pass-through summary reason={} range={}-{} "
                 "streamed={} zero_fill={} recoveries={} "
@@ -4383,7 +4391,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     ctx.get("session_streamed_bytes", 0),
                     ctx.get("session_zero_fill_bytes", 0),
                 ),
-                xbmc.LOGINFO if terminal_reason == "complete" else xbmc.LOGWARNING,
+                xbmc.LOGINFO if _benign_summary else xbmc.LOGWARNING,
             )
 
     def _retry_original_range(self, ctx, start, end, contract_mode):
