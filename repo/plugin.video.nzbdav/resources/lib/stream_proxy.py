@@ -6314,6 +6314,23 @@ class StreamProxy:
 
         return evicted
 
+    def _refresh_session_standby_fallbacks(self, ctx):
+        """Resolve nzo-only standby fallbacks into usable WebDAV stream URLs.
+
+        Runs the same resolution the failure-time cutover would, but AHEAD of
+        the failure, so a primary stall becomes an instant source swap instead
+        of a multi-second cold resolve under Kodi's read timeout.
+        """
+        handler = _StreamHandler.__new__(_StreamHandler)
+        handler.server = self._server
+        try:
+            handler._refresh_standby_fallback_sources(ctx)
+        except Exception as exc:  # pylint: disable=broad-except
+            xbmc.log(
+                "NZB-DAV: standby fallback resolve failed: {}".format(exc),
+                xbmc.LOGWARNING,
+            )
+
     def _prevalidate_fallback_sources(self, ctx):
         handler = _StreamHandler.__new__(_StreamHandler)
         handler.server = self._server
@@ -6343,41 +6360,47 @@ class StreamProxy:
             return
         sources = ctx.get("fallback_sources") or []
 
-        def _can_prevalidate(source):
-            if (
-                not source.get("stream_url")
-                or source.get("failed")
-                or source.get("validated")
-            ):
+        def _has_work(source):
+            if source.get("failed") or source.get("validated"):
                 return False
-            try:
-                return int(source.get("content_length", 0) or 0) == expected_length
-            except (TypeError, ValueError):
-                return False
+            # Either a resolved URL ready to fingerprint, or an nzo-only
+            # standby we can resolve into one.
+            return bool(source.get("stream_url") or source.get("nzo_id"))
 
-        eligible = [s for s in sources if _can_prevalidate(s)]
+        pending = [s for s in sources if _has_work(s)]
         xbmc.log(
-            "NZB-DAV: prevalidation eligible sources={}/{} expected_length={}".format(
-                len(eligible), len(sources), expected_length
+            "NZB-DAV: prevalidation pending sources={}/{} expected_length={}".format(
+                len(pending), len(sources), expected_length
             ),
             xbmc.LOGINFO,
         )
-        if not eligible:
+        if not pending:
             return
 
-        def _prevalidate_after_initial_prefetch():
+        # Coalesce bursts: fallbacks are pushed one-per-adopted-job, so mark
+        # the session dirty and let a single running warmer re-loop to pick up
+        # late arrivals, instead of spawning a thread per push.
+        ctx["_fallback_prevalidation_dirty"] = True
+        existing = ctx.get("_fallback_prevalidation_thread")
+        if existing is not None and existing.is_alive():
+            return
+
+        def _warm():
             prefetch_thread = ctx.get("_initial_range_prefetch_thread")
             if prefetch_thread and prefetch_thread is not threading.current_thread():
                 try:
                     prefetch_thread.join()
                 except RuntimeError:
                     pass
-            self._prevalidate_fallback_sources(ctx)
+            # Resolve nzo-only standbys into WebDAV URLs, then fingerprint the
+            # resolved sources — so the live cutover is an instant pointer swap.
+            # The dirty flag lets a merge that lands mid-pass trigger one more
+            # pass; it terminates once no new push has arrived.
+            while ctx.pop("_fallback_prevalidation_dirty", False):
+                self._refresh_session_standby_fallbacks(ctx)
+                self._prevalidate_fallback_sources(ctx)
 
-        thread = threading.Thread(
-            target=_prevalidate_after_initial_prefetch,
-            name="nzbdav-fallback-prevalidate",
-        )
+        thread = threading.Thread(target=_warm, name="nzbdav-fallback-prevalidate")
         thread.daemon = True
         ctx["_fallback_prevalidation_thread"] = thread
         thread.start()
@@ -6519,6 +6542,11 @@ class StreamProxy:
                 added += 1
             if added:
                 ctx["fallback_sources"] = existing
+        if added:
+            # Warm the freshly-pushed fallbacks in the background (resolve
+            # nzo-only standbys + fingerprint) so a later primary failure cuts
+            # over instantly instead of cold-resolving under Kodi's timeout.
+            self._start_fallback_prevalidation(ctx)
         return added
 
     def prepare_stream(
