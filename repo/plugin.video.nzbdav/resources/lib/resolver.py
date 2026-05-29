@@ -517,6 +517,53 @@ def _playback_fallback_sources_for_stream(stream_url, fallback_jobs):
     return fallback_sources
 
 
+def _arm_live_fallback_push(prepared, fallback_state, primary_stream_url):
+    """Push fallbacks adopted AFTER /prepare into the live proxy session.
+
+    The /prepare fallback snapshot is one-shot: when the primary resolves
+    instantly (e.g. an already-downloaded copy), the fallback submit worker
+    hasn't adopted the alternate copies yet, so the session starts with an
+    empty fallback list and the live cutover has nothing to switch to. The
+    worker keeps adopting for tens of seconds afterward. This installs an
+    ``on_append`` hook so each newly-adopted job is POSTed to
+    ``/stream/<id>/fallbacks``, and flushes whatever was already adopted
+    between the snapshot and now. No-ops for non-service (direct) playback.
+    """
+    if not prepared or not fallback_state:
+        return
+    service_port = prepared.get("service_port")
+    proxy_url = prepared.get("proxy_url")
+    if not service_port or not proxy_url:
+        return
+    from resources.lib.stream_proxy import (
+        _extract_session_id_from_proxy_url,
+        update_stream_fallbacks_via_service,
+    )
+
+    session_id = _extract_session_id_from_proxy_url(proxy_url)
+    if not session_id:
+        return
+    _, prepare_token = _direct_playback_service_config()
+
+    def _push():
+        jobs = _fallback_submit_jobs_snapshot(fallback_state, wait_seconds=0)
+        sources = _playback_fallback_sources_for_stream(primary_stream_url, jobs)
+        if not sources:
+            return
+        try:
+            update_stream_fallbacks_via_service(
+                service_port, session_id, sources, prepare_token=prepare_token
+            )
+        except Exception as error:  # pylint: disable=broad-except
+            xbmc.log(
+                "NZB-DAV: live fallback push failed: {}".format(error),
+                xbmc.LOGWARNING,
+            )
+
+    fallback_state["on_append"] = _push
+    _push()
+
+
 def _make_playable_listitem(url, headers):
     """Create a ListItem with URL and optional HTTP auth headers.
 
@@ -2492,6 +2539,19 @@ def _start_fallback_submit_worker(
                 state["jobs"].append(job)
         if should_cancel:
             _cancel_fallback_job(state, job)
+            return
+        # Push this late-adopted fallback into the live proxy session if a
+        # push hook has been armed (after /prepare returns a session id).
+        # Best-effort: a push failure must never disrupt fallback submission.
+        hook = state.get("on_append")
+        if hook is not None:
+            try:
+                hook()
+            except Exception as error:  # pylint: disable=broad-except
+                xbmc.log(
+                    "NZB-DAV: fallback on_append hook failed: {}".format(error),
+                    xbmc.LOGWARNING,
+                )
 
     def _worker():
         try:
@@ -3132,6 +3192,7 @@ def resolve(handle, params):
             )
             _wait_playback_state_cleanup(playback_cleanup_state)
             prepared = _wait_direct_playback_prepare(playback_prepare_state)
+            _arm_live_fallback_push(prepared, fallback_state, stream_url)
             _finish_direct_playback(handle, prepared)
         else:
             _stop_fallback_submit_worker(fallback_state, cancel_submitted=True)
@@ -3275,6 +3336,7 @@ def resolve_and_play(nzb_url, title, params=None):
                     prepared.get("service_port") if prepared else ""
                 )
             )
+            _arm_live_fallback_push(prepared, fallback_state, stream_url)
             _finish_player_playback(prepared)
             _resolve_stage("player playback started")
         else:

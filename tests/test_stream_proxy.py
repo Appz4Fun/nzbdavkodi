@@ -406,6 +406,271 @@ def test_stream_proxy_stop_idempotent():
 
 
 # ---------------------------------------------------------------------------
+# Live fallback updates: push late-adopted fallbacks into an active session
+# ---------------------------------------------------------------------------
+
+
+def _seed_session(sp, session_id, sources):
+    sp._server.stream_sessions[session_id] = {"fallback_sources": list(sources)}
+    return sp._server.stream_sessions[session_id]
+
+
+def test_merge_session_fallbacks_appends_new_and_dedups():
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy()
+    sp.start()
+    try:
+        ctx = _seed_session(
+            sp,
+            "sess1",
+            [
+                {
+                    "nzo_id": "a",
+                    "stream_url": "http://host/a.mkv",
+                    "stream_headers": {},
+                    "content_length": 10,
+                    "validated": False,
+                    "failed": False,
+                }
+            ],
+        )
+        added = sp.merge_session_fallbacks(
+            "sess1",
+            [
+                {"nzo_id": "a", "stream_url": "http://host/a.mkv"},  # dup -> skip
+                {"nzo_id": "b", "stream_url": "http://host/b.mkv"},  # new
+            ],
+        )
+        assert added == 1
+        assert [s["nzo_id"] for s in ctx["fallback_sources"]] == ["a", "b"]
+    finally:
+        sp.stop()
+
+
+def test_merge_session_fallbacks_preserves_existing_source_identity():
+    """A merge must not clobber in-place failed/validated marks the live
+    cutover writes on existing source dicts."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy()
+    sp.start()
+    try:
+        ctx = _seed_session(
+            sp,
+            "sess1",
+            [
+                {
+                    "nzo_id": "a",
+                    "stream_url": "http://host/a.mkv",
+                    "stream_headers": {},
+                    "content_length": 10,
+                    "validated": False,
+                    "failed": False,
+                }
+            ],
+        )
+        original = ctx["fallback_sources"][0]
+        original["failed"] = True  # simulate the cutover marking it failed
+        sp.merge_session_fallbacks(
+            "sess1", [{"nzo_id": "b", "stream_url": "http://host/b.mkv"}]
+        )
+        assert ctx["fallback_sources"][0] is original
+        assert ctx["fallback_sources"][0]["failed"] is True
+    finally:
+        sp.stop()
+
+
+def test_merge_session_fallbacks_dedups_by_nzo_after_cutover_resolves_url():
+    """In production every pushed source has stream_url="" (jobs carry only
+    nzo_id); the live cutover then resolves it in place to a real URL. A
+    re-push of the same nzo (still url="") must NOT be re-added as a duplicate
+    that un-fails the source the cutover already marked failed.
+    """
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy()
+    sp.start()
+    try:
+        ctx = _seed_session(
+            sp,
+            "sess1",
+            [
+                {
+                    "nzo_id": "a",
+                    "stream_url": "",
+                    "stream_headers": {},
+                    "content_length": 0,
+                    "validated": False,
+                    "failed": False,
+                }
+            ],
+        )
+        # Simulate the cutover resolving + failing this source in place.
+        resolved = ctx["fallback_sources"][0]
+        resolved["stream_url"] = "http://host/a.mkv"
+        resolved["failed"] = True
+        # Worker re-pushes the same nzo (jobs always carry stream_url="").
+        added = sp.merge_session_fallbacks("sess1", [{"nzo_id": "a", "stream_url": ""}])
+        assert added == 0
+        assert len(ctx["fallback_sources"]) == 1
+        assert ctx["fallback_sources"][0] is resolved
+        assert ctx["fallback_sources"][0]["failed"] is True
+    finally:
+        sp.stop()
+
+
+def test_merge_session_fallbacks_unknown_session_returns_none():
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy()
+    sp.start()
+    try:
+        assert (
+            sp.merge_session_fallbacks(
+                "nope", [{"nzo_id": "b", "stream_url": "http://host/b.mkv"}]
+            )
+            is None
+        )
+    finally:
+        sp.stop()
+
+
+def _make_fallback_update_handler(
+    session_id="sess1",
+    body=None,
+    prepare_token="test-token",
+    supplied_token="test-token",
+):
+    import json as _json
+
+    if body is None:
+        body = _json.dumps(
+            {"fallback_sources": [{"nzo_id": "b", "stream_url": "http://host/b.mkv"}]}
+        ).encode()
+    handler = _make_prepare_post_handler(
+        body=body,
+        path="/stream/{}/fallbacks".format(session_id),
+        prepare_token=prepare_token,
+        supplied_token=supplied_token,
+    )
+    return handler
+
+
+def test_do_post_fallback_update_merges_with_valid_token():
+    handler = _make_fallback_update_handler()
+    handler.server.owner_proxy.merge_session_fallbacks.return_value = 1
+    handler.do_POST()
+    handler.server.owner_proxy.merge_session_fallbacks.assert_called_once_with(
+        "sess1", [{"nzo_id": "b", "stream_url": "http://host/b.mkv"}]
+    )
+    handler.send_response.assert_called_with(200)
+
+
+def test_do_post_fallback_update_rejects_bad_token():
+    handler = _make_fallback_update_handler(
+        prepare_token="real-token", supplied_token="wrong-token"
+    )
+    handler.do_POST()
+    handler.send_error.assert_called_with(403)
+    handler.server.owner_proxy.merge_session_fallbacks.assert_not_called()
+
+
+def test_do_post_fallback_update_unknown_session_returns_404():
+    handler = _make_fallback_update_handler()
+    handler.server.owner_proxy.merge_session_fallbacks.return_value = None
+    handler.do_POST()
+    handler.send_error.assert_called_with(404)
+
+
+def test_merge_session_fallbacks_idempotent_across_repeated_pushes():
+    """The on_append hook re-pushes the FULL job set every append; repeated
+    merges of an overlapping set must be no-ops."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy()
+    sp.start()
+    try:
+        _seed_session(sp, "s", [])
+        first = sp.merge_session_fallbacks(
+            "s",
+            [{"nzo_id": "a", "stream_url": ""}, {"nzo_id": "b", "stream_url": ""}],
+        )
+        second = sp.merge_session_fallbacks(
+            "s",
+            [{"nzo_id": "a", "stream_url": ""}, {"nzo_id": "b", "stream_url": ""}],
+        )
+        assert first == 2
+        assert second == 0
+        assert len(sp._server.stream_sessions["s"]["fallback_sources"]) == 2
+    finally:
+        sp.stop()
+
+
+def test_do_post_fallback_update_malformed_url_returns_400():
+    """A source whose stream_url _validate_url rejects surfaces as 400 via the
+    post-merge ValueError branch (no partial mutation)."""
+    handler = _make_fallback_update_handler()
+    handler.server.owner_proxy.merge_session_fallbacks.side_effect = ValueError(
+        "bad url"
+    )
+    handler.do_POST()
+    handler.send_error.assert_called_with(400)
+
+
+def test_do_post_fallback_update_rejects_non_list():
+    import json as _json
+
+    handler = _make_fallback_update_handler(
+        body=_json.dumps({"fallback_sources": "nope"}).encode()
+    )
+    handler.do_POST()
+    handler.send_error.assert_called_with(400)
+    handler.server.owner_proxy.merge_session_fallbacks.assert_not_called()
+
+
+def test_update_stream_fallbacks_via_service_posts_authenticated_request():
+    from resources.lib.stream_proxy import update_stream_fallbacks_via_service
+
+    captured = {}
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b'{"added": 1}'
+
+    def _fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        captured["method"] = req.get_method()
+        headers = {k.lower(): v for k, v in req.header_items()}
+        captured["token"] = headers.get("x-nzbdav-token")
+        captured["body"] = req.data
+        return _Resp()
+
+    with patch("resources.lib.stream_proxy.urlopen", side_effect=_fake_urlopen):
+        update_stream_fallbacks_via_service(
+            8080,
+            "sess1",
+            [{"nzo_id": "b", "stream_url": "http://host/b.mkv"}],
+            prepare_token="tok",
+        )
+
+    assert captured["url"] == "http://127.0.0.1:8080/stream/sess1/fallbacks"
+    assert captured["method"] == "POST"
+    assert captured["token"] == "tok"
+    import json as _json
+
+    assert _json.loads(captured["body"]) == {
+        "fallback_sources": [{"nzo_id": "b", "stream_url": "http://host/b.mkv"}]
+    }
+
+
+# ---------------------------------------------------------------------------
 # StreamProxy._get_content_length
 # ---------------------------------------------------------------------------
 
@@ -10865,6 +11130,57 @@ def test_stream_upstream_range_fault_inert_below_threshold_and_off_by_default():
     assert result2 == _UPSTREAM_RANGE_OK
 
 
+def test_stream_upstream_range_fault_spares_tail_for_large_files():
+    """The fault spares the file tail (MKV cues/SeekHead) so the demuxer can
+    initialize and playback runs long enough for fallback sources to attach.
+    It only fires in the body band [threshold, content_length - tail_guard);
+    a tail read streams normally, a deep body read fails.
+    """
+    import os
+
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_OK,
+        _UPSTREAM_RANGE_UPSTREAM_ERROR,
+    )
+
+    content_length = 85_000_000_000
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": content_length,
+    }
+
+    # Tail read (MKV cues near EOF): spared so the demuxer can initialize.
+    handler = _make_handler_with_server(
+        ctx, range_header="bytes=0-{}".format(content_length - 1)
+    )
+    with patch.dict(
+        os.environ, {"NZBDAV_FAULT_PRIMARY_FAIL_AFTER_BYTES": "2147483648"}
+    ), patch(
+        "resources.lib.stream_proxy.urlopen",
+        return_value=_mock_urlopen_response([b"T" * 65536]),
+    ):
+        tail_result, _ = handler._stream_upstream_range(
+            ctx, content_length - 65536, content_length - 1
+        )
+    assert tail_result == _UPSTREAM_RANGE_OK
+
+    # Deep body read past the 2 GiB threshold: forced failure -> cutover.
+    handler2 = _make_handler_with_server(
+        ctx, range_header="bytes=0-{}".format(content_length - 1)
+    )
+    with patch.dict(
+        os.environ, {"NZBDAV_FAULT_PRIMARY_FAIL_AFTER_BYTES": "2147483648"}
+    ), patch("resources.lib.stream_proxy.urlopen") as mock_urlopen:
+        body_result, written = handler2._stream_upstream_range(
+            ctx, 3_000_000_000, 3_000_065_535
+        )
+    assert body_result == _UPSTREAM_RANGE_UPSTREAM_ERROR
+    assert written == 0
+    mock_urlopen.assert_not_called()
+
+
 def test_stream_upstream_range_fault_does_not_fail_active_fallback():
     """Once cut over to a fallback (switch_count>0), the fault no longer
     fires — otherwise the fallback would be killed too and never play.
@@ -10891,6 +11207,38 @@ def test_stream_upstream_range_fault_does_not_fail_active_fallback():
         result, _ = handler._stream_upstream_range(ctx, 2000, 3023)
 
     assert result == _UPSTREAM_RANGE_OK
+
+
+def test_stream_upstream_range_fault_fires_mid_stream_crossing_threshold():
+    """A single long-lived connection opened BELOW the threshold that streams
+    PAST it must still fault mid-stream — the entry-only check misses Kodi's
+    one-connection sequential read (the reason a 2 GiB threshold never tripped
+    live until the position-based check was added).
+    """
+    import os
+
+    from resources.lib.stream_proxy import _UPSTREAM_RANGE_UPSTREAM_ERROR
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 10_000_000,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-9999999")
+
+    # Connection opens at byte 0 (< threshold), then streams chunks past 4096.
+    with patch.dict(
+        os.environ, {"NZBDAV_FAULT_PRIMARY_FAIL_AFTER_BYTES": "4096"}
+    ), patch(
+        "resources.lib.stream_proxy.urlopen",
+        return_value=_mock_urlopen_response([b"A" * 2048, b"B" * 2048, b"C" * 2048]),
+    ):
+        result, written = handler._stream_upstream_range(ctx, 0, 9999999)
+
+    assert result == _UPSTREAM_RANGE_UPSTREAM_ERROR
+    # Some bytes were delivered before the fault tripped at the threshold.
+    assert written >= 4096
 
 
 @patch("resources.lib.stream_proxy.xbmc")
