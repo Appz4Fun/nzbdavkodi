@@ -218,6 +218,14 @@ _STRICT_CONTRACT_MODE_ENFORCE = "enforce"
 
 _UPSTREAM_RANGE_OK = "OK"
 _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE = "SHORT_READ_RECOVERABLE"
+# A clean short read at the download high-water mark: the upstream upload is
+# still downloading and simply hasn't fetched this byte yet. Unlike a wedged
+# or trickling upstream (#214), the primary is healthy — so the right response
+# is to wait for the buffer to fill via the retry ladder, NOT to fail over to
+# fallback sources that may themselves still be downloading. Treating this as
+# fallback_exhausted closed the stream prematurely and stalled playback (the
+# "Empire stalled at 1:11" regression).
+_UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD = "SHORT_READ_AWAITING_DOWNLOAD"
 _UPSTREAM_RANGE_PROTOCOL_MISMATCH = "PROTOCOL_MISMATCH"
 _UPSTREAM_RANGE_UPSTREAM_ERROR = "UPSTREAM_ERROR"
 _UPSTREAM_RANGE_CLIENT_ERROR = "CLIENT_ERROR"
@@ -4081,6 +4089,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
 
                 if retry_ladder_enabled and result in (
                     _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE,
+                    _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD,
                     _UPSTREAM_RANGE_UPSTREAM_ERROR,
                 ):
                     (
@@ -4307,6 +4316,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 return result, total_written, current
             if result not in (
                 _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE,
+                _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD,
                 _UPSTREAM_RANGE_UPSTREAM_ERROR,
             ):
                 return result, total_written, current
@@ -4483,7 +4493,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     xbmc.log(
                         "NZB-DAV: Upstream short read for {}-{} wrote={} "
                         "expected={} status={} Content-Range={!r} "
-                        "Content-Length={!r} (reason=short_read_recoverable)".format(
+                        "Content-Length={!r} (reason=short_read_awaiting_download)".format(
                             start,
                             end,
                             written,
@@ -4494,7 +4504,11 @@ class _StreamHandler(BaseHTTPRequestHandler):
                         ),
                         xbmc.LOGWARNING,
                     )
-                    return _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, written
+                    # Clean EOF before the full range: the upload is still
+                    # downloading and hasn't reached this byte yet. Wait on the
+                    # primary (retry ladder) instead of declaring fallbacks
+                    # exhausted. See _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD.
+                    return _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD, written
                 remaining = requested - written
                 if len(chunk) > remaining:
                     chunk = chunk[:remaining]
