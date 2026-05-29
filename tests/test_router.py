@@ -17,7 +17,6 @@ from resources.lib.router import (
     _handle_play,
     _handle_search,
     _prowlarr_indexers_response_ok,
-    _resolver_params_for_selection,
     _safe_resolve_handle,
     _tag_available,
     _test_connection,
@@ -53,31 +52,6 @@ def test_parse_route_install_player_other():
         parse_route("plugin://plugin.video.nzbdav/install_player_other")
         == "/install_player_other"
     )
-
-
-def test_resolver_params_for_selection_builds_clean_episode_display_title():
-    selected = {
-        "title": "Slow.Horses.S03E02.2160p.WEB-DL.Atmos.mkv",
-        "link": "http://hydra/nzb/slow-horses",
-    }
-    params = _resolver_params_for_selection(
-        {"type": "episode", "title": "", "season": "", "episode": ""},
-        selected,
-        [selected],
-        title="Slow Horses",
-        year="",
-        season="3",
-        episode="2",
-    )
-
-    loader = params.pop("_fallback_candidate_loader")
-    assert loader is None
-    assert params == {
-        "nzburl": selected["link"],
-        "title": selected["title"],
-        "_display_title": "Slow Horses S03E02",
-        "_fallback_candidates": [],
-    }
 
 
 def test_parse_params_movie():
@@ -1747,92 +1721,6 @@ def test_handle_play_happy_path_invokes_resolve(
 @patch("resources.lib.results_dialog.show_results_dialog")
 @patch("resources.lib.filter.filter_results")
 @patch("resources.lib.router._search_all_providers")
-@patch("resources.lib.router._tag_available")
-@patch("resources.lib.cache.get_cached", return_value=None)
-def test_handle_play_passes_clean_episode_display_title_to_resolver(
-    mock_cache,
-    mock_tag,
-    mock_search,
-    mock_filter,
-    mock_dialog,
-    mock_resolve,
-    mock_listitem,
-    mock_resolved,
-    mock_addon,
-):
-    _install_progress_dialog_that_wont_cancel()
-    mock_addon.return_value.getSetting.side_effect = _stub_setting("false")
-    mock_listitem.return_value = "li"
-    chosen = {
-        "title": "Slow.Horses.S03E02.2160p.WEB-DL.Atmos.mkv",
-        "link": "http://hydra/nzb/slow-horses",
-    }
-    mock_search.return_value = ([chosen], None)
-    mock_filter.return_value = ([chosen], [chosen])
-    mock_dialog.return_value = chosen
-
-    _handle_play(
-        5,
-        {"type": "episode", "title": "Slow Horses", "season": "3", "episode": "2"},
-    )
-
-    args, _kwargs = mock_resolve.call_args
-    assert args[1]["title"] == chosen["title"]
-    assert args[1]["_display_title"] == "Slow Horses S03E02"
-
-
-@patch("xbmcaddon.Addon")
-@patch("xbmcplugin.setResolvedUrl")
-@patch("xbmcgui.ListItem")
-@patch("resources.lib.resolver.resolve")
-@patch("resources.lib.results_dialog.show_results_dialog")
-@patch("resources.lib.filter.filter_results")
-@patch("resources.lib.router._search_all_providers")
-@patch("resources.lib.router._tag_available")
-@patch("resources.lib.cache.get_cached", return_value=None)
-def test_handle_play_uses_infolabel_episode_metadata_for_display_title(
-    mock_cache,
-    mock_tag,
-    mock_search,
-    mock_filter,
-    mock_dialog,
-    mock_resolve,
-    mock_listitem,
-    mock_resolved,
-    mock_addon,
-):
-    _install_progress_dialog_that_wont_cancel()
-    mock_addon.return_value.getSetting.side_effect = _stub_setting("false")
-    mock_listitem.return_value = "li"
-    chosen = {
-        "title": "Slow.Horses.S03E02.2160p.WEB-DL.Atmos.mkv",
-        "link": "http://hydra/nzb/slow-horses",
-    }
-    mock_search.return_value = ([chosen], None)
-    mock_filter.return_value = ([chosen], [chosen])
-    mock_dialog.return_value = chosen
-
-    info_labels = {
-        "ListItem.TVShowTitle": "Slow Horses",
-        "ListItem.Season": "3",
-        "ListItem.Episode": "2",
-    }
-    with patch("resources.lib.router.xbmc") as mock_xbmc:
-        mock_xbmc.getInfoLabel.side_effect = lambda label: info_labels.get(label, "")
-        _handle_play(5, {"type": "episode"})
-
-    args, _kwargs = mock_resolve.call_args
-    assert args[1]["title"] == chosen["title"]
-    assert args[1]["_display_title"] == "Slow Horses S03E02"
-
-
-@patch("xbmcaddon.Addon")
-@patch("xbmcplugin.setResolvedUrl")
-@patch("xbmcgui.ListItem")
-@patch("resources.lib.resolver.resolve")
-@patch("resources.lib.results_dialog.show_results_dialog")
-@patch("resources.lib.filter.filter_results")
-@patch("resources.lib.router._search_all_providers")
 @patch("resources.lib.router.get_completed_jobs")
 @patch("resources.lib.cache.get_cached", return_value=None)
 def test_handle_play_marks_completed_history_miss_from_picker_snapshot(
@@ -2095,7 +1983,6 @@ def test_handle_search_auto_select_passes_clean_params_to_resolver(
         "title": "The Matrix",
         "year": "",
         "tmdb_id": "603",
-        "_display_title": "The Matrix",
         "_fallback_candidates": [],
     }
     mock_end.assert_called_once_with(7, succeeded=False)
@@ -2150,7 +2037,6 @@ def test_handle_search_picker_passes_clean_params_to_resolver(
         "title": "The Matrix",
         "year": "",
         "tmdb_id": "603",
-        "_display_title": "The Matrix",
         "_fallback_candidates": [],
     }
     mock_end.assert_called_once_with(8, succeeded=False)
@@ -2219,7 +2105,6 @@ def test_handle_script_play_uses_picker_without_plugin_handle_resolution(
         "title": "The Odyssey",
         "year": "2026",
         "tmdb_id": "1368337",
-        "_display_title": "The Odyssey (2026)",
         "_fallback_candidates": [],
         "_selected_indexer": "NZBFinder",
     }
@@ -2542,7 +2427,6 @@ def test_handle_script_play_auto_select_marks_completed_lookup_done(
         "type": "movie",
         "title": "The Odyssey",
         "year": "2026",
-        "_display_title": "The Odyssey (2026)",
         "_fallback_candidates": [],
         "_completed_job_lookup_done": True,
     }
@@ -2656,7 +2540,6 @@ def test_handle_search_picker_fetches_fallbacks_after_selection(
         "title": "The Matrix",
         "year": "",
         "tmdb_id": "603",
-        "_display_title": "The Matrix",
         "_fallback_candidates": [],
     }
 

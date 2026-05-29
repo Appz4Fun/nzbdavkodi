@@ -511,19 +511,6 @@ def _apply_proxy_mime(li, stream_url, stream_info):
             li.setMimeType("video/x-matroska")
 
 
-def _apply_display_title(li, display_title):
-    if not display_title:
-        return
-    try:
-        li.setLabel(display_title)
-    except (AttributeError, RuntimeError, TypeError):
-        pass
-    try:
-        li.getVideoInfoTag().setTitle(display_title)
-    except (AttributeError, RuntimeError, TypeError):
-        pass
-
-
 def _stream_auth_header(stream_headers):
     if stream_headers and "Authorization" in stream_headers:
         return stream_headers["Authorization"]
@@ -940,7 +927,6 @@ def _finish_direct_playback(handle, prepared):
     stream_url = prepared["stream_url"]
     stream_headers = prepared["stream_headers"]
     service_port = prepared.get("service_port")
-    display_title = prepared.get("display_title") or stream_url.rsplit("/", 1)[-1]
     _resolve_stage(
         "finish_direct_playback_got_params service_port={}".format(service_port)
     )
@@ -963,10 +949,9 @@ def _finish_direct_playback(handle, prepared):
             )
             bust_url = _cache_bust_url(stream_url)
             li = _make_playable_listitem(bust_url, stream_headers)
-            _apply_display_title(li, display_title)
             play_url = _build_play_url(bust_url, stream_headers)
             home.setProperty("nzbdav.stream_url", play_url)
-            home.setProperty("nzbdav.stream_title", display_title)
+            home.setProperty("nzbdav.stream_title", stream_url.rsplit("/", 1)[-1])
             home.setProperty("nzbdav.active", "true")
             xbmcplugin.setResolvedUrl(handle, True, li)
             return
@@ -974,10 +959,9 @@ def _finish_direct_playback(handle, prepared):
         li = xbmcgui.ListItem(path=proxy_url)
         li.setContentLookup(False)
         _apply_proxy_mime(li, stream_url, stream_info)
-        _apply_display_title(li, display_title)
 
         home.setProperty("nzbdav.stream_url", proxy_url)
-        home.setProperty("nzbdav.stream_title", display_title)
+        home.setProperty("nzbdav.stream_title", stream_url.rsplit("/", 1)[-1])
         home.setProperty("nzbdav.active", "true")
         xbmcplugin.setResolvedUrl(handle, True, li)
         return
@@ -990,10 +974,9 @@ def _finish_direct_playback(handle, prepared):
     )
 
     li = _make_playable_listitem(bust_url, stream_headers)
-    _apply_display_title(li, display_title)
     home = xbmcgui.Window(10000)
     home.setProperty("nzbdav.stream_url", play_url)
-    home.setProperty("nzbdav.stream_title", display_title)
+    home.setProperty("nzbdav.stream_title", stream_url.rsplit("/", 1)[-1])
     home.setProperty("nzbdav.active", "true")
     xbmcplugin.setResolvedUrl(handle, True, li)
 
@@ -1004,7 +987,7 @@ def _finish_player_playback(prepared):
     stream_headers = prepared["stream_headers"]
     service_port = prepared.get("service_port")
     home = xbmcgui.Window(10000)
-    title = prepared.get("display_title") or stream_url.rsplit("/", 1)[-1]
+    title = stream_url.rsplit("/", 1)[-1]
 
     if service_port:
         proxy_url = prepared["proxy_url"]
@@ -1017,7 +1000,6 @@ def _finish_player_playback(prepared):
             )
             bust_url = _cache_bust_url(stream_url)
             li = _make_playable_listitem(bust_url, stream_headers)
-            _apply_display_title(li, title)
             play_url = _build_play_url(bust_url, stream_headers)
             home.setProperty("nzbdav.stream_url", play_url)
             home.setProperty("nzbdav.stream_title", title)
@@ -1028,7 +1010,6 @@ def _finish_player_playback(prepared):
         li = xbmcgui.ListItem(path=proxy_url)
         li.setContentLookup(False)
         _apply_proxy_mime(li, stream_url, stream_info)
-        _apply_display_title(li, title)
         home.setProperty("nzbdav.stream_url", proxy_url)
         home.setProperty("nzbdav.stream_title", title)
         home.setProperty("nzbdav.active", "true")
@@ -1038,7 +1019,6 @@ def _finish_player_playback(prepared):
 
     bust_url = _cache_bust_url(stream_url)
     li = _make_playable_listitem(bust_url, stream_headers)
-    _apply_display_title(li, title)
     play_url = _build_play_url(bust_url, stream_headers)
     xbmc.log("NZB-DAV: Playing direct (no proxy): {}".format(stream_url), xbmc.LOGINFO)
     home.setProperty("nzbdav.stream_url", play_url)
@@ -2989,7 +2969,6 @@ def resolve(handle, params):
     """
     nzb_url = unquote(params.get("nzburl", ""))
     title = unquote(params.get("title", ""))
-    display_title = unquote(params.get("_display_title", ""))
     fallback_state = None
     playback_cleanup_state = None
 
@@ -3074,8 +3053,6 @@ def resolve(handle, params):
             )
             _wait_playback_state_cleanup(playback_cleanup_state)
             prepared = _wait_direct_playback_prepare(playback_prepare_state)
-            if prepared and display_title:
-                prepared["display_title"] = display_title
             _finish_direct_playback(handle, prepared)
         else:
             _stop_fallback_submit_worker(fallback_state, cancel_submitted=True)
@@ -3114,7 +3091,6 @@ def resolve_and_play(nzb_url, title, params=None):
     try:
         _resolve_stage("enter resolve_and_play")
         resolve_params = params or {}
-        display_title = resolve_params.get("_display_title", "")
         settings_getter = resolve_params.get("_settings_getter")
         selected_indexer = resolve_params.get("_selected_indexer", "")
         fallback_candidates = resolve_params.get("_fallback_candidates", [])
@@ -3215,8 +3191,6 @@ def resolve_and_play(nzb_url, title, params=None):
             _resolve_stage("finish playback start")
             _resolve_stage("prepare wait start")
             prepared = _wait_direct_playback_prepare(playback_prepare_state)
-            if prepared and display_title:
-                prepared["display_title"] = display_title
             _resolve_stage(
                 "prepare wait done service_port={}".format(
                     prepared.get("service_port") if prepared else ""
