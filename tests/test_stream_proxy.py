@@ -10723,6 +10723,82 @@ def test_serve_proxy_trickle_triggers_cutover_when_fallback_attached(mock_xbmc):
     assert "Pass-through stall at byte" not in logged
 
 
+def test_serve_proxy_high_water_short_read_waits_instead_of_fallback_exhausted():
+    """A download-high-water short read must wait on the primary, not give up.
+
+    When the upstream upload is still downloading, a range request returns
+    HTTP 206 with the full Content-Length but the body ends early at the
+    download high-water mark (a clean short read). That is distinct from a
+    wedged/trickle upstream (#214): the primary is healthy and just hasn't
+    fetched this byte yet, so the correct response is to wait for the buffer
+    to fill via the retry ladder — NOT to treat attached-but-unready fallback
+    sources as exhausted and close the stream.
+
+    Regression for the live bug where Empire stalled at 1:11: a high-water
+    short read with fallback sources attached (but themselves still
+    downloading) hit ``reason=fallback_exhausted`` and terminated before the
+    retry ladder ever ran.
+    """
+    import sys
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 4096,
+        # Fallback sources are attached but not yet ready (still downloading).
+        "fallback_sources": [{"nzo_id": "alt"}],
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-4095")
+
+    # First open: download has only reached byte 1024, so the 206 body ends
+    # early (high-water short read). Second open (retry ladder): the download
+    # has caught up and serves the remainder.
+    resp1 = _mock_urlopen_response(
+        [b"A" * 1024],
+        status=206,
+        headers={"Content-Range": "bytes 0-4095/4096", "Content-Length": "4096"},
+    )
+    resp2 = _mock_urlopen_response(
+        [b"B" * 3072],
+        status=206,
+        headers={"Content-Range": "bytes 1024-4095/4096", "Content-Length": "3072"},
+    )
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = lambda key: {
+        "strict_contract_mode": "warn",
+        "density_breaker_enabled": "false",
+        "zero_fill_budget_enabled": "true",
+        "retry_ladder_enabled": "true",
+    }.get(key, "")
+    original_addon = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+
+    # Make the retry-ladder backoff instant (conftest's default sleeps for real).
+    monitor = sys.modules["xbmc"].Monitor.return_value
+    original_wait = monitor.waitForAbort.side_effect
+    monitor.waitForAbort.side_effect = lambda timeout=0.0: False
+    try:
+        with patch(
+            "resources.lib.stream_proxy.urlopen",
+            side_effect=[resp1, resp2],
+        ) as mock_urlopen, patch.object(
+            handler, "_select_live_fallback_source", return_value=None
+        ):
+            handler._serve_proxy(ctx)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original_addon
+        monitor.waitForAbort.side_effect = original_wait
+
+    # It waited on the primary (retry ladder re-requested the range -> resp2)
+    # and streamed the full range, instead of closing at byte 1024.
+    assert _collect_written(handler) == b"A" * 1024 + b"B" * 3072
+    # The retry ladder actually re-fetched the primary (second urlopen),
+    # rather than declaring the attached-but-unready fallbacks exhausted.
+    assert mock_urlopen.call_count == 2
+
+
 @patch("resources.lib.stream_proxy.xbmc")
 def test_serve_proxy_logs_terminal_summary_on_success(mock_xbmc):
     ctx = {
