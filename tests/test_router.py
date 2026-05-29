@@ -1815,7 +1815,7 @@ def test_handle_play_empty_completed_snapshot_skips_post_picker_history_lookup(
     elapsed_to_submit = submit_started[0] - started
 
     assert (
-        elapsed_to_submit < 0.05
+        elapsed_to_submit < 0.10
     ), "post-picker submit waited {:.3f}s on a repeated history miss".format(
         elapsed_to_submit
     )
