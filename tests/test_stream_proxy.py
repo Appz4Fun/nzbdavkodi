@@ -520,6 +520,55 @@ def test_merge_session_fallbacks_dedups_by_nzo_after_cutover_resolves_url():
         sp.stop()
 
 
+def test_merge_session_fallbacks_kicks_prevalidation_for_pushed_sources():
+    """After merging pushed fallbacks, the proxy must warm them in the
+    background (resolve nzo-only standbys + fingerprint) so the failure-time
+    cutover is an instant pointer swap instead of a multi-second cold resolve.
+    """
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy()
+    sp.start()
+    try:
+        _seed_session(sp, "s", [])
+        sp._server.stream_sessions["s"]["content_length"] = 100
+        with patch.object(sp, "_start_fallback_prevalidation") as mock_warm:
+            added = sp.merge_session_fallbacks("s", [{"nzo_id": "a", "stream_url": ""}])
+        assert added == 1
+        mock_warm.assert_called_once()
+    finally:
+        sp.stop()
+
+
+def test_start_fallback_prevalidation_resolves_standbys_then_validates():
+    """Background prevalidation must RESOLVE nzo-only standbys (not skip them)
+    and then fingerprint-validate the resolved sources."""
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy()
+    sp.start()
+    try:
+        ctx = {
+            "content_length": 100,
+            "fallback_sources": [
+                {"nzo_id": "a", "stream_url": "", "failed": False, "validated": False}
+            ],
+        }
+        with patch.object(
+            sp, "_refresh_session_standby_fallbacks"
+        ) as mock_refresh, patch.object(
+            sp, "_prevalidate_fallback_sources"
+        ) as mock_preval:
+            sp._start_fallback_prevalidation(ctx)
+            thread = ctx.get("_fallback_prevalidation_thread")
+            if thread is not None:
+                thread.join(timeout=2)
+        mock_refresh.assert_called_with(ctx)
+        mock_preval.assert_called_with(ctx)
+    finally:
+        sp.stop()
+
+
 def test_merge_session_fallbacks_unknown_session_returns_none():
     from resources.lib.stream_proxy import StreamProxy
 
