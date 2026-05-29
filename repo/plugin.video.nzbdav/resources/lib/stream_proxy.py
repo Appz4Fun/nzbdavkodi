@@ -245,6 +245,11 @@ _FALLBACK_SOURCE_STREAM_URL_HINT_KEY = "_fallback_source_stream_url_hint"
 # requested, so the cutover path runs against a real, already-downloaded
 # fallback. Off by default — safe to ship permanently.
 _FAULT_PRIMARY_FAIL_AFTER_BYTES_ENV = "NZBDAV_FAULT_PRIMARY_FAIL_AFTER_BYTES"
+# Spare the file tail (MKV cues/SeekHead live at EOF) from the fault so the
+# demuxer can initialize and playback runs long enough for the fallback worker
+# to attach+validate alternates — otherwise the very first tail read (at a
+# ~file-size offset) trips the fault before any cutover target exists.
+_FAULT_TAIL_GUARD_BYTES = 1073741824  # 1 GiB
 
 
 def _fault_forced_primary_failure(ctx, start):
@@ -261,6 +266,14 @@ def _fault_forced_primary_failure(ctx, start):
     # playback can actually recover.
     if int(ctx.get("fallback_switch_count", 0) or 0) > 0:
         return False
+    # Spare the tail so the demuxer initializes and playback survives long
+    # enough for fallbacks to attach (see _FAULT_TAIL_GUARD_BYTES). Only when
+    # the file is large enough that the tail guard and the threshold band
+    # don't overlap — small test files keep the simple start>=threshold rule.
+    content_length = int(ctx.get("content_length", 0) or 0)
+    if content_length > _FAULT_TAIL_GUARD_BYTES + threshold:
+        if start >= content_length - _FAULT_TAIL_GUARD_BYTES:
+            return False
     return start >= threshold
 _FALLBACK_PRIMARY_URL_HINT_KEY = "_fallback_primary_url_hint"
 _FALLBACK_PRIMARY_AUTH_HINT_KEY = "_fallback_primary_auth_hint"
@@ -295,6 +308,10 @@ _REMUX_WRITE_TIMEOUT = 60
 _REMUX_STDOUT_IDLE_TIMEOUT = 30.0
 _PREPARE_TOKEN_HEADER = "X-NZBDAV-Token"
 _PROP_PROXY_TOKEN = "nzbdav.proxy_token"
+# POST /stream/<session_id>/fallbacks — merge late-adopted fallback sources into
+# a live session whose /prepare snapshot was taken before the fallback worker
+# finished adopting them (the cutover-never-fires race).
+_FALLBACK_UPDATE_PATH_RE = re.compile(r"^/stream/([^/]+)/fallbacks$")
 
 # HLS segment length. Shorter segments (6 s) minimize the playlist-
 # vs-actual drift that breaks seek accuracy and A/V sync on the fmp4
@@ -1802,10 +1819,15 @@ class _StreamHandler(BaseHTTPRequestHandler):
         )
 
     def do_POST(self):
-        """Handle POST /prepare — plugin sends stream config via HTTP."""
+        """Handle POST /prepare and /stream/<id>/fallbacks (plugin → service)."""
         import json
 
-        if self.path.split("?", 1)[0] != "/prepare":
+        raw_path = self.path.split("?", 1)[0]
+        fallback_match = _FALLBACK_UPDATE_PATH_RE.match(raw_path)
+        if fallback_match:
+            self._handle_fallback_update(fallback_match.group(1))
+            return
+        if raw_path != "/prepare":
             self.send_error(404)
             return
         expected_token = getattr(self.server, "prepare_token", "")
@@ -1919,6 +1941,69 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 ),
                 xbmc.LOGINFO,
             )
+
+    def _handle_fallback_update(self, session_id):
+        """Merge late-adopted fallback sources into a live session (auth'd).
+
+        The fallback submit worker keeps adopting alternate copies for ~tens of
+        seconds after playback starts — after the one-shot /prepare snapshot.
+        This sibling endpoint lets the resolver push those late arrivals into
+        the live session so the cutover has something to switch to. Mirrors the
+        /prepare auth + body validation exactly.
+        """
+        import json
+
+        expected_token = getattr(self.server, "prepare_token", "")
+        supplied_token = self.headers.get(_PREPARE_TOKEN_HEADER)
+        if expected_token and not hmac.compare_digest(
+            supplied_token or "", expected_token or ""
+        ):
+            self.send_error(403)
+            return
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except (TypeError, ValueError):
+            self.send_error(400)
+            return
+        if length < 0:
+            self.send_error(400)
+            return
+        if length > _PREPARE_REQUEST_MAX_BYTES:
+            self.send_error(413)
+            return
+        body = self.rfile.read(length) if length else b""
+        try:
+            data = json.loads(body)
+        except (ValueError, KeyError):
+            self.send_error(400)
+            return
+        if not isinstance(data, dict):
+            self.send_error(400)
+            return
+        fallback_sources = data.get("fallback_sources", [])
+        if not isinstance(fallback_sources, list):
+            self.send_error(400)
+            return
+        proxy = self.server.owner_proxy
+        try:
+            added = proxy.merge_session_fallbacks(session_id, fallback_sources)
+        except ValueError:
+            # _normalize_fallback_sources rejected a malformed stream_url.
+            self.send_error(400)
+            return
+        if added is None:
+            # Unknown / already-torn-down session.
+            self.send_error(404)
+            return
+        self.send_response(200)
+        resp = json.dumps({"added": added}).encode()
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(resp)))
+        self.end_headers()
+        try:
+            self.wfile.write(resp)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
 
     def do_HEAD(self):
         """Respond to HEAD with content metadata (type, length, ranges)."""
@@ -4558,6 +4643,20 @@ class _StreamHandler(BaseHTTPRequestHandler):
                         )
                 self.wfile.write(chunk)
                 written += len(chunk)
+                # Env-gated fault injection: a single long-lived connection
+                # opened below the threshold can stream past it, so the
+                # entry-only check misses it — re-check the absolute position
+                # mid-stream. Inert unless the fault env var is set.
+                if _fault_forced_primary_failure(ctx, requested_start + written):
+                    xbmc.log(
+                        "NZB-DAV: [FAULT] forcing primary upstream failure "
+                        "mid-stream at byte {} ({}) (reason=fault_injection)".format(
+                            requested_start + written,
+                            _FAULT_PRIMARY_FAIL_AFTER_BYTES_ENV,
+                        ),
+                        xbmc.LOGWARNING,
+                    )
+                    return _UPSTREAM_RANGE_UPSTREAM_ERROR, written
                 # Throughput watchdog: only sampled inside the read loop
                 # because that's where bytes-in-flight matches what Kodi
                 # actually sees. A separate check at the _serve_proxy level
@@ -6379,6 +6478,49 @@ class StreamProxy:
             ctx.pop("_passthrough_runtime_settings_thread", None)
             ctx.pop(_PASSTHROUGH_RUNTIME_SETTINGS_DONE_KEY, None)
 
+    def merge_session_fallbacks(self, session_id, fallback_sources):
+        """Merge late-adopted fallback sources into a live session context.
+
+        Returns the count of NEW sources added, or None when the session is
+        unknown (torn down / never existed). Dedups by (nzo_id, stream_url).
+        Existing source dicts are preserved BY IDENTITY so in-place
+        failed/validated marks the live cutover writes survive a merge, and
+        the list is swapped atomically so a concurrent _serve_proxy reader
+        never observes a half-mutated list.
+        """
+        normalized = _normalize_fallback_sources(fallback_sources)
+
+        def _dedup_key(source):
+            # Dedup by nzo_id when present: a pushed source always carries
+            # stream_url="" (jobs only know their nzo_id), but the live cutover
+            # resolves stream_url in place — so a (nzo_id, stream_url) tuple key
+            # would treat a re-push of the same nzo as new once it's resolved,
+            # re-adding a duplicate that un-fails the source. Fall back to the
+            # URL only for url-only sources that have no nzo_id.
+            nzo_id = source.get("nzo_id", "")
+            if nzo_id:
+                return ("nzo", nzo_id)
+            return ("url", source.get("stream_url", ""))
+
+        with self._context_lock:
+            sessions = getattr(self._server, "stream_sessions", None)
+            ctx = sessions.get(session_id) if isinstance(sessions, dict) else None
+            if ctx is None:
+                return None
+            existing = list(ctx.get("fallback_sources") or [])
+            seen = {_dedup_key(s) for s in existing if isinstance(s, dict)}
+            added = 0
+            for src in normalized:
+                key = _dedup_key(src)
+                if key in seen:
+                    continue
+                seen.add(key)
+                existing.append(src)
+                added += 1
+            if added:
+                ctx["fallback_sources"] = existing
+        return added
+
     def prepare_stream(
         self,
         remote_url,
@@ -7325,6 +7467,36 @@ def prepare_stream_via_service(
                 "restart Kodi or toggle the addon".format(port)
             ) from e
         raise
+
+
+def update_stream_fallbacks_via_service(
+    port, session_id, fallback_sources, prepare_token=None
+):
+    """Push late-adopted fallback sources into a live proxy session.
+
+    Best-effort: the caller should swallow exceptions (the cutover still works
+    for whatever was attached at /prepare time). Returns the parsed JSON
+    response (``{"added": n}``) on success.
+    """
+    import json
+
+    url = "http://127.0.0.1:{}/stream/{}/fallbacks".format(port, session_id)
+    payload = {"fallback_sources": list(fallback_sources or [])}
+    req = Request(url, data=json.dumps(payload).encode(), method="POST")
+    req.add_header("User-Agent", HTTP_USER_AGENT)
+    req.add_header("Content-Type", "application/json")
+    if prepare_token is None:
+        prepare_token = get_service_proxy_token()
+    if prepare_token:
+        req.add_header(_PREPARE_TOKEN_HEADER, prepare_token)
+    # Short timeout: this is an in-process loopback service that answers in
+    # well under a second, and the flush push runs inline on the resolver
+    # thread just before playback handoff — a long timeout would stall it.
+    # nosemgrep
+    with urlopen(  # nosec B310 — loopback service URL
+        req, timeout=3
+    ) as resp:
+        return json.loads(resp.read())
 
 
 def get_proxy():
