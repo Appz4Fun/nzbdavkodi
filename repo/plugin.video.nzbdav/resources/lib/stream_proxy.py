@@ -121,6 +121,17 @@ _FFPROBE_PATHS = [
 
 # Pass-through proxy recovery constants
 _UPSTREAM_OPEN_TIMEOUT = 60
+# Dedicated recv() deadline for the streaming body, armed explicitly on the
+# upstream socket AFTER the response headers arrive (see
+# _set_upstream_read_timeout). _UPSTREAM_OPEN_TIMEOUT above is inherited by
+# recv() too, but we want a tighter, explicit bound so a stalled backend (all
+# Usenet providers returning article-not-found) surfaces as a RECOVERABLE read
+# result that drives live fallback — and wins the race against the equal 60 s
+# proxy->Kodi write timeout (_REMUX_WRITE_TIMEOUT) instead of unwinding as
+# terminal_reason="client_disconnected" with recoveries=0. Kept well above a
+# realistic single-article fetch so a slow-but-progressing source is not
+# falsely rotated. See https://github.com/Appz4Fun/nzbdavkodi/issues/214
+_UPSTREAM_READ_TIMEOUT = 45
 _SKIP_PROBE_TIMEOUT = 60
 # Geometric skip sizes for probing past a bad article region. 1 MB covers a
 # single missing article (~700 KB). 16 MB covers a cluster of ~20 articles.
@@ -167,6 +178,31 @@ def _passthrough_watchdog_applies(ctx):
     """
     content_type = (ctx.get("content_type") or "").lower()
     return content_type.startswith("video/")
+
+
+def _set_upstream_read_timeout(resp, timeout):
+    """Best-effort: arm a recv() deadline on an urlopen response's socket.
+
+    urllib inherits the urlopen connect timeout for reads, but we set a
+    tighter, explicit deadline on the body socket so a stalled upstream
+    surfaces as a recoverable read error promptly (which drives live
+    fallback) rather than blocking until the equal proxy->Kodi write
+    timeout fires first and the stall is misattributed to a client
+    disconnect. Tolerant of the CPython-internal attribute path
+    (BufferedReader -> SocketIO -> socket) being absent on other
+    implementations; on failure the inherited urlopen timeout still
+    applies. See https://github.com/Appz4Fun/nzbdavkodi/issues/214
+    """
+    try:
+        sock = resp.fp.raw._sock
+    except AttributeError:
+        return
+    if sock is None:
+        return
+    try:
+        sock.settimeout(timeout)
+    except OSError:
+        pass
 
 
 # Chunk size for reading from the upstream HTTP response in _serve_proxy.
@@ -4361,6 +4397,14 @@ class _StreamHandler(BaseHTTPRequestHandler):
             getattr(self, "server", None), ctx, observed_at=observed_at
         )
 
+        # Arm a dedicated, shorter recv() deadline on the body socket now that
+        # headers are in. A stalled backend (e.g. looping on article-not-found)
+        # then surfaces as a recoverable read error within _UPSTREAM_READ_TIMEOUT
+        # — driving the live fallback cutover below — instead of blocking on the
+        # inherited 60 s timeout until Kodi gives up and the stall is logged as
+        # client_disconnected. See issue #214.
+        _set_upstream_read_timeout(resp, _UPSTREAM_READ_TIMEOUT)
+
         try:
             status = getattr(resp, "status", None) or resp.getcode()
             content_range = _get_header(resp, "Content-Range")
@@ -4491,6 +4535,28 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     if window_elapsed >= _PASSTHROUGH_THROUGHPUT_WINDOW_SECONDS:
                         bps = ctx["passthrough_window_bytes"] / window_elapsed
                         if bps < _PASSTHROUGH_MIN_THROUGHPUT_BPS:
+                            # When a live fallback upload is attached, a
+                            # sustained sub-floor trickle should switch sources
+                            # rather than blindly close for a reconnect to the
+                            # SAME stalled upload (which just wedges again on a
+                            # dead/missing-article release). Returning a
+                            # recoverable result hands control to _serve_proxy's
+                            # cutover (which calls _select_live_fallback_source);
+                            # the no-fallback path below is unchanged so the
+                            # existing passthrough_stall reconnect + audio-skip
+                            # behavior and its tests still hold. See issue #214.
+                            if ctx.get("fallback_sources"):
+                                xbmc.log(
+                                    "NZB-DAV: Pass-through trickle below floor "
+                                    "at byte {} ({:.0f} B/s over {:.1f}s) with "
+                                    "fallback attached; returning recoverable to "
+                                    "trigger cutover "
+                                    "(reason=passthrough_stall_fallback)".format(
+                                        start + written, bps, window_elapsed
+                                    ),
+                                    xbmc.LOGWARNING,
+                                )
+                                return _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, written
                             # Mark before raising so the _serve_proxy handler
                             # can distinguish stall-induced unwind from a
                             # real Kodi disconnect. socket.timeout is an
