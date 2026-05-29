@@ -179,7 +179,17 @@ def _completed_stream_body_available(url, headers, probe_bytes=65536, timeout=20
     length, a file too small to have a meaningful middle, a timeout, or any
     other network error — returns ``True`` (fail-open) so a slow-but-valid
     stream is never blocked from playing.
+
+    Env-gated fault injection: NZBDAV_FAULT_REJECT_COMPLETED forces this to
+    return False so the resolver takes the re-download path (which attaches
+    validated fallback sources), used to stage a live fallback cutover. Inert
+    unless the env var is set.
     """
+    import os
+
+    if os.environ.get("NZBDAV_FAULT_REJECT_COMPLETED"):
+        return False
+
     from urllib.error import HTTPError
     from urllib.request import Request, urlopen
 
