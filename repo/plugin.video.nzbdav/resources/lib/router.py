@@ -232,9 +232,6 @@ def route(argv):
             # TMDBHelper bookmark row (keyed by tmdb_id+title) when
             # playback starts. Without it, replays resume from a stale
             # offset. TODO.md §H.3.
-            clean["_display_title"] = _build_display_title(
-                clean, clean.get("title", "")
-            )
             resolve_and_play(
                 clean.get("nzburl", ""),
                 clean.get("title", ""),
@@ -329,81 +326,6 @@ def _clean_params(params):
     https://github.com/jurialmunkey/plugin.video.themoviedb.helper/wiki/PlayerConfig
     """
     return {k: ("" if v == "_" else v) for k, v in params.items()}
-
-
-def _format_episode_display_title(title, season, episode):
-    def _pad(value):
-        try:
-            return "{:02d}".format(int(value))
-        except (TypeError, ValueError):
-            return str(value or "")
-
-    if title and season not in ("", None) and episode not in ("", None):
-        return "{} S{}E{}".format(title, _pad(season), _pad(episode))
-    return title or ""
-
-
-def _build_display_title(params, fallback_title=""):
-    title = params.get("title", "")
-    search_type = params.get("type", "movie")
-    if search_type == "episode":
-        season = params.get("season", "") or params.get("ep_season", "")
-        episode = params.get("episode", "") or params.get("ep_episode", "")
-        return _format_episode_display_title(title, season, episode) or fallback_title
-    year = params.get("year", "")
-    if title and year:
-        return "{} ({})".format(title, year)
-    return title or fallback_title
-
-
-def _build_resolved_display_title(
-    params, fallback_title="", title=None, year=None, season=None, episode=None
-):
-    display_params = dict(params)
-    if title:
-        display_params["title"] = title
-    if year:
-        display_params["year"] = year
-    if season not in ("", None):
-        display_params["season"] = season
-    if episode not in ("", None):
-        display_params["episode"] = episode
-    return _build_display_title(display_params, fallback_title)
-
-
-def _resolver_params_for_selection(
-    params,
-    selected,
-    results,
-    title=None,
-    year=None,
-    season=None,
-    episode=None,
-    settings_getter=None,
-    preserve_params=False,
-):
-    if preserve_params:
-        resolver_params = dict(params)
-    else:
-        resolver_params = {
-            "nzburl": selected["link"],
-            "title": selected["title"],
-        }
-    resolver_params["_display_title"] = _build_resolved_display_title(
-        params,
-        selected["title"],
-        title=title,
-        year=year,
-        season=season,
-        episode=episode,
-    )
-    resolver_params["_fallback_candidates"] = []
-    resolver_params["_fallback_candidate_loader"] = (
-        _fallback_candidate_loader_for_selection(
-            selected, results, settings_getter=settings_getter
-        )
-    )
-    return resolver_params
 
 
 def _fallback_candidate_loader_for_selection(selected, results, settings_getter=None):
@@ -1212,8 +1134,6 @@ def _handle_play(handle, params):
         looked_up = _lookup_episode_info(imdb, params.get("tmdb_id", ""))
         if looked_up:
             title = looked_up.get("title", title)
-            season = season or looked_up.get("season", "")
-            episode = episode or looked_up.get("episode", "")
 
     xbmc.log(
         "NZB-DAV: Search stage: checking cache for '{}' ({})".format(
@@ -1313,15 +1233,14 @@ def _handle_play(handle, params):
         best = filtered[0]
         from resources.lib.resolver import resolve
 
-        resolver_params = _resolver_params_for_selection(
-            params,
-            best,
-            filtered,
-            title=title,
-            year=year,
-            season=season,
-            episode=episode,
-        )
+        resolver_params = {
+            "nzburl": best["link"],
+            "title": best["title"],
+            "_fallback_candidates": [],
+            "_fallback_candidate_loader": _fallback_candidate_loader_for_selection(
+                best, filtered
+            ),
+        }
         _attach_selected_indexer(resolver_params, best)
         resolve(
             handle,
@@ -1342,15 +1261,14 @@ def _handle_play(handle, params):
     if selected:
         from resources.lib.resolver import resolve
 
-        resolver_params = _resolver_params_for_selection(
-            params,
-            selected,
-            filtered,
-            title=title,
-            year=year,
-            season=season,
-            episode=episode,
-        )
+        resolver_params = {
+            "nzburl": selected["link"],
+            "title": selected["title"],
+            "_fallback_candidates": [],
+            "_fallback_candidate_loader": _fallback_candidate_loader_for_selection(
+                selected, filtered
+            ),
+        }
         completed_job = selected.get("_completed_job")
         if completed_job:
             resolver_params["_completed_job"] = completed_job
@@ -1502,16 +1420,10 @@ def _handle_search(handle, params):
         best = filtered[0]
         from resources.lib.resolver import resolve_and_play
 
-        resolver_params = _resolver_params_for_selection(
-            params,
-            best,
-            filtered,
-            title=title,
-            year=year,
-            season=season,
-            episode=episode,
-            preserve_params=True,
-        )
+        resolver_params = dict(params)
+        resolver_params["_fallback_candidates"] = []
+        fallback_loader = _fallback_candidate_loader_for_selection(best, filtered)
+        resolver_params["_fallback_candidate_loader"] = fallback_loader
         _attach_selected_indexer(resolver_params, best)
         resolve_and_play(best["link"], best["title"], params=resolver_params)
         # Same hang class as C1 (router.py): /search is a directory
@@ -1536,15 +1448,10 @@ def _handle_search(handle, params):
     if selected:
         from resources.lib.resolver import resolve_and_play
 
-        resolver_params = _resolver_params_for_selection(
-            params,
-            selected,
-            filtered,
-            title=title,
-            year=year,
-            season=season,
-            episode=episode,
-            preserve_params=True,
+        resolver_params = dict(params)
+        resolver_params["_fallback_candidates"] = []
+        resolver_params["_fallback_candidate_loader"] = (
+            _fallback_candidate_loader_for_selection(selected, filtered)
         )
         completed_job = selected.get("_completed_job")
         if completed_job:
@@ -1660,17 +1567,12 @@ def _handle_script_play(params):
         best = filtered[0]
         from resources.lib.resolver import resolve_and_play
 
-        resolver_params = _resolver_params_for_selection(
-            params,
-            best,
-            filtered,
-            title=title,
-            year=year,
-            season=season,
-            episode=episode,
-            settings_getter=_get_script_setting,
-            preserve_params=True,
+        resolver_params = dict(params)
+        resolver_params["_fallback_candidates"] = []
+        fallback_loader = _fallback_candidate_loader_for_selection(
+            best, filtered, settings_getter=_get_script_setting
         )
+        resolver_params["_fallback_candidate_loader"] = fallback_loader
         completed_job = _script_completed_job_for_selection(best)
         if completed_job:
             resolver_params["_completed_job"] = completed_job
@@ -1707,17 +1609,12 @@ def _handle_script_play(params):
 
     from resources.lib.resolver import resolve_and_play
 
-    resolver_params = _resolver_params_for_selection(
-        params,
-        selected,
-        filtered,
-        title=title,
-        year=year,
-        season=season,
-        episode=episode,
-        settings_getter=_get_script_setting,
-        preserve_params=True,
+    resolver_params = dict(params)
+    resolver_params["_fallback_candidates"] = []
+    fallback_loader = _fallback_candidate_loader_for_selection(
+        selected, filtered, settings_getter=_get_script_setting
     )
+    resolver_params["_fallback_candidate_loader"] = fallback_loader
     resolver_params["_settings_getter"] = _get_script_setting
     completed_job = selected.get("_completed_job")
     if not completed_job and not _completed_lookup_was_done(completed_jobs):
