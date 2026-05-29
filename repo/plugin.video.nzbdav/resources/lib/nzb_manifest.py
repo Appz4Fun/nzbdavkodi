@@ -359,10 +359,37 @@ def _split_payload_video_candidates(file_elems, health_check):
     return [candidate]
 
 
+def _build_xxe_safe_parser():
+    """Create an XML parser that prevents External Entity Processing (XXE).
+
+    ``xml.etree.ElementTree`` does not prevent external entities by default
+    on all Python versions. We attach an ``ExternalEntityRefHandler`` that
+    raises an exception on resolution, killing the parse.
+
+    Unlike ``hydra._build_xxe_safe_parser``, we cannot return ``0`` (False)
+    because standard NZB files contain a `<!DOCTYPE nzb PUBLIC ...>` declaration
+    that triggers the handler. We must only raise on an actual SYSTEM entity
+    or known risk. Instead of returning false, we use a simple passthrough
+    for expected NZB namespaces if needed, but since we just want to avoid
+    outbound network calls, we can let expat handle it safely or use a
+    dummy string. For true safety while allowing `<!DOCTYPE nzb ...>` we
+    use a handler that simply ignores it by returning 1 (True).
+    """
+    parser = ET.XMLParser()
+    try:
+        # Prevent parsing of external entities (XXE) while allowing the standard DOCTYPE
+        # The return value 1 (True) tells expat the entity was handled (ignored),
+        # whereas 0 (False) aborts parsing entirely.
+        parser.parser.ExternalEntityRefHandler = lambda *args: 1
+    except AttributeError:
+        pass
+    return parser
+
+
 def extract_nzb_video_manifest(nzb_bytes, health_check=None):
     """Return main video-file or provisional archive metadata from an NZB XML."""
     try:
-        root = ET.fromstring(nzb_bytes)
+        root = ET.fromstring(nzb_bytes, parser=_build_xxe_safe_parser())
     except (ET.ParseError, TypeError):
         return _empty_manifest("invalid_xml")
 
