@@ -71,10 +71,10 @@ def _sanitize_server_message(raw):
 def _get_settings(settings_getter=None):
     if settings_getter is None:
         addon = xbmcaddon.Addon("plugin.video.nzbdav")
-        url = addon.getSetting("nzbdav_url").rstrip("/")
+        url = addon.getSetting("nzbdav_url").strip().rstrip("/")
         api_key = addon.getSetting("nzbdav_api_key")
     else:
-        url = settings_getter("nzbdav_url", "").rstrip("/")
+        url = settings_getter("nzbdav_url", "").strip().rstrip("/")
         api_key = settings_getter("nzbdav_api_key", "")
     return url, api_key
 
