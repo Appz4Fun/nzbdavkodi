@@ -344,6 +344,27 @@ def test_existing_completed_stream_ignores_partial_history_row(
     mock_find_video.assert_not_called()
 
 
+def _probe_response(content_length=None, code=206, body=b"\x00"):
+    """Mock urllib response for the completed-stream body probe (HEAD/GET)."""
+    resp = MagicMock()
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=False)
+    resp.getcode.return_value = code
+    hdrs = {}
+    if content_length is not None:
+        hdrs["Content-Length"] = str(content_length)
+    resp.headers.get = MagicMock(side_effect=lambda k, d=None: hdrs.get(k, d))
+    resp.read = MagicMock(return_value=body)
+    return resp
+
+
+_COMPLETED_JOB = {
+    "status": "Completed",
+    "name": "movie.mkv",
+    "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/movie",
+}
+
+
 @patch("resources.lib.resolver._find_video_stream_for_folder")
 def test_completed_job_stream_passes_settings_getter_to_webdav_lookup(mock_find_stream):
     def settings_getter(_key, default=""):
@@ -354,23 +375,84 @@ def test_completed_job_stream_passes_settings_getter_to_webdav_lookup(mock_find_
         "http://webdav/movie.mkv",
         {"Authorization": "Basic x"},
     )
-    completed_job = {
-        "status": "Completed",
-        "name": "movie.mkv",
-        "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/movie",
-    }
 
-    stream = _completed_job_stream(
-        "movie.mkv",
-        completed_job,
-        settings_getter=settings_getter,
-    )
+    # Body probe sees a large, fully-served file (HEAD length + mid-file bytes).
+    with patch(
+        "urllib.request.urlopen",
+        return_value=_probe_response(content_length=85_000_000, body=b"\x00"),
+    ):
+        stream = _completed_job_stream(
+            "movie.mkv",
+            _COMPLETED_JOB,
+            settings_getter=settings_getter,
+        )
 
     assert stream == ("http://webdav/movie.mkv", {"Authorization": "Basic x"})
     mock_find_stream.assert_called_once_with(
         "/content/uncategorized/movie/",
         settings_getter=settings_getter,
     )
+
+
+@patch("resources.lib.resolver._find_video_stream_for_folder")
+def test_completed_job_stream_rejects_when_midfile_body_unavailable(mock_find_stream):
+    """nzbdav says Completed but the mid-file articles are gone (the
+    Good/Bad/Ugly failure): the byte-0 header reads, but a mid-file range
+    GET fails. The stream must be rejected (return None) so the resolver
+    re-downloads instead of handing Kodi an empty stream that EOFs at once.
+    """
+    from urllib.error import HTTPError
+
+    mock_find_stream.return_value = (
+        "/content/uncategorized/movie/movie.mkv",
+        "http://webdav/movie.mkv",
+        {"Authorization": "Basic x"},
+    )
+    head = _probe_response(content_length=85_000_000)
+    midfile_500 = HTTPError(
+        "http://webdav/movie.mkv", 500, "Internal Server Error", {}, None
+    )
+
+    with patch("urllib.request.urlopen", side_effect=[head, midfile_500]):
+        stream = _completed_job_stream("movie.mkv", _COMPLETED_JOB)
+
+    assert stream is None
+
+
+@patch("resources.lib.resolver._find_video_stream_for_folder")
+def test_completed_job_stream_streams_when_midfile_body_available(mock_find_stream):
+    """When the mid-file range GET returns real body bytes, stream directly."""
+    mock_find_stream.return_value = (
+        "/content/uncategorized/movie/movie.mkv",
+        "http://webdav/movie.mkv",
+        {"Authorization": "Basic x"},
+    )
+    head = _probe_response(content_length=85_000_000)
+    midfile_ok = _probe_response(code=206, body=b"\x00")
+
+    with patch("urllib.request.urlopen", side_effect=[head, midfile_ok]):
+        stream = _completed_job_stream("movie.mkv", _COMPLETED_JOB)
+
+    assert stream == ("http://webdav/movie.mkv", {"Authorization": "Basic x"})
+
+
+@patch("resources.lib.resolver._find_video_stream_for_folder")
+def test_completed_job_stream_fails_open_when_probe_inconclusive(mock_find_stream):
+    """A timeout / network error during the probe is ambiguous, not proof of
+    a bad file — fail open and stream rather than block a slow-but-valid file.
+    """
+    from urllib.error import URLError
+
+    mock_find_stream.return_value = (
+        "/content/uncategorized/movie/movie.mkv",
+        "http://webdav/movie.mkv",
+        {"Authorization": "Basic x"},
+    )
+
+    with patch("urllib.request.urlopen", side_effect=URLError("timed out")):
+        stream = _completed_job_stream("movie.mkv", _COMPLETED_JOB)
+
+    assert stream == ("http://webdav/movie.mkv", {"Authorization": "Basic x"})
 
 
 @patch("resources.lib.resolver.xbmcgui")

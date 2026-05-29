@@ -163,6 +163,68 @@ def _validate_stream_url(url, headers):
         return False
 
 
+def _completed_stream_body_available(url, headers, probe_bytes=65536, timeout=20):
+    """Best-effort: can a supposedly-Completed stream serve its mid-file body?
+
+    nzbdav sometimes reports a download ``Completed`` when its middle article
+    bodies are actually missing/unretained on the backend. The container header
+    (byte 0) and the tail (cues) still read, so the file *looks* valid and
+    playback starts — then the demuxer EOFs the instant it reaches the body.
+    That empty-stream playback is what preceded the Kodi crash on
+    "The Good, the Bad and the Ugly". A byte-0 check can't catch it (the header
+    is present), so this probes an actual byte range from the middle of the file.
+
+    Returns ``False`` ONLY on a definitive failure: the mid-file range GET
+    returns HTTP >= 400 or yields zero body bytes. On any ambiguity — unknown
+    length, a file too small to have a meaningful middle, a timeout, or any
+    other network error — returns ``True`` (fail-open) so a slow-but-valid
+    stream is never blocked from playing.
+    """
+    from urllib.error import HTTPError
+    from urllib.request import Request, urlopen
+
+    def _add_headers(req):
+        if headers:
+            for key, value in headers.items():
+                req.add_header(key, value)
+
+    # Learn the length so we can target the middle. Any failure here is
+    # ambiguous (e.g. server rejects HEAD) — don't block on it.
+    try:
+        head = Request(url, method="HEAD")
+        _add_headers(head)
+        # nosemgrep
+        with urlopen(head, timeout=timeout) as resp:  # nosec B310
+            length = int(resp.headers.get("Content-Length", 0) or 0)
+    except (OSError, ValueError, http.client.HTTPException):
+        return True
+
+    if length <= probe_bytes * 2:
+        # Too small to distinguish a missing "middle" from header/tail.
+        return True
+
+    start = length // 2
+    end = min(start + probe_bytes - 1, length - 1)
+    try:
+        req = Request(url)
+        req.add_header("Range", "bytes={}-{}".format(start, end))
+        _add_headers(req)
+        # nosemgrep
+        with urlopen(req, timeout=timeout) as resp:  # nosec B310
+            if resp.getcode() >= 400:
+                return False
+            # A success status that delivers no body == the article body is
+            # gone even though the metadata claims the file exists.
+            return bool(resp.read(1))
+    except HTTPError:
+        # Definitive: the backend cannot serve the mid-file body (e.g. the
+        # 404/500 seen when articles are missing).
+        return False
+    except (OSError, ValueError, http.client.HTTPException):
+        # Ambiguous (timeout, connection reset) — fail open.
+        return True
+
+
 _STATUS_MESSAGES = {
     "Queued": 30102,
     "Fetching": 30103,
@@ -1524,6 +1586,13 @@ def _completed_job_stream(
         webdav_folder, settings_getter=settings_getter
     )
     if not video_path:
+        return None
+    if not _completed_stream_body_available(stream_url, stream_headers):
+        xbmc.log(
+            "NZB-DAV: '{}' is marked Completed but its mid-file body is "
+            "unavailable; re-downloading instead of streaming directly".format(title),
+            xbmc.LOGWARNING,
+        )
         return None
     return stream_url, stream_headers
 
