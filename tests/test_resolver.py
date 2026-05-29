@@ -436,6 +436,120 @@ def test_completed_job_stream_streams_when_midfile_body_available(mock_find_stre
     assert stream == ("http://webdav/movie.mkv", {"Authorization": "Basic x"})
 
 
+def test_fallback_worker_append_invokes_on_append_hook():
+    """When a live-push hook is armed, each job the worker adopts fires it so
+    late-adopted fallbacks get pushed to the proxy session."""
+    from resources.lib.resolver import _start_fallback_submit_worker
+
+    captured = {}
+
+    def fake_submit(cands, monitor, stop_event=None, on_job=None, settings_getter=None):
+        captured["on_job"] = on_job
+
+    with patch(
+        "resources.lib.resolver._submit_fallback_candidates", side_effect=fake_submit
+    ):
+        state = _start_fallback_submit_worker(candidates=[{"nzb_url": "x"}])
+        state["thread"].join(timeout=2)
+
+    on_append = MagicMock()
+    state["on_append"] = on_append
+    captured["on_job"]({"nzo_id": "a", "job_name": "A"})
+
+    on_append.assert_called_once()
+    assert any(j.get("nzo_id") == "a" for j in state["jobs"])
+
+
+def test_arm_live_fallback_push_sets_hook_and_flushes_current_jobs():
+    """Arming installs the on_append hook and immediately pushes whatever the
+    worker has already adopted (between the prepare snapshot and now)."""
+    from resources.lib.resolver import _arm_live_fallback_push
+
+    prepared = {
+        "service_port": 8080,
+        "proxy_url": "http://127.0.0.1:8080/stream/abc123",
+    }
+    fallback_state = {"lock": threading.Lock(), "jobs": [{"nzo_id": "a"}]}
+
+    with patch(
+        "resources.lib.resolver._direct_playback_service_config",
+        return_value=(8080, "tok"),
+    ), patch(
+        "resources.lib.resolver._playback_fallback_sources_for_stream",
+        return_value=[{"nzo_id": "a", "stream_url": "http://h/a.mkv"}],
+    ), patch(
+        "resources.lib.stream_proxy.update_stream_fallbacks_via_service"
+    ) as mock_update:
+        _arm_live_fallback_push(prepared, fallback_state, "http://primary/movie.mkv")
+
+    assert callable(fallback_state.get("on_append"))
+    mock_update.assert_called_once_with(
+        8080,
+        "abc123",
+        [{"nzo_id": "a", "stream_url": "http://h/a.mkv"}],
+        prepare_token="tok",
+    )
+
+
+def test_arm_live_fallback_push_swallows_update_errors():
+    """A push failure (service slow/unreachable) must never propagate out of
+    the resolver flow and break playback handoff."""
+    from resources.lib.resolver import _arm_live_fallback_push
+
+    prepared = {
+        "service_port": 8080,
+        "proxy_url": "http://127.0.0.1:8080/stream/abc123",
+    }
+    fallback_state = {"lock": threading.Lock(), "jobs": [{"nzo_id": "a"}]}
+
+    with patch(
+        "resources.lib.resolver._direct_playback_service_config",
+        return_value=(8080, "tok"),
+    ), patch(
+        "resources.lib.resolver._playback_fallback_sources_for_stream",
+        return_value=[{"nzo_id": "a", "stream_url": ""}],
+    ), patch(
+        "resources.lib.stream_proxy.update_stream_fallbacks_via_service",
+        side_effect=OSError("service unreachable"),
+    ):
+        # Must not raise.
+        _arm_live_fallback_push(prepared, fallback_state, "http://primary/movie.mkv")
+
+    assert callable(fallback_state.get("on_append"))
+
+
+def test_fallback_worker_append_swallows_on_append_errors():
+    """A throwing on_append hook must not lose the job or break submission."""
+    from resources.lib.resolver import _start_fallback_submit_worker
+
+    captured = {}
+
+    def fake_submit(cands, monitor, stop_event=None, on_job=None, settings_getter=None):
+        captured["on_job"] = on_job
+
+    with patch(
+        "resources.lib.resolver._submit_fallback_candidates", side_effect=fake_submit
+    ):
+        state = _start_fallback_submit_worker(candidates=[{"nzb_url": "x"}])
+        state["thread"].join(timeout=2)
+
+    state["on_append"] = MagicMock(side_effect=RuntimeError("push boom"))
+    # Must not raise despite the hook throwing.
+    captured["on_job"]({"nzo_id": "a"})
+    assert any(j.get("nzo_id") == "a" for j in state["jobs"])
+
+
+def test_arm_live_fallback_push_noops_without_service_port():
+    from resources.lib.resolver import _arm_live_fallback_push
+
+    fallback_state = {"lock": threading.Lock(), "jobs": []}
+    # No service_port (direct/non-service playback) -> nothing to push to.
+    _arm_live_fallback_push(
+        {"proxy_url": ""}, fallback_state, "http://primary/movie.mkv"
+    )
+    assert "on_append" not in fallback_state
+
+
 @patch("resources.lib.resolver._find_video_stream_for_folder")
 def test_completed_job_stream_rejected_by_fault_env(mock_find_stream):
     """NZBDAV_FAULT_REJECT_COMPLETED forces the 'already downloaded' path to be
