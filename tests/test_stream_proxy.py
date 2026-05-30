@@ -7649,7 +7649,9 @@ def test_serve_proxy_switches_to_valid_fallback_source_mid_response():
     assert mock_stream.call_args_list[1][0][0]["auth_header"] == "Basic fallback"
     assert mock_stream.call_args_list[1][0][1:3] == (0, 9)
     mock_notify.assert_called_once()
-    assert "fallback stream" in mock_notify.call_args[0][1].lower()
+    _msg = mock_notify.call_args[0][1].lower()
+    assert "candidate #1" in _msg
+    assert "successful" in _msg
 
 
 def test_serve_proxy_survives_five_stream_outages_with_backup_sources():
@@ -7732,7 +7734,117 @@ def test_serve_proxy_survives_five_stream_outages_with_backup_sources():
     ]
     assert mock_select.call_count == 5
     assert _collect_written(handler) == b"S" * content_length
-    mock_notify.assert_called_once()
+    # Each of the five cutovers delivered bytes, so each candidate is notified
+    # as a successful fall-back (one toast per fallback, by design).
+    assert mock_notify.call_count == 5
+    _msgs = [call.args[1].lower() for call in mock_notify.call_args_list]
+    assert all("successful" in m for m in _msgs)
+    assert any("candidate #1" in m for m in _msgs)
+    assert any("candidate #5" in m for m in _msgs)
+
+
+def test_serve_proxy_notifies_fallback_failure_when_candidate_delivers_no_bytes():
+    """A fallback candidate that is selected but delivers zero bytes before the
+    queue is exhausted is reported as a failure (not a success)."""
+    from resources.lib.stream_proxy import _UPSTREAM_RANGE_UPSTREAM_ERROR
+
+    ctx = {
+        "remote_url": "http://webdav/primary.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 10,
+        "fallback_sources": [
+            {
+                "nzo_id": "nzo2",
+                "stream_url": "http://webdav/fallback.mkv",
+                "stream_headers": {"Authorization": "Basic fallback"},
+                "content_length": 10,
+                "validated": True,
+                "failed": False,
+            }
+        ],
+        "fallback_switch_count": 0,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-9")
+
+    with patch.object(
+        handler,
+        "_stream_upstream_range",
+        # primary errors (0 bytes) -> switch to candidate #1 -> it also errors
+        # with 0 bytes -> no more fallbacks -> exhausted.
+        side_effect=[
+            (_UPSTREAM_RANGE_UPSTREAM_ERROR, 0),
+            (_UPSTREAM_RANGE_UPSTREAM_ERROR, 0),
+        ],
+    ), patch.object(
+        handler,
+        "_select_live_fallback_source",
+        side_effect=[ctx["fallback_sources"][0], None],
+    ), patch(
+        "resources.lib.stream_proxy._notify"
+    ) as mock_notify:
+        handler._serve_proxy(ctx)
+
+    msgs = [call.args[1].lower() for call in mock_notify.call_args_list]
+    assert any("candidate #1" in m and "was a failure" in m for m in msgs), msgs
+    assert not any("successful" in m for m in msgs), msgs
+
+
+def test_serve_proxy_notifies_failure_then_success_across_two_candidates():
+    """Candidate #1 fails (zero bytes), the proxy falls back to candidate #2
+    which streams: the user sees a failure toast then a success toast."""
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_OK,
+        _UPSTREAM_RANGE_UPSTREAM_ERROR,
+    )
+
+    ctx = {
+        "remote_url": "http://webdav/primary.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 10,
+        "fallback_sources": [
+            {
+                "nzo_id": "nzo2",
+                "stream_url": "http://webdav/fallback1.mkv",
+                "stream_headers": {"Authorization": "Basic f1"},
+                "content_length": 10,
+                "validated": True,
+                "failed": False,
+            },
+            {
+                "nzo_id": "nzo3",
+                "stream_url": "http://webdav/fallback2.mkv",
+                "stream_headers": {"Authorization": "Basic f2"},
+                "content_length": 10,
+                "validated": True,
+                "failed": False,
+            },
+        ],
+        "fallback_switch_count": 0,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-9")
+
+    with patch.object(
+        handler,
+        "_stream_upstream_range",
+        side_effect=[
+            (_UPSTREAM_RANGE_UPSTREAM_ERROR, 0),  # primary
+            (_UPSTREAM_RANGE_UPSTREAM_ERROR, 0),  # candidate #1: zero bytes
+            (_UPSTREAM_RANGE_OK, 10),  # candidate #2: streams
+        ],
+    ), patch.object(
+        handler,
+        "_select_live_fallback_source",
+        side_effect=[ctx["fallback_sources"][0], ctx["fallback_sources"][1]],
+    ), patch(
+        "resources.lib.stream_proxy._notify"
+    ) as mock_notify:
+        handler._serve_proxy(ctx)
+
+    msgs = [call.args[1].lower() for call in mock_notify.call_args_list]
+    assert any("candidate #1" in m and "was a failure" in m for m in msgs), msgs
+    assert any("candidate #2" in m and "successful" in m for m in msgs), msgs
 
 
 def test_serve_proxy_starts_fallback_stream_before_slow_switch_notification():
