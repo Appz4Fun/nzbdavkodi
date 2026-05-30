@@ -665,7 +665,13 @@ def test_find_video_file_parallelizes_sibling_subfolders_for_post_picker_start(
 def test_find_video_file_overlaps_first_sibling_probe_for_post_picker_start(
     mock_urlopen, mock_settings
 ):
-    """The first slow empty sibling should not delay probing later siblings."""
+    """Sibling probes run concurrently; a size tie keeps the earliest sibling.
+
+    We now scan every sibling (no early-exit) to pick the largest, so total
+    time tracks the SLOWEST sibling — but probes still overlap, so it stays
+    near max(sibling) rather than the serial sum. B and C are the same size,
+    so the tie resolves to the earlier-listed B.
+    """
     mock_settings.return_value = _SETTINGS_WITH_AUTH
     parent = _propfind_listing(
         [
@@ -711,7 +717,9 @@ def test_find_video_file_overlaps_first_sibling_probe_for_post_picker_start(
     elapsed = time.perf_counter() - started
 
     assert path == "/content/uncategorized/Overlap/B/Movie.mkv"
-    assert elapsed < 0.24, "first-sibling WebDAV overlap took {:.3f}s".format(elapsed)
+    # Overlapped: near the slowest sibling (~0.6s), well under the serial sum
+    # (0.16 + 0.16 + 0.6 = 0.92s).
+    assert elapsed < 0.85, "first-sibling WebDAV overlap took {:.3f}s".format(elapsed)
 
 
 @patch("resources.lib.webdav._get_settings")
@@ -773,9 +781,16 @@ def test_find_video_file_reuses_settings_during_recursive_post_picker_scan(
 
 @patch("resources.lib.webdav._get_settings")
 @patch("resources.lib.webdav.urlopen")
-def test_find_video_file_returns_before_slower_later_sibling_when_ordered_match_found(
+def test_find_video_file_waits_for_larger_slower_later_sibling(
     mock_urlopen, mock_settings
 ):
+    """A larger video in a slower, later-listed sibling must still win.
+
+    The old code returned the first sibling with any video (here B) and never
+    waited for the slower C. Now we scan all siblings and pick the largest, so
+    the bigger C wins even though it is listed later and responds slower —
+    exactly what prevents a smaller early release from hijacking the real one.
+    """
     mock_settings.return_value = _SETTINGS_WITH_AUTH
     parent = _propfind_listing(
         [
@@ -789,13 +804,13 @@ def test_find_video_file_returns_before_slower_later_sibling_when_ordered_match_
     with_video_b = _propfind_listing(
         [
             ("/content/uncategorized/Ordered/B/", True, None),
-            ("/content/uncategorized/Ordered/B/Movie.mkv", False, 1234),
+            ("/content/uncategorized/Ordered/B/Small.mkv", False, 1234),
         ]
     )
     with_video_c = _propfind_listing(
         [
             ("/content/uncategorized/Ordered/C/", True, None),
-            ("/content/uncategorized/Ordered/C/Slow.mkv", False, 1234),
+            ("/content/uncategorized/Ordered/C/Large.mkv", False, 999999),
         ]
     )
 
@@ -816,12 +831,102 @@ def test_find_video_file_returns_before_slower_later_sibling_when_ordered_match_
 
     mock_urlopen.side_effect = propfind
 
-    started = time.perf_counter()
     path = find_video_file("/content/uncategorized/Ordered/")
-    elapsed = time.perf_counter() - started
 
-    assert path == "/content/uncategorized/Ordered/B/Movie.mkv"
-    assert elapsed < 0.34, "ordered WebDAV match waited {:.3f}s".format(elapsed)
+    assert path == "/content/uncategorized/Ordered/C/Large.mkv"
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_skips_hidden_dot_subfolders(mock_urlopen, mock_settings):
+    """Hidden (dot-prefixed) sibling folders must be ignored entirely.
+
+    Regression for the polluted FraMeSToR release whose hidden
+    '.and_justice_for_all...1080p...' child folder hijacked playback of the
+    real 2160p release. A leading-dot subfolder is skipped (never even
+    PROPFIND'd) regardless of how large its contents are.
+    """
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    parent = _propfind_listing(
+        [
+            ("/content/uncategorized/Polluted/", True, None),
+            ("/content/uncategorized/Polluted/.and_justice_1080p/", True, None),
+            ("/content/uncategorized/Polluted/Real/", True, None),
+        ]
+    )
+    real = _propfind_listing(
+        [
+            ("/content/uncategorized/Polluted/Real/", True, None),
+            ("/content/uncategorized/Polluted/Real/Silence.2160p.mkv", False, 9000),
+        ]
+    )
+    visited_urls = []
+
+    def propfind(req, **_kwargs):
+        url = req.full_url
+        visited_urls.append(url)
+        if url.endswith("/Polluted/"):
+            return _webdav_response(parent)
+        if url.endswith("/Real/"):
+            return _webdav_response(real)
+        raise AssertionError("unexpected PROPFIND URL: {}".format(url))
+
+    mock_urlopen.side_effect = propfind
+
+    path = find_video_file("/content/uncategorized/Polluted/")
+
+    assert path == "/content/uncategorized/Polluted/Real/Silence.2160p.mkv"
+    assert not any(
+        ".and_justice" in url for url in visited_urls
+    ), "hidden dot-folder must not be probed: {}".format(visited_urls)
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_returns_largest_across_sibling_folders(
+    mock_urlopen, mock_settings
+):
+    """Across sibling folders, the LARGEST video wins regardless of order.
+
+    The old code returned the first sibling that had any video, so a smaller
+    junk release in an earlier-listed sibling beat the real, larger release in
+    a later sibling.
+    """
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    parent = _propfind_listing(
+        [
+            ("/content/uncategorized/Multi/", True, None),
+            ("/content/uncategorized/Multi/A/", True, None),
+            ("/content/uncategorized/Multi/B/", True, None),
+        ]
+    )
+    small_a = _propfind_listing(
+        [
+            ("/content/uncategorized/Multi/A/", True, None),
+            ("/content/uncategorized/Multi/A/Junk.1080p.mkv", False, 1000),
+        ]
+    )
+    large_b = _propfind_listing(
+        [
+            ("/content/uncategorized/Multi/B/", True, None),
+            ("/content/uncategorized/Multi/B/Real.2160p.mkv", False, 90000),
+        ]
+    )
+
+    def propfind(req, **_kwargs):
+        url = req.full_url
+        if url.endswith("/Multi/"):
+            return _webdav_response(parent)
+        if url.endswith("/Multi/A/"):
+            return _webdav_response(small_a)
+        if url.endswith("/Multi/B/"):
+            return _webdav_response(large_b)
+        raise AssertionError("unexpected PROPFIND URL: {}".format(url))
+
+    mock_urlopen.side_effect = propfind
+
+    path = find_video_file("/content/uncategorized/Multi/")
+    assert path == "/content/uncategorized/Multi/B/Real.2160p.mkv"
 
 
 _PROPFIND_CROSS_ORIGIN_HREFS = """<?xml version="1.0" encoding="utf-8"?>
