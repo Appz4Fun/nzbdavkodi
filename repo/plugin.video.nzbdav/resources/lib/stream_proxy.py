@@ -63,7 +63,6 @@ from resources.lib.dv_source import probe_dolby_vision_source
 from resources.lib.http_util import HTTP_USER_AGENT
 from resources.lib.http_util import notify as _notify
 from resources.lib.http_util import redact_text as _redact_text
-from resources.lib.i18n import string as _string
 
 # Singleton proxy instance
 _proxy = None
@@ -1161,12 +1160,20 @@ def _maybe_notify_recovery_summary(
     return True
 
 
-def _notify_fallback_switch_once(ctx):
-    """Notify the user once when a session activates a live fallback stream."""
-    if int(ctx.get("fallback_switch_count", 0) or 0) != 1:
-        return False
+def _notify_fallback_outcome(candidate_number, success):
+    """Toast the outcome of a live fall-back to a given candidate.
+
+    ``candidate_number`` is the 1-based position of the fallback source in the
+    session's candidate list. ``success`` distinguishes a candidate that
+    started streaming (the cutover worked) from one that was abandoned before
+    delivering any bytes (or the queue was exhausted on it).
+    """
+    outcome = "successful" if success else "was a failure"
     try:
-        _notify("NZB-DAV", _string(30186))
+        _notify(
+            "NZB-DAV",
+            "fall back to candidate #{} {}".format(candidate_number, outcome),
+        )
     except (RuntimeError, OSError):
         return False
     return True
@@ -4103,7 +4110,11 @@ class _StreamHandler(BaseHTTPRequestHandler):
         ctx["passthrough_stall_detected"] = False
 
         active_ctx = ctx
-        fallback_notification_pending = False
+        # The candidate number (1-based) we last switched to and are awaiting
+        # first bytes from, or None. Drives the per-fallback success/failure
+        # toast: success when bytes flow, failure when we switch away or
+        # exhaust the queue before it delivers anything.
+        fallback_pending_candidate = None
 
         try:
             waited_for_initial_prefetch = False
@@ -4141,9 +4152,11 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 _update_session_recovery_state(self.server, ctx, streamed=written)
                 _record_density_window(density_window, "progress", written)
                 current += written
-                if fallback_notification_pending and written:
-                    fallback_notification_pending = False
-                    _notify_fallback_switch_once(ctx)
+                if fallback_pending_candidate is not None and written:
+                    # The candidate we switched to just delivered playable
+                    # bytes — the cutover worked.
+                    _notify_fallback_outcome(fallback_pending_candidate, True)
+                    fallback_pending_candidate = None
                 if current > end:
                     return
 
@@ -4185,7 +4198,15 @@ class _StreamHandler(BaseHTTPRequestHandler):
                             ),
                             xbmc.LOGWARNING,
                         )
-                        fallback_notification_pending = True
+                        if fallback_pending_candidate is not None:
+                            # Switching away from a candidate that never
+                            # delivered a byte — it failed.
+                            _notify_fallback_outcome(fallback_pending_candidate, False)
+                        fallback_pending_candidate = (
+                            ctx["fallback_active_index"] + 1
+                            if ctx["fallback_active_index"] >= 0
+                            else int(ctx.get("fallback_switch_count", 0) or 0)
+                        )
                         continue
                     if ctx.get("fallback_sources"):
                         terminal_reason = "fallback_exhausted"
@@ -4197,6 +4218,10 @@ class _StreamHandler(BaseHTTPRequestHandler):
                             ),
                             xbmc.LOGERROR,
                         )
+                        if fallback_pending_candidate is not None:
+                            # No further candidate to try — the one we switched
+                            # to never delivered.
+                            _notify_fallback_outcome(fallback_pending_candidate, False)
                         return
 
                 if retry_ladder_enabled and result in (
