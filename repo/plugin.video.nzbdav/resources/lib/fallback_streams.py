@@ -17,7 +17,11 @@ from types import SimpleNamespace
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
-from xml.etree import ElementTree as ET
+
+try:
+    from defusedxml import ElementTree as ET
+except ImportError:  # pragma: no cover - Kodi installs may not bundle defusedxml
+    from xml.etree import ElementTree as ET
 
 import xbmc
 import xbmcaddon
@@ -525,8 +529,8 @@ _TITLE_STOP_TOKENS = frozenset(
         "x265",
     )
 )
-_TITLE_TOKEN_CACHE_TITLE_KEY = "_fallback_title_tokens_title"
-_TITLE_TOKEN_CACHE_VALUE_KEY = "_fallback_title_tokens"
+_TITLE_TOKEN_CACHE_TITLE_KEY = "_fallback_title_tokens_title"  # nosec B105 — cache key
+_TITLE_TOKEN_CACHE_VALUE_KEY = "_fallback_title_tokens"  # nosec B105 — cache key
 _PREFETCH_PROOF_KEY = "_fallback_prefetch_gate_proof"
 _SELECTION_POOL_FIRST_PEER_KEY = "_fallback_selection_pool_first_peer"
 FALLBACK_CANDIDATES_DISABLED = object()

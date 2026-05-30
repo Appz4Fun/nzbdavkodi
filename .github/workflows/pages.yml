@@ -37,7 +37,12 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+          # Always run the Pages infra scripts from the trusted default branch
+          # rather than the workflow_run head SHA. The deploy reads releases via
+          # the API and downloads the published asset, so it never needs the
+          # triggering ref's tree. Avoids checking out untrusted code in this
+          # privileged (pages: write, id-token: write) context.
+          ref: main
 
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0

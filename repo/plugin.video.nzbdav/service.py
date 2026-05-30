@@ -12,7 +12,7 @@ from enum import Enum
 # Same faulthandler hook as addon.py, but the service runs continuously so
 # this catches crashes during the long-lived stream-proxy thread too.
 try:
-    _fh = open("/tmp/nzbdav-faulthandler-service.log", "a", buffering=1)
+    _fh = open("/tmp/nzbdav-faulthandler-service.log", "a", buffering=1)  # nosec B108
     faulthandler.enable(file=_fh, all_threads=True)
 except OSError:
     pass
@@ -34,7 +34,7 @@ _PROP_STREAM_URL = "nzbdav.stream_url"
 _PROP_STREAM_TITLE = "nzbdav.stream_title"
 _PROP_ACTIVE = "nzbdav.active"
 _PROP_PROXY_PORT = "nzbdav.proxy_port"
-_PROP_PROXY_TOKEN = "nzbdav.proxy_token"
+_PROP_PROXY_TOKEN = "nzbdav.proxy_token"  # nosec B105 — settings key, not a secret
 
 _HOME_WINDOW = xbmcgui.Window(10000)
 _PLAYER_RUNTIME_ERRORS = (
