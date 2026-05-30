@@ -2780,10 +2780,11 @@ def test_start_direct_playback_prepare_snapshots_settings_in_worker(
     assert len(calls) == 9
 
 
+@patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 @patch("resources.lib.webdav.urlopen")
 @patch("resources.lib.webdav._get_settings")
 def test_completed_history_reuses_webdav_settings_for_stream_url(
-    mock_settings, mock_urlopen
+    mock_settings, mock_urlopen, mock_body_probe
 ):
     """Completed history -> playable URL should not re-read Kodi settings."""
     settings = {
@@ -2873,6 +2874,7 @@ def test_script_history_failure_uses_notification_not_modal(
     mock_xbmc.log.assert_called()
 
 
+@patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 @patch("resources.lib.webdav.get_video_file_size_hint")
 @patch("resources.lib.stream_proxy.prepare_stream_via_service")
 @patch("resources.lib.resolver.get_webdav_stream_url_for_path")
@@ -2882,6 +2884,7 @@ def test_completed_history_propfind_length_hint_is_passed_to_proxy_prepare(
     mock_stream_url,
     mock_prepare_via_service,
     mock_size_hint,
+    mock_body_probe,
 ):
     """Reuse the PROPFIND getcontentlength so proxy prepare can skip stream HEAD."""
     from resources.lib.resolver import _handle_history_result, _prepare_direct_playback
@@ -6131,3 +6134,160 @@ def test_poll_until_ready_no_cleanup_on_completed_no_video(
     _poll_until_ready("http://hydra/nzb", "movie", _make_dialog(), 0, 3600)
 
     mock_cancel_job.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Post-#217 follow-up: body-probe the history-completion path (finding #6) and
+# don't re-adopt a probe-rejected completed row during submit (finding #7).
+# ---------------------------------------------------------------------------
+
+
+@patch("resources.lib.resolver._completed_stream_body_available", return_value=False)
+@patch("resources.lib.resolver._find_completed_video_stream_with_rechecks")
+def test_handle_history_result_rejects_completed_when_body_unavailable(
+    mock_find_stream, mock_probe
+):
+    """A freshly-Completed history row whose mid-file body is unavailable must
+    NOT be streamed to Kodi (the missing-articles empty-stream crash class).
+    The pre-submit shortcut already probes; the normal submit/poll path through
+    _handle_history_result must too. On a failed probe it falls through to the
+    retry budget (keep polling) instead of returning the broken stream.
+    """
+    mock_find_stream.return_value = (
+        "/content/uncategorized/movie/movie.mkv",
+        "http://webdav/movie.mkv",
+        {"Authorization": "Basic x"},
+    )
+
+    should_stop, stream_url, stream_headers, retries = _handle_history_result(
+        {
+            "status": "Completed",
+            "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/movie",
+            "nzo_id": "bad_completed",
+        },
+        "movie.mkv",
+        no_video_retries=0,
+        max_no_video_retries=5,
+    )
+
+    assert stream_url is None
+    assert stream_headers is None
+    assert should_stop is False  # keep polling, do not hand Kodi a broken stream
+    assert retries == 1  # consumed one retry from the budget
+    mock_probe.assert_called_once_with(
+        "http://webdav/movie.mkv", {"Authorization": "Basic x"}
+    )
+
+
+@patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
+@patch("resources.lib.resolver._find_completed_video_stream_with_rechecks")
+def test_handle_history_result_streams_completed_when_body_available(
+    mock_find_stream, mock_probe
+):
+    """When the mid-file body probe passes, the Completed history row streams
+    directly — the pre-existing happy-path behavior is preserved."""
+    mock_find_stream.return_value = (
+        "/content/uncategorized/movie/movie.mkv",
+        "http://webdav/movie.mkv",
+        {"Authorization": "Basic x"},
+    )
+
+    should_stop, stream_url, stream_headers, retries = _handle_history_result(
+        {
+            "status": "Completed",
+            "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/movie",
+            "nzo_id": "good_completed",
+        },
+        "movie.mkv",
+        no_video_retries=0,
+        max_no_video_retries=5,
+    )
+
+    assert should_stop is True
+    assert stream_url == "http://webdav/movie.mkv"
+    assert stream_headers == {"Authorization": "Basic x"}
+    assert retries == 0
+    mock_probe.assert_called_once()
+
+
+@patch("resources.lib.resolver.find_completed_by_name")
+@patch("resources.lib.resolver.find_queued_by_name", return_value=None)
+@patch("resources.lib.resolver.submit_nzb")
+def test_submit_ui_pump_skips_rejected_completed_row(
+    mock_submit, mock_find_queued, mock_find_completed
+):
+    """When the pre-submit body probe has already rejected a Completed row,
+    the concurrent history probe must NOT re-adopt that same row. Submit
+    proceeds to a real re-download (returns the fresh nzo_id) instead of
+    handing back the known-bad completed job."""
+    probe_fired = threading.Event()
+
+    def fake_find_completed(_title, **_kwargs):
+        probe_fired.set()
+        return {
+            "nzo_id": "bad_completed",
+            "status": "Completed",
+            "name": "movie.mkv",
+        }
+
+    def fake_submit(_nzb_url, _title, **_kwargs):
+        # Don't finish addurl until the history probe has had a chance to
+        # (try to) adopt, so the test deterministically exercises the skip.
+        probe_fired.wait(2.0)
+        return "fresh_redownload", None
+
+    mock_find_completed.side_effect = fake_find_completed
+    mock_submit.side_effect = fake_submit
+
+    dialog = MagicMock()
+    dialog.iscanceled.return_value = False
+    monitor = MagicMock()
+    monitor.abortRequested.return_value = False
+
+    nzo_id, submit_error = _submit_nzb_with_ui_pump(
+        "http://indexer/movie.nzb",
+        "movie.mkv",
+        dialog,
+        monitor,
+        rejected_completed_ids={"bad_completed"},
+    )
+
+    assert probe_fired.is_set()  # the history probe really ran
+    assert submit_error is None
+    assert nzo_id == "fresh_redownload"  # NOT the rejected "bad_completed" row
+
+
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver._completed_stream_body_available", return_value=False)
+@patch("resources.lib.resolver._find_completed_video_stream_with_rechecks")
+def test_handle_history_result_body_unavailable_exhaustion_message(
+    mock_find_stream, mock_probe, mock_gui
+):
+    """On retry exhaustion for a body-unavailable Completed row, the user-facing
+    dialog must explain incomplete articles, not misdirect to WebDAV settings
+    (the file WAS found; its mid-file body is missing)."""
+    mock_find_stream.return_value = (
+        "/content/uncategorized/movie/movie.mkv",
+        "http://webdav/movie.mkv",
+        {"Authorization": "Basic x"},
+    )
+
+    # no_video_retries=4 -> the increment hits max_no_video_retries=5 (exhaustion).
+    should_stop, stream_url, _headers, retries = _handle_history_result(
+        {
+            "status": "Completed",
+            "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/movie",
+            "nzo_id": "bad_completed",
+        },
+        "movie.mkv",
+        no_video_retries=4,
+        max_no_video_retries=5,
+    )
+
+    assert should_stop is True
+    assert stream_url is None
+    assert retries == 5
+    dialog_msg = mock_gui.Dialog.return_value.ok.call_args.args[1].lower()
+    assert "incomplete" in dialog_msg
+    assert "articles" in dialog_msg
+    assert "not found" not in dialog_msg
