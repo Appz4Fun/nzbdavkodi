@@ -765,3 +765,19 @@ msgstr "Always clear"
 msgctxt "#30200"
 msgid "Never"
 msgstr "Never"
+
+msgctxt "#30201"
+msgid "Keep queue"
+msgstr "Keep queue"
+
+msgctxt "#30202"
+msgid "Clear queue"
+msgstr "Clear queue"
+
+msgctxt "#30203"
+msgid "The download queue has {} item(s):"
+msgstr "The download queue has {} item(s):"
+
+msgctxt "#30204"
+msgid "Clear the queue before starting this download?"
+msgstr "Clear the queue before starting this download?"

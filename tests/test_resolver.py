@@ -6432,11 +6432,21 @@ def test_maybe_clear_queue_empty_queue_no_clear(mock_slots, mock_clear):
     ],
 )
 def test_maybe_clear_queue_always_clears_without_prompt(mock_slots, mock_clear):
+    from resources.lib import resolver
     from resources.lib.resolver import _maybe_clear_queue_before_submit
 
     _maybe_clear_queue_before_submit("Title", settings_getter=_clear_queue_setting("1"))
 
     mock_clear.assert_called_once()
+    # Probe uses the short, best-effort timeout (must not freeze the resolver
+    # thread on a slow/unreachable nzbdav).
+    assert (
+        mock_slots.call_args.kwargs.get("timeout")
+        == resolver._CLEAR_QUEUE_PROBE_TIMEOUT
+    )
+    # The clear reuses the exact slots that were probed — no second fetch — so
+    # a job added between the probe and the clear is never cancelled unseen.
+    assert mock_clear.call_args.kwargs.get("slots") == mock_slots.return_value
 
 
 @patch("resources.lib.resolver.xbmcgui")

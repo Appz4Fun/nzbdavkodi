@@ -2240,6 +2240,10 @@ def _adopt_queued_or_completed_job(
 
 
 _CLEAR_QUEUE_ON_SUBMIT_MODES = {"0": "ask", "1": "always", "2": "never"}
+# Short, best-effort timeout for the pre-submit queue probe. It runs on the
+# resolver thread before the threaded submit/dialog pump, so a slow/unreachable
+# nzbdav must fail fast (returning []) rather than freezing playback.
+_CLEAR_QUEUE_PROBE_TIMEOUT = 5
 
 
 def _clear_queue_on_submit_mode(settings_getter=None):
@@ -2262,25 +2266,25 @@ def _clear_queue_on_submit_mode(settings_getter=None):
 
 
 def _queue_clear_prompt_message(slots):
-    """Build the yes/no prompt body listing the queued jobs to be cleared."""
+    """Build the localized yes/no prompt body listing the queued jobs.
+
+    The per-item lines (name + status) are live nzbdav data, not translatable
+    boilerplate; the heading and trailing question come from ``strings.po``.
+    """
     lines = []
-    downloading = 0
     for slot in slots:
         if not isinstance(slot, dict):
             continue
         status = slot.get("status") or "?"
-        if status == "Downloading":
-            downloading += 1
         name = slot.get("filename") or slot.get("name") or slot.get("nzo_id") or "?"
         lines.append("- {} ({})".format(str(name)[:60], status))
-    header = "The download queue has {} item(s)".format(len(slots))
-    if downloading:
-        header += " ({} downloading)".format(downloading)
     shown = "\n".join(lines[:6])
     if len(lines) > 6:
         shown += "\n  ..."
-    return "{}:\n{}\n\nClear the queue before starting this download?".format(
-        header, shown
+    return "{}\n{}\n\n{}".format(
+        _string(30203).format(len(slots)),
+        shown,
+        _string(30204),
     )
 
 
@@ -2302,7 +2306,13 @@ def _maybe_clear_queue_before_submit(title, settings_getter=None):
     if mode == "never":
         return
     try:
-        slots = get_queue_slots(**_settings_getter_kwargs(settings_getter))
+        # Bounded, best-effort probe: a slow/unreachable nzbdav must not freeze
+        # the resolver thread (this runs before the threaded submit/dialog
+        # pump). On timeout/error get_queue_slots returns [] and we proceed.
+        slots = get_queue_slots(
+            timeout=_CLEAR_QUEUE_PROBE_TIMEOUT,
+            **_settings_getter_kwargs(settings_getter),
+        )
     except Exception as error:  # pylint: disable=broad-except
         xbmc.log(
             "NZB-DAV: queue probe before submit failed; leaving queue intact: "
@@ -2317,8 +2327,8 @@ def _maybe_clear_queue_before_submit(title, settings_getter=None):
             confirmed = xbmcgui.Dialog().yesno(
                 _addon_name(),
                 _queue_clear_prompt_message(slots),
-                nolabel="Keep queue",
-                yeslabel="Clear queue",
+                nolabel=_string(30201),
+                yeslabel=_string(30202),
             )
         except (RuntimeError, OSError, TypeError) as error:
             xbmc.log(
@@ -2334,7 +2344,9 @@ def _maybe_clear_queue_before_submit(title, settings_getter=None):
                 xbmc.LOGINFO,
             )
             return
-    cleared = clear_queue(**_settings_getter_kwargs(settings_getter))
+    # Cancel exactly the slots we probed/showed — not a fresh fetch — so a job
+    # that appeared between the prompt and now is never cancelled unseen.
+    cleared = clear_queue(slots=slots, **_settings_getter_kwargs(settings_getter))
     xbmc.log(
         "NZB-DAV: cleared {} queued job(s) before submitting '{}'".format(
             cleared, title
@@ -2355,7 +2367,6 @@ def _submit_nzb_with_retries(
 ):
     """Submit an NZB with the existing retry and error-dialog behavior."""
     xbmc.log("NZB-DAV: Submitting NZB for '{}'".format(title), xbmc.LOGINFO)
-    _maybe_clear_queue_before_submit(title, settings_getter=settings_getter)
     last_submit_error = None
 
     for attempt in range(1, max_submit_retries + 1):
@@ -3385,6 +3396,10 @@ def resolve(handle, params):
             stream_url, stream_headers = completed_stream
         else:
             poll_interval, download_timeout = _get_poll_settings()
+            # Offer to clear the existing nzbdav queue before this download
+            # starts — before the progress dialog is created, so the yes/no
+            # prompt is never stacked behind a modal DialogProgress.
+            _maybe_clear_queue_before_submit(title)
             dialog = xbmcgui.DialogProgress()
             dialog.create(_addon_name(), _string(30097))
             # Bookmark cleanup does not depend on the accepted nzo_id. Start it
@@ -3517,6 +3532,9 @@ def resolve_and_play(nzb_url, title, params=None):
                 settings_getter=settings_getter
             )
             _resolve_stage("poll settings done")
+            # Offer to clear the queue before opening the progress dialog, so
+            # the yes/no prompt is not stacked behind a modal DialogProgress.
+            _maybe_clear_queue_before_submit(title, settings_getter=settings_getter)
             _resolve_stage("progress create start")
             dialog = xbmcgui.DialogProgress()
             dialog.create(_addon_name(), _string(30097))

@@ -1241,3 +1241,29 @@ def test_clear_queue_empty_returns_zero(mock_http, mock_settings):
     assert clear_queue() == 0
     # Only the listing GET; nothing to delete.
     assert mock_http.call_count == 1
+
+
+@patch("resources.lib.nzbdav_api.get_queue_slots")
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_clear_queue_uses_provided_slots_without_refetch(
+    mock_http, mock_settings, mock_slots
+):
+    """When given the already-probed slots, clear_queue cancels exactly those
+    and does NOT re-fetch the queue (avoids cancelling jobs added since)."""
+    from resources.lib.nzbdav_api import clear_queue
+
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.return_value = '{"status":true}'
+
+    cleared = clear_queue(
+        slots=[{"nzo_id": "a", "status": "Downloading"}, {"nzo_id": "b"}]
+    )
+
+    assert cleared == 2
+    mock_slots.assert_not_called()  # no second fetch
+    # Two deletes, one per provided slot.
+    urls = [c[0][0] for c in mock_http.call_args_list]
+    assert all("name=delete" in u for u in urls)
+    assert any("value=a" in u for u in urls)
+    assert any("value=b" in u for u in urls)

@@ -444,17 +444,25 @@ def get_queue_slots(settings_getter=None, timeout=15):
     return _response_slots(response, "queue")
 
 
-def clear_queue(settings_getter=None):
+def clear_queue(settings_getter=None, slots=None):
     """Cancel every job in the nzbdav queue and return the count cancelled.
 
     Removes BOTH the actively-downloading job (the queue head) and any waiting
-    jobs: it lists the queue via ``get_queue_slots`` then issues one queue
-    DELETE per ``nzo_id`` through ``cancel_job``. History (completed/failed) is
-    left intact, matching ``cancel_job``'s queue-only semantics. Best-effort —
-    a slot that fails to cancel is logged by ``cancel_job`` and skipped.
+    jobs by issuing one queue DELETE per ``nzo_id`` through ``cancel_job``.
+    History (completed/failed) is left intact, matching ``cancel_job``'s
+    queue-only semantics. Best-effort — a slot that fails to cancel is logged
+    by ``cancel_job`` and skipped.
+
+    ``slots`` lets the caller pass the exact queue listing it already probed
+    (e.g. the one shown to the user): those jobs are cancelled rather than
+    re-fetching, so a job that appeared between the probe and the clear is
+    never cancelled unseen. When ``slots`` is None the current queue is
+    fetched.
     """
+    if slots is None:
+        slots = get_queue_slots(settings_getter=settings_getter)
     cleared = 0
-    for slot in get_queue_slots(settings_getter=settings_getter):
+    for slot in slots:
         nzo_id = slot.get("nzo_id") if isinstance(slot, dict) else None
         if not nzo_id:
             continue
