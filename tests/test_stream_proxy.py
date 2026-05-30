@@ -7847,6 +7847,76 @@ def test_serve_proxy_notifies_failure_then_success_across_two_candidates():
     assert any("candidate #2" in m and "successful" in m for m in msgs), msgs
 
 
+def test_serve_proxy_failure_toast_does_not_delay_next_candidate_cutover():
+    """A failure toast for a dead candidate must not delay the NEXT candidate's
+    read. Mirrors the success-path slow-notify guard for multi-candidate
+    failover: candidate #1 fails with zero bytes, candidate #2 is selected, and
+    a slow Kodi notification must not stall candidate #2's cutover.
+    """
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_OK,
+        _UPSTREAM_RANGE_UPSTREAM_ERROR,
+    )
+
+    ctx = {
+        "remote_url": "http://webdav/primary.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 10,
+        "fallback_sources": [
+            {
+                "nzo_id": "nzo2",
+                "stream_url": "http://webdav/fallback1.mkv",
+                "stream_headers": {"Authorization": "Basic f1"},
+                "content_length": 10,
+                "validated": True,
+                "failed": False,
+            },
+            {
+                "nzo_id": "nzo3",
+                "stream_url": "http://webdav/fallback2.mkv",
+                "stream_headers": {"Authorization": "Basic f2"},
+                "content_length": 10,
+                "validated": True,
+                "failed": False,
+            },
+        ],
+        "fallback_switch_count": 0,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-9")
+    timings = {}
+
+    def stream_range(stream_ctx, _start, _end, contract_mode=None):
+        _ = contract_mode
+        url = stream_ctx["remote_url"]
+        if url.endswith("/primary.mkv"):
+            return _UPSTREAM_RANGE_UPSTREAM_ERROR, 0
+        if url.endswith("/fallback1.mkv"):
+            timings["candidate1_failed_at"] = time.perf_counter()
+            return _UPSTREAM_RANGE_UPSTREAM_ERROR, 0
+        timings["candidate2_started_at"] = time.perf_counter()
+        return _UPSTREAM_RANGE_OK, 10
+
+    def slow_notify(_title, _message):
+        time.sleep(0.12)
+
+    with patch.object(
+        handler, "_stream_upstream_range", side_effect=stream_range
+    ), patch.object(
+        handler,
+        "_select_live_fallback_source",
+        side_effect=[ctx["fallback_sources"][0], ctx["fallback_sources"][1]],
+    ), patch(
+        "resources.lib.stream_proxy._notify", side_effect=slow_notify
+    ):
+        handler._serve_proxy(ctx)
+
+    cutover_delay = timings["candidate2_started_at"] - timings["candidate1_failed_at"]
+    assert (
+        cutover_delay < 0.06
+    ), "candidate #2 cutover waited {:.3f}s on the failure toast".format(cutover_delay)
+
+
 def test_serve_proxy_starts_fallback_stream_before_slow_switch_notification():
     """A slow Kodi notification must not delay the first fallback read."""
     from resources.lib.stream_proxy import (

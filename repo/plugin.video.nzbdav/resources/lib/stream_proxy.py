@@ -4158,6 +4158,11 @@ class _StreamHandler(BaseHTTPRequestHandler):
         # toast: success when bytes flow, failure when we switch away or
         # exhaust the queue before it delivers anything.
         fallback_pending_candidate = None
+        # A failed candidate number whose toast is deferred until after the
+        # NEXT candidate's read has started, so a slow Kodi notification can
+        # never stall the cutover between a dead candidate and its successor
+        # (the success toast is deferred past the read the same way).
+        fallback_failed_to_notify = None
 
         try:
             waited_for_initial_prefetch = False
@@ -4195,6 +4200,12 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 _update_session_recovery_state(self.server, ctx, streamed=written)
                 _record_density_window(density_window, "progress", written)
                 current += written
+                if fallback_failed_to_notify is not None:
+                    # The prior candidate failed; emit its toast now — after
+                    # this (successor) read has already begun — so it never
+                    # delays the cutover.
+                    _notify_fallback_outcome(fallback_failed_to_notify, False)
+                    fallback_failed_to_notify = None
                 if fallback_pending_candidate is not None and written:
                     # The candidate we switched to just delivered playable
                     # bytes — the cutover worked.
@@ -4243,8 +4254,11 @@ class _StreamHandler(BaseHTTPRequestHandler):
                         )
                         if fallback_pending_candidate is not None:
                             # Switching away from a candidate that never
-                            # delivered a byte — it failed.
-                            _notify_fallback_outcome(fallback_pending_candidate, False)
+                            # delivered a byte — it failed. Defer the toast to
+                            # after the next candidate's read starts (handled at
+                            # the top of the loop) so a slow notification can't
+                            # stall the cutover.
+                            fallback_failed_to_notify = fallback_pending_candidate
                         fallback_pending_candidate = (
                             ctx["fallback_active_index"] + 1
                             if ctx["fallback_active_index"] >= 0
