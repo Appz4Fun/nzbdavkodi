@@ -234,6 +234,15 @@ _RECOVERABLE_HTTP_RANGE_ERROR_CODES = frozenset({416})
 _SESSION_ZERO_FILL_RATIO_MAX = 0.05
 _RECOVERY_NOTIFY_DEBOUNCE_SECONDS = 60.0
 _RANGE_RETRY_DELAYS = (2, 4, 8)
+# The (2, 4, 8) ladder above is the right backoff for a MID-STREAM rebuffer:
+# Kodi is already playing and will wait while a still-downloading file catches
+# up. Applying it to the FIRST byte, though, makes the proxy hold Kodi's initial
+# open silent for up to ~14 s — longer than the player's first-read patience —
+# so Kodi disconnects at byte 0 and the summary logs
+# ``streamed=0 reason=client_disconnected`` (no video plays). When nothing has
+# streamed yet, use a short schedule so byte 0 arrives promptly, or the
+# connection closes fast enough for Kodi's CCurlFile to reconnect and retry.
+_FIRST_BYTE_RANGE_RETRY_DELAYS = (0.25, 0.5, 1.0)
 _AUTH_HEADER_NOT_PROVIDED = object()
 _FALLBACK_SOURCE_STATE_NOT_PROVIDED = object()
 _FALLBACK_SOURCE_STREAM_URL_HINT_KEY = "_fallback_source_stream_url_hint"
@@ -281,6 +290,13 @@ _FALLBACK_PRIMARY_URL_HINT_KEY = "_fallback_primary_url_hint"
 _FALLBACK_PRIMARY_AUTH_HINT_KEY = "_fallback_primary_auth_hint"
 _FALLBACK_CURRENT_RANGE_CACHE_KEY = "_fallback_current_range_cache"
 _FALLBACK_FINGERPRINT_WORKERS = 10
+# Upper bound on concurrent pass-through handler threads. Kodi forces
+# Connection: close per response, so every seek/retry opens a fresh connection
+# and thus a fresh handler thread; without a cap a burst can exhaust the OS
+# thread/stack budget and raise "can't start new thread", after which the
+# listener stays up but cannot answer (the "background service unreachable"
+# wedge). Excess connections are dropped cleanly so Kodi reconnects.
+_MAX_PROXY_WORKERS = 64
 _FALLBACK_PRIMARY_DIGEST_CACHE_MAX = 512
 _INITIAL_RANGE_PREFETCH_WAIT_SECONDS = 0.08
 _PASSTHROUGH_RUNTIME_SETTINGS_KEY = "_passthrough_runtime_settings"
@@ -309,6 +325,19 @@ _ZERO_FILL_BUFFER = bytes(65536)
 _REMUX_WRITE_TIMEOUT = 60
 _REMUX_STDOUT_IDLE_TIMEOUT = 30.0
 _PREPARE_TOKEN_HEADER = "X-NZBDAV-Token"  # nosec B105 — HTTP header name, not a secret
+# /prepare client retry. A momentarily thread-starved proxy accepts then drops
+# the loopback connection (RemoteDisconnected / reset / refused) — a FAST
+# failure that clears in well under a second once a handler thread frees up. A
+# single POST would otherwise surface the terminal "background service
+# unreachable" dialog on that first transient hiccup, so retry the FAST
+# connection failures a few times with a short backoff. A genuine timeout is
+# NOT retried: it means the proxy accepted but is wedged, or a slow-but-
+# reachable prepare that already had the full budget — retrying another full
+# budget can't help and would multiply the wait. So the worst case stays the
+# original single timeout, not a multiple of it.
+_PREPARE_MAX_ATTEMPTS = 3
+_PREPARE_ATTEMPT_TIMEOUT = 60
+_PREPARE_RETRY_BACKOFF = 0.25
 _PROP_PROXY_TOKEN = "nzbdav.proxy_token"  # nosec B105 — settings key, not a secret
 # POST /stream/<session_id>/fallbacks — merge late-adopted fallback sources into
 # a live session whose /prepare snapshot was taken before the fallback worker
@@ -4209,7 +4238,18 @@ class _StreamHandler(BaseHTTPRequestHandler):
                         retry_written,
                         current,
                     ) = self._retry_original_range(
-                        active_ctx, current, end, contract_mode
+                        active_ctx,
+                        current,
+                        end,
+                        contract_mode,
+                        # Key on the ABSOLUTE file offset, not total_streamed:
+                        # Kodi forces Connection: close, so every mid-file seek
+                        # is a fresh request with total_streamed=0. Only a
+                        # genuine byte-0 open (where the player's first-read
+                        # patience is short) takes the short schedule; a
+                        # mid-file AWAITING_DOWNLOAD keeps the long
+                        # wait-on-primary ladder.
+                        first_byte=(current == 0),
                     )
                     total_streamed += retry_written
                     _update_session_recovery_state(
@@ -4396,7 +4436,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 xbmc.LOGINFO if _benign_summary else xbmc.LOGWARNING,
             )
 
-    def _retry_original_range(self, ctx, start, end, contract_mode):
+    def _retry_original_range(self, ctx, start, end, contract_mode, first_byte=False):
         """Retry the still-unread upstream range before falling back to skip.
 
         Fast-fail when the session already knows upstream is down.
@@ -4404,6 +4444,13 @@ class _StreamHandler(BaseHTTPRequestHandler):
         retry ladder would otherwise sleep-and-retry through its entire
         delay schedule against a known-failing upstream on every range,
         turning a sustained outage into seconds of stall per seek.
+
+        ``first_byte`` selects a short backoff schedule
+        (``_FIRST_BYTE_RANGE_RETRY_DELAYS``) when no byte has been streamed
+        yet: the long (2, 4, 8) ladder would hold Kodi's initial open silent
+        past its first-read patience, so it disconnects at byte 0
+        (``streamed=0``). The long ladder is kept for mid-stream rebuffering,
+        where Kodi is already playing and will wait.
         """
         if ctx.get("upstream_down_notified"):
             xbmc.log(
@@ -4423,7 +4470,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
         # the handler for the full delay even after Kodi started
         # tearing down. TODO.md §H.2-M14.
         monitor = xbmc.Monitor()
-        for delay in _RANGE_RETRY_DELAYS:
+        delays = _FIRST_BYTE_RANGE_RETRY_DELAYS if first_byte else _RANGE_RETRY_DELAYS
+        for delay in delays:
             if monitor.waitForAbort(delay):
                 return last_result, total_written, current
             result, written = self._stream_upstream_range(
@@ -4872,7 +4920,16 @@ class _StreamHandler(BaseHTTPRequestHandler):
 
 
 class _ThreadedHTTPServer(_ThreadingMixIn, HTTPServer):
-    """HTTPServer that handles each request in a new thread."""
+    """HTTPServer that handles each request in a new thread.
+
+    Hardened against thread/stack exhaustion: handler threads are bounded by a
+    semaphore (``_MAX_PROXY_WORKERS``) and the per-connection spawn is wrapped
+    so a transient ``RuntimeError: can't start new thread`` drops the accepted
+    connection cleanly (Kodi reconnects) instead of escaping as an unhandled
+    traceback while the listener stays up but unanswering. Stdlib
+    ``ThreadingMixIn`` does neither, which is what let a playback burst wedge
+    the proxy into "background service unreachable on 127.0.0.1:<port>".
+    """
 
     allow_reuse_address = True
     daemon_threads = True
@@ -4886,7 +4943,54 @@ class _ThreadedHTTPServer(_ThreadingMixIn, HTTPServer):
         self.ffmpeg_lock = threading.Lock()
         self.owner_proxy = None
         self.prepare_token = ""  # nosec B105 — empty init value, not a secret
+        self._worker_slots = threading.BoundedSemaphore(_MAX_PROXY_WORKERS)
         super().__init__(*args, **kwargs)
+
+    def process_request(self, request, client_address):
+        """Spawn a bounded, RuntimeError-tolerant handler thread.
+
+        ``__new__``-built test doubles (and any subclass that skips __init__)
+        have no ``_worker_slots`` — fall back to an unbounded-but-guarded spawn
+        in that case rather than erroring.
+        """
+        slots = getattr(self, "_worker_slots", None)
+        if slots is not None and not slots.acquire(blocking=False):
+            xbmc.log(
+                "NZB-DAV: Proxy at worker cap ({}); dropping connection so the "
+                "client reconnects (reason=worker_cap)".format(_MAX_PROXY_WORKERS),
+                xbmc.LOGWARNING,
+            )
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except RuntimeError:
+            # Out of OS thread/stack budget. Release the slot we reserved and
+            # close the accepted socket so the client sees a reset and retries,
+            # instead of leaking the connection behind an unhandled traceback.
+            if slots is not None:
+                try:
+                    slots.release()
+                except ValueError:
+                    pass
+            xbmc.log(
+                "NZB-DAV: Could not start proxy handler thread; dropping "
+                "connection so the client reconnects (reason=thread_exhausted)",
+                xbmc.LOGWARNING,
+            )
+            self.shutdown_request(request)
+
+    def process_request_thread(self, request, client_address):
+        """Release the worker slot once the handler thread finishes."""
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            slots = getattr(self, "_worker_slots", None)
+            if slots is not None:
+                try:
+                    slots.release()
+                except ValueError:
+                    pass
 
 
 class HlsProducer:
@@ -6416,7 +6520,12 @@ class StreamProxy:
         thread = threading.Thread(target=_warm, name="nzbdav-fallback-prevalidate")
         thread.daemon = True
         ctx["_fallback_prevalidation_thread"] = thread
-        thread.start()
+        try:
+            thread.start()
+        except RuntimeError:
+            # Out of thread budget — match the sibling prefetch spawns and fail
+            # soft so prevalidation never wedges /prepare.
+            ctx.pop("_fallback_prevalidation_thread", None)
 
     @staticmethod
     def _initial_range_prefetchable(ctx):
@@ -7481,35 +7590,48 @@ def prepare_stream_via_service(
         prepare_token = get_service_proxy_token()
     if prepare_token:
         req.add_header(_PREPARE_TOKEN_HEADER, prepare_token)
-    try:
-        # nosemgrep
-        with urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
-            req, timeout=60
-        ) as resp:
-            result = json.loads(resp.read())
-            proxy_url = result.pop("proxy_url")
-            return proxy_url, result
-    except (ConnectionError, _socket.timeout, TimeoutError) as e:
-        # The loopback service isn't answering. Could be: service
-        # crashed, Kodi restart that didn't re-launch it, port stale
-        # from a previous run. Surface a specific error so the user
-        # sees "NZB-DAV background service unreachable" rather than
-        # a bare Errno 61.
-        raise ServiceProxyUnavailableError(
-            "NZB-DAV background service unreachable on 127.0.0.1:{} — "
-            "restart Kodi or toggle the addon".format(port)
-        ) from e
-    except URLError as e:
-        # URLError wraps the same family of errors when urlopen fails.
-        reason = getattr(e, "reason", None)
-        if isinstance(
-            reason, (ConnectionError, _socket.timeout, TimeoutError, OSError)
-        ):
-            raise ServiceProxyUnavailableError(
-                "NZB-DAV background service unreachable on 127.0.0.1:{} — "
-                "restart Kodi or toggle the addon".format(port)
-            ) from e
-        raise
+    unreachable = (
+        "NZB-DAV background service unreachable on 127.0.0.1:{} — "
+        "restart Kodi or toggle the addon".format(port)
+    )
+    last_error = None
+    for index in range(_PREPARE_MAX_ATTEMPTS):
+        try:
+            # nosemgrep
+            with urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
+                req, timeout=_PREPARE_ATTEMPT_TIMEOUT
+            ) as resp:
+                result = json.loads(resp.read())
+                proxy_url = result.pop("proxy_url")
+                return proxy_url, result
+        except ConnectionError as e:
+            # FAST transient: a momentarily thread-starved proxy accepted then
+            # dropped the loopback socket (RemoteDisconnected / reset / refused).
+            # It clears in well under a second once a handler thread frees up,
+            # so retry before surfacing the terminal error rather than failing
+            # the whole playback on the first transient hiccup.
+            last_error = e
+        except (_socket.timeout, TimeoutError) as e:
+            # The proxy accepted but never answered within the budget: wedged,
+            # not starved. Retrying another full budget won't help, so surface
+            # immediately — same worst case as before this retry loop existed.
+            raise ServiceProxyUnavailableError(unreachable) from e
+        except URLError as e:
+            # URLError wraps the same family of errors when urlopen fails. Retry
+            # only the fast connection-reset family; surface a wrapped timeout/
+            # OSError as unreachable; re-raise everything else (e.g. HTTPError,
+            # a 4xx/5xx from a reachable proxy — not a reachability problem).
+            reason = getattr(e, "reason", None)
+            if isinstance(reason, ConnectionError):
+                last_error = e
+            elif isinstance(reason, (_socket.timeout, TimeoutError, OSError)):
+                raise ServiceProxyUnavailableError(unreachable) from e
+            else:
+                raise
+        if index < _PREPARE_MAX_ATTEMPTS - 1:
+            time.sleep(_PREPARE_RETRY_BACKOFF)
+    # Every attempt failed with a fast connection reset.
+    raise ServiceProxyUnavailableError(unreachable) from last_error
 
 
 def update_stream_fallbacks_via_service(
