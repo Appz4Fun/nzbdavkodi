@@ -15,6 +15,11 @@ services:
       - ./kodi-config:/config
       - ./plugin.video.nzbdav:/config/addons/plugin.video.nzbdav
     restart: unless-stopped
+    # Prevent privilege escalation via setuid/setgid binaries in this test
+    # container. A read-only root filesystem is intentionally NOT set: the
+    # linuxserver/kodi image writes runtime state across the rootfs.
+    security_opt:
+      - "no-new-privileges:true"
     networks:
       - test-net
 
@@ -27,6 +32,10 @@ services:
     environment:
       - VNC_PASSWORD=test123
     restart: unless-stopped
+    # Prevent privilege escalation via setuid/setgid binaries. The desktop/X11
+    # image requires a writable root filesystem, so read_only is not set.
+    security_opt:
+      - "no-new-privileges:true"
     networks:
       - test-net
 

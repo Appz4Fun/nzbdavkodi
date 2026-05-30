@@ -777,7 +777,7 @@ def _start_direct_playback_service_config_lookup():
         "done": done,
         "error": None,
         "service_port": None,
-        "prepare_token": "",
+        "prepare_token": "",  # nosec B105 — empty init value, not a secret
         "thread": None,
     }
 

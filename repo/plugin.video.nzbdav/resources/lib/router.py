@@ -472,7 +472,10 @@ def _get_addon_setting(addon, key, default="", runtime_default=None):
 
 def _get_script_setting(key, default=""):
     """Read this addon's setting from settings.xml without Kodi settings APIs."""
-    from xml.etree import ElementTree as element_tree
+    try:
+        from defusedxml import ElementTree as element_tree
+    except ImportError:  # pragma: no cover - Kodi installs may not bundle defusedxml
+        from xml.etree import ElementTree as element_tree
 
     for settings_path in _script_settings_paths():
         try:
