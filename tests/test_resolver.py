@@ -6364,3 +6364,110 @@ def test_poll_once_byname_fallback_skips_rejected_completed_row(
     assert history_default is not None
     assert history_default.get("status") == "Completed"
     assert history_rejected is None
+
+
+# --- clear-queue-on-submit ---
+
+
+def _clear_queue_setting(value):
+    """settings_getter that returns ``value`` for clear_queue_on_submit."""
+
+    def _sg(key, default=""):
+        return value if key == "clear_queue_on_submit" else default
+
+    return _sg
+
+
+def test_clear_queue_on_submit_mode_maps_index_to_name():
+    from resources.lib.resolver import _clear_queue_on_submit_mode
+
+    assert (
+        _clear_queue_on_submit_mode(settings_getter=_clear_queue_setting("0")) == "ask"
+    )
+    assert (
+        _clear_queue_on_submit_mode(settings_getter=_clear_queue_setting("1"))
+        == "always"
+    )
+    assert (
+        _clear_queue_on_submit_mode(settings_getter=_clear_queue_setting("2"))
+        == "never"
+    )
+    # Unset / unknown values fall back to the safe default (ask).
+    assert (
+        _clear_queue_on_submit_mode(settings_getter=_clear_queue_setting("")) == "ask"
+    )
+    assert (
+        _clear_queue_on_submit_mode(settings_getter=_clear_queue_setting("9")) == "ask"
+    )
+
+
+@patch("resources.lib.resolver.clear_queue")
+@patch("resources.lib.resolver.get_queue_slots")
+def test_maybe_clear_queue_never_does_not_even_probe(mock_slots, mock_clear):
+    from resources.lib.resolver import _maybe_clear_queue_before_submit
+
+    _maybe_clear_queue_before_submit("Title", settings_getter=_clear_queue_setting("2"))
+
+    mock_slots.assert_not_called()
+    mock_clear.assert_not_called()
+
+
+@patch("resources.lib.resolver.clear_queue")
+@patch("resources.lib.resolver.get_queue_slots", return_value=[])
+def test_maybe_clear_queue_empty_queue_no_clear(mock_slots, mock_clear):
+    from resources.lib.resolver import _maybe_clear_queue_before_submit
+
+    _maybe_clear_queue_before_submit("Title", settings_getter=_clear_queue_setting("0"))
+
+    mock_slots.assert_called_once()
+    mock_clear.assert_not_called()
+
+
+@patch("resources.lib.resolver.clear_queue", return_value=2)
+@patch(
+    "resources.lib.resolver.get_queue_slots",
+    return_value=[
+        {"nzo_id": "a", "status": "Downloading"},
+        {"nzo_id": "b", "status": "Queued"},
+    ],
+)
+def test_maybe_clear_queue_always_clears_without_prompt(mock_slots, mock_clear):
+    from resources.lib.resolver import _maybe_clear_queue_before_submit
+
+    _maybe_clear_queue_before_submit("Title", settings_getter=_clear_queue_setting("1"))
+
+    mock_clear.assert_called_once()
+
+
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.clear_queue", return_value=1)
+@patch(
+    "resources.lib.resolver.get_queue_slots",
+    return_value=[{"nzo_id": "a", "status": "Downloading", "filename": "Foo"}],
+)
+def test_maybe_clear_queue_ask_yes_clears(mock_slots, mock_clear, mock_xbmcgui):
+    from resources.lib.resolver import _maybe_clear_queue_before_submit
+
+    mock_xbmcgui.Dialog.return_value.yesno.return_value = True
+
+    _maybe_clear_queue_before_submit("Title", settings_getter=_clear_queue_setting("0"))
+
+    assert mock_xbmcgui.Dialog.return_value.yesno.called
+    mock_clear.assert_called_once()
+
+
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.clear_queue")
+@patch(
+    "resources.lib.resolver.get_queue_slots",
+    return_value=[{"nzo_id": "a", "status": "Downloading", "filename": "Foo"}],
+)
+def test_maybe_clear_queue_ask_no_keeps_queue(mock_slots, mock_clear, mock_xbmcgui):
+    from resources.lib.resolver import _maybe_clear_queue_before_submit
+
+    mock_xbmcgui.Dialog.return_value.yesno.return_value = False
+
+    _maybe_clear_queue_before_submit("Title", settings_getter=_clear_queue_setting("0"))
+
+    assert mock_xbmcgui.Dialog.return_value.yesno.called
+    mock_clear.assert_not_called()

@@ -412,6 +412,62 @@ def cancel_job(nzo_id, timeout=30, settings_getter=None):
     return False
 
 
+def get_queue_slots(settings_getter=None, timeout=15):
+    """Return the nzbdav download-queue slots (SABnzbd ``mode=queue``).
+
+    Read-only: one HTTP GET to ``/api?mode=queue``. Each slot is a dict with
+    at least ``nzo_id`` and ``status`` (and usually ``filename``/``name`` and
+    ``percentage``). The active download is the head slot (status
+    ``Downloading``); waiting jobs follow. Returns an empty list on any error
+    or when the queue is empty, so callers can treat it as "nothing to clear".
+    """
+    try:
+        base_url, api_key = _get_settings(settings_getter=settings_getter)
+    except Exception as e:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: get_queue_slots failed to read settings: {}".format(
+                _redact_text(str(e))
+            ),
+            xbmc.LOGERROR,
+        )
+        return []
+    params = {"mode": "queue", "apikey": api_key, "output": "json"}
+    url = "{}/api?{}".format(base_url, urlencode(params))
+    try:
+        response = _coerce_response_dict(json.loads(_http_get(url, timeout=timeout)))
+    except Exception as e:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: get_queue_slots network error: {}".format(_redact_text(str(e))),
+            xbmc.LOGWARNING,
+        )
+        return []
+    return _response_slots(response, "queue")
+
+
+def clear_queue(settings_getter=None):
+    """Cancel every job in the nzbdav queue and return the count cancelled.
+
+    Removes BOTH the actively-downloading job (the queue head) and any waiting
+    jobs: it lists the queue via ``get_queue_slots`` then issues one queue
+    DELETE per ``nzo_id`` through ``cancel_job``. History (completed/failed) is
+    left intact, matching ``cancel_job``'s queue-only semantics. Best-effort —
+    a slot that fails to cancel is logged by ``cancel_job`` and skipped.
+    """
+    cleared = 0
+    for slot in get_queue_slots(settings_getter=settings_getter):
+        nzo_id = slot.get("nzo_id") if isinstance(slot, dict) else None
+        if not nzo_id:
+            continue
+        if cancel_job(nzo_id, settings_getter=settings_getter):
+            cleared += 1
+    if cleared:
+        xbmc.log(
+            "NZB-DAV: clear_queue cancelled {} queued job(s)".format(cleared),
+            xbmc.LOGINFO,
+        )
+    return cleared
+
+
 def get_job_history(nzo_id, settings_getter=None):
     """Check if a job has landed in nzbdav's history.
 
