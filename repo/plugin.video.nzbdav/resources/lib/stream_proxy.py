@@ -1124,7 +1124,20 @@ def _project_session_zero_fill_ratio(
 def _maybe_notify_recovery_summary(
     server, ctx, zero_fill_bytes=None, recovery_count=None
 ):
-    """Send a debounced recovery summary notification for this session."""
+    """
+    Emit a debounced toast summarizing skipped bytes and recovery count for a session.
+    
+    If provided, `zero_fill_bytes` and `recovery_count` override the stored per-session counters used in the summary. Notifications are rate-limited by _RECOVERY_NOTIFY_DEBOUNCE_SECONDS to avoid frequent toasts.
+    
+    Parameters:
+        server: The server instance that owns the session context (used for optional context locking).
+        ctx (dict): Session context containing recovery counters and last-notify timestamp.
+        zero_fill_bytes (int | None): Optional override for the total skipped/zero-filled bytes to report.
+        recovery_count (int | None): Optional override for the number of recoveries to report.
+    
+    Returns:
+        bool: `True` if a notification was emitted, `False` if no notification was sent (debounced, nothing to report, or an internal notification error occurred).
+    """
     context_lock = _get_server_context_lock(server)
     now = time.time()
 
@@ -1161,12 +1174,15 @@ def _maybe_notify_recovery_summary(
 
 
 def _notify_fallback_outcome(candidate_number, success):
-    """Toast the outcome of a live fall-back to a given candidate.
-
-    ``candidate_number`` is the 1-based position of the fallback source in the
-    session's candidate list. ``success`` distinguishes a candidate that
-    started streaming (the cutover worked) from one that was abandoned before
-    delivering any bytes (or the queue was exhausted on it).
+    """
+    Notify the user with a short toast about the outcome of switching to a live fallback candidate.
+    
+    Parameters:
+        candidate_number (int): 1-based index of the fallback candidate in the session's list.
+        success (bool): `True` if the candidate began delivering bytes (cutover succeeded), `False` if the candidate was abandoned before any bytes arrived.
+    
+    Returns:
+        bool: `True` if the notification was posted successfully, `False` if notification failed (e.g., due to runtime or OS error).
     """
     outcome = "successful" if success else "was a failure"
     try:
@@ -4030,15 +4046,13 @@ class _StreamHandler(BaseHTTPRequestHandler):
             return
 
     def _serve_proxy(self, ctx):
-        """Proxy range requests to remote with missing-article recovery.
-
-        Missing or unfetchable usenet articles cause nzbdav to either 416 or
-        hang mid-stream on the byte ranges that depend on them. Rather than
-        killing playback with a black screen, this routine streams what
-        upstream can serve, probes forward to locate a readable offset past
-        the bad region, zero-fills the gap, and resumes. MKV/MP4 demuxers
-        typically tolerate a few seconds of corrupted bytes as a brief
-        playback glitch.
+        """
+        Proxy a byte-range request to the configured upstream and stream the response to the client, performing missing-article recovery when upstream ranges are unreadable.
+        
+        Reads the requested byte range from ctx["content_length"] and ctx["content_type"], streams available upstream bytes, probes forward past unreadable regions, writes zero-filled bytes to bridge gaps, and may switch to validated fallback sources or retry the original range according to runtime passthrough settings. Updates session recovery counters in the provided context and emits per-fallback outcome and recovery summary notifications as recovery/cutover events occur. The method sends the final HTTP response (headers and body) and does not return a value.
+        
+        Parameters:
+            ctx (dict): session context containing stream metadata and runtime state (must include at least `content_length` and `content_type`; may also contain upstream URL/auth, fallback sources, and passthrough runtime flags).
         """
         content_length = ctx["content_length"]
         range_header = self.headers.get("Range")
