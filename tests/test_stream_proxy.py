@@ -12991,3 +12991,384 @@ def test_record_upstream_recovered_drops_stale_success_observations():
         # A fresher success (t=300) DOES clear the flag.
         _record_upstream_recovered(server, ctx, observed_at=300.0)
         assert ctx["upstream_down_notified"] is False
+
+
+# ---------------------------------------------------------------------------
+# Playback regression fixes: first-byte stall + proxy thread exhaustion
+# ---------------------------------------------------------------------------
+
+
+def test_serve_proxy_first_byte_uses_short_retry_schedule():
+    """Byte 0 must not block on the long (2,4,8) ladder.
+
+    When nothing has streamed yet and the first upstream read returns a clean
+    download-high-water short read (AWAITING_DOWNLOAD with zero bytes), the
+    proxy must NOT sleep through the full (2, 4, 8) = ~14s ladder before
+    delivering byte 0 — that exceeds the player's first-read patience, so Kodi
+    disconnects at byte 0 (the live ``streamed=0 reason=client_disconnected``
+    regression). The pre-first-byte wait must be short.
+    """
+    import sys
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 4096,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-4095")
+
+    # First open: byte 0 not fetched yet -> empty 206 body (AWAITING_DOWNLOAD, 0
+    # written). Second open (retry ladder): the download has caught up.
+    resp1 = _mock_urlopen_response(
+        [],
+        status=206,
+        headers={"Content-Range": "bytes 0-4095/4096", "Content-Length": "4096"},
+    )
+    resp2 = _mock_urlopen_response(
+        [b"B" * 4096],
+        status=206,
+        headers={"Content-Range": "bytes 0-4095/4096", "Content-Length": "4096"},
+    )
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = lambda key: {
+        "strict_contract_mode": "warn",
+        "density_breaker_enabled": "false",
+        "zero_fill_budget_enabled": "true",
+        "retry_ladder_enabled": "true",
+    }.get(key, "")
+    original_addon = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+
+    waited = []
+    monitor = sys.modules["xbmc"].Monitor.return_value
+    original_wait = monitor.waitForAbort.side_effect
+
+    def _record(timeout=0.0):
+        waited.append(timeout)
+        return False
+
+    monitor.waitForAbort.side_effect = _record
+    try:
+        with patch(
+            "resources.lib.stream_proxy.urlopen",
+            side_effect=[resp1, resp2],
+        ), patch.object(handler, "_select_live_fallback_source", return_value=None):
+            handler._serve_proxy(ctx)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original_addon
+        monitor.waitForAbort.side_effect = original_wait
+
+    # Byte 0 was delivered after a SHORT wait, not the 2s first rung of the
+    # long ladder.
+    assert waited, "retry ladder did not run for the first byte"
+    assert waited[0] <= 1.0, "first-byte wait used the long ladder: {!r}".format(waited)
+    assert _collect_written(handler) == b"B" * 4096
+
+
+def test_serve_proxy_midstream_keeps_long_retry_schedule():
+    """Once bytes have streamed, a high-water short read keeps the long ladder.
+
+    Regression guard for the "Empire stalled at 1:11" fix: mid-stream
+    rebuffering on a still-downloading file should still wait on the primary
+    via the long (2, 4, 8) ladder. The short pre-first-byte schedule must apply
+    ONLY to byte 0 (nothing streamed yet).
+    """
+    import sys
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 4096,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-4095")
+
+    # First open delivers 1024 bytes (byte 0 IS served) then short-reads; the
+    # retry ladder serves the remainder.
+    resp1 = _mock_urlopen_response(
+        [b"A" * 1024],
+        status=206,
+        headers={"Content-Range": "bytes 0-4095/4096", "Content-Length": "4096"},
+    )
+    resp2 = _mock_urlopen_response(
+        [b"B" * 3072],
+        status=206,
+        headers={"Content-Range": "bytes 1024-4095/4096", "Content-Length": "3072"},
+    )
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = lambda key: {
+        "strict_contract_mode": "warn",
+        "density_breaker_enabled": "false",
+        "zero_fill_budget_enabled": "true",
+        "retry_ladder_enabled": "true",
+    }.get(key, "")
+    original_addon = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+
+    waited = []
+    monitor = sys.modules["xbmc"].Monitor.return_value
+    original_wait = monitor.waitForAbort.side_effect
+
+    def _record(timeout=0.0):
+        waited.append(timeout)
+        return False
+
+    monitor.waitForAbort.side_effect = _record
+    try:
+        with patch(
+            "resources.lib.stream_proxy.urlopen",
+            side_effect=[resp1, resp2],
+        ), patch.object(handler, "_select_live_fallback_source", return_value=None):
+            handler._serve_proxy(ctx)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original_addon
+        monitor.waitForAbort.side_effect = original_wait
+
+    assert _collect_written(handler) == b"A" * 1024 + b"B" * 3072
+    # Mid-stream rebuffer still uses the long ladder (first rung == 2s).
+    assert waited, "retry ladder did not run"
+    assert waited[0] == 2.0, "mid-stream wait was shortened: {!r}".format(waited)
+
+
+def test_serve_proxy_midfile_awaiting_download_keeps_long_retry_schedule():
+    """A fresh connection seeking MID-FILE must keep the long wait-on-primary
+    ladder, not the short first-byte schedule.
+
+    Kodi forces Connection: close, so every seek is a new _serve_proxy request
+    with total_streamed reset to 0. The short first-byte schedule must therefore
+    key on the absolute file offset (current == 0), NOT on the per-request
+    counter — otherwise a mid-file seek to a byte at the download high-water mark
+    (first read returns AWAITING_DOWNLOAD with zero bytes) would wrongly use the
+    short ladder and close after ~1.75s instead of waiting ~14s for the
+    still-downloading primary to catch up (the "Empire stalled at 1:11" fix).
+    """
+    import sys
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 100000,
+    }
+    # Seek into the middle of the file (byte 50000), not byte 0.
+    handler = _make_handler_with_server(ctx, range_header="bytes=50000-53071")
+
+    # First read at the high-water mark: empty 206 body (AWAITING_DOWNLOAD, 0
+    # written). The retry ladder serves it once the download catches up.
+    resp1 = _mock_urlopen_response(
+        [],
+        status=206,
+        headers={
+            "Content-Range": "bytes 50000-53071/100000",
+            "Content-Length": "3072",
+        },
+    )
+    resp2 = _mock_urlopen_response(
+        [b"B" * 3072],
+        status=206,
+        headers={
+            "Content-Range": "bytes 50000-53071/100000",
+            "Content-Length": "3072",
+        },
+    )
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = lambda key: {
+        "strict_contract_mode": "warn",
+        "density_breaker_enabled": "false",
+        "zero_fill_budget_enabled": "true",
+        "retry_ladder_enabled": "true",
+    }.get(key, "")
+    original_addon = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+
+    waited = []
+    monitor = sys.modules["xbmc"].Monitor.return_value
+    original_wait = monitor.waitForAbort.side_effect
+
+    def _record(timeout=0.0):
+        waited.append(timeout)
+        return False
+
+    monitor.waitForAbort.side_effect = _record
+    try:
+        with patch(
+            "resources.lib.stream_proxy.urlopen",
+            side_effect=[resp1, resp2],
+        ), patch.object(handler, "_select_live_fallback_source", return_value=None):
+            handler._serve_proxy(ctx)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original_addon
+        monitor.waitForAbort.side_effect = original_wait
+
+    assert _collect_written(handler) == b"B" * 3072
+    # A mid-file AWAITING_DOWNLOAD waits on the primary via the LONG ladder
+    # (first rung 2s), NOT the short first-byte schedule.
+    assert waited, "retry ladder did not run"
+    assert waited[0] == 2.0, "mid-file seek used the short schedule: {!r}".format(
+        waited
+    )
+
+
+def test_threaded_server_drops_connection_when_thread_cannot_start():
+    """A transient 'can't start new thread' must not abandon the socket.
+
+    When the OS thread/stack budget is momentarily exhausted, the per-connection
+    spawn raises RuntimeError. The server must catch it and close the accepted
+    socket deterministically (so the client reconnects) instead of letting the
+    error escape while leaving the listener up but unable to answer.
+    """
+    import socketserver
+
+    from resources.lib.stream_proxy import _ThreadedHTTPServer
+
+    srv = _ThreadedHTTPServer.__new__(_ThreadedHTTPServer)
+    srv.shutdown_request = MagicMock()
+    request = MagicMock()
+
+    with patch(
+        "socketserver.ThreadingMixIn.process_request",
+        side_effect=RuntimeError("can't start new thread"),
+    ):
+        # Must not raise.
+        srv.process_request(request, ("127.0.0.1", 12345))
+
+    assert isinstance(socketserver.ThreadingMixIn, type)  # import sanity
+    srv.shutdown_request.assert_called_once_with(request)
+
+
+def test_threaded_server_drops_connection_when_worker_cap_reached():
+    """When all worker slots are taken, a new connection is dropped, not spawned.
+
+    Bounding concurrent handler threads keeps the proxy below the thread/stack
+    ceiling that triggers 'can't start new thread'.
+    """
+    from resources.lib.stream_proxy import _ThreadedHTTPServer
+
+    srv = _ThreadedHTTPServer.__new__(_ThreadedHTTPServer)
+    srv._worker_slots = threading.BoundedSemaphore(1)
+    srv.shutdown_request = MagicMock()
+    request = MagicMock()
+
+    # Exhaust the single slot so the next request cannot acquire one.
+    assert srv._worker_slots.acquire(blocking=False) is True
+
+    with patch("socketserver.ThreadingMixIn.process_request") as super_pr:
+        srv.process_request(request, ("127.0.0.1", 1))
+        super_pr.assert_not_called()
+
+    srv.shutdown_request.assert_called_once_with(request)
+
+
+def _prepare_json_response(proxy_url="http://127.0.0.1:38699/stream/abc", **extra):
+    payload = {"proxy_url": proxy_url}
+    payload.update(extra)
+    return _mock_urlopen_response([json.dumps(payload).encode()], status=200)
+
+
+def test_prepare_stream_via_service_retries_transient_then_succeeds():
+    """A momentarily thread-starved proxy drops the loopback connection (a fast
+    reset); the client must retry rather than surface the terminal 'unreachable'
+    dialog on the first transient hiccup.
+    """
+    from resources.lib.stream_proxy import prepare_stream_via_service
+
+    good = _prepare_json_response(total_bytes=123)
+    with patch(
+        "resources.lib.stream_proxy.urlopen",
+        side_effect=[ConnectionResetError("starved"), good],
+    ) as mock_urlopen, patch("resources.lib.stream_proxy.time.sleep") as mock_sleep:
+        proxy_url, info = prepare_stream_via_service(
+            38699, "http://nzbdav/movie.mkv", prepare_token="tok"
+        )
+
+    assert proxy_url == "http://127.0.0.1:38699/stream/abc"
+    assert info == {"total_bytes": 123}
+    assert mock_urlopen.call_count == 2
+    assert mock_sleep.called, "expected a backoff between retries"
+
+
+def test_prepare_stream_via_service_retries_remote_disconnect():
+    """A RemoteDisconnected (server closed the accepted socket without a
+    handler) is a transient thread-starvation symptom and must be retried.
+    """
+    import http.client
+
+    from resources.lib.stream_proxy import prepare_stream_via_service
+
+    good = _prepare_json_response()
+    with patch(
+        "resources.lib.stream_proxy.urlopen",
+        side_effect=[
+            http.client.RemoteDisconnected("Remote end closed connection"),
+            good,
+        ],
+    ) as mock_urlopen, patch("resources.lib.stream_proxy.time.sleep"):
+        proxy_url, _info = prepare_stream_via_service(38699, "http://nzbdav/m.mkv")
+
+    assert proxy_url == "http://127.0.0.1:38699/stream/abc"
+    assert mock_urlopen.call_count == 2
+
+
+def test_prepare_stream_via_service_raises_after_retries_exhausted():
+    """A persistently reset connection still raises ServiceProxyUnavailableError
+    — after exhausting the retry budget, not on the first attempt.
+    """
+    from resources.lib.stream_proxy import (
+        ServiceProxyUnavailableError,
+        prepare_stream_via_service,
+    )
+
+    with patch(
+        "resources.lib.stream_proxy.urlopen",
+        side_effect=ConnectionResetError("down"),
+    ) as mock_urlopen, patch("resources.lib.stream_proxy.time.sleep"):
+        with pytest.raises(ServiceProxyUnavailableError) as excinfo:
+            prepare_stream_via_service(38699, "http://nzbdav/m.mkv")
+
+    assert "38699" in str(excinfo.value)
+    assert mock_urlopen.call_count == 3, "expected the full retry budget"
+
+
+def test_prepare_stream_via_service_timeout_surfaces_without_retry():
+    """A genuine timeout means the proxy accepted but is wedged (not starved),
+    so retrying another full budget won't help and would multiply the wait. It
+    surfaces immediately as 'unreachable' — one attempt, same worst case as
+    before the retry loop existed.
+    """
+    import socket
+
+    from resources.lib.stream_proxy import (
+        ServiceProxyUnavailableError,
+        prepare_stream_via_service,
+    )
+
+    with patch(
+        "resources.lib.stream_proxy.urlopen",
+        side_effect=socket.timeout("wedged"),
+    ) as mock_urlopen, patch("resources.lib.stream_proxy.time.sleep"):
+        with pytest.raises(ServiceProxyUnavailableError):
+            prepare_stream_via_service(38699, "http://nzbdav/m.mkv")
+
+    assert mock_urlopen.call_count == 1, "a timeout must not be retried"
+
+
+def test_prepare_stream_via_service_does_not_retry_http_error():
+    """A 4xx/5xx from /prepare is non-transient and must NOT be retried or
+    converted to the 'unreachable' error.
+    """
+    import urllib.error
+
+    from resources.lib.stream_proxy import prepare_stream_via_service
+
+    err = urllib.error.HTTPError("http://127.0.0.1:38699/prepare", 404, "nf", {}, None)
+    with patch(
+        "resources.lib.stream_proxy.urlopen", side_effect=err
+    ) as mock_urlopen, patch("resources.lib.stream_proxy.time.sleep"):
+        with pytest.raises(urllib.error.HTTPError):
+            prepare_stream_via_service(38699, "http://nzbdav/m.mkv")
+
+    assert mock_urlopen.call_count == 1, "HTTPError must not be retried"
