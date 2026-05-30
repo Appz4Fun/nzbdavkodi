@@ -6415,13 +6415,16 @@ def test_maybe_clear_queue_never_does_not_even_probe(mock_slots, mock_clear):
 @patch("resources.lib.resolver.find_completed_by_name", return_value=None)
 @patch("resources.lib.resolver.clear_queue")
 @patch("resources.lib.resolver.get_queue_slots", return_value=[])
-def test_maybe_clear_queue_empty_queue_no_clear(mock_slots, mock_clear, _mock_find):
+def test_maybe_clear_queue_empty_queue_no_clear(mock_slots, mock_clear, mock_find):
     from resources.lib.resolver import _maybe_clear_queue_before_submit
 
     _maybe_clear_queue_before_submit("Title", settings_getter=_clear_queue_setting("0"))
 
     mock_slots.assert_called_once()
     mock_clear.assert_not_called()
+    # The queue is probed FIRST: an empty queue must not pay for a (possibly
+    # slow) history lookup before returning.
+    mock_find.assert_not_called()
 
 
 @patch("resources.lib.resolver.find_completed_by_name", return_value=None)
@@ -6500,24 +6503,67 @@ def test_maybe_clear_queue_ask_no_keeps_queue(
 
 
 @patch("resources.lib.resolver.clear_queue")
-@patch("resources.lib.resolver.get_queue_slots")
+@patch(
+    "resources.lib.resolver.get_queue_slots",
+    return_value=[{"nzo_id": "other", "status": "Queued", "filename": "Other"}],
+)
 @patch("resources.lib.resolver.find_completed_by_name")
 def test_maybe_clear_queue_skips_when_title_already_completed(
     mock_find, mock_slots, mock_clear
 ):
     """If the title is already downloaded, playback adopts the completed copy
-    (no new download), so the queue must NOT be probed or cleared — cancelling
-    other active jobs for a replay would be wrong."""
+    (no new download), so other active jobs must NOT be cancelled for a replay —
+    even when there are other jobs queued."""
     from resources.lib.resolver import _maybe_clear_queue_before_submit
 
     mock_find.return_value = {"nzo_id": "done", "status": "Completed"}
 
-    # 'always' would otherwise clear unconditionally.
+    # 'always' would otherwise clear the other queued job.
     _maybe_clear_queue_before_submit("Title", settings_getter=_clear_queue_setting("1"))
 
-    mock_find.assert_called_once()
-    mock_slots.assert_not_called()
+    mock_slots.assert_called_once()  # probe runs first
+    mock_find.assert_called_once()  # then the completed-guard (other jobs exist)
+    mock_clear.assert_not_called()  # ... which skips the clear
+
+
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.clear_queue", return_value=1)
+@patch("resources.lib.resolver.get_queue_slots")
+def test_maybe_clear_queue_excludes_current_title_slot(
+    mock_slots, mock_clear, _mock_find
+):
+    """The current title's own in-flight queue job must NOT be cleared (the
+    submit path resumes it); only the OTHER queued jobs are cancelled."""
+    from resources.lib.resolver import _maybe_clear_queue_before_submit
+
+    mine = {"nzo_id": "mine", "filename": "Title", "status": "Downloading"}
+    other = {"nzo_id": "other", "filename": "Other", "status": "Queued"}
+    mock_slots.return_value = [mine, other]
+
+    _maybe_clear_queue_before_submit("Title", settings_getter=_clear_queue_setting("1"))
+
+    assert mock_clear.call_args.kwargs.get("slots") == [other]
+
+
+@patch("resources.lib.resolver.find_completed_by_name")
+@patch("resources.lib.resolver.clear_queue")
+@patch("resources.lib.resolver.get_queue_slots")
+def test_maybe_clear_queue_only_current_title_skips_clear(
+    mock_slots, mock_clear, mock_find
+):
+    """If the only queued job is the current title's own, there is nothing else
+    to clear: don't cancel it (it will be resumed) and don't run the history
+    guard."""
+    from resources.lib.resolver import _maybe_clear_queue_before_submit
+
+    mock_slots.return_value = [
+        {"nzo_id": "mine", "filename": "Title", "status": "Downloading"}
+    ]
+
+    _maybe_clear_queue_before_submit("Title", settings_getter=_clear_queue_setting("1"))
+
     mock_clear.assert_not_called()
+    mock_find.assert_not_called()  # filtered-empty returns before the guard
 
 
 @patch("resources.lib.resolver.clear_queue", return_value=1)
