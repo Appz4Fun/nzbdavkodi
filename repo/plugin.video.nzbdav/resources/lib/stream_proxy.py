@@ -275,6 +275,8 @@ def _fault_forced_primary_failure(ctx, start):
         if start >= content_length - _FAULT_TAIL_GUARD_BYTES:
             return False
     return start >= threshold
+
+
 _FALLBACK_PRIMARY_URL_HINT_KEY = "_fallback_primary_url_hint"
 _FALLBACK_PRIMARY_AUTH_HINT_KEY = "_fallback_primary_auth_hint"
 _FALLBACK_CURRENT_RANGE_CACHE_KEY = "_fallback_current_range_cache"
@@ -1591,7 +1593,11 @@ class _StreamHandler(BaseHTTPRequestHandler):
         )
         try:
             proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                shell=False,
             )
         except OSError as error:
             xbmc.log("NZB-DAV: Failed to start ffmpeg: {}".format(error), xbmc.LOGERROR)
@@ -4620,7 +4626,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     xbmc.log(
                         "NZB-DAV: Upstream short read for {}-{} wrote={} "
                         "expected={} status={} Content-Range={!r} "
-                        "Content-Length={!r} (reason=short_read_awaiting_download)".format(
+                        "Content-Length={!r} (reason=short_read)".format(
                             start,
                             end,
                             written,
@@ -6093,6 +6099,7 @@ class StreamProxy:
         try:
             proc = subprocess.Popen(
                 cmd,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 shell=False,
@@ -7065,6 +7072,7 @@ class StreamProxy:
             )
             proc = subprocess.Popen(
                 cmd,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 shell=False,
@@ -7137,6 +7145,7 @@ class StreamProxy:
         try:
             proc = subprocess.Popen(
                 cmd,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 shell=False,
@@ -7260,7 +7269,11 @@ class StreamProxy:
         try:
             xbmc.log("NZB-DAV: Temp-file faststart remux starting", xbmc.LOGINFO)
             proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                shell=False,
             )
             _, stderr = proc.communicate(timeout=600)  # 10 min timeout
             if proc.returncode != 0:
@@ -7529,9 +7542,7 @@ def update_stream_fallbacks_via_service(
     # well under a second, and the flush push runs inline on the resolver
     # thread just before playback handoff — a long timeout would stall it.
     # nosemgrep
-    with urlopen(  # nosec B310 — loopback service URL
-        req, timeout=3
-    ) as resp:
+    with urlopen(req, timeout=3) as resp:  # nosec B310 — loopback service URL
         return json.loads(resp.read())
 
 
