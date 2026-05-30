@@ -2240,9 +2240,10 @@ def _adopt_queued_or_completed_job(
 
 
 _CLEAR_QUEUE_ON_SUBMIT_MODES = {"0": "ask", "1": "always", "2": "never"}
-# Short, best-effort timeout for the pre-submit queue probe. It runs on the
-# resolver thread before the threaded submit/dialog pump, so a slow/unreachable
-# nzbdav must fail fast (returning []) rather than freezing playback.
+# Short, best-effort timeout for the pre-submit queue operations — both the
+# probe (mode=queue) and EACH per-slot delete. They run on the resolver thread
+# before the threaded submit/dialog pump, so a slow/unreachable nzbdav must
+# fail fast rather than freezing playback for minutes across several deletes.
 _CLEAR_QUEUE_PROBE_TIMEOUT = 5
 
 
@@ -2288,7 +2289,9 @@ def _queue_clear_prompt_message(slots):
     )
 
 
-def _maybe_clear_queue_before_submit(title, settings_getter=None):
+def _maybe_clear_queue_before_submit(
+    title, settings_getter=None, completed_lookup_done=False
+):
     """Optionally clear the nzbdav queue before submitting a new NZB.
 
     Driven by the ``clear_queue_on_submit`` setting:
@@ -2304,6 +2307,22 @@ def _maybe_clear_queue_before_submit(title, settings_getter=None):
     """
     mode = _clear_queue_on_submit_mode(settings_getter)
     if mode == "never":
+        return
+    # Don't clear when this title is already downloaded: playback will adopt the
+    # completed copy (no new download is submitted), so cancelling other active
+    # jobs would be wrong. Only the no-picker-hint paths (/resolve, auto-select)
+    # need this guard — there the existing-completed adopt-check happens later,
+    # inside _poll_until_ready. When the picker already ran a completed lookup
+    # (completed_lookup_done) and we still reached the submit path, the title is
+    # confirmed not-completed, so a submit is certain and the guard lookup is
+    # skipped (it would be a redundant history probe). A history hit is a
+    # conservative skip — if the body probe later rejects the completed copy and
+    # we re-download, we just don't clear (the new job queues behind), which is
+    # safe. find_completed_by_name is self-defensive (returns None on error), so
+    # a failed check falls through and the clear proceeds.
+    if not completed_lookup_done and find_completed_by_name(
+        title, **_settings_getter_kwargs(settings_getter)
+    ):
         return
     try:
         # Bounded, best-effort probe: a slow/unreachable nzbdav must not freeze
@@ -2345,8 +2364,14 @@ def _maybe_clear_queue_before_submit(title, settings_getter=None):
             )
             return
     # Cancel exactly the slots we probed/showed — not a fresh fetch — so a job
-    # that appeared between the prompt and now is never cancelled unseen.
-    cleared = clear_queue(slots=slots, **_settings_getter_kwargs(settings_getter))
+    # that appeared between the prompt and now is never cancelled unseen. Bound
+    # each delete with the same short timeout as the probe so a stalled nzbdav
+    # can't freeze the resolver for minutes across several deletes.
+    cleared = clear_queue(
+        slots=slots,
+        timeout=_CLEAR_QUEUE_PROBE_TIMEOUT,
+        **_settings_getter_kwargs(settings_getter),
+    )
     xbmc.log(
         "NZB-DAV: cleared {} queued job(s) before submitting '{}'".format(
             cleared, title
@@ -3399,7 +3424,9 @@ def resolve(handle, params):
             # Offer to clear the existing nzbdav queue before this download
             # starts — before the progress dialog is created, so the yes/no
             # prompt is never stacked behind a modal DialogProgress.
-            _maybe_clear_queue_before_submit(title)
+            _maybe_clear_queue_before_submit(
+                title, completed_lookup_done=picker_completed_lookup_done
+            )
             dialog = xbmcgui.DialogProgress()
             dialog.create(_addon_name(), _string(30097))
             # Bookmark cleanup does not depend on the accepted nzo_id. Start it
@@ -3534,7 +3561,11 @@ def resolve_and_play(nzb_url, title, params=None):
             _resolve_stage("poll settings done")
             # Offer to clear the queue before opening the progress dialog, so
             # the yes/no prompt is not stacked behind a modal DialogProgress.
-            _maybe_clear_queue_before_submit(title, settings_getter=settings_getter)
+            _maybe_clear_queue_before_submit(
+                title,
+                settings_getter=settings_getter,
+                completed_lookup_done=picker_completed_lookup_done,
+            )
             _resolve_stage("progress create start")
             dialog = xbmcgui.DialogProgress()
             dialog.create(_addon_name(), _string(30097))

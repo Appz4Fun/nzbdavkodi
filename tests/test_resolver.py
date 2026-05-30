@@ -6412,9 +6412,10 @@ def test_maybe_clear_queue_never_does_not_even_probe(mock_slots, mock_clear):
     mock_clear.assert_not_called()
 
 
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
 @patch("resources.lib.resolver.clear_queue")
 @patch("resources.lib.resolver.get_queue_slots", return_value=[])
-def test_maybe_clear_queue_empty_queue_no_clear(mock_slots, mock_clear):
+def test_maybe_clear_queue_empty_queue_no_clear(mock_slots, mock_clear, _mock_find):
     from resources.lib.resolver import _maybe_clear_queue_before_submit
 
     _maybe_clear_queue_before_submit("Title", settings_getter=_clear_queue_setting("0"))
@@ -6423,6 +6424,7 @@ def test_maybe_clear_queue_empty_queue_no_clear(mock_slots, mock_clear):
     mock_clear.assert_not_called()
 
 
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
 @patch("resources.lib.resolver.clear_queue", return_value=2)
 @patch(
     "resources.lib.resolver.get_queue_slots",
@@ -6431,7 +6433,9 @@ def test_maybe_clear_queue_empty_queue_no_clear(mock_slots, mock_clear):
         {"nzo_id": "b", "status": "Queued"},
     ],
 )
-def test_maybe_clear_queue_always_clears_without_prompt(mock_slots, mock_clear):
+def test_maybe_clear_queue_always_clears_without_prompt(
+    mock_slots, mock_clear, _mock_find
+):
     from resources.lib import resolver
     from resources.lib.resolver import _maybe_clear_queue_before_submit
 
@@ -6447,15 +6451,24 @@ def test_maybe_clear_queue_always_clears_without_prompt(mock_slots, mock_clear):
     # The clear reuses the exact slots that were probed — no second fetch — so
     # a job added between the probe and the clear is never cancelled unseen.
     assert mock_clear.call_args.kwargs.get("slots") == mock_slots.return_value
+    # Each delete is bounded by the same short timeout so a stalled nzbdav
+    # can't freeze the resolver across several deletes.
+    assert (
+        mock_clear.call_args.kwargs.get("timeout")
+        == resolver._CLEAR_QUEUE_PROBE_TIMEOUT
+    )
 
 
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver.clear_queue", return_value=1)
 @patch(
     "resources.lib.resolver.get_queue_slots",
     return_value=[{"nzo_id": "a", "status": "Downloading", "filename": "Foo"}],
 )
-def test_maybe_clear_queue_ask_yes_clears(mock_slots, mock_clear, mock_xbmcgui):
+def test_maybe_clear_queue_ask_yes_clears(
+    mock_slots, mock_clear, mock_xbmcgui, _mock_find
+):
     from resources.lib.resolver import _maybe_clear_queue_before_submit
 
     mock_xbmcgui.Dialog.return_value.yesno.return_value = True
@@ -6466,13 +6479,16 @@ def test_maybe_clear_queue_ask_yes_clears(mock_slots, mock_clear, mock_xbmcgui):
     mock_clear.assert_called_once()
 
 
+@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver.clear_queue")
 @patch(
     "resources.lib.resolver.get_queue_slots",
     return_value=[{"nzo_id": "a", "status": "Downloading", "filename": "Foo"}],
 )
-def test_maybe_clear_queue_ask_no_keeps_queue(mock_slots, mock_clear, mock_xbmcgui):
+def test_maybe_clear_queue_ask_no_keeps_queue(
+    mock_slots, mock_clear, mock_xbmcgui, _mock_find
+):
     from resources.lib.resolver import _maybe_clear_queue_before_submit
 
     mock_xbmcgui.Dialog.return_value.yesno.return_value = False
@@ -6481,3 +6497,45 @@ def test_maybe_clear_queue_ask_no_keeps_queue(mock_slots, mock_clear, mock_xbmcg
 
     assert mock_xbmcgui.Dialog.return_value.yesno.called
     mock_clear.assert_not_called()
+
+
+@patch("resources.lib.resolver.clear_queue")
+@patch("resources.lib.resolver.get_queue_slots")
+@patch("resources.lib.resolver.find_completed_by_name")
+def test_maybe_clear_queue_skips_when_title_already_completed(
+    mock_find, mock_slots, mock_clear
+):
+    """If the title is already downloaded, playback adopts the completed copy
+    (no new download), so the queue must NOT be probed or cleared — cancelling
+    other active jobs for a replay would be wrong."""
+    from resources.lib.resolver import _maybe_clear_queue_before_submit
+
+    mock_find.return_value = {"nzo_id": "done", "status": "Completed"}
+
+    # 'always' would otherwise clear unconditionally.
+    _maybe_clear_queue_before_submit("Title", settings_getter=_clear_queue_setting("1"))
+
+    mock_find.assert_called_once()
+    mock_slots.assert_not_called()
+    mock_clear.assert_not_called()
+
+
+@patch("resources.lib.resolver.clear_queue", return_value=1)
+@patch("resources.lib.resolver.get_queue_slots", return_value=[{"nzo_id": "a"}])
+@patch("resources.lib.resolver.find_completed_by_name")
+def test_maybe_clear_queue_skips_completed_probe_when_picker_already_checked(
+    mock_find, mock_slots, mock_clear
+):
+    """When the picker already ran a completed lookup and we still reached the
+    submit path, a submit is certain — the guard must NOT do a redundant
+    find_completed_by_name probe (that dedup is a resolve-flow perf contract)."""
+    from resources.lib.resolver import _maybe_clear_queue_before_submit
+
+    _maybe_clear_queue_before_submit(
+        "Title",
+        settings_getter=_clear_queue_setting("1"),
+        completed_lookup_done=True,
+    )
+
+    mock_find.assert_not_called()
+    mock_clear.assert_called_once()
