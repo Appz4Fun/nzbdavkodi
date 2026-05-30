@@ -129,6 +129,7 @@
 		<setting id="poll_interval" label="30069" type="number" default="1" />
 		<setting id="download_timeout" label="30070" type="number" default="3600" />
 		<setting id="submit_timeout" label="30122" type="number" default="300" />
+		<setting id="clear_queue_on_submit" label="30197" type="enum" default="0" lvalues="30198|30199|30200" />
 		<setting label="30071" type="lsep" />
 		<setting id="cache_ttl" label="30072" type="number" default="300" />
 		<setting label="30073" type="lsep" />

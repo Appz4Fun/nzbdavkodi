@@ -28,12 +28,14 @@ from resources.lib.i18n import fmt as _fmt
 from resources.lib.i18n import string as _string
 from resources.lib.nzbdav_api import (
     cancel_job,
+    clear_queue,
     find_completed_by_name,
     find_completed_by_names,
     find_queued_by_name,
     find_queued_by_names,
     get_job_history,
     get_job_status,
+    get_queue_slots,
     submit_nzb,
 )
 from resources.lib.webdav import (
@@ -2237,6 +2239,110 @@ def _adopt_queued_or_completed_job(
     return None
 
 
+_CLEAR_QUEUE_ON_SUBMIT_MODES = {"0": "ask", "1": "always", "2": "never"}
+
+
+def _clear_queue_on_submit_mode(settings_getter=None):
+    """Return the clear-queue-on-submit policy: ``ask`` | ``always`` | ``never``.
+
+    Reads the ``clear_queue_on_submit`` enum setting (stored as the 0-based
+    index "0"/"1"/"2"). Any unset or unknown value falls back to the safe
+    default, ``ask``.
+    """
+    try:
+        if settings_getter is None:
+            raw = xbmcaddon.Addon("plugin.video.nzbdav").getSetting(
+                "clear_queue_on_submit"
+            )
+        else:
+            raw = settings_getter("clear_queue_on_submit", "0")
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return "ask"
+    return _CLEAR_QUEUE_ON_SUBMIT_MODES.get(str(raw or "0").strip(), "ask")
+
+
+def _queue_clear_prompt_message(slots):
+    """Build the yes/no prompt body listing the queued jobs to be cleared."""
+    lines = []
+    downloading = 0
+    for slot in slots:
+        if not isinstance(slot, dict):
+            continue
+        status = slot.get("status") or "?"
+        if status == "Downloading":
+            downloading += 1
+        name = slot.get("filename") or slot.get("name") or slot.get("nzo_id") or "?"
+        lines.append("- {} ({})".format(str(name)[:60], status))
+    header = "The download queue has {} item(s)".format(len(slots))
+    if downloading:
+        header += " ({} downloading)".format(downloading)
+    shown = "\n".join(lines[:6])
+    if len(lines) > 6:
+        shown += "\n  ..."
+    return "{}:\n{}\n\nClear the queue before starting this download?".format(
+        header, shown
+    )
+
+
+def _maybe_clear_queue_before_submit(title, settings_getter=None):
+    """Optionally clear the nzbdav queue before submitting a new NZB.
+
+    Driven by the ``clear_queue_on_submit`` setting:
+      * ``never``  - no-op (does not even probe the queue);
+      * ``always`` - clear the whole queue whenever it is non-empty;
+      * ``ask``    - show a yes/no dialog listing the queued jobs and clear
+        only on confirmation.
+
+    "Clear" cancels every queue slot, including the job currently downloading;
+    completed/failed history is left intact (see ``clear_queue``). Defensive:
+    a queue-probe or dialog failure leaves the queue untouched and never blocks
+    the submit.
+    """
+    mode = _clear_queue_on_submit_mode(settings_getter)
+    if mode == "never":
+        return
+    try:
+        slots = get_queue_slots(**_settings_getter_kwargs(settings_getter))
+    except Exception as error:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: queue probe before submit failed; leaving queue intact: "
+            "{}".format(error),
+            xbmc.LOGWARNING,
+        )
+        return
+    if not slots:
+        return
+    if mode == "ask":
+        try:
+            confirmed = xbmcgui.Dialog().yesno(
+                _addon_name(),
+                _queue_clear_prompt_message(slots),
+                nolabel="Keep queue",
+                yeslabel="Clear queue",
+            )
+        except (RuntimeError, OSError, TypeError) as error:
+            xbmc.log(
+                "NZB-DAV: clear-queue prompt failed; leaving queue intact: "
+                "{}".format(error),
+                xbmc.LOGWARNING,
+            )
+            return
+        if not confirmed:
+            xbmc.log(
+                "NZB-DAV: user kept the existing queue before submitting "
+                "'{}'".format(title),
+                xbmc.LOGINFO,
+            )
+            return
+    cleared = clear_queue(**_settings_getter_kwargs(settings_getter))
+    xbmc.log(
+        "NZB-DAV: cleared {} queued job(s) before submitting '{}'".format(
+            cleared, title
+        ),
+        xbmc.LOGINFO,
+    )
+
+
 def _submit_nzb_with_retries(
     nzb_url,
     title,
@@ -2249,6 +2355,7 @@ def _submit_nzb_with_retries(
 ):
     """Submit an NZB with the existing retry and error-dialog behavior."""
     xbmc.log("NZB-DAV: Submitting NZB for '{}'".format(title), xbmc.LOGINFO)
+    _maybe_clear_queue_before_submit(title, settings_getter=settings_getter)
     last_submit_error = None
 
     for attempt in range(1, max_submit_retries + 1):
