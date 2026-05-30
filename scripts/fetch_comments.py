@@ -157,9 +157,7 @@ def _fetch_remaining_comments(thread, runner=run_command):
             ],
             runner=runner,
         )
-        next_comments = (
-            data.get("data", {}).get("node", {}).get("comments", {})
-        )
+        next_comments = data.get("data", {}).get("node", {}).get("comments", {})
         nodes.extend(next_comments.get("nodes") or [])
         if not _has_next_page(next_comments):
             break
@@ -188,9 +186,7 @@ def review_threads(owner, name, number, runner=run_command):
             runner=runner,
         )
         pull_request = (
-            last_payload.get("data", {})
-            .get("repository", {})
-            .get("pullRequest", {})
+            last_payload.get("data", {}).get("repository", {}).get("pullRequest", {})
         )
         connection = pull_request.get("reviewThreads") or {}
         for thread in connection.get("nodes") or []:

@@ -147,7 +147,9 @@ def _collect_comments(pr_number, include_resolved, runner, context_pr=None):
 
     try:
         owner, name = fetch_comments.current_repo(runner=runner)
-        threads = fetch_comments.review_threads(owner, name, pr["number"], runner=runner)
+        threads = fetch_comments.review_threads(
+            owner, name, pr["number"], runner=runner
+        )
     except (OSError, subprocess.CalledProcessError, SystemExit) as exc:
         threads = _empty_thread_data()
         errors.append(_error_payload("review_threads", exc))

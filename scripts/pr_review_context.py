@@ -13,7 +13,9 @@ import sys
 PR_JSON_FIELDS = (
     "number,title,url,baseRefName,headRefName,statusCheckRollup,reviewDecision,comments"
 )
-PR_FALLBACK_JSON_FIELDS = "number,title,url,baseRefName,headRefName,reviewDecision,comments"
+PR_FALLBACK_JSON_FIELDS = (
+    "number,title,url,baseRefName,headRefName,reviewDecision,comments"
+)
 FAILING_CHECK_STATES = (
     "FAILURE",
     "ERROR",

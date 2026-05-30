@@ -26,7 +26,9 @@ SG_UNMAP = "/storage/.opt/bin/sg_unmap"
 
 
 def get_fs_params():
-    info = subprocess.check_output(["tune2fs", "-l", PART], text=True, stderr=subprocess.DEVNULL)
+    info = subprocess.check_output(
+        ["tune2fs", "-l", PART], text=True, stderr=subprocess.DEVNULL
+    )
     block_size = int(re.search(r"Block size:\s+(\d+)", info).group(1))
     blocks_per_group = int(re.search(r"Blocks per group:\s+(\d+)", info).group(1))
     block_count = int(re.search(r"Block count:\s+(\d+)", info).group(1))
@@ -41,7 +43,6 @@ def read_block_bitmap(fd, bitmap_block, block_size, blocks_in_group):
     fd.seek(offset)
     bitmap = fd.read(block_size)
 
-    pos = 0
     run_start = None
 
     for byte_idx in range(blocks_in_group // 8):
@@ -107,7 +108,9 @@ def trim_ranges(ranges, total_sectors):
         while lba_count > 0:
             chunk = min(lba_count, MAX_UNMAP_LBA)
             cmd = [SG_UNMAP, f"--lba={lba_start}", f"--num={chunk}", "--force", DEV]
-            r = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=False)
+            r = subprocess.run(
+                cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=False
+            )
             if r.returncode != 0:
                 errors += 1
                 break
@@ -124,9 +127,11 @@ def trim_ranges(ranges, total_sectors):
             remaining_sectors = total_sectors - sectors_done
             eta_s = remaining_sectors / rate if rate > 0 else 0
             eta_m = eta_s / 60
-            msg = (f"TRIM progress: {i+1}/{len(ranges)} ranges, "
-                   f"{pct:.1f}%, {errors} errors, "
-                   f"ETA {eta_m:.1f} min")
+            msg = (
+                f"TRIM progress: {i+1}/{len(ranges)} ranges, "
+                f"{pct:.1f}%, {errors} errors, "
+                f"ETA {eta_m:.1f} min"
+            )
             print(msg)
             syslog.syslog(msg)
             last_log = now
@@ -141,8 +146,12 @@ def freeze_disk():
     """Remount CACHE_DRIVE read-only to prevent ALL writes during TRIM."""
     subprocess.run(["sync"], check=False)
     time.sleep(1)
-    r = subprocess.run(["mount", "-o", "remount,ro", MOUNT_POINT],
-                       capture_output=True, text=True, check=False)
+    r = subprocess.run(
+        ["mount", "-o", "remount,ro", MOUNT_POINT],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     if r.returncode != 0:
         print(f"WARNING: remount ro failed: {r.stderr.strip()}")
         print("Falling back to SIGSTOP on warmup-rs processes")
@@ -161,6 +170,7 @@ def thaw_disk(state):
 def _freeze_processes():
     """Fallback: SIGSTOP all warmup-rs processes."""
     import signal
+
     pids = []
     try:
         out = subprocess.check_output(["pidof", "warmup-rs"], text=True).strip()
@@ -181,6 +191,7 @@ def _freeze_processes():
 def _thaw_processes(pids):
     """Fallback: SIGCONT previously frozen processes."""
     import signal
+
     for pid in pids:
         try:
             os.kill(pid, signal.SIGCONT)
@@ -200,15 +211,25 @@ def main():
         syslog.syslog(f"frozen {len(state)} PIDs (remount-ro fallback)")
 
     try:
-        block_size, blocks_per_group, block_count, free_blocks, first_data_block = get_fs_params()
+        block_size, blocks_per_group, block_count, free_blocks, first_data_block = (
+            get_fs_params()
+        )
         num_groups = (block_count + blocks_per_group - 1) // blocks_per_group
 
-        free_gb = (free_blocks * block_size) / (1024 ** 3)
-        print(f"ext4: {block_count} blocks, {free_blocks} free ({free_gb:.1f} GB), {num_groups} groups")
-        syslog.syslog(f"starting TRIM: {free_blocks} free blocks ({free_gb:.1f} GB) across {num_groups} groups")
+        free_gb = (free_blocks * block_size) / (1024**3)
+        print(
+            f"ext4: {block_count} blocks, {free_blocks} free ({free_gb:.1f} GB),"
+            f" {num_groups} groups"
+        )
+        syslog.syslog(
+            f"starting TRIM: {free_blocks} free blocks ({free_gb:.1f} GB) across"
+            f" {num_groups} groups"
+        )
 
         with open(PART, "rb") as fd:
-            bitmaps = read_group_descriptors(fd, block_size, num_groups, first_data_block)
+            bitmaps = read_group_descriptors(
+                fd, block_size, num_groups, first_data_block
+            )
             print(f"read {len(bitmaps)} group descriptors")
 
             lba_ranges = []
@@ -219,33 +240,54 @@ def main():
                 remaining = block_count - (group_idx * blocks_per_group)
                 blocks_in_group = min(blocks_per_group, remaining)
 
-                for rel_start, count in read_block_bitmap(fd, bitmap_block, block_size, blocks_in_group):
-                    abs_block = group_idx * blocks_per_group + first_data_block + rel_start
+                for rel_start, count in read_block_bitmap(
+                    fd, bitmap_block, block_size, blocks_in_group
+                ):
+                    abs_block = (
+                        group_idx * blocks_per_group + first_data_block + rel_start
+                    )
                     lba_start = abs_block * SECTORS_PER_BLOCK + PART_START_SECTORS
                     lba_count = count * SECTORS_PER_BLOCK
                     lba_ranges.append((lba_start, lba_count))
                     total_free += count
 
                 if (group_idx + 1) % 500 == 0:
-                    print(f"  scanned {group_idx + 1}/{num_groups} groups, {len(lba_ranges)} free ranges so far")
+                    print(
+                        f"  scanned {group_idx + 1}/{num_groups} groups,"
+                        f" {len(lba_ranges)} free ranges so far"
+                    )
 
         scan_time = time.time() - t0
-        free_found_gb = (total_free * block_size) / (1024 ** 3)
-        print(f"scan complete: {len(lba_ranges)} free ranges ({free_found_gb:.1f} GB) in {scan_time:.1f}s")
-        syslog.syslog(f"scan: {len(lba_ranges)} ranges ({free_found_gb:.1f} GB) in {scan_time:.1f}s")
+        free_found_gb = (total_free * block_size) / (1024**3)
+        print(
+            f"scan complete: {len(lba_ranges)} free ranges ({free_found_gb:.1f} GB)"
+            f" in {scan_time:.1f}s"
+        )
+        syslog.syslog(
+            f"scan: {len(lba_ranges)} ranges ({free_found_gb:.1f} GB)"
+            f" in {scan_time:.1f}s"
+        )
 
         merged = coalesce_ranges(lba_ranges)
         print(f"coalesced to {len(merged)} ranges (from {len(lba_ranges)})")
 
         total_sectors = sum(c for _, c in merged)
-        print(f"sending TRIM via sg_unmap ({len(merged)} ranges, {total_sectors} sectors, max {MAX_UNMAP_LBA} LBAs each)...")
-        syslog.syslog(f"TRIM starting: {len(merged)} ranges, {total_sectors * 512 / (1024**3):.1f} GB")
+        print(
+            f"sending TRIM via sg_unmap ({len(merged)} ranges, {total_sectors} sectors,"
+            f" max {MAX_UNMAP_LBA} LBAs each)..."
+        )
+        syslog.syslog(
+            f"TRIM starting: {len(merged)} ranges,"
+            f" {total_sectors * 512 / (1024**3):.1f} GB"
+        )
         t1 = time.time()
         trimmed, errors = trim_ranges(merged, total_sectors)
         trim_time = time.time() - t1
 
         print(f"TRIM complete: {trimmed} commands in {trim_time:.1f}s, {errors} errors")
-        syslog.syslog(f"TRIM complete: {trimmed} commands in {trim_time:.1f}s, {errors} errors")
+        syslog.syslog(
+            f"TRIM complete: {trimmed} commands in {trim_time:.1f}s, {errors} errors"
+        )
     finally:
         thaw_disk(state)
         if state == "ro":

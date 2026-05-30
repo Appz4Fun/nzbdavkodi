@@ -56,7 +56,7 @@ AGENT_SKILL_PATHS = (
 )
 AGENT_MCP_INSTALL_HINTS = {
     "chroma": (
-        'codex mcp add chroma --env CHROMA_CLIENT_TYPE=cloud '
+        "codex mcp add chroma --env CHROMA_CLIENT_TYPE=cloud "
         '--env CHROMA_HOST="$CHROMA_HOST" '
         '--env CHROMA_API_KEY="$CHROMA_API_KEY" '
         '--env CHROMA_TENANT="$CHROMA_TENANT" '
@@ -64,8 +64,7 @@ AGENT_MCP_INSTALL_HINTS = {
         "uvx chroma-mcp --client-type cloud"
     ),
     "chroma-docs": (
-        "codex mcp add chroma-docs -- "
-        "npx mcp-remote https://docs.trychroma.com/mcp"
+        "codex mcp add chroma-docs -- " "npx mcp-remote https://docs.trychroma.com/mcp"
     ),
     "package-search": (
         'codex mcp add package-search --env X_CHROMA_TOKEN="$CHROMA_API_KEY" -- '
@@ -299,9 +298,7 @@ def ensure_chroma_config(
 
     prompted = {}
     if missing:
-        print(
-            "Chroma Cloud dev search needs configuration before indexing/searching."
-        )
+        print("Chroma Cloud dev search needs configuration before indexing/searching.")
         prompted = _prompt_for_required_chroma_values(
             missing,
             input_func=input_func,
@@ -331,9 +328,7 @@ def ensure_chroma_config(
     if values_to_append:
         _append_chroma_env(env_file, values_to_append)
     if values_to_rewrite or values_to_append:
-        print(
-            "Updated {} with Chroma dev search keys.".format(env_file.as_posix())
-        )
+        print("Updated {} with Chroma dev search keys.".format(env_file.as_posix()))
     else:
         print("Chroma dev search configuration is present.")
     return 0
@@ -378,7 +373,8 @@ def check_agent_chroma_setup(
         config = merged_chroma_config(env_file)
         print(
             "Chroma config: present "
-            "host={host} tenant={tenant} database={database} collection={collection}".format(
+            "host={host} tenant={tenant} "
+            "database={database} collection={collection}".format(
                 host=config["CHROMA_HOST"],
                 tenant=config["CHROMA_TENANT"],
                 database=config["CHROMA_DATABASE"],
@@ -1600,10 +1596,9 @@ def _normalize_search_argv(
     sentinel_index = contains_index + 1
     if sentinel_index >= len(normalized) or normalized[sentinel_index] != "--":
         return normalized
-    return (
-        normalized[:sentinel_index]
-        + [" ".join(normalized[sentinel_index + 1 :]).strip()]
-    )
+    return normalized[:sentinel_index] + [
+        " ".join(normalized[sentinel_index + 1 :]).strip()
+    ]
 
 
 def build_check_config_parser() -> argparse.ArgumentParser:
