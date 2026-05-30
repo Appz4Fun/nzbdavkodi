@@ -3639,7 +3639,7 @@ def test_submit_ui_pump_probes_queue_without_two_second_startup_delay(
     assert elapsed < 1.5
 
 
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver.find_queued_by_name", return_value=None)
 @patch("resources.lib.resolver.submit_nzb")
 def test_submit_ui_pump_passes_settings_getter_to_submit_worker(
@@ -3678,7 +3678,7 @@ def test_submit_ui_pump_passes_settings_getter_to_submit_worker(
         )
 
 
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver.find_queued_by_name", return_value=None)
 @patch("resources.lib.resolver.submit_nzb")
 def test_submit_ui_pump_uses_nonblocking_abort_check_after_submit_result(
@@ -3715,7 +3715,7 @@ def test_submit_ui_pump_uses_nonblocking_abort_check_after_submit_result(
     assert 0 not in [call.args[0] for call in monitor.waitForAbort.call_args_list]
 
 
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver.find_queued_by_name", return_value=None)
 @patch("resources.lib.resolver.submit_nzb")
 def test_submit_ui_pump_continues_when_probe_threads_cannot_start(
@@ -3973,7 +3973,7 @@ def test_submit_ui_pump_adopts_existing_queue_without_initial_probe_delay(
     assert elapsed < 0.1, "existing queue adoption took {:.3f}s".format(elapsed)
 
 
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver.find_queued_by_name")
 @patch("resources.lib.resolver.submit_nzb")
 def test_submit_ui_pump_rechecks_queue_quickly_after_initial_fast_miss(
@@ -4248,7 +4248,7 @@ def test_submit_ui_pump_rechecks_queue_while_history_miss_is_slow(
     )
 
 
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver.find_queued_by_name", return_value=None)
 @patch("resources.lib.resolver.submit_nzb")
 def test_submit_ui_pump_wakes_when_submit_finishes_before_adoption_tick(
@@ -4278,7 +4278,7 @@ def test_submit_ui_pump_wakes_when_submit_finishes_before_adoption_tick(
     ), "fast submit result waited for poll tick; elapsed={:.3f}s".format(elapsed)
 
 
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver.find_queued_by_name")
 @patch("resources.lib.resolver.submit_nzb")
 def test_submit_ui_pump_fast_submit_skips_slow_probe_cleanup_wait(
@@ -4413,7 +4413,7 @@ def test_submit_ui_pump_overlaps_completed_history_probe_with_slow_queue_miss(
     ), "completed history adoption waited behind queue miss for {:.3f}s".format(elapsed)
 
 
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver.find_queued_by_name")
 @patch("resources.lib.resolver.submit_nzb")
 def test_submit_ui_pump_retries_queue_probe_quickly_after_initial_miss(
@@ -4453,7 +4453,7 @@ def test_submit_ui_pump_retries_queue_probe_quickly_after_initial_miss(
     assert elapsed < 0.6
 
 
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver.find_queued_by_name")
 @patch("resources.lib.resolver.submit_nzb")
 def test_submit_ui_pump_keeps_late_queue_probe_cadence_subsecond(
@@ -5246,7 +5246,7 @@ def test_poll_once_returns_full_progress_queue_before_slow_history(
     mock_probe.assert_not_called()
 
 
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver._validate_stream_url", return_value=True)
 @patch("resources.lib.resolver.get_webdav_stream_url_for_path")
 @patch("resources.lib.resolver.find_video_file")
@@ -5322,7 +5322,7 @@ def test_poll_until_ready_uses_nonblocking_abort_check_between_polls(
     monitor.waitForAbort.assert_not_called()
 
 
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver._validate_stream_url")
 @patch("resources.lib.resolver.get_webdav_stream_url_for_path")
 @patch("resources.lib.resolver.find_video_file")
@@ -5361,7 +5361,7 @@ def test_poll_until_ready_skips_non_gate_stream_validation(
     mock_validate.assert_not_called()
 
 
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver._submit_nzb_with_retries", return_value="nzo_abc")
 @patch("resources.lib.resolver.get_webdav_stream_url_for_path")
 @patch("resources.lib.resolver.find_video_file")
@@ -5418,7 +5418,7 @@ def test_poll_until_ready_graces_nearly_complete_queue_for_history(
     )
 
 
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver._submit_nzb_with_retries", return_value="nzo_abc")
 @patch("resources.lib.resolver.get_webdav_stream_url_for_path")
 @patch("resources.lib.resolver.find_video_file")
@@ -5470,7 +5470,7 @@ def test_poll_until_ready_waits_for_full_progress_history_before_poll_tick(
     )
 
 
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver._submit_nzb_with_retries", return_value="nzo_abc")
 @patch("resources.lib.resolver.get_webdav_stream_url_for_path")
 @patch("resources.lib.resolver.find_video_file")
@@ -5525,7 +5525,7 @@ def test_poll_until_ready_repolls_full_progress_history_miss_before_full_tick(
 
 
 @patch("resources.lib.resolver.cancel_job")
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver.get_job_history", return_value=None)
 @patch("resources.lib.resolver.get_job_status")
 @patch("resources.lib.resolver.submit_nzb", return_value=("nzo_xyz", None))
@@ -5550,7 +5550,7 @@ def test_poll_until_ready_user_cancel(
 
 
 @patch("resources.lib.resolver.cancel_job")
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver.get_job_history", return_value=None)
 @patch("resources.lib.resolver.get_job_status")
@@ -5592,7 +5592,7 @@ def test_poll_until_ready_timeout(
     mock_gui.Dialog.return_value.ok.assert_called()
 
 
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver.get_job_history", return_value=None)
 @patch("resources.lib.resolver.get_job_status")
@@ -5614,7 +5614,7 @@ def test_poll_until_ready_job_failed(
     mock_gui.Dialog.return_value.ok.assert_called()
 
 
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver.xbmcgui")
 @patch(
     "resources.lib.resolver.get_job_history",
@@ -5659,7 +5659,7 @@ def test_poll_until_ready_already_downloaded(
     assert url == "http://webdav/movie.mkv"
 
 
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver.xbmcgui")
 @patch(
     "resources.lib.resolver.get_job_history",
@@ -5690,7 +5690,7 @@ def test_poll_until_ready_history_failed_shows_fail_message(
     ] == "CRC error in article " + ("details " * 30)
 
 
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver.find_video_file", return_value=None)
 @patch(
@@ -5724,7 +5724,7 @@ def test_poll_until_ready_no_video_after_retries(
     mock_gui.Dialog.return_value.ok.assert_called_once()
 
 
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver.get_webdav_stream_url_for_path")
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver.find_video_file")
@@ -5772,7 +5772,7 @@ def test_poll_until_ready_rechecks_completed_webdav_before_full_poll_interval(
     assert elapsed < 0.3, "completed WebDAV recheck waited {:.3f}s".format(elapsed)
 
 
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver.get_webdav_stream_url_for_path")
 @patch("resources.lib.resolver.find_video_file")
 @patch(
@@ -5823,7 +5823,7 @@ def test_poll_until_ready_rechecks_completed_webdav_quickly_after_first_miss(
 # --- HTTP error classification tests for the submit retry loop ---
 
 
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver.submit_nzb")
 @patch("resources.lib.resolver.xbmc")
@@ -5849,7 +5849,7 @@ def test_poll_until_ready_submit_http_500_no_retry(
     mock_gui.Dialog.return_value.ok.assert_called_once()
 
 
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver.submit_nzb")
 @patch("resources.lib.resolver.xbmc")
@@ -5880,7 +5880,7 @@ def test_poll_until_ready_submit_http_502_retries_then_surfaces(
     assert "502" in call_args_text or "Bad Gateway" in call_args_text
 
 
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver.submit_nzb")
 @patch("resources.lib.resolver.xbmc")
@@ -5900,7 +5900,7 @@ def test_poll_until_ready_submit_http_400_no_retry(
     mock_gui.Dialog.return_value.ok.assert_called_once()
 
 
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver.submit_nzb")
 @patch("resources.lib.resolver.xbmc")
@@ -5922,7 +5922,7 @@ def test_poll_until_ready_submit_connection_error_still_retries(
 
 
 @patch("resources.lib.resolver.cancel_job")
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver.time")
 @patch("resources.lib.resolver._submit_nzb_with_retries", return_value="nzo_xyz")
@@ -5950,7 +5950,7 @@ def test_poll_until_ready_cleanup_on_timeout(
 
 
 @patch("resources.lib.resolver.cancel_job")
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver.get_job_history", return_value=None)
 @patch("resources.lib.resolver.get_job_status")
@@ -5978,7 +5978,7 @@ def test_poll_until_ready_cleanup_on_user_cancel(
 
 
 @patch("resources.lib.resolver.cancel_job")
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver.get_job_history", return_value=None)
 @patch("resources.lib.resolver.get_job_status")
@@ -6014,7 +6014,7 @@ def test_poll_until_ready_cleanup_on_kodi_shutdown(
 
 
 @patch("resources.lib.resolver.cancel_job")
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver.MAX_POLL_ITERATIONS", 2)
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver.get_job_history", return_value=None)
@@ -6049,7 +6049,7 @@ def test_poll_until_ready_cleanup_on_max_iterations(
 
 
 @patch("resources.lib.resolver.cancel_job")
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver.get_job_history", return_value=None)
 @patch("resources.lib.resolver.get_job_status")
@@ -6075,7 +6075,7 @@ def test_poll_until_ready_no_cleanup_on_job_failed_status(
 
 
 @patch("resources.lib.resolver.cancel_job")
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver.xbmcgui")
 @patch(
     "resources.lib.resolver.get_job_history",
@@ -6103,7 +6103,7 @@ def test_poll_until_ready_no_cleanup_on_history_failed(
 
 
 @patch("resources.lib.resolver.cancel_job")
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver.find_video_file", return_value=None)
 @patch(
@@ -6412,7 +6412,7 @@ def test_maybe_clear_queue_never_does_not_even_probe(mock_slots, mock_clear):
     mock_clear.assert_not_called()
 
 
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver.clear_queue")
 @patch("resources.lib.resolver.get_queue_slots", return_value=[])
 def test_maybe_clear_queue_empty_queue_no_clear(mock_slots, mock_clear, mock_find):
@@ -6427,7 +6427,7 @@ def test_maybe_clear_queue_empty_queue_no_clear(mock_slots, mock_clear, mock_fin
     mock_find.assert_not_called()
 
 
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver.clear_queue", return_value=2)
 @patch(
     "resources.lib.resolver.get_queue_slots",
@@ -6462,7 +6462,7 @@ def test_maybe_clear_queue_always_clears_without_prompt(
     )
 
 
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver.clear_queue", return_value=1)
 @patch(
@@ -6482,7 +6482,7 @@ def test_maybe_clear_queue_ask_yes_clears(
     mock_clear.assert_called_once()
 
 
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver.clear_queue")
 @patch(
@@ -6507,26 +6507,47 @@ def test_maybe_clear_queue_ask_no_keeps_queue(
     "resources.lib.resolver.get_queue_slots",
     return_value=[{"nzo_id": "other", "status": "Queued", "filename": "Other"}],
 )
-@patch("resources.lib.resolver.find_completed_by_name")
+@patch("resources.lib.resolver._existing_completed_stream")
 def test_maybe_clear_queue_skips_when_title_already_completed(
     mock_find, mock_slots, mock_clear
 ):
-    """If the title is already downloaded, playback adopts the completed copy
-    (no new download), so other active jobs must NOT be cancelled for a replay —
-    even when there are other jobs queued."""
+    """If the title is already downloaded AND its body is streamable, playback
+    adopts the completed copy (no new download), so other active jobs must NOT
+    be cancelled for a replay — even when there are other jobs queued."""
     from resources.lib.resolver import _maybe_clear_queue_before_submit
 
-    mock_find.return_value = {"nzo_id": "done", "status": "Completed"}
+    # A truthy stream tuple means the completed copy is body-validated/adoptable.
+    mock_find.return_value = ("http://webdav/Title.mkv", {})
 
     # 'always' would otherwise clear the other queued job.
     _maybe_clear_queue_before_submit("Title", settings_getter=_clear_queue_setting("1"))
 
     mock_slots.assert_called_once()  # probe runs first
-    mock_find.assert_called_once()  # then the completed-guard (other jobs exist)
+    mock_find.assert_called_once()  # then the completed-stream guard (other jobs exist)
     mock_clear.assert_not_called()  # ... which skips the clear
 
 
-@patch("resources.lib.resolver.find_completed_by_name", return_value=None)
+@patch("resources.lib.resolver.clear_queue", return_value=1)
+@patch(
+    "resources.lib.resolver.get_queue_slots",
+    return_value=[{"nzo_id": "other", "status": "Queued", "filename": "Other"}],
+)
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
+def test_maybe_clear_queue_clears_when_completed_row_body_unavailable(
+    mock_find, mock_slots, mock_clear
+):
+    """A Completed history row whose mid-file body is missing is NOT adoptable —
+    playback will resubmit a fresh download, so the queue guard must still clear
+    the other jobs rather than skip on mere history existence."""
+    from resources.lib.resolver import _maybe_clear_queue_before_submit
+
+    _maybe_clear_queue_before_submit("Title", settings_getter=_clear_queue_setting("1"))
+
+    mock_find.assert_called_once()  # body-validated, not mere existence
+    mock_clear.assert_called_once()  # not adoptable -> proceed to clear
+
+
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver.clear_queue", return_value=1)
 @patch("resources.lib.resolver.get_queue_slots")
 def test_maybe_clear_queue_excludes_current_title_slot(
@@ -6545,15 +6566,15 @@ def test_maybe_clear_queue_excludes_current_title_slot(
     assert mock_clear.call_args.kwargs.get("slots") == [other]
 
 
-@patch("resources.lib.resolver.find_completed_by_name")
+@patch("resources.lib.resolver._existing_completed_stream")
 @patch("resources.lib.resolver.clear_queue")
 @patch("resources.lib.resolver.get_queue_slots")
 def test_maybe_clear_queue_only_current_title_skips_clear(
     mock_slots, mock_clear, mock_find
 ):
     """If the only queued job is the current title's own, there is nothing else
-    to clear: don't cancel it (it will be resumed) and don't run the history
-    guard."""
+    to clear: don't cancel it (it will be resumed) and don't run the
+    completed-stream guard."""
     from resources.lib.resolver import _maybe_clear_queue_before_submit
 
     mock_slots.return_value = [
@@ -6568,13 +6589,14 @@ def test_maybe_clear_queue_only_current_title_skips_clear(
 
 @patch("resources.lib.resolver.clear_queue", return_value=1)
 @patch("resources.lib.resolver.get_queue_slots", return_value=[{"nzo_id": "a"}])
-@patch("resources.lib.resolver.find_completed_by_name")
+@patch("resources.lib.resolver._existing_completed_stream")
 def test_maybe_clear_queue_skips_completed_probe_when_picker_already_checked(
     mock_find, mock_slots, mock_clear
 ):
     """When the picker already ran a completed lookup and we still reached the
     submit path, a submit is certain — the guard must NOT do a redundant
-    find_completed_by_name probe (that dedup is a resolve-flow perf contract)."""
+    _existing_completed_stream probe (that dedup is a resolve-flow perf
+    contract)."""
     from resources.lib.resolver import _maybe_clear_queue_before_submit
 
     _maybe_clear_queue_before_submit(
