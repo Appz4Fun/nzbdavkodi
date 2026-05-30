@@ -1158,3 +1158,86 @@ def test_cancel_job_handles_scalar_json(mock_http, mock_settings):
     # cancel_job should treat a scalar response as "not status: True"
     # and return False without raising.
     assert cancel_job("nzo_xyz") is False
+
+
+# --- get_queue_slots / clear_queue tests ---
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_get_queue_slots_returns_slots(mock_http, mock_settings):
+    """get_queue_slots reads the whole queue (mode=queue, read-only)."""
+    from resources.lib.nzbdav_api import get_queue_slots
+
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.return_value = json.dumps(
+        {
+            "queue": {
+                "slots": [
+                    {"nzo_id": "a", "status": "Downloading", "filename": "Foo"},
+                    {"nzo_id": "b", "status": "Queued", "filename": "Bar"},
+                ]
+            }
+        }
+    )
+
+    slots = get_queue_slots()
+
+    assert [s["nzo_id"] for s in slots] == ["a", "b"]
+    assert mock_http.call_count == 1
+    called_url = mock_http.call_args[0][0]
+    assert "mode=queue" in called_url
+    assert "name=delete" not in called_url  # read-only, never mutates
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_get_queue_slots_empty_on_network_error(mock_http, mock_settings):
+    from resources.lib.nzbdav_api import get_queue_slots
+
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.side_effect = Exception("connection refused")
+
+    assert get_queue_slots() == []
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_clear_queue_cancels_every_slot(mock_http, mock_settings):
+    """clear_queue removes every queued job (active + waiting) by nzo_id."""
+    from resources.lib.nzbdav_api import clear_queue
+
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    queue_json = json.dumps(
+        {
+            "queue": {
+                "slots": [
+                    {"nzo_id": "a", "status": "Downloading"},
+                    {"nzo_id": "b", "status": "Queued"},
+                ]
+            }
+        }
+    )
+    # 1 listing GET, then one delete GET per slot.
+    mock_http.side_effect = [queue_json, '{"status":true}', '{"status":true}']
+
+    cleared = clear_queue()
+
+    assert cleared == 2
+    urls = [c[0][0] for c in mock_http.call_args_list]
+    assert "mode=queue" in urls[0] and "name=delete" not in urls[0]
+    assert any("name=delete" in u and "value=a" in u for u in urls[1:])
+    assert any("name=delete" in u and "value=b" in u for u in urls[1:])
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_clear_queue_empty_returns_zero(mock_http, mock_settings):
+    from resources.lib.nzbdav_api import clear_queue
+
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.return_value = json.dumps({"queue": {"slots": []}})
+
+    assert clear_queue() == 0
+    # Only the listing GET; nothing to delete.
+    assert mock_http.call_count == 1

@@ -749,3 +749,19 @@ msgstr "Manage Indexers"
 msgctxt "#30196"
 msgid "Refresh NZBHydra2 Caps"
 msgstr "Refresh NZBHydra2 Caps"
+
+msgctxt "#30197"
+msgid "Clear download queue when starting a new download"
+msgstr "Clear download queue when starting a new download"
+
+msgctxt "#30198"
+msgid "Ask"
+msgstr "Ask"
+
+msgctxt "#30199"
+msgid "Always clear"
+msgstr "Always clear"
+
+msgctxt "#30200"
+msgid "Never"
+msgstr "Never"
