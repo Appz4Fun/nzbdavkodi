@@ -24,6 +24,8 @@ _BARE_FILENAME_RE = re.compile(
     re.I,
 )
 _ARCHIVE_RE = re.compile(r'"?([^"\\/]+?)(?:\.part\d+)?\.(?:rar|r\d{2,3})\b', re.I)
+# ⚡ Bolt Optimization: Precompile regex to avoid re.sub() cache overhead.
+_NON_ALPHANUM_RE = re.compile(r"[\W_]+")
 _ALLOWED_NZB_SCHEMES = frozenset(("http", "https"))
 _METADATA_EXTENSION_RE = re.compile(
     r"\.(par2?|nfo|sfv|jpg|jpeg|png|gif|txt|url|lnk|srt|sub|idx|md5|sha\d*)\b",
@@ -68,9 +70,9 @@ def normalize_video_filename(value):
         return ""
     if "." in value:
         stem, ext = value.rsplit(".", 1)
-        stem = re.sub(r"[\W_]+", " ", stem.lower())
+        stem = _NON_ALPHANUM_RE.sub(" ", stem.lower())
         return "{}.{}".format(" ".join(stem.split()), ext.lower())
-    return " ".join(re.sub(r"[\W_]+", " ", value.lower()).split())
+    return " ".join(_NON_ALPHANUM_RE.sub(" ", value.lower()).split())
 
 
 def _strip_namespace(tag):
@@ -120,7 +122,7 @@ def _find_archive_base(subject):
     if not match:
         return ""
     base = match.group(1).strip().strip('"').strip("'")
-    base = re.sub(r"[\W_]+", " ", base.lower())
+    base = _NON_ALPHANUM_RE.sub(" ", base.lower())
     return " ".join(base.split())
 
 

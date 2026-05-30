@@ -80,6 +80,10 @@ _PARSE_ERRORS = (
     struct.error,
     HTTPException,
 )
+
+# ⚡ Bolt Optimization: Precompiled segment regex to skip compilation cache lookup
+# on every playlist refresh.
+_SEGMENT_RE = re.compile(r"seg_0*(\d+)\.(m4s|ts)")
 _KODI_SETTING_ERRORS = (
     AttributeError,
     ImportError,
@@ -275,6 +279,8 @@ def _fault_forced_primary_failure(ctx, start):
         if start >= content_length - _FAULT_TAIL_GUARD_BYTES:
             return False
     return start >= threshold
+
+
 _FALLBACK_PRIMARY_URL_HINT_KEY = "_fallback_primary_url_hint"
 _FALLBACK_PRIMARY_AUTH_HINT_KEY = "_fallback_primary_auth_hint"
 _FALLBACK_CURRENT_RANGE_CACHE_KEY = "_fallback_current_range_cache"
@@ -4620,7 +4626,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     xbmc.log(
                         "NZB-DAV: Upstream short read for {}-{} wrote={} "
                         "expected={} status={} Content-Range={!r} "
-                        "Content-Length={!r} (reason=short_read_awaiting_download)".format(
+                        "Content-Length={!r} (reason=short_read)".format(
                             start,
                             end,
                             written,
@@ -4985,7 +4991,7 @@ class HlsProducer:
         def _normalize_segment(match):
             return "seg_{}.{}".format(int(match.group(1)), match.group(2))
 
-        text = re.sub(r"seg_0*(\d+)\.(m4s|ts)", _normalize_segment, text)
+        text = _SEGMENT_RE.sub(_normalize_segment, text)
         return text.encode("utf-8")
 
     def _segment_complete(self, seg_n):
@@ -7529,9 +7535,7 @@ def update_stream_fallbacks_via_service(
     # well under a second, and the flush push runs inline on the resolver
     # thread just before playback handoff — a long timeout would stall it.
     # nosemgrep
-    with urlopen(  # nosec B310 — loopback service URL
-        req, timeout=3
-    ) as resp:
+    with urlopen(req, timeout=3) as resp:  # nosec B310 — loopback service URL
         return json.loads(resp.read())
 
 
