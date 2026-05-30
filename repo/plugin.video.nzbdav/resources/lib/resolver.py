@@ -1614,9 +1614,18 @@ def _find_video_stream_for_folder(webdav_folder, settings_getter=None):
 
 
 def _completed_job_stream(
-    title, completed_job, on_existing_completed=None, settings_getter=None
+    title,
+    completed_job,
+    on_existing_completed=None,
+    settings_getter=None,
+    rejected_completed_ids=None,
 ):
-    """Return a WebDAV stream URL from a completed nzbdav history row."""
+    """Return a WebDAV stream URL from a completed nzbdav history row.
+
+    When the mid-file body probe rejects a row and ``rejected_completed_ids``
+    is provided, the row's ``nzo_id`` is recorded into that set so the submit
+    path that follows does not re-adopt the very row we just rejected.
+    """
     if not isinstance(completed_job, dict):
         return None
     status = completed_job.get("status", "")
@@ -1650,6 +1659,10 @@ def _completed_job_stream(
             "unavailable; re-downloading instead of streaming directly".format(title),
             xbmc.LOGWARNING,
         )
+        if rejected_completed_ids is not None:
+            rejected_nzo_id = completed_job.get("nzo_id")
+            if rejected_nzo_id:
+                rejected_completed_ids.add(rejected_nzo_id)
         return None
     return stream_url, stream_headers
 
@@ -1660,6 +1673,7 @@ def _existing_completed_stream(
     completed_job_hint=None,
     completed_job_lookup_done=False,
     settings_getter=None,
+    rejected_completed_ids=None,
 ):
     """Return an already-downloaded stream URL when the title exists."""
     hinted_stream = _completed_job_stream(
@@ -1667,6 +1681,7 @@ def _existing_completed_stream(
         completed_job_hint,
         on_existing_completed=on_existing_completed,
         settings_getter=settings_getter,
+        rejected_completed_ids=rejected_completed_ids,
     )
     if hinted_stream is not None:
         return hinted_stream
@@ -1680,6 +1695,7 @@ def _existing_completed_stream(
         existing,
         on_existing_completed=on_existing_completed,
         settings_getter=settings_getter,
+        rejected_completed_ids=rejected_completed_ids,
     )
 
 
@@ -1728,8 +1744,11 @@ def _job_nzo_id(match):
     return None
 
 
-def _find_adoptable_job_during_submit(title, settings_getter=None):
+def _find_adoptable_job_during_submit(
+    title, settings_getter=None, rejected_completed_ids=None
+):
     """Return queue/history nzo_id without serializing behind a slow queue miss."""
+    rejected_ids = tuple(rejected_completed_ids or ())
     result = {"nzo_id": None, "done_count": 0}
     lock = threading.Lock()
     progress = threading.Event()
@@ -1765,6 +1784,11 @@ def _find_adoptable_job_during_submit(title, settings_getter=None):
                 "NZB-DAV: concurrent history probe raised: {}".format(e),
                 xbmc.LOGWARNING,
             )
+            match = None
+        if match is not None and _job_nzo_id(match) in rejected_ids:
+            # Don't re-adopt a Completed row the pre-submit body probe already
+            # rejected (mid-file body unavailable); it would bypass the
+            # intended re-download. See finding #7.
             match = None
         _record_match(match)
 
@@ -1807,7 +1831,9 @@ def _find_adoptable_job_during_submit(title, settings_getter=None):
         progress.clear()
 
 
-def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor, settings_getter=None):
+def _submit_nzb_with_ui_pump(
+    nzb_url, title, dialog, monitor, settings_getter=None, rejected_completed_ids=None
+):
     """Run ``submit_nzb`` off the plugin thread, pump the dialog, and
     race a concurrent queue probe against the submit.
 
@@ -1833,6 +1859,10 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor, settings_getter=No
         xbmc.LOGINFO,
     )
 
+    # Completed rows the pre-submit body probe already rejected must not be
+    # re-adopted by the concurrent history probe (finding #7); a tuple keeps
+    # the `in` test cheap and never None.
+    rejected_ids = tuple(rejected_completed_ids or ())
     submit_result = [None, None]
     submit_done = threading.Event()
     activity_ready = threading.Event()
@@ -1953,6 +1983,12 @@ def _submit_nzb_with_ui_pump(nzb_url, title, dialog, monitor, settings_getter=No
                     "NZB-DAV: concurrent history probe raised: {}".format(e),
                     xbmc.LOGWARNING,
                 )
+                match = None
+            if match is not None and _job_nzo_id(match) in rejected_ids:
+                # The pre-submit body probe already rejected this exact
+                # Completed row (mid-file body unavailable). Re-adopting it
+                # would bypass the intended re-download, so ignore it and keep
+                # probing while the real addurl submit proceeds.
                 match = None
             if _record_adoption_hit(match):
                 return
@@ -2145,7 +2181,9 @@ _SUBMIT_ADOPT_POLL_COUNT = 6
 _SUBMIT_ADOPT_POLL_INTERVAL_SECONDS = 2
 
 
-def _adopt_queued_or_completed_job(title, monitor, settings_getter=None):
+def _adopt_queued_or_completed_job(
+    title, monitor, settings_getter=None, rejected_completed_ids=None
+):
     """Return an existing nzbdav nzo_id for ``title`` if the submit we
     just timed out on actually reached nzbdav.
 
@@ -2160,7 +2198,9 @@ def _adopt_queued_or_completed_job(title, monitor, settings_getter=None):
     """
     for poll in range(_SUBMIT_ADOPT_POLL_COUNT):
         nzo_id = _find_adoptable_job_during_submit(
-            title, settings_getter=settings_getter
+            title,
+            settings_getter=settings_getter,
+            rejected_completed_ids=rejected_completed_ids,
         )
         if nzo_id:
             return nzo_id
@@ -2178,6 +2218,7 @@ def _submit_nzb_with_retries(
     max_submit_retries=3,
     settings_getter=None,
     selected_indexer=None,
+    rejected_completed_ids=None,
 ):
     """Submit an NZB with the existing retry and error-dialog behavior."""
     xbmc.log("NZB-DAV: Submitting NZB for '{}'".format(title), xbmc.LOGINFO)
@@ -2185,7 +2226,12 @@ def _submit_nzb_with_retries(
 
     for attempt in range(1, max_submit_retries + 1):
         nzo_id, submit_error = _submit_nzb_with_ui_pump(
-            nzb_url, title, dialog, monitor, settings_getter=settings_getter
+            nzb_url,
+            title,
+            dialog,
+            monitor,
+            settings_getter=settings_getter,
+            rejected_completed_ids=rejected_completed_ids,
         )
         if nzo_id:
             return nzo_id
@@ -2217,7 +2263,10 @@ def _submit_nzb_with_retries(
                     xbmc.LOGWARNING,
                 )
                 adopted_nzo_id = _adopt_queued_or_completed_job(
-                    title, monitor, settings_getter=settings_getter
+                    title,
+                    monitor,
+                    settings_getter=settings_getter,
+                    rejected_completed_ids=rejected_completed_ids,
                 )
                 if adopted_nzo_id:
                     xbmc.log(
@@ -2276,7 +2325,10 @@ def _submit_nzb_with_retries(
                 # the race where a concurrent submit (e.g. retried play of
                 # the same title) beat us to nzbdav.
                 adopted_nzo_id = _adopt_queued_or_completed_job(
-                    title, monitor, settings_getter=settings_getter
+                    title,
+                    monitor,
+                    settings_getter=settings_getter,
+                    rejected_completed_ids=rejected_completed_ids,
                 )
                 if adopted_nzo_id:
                     xbmc.log(
@@ -2889,26 +2941,61 @@ def _handle_history_result(
     video_path, stream_url, stream_headers = _find_completed_video_stream_with_rechecks(
         webdav_folder, monitor=monitor, settings_getter=settings_getter
     )
-    if video_path:
+    if video_path and _completed_stream_body_available(stream_url, stream_headers):
         xbmc.log(
             "NZB-DAV: File available, streaming '{}' via WebDAV".format(video_path),
             xbmc.LOGINFO,
         )
         return True, stream_url, stream_headers, no_video_retries
+    if video_path:
+        # nzbdav reports Completed and the container resolves, but the mid-file
+        # body is unavailable (missing/unretained articles). Handing this to
+        # Kodi plays an empty stream that EOFs the instant the demuxer reaches
+        # the body — the missing-articles crash class this guard exists to
+        # prevent, mirroring the pre-submit _completed_job_stream probe. Fall
+        # through to the retry budget: the backend may still be filling the
+        # gap, and on exhaustion we give up cleanly instead of streaming
+        # garbage.
+        xbmc.log(
+            "NZB-DAV: '{}' is marked Completed but its mid-file body is "
+            "unavailable; awaiting download instead of streaming".format(title),
+            xbmc.LOGWARNING,
+        )
+
+    # A truthy video_path here means the happy-path return above was skipped
+    # *because the body probe rejected it* (a servable file already returned).
+    # Track that so the exhaustion dialog explains the real failure (incomplete
+    # articles) instead of misdirecting the user to WebDAV settings.
+    body_unavailable = bool(video_path)
 
     no_video_retries += 1
     if no_video_retries >= max_no_video_retries:
-        xbmc.log(
-            "NZB-DAV: Download completed but no video file found "
-            "at '{}' after {} attempts (storage='{}')".format(
-                webdav_folder, no_video_retries, storage
-            ),
-            xbmc.LOGERROR,
-        )
-        msg = (
-            "Video file not found in WebDAV folder: {}\n\n"
-            "Check WebDAV settings and ensure the download completed on nzbdav."
-        ).format(webdav_folder)
+        if body_unavailable:
+            xbmc.log(
+                "NZB-DAV: '{}' completed but its mid-file body stayed "
+                "unavailable after {} attempts (storage='{}')".format(
+                    title, no_video_retries, storage
+                ),
+                xbmc.LOGERROR,
+            )
+            msg = (
+                "Download completed but the video file is incomplete:\n{}\n\n"
+                "The backend is missing or has not retained the middle "
+                "articles. Check nzbdav retention / repair (PAR2) for this "
+                "release."
+            ).format(webdav_folder)
+        else:
+            xbmc.log(
+                "NZB-DAV: Download completed but no video file found "
+                "at '{}' after {} attempts (storage='{}')".format(
+                    webdav_folder, no_video_retries, storage
+                ),
+                xbmc.LOGERROR,
+            )
+            msg = (
+                "Video file not found in WebDAV folder: {}\n\n"
+                "Check WebDAV settings and ensure the download completed on nzbdav."
+            ).format(webdav_folder)
         xbmcgui.Dialog().ok(_addon_name(), msg)
         return True, None, None, no_video_retries
 
@@ -2979,12 +3066,18 @@ def _poll_until_ready(
     notifications are issued inside this function; the caller only needs to
     decide what to do with the resulting stream URL.
     """
+    # Completed rows the pre-submit body probe rejects (Completed but mid-file
+    # body unavailable) are collected here so the submit path below does not
+    # re-adopt the very row we just rejected and bypass the intended
+    # re-download. See _submit_nzb_with_ui_pump / _adopt_queued_or_completed_job.
+    rejected_completed_ids = set()
     existing_stream = _existing_completed_stream(
         title,
         on_existing_completed=on_existing_completed,
         completed_job_hint=completed_job_hint,
         completed_job_lookup_done=completed_job_lookup_done,
         settings_getter=settings_getter,
+        rejected_completed_ids=rejected_completed_ids,
     )
     if existing_stream is not None:
         return existing_stream
@@ -3001,6 +3094,7 @@ def _poll_until_ready(
         monitor,
         settings_getter=settings_getter,
         selected_indexer=selected_indexer,
+        rejected_completed_ids=rejected_completed_ids,
     )
     if not nzo_id:
         return None, None
