@@ -7745,7 +7745,13 @@ def test_serve_proxy_survives_five_stream_outages_with_backup_sources():
 
 def test_serve_proxy_notifies_fallback_failure_when_candidate_delivers_no_bytes():
     """A fallback candidate that is selected but delivers zero bytes before the
-    queue is exhausted is reported as a failure (not a success)."""
+    queue is exhausted is reported as a failure (not a success).
+
+    With no validated fallback left, the proxy no longer hard-closes at the
+    selection point — it falls through to the retry ladder / skip-probe (stubbed
+    here to terminate immediately as recovery_exhausted). The pending candidate's
+    failure toast still fires from the finally block on that terminal exit.
+    """
     from resources.lib.stream_proxy import _UPSTREAM_RANGE_UPSTREAM_ERROR
 
     ctx = {
@@ -7771,7 +7777,7 @@ def test_serve_proxy_notifies_fallback_failure_when_candidate_delivers_no_bytes(
         handler,
         "_stream_upstream_range",
         # primary errors (0 bytes) -> switch to candidate #1 -> it also errors
-        # with 0 bytes -> no more fallbacks -> exhausted.
+        # with 0 bytes -> no more fallbacks.
         side_effect=[
             (_UPSTREAM_RANGE_UPSTREAM_ERROR, 0),
             (_UPSTREAM_RANGE_UPSTREAM_ERROR, 0),
@@ -7780,6 +7786,12 @@ def test_serve_proxy_notifies_fallback_failure_when_candidate_delivers_no_bytes(
         handler,
         "_select_live_fallback_source",
         side_effect=[ctx["fallback_sources"][0], None],
+    ), patch.object(
+        handler,
+        "_retry_original_range",
+        return_value=(_UPSTREAM_RANGE_UPSTREAM_ERROR, 0, 0),
+    ), patch.object(
+        handler, "_find_skip_offset", return_value=None
     ), patch(
         "resources.lib.stream_proxy._notify"
     ) as mock_notify:
@@ -10988,8 +11000,16 @@ def test_standby_refresh_reuses_probe_bases_for_content_length_checks():
     assert [source["content_length"] for source in sources] == [10, 10, 10, 10, 10]
 
 
-def test_fallback_range_probe_failure_closes_before_retry_or_zero_fill():
-    """Fallback sessions stop when no validated fallback source can resume."""
+def test_fallback_range_probe_failure_reenters_retry_and_zero_fill_recovery():
+    """No validated fallback must NOT short-circuit the recovery machinery.
+
+    Previously, a fallback-enabled session whose fallback failed to validate
+    closed immediately (retry ladder and zero-fill skipped) — making it more
+    brittle than a stream with no fallbacks at all. Now it falls through to the
+    retry ladder and skip-probe exactly as a no-fallback stream would; only the
+    existing session zero-fill budget safeguard (1 byte of a 10-byte file is
+    already over the ratio cap) stops it, so no zeros are actually written.
+    """
     from resources.lib.stream_proxy import (
         _UPSTREAM_RANGE_UPSTREAM_ERROR,
     )
@@ -11038,8 +11058,13 @@ def test_fallback_range_probe_failure_closes_before_retry_or_zero_fill():
     assert ctx["remote_url"] == "http://webdav/primary.mkv"
     assert ctx["fallback_sources"][0]["failed"] is True
     assert ctx["fallback_switch_count"] == 0
-    retry_original.assert_not_called()
-    find_skip.assert_not_called()
+    # The fix: no validated fallback now re-enters the retry ladder and reaches
+    # the skip-probe, rather than hard-closing before either.
+    retry_original.assert_called()
+    find_skip.assert_called()
+    # The session zero-fill budget cap (1 byte already exceeds 5% of 10) blocks
+    # the actual zero-fill, so nothing is written — but only AFTER the recovery
+    # path ran, not by skipping it.
     write_zeros.assert_not_called()
     assert _collect_written(handler) == b""
 
@@ -11352,6 +11377,8 @@ def test_serve_proxy_trickle_triggers_cutover_when_fallback_attached(mock_xbmc):
     no-fallback case is covered by
     test_serve_proxy_stall_watchdog_aborts_on_low_throughput. See issue #214.
     """
+    from resources.lib.stream_proxy import _UPSTREAM_RANGE_OK
+
     ctx = {
         "remote_url": "http://host/movie.mkv",
         "auth_header": None,
@@ -11368,6 +11395,9 @@ def test_serve_proxy_trickle_triggers_cutover_when_fallback_attached(mock_xbmc):
     chunks = [b"A" * 1024, b"B" * 1024]
     monotonic_returns = iter([100.0, 105.0, 125.0] + [125.0] * 30)
 
+    # The retry ladder is mocked out (its own coverage lives elsewhere); here
+    # we only care that the cutover ran and handed off to it rather than
+    # blind-reconnecting or hard-closing.
     with patch(
         "resources.lib.stream_proxy.time.monotonic",
         side_effect=lambda: next(monotonic_returns),
@@ -11376,7 +11406,11 @@ def test_serve_proxy_trickle_triggers_cutover_when_fallback_attached(mock_xbmc):
         return_value=_mock_urlopen_response(chunks),
     ), patch.object(
         handler, "_select_live_fallback_source", return_value=None
-    ) as mock_select:
+    ) as mock_select, patch.object(
+        handler,
+        "_retry_original_range",
+        return_value=(_UPSTREAM_RANGE_OK, 1046528, 1048576),
+    ) as mock_retry:
         handler._serve_proxy(ctx)
 
     # Cutover was attempted (recoverable return -> _select_live_fallback_source)
@@ -11385,9 +11419,82 @@ def test_serve_proxy_trickle_triggers_cutover_when_fallback_attached(mock_xbmc):
     assert ctx.get("passthrough_stall_detected", False) is False
     logged = "\n".join(call.args[0] for call in mock_xbmc.log.call_args_list)
     assert "passthrough_stall_fallback" in logged
-    assert "reason=fallback_exhausted" in logged
     # The blind-reconnect path (outer handler) must NOT have run.
     assert "Pass-through stall at byte" not in logged
+    # The cutover failed to validate a fallback, but that must NOT hard-close
+    # the stream — it now re-enters the retry ladder on the primary (see
+    # test_serve_proxy_trickle_reenters_retry_ladder_when_no_validated_fallback).
+    mock_retry.assert_called()
+    assert "reason=fallback_exhausted" not in logged
+    assert "reason=fallback_pending_retry_primary" in logged
+
+
+@patch("resources.lib.stream_proxy.xbmc")
+def test_serve_proxy_trickle_reenters_retry_ladder_when_no_validated_fallback(
+    mock_xbmc,
+):
+    """No validated fallback must re-enter the retry ladder, not hard-close.
+
+    Regression for the live bug where *The Silence of the Lambs* went dark and
+    bounced back to TMDBHelper's player dialog: a pass-through trickle with
+    fallback sources attached returned recoverable to drive cutover, but
+    ``_select_live_fallback_source`` validated nothing (the fallbacks were
+    themselves still downloading). The old code then set
+    ``terminal_reason=fallback_exhausted`` and closed the stream BEFORE the
+    retry ladder / zero-fill rescue ran — making a fallback-enabled stream
+    MORE brittle than a plain one. The fix falls through to the retry ladder
+    so the primary gets a chance to recover, exactly as a no-fallback stream
+    would. See the dark-screen handoff and issue #214.
+    """
+    from resources.lib.stream_proxy import _UPSTREAM_RANGE_OK
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 4096,
+        "fallback_sources": [{"nzo_id": "alt", "stream_url": "http://host/alt.mkv"}],
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-4095")
+
+    # Same trickle as the cutover test: two 1 KB chunks, ~82 B/s over a 25 s
+    # window, so the watchdog trips at byte 2048 and returns recoverable.
+    chunks = [b"A" * 1024, b"B" * 1024]
+    monotonic_returns = iter([100.0, 105.0, 125.0] + [125.0] * 30)
+
+    # The retry ladder stands in for a primary that catches up: it writes the
+    # remaining bytes and reports the range complete. We assert it was CALLED —
+    # the regression is that the old code returned fallback_exhausted before
+    # ever reaching it.
+    def _fake_retry(active_ctx, start, end, contract_mode, first_byte=False):
+        remainder = b"C" * (end - start + 1)
+        handler.wfile.write(remainder)
+        return _UPSTREAM_RANGE_OK, len(remainder), end + 1
+
+    with patch(
+        "resources.lib.stream_proxy.time.monotonic",
+        side_effect=lambda: next(monotonic_returns),
+    ), patch(
+        "resources.lib.stream_proxy.urlopen",
+        return_value=_mock_urlopen_response(chunks),
+    ), patch.object(
+        handler, "_select_live_fallback_source", return_value=None
+    ) as mock_select, patch.object(
+        handler, "_retry_original_range", side_effect=_fake_retry
+    ) as mock_retry:
+        handler._serve_proxy(ctx)
+
+    # Cutover was attempted (recoverable -> _select_live_fallback_source).
+    mock_select.assert_called()
+    # ...and with no validated fallback we re-entered the retry ladder on the
+    # primary at the stalled offset, instead of hard-closing.
+    mock_retry.assert_called()
+    assert mock_retry.call_args.args[1] == 2048
+    # The primary recovered through the ladder, so the full range reached Kodi.
+    assert _collect_written(handler) == b"A" * 1024 + b"B" * 1024 + b"C" * 2048
+    logged = "\n".join(call.args[0] for call in mock_xbmc.log.call_args_list)
+    assert "reason=fallback_pending_retry_primary" in logged
+    assert "reason=fallback_exhausted" not in logged
 
 
 def test_serve_proxy_high_water_short_read_waits_instead_of_fallback_exhausted():

@@ -4283,19 +4283,31 @@ class _StreamHandler(BaseHTTPRequestHandler):
                         )
                         continue
                     if ctx.get("fallback_sources"):
-                        terminal_reason = "fallback_exhausted"
+                        # Fallback sources are attached but none validated yet
+                        # (they may still be downloading). Closing here made a
+                        # fallback-enabled stream MORE brittle than a plain
+                        # one: the hard close skipped the retry ladder and
+                        # zero-fill rescue that a no-fallback stream still
+                        # gets, so a transient primary trickle/short read
+                        # bounced playback back to the TMDBHelper player
+                        # dialog (the "Silence of the Lambs went dark"
+                        # regression). Fall through so the primary gets a
+                        # fresh chance via the retry ladder; if it stays dead,
+                        # the existing skip-probe / zero-fill safeguards
+                        # (density breaker, session budget) bound the damage —
+                        # exactly as they do without fallbacks attached.
+                        #
+                        # The pending candidate stays set; its failure toast is
+                        # still emitted by the finally block (the single sink for
+                        # every terminal exit) whenever the stream does end, so
+                        # falling through here doesn't drop the notification.
                         xbmc.log(
                             "NZB-DAV: No validated fallback source available at "
-                            "byte {}; closing fallback-enabled stream before "
-                            "retry ladder or zero-fill rescue (reason={})".format(
-                                current, terminal_reason
-                            ),
-                            xbmc.LOGERROR,
+                            "byte {}; re-entering retry ladder on the primary "
+                            "instead of closing "
+                            "(reason=fallback_pending_retry_primary)".format(current),
+                            xbmc.LOGWARNING,
                         )
-                        # The pending candidate is still set here; its failure
-                        # toast is emitted by the finally block (single sink for
-                        # every terminal exit), so no inline notify is needed.
-                        return
 
                 if retry_ladder_enabled and result in (
                     _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE,
