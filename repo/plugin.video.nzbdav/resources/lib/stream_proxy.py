@@ -6552,9 +6552,8 @@ class StreamProxy:
                 existing.append(src)
                 added += 1
             if added:
-                ctx["fallback_sources"] = (
-                    existing  # pylint: disable=unsupported-assignment-operation
-                )
+                # pylint: disable=unsupported-assignment-operation
+                ctx["fallback_sources"] = existing
         if added:
             # Warm the freshly-pushed fallbacks in the background (resolve
             # nzo-only standbys + fingerprint) so a later primary failure cuts
