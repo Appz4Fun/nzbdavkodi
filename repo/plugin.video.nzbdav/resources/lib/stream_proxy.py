@@ -4488,23 +4488,29 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     xbmc.LOGINFO,
                 )
         finally:
-            # Resolve any still-pending fallback candidate. A delivering
-            # candidate clears it on success (direct read OR via the retry
-            # ladder), so a candidate still pending at ANY exit — terminal
-            # upstream/client error, recovery or zero-fill exhaustion, density
-            # breaker, or an aborted connection — never delivered, and is
-            # reported as a failure here. Also flush a deferred prior-candidate
-            # failure that an abrupt exit skipped before the next read.
+            # Benign terminal reasons (full success / client closed the
+            # connection) log at INFO; only genuine failures (recovery/
+            # fallback exhausted, upstream errors) warrant WARNING — and only
+            # those genuine failures blame a still-pending fallback candidate.
+            _benign_summary = terminal_reason in ("complete", "client_disconnected")
+            # A candidate we switched AWAY from never delivered, so its deferred
+            # failure is genuine regardless of how the stream ends — always
+            # report it (and flush a deferred failure an abrupt exit skipped
+            # before the next read).
             if fallback_failed_to_notify is not None:
                 _notify_fallback_outcome(fallback_failed_to_notify, False)
                 fallback_failed_to_notify = None
+            # The candidate still awaiting its first byte only "failed" if the
+            # stream ended on a genuine upstream/recovery failure. A benign exit
+            # is NOT its fault: on full completion a delivering candidate already
+            # cleared itself on success, and on client_disconnected the CLIENT
+            # write aborted — which means the candidate WAS serving bytes — so a
+            # failure toast here would falsely blame a working candidate. Clear
+            # it silently in that case; report it on every genuine failure exit.
             if fallback_pending_candidate is not None:
-                _notify_fallback_outcome(fallback_pending_candidate, False)
+                if not _benign_summary:
+                    _notify_fallback_outcome(fallback_pending_candidate, False)
                 fallback_pending_candidate = None
-            # Benign terminal reasons (full success / client closed the
-            # connection) log at INFO; only genuine failures (recovery/
-            # fallback exhausted, upstream errors) warrant WARNING.
-            _benign_summary = terminal_reason in ("complete", "client_disconnected")
             xbmc.log(
                 "NZB-DAV: Pass-through summary reason={} range={}-{} "
                 "streamed={} zero_fill={} recoveries={} "
