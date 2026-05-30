@@ -6539,7 +6539,7 @@ class StreamProxy:
         with self._context_lock:
             sessions = getattr(self._server, "stream_sessions", None)
             ctx = sessions.get(session_id) if isinstance(sessions, dict) else None
-            if ctx is None:
+            if not isinstance(ctx, dict):
                 return None
             existing = list(ctx.get("fallback_sources") or [])
             seen = {_dedup_key(s) for s in existing if isinstance(s, dict)}
@@ -6552,7 +6552,9 @@ class StreamProxy:
                 existing.append(src)
                 added += 1
             if added:
-                ctx["fallback_sources"] = existing
+                ctx["fallback_sources"] = (
+                    existing  # pylint: disable=unsupported-assignment-operation
+                )
         if added:
             # Warm the freshly-pushed fallbacks in the background (resolve
             # nzo-only standbys + fingerprint) so a later primary failure cuts
