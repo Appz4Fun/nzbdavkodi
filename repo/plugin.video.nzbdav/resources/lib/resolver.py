@@ -2293,13 +2293,19 @@ def _queue_slot_is_title(slot, title):
     """True if a queue slot is THIS playback title's own job (exact name match).
 
     nzbdav echoes the submitted name verbatim into the queue slot, so an exact
-    match on filename/name identifies the job the submit path would adopt and
-    resume (see ``find_queued_by_name``). It must be excluded from the clear so
-    the user's own in-flight download is not cancelled and restarted.
+    match identifies the job the submit path would adopt and resume — it must be
+    excluded from the clear so the user's own in-flight download is not
+    cancelled and restarted. Checks the SAME slot fields, in the same order, as
+    the adoption path (``find_queued_by_names``): ``filename``, ``nzo_id_name``,
+    then ``name`` (nzbdav reports the name under different keys by build/phase).
     """
     if not isinstance(slot, dict):
         return False
-    return (slot.get("filename") or slot.get("name") or "") == title
+    return title in (
+        slot.get("filename"),
+        slot.get("nzo_id_name"),
+        slot.get("name"),
+    )
 
 
 def _maybe_clear_queue_before_submit(
@@ -2343,18 +2349,20 @@ def _maybe_clear_queue_before_submit(
     slots = [s for s in slots if not _queue_slot_is_title(s, title)]
     if not slots:
         return
-    # Don't clear when this title is already downloaded: playback adopts the
-    # completed copy (no new download is submitted), so cancelling other active
-    # jobs would be wrong. Only the no-picker-hint paths (/resolve, auto-select)
-    # need this guard — there the existing-completed adopt-check happens later,
-    # inside _poll_until_ready. When the picker already ran a completed lookup
-    # (completed_lookup_done) and we still reached the submit path, the title is
-    # confirmed not-completed, so the guard lookup is skipped (a redundant
-    # history probe). It runs only here — after the probe confirmed there ARE
-    # other jobs to clear — so an empty queue never pays for it. A history hit
-    # is a conservative skip; find_completed_by_name returns None on error, so a
-    # failed check falls through and the clear proceeds.
-    if not completed_lookup_done and find_completed_by_name(
+    # Don't clear when this title is already downloaded AND playable: playback
+    # adopts the completed copy (no new download is submitted), so cancelling
+    # other active jobs would be wrong. Validate with the SAME check the adopt
+    # path uses — _existing_completed_stream runs the body probe — so a STALE
+    # Completed row whose storage is missing or fails the probe does NOT suppress
+    # the clear: _poll_until_ready will reject that row and submit a new
+    # download, which is exactly when the clear should run. on_existing_completed
+    # defaults to None here, so this validation has no side effects. Only the
+    # no-picker-hint paths (/resolve, auto-select) need it: gated on
+    # completed_lookup_done, so when the picker already validated completed and
+    # we still reached the submit path (submit certain) it is skipped as a
+    # redundant probe. It runs only after the probe confirmed there ARE other
+    # jobs to clear, so an empty queue never pays for it.
+    if not completed_lookup_done and _existing_completed_stream(
         title, **_settings_getter_kwargs(settings_getter)
     ):
         return
