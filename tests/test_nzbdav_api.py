@@ -1267,3 +1267,36 @@ def test_clear_queue_uses_provided_slots_without_refetch(
     assert all("name=delete" in u for u in urls)
     assert any("value=a" in u for u in urls)
     assert any("value=b" in u for u in urls)
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_get_queue_slots_requests_a_page_limit(mock_http, mock_settings):
+    """The probe must request a page limit so a paginated SAB/nzbdav queue
+    does not hide later jobs from a clear-the-whole-queue."""
+    from resources.lib.nzbdav_api import get_queue_slots
+
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.return_value = json.dumps({"queue": {"slots": []}})
+
+    get_queue_slots()
+
+    called_url = mock_http.call_args[0][0]
+    assert "mode=queue" in called_url
+    assert "limit=200" in called_url
+
+
+@patch("resources.lib.nzbdav_api.cancel_job")
+def test_clear_queue_passes_per_delete_timeout(mock_cancel):
+    """A short per-delete timeout is forwarded to cancel_job so a stalled
+    nzbdav cannot freeze the resolver across several deletes."""
+    from resources.lib.nzbdav_api import clear_queue
+
+    mock_cancel.return_value = True
+
+    cleared = clear_queue(slots=[{"nzo_id": "a"}, {"nzo_id": "b"}], timeout=5)
+
+    assert cleared == 2
+    assert mock_cancel.call_count == 2
+    for call in mock_cancel.call_args_list:
+        assert call.kwargs.get("timeout") == 5

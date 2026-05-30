@@ -431,7 +431,10 @@ def get_queue_slots(settings_getter=None, timeout=15):
             xbmc.LOGERROR,
         )
         return []
-    params = {"mode": "queue", "apikey": api_key, "output": "json"}
+    # SAB/nzbdav paginate the queue by start/limit; without a limit a small
+    # default page would hide later jobs from a "clear the whole queue". Mirror
+    # find_queued_by_names's limit=200 so the probe sees the full queue.
+    params = {"mode": "queue", "apikey": api_key, "output": "json", "limit": 200}
     url = "{}/api?{}".format(base_url, urlencode(params))
     try:
         response = _coerce_response_dict(json.loads(_http_get(url, timeout=timeout)))
@@ -444,7 +447,7 @@ def get_queue_slots(settings_getter=None, timeout=15):
     return _response_slots(response, "queue")
 
 
-def clear_queue(settings_getter=None, slots=None):
+def clear_queue(settings_getter=None, slots=None, timeout=None):
     """Cancel every job in the nzbdav queue and return the count cancelled.
 
     Removes BOTH the actively-downloading job (the queue head) and any waiting
@@ -458,15 +461,23 @@ def clear_queue(settings_getter=None, slots=None):
     re-fetching, so a job that appeared between the probe and the clear is
     never cancelled unseen. When ``slots`` is None the current queue is
     fetched.
+
+    ``timeout`` bounds EACH per-slot DELETE (passed to ``cancel_job``). The
+    pre-submit clear path runs synchronously before the playback UI pump, so a
+    short timeout keeps a stalled nzbdav from freezing the resolver for minutes
+    across several deletes. When None, ``cancel_job``'s default is used.
     """
     if slots is None:
         slots = get_queue_slots(settings_getter=settings_getter)
+    cancel_kwargs = {"settings_getter": settings_getter}
+    if timeout is not None:
+        cancel_kwargs["timeout"] = timeout
     cleared = 0
     for slot in slots:
         nzo_id = slot.get("nzo_id") if isinstance(slot, dict) else None
         if not nzo_id:
             continue
-        if cancel_job(nzo_id, settings_getter=settings_getter):
+        if cancel_job(nzo_id, **cancel_kwargs):
             cleared += 1
     if cleared:
         xbmc.log(
