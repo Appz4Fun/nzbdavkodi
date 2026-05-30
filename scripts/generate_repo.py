@@ -75,12 +75,16 @@ def _verify_sha256_file(path):
     checksum_path = "{}.sha256".format(path)
     filename = os.path.basename(path)
     if not os.path.isfile(checksum_path):
-        raise SystemExit("generate_repo: missing sha256 checksum for {}".format(filename))
+        raise SystemExit(
+            "generate_repo: missing sha256 checksum for {}".format(filename)
+        )
     expected = hashlib.sha256(open(path, "rb").read()).hexdigest()
     checksum = open(checksum_path, "r", encoding="ascii").read().strip()
     checksum_parts = checksum.split()
     if not checksum_parts or checksum_parts[0] != expected:
-        raise SystemExit("generate_repo: sha256 checksum does not match {}".format(filename))
+        raise SystemExit(
+            "generate_repo: sha256 checksum does not match {}".format(filename)
+        )
 
 
 def _copy_addon_zip_for_pages(output_dir, addon_zip, addon_id, version):
@@ -161,7 +165,7 @@ def _read_addon_version_from_zip(zip_path, addon_id):
 
 
 def _write_html_index(path, links):
-    html = "<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n</head>\n<body>\n"
+    html = '<!doctype html>\n<html>\n<head>\n<meta charset="utf-8">\n</head>\n<body>\n'
     for name in links:
         html += '<a href="{n}">{n}</a><br>\n'.format(n=name)
     html += "</body>\n</html>\n"
@@ -314,9 +318,8 @@ def generate_repo(
             addon_xmls.append(read_addon_xml(main_addon, metadata_url))
         else:
             print(
-                "generate_repo: skipping {} metadata because addon zip not found: {!r}".format(
-                    main_addon_id, local_addon_zip
-                ),
+                "generate_repo: skipping {} metadata because addon zip "
+                "not found: {!r}".format(main_addon_id, local_addon_zip),
                 file=sys.stderr,
             )
 
@@ -377,7 +380,8 @@ def smoke_check_pages(output_dir, repository_addon_dir="repo/repository.nzbdav")
         path = metadata.findtext("path") if metadata is not None else ""
         if path and not _is_repository_relative_path(path):
             raise SystemExit(
-                "generate_repo: plugin.video.nzbdav path must be relative to repository datadir"
+                "generate_repo: plugin.video.nzbdav path must be relative "
+                "to repository datadir"
             )
         if path:
             addon_zip_path = os.path.join(output_dir, path)
@@ -424,9 +428,7 @@ def smoke_check_pages(output_dir, repository_addon_dir="repo/repository.nzbdav")
     with zipfile.ZipFile(repo_zip_path) as zf:
         if repo_addon_xml_member not in zf.namelist():
             raise SystemExit(
-                "generate_repo: repository zip missing {}".format(
-                    repo_addon_xml_member
-                )
+                "generate_repo: repository zip missing {}".format(repo_addon_xml_member)
             )
 
     repo_dir = os.path.join(output_dir, repo_id)
@@ -438,9 +440,8 @@ def smoke_check_pages(output_dir, repository_addon_dir="repo/repository.nzbdav")
         ]
         if repo_dir_zip_names != repo_zip_names:
             raise SystemExit(
-                "generate_repo: {} directory must contain one matching repository zip".format(
-                    repo_id
-                )
+                "generate_repo: {} directory must contain one matching "
+                "repository zip".format(repo_id)
             )
         _verify_sha256_file(os.path.join(repo_dir, repo_dir_zip_names[0]))
 
@@ -472,7 +473,9 @@ def main(argv=None):
         repository_addon_dir=args.repository_addon_dir,
     )
     if args.smoke_check:
-        smoke_check_pages(args.output_dir, repository_addon_dir=args.repository_addon_dir)
+        smoke_check_pages(
+            args.output_dir, repository_addon_dir=args.repository_addon_dir
+        )
 
 
 if __name__ == "__main__":

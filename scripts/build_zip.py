@@ -64,9 +64,9 @@ def build_zip(addon_dir="repo/plugin.video.nzbdav", output_dir="."):
                 if f in skip_files or os.path.splitext(f)[1] in skip_ext:
                     continue
                 filepath = os.path.join(root, f)
-                arcname = os.path.relpath(
-                    filepath, os.path.dirname(addon_dir)
-                ).replace(os.sep, "/")
+                arcname = os.path.relpath(filepath, os.path.dirname(addon_dir)).replace(
+                    os.sep, "/"
+                )
                 info = zipfile.ZipInfo(arcname)
                 info.compress_type = zipfile.ZIP_DEFLATED
                 info.external_attr = FILE_ATTR
