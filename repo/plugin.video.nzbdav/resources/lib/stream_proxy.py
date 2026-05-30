@@ -4292,10 +4292,9 @@ class _StreamHandler(BaseHTTPRequestHandler):
                             ),
                             xbmc.LOGERROR,
                         )
-                        if fallback_pending_candidate is not None:
-                            # No further candidate to try — the one we switched
-                            # to never delivered.
-                            _notify_fallback_outcome(fallback_pending_candidate, False)
+                        # The pending candidate is still set here; its failure
+                        # toast is emitted by the finally block (single sink for
+                        # every terminal exit), so no inline notify is needed.
                         return
 
                 if retry_ladder_enabled and result in (
@@ -4326,6 +4325,12 @@ class _StreamHandler(BaseHTTPRequestHandler):
                         self.server, ctx, streamed=retry_written
                     )
                     _record_density_window(density_window, "progress", retry_written)
+                    if fallback_pending_candidate is not None and retry_written:
+                        # The candidate delivered its first bytes via the retry
+                        # ladder (its initial read was a download-high-water
+                        # short read) — the cutover worked.
+                        _notify_fallback_outcome(fallback_pending_candidate, True)
+                        fallback_pending_candidate = None
                     if current > end:
                         return
 
@@ -4483,6 +4488,19 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     xbmc.LOGINFO,
                 )
         finally:
+            # Resolve any still-pending fallback candidate. A delivering
+            # candidate clears it on success (direct read OR via the retry
+            # ladder), so a candidate still pending at ANY exit — terminal
+            # upstream/client error, recovery or zero-fill exhaustion, density
+            # breaker, or an aborted connection — never delivered, and is
+            # reported as a failure here. Also flush a deferred prior-candidate
+            # failure that an abrupt exit skipped before the next read.
+            if fallback_failed_to_notify is not None:
+                _notify_fallback_outcome(fallback_failed_to_notify, False)
+                fallback_failed_to_notify = None
+            if fallback_pending_candidate is not None:
+                _notify_fallback_outcome(fallback_pending_candidate, False)
+                fallback_pending_candidate = None
             # Benign terminal reasons (full success / client closed the
             # connection) log at INFO; only genuine failures (recovery/
             # fallback exhausted, upstream errors) warrant WARNING.

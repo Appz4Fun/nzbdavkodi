@@ -7847,6 +7847,126 @@ def test_serve_proxy_notifies_failure_then_success_across_two_candidates():
     assert any("candidate #2" in m and "successful" in m for m in msgs), msgs
 
 
+def test_serve_proxy_notifies_success_when_retry_ladder_delivers_fallback():
+    """A switched-to candidate whose first read is AWAITING_DOWNLOAD (zero
+    bytes) but whose retry ladder then delivers the range must be reported as a
+    SUCCESS — not silently dropped (its bytes arrive via retry_written, which
+    the first-read success check never sees)."""
+    import sys
+
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_OK,
+        _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD,
+        _UPSTREAM_RANGE_UPSTREAM_ERROR,
+    )
+
+    ctx = {
+        "remote_url": "http://webdav/primary.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 10,
+        "fallback_sources": [
+            {
+                "nzo_id": "nzo2",
+                "stream_url": "http://webdav/fallback1.mkv",
+                "stream_headers": {"Authorization": "Basic f1"},
+                "content_length": 10,
+                "validated": True,
+                "failed": False,
+            }
+        ],
+        "fallback_switch_count": 0,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-9")
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = lambda key: {
+        "strict_contract_mode": "warn",
+        "density_breaker_enabled": "false",
+        "zero_fill_budget_enabled": "true",
+        "retry_ladder_enabled": "true",
+    }.get(key, "")
+    original_addon = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+    try:
+        with patch.object(
+            handler,
+            "_stream_upstream_range",
+            side_effect=[
+                (_UPSTREAM_RANGE_UPSTREAM_ERROR, 0),  # primary -> switch to #1
+                (_UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD, 0),  # #1 downloading
+            ],
+        ), patch.object(
+            handler,
+            "_select_live_fallback_source",
+            return_value=ctx["fallback_sources"][0],
+        ), patch.object(
+            handler,
+            "_retry_original_range",
+            # ladder delivers the whole range: (result, retry_written, current)
+            return_value=(_UPSTREAM_RANGE_OK, 10, 10),
+        ), patch(
+            "resources.lib.stream_proxy._notify"
+        ) as mock_notify:
+            handler._serve_proxy(ctx)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original_addon
+
+    msgs = [call.args[1].lower() for call in mock_notify.call_args_list]
+    assert any("candidate #1" in m and "successful" in m for m in msgs), msgs
+    assert not any("was a failure" in m for m in msgs), msgs
+
+
+def test_serve_proxy_notifies_fallback_failure_on_terminal_client_error():
+    """A switched-to candidate that returns a terminal CLIENT_ERROR (zero
+    bytes) must still be reported as a failure. Such results bypass the
+    live-fallback and retry-ladder blocks and hit a terminal return that
+    previously left the pending candidate unreported."""
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_CLIENT_ERROR,
+        _UPSTREAM_RANGE_UPSTREAM_ERROR,
+    )
+
+    ctx = {
+        "remote_url": "http://webdav/primary.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 10,
+        "fallback_sources": [
+            {
+                "nzo_id": "nzo2",
+                "stream_url": "http://webdav/fallback1.mkv",
+                "stream_headers": {"Authorization": "Basic f1"},
+                "content_length": 10,
+                "validated": True,
+                "failed": False,
+            }
+        ],
+        "fallback_switch_count": 0,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-9")
+
+    with patch.object(
+        handler,
+        "_stream_upstream_range",
+        side_effect=[
+            (_UPSTREAM_RANGE_UPSTREAM_ERROR, 0),  # primary -> switch to #1
+            (_UPSTREAM_RANGE_CLIENT_ERROR, 0),  # #1 dies on a hard terminal error
+        ],
+    ), patch.object(
+        handler,
+        "_select_live_fallback_source",
+        return_value=ctx["fallback_sources"][0],
+    ), patch(
+        "resources.lib.stream_proxy._notify"
+    ) as mock_notify:
+        handler._serve_proxy(ctx)
+
+    msgs = [call.args[1].lower() for call in mock_notify.call_args_list]
+    assert any("candidate #1" in m and "was a failure" in m for m in msgs), msgs
+    assert not any("successful" in m for m in msgs), msgs
+
+
 def test_serve_proxy_failure_toast_does_not_delay_next_candidate_cutover():
     """A failure toast for a dead candidate must not delay the NEXT candidate's
     read. Mirrors the success-path slow-notify guard for multi-candidate
