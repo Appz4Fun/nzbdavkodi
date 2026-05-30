@@ -131,7 +131,10 @@ def _main():
     ap.add_argument(
         "--nzbdav-url",
         default=os.environ.get("NZBDAV_URL", "http://localhost:8180"),
-        help="default: %(default)s (nzbdav-rs container listens on 8080; host-published on NZBDAV_PORT, default 8180)",
+        help=(
+            "default: %(default)s (nzbdav-rs container listens on 8080; "
+            "host-published on NZBDAV_PORT, default 8180)"
+        ),
     )
     ap.add_argument(
         "--nzbdav-api-key",
