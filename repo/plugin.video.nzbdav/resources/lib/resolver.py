@@ -1354,7 +1354,14 @@ def _wait_for_nearly_complete_history(
         history_ready.wait(min(0.01, remaining))
 
 
-def _poll_once(nzo_id, title, monitor, settings_getter=None, submit_started_wall=None):
+def _poll_once(
+    nzo_id,
+    title,
+    monitor,
+    settings_getter=None,
+    submit_started_wall=None,
+    rejected_completed_ids=None,
+):
     """Poll nzbdav queue API and history API in parallel.
 
     Args:
@@ -1380,6 +1387,11 @@ def _poll_once(nzo_id, title, monitor, settings_getter=None, submit_started_wall
         neither returns data, a WebDAV reachability probe.
         Logs poll results to the Kodi log.
     """
+    # Terminal rows the body probe already rejected (Completed but mid-file
+    # body unavailable). The by-name fallback must not surface them, or the
+    # poll loop would abort on the stale row instead of waiting for the fresh
+    # re-download. Snapshot to an immutable tuple before spawning threads.
+    rejected_terminal_ids = tuple(rejected_completed_ids or ())
     job_status = [None]
     history_status = [None]
     error_type = [None]
@@ -1422,7 +1434,11 @@ def _poll_once(nzo_id, title, monitor, settings_getter=None, submit_started_wall
                 # ``completed`` entirely (older nzbdav-rs builds),
                 # don't trigger the by-name path at all — better to
                 # wait out the timeout than to fire a false-failure.
-                if by_name and by_name.get("status"):
+                if (
+                    by_name
+                    and by_name.get("status")
+                    and by_name.get("nzo_id") not in rejected_terminal_ids
+                ):
                     completed = by_name.get("completed")
                     try:
                         completed_ts = int(completed) if completed is not None else None
@@ -1700,9 +1716,19 @@ def _existing_completed_stream(
 
 
 def _picker_completed_stream(
-    title, params, on_existing_completed=None, settings_getter=None
+    title,
+    params,
+    on_existing_completed=None,
+    settings_getter=None,
+    rejected_completed_ids=None,
 ):
-    """Return a picker-provided completed stream before opening progress UI."""
+    """Return a picker-provided completed stream before opening progress UI.
+
+    Shares ``rejected_completed_ids`` with the caller so a picker row the body
+    probe rejects here is recorded for the submit/poll paths that follow — the
+    picker hint is not re-probed inside ``_poll_until_ready`` once the picker
+    has done the completed-history lookup.
+    """
     if not params:
         return None
     has_hint = "_completed_job" in params
@@ -1715,6 +1741,7 @@ def _picker_completed_stream(
         completed_job_hint=params.get("_completed_job"),
         completed_job_lookup_done=lookup_done,
         settings_getter=settings_getter,
+        rejected_completed_ids=rejected_completed_ids,
     )
 
 
@@ -3058,6 +3085,7 @@ def _poll_until_ready(
     completed_job_lookup_done=False,
     settings_getter=None,
     selected_indexer=None,
+    rejected_completed_ids=None,
 ):
     """Submit NZB and poll until download completes.
 
@@ -3066,11 +3094,13 @@ def _poll_until_ready(
     notifications are issued inside this function; the caller only needs to
     decide what to do with the resulting stream URL.
     """
-    # Completed rows the pre-submit body probe rejects (Completed but mid-file
-    # body unavailable) are collected here so the submit path below does not
-    # re-adopt the very row we just rejected and bypass the intended
-    # re-download. See _submit_nzb_with_ui_pump / _adopt_queued_or_completed_job.
-    rejected_completed_ids = set()
+    # Completed rows the body probe rejects (Completed but mid-file body
+    # unavailable) are collected here so neither the submit/adoption path nor
+    # the poll-loop by-name fallback re-adopts the very row we just rejected
+    # and bypasses the intended re-download. The caller may pass a shared set
+    # so a picker-probe rejection (recorded before this call) is honored too.
+    if rejected_completed_ids is None:
+        rejected_completed_ids = set()
     existing_stream = _existing_completed_stream(
         title,
         on_existing_completed=on_existing_completed,
@@ -3139,6 +3169,7 @@ def _poll_until_ready(
             monitor,
             settings_getter=settings_getter,
             submit_started_wall=submit_started_wall,
+            rejected_completed_ids=rejected_completed_ids,
         )
 
         should_stop, last_status = _handle_job_status(
@@ -3234,8 +3265,14 @@ def resolve(handle, params):
                     candidate_loader=fallback_candidate_loader,
                 )
 
+        # One rejected-id set per resolve attempt, shared so a Completed row
+        # the picker body probe rejects is honored by the submit/poll paths.
+        rejected_completed_ids = set()
         completed_stream = _picker_completed_stream(
-            title, params, on_existing_completed=_start_playback_cleanup_once
+            title,
+            params,
+            on_existing_completed=_start_playback_cleanup_once,
+            rejected_completed_ids=rejected_completed_ids,
         )
         if completed_stream is not None:
             stream_url, stream_headers = completed_stream
@@ -3267,6 +3304,7 @@ def resolve(handle, params):
                 ),
                 completed_job_lookup_done=picker_completed_lookup_done,
                 selected_indexer=selected_indexer,
+                rejected_completed_ids=rejected_completed_ids,
             )
         if stream_url:
             if fallback_state is None:
@@ -3353,11 +3391,15 @@ def resolve_and_play(nzb_url, title, params=None):
                     **fallback_submit_kwargs,
                 )
 
+        # One rejected-id set per resolve attempt, shared so a Completed row
+        # the picker body probe rejects is honored by the submit/poll paths.
+        rejected_completed_ids = set()
         completed_stream = _picker_completed_stream(
             title,
             resolve_params,
             on_existing_completed=_start_playback_cleanup_once,
             settings_getter=settings_getter,
+            rejected_completed_ids=rejected_completed_ids,
         )
         _resolve_stage("picker completed stream checked")
         if completed_stream is not None:
@@ -3398,6 +3440,7 @@ def resolve_and_play(nzb_url, title, params=None):
                 completed_job_lookup_done=picker_completed_lookup_done,
                 settings_getter=settings_getter,
                 selected_indexer=selected_indexer,
+                rejected_completed_ids=rejected_completed_ids,
             )
             _resolve_stage("poll until ready done stream={}".format(bool(stream_url)))
         if stream_url:

@@ -6291,3 +6291,76 @@ def test_handle_history_result_body_unavailable_exhaustion_message(
     assert "incomplete" in dialog_msg
     assert "articles" in dialog_msg
     assert "not found" not in dialog_msg
+
+
+@patch("resources.lib.resolver._find_video_stream_for_folder")
+def test_picker_completed_stream_records_rejected_id(mock_find_stream):
+    """A picker-supplied completed row rejected by the body probe records its
+    nzo_id into the shared rejected set, so the submit history probe can skip
+    it (PR #219 review: picker rejections must not be lost)."""
+    from urllib.error import HTTPError
+
+    from resources.lib.resolver import _picker_completed_stream
+
+    mock_find_stream.return_value = (
+        "/content/uncategorized/movie/movie.mkv",
+        "http://webdav/movie.mkv",
+        {"Authorization": "Basic x"},
+    )
+    head = _probe_response(content_length=85_000_000)
+    midfile_500 = HTTPError("http://webdav/movie.mkv", 500, "err", {}, None)
+    rejected = set()
+    params = {
+        "_completed_job": {
+            "status": "Completed",
+            "name": "movie.mkv",
+            "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/movie",
+            "nzo_id": "bad_picker",
+        }
+    }
+
+    with patch("urllib.request.urlopen", side_effect=[head, midfile_500]):
+        stream = _picker_completed_stream(
+            "movie.mkv", params, rejected_completed_ids=rejected
+        )
+
+    assert stream is None
+    assert "bad_picker" in rejected
+
+
+@patch("resources.lib.resolver.probe_webdav_reachable", return_value=(False, None))
+@patch("resources.lib.resolver.get_job_history", return_value=None)
+@patch("resources.lib.resolver.get_job_status", return_value=None)
+def test_poll_once_byname_fallback_skips_rejected_completed_row(
+    mock_status, mock_history, mock_probe
+):
+    """The by-name terminal fallback must not surface a Completed row whose
+    nzo_id was already rejected by the body probe (PR #219 review): otherwise
+    the poll loop latches onto the stale bad row inside the 5s tolerance
+    instead of waiting for the fresh re-download."""
+    bad_row = {
+        "status": "Completed",
+        "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/movie",
+        "name": "movie",
+        "nzo_id": "bad_terminal",
+        "fail_message": "",
+        "completed": 10_000,
+    }
+
+    with patch("resources.lib.nzbdav_api.find_terminal_by_name", return_value=bad_row):
+        # Without the rejected set, the fallback surfaces the terminal row.
+        _js, history_default, _err = _poll_once(
+            "fresh_nzo", "movie", _make_monitor(), submit_started_wall=10_000
+        )
+        # With the row's nzo_id rejected, the fallback suppresses it.
+        _js2, history_rejected, _err2 = _poll_once(
+            "fresh_nzo",
+            "movie",
+            _make_monitor(),
+            submit_started_wall=10_000,
+            rejected_completed_ids={"bad_terminal"},
+        )
+
+    assert history_default is not None
+    assert history_default.get("status") == "Completed"
+    assert history_rejected is None
