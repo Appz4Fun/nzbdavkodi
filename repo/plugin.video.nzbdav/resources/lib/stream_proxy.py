@@ -275,6 +275,8 @@ def _fault_forced_primary_failure(ctx, start):
         if start >= content_length - _FAULT_TAIL_GUARD_BYTES:
             return False
     return start >= threshold
+
+
 _FALLBACK_PRIMARY_URL_HINT_KEY = "_fallback_primary_url_hint"
 _FALLBACK_PRIMARY_AUTH_HINT_KEY = "_fallback_primary_auth_hint"
 _FALLBACK_CURRENT_RANGE_CACHE_KEY = "_fallback_current_range_cache"
@@ -4618,9 +4620,12 @@ class _StreamHandler(BaseHTTPRequestHandler):
                             return _UPSTREAM_RANGE_PROTOCOL_MISMATCH, written
                         return _UPSTREAM_RANGE_OK, written
                     xbmc.log(
-                        "NZB-DAV: Upstream short read for {}-{} wrote={} "
-                        "expected={} status={} Content-Range={!r} "
-                        "Content-Length={!r} (reason=short_read_awaiting_download)".format(
+                        (
+                            "NZB-DAV: Upstream short read for {}-{} wrote={} "
+                            "expected={} status={} Content-Range={!r} "
+                            "Content-Length={!r} "
+                            "(reason=short_read_awaiting_download)"
+                        ).format(
                             start,
                             end,
                             written,
@@ -6535,8 +6540,10 @@ class StreamProxy:
 
         with self._context_lock:
             sessions = getattr(self._server, "stream_sessions", None)
-            ctx = sessions.get(session_id) if isinstance(sessions, dict) else None
-            if ctx is None:
+            if not isinstance(sessions, dict):
+                return None
+            ctx = sessions.get(session_id)
+            if not isinstance(ctx, dict):
                 return None
             existing = list(ctx.get("fallback_sources") or [])
             seen = {_dedup_key(s) for s in existing if isinstance(s, dict)}
@@ -7529,9 +7536,7 @@ def update_stream_fallbacks_via_service(
     # well under a second, and the flush push runs inline on the resolver
     # thread just before playback handoff — a long timeout would stall it.
     # nosemgrep
-    with urlopen(  # nosec B310 — loopback service URL
-        req, timeout=3
-    ) as resp:
+    with urlopen(req, timeout=3) as resp:  # nosec B310 — loopback service URL
         return json.loads(resp.read())
 
 
