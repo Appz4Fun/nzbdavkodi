@@ -308,8 +308,8 @@ _ZERO_FILL_BUFFER = bytes(65536)
 # buffering stall on a healthy client while still bounding zombie lifetime.
 _REMUX_WRITE_TIMEOUT = 60
 _REMUX_STDOUT_IDLE_TIMEOUT = 30.0
-_PREPARE_TOKEN_HEADER = "X-NZBDAV-Token"
-_PROP_PROXY_TOKEN = "nzbdav.proxy_token"
+_PREPARE_TOKEN_HEADER = "X-NZBDAV-Token"  # nosec B105 — HTTP header name, not a secret
+_PROP_PROXY_TOKEN = "nzbdav.proxy_token"  # nosec B105 — settings key, not a secret
 # POST /stream/<session_id>/fallbacks — merge late-adopted fallback sources into
 # a live session whose /prepare snapshot was taken before the fallback worker
 # finished adopting them (the cutover-never-fires race).
@@ -4885,7 +4885,7 @@ class _ThreadedHTTPServer(_ThreadingMixIn, HTTPServer):
         self.current_byte_pos = 0
         self.ffmpeg_lock = threading.Lock()
         self.owner_proxy = None
-        self.prepare_token = ""
+        self.prepare_token = ""  # nosec B105 — empty init value, not a secret
         super().__init__(*args, **kwargs)
 
 
