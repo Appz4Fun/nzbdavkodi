@@ -2289,6 +2289,19 @@ def _queue_clear_prompt_message(slots):
     )
 
 
+def _queue_slot_is_title(slot, title):
+    """True if a queue slot is THIS playback title's own job (exact name match).
+
+    nzbdav echoes the submitted name verbatim into the queue slot, so an exact
+    match on filename/name identifies the job the submit path would adopt and
+    resume (see ``find_queued_by_name``). It must be excluded from the clear so
+    the user's own in-flight download is not cancelled and restarted.
+    """
+    if not isinstance(slot, dict):
+        return False
+    return (slot.get("filename") or slot.get("name") or "") == title
+
+
 def _maybe_clear_queue_before_submit(
     title, settings_getter=None, completed_lookup_done=False
 ):
@@ -2300,34 +2313,19 @@ def _maybe_clear_queue_before_submit(
       * ``ask``    - show a yes/no dialog listing the queued jobs and clear
         only on confirmation.
 
-    "Clear" cancels every queue slot, including the job currently downloading;
-    completed/failed history is left intact (see ``clear_queue``). Defensive:
-    a queue-probe or dialog failure leaves the queue untouched and never blocks
-    the submit.
+    "Clear" cancels the OTHER queued jobs — not this title's own in-flight job
+    (the submit path adopts and resumes that one) — and leaves completed/failed
+    history intact (see ``clear_queue``). Defensive: a queue-probe or dialog
+    failure leaves the queue untouched and never blocks the submit.
     """
     mode = _clear_queue_on_submit_mode(settings_getter)
     if mode == "never":
         return
-    # Don't clear when this title is already downloaded: playback will adopt the
-    # completed copy (no new download is submitted), so cancelling other active
-    # jobs would be wrong. Only the no-picker-hint paths (/resolve, auto-select)
-    # need this guard — there the existing-completed adopt-check happens later,
-    # inside _poll_until_ready. When the picker already ran a completed lookup
-    # (completed_lookup_done) and we still reached the submit path, the title is
-    # confirmed not-completed, so a submit is certain and the guard lookup is
-    # skipped (it would be a redundant history probe). A history hit is a
-    # conservative skip — if the body probe later rejects the completed copy and
-    # we re-download, we just don't clear (the new job queues behind), which is
-    # safe. find_completed_by_name is self-defensive (returns None on error), so
-    # a failed check falls through and the clear proceeds.
-    if not completed_lookup_done and find_completed_by_name(
-        title, **_settings_getter_kwargs(settings_getter)
-    ):
-        return
+    # Probe the queue FIRST (bounded, best-effort), before any history lookup,
+    # so an empty queue — or a slow nzbdav — never blocks the resolver thread
+    # when there is nothing to clear. This runs before the threaded
+    # submit/dialog pump; on timeout/error get_queue_slots returns [].
     try:
-        # Bounded, best-effort probe: a slow/unreachable nzbdav must not freeze
-        # the resolver thread (this runs before the threaded submit/dialog
-        # pump). On timeout/error get_queue_slots returns [] and we proceed.
         slots = get_queue_slots(
             timeout=_CLEAR_QUEUE_PROBE_TIMEOUT,
             **_settings_getter_kwargs(settings_getter),
@@ -2339,7 +2337,26 @@ def _maybe_clear_queue_before_submit(
             xbmc.LOGWARNING,
         )
         return
+    # Never cancel THIS title's own in-flight queue job: the submit path adopts
+    # and resumes it, so clearing it would restart the download the user is
+    # playing. Drop it from the clear set (and from the prompt list below).
+    slots = [s for s in slots if not _queue_slot_is_title(s, title)]
     if not slots:
+        return
+    # Don't clear when this title is already downloaded: playback adopts the
+    # completed copy (no new download is submitted), so cancelling other active
+    # jobs would be wrong. Only the no-picker-hint paths (/resolve, auto-select)
+    # need this guard — there the existing-completed adopt-check happens later,
+    # inside _poll_until_ready. When the picker already ran a completed lookup
+    # (completed_lookup_done) and we still reached the submit path, the title is
+    # confirmed not-completed, so the guard lookup is skipped (a redundant
+    # history probe). It runs only here — after the probe confirmed there ARE
+    # other jobs to clear — so an empty queue never pays for it. A history hit
+    # is a conservative skip; find_completed_by_name returns None on error, so a
+    # failed check falls through and the clear proceeds.
+    if not completed_lookup_done and find_completed_by_name(
+        title, **_settings_getter_kwargs(settings_getter)
+    ):
         return
     if mode == "ask":
         try:
