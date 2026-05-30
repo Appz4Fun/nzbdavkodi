@@ -2308,6 +2308,60 @@ def _queue_slot_is_title(slot, title):
     )
 
 
+def _completed_copy_blocks_clear(title, settings_getter):
+    """Best-effort adopt check for the clear-queue guard, hard-bounded to the
+    queue-probe budget.
+
+    Returns True when the queue clear must be SKIPPED: either this title is
+    already adoptable (a completed, body-validated copy exists) or adoption could
+    not be ruled out within ``_CLEAR_QUEUE_PROBE_TIMEOUT``. Only a probe that
+    completes and finds NO adoptable copy returns False (the clear may proceed).
+
+    The probe (``_existing_completed_stream`` -> completed-history GET + WebDAV
+    body probe) carries its own multi-second socket timeouts. This guard runs
+    BEFORE the progress dialog, so an unbounded wait would freeze playback with
+    no UI and no abort path on a slow/unreachable nzbdav. Running it on a daemon
+    worker with a join deadline caps that wait. The authoritative, full-timeout
+    probe inside ``_poll_until_ready`` (which runs with the dialog visible and
+    abortable) still makes the real adopt-or-submit decision, so a timeout here
+    never forces a wrong outcome -- only a conservative "leave the queue intact".
+    A timeout/error therefore returns True (skip clear): never cancel the user's
+    other downloads on an adoption we could not rule out. ``on_existing_completed``
+    is left None so the worker has no side effects.
+    """
+    result = {}
+
+    def _probe():
+        try:
+            result["stream"] = _existing_completed_stream(
+                title, **_settings_getter_kwargs(settings_getter)
+            )
+        except Exception as error:  # pylint: disable=broad-except
+            result["error"] = error
+
+    worker = threading.Thread(
+        target=_probe, name="nzbdav-clearqueue-adopt-probe", daemon=True
+    )
+    worker.start()
+    worker.join(_CLEAR_QUEUE_PROBE_TIMEOUT)
+    if worker.is_alive():
+        xbmc.log(
+            "NZB-DAV: completed-adopt probe exceeded {}s before clearing the "
+            "queue; leaving queue intact and deferring to the in-dialog download "
+            "check".format(_CLEAR_QUEUE_PROBE_TIMEOUT),
+            xbmc.LOGINFO,
+        )
+        return True
+    if result.get("error") is not None:
+        xbmc.log(
+            "NZB-DAV: completed-adopt probe failed before clearing the queue; "
+            "leaving queue intact: {}".format(result["error"]),
+            xbmc.LOGWARNING,
+        )
+        return True
+    return bool(result.get("stream"))
+
+
 def _maybe_clear_queue_before_submit(
     title, settings_getter=None, completed_lookup_done=False
 ):
@@ -2351,19 +2405,27 @@ def _maybe_clear_queue_before_submit(
         return
     # Don't clear when this title is already downloaded AND playable: playback
     # adopts the completed copy (no new download is submitted), so cancelling
-    # other active jobs would be wrong. Validate with the SAME check the adopt
-    # path uses — _existing_completed_stream runs the body probe — so a STALE
-    # Completed row whose storage is missing or fails the probe does NOT suppress
-    # the clear: _poll_until_ready will reject that row and submit a new
-    # download, which is exactly when the clear should run. on_existing_completed
-    # defaults to None here, so this validation has no side effects. Only the
+    # other active jobs would be wrong. Validate with the SAME body probe the
+    # adopt path uses (_existing_completed_stream) so a STALE Completed row whose
+    # storage is missing or fails the probe does NOT suppress the clear:
+    # _poll_until_ready will reject that row and submit a new download, which is
+    # exactly when the clear should run. That probe carries multi-second socket
+    # timeouts and this guard runs BEFORE the progress dialog, so it is
+    # hard-bounded to the queue-probe budget (_completed_copy_blocks_clear): on a
+    # slow/unreachable nzbdav the guard returns promptly and leaves the queue
+    # intact rather than freezing playback with no UI. This bounded check is a
+    # best-effort gate, NOT the authoritative adopt decision -- _poll_until_ready
+    # re-runs the probe at full timeout with the dialog visible/abortable and
+    # makes the real adopt-or-submit call; trusting this short-timeout result to
+    # skip that probe would risk a spurious re-download on a slow-but-working
+    # nzbdav, so the (cheap, bounded) re-check is intentional. Only the
     # no-picker-hint paths (/resolve, auto-select) need it: gated on
     # completed_lookup_done, so when the picker already validated completed and
-    # we still reached the submit path (submit certain) it is skipped as a
-    # redundant probe. It runs only after the probe confirmed there ARE other
-    # jobs to clear, so an empty queue never pays for it.
-    if not completed_lookup_done and _existing_completed_stream(
-        title, **_settings_getter_kwargs(settings_getter)
+    # we still reached the submit path (submit certain) it is skipped. It runs
+    # only after the queue probe confirmed there ARE other jobs to clear, so an
+    # empty queue never pays for it.
+    if not completed_lookup_done and _completed_copy_blocks_clear(
+        title, settings_getter
     ):
         return
     if mode == "ask":

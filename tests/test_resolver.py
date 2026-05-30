@@ -6547,6 +6547,51 @@ def test_maybe_clear_queue_clears_when_completed_row_body_unavailable(
     mock_clear.assert_called_once()  # not adoptable -> proceed to clear
 
 
+@patch("resources.lib.resolver.clear_queue")
+@patch(
+    "resources.lib.resolver.get_queue_slots",
+    return_value=[{"nzo_id": "other", "status": "Queued", "filename": "Other"}],
+)
+@patch("resources.lib.resolver._existing_completed_stream")
+def test_maybe_clear_queue_completed_probe_is_time_bounded(
+    mock_find, mock_slots, mock_clear
+):
+    """A slow/unreachable nzbdav must not freeze the pre-dialog clear-queue guard.
+
+    The completed-adopt probe runs on a worker bounded to
+    _CLEAR_QUEUE_PROBE_TIMEOUT; on timeout the guard returns promptly and leaves
+    the queue intact (defensive) instead of blocking on the probe's own
+    multi-second history/WebDAV socket timeouts before the progress dialog even
+    appears.
+    """
+    from resources.lib import resolver
+    from resources.lib.resolver import _maybe_clear_queue_before_submit
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def _slow_probe(*_args, **_kwargs):
+        started.set()
+        release.wait(2)  # would block well past the probe budget
+        return ("http://webdav/Title.mkv", {})
+
+    mock_find.side_effect = _slow_probe
+
+    try:
+        with patch.object(resolver, "_CLEAR_QUEUE_PROBE_TIMEOUT", 0.05):
+            start = _time.monotonic()
+            _maybe_clear_queue_before_submit(
+                "Title", settings_getter=_clear_queue_setting("1")
+            )
+            elapsed = _time.monotonic() - start
+    finally:
+        release.set()
+
+    assert started.is_set()  # the probe really ran
+    assert elapsed < 1.0  # bounded — did not block on the full probe
+    mock_clear.assert_not_called()  # uncertain within budget -> leave queue intact
+
+
 @patch("resources.lib.resolver._existing_completed_stream", return_value=None)
 @patch("resources.lib.resolver.clear_queue", return_value=1)
 @patch("resources.lib.resolver.get_queue_slots")
