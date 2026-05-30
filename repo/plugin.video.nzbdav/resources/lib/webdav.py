@@ -171,19 +171,27 @@ def probe_webdav_reachable(
 
 
 def _find_video_file_in_subdirs(subdirs, depth, visited, settings):
-    """Probe sibling WebDAV subfolders while preserving result order."""
+    """Probe sibling WebDAV subfolders and return the LARGEST video found.
+
+    Every sibling is scanned (no early-exit on the first match) so a polluted
+    release folder can't win by ordering — e.g. a smaller junk release listed
+    before the real, larger release must not hijack playback. Ties break toward
+    the earliest sibling so behavior stays stable. Sizes come from the
+    PROPFIND ``getcontentlength`` hint each recursive call records; a found
+    video whose size is unknown still beats "no video" so we never drop a
+    playable file just because the server omitted its length.
+    """
     if not subdirs:
         return None
 
     pending = list(subdirs)
     workers = max(1, min(_WEBDAV_SUBDIR_SCAN_WORKERS, len(pending)))
     result_queue = Queue()
-    stop_event = threading.Event()
     next_index = [0]
     index_lock = threading.Lock()
 
     def _scan_worker():
-        while not stop_event.is_set():
+        while True:
             with index_lock:
                 if next_index[0] >= len(pending):
                     return
@@ -211,20 +219,20 @@ def _find_video_file_in_subdirs(subdirs, depth, visited, settings):
         thread = threading.Thread(target=_scan_worker, daemon=True)
         thread.start()
 
-    completed = {}
-    completed_count = 0
-    next_to_return = 0
-    while completed_count < len(pending):
+    best_path = None
+    best_size = -1
+    best_index = None
+    for _ in range(len(pending)):
         index, result = result_queue.get()
-        completed[index] = result
-        completed_count += 1
-        while next_to_return in completed:
-            result = completed.pop(next_to_return)
-            if result:
-                stop_event.set()
-                return result
-            next_to_return += 1
-    return None
+        if not result:
+            continue
+        size = get_video_file_size_hint(result)
+        # Strictly-larger wins; on a tie keep the earlier-listed sibling.
+        if size > best_size or (size == best_size and index < best_index):
+            best_path = result
+            best_size = size
+            best_index = index
+    return best_path
 
 
 def _remember_video_file_size_hint(file_path, size):
@@ -409,8 +417,24 @@ def find_video_file(
             resource_type = response.find(".//D:resourcetype/D:collection", ns)
             if resource_type is not None:
                 # Skip the folder itself (href matches our request URL)
-                if href_path.rstrip("/") != request_path:
-                    subdirs.append(href_path.rstrip("/") + "/")
+                child = href_path.rstrip("/")
+                if child != request_path:
+                    # Skip hidden (dot-prefixed) subfolders. nzbdav release
+                    # folders sometimes get polluted with a leading-dot child
+                    # holding a different (often wrong, smaller) movie — e.g.
+                    # a '.and_justice_for_all...1080p...' folder hijacking a
+                    # 2160p release. Leading dots are not URL-encoded, so the
+                    # encoded path segment still starts with ".".
+                    segment = child.rsplit("/", 1)[-1]
+                    if segment.startswith("."):
+                        xbmc.log(
+                            "NZB-DAV: Skipping hidden WebDAV subfolder '{}'".format(
+                                child
+                            ),
+                            xbmc.LOGDEBUG,
+                        )
+                    else:
+                        subdirs.append(child + "/")
                 continue
 
             # Check if it's a video file
