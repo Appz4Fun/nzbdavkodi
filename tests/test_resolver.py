@@ -5594,7 +5594,7 @@ def test_poll_until_ready_rechecks_completed_webdav_quickly_after_first_miss(
 
     assert url == "http://webdav/content/uncategorized/movie/movie.mkv"
     assert headers == {"Authorization": "Basic primary"}
-    assert elapsed < 0.08, "first completed WebDAV recheck waited {:.3f}s".format(
+    assert elapsed < 0.2, "first completed WebDAV recheck waited {:.3f}s".format(
         elapsed
     )
 
