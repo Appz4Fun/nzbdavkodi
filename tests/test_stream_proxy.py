@@ -7967,6 +7967,57 @@ def test_serve_proxy_notifies_fallback_failure_on_terminal_client_error():
     assert not any("successful" in m for m in msgs), msgs
 
 
+def test_serve_proxy_suppresses_pending_failure_toast_on_client_disconnect():
+    """A client disconnect right after a fallback switch — before the new
+    candidate has delivered its first byte — is NOT a candidate failure. For the
+    client write to abort (BrokenPipeError), the candidate had to be serving
+    bytes; the CLIENT went away. The finally block must suppress the
+    'candidate #N was a failure' toast for a still-pending candidate when the
+    stream ends benignly (terminal_reason=client_disconnected) rather than
+    blaming the candidate for a demuxer probe/seek or a user stop.
+    """
+    from resources.lib.stream_proxy import _UPSTREAM_RANGE_UPSTREAM_ERROR
+
+    ctx = {
+        "remote_url": "http://webdav/primary.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 10,
+        "fallback_sources": [
+            {
+                "nzo_id": "nzo2",
+                "stream_url": "http://webdav/fallback1.mkv",
+                "stream_headers": {"Authorization": "Basic f1"},
+                "content_length": 10,
+                "validated": True,
+                "failed": False,
+            }
+        ],
+        "fallback_switch_count": 0,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-9")
+
+    with patch.object(
+        handler,
+        "_stream_upstream_range",
+        side_effect=[
+            (_UPSTREAM_RANGE_UPSTREAM_ERROR, 0),  # primary -> switch to #1
+            BrokenPipeError(),  # client write aborts before #1 delivers a byte
+        ],
+    ), patch.object(
+        handler,
+        "_select_live_fallback_source",
+        return_value=ctx["fallback_sources"][0],
+    ), patch(
+        "resources.lib.stream_proxy._notify"
+    ) as mock_notify:
+        handler._serve_proxy(ctx)
+
+    msgs = [call.args[1].lower() for call in mock_notify.call_args_list]
+    assert not any("was a failure" in m for m in msgs), msgs
+    assert not any("successful" in m for m in msgs), msgs
+
+
 def test_serve_proxy_failure_toast_does_not_delay_next_candidate_cutover():
     """A failure toast for a dead candidate must not delay the NEXT candidate's
     read. Mirrors the success-path slow-notify guard for multi-candidate
