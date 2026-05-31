@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 from resources.lib.resolver import (
     _DOWNLOAD_TIMEOUT_MAX,
     _DOWNLOAD_TIMEOUT_MIN,
+    _FALLBACK_PREWARM_DELAY_SECONDS,
     _POLL_INTERVAL_MAX,
     _POLL_INTERVAL_MIN,
     MAX_POLL_ITERATIONS,
@@ -1116,7 +1117,9 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
         assert mock_start_fallback.call_count == 0
         kwargs["on_primary_submitted"]("SABnzbd_nzo_primary")
         mock_start_fallback.assert_called_once_with(
-            fallback_candidates, candidate_loader=None
+            fallback_candidates,
+            candidate_loader=None,
+            prewarm_delay=_FALLBACK_PREWARM_DELAY_SECONDS,
         )
         return (
             "http://webdav/content/primary/movie.mp4",
@@ -1151,7 +1154,9 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
     assert call_order == ["poll"]
     mock_snapshot.assert_called_once_with(fallback_state, wait_seconds=8.0)
     mock_start_fallback.assert_called_once_with(
-        fallback_candidates, candidate_loader=None
+        fallback_candidates,
+        candidate_loader=None,
+        prewarm_delay=_FALLBACK_PREWARM_DELAY_SECONDS,
     )
     mock_start_prepare.assert_called_once_with(
         "http://webdav/content/primary/movie.mp4",
@@ -2529,6 +2534,7 @@ def test_resolve_and_play_defers_fallback_loader_until_primary_accept(
     mock_start_fallback.assert_called_once_with(
         [],
         candidate_loader=loader_kwarg,
+        prewarm_delay=_FALLBACK_PREWARM_DELAY_SECONDS,
     )
 
 
@@ -3112,6 +3118,26 @@ def test_fallback_submit_worker_loads_candidates_in_background(mock_xbmc, mock_s
             "content_length": 0,
         }
     ]
+
+
+@patch("resources.lib.resolver._submit_fallback_candidates")
+def test_fallback_submit_worker_defers_prewarm_burst(mock_submit):
+    """The fallback prewarm must wait ``prewarm_delay`` before submitting, so the
+    multi-source burst doesn't pile concurrent nzbdav connections onto a
+    just-started playback stream (the live black-screen freezes, 2026-05-31).
+
+    A stop during the deferral window cancels the burst with no submission.
+    """
+    mock_submit.return_value = ("SABnzbd_nzo_fallback", None)
+
+    state = _start_fallback_submit_worker(
+        candidates=[{"title": "Fallback A", "link": "http://hydra/getnzb/a"}],
+        prewarm_delay=30.0,
+    )
+    # Stop during the deferral window → burst cancelled, nothing submitted.
+    state["stop"].set()
+    assert state["finished"].wait(timeout=2)
+    mock_submit.assert_not_called()
 
 
 @patch("resources.lib.resolver._submit_fallback_candidates")

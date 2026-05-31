@@ -2816,10 +2816,27 @@ def _prefetch_fallback_candidate_loader(candidate_loader):
     return _load_prefetched_candidates
 
 
+# Seconds to hold the fallback prewarm burst after playback handoff so it does
+# not contend with the live stream for nzbdav connections while Kodi's read
+# cache is still filling. Long enough to cover the startup cache-fill window;
+# the cutover safety net is only briefly delayed, not removed.
+_FALLBACK_PREWARM_DELAY_SECONDS = 15
+
+
 def _start_fallback_submit_worker(
-    candidates=None, candidate_loader=None, settings_getter=None
+    candidates=None, candidate_loader=None, settings_getter=None, prewarm_delay=0
 ):
-    """Start background fallback submits and return shared state."""
+    """Start background fallback submits and return shared state.
+
+    ``prewarm_delay`` defers the submit/prevalidation burst by that many seconds
+    after playback hands off. The prewarm opens several concurrent connections to
+    nzbdav (one submit + one prevalidation probe per source); firing them during
+    the first seconds of playback — while Kodi's read cache is still filling —
+    competes for nzbdav's connection budget and can stall the live stream enough
+    to wedge the CoreELEC audio clock (black screen). Waiting until playback is
+    established keeps the cutover safety net while protecting startup. The wait is
+    cancellable: a session stop during the window aborts it with no submission.
+    """
 
     def _cancel_job(nzo_id):
         if settings_getter is None:
@@ -2864,6 +2881,12 @@ def _start_fallback_submit_worker(
 
     def _worker():
         try:
+            # Defer the prewarm burst until playback is established so it does
+            # not compete with the live stream for nzbdav connections during the
+            # fragile cache-fill window. Cancellable: a stop set during the wait
+            # returns True and aborts before any submit.
+            if prewarm_delay and state["stop"].wait(prewarm_delay):
+                return
             active_candidates = candidate_list
             candidate_lookup_disabled = False
             if candidate_loader is not None:
@@ -3493,6 +3516,7 @@ def resolve(handle, params):
                 fallback_state = _start_fallback_submit_worker(
                     fallback_candidates,
                     candidate_loader=fallback_candidate_loader,
+                    prewarm_delay=_FALLBACK_PREWARM_DELAY_SECONDS,
                 )
 
         # One rejected-id set per resolve attempt, shared so a Completed row
@@ -3620,6 +3644,7 @@ def resolve_and_play(nzb_url, title, params=None):
             if fallback_state is None:
                 fallback_submit_kwargs = {
                     "candidate_loader": fallback_candidate_loader,
+                    "prewarm_delay": _FALLBACK_PREWARM_DELAY_SECONDS,
                 }
                 fallback_submit_kwargs.update(_settings_getter_kwargs(settings_getter))
                 fallback_state = _start_fallback_submit_worker(
