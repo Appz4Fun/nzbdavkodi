@@ -2603,6 +2603,69 @@ def test_fallback_prevalidation_does_not_delay_initial_prefetch_first_bytes():
     )
 
 
+def test_prefetch_tail_prewarms_nzbdav_cues_cache():
+    """Prepare-time prefetch must warm nzbdav's FILE-TAIL articles (MKV cues).
+
+    Kodi reads the MKV SeekHead/Cues at the file tail BEFORE playback. For a
+    usenet-backed file nzbdav fetches those end-of-file articles on demand, so
+    the first tail read stalls 1-4s mid-startup and can wedge the CoreELEC audio
+    clock (permanent black screen). A throwaway read of the tail during the
+    prepare gap warms nzbdav so Kodi's real cues read is fast. Regression for the
+    live Ballerina/Casino black-screen freezes (2026-05-31).
+    """
+    from resources.lib.stream_proxy import (
+        _TAIL_PREWARM_BYTES,
+        StreamProxy,
+        _StreamHandler,
+    )
+
+    sp = StreamProxy.__new__(StreamProxy)
+    content_length = 50 * 1024 * 1024  # 50 MiB — large enough for a distinct tail
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": "Basic primary",
+        "content_type": "video/x-matroska",
+        "content_length": content_length,
+    }
+    calls = []
+
+    def record(url, auth_header, start, end, cl):
+        calls.append((start, end))
+        return b"X" * (end - start + 1)
+
+    with patch.object(_StreamHandler, "_fetch_primary_range_bytes", side_effect=record):
+        sp._prewarm_tail_range(ctx)
+
+    assert calls, "tail prewarm issued no upstream read"
+    tail_start, tail_end = calls[-1]
+    assert tail_end == content_length - 1
+    assert tail_start == content_length - _TAIL_PREWARM_BYTES
+
+
+def test_tail_prewarm_skipped_when_file_smaller_than_tail_window():
+    """Tiny files have no distinct tail to warm — skip the read (the byte-0
+    prefetch already covers the whole file)."""
+    from resources.lib.stream_proxy import StreamProxy, _StreamHandler
+
+    sp = StreamProxy.__new__(StreamProxy)
+    ctx = {
+        "remote_url": "http://host/small.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 4096,
+    }
+    calls = []
+
+    with patch.object(
+        _StreamHandler,
+        "_fetch_primary_range_bytes",
+        side_effect=lambda *a, **k: calls.append(a) or b"",
+    ):
+        sp._prewarm_tail_range(ctx)
+
+    assert not calls, "small file should not trigger a tail prewarm read"
+
+
 def test_ready_fallback_is_prevalidated_before_upstream_error_cutover():
     """Cutover should not pay full fingerprint validation after the read error."""
     from resources.lib.stream_proxy import (

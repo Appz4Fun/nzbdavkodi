@@ -298,6 +298,13 @@ _FALLBACK_FINGERPRINT_WORKERS = 10
 _MAX_PROXY_WORKERS = 64
 _FALLBACK_PRIMARY_DIGEST_CACHE_MAX = 512
 _INITIAL_RANGE_PREFETCH_WAIT_SECONDS = 0.08
+# Kodi reads the MKV cues/SeekHead at the FILE TAIL before playback. nzbdav
+# fetches those end-of-file usenet articles on demand, so the first tail read
+# stalls 1-4s mid-startup and can wedge the CoreELEC audio clock (black screen).
+# A throwaway read of the last _TAIL_PREWARM_BYTES during the prepare gap warms
+# nzbdav's article cache so Kodi's real cues read is fast. 1 MiB comfortably
+# covers the cues/SeekHead region Kodi reads at startup.
+_TAIL_PREWARM_BYTES = 1048576
 _PASSTHROUGH_RUNTIME_SETTINGS_KEY = "_passthrough_runtime_settings"
 _PASSTHROUGH_RUNTIME_SETTINGS_DONE_KEY = "_passthrough_runtime_settings_done"
 _PASSTHROUGH_RUNTIME_SETTINGS_ERROR_KEY = "_passthrough_runtime_settings_error"
@@ -6698,6 +6705,64 @@ class StreamProxy:
         except RuntimeError:
             ctx.pop("_initial_range_prefetch_thread", None)
 
+    def _prewarm_tail_range(self, ctx):
+        """Warm nzbdav's FILE-TAIL article cache (MKV cues) for instant startup.
+
+        Kodi reads the MKV cues/SeekHead at the file tail before it can play. For
+        a usenet-backed file nzbdav fetches those end-of-file articles on demand,
+        so Kodi's first tail read otherwise stalls 1-4s mid-startup — long enough
+        to drain its not-yet-full cache and wedge the CoreELEC audio clock
+        (permanent black screen). Issue a throwaway read of the last
+        _TAIL_PREWARM_BYTES here, during the prepare gap, so nzbdav has the tail
+        articles cached before Kodi asks. No proxy-side caching: the exact tail
+        offset Kodi requests isn't fixed, and nzbdav serves subsequent tail reads
+        fast once the articles are fetched. The body is discarded.
+        """
+        try:
+            content_length = int(ctx.get("content_length", 0) or 0)
+        except (TypeError, ValueError):
+            return
+        # Only warm a tail that is distinct from the byte-0 prefetch window;
+        # tiny files are already fully covered by _prefetch_initial_range.
+        if content_length <= _TAIL_PREWARM_BYTES + _UPSTREAM_READ_CHUNK:
+            return
+        tail_start = content_length - _TAIL_PREWARM_BYTES
+        try:
+            _StreamHandler._fetch_primary_range_bytes(
+                ctx["remote_url"],
+                ctx.get("auth_header"),
+                tail_start,
+                content_length - 1,
+                content_length,
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            xbmc.log(
+                "NZB-DAV: Tail prewarm failed: {}".format(exc),
+                xbmc.LOGDEBUG,
+            )
+
+    def _start_tail_prewarm(self, ctx):
+        """Warm the file tail in parallel with the byte-0 prefetch at prepare.
+
+        Runs on its own thread so it neither delays /prepare nor serializes
+        behind the byte-0 prefetch — Kodi reads the tail FIRST, so warming it
+        must start as early as possible. Fails soft when out of thread budget,
+        matching the sibling prefetch spawns.
+        """
+        if not self._initial_range_prefetchable(ctx):
+            return
+        thread = threading.Thread(
+            target=self._prewarm_tail_range,
+            args=(ctx,),
+            name="nzbdav-tail-prewarm",
+        )
+        thread.daemon = True
+        ctx["_tail_prewarm_thread"] = thread
+        try:
+            thread.start()
+        except RuntimeError:
+            ctx.pop("_tail_prewarm_thread", None)
+
     def _start_passthrough_runtime_settings_prefetch(self, ctx):
         """Read pass-through recovery settings during the player handoff gap."""
         if isinstance(ctx.get(_PASSTHROUGH_RUNTIME_SETTINGS_KEY), dict):
@@ -7191,6 +7256,7 @@ class StreamProxy:
             )
         self._start_passthrough_runtime_settings_prefetch(ctx)
         self._start_initial_range_prefetch(ctx)
+        self._start_tail_prewarm(ctx)
         self._start_fallback_prevalidation(ctx)
 
         local_url = self._register_session(ctx)
