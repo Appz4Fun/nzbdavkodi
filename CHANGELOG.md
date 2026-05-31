@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | Version | Released | What it's about |
 |---|---|---|
 | **[Unreleased](#unreleased)** | Pending | Next changes |
+| **[1.2.4](#124--2026-05-31)** | 2026-05-31 | Startup black-screen fix, live fallback cutover hardening, nzbdav queue-clear prompt, sibling-video WebDAV selection, caps-aware direct indexers |
 | **[1.2.3](#123--2026-05-08)** | 2026-05-08 | Proxy fallback hardening, repo install checksum fix, RunScript path reliability |
 | **[1.2.2](#122--2026-05-07)** | 2026-05-07 | Kodi add-on info freeze hotfix |
 | **[1.2.1](#121--2026-05-07)** | 2026-05-07 | Synthetic indexer-size fallback manifests, prefetch indexer-size gate, NZB fetch LRU, stale-progress failure fix |
@@ -63,8 +64,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.4] — 2026-05-31
+
+> **Startup playback and live-fallback hardening.** This release closes the
+> startup black-screen on large MKVs, makes the live fallback cutover resolve
+> every candidate exactly once without spurious failure toasts, adds an
+> optional nzbdav queue-clear prompt when starting a new download, and selects
+> the right video across sibling/hidden WebDAV folders. It also folds in the
+> caps-aware direct-indexer work and the same-release fallback expansion that
+> had accumulated on `main` while the add-on version stayed pinned at 1.2.3.
+
 ### Fixed
 
+- **Startup black-screen on large MKVs.** The proxy now prewarms the nzbdav
+  file tail (where Matroska cues live) before handing Kodi the stream, and the
+  fallback prewarm burst is deferred so it can no longer starve the initial
+  playback read. Together these stop the black screen at the start of big-MKV
+  playback.
+- **Live fallback cutover correctness.** Every fallback candidate's outcome is
+  now resolved exactly once; the proxy re-enters the retry ladder instead of
+  hard-closing on `fallback_exhausted`; a pending candidate is no longer toasted
+  as failed when the client disconnects; and the failure toast is deferred so it
+  can never stall the cutover.
+- **WebDAV sibling selection.** Folder discovery now skips hidden subfolders and
+  picks the largest video across sibling folders, so playback targets the real
+  feature file instead of a sample or extra.
 - `just make-dev` now works on macOS Bash 3.2 when no pip compatibility flags
   are needed, instead of failing under `set -u` on an empty `pip_flags` array.
 - Test harness now isolates stream-proxy prevalidation and remux idle-timeout
@@ -106,6 +130,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Optional nzbdav queue-clear prompt.** When starting a new download the
+  resolver can offer to clear the nzbdav queue first, probing the queue without
+  ever cancelling the title's own in-flight job.
+- **Manual indexer manager.** New Indexers settings route with add/edit/custom
+  flows and JSON-backed persistence, an NZBHydra2 Newznab preset catalog, and a
+  caps-aware Newznab search planner that respects each provider's advertised
+  capabilities (with a Hydra fallback when cached caps are unavailable).
 - **Same-release / different-upload fallback expansion through Hydra's
   internal API.** `hydra.fetch_release_duplicate_uploads` calls
   `/internalapi/search` with `showSingleResultPerSearchResultGroup=false` to
