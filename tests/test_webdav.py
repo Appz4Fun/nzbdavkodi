@@ -1047,3 +1047,229 @@ def test_check_file_in_folder_returns_not_found_when_missing(mock_find):
     path, err = check_file_in_folder("/content/Missing/")
     assert path is None
     assert err == "not_found"
+
+
+# ---------------------------------------------------------------------------
+# F8: episode-hint preference for multi-episode packs
+# ---------------------------------------------------------------------------
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_prefers_title_hint_over_largest(mock_urlopen, mock_settings):
+    """With a requested episode hint, the name-matching video wins even when a
+    different episode in the same pack is larger."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    listing = _propfind_listing(
+        [
+            ("/content/Show/", True, None),
+            ("/content/Show/Show.S02E05.1080p.mkv", False, 2000000000),
+            ("/content/Show/Show.S02E06.1080p.mkv", False, 9000000000),
+        ]
+    )
+    mock_urlopen.return_value = _webdav_response(listing)
+
+    path = find_video_file("/content/Show/", title_hint="Show.S02E05.1080p.WEB-DL")
+
+    assert path == "/content/Show/Show.S02E05.1080p.mkv"
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_without_hint_keeps_largest(mock_urlopen, mock_settings):
+    """No hint -> preserve the existing largest-video behavior."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    listing = _propfind_listing(
+        [
+            ("/content/Show/", True, None),
+            ("/content/Show/Show.S02E05.1080p.mkv", False, 2000000000),
+            ("/content/Show/Show.S02E06.1080p.mkv", False, 9000000000),
+        ]
+    )
+    mock_urlopen.return_value = _webdav_response(listing)
+
+    path = find_video_file("/content/Show/")
+
+    assert path == "/content/Show/Show.S02E06.1080p.mkv"
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_hint_no_match_falls_back_to_largest(
+    mock_urlopen, mock_settings
+):
+    """A hint that matches no sibling video still returns the largest video."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    listing = _propfind_listing(
+        [
+            ("/content/Show/", True, None),
+            ("/content/Show/Show.S02E05.1080p.mkv", False, 2000000000),
+            ("/content/Show/Show.S02E06.1080p.mkv", False, 9000000000),
+        ]
+    )
+    mock_urlopen.return_value = _webdav_response(listing)
+
+    path = find_video_file("/content/Show/", title_hint="Show.S05E99.1080p.WEB-DL")
+
+    assert path == "/content/Show/Show.S02E06.1080p.mkv"
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_prefers_hint_across_sibling_subfolders(
+    mock_urlopen, mock_settings
+):
+    """The episode hint must steer selection across sibling subfolders, not
+    just files within one folder."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    parent = _propfind_listing(
+        [
+            ("/content/Pack/", True, None),
+            ("/content/Pack/E05/", True, None),
+            ("/content/Pack/E06/", True, None),
+        ]
+    )
+    e05 = _propfind_listing(
+        [
+            ("/content/Pack/E05/", True, None),
+            ("/content/Pack/E05/Show.S02E05.1080p.mkv", False, 2000000000),
+        ]
+    )
+    e06 = _propfind_listing(
+        [
+            ("/content/Pack/E06/", True, None),
+            ("/content/Pack/E06/Show.S02E06.1080p.mkv", False, 9000000000),
+        ]
+    )
+
+    def propfind(req, **_kwargs):
+        url = req.full_url
+        if url.endswith("/Pack/"):
+            return _webdav_response(parent)
+        if url.endswith("/E05/"):
+            return _webdav_response(e05)
+        if url.endswith("/E06/"):
+            return _webdav_response(e06)
+        raise AssertionError("unexpected PROPFIND URL: {}".format(url))
+
+    mock_urlopen.side_effect = propfind
+
+    path = find_video_file("/content/Pack/", title_hint="Show.S02E05.1080p.WEB-DL")
+
+    assert path == "/content/Pack/E05/Show.S02E05.1080p.mkv"
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_recurses_past_wrong_episode_at_current_level(
+    mock_urlopen, mock_settings
+):
+    """When the only video at the current level is an explicit episode MISMATCH
+    and a hint was given, prefer recursing into siblings that may hold the
+    requested episode before falling back to the wrong-episode file."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    parent = _propfind_listing(
+        [
+            ("/content/Pack/", True, None),
+            # A wrong-episode video sits at the CURRENT level (would normally be
+            # returned immediately, blocking the descent into Extras/).
+            ("/content/Pack/Show.S02E06.1080p.mkv", False, 9000000000),
+            ("/content/Pack/Extras/", True, None),
+        ]
+    )
+    extras = _propfind_listing(
+        [
+            ("/content/Pack/Extras/", True, None),
+            ("/content/Pack/Extras/Show.S02E05.1080p.mkv", False, 2000000000),
+        ]
+    )
+
+    def propfind(req, **_kwargs):
+        url = req.full_url
+        if url.endswith("/Pack/"):
+            return _webdav_response(parent)
+        if url.endswith("/Extras/"):
+            return _webdav_response(extras)
+        raise AssertionError("unexpected PROPFIND URL: {}".format(url))
+
+    mock_urlopen.side_effect = propfind
+
+    path = find_video_file("/content/Pack/", title_hint="Show.S02E05.1080p.WEB-DL")
+
+    assert path == "/content/Pack/Extras/Show.S02E05.1080p.mkv"
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_keeps_wrong_episode_when_siblings_have_no_match(
+    mock_urlopen, mock_settings
+):
+    """If recursion finds no matching episode, fall back to the current-level
+    (mismatched) video rather than returning nothing."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    parent = _propfind_listing(
+        [
+            ("/content/Pack/", True, None),
+            ("/content/Pack/Show.S02E06.1080p.mkv", False, 9000000000),
+            ("/content/Pack/Empty/", True, None),
+        ]
+    )
+    empty = _propfind_listing([("/content/Pack/Empty/", True, None)])
+
+    def propfind(req, **_kwargs):
+        url = req.full_url
+        if url.endswith("/Pack/"):
+            return _webdav_response(parent)
+        if url.endswith("/Empty/"):
+            return _webdav_response(empty)
+        raise AssertionError("unexpected PROPFIND URL: {}".format(url))
+
+    mock_urlopen.side_effect = propfind
+
+    path = find_video_file("/content/Pack/", title_hint="Show.S02E05.1080p.WEB-DL")
+
+    assert path == "/content/Pack/Show.S02E06.1080p.mkv"
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_matches_middle_episode_of_multi_ep_tag(
+    mock_urlopen, mock_settings
+):
+    """A multi-episode file like S01E01E02E03 must match a request for a middle
+    episode (E02), not only the first listed episode."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    listing = _propfind_listing(
+        [
+            ("/content/Show/", True, None),
+            ("/content/Show/Show.S01E01E02E03.1080p.mkv", False, 2000000000),
+            ("/content/Show/Show.S01E04.1080p.mkv", False, 9000000000),
+        ]
+    )
+    mock_urlopen.return_value = _webdav_response(listing)
+
+    path = find_video_file("/content/Show/", title_hint="Show.S01E02.1080p.WEB-DL")
+
+    assert path == "/content/Show/Show.S01E01E02E03.1080p.mkv"
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_stream_for_folder_passes_title_hint(mock_urlopen, mock_settings):
+    """find_video_stream_for_folder threads the hint into find_video_file."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    listing = _propfind_listing(
+        [
+            ("/content/Show/", True, None),
+            ("/content/Show/Show.S02E05.1080p.mkv", False, 2000000000),
+            ("/content/Show/Show.S02E06.1080p.mkv", False, 9000000000),
+        ]
+    )
+    mock_urlopen.return_value = _webdav_response(listing)
+
+    video_path, stream_url, _headers = find_video_stream_for_folder(
+        "/content/Show/", title_hint="Show.S02E05.1080p.WEB-DL"
+    )
+
+    assert video_path == "/content/Show/Show.S02E05.1080p.mkv"
+    assert stream_url.endswith("/content/Show/Show.S02E05.1080p.mkv")

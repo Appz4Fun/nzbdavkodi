@@ -242,6 +242,42 @@ _RANGE_RETRY_DELAYS = (2, 4, 8)
 # streamed yet, use a short schedule so byte 0 arrives promptly, or the
 # connection closes fast enough for Kodi's CCurlFile to reconnect and retry.
 _FIRST_BYTE_RANGE_RETRY_DELAYS = (0.25, 0.5, 1.0)
+# Bounded exhaustion cap for the fallback cutover fall-through (F4). When
+# fallback sources are attached but none validate and the primary makes no
+# forward progress, _serve_proxy re-enters the retry ladder so a TRANSIENT
+# trickle can recover (e3a74a1). But an indefinitely-dead primary with
+# never-validating fallbacks would otherwise spin the ladder / zero-fill until
+# the client gives up (looks like a hang). After this many CONSECUTIVE
+# fall-throughs that streamed no new REAL upstream bytes, close cleanly with
+# terminal_reason="fallback_exhausted" instead of looping. The transient
+# recovery path resets the counter on any genuine streamed progress, so a
+# healthy primary that briefly trickles is never penalised.
+_FALLBACK_PENDING_FALLTHROUGH_MAX = 3
+# F8-dropout: tri-state result for _fallback_source_matches. A definitive
+# MISMATCH (provably different file) permanently fails the source; a transient
+# INCONCLUSIVE (still-downloading region / probe 5xx / timeout / empty digest)
+# keeps the source eligible and is reconsidered on the next cutover. ``True``
+# (MATCH) means usable now. INCONCLUSIVE is a unique sentinel so it can never
+# be confused with the legacy truthy/falsy contract that callers still honour
+# (truthy -> select, falsy -> permanent fail).
+_FALLBACK_MATCH = True
+_FALLBACK_MISMATCH = False
+_FALLBACK_INCONCLUSIVE = object()
+# Bound on how many CONSECUTIVE transient (INCONCLUSIVE) misses a single
+# fallback source may accrue before it is abandoned (failed=True). Without this
+# bound a source that is permanently INCONCLUSIVE (e.g. an upstream that always
+# 5xxs the probe) would be reconsidered forever on every cutover. Reset to 0
+# whenever the source produces a definitive answer or validates.
+_FALLBACK_SOURCE_TRANSIENT_MISS_MAX = 4
+# F-route: a DEAD primary whose missing-article region reads as a CLEAN
+# download-high-water short read (AWAITING_DOWNLOAD) would otherwise spin the
+# retry ladder forever and never fail over (58f3d4f routed AWAITING_DOWNLOAD to
+# the ladder, not fallback, to avoid premature fallback_exhausted). After this
+# many CONSECUTIVE AWAITING_DOWNLOAD reads that make NO forward progress, allow
+# a failover to a validated fallback by routing into the live-cutover path. A
+# primary that IS still downloading and making progress resets the counter and
+# keeps using the ladder, preserving 58f3d4f's intent.
+_AWAITING_DOWNLOAD_NO_PROGRESS_MAX = 3
 _AUTH_HEADER_NOT_PROVIDED = object()
 _FALLBACK_SOURCE_STATE_NOT_PROVIDED = object()
 _FALLBACK_SOURCE_STREAM_URL_HINT_KEY = "_fallback_source_stream_url_hint"
@@ -305,6 +341,16 @@ _INITIAL_RANGE_PREFETCH_WAIT_SECONDS = 0.08
 # nzbdav's article cache so Kodi's real cues read is fast. 1 MiB comfortably
 # covers the cues/SeekHead region Kodi reads at startup.
 _TAIL_PREWARM_BYTES = 1048576
+# The tail prewarm warms the MKV cues, but firing its upstream read at prepare
+# time made it RACE Kodi's first-byte range request and the byte-0 prefetch for
+# nzbdav's connection budget — widening the same mid-startup stall window the
+# prewarm exists to close (transient black-screen). Hold the tail read back a
+# short, ABORTABLE beat so the byte-0 prefetch and Kodi's initial range fetch
+# win the budget first; Kodi's own cues read still arrives well after this. The
+# wait uses xbmc.Monitor.waitForAbort so a Kodi shutdown / session stop during
+# the defer cancels the prewarm cleanly (no wasted connection) instead of
+# blocking the daemon thread.
+_TAIL_PREWARM_DEFER_SECONDS = 1.5
 _PASSTHROUGH_RUNTIME_SETTINGS_KEY = "_passthrough_runtime_settings"
 _PASSTHROUGH_RUNTIME_SETTINGS_DONE_KEY = "_passthrough_runtime_settings_done"
 _PASSTHROUGH_RUNTIME_SETTINGS_ERROR_KEY = "_passthrough_runtime_settings_error"
@@ -2874,6 +2920,98 @@ class _StreamHandler(BaseHTTPRequestHandler):
         )
         return cmd
 
+    @staticmethod
+    def _bump_awaiting_no_progress(ctx, result, current_count):
+        """Advance the session-persistent no-progress AWAITING_DOWNLOAD count.
+
+        Only a clean download-high-water short read (AWAITING_DOWNLOAD) that
+        delivered nothing advances the streak; any other result leaves it
+        unchanged. The count lives in ctx so it survives Kodi's
+        Connection: close reconnects (a dead region reads as a clean short
+        read on every fresh GET). See F-route.
+        """
+        if result == _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD:
+            current_count += 1
+            ctx["_awaiting_download_no_progress"] = current_count
+        return current_count
+
+    def _activate_fallback_source(self, ctx, fallback, current, stuck_awaiting=False):
+        """Point the session at a selected fallback source for live cutover.
+
+        Shared by the recoverable cutover path and the F-route stuck-
+        AWAITING_DOWNLOAD failover so both perform identical bookkeeping
+        (URL/auth swap, watchdog window reset, switch counters, index).
+        """
+        ctx["remote_url"] = fallback["stream_url"]
+        ctx["auth_header"] = (fallback.get("stream_headers") or {}).get("Authorization")
+        ctx.pop("upstream_down_notified", None)
+        ctx.pop("upstream_unreachable_error", None)
+        # Reset throughput watchdog window so the new upstream gets a fresh
+        # stall window — otherwise the prior peer's wedge-induced low B/s would
+        # carry over and trip the watchdog mid-handshake against the healthy
+        # peer.
+        ctx["passthrough_window_t0"] = time.monotonic()
+        ctx["passthrough_window_bytes"] = 0
+        # The new source gets a fresh AWAITING_DOWNLOAD streak; the prior
+        # (dead) primary's stuck count must not carry over and prematurely
+        # escalate the healthy peer.
+        ctx["_awaiting_download_no_progress"] = 0
+        ctx["fallback_switch_count"] = int(ctx.get("fallback_switch_count", 0) or 0) + 1
+        try:
+            ctx["fallback_active_index"] = ctx.get("fallback_sources", []).index(
+                fallback
+            )
+        except ValueError:
+            ctx["fallback_active_index"] = -1
+        if stuck_awaiting:
+            message = (
+                "NZB-DAV: Primary stuck on no-progress AWAITING_DOWNLOAD at "
+                "byte {}; failing over to fallback nzo_id={} (switch_count={})"
+            )
+        else:
+            message = (
+                "NZB-DAV: Switched pass-through source at byte {} to fallback "
+                "nzo_id={} (switch_count={})"
+            )
+        xbmc.log(
+            message.format(
+                current,
+                fallback.get("nzo_id", ""),
+                ctx["fallback_switch_count"],
+            ),
+            xbmc.LOGWARNING,
+        )
+
+    @staticmethod
+    def _apply_fallback_match_result(source, match_result):
+        """Apply a tri-state match result to a candidate source (F8-dropout).
+
+        Returns True when the source is usable now (MATCH). On a definitive
+        MISMATCH the source is failed permanently. On a transient
+        INCONCLUSIVE the source is left eligible — its
+        ``transient_miss_count`` is bumped and only after exceeding
+        ``_FALLBACK_SOURCE_TRANSIENT_MISS_MAX`` is it abandoned, so a peer
+        that is briefly a few bytes short (or hiccups one probe) is
+        reconsidered on the next cutover instead of being killed for the
+        whole session. Any definitive answer resets the transient counter.
+        """
+        if match_result is _FALLBACK_INCONCLUSIVE:
+            misses = int(source.get("transient_miss_count", 0) or 0) + 1
+            source["transient_miss_count"] = misses
+            if misses > _FALLBACK_SOURCE_TRANSIENT_MISS_MAX:
+                # Stuck INCONCLUSIVE forever — abandon so the queue can't
+                # reconsider it on every cutover indefinitely.
+                source["failed"] = True
+            return False
+        # A definitive answer arrived; clear any prior transient streak.
+        if source.get("transient_miss_count"):
+            source["transient_miss_count"] = 0
+        if match_result:
+            return True
+        # Definitive MISMATCH (provably a different file).
+        source["failed"] = True
+        return False
+
     def _select_live_fallback_source(self, ctx, failed_byte, range_end):
         """Return a validated fallback source for the failed byte range."""
         fallback_sources = ctx.get("fallback_sources") or []
@@ -2966,10 +3104,10 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     known_failed=source_failed,
                 ):
                     continue
-                if not self._fallback_source_matches(
+                match_result = self._fallback_source_matches(
                     ctx, source, failed_byte, range_end
-                ):
-                    source["failed"] = True
+                )
+                if not self._apply_fallback_match_result(source, match_result):
                     continue
                 return source
             finally:
@@ -3112,8 +3250,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     ctx[primary_auth_hint_key] = previous_primary_auth_hint
                 else:
                     ctx.pop(primary_auth_hint_key, None)
-            if not matches:
-                source["failed"] = True
+            if not self._apply_fallback_match_result(source, matches):
                 continue
             return source
         return None
@@ -3224,7 +3361,24 @@ class _StreamHandler(BaseHTTPRequestHandler):
         return bool(stream_url)
 
     def _fallback_source_matches(self, ctx, source, failed_byte, range_end):
-        """Return True when a fallback looks like the same file and can resume."""
+        """Classify a fallback as MATCH / MISMATCH / INCONCLUSIVE (F8-dropout).
+
+        Returns one of:
+
+        - ``_FALLBACK_MATCH`` (``True``): same file, usable now.
+        - ``_FALLBACK_MISMATCH`` (``False``): provably a different file
+          (same URL+auth as primary, a definitively different content
+          length, or a fingerprint digest that is present and provably
+          differs). The caller fails the source permanently.
+        - ``_FALLBACK_INCONCLUSIVE``: a TRANSIENT condition — the needed
+          range/probe is not yet available (empty digest, probe 5xx /
+          timeout). The caller keeps the source eligible (bounded
+          reconsider) instead of killing it for the whole session.
+
+        The strict wrong-file safety is preserved: a definitively different
+        length or a provably different digest is still MISMATCH and can
+        never be selected.
+        """
         source_url = self._fallback_source_stream_url(ctx, source)
         source_auth = self._fallback_source_auth_hint(ctx, source)
         primary_auth = _AUTH_HEADER_NOT_PROVIDED
@@ -3238,16 +3392,23 @@ class _StreamHandler(BaseHTTPRequestHandler):
             if primary_auth is _AUTH_HEADER_NOT_PROVIDED:
                 primary_auth = ctx.get("auth_header")
             if source_auth == primary_auth:
-                return False
+                # The source IS the primary — it can never be its own
+                # recovery. A definitive, permanent MISMATCH.
+                return _FALLBACK_MISMATCH
         expected_length = self._fallback_expected_content_length(ctx)
         source_length = self._fallback_source_content_length(ctx, source)
         if expected_length <= 0 or source_length != expected_length:
-            return False
+            # A different WebDAV-reported final content length is a
+            # different release — definitive wrong-file rejection.
+            return _FALLBACK_MISMATCH
         if source_auth is _AUTH_HEADER_NOT_PROVIDED:
             source_auth = self._fallback_source_auth(source)
         probe_bases = self._fallback_probe_bases(ctx)
         if source.get("validated"):
-            return self._probe_fallback_current_range(
+            # Already fingerprint-proven this session. A failing
+            # current-range probe now is transient (the peer just hasn't
+            # downloaded THIS offset yet), not a wrong-file mismatch.
+            if self._probe_fallback_current_range(
                 source,
                 failed_byte,
                 range_end,
@@ -3256,7 +3417,9 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 auth_header=source_auth,
                 stream_url=source_url,
                 cache_ctx=ctx,
-            )
+            ):
+                return _FALLBACK_MATCH
+            return _FALLBACK_INCONCLUSIVE
         current_digest = self._fetch_fallback_current_range_digest(
             source,
             failed_byte,
@@ -3268,7 +3431,9 @@ class _StreamHandler(BaseHTTPRequestHandler):
             cache_ctx=ctx,
         )
         if not current_digest:
-            return False
+            # Range not yet available on the peer (still downloading) or a
+            # probe hiccup — transient, do not condemn the source.
+            return _FALLBACK_INCONCLUSIVE
         # Bug 4: only reuse the current_range digest in fingerprint
         # validation when its (start, end) covers the WHOLE 4096-byte
         # fingerprint range. When ``range_end`` is shorter than
@@ -3284,7 +3449,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
             current_range = None
         else:
             current_range = (failed_byte, natural_end, current_digest)
-        if not self._validate_fallback_fingerprint(
+        classification = self._classify_fallback_fingerprint(
             ctx,
             source,
             expected_length,
@@ -3294,10 +3459,16 @@ class _StreamHandler(BaseHTTPRequestHandler):
             fallback_url=source_url,
             fallback_auth=source_auth,
             primary_auth=primary_auth,
-        ):
-            return False
+        )
+        if classification is _FALLBACK_INCONCLUSIVE:
+            # A probe couldn't be completed (5xx / timeout / empty body) so
+            # we can't PROVE same-or-different yet. Stay eligible.
+            return _FALLBACK_INCONCLUSIVE
+        if classification is _FALLBACK_MISMATCH:
+            # Digests present and provably differ — a different file.
+            return _FALLBACK_MISMATCH
         source["validated"] = True
-        return True
+        return _FALLBACK_MATCH
 
     def _prevalidate_ready_fallback_sources(self, ctx):
         """Fingerprint ready fallback URLs before an upstream failure happens."""
@@ -3523,7 +3694,50 @@ class _StreamHandler(BaseHTTPRequestHandler):
         primary_auth=_AUTH_HEADER_NOT_PROVIDED,
         cache_fallback_range_bytes=False,
     ):
-        """Verify sampled bytes match before splicing in a fallback stream."""
+        """Return True only when every sampled range provably matches.
+
+        Bool wrapper over :meth:`_classify_fallback_fingerprint`. A
+        transient INCONCLUSIVE probe is treated as a non-match here — the
+        prevalidation caller only wants to mark a source ``validated`` when
+        it is byte-proven, and a transient miss simply stays unvalidated to
+        be retried later.
+        """
+        return (
+            self._classify_fallback_fingerprint(
+                ctx,
+                source,
+                content_length,
+                probe_bases,
+                current_range,
+                primary_url,
+                fallback_url,
+                fallback_auth,
+                primary_auth,
+                cache_fallback_range_bytes,
+            )
+            is _FALLBACK_MATCH
+        )
+
+    def _classify_fallback_fingerprint(
+        self,
+        ctx,
+        source,
+        content_length,
+        probe_bases,
+        current_range=None,
+        primary_url=None,
+        fallback_url=None,
+        fallback_auth=_AUTH_HEADER_NOT_PROVIDED,
+        primary_auth=_AUTH_HEADER_NOT_PROVIDED,
+        cache_fallback_range_bytes=False,
+    ):
+        """Classify sampled bytes as MATCH / MISMATCH / INCONCLUSIVE.
+
+        A digest that is PRESENT on both sides and differs is a definitive
+        MISMATCH (wrong file). A digest that cannot be fetched (empty body,
+        probe 5xx / timeout) is INCONCLUSIVE — we can't prove same-or-
+        different yet, so the caller keeps the source eligible.
+        """
         if primary_auth is _AUTH_HEADER_NOT_PROVIDED:
             primary_auth = ctx.get("auth_header")
         if fallback_url is None:
@@ -3532,7 +3746,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
             fallback_auth = self._fallback_source_auth(source)
         ranges = tuple(self._fallback_fingerprint_ranges(ctx, content_length))
         if len(ranges) > 1 and _FALLBACK_FINGERPRINT_WORKERS > 1:
-            return self._validate_fallback_fingerprint_parallel(
+            return self._classify_fallback_fingerprint_parallel(
                 ctx,
                 ranges,
                 content_length,
@@ -3556,7 +3770,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 cache_range_bytes=cache_fallback_range_bytes,
             )
             if not fallback_digest:
-                return False
+                return _FALLBACK_INCONCLUSIVE
             primary_digest = self._fetch_primary_fallback_range_digest(
                 ctx,
                 primary_auth,
@@ -3566,9 +3780,11 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 probe_bases,
                 primary_url,
             )
-            if not primary_digest or primary_digest != fallback_digest:
-                return False
-        return True
+            if not primary_digest:
+                return _FALLBACK_INCONCLUSIVE
+            if primary_digest != fallback_digest:
+                return _FALLBACK_MISMATCH
+        return _FALLBACK_MATCH
 
     def _fetch_fallback_fingerprint_digest(
         self,
@@ -3719,7 +3935,40 @@ class _StreamHandler(BaseHTTPRequestHandler):
         primary_auth,
         cache_fallback_range_bytes=False,
     ):
-        """Verify fingerprint ranges with bounded parallel range probes."""
+        """Return True only when every parallel-probed range provably matches.
+
+        Bool wrapper over :meth:`_classify_fallback_fingerprint_parallel`.
+        """
+        return (
+            self._classify_fallback_fingerprint_parallel(
+                ctx,
+                ranges,
+                content_length,
+                probe_bases,
+                current_range,
+                primary_url,
+                fallback_url,
+                fallback_auth,
+                primary_auth,
+                cache_fallback_range_bytes,
+            )
+            is _FALLBACK_MATCH
+        )
+
+    def _classify_fallback_fingerprint_parallel(
+        self,
+        ctx,
+        ranges,
+        content_length,
+        probe_bases,
+        current_range,
+        primary_url,
+        fallback_url,
+        fallback_auth,
+        primary_auth,
+        cache_fallback_range_bytes=False,
+    ):
+        """Classify fingerprint ranges with bounded parallel range probes."""
         workers = min(_FALLBACK_FINGERPRINT_WORKERS, len(ranges))
         fallback_digests = {}
         # Shared lock for the primary-digest cache: parallel workers
@@ -3756,7 +4005,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 start, end = fallback_futures[future]
                 digest = future.result()
                 if not digest:
-                    return False
+                    return _FALLBACK_INCONCLUSIVE
                 fallback_digests[(start, end)] = digest
 
             for start, end in ranges:
@@ -3776,11 +4025,11 @@ class _StreamHandler(BaseHTTPRequestHandler):
             for future in as_completed(primary_futures):
                 start, end = primary_futures[future]
                 primary_digest = future.result()
-                if not primary_digest or primary_digest != fallback_digests.get(
-                    (start, end)
-                ):
-                    return False
-            return True
+                if not primary_digest:
+                    return _FALLBACK_INCONCLUSIVE
+                if primary_digest != fallback_digests.get((start, end)):
+                    return _FALLBACK_MISMATCH
+            return _FALLBACK_MATCH
         finally:
             # `cancel_futures` requires Python 3.9+. Cancel explicitly first
             # so Python 3.8 stops any queued probes before nonblocking shutdown.
@@ -4167,7 +4416,39 @@ class _StreamHandler(BaseHTTPRequestHandler):
         total_streamed = 0
         total_skipped = 0
         recovery_count = 0
-        terminal_reason = "complete"
+        # Default to a DISTINCT sentinel, NOT "complete". Only the genuine
+        # success paths (full range delivered) set terminal_reason="complete"
+        # explicitly; any early return/raise that leaves it unset must read as
+        # a non-benign exit so the finally block still reports a still-pending
+        # fallback candidate as failed instead of silently swallowing it.
+        terminal_reason = "unknown"
+        # Bounded exhaustion guard: count consecutive cutover fall-throughs
+        # where fallback sources are attached but none validated AND the
+        # primary made no forward progress since the prior fall-through. A
+        # transient trickle re-enters the retry ladder and recovers (resetting
+        # this), but a genuinely-dead primary with never-validating fallbacks
+        # is stopped after the cap instead of spinning the ladder / zero-fill
+        # forever (the indefinite-hang regression). See e3a74a1 + F4.
+        fallback_pending_fallthroughs = 0
+        last_fallthrough_streamed = -1
+        # F-route: count CONSECUTIVE clean download-high-water short reads
+        # (AWAITING_DOWNLOAD) that make NO forward progress. 58f3d4f routes a
+        # still-downloading short read to the retry ladder (wait on the
+        # primary) rather than failing over, which is correct while the
+        # primary is genuinely advancing. But a DEAD primary whose missing
+        # region reads as a clean short read would spin the ladder forever and
+        # never fail over. Once this many no-progress AWAITING_DOWNLOAD reads
+        # accrue, allow a failover into the live-cutover path. Any genuine
+        # forward progress resets the counter, so a primary that IS still
+        # downloading keeps using the ladder (preserving 58f3d4f's intent).
+        #
+        # Kept in ctx (not a local) so it survives Kodi's Connection: close
+        # reconnects: a dead region reads as a clean short read on every fresh
+        # GET, and a per-request local would reset to 0 each time and never
+        # escalate. Genuine progress (this request or any prior one) clears it.
+        awaiting_download_no_progress = int(
+            ctx.get("_awaiting_download_no_progress", 0) or 0
+        )
         density_window = deque()
         # Reset the throughput watchdog window per request. ctx may be reused
         # across requests for the same session, so explicit re-init avoids
@@ -4182,6 +4463,17 @@ class _StreamHandler(BaseHTTPRequestHandler):
         # toast: success when bytes flow, failure when we switch away or
         # exhaust the queue before it delivers anything.
         fallback_pending_candidate = None
+        # Whether the currently-pending candidate has PROVABLY delivered real
+        # bytes yet. Set True only at the sites that emit the success toast
+        # (where written/retry_written > 0), and reset to False on every fresh
+        # switch. The finally block reports a still-pending candidate that never
+        # delivered as a failure regardless of terminal_reason — closing the
+        # F11/F12 hole where a benign exit (zero-fill "complete" or a client
+        # disconnect AFTER the switch but BEFORE any byte) silently swallowed a
+        # dead/wrong fallback. A candidate that DID deliver already cleared
+        # fallback_pending_candidate to None at the success site, so it is never
+        # re-toasted here.
+        candidate_delivered = False
         # A failed candidate number whose toast is deferred until after the
         # NEXT candidate's read has started, so a slow Kodi notification can
         # never stall the cutover between a dead candidate and its successor
@@ -4204,6 +4496,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     _update_session_recovery_state(self.server, ctx, streamed=written)
                     _record_density_window(density_window, "progress", written)
                     if current > end:
+                        terminal_reason = "complete"
                         return
 
             if waited_for_initial_prefetch:
@@ -4233,10 +4526,20 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 if fallback_pending_candidate is not None and written:
                     # The candidate we switched to just delivered playable
                     # bytes — the cutover worked.
+                    candidate_delivered = True
                     _notify_fallback_outcome(fallback_pending_candidate, True)
                     fallback_pending_candidate = None
                 if current > end:
+                    terminal_reason = "complete"
                     return
+
+                # F-route: track consecutive AWAITING_DOWNLOAD iterations that
+                # made NO forward progress. The reset happens here for the main
+                # read; the retry ladder below feeds back into this counter via
+                # ``awaiting_download_stuck`` so a primary that the ladder can
+                # still coax forward (genuinely downloading, per 58f3d4f) keeps
+                # waiting, while a stuck/dead primary escalates to failover.
+                progressed_this_iter = bool(written)
 
                 if current <= end and result in (
                     _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE,
@@ -4244,38 +4547,17 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 ):
                     fallback = self._select_live_fallback_source(ctx, current, end)
                     if fallback:
-                        ctx["remote_url"] = fallback["stream_url"]
-                        ctx["auth_header"] = (fallback.get("stream_headers") or {}).get(
-                            "Authorization"
-                        )
-                        ctx.pop("upstream_down_notified", None)
-                        ctx.pop("upstream_unreachable_error", None)
-                        # Reset throughput watchdog window so the new
-                        # upstream gets a fresh stall window — otherwise
-                        # the prior peer's wedge-induced low B/s would
-                        # carry over and trip the watchdog mid-handshake
-                        # against the healthy peer.
-                        ctx["passthrough_window_t0"] = time.monotonic()
-                        ctx["passthrough_window_bytes"] = 0
+                        self._activate_fallback_source(ctx, fallback, current)
+                        awaiting_download_no_progress = 0
+                        # SM-1 (F4): a successful cutover is genuine progress on
+                        # the fallback chain — reset the bounded-exhaustion
+                        # counters so a freshly-switched source gets its FULL
+                        # fruitless-read budget instead of inheriting the stale
+                        # primary-driven count (which could trip
+                        # fallback_exhausted after ~one fruitless read).
+                        fallback_pending_fallthroughs = 0
+                        last_fallthrough_streamed = -1
                         active_ctx = ctx
-                        ctx["fallback_switch_count"] = (
-                            int(ctx.get("fallback_switch_count", 0) or 0) + 1
-                        )
-                        try:
-                            ctx["fallback_active_index"] = ctx.get(
-                                "fallback_sources", []
-                            ).index(fallback)
-                        except ValueError:
-                            ctx["fallback_active_index"] = -1
-                        xbmc.log(
-                            "NZB-DAV: Switched pass-through source at byte {} "
-                            "to fallback nzo_id={} (switch_count={})".format(
-                                current,
-                                fallback.get("nzo_id", ""),
-                                ctx["fallback_switch_count"],
-                            ),
-                            xbmc.LOGWARNING,
-                        )
                         if fallback_pending_candidate is not None:
                             # Switching away from a candidate that never
                             # delivered a byte — it failed. Defer the toast to
@@ -4288,6 +4570,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
                             if ctx["fallback_active_index"] >= 0
                             else int(ctx.get("fallback_switch_count", 0) or 0)
                         )
+                        candidate_delivered = False
                         continue
                     if ctx.get("fallback_sources"):
                         # Fallback sources are attached but none validated yet
@@ -4308,11 +4591,51 @@ class _StreamHandler(BaseHTTPRequestHandler):
                         # still emitted by the finally block (the single sink for
                         # every terminal exit) whenever the stream does end, so
                         # falling through here doesn't drop the notification.
+                        #
+                        # BOUNDED EXHAUSTION (F4): re-entering the retry ladder
+                        # is correct for a TRANSIENT trickle, but a primary that
+                        # never recovers while its fallbacks never validate would
+                        # otherwise spin the ladder / zero-fill indefinitely
+                        # (looks like a hang/dropout). Count consecutive
+                        # fall-throughs that streamed NO new REAL upstream bytes
+                        # (zero-fill "progress" is black frames, not recovery, so
+                        # it must NOT reset the bound). Any genuine streamed byte
+                        # since the last fall-through resets the count, so a
+                        # recovering primary is never penalised. Once the cap is
+                        # hit with still no validated candidate, close cleanly
+                        # with fallback_exhausted instead of looping — WITHOUT
+                        # reintroducing e3a74a1's immediate hard-close.
+                        if total_streamed == last_fallthrough_streamed:
+                            fallback_pending_fallthroughs += 1
+                        else:
+                            fallback_pending_fallthroughs = 1
+                            last_fallthrough_streamed = total_streamed
+                        if (
+                            fallback_pending_fallthroughs
+                            >= _FALLBACK_PENDING_FALLTHROUGH_MAX
+                        ):
+                            terminal_reason = "fallback_exhausted"
+                            xbmc.log(
+                                "NZB-DAV: Fallback chain exhausted at byte {} "
+                                "after {} fruitless cutover re-entries with no "
+                                "validated source and no primary progress; "
+                                "closing cleanly (reason={})".format(
+                                    current,
+                                    fallback_pending_fallthroughs,
+                                    terminal_reason,
+                                ),
+                                xbmc.LOGERROR,
+                            )
+                            return
                         xbmc.log(
                             "NZB-DAV: No validated fallback source available at "
                             "byte {}; re-entering retry ladder on the primary "
-                            "instead of closing "
-                            "(reason=fallback_pending_retry_primary)".format(current),
+                            "instead of closing (attempt {}/{}) "
+                            "(reason=fallback_pending_retry_primary)".format(
+                                current,
+                                fallback_pending_fallthroughs,
+                                _FALLBACK_PENDING_FALLTHROUGH_MAX,
+                            ),
                             xbmc.LOGWARNING,
                         )
 
@@ -4348,10 +4671,69 @@ class _StreamHandler(BaseHTTPRequestHandler):
                         # The candidate delivered its first bytes via the retry
                         # ladder (its initial read was a download-high-water
                         # short read) — the cutover worked.
+                        candidate_delivered = True
                         _notify_fallback_outcome(fallback_pending_candidate, True)
                         fallback_pending_candidate = None
+                    if retry_written:
+                        progressed_this_iter = True
                     if current > end:
+                        terminal_reason = "complete"
                         return
+
+                # F-route: the retry ladder has now had its chance to coax the
+                # primary forward. If this whole iteration delivered bytes, the
+                # primary IS still downloading — reset the streak and keep
+                # waiting on it (58f3d4f's intent). If the result is STILL a
+                # clean AWAITING_DOWNLOAD short read with no progress, the
+                # primary's needed region is stuck/dead; after a bounded number
+                # of such no-progress passes, fail over to a validated fallback
+                # (the same live-cutover path the recoverable cases use) rather
+                # than spinning the ladder / zero-filling toward EOF forever.
+                if progressed_this_iter:
+                    awaiting_download_no_progress = 0
+                    ctx["_awaiting_download_no_progress"] = 0
+                    # SM-1 (F4): genuine streamed progress means the chain is
+                    # alive — reset the bounded-exhaustion counters so a later
+                    # fruitless read starts from a fresh budget, not a stale count.
+                    fallback_pending_fallthroughs = 0
+                    last_fallthrough_streamed = -1
+                else:
+                    awaiting_download_no_progress = self._bump_awaiting_no_progress(
+                        ctx, result, awaiting_download_no_progress
+                    )
+                awaiting_stuck = (
+                    not progressed_this_iter
+                    and current <= end
+                    and result == _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD
+                    and awaiting_download_no_progress
+                    > _AWAITING_DOWNLOAD_NO_PROGRESS_MAX
+                    and ctx.get("fallback_sources")
+                )
+                awaiting_fallback = (
+                    self._select_live_fallback_source(ctx, current, end)
+                    if awaiting_stuck
+                    else None
+                )
+                if awaiting_fallback:
+                    self._activate_fallback_source(
+                        ctx, awaiting_fallback, current, stuck_awaiting=True
+                    )
+                    awaiting_download_no_progress = 0
+                    # SM-1 (F4): see the live-cutover reset above — a successful
+                    # awaiting-stuck cutover likewise resets the bounded-
+                    # exhaustion counters so the new source gets a fresh budget.
+                    fallback_pending_fallthroughs = 0
+                    last_fallthrough_streamed = -1
+                    active_ctx = ctx
+                    if fallback_pending_candidate is not None:
+                        fallback_failed_to_notify = fallback_pending_candidate
+                    fallback_pending_candidate = (
+                        ctx["fallback_active_index"] + 1
+                        if ctx["fallback_active_index"] >= 0
+                        else int(ctx.get("fallback_switch_count", 0) or 0)
+                    )
+                    candidate_delivered = False
+                    continue
 
                 if result in (
                     _UPSTREAM_RANGE_CLIENT_ERROR,
@@ -4466,6 +4848,11 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     ),
                     xbmc.LOGWARNING,
                 )
+            # The while loop only exits normally when ``current > end`` — every
+            # requested byte was delivered (streamed and/or zero-filled). That
+            # is a genuine completion, so mark it explicitly rather than leaning
+            # on the default sentinel.
+            terminal_reason = "complete"
         except (BrokenPipeError, ConnectionResetError, _socket.timeout):
             # socket.timeout has TWO causes here:
             #   1. Kodi stopped reading from us for longer than
@@ -4519,17 +4906,32 @@ class _StreamHandler(BaseHTTPRequestHandler):
             if fallback_failed_to_notify is not None:
                 _notify_fallback_outcome(fallback_failed_to_notify, False)
                 fallback_failed_to_notify = None
-            # The candidate still awaiting its first byte only "failed" if the
-            # stream ended on a genuine upstream/recovery failure. A benign exit
-            # is NOT its fault: on full completion a delivering candidate already
-            # cleared itself on success, and on client_disconnected the CLIENT
-            # write aborted — which means the candidate WAS serving bytes — so a
-            # failure toast here would falsely blame a working candidate. Clear
-            # it silently in that case; report it on every genuine failure exit.
-            if fallback_pending_candidate is not None:
-                if not _benign_summary:
-                    _notify_fallback_outcome(fallback_pending_candidate, False)
-                fallback_pending_candidate = None
+            # A candidate that PROVABLY delivered real bytes cleared
+            # fallback_pending_candidate to None at its success site, so reaching
+            # here with it still set means the candidate switched in but
+            # candidate_delivered never flipped True. That covers the F11 hole —
+            # a full zero-fill to EOF (reason="complete") where the candidate
+            # genuinely never wrote a real byte — which the candidate_delivered
+            # catch correctly reports as a failure.
+            #
+            # But 4decdd4's invariant exempts terminal_reason="client_disconnected":
+            # a BrokenPipeError yielding that reason can ONLY originate at the
+            # client body write (self.wfile.write(chunk)), reached only AFTER
+            # resp.read() returned a non-empty chunk — so the candidate's
+            # upstream WAS serving bytes and the CLIENT went away (a Kodi demuxer
+            # probe/seek abandoning the range, or a user stop). candidate_delivered
+            # stays False because the BrokenPipeError raises before
+            # _stream_upstream_range returns (written>0), so without this exempt a
+            # live/working candidate (including one disconnected mid multi-chunk
+            # delivery) would be falsely toasted as failed. Suppress the toast on
+            # that genuinely-benign exit; every genuine failure exit still blames it.
+            if (
+                fallback_pending_candidate is not None
+                and not candidate_delivered
+                and terminal_reason != "client_disconnected"
+            ):
+                _notify_fallback_outcome(fallback_pending_candidate, False)
+            fallback_pending_candidate = None
             xbmc.log(
                 "NZB-DAV: Pass-through summary reason={} range={}-{} "
                 "streamed={} zero_fill={} recoveries={} "
@@ -6725,6 +7127,15 @@ class StreamProxy:
         # Only warm a tail that is distinct from the byte-0 prefetch window;
         # tiny files are already fully covered by _prefetch_initial_range.
         if content_length <= _TAIL_PREWARM_BYTES + _UPSTREAM_READ_CHUNK:
+            return
+        # Yield to startup playback: hold the tail read back a short, abortable
+        # beat so the byte-0 prefetch and Kodi's first-byte range request win
+        # nzbdav's connection budget first. Without this the tail read RACED
+        # them at prepare time and widened the very mid-startup stall window the
+        # prewarm exists to close (transient black-screen). waitForAbort lets a
+        # Kodi shutdown / session stop cancel the prewarm cleanly during the
+        # defer instead of blocking the daemon thread or wasting a connection.
+        if xbmc.Monitor().waitForAbort(_TAIL_PREWARM_DEFER_SECONDS):
             return
         tail_start = content_length - _TAIL_PREWARM_BYTES
         try:

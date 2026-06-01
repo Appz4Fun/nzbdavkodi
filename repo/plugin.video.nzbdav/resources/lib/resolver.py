@@ -1594,8 +1594,15 @@ def _start_existing_completed_cleanup(title, on_existing_completed):
         )
 
 
-def _find_video_stream_for_folder(webdav_folder, settings_getter=None):
-    """Return video path, URL, and headers for a completed WebDAV folder."""
+def _find_video_stream_for_folder(webdav_folder, settings_getter=None, title_hint=None):
+    """Return video path, URL, and headers for a completed WebDAV folder.
+
+    ``title_hint`` is the requested release/episode title (e.g. the submitted
+    scene name). It is threaded into webdav discovery so a multi-episode pack
+    returns the requested SxxExx episode rather than whichever sibling file is
+    largest. When ``None`` (movie / no identifiable episode) the historical
+    largest-video-wins behavior is preserved unchanged.
+    """
     try:
         from resources.lib import webdav as _webdav
 
@@ -1606,7 +1613,9 @@ def _find_video_stream_for_folder(webdav_folder, settings_getter=None):
         ):
             _resolve_stage("find_video_stream_for_folder_delegated")
             video_path, stream_url, stream_headers = find_video_stream_for_folder(
-                webdav_folder, **_settings_getter_kwargs(settings_getter)
+                webdav_folder,
+                title_hint=title_hint,
+                **_settings_getter_kwargs(settings_getter),
             )
             if video_path:
                 _remember_resolved_stream_content_length_hint(
@@ -1618,7 +1627,7 @@ def _find_video_stream_for_folder(webdav_folder, settings_getter=None):
 
     kwargs = _settings_getter_kwargs(settings_getter)
     _resolve_stage("find_video_file_start folder={}".format(webdav_folder))
-    video_path = find_video_file(webdav_folder, **kwargs)
+    video_path = find_video_file(webdav_folder, title_hint=title_hint, **kwargs)
     _resolve_stage("find_video_file_done path={}".format(bool(video_path)))
     if not video_path:
         return None, None, None
@@ -1667,7 +1676,7 @@ def _completed_job_stream(
     webdav_folder = _storage_to_webdav_path(storage)
     _start_existing_completed_cleanup(title, on_existing_completed)
     video_path, stream_url, stream_headers = _find_video_stream_for_folder(
-        webdav_folder, settings_getter=settings_getter
+        webdav_folder, settings_getter=settings_getter, title_hint=title
     )
     if not video_path:
         return None
@@ -3145,12 +3154,17 @@ def _handle_job_status(job_status, nzo_id, dialog, last_status):
 
 
 def _find_completed_video_stream_with_rechecks(
-    webdav_folder, monitor=None, settings_getter=None
+    webdav_folder, monitor=None, settings_getter=None, title_hint=None
 ):
-    """Return a completed WebDAV stream, briefly rechecking symlink visibility."""
+    """Return a completed WebDAV stream, briefly rechecking symlink visibility.
+
+    ``title_hint`` (the requested release/episode title) is threaded into
+    discovery so a multi-episode pack resolves to the requested episode; with
+    ``None`` the historical largest-video behavior is preserved.
+    """
     _resolve_stage("find_video_stream_start")
     video_path, stream_url, stream_headers = _find_video_stream_for_folder(
-        webdav_folder, settings_getter=settings_getter
+        webdav_folder, settings_getter=settings_getter, title_hint=title_hint
     )
     _resolve_stage("find_video_stream_done path={}".format(bool(video_path)))
     if video_path or monitor is None:
@@ -3161,7 +3175,7 @@ def _find_completed_video_stream_with_rechecks(
             return None, None, None
         _resolve_stage("find_video_stream_retry delay={}".format(delay_seconds))
         video_path, stream_url, stream_headers = _find_video_stream_for_folder(
-            webdav_folder, settings_getter=settings_getter
+            webdav_folder, settings_getter=settings_getter, title_hint=title_hint
         )
         _resolve_stage("find_video_stream_retry_done path={}".format(bool(video_path)))
         if video_path:
@@ -3219,7 +3233,10 @@ def _handle_history_result(
         return False, None, None, no_video_retries
     webdav_folder = _storage_to_webdav_path(storage)
     video_path, stream_url, stream_headers = _find_completed_video_stream_with_rechecks(
-        webdav_folder, monitor=monitor, settings_getter=settings_getter
+        webdav_folder,
+        monitor=monitor,
+        settings_getter=settings_getter,
+        title_hint=title,
     )
     if video_path and _completed_stream_body_available(stream_url, stream_headers):
         xbmc.log(

@@ -1318,7 +1318,7 @@ def test_selection_fallback_rejects_batch_after_unusable_selected_manifest(
     )
     candidates = [
         _result(
-            "The.Matrix.1999.UHD.BluRay.2160p.DV.HEVC.REMUX-ALT{:02d}".format(index),
+            "The.Matrix.1999.UHD.BluRay.2160p.DV.HEVC.REMUX-ALTx{:02d}".format(index),
             "https://idx/fallback-unusable-selected-{}.nzb".format(index),
             60000000000,
             meta=selected["_meta"],
@@ -1370,7 +1370,7 @@ def test_selection_fallback_skips_candidate_wait_after_unusable_selected_manifes
     )
     candidates = [
         _result(
-            "The.Matrix.1999.UHD.BluRay.2160p.DV.HEVC.REMUX-SLOW{:02d}".format(index),
+            "The.Matrix.1999.UHD.BluRay.2160p.DV.HEVC.REMUX-SLOWx{:02d}".format(index),
             "https://idx/fallback-slow-unusable-selected-{}.nzb".format(index),
             60000000000,
             meta=selected["_meta"],
@@ -1792,7 +1792,7 @@ def test_selection_fallback_stops_manifest_fetch_after_max_candidates(
     )
     candidates = [
         _result(
-            "The.Matrix.1999.UHD.BluRay.2160p.DV.HEVC.REMUX-ALT{:02d}".format(index),
+            "The.Matrix.1999.UHD.BluRay.2160p.DV.HEVC.REMUX-ALTx{:02d}".format(index),
             "https://idx/fallback-{}.nzb".format(index),
             60000000000,
             meta=selected["_meta"],
@@ -1846,7 +1846,7 @@ def test_selection_fallback_fetches_candidate_manifests_in_parallel(
     )
     candidates = [
         _result(
-            "The.Matrix.1999.UHD.BluRay.2160p.DV.HEVC.REMUX-PAR{:02d}".format(index),
+            "The.Matrix.1999.UHD.BluRay.2160p.DV.HEVC.REMUX-PARx{:02d}".format(index),
             "https://idx/fallback-parallel-{}.nzb".format(index),
             60000000000,
             meta=selected["_meta"],
@@ -1911,7 +1911,7 @@ def test_selection_fallback_overlaps_selected_manifest_with_candidate_batch(
     )
     candidates = [
         _result(
-            "The.Matrix.1999.UHD.BluRay.2160p.DV.HEVC.REMUX-OVR{:02d}".format(index),
+            "The.Matrix.1999.UHD.BluRay.2160p.DV.HEVC.REMUX-OVRx{:02d}".format(index),
             "https://idx/fallback-overlap-{}.nzb".format(index),
             60000000000,
             meta=selected["_meta"],
@@ -1970,7 +1970,7 @@ def test_selection_fallback_pipelines_second_manifest_wave_after_underfill(
     )
     candidates = [
         _result(
-            "The.Matrix.1999.UHD.BluRay.2160p.DV.HEVC.REMUX-PIPE{:02d}".format(index),
+            "The.Matrix.1999.UHD.BluRay.2160p.DV.HEVC.REMUX-PIPEx{:02d}".format(index),
             "https://idx/fallback-pipeline-{}.nzb".format(index),
             60000000000,
             meta=selected["_meta"],
@@ -2179,7 +2179,7 @@ def test_selection_fallback_scales_second_wave_to_remaining_slots(
     )
     candidates = [
         _result(
-            "The.Matrix.1999.UHD.BluRay.2160p.DV.HEVC.REMUX-SCALE{:02d}".format(index),
+            "The.Matrix.1999.UHD.BluRay.2160p.DV.HEVC.REMUX-SCALEx{:02d}".format(index),
             "https://idx/fallback-scaled-wave-{}.nzb".format(index),
             60000000000,
             meta=selected["_meta"],
@@ -2380,7 +2380,7 @@ def test_selection_fallback_stops_prefilter_scan_after_max_attached_candidates(
     )
     candidates = [
         _result(
-            "The.Matrix.1999.UHD.BluRay.2160p.DV.HEVC.REMUX-ALT{:02d}".format(index),
+            "The.Matrix.1999.UHD.BluRay.2160p.DV.HEVC.REMUX-ALTx{:02d}".format(index),
             "https://idx/fallback-extra-{}.nzb".format(index),
             60000000000,
             meta=selected["_meta"],
@@ -2447,7 +2447,7 @@ def test_selection_fallback_reuses_prefilter_match_for_manifest_gate(
     )
     candidates = [
         _result(
-            "The.Matrix.1999.UHD.BluRay.2160p.DV.HEVC.REMUX-ALT{:02d}".format(index),
+            "The.Matrix.1999.UHD.BluRay.2160p.DV.HEVC.REMUX-ALTx{:02d}".format(index),
             "https://idx/fallback-{}.nzb".format(index),
             60000000000,
             meta=selected["_meta"],
@@ -3215,6 +3215,11 @@ def test_fetch_content_length_reuses_validated_probe_url_for_precomputed_bases()
 def test_precomputed_probe_bases_reuse_base_origin_checks_for_range_digest():
     from resources.lib import fallback_streams
 
+    # The module-level @lru_cache on _cached_validated_probe_url leaks across
+    # tests; clear it so this assertion is independent of test execution order.
+    if hasattr(fallback_streams._cached_validated_probe_url, "cache_clear"):
+        fallback_streams._cached_validated_probe_url.cache_clear()
+
     body = b"A" * 4
     response = _mock_range_response(
         body,
@@ -3319,13 +3324,14 @@ def test_fetch_range_digest_accepts_matching_partial_content(mock_urlopen):
 
 @patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
 @patch("resources.lib.fallback_streams._fallback_settings")
-def test_video_manifest_peer_match_accepts_size_within_20_percent_tolerance(
+def test_video_manifest_peer_match_accepts_size_within_10_percent_tolerance(
     mock_settings, mock_fetch
 ):
     """Different uploads of the same source MKV use different yEnc segment sizes,
     so two video manifests for the same release will report different group_bytes.
-    Accept matches when the bytes are within +/-20% as long as title and profile
-    gates already passed.
+    Accept matches when the bytes are within the +/-10% Tier-1 band as long as the
+    content-identity gate already passed. (Tightened from the old +/-20% band so a
+    differently-encoded release can no longer slip through on size alone.)
     """
     mock_settings.return_value = (True, 5)
     primary = _result(
@@ -3344,7 +3350,7 @@ def test_video_manifest_peer_match_accepts_size_within_20_percent_tolerance(
     repost_within_tolerance = _result(
         "Once.Upon.a.Time.in.the.West.1968.PROPER.UHD.BluRay.2160p.DTS-HD.MA.5.1.DV.HEVC.HYBRID.REMUX-FraMeSToR",
         "https://idx/repost.nzb",
-        110000000000,
+        103000000000,
         meta={
             "resolution": "2160p",
             "quality": "BluRay REMUX",
@@ -3359,7 +3365,7 @@ def test_video_manifest_peer_match_accepts_size_within_20_percent_tolerance(
             "video", "once upon a time framestor.mkv", 95000000000, "articles-a"
         ),
         "https://idx/repost.nzb": _manifest(
-            "video", "once upon a time alt repost.mkv", 110000000000, "articles-b"
+            "video", "once upon a time alt repost.mkv", 103000000000, "articles-b"
         ),
     }
     mock_fetch.side_effect = lambda url, **_kwargs: manifests[url]
@@ -3687,3 +3693,350 @@ def test_archive_peers_with_shared_archive_base_match_via_group_key_short_circui
 
     assert primary["_fallback_candidates"] == [repost_shared_base]
     assert repost_shared_base["_fallback_candidates"] == [primary]
+
+
+# ---------------------------------------------------------------------------
+# Tiered content-identity fallback (F1/F2/F3)
+# ---------------------------------------------------------------------------
+
+
+def _movie_meta(resolution="2160p", codec="x265/HEVC", group="GROUP"):
+    return {
+        "resolution": resolution,
+        "quality": "BluRay REMUX",
+        "codec": codec,
+        "hdr": ["Dolby Vision"],
+        "group": group,
+        "container": "mkv",
+    }
+
+
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+@patch("resources.lib.fallback_streams._fallback_settings")
+def test_content_identity_gate_rejects_different_movie_part(mock_settings, mock_fetch):
+    """Dune Part Two must never fall back to Dune Part One even though the
+    release tokens (dune, part, year, profile) overlap heavily."""
+    mock_settings.return_value = (True, 5)
+    part_two = _result(
+        "Dune.Part.Two.2024.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/part-two.nzb",
+        60000000000,
+        meta=_movie_meta(),
+    )
+    part_one = _result(
+        "Dune.Part.One.2021.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/part-one.nzb",
+        60000000000,
+        meta=_movie_meta(),
+    )
+    manifests = {
+        "https://idx/part-two.nzb": _manifest(
+            "video", "dune two.mkv", 60000000000, "a"
+        ),
+        "https://idx/part-one.nzb": _manifest(
+            "video", "dune one.mkv", 60000000000, "b"
+        ),
+    }
+    mock_fetch.side_effect = lambda url, **_kwargs: manifests[url]
+
+    attach_fallback_candidates([part_two, part_one])
+
+    assert part_two["_fallback_candidates"] == []
+    assert part_one["_fallback_candidates"] == []
+
+
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+@patch("resources.lib.fallback_streams._fallback_settings")
+def test_content_identity_gate_rejects_different_movie_year(mock_settings, mock_fetch):
+    """Same title, different year (Avatar 2009 vs 2022) is different content."""
+    mock_settings.return_value = (True, 5)
+    old = _result(
+        "Avatar.2009.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/avatar-2009.nzb",
+        60000000000,
+        meta=_movie_meta(),
+    )
+    new = _result(
+        "Avatar.2022.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/avatar-2022.nzb",
+        60000000000,
+        meta=_movie_meta(),
+    )
+    manifests = {
+        "https://idx/avatar-2009.nzb": _manifest("video", "a.mkv", 60000000000, "a"),
+        "https://idx/avatar-2022.nzb": _manifest("video", "b.mkv", 60000000000, "b"),
+    }
+    mock_fetch.side_effect = lambda url, **_kwargs: manifests[url]
+
+    attach_fallback_candidates([old, new])
+
+    assert old["_fallback_candidates"] == []
+    assert new["_fallback_candidates"] == []
+
+
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+@patch("resources.lib.fallback_streams._fallback_settings")
+def test_content_identity_gate_rejects_different_episode(mock_settings, mock_fetch):
+    """S02E05 must not fall back to S02E06 or S01E05."""
+    mock_settings.return_value = (True, 5)
+    e05 = _result(
+        "Show.Name.S02E05.2160p.WEB-DL.x265-GROUP",
+        "https://idx/e05.nzb",
+        6000000000,
+        meta=_movie_meta(),
+    )
+    e06 = _result(
+        "Show.Name.S02E06.2160p.WEB-DL.x265-GROUP",
+        "https://idx/e06.nzb",
+        6000000000,
+        meta=_movie_meta(),
+    )
+    s01 = _result(
+        "Show.Name.S01E05.2160p.WEB-DL.x265-GROUP",
+        "https://idx/s01e05.nzb",
+        6000000000,
+        meta=_movie_meta(),
+    )
+    manifests = {
+        "https://idx/e05.nzb": _manifest("video", "e05.mkv", 6000000000, "a"),
+        "https://idx/e06.nzb": _manifest("video", "e06.mkv", 6000000000, "b"),
+        "https://idx/s01e05.nzb": _manifest("video", "s1e5.mkv", 6000000000, "c"),
+    }
+    mock_fetch.side_effect = lambda url, **_kwargs: manifests[url]
+
+    attach_fallback_candidates([e05, e06, s01])
+
+    assert e05["_fallback_candidates"] == []
+    assert e06["_fallback_candidates"] == []
+    assert s01["_fallback_candidates"] == []
+
+
+def test_same_content_rejects_part_vs_bare_movie():
+    """FS-1: an explicit-part release is different content from the bare title.
+
+    PTT keeps the part word in the title, so "dune part two" != "dune" and the
+    old `primary_title == candidate_title` guard never fired. A sequel must not
+    peer with the bare original even when the sequel omits its year.
+    """
+    from resources.lib import fallback_streams as fs
+
+    part_two = _result(
+        "Dune.Part.Two.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/part-two.nzb",
+        60000000000,
+        meta=_movie_meta(),
+    )
+    bare = _result(
+        "Dune.2024.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/bare.nzb",
+        60000000000,
+        meta=_movie_meta(),
+    )
+    assert fs._same_content(part_two, bare) is False
+    assert fs._same_content(bare, part_two) is False
+
+
+def test_same_content_rejects_part_one_vs_part_two():
+    """FS-1: differing explicit parts stay different content."""
+    from resources.lib import fallback_streams as fs
+
+    part_two = _result(
+        "Dune.Part.Two.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/part-two.nzb",
+        60000000000,
+        meta=_movie_meta(),
+    )
+    part_one = _result(
+        "Dune.Part.One.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/part-one.nzb",
+        60000000000,
+        meta=_movie_meta(),
+    )
+    assert fs._same_content(part_two, part_one) is False
+
+
+def test_titles_core_related_fails_closed_on_empty_token_set():
+    """FS-2: an empty core-title token set must not fail open.
+
+    A subject that normalizes to no word tokens (all punctuation) paired with an
+    empty PTT title used to return True; without corroborating identity it must
+    fail closed.
+    """
+    from resources.lib import fallback_streams as fs
+
+    assert fs._titles_core_related("", "dune") is False
+    assert fs._titles_core_related("dune", "") is False
+    # But corroborating identity (matching year/episode) rescues the empty case.
+    assert fs._titles_core_related("", "dune", corroborated=True) is True
+
+
+def test_same_content_rejects_subtitled_sequel_without_year():
+    """FS-3: a subset title relation with no year/episode backstop is rejected.
+
+    "Avatar" must not peer with "Avatar The Way Of Water" when neither carries a
+    year, because the extra tokens are a distinguishing subtitle, not junk.
+    """
+    from resources.lib import fallback_streams as fs
+
+    avatar = _result(
+        "Avatar.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/avatar.nzb",
+        60000000000,
+        meta=_movie_meta(),
+    )
+    sequel = _result(
+        "Avatar.The.Way.Of.Water.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/sequel.nzb",
+        60000000000,
+        meta=_movie_meta(),
+    )
+    assert fs._same_content(avatar, sequel) is False
+    assert fs._same_content(sequel, avatar) is False
+
+
+def test_same_content_keeps_junk_suffix_repost_peering():
+    """Legitimate junk-SUFFIX repost of the SAME release must still peer.
+
+    "Movie" vs "Movie mirror" (trailing noise, no distinguishing subtitle) is a
+    true repost and must keep matching even with no year on either side.
+    """
+    from resources.lib import fallback_streams as fs
+
+    primary = _result(
+        "Movie.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/movie.nzb",
+        60000000000,
+        meta=_movie_meta(),
+    )
+    mirror = _result(
+        "Movie.mirror.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/movie-mirror.nzb",
+        60000000000,
+        meta=_movie_meta(),
+    )
+    assert fs._same_content(primary, mirror) is True
+    assert fs._same_content(mirror, primary) is True
+
+
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+@patch("resources.lib.fallback_streams._fallback_settings")
+def test_same_episode_different_group_is_allowed_fallback(mock_settings, mock_fetch):
+    """Same show/season/episode, different group is a valid same-content peer."""
+    mock_settings.return_value = (True, 5)
+    primary = _result(
+        "Show.Name.S02E05.2160p.WEB-DL.x265-GROUP",
+        "https://idx/primary.nzb",
+        6000000000,
+        meta=_movie_meta(group="GROUP"),
+    )
+    repost = _result(
+        "Show.Name.S02E05.2160p.WEB-DL.x265-ALT",
+        "https://idx/repost.nzb",
+        6100000000,
+        meta=_movie_meta(group="ALT"),
+    )
+    manifests = {
+        "https://idx/primary.nzb": _manifest("video", "p.mkv", 6000000000, "a"),
+        "https://idx/repost.nzb": _manifest("video", "r.mkv", 6100000000, "b"),
+    }
+    mock_fetch.side_effect = lambda url, **_kwargs: manifests[url]
+
+    attach_fallback_candidates([primary, repost])
+
+    assert primary["_fallback_candidates"] == [repost]
+    assert repost["_fallback_candidates"] == [primary]
+
+
+def test_release_similarity_tiers():
+    from resources.lib import fallback_streams as fs
+
+    primary = _result(
+        "Dune.Part.Two.2024.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/p.nzb",
+        60000000000,
+        meta=_movie_meta(resolution="2160p", codec="x265/HEVC", group="GROUP"),
+    )
+    # Tier 0: same res/codec/group, ~same size.
+    tier0 = _result(
+        "Dune.Part.Two.2024.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/t0.nzb",
+        60500000000,
+        meta=_movie_meta(resolution="2160p", codec="x265/HEVC", group="GROUP"),
+    )
+    # Tier 1: same res/codec, different group, within ~10%.
+    tier1 = _result(
+        "Dune.Part.Two.2024.2160p.UHD.BluRay.REMUX.DV.HEVC-ALT",
+        "https://idx/t1.nzb",
+        63000000000,
+        meta=_movie_meta(resolution="2160p", codec="x265/HEVC", group="ALT"),
+    )
+    # Tier 2: same res, different codec.
+    tier2 = _result(
+        "Dune.Part.Two.2024.2160p.UHD.BluRay.x264-ALT",
+        "https://idx/t2.nzb",
+        62000000000,
+        meta=_movie_meta(resolution="2160p", codec="x264/AVC", group="ALT"),
+    )
+    # Tier 3: same content, different resolution.
+    tier3 = _result(
+        "Dune.Part.Two.2024.1080p.BluRay.x264-ALT",
+        "https://idx/t3.nzb",
+        20000000000,
+        meta=_movie_meta(resolution="1080p", codec="x264/AVC", group="ALT"),
+    )
+    # Different content -> None.
+    other = _result(
+        "Dune.Part.One.2021.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/o.nzb",
+        60000000000,
+        meta=_movie_meta(),
+    )
+
+    assert fs._release_similarity(primary, tier0) == 0
+    assert fs._release_similarity(primary, tier1) == 1
+    assert fs._release_similarity(primary, tier2) == 2
+    assert fs._release_similarity(primary, tier3) == 3
+    assert fs._release_similarity(primary, other) is None
+
+
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+@patch("resources.lib.fallback_streams._fallback_settings")
+def test_fallback_candidates_sorted_best_tier_first(mock_settings, mock_fetch):
+    """Candidates are ordered by tier (most-similar first), not pool order.
+
+    Both peers share the primary's resolution+codec (so both clear the profile
+    gate); ranking must still place the same-group ~identical-size repost
+    (Tier 0) ahead of the different-group repost (Tier 1) even though the pool
+    lists the Tier-1 peer first.
+    """
+    mock_settings.return_value = (True, 5)
+    primary = _result(
+        "Dune.Part.Two.2024.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/primary.nzb",
+        60000000000,
+        meta=_movie_meta(resolution="2160p", codec="x265/HEVC", group="GROUP"),
+    )
+    # Tier 1 (different group), listed first to prove ranking re-orders them.
+    worse = _result(
+        "Dune.Part.Two.2024.2160p.UHD.BluRay.REMUX.DV.HEVC-OTHER",
+        "https://idx/worse.nzb",
+        61000000000,
+        meta=_movie_meta(resolution="2160p", codec="x265/HEVC", group="OTHER"),
+    )
+    # Tier 0 (same group, size within 3%).
+    best = _result(
+        "Dune.Part.Two.2024.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/best.nzb",
+        60100000000,
+        meta=_movie_meta(resolution="2160p", codec="x265/HEVC", group="GROUP"),
+    )
+    manifests = {
+        "https://idx/primary.nzb": _manifest("video", "p.mkv", 60000000000, "a"),
+        "https://idx/worse.nzb": _manifest("video", "w.mkv", 61000000000, "b"),
+        "https://idx/best.nzb": _manifest("video", "x.mkv", 60100000000, "c"),
+    }
+    mock_fetch.side_effect = lambda url, **_kwargs: manifests[url]
+
+    attach_fallback_candidates([primary, worse, best])
+
+    assert primary["_fallback_candidates"] == [best, worse]
