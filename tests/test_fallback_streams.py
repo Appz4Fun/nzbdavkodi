@@ -3855,6 +3855,64 @@ def test_same_content_rejects_part_one_vs_part_two():
     assert fs._same_content(part_two, part_one) is False
 
 
+def test_same_episode_with_part_token_matches_bare_repost():
+    """An episode that carries an episode-title Part/Chapter token must still
+    peer with the same SxxExx posted without that token.
+
+    PTT leaves words like "Chapter One" inside an episode title, so the
+    part-vs-bare xor (the 'Dune Part Two' vs 'Dune' movie discriminator) must
+    NOT fire for episodes — both sides are the same episode, one just spelled
+    out its episode title.
+    """
+    from resources.lib import fallback_streams as fs
+
+    titled = _result(
+        "Show.Name.S01E01.Chapter.1.1080p.WEB-DL.x265-GROUP",
+        "https://idx/titled.nzb",
+        2000000000,
+    )
+    bare = _result(
+        "Show.Name.S01E01.1080p.WEB-DL.x265-GROUP",
+        "https://idx/bare.nzb",
+        2000000000,
+    )
+    assert fs._same_content(titled, bare) is True
+    assert fs._same_content(bare, titled) is True
+
+    real_titled = _result(
+        "Stranger.Things.S04E01.Chapter.One.The.Hellfire.Club.1080p.NF.WEB-DL.x265-GROUP",
+        "https://idx/stranger-titled.nzb",
+        2000000000,
+    )
+    real_bare = _result(
+        "Stranger.Things.S04E01.1080p.NF.WEB-DL.x265-GROUP",
+        "https://idx/stranger-bare.nzb",
+        2000000000,
+    )
+    assert fs._same_content(real_titled, real_bare) is True
+    assert fs._same_content(real_bare, real_titled) is True
+
+
+def test_same_content_rejects_different_part_same_episode():
+    """REGRESSION GUARD: same SxxExx but a differing explicit part is different
+    content, so the global differing-explicit-part reject must still apply to
+    episodes (the broad CodeRabbit fix would false-accept this)."""
+    from resources.lib import fallback_streams as fs
+
+    part_one = _result(
+        "Some.Show.S01E01.Part.1.1080p.WEB-DL.x265-GROUP",
+        "https://idx/ep-part-one.nzb",
+        2000000000,
+    )
+    part_two = _result(
+        "Some.Show.S01E01.Part.2.1080p.WEB-DL.x265-GROUP",
+        "https://idx/ep-part-two.nzb",
+        2000000000,
+    )
+    assert fs._same_content(part_one, part_two) is False
+    assert fs._same_content(part_two, part_one) is False
+
+
 def test_titles_core_related_fails_closed_on_empty_token_set():
     """FS-2: an empty core-title token set must not fail open.
 

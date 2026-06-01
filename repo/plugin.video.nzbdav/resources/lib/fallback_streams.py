@@ -619,13 +619,6 @@ def _same_content(primary, candidate):
     # Part/chapter number is a content discriminator (Part One vs Part Two).
     if primary_part and candidate_part and primary_part != candidate_part:
         return False
-    if bool(primary_part) != bool(candidate_part):
-        # PTT keeps the part word inside the title ("Dune Part Two"), so the
-        # core titles never compare equal to the bare original. One side naming
-        # an explicit part while the other names none is a sequel-vs-original
-        # mismatch (e.g. "Dune Part Two" vs "Dune"); treat it as different
-        # content. A differing explicit part is already rejected above.
-        return False
 
     primary_is_episode = bool(primary_seasons or primary_episodes)
     candidate_is_episode = bool(candidate_seasons or candidate_episodes)
@@ -649,6 +642,17 @@ def _same_content(primary, candidate):
         if bool(primary_seasons) != bool(candidate_seasons):
             return False
         return True
+
+    if bool(primary_part) != bool(candidate_part):
+        # PTT keeps the part word inside the title ("Dune Part Two"), so the
+        # core titles never compare equal to the bare original. One side naming
+        # an explicit part while the other names none is a sequel-vs-original
+        # mismatch (e.g. "Dune Part Two" vs "Dune"); treat it as different
+        # content. A differing explicit part is already rejected above. This is
+        # the movie discriminator only: episodes routinely keep an episode-title
+        # token ("Chapter One") that PTT leaves in the title, so the same SxxExx
+        # posted with and without that token must still peer (handled above).
+        return False
 
     # Movies: a differing year is different content.
     if primary_year and candidate_year and primary_year != candidate_year:

@@ -1273,3 +1273,130 @@ def test_find_video_stream_for_folder_passes_title_hint(mock_urlopen, mock_setti
 
     assert video_path == "/content/Show/Show.S02E05.1080p.mkv"
     assert stream_url.endswith("/content/Show/Show.S02E05.1080p.mkv")
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_recurses_past_generic_nonepisode_at_current_level(
+    mock_urlopen, mock_settings
+):
+    """A generic current-level video that shares show tokens but carries NO
+    SxxExx tag scores non-negative and would be returned before scanning
+    subdirs. With an episode hint, recurse first so the requested episode
+    living in a subfolder is found instead of the loose token match."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    parent = _propfind_listing(
+        [
+            ("/content/Pack/", True, None),
+            # Generic (no SxxExx) video at the CURRENT level. It shares show
+            # tokens with the hint, so it scores >= 0 and the old gate (which
+            # only recursed on a confirmed wrong-episode < 0 score) returned it
+            # immediately, never scanning E05/.
+            ("/content/Pack/Show.Sample.1080p.WEB-DL.mkv", False, 50000000),
+            ("/content/Pack/E05/", True, None),
+        ]
+    )
+    e05 = _propfind_listing(
+        [
+            ("/content/Pack/E05/", True, None),
+            ("/content/Pack/E05/Show.S02E05.1080p.WEB-DL.mkv", False, 2000000000),
+        ]
+    )
+
+    def propfind(req, **_kwargs):
+        url = req.full_url
+        if url.endswith("/Pack/"):
+            return _webdav_response(parent)
+        if url.endswith("/E05/"):
+            return _webdav_response(e05)
+        raise AssertionError("unexpected PROPFIND URL: {}".format(url))
+
+    mock_urlopen.side_effect = propfind
+
+    path = find_video_file("/content/Pack/", title_hint="Show.S02E05.1080p.WEB-DL")
+
+    assert path == "/content/Pack/E05/Show.S02E05.1080p.WEB-DL.mkv"
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_movie_hint_keeps_largest_over_token_heavy_extra(
+    mock_urlopen, mock_settings
+):
+    """For a movie hint (no SxxExx tag) the large feature must win over a
+    small, token-rich extra/trailer. Splitting the score so raw token overlap
+    ranks BELOW size keeps the feature from being hijacked by a featurette
+    that happens to share more tokens with the release name."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    listing = _propfind_listing(
+        [
+            ("/content/Dune/", True, None),
+            ("/content/Dune/Dune.mkv", False, 80_000_000_000),
+            (
+                "/content/Dune/Dune.Part.Two.2024.Behind.The.Scenes.2160p.mkv",
+                False,
+                300_000_000,
+            ),
+        ]
+    )
+    mock_urlopen.return_value = _webdav_response(listing)
+
+    path = find_video_file(
+        "/content/Dune/",
+        title_hint="Dune.Part.Two.2024.2160p.UHD.BluRay.REMUX-FraMeSToR",
+    )
+
+    assert path == "/content/Dune/Dune.mkv"
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_movie_hint_keeps_largest_across_sibling_subfolders(
+    mock_urlopen, mock_settings
+):
+    """The same size-over-token-overlap rule must hold across sibling
+    subfolders (covers the _find_video_file_in_subdirs key change): the large
+    feature in Movie/ beats the small token-heavy extra in Extras/."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    parent = _propfind_listing(
+        [
+            ("/content/Dune/", True, None),
+            ("/content/Dune/Movie/", True, None),
+            ("/content/Dune/Extras/", True, None),
+        ]
+    )
+    movie = _propfind_listing(
+        [
+            ("/content/Dune/Movie/", True, None),
+            ("/content/Dune/Movie/Dune.mkv", False, 80_000_000_000),
+        ]
+    )
+    extras = _propfind_listing(
+        [
+            ("/content/Dune/Extras/", True, None),
+            (
+                "/content/Dune/Extras/Dune.Part.Two.2024.Behind.The.Scenes.2160p.mkv",
+                False,
+                300_000_000,
+            ),
+        ]
+    )
+
+    def propfind(req, **_kwargs):
+        url = req.full_url
+        if url.endswith("/Dune/"):
+            return _webdav_response(parent)
+        if url.endswith("/Movie/"):
+            return _webdav_response(movie)
+        if url.endswith("/Extras/"):
+            return _webdav_response(extras)
+        raise AssertionError("unexpected PROPFIND URL: {}".format(url))
+
+    mock_urlopen.side_effect = propfind
+
+    path = find_video_file(
+        "/content/Dune/",
+        title_hint="Dune.Part.Two.2024.2160p.UHD.BluRay.REMUX-FraMeSToR",
+    )
+
+    assert path == "/content/Dune/Movie/Dune.mkv"
