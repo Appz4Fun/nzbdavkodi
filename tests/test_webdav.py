@@ -1095,6 +1095,48 @@ def test_find_video_file_without_hint_keeps_largest(mock_urlopen, mock_settings)
 
 @patch("resources.lib.webdav._get_settings")
 @patch("resources.lib.webdav.urlopen")
+def test_find_video_file_without_hint_recurses_past_sizeless_top_level_video(
+    mock_urlopen, mock_settings
+):
+    """A top-level video with a missing getcontentlength (size 0) must NOT
+    pre-empt recursion on the no-hint path. main kept best_size=0 with a
+    strict ``size > best_size``, so a size-0 file was never adopted and the
+    function recursed into the subdir holding the real feature. The
+    hinted-selection rewrite must reproduce that EXACTLY (deliberate decision
+    f12b3c3); otherwise a top-level placeholder/teaser lacking a content
+    length is played instead of the real movie in the subfolder."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    parent = _propfind_listing(
+        [
+            ("/content/Movie/", True, None),
+            ("/content/Movie/teaser.mkv", False, None),  # no getcontentlength
+            ("/content/Movie/Disc1/", True, None),
+        ]
+    )
+    disc1 = _propfind_listing(
+        [
+            ("/content/Movie/Disc1/", True, None),
+            ("/content/Movie/Disc1/feature.mkv", False, 9000000000),
+        ]
+    )
+
+    def propfind(req, **_kwargs):
+        url = req.full_url
+        if url.endswith("/Movie/"):
+            return _webdav_response(parent)
+        if url.endswith("/Disc1/"):
+            return _webdav_response(disc1)
+        raise AssertionError("unexpected PROPFIND URL: {}".format(url))
+
+    mock_urlopen.side_effect = propfind
+
+    path = find_video_file("/content/Movie/")
+
+    assert path == "/content/Movie/Disc1/feature.mkv"
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
 def test_find_video_file_hint_no_match_falls_back_to_largest(
     mock_urlopen, mock_settings
 ):
