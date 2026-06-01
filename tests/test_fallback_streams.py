@@ -3041,33 +3041,6 @@ def test_fingerprint_ranges_uses_100_deterministic_4096_byte_samples_for_large_f
     assert all((end - start + 1) == 4096 for start, end in ranges)
 
 
-@pytest.mark.skip(
-    reason=(
-        "LRU cache removed to fix Kodi crash; cache is an optimization, "
-        "not core functionality"
-    )
-)
-def test_fingerprint_ranges_reuses_large_file_sample_offsets_between_calls():
-    from resources.lib import fallback_streams
-
-    content_length = 11 * 1024 * 1024 * 1024 + 12345
-    original_sha256 = fallback_streams.hashlib.sha256
-    sha256_calls = []
-
-    def counted_sha256(*args, **kwargs):
-        sha256_calls.append(args)
-        return original_sha256(*args, **kwargs)
-
-    with patch(
-        "resources.lib.fallback_streams.hashlib.sha256", side_effect=counted_sha256
-    ):
-        first = fingerprint_ranges(content_length)
-        second = fingerprint_ranges(content_length)
-
-    assert second == first
-    assert len(sha256_calls) == len(first) - 2
-
-
 def test_fingerprint_ranges_handles_small_files():
     assert fingerprint_ranges(1024) == [(0, 1023)]
 
@@ -3166,12 +3139,6 @@ def test_fetch_content_length_accepts_configured_stream_url(mock_urlopen):
     assert mock_urlopen.call_args.kwargs["timeout"] == 10
 
 
-@pytest.mark.skip(
-    reason=(
-        "LRU cache removed to fix Kodi crash; cache is an optimization, "
-        "not core functionality"
-    )
-)
 def test_fetch_content_length_reuses_validated_probe_url_for_precomputed_bases():
     from resources.lib import fallback_streams
 
@@ -4247,6 +4214,54 @@ def test_same_content_keeps_distinct_seasons_apart_despite_phantom_collapse():
     assert fs._release_identity(s01)[1] == fs._release_identity(s02)[1] == 2014
     assert fs._same_content(s01, s02) is False
     assert fs._same_content(s02, s01) is False
+
+
+def test_titles_core_related_rejects_disjoint_tail_without_corroboration():
+    """FB-1: two titles that share a >=2-token prefix but diverge into DIFFERENT
+    tails on both sides (neither a subset of the other) are typically distinct
+    works in a franchise. A loose >=2-token overlap is not enough to call them
+    the same content -- require corroborating positive identity (matching year,
+    or matching season+episode). Without corroboration the disjoint-tail overlap
+    must be rejected; with it, the loose overlap is allowed.
+    """
+    from resources.lib import fallback_streams as fs
+
+    left = "mission impossible fallout"
+    right = "mission impossible dead reckoning"
+    # Sanity: neither token set is a subset of the other (this is the
+    # disjoint-tail branch, not the junk-suffix subset branch).
+    assert not frozenset(left.split()).issubset(frozenset(right.split()))
+    assert not frozenset(right.split()).issubset(frozenset(left.split()))
+    assert fs._titles_core_related(left, right, corroborated=False) is False
+    assert fs._titles_core_related(right, left, corroborated=False) is False
+    assert fs._titles_core_related(left, right, corroborated=True) is True
+    assert fs._titles_core_related(right, left, corroborated=True) is True
+
+
+def test_same_content_rejects_disjoint_tail_franchise_without_year():
+    """FB-1: different films in a franchise that share a >=2-token prefix but
+    diverge in their tails, with no year on either side, must NOT be treated as
+    the same content (no corroborating year/episode to back the loose overlap).
+    """
+    from resources.lib import fallback_streams as fs
+
+    fallout = _result(
+        "Mission.Impossible.Fallout.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/fallout.nzb",
+        60000000000,
+        meta=_movie_meta(),
+    )
+    reckoning = _result(
+        "Mission.Impossible.Dead.Reckoning.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/reckoning.nzb",
+        60000000000,
+        meta=_movie_meta(),
+    )
+    # Sanity: PTT leaves the distinguishing tail in the title and parses no year.
+    assert fs._release_identity(fallout)[1] == 0
+    assert fs._release_identity(reckoning)[1] == 0
+    assert fs._same_content(fallout, reckoning) is False
+    assert fs._same_content(reckoning, fallout) is False
 
 
 @patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
