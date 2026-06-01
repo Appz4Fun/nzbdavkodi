@@ -4017,6 +4017,174 @@ def test_same_content_rejects_numeric_sequel_suffix_without_year():
     assert fs._same_content(rocky, rocky2) is False
 
 
+def test_same_content_rejects_roman_ordinal_sequel_suffix_without_year():
+    """FS-M: a lone MULTI-CHARACTER Roman-numeral or ordinal-word sequel tail
+    ("Rocky IV", "Rambo III", "Iron Man Three") is a content discriminator, not
+    a junk suffix, and must be rejected when neither side parses a year (PTT
+    keeps the sequel discriminator inside the title)."""
+    from resources.lib import fallback_streams as fs
+
+    rocky4 = _result(
+        "Rocky.IV.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/rocky4.nzb",
+        60000000000,
+        meta=_movie_meta(),
+    )
+    rocky = _result(
+        "Rocky.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/rocky.nzb",
+        60000000000,
+        meta=_movie_meta(),
+    )
+    # Sanity: PTT keeps the Roman tail in the title, parses no year.
+    assert fs._release_identity(rocky4)[0] == "rocky iv"
+    assert fs._release_identity(rocky4)[1] == 0
+    assert fs._release_identity(rocky)[0] == "rocky"
+    assert fs._same_content(rocky4, rocky) is False
+    assert fs._same_content(rocky, rocky4) is False
+
+    rambo3 = _result(
+        "Rambo.III.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/rambo3.nzb",
+        60000000000,
+        meta=_movie_meta(),
+    )
+    rambo = _result(
+        "Rambo.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/rambo.nzb",
+        60000000000,
+        meta=_movie_meta(),
+    )
+    assert fs._same_content(rambo3, rambo) is False
+    assert fs._same_content(rambo, rambo3) is False
+
+    iron_man_three = _result(
+        "Iron.Man.Three.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/iron3.nzb",
+        60000000000,
+        meta=_movie_meta(),
+    )
+    iron_man = _result(
+        "Iron.Man.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/iron.nzb",
+        60000000000,
+        meta=_movie_meta(),
+    )
+    assert fs._same_content(iron_man_three, iron_man) is False
+    assert fs._same_content(iron_man, iron_man_three) is False
+
+
+def test_same_content_keeps_single_letter_and_one_eleven_tails_peering():
+    """FS-M: the sequel-tail reject is MULTI-CHARACTER only.
+
+    Single-letter Roman tails (i/v/x) collide with stray junk-suffix letters, so
+    "Saw X" / "Final Destination V" must still peer; "one" is never a real
+    sequel tail; and the ordinal-word ceiling stops at "ten" so "Ocean's Eleven"
+    (eleven) is unaffected. All must still peer with the bare title when no year
+    corroborates."""
+    from resources.lib import fallback_streams as fs
+
+    saw_x = _result(
+        "Saw.X.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/sawx.nzb",
+        60000000000,
+        meta=_movie_meta(),
+    )
+    saw = _result(
+        "Saw.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/saw.nzb",
+        60000000000,
+        meta=_movie_meta(),
+    )
+    assert fs._same_content(saw_x, saw) is True
+    assert fs._same_content(saw, saw_x) is True
+
+    fd_v = _result(
+        "Final.Destination.V.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/fdv.nzb",
+        60000000000,
+        meta=_movie_meta(),
+    )
+    fd = _result(
+        "Final.Destination.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/fd.nzb",
+        60000000000,
+        meta=_movie_meta(),
+    )
+    assert fs._same_content(fd_v, fd) is True
+    assert fs._same_content(fd, fd_v) is True
+
+    # Direct title-predicate checks for "one" exclusion and the "eleven" ceiling
+    # (these PTT-parse cleanly to bare-vs-tail core titles).
+    assert fs._titles_core_related("show one", "show", corroborated=False) is True
+    assert fs._titles_core_related("show", "show one", corroborated=False) is True
+    assert (
+        fs._titles_core_related("oceans eleven", "oceans", corroborated=False) is True
+    )
+    assert (
+        fs._titles_core_related("oceans", "oceans eleven", corroborated=False) is True
+    )
+
+
+def test_titles_core_related_sequel_tail_predicate_matrix():
+    """FS-M: direct-predicate matrix for the sequel-tail reject."""
+    from resources.lib import fallback_streams as fs
+
+    # Multi-character Roman / ordinal tails: rejected without corroboration,
+    # rescued by corroboration.
+    assert fs._titles_core_related("rocky iv", "rocky", corroborated=False) is False
+    assert fs._titles_core_related("rocky", "rocky iv", corroborated=False) is False
+    assert fs._titles_core_related("rocky iv", "rocky", corroborated=True) is True
+    assert fs._titles_core_related("iron man three", "iron man", False) is False
+    # Legit junk suffix stays a repost.
+    assert fs._titles_core_related("movie", "movie mirror", corroborated=False) is True
+    # Single-letter ambiguity preserved.
+    assert fs._titles_core_related("saw x", "saw", corroborated=False) is True
+    # "one" exclusion.
+    assert fs._titles_core_related("show one", "show", corroborated=False) is True
+    # The new constant excludes single-letter romans and "one"/"eleven".
+    assert "ii" in fs._SEQUEL_TAIL_TOKENS
+    assert "three" in fs._SEQUEL_TAIL_TOKENS
+    assert "ten" in fs._SEQUEL_TAIL_TOKENS
+    for excluded in ("i", "v", "x", "one", "eleven"):
+        assert excluded not in fs._SEQUEL_TAIL_TOKENS
+
+
+def test_same_content_rescues_roman_sequel_with_matching_year():
+    """FS-M: a matching parsed year on both sides corroborates and rescues an
+    otherwise-rejected Roman/ordinal sequel tail (legit repost short-circuit)."""
+    from resources.lib import fallback_streams as fs
+
+    rocky4_a = _result(
+        "Rocky.IV.2025.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/rocky4a.nzb",
+        60000000000,
+        meta=_movie_meta(),
+    )
+    rocky4_b = _result(
+        "Rocky.2025.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/rocky4b.nzb",
+        60000000000,
+        meta=_movie_meta(),
+    )
+    # Sanity: both parse the same year, so identity is corroborated.
+    assert fs._release_identity(rocky4_a)[1] == 2025
+    assert fs._release_identity(rocky4_b)[1] == 2025
+    assert fs._same_content(rocky4_a, rocky4_b) is True
+    assert fs._same_content(rocky4_b, rocky4_a) is True
+
+
+def test_part_number_from_title_roman_sequel_tails_are_not_parts():
+    """FS-M regression guard: a bare Roman/ordinal sequel tail is NOT a
+    labeled part, but an explicit Part/Chapter label still parses."""
+    from resources.lib import fallback_streams as fs
+
+    assert fs._part_number_from_title("Rocky IV") == 0
+    assert fs._part_number_from_title("Saw X") == 0
+    assert fs._part_number_from_title("Dune Part Two") == 2
+    assert fs._part_number_from_title("John Wick Chapter 4") == 4
+
+
 def test_same_content_ignores_phantom_season_for_movie_peer():
     """FS: a movie whose release-group suffix mis-parses as a season (e.g.
     REMUX-ALT01 -> seasons=[1]) must still peer with the same movie posted by a
