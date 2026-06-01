@@ -35,11 +35,15 @@ _EPISODE_RANGE_RE = re.compile(
 _EPISODE_RANGE_MAX_SPAN = 64
 # Older/scene-alternate "NxNN" / "NNxNN" episode notation (e.g. 2x05,
 # 02x05) that PTT's parse_title recognizes (ptt/handlers.py:1444 season
-# handler) but the SxxExx regex above does not. The (?:\D|^) left boundary
-# and 2-digit season cap keep resolutions like 1920x1080 / 1280x720 /
-# 3840x2160 and codec tokens like x264/x265 from registering as episodes.
-# Accepts the Cyrillic 'х' the PTT handler also allows.
-_EPISODE_NXN_RE = re.compile(r"(?:\D|^)(\d{1,2})[xх](\d{1,3})(?:\D|$)", re.IGNORECASE)
+# handler) but the SxxExx regex above does not. Zero-width `(?<!\d)` /
+# `(?!\d)` digit-lookarounds anchor the tag without CONSUMING the
+# surrounding separator, so adjacent tags ("2x05.2x06") both register
+# instead of the boundary eating the gap and dropping the second (and the
+# middle of a 3-pack). The `\d{1,2}` season cap (unchanged) is what keeps
+# resolutions like 1920x1080 / 1280x720 / 3840x2160 and codec tokens like
+# x264/x265 from registering as episodes. Accepts the Cyrillic 'х' the PTT
+# handler also allows.
+_EPISODE_NXN_RE = re.compile(r"(?<!\d)(\d{1,2})[xх](\d{1,3})(?!\d)", re.IGNORECASE)
 
 
 def _hint_tokens(value):
@@ -98,9 +102,21 @@ def _title_hint_match_score(file_path, hint_tokens, hint_episode_tags):
     name = unquote(file_path.rsplit("/", 1)[-1]) if file_path else ""
     if not name:
         return (0, 0)
+    parent = (
+        unquote(file_path.rsplit("/", 1)[0]) if file_path and "/" in file_path else ""
+    )
     episode_score = 0
     if hint_episode_tags:
+        # Basename FIRST: the file's own episode tag is authoritative. Only
+        # when the basename carries no episode tag (a generically-named file
+        # like "video.mkv") do we fall back to the parent directory's tag --
+        # this is a LAYERED fallback, NOT a union: a matching dir tag must
+        # never mask a wrong-episode FILENAME, or the wrong-episode gate
+        # would regress. A season-complete parent ("Show.S01.Complete")
+        # yields no tag, so largest-wins is preserved there.
         file_tags = _episode_tags(name)
+        if not file_tags and parent:
+            file_tags = _episode_tags(parent)
         if file_tags:
             if hint_episode_tags & file_tags:
                 # Strong match: same episode requested and present.
