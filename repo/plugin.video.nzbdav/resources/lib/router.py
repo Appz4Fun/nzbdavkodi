@@ -1773,8 +1773,17 @@ def _xml_root_name(response):
     """Return the unqualified root XML tag name, lowercased."""
     import xml.etree.ElementTree as ET  # nosec B405 - trusted service response
 
+    parser = ET.XMLParser()  # nosec B314 - entities disabled below
     try:
-        root = ET.fromstring(response)  # nosec B314 - trusted service response
+        parser.parser.DefaultHandler = lambda _d: None
+        parser.parser.ExternalEntityRefHandler = lambda *_: False
+    except AttributeError:
+        pass
+
+    try:
+        root = ET.fromstring(
+            response, parser=parser
+        )  # nosec B314 - trusted service response
     except (TypeError, ET.ParseError):
         return ""
     return root.tag.rsplit("}", 1)[-1].lower()
