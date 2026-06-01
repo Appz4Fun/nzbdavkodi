@@ -1263,6 +1263,44 @@ def test_episode_tags_recognizes_nxnn_and_ignores_resolution():
     assert _episode_tags("Show.S02E05.mkv") == frozenset({(2, 5)})  # unchanged
 
 
+def test_episode_tags_expands_episode_ranges():
+    from resources.lib.webdav import _episode_tags
+
+    # SxxEaa-Ebb and SxxEaa-bb both cover the middle episode.
+    assert _episode_tags("Show.S01E01-E03.1080p.mkv") == frozenset(
+        {(1, 1), (1, 2), (1, 3)}
+    )
+    assert _episode_tags("Show.S01E01-03.1080p.mkv") == frozenset(
+        {(1, 1), (1, 2), (1, 3)}
+    )
+    # Single episode is unchanged (no over-expansion).
+    assert _episode_tags("Show.S01E02.mkv") == frozenset({(1, 2)})
+    # Absurd / reversed ranges do not explode; literal endpoints survive.
+    assert _episode_tags("Show.S01E01-E999.mkv") == frozenset({(1, 1), (1, 999)})
+    assert _episode_tags("Show.S01E05-E01.mkv") == frozenset({(1, 1), (1, 5)})
+    # Over-match guard: resolutions/codecs/season ranges do NOT register.
+    assert _episode_tags("Movie.2019.1920x1080.x265.mkv") == frozenset()
+    assert _episode_tags("Show.S01-S03.Complete.1080p.mkv") == frozenset()
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_matches_episode_in_range_pack(mock_urlopen, mock_settings):
+    """A request for a middle episode (E02) must pick the range pack that
+    covers it (S01E01-E03) over a larger non-covering range pack."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    listing = _propfind_listing(
+        [
+            ("/content/Show/", True, None),
+            ("/content/Show/Show.S01E01-E03.1080p.mkv", False, 8000000000),
+            ("/content/Show/Show.S01E04-E06.1080p.mkv", False, 9000000000),
+        ]
+    )
+    mock_urlopen.return_value = _webdav_response(listing)
+    path = find_video_file("/content/Show/", title_hint="Show.S01E02.1080p.WEB-DL")
+    assert path == "/content/Show/Show.S01E01-E03.1080p.mkv"
+
+
 @patch("resources.lib.webdav._get_settings")
 @patch("resources.lib.webdav.urlopen")
 def test_find_video_file_matches_nxnn_episode_notation(mock_urlopen, mock_settings):

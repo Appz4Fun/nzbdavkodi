@@ -3304,7 +3304,10 @@ class _StreamHandler(BaseHTTPRequestHandler):
         storage = history.get("storage", "")
         if not storage:
             return False
-        video_path = find_video_file(_storage_to_webdav_path(storage))
+        video_path = find_video_file(
+            _storage_to_webdav_path(storage),
+            title_hint=source.get("title") or None,
+        )
         if not video_path:
             return False
         stream_url, stream_headers = get_webdav_stream_url_for_path(video_path)
