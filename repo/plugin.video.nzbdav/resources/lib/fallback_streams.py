@@ -432,6 +432,33 @@ _PART_LABEL_RE = re.compile(
     r"one|two|three|four|five|six|seven|eight|nine|ten)\b",
     re.IGNORECASE,
 )
+# Trailing sequel discriminators PTT leaves inside the title ("Rocky IV",
+# "Rambo III", "Iron Man Three"). Mirror the numeric-tail reject for these.
+# MULTI-CHARACTER tokens ONLY: single-letter romans i/v/x collide with junk
+# suffixes (a stray "v"/"x"), and "one" is never a real sequel tail, so they
+# are deliberately excluded to avoid false-rejecting legit junk-suffix reposts.
+# Ordinal WORDS stop at "ten" (no "eleven"+) so titles like "Ocean's Eleven"
+# are not affected.
+_SEQUEL_TAIL_TOKENS = frozenset(
+    {
+        "ii",
+        "iii",
+        "iv",
+        "vi",
+        "vii",
+        "viii",
+        "ix",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+    }
+)
 _RELEASE_IDENTITY_CACHE_TITLE_KEY = "_fallback_identity_title"  # nosec B105
 _RELEASE_IDENTITY_CACHE_VALUE_KEY = "_fallback_identity"  # nosec B105
 
@@ -546,9 +573,16 @@ def _titles_core_related(primary_title, candidate_title, corroborated=False):
             # discriminator, not junk. PTT leaves the sequel number inside the
             # title (years/resolutions are already stripped into year/meta), so a
             # numeric tail that survives normalization is content-distinguishing.
-            # Reject it without corroboration; a non-numeric trailing token
-            # ("Movie" -> "Movie mirror") stays a legitimate junk-suffix repost.
-            if extra == 1 and longer[-1].isdigit():
+            # The same holds for MULTI-CHARACTER Roman-numeral / ordinal-word
+            # sequel tails ("Rocky" -> "Rocky IV", "Iron Man" -> "Iron Man
+            # Three"). Single-letter romans (i/v/x) and "one"/"eleven"+ are
+            # deliberately NOT in _SEQUEL_TAIL_TOKENS, so a stray "Movie x"/junk
+            # tail stays a legitimate junk-suffix repost. Reject these tails
+            # without corroboration; any other trailing token ("Movie" ->
+            # "Movie mirror") stays a legitimate junk-suffix repost.
+            if extra == 1 and (
+                longer[-1].isdigit() or longer[-1] in _SEQUEL_TAIL_TOKENS
+            ):
                 return False
             return True
         return False

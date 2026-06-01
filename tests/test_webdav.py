@@ -1207,6 +1207,94 @@ def test_find_video_file_prefers_dir_tagged_episode_over_larger_sibling(
 
 @patch("resources.lib.webdav._get_settings")
 @patch("resources.lib.webdav.urlopen")
+def test_find_video_file_nearest_dir_tag_not_masked_by_ancestor_pack(
+    mock_urlopen, mock_settings
+):
+    """When the NEAREST parent dir carries its OWN episode tag it is
+    authoritative -- an ancestor pack folder (Show.S01E02.Pack) must NOT
+    rescue a wrong nearer subfolder (Show.S01E03). The real S01E02 sibling
+    wins, not the larger S01E03."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    parent = _propfind_listing(
+        [
+            ("/content/Show.S01E02.Pack/", True, None),
+            ("/content/Show.S01E02.Pack/Show.S01E02/", True, None),
+            ("/content/Show.S01E02.Pack/Show.S01E03/", True, None),
+        ]
+    )
+    e02 = _propfind_listing(
+        [
+            ("/content/Show.S01E02.Pack/Show.S01E02/", True, None),
+            ("/content/Show.S01E02.Pack/Show.S01E02/video.mkv", False, 1000000000),
+        ]
+    )
+    e03 = _propfind_listing(
+        [
+            ("/content/Show.S01E02.Pack/Show.S01E03/", True, None),
+            ("/content/Show.S01E02.Pack/Show.S01E03/video.mkv", False, 5000000000),
+        ]
+    )
+
+    def propfind(req, **_kw):
+        u = req.full_url
+        if u.endswith("/Show.S01E02.Pack/"):
+            return _webdav_response(parent)
+        if u.endswith("/Show.S01E02/"):
+            return _webdav_response(e02)
+        if u.endswith("/Show.S01E03/"):
+            return _webdav_response(e03)
+        raise AssertionError("unexpected PROPFIND URL: {}".format(u))
+
+    mock_urlopen.side_effect = propfind
+
+    path = find_video_file(
+        "/content/Show.S01E02.Pack/", title_hint="Show.S01E02.1080p.WEB-DL"
+    )
+
+    # NOT the larger S01E03: the nearest dir's own tag rules it out even
+    # though the ancestor pack (Show.S01E02.Pack) covers the requested E02.
+    assert path == "/content/Show.S01E02.Pack/Show.S01E02/video.mkv"
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_grandparent_tag_matches_when_nearest_dir_generic(
+    mock_urlopen, mock_settings
+):
+    """When the nearest dir is generic ("1080p") with no tag of its own, the
+    fallback widens to the full ancestor path so a grandparent's episode tag
+    (Show.S01E02) still supplies the match -- locks in the widen branch."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    parent = _propfind_listing(
+        [
+            ("/content/Show.S01E02/", True, None),
+            ("/content/Show.S01E02/1080p/", True, None),
+        ]
+    )
+    nested = _propfind_listing(
+        [
+            ("/content/Show.S01E02/1080p/", True, None),
+            ("/content/Show.S01E02/1080p/video.mkv", False, 1000000000),
+        ]
+    )
+
+    def propfind(req, **_kw):
+        u = req.full_url
+        if u.endswith("/Show.S01E02/"):
+            return _webdav_response(parent)
+        if u.endswith("/1080p/"):
+            return _webdav_response(nested)
+        raise AssertionError("unexpected PROPFIND URL: {}".format(u))
+
+    mock_urlopen.side_effect = propfind
+
+    path = find_video_file("/content/Show.S01E02/", title_hint="Show.S01E02.1080p")
+
+    assert path == "/content/Show.S01E02/1080p/video.mkv"
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
 def test_find_video_file_basename_episode_overrides_parent_range_dir(
     mock_urlopen, mock_settings
 ):
@@ -1396,6 +1484,48 @@ def test_episode_tags_expands_episode_ranges():
     # Over-match guard: resolutions/codecs/season ranges do NOT register.
     assert _episode_tags("Movie.2019.1920x1080.x265.mkv") == frozenset()
     assert _episode_tags("Show.S01-S03.Complete.1080p.mkv") == frozenset()
+
+
+def test_episode_tags_expands_nxn_ranges():
+    from resources.lib.webdav import _episode_tags
+
+    # NxN range notation ("1x01-03", "1x01-1x03") covers the middle episode,
+    # mirroring the SxxExx range expansion.
+    assert _episode_tags("Show.1x01-03.mkv") == frozenset({(1, 1), (1, 2), (1, 3)})
+    assert _episode_tags("Show.1x01-1x03.mkv") == frozenset({(1, 1), (1, 2), (1, 3)})
+    assert _episode_tags("Show.10x01-10x12.mkv") == frozenset(
+        {(10, e) for e in range(1, 13)}
+    )
+    # Single NxN unchanged; resolutions/codecs still excluded.
+    assert _episode_tags("Show.1x02.mkv") == frozenset({(1, 2)})
+    assert _episode_tags("Movie.1920x1080.mkv") == frozenset()
+    assert _episode_tags("Movie.1280x720.x264.mkv") == frozenset()
+    assert _episode_tags("Movie.3840x2160.mkv") == frozenset()
+    # Adjacent dot-separated NxN tags must NOT collapse into a range (the
+    # range regex requires a literal '-').
+    assert _episode_tags("Doctor.Who.2x05.2x06.mkv") == frozenset({(2, 5), (2, 6)})
+    # Reversed / cross-season spans: literal endpoints survive via the
+    # standalone NxN loop, no explosion.
+    assert _episode_tags("Show.1x05-1x02.mkv") == frozenset({(1, 2), (1, 5)})
+    assert _episode_tags("Show.1x10-2x02.mkv") == frozenset({(1, 10), (2, 2)})
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_matches_nxn_episode_in_range_pack(mock_urlopen, mock_settings):
+    """A request for a middle episode (1x02) must pick the NxN range pack that
+    covers it (1x01-03) over a larger non-covering range pack (1x04-06)."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    listing = _propfind_listing(
+        [
+            ("/content/Show/", True, None),
+            ("/content/Show/Show.1x01-03.mkv", False, 8000000000),
+            ("/content/Show/Show.1x04-06.mkv", False, 9000000000),
+        ]
+    )
+    mock_urlopen.return_value = _webdav_response(listing)
+    path = find_video_file("/content/Show/", title_hint="Show 1x02")
+    assert path == "/content/Show/Show.1x01-03.mkv"
 
 
 @patch("resources.lib.webdav._get_settings")

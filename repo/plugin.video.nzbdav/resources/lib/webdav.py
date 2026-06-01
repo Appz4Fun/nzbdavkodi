@@ -44,6 +44,20 @@ _EPISODE_RANGE_MAX_SPAN = 64
 # x264/x265 from registering as episodes. Accepts the Cyrillic 'х' the PTT
 # handler also allows.
 _EPISODE_NXN_RE = re.compile(r"(?<!\d)(\d{1,2})[xх](\d{1,3})(?!\d)", re.IGNORECASE)
+# NxN RANGE notation "1x01-03" / "1x01-1x03" -- the NxN sibling of
+# _EPISODE_RANGE_RE (SxxEaa-Ebb). The standalone _EPISODE_NXN_RE above only
+# records the literal endpoints (1x01 and 1x03) and drops a bare "-03" half
+# entirely, so a request for a covered middle episode (1x02) would mis-score
+# and a larger non-covering sibling could win. We expand the inclusive span
+# below, capped by _EPISODE_RANGE_MAX_SPAN. The `\d{1,2}` season cap and the
+# trailing `(?!\d)` are the resolution/codec guard (1920x1080, 1280x720,
+# 3840x2160, 1920x1080-1920x1200 and 1x01-1080 all register nothing). The
+# optional `(?:\d{1,2}[xх])?` handles both "1x01-03" and "1x01-1x03"; the
+# literal '-' means dot-separated adjacent tags ("2x05.2x06") never collapse.
+_EPISODE_NXN_RANGE_RE = re.compile(
+    r"(?<!\d)(\d{1,2})[xх](\d{1,3})[. _-]*-[. _-]*(?:\d{1,2}[xх])?(\d{1,3})(?!\d)",
+    re.IGNORECASE,
+)
 
 
 def _hint_tokens(value):
@@ -75,6 +89,18 @@ def _episode_tags(value):
         if start <= end <= start + _EPISODE_RANGE_MAX_SPAN:
             for episode in range(start, end + 1):
                 tags.add((season, episode))
+    for match in _EPISODE_NXN_RANGE_RE.finditer(value):
+        season = int(match.group(1))
+        start = int(match.group(2))
+        end = int(match.group(3))
+        if start <= end <= start + _EPISODE_RANGE_MAX_SPAN:
+            for episode in range(start, end + 1):
+                tags.add((season, episode))
+    # Keep the standalone NxN loop AFTER the range expansion: it preserves the
+    # literal endpoints when the range guard rejects a span (reversed 1x05-1x02
+    # or cross-season 1x10-2x02, where start<=end is False, or beyond the cap),
+    # so behavior is a strict superset and never regresses. tags is a set, so
+    # there is no double-count.
     for match in _EPISODE_NXN_RE.finditer(value):
         tags.add((int(match.group(1)), int(match.group(2))))
     return frozenset(tags)
@@ -102,21 +128,30 @@ def _title_hint_match_score(file_path, hint_tokens, hint_episode_tags):
     name = unquote(file_path.rsplit("/", 1)[-1]) if file_path else ""
     if not name:
         return (0, 0)
-    parent = (
-        unquote(file_path.rsplit("/", 1)[0]) if file_path and "/" in file_path else ""
-    )
+    parent_path = file_path.rsplit("/", 1)[0] if file_path and "/" in file_path else ""
     episode_score = 0
     if hint_episode_tags:
         # Basename FIRST: the file's own episode tag is authoritative. Only
         # when the basename carries no episode tag (a generically-named file
-        # like "video.mkv") do we fall back to the parent directory's tag --
-        # this is a LAYERED fallback, NOT a union: a matching dir tag must
-        # never mask a wrong-episode FILENAME, or the wrong-episode gate
-        # would regress. A season-complete parent ("Show.S01.Complete")
-        # yields no tag, so largest-wins is preserved there.
+        # like "video.mkv") do we fall back to the directory -- this is a
+        # LAYERED fallback, NOT a union: a matching dir tag must never mask a
+        # wrong-episode FILENAME, or the wrong-episode gate would regress.
+        #
+        # The fallback scores the NEAREST parent SEGMENT and treats it as
+        # authoritative when it carries its OWN episode tag (most-specific
+        # identity), so a wrong nearer dir like "Show.S01E03" is correctly
+        # wrong and is NOT rescued by an ancestor pack folder
+        # ("Show.S01E02.Pack"). It widens to scan the FULL ancestor path only
+        # when the nearest dir is generic (e.g. "1080p"), so a grandparent's
+        # tag ("Show.S01E02/1080p/video.mkv") still supplies the match. A
+        # season-complete parent ("Show.S01.Complete") yields no tag, so
+        # largest-wins is preserved there.
         file_tags = _episode_tags(name)
-        if not file_tags and parent:
-            file_tags = _episode_tags(parent)
+        if not file_tags and parent_path:
+            nearest_tags = _episode_tags(unquote(parent_path.rsplit("/", 1)[-1]))
+            file_tags = (
+                nearest_tags if nearest_tags else _episode_tags(unquote(parent_path))
+            )
         if file_tags:
             if hint_episode_tags & file_tags:
                 # Strong match: same episode requested and present.
