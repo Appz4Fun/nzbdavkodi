@@ -14489,6 +14489,70 @@ def test_serve_proxy_fallback_primary_recovers_on_final_retry_ladder(mock_xbmc):
 
 
 @patch("resources.lib.stream_proxy.xbmc")
+def test_serve_proxy_surfaces_client_error_from_final_retry_ladder_not_fallback_exhausted(  # noqa: E501
+    mock_xbmc,
+):
+    """F4 cap must NOT mask a terminal upstream result returned by the FINAL
+    retry-ladder attempt. The cap-fire block runs after the retry ladder but
+    before the CLIENT_ERROR/PROTOCOL_MISMATCH terminal branch, so a primary
+    whose cap-th ladder attempt returns a 401/403 (CLIENT_ERROR) or a contract
+    mismatch (PROTOCOL_MISMATCH) would otherwise exit as fallback_exhausted and
+    hide the real root cause. The guard lets a terminal result fall through to
+    the terminal branch so the genuine reason is surfaced instead."""
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_CLIENT_ERROR,
+        _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE,
+    )
+
+    content_length = 1_000_000
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": content_length,
+        "fallback_sources": [{"nzo_id": "alt", "stream_url": "http://host/alt.mkv"}],
+    }
+    handler = _make_handler_with_server(
+        ctx, range_header="bytes=0-{}".format(content_length - 1)
+    )
+
+    # The primary read always short-reads with zero bytes, driving the
+    # fall-through counter up via the L4546 gate while the fallback never
+    # validates. The retry ladder makes no progress on attempts 1 and 2, then
+    # on the cap-th (3rd) attempt the upstream returns a terminal CLIENT_ERROR
+    # (a 401/403). Without the guard the cap would fire first and report
+    # fallback_exhausted; with it, the terminal result is surfaced.
+    def _stream(active_ctx, start, end, contract_mode=None):
+        return _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, 0
+
+    retry_calls = {"n": 0}
+
+    def _fake_retry(active_ctx, start, end, contract_mode, first_byte=False):
+        retry_calls["n"] += 1
+        if retry_calls["n"] >= 3:
+            return _UPSTREAM_RANGE_CLIENT_ERROR, 0, start
+        return _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, 0, start
+
+    with patch.object(
+        handler, "_stream_upstream_range", side_effect=_stream
+    ), patch.object(
+        handler, "_select_live_fallback_source", return_value=None
+    ), patch.object(
+        handler, "_retry_original_range", side_effect=_fake_retry
+    ), patch.object(
+        handler, "_find_skip_offset", return_value=4096
+    ):
+        handler._serve_proxy(ctx)
+
+    logged = "\n".join(call.args[0] for call in mock_xbmc.log.call_args_list)
+    # The 403 surfaces on the cap-th ladder attempt.
+    assert retry_calls["n"] == 3
+    # The real terminal reason is surfaced, not masked as fallback_exhausted.
+    assert "reason=upstream_client_error" in logged
+    assert "reason=fallback_exhausted" not in logged
+
+
+@patch("resources.lib.stream_proxy.xbmc")
 def test_serve_proxy_cutover_resets_fallthrough_exhaustion_counter(mock_xbmc):
     """SM-1: the F4 bounded-exhaustion counters
     (fallback_pending_fallthroughs / last_fallthrough_streamed) must be RESET on

@@ -4732,7 +4732,18 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 # fallback_exhausted instead of looping — WITHOUT reintroducing
                 # e3a74a1's immediate hard-close. A recovering primary's count
                 # is 0 here (the SM-1 reset fired), so this won't condemn it.
-                if fallback_pending_fallthroughs >= _FALLBACK_PENDING_FALLTHROUGH_MAX:
+                # Guard: when the final ladder attempt returned a terminal
+                # 401/403/contract-mismatch, fall through to the
+                # CLIENT_ERROR/PROTOCOL_MISMATCH branch below so the real root
+                # cause is surfaced instead of being masked as fallback_exhausted.
+                if (
+                    fallback_pending_fallthroughs >= _FALLBACK_PENDING_FALLTHROUGH_MAX
+                    and result
+                    not in (
+                        _UPSTREAM_RANGE_CLIENT_ERROR,
+                        _UPSTREAM_RANGE_PROTOCOL_MISMATCH,
+                    )
+                ):
                     terminal_reason = "fallback_exhausted"
                     xbmc.log(
                         "NZB-DAV: Fallback chain exhausted at byte {} "

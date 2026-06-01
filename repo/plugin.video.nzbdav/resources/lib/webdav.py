@@ -22,6 +22,13 @@ _VIDEO_FILE_SIZE_HINTS = {}
 # between consecutive episode numbers within the same Sxx tag.
 _EPISODE_TAG_RE = re.compile(r"s(\d{1,3})[. _-]*((?:e\d{1,4}[. _-]*)+)", re.IGNORECASE)
 _EPISODE_NUM_RE = re.compile(r"e(\d{1,4})", re.IGNORECASE)
+# Older/scene-alternate "NxNN" / "NNxNN" episode notation (e.g. 2x05,
+# 02x05) that PTT's parse_title recognizes (ptt/handlers.py:1444 season
+# handler) but the SxxExx regex above does not. The (?:\D|^) left boundary
+# and 2-digit season cap keep resolutions like 1920x1080 / 1280x720 /
+# 3840x2160 and codec tokens like x264/x265 from registering as episodes.
+# Accepts the Cyrillic 'х' the PTT handler also allows.
+_EPISODE_NXN_RE = re.compile(r"(?:\D|^)(\d{1,2})[xх](\d{1,3})(?:\D|$)", re.IGNORECASE)
 
 
 def _hint_tokens(value):
@@ -46,6 +53,8 @@ def _episode_tags(value):
         season = int(match.group(1))
         for episode in _EPISODE_NUM_RE.findall(match.group(2)):
             tags.add((season, int(episode)))
+    for match in _EPISODE_NXN_RE.finditer(value):
+        tags.add((int(match.group(1)), int(match.group(2))))
     return frozenset(tags)
 
 
@@ -645,10 +654,15 @@ def find_video_file(
             # sibling when it is at least as good a hint match; otherwise the
             # mismatched current-level file is no worse and stays the fallback.
             if best_file and have_hint:
-                result_ep_score, _ = _title_hint_match_score(
+                result_ep_score, result_tok_score = _title_hint_match_score(
                     result, hint_tokens, hint_episode_tags
                 )
-                if result_ep_score < best_match_score:
+                result_key = (
+                    result_ep_score,
+                    get_video_file_size_hint(result),
+                    result_tok_score,
+                )
+                if result_key < best_file_key:
                     result = None
             if result:
                 return result
