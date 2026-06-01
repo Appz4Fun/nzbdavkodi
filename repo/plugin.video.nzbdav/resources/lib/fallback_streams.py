@@ -542,6 +542,14 @@ def _titles_core_related(primary_title, candidate_title, corroborated=False):
         prefix_match = longer[: len(shorter)] == shorter
         extra = len(longer) - len(shorter)
         if prefix_match and extra <= 1:
+            # A lone trailing numeric token ("Avatar" -> "Avatar 2") is a sequel
+            # discriminator, not junk. PTT leaves the sequel number inside the
+            # title (years/resolutions are already stripped into year/meta), so a
+            # numeric tail that survives normalization is content-distinguishing.
+            # Reject it without corroboration; a non-numeric trailing token
+            # ("Movie" -> "Movie mirror") stays a legitimate junk-suffix repost.
+            if extra == 1 and longer[-1].isdigit():
+                return False
             return True
         return False
     return _title_token_sets_look_related(left, right)
@@ -619,6 +627,25 @@ def _same_content(primary, candidate):
     # Part/chapter number is a content discriminator (Part One vs Part Two).
     if primary_part and candidate_part and primary_part != candidate_part:
         return False
+
+    # A movie whose release-group suffix mis-parses as a season (e.g.
+    # "...HEVC-REMUX-ALT01" -> seasons=[1], episodes=[]) would otherwise look
+    # episodic, and the season-presence parity check below would then reject the
+    # same movie posted by a normal group (seasons=[]). When BOTH sides have no
+    # episode, the season PRESENCE differs, and both parsed the SAME year, treat
+    # the lone "season" as the phantom it is and collapse it away. The
+    # matching-year gate is required: genuine TV is always season-tagged on both
+    # sides (presence matches), so it never reaches this collapse and stays
+    # subject to season equality.
+    same_year = bool(primary_year) and primary_year == candidate_year
+    if (
+        not primary_episodes
+        and not candidate_episodes
+        and bool(primary_seasons) != bool(candidate_seasons)
+        and same_year
+    ):
+        primary_seasons = ()
+        candidate_seasons = ()
 
     primary_is_episode = bool(primary_seasons or primary_episodes)
     candidate_is_episode = bool(candidate_seasons or candidate_episodes)

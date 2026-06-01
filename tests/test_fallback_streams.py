@@ -3976,6 +3976,111 @@ def test_same_content_keeps_junk_suffix_repost_peering():
     assert fs._same_content(mirror, primary) is True
 
 
+def test_same_content_rejects_numeric_sequel_suffix_without_year():
+    """FS: a lone numeric sequel tail ("Avatar 2") is a content discriminator,
+    not a junk suffix, even when neither side parses a year (PTT keeps the
+    sequel number in the title and _part_number_from_title only covers labeled
+    parts)."""
+    from resources.lib import fallback_streams as fs
+
+    sequel = _result(
+        "Avatar.2.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/avatar2.nzb",
+        60000000000,
+        meta=_movie_meta(),
+    )
+    original = _result(
+        "Avatar.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/avatar.nzb",
+        60000000000,
+        meta=_movie_meta(),
+    )
+    # Sanity: PTT keeps the sequel number in the title, parses no year.
+    assert fs._release_identity(sequel)[0] == "avatar 2"
+    assert fs._release_identity(sequel)[1] == 0
+    assert fs._release_identity(original)[0] == "avatar"
+    assert fs._same_content(sequel, original) is False
+    assert fs._same_content(original, sequel) is False
+    rocky2 = _result(
+        "Rocky.2.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/rocky2.nzb",
+        60000000000,
+        meta=_movie_meta(),
+    )
+    rocky = _result(
+        "Rocky.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/rocky.nzb",
+        60000000000,
+        meta=_movie_meta(),
+    )
+    assert fs._same_content(rocky2, rocky) is False
+    assert fs._same_content(rocky, rocky2) is False
+
+
+def test_same_content_ignores_phantom_season_for_movie_peer():
+    """FS: a movie whose release-group suffix mis-parses as a season (e.g.
+    REMUX-ALT01 -> seasons=[1]) must still peer with the same movie posted by a
+    normal group (seasons=[]) when both carry the same parsed year.
+
+    Without the guarded collapse the phantom season makes one side look
+    episodic, and the season-presence parity check then rejects the same
+    movie from a normal group.
+    """
+    from resources.lib import fallback_streams as fs
+
+    phantom = _result(
+        "The.Matrix.1999.2160p.UHD.BluRay.REMUX.DV.HEVC-REMUX-ALT01",
+        "https://idx/matrix-alt01.nzb",
+        60000000000,
+        meta=_movie_meta(),
+    )
+    normal = _result(
+        "The.Matrix.1999.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/matrix-group.nzb",
+        60000000000,
+        meta=_movie_meta(),
+    )
+    # Sanity: the suffix injects a phantom season on one side only, no episode,
+    # and both sides parse the same year.
+    phantom_identity = fs._release_identity(phantom)
+    normal_identity = fs._release_identity(normal)
+    assert phantom_identity[2] == (1,)
+    assert phantom_identity[3] == ()
+    assert normal_identity[2] == ()
+    assert normal_identity[3] == ()
+    assert phantom_identity[1] == normal_identity[1] == 1999
+    assert fs._same_content(phantom, normal) is True
+    assert fs._same_content(normal, phantom) is True
+
+
+def test_same_content_keeps_distinct_seasons_apart_despite_phantom_collapse():
+    """REGRESSION GUARD: the phantom-season collapse must NOT relax genuinely
+    different seasons. Fargo S01 and S02 both carry a season AND the same year,
+    so the season-presence parity holds and they stay subject to season
+    equality — they must remain different content.
+    """
+    from resources.lib import fallback_streams as fs
+
+    s01 = _result(
+        "Fargo.2014.S01.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/fargo-s01.nzb",
+        60000000000,
+        meta=_movie_meta(),
+    )
+    s02 = _result(
+        "Fargo.2014.S02.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/fargo-s02.nzb",
+        60000000000,
+        meta=_movie_meta(),
+    )
+    # Sanity: both sides carry a season and the same year (presence matches).
+    assert fs._release_identity(s01)[2] == (1,)
+    assert fs._release_identity(s02)[2] == (2,)
+    assert fs._release_identity(s01)[1] == fs._release_identity(s02)[1] == 2014
+    assert fs._same_content(s01, s02) is False
+    assert fs._same_content(s02, s01) is False
+
+
 @patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
 @patch("resources.lib.fallback_streams._fallback_settings")
 def test_same_episode_different_group_is_allowed_fallback(mock_settings, mock_fetch):

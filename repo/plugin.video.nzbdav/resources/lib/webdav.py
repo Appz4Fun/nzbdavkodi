@@ -22,6 +22,17 @@ _VIDEO_FILE_SIZE_HINTS = {}
 # between consecutive episode numbers within the same Sxx tag.
 _EPISODE_TAG_RE = re.compile(r"s(\d{1,3})[. _-]*((?:e\d{1,4}[. _-]*)+)", re.IGNORECASE)
 _EPISODE_NUM_RE = re.compile(r"e(\d{1,4})", re.IGNORECASE)
+# Episode RANGE notation "SxxEaa-Ebb" / "SxxEaa-bb" (e.g. S01E01-E03,
+# S01E01-03). The base _EPISODE_TAG_RE only records the literal endpoints
+# (E01 and E03) and drops a bare "-03" half entirely, so a request for a
+# covered middle episode (E02) would be scored as a different episode. We
+# expand the inclusive span below. _EPISODE_RANGE_MAX_SPAN caps expansion so
+# a malformed/absurd range (e.g. S01E01-E999) can't balloon the tag set --
+# beyond the cap we leave the literal endpoints from _EPISODE_TAG_RE intact.
+_EPISODE_RANGE_RE = re.compile(
+    r"s(\d{1,3})[. _-]*e(\d{1,4})[. _-]*-[. _-]*e?(\d{1,4})", re.IGNORECASE
+)
+_EPISODE_RANGE_MAX_SPAN = 64
 # Older/scene-alternate "NxNN" / "NNxNN" episode notation (e.g. 2x05,
 # 02x05) that PTT's parse_title recognizes (ptt/handlers.py:1444 season
 # handler) but the SxxExx regex above does not. The (?:\D|^) left boundary
@@ -53,6 +64,13 @@ def _episode_tags(value):
         season = int(match.group(1))
         for episode in _EPISODE_NUM_RE.findall(match.group(2)):
             tags.add((season, int(episode)))
+    for match in _EPISODE_RANGE_RE.finditer(value):
+        season = int(match.group(1))
+        start = int(match.group(2))
+        end = int(match.group(3))
+        if start <= end <= start + _EPISODE_RANGE_MAX_SPAN:
+            for episode in range(start, end + 1):
+                tags.add((season, episode))
     for match in _EPISODE_NXN_RE.finditer(value):
         tags.add((int(match.group(1)), int(match.group(2))))
     return frozenset(tags)

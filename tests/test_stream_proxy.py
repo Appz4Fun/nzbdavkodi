@@ -10810,7 +10810,7 @@ def test_select_live_fallback_refreshes_completed_standby_job():
     assert source["stream_headers"] == {"Authorization": "Basic fallback"}
     assert source["content_length"] == 10
     history.assert_called_once_with("nzo2")
-    find_video.assert_called_once_with("/content/movies/Fallback/")
+    find_video.assert_called_once_with("/content/movies/Fallback/", title_hint=None)
     stream_url.assert_called_once_with("/content/movies/Fallback/fallback.mkv")
     assert fetch_length.call_args[0] == (
         "http://webdav/fallback.mkv",
@@ -11066,7 +11066,7 @@ def test_standby_refresh_reuses_probe_bases_for_content_length_checks():
             {"Authorization": "Basic fallback"},
         )
 
-    def find_video_path(path):
+    def find_video_path(path, title_hint=None):
         return "{}movie.mkv".format(path)
 
     with patch(
@@ -15269,3 +15269,79 @@ def test_non_awaiting_read_resets_awaiting_streak():
     )
     assert count == 1
     assert ctx["_awaiting_download_no_progress"] == 1
+
+
+def test_standby_refresh_threads_source_title_as_find_video_file_hint():
+    """A standby fallback source title must reach find_video_file as title_hint.
+
+    For a multi-episode fallback pack the proxy must resolve the requested
+    episode (via title_hint), not the largest sibling, so the resolved file
+    can pass content-length/fingerprint validation.
+    """
+    handler = _make_handler()
+    source = {
+        "nzo_id": "nzo-episode",
+        "title": "The.Show.S03E07.1080p.WEB-DL.x264-GRP",
+        "stream_url": "",
+        "stream_headers": {},
+        "content_length": 0,
+        "validated": False,
+        "failed": False,
+    }
+    ctx = {"fallback_sources": [source]}
+
+    with patch(
+        "resources.lib.nzbdav_api.get_job_history",
+        return_value={
+            "status": "Completed",
+            "storage": "/mnt/nzbdav/completed-symlinks/tv/TheShow.S03",
+        },
+    ), patch(
+        "resources.lib.webdav.find_video_file",
+        return_value="/content/tv/TheShow.S03/S03E07.mkv",
+    ) as find_video, patch(
+        "resources.lib.webdav.get_webdav_stream_url_for_path",
+        return_value=("", {}),
+    ), patch(
+        "resources.lib.fallback_streams.fetch_content_length",
+        return_value=0,
+    ):
+        handler._refresh_standby_fallback_source(ctx, source)
+
+    assert find_video.call_args.kwargs["title_hint"] == (
+        "The.Show.S03E07.1080p.WEB-DL.x264-GRP"
+    )
+
+
+def test_standby_refresh_passes_none_hint_when_source_title_absent():
+    """A source with no title must pass title_hint=None (largest-wins, f12b3c3)."""
+    handler = _make_handler()
+    source = {
+        "nzo_id": "nzo-no-title",
+        "stream_url": "",
+        "stream_headers": {},
+        "content_length": 0,
+        "validated": False,
+        "failed": False,
+    }
+    ctx = {"fallback_sources": [source]}
+
+    with patch(
+        "resources.lib.nzbdav_api.get_job_history",
+        return_value={
+            "status": "Completed",
+            "storage": "/mnt/nzbdav/completed-symlinks/movies/NoTitle",
+        },
+    ), patch(
+        "resources.lib.webdav.find_video_file",
+        return_value="/content/movies/NoTitle/movie.mkv",
+    ) as find_video, patch(
+        "resources.lib.webdav.get_webdav_stream_url_for_path",
+        return_value=("", {}),
+    ), patch(
+        "resources.lib.fallback_streams.fetch_content_length",
+        return_value=0,
+    ):
+        handler._refresh_standby_fallback_source(ctx, source)
+
+    assert find_video.call_args.kwargs["title_hint"] is None
