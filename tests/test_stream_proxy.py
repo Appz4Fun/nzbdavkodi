@@ -8043,41 +8043,51 @@ def test_serve_proxy_notifies_fallback_failure_on_terminal_client_error():
 
 
 def test_serve_proxy_suppresses_pending_failure_toast_on_client_disconnect():
-    """A client disconnect right after a fallback switch — before the new
-    candidate has delivered its first byte — is NOT a candidate failure. For the
-    client write to abort (BrokenPipeError), the candidate had to be serving
-    bytes; the CLIENT went away. The finally block must suppress the
-    'candidate #N was a failure' toast for a still-pending candidate when the
-    stream ends benignly (terminal_reason=client_disconnected) rather than
-    blaming the candidate for a demuxer probe/seek or a user stop.
+    """A client disconnect AFTER a candidate has already delivered real bytes is
+    NOT a candidate failure: the candidate was serving; the CLIENT went away
+    (demuxer probe/seek or a user stop). The candidate cleared itself with a
+    success toast on delivery, so the finally block must not emit a spurious
+    'candidate #N was a failure'.
+
+    NOTE: an EARLIER (F5) version of this test fed a BrokenPipeError on the
+    candidate's FIRST read and asserted suppression on the false premise that
+    "a client abort implies the candidate was serving bytes". The F11/F12 review
+    corrected that premise — a disconnect BEFORE any byte means the candidate
+    delivered nothing and IS a failure (see
+    test_serve_proxy_fallback_zero_bytes_then_disconnect_toasts_failure). This
+    test now exercises the genuinely-benign case: delivered THEN disconnected.
     """
-    from resources.lib.stream_proxy import _UPSTREAM_RANGE_UPSTREAM_ERROR
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_OK,
+        _UPSTREAM_RANGE_UPSTREAM_ERROR,
+    )
 
     ctx = {
         "remote_url": "http://webdav/primary.mkv",
         "auth_header": None,
         "content_type": "video/x-matroska",
-        "content_length": 10,
+        "content_length": 20,
         "fallback_sources": [
             {
                 "nzo_id": "nzo2",
                 "stream_url": "http://webdav/fallback1.mkv",
                 "stream_headers": {"Authorization": "Basic f1"},
-                "content_length": 10,
+                "content_length": 20,
                 "validated": True,
                 "failed": False,
             }
         ],
         "fallback_switch_count": 0,
     }
-    handler = _make_handler_with_server(ctx, range_header="bytes=0-9")
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-19")
 
     with patch.object(
         handler,
         "_stream_upstream_range",
         side_effect=[
             (_UPSTREAM_RANGE_UPSTREAM_ERROR, 0),  # primary -> switch to #1
-            BrokenPipeError(),  # client write aborts before #1 delivers a byte
+            (_UPSTREAM_RANGE_OK, 10),  # #1 delivers real bytes (success)
+            BrokenPipeError(),  # client write aborts AFTER #1 delivered
         ],
     ), patch.object(
         handler,
@@ -8090,7 +8100,7 @@ def test_serve_proxy_suppresses_pending_failure_toast_on_client_disconnect():
 
     msgs = [call.args[1].lower() for call in mock_notify.call_args_list]
     assert not any("was a failure" in m for m in msgs), msgs
-    assert not any("successful" in m for m in msgs), msgs
+    assert any("candidate #1" in m and "successful" in m for m in msgs), msgs
 
 
 def test_serve_proxy_failure_toast_does_not_delay_next_candidate_cutover():
@@ -8280,7 +8290,14 @@ def test_select_live_fallback_rejects_same_length_different_fingerprint():
 
 
 def test_live_fallback_selection_probes_failed_range_before_full_fingerprint():
-    """Unreadable failed ranges should reject before expensive fingerprints."""
+    """Unreadable failed ranges reject before expensive fingerprints.
+
+    F8-dropout: an empty current-range digest is a TRANSIENT miss (the peer
+    just hasn't downloaded this offset yet), so the source is NOT selected
+    this round but is also NOT permanently failed — it stays eligible for the
+    next cutover with a bumped transient_miss_count. The probe-before-
+    fingerprint optimisation (one probe, no fingerprint sweep) is preserved.
+    """
     handler = _make_handler()
     content_length = 10000000
     failed_byte = 1234567
@@ -8315,7 +8332,9 @@ def test_live_fallback_selection_probes_failed_range_before_full_fingerprint():
         source = handler._select_live_fallback_source(ctx, failed_byte, range_end)
 
     assert source is None
-    assert ctx["fallback_sources"][0]["failed"] is True
+    # Transient miss: stays eligible (not permanently failed), counter bumped.
+    assert ctx["fallback_sources"][0].get("failed") is not True
+    assert ctx["fallback_sources"][0].get("transient_miss_count") == 1
     assert mock_digest.call_count == 1
     assert mock_digest.call_args[0][:4] == (
         "http://webdav/content/fallback.mkv",
@@ -8795,7 +8814,12 @@ def test_live_fallback_selection_keeps_primary_cache_for_later_attempts():
 
 
 def test_live_fallback_selection_skips_primary_read_for_unreadable_fallback_sample():
-    """An unreadable fallback fingerprint sample should reject before primary I/O."""
+    """An unreadable fallback fingerprint sample rejects before primary I/O.
+
+    F8-dropout: a missing fallback digest is INCONCLUSIVE (probe couldn't be
+    completed) — the source is not selected but is not permanently failed,
+    and the primary range is never read (the optimisation is preserved).
+    """
     from resources.lib.fallback_streams import fingerprint_ranges
 
     handler = _make_handler()
@@ -8835,7 +8859,9 @@ def test_live_fallback_selection_skips_primary_read_for_unreadable_fallback_samp
         source = handler._select_live_fallback_source(ctx, failed_byte, range_end)
 
     assert source is None
-    assert ctx["fallback_sources"][0]["failed"] is True
+    # Missing fallback digest is INCONCLUSIVE: eligible, not failed.
+    assert ctx["fallback_sources"][0].get("failed") is not True
+    assert ctx["fallback_sources"][0].get("transient_miss_count") == 1
     assert calls
     assert all(call[0] == "http://webdav/content/fallback.mkv" for call in calls)
 
@@ -11119,7 +11145,11 @@ def test_fallback_range_probe_failure_reenters_retry_and_zero_fill_recovery():
         handler._serve_proxy(ctx)
 
     assert ctx["remote_url"] == "http://webdav/primary.mkv"
-    assert ctx["fallback_sources"][0]["failed"] is True
+    # F8-dropout: a probe 5xx/timeout (OSError) is a TRANSIENT miss, so the
+    # fallback is NOT permanently failed on the first hiccup — it stays
+    # eligible (under the transient-miss bound) to be reconsidered later.
+    assert ctx["fallback_sources"][0].get("failed") is not True
+    assert ctx["fallback_sources"][0].get("transient_miss_count", 0) >= 1
     assert ctx["fallback_switch_count"] == 0
     # The fix: no validated fallback now re-enters the retry ladder and reaches
     # the skip-probe, rather than hard-closing before either.
@@ -13895,3 +13925,1093 @@ def test_prepare_stream_via_service_does_not_retry_http_error():
             prepare_stream_via_service(38699, "http://nzbdav/m.mkv")
 
     assert mock_urlopen.call_count == 1, "HTTPError must not be retried"
+
+
+def sys_modules_monitor():
+    import sys
+
+    return sys.modules["xbmc"].Monitor.return_value
+
+
+# ---------------------------------------------------------------------------
+# F5 — pending fallback-candidate failure must not be silently swallowed when
+# terminal_reason was never explicitly set (default sentinel, not "complete").
+# ---------------------------------------------------------------------------
+
+
+def test_serve_proxy_default_terminal_reason_is_unknown_not_complete():
+    """An exit that never sets terminal_reason must surface as a genuine
+    failure (toast the pending candidate), NOT be silently treated as a
+    benign "complete". Force an unexpected exception out of the streaming
+    loop after a fallback switch so terminal_reason stays at its default; the
+    finally block must report the pending candidate as a failure.
+    """
+    from resources.lib.stream_proxy import _UPSTREAM_RANGE_UPSTREAM_ERROR
+
+    ctx = {
+        "remote_url": "http://webdav/primary.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 10,
+        "fallback_sources": [
+            {
+                "nzo_id": "nzo2",
+                "stream_url": "http://webdav/fallback1.mkv",
+                "stream_headers": {"Authorization": "Basic f1"},
+                "content_length": 10,
+                "validated": True,
+                "failed": False,
+            }
+        ],
+        "fallback_switch_count": 0,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-9")
+
+    # primary errors -> switch to candidate #1; the candidate's first read
+    # raises a non-socket exception that is NOT caught by the
+    # BrokenPipe/timeout handler, so it propagates through finally with
+    # terminal_reason still at its default sentinel.
+    with patch.object(
+        handler,
+        "_stream_upstream_range",
+        side_effect=[
+            (_UPSTREAM_RANGE_UPSTREAM_ERROR, 0),
+            RuntimeError("unexpected"),
+        ],
+    ), patch.object(
+        handler,
+        "_select_live_fallback_source",
+        return_value=ctx["fallback_sources"][0],
+    ), patch(
+        "resources.lib.stream_proxy._notify"
+    ) as mock_notify:
+        with pytest.raises(RuntimeError):
+            handler._serve_proxy(ctx)
+
+    msgs = [call.args[1].lower() for call in mock_notify.call_args_list]
+    assert any("was a failure" in m for m in msgs), msgs
+
+
+def test_serve_proxy_complete_terminal_reason_set_explicitly_no_toast():
+    """The genuine success path must set terminal_reason="complete" explicitly
+    so a still-pending candidate that already delivered is NOT toasted as a
+    failure. Happy path: primary delivers everything, no candidate switch, no
+    fallback toast at all.
+    """
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 2048,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-2047")
+
+    payload = b"A" * 2048
+    with patch(
+        "resources.lib.stream_proxy.urlopen",
+        return_value=_mock_urlopen_response([payload]),
+    ), patch("resources.lib.stream_proxy._notify") as mock_notify:
+        handler._serve_proxy(ctx)
+
+    msgs = [call.args[1].lower() for call in mock_notify.call_args_list]
+    assert not any("was a failure" in m for m in msgs), msgs
+
+
+# ---------------------------------------------------------------------------
+# F11 — a candidate that switched in but delivered ZERO bytes must be reported
+# as a FAILURE even when the stream ends on terminal_reason="complete" (a full
+# zero-fill to EOF). An explicit ``candidate_delivered`` flag — set only where
+# real bytes were written — drives the finally-block failure toast.
+# F12 (4decdd4) — but a benign client disconnect
+# (terminal_reason="client_disconnected") must NOT blame a still-pending
+# candidate: a BrokenPipeError can only raise at the client body write AFTER a
+# non-empty upstream read, so the candidate WAS serving bytes and the CLIENT
+# went away. That genuinely-benign exit is exempted from the failure toast.
+# ---------------------------------------------------------------------------
+
+
+def test_serve_proxy_fallback_delivered_then_complete_toasts_success_once():
+    """Case (a): a candidate that delivered real bytes and then the loop
+    completes must toast success exactly once and never a failure."""
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_OK,
+        _UPSTREAM_RANGE_UPSTREAM_ERROR,
+    )
+
+    ctx = {
+        "remote_url": "http://webdav/primary.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 10,
+        "fallback_sources": [
+            {
+                "nzo_id": "nzo2",
+                "stream_url": "http://webdav/fallback1.mkv",
+                "stream_headers": {"Authorization": "Basic f1"},
+                "content_length": 10,
+                "validated": True,
+                "failed": False,
+            }
+        ],
+        "fallback_switch_count": 0,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-9")
+
+    with patch.object(
+        handler,
+        "_stream_upstream_range",
+        side_effect=[
+            (_UPSTREAM_RANGE_UPSTREAM_ERROR, 0),  # primary: 0 bytes -> switch
+            (_UPSTREAM_RANGE_OK, 10),  # candidate #1: delivers, completes
+        ],
+    ), patch.object(
+        handler,
+        "_select_live_fallback_source",
+        return_value=ctx["fallback_sources"][0],
+    ), patch(
+        "resources.lib.stream_proxy._notify"
+    ) as mock_notify:
+        handler._serve_proxy(ctx)
+
+    msgs = [call.args[1].lower() for call in mock_notify.call_args_list]
+    success = [m for m in msgs if "candidate #1" in m and "successful" in m]
+    assert len(success) == 1, msgs
+    assert not any("was a failure" in m for m in msgs), msgs
+
+
+def test_serve_proxy_fallback_zero_bytes_then_complete_toasts_failure():
+    """Case (b) — the F11 hole: a candidate switched in, delivered ZERO bytes,
+    and the loop reached EOF via zero-fill (terminal_reason="complete"). The
+    benign terminal reason must NOT swallow the failure: the candidate never
+    delivered, so it is reported as a failure."""
+    from resources.lib.stream_proxy import _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE
+
+    ctx = {
+        "remote_url": "http://webdav/primary.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 10,
+        "fallback_sources": [
+            {
+                "nzo_id": "nzo2",
+                "stream_url": "http://webdav/fallback1.mkv",
+                "stream_headers": {"Authorization": "Basic f1"},
+                "content_length": 10,
+                "validated": True,
+                "failed": False,
+            }
+        ],
+        "fallback_switch_count": 0,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-9")
+
+    # Budget/density guards OFF so a full zero-fill to EOF exits the loop on the
+    # BENIGN reason="complete" path (current > end) rather than tripping one of
+    # the non-benign budget breakers — that is precisely the F11 hole where a
+    # never-delivering candidate would otherwise be swallowed.
+    runtime_settings = {
+        "contract_mode": "lenient",
+        "density_breaker_enabled": False,
+        "zero_fill_budget_enabled": False,
+        "retry_ladder_enabled": True,
+    }
+
+    with patch.object(
+        handler,
+        "_stream_upstream_range",
+        side_effect=[
+            (_UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, 0),  # primary: 0 -> switch
+            (_UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, 0),  # candidate #1: 0 bytes
+        ],
+    ), patch.object(
+        handler,
+        "_select_live_fallback_source",
+        # switch to #1 first, then no further candidate so we fall through to
+        # the skip-probe / zero-fill recovery on the dead candidate.
+        side_effect=[ctx["fallback_sources"][0], None],
+    ), patch.object(
+        handler,
+        "_retry_original_range",
+        return_value=(_UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, 0, 0),
+    ), patch.object(
+        # Zero-fill the whole requested range to EOF -> loop exits current>end
+        # -> terminal_reason="complete" (benign), while no real byte was served.
+        handler,
+        "_find_skip_offset",
+        return_value=10,
+    ), patch(
+        "resources.lib.stream_proxy._passthrough_runtime_settings",
+        return_value=runtime_settings,
+    ), patch(
+        "resources.lib.stream_proxy._notify"
+    ) as mock_notify:
+        handler._serve_proxy(ctx)
+
+    msgs = [call.args[1].lower() for call in mock_notify.call_args_list]
+    assert any("candidate #1" in m and "was a failure" in m for m in msgs), msgs
+    assert not any("successful" in m for m in msgs), msgs
+
+
+def test_serve_proxy_fallback_zero_bytes_then_disconnect_toasts_failure():
+    """Case (c) — 4decdd4's invariant: a client disconnect right after a
+    fallback switch (terminal_reason="client_disconnected") must NOT toast the
+    still-pending candidate as a failure. A BrokenPipeError yielding
+    terminal_reason="client_disconnected" can only originate at the CLIENT body
+    write ``self.wfile.write(chunk)`` — reached only AFTER ``resp.read()``
+    returned a non-empty chunk. So the candidate's upstream WAS serving bytes
+    and the CLIENT went away (a Kodi demuxer probe/seek abandoning the range, or
+    a user stop). ``candidate_delivered`` stays False because the BrokenPipeError
+    raises before ``_stream_upstream_range`` returns, so without the
+    client_disconnect exemption a live/working candidate would be falsely
+    toasted as failed — a regression of 4decdd4's deliberate suppression.
+    """
+    from resources.lib.stream_proxy import _UPSTREAM_RANGE_UPSTREAM_ERROR
+
+    ctx = {
+        "remote_url": "http://webdav/primary.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 10,
+        "fallback_sources": [
+            {
+                "nzo_id": "nzo2",
+                "stream_url": "http://webdav/fallback1.mkv",
+                "stream_headers": {"Authorization": "Basic f1"},
+                "content_length": 10,
+                "validated": True,
+                "failed": False,
+            }
+        ],
+        "fallback_switch_count": 0,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-9")
+
+    with patch.object(
+        handler,
+        "_stream_upstream_range",
+        side_effect=[
+            (_UPSTREAM_RANGE_UPSTREAM_ERROR, 0),  # primary: 0 bytes -> switch
+            # candidate #1's first read: the candidate WAS serving bytes (the
+            # BrokenPipeError can only raise at the client body write, after a
+            # non-empty read) and the CLIENT went away before the read returned.
+            BrokenPipeError("client gone"),
+        ],
+    ), patch.object(
+        handler,
+        "_select_live_fallback_source",
+        return_value=ctx["fallback_sources"][0],
+    ), patch(
+        "resources.lib.stream_proxy._notify"
+    ) as mock_notify:
+        handler._serve_proxy(ctx)
+
+    msgs = [call.args[1].lower() for call in mock_notify.call_args_list]
+    # 4decdd4: a benign client disconnect must NOT blame the candidate.
+    assert not any("was a failure" in m for m in msgs), msgs
+    assert not any("successful" in m for m in msgs), msgs
+
+
+def test_serve_proxy_no_fallback_pending_emits_no_fallback_toast():
+    """Case (d): a plain stream that completes with no fallback ever pending
+    emits no fallback success/failure toast at all."""
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 2048,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-2047")
+
+    with patch(
+        "resources.lib.stream_proxy.urlopen",
+        return_value=_mock_urlopen_response([b"A" * 2048]),
+    ), patch("resources.lib.stream_proxy._notify") as mock_notify:
+        handler._serve_proxy(ctx)
+
+    msgs = [call.args[1].lower() for call in mock_notify.call_args_list]
+    assert not any("candidate #" in m for m in msgs), msgs
+
+
+def test_serve_proxy_fallback_delivered_then_disconnect_toasts_success_only():
+    """Case (e): a candidate that delivered real bytes and was then cut by a
+    client disconnect must toast success only (its delivery already cleared the
+    pending state) — never a spurious failure."""
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_OK,
+        _UPSTREAM_RANGE_UPSTREAM_ERROR,
+    )
+
+    ctx = {
+        "remote_url": "http://webdav/primary.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 20,
+        "fallback_sources": [
+            {
+                "nzo_id": "nzo2",
+                "stream_url": "http://webdav/fallback1.mkv",
+                "stream_headers": {"Authorization": "Basic f1"},
+                "content_length": 20,
+                "validated": True,
+                "failed": False,
+            }
+        ],
+        "fallback_switch_count": 0,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-19")
+
+    with patch.object(
+        handler,
+        "_stream_upstream_range",
+        side_effect=[
+            (_UPSTREAM_RANGE_UPSTREAM_ERROR, 0),  # primary: 0 bytes -> switch
+            (_UPSTREAM_RANGE_OK, 10),  # candidate #1: delivers real bytes
+            BrokenPipeError("client gone"),  # then client disconnects
+        ],
+    ), patch.object(
+        handler,
+        "_select_live_fallback_source",
+        return_value=ctx["fallback_sources"][0],
+    ), patch(
+        "resources.lib.stream_proxy._notify"
+    ) as mock_notify:
+        handler._serve_proxy(ctx)
+
+    msgs = [call.args[1].lower() for call in mock_notify.call_args_list]
+    success = [m for m in msgs if "candidate #1" in m and "successful" in m]
+    assert len(success) == 1, msgs
+    assert not any("was a failure" in m for m in msgs), msgs
+
+
+@patch("resources.lib.stream_proxy.xbmc")
+def test_serve_proxy_logs_complete_reason_on_natural_loop_exit(mock_xbmc):
+    """The pass-through summary on a fully-streamed range must read
+    reason=complete (the success sentinel), not the default sentinel."""
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 2048,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-2047")
+
+    with patch(
+        "resources.lib.stream_proxy.urlopen",
+        return_value=_mock_urlopen_response([b"A" * 2048]),
+    ):
+        handler._serve_proxy(ctx)
+
+    logged = "\n".join(call.args[0] for call in mock_xbmc.log.call_args_list)
+    assert "reason=complete" in logged
+    assert "reason=unknown" not in logged
+
+
+# ---------------------------------------------------------------------------
+# F4 — exhausted fallback chain must hit a BOUNDED stop (fallback_exhausted)
+# instead of spinning the retry ladder forever, while a TRANSIENT failure
+# still re-enters the ladder and recovers (preserving e3a74a1).
+# ---------------------------------------------------------------------------
+
+
+@patch("resources.lib.stream_proxy.xbmc")
+def test_serve_proxy_transient_trickle_still_recovers_via_ladder(mock_xbmc):
+    """e3a74a1 preserved: a single transient trickle with no validated
+    fallback re-enters the retry ladder and recovers — it must NOT trip the
+    bounded exhaustion stop on the first miss.
+    """
+    from resources.lib.stream_proxy import _UPSTREAM_RANGE_OK
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 4096,
+        "fallback_sources": [{"nzo_id": "alt", "stream_url": "http://host/alt.mkv"}],
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-4095")
+
+    chunks = [b"A" * 1024, b"B" * 1024]
+    monotonic_returns = iter([100.0, 105.0, 125.0] + [125.0] * 30)
+
+    def _fake_retry(active_ctx, start, end, contract_mode, first_byte=False):
+        remainder = b"C" * (end - start + 1)
+        handler.wfile.write(remainder)
+        return _UPSTREAM_RANGE_OK, len(remainder), end + 1
+
+    with patch(
+        "resources.lib.stream_proxy.time.monotonic",
+        side_effect=lambda: next(monotonic_returns),
+    ), patch(
+        "resources.lib.stream_proxy.urlopen",
+        return_value=_mock_urlopen_response(chunks),
+    ), patch.object(
+        handler, "_select_live_fallback_source", return_value=None
+    ), patch.object(
+        handler, "_retry_original_range", side_effect=_fake_retry
+    ) as mock_retry:
+        handler._serve_proxy(ctx)
+
+    mock_retry.assert_called()
+    assert _collect_written(handler) == b"A" * 1024 + b"B" * 1024 + b"C" * 2048
+    logged = "\n".join(call.args[0] for call in mock_xbmc.log.call_args_list)
+    assert "reason=fallback_pending_retry_primary" in logged
+    assert "reason=fallback_exhausted" not in logged
+
+
+@patch("resources.lib.stream_proxy.xbmc")
+def test_serve_proxy_bounded_exhaustion_stops_instead_of_looping(mock_xbmc):
+    """When fallbacks are attached but never validate and the primary never
+    recovers, the retry-ladder re-entry must be BOUNDED: after the cap of
+    fruitless cutover attempts it terminates with reason=fallback_exhausted
+    rather than zero-filling the whole file / looping until the client quits.
+    """
+    from resources.lib.stream_proxy import _UPSTREAM_RANGE_UPSTREAM_ERROR
+
+    content_length = 1_000_000
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": content_length,
+        "fallback_sources": [{"nzo_id": "alt", "stream_url": "http://host/alt.mkv"}],
+    }
+    handler = _make_handler_with_server(
+        ctx, range_header="bytes=0-{}".format(content_length - 1)
+    )
+
+    # Every primary read errors with zero bytes and the retry ladder never makes
+    # progress; the skip-probe always offers a small skip, so without a bound the
+    # loop would zero-fill the ENTIRE file (garbage playback) or spin. The F4
+    # bound must stop the fruitless cutover re-entry early with
+    # fallback_exhausted instead.
+    probe_calls = {"n": 0}
+
+    def _stream(active_ctx, start, end, contract_mode=None):
+        return _UPSTREAM_RANGE_UPSTREAM_ERROR, 0
+
+    def _fake_retry(active_ctx, start, end, contract_mode, first_byte=False):
+        return _UPSTREAM_RANGE_UPSTREAM_ERROR, 0, start
+
+    def _skip(active_ctx, current, end):
+        probe_calls["n"] += 1
+        assert probe_calls["n"] < 10_000, "F4 bound never tripped"
+        return 4096
+
+    with patch.object(
+        handler, "_stream_upstream_range", side_effect=_stream
+    ), patch.object(
+        handler, "_select_live_fallback_source", return_value=None
+    ), patch.object(
+        handler, "_retry_original_range", side_effect=_fake_retry
+    ), patch.object(
+        handler, "_find_skip_offset", side_effect=_skip
+    ):
+        handler._serve_proxy(ctx)
+
+    logged = "\n".join(call.args[0] for call in mock_xbmc.log.call_args_list)
+    assert "reason=fallback_exhausted" in logged
+    written = _collect_written(handler)
+    # Stopped well before zero-filling the entire file.
+    assert len(written) < content_length
+
+
+@patch("resources.lib.stream_proxy.xbmc")
+def test_serve_proxy_cutover_resets_fallthrough_exhaustion_counter(mock_xbmc):
+    """SM-1: the F4 bounded-exhaustion counters
+    (fallback_pending_fallthroughs / last_fallthrough_streamed) must be RESET on
+    a successful cutover, exactly where awaiting_download_no_progress is. After
+    the primary drives the fall-through count up to ~2 (fruitless re-entries
+    with no validated source), a successful live cutover that delivers real
+    bytes resets the counter. A LATER single fruitless read must therefore NOT
+    immediately trip reason=fallback_exhausted off the stale primary-driven
+    count — otherwise a freshly-switched-but-dead source would be condemned
+    after roughly one read instead of getting the full bounded budget.
+    """
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_OK,
+        _UPSTREAM_RANGE_UPSTREAM_ERROR,
+    )
+
+    content_length = 100
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": content_length,
+        "fallback_sources": [
+            {
+                "nzo_id": "alt",
+                "stream_url": "http://host/alt.mkv",
+                "content_length": content_length,
+                "validated": True,
+                "failed": False,
+            }
+        ],
+        "fallback_active_index": -1,
+        "fallback_switch_count": 0,
+    }
+    handler = _make_handler_with_server(
+        ctx, range_header="bytes=0-{}".format(content_length - 1)
+    )
+
+    # The primary errors with no validated source: each such iteration falls
+    # through, the retry ladder makes no progress, then a small zero-fill
+    # (skip=10) advances one step. Zero-fill is black frames, not recovery, so it
+    # does NOT reset the F4 count, which climbs by one per fall-through toward the
+    # cap _FALLBACK_PENDING_FALLTHROUGH_MAX (3). State machine:
+    #   reads 1,2 -> no source -> fall-through (count 1, 2)
+    #   read  3   -> validated source -> CUTOVER: must RESET the counters, and
+    #                from now on the (now-active) source DELIVERS real bytes.
+    # WITHOUT the reset the stale count is 2 at cutover; the activated source
+    # delivering bytes would still be fine here, but had it needed one more
+    # fruitless read the stale 2 would trip the cap after a single miss. To prove
+    # the reset, the activated source first MISSES once more (a fresh fall-through
+    # — count 1 WITH reset, but the fatal 3 WITHOUT it) and only THEN delivers.
+    state = {"cut": False, "post_cut_misses": 0}
+
+    def _stream(active_ctx, start, end, contract_mode=None):
+        if state["cut"]:
+            # The cutover source misses once (fresh fall-through), then delivers.
+            if state["post_cut_misses"] < 1:
+                state["post_cut_misses"] += 1
+                return _UPSTREAM_RANGE_UPSTREAM_ERROR, 0
+            remaining = end - start + 1
+            handler.wfile.write(b"\x00" * remaining)
+            return _UPSTREAM_RANGE_OK, remaining
+        return _UPSTREAM_RANGE_UPSTREAM_ERROR, 0
+
+    selects = iter([None, None, ctx["fallback_sources"][0]])
+
+    def _select(active_ctx, current, end):
+        try:
+            value = next(selects)
+        except StopIteration:
+            return None
+        if value:
+            state["cut"] = True
+        return value
+
+    def _fake_retry(active_ctx, start, end, contract_mode, first_byte=False):
+        return _UPSTREAM_RANGE_UPSTREAM_ERROR, 0, start
+
+    def _skip(active_ctx, current, end):
+        return min(10, end - current + 1)
+
+    runtime_settings = {
+        "contract_mode": "lenient",
+        "density_breaker_enabled": False,
+        "zero_fill_budget_enabled": False,
+        "retry_ladder_enabled": True,
+    }
+
+    with patch.object(
+        handler, "_stream_upstream_range", side_effect=_stream
+    ), patch.object(
+        handler, "_select_live_fallback_source", side_effect=_select
+    ), patch.object(
+        handler, "_retry_original_range", side_effect=_fake_retry
+    ), patch.object(
+        handler, "_find_skip_offset", side_effect=_skip
+    ), patch.object(
+        handler, "_activate_fallback_source"
+    ), patch(
+        "resources.lib.stream_proxy._passthrough_runtime_settings",
+        return_value=runtime_settings,
+    ):
+        handler._serve_proxy(ctx)
+
+    logged = "\n".join(call.args[0] for call in mock_xbmc.log.call_args_list)
+    # The cutover reset the counter, so the count never reached the cap even
+    # though more than _FALLBACK_PENDING_FALLTHROUGH_MAX fall-throughs occurred.
+    assert "reason=fallback_exhausted" not in logged
+    # The stream survived to a natural completion instead of being condemned.
+    assert "reason=complete" in logged
+
+
+# ---------------------------------------------------------------------------
+# F6/F7 — tail prewarm (MKV cues) must YIELD to startup playback: it must not
+# fire its upstream tail read until after a short defer (abortable), so it
+# cannot starve the byte-0 prefetch / initial first-byte range request.
+# ---------------------------------------------------------------------------
+
+
+def test_tail_prewarm_defers_before_fetching_to_yield_startup():
+    """Tail prewarm must wait (abortably) before issuing its tail read so it
+    yields the connection budget to the byte-0 prefetch and Kodi's first-byte
+    range request during the fragile startup window. The MKV-cues benefit is
+    preserved: after the defer it still fetches the tail.
+    """
+    from resources.lib.stream_proxy import (
+        _TAIL_PREWARM_BYTES,
+        StreamProxy,
+        _StreamHandler,
+    )
+
+    sp = StreamProxy.__new__(StreamProxy)
+    content_length = 50 * 1024 * 1024
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": "Basic primary",
+        "content_type": "video/x-matroska",
+        "content_length": content_length,
+    }
+    order = []
+
+    monitor = sys_modules_monitor()
+    original_wait = monitor.waitForAbort.side_effect
+
+    def _wait(timeout=0.0):
+        order.append(("wait", timeout))
+        return False
+
+    monitor.waitForAbort.side_effect = _wait
+
+    def record(url, auth_header, start, end, cl):
+        order.append(("fetch", start, end))
+        return b"X" * (end - start + 1)
+
+    try:
+        with patch.object(
+            _StreamHandler, "_fetch_primary_range_bytes", side_effect=record
+        ):
+            sp._prewarm_tail_range(ctx)
+    finally:
+        monitor.waitForAbort.side_effect = original_wait
+
+    # A defer happened BEFORE the tail fetch.
+    assert order, "tail prewarm did nothing"
+    assert order[0][0] == "wait", order
+    assert any(step[0] == "fetch" for step in order), order
+    fetch = [s for s in order if s[0] == "fetch"][-1]
+    assert fetch[1] == content_length - _TAIL_PREWARM_BYTES
+    assert fetch[2] == content_length - 1
+
+
+def test_tail_prewarm_aborts_during_defer_without_fetching():
+    """If Kodi shuts down (or the session aborts) during the prewarm defer, the
+    tail read must be skipped entirely — no wasted upstream connection."""
+    from resources.lib.stream_proxy import StreamProxy, _StreamHandler
+
+    sp = StreamProxy.__new__(StreamProxy)
+    content_length = 50 * 1024 * 1024
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": content_length,
+    }
+    fetched = []
+
+    monitor = sys_modules_monitor()
+    original_wait = monitor.waitForAbort.side_effect
+    monitor.waitForAbort.side_effect = lambda timeout=0.0: True  # abort signalled
+
+    try:
+        with patch.object(
+            _StreamHandler,
+            "_fetch_primary_range_bytes",
+            side_effect=lambda *a, **k: fetched.append(a) or b"",
+        ):
+            sp._prewarm_tail_range(ctx)
+    finally:
+        monitor.waitForAbort.side_effect = original_wait
+
+    assert not fetched, "tail prewarm must not fetch after an abort during defer"
+
+
+# ---------------------------------------------------------------------------
+# F8-dropout — tri-state fallback match: MATCH / MISMATCH / INCONCLUSIVE
+#
+# A correct same-release fallback that is momentarily a few bytes short, or
+# hiccups on one probe (5xx/timeout/empty digest), must NOT be permanently
+# killed for the whole session. Only a PROVABLE different file is permanently
+# failed; a transient miss keeps the source eligible (bounded reconsider).
+# ---------------------------------------------------------------------------
+
+
+def test_fallback_match_classifies_missing_fallback_digest_as_inconclusive():
+    """An empty/unavailable fallback probe digest is transient, not a mismatch."""
+    from resources.lib import stream_proxy as sp
+
+    handler = _make_handler()
+    source = {
+        "nzo_id": "peer",
+        "stream_url": "http://webdav/fallback.mkv",
+        "stream_headers": {"Authorization": "Basic peer"},
+        "content_length": 1000,
+        "validated": False,
+        "failed": False,
+    }
+    ctx = {
+        "remote_url": "http://webdav/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_length": 1000,
+        "fallback_sources": [source],
+    }
+
+    # current-range probe returns nothing yet (range not downloaded on the peer)
+    with patch.object(handler, "_fetch_fallback_current_range_digest", return_value=""):
+        result = handler._fallback_source_matches(ctx, source, 100, 999)
+
+    assert result is sp._FALLBACK_INCONCLUSIVE
+
+
+def test_fallback_match_classifies_differing_digest_as_mismatch():
+    """Both digests present and provably different is a definitive MISMATCH."""
+    from resources.lib import stream_proxy as sp
+
+    handler = _make_handler()
+    source = {
+        "nzo_id": "wrong",
+        "stream_url": "http://webdav/fallback.mkv",
+        "stream_headers": {"Authorization": "Basic peer"},
+        "content_length": 1000,
+        "validated": False,
+        "failed": False,
+    }
+    ctx = {
+        "remote_url": "http://webdav/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_length": 1000,
+        "fallback_sources": [source],
+    }
+
+    with patch.object(
+        handler, "_fetch_fallback_current_range_digest", return_value="dead-beef"
+    ), patch.object(
+        handler, "_fetch_fallback_fingerprint_digest", return_value="aaaa"
+    ), patch.object(
+        handler, "_fetch_primary_fallback_range_digest", return_value="bbbb"
+    ):
+        result = handler._fallback_source_matches(ctx, source, 100, 4194)
+
+    assert result is sp._FALLBACK_MISMATCH
+
+
+def test_fallback_match_classifies_missing_primary_digest_as_inconclusive():
+    """A primary probe 5xx/timeout (empty digest) is transient, not a mismatch."""
+    from resources.lib import stream_proxy as sp
+
+    handler = _make_handler()
+    source = {
+        "nzo_id": "peer",
+        "stream_url": "http://webdav/fallback.mkv",
+        "stream_headers": {"Authorization": "Basic peer"},
+        "content_length": 1000,
+        "validated": False,
+        "failed": False,
+    }
+    ctx = {
+        "remote_url": "http://webdav/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_length": 1000,
+        "fallback_sources": [source],
+    }
+
+    with patch.object(
+        handler, "_fetch_fallback_current_range_digest", return_value="dead-beef"
+    ), patch.object(
+        handler, "_fetch_fallback_fingerprint_digest", return_value="aaaa"
+    ), patch.object(
+        handler, "_fetch_primary_fallback_range_digest", return_value=""
+    ):
+        result = handler._fallback_source_matches(ctx, source, 100, 4194)
+
+    assert result is sp._FALLBACK_INCONCLUSIVE
+
+
+def test_fallback_match_returns_true_on_full_fingerprint_agreement():
+    """All sampled ranges agree -> usable now (MATCH)."""
+    handler = _make_handler()
+    source = {
+        "nzo_id": "good",
+        "stream_url": "http://webdav/fallback.mkv",
+        "stream_headers": {"Authorization": "Basic peer"},
+        "content_length": 1000,
+        "validated": False,
+        "failed": False,
+    }
+    ctx = {
+        "remote_url": "http://webdav/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_length": 1000,
+        "fallback_sources": [source],
+    }
+
+    with patch.object(
+        handler, "_fetch_fallback_current_range_digest", return_value="dead-beef"
+    ), patch.object(
+        handler, "_fetch_fallback_fingerprint_digest", return_value="same"
+    ), patch.object(
+        handler, "_fetch_primary_fallback_range_digest", return_value="same"
+    ):
+        result = handler._fallback_source_matches(ctx, source, 100, 4194)
+
+    assert result is True
+
+
+def test_inconclusive_fallback_is_not_permanently_failed_and_retried():
+    """A transient (INCONCLUSIVE) miss must keep the source eligible for the
+    NEXT cutover — never set failed=True on the first transient hiccup."""
+    from resources.lib import stream_proxy as sp
+
+    handler = _make_handler()
+    source = {
+        "nzo_id": "peer",
+        "stream_url": "http://webdav/fallback.mkv",
+        "stream_headers": {"Authorization": "Basic peer"},
+        "content_length": 1000,
+        "validated": False,
+        "failed": False,
+    }
+    ctx = {
+        "remote_url": "http://webdav/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_length": 1000,
+        "fallback_sources": [source],
+    }
+
+    with patch.object(
+        handler, "_fallback_source_matches", return_value=sp._FALLBACK_INCONCLUSIVE
+    ):
+        first = handler._select_resolved_fallback_source(
+            ctx, 100, 999, expected_length=1000
+        )
+        second = handler._select_resolved_fallback_source(
+            ctx, 100, 999, expected_length=1000
+        )
+
+    assert first is None
+    assert second is None
+    assert source.get("failed") is not True
+    # the transient miss is counted but stays under the abandon bound
+    assert source.get("transient_miss_count", 0) >= 1
+
+
+def test_definitive_mismatch_permanently_fails_the_source():
+    """A definitive MISMATCH (provably different file) is failed for good."""
+    from resources.lib import stream_proxy as sp
+
+    handler = _make_handler()
+    source = {
+        "nzo_id": "wrong",
+        "stream_url": "http://webdav/fallback.mkv",
+        "stream_headers": {"Authorization": "Basic peer"},
+        "content_length": 1000,
+        "validated": False,
+        "failed": False,
+    }
+    ctx = {
+        "remote_url": "http://webdav/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_length": 1000,
+        "fallback_sources": [source],
+    }
+
+    with patch.object(
+        handler, "_fallback_source_matches", return_value=sp._FALLBACK_MISMATCH
+    ):
+        selected = handler._select_resolved_fallback_source(
+            ctx, 100, 999, expected_length=1000
+        )
+
+    assert selected is None
+    assert source["failed"] is True
+
+
+def test_stuck_inconclusive_source_is_abandoned_after_bound():
+    """A source stuck INCONCLUSIVE forever is abandoned once it exceeds the
+    bounded reconsider cap (so the queue can't reconsider it forever)."""
+    from resources.lib import stream_proxy as sp
+
+    handler = _make_handler()
+    source = {
+        "nzo_id": "peer",
+        "stream_url": "http://webdav/fallback.mkv",
+        "stream_headers": {"Authorization": "Basic peer"},
+        "content_length": 1000,
+        "validated": False,
+        "failed": False,
+    }
+    ctx = {
+        "remote_url": "http://webdav/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_length": 1000,
+        "fallback_sources": [source],
+    }
+
+    with patch.object(
+        handler, "_fallback_source_matches", return_value=sp._FALLBACK_INCONCLUSIVE
+    ):
+        for _ in range(sp._FALLBACK_SOURCE_TRANSIENT_MISS_MAX + 2):
+            handler._select_resolved_fallback_source(
+                ctx, 100, 999, expected_length=1000
+            )
+
+    assert source["failed"] is True
+
+
+# ---------------------------------------------------------------------------
+# F-route — bounded failover from a STUCK no-progress AWAITING_DOWNLOAD
+#
+# 58f3d4f routed the clean high-water "still downloading" short read to the
+# retry ladder (NOT fallback) to avoid premature fallback_exhausted. But a DEAD
+# primary whose missing-article region reads as a clean short read would spin
+# the ladder forever and never fail over. After a bounded number of consecutive
+# AWAITING_DOWNLOAD reads that make NO forward progress, allow failover.
+# ---------------------------------------------------------------------------
+
+
+def test_progressing_awaiting_download_keeps_using_retry_ladder():
+    """AWAITING_DOWNLOAD reads that make real forward progress must keep using
+    the retry ladder and must NOT prematurely fail over (preserves 58f3d4f)."""
+    import sys
+
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_OK,
+        _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD,
+    )
+
+    ctx = {
+        "remote_url": "http://webdav/primary.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 40,
+        "fallback_sources": [
+            {
+                "nzo_id": "peer",
+                "stream_url": "http://webdav/fallback.mkv",
+                "stream_headers": {"Authorization": "Basic f"},
+                "content_length": 40,
+                "validated": True,
+                "failed": False,
+            }
+        ],
+        "fallback_switch_count": 0,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-39")
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = lambda key: {
+        "strict_contract_mode": "warn",
+        "density_breaker_enabled": "false",
+        "zero_fill_budget_enabled": "true",
+        "retry_ladder_enabled": "true",
+    }.get(key, "")
+    original_addon = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+
+    # Primary keeps short-reading at the high-water mark, but the retry ladder
+    # makes forward progress each time (download is genuinely advancing).
+    retry_calls = {"n": 0}
+
+    def fake_retry(_ctx, current, _end, _mode, first_byte=False):
+        del first_byte
+        retry_calls["n"] += 1
+        handler.wfile.write(b"P" * 10)
+        return _UPSTREAM_RANGE_OK, 10, current + 10
+
+    try:
+        with patch.object(
+            handler,
+            "_stream_upstream_range",
+            side_effect=[
+                (_UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD, 0),
+                (_UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD, 0),
+                (_UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD, 0),
+                (_UPSTREAM_RANGE_OK, 10),
+            ],
+        ), patch.object(
+            handler, "_retry_original_range", side_effect=fake_retry
+        ), patch.object(
+            handler, "_select_live_fallback_source"
+        ) as mock_select:
+            handler._serve_proxy(ctx)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original_addon
+
+    # Never failed over: progressing AWAITING_DOWNLOAD stays on the primary.
+    mock_select.assert_not_called()
+    assert ctx["remote_url"] == "http://webdav/primary.mkv"
+
+
+def test_stuck_awaiting_download_fails_over_after_bound():
+    """A DEAD primary stuck on no-progress AWAITING_DOWNLOAD must eventually fail
+    over to a validated fallback once the no-progress bound is exceeded."""
+    import sys
+
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_OK,
+        _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD,
+    )
+
+    fallback = {
+        "nzo_id": "peer",
+        "stream_url": "http://webdav/fallback.mkv",
+        "stream_headers": {"Authorization": "Basic f"},
+        "content_length": 10,
+        "validated": True,
+        "failed": False,
+    }
+    ctx = {
+        "remote_url": "http://webdav/primary.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 10,
+        "fallback_sources": [fallback],
+        "fallback_switch_count": 0,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-9")
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = lambda key: {
+        "strict_contract_mode": "warn",
+        "density_breaker_enabled": "false",
+        "zero_fill_budget_enabled": "true",
+        "retry_ladder_enabled": "true",
+    }.get(key, "")
+    original_addon = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+
+    from resources.lib.stream_proxy import _AWAITING_DOWNLOAD_NO_PROGRESS_MAX
+
+    def stream_range(stream_ctx, start, end, contract_mode=None):
+        del contract_mode
+        if stream_ctx["remote_url"] == "http://webdav/fallback.mkv":
+            handler.wfile.write(b"F" * (end - start + 1))
+            return _UPSTREAM_RANGE_OK, end - start + 1
+        # primary is dead: every read is a clean no-progress short read
+        return _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD, 0
+
+    # retry ladder never makes progress on the dead primary
+    def fake_retry(_ctx, current, _end, _mode, first_byte=False):
+        del first_byte
+        return _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD, 0, current
+
+    # Kodi forces Connection: close, so a stuck region reads as a clean short
+    # read on every fresh GET. The no-progress streak is session-persistent
+    # (ctx), so it accrues across reconnects until the bound triggers failover.
+    calls_before_switch = 0
+    try:
+        with patch.object(
+            handler, "_stream_upstream_range", side_effect=stream_range
+        ), patch.object(
+            handler, "_retry_original_range", side_effect=fake_retry
+        ), patch.object(
+            handler, "_select_live_fallback_source", return_value=fallback
+        ) as mock_select, patch(
+            "resources.lib.stream_proxy._notify"
+        ):
+            for _ in range(_AWAITING_DOWNLOAD_NO_PROGRESS_MAX + 5):
+                if ctx["remote_url"] == "http://webdav/fallback.mkv":
+                    break
+                calls_before_switch += 1
+                handler._serve_proxy(ctx)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original_addon
+
+    # Did NOT fail over on the very first stuck request (preserves 58f3d4f's
+    # wait-on-primary), but DID eventually fail over once the bound was exceeded.
+    assert calls_before_switch > 1
+    mock_select.assert_called()
+    assert ctx["remote_url"] == "http://webdav/fallback.mkv"

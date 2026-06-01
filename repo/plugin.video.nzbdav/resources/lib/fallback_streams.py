@@ -401,6 +401,312 @@ def _normalize_title(value):
     return " ".join(normalized.split())
 
 
+# Ordinal words PTT keeps inside a movie title (e.g. "Dune Part Two",
+# "John Wick Chapter 4"). A movie's part/chapter number is a content
+# discriminator, not an encode attribute, so the content-identity gate
+# must treat "Part Two" and "Part One" as different content.
+_PART_ORDINAL_WORDS = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "i": 1,
+    "ii": 2,
+    "iii": 3,
+    "iv": 4,
+    "v": 5,
+    "vi": 6,
+    "vii": 7,
+    "viii": 8,
+    "ix": 9,
+    "x": 10,
+}
+_PART_LABEL_RE = re.compile(
+    r"\b(?:part|chapter|vol(?:ume)?|book)\b[\s._-]*([0-9]{1,3}|[ivx]{1,4}|"
+    r"one|two|three|four|five|six|seven|eight|nine|ten)\b",
+    re.IGNORECASE,
+)
+_RELEASE_IDENTITY_CACHE_TITLE_KEY = "_fallback_identity_title"  # nosec B105
+_RELEASE_IDENTITY_CACHE_VALUE_KEY = "_fallback_identity"  # nosec B105
+
+
+def _part_number_from_title(title):
+    """Return the part/chapter/volume number embedded in a title, or 0."""
+    if not isinstance(title, str) or not title:
+        return 0
+    match = _PART_LABEL_RE.search(title)
+    if not match:
+        return 0
+    token = match.group(1).strip().lower()
+    if token.isdigit():
+        try:
+            return int(token)
+        except ValueError:
+            return 0
+    return _PART_ORDINAL_WORDS.get(token, 0)
+
+
+def _release_identity(result):
+    """Return PTT-derived content identity for a release.
+
+    Returns a tuple ``(title, year, seasons, episodes, part)`` where
+    ``title`` is the normalized PTT show/movie title, ``year`` is the
+    parsed year (0 when absent), ``seasons``/``episodes`` are sorted
+    tuples, and ``part`` is a part/chapter/volume number (0 when absent).
+    This is the authoritative content fingerprint used by the fallback
+    content-identity gate. Falls back to the normalized raw title when
+    PTT cannot parse.
+    """
+    if not isinstance(result, dict):
+        raw = result if isinstance(result, str) else ""
+        return (_normalize_title(raw), 0, (), (), 0)
+    title = result.get("title", "")
+    cached = result.get(_RELEASE_IDENTITY_CACHE_VALUE_KEY)
+    if result.get(_RELEASE_IDENTITY_CACHE_TITLE_KEY) == title and isinstance(
+        cached, tuple
+    ):
+        return cached
+    parsed = {}
+    try:
+        from resources.lib.ptt import parse_title
+
+        parsed = parse_title(title) or {}
+    except Exception:  # pylint: disable=broad-except
+        parsed = {}
+    parsed_title = parsed.get("title") if isinstance(parsed, dict) else ""
+    norm_title = _normalize_title(parsed_title or title)
+    try:
+        year = int(parsed.get("year") or 0)
+    except (TypeError, ValueError):
+        year = 0
+
+    def _int_tuple(values):
+        if isinstance(values, (int, str)):
+            values = [values]
+        if not isinstance(values, (list, tuple)):
+            return ()
+        out = []
+        for value in values:
+            try:
+                out.append(int(value))
+            except (TypeError, ValueError):
+                continue
+        return tuple(sorted(set(out)))
+
+    seasons = _int_tuple(parsed.get("seasons"))
+    episodes = _int_tuple(parsed.get("episodes"))
+    part = _part_number_from_title(title)
+    identity = (norm_title, year, seasons, episodes, part)
+    if isinstance(result, dict):
+        result[_RELEASE_IDENTITY_CACHE_TITLE_KEY] = title
+        result[_RELEASE_IDENTITY_CACHE_VALUE_KEY] = identity
+    return identity
+
+
+def _titles_core_related(primary_title, candidate_title, corroborated=False):
+    """Return whether two normalized core titles plausibly name the same work.
+
+    Reposts often differ only by a junk suffix (e.g. "Movie" vs "Movie
+    mirror"), so a single trailing extra token on one side is treated as noise
+    and accepted. A multi-token extra tail looks like a distinguishing subtitle
+    (e.g. "Avatar" vs "Avatar The Way Of Water") and is rejected unless
+    ``corroborated`` positive identity (matching year/episode) backs it up. An
+    empty token set on either side fails closed unless corroborated.
+    """
+    left_tokens = primary_title.split()
+    right_tokens = candidate_title.split()
+    left = frozenset(left_tokens)
+    right = frozenset(right_tokens)
+    if not left or not right:
+        # Fail closed on a missing core title unless positive identity agrees.
+        return corroborated
+    if left == right:
+        return True
+    if left <= right or right <= left:
+        if corroborated:
+            return True
+        # Accept only a junk-SUFFIX repost: the longer title's extra tokens are
+        # a single trailing noise token. More than one extra token, or extra
+        # tokens that are not a trailing tail, look like a distinguishing
+        # subtitle and are rejected without corroboration.
+        if left <= right:
+            shorter, longer = left_tokens, right_tokens
+        else:
+            shorter, longer = right_tokens, left_tokens
+        prefix_match = longer[: len(shorter)] == shorter
+        extra = len(longer) - len(shorter)
+        if prefix_match and extra <= 1:
+            return True
+        return False
+    return _title_token_sets_look_related(left, right)
+
+
+def _content_discriminators_match(primary, candidate):
+    """Return whether two same-titled releases are the same *cut* of the work.
+
+    Edition (Theatrical vs Extended/Director's) and PROPER/REPACK status are
+    content discriminators: a Theatrical encode is not a valid fallback for an
+    Extended encode even though title/year match. Resolution, codec, group,
+    HDR, and audio are deliberately *not* checked here — those only affect the
+    fallback tier, not whether the candidate is the same content.
+    """
+    primary_meta = _result_meta(primary)
+    candidate_meta = _result_meta(candidate)
+    left_edition = _normalize_title(_meta_value_from_meta(primary_meta, "edition"))
+    right_edition = _normalize_title(_meta_value_from_meta(candidate_meta, "edition"))
+    if left_edition != right_edition:
+        return False
+    for key in ("proper", "repack", "upscaled"):
+        if _meta_bool_from_meta(primary_meta, key) != _meta_bool_from_meta(
+            candidate_meta, key
+        ):
+            return False
+    return True
+
+
+def _same_content(primary, candidate):
+    """Return whether two releases are the SAME content (content-identity gate).
+
+    Movies: same core title and same year (when both parsed a year).
+    Episodes: same show title, season, and episode set.
+    Any parsed part/chapter/volume number must match. Edition and
+    PROPER/REPACK status (the same-cut discriminators) must also match. This
+    is the authoritative hard gate that prevents falling back to a different
+    release (different movie part, year, episode, edition, etc.).
+    """
+    if not _content_discriminators_match(primary, candidate):
+        return False
+    (
+        primary_title,
+        primary_year,
+        primary_seasons,
+        primary_episodes,
+        primary_part,
+    ) = _release_identity(primary)
+    (
+        candidate_title,
+        candidate_year,
+        candidate_seasons,
+        candidate_episodes,
+        candidate_part,
+    ) = _release_identity(candidate)
+
+    # Corroborating positive identity rescues otherwise-ambiguous title
+    # relations: a matching parsed year, or a matching season+episode set.
+    corroborated = bool(
+        (primary_year and candidate_year and primary_year == candidate_year)
+        or (
+            primary_seasons
+            and candidate_seasons
+            and primary_episodes
+            and candidate_episodes
+            and primary_seasons == candidate_seasons
+            and primary_episodes == candidate_episodes
+        )
+    )
+
+    if not _titles_core_related(
+        primary_title, candidate_title, corroborated=corroborated
+    ):
+        return False
+
+    # Part/chapter number is a content discriminator (Part One vs Part Two).
+    if primary_part and candidate_part and primary_part != candidate_part:
+        return False
+    if bool(primary_part) != bool(candidate_part):
+        # PTT keeps the part word inside the title ("Dune Part Two"), so the
+        # core titles never compare equal to the bare original. One side naming
+        # an explicit part while the other names none is a sequel-vs-original
+        # mismatch (e.g. "Dune Part Two" vs "Dune"); treat it as different
+        # content. A differing explicit part is already rejected above.
+        return False
+
+    primary_is_episode = bool(primary_seasons or primary_episodes)
+    candidate_is_episode = bool(candidate_seasons or candidate_episodes)
+    if primary_is_episode or candidate_is_episode:
+        if (
+            primary_seasons
+            and candidate_seasons
+            and primary_seasons != candidate_seasons
+        ):
+            return False
+        if (
+            primary_episodes
+            and candidate_episodes
+            and primary_episodes != candidate_episodes
+        ):
+            return False
+        # An episode must not peer with a different episode that simply omitted
+        # its SxxExx tokens; require both to carry the same episode evidence.
+        if bool(primary_episodes) != bool(candidate_episodes):
+            return False
+        if bool(primary_seasons) != bool(candidate_seasons):
+            return False
+        return True
+
+    # Movies: a differing year is different content.
+    if primary_year and candidate_year and primary_year != candidate_year:
+        return False
+    return True
+
+
+def _release_similarity(primary, candidate):
+    """Return a fallback tier for ``candidate`` vs ``primary``, or None.
+
+    None means different content (hard reject). Otherwise:
+      0  same resolution + codec + group, size within ~3%
+      1  same resolution + codec, size within ~10%
+      2  same resolution, different codec
+      3  same content, anything else (last resort)
+    Lower tiers are tried first.
+    """
+    if not _same_content(primary, candidate):
+        return None
+    primary_res = _meta_value(primary, "resolution")
+    candidate_res = _meta_value(candidate, "resolution")
+    primary_codec = _meta_value(primary, "codec")
+    candidate_codec = _meta_value(candidate, "codec")
+    primary_group = _meta_value(primary, "group")
+    candidate_group = _meta_value(candidate, "group")
+
+    same_res = bool(primary_res) and primary_res == candidate_res
+    same_codec = bool(primary_codec) and primary_codec == candidate_codec
+    same_group = bool(primary_group) and primary_group == candidate_group
+
+    if same_res and same_codec:
+        if same_group and _release_size_within(
+            primary, candidate, _TIER0_SIZE_FRACTION
+        ):
+            return 0
+        return 1
+    if same_res:
+        return 2
+    return 3
+
+
+def _release_size_bytes(result):
+    """Return the best-known release size: manifest group bytes or indexer size."""
+    manifest_bytes = _manifest_group_bytes(result)
+    if manifest_bytes > 0:
+        return manifest_bytes
+    return _result_indexer_size(result)
+
+
+def _release_size_within(primary, candidate, fraction):
+    """Return whether two releases' known sizes are within ``fraction``."""
+    primary_size = _release_size_bytes(primary)
+    candidate_size = _release_size_bytes(candidate)
+    if primary_size <= 0 or candidate_size <= 0:
+        return True
+    return abs(primary_size - candidate_size) <= primary_size * fraction
+
+
 def _quality_key(result):
     """Return the conservative duplicate-grouping quality key for a result."""
     meta = _result_meta(result)
@@ -776,7 +1082,9 @@ def first_prefetchable_fallback_peer(
                 continue
             if selected_tokens is None:
                 selected_tokens = _title_tokens(selected)
-            if _title_token_sets_look_related(selected_tokens, _title_tokens(result)):
+            if _title_token_sets_look_related(
+                selected_tokens, _title_tokens(result)
+            ) and _same_content(selected, result):
                 _remember_prefetch_gate_match(
                     selected, result, selected_meta, candidate_meta
                 )
@@ -795,7 +1103,7 @@ def first_prefetchable_fallback_peer(
                 result,
                 primary_meta=selected_meta,
                 candidate_meta=candidate_meta,
-            ):
+            ) and _same_content(selected, result):
                 _remember_prefetch_gate_match(
                     selected, result, selected_meta, candidate_meta
                 )
@@ -804,7 +1112,9 @@ def first_prefetchable_fallback_peer(
         if not selected_meta_ready:
             selected_meta = _result_meta(selected)
             selected_meta_ready = True
-        if _metadata_profiles_match(selected, result, primary_meta=selected_meta):
+        if _metadata_profiles_match(
+            selected, result, primary_meta=selected_meta
+        ) and _same_content(selected, result):
             candidate_meta = result.get("_meta")
             if not isinstance(candidate_meta, dict):
                 candidate_meta = None
@@ -949,6 +1259,11 @@ def _fallback_peer_matches(primary, candidate):
     if primary_digest and candidate_digest and candidate_digest == primary_digest:
         return False
 
+    # Authoritative content-identity gate (F2): never fall back to a different
+    # movie part / year / episode / edition even when release tokens overlap.
+    if not _same_content(primary, candidate):
+        return False
+
     if not _has_prefetch_gate_match(primary, candidate):
         if not _titles_look_related(primary, candidate):
             return False
@@ -959,7 +1274,19 @@ def _fallback_peer_matches(primary, candidate):
     return _fallback_manifest_peer_matches(primary, candidate)
 
 
-_PEER_BYTES_TOLERANCE_FRACTION = 0.20
+# Per-tier size bands used for fallback ranking. The content-identity gate
+# (``_same_content``) is the authoritative reject; these bands only separate a
+# near-identical same-encode repost (Tier 0/1) from looser same-content peers.
+_TIER0_SIZE_FRACTION = 0.03
+# Manifest group-bytes tolerance for same-resolution + same-codec peers (the
+# Tier 1 band). The stream proxy still fingerprint-verifies byte identity
+# before cutover, so this only needs to be loose enough to absorb yEnc
+# segmentation noise across two uploads of the same encode while still
+# rejecting a wildly different file (different tracks/runtime).
+_PEER_BYTES_TOLERANCE_FRACTION = 0.10
+# Indexer-size prefilter band before fetching a manifest. Content identity is
+# enforced separately; this only avoids fetching manifests for releases whose
+# advertised size is implausibly far from the primary.
 _PREFETCH_INDEXER_SIZE_TOLERANCE_FRACTION = 0.25
 
 
@@ -1049,13 +1376,12 @@ def _fallback_manifest_peer_matches(primary, candidate):
     candidate_kind = _manifest_payload_kind(candidate)
     if not primary_kind or not candidate_kind:
         return False
-    # Apply the same +/-20% group_bytes tolerance whenever both kinds are
-    # plausible video payloads (direct MKV or RAR archive). Title and profile
-    # gates already proved the candidate is a related release; allow the
-    # configured tolerance band so yEnc segmentation noise across uploads
-    # does not block peers and so a direct-MKV upload can peer with a RAR
-    # upload of the same release. Reject pairs whose group_bytes gap exceeds
-    # the band (e.g., a Theatrical-UHD RAR vs. an Extended-UHD RAR).
+    # Both kinds are plausible video payloads (direct MKV or RAR archive). The
+    # content-identity gate (_same_content) and the same-resolution/codec
+    # profile gate already ran upstream, so two peers reaching here are the
+    # same content and the same encode; their group_bytes should differ only by
+    # yEnc segmentation noise. Tightened from the old +/-20% band to +/-10% so a
+    # large gap (different tracks/runtime) is rejected.
     if primary_kind in ("video", "archive") and candidate_kind in ("video", "archive"):
         primary_bytes = _manifest_group_bytes(primary)
         candidate_bytes = _manifest_group_bytes(candidate)
@@ -1218,10 +1544,11 @@ def _ensure_fallback_manifest(result, manifest_cache):
 
 
 def _attach_candidates_for_target(target, pool, max_candidates):
-    candidates = []
+    matched = []
     seen_links = {target.get("link", "")}
     target_digest = _article_digest(target)
     seen_article_digests = {target_digest} if target_digest else set()
+    target_size = _release_size_bytes(target)
     for candidate in pool:
         if candidate is target:
             continue
@@ -1234,13 +1561,19 @@ def _attach_candidates_for_target(target, pool, max_candidates):
             or not _fallback_peer_matches(target, candidate)
         ):
             continue
-        candidates.append(candidate)
+        tier = _release_similarity(target, candidate)
+        if tier is None:
+            continue
+        candidate_size = _release_size_bytes(candidate)
+        size_delta = abs(target_size - candidate_size) if target_size else 0
+        matched.append((tier, size_delta, candidate))
         seen_links.add(candidate_link)
         if candidate_digest:
             seen_article_digests.add(candidate_digest)
-        if len(candidates) >= max_candidates:
-            break
-    target["_fallback_candidates"] = candidates
+    # Tiered ranking: most-similar first (lower tier), then smallest size delta.
+    # Sort is stable so equal (tier, delta) keeps pool order.
+    matched.sort(key=lambda item: (item[0], item[1]))
+    target["_fallback_candidates"] = [item[2] for item in matched[:max_candidates]]
 
 
 def _attach_manifest_candidate_if_matching(
@@ -1512,9 +1845,11 @@ def _prefetch_candidate_matches(
     if target_tokens is not None and (not candidate_has_meta or target_meta is None):
         if not _title_token_sets_look_related(target_tokens, _title_tokens(candidate)):
             return False
-        return _metadata_profiles_match(
+        if not _metadata_profiles_match(
             target, candidate, primary_meta=target_meta, candidate_meta=candidate_meta
-        )
+        ):
+            return False
+        return _same_content(target, candidate)
     if not _metadata_profiles_match(
         target, candidate, primary_meta=target_meta, candidate_meta=candidate_meta
     ):
@@ -1527,7 +1862,8 @@ def _prefetch_candidate_matches(
         )
     if not titles_match:
         return False
-    return True
+    # Authoritative content-identity gate after the cheap profile/title checks.
+    return _same_content(target, candidate)
 
 
 def attach_fallback_candidates(results):
@@ -1656,8 +1992,30 @@ def attach_fallback_candidates_for_selection(selected, results, fallback_setting
         pool=_safe_len(results or []),
         selected_manifest_fetch=selected_manifest_fetch,
     )
-    selected["_fallback_candidates"] = candidates
+    selected["_fallback_candidates"] = _rank_fallback_candidates(selected, candidates)
     return selected
+
+
+def _rank_fallback_candidates(target, candidates):
+    """Return candidates ordered best-first by fallback tier, then size delta.
+
+    Tiered ranking (lower tier = tried first) so the most-similar release is
+    submitted before a looser same-content peer. Sort is stable, preserving the
+    original arrival order within a (tier, size-delta) bucket.
+    """
+    target_size = _release_size_bytes(target)
+    ranked = []
+    for candidate in candidates:
+        tier = _release_similarity(target, candidate)
+        if tier is None:
+            # Content gate already ran upstream; keep as last-resort if it
+            # somehow lacks a tier (defensive — should not happen).
+            tier = 3
+        candidate_size = _release_size_bytes(candidate)
+        size_delta = abs(target_size - candidate_size) if target_size else 0
+        ranked.append((tier, size_delta, candidate))
+    ranked.sort(key=lambda item: (item[0], item[1]))
+    return [item[2] for item in ranked]
 
 
 def build_fallback_job_name(title, nzb_url, index):

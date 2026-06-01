@@ -392,7 +392,32 @@ def test_completed_job_stream_passes_settings_getter_to_webdav_lookup(mock_find_
     mock_find_stream.assert_called_once_with(
         "/content/uncategorized/movie/",
         settings_getter=settings_getter,
+        title_hint="movie.mkv",
     )
+
+
+@patch("resources.lib.resolver._find_video_stream_for_folder")
+def test_completed_job_stream_threads_title_as_episode_hint(mock_find_stream):
+    """The requested release title is threaded into webdav as ``title_hint`` so a
+    multi-episode pack returns the requested episode, not the largest file."""
+    mock_find_stream.return_value = (
+        "/content/uncategorized/Show/Show.S02E05.mkv",
+        "http://webdav/Show.S02E05.mkv",
+        {"Authorization": "Basic x"},
+    )
+
+    job = {
+        "status": "Completed",
+        "name": "Show.S02E05.1080p.WEB-DL",
+        "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/Show",
+    }
+    with patch(
+        "urllib.request.urlopen",
+        return_value=_probe_response(content_length=85_000_000, body=b"\x00"),
+    ):
+        _completed_job_stream("Show.S02E05.1080p.WEB-DL", job)
+
+    assert mock_find_stream.call_args.kwargs["title_hint"] == "Show.S02E05.1080p.WEB-DL"
 
 
 @patch("resources.lib.resolver._find_video_stream_for_folder")
@@ -2185,7 +2210,7 @@ def test_resolve_overlaps_bookmark_cleanup_with_existing_completed_fast_path(
         _time.sleep(0.2)
         timing["cleanup_end"] = _time.perf_counter()
 
-    def find_video(_path):
+    def find_video(_path, **_kwargs):
         timing["video_scan_start"] = _time.perf_counter()
         _time.sleep(0.2)
         timing["video_scan_end"] = _time.perf_counter()
@@ -2426,7 +2451,7 @@ def test_resolve_and_play_skips_duplicate_stale_picker_completed_probe_before_su
     timing = {}
     scanned_folders = []
 
-    def slow_find_video(folder):
+    def slow_find_video(folder, **_kwargs):
         scanned_folders.append(folder)
         _time.sleep(0.09)
         if folder.endswith("/ready/"):
@@ -2989,6 +3014,29 @@ def test_delegated_find_video_stream_remembers_content_length_hint(mock_size_hin
         resolver._get_stream_content_length_hint(stream_url, "Basic delegated")
         == 4294967296
     )
+
+
+def test_find_video_stream_for_folder_threads_title_hint_to_webdav():
+    """``_find_video_stream_for_folder`` forwards ``title_hint`` to the webdav
+    delegate so the episode-pack preference reaches discovery at runtime."""
+    from resources.lib import resolver
+    from resources.lib.resolver import _find_video_stream_for_folder
+
+    delegated = MagicMock(
+        return_value=(
+            "/content/Show/Show.S02E05.mkv",
+            "http://webdav/content/Show/Show.S02E05.mkv",
+            {"Authorization": "Basic x"},
+        )
+    )
+
+    with patch("resources.lib.webdav.find_video_stream_for_folder", delegated):
+        with patch.object(resolver, "find_video_stream_for_folder", delegated):
+            _find_video_stream_for_folder(
+                "/content/Show/", title_hint="Show.S02E05.1080p.WEB-DL"
+            )
+
+    assert delegated.call_args.kwargs["title_hint"] == "Show.S02E05.1080p.WEB-DL"
 
 
 @patch("resources.lib.resolver._stop_fallback_submit_worker")

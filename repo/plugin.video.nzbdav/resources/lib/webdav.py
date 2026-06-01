@@ -4,10 +4,11 @@
 """WebDAV availability checker for nzbdav streams."""
 
 import base64
+import re
 import threading
 from queue import Queue
 from urllib.error import HTTPError
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 from urllib.request import Request, urlopen
 
 import xbmc
@@ -15,6 +16,66 @@ import xbmc
 _WEBDAV_SUBDIR_SCAN_WORKERS = 4
 _VIDEO_FILE_SIZE_HINTS_MAX = 64
 _VIDEO_FILE_SIZE_HINTS = {}
+# Capture a season followed by one or more episode numbers so a multi-episode
+# file like "S01E01E02E03" yields every episode it contains, not just the
+# first. The episode run allows light separators (e.g. "E01-E02", "E01.E02")
+# between consecutive episode numbers within the same Sxx tag.
+_EPISODE_TAG_RE = re.compile(r"s(\d{1,3})[. _-]*((?:e\d{1,4}[. _-]*)+)", re.IGNORECASE)
+_EPISODE_NUM_RE = re.compile(r"e(\d{1,4})", re.IGNORECASE)
+
+
+def _hint_tokens(value):
+    """Return lowercased alphanumeric tokens for loose name matching."""
+    if not isinstance(value, str) or not value:
+        return frozenset()
+    cleaned = re.sub(r"[\W_]+", " ", value.lower())
+    return frozenset(token for token in cleaned.split() if token)
+
+
+def _episode_tags(value):
+    """Return the set of (season, episode) tags found in a release name.
+
+    A multi-episode tag such as "S01E01E02E03" expands to every episode it
+    spans -- {(1, 1), (1, 2), (1, 3)} -- so a request for a middle episode
+    (E02) still matches the combined file rather than only its first episode.
+    """
+    if not isinstance(value, str) or not value:
+        return frozenset()
+    tags = set()
+    for match in _EPISODE_TAG_RE.finditer(value):
+        season = int(match.group(1))
+        for episode in _EPISODE_NUM_RE.findall(match.group(2)):
+            tags.add((season, int(episode)))
+    return frozenset(tags)
+
+
+def _title_hint_match_score(file_path, hint_tokens, hint_episode_tags):
+    """Return how strongly a video file name matches the requested title hint.
+
+    A shared SxxExx episode tag is the strongest signal (an episode pack must
+    pick the requested episode, not the largest file). Otherwise fall back to
+    raw token overlap. Returns 0 when there is no usable hint or no overlap.
+    """
+    if not hint_tokens and not hint_episode_tags:
+        return 0
+    name = unquote(file_path.rsplit("/", 1)[-1]) if file_path else ""
+    if not name:
+        return 0
+    score = 0
+    if hint_episode_tags:
+        file_tags = _episode_tags(name)
+        if file_tags:
+            if hint_episode_tags & file_tags:
+                # Strong match: same episode requested and present.
+                score += 1000
+            else:
+                # The file names a different episode than requested; never
+                # prefer it over a true match (but token overlap may still
+                # rank it among non-episode candidates).
+                score -= 1000
+    if hint_tokens:
+        score += len(hint_tokens & _hint_tokens(name))
+    return score
 
 
 def _get_settings(settings_getter=None):
@@ -170,19 +231,26 @@ def probe_webdav_reachable(
     return False, "connection_error"
 
 
-def _find_video_file_in_subdirs(subdirs, depth, visited, settings):
-    """Probe sibling WebDAV subfolders and return the LARGEST video found.
+def _find_video_file_in_subdirs(
+    subdirs, depth, visited, settings, hint_tokens=None, hint_episode_tags=None
+):
+    """Probe sibling WebDAV subfolders and return the best video found.
+
+    When a requested title/episode hint is available, a sibling whose video
+    name matches the hint (especially the requested SxxExx episode) is preferred
+    over the largest video — so a multi-episode pack returns the requested
+    episode instead of whichever sibling happens to be biggest. With no hint
+    (or no hint match) the historical "largest video wins" behavior is kept.
 
     Every sibling is scanned (no early-exit on the first match) so a polluted
-    release folder can't win by ordering — e.g. a smaller junk release listed
-    before the real, larger release must not hijack playback. Ties break toward
-    the earliest sibling so behavior stays stable. Sizes come from the
-    PROPFIND ``getcontentlength`` hint each recursive call records; a found
-    video whose size is unknown still beats "no video" so we never drop a
-    playable file just because the server omitted its length.
+    release folder can't win by ordering. Among equally-scored hint matches, or
+    when no hint matches, ties break toward the larger then earlier-listed
+    sibling so behavior stays stable.
     """
     if not subdirs:
         return None
+    hint_tokens = hint_tokens or frozenset()
+    hint_episode_tags = hint_episode_tags or frozenset()
 
     pending = list(subdirs)
     workers = max(1, min(_WEBDAV_SUBDIR_SCAN_WORKERS, len(pending)))
@@ -205,7 +273,15 @@ def _find_video_file_in_subdirs(subdirs, depth, visited, settings):
                 xbmc.LOGDEBUG,
             )
             try:
-                result = find_video_file(subdir, depth + 1, visited, True, settings)
+                result = find_video_file(
+                    subdir,
+                    depth + 1,
+                    visited,
+                    True,
+                    settings,
+                    title_hint_tokens=hint_tokens,
+                    title_hint_episode_tags=hint_episode_tags,
+                )
             except Exception as e:  # pylint: disable=broad-except
                 xbmc.log(
                     "NZB-DAV: Error scanning WebDAV subfolder in parallel: "
@@ -220,18 +296,25 @@ def _find_video_file_in_subdirs(subdirs, depth, visited, settings):
         thread.start()
 
     best_path = None
-    best_size = -1
-    best_index = None
+    best_key = None
+    have_hint = bool(hint_tokens or hint_episode_tags)
     for _ in range(len(pending)):
         index, result = result_queue.get()
         if not result:
             continue
         size = get_video_file_size_hint(result)
-        # Strictly-larger wins; on a tie keep the earlier-listed sibling.
-        if size > best_size or (size == best_size and index < best_index):
+        match_score = (
+            _title_hint_match_score(result, hint_tokens, hint_episode_tags)
+            if have_hint
+            else 0
+        )
+        # Rank by (hint score, size) and break ties toward the earlier sibling
+        # (negative index sorts a smaller index higher). Without a hint the
+        # score stays 0, so this reduces to the historical largest-wins rule.
+        key = (match_score, size, -index)
+        if best_key is None or key > best_key:
             best_path = result
-            best_size = size
-            best_index = index
+            best_key = key
     return best_path
 
 
@@ -262,8 +345,11 @@ def find_video_file(
     _already_encoded=False,
     _settings=None,
     settings_getter=None,
+    title_hint=None,
+    title_hint_tokens=None,
+    title_hint_episode_tags=None,
 ):
-    """Browse a WebDAV folder and find the largest video file.
+    """Browse a WebDAV folder and find the requested (or largest) video file.
 
     Args:
         folder_path: WebDAV folder path to scan (may be absolute or relative).
@@ -276,6 +362,14 @@ def find_video_file(
             the server already URL-encoded for us). Without this, recursive
             descents double-encode ``%20`` → ``%2520`` and every subdirectory
             lookup 404s.
+        title_hint: Optional requested release name (e.g. the selected scene
+            title). When supplied and a folder/pack holds several candidate
+            videos, the one whose name matches the hint — especially the
+            requested SxxExx episode — is preferred over the largest video.
+            When omitted, the historical largest-video behavior is preserved.
+        title_hint_tokens / title_hint_episode_tags: Internal pre-parsed forms
+            of ``title_hint`` threaded through recursion so the hint is parsed
+            once per discovery rather than once per folder level.
 
     Returns:
         The WebDAV href path of the largest video file found, typically an
@@ -293,6 +387,16 @@ def find_video_file(
 
     if _depth > 2:
         return None
+
+    # Parse the title hint once at the top of a discovery; recursive calls
+    # receive the already-parsed token/episode-tag sets so the cost is paid
+    # once, not per folder level.
+    if title_hint_tokens is None and title_hint_episode_tags is None:
+        hint_tokens = _hint_tokens(title_hint)
+        hint_episode_tags = _episode_tags(title_hint)
+    else:
+        hint_tokens = title_hint_tokens or frozenset()
+        hint_episode_tags = title_hint_episode_tags or frozenset()
 
     if _visited is None:
         _visited = set()
@@ -355,6 +459,9 @@ def find_video_file(
 
         best_file = None
         best_size = 0
+        best_file_key = None
+        best_match_score = 0
+        have_hint = bool(hint_tokens or hint_episode_tags)
         subdirs = []
 
         from urllib.parse import urlparse
@@ -459,11 +566,31 @@ def find_video_file(
                         xbmc.LOGWARNING,
                     )
 
-            if size > best_size:
+            # Rank candidate videos by (hint match score, size). Without a hint
+            # the score is always 0, so this stays the historical largest-wins
+            # rule. With a hint, the name-matching video (especially the
+            # requested SxxExx episode) outranks a larger non-matching sibling.
+            match_score = (
+                _title_hint_match_score(href_path, hint_tokens, hint_episode_tags)
+                if have_hint
+                else 0
+            )
+            file_key = (match_score, size)
+            if best_file_key is None or file_key > best_file_key:
+                best_file_key = file_key
                 best_size = size
                 best_file = href_path
+                best_match_score = match_score
 
-        if best_file:
+        # When the best current-level candidate is an explicit episode MISMATCH
+        # (negative hint score) and a hint was given, the requested episode may
+        # still live in a sibling subdir (e.g. a season pack with per-episode
+        # subfolders plus a stray wrong-episode file at the top). Prefer
+        # recursing first so we don't return the wrong episode before even
+        # looking; fall back to the mismatched current-level file only if the
+        # descent finds nothing. The no-hint path keeps the historical
+        # largest-wins/return-immediately behavior untouched.
+        if best_file and not (have_hint and best_match_score < 0 and subdirs):
             file_path = best_file
             _remember_video_file_size_hint(file_path, best_size)
             xbmc.log(
@@ -472,12 +599,51 @@ def find_video_file(
             )
             return file_path
 
-        # No video found at this level, recurse into subdirectories. Subdirs
-        # came from PROPFIND hrefs and are already URL-encoded, so recursive
-        # calls skip top-level quote() to avoid `%20` -> `%2520`.
-        result = _find_video_file_in_subdirs(subdirs, _depth, _visited, settings)
+        if best_file:
+            xbmc.log(
+                "NZB-DAV: Current-level video '{}' is a wrong-episode match for "
+                "the requested title; checking sibling subfolders first".format(
+                    best_file
+                ),
+                xbmc.LOGDEBUG,
+            )
+
+        # No (usable) video found at this level, recurse into subdirectories.
+        # Subdirs came from PROPFIND hrefs and are already URL-encoded, so
+        # recursive calls skip top-level quote() to avoid `%20` -> `%2520`.
+        result = _find_video_file_in_subdirs(
+            subdirs,
+            _depth,
+            _visited,
+            settings,
+            hint_tokens=hint_tokens,
+            hint_episode_tags=hint_episode_tags,
+        )
         if result:
-            return result
+            # If we deferred a wrong-episode current-level file, only adopt the
+            # sibling when it is at least as good a hint match; otherwise the
+            # mismatched current-level file is no worse and stays the fallback.
+            if best_file and have_hint:
+                result_score = _title_hint_match_score(
+                    result, hint_tokens, hint_episode_tags
+                )
+                if result_score < best_match_score:
+                    result = None
+            if result:
+                return result
+
+        # Recursion found nothing better; fall back to the wrong-episode
+        # current-level file rather than returning nothing at all.
+        if best_file:
+            _remember_video_file_size_hint(best_file, best_size)
+            xbmc.log(
+                "NZB-DAV: No matching episode in sibling subfolders; falling "
+                "back to current-level video: {} ({} bytes)".format(
+                    best_file, best_size
+                ),
+                xbmc.LOGINFO,
+            )
+            return best_file
 
         return None
     except Exception as e:
@@ -523,10 +689,15 @@ def get_webdav_stream_url_for_path(file_path, settings_getter=None):
     )
 
 
-def find_video_stream_for_folder(folder_path, settings_getter=None):
-    """Find a folder's playable video path and stream URL with one settings read."""
+def find_video_stream_for_folder(folder_path, settings_getter=None, title_hint=None):
+    """Find a folder's playable video path and stream URL with one settings read.
+
+    ``title_hint`` is the optional requested release name; when supplied it
+    steers multi-episode/multi-video folders toward the requested episode
+    instead of the largest file (see ``find_video_file``).
+    """
     settings = _read_settings(settings_getter)
-    video_path = find_video_file(folder_path, _settings=settings)
+    video_path = find_video_file(folder_path, _settings=settings, title_hint=title_hint)
     if not video_path:
         return None, None, None
     stream_url, stream_headers = _get_webdav_stream_url_for_path_with_settings(
