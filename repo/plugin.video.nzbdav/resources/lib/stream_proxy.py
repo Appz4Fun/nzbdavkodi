@@ -2925,15 +2925,17 @@ class _StreamHandler(BaseHTTPRequestHandler):
         """Advance the session-persistent no-progress AWAITING_DOWNLOAD count.
 
         Only a clean download-high-water short read (AWAITING_DOWNLOAD) that
-        delivered nothing advances the streak; any other result leaves it
-        unchanged. The count lives in ctx so it survives Kodi's
-        Connection: close reconnects (a dead region reads as a clean short
-        read on every fresh GET). See F-route.
+        delivered nothing advances the streak; any other result resets it to 0
+        (keeping the streak strictly consecutive AWAITING reads). The count
+        lives in ctx so it survives Kodi's Connection: close reconnects (a dead
+        region reads as a clean short read on every fresh GET). See F-route.
         """
         if result == _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD:
             current_count += 1
             ctx["_awaiting_download_no_progress"] = current_count
-        return current_count
+            return current_count
+        ctx["_awaiting_download_no_progress"] = 0
+        return 0
 
     def _activate_fallback_source(self, ctx, fallback, current, stuck_awaiting=False):
         """Point the session at a selected fallback source for live cutover.
@@ -4601,32 +4603,19 @@ class _StreamHandler(BaseHTTPRequestHandler):
                         # (zero-fill "progress" is black frames, not recovery, so
                         # it must NOT reset the bound). Any genuine streamed byte
                         # since the last fall-through resets the count, so a
-                        # recovering primary is never penalised. Once the cap is
-                        # hit with still no validated candidate, close cleanly
-                        # with fallback_exhausted instead of looping — WITHOUT
-                        # reintroducing e3a74a1's immediate hard-close.
+                        # recovering primary is never penalised. The cap-fire
+                        # check itself now runs AFTER the retry ladder + the
+                        # progress-reset below, so the primary gets its FINAL
+                        # ladder attempt spent before fallback_exhausted is
+                        # declared (matching the no-fallback path, which always
+                        # runs the ladder); when it finally fires it closes
+                        # cleanly with fallback_exhausted instead of looping —
+                        # WITHOUT reintroducing e3a74a1's immediate hard-close.
                         if total_streamed == last_fallthrough_streamed:
                             fallback_pending_fallthroughs += 1
                         else:
                             fallback_pending_fallthroughs = 1
                             last_fallthrough_streamed = total_streamed
-                        if (
-                            fallback_pending_fallthroughs
-                            >= _FALLBACK_PENDING_FALLTHROUGH_MAX
-                        ):
-                            terminal_reason = "fallback_exhausted"
-                            xbmc.log(
-                                "NZB-DAV: Fallback chain exhausted at byte {} "
-                                "after {} fruitless cutover re-entries with no "
-                                "validated source and no primary progress; "
-                                "closing cleanly (reason={})".format(
-                                    current,
-                                    fallback_pending_fallthroughs,
-                                    terminal_reason,
-                                ),
-                                xbmc.LOGERROR,
-                            )
-                            return
                         xbmc.log(
                             "NZB-DAV: No validated fallback source available at "
                             "byte {}; re-entering retry ladder on the primary "
@@ -4706,7 +4695,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     and current <= end
                     and result == _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD
                     and awaiting_download_no_progress
-                    > _AWAITING_DOWNLOAD_NO_PROGRESS_MAX
+                    >= _AWAITING_DOWNLOAD_NO_PROGRESS_MAX
                     and ctx.get("fallback_sources")
                 )
                 awaiting_fallback = (
@@ -4734,6 +4723,29 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     )
                     candidate_delivered = False
                     continue
+
+                # BOUNDED EXHAUSTION (F4) cap-fire: now that the retry ladder
+                # has run AND the progress-reset above has cleared the count on
+                # any genuine byte, a still-positive fall-through count at the
+                # cap means the primary spent its final ladder attempt with no
+                # recovery and no validated candidate. Close cleanly with
+                # fallback_exhausted instead of looping — WITHOUT reintroducing
+                # e3a74a1's immediate hard-close. A recovering primary's count
+                # is 0 here (the SM-1 reset fired), so this won't condemn it.
+                if fallback_pending_fallthroughs >= _FALLBACK_PENDING_FALLTHROUGH_MAX:
+                    terminal_reason = "fallback_exhausted"
+                    xbmc.log(
+                        "NZB-DAV: Fallback chain exhausted at byte {} "
+                        "after {} fruitless cutover re-entries with no "
+                        "validated source and no primary progress; "
+                        "closing cleanly (reason={})".format(
+                            current,
+                            fallback_pending_fallthroughs,
+                            terminal_reason,
+                        ),
+                        xbmc.LOGERROR,
+                    )
+                    return
 
                 if result in (
                     _UPSTREAM_RANGE_CLIENT_ERROR,

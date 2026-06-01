@@ -52,30 +52,39 @@ def _episode_tags(value):
 def _title_hint_match_score(file_path, hint_tokens, hint_episode_tags):
     """Return how strongly a video file name matches the requested title hint.
 
-    A shared SxxExx episode tag is the strongest signal (an episode pack must
-    pick the requested episode, not the largest file). Otherwise fall back to
-    raw token overlap. Returns 0 when there is no usable hint or no overlap.
+    Returns a 2-tuple ``(episode_score, token_score)`` so callers can rank
+    episode identity ABOVE size but raw token overlap BELOW it:
+
+    * ``episode_score`` is the strongest signal -- ``1000`` when the requested
+      SxxExx episode is present, ``-1000`` when the file names a different
+      episode, ``0`` when no episode comparison applies. An episode pack must
+      pick the requested episode, not the largest file.
+    * ``token_score`` is the raw token-overlap count (``0`` when there is no
+      token hint). For a movie hint (no episode tag) this must NOT outrank
+      size, or a small token-rich extra/trailer would hijack the feature; the
+      folder/sibling sort keys therefore place size between the two scores.
+
+    Returns ``(0, 0)`` when there is no usable hint or the name is empty.
     """
     if not hint_tokens and not hint_episode_tags:
-        return 0
+        return (0, 0)
     name = unquote(file_path.rsplit("/", 1)[-1]) if file_path else ""
     if not name:
-        return 0
-    score = 0
+        return (0, 0)
+    episode_score = 0
     if hint_episode_tags:
         file_tags = _episode_tags(name)
         if file_tags:
             if hint_episode_tags & file_tags:
                 # Strong match: same episode requested and present.
-                score += 1000
+                episode_score = 1000
             else:
                 # The file names a different episode than requested; never
                 # prefer it over a true match (but token overlap may still
                 # rank it among non-episode candidates).
-                score -= 1000
-    if hint_tokens:
-        score += len(hint_tokens & _hint_tokens(name))
-    return score
+                episode_score = -1000
+    token_score = len(hint_tokens & _hint_tokens(name)) if hint_tokens else 0
+    return (episode_score, token_score)
 
 
 def _get_settings(settings_getter=None):
@@ -303,15 +312,19 @@ def _find_video_file_in_subdirs(
         if not result:
             continue
         size = get_video_file_size_hint(result)
-        match_score = (
-            _title_hint_match_score(result, hint_tokens, hint_episode_tags)
-            if have_hint
-            else 0
-        )
-        # Rank by (hint score, size) and break ties toward the earlier sibling
-        # (negative index sorts a smaller index higher). Without a hint the
-        # score stays 0, so this reduces to the historical largest-wins rule.
-        key = (match_score, size, -index)
+        if have_hint:
+            ep_score, tok_score = _title_hint_match_score(
+                result, hint_tokens, hint_episode_tags
+            )
+        else:
+            ep_score, tok_score = 0, 0
+        # Rank by (episode identity, size, token overlap) and break ties toward
+        # the earlier sibling (negative index sorts a smaller index higher).
+        # Episode match is primary so the requested SxxExx still wins; size
+        # outranks loose token overlap so a small token-rich extra can't beat
+        # the feature. Without a hint both scores stay 0, so this reduces to the
+        # historical largest-wins rule.
+        key = (ep_score, size, tok_score, -index)
         if best_key is None or key > best_key:
             best_path = result
             best_key = key
@@ -566,31 +579,39 @@ def find_video_file(
                         xbmc.LOGWARNING,
                     )
 
-            # Rank candidate videos by (hint match score, size). Without a hint
-            # the score is always 0, so this stays the historical largest-wins
-            # rule. With a hint, the name-matching video (especially the
-            # requested SxxExx episode) outranks a larger non-matching sibling.
-            match_score = (
-                _title_hint_match_score(href_path, hint_tokens, hint_episode_tags)
-                if have_hint
-                else 0
-            )
-            file_key = (match_score, size)
+            # Rank candidate videos by (episode identity, size, token overlap).
+            # Without a hint both scores are 0, so this stays the historical
+            # largest-wins rule. With a hint, the requested SxxExx episode
+            # outranks a larger non-matching sibling, while size outranks loose
+            # token overlap so a small token-rich extra can't beat the feature.
+            if have_hint:
+                ep_score, tok_score = _title_hint_match_score(
+                    href_path, hint_tokens, hint_episode_tags
+                )
+            else:
+                ep_score, tok_score = 0, 0
+            file_key = (ep_score, size, tok_score)
             if best_file_key is None or file_key > best_file_key:
                 best_file_key = file_key
                 best_size = size
                 best_file = href_path
-                best_match_score = match_score
+                # Keep the episode score as the recurse/adoption signal so the
+                # wrong-episode gate compares episode identity, not token noise.
+                best_match_score = ep_score
 
-        # When the best current-level candidate is an explicit episode MISMATCH
-        # (negative hint score) and a hint was given, the requested episode may
-        # still live in a sibling subdir (e.g. a season pack with per-episode
-        # subfolders plus a stray wrong-episode file at the top). Prefer
-        # recursing first so we don't return the wrong episode before even
-        # looking; fall back to the mismatched current-level file only if the
-        # descent finds nothing. The no-hint path keeps the historical
-        # largest-wins/return-immediately behavior untouched.
-        if best_file and not (have_hint and best_match_score < 0 and subdirs):
+        # When an episode was requested but the current-level best is NOT a
+        # confirmed episode match (score below the confirmed-match threshold of
+        # 1000), the requested episode may still live in a sibling subdir. This
+        # covers both an explicit wrong-episode file (score -1000) AND a generic
+        # current-level video that merely shares show tokens but carries no
+        # SxxExx tag (score 0) -- either would otherwise be returned before we
+        # ever scan the subdir holding the exact requested episode. Recurse
+        # first; fall back to the current-level file only if the descent finds
+        # nothing better. A movie/token-only hint has empty hint_episode_tags so
+        # it keeps the historical short-circuit, as does the no-hint path.
+        if best_file and not (
+            hint_episode_tags and best_match_score < 1000 and subdirs
+        ):
             file_path = best_file
             _remember_video_file_size_hint(file_path, best_size)
             xbmc.log(
@@ -624,10 +645,10 @@ def find_video_file(
             # sibling when it is at least as good a hint match; otherwise the
             # mismatched current-level file is no worse and stays the fallback.
             if best_file and have_hint:
-                result_score = _title_hint_match_score(
+                result_ep_score, _ = _title_hint_match_score(
                     result, hint_tokens, hint_episode_tags
                 )
-                if result_score < best_match_score:
+                if result_ep_score < best_match_score:
                     result = None
             if result:
                 return result

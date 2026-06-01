@@ -8052,10 +8052,13 @@ def test_serve_proxy_suppresses_pending_failure_toast_on_client_disconnect():
     NOTE: an EARLIER (F5) version of this test fed a BrokenPipeError on the
     candidate's FIRST read and asserted suppression on the false premise that
     "a client abort implies the candidate was serving bytes". The F11/F12 review
-    corrected that premise — a disconnect BEFORE any byte means the candidate
-    delivered nothing and IS a failure (see
-    test_serve_proxy_fallback_zero_bytes_then_disconnect_toasts_failure). This
-    test now exercises the genuinely-benign case: delivered THEN disconnected.
+    settled this: a zero-fill 'complete' before any byte IS a failure (Case (b),
+    test_serve_proxy_fallback_zero_bytes_then_complete_toasts_failure), but a
+    BrokenPipe classified as terminal_reason='client_disconnected' before any
+    byte is EXEMPTED per 4decdd4 (see
+    test_serve_proxy_fallback_zero_bytes_then_disconnect_suppresses_failure_toast).
+    This test now exercises the genuinely-benign case: delivered THEN
+    disconnected.
     """
     from resources.lib.stream_proxy import (
         _UPSTREAM_RANGE_OK,
@@ -14152,7 +14155,7 @@ def test_serve_proxy_fallback_zero_bytes_then_complete_toasts_failure():
     assert not any("successful" in m for m in msgs), msgs
 
 
-def test_serve_proxy_fallback_zero_bytes_then_disconnect_toasts_failure():
+def test_serve_proxy_fallback_zero_bytes_then_disconnect_suppresses_failure_toast():
     """Case (c) — 4decdd4's invariant: a client disconnect right after a
     fallback switch (terminal_reason="client_disconnected") must NOT toast the
     still-pending candidate as a failure. A BrokenPipeError yielding
@@ -14413,6 +14416,76 @@ def test_serve_proxy_bounded_exhaustion_stops_instead_of_looping(mock_xbmc):
     written = _collect_written(handler)
     # Stopped well before zero-filling the entire file.
     assert len(written) < content_length
+
+
+@patch("resources.lib.stream_proxy.xbmc")
+def test_serve_proxy_fallback_primary_recovers_on_final_retry_ladder(mock_xbmc):
+    """F4 cap symmetry: the cap-fire check runs AFTER the retry ladder, so a
+    primary with no validated fallback gets its FINAL retry-ladder attempt
+    spent before fallback_exhausted is declared. A primary that recovers on
+    the cap-th (3rd) retry ladder must complete the range with reason=complete
+    rather than being aborted with fallback_exhausted (matching the
+    no-fallback path, which always runs the ladder)."""
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_OK,
+        _UPSTREAM_RANGE_UPSTREAM_ERROR,
+    )
+
+    content_length = 1_000_000
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": content_length,
+        "fallback_sources": [{"nzo_id": "alt", "stream_url": "http://host/alt.mkv"}],
+    }
+    handler = _make_handler_with_server(
+        ctx, range_header="bytes=0-{}".format(content_length - 1)
+    )
+
+    # The primary errors with zero bytes and the fallback never validates, so
+    # every iteration falls through and re-enters the retry ladder. The ladder
+    # makes no progress on attempts 1 and 2 (the fall-through count climbs to
+    # the cap), but on attempt 3 the primary's region has finally downloaded:
+    # the ladder writes the full remainder and finishes the range. Because the
+    # cap-fire check now runs AFTER the ladder + progress-reset (which clears
+    # the count on real bytes), the recovering primary completes instead of
+    # being condemned to fallback_exhausted.
+    retry_calls = {"n": 0}
+
+    def _stream(active_ctx, start, end, contract_mode=None):
+        return _UPSTREAM_RANGE_UPSTREAM_ERROR, 0
+
+    def _fake_retry(active_ctx, start, end, contract_mode, first_byte=False):
+        retry_calls["n"] += 1
+        if retry_calls["n"] < 3:
+            return _UPSTREAM_RANGE_UPSTREAM_ERROR, 0, start
+        remaining = end - start + 1
+        handler.wfile.write(b"R" * remaining)
+        return _UPSTREAM_RANGE_OK, remaining, end + 1
+
+    def _skip(active_ctx, current, end):
+        return 4096
+
+    with patch.object(
+        handler, "_stream_upstream_range", side_effect=_stream
+    ), patch.object(
+        handler, "_select_live_fallback_source", return_value=None
+    ), patch.object(
+        handler, "_retry_original_range", side_effect=_fake_retry
+    ), patch.object(
+        handler, "_find_skip_offset", side_effect=_skip
+    ):
+        handler._serve_proxy(ctx)
+
+    # The primary got its FINAL (3rd) retry ladder before exhaustion.
+    assert retry_calls["n"] == 3
+    written = _collect_written(handler)
+    # The full range was delivered via the recovering ladder.
+    assert len(written) == content_length
+    logged = "\n".join(call.args[0] for call in mock_xbmc.log.call_args_list)
+    assert "reason=complete" in logged
+    assert "reason=fallback_exhausted" not in logged
 
 
 @patch("resources.lib.stream_proxy.xbmc")
@@ -15015,3 +15088,120 @@ def test_stuck_awaiting_download_fails_over_after_bound():
     assert calls_before_switch > 1
     mock_select.assert_called()
     assert ctx["remote_url"] == "http://webdav/fallback.mkv"
+
+
+def test_stuck_awaiting_fails_over_on_cap_th_read():
+    """The awaiting-stuck failover must fire on EXACTLY the cap-th consecutive
+    no-progress AWAITING_DOWNLOAD read (the `>=` boundary), not the cap+1-th.
+    A dead primary that returns a clean no-progress AWAITING read on every GET
+    must therefore cut over after _AWAITING_DOWNLOAD_NO_PROGRESS_MAX serve
+    passes — proving the cap-th-read boundary AND no first-request failover.
+    Under the old `>` this would have been cap+1 (off-by-one)."""
+    import sys
+
+    from resources.lib.stream_proxy import (
+        _AWAITING_DOWNLOAD_NO_PROGRESS_MAX,
+        _UPSTREAM_RANGE_OK,
+        _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD,
+    )
+
+    fallback = {
+        "nzo_id": "peer",
+        "stream_url": "http://webdav/fallback.mkv",
+        "stream_headers": {"Authorization": "Basic f"},
+        "content_length": 10,
+        "validated": True,
+        "failed": False,
+    }
+    ctx = {
+        "remote_url": "http://webdav/primary.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 10,
+        "fallback_sources": [fallback],
+        "fallback_switch_count": 0,
+    }
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-9")
+
+    mock_addon = MagicMock()
+    mock_addon.getSetting.side_effect = lambda key: {
+        "strict_contract_mode": "warn",
+        "density_breaker_enabled": "false",
+        "zero_fill_budget_enabled": "true",
+        "retry_ladder_enabled": "true",
+    }.get(key, "")
+    original_addon = sys.modules["xbmcaddon"].Addon.return_value
+    sys.modules["xbmcaddon"].Addon.return_value = mock_addon
+
+    def stream_range(stream_ctx, start, end, contract_mode=None):
+        del contract_mode
+        if stream_ctx["remote_url"] == "http://webdav/fallback.mkv":
+            handler.wfile.write(b"F" * (end - start + 1))
+            return _UPSTREAM_RANGE_OK, end - start + 1
+        return _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD, 0
+
+    def fake_retry(_ctx, current, _end, _mode, first_byte=False):
+        del first_byte
+        return _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD, 0, current
+
+    calls_before_switch = 0
+    try:
+        with patch.object(
+            handler, "_stream_upstream_range", side_effect=stream_range
+        ), patch.object(
+            handler, "_retry_original_range", side_effect=fake_retry
+        ), patch.object(
+            handler, "_select_live_fallback_source", return_value=fallback
+        ) as mock_select, patch(
+            "resources.lib.stream_proxy._notify"
+        ):
+            for _ in range(_AWAITING_DOWNLOAD_NO_PROGRESS_MAX + 5):
+                if ctx["remote_url"] == "http://webdav/fallback.mkv":
+                    break
+                calls_before_switch += 1
+                handler._serve_proxy(ctx)
+    finally:
+        sys.modules["xbmcaddon"].Addon.return_value = original_addon
+
+    # Fires on EXACTLY the cap-th read (>=), never on the first (no
+    # first-request failover), never on cap+1 (no off-by-one).
+    assert calls_before_switch == _AWAITING_DOWNLOAD_NO_PROGRESS_MAX
+    mock_select.assert_called()
+    assert ctx["remote_url"] == "http://webdav/fallback.mkv"
+
+
+def test_non_awaiting_read_resets_awaiting_streak():
+    """The no-progress AWAITING_DOWNLOAD streak must be STRICTLY consecutive: a
+    single non-AWAITING result resets it to 0, so an intervening RECOVERABLE
+    no-progress read clears the streak rather than letting it accrue toward the
+    failover bound. Pins the "strictly consecutive" invariant of
+    _bump_awaiting_no_progress."""
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD,
+        _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE,
+    )
+
+    ctx = {}
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-9")
+
+    count = 0
+    count = handler._bump_awaiting_no_progress(
+        ctx, _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD, count
+    )
+    assert count == 1
+    count = handler._bump_awaiting_no_progress(
+        ctx, _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD, count
+    )
+    assert count == 2
+    # A non-AWAITING result resets the streak to 0.
+    count = handler._bump_awaiting_no_progress(
+        ctx, _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, count
+    )
+    assert count == 0
+    assert ctx["_awaiting_download_no_progress"] == 0
+    # The next AWAITING read starts a FRESH streak at 1, not 3.
+    count = handler._bump_awaiting_no_progress(
+        ctx, _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD, count
+    )
+    assert count == 1
+    assert ctx["_awaiting_download_no_progress"] == 1
