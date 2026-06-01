@@ -1373,12 +1373,16 @@ def _storage_to_webdav_path(storage):
     if storage.startswith("/content/"):
         return storage.rstrip("/") + "/"
 
-    prefix = "/mnt/nzbdav/completed-symlinks/"
-    if storage.startswith(prefix):
-        relative = storage[len(prefix) :]
-    else:
-        parts = storage.rstrip("/").split("/")
-        relative = "/".join(parts[-2:]) if len(parts) >= 2 else parts[-1]
+    for prefix in (
+        "/mnt/nzbdav/completed-symlinks/",
+        "/mnt/data/completed-symlinks/",
+    ):
+        if storage.startswith(prefix):
+            relative = storage[len(prefix) :]
+            return "/content/{}/".format(relative)
+
+    parts = storage.rstrip("/").split("/")
+    relative = "/".join(parts[-2:]) if len(parts) >= 2 else parts[-1]
     return "/content/{}/".format(relative)
 
 

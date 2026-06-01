@@ -15345,3 +15345,50 @@ def test_standby_refresh_passes_none_hint_when_source_title_absent():
         handler._refresh_standby_fallback_source(ctx, source)
 
     assert find_video.call_args.kwargs["title_hint"] is None
+
+
+def test_storage_to_webdav_path_mnt_data_no_category():
+    from resources.lib.stream_proxy import _storage_to_webdav_path
+
+    # No-category /mnt/data row must strip the mount prefix, not fall
+    # through to last-two-components (which yields a bogus
+    # /content/completed-symlinks/... folder).
+    assert (
+        _storage_to_webdav_path("/mnt/data/completed-symlinks/The Matrix 1999")
+        == "/content/The Matrix 1999/"
+    )
+
+
+def test_storage_to_webdav_path_mnt_data_with_category():
+    from resources.lib.stream_proxy import _storage_to_webdav_path
+
+    assert (
+        _storage_to_webdav_path("/mnt/data/completed-symlinks/movies/The Matrix 1999")
+        == "/content/movies/The Matrix 1999/"
+    )
+
+
+def test_storage_to_webdav_path_mnt_nzbdav_inputs_map_identically():
+    from resources.lib.stream_proxy import _storage_to_webdav_path
+
+    # Already-working /mnt/nzbdav cases (no-category and categorized) must
+    # map exactly as before the /mnt/data prefix was added.
+    assert (
+        _storage_to_webdav_path("/mnt/nzbdav/completed-symlinks/The Matrix 1999")
+        == "/content/The Matrix 1999/"
+    )
+    assert (
+        _storage_to_webdav_path("/mnt/nzbdav/completed-symlinks/movies/The Matrix 1999")
+        == "/content/movies/The Matrix 1999/"
+    )
+
+
+def test_storage_to_webdav_path_content_passthrough_unchanged():
+    from resources.lib.stream_proxy import _storage_to_webdav_path
+
+    # A storage already under /content/ is passed through (trailing-slash
+    # normalized) regardless of the prefix list.
+    assert (
+        _storage_to_webdav_path("/content/movies/The Matrix 1999")
+        == "/content/movies/The Matrix 1999/"
+    )
