@@ -669,7 +669,17 @@ def find_video_file(
             else:
                 ep_score, tok_score = 0, 0
             file_key = (ep_score, size, tok_score)
-            if best_file_key is None or file_key > best_file_key:
+            # A current-level video only displaces "nothing yet" when it
+            # carries a positive selection signal: a real (non-zero) size --
+            # the historical largest-wins rule, under which main never adopted
+            # a size-0 file but recursed past it -- or, with a hint, a positive
+            # episode/token score. This keeps the no-hint movie path
+            # byte-identical to main (deliberate decision f12b3c3): a top-level
+            # video missing getcontentlength is skipped so recursion can find
+            # the real feature in a subfolder rather than returning a
+            # placeholder/teaser.
+            has_signal = size > 0 or ep_score > 0 or tok_score > 0
+            if has_signal and (best_file_key is None or file_key > best_file_key):
                 best_file_key = file_key
                 best_size = size
                 best_file = href_path
