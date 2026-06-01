@@ -586,6 +586,20 @@ def _titles_core_related(primary_title, candidate_title, corroborated=False):
                 return False
             return True
         return False
+    # Neither title's token set is a subset of the other, so each carries its
+    # own distinguishing tail. A MULTI-token distinguishing tail on either side
+    # looks like a different work in a franchise ("Mission Impossible Fallout"
+    # vs "...Dead Reckoning", "Star Wars The Force Awakens" vs "...The Last
+    # Jedi") rather than a repost, so require corroborating positive identity (a
+    # matching year, or a matching season+episode set) before accepting it -- a
+    # loose >=2-token prefix overlap is too weak on its own. A single-token
+    # difference on each side stays repost noise ("Movie mirror" vs "Movie
+    # repost") and keeps the existing token-overlap behavior, mirroring the
+    # <=1-trailing-token junk-suffix rule of the subset case above.
+    left_extra = left - right
+    right_extra = right - left
+    if (len(left_extra) >= 2 or len(right_extra) >= 2) and not corroborated:
+        return False
     return _title_token_sets_look_related(left, right)
 
 
@@ -670,7 +684,15 @@ def _same_content(primary, candidate):
     # the lone "season" as the phantom it is and collapse it away. The
     # matching-year gate is required: genuine TV is always season-tagged on both
     # sides (presence matches), so it never reaches this collapse and stays
-    # subject to season equality.
+    # subject to season equality. NOTE: extending this collapse to the
+    # both-years-ABSENT case was attempted and reverted -- a yearless phantom
+    # season and a yearless REAL season pack ("Show.S01"/"Show.Сезон.1") share an
+    # identical parsed identity, and no heuristic could tell them apart without
+    # re-implementing (and forever chasing) PTT's multilingual season vocabulary,
+    # so every loosening leaked a dangerous false-ACCEPT of different content. The
+    # yearless-phantom-movie false-reject is an accepted fail-safe limitation
+    # (never serves wrong content), per the "never loosen _same_content to win
+    # coverage" rule.
     same_year = bool(primary_year) and primary_year == candidate_year
     if (
         not primary_episodes
