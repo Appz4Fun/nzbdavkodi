@@ -1160,6 +1160,11 @@ _STARVATION_TERMINAL_REASONS = (
     "fallback_exhausted",
     "session_zero_fill_budget_exceeded",
 )
+# How recently (seconds) an upstream outage must have occurred, relative to the
+# stream ending, for a client_disconnected end to count as backend starvation
+# rather than a healthy user stop. Catches the live incident (upstream blipped
+# back ~9s before Kodi gave up) without firing on a long-recovered early blip.
+_STARVATION_RECENT_OUTAGE_SECONDS = 60
 
 
 def _maybe_notify_stream_starvation(
@@ -1185,8 +1190,23 @@ def _maybe_notify_stream_starvation(
     """
     if terminal_reason == "complete":
         return False
-    upstream_trouble = int(ctx.get("upstream_unreachable_count", 0) or 0) > 0
-    if not (upstream_trouble or terminal_reason in _STARVATION_TERMINAL_REASONS):
+    # The backend (not a healthy stop) ended this stream when an explicit stall
+    # terminal reason fired, OR the upstream is still flagged down, OR an outage
+    # happened very recently. The RECENCY window matters because
+    # ``upstream_unreachable_count`` is a sticky running total and
+    # ``last_upstream_unreachable_at`` can predate a long healthy stretch the
+    # user then stopped — that must NOT fire. It also catches the live incident,
+    # where the upstream momentarily "recovered" a few seconds before Kodi gave
+    # up and disconnected (so a recovered-vs-unreachable ordering check alone
+    # would wrongly stay silent).
+    down_now = bool(ctx.get("upstream_down_notified"))
+    last_down = float(ctx.get("last_upstream_unreachable_at", 0) or 0)
+    recent_outage = (
+        last_down > 0 and (time.time() - last_down) <= _STARVATION_RECENT_OUTAGE_SECONDS
+    )
+    if not (
+        terminal_reason in _STARVATION_TERMINAL_REASONS or down_now or recent_outage
+    ):
         return False
     # Only when the stream was genuinely starved — it did NOT deliver the full
     # requested range. A fully-delivered stream the user happened to stop is

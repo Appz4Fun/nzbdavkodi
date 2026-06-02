@@ -15457,14 +15457,19 @@ def test_storage_to_webdav_path_content_passthrough_unchanged():
     )
 
 
-def test_maybe_notify_stream_starvation_fires_on_backend_outage():
-    """A pass-through stream that ends starved while the backend was unreachable
-    must fire ONE clear 'can't keep up' notification, not a silent black screen
-    (the live Shawshank incident: client_disconnected, upstream_unreachable=3,
-    only ~140MB of a 57GB file delivered)."""
+def test_maybe_notify_stream_starvation_fires_on_recent_outage_disconnect():
+    """The live Shawshank incident: client_disconnected, a RECENT upstream
+    outage (nzbdav blipped back ~9s before Kodi gave up), only ~140MB of a 57GB
+    file delivered. Must fire ONE clear 'can't keep up' toast, not a silent
+    black screen."""
+    import time
+
     from resources.lib import stream_proxy
 
-    ctx = {"upstream_unreachable_count": 3}
+    ctx = {
+        "upstream_unreachable_count": 3,
+        "last_upstream_unreachable_at": time.time() - 9,
+    }
     with patch("resources.lib.stream_proxy._notify") as mock_notify:
         fired = stream_proxy._maybe_notify_stream_starvation(
             None, ctx, "client_disconnected", 140558304, 57740611174
@@ -15472,6 +15477,39 @@ def test_maybe_notify_stream_starvation_fires_on_backend_outage():
     assert fired is True
     mock_notify.assert_called_once()
     assert "keep up" in mock_notify.call_args[0][1].lower()
+
+
+def test_maybe_notify_stream_starvation_fires_when_upstream_still_down():
+    from resources.lib import stream_proxy
+
+    ctx = {"upstream_unreachable_count": 2, "upstream_down_notified": True}
+    with patch("resources.lib.stream_proxy._notify") as mock_notify:
+        fired = stream_proxy._maybe_notify_stream_starvation(
+            None, ctx, "client_disconnected", 5_000_000, 57740611174
+        )
+    assert fired is True
+    mock_notify.assert_called_once()
+
+
+def test_maybe_notify_stream_starvation_silent_on_long_recovered_outage():
+    """FP-1/FP-2: a stream that had an EARLY transient outage, recovered, played,
+    then was stopped (healthy client_disconnected) must NOT fire — the sticky
+    upstream_unreachable_count is gated on recency."""
+    import time
+
+    from resources.lib import stream_proxy
+
+    ctx = {
+        "upstream_unreachable_count": 1,
+        "last_upstream_unreachable_at": time.time() - 3600,
+        "upstream_last_recovered_at": time.time() - 3590,
+    }
+    with patch("resources.lib.stream_proxy._notify") as mock_notify:
+        fired = stream_proxy._maybe_notify_stream_starvation(
+            None, ctx, "client_disconnected", 30_000_000, 57740611174
+        )
+    assert fired is False
+    mock_notify.assert_not_called()
 
 
 def test_maybe_notify_stream_starvation_fires_on_stall_reason_without_outage():
