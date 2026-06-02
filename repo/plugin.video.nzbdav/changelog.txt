@@ -1,2 +1,1 @@
-v1.2.5: Fallback backups now require the same release group (no cross-group encodes); defer backup submission until ~2 min into playback (anchored to playback start); fix pass-through startup stall on very large files (first-byte retry ladder kept short after the byte-0 prefetch prefix).
-v1.2.4: Fix startup black-screen; harden live fallback cutover and queue clear.
+v1.2.5: Same-group fallback backups, deferred submission, startup-stall fix.
