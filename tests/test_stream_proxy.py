@@ -12137,7 +12137,12 @@ def test_serve_proxy_debounces_recovery_notify_within_one_session():
     finally:
         sys.modules["xbmcaddon"].Addon.return_value = original
 
-    mock_notify.assert_called_once()
+    # The recovery summary stays debounced to a single toast across recoveries;
+    # the separate graceful-starvation guard adds one clear "can't keep up" toast
+    # when the session aborts on backend starvation.
+    notify_msgs = [call.args[1] for call in mock_notify.call_args_list]
+    assert sum("recoveries" in msg for msg in notify_msgs) == 1
+    assert any("keep up" in msg.lower() for msg in notify_msgs)
 
 
 def test_serve_proxy_retries_original_range_before_skip_probe():
@@ -12405,7 +12410,11 @@ def test_serve_proxy_aborts_when_session_zero_fill_ratio_exceeds_cap(mock_xbmc):
         sys.modules["xbmcaddon"].Addon.return_value = original
 
     mock_write_zeros.assert_not_called()
-    mock_notify.assert_called_once()
+    # The recovery summary still fires exactly once; the graceful-starvation
+    # guard adds one clear "can't keep up" toast on this backend-starvation abort.
+    notify_msgs = [call.args[1] for call in mock_notify.call_args_list]
+    assert sum("recoveries" in msg for msg in notify_msgs) == 1
+    assert any("keep up" in msg.lower() for msg in notify_msgs)
     logged = "\n".join(call.args[0] for call in mock_xbmc.log.call_args_list)
     assert "reason=session_zero_fill_budget_exceeded" in logged
 
@@ -15446,3 +15455,74 @@ def test_storage_to_webdav_path_content_passthrough_unchanged():
         _storage_to_webdav_path("/content/movies/The Matrix 1999")
         == "/content/movies/The Matrix 1999/"
     )
+
+
+def test_maybe_notify_stream_starvation_fires_on_backend_outage():
+    """A pass-through stream that ends starved while the backend was unreachable
+    must fire ONE clear 'can't keep up' notification, not a silent black screen
+    (the live Shawshank incident: client_disconnected, upstream_unreachable=3,
+    only ~140MB of a 57GB file delivered)."""
+    from resources.lib import stream_proxy
+
+    ctx = {"upstream_unreachable_count": 3}
+    with patch("resources.lib.stream_proxy._notify") as mock_notify:
+        fired = stream_proxy._maybe_notify_stream_starvation(
+            None, ctx, "client_disconnected", 140558304, 57740611174
+        )
+    assert fired is True
+    mock_notify.assert_called_once()
+    assert "keep up" in mock_notify.call_args[0][1].lower()
+
+
+def test_maybe_notify_stream_starvation_fires_on_stall_reason_without_outage():
+    from resources.lib import stream_proxy
+
+    ctx = {"upstream_unreachable_count": 0}
+    with patch("resources.lib.stream_proxy._notify") as mock_notify:
+        fired = stream_proxy._maybe_notify_stream_starvation(
+            None, ctx, "passthrough_stall", 5000000, 57740611174
+        )
+    assert fired is True
+    mock_notify.assert_called_once()
+
+
+def test_maybe_notify_stream_starvation_silent_on_clean_complete():
+    from resources.lib import stream_proxy
+
+    ctx = {"upstream_unreachable_count": 3}
+    with patch("resources.lib.stream_proxy._notify") as mock_notify:
+        fired = stream_proxy._maybe_notify_stream_starvation(
+            None, ctx, "complete", 57740611174, 57740611174
+        )
+    assert fired is False
+    mock_notify.assert_not_called()
+
+
+def test_maybe_notify_stream_starvation_silent_on_healthy_user_stop():
+    """A normal stop of a healthy stream (no upstream trouble, not a stall
+    reason) must NOT fire the starvation toast."""
+    from resources.lib import stream_proxy
+
+    ctx = {"upstream_unreachable_count": 0}
+    with patch("resources.lib.stream_proxy._notify") as mock_notify:
+        fired = stream_proxy._maybe_notify_stream_starvation(
+            None, ctx, "client_disconnected", 5000000, 57740611174
+        )
+    assert fired is False
+    mock_notify.assert_not_called()
+
+
+def test_maybe_notify_stream_starvation_debounced_once_per_session():
+    from resources.lib import stream_proxy
+
+    ctx = {"upstream_unreachable_count": 3}
+    with patch("resources.lib.stream_proxy._notify") as mock_notify:
+        first = stream_proxy._maybe_notify_stream_starvation(
+            None, ctx, "fallback_exhausted", 1000, 57740611174
+        )
+        second = stream_proxy._maybe_notify_stream_starvation(
+            None, ctx, "fallback_exhausted", 1000, 57740611174
+        )
+    assert first is True
+    assert second is False
+    mock_notify.assert_called_once()
