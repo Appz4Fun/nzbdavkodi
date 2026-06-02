@@ -146,6 +146,26 @@ _MAX_RECOVERY_SECONDS = 30
 # Cap zero-filled bytes per response to prevent runaway silent playback when
 # an NZB is mostly corrupt. 64 MB ≈ several seconds of 4K REMUX video.
 _MAX_TOTAL_ZERO_FILL = 67108864
+# Patient forward-stall wait (pass-through). When an ESTABLISHED forward stream
+# (real upstream bytes already delivered this request) stalls on a RECOVERABLE
+# backend condition — a still-downloading high-water short read
+# (AWAITING_DOWNLOAD) or a transient 5xx/connection error (UPSTREAM_ERROR) — the
+# session breaker (upstream_down_notified) has short-circuited BOTH the retry
+# ladder and the skip-probe to instant give-up, so the loop would close in ms
+# and Kodi reads the premature Connection: close as demuxer EOF (the live 4K
+# REMUX mid-stream black screen). Instead, keep the CLIENT connection OPEN and
+# re-read with abortable backoff up to this budget so a recovering backend
+# resumes. A monotonic stall clock resets on ANY genuine forward byte, so a
+# healthy still-downloading stream is never condemned; only a TRULY-stuck stream
+# exhausts the budget and then falls through to the existing give-up paths. Bound
+# it at/under Kodi's network curllowspeedtime so Kodi buffers through the wait
+# rather than tearing down and stranding this handler as a zombie. 0 disables the
+# wait (restores the prior instant-close behavior). Does NOT apply to
+# SHORT_READ_RECOVERABLE (genuinely-missing articles must zero-fill past) nor to
+# a byte-0 first read / fresh seek that never streamed (issue #214 fast-fail).
+_DEFAULT_PASSTHROUGH_STALL_WAIT_SECONDS = 120
+_PASSTHROUGH_STALL_WAIT_MAX_SECONDS = 600
+_PASSTHROUGH_STALL_WAIT_BACKOFF_SECONDS = 2.0
 # Density breaker: abort if the recent recovery window becomes mostly synthetic
 # data instead of real upstream bytes.
 _DENSITY_BREAKER_WINDOW_BYTES = 16 * 1024 * 1024
@@ -662,6 +682,17 @@ def _bool_from_snapshot(snapshot, setting_id, default=False):
     return str(raw).strip().lower() in ("1", "true", "yes", "on")
 
 
+def _int_from_snapshot(snapshot, setting_id, default, lo, hi):
+    """Return a clamped int setting from a snapshot. Side-effect free: any parse
+    failure falls back to ``default`` (never calls Kodi)."""
+    raw = snapshot.get(setting_id) if isinstance(snapshot, dict) else None
+    try:
+        value = int(raw) if raw not in (None, "") else default
+    except (TypeError, ValueError):
+        value = default
+    return _clamp_int_setting(setting_id, value, lo, hi)
+
+
 def _strict_contract_mode_from_snapshot(snapshot):
     raw = snapshot.get("strict_contract_mode") if isinstance(snapshot, dict) else None
     key = str(raw).strip().lower() if raw is not None else ""
@@ -726,6 +757,13 @@ def _passthrough_runtime_settings_from_snapshot(snapshot):
         ),
         "send_200_no_range_enabled": _bool_from_snapshot(
             snapshot, "send_200_no_range", default=False
+        ),
+        "passthrough_stall_wait_seconds": _int_from_snapshot(
+            snapshot,
+            "passthrough_stall_wait",
+            _DEFAULT_PASSTHROUGH_STALL_WAIT_SECONDS,
+            0,
+            _PASSTHROUGH_STALL_WAIT_MAX_SECONDS,
         ),
     }
 
@@ -823,6 +861,22 @@ def _send_200_no_range_enabled():
     return _get_bool_setting("send_200_no_range", default=False)
 
 
+def _get_passthrough_stall_wait_seconds():
+    """Return the patient forward-stall budget in seconds, clamped [0, 600]."""
+    raw = _get_addon_setting("passthrough_stall_wait")
+    try:
+        secs = (
+            int(raw)
+            if raw not in (None, "")
+            else _DEFAULT_PASSTHROUGH_STALL_WAIT_SECONDS
+        )
+    except (TypeError, ValueError):
+        secs = _DEFAULT_PASSTHROUGH_STALL_WAIT_SECONDS
+    return _clamp_int_setting(
+        "passthrough_stall_wait", secs, 0, _PASSTHROUGH_STALL_WAIT_MAX_SECONDS
+    )
+
+
 def _read_passthrough_runtime_settings():
     """Read per-session pass-through recovery settings once."""
     contract_mode = _get_strict_contract_mode()
@@ -832,6 +886,7 @@ def _read_passthrough_runtime_settings():
         "zero_fill_budget_enabled": _zero_fill_budget_enabled(),
         "retry_ladder_enabled": _retry_ladder_enabled(),
         "send_200_no_range_enabled": _send_200_no_range_enabled(),
+        "passthrough_stall_wait_seconds": _get_passthrough_stall_wait_seconds(),
     }
 
 
@@ -4617,6 +4672,16 @@ class _StreamHandler(BaseHTTPRequestHandler):
             # first-byte retry schedule keys on this (not ``current``) to tell a
             # genuine first content read from a mid-stream rebuffer.
             streamed_real_upstream_bytes = False
+            # Patient forward-stall clock: monotonic time when an ESTABLISHED
+            # stream first stalled with NO forward progress (None while it is
+            # advancing; set on the first stalled pass and CLEARED on any genuine
+            # streamed byte below). The budget is consumed only by a truly-stuck
+            # stream, never by a slow-but-healthy one.
+            forward_stall_t0 = None
+            stall_wait_budget = runtime_settings.get(
+                "passthrough_stall_wait_seconds",
+                _DEFAULT_PASSTHROUGH_STALL_WAIT_SECONDS,
+            )
 
             while current <= end:
                 result, written = self._stream_upstream_range(
@@ -4802,6 +4867,10 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     # fruitless read starts from a fresh budget, not a stale count.
                     fallback_pending_fallthroughs = 0
                     last_fallthrough_streamed = -1
+                    # Genuine forward progress — drop the patient-stall clock so a
+                    # healthy still-downloading stream never consumes the wait
+                    # budget (only CONSECUTIVE no-progress time is counted).
+                    forward_stall_t0 = None
                 else:
                     awaiting_download_no_progress = self._bump_awaiting_no_progress(
                         ctx, result, awaiting_download_no_progress
@@ -4839,6 +4908,74 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     )
                     candidate_delivered = False
                     continue
+
+                # PATIENT FORWARD-STALL WAIT. An ESTABLISHED forward stream (real
+                # bytes already delivered) that stalls on a RECOVERABLE backend
+                # condition must NOT close on the spot: the session breaker
+                # (upstream_down_notified) short-circuited the retry ladder and
+                # skip-probe to instant give-up, so without this we hit the F4
+                # cap-fire or the recovery_exhausted close in ms and Kodi reads
+                # the premature Connection: close as demuxer EOF (the live 4K
+                # REMUX black screen). Hold the client connection open and re-read
+                # with abortable backoff until the budget elapses, then fall
+                # through to the existing give-up paths below. forward_stall_t0
+                # resets on genuine progress (above), so a healthy
+                # still-downloading stream never trips this; only a truly-stuck
+                # one exhausts the budget. Scope: established only
+                # (streamed_real_upstream_bytes) so a byte-0 first read / fresh
+                # never-streamed seek keep the issue-#214 fast-fail; and
+                # AWAITING_DOWNLOAD / UPSTREAM_ERROR only, so SHORT_READ_RECOVERABLE
+                # (genuinely-missing articles) still zero-fills past below. Runs
+                # AFTER the fallback cutover routes, so a validated alternate is
+                # always preferred over waiting.
+                if (
+                    stall_wait_budget > 0
+                    and streamed_real_upstream_bytes
+                    and current <= end
+                    and result
+                    in (
+                        _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD,
+                        _UPSTREAM_RANGE_UPSTREAM_ERROR,
+                    )
+                ):
+                    now = time.monotonic()
+                    if forward_stall_t0 is None:
+                        forward_stall_t0 = now
+                    if now - forward_stall_t0 < stall_wait_budget:
+                        xbmc.log(
+                            "NZB-DAV: Established forward stream stalled at byte "
+                            "{} (result={}); holding client open and re-reading "
+                            "(elapsed={:.0f}s/{}s, reason=patient_forward_stall)".format(
+                                current,
+                                result,
+                                now - forward_stall_t0,
+                                stall_wait_budget,
+                            ),
+                            xbmc.LOGINFO,
+                        )
+                        # Abortable: a Kodi shutdown / session stop breaks the
+                        # wait immediately so the budget never blocks teardown.
+                        if xbmc.Monitor().waitForAbort(
+                            _PASSTHROUGH_STALL_WAIT_BACKOFF_SECONDS
+                        ):
+                            return
+                        # Reset the throughput watchdog window so the stale
+                        # pre-wait sample can't trip a spurious stall on the first
+                        # post-recovery read.
+                        ctx["passthrough_window_t0"] = time.monotonic()
+                        ctx["passthrough_window_bytes"] = 0
+                        continue
+                    # Budget exhausted: genuinely stuck. Fall through to the
+                    # existing F4 cap-fire / skip-probe give-up so the close is
+                    # reported through the established taxonomy (no new exit path).
+                    xbmc.log(
+                        "NZB-DAV: Patient forward-stall budget exhausted at byte "
+                        "{} after {}s with no progress (result={}); giving up "
+                        "(reason=patient_forward_stall_exhausted)".format(
+                            current, stall_wait_budget, result
+                        ),
+                        xbmc.LOGWARNING,
+                    )
 
                 # BOUNDED EXHAUSTION (F4) cap-fire: now that the retry ladder
                 # has run AND the progress-reset above has cleared the count on
