@@ -1165,6 +1165,7 @@ def first_prefetchable_fallback_peer(
                 result,
                 primary_meta=selected_meta,
                 candidate_meta=candidate_meta,
+                require_same_group=True,
             ):
                 continue
             if selected_tokens is None:
@@ -1190,6 +1191,7 @@ def first_prefetchable_fallback_peer(
                 result,
                 primary_meta=selected_meta,
                 candidate_meta=candidate_meta,
+                require_same_group=True,
             ) and _same_content(selected, result):
                 _remember_prefetch_gate_match(
                     selected, result, selected_meta, candidate_meta
@@ -1200,7 +1202,7 @@ def first_prefetchable_fallback_peer(
             selected_meta = _result_meta(selected)
             selected_meta_ready = True
         if _metadata_profiles_match(
-            selected, result, primary_meta=selected_meta
+            selected, result, primary_meta=selected_meta, require_same_group=True
         ) and _same_content(selected, result):
             candidate_meta = result.get("_meta")
             if not isinstance(candidate_meta, dict):
@@ -1213,19 +1215,31 @@ def first_prefetchable_fallback_peer(
 
 
 def _metadata_profiles_match(
-    primary, candidate, primary_meta=None, candidate_meta=None
+    primary, candidate, primary_meta=None, candidate_meta=None, require_same_group=False
 ):
     """Return whether two releases are plausible same-file fallback peers.
 
     This is intentionally looser than manifest equality. The stream proxy still
     verifies content length and sampled byte fingerprints before switching to a
     fallback source, so this stage should gather plausible peers instead of
-    rejecting reposts because their NZB subject used a different filename/group.
+    rejecting reposts because their NZB subject used a different filename.
+
+    ``require_same_group`` adds the user-requested same-release-group gate: a
+    backup must come from the SAME group as the primary, because a different
+    group's encode is a different file that can never byte-match for a seamless
+    cutover. Both groups must be parsed and equal (fail closed on an unknown
+    group). The check reuses the metadata already computed here, so it adds no
+    extra title-metadata parses and runs only after the cheap title prefilter.
     """
     if primary_meta is None:
         primary_meta = _result_meta(primary)
     if candidate_meta is None:
         candidate_meta = _result_meta(candidate)
+    if require_same_group:
+        left_group = _meta_value_from_meta(primary_meta, "group")
+        right_group = _meta_value_from_meta(candidate_meta, "group")
+        if not left_group or left_group != right_group:
+            return False
     for key in ("resolution", "codec", "container"):
         left = _meta_value_from_meta(primary_meta, key)
         right = _meta_value_from_meta(candidate_meta, key)
@@ -1355,7 +1369,11 @@ def _fallback_peer_matches(primary, candidate):
         if not _titles_look_related(primary, candidate):
             return False
 
-        if not _metadata_profiles_match(primary, candidate):
+        # require_same_group: a backup must come from the SAME release group as
+        # the primary (user requirement) -- a different group's encode is a
+        # different file that can never byte-match for a seamless cutover. When
+        # the prefetch gate already matched, the group was validated there.
+        if not _metadata_profiles_match(primary, candidate, require_same_group=True):
             return False
 
     return _fallback_manifest_peer_matches(primary, candidate)
@@ -1933,12 +1951,20 @@ def _prefetch_candidate_matches(
         if not _title_token_sets_look_related(target_tokens, _title_tokens(candidate)):
             return False
         if not _metadata_profiles_match(
-            target, candidate, primary_meta=target_meta, candidate_meta=candidate_meta
+            target,
+            candidate,
+            primary_meta=target_meta,
+            candidate_meta=candidate_meta,
+            require_same_group=True,
         ):
             return False
         return _same_content(target, candidate)
     if not _metadata_profiles_match(
-        target, candidate, primary_meta=target_meta, candidate_meta=candidate_meta
+        target,
+        candidate,
+        primary_meta=target_meta,
+        candidate_meta=candidate_meta,
+        require_same_group=True,
     ):
         return False
     if target_tokens is None:

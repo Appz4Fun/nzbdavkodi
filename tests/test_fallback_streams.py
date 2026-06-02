@@ -467,6 +467,7 @@ def test_prefetch_title_tokens_are_reused_for_selection_attach(
         "codec": "x265/HEVC",
         "hdr": ["Dolby Vision"],
         "audio": ["TrueHD", "Atmos"],
+        "group": "GROUP",
         "container": "mkv",
     }
     selected = _result(
@@ -569,7 +570,7 @@ def test_similar_reposts_with_different_manifest_names_are_fallbacks(
             "codec": "x265/HEVC",
             "hdr": ["Dolby Vision"],
             "audio": ["DTS:X"],
-            "group": "ALT",
+            "group": "FraMeSToR",
             "container": "mkv",
         },
     )
@@ -771,7 +772,7 @@ def test_too_large_manifest_can_attach_same_profile_metadata_fallback(
     repost = {
         "title": (
             "The.Matrix.1999.UHD.BluRay.2160p.TrueHD.Atmos.7.1."
-            "DV.HEVC.REMUX.FraMeSToR"
+            "DV.HEVC.REMUX-FraMeSToR"
         ),
         "link": "https://idx/repost.nzb",
         "size": 61538207424,
@@ -815,6 +816,7 @@ def test_unsupported_manifest_uses_indexer_size_as_synthetic_video_manifest(
         "codec": "x265/HEVC",
         "hdr": ["Dolby Vision"],
         "audio": ["TrueHD", "Atmos"],
+        "group": "GROUP",
         "container": "mkv",
     }
     primary = _result(
@@ -924,6 +926,7 @@ def test_selection_fallback_prefilter_skips_manifest_fetch_for_unrelated_candida
             "codec": "x265/HEVC",
             "hdr": ["Dolby Vision"],
             "audio": ["TrueHD", "Atmos"],
+            "group": "GROUP",
             "container": "mkv",
         },
     )
@@ -978,6 +981,7 @@ def test_selection_fallback_logs_manifest_timing(
             "codec": "x265/HEVC",
             "hdr": ["Dolby Vision"],
             "audio": ["TrueHD", "Atmos"],
+            "group": "GROUP",
             "container": "mkv",
         },
     )
@@ -1055,6 +1059,7 @@ def test_selection_prefilled_unsupported_manifest_can_synthesize_indexer_manifes
         "codec": "x265/HEVC",
         "hdr": ["Dolby Vision"],
         "audio": ["TrueHD", "Atmos"],
+        "group": "GROUP",
         "container": "mkv",
     }
     selected = _result(
@@ -1138,6 +1143,7 @@ def test_selection_fallback_does_not_reset_unselected_candidate_lists(
             "codec": "x265/HEVC",
             "hdr": ["Dolby Vision"],
             "audio": ["TrueHD", "Atmos"],
+            "group": "GROUP",
             "container": "mkv",
         },
     )
@@ -1313,6 +1319,7 @@ def test_selection_fallback_rejects_batch_after_unusable_selected_manifest(
             "codec": "x265/HEVC",
             "hdr": ["Dolby Vision"],
             "audio": ["TrueHD", "Atmos"],
+            "group": "GROUP",
             "container": "mkv",
         },
     )
@@ -1365,6 +1372,7 @@ def test_selection_fallback_skips_candidate_wait_after_unusable_selected_manifes
             "codec": "x265/HEVC",
             "hdr": ["Dolby Vision"],
             "audio": ["TrueHD", "Atmos"],
+            "group": "GROUP",
             "container": "mkv",
         },
     )
@@ -1427,6 +1435,7 @@ def test_selection_fallback_reuses_selected_title_tokens_while_prefiltering(
             "codec": "x265/HEVC",
             "hdr": ["Dolby Vision"],
             "audio": ["TrueHD", "Atmos"],
+            "group": "GROUP",
             "container": "mkv",
         },
     )
@@ -1787,6 +1796,7 @@ def test_selection_fallback_stops_manifest_fetch_after_max_candidates(
             "codec": "x265/HEVC",
             "hdr": ["Dolby Vision"],
             "audio": ["TrueHD", "Atmos"],
+            "group": "GROUP",
             "container": "mkv",
         },
     )
@@ -1841,6 +1851,7 @@ def test_selection_fallback_fetches_candidate_manifests_in_parallel(
             "codec": "x265/HEVC",
             "hdr": ["Dolby Vision"],
             "audio": ["TrueHD", "Atmos"],
+            "group": "GROUP",
             "container": "mkv",
         },
     )
@@ -1906,6 +1917,7 @@ def test_selection_fallback_overlaps_selected_manifest_with_candidate_batch(
             "codec": "x265/HEVC",
             "hdr": ["Dolby Vision"],
             "audio": ["TrueHD", "Atmos"],
+            "group": "GROUP",
             "container": "mkv",
         },
     )
@@ -1965,6 +1977,7 @@ def test_selection_fallback_pipelines_second_manifest_wave_after_underfill(
             "codec": "x265/HEVC",
             "hdr": ["Dolby Vision"],
             "audio": ["TrueHD", "Atmos"],
+            "group": "GROUP",
             "container": "mkv",
         },
     )
@@ -2039,6 +2052,7 @@ def test_selection_fallback_uses_later_completed_candidate_instead_of_slow_gap(
             "codec": "x265/HEVC",
             "hdr": ["Dolby Vision"],
             "audio": ["TrueHD", "Atmos"],
+            "group": "GROUP",
             "container": "mkv",
         },
     )
@@ -2106,6 +2120,7 @@ def test_selection_fallback_starts_followup_fetch_before_first_wave_tail_finishe
             "codec": "x265/HEVC",
             "hdr": ["Dolby Vision"],
             "audio": ["TrueHD", "Atmos"],
+            "group": "GROUP",
             "container": "mkv",
         },
     )
@@ -2174,6 +2189,7 @@ def test_selection_fallback_scales_second_wave_to_remaining_slots(
             "codec": "x265/HEVC",
             "hdr": ["Dolby Vision"],
             "audio": ["TrueHD", "Atmos"],
+            "group": "GROUP",
             "container": "mkv",
         },
     )
@@ -2233,6 +2249,7 @@ def test_selection_fallback_does_not_wait_for_optional_tail_after_max_filled(
             "codec": "x265/HEVC",
             "hdr": ["Dolby Vision"],
             "audio": ["TrueHD", "Atmos"],
+            "group": "GROUP",
             "container": "mkv",
         },
     )
@@ -2304,6 +2321,7 @@ def test_selection_fallback_does_not_wait_for_optional_tail_after_partial_match(
             "codec": "x265/HEVC",
             "hdr": ["Dolby Vision"],
             "audio": ["TrueHD", "Atmos"],
+            "group": "GROUP",
             "container": "mkv",
         },
     )
@@ -2375,6 +2393,7 @@ def test_selection_fallback_stops_prefilter_scan_after_max_attached_candidates(
             "codec": "x265/HEVC",
             "hdr": ["Dolby Vision"],
             "audio": ["TrueHD", "Atmos"],
+            "group": "GROUP",
             "container": "mkv",
         },
     )
@@ -2442,6 +2461,7 @@ def test_selection_fallback_reuses_prefilter_match_for_manifest_gate(
             "codec": "x265/HEVC",
             "hdr": ["Dolby Vision"],
             "audio": ["TrueHD", "Atmos"],
+            "group": "GROUP",
             "container": "mkv",
         },
     )
@@ -2501,6 +2521,7 @@ def test_selection_fallback_reuses_known_prefetch_peer_profile_match(
             "codec": "x265/HEVC",
             "hdr": ["Dolby Vision"],
             "audio": ["TrueHD", "Atmos"],
+            "group": "GROUP",
             "container": "mkv",
         },
     )
@@ -2655,6 +2676,7 @@ def test_manifest_fetches_are_cached_across_short_lived_selection_calls(
                 "codec": "x265/HEVC",
                 "hdr": ["Dolby Vision"],
                 "audio": ["TrueHD", "Atmos"],
+                "group": "GROUP",
                 "container": "mkv",
             },
         )
@@ -2730,6 +2752,7 @@ def test_short_lived_manifest_cache_expires_between_selection_calls(
                 "codec": "x265/HEVC",
                 "hdr": ["Dolby Vision"],
                 "audio": ["TrueHD", "Atmos"],
+                "group": "GROUP",
                 "container": "mkv",
             },
         )
@@ -2830,6 +2853,7 @@ def test_attach_fallbacks_reuses_known_prefetch_peer_profile_match(
             "codec": "x265/HEVC",
             "hdr": ["Dolby Vision"],
             "audio": ["TrueHD", "Atmos"],
+            "group": "GROUP",
             "container": "mkv",
         },
     )
@@ -4266,8 +4290,11 @@ def test_same_content_rejects_disjoint_tail_franchise_without_year():
 
 @patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
 @patch("resources.lib.fallback_streams._fallback_settings")
-def test_same_episode_different_group_is_allowed_fallback(mock_settings, mock_fetch):
-    """Same show/season/episode, different group is a valid same-content peer."""
+def test_same_episode_different_group_is_rejected_fallback(mock_settings, mock_fetch):
+    """A different release group is no longer a qualified fallback (user
+    requirement). Even with the same show/season/episode and matching profile, a
+    candidate from a different group is a different file that can never byte-match
+    for a seamless cutover, so it must not be attached as a fallback."""
     mock_settings.return_value = (True, 5)
     primary = _result(
         "Show.Name.S02E05.2160p.WEB-DL.x265-GROUP",
@@ -4289,8 +4316,51 @@ def test_same_episode_different_group_is_allowed_fallback(mock_settings, mock_fe
 
     attach_fallback_candidates([primary, repost])
 
-    assert primary["_fallback_candidates"] == [repost]
-    assert repost["_fallback_candidates"] == [primary]
+    assert primary["_fallback_candidates"] == []
+    assert repost["_fallback_candidates"] == []
+
+
+def test_metadata_profiles_match_requires_same_release_group():
+    """User-reported scenario: a FraMeSToR release must NOT pull in an RU4HD
+    encode of the same movie as a backup. Two releases with an IDENTICAL encode
+    profile that differ ONLY in release group are group-agnostic peers by default
+    but are rejected once require_same_group is set -- proving the group, not any
+    other attribute, is the discriminator. A same-group re-post still peers.
+    """
+    from resources.lib import fallback_streams as fs
+
+    # Raw results (no pre-set _meta) so the group is parsed from the release
+    # title -- the real production path. Identical encode profile, group only
+    # differs.
+    framestor = {
+        "title": "Goodfellas.1990.2160p.UHD.BluRay.REMUX.DV.HEVC.TrueHD.7.1-FraMeSToR",
+        "link": "https://idx/goodfellas-framestor.nzb",
+        "size": 60000000000,
+    }
+    ru4hd = {
+        "title": "Goodfellas.1990.2160p.UHD.BluRay.REMUX.DV.HEVC.TrueHD.7.1-RU4HD",
+        "link": "https://idx/goodfellas-ru4hd.nzb",
+        "size": 60000000000,
+    }
+    same_group_repost = {
+        "title": "Goodfellas.1990.2160p.UHD.BluRay.REMUX.DV.HEVC.TrueHD.7.1-FraMeSToR",
+        "link": "https://idx/goodfellas-framestor-mirror.nzb",
+        "size": 60000000000,
+    }
+    # Sanity: groups parse distinct / equal; the encode profile is otherwise
+    # identical (so a False below is caused by the group, nothing else).
+    assert fs._meta_value(framestor, "group") == "framestor"
+    assert fs._meta_value(ru4hd, "group") == "ru4hd"
+    assert fs._metadata_profiles_match(framestor, ru4hd) is True
+    assert (
+        fs._metadata_profiles_match(framestor, ru4hd, require_same_group=True) is False
+    )
+    assert (
+        fs._metadata_profiles_match(
+            framestor, same_group_repost, require_same_group=True
+        )
+        is True
+    )
 
 
 def test_release_similarity_tiers():
@@ -4350,10 +4420,11 @@ def test_release_similarity_tiers():
 def test_fallback_candidates_sorted_best_tier_first(mock_settings, mock_fetch):
     """Candidates are ordered by tier (most-similar first), not pool order.
 
-    Both peers share the primary's resolution+codec (so both clear the profile
-    gate); ranking must still place the same-group ~identical-size repost
-    (Tier 0) ahead of the different-group repost (Tier 1) even though the pool
-    lists the Tier-1 peer first.
+    All peers share the primary's release group (a different group is no longer a
+    qualified fallback), so tiering is exercised within the same group by size:
+    ranking must still place the ~identical-size repost (Tier 0, size within 3%)
+    ahead of the larger same-encode repost (Tier 1, size beyond 3% but within the
+    10% peer band) even though the pool lists the Tier-1 peer first.
     """
     mock_settings.return_value = (True, 5)
     primary = _result(
@@ -4362,12 +4433,13 @@ def test_fallback_candidates_sorted_best_tier_first(mock_settings, mock_fetch):
         60000000000,
         meta=_movie_meta(resolution="2160p", codec="x265/HEVC", group="GROUP"),
     )
-    # Tier 1 (different group), listed first to prove ranking re-orders them.
+    # Tier 1 (same group, same res+codec, size beyond the 3% Tier-0 band but
+    # within the 10% peer band), listed first to prove ranking re-orders them.
     worse = _result(
-        "Dune.Part.Two.2024.2160p.UHD.BluRay.REMUX.DV.HEVC-OTHER",
+        "Dune.Part.Two.2024.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
         "https://idx/worse.nzb",
-        61000000000,
-        meta=_movie_meta(resolution="2160p", codec="x265/HEVC", group="OTHER"),
+        62500000000,
+        meta=_movie_meta(resolution="2160p", codec="x265/HEVC", group="GROUP"),
     )
     # Tier 0 (same group, size within 3%).
     best = _result(
@@ -4378,7 +4450,7 @@ def test_fallback_candidates_sorted_best_tier_first(mock_settings, mock_fetch):
     )
     manifests = {
         "https://idx/primary.nzb": _manifest("video", "p.mkv", 60000000000, "a"),
-        "https://idx/worse.nzb": _manifest("video", "w.mkv", 61000000000, "b"),
+        "https://idx/worse.nzb": _manifest("video", "w.mkv", 62500000000, "b"),
         "https://idx/best.nzb": _manifest("video", "x.mkv", 60100000000, "c"),
     }
     mock_fetch.side_effect = lambda url, **_kwargs: manifests[url]

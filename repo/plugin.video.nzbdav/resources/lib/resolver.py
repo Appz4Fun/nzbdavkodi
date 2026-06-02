@@ -2825,26 +2825,75 @@ def _prefetch_fallback_candidate_loader(candidate_loader):
     return _load_prefetched_candidates
 
 
-# Seconds to hold the fallback prewarm burst after playback handoff so it does
-# not contend with the live stream for nzbdav connections while Kodi's read
-# cache is still filling. Long enough to cover the startup cache-fill window;
-# the cutover safety net is only briefly delayed, not removed.
-_FALLBACK_PREWARM_DELAY_SECONDS = 15
+# Seconds INTO playback to hold the fallback prewarm/submit burst. Anchored to
+# actual playback start (not primary submission, which can precede playback by a
+# whole download for a slow primary), so backups are only fetched well after the
+# video is established: a working playback that never needs them submits none,
+# and the burst never contends with the fragile startup cache-fill window. The
+# wait is cancellable -- a session stop aborts it with no submission.
+_FALLBACK_PREWARM_DELAY_SECONDS = 120
+# Poll granularity while waiting for the playback-start signal, plus a defensive
+# cap after which the worker proceeds even if the signal never arrived (so a
+# missed signal degrades to a late submit, never a permanently stranded backup).
+_FALLBACK_PLAYBACK_WAIT_POLL_SECONDS = 1.0
+_FALLBACK_PLAYBACK_WAIT_CAP_SECONDS = 300.0
+
+
+def _await_playback_start(state):
+    """Block until playback is signaled (return True) or the worker is stopped
+    (return False).
+
+    Anchors the fallback prewarm delay to actual playback start. Capped by
+    ``_FALLBACK_PLAYBACK_WAIT_CAP_SECONDS`` so a path that never signals (a bug
+    or an unusual handoff) degrades to a late submit rather than a permanently
+    stranded backup.
+    """
+    started = state.get("playback_started")
+    if started is None:
+        return True
+    stop = state.get("stop")
+    if stop is not None and stop.is_set():
+        return False
+    waited = 0.0
+    while not started.wait(_FALLBACK_PLAYBACK_WAIT_POLL_SECONDS):
+        if stop is not None and stop.is_set():
+            return False
+        waited += _FALLBACK_PLAYBACK_WAIT_POLL_SECONDS
+        if waited >= _FALLBACK_PLAYBACK_WAIT_CAP_SECONDS:
+            return True
+    return True
+
+
+def _signal_fallback_playback_started(state):
+    """Mark playback as started so a ``wait_for_playback`` fallback worker begins
+    its prewarm-delay countdown. Best-effort no-op when there is no worker."""
+    if not state:
+        return
+    event = state.get("playback_started")
+    if event is not None:
+        event.set()
 
 
 def _start_fallback_submit_worker(
-    candidates=None, candidate_loader=None, settings_getter=None, prewarm_delay=0
+    candidates=None,
+    candidate_loader=None,
+    settings_getter=None,
+    prewarm_delay=0,
+    wait_for_playback=False,
 ):
     """Start background fallback submits and return shared state.
 
-    ``prewarm_delay`` defers the submit/prevalidation burst by that many seconds
-    after playback hands off. The prewarm opens several concurrent connections to
-    nzbdav (one submit + one prevalidation probe per source); firing them during
-    the first seconds of playback — while Kodi's read cache is still filling —
-    competes for nzbdav's connection budget and can stall the live stream enough
-    to wedge the CoreELEC audio clock (black screen). Waiting until playback is
-    established keeps the cutover safety net while protecting startup. The wait is
-    cancellable: a session stop during the window aborts it with no submission.
+    When ``wait_for_playback`` is set, the burst is held until playback is
+    signaled (via ``_signal_fallback_playback_started``) and then for
+    ``prewarm_delay`` seconds, so backups are only fetched well INTO playback,
+    never during the pre-playback download. ``prewarm_delay`` then measures the
+    delay from playback start rather than from worker creation (primary submit).
+    The prewarm opens several concurrent connections to nzbdav (one submit + one
+    prevalidation probe per source); firing them during the fragile startup
+    cache-fill window competes for nzbdav's connection budget and can stall the
+    live stream enough to wedge the CoreELEC audio clock (black screen). Both the
+    playback wait and the delay are cancellable: a session stop aborts with no
+    submission.
     """
 
     def _cancel_job(nzo_id):
@@ -2857,6 +2906,7 @@ def _start_fallback_submit_worker(
         "jobs": [],
         "stop": threading.Event(),
         "finished": threading.Event(),
+        "playback_started": threading.Event(),
         "thread": None,
         "cancel_job": _cancel_job,
     }
@@ -2890,10 +2940,13 @@ def _start_fallback_submit_worker(
 
     def _worker():
         try:
-            # Defer the prewarm burst until playback is established so it does
-            # not compete with the live stream for nzbdav connections during the
-            # fragile cache-fill window. Cancellable: a stop set during the wait
-            # returns True and aborts before any submit.
+            # Hold the entire prewarm/submit burst until playback has actually
+            # started, then for ``prewarm_delay`` seconds, so backups are fetched
+            # well INTO playback and never during the pre-playback download
+            # (anchoring to primary submission could fire mid-download for a slow
+            # primary). Both waits are cancellable: a stop aborts before submit.
+            if wait_for_playback and not _await_playback_start(state):
+                return
             if prewarm_delay and state["stop"].wait(prewarm_delay):
                 return
             active_candidates = candidate_list
@@ -3534,6 +3587,7 @@ def resolve(handle, params):
                     fallback_candidates,
                     candidate_loader=fallback_candidate_loader,
                     prewarm_delay=_FALLBACK_PREWARM_DELAY_SECONDS,
+                    wait_for_playback=True,
                 )
 
         # One rejected-id set per resolve attempt, shared so a Completed row
@@ -3603,6 +3657,9 @@ def resolve(handle, params):
             prepared = _wait_direct_playback_prepare(playback_prepare_state)
             _arm_live_fallback_push(prepared, fallback_state, stream_url)
             _finish_direct_playback(handle, prepared)
+            # Playback handed off to Kodi: start the fallback worker's "minutes
+            # into playback" countdown now, not from the earlier primary submit.
+            _signal_fallback_playback_started(fallback_state)
         else:
             _stop_fallback_submit_worker(fallback_state, cancel_submitted=True)
             xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
@@ -3662,6 +3719,7 @@ def resolve_and_play(nzb_url, title, params=None):
                 fallback_submit_kwargs = {
                     "candidate_loader": fallback_candidate_loader,
                     "prewarm_delay": _FALLBACK_PREWARM_DELAY_SECONDS,
+                    "wait_for_playback": True,
                 }
                 fallback_submit_kwargs.update(_settings_getter_kwargs(settings_getter))
                 fallback_state = _start_fallback_submit_worker(
@@ -3760,6 +3818,9 @@ def resolve_and_play(nzb_url, title, params=None):
             )
             _arm_live_fallback_push(prepared, fallback_state, stream_url)
             _finish_player_playback(prepared)
+            # Playback handed off to the player: start the fallback worker's
+            # "minutes into playback" countdown now, not from the primary submit.
+            _signal_fallback_playback_started(fallback_state)
             _resolve_stage("player playback started")
         else:
             _stop_fallback_submit_worker(fallback_state, cancel_submitted=True)
