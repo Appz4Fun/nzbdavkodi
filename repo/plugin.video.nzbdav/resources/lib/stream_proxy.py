@@ -58,6 +58,11 @@ except (ImportError, ModuleNotFoundError):
     build_faststart_layout = None  # type: ignore[assignment]
     fetch_remote_mp4_layout = None  # type: ignore[assignment]
 
+# Optimization: Pre-compile regexes at module level to avoid runtime parsing overhead
+_DURATION_RE = re.compile(r"Duration:\s*(\d+):(\d+):(\d+)(?:\.(\d+))?")
+_SEGMENT_NORMALIZE_RE = re.compile(r"seg_0*(\d+)\.(m4s|ts)")
+_CONTENT_RANGE_0_RE = re.compile(r"^bytes\s+0-0/(\d+)$")
+
 from resources.lib import telemetry
 from resources.lib.dv_source import probe_dolby_vision_source
 from resources.lib.http_util import HTTP_USER_AGENT
@@ -1436,7 +1441,7 @@ def _parse_ffmpeg_duration(stderr_text):
 
     Returns duration in seconds as a float, or None if not found.
     """
-    match = re.search(r"Duration:\s*(\d+):(\d+):(\d+)(?:\.(\d+))?", stderr_text)
+    match = _DURATION_RE.search(stderr_text)
     if not match:
         return None
     hours, minutes, seconds, frac = match.groups()
@@ -5207,7 +5212,7 @@ class HlsProducer:
         def _normalize_segment(match):
             return "seg_{}.{}".format(int(match.group(1)), match.group(2))
 
-        text = re.sub(r"seg_0*(\d+)\.(m4s|ts)", _normalize_segment, text)
+        text = _SEGMENT_NORMALIZE_RE.sub(_normalize_segment, text)
         return text.encode("utf-8")
 
     def _segment_complete(self, seg_n):
@@ -7624,7 +7629,7 @@ class StreamProxy:
                     status = getattr(resp, "status", None)
                     if status is None:
                         status = resp.getcode()
-                    match = re.match(r"^bytes\s+0-0/(\d+)$", cr.strip())
+                    match = _CONTENT_RANGE_0_RE.match(cr.strip())
                     stream_length = int(match.group(1)) if match else 0
                     if status == 206 and stream_length == content_length_hint:
                         return content_length_hint
