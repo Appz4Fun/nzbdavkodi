@@ -4458,3 +4458,99 @@ def test_fallback_candidates_sorted_best_tier_first(mock_settings, mock_fetch):
     attach_fallback_candidates([primary, worse, best])
 
     assert primary["_fallback_candidates"] == [best, worse]
+
+
+def test_metadata_profiles_match_fails_closed_on_unknown_resolution_same_group():
+    """When same-group backups are required, a candidate whose resolution PTT
+    could not parse must be REJECTED — the user requires the backup share the
+    primary's resolution, so the gate fails closed like the group gate."""
+    from resources.lib import fallback_streams
+
+    primary = _result(
+        "Example Movie 2026 1080p WEB-DL x265-GROUP",
+        "https://a/nzb",
+        1000,
+        meta=_movie_meta(resolution="1080p", codec="x265/HEVC", group="GROUP"),
+    )
+    unknown_res = _result(
+        "Example Movie 2026 WEB-DL x265-GROUP",
+        "https://b/nzb",
+        1000,
+        meta=_movie_meta(resolution="", codec="x265/HEVC", group="GROUP"),
+    )
+    assert not fallback_streams._metadata_profiles_match(
+        primary, unknown_res, require_same_group=True
+    )
+
+
+def test_metadata_profiles_match_rejects_different_resolution_same_group():
+    from resources.lib import fallback_streams
+
+    primary = _result(
+        "Example Movie 2026 1080p WEB-DL x265-GROUP",
+        "https://a/nzb",
+        1000,
+        meta=_movie_meta(resolution="1080p", codec="x265/HEVC", group="GROUP"),
+    )
+    other_res = _result(
+        "Example Movie 2026 2160p WEB-DL x265-GROUP",
+        "https://b/nzb",
+        1000,
+        meta=_movie_meta(resolution="2160p", codec="x265/HEVC", group="GROUP"),
+    )
+    assert not fallback_streams._metadata_profiles_match(
+        primary, other_res, require_same_group=True
+    )
+
+
+def test_metadata_profiles_match_accepts_same_resolution_same_group():
+    from resources.lib import fallback_streams
+
+    primary = _result(
+        "Example Movie 2026 1080p WEB-DL x265-GROUP",
+        "https://a/nzb",
+        1000,
+        meta=_movie_meta(resolution="1080p", codec="x265/HEVC", group="GROUP"),
+    )
+    same = _result(
+        "Example Movie 2026 1080p WEB-DL x265-GROUP",
+        "https://b/nzb",
+        1000,
+        meta=_movie_meta(resolution="1080p", codec="x265/HEVC", group="GROUP"),
+    )
+    assert fallback_streams._metadata_profiles_match(
+        primary, same, require_same_group=True
+    )
+
+
+def test_rank_fallback_candidates_prefers_exact_same_filename():
+    """An exact-same-filename repost (different upload) must be ranked ahead of a
+    closer-by-tier/size peer — the user wants exact filenames preferred first."""
+    from resources.lib import fallback_streams
+
+    meta = _movie_meta(resolution="2160p", codec="x265/HEVC", group="GROUP")
+    target = _result(
+        "Example 2026 2160p BluRay x265-GROUP", "https://t/nzb", 60000000000, meta=meta
+    )
+    target["_fallback_manifest"] = _manifest(
+        "video", "example.2026.2160p.group.mkv", 60000000000, "t"
+    )
+    # Tier 0 peer (same res+codec+group, size within 3%) but DIFFERENT filename.
+    closer = _result(
+        "Example 2026 2160p BluRay x265-GROUP", "https://c/nzb", 60000000000, meta=meta
+    )
+    closer["_fallback_manifest"] = _manifest(
+        "video", "different.name.mkv", 60000000000, "c"
+    )
+    # Tier 1 peer (size ~10% off -> not tier 0) but EXACT same filename.
+    exact = _result(
+        "Example 2026 2160p BluRay x265-GROUP", "https://e/nzb", 66000000000, meta=meta
+    )
+    exact["_fallback_manifest"] = _manifest(
+        "video", "example.2026.2160p.group.mkv", 66000000000, "e"
+    )
+
+    ranked = fallback_streams._rank_fallback_candidates(target, [closer, exact])
+
+    assert ranked[0] is exact
+    assert ranked[1] is closer

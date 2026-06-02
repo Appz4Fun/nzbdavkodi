@@ -781,3 +781,7 @@ msgstr "The download queue has {} item(s):"
 msgctxt "#30204"
 msgid "Clear the queue before starting this download?"
 msgstr "Clear the queue before starting this download?"
+
+msgctxt "#30205"
+msgid "Seconds into playback before submitting fallback backups"
+msgstr "Seconds into playback before submitting fallback backups"

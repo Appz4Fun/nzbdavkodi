@@ -19,6 +19,7 @@ from resources.lib.resolver import (
     _direct_playback_service_config,
     _existing_completed_stream,
     _fallback_submit_jobs_snapshot,
+    _get_fallback_submit_delay_seconds,
     _get_poll_settings,
     _get_submit_timeout_seconds,
     _handle_history_result,
@@ -264,6 +265,55 @@ def test_get_submit_timeout_seconds_uses_requested_default_for_empty_setting():
         assert _get_submit_timeout_seconds() == 300
     finally:
         sys.modules["xbmcaddon"].Addon.return_value = original
+
+
+def test_get_fallback_submit_delay_seconds_defaults_to_prewarm_constant():
+    """An empty setting falls back to the documented 120s prewarm default."""
+
+    def settings_getter(_key, default=""):
+        return ""
+
+    assert (
+        _get_fallback_submit_delay_seconds(settings_getter=settings_getter)
+        == _FALLBACK_PREWARM_DELAY_SECONDS
+    )
+
+
+def test_get_fallback_submit_delay_seconds_uses_configured_value():
+    """A user-configured defer is honored verbatim (the requirement)."""
+
+    def settings_getter(key, default=""):
+        return "45" if key == "fallback_submit_delay" else default
+
+    assert _get_fallback_submit_delay_seconds(settings_getter=settings_getter) == 45
+
+
+def test_get_fallback_submit_delay_seconds_allows_zero():
+    """Zero means submit right at playback start — a valid configuration."""
+
+    def settings_getter(key, default=""):
+        return "0" if key == "fallback_submit_delay" else default
+
+    assert _get_fallback_submit_delay_seconds(settings_getter=settings_getter) == 0
+
+
+def test_get_fallback_submit_delay_seconds_rejects_garbage_and_negatives():
+    """Non-numeric or negative values fall back to the safe default."""
+
+    def garbage(key, default=""):
+        return "soon" if key == "fallback_submit_delay" else default
+
+    def negative(key, default=""):
+        return "-30" if key == "fallback_submit_delay" else default
+
+    assert (
+        _get_fallback_submit_delay_seconds(settings_getter=garbage)
+        == _FALLBACK_PREWARM_DELAY_SECONDS
+    )
+    assert (
+        _get_fallback_submit_delay_seconds(settings_getter=negative)
+        == _FALLBACK_PREWARM_DELAY_SECONDS
+    )
 
 
 def test_direct_playback_service_config_reads_proxy_window_once_for_fast_start():
