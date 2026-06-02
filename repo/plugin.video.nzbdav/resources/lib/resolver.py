@@ -2839,6 +2839,31 @@ _FALLBACK_PLAYBACK_WAIT_POLL_SECONDS = 1.0
 _FALLBACK_PLAYBACK_WAIT_CAP_SECONDS = 300.0
 
 
+def _get_fallback_submit_delay_seconds(settings_getter=None):
+    """Read the configurable fallback submit defer (seconds INTO playback).
+
+    Backup NZBs are submitted only this many seconds AFTER playback has actually
+    started (the burst is anchored to the playback-start signal, then held for
+    this delay). Exposed as the ``fallback_submit_delay`` user setting so the
+    defer is configurable; an empty/invalid/negative value funnels to the
+    documented ``_FALLBACK_PREWARM_DELAY_SECONDS`` default. ``0`` is valid and
+    means submit right at playback start.
+    """
+    try:
+        if settings_getter is None:
+            raw = xbmcaddon.Addon("plugin.video.nzbdav").getSetting(
+                "fallback_submit_delay"
+            )
+        else:
+            raw = settings_getter("fallback_submit_delay", "")
+        value = int(raw) if raw else _FALLBACK_PREWARM_DELAY_SECONDS
+        return value if value >= 0 else _FALLBACK_PREWARM_DELAY_SECONDS
+    except Exception:  # pylint: disable=broad-except
+        # xbmcaddon import failure, unexpected setting shapes, int() on a
+        # MagicMock in tests — all funnel to the documented default.
+        return _FALLBACK_PREWARM_DELAY_SECONDS
+
+
 def _await_playback_start(state):
     """Block until playback is signaled (return True) or the worker is stopped
     (return False).
@@ -3586,7 +3611,7 @@ def resolve(handle, params):
                 fallback_state = _start_fallback_submit_worker(
                     fallback_candidates,
                     candidate_loader=fallback_candidate_loader,
-                    prewarm_delay=_FALLBACK_PREWARM_DELAY_SECONDS,
+                    prewarm_delay=_get_fallback_submit_delay_seconds(),
                     wait_for_playback=True,
                 )
 
@@ -3718,7 +3743,9 @@ def resolve_and_play(nzb_url, title, params=None):
             if fallback_state is None:
                 fallback_submit_kwargs = {
                     "candidate_loader": fallback_candidate_loader,
-                    "prewarm_delay": _FALLBACK_PREWARM_DELAY_SECONDS,
+                    "prewarm_delay": _get_fallback_submit_delay_seconds(
+                        settings_getter
+                    ),
                     "wait_for_playback": True,
                 }
                 fallback_submit_kwargs.update(_settings_getter_kwargs(settings_getter))

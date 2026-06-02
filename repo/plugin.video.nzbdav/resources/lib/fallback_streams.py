@@ -1240,6 +1240,16 @@ def _metadata_profiles_match(
         right_group = _meta_value_from_meta(candidate_meta, "group")
         if not left_group or left_group != right_group:
             return False
+        # require same RESOLUTION too (user requirement): fail CLOSED like the
+        # group gate -- reject when either side's resolution is unparsed or
+        # differs, so an unparsed-resolution candidate can never slip a
+        # different-resolution encode past the gate. The shared resolution
+        # check below only fails OPEN when one side is unknown, so this stricter
+        # gate is what enforces "same resolution as parsed by PTT".
+        left_res = _meta_value_from_meta(primary_meta, "resolution")
+        right_res = _meta_value_from_meta(candidate_meta, "resolution")
+        if not left_res or left_res != right_res:
+            return False
     for key in ("resolution", "codec", "container"):
         left = _meta_value_from_meta(primary_meta, key)
         right = _meta_value_from_meta(candidate_meta, key)
@@ -1346,6 +1356,21 @@ def _manifest_group_bytes(result):
         return int(manifest.get("group_bytes", 0) or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _manifest_normalized_video_name(result):
+    """Return the candidate's normalized video filename from its manifest, else "".
+
+    Used to PREFER an exact-same-filename repost (a different upload of the
+    byte-identical file, already de-duplicated from the primary by article
+    digest) ahead of the looser tier/size ranking, per the user requirement to
+    try exact-filename matches first.
+    """
+    manifest = result.get("_fallback_manifest") if isinstance(result, dict) else None
+    if not isinstance(manifest, dict):
+        return ""
+    name = manifest.get("normalized_video_name", "")
+    return name.strip().lower() if isinstance(name, str) else ""
 
 
 def _fallback_peer_matches(primary, candidate):
@@ -1654,6 +1679,7 @@ def _attach_candidates_for_target(target, pool, max_candidates):
     target_digest = _article_digest(target)
     seen_article_digests = {target_digest} if target_digest else set()
     target_size = _release_size_bytes(target)
+    target_name = _manifest_normalized_video_name(target)
     for candidate in pool:
         if candidate is target:
             continue
@@ -1671,14 +1697,17 @@ def _attach_candidates_for_target(target, pool, max_candidates):
             continue
         candidate_size = _release_size_bytes(candidate)
         size_delta = abs(target_size - candidate_size) if target_size else 0
-        matched.append((tier, size_delta, candidate))
+        candidate_name = _manifest_normalized_video_name(candidate)
+        exact_name = 0 if target_name and candidate_name == target_name else 1
+        matched.append((exact_name, tier, size_delta, candidate))
         seen_links.add(candidate_link)
         if candidate_digest:
             seen_article_digests.add(candidate_digest)
-    # Tiered ranking: most-similar first (lower tier), then smallest size delta.
-    # Sort is stable so equal (tier, delta) keeps pool order.
-    matched.sort(key=lambda item: (item[0], item[1]))
-    target["_fallback_candidates"] = [item[2] for item in matched[:max_candidates]]
+    # Exact-same-filename first (0 before 1), then tiered ranking: most-similar
+    # first (lower tier), then smallest size delta. Sort is stable so equal keys
+    # keep pool order.
+    matched.sort(key=lambda item: (item[0], item[1], item[2]))
+    target["_fallback_candidates"] = [item[3] for item in matched[:max_candidates]]
 
 
 def _attach_manifest_candidate_if_matching(
@@ -2112,11 +2141,13 @@ def attach_fallback_candidates_for_selection(selected, results, fallback_setting
 def _rank_fallback_candidates(target, candidates):
     """Return candidates ordered best-first by fallback tier, then size delta.
 
-    Tiered ranking (lower tier = tried first) so the most-similar release is
-    submitted before a looser same-content peer. Sort is stable, preserving the
-    original arrival order within a (tier, size-delta) bucket.
+    An exact-same-filename repost (a different upload of the byte-identical
+    file) is preferred first; then tiered ranking (lower tier = tried first) so
+    the most-similar release is submitted before a looser same-content peer.
+    Sort is stable, preserving original arrival order within a bucket.
     """
     target_size = _release_size_bytes(target)
+    target_name = _manifest_normalized_video_name(target)
     ranked = []
     for candidate in candidates:
         tier = _release_similarity(target, candidate)
@@ -2126,9 +2157,11 @@ def _rank_fallback_candidates(target, candidates):
             tier = 3
         candidate_size = _release_size_bytes(candidate)
         size_delta = abs(target_size - candidate_size) if target_size else 0
-        ranked.append((tier, size_delta, candidate))
-    ranked.sort(key=lambda item: (item[0], item[1]))
-    return [item[2] for item in ranked]
+        candidate_name = _manifest_normalized_video_name(candidate)
+        exact_name = 0 if target_name and candidate_name == target_name else 1
+        ranked.append((exact_name, tier, size_delta, candidate))
+    ranked.sort(key=lambda item: (item[0], item[1], item[2]))
+    return [item[3] for item in ranked]
 
 
 def build_fallback_job_name(title, nzb_url, index):
