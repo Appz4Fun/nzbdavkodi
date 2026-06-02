@@ -22,7 +22,7 @@
         <license>GPL-3.0-or-later</license>
         <source>https://github.com/Appz4Fun/nzbdavkodi</source>
         <website>https://appz4fun.github.io/nzbdavkodi/</website>
-        <news>v1.2.5: Fallback backups now require the same release group; defer backup submission until ~2 min into playback; fix pass-through startup stall (first-byte retry ladder) on very large files.</news>
+        <news>v1.2.5: Same-group fallback backups, deferred submission, startup-stall fix.</news>
         <assets>
             <icon>resources/icon.png</icon>
             <fanart>resources/fanart.jpg</fanart>
