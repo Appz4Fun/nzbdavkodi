@@ -785,3 +785,7 @@ msgstr "Clear the queue before starting this download?"
 msgctxt "#30205"
 msgid "Seconds into playback before submitting fallback backups"
 msgstr "Seconds into playback before submitting fallback backups"
+
+msgctxt "#30206"
+msgid "Max seconds to wait for a slow/stalled backend before giving up (0=off)"
+msgstr "Max seconds to wait for a slow/stalled backend before giving up (0=off)"

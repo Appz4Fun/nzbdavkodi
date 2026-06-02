@@ -1141,6 +1141,7 @@ def test_prepare_stream_uses_settings_snapshot_without_kodi_setting_reads():
         "zero_fill_budget_enabled": True,
         "retry_ladder_enabled": True,
         "send_200_no_range_enabled": False,
+        "passthrough_stall_wait_seconds": 120,
     }
     assert "_passthrough_runtime_settings_thread" not in ctx
 
@@ -11962,6 +11963,9 @@ def test_serve_proxy_zero_fills_on_upstream_failure():
     mock_addon = MagicMock()
     mock_addon.getSetting.side_effect = lambda key: {
         "retry_ladder_enabled": "false",
+        # Disable the patient forward-stall wait so this test stays targeted at
+        # the zero-fill recovery branch (the wait is covered separately).
+        "passthrough_stall_wait": "0",
     }.get(key, "")
     original = sys.modules["xbmcaddon"].Addon.return_value
     sys.modules["xbmcaddon"].Addon.return_value = mock_addon
@@ -12008,6 +12012,7 @@ def test_serve_proxy_notifies_first_recovery_with_bytes_and_count():
         "density_breaker_enabled": "false",
         "zero_fill_budget_enabled": "true",
         "retry_ladder_enabled": "false",
+        "passthrough_stall_wait": "0",
     }.get(key, "")
     original = sys.modules["xbmcaddon"].Addon.return_value
     sys.modules["xbmcaddon"].Addon.return_value = mock_addon
@@ -12070,6 +12075,7 @@ def test_serve_proxy_retries_probes_when_upstream_briefly_down():
     mock_addon.getSetting.side_effect = lambda key: {
         "retry_ladder_enabled": "false",
         "zero_fill_budget_enabled": "false",
+        "passthrough_stall_wait": "0",
     }.get(key, "")
     original = sys.modules["xbmcaddon"].Addon.return_value
     sys.modules["xbmcaddon"].Addon.return_value = mock_addon
@@ -12216,6 +12222,7 @@ def test_serve_proxy_falls_back_to_skip_probe_after_retry_ladder_exhausted():
         "density_breaker_enabled": "false",
         "zero_fill_budget_enabled": "true",
         "retry_ladder_enabled": "true",
+        "passthrough_stall_wait": "0",
     }.get(key, "")
     original = sys.modules["xbmcaddon"].Addon.return_value
     sys.modules["xbmcaddon"].Addon.return_value = mock_addon
@@ -12346,6 +12353,7 @@ def test_serve_proxy_logs_terminal_summary_on_recovery_exhausted(mock_xbmc):
     mock_addon = MagicMock()
     mock_addon.getSetting.side_effect = lambda key: {
         "retry_ladder_enabled": "false",
+        "passthrough_stall_wait": "0",
     }.get(key, "")
     original = sys.modules["xbmcaddon"].Addon.return_value
     sys.modules["xbmcaddon"].Addon.return_value = mock_addon
@@ -15564,3 +15572,166 @@ def test_maybe_notify_stream_starvation_debounced_once_per_session():
     assert first is True
     assert second is False
     mock_notify.assert_called_once()
+
+
+def test_serve_proxy_established_forward_stall_waits_then_completes_on_recovery():
+    """An ESTABLISHED forward stream (real bytes already streamed) that hits a
+    transient backend outage with the session circuit breaker tripped must KEEP
+    the client connection open and keep retrying (with abortable backoff) until
+    the backend recovers — instead of giving up in milliseconds and closing (the
+    live 4K-REMUX mid-stream black screen). Recovery then completes the range;
+    no zero-fill, no skip-probe."""
+    import sys
+
+    from resources.lib.stream_proxy import (
+        _PASSTHROUGH_RUNTIME_SETTINGS_KEY,
+        _STRICT_CONTRACT_MODE_OFF,
+        _UPSTREAM_RANGE_OK,
+        _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD,
+        _UPSTREAM_RANGE_UPSTREAM_ERROR,
+    )
+
+    start, end = 1000, 1099  # mid-file (start>0): not the byte-0 first open
+    ctx = {
+        "remote_url": "http://webdav/remux.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 100_000,
+        # Breaker already tripped by an earlier 5xx — the exact live condition
+        # that made the loop give up in ~ms.
+        "upstream_down_notified": True,
+        "upstream_unreachable_count": 1,
+        _PASSTHROUGH_RUNTIME_SETTINGS_KEY: {
+            "contract_mode": _STRICT_CONTRACT_MODE_OFF,
+            "density_breaker_enabled": False,
+            "zero_fill_budget_enabled": True,
+            "retry_ladder_enabled": False,  # isolate the backoff to the new gate
+            "send_200_no_range_enabled": False,
+            "passthrough_stall_wait_seconds": 120,
+        },
+    }
+    handler = _make_handler_with_server(
+        ctx, range_header="bytes={}-{}".format(start, end)
+    )
+
+    def stream_range(active_ctx, s, e, contract_mode=None):
+        del active_ctx, contract_mode
+        remaining = e - s + 1
+        if s == 1000:
+            # Established read: streams 40 real bytes then hits the download
+            # high-water (still-downloading) -> AWAITING with written>0.
+            handler.wfile.write(b"A" * 40)
+            return _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD, 40
+        if s == 1040 and stream_range.stalls < 2:
+            stream_range.stalls += 1
+            return _UPSTREAM_RANGE_UPSTREAM_ERROR, 0
+        handler.wfile.write(b"B" * remaining)
+        return _UPSTREAM_RANGE_OK, remaining
+
+    stream_range.stalls = 0
+
+    wait_calls = {"n": 0}
+
+    def _counting_wait(timeout=0.0):
+        del timeout
+        wait_calls["n"] += 1
+        return False  # never abort, never really sleep
+
+    monitor = sys.modules["xbmc"].Monitor.return_value
+    original_wait = monitor.waitForAbort.side_effect
+    monitor.waitForAbort.side_effect = _counting_wait
+    try:
+        with patch.object(
+            handler, "_stream_upstream_range", side_effect=stream_range
+        ) as mock_stream, patch.object(
+            handler, "_select_live_fallback_source", return_value=None
+        ), patch.object(
+            handler, "_find_skip_offset", return_value=1
+        ) as mock_skip, patch.object(
+            handler, "_write_zeros"
+        ) as mock_zeros:
+            handler._serve_proxy(ctx)
+    finally:
+        monitor.waitForAbort.side_effect = original_wait
+
+    # Kept retrying across the outage rather than closing after the stall.
+    assert mock_stream.call_count >= 4
+    # The forward-stall gate backed off (waited) at least once; with the ladder
+    # disabled, no other loop site calls waitForAbort.
+    assert wait_calls["n"] >= 1
+    # It WAITED for the primary — never zero-filled / skip-probed past the gap.
+    mock_skip.assert_not_called()
+    mock_zeros.assert_not_called()
+    # On recovery the full requested range was delivered (40 + 60 bytes).
+    assert _collect_written(handler) == b"A" * 40 + b"B" * 60
+
+
+def test_serve_proxy_pre_bytes_stall_does_not_engage_long_wait():
+    """A stall BEFORE any real bytes streamed (byte-0 first read / fresh seek)
+    must keep the issue-#214 fast-fail: the patient wait must NOT engage, so a
+    genuinely-dead open closes promptly instead of holding Kodi's initial open."""
+    import sys
+
+    from resources.lib.stream_proxy import (
+        _PASSTHROUGH_RUNTIME_SETTINGS_KEY,
+        _STRICT_CONTRACT_MODE_OFF,
+        _UPSTREAM_RANGE_UPSTREAM_ERROR,
+    )
+
+    content_length = 100_000
+    ctx = {
+        "remote_url": "http://webdav/remux.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": content_length,
+        "upstream_down_notified": True,
+        "upstream_unreachable_count": 1,
+        _PASSTHROUGH_RUNTIME_SETTINGS_KEY: {
+            "contract_mode": _STRICT_CONTRACT_MODE_OFF,
+            "density_breaker_enabled": False,
+            "zero_fill_budget_enabled": True,
+            "retry_ladder_enabled": False,
+            "send_200_no_range_enabled": False,
+            "passthrough_stall_wait_seconds": 120,
+        },
+    }
+    handler = _make_handler_with_server(
+        ctx, range_header="bytes=0-{}".format(content_length - 1)
+    )
+
+    wait_calls = {"n": 0}
+
+    def _counting_wait(timeout=0.0):
+        del timeout
+        wait_calls["n"] += 1
+        return False
+
+    monitor = sys.modules["xbmc"].Monitor.return_value
+    original_wait = monitor.waitForAbort.side_effect
+    monitor.waitForAbort.side_effect = _counting_wait
+    try:
+        with patch.object(
+            handler,
+            "_stream_upstream_range",
+            return_value=(_UPSTREAM_RANGE_UPSTREAM_ERROR, 0),
+        ) as mock_stream, patch.object(
+            handler, "_pop_cached_fallback_range", return_value=b""
+        ), patch.object(
+            handler, "_wait_for_initial_range_prefetch", return_value=None
+        ), patch.object(
+            handler, "_select_live_fallback_source", return_value=None
+        ), patch.object(
+            handler, "_find_skip_offset", return_value=None
+        ), patch.object(
+            handler, "_write_zeros"
+        ) as mock_zeros:
+            handler._serve_proxy(ctx)
+    finally:
+        monitor.waitForAbort.side_effect = original_wait
+
+    # Fast-fail preserved: did not spin extra reads on a dead pre-bytes open...
+    assert mock_stream.call_count == 1
+    # ...and the patient gate never backed off (no patience before any bytes).
+    assert wait_calls["n"] == 0
+    mock_zeros.assert_not_called()
+    assert _collect_written(handler) == b""
