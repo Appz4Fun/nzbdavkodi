@@ -11165,6 +11165,60 @@ def test_fallback_range_probe_failure_reenters_retry_and_zero_fill_recovery():
     assert _collect_written(handler) == b""
 
 
+def test_serve_proxy_byte0_prefetch_keeps_short_first_byte_ladder():
+    """Regression (Interstellar 64KB-then-EOF on a huge pass-through MKV): a
+    byte-0 open serves a ~64KB prefetched prefix, which advances the serve cursor
+    to 65536. The retry ladder's first-byte detection must key on the ORIGINAL
+    request start (0), not the mutated cursor -- otherwise the player's real first
+    content read at byte 65536 takes the long (2,4,8)s wait-on-primary ladder,
+    stalls ~14s past Kodi's first-read patience, and the player disconnects with
+    only the 64KB prefix served (streamed=65536 then 0, client_disconnected).
+    """
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_OK,
+        _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD,
+    )
+
+    content_length = 102_700_000_000
+    ctx = {
+        "remote_url": "http://webdav/interstellar.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": content_length,
+        "fallback_sources": [],
+        "fallback_switch_count": 0,
+    }
+    handler = _make_handler_with_server(
+        ctx, range_header="bytes=0-{}".format(content_length - 1)
+    )
+    prefix = b"P" * 65536
+
+    def pop_prefix(_ctx, current, _end):
+        # Serve the cached 64KB prefix only for the genuine byte-0 open.
+        return prefix if current == 0 else b""
+
+    with patch.object(
+        handler, "_pop_cached_fallback_range", side_effect=pop_prefix
+    ), patch.object(
+        handler,
+        "_stream_upstream_range",
+        return_value=(_UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD, 0),
+    ), patch(
+        "resources.lib.stream_proxy._retry_ladder_enabled", return_value=True
+    ), patch.object(
+        handler,
+        "_retry_original_range",
+        # Complete the request so the serve loop exits after one ladder entry.
+        return_value=(_UPSTREAM_RANGE_OK, content_length - 65536, content_length),
+    ) as retry_original:
+        handler._serve_proxy(ctx)
+
+    retry_original.assert_called()
+    # The cursor is at 65536 by now, but the open began at byte 0, so the SHORT
+    # first-byte ladder must be selected.
+    assert retry_original.call_args.kwargs.get("first_byte") is True
+
+
 def test_fallback_cutover_parallelizes_fingerprint_probes_before_first_byte():
     """Fallback switch should not serially probe every fingerprint range."""
     from resources.lib.stream_proxy import (

@@ -4518,11 +4518,20 @@ class _StreamHandler(BaseHTTPRequestHandler):
             zero_fill_budget_enabled = runtime_settings["zero_fill_budget_enabled"]
             retry_ladder_enabled = runtime_settings["retry_ladder_enabled"]
 
+            # Whether any REAL upstream bytes have been delivered in this request
+            # yet. The byte-0 prefetch prefix is served instantly from cache and
+            # advances ``current`` WITHOUT counting as buffered playback, so the
+            # first-byte retry schedule keys on this (not ``current``) to tell a
+            # genuine first content read from a mid-stream rebuffer.
+            streamed_real_upstream_bytes = False
+
             while current <= end:
                 result, written = self._stream_upstream_range(
                     active_ctx, current, end, contract_mode=contract_mode
                 )
                 total_streamed += written
+                if written:
+                    streamed_real_upstream_bytes = True
                 _update_session_recovery_state(self.server, ctx, streamed=written)
                 _record_density_window(density_window, "progress", written)
                 current += written
@@ -4649,16 +4658,23 @@ class _StreamHandler(BaseHTTPRequestHandler):
                         current,
                         end,
                         contract_mode,
-                        # Key on the ABSOLUTE file offset, not total_streamed:
-                        # Kodi forces Connection: close, so every mid-file seek
-                        # is a fresh request with total_streamed=0. Only a
-                        # genuine byte-0 open (where the player's first-read
-                        # patience is short) takes the short schedule; a
-                        # mid-file AWAITING_DOWNLOAD keeps the long
-                        # wait-on-primary ladder.
-                        first_byte=(current == 0),
+                        # The player's first content read takes the SHORT,
+                        # first-read-patient schedule; a mid-stream rebuffer keeps
+                        # the long wait-on-primary ladder (58f3d4f). "First read"
+                        # = a front-of-file open (start == 0) on which no REAL
+                        # upstream bytes have streamed yet. We must NOT key on
+                        # ``current`` alone: a byte-0 open serves its cached ~64KB
+                        # prefetch prefix first, advancing ``current`` to 65536
+                        # before this ladder runs, so ``current == 0`` wrongly
+                        # took the long ladder for the genuine first content read
+                        # (Interstellar 64KB-then-EOF). Nor on ``start`` alone:
+                        # once real bytes have streamed from byte 0, a later stall
+                        # is a mid-stream rebuffer and must keep the long ladder.
+                        first_byte=(start == 0 and not streamed_real_upstream_bytes),
                     )
                     total_streamed += retry_written
+                    if retry_written:
+                        streamed_real_upstream_bytes = True
                     _update_session_recovery_state(
                         self.server, ctx, streamed=retry_written
                     )
