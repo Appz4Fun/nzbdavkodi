@@ -1145,6 +1145,7 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
             fallback_candidates,
             candidate_loader=None,
             prewarm_delay=_FALLBACK_PREWARM_DELAY_SECONDS,
+            wait_for_playback=True,
         )
         return (
             "http://webdav/content/primary/movie.mp4",
@@ -1182,6 +1183,7 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
         fallback_candidates,
         candidate_loader=None,
         prewarm_delay=_FALLBACK_PREWARM_DELAY_SECONDS,
+        wait_for_playback=True,
     )
     mock_start_prepare.assert_called_once_with(
         "http://webdav/content/primary/movie.mp4",
@@ -2560,6 +2562,7 @@ def test_resolve_and_play_defers_fallback_loader_until_primary_accept(
         [],
         candidate_loader=loader_kwarg,
         prewarm_delay=_FALLBACK_PREWARM_DELAY_SECONDS,
+        wait_for_playback=True,
     )
 
 
@@ -3183,6 +3186,43 @@ def test_fallback_submit_worker_defers_prewarm_burst(mock_submit):
         prewarm_delay=30.0,
     )
     # Stop during the deferral window → burst cancelled, nothing submitted.
+    state["stop"].set()
+    assert state["finished"].wait(timeout=2)
+    mock_submit.assert_not_called()
+
+
+@patch("resources.lib.resolver._submit_fallback_candidates")
+def test_fallback_submit_worker_waits_for_playback_start_before_prewarm(mock_submit):
+    """With ``wait_for_playback``, the burst is held until playback is signaled,
+    then for ``prewarm_delay`` -- so backups submit INTO playback, never during
+    the pre-playback download. Nothing is submitted before the signal; after it
+    (with prewarm_delay=0) the worker submits."""
+    from resources.lib.resolver import _signal_fallback_playback_started
+
+    mock_submit.return_value = ("SABnzbd_nzo_fallback", None)
+
+    state = _start_fallback_submit_worker(
+        candidates=[{"title": "Fallback A", "link": "http://hydra/getnzb/a"}],
+        prewarm_delay=0,
+        wait_for_playback=True,
+    )
+    # Playback not signaled yet → worker parked, nothing submitted.
+    assert not state["finished"].wait(timeout=0.3)
+    mock_submit.assert_not_called()
+    # Signal playback start → worker proceeds (prewarm_delay=0) and submits.
+    _signal_fallback_playback_started(state)
+    assert state["finished"].wait(timeout=2)
+    mock_submit.assert_called_once()
+
+
+@patch("resources.lib.resolver._submit_fallback_candidates")
+def test_fallback_submit_worker_playback_wait_is_cancellable(mock_submit):
+    """A stop during the pre-playback wait aborts the burst with no submission."""
+    state = _start_fallback_submit_worker(
+        candidates=[{"title": "Fallback A", "link": "http://hydra/getnzb/a"}],
+        prewarm_delay=0,
+        wait_for_playback=True,
+    )
     state["stop"].set()
     assert state["finished"].wait(timeout=2)
     mock_submit.assert_not_called()
