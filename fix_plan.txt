@@ -1,0 +1,5 @@
+1. Identify the root cause: The CI failed with "E402 Module level import not at top of file" in `repo/plugin.video.nzbdav/resources/lib/stream_proxy.py` starting at line 66.
+2. The cause is that `_CONTENT_RANGE_0_RE = re.compile(...)` was added around line 58, which is *before* the subsequent imports like `from resources.lib import telemetry`. Ruff requires module-level code (like assigning to a variable) to come *after* all imports unless you disable the rule.
+3. Fix: Move the `_DURATION_RE`, `_SEGMENT_NORMALIZE_RE`, and `_CONTENT_RANGE_0_RE` definitions to occur *after* all the imports in `stream_proxy.py`.
+4. Run `just lint` (or `ruff check`) to verify the fix.
+5. Submit the changes.

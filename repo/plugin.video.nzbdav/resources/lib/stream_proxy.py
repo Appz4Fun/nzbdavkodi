@@ -58,16 +58,16 @@ except (ImportError, ModuleNotFoundError):
     build_faststart_layout = None  # type: ignore[assignment]
     fetch_remote_mp4_layout = None  # type: ignore[assignment]
 
-# Optimization: Pre-compile regexes at module level to avoid runtime parsing overhead
-_DURATION_RE = re.compile(r"Duration:\s*(\d+):(\d+):(\d+)(?:\.(\d+))?")
-_SEGMENT_NORMALIZE_RE = re.compile(r"seg_0*(\d+)\.(m4s|ts)")
-_CONTENT_RANGE_0_RE = re.compile(r"^bytes\s+0-0/(\d+)$")
-
 from resources.lib import telemetry
 from resources.lib.dv_source import probe_dolby_vision_source
 from resources.lib.http_util import HTTP_USER_AGENT
 from resources.lib.http_util import notify as _notify
 from resources.lib.http_util import redact_text as _redact_text
+
+# Optimization: Pre-compile regexes at module level to avoid runtime parsing overhead
+_DURATION_RE = re.compile(r"Duration:\s*(\d+):(\d+):(\d+)(?:\.(\d+))?")
+_SEGMENT_NORMALIZE_RE = re.compile(r"seg_0*(\d+)\.(m4s|ts)")
+_CONTENT_RANGE_0_RE = re.compile(r"^bytes\s+0-0/(\d+)$")
 
 # Singleton proxy instance
 _proxy = None
