@@ -1151,6 +1151,79 @@ def _record_upstream_unreachable(server, ctx, error):
         pass
 
 
+# Pass-through terminal reasons that mean the BACKEND could not deliver the
+# stream (a throughput stall, fallback exhaustion, or a zero-fill blowout) — as
+# opposed to a clean finish ("complete") or a healthy user stop. Used to surface
+# a clear "nzbdav can't keep up" notification instead of a silent black screen.
+_STARVATION_TERMINAL_REASONS = (
+    "passthrough_stall",
+    "fallback_exhausted",
+    "session_zero_fill_budget_exceeded",
+)
+
+
+def _maybe_notify_stream_starvation(
+    server, ctx, terminal_reason, total_streamed, requested_bytes
+):
+    """Fire ONE clear notification when a pass-through stream ends because the
+    backend could not keep up, so the user gets an explanation instead of a
+    silent black screen.
+
+    This is the graceful-starvation guard for the live failure mode where
+    nzbdav delivers far below the release's bitrate and/or returns HTTP 5xx for
+    a sustained period: playback exhausts the downloaded head-start, the demuxer
+    EOFs, and Kodi stops with no on-screen reason. No proxy change can stream
+    bytes that were never downloaded, but the user should at least learn WHY.
+
+    Distinct from the early one-shot ``_record_upstream_unreachable`` toast
+    (which warns when an outage STARTS): this explains why playback STOPPED. It
+    fires only for an abnormal end (not ``complete``) that shows evidence of
+    backend trouble — a recorded upstream outage this session, or an explicit
+    stall terminal reason — and never for a clean finish or a healthy user stop
+    of a stream that delivered its full range. Debounced once per session via
+    ``starvation_notified``. Returns whether the notification fired.
+    """
+    if terminal_reason == "complete":
+        return False
+    upstream_trouble = int(ctx.get("upstream_unreachable_count", 0) or 0) > 0
+    if not (upstream_trouble or terminal_reason in _STARVATION_TERMINAL_REASONS):
+        return False
+    # Only when the stream was genuinely starved — it did NOT deliver the full
+    # requested range. A fully-delivered stream the user happened to stop is
+    # not starvation.
+    if requested_bytes > 0 and total_streamed >= requested_bytes:
+        return False
+
+    context_lock = _get_server_context_lock(server)
+
+    def _update():
+        if ctx.get("starvation_notified"):
+            return False
+        ctx["starvation_notified"] = True
+        return True
+
+    if context_lock is None:
+        fire = _update()
+    else:
+        with context_lock:
+            fire = _update()
+    if not fire:
+        return False
+
+    xbmc.log(
+        "NZB-DAV: Stream stalled — backend could not keep up "
+        "(terminal={} streamed={} requested={} reason=stream_starvation)".format(
+            terminal_reason, total_streamed, requested_bytes
+        ),
+        xbmc.LOGWARNING,
+    )
+    try:
+        _notify("NZB-DAV", "nzbdav can't keep up — playback stalled")
+    except (RuntimeError, OSError):
+        pass
+    return True
+
+
 def _read_session_recovery_state(ctx):
     return {
         "streamed": int(ctx.get("session_streamed_bytes", 0) or 0),
@@ -4995,6 +5068,13 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     ctx.get("session_zero_fill_bytes", 0),
                 ),
                 xbmc.LOGINFO if _benign_summary else xbmc.LOGWARNING,
+            )
+            # Graceful-starvation guard: if this stream ended because the
+            # backend could not keep up (a sustained outage or a throughput
+            # stall), tell the user once instead of leaving a silent black
+            # screen. No-op on a clean finish or a healthy user stop.
+            _maybe_notify_stream_starvation(
+                self.server, ctx, terminal_reason, total_streamed, end - start + 1
             )
 
     def _retry_original_range(self, ctx, start, end, contract_mode, first_byte=False):
