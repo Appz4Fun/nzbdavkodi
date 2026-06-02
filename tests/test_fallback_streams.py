@@ -4460,6 +4460,49 @@ def test_fallback_candidates_sorted_best_tier_first(mock_settings, mock_fetch):
     assert primary["_fallback_candidates"] == [best, worse]
 
 
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+@patch("resources.lib.fallback_streams._fallback_settings")
+def test_attach_fallback_candidates_prefers_exact_filename_over_tier(
+    mock_settings, mock_fetch
+):
+    """Through the production attach path, an exact-same-filename repost (a
+    different upload of the byte-identical file) must rank ahead of a closer
+    tier/size peer — the user requirement to try exact filenames first."""
+    mock_settings.return_value = (True, 5)
+    primary = _result(
+        "Dune.Part.Two.2024.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/primary.nzb",
+        60000000000,
+        meta=_movie_meta(resolution="2160p", codec="x265/HEVC", group="GROUP"),
+    )
+    # Tier 0 (size within 3%) but a DIFFERENT filename — listed first to prove
+    # the exact-filename key re-orders ahead of the better tier.
+    closer = _result(
+        "Dune.Part.Two.2024.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/closer.nzb",
+        60100000000,
+        meta=_movie_meta(resolution="2160p", codec="x265/HEVC", group="GROUP"),
+    )
+    # Tier 1 (size beyond 3%, within the 10% peer band) but the EXACT same
+    # filename as the primary.
+    exact = _result(
+        "Dune.Part.Two.2024.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/exact.nzb",
+        62500000000,
+        meta=_movie_meta(resolution="2160p", codec="x265/HEVC", group="GROUP"),
+    )
+    manifests = {
+        "https://idx/primary.nzb": _manifest("video", "dune.mkv", 60000000000, "a"),
+        "https://idx/closer.nzb": _manifest("video", "other.mkv", 60100000000, "c"),
+        "https://idx/exact.nzb": _manifest("video", "dune.mkv", 62500000000, "b"),
+    }
+    mock_fetch.side_effect = lambda url, **_kwargs: manifests[url]
+
+    attach_fallback_candidates([primary, closer, exact])
+
+    assert primary["_fallback_candidates"] == [exact, closer]
+
+
 def test_metadata_profiles_match_fails_closed_on_unknown_resolution_same_group():
     """When same-group backups are required, a candidate whose resolution PTT
     could not parse must be REJECTED — the user requires the backup share the
