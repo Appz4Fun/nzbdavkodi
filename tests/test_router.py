@@ -3023,3 +3023,34 @@ def test_tag_available_fails_open_when_size_unknown(mock_completed):
     r2 = {"title": "Movie.mkv", "size": ""}
     _tag_available([r2])
     assert r2.get("_available") is True
+
+
+@patch("resources.lib.nzbdav_api.find_completed_by_name")
+def test_script_completed_job_for_selection_gates_by_size(mock_find):
+    """The RunScript error/auto-select completed re-fetch must honor the same
+    size gate as _tag_available, so a same-name different-size upload isn't
+    reused (RH-3)."""
+    from resources.lib.router import _script_completed_job_for_selection
+
+    # Same name, MATCHING size -> returned.
+    mock_find.return_value = {
+        "status": "Completed",
+        "name": "Movie.mkv",
+        "nzo_id": "x",
+        "bytes": 60_000_000_000,
+    }
+    assert _script_completed_job_for_selection(
+        {"title": "Movie.mkv", "size": "60500000000"}
+    )
+    # Same name, clearly different size -> dropped (download fresh).
+    assert (
+        _script_completed_job_for_selection(
+            {"title": "Movie.mkv", "size": "10000000000"}
+        )
+        is None
+    )
+    # Unknown size -> fail open (returned).
+    mock_find.return_value = {"status": "Completed", "name": "Movie.mkv", "nzo_id": "x"}
+    assert _script_completed_job_for_selection(
+        {"title": "Movie.mkv", "size": "60000000000"}
+    )

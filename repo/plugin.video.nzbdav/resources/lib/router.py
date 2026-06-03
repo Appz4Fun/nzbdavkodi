@@ -511,14 +511,23 @@ def _snapshot_settings_getter(settings_getter, defaults):
 
 
 def _script_completed_job_for_selection(selected):
-    """Look up completed-history metadata for a RunScript picker selection."""
+    """Look up completed-history metadata for a RunScript picker selection.
+
+    Gated by size the same way ``_tag_available`` is: nzbdav history is keyed by
+    NAME, so a name-only match would reuse the wrong cached stream for a distinct
+    same-filename upload. Only return the completed job when its size matches the
+    selection (fail-open on unknown size).
+    """
     title = selected.get("title", "") if isinstance(selected, dict) else ""
     if not title:
         return None
     try:
         from resources.lib.nzbdav_api import find_completed_by_name
 
-        return find_completed_by_name(title, settings_getter=_get_script_setting)
+        job = find_completed_by_name(title, settings_getter=_get_script_setting)
+        if job and _completed_job_matches_result(selected, job):
+            return job
+        return None
     except Exception as error:  # pylint: disable=broad-except
         xbmc.log(
             "NZB-DAV: Script completed lookup failed for '{}': {}".format(title, error),
