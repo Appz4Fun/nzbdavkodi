@@ -128,7 +128,7 @@ def trim_ranges(ranges, total_sectors):
             eta_s = remaining_sectors / rate if rate > 0 else 0
             eta_m = eta_s / 60
             msg = (
-                f"TRIM progress: {i + 1}/{len(ranges)} ranges, "
+                f"TRIM progress: {i+1}/{len(ranges)} ranges, "
                 f"{pct:.1f}%, {errors} errors, "
                 f"ETA {eta_m:.1f} min"
             )

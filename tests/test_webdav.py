@@ -45,7 +45,8 @@ def test_get_webdav_stream_url_encodes_path_spaces(mock_settings):
     )
 
     assert url == (
-        "http://nzbdav:3000/content/Dune%20Part%20Two/Dune%20Part%20Two%20DD%2B7.1.mkv"
+        "http://nzbdav:3000/content/Dune%20Part%20Two/"
+        "Dune%20Part%20Two%20DD%2B7.1.mkv"
     )
 
 

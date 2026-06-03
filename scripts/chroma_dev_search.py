@@ -64,7 +64,7 @@ AGENT_MCP_INSTALL_HINTS = {
         "uvx chroma-mcp --client-type cloud"
     ),
     "chroma-docs": (
-        "codex mcp add chroma-docs -- npx mcp-remote https://docs.trychroma.com/mcp"
+        "codex mcp add chroma-docs -- " "npx mcp-remote https://docs.trychroma.com/mcp"
     ),
     "package-search": (
         'codex mcp add package-search --env X_CHROMA_TOKEN="$CHROMA_API_KEY" -- '

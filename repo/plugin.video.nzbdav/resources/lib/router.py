@@ -993,9 +993,8 @@ def _handle_direct_play(handle, params):
         length, err = _head_length(url, auth)
         if err or length <= 0:
             xbmc.log(
-                "NZB-DAV: /direct_play skipping unstreamable fallback ({}): {}".format(
-                    err, url[:120]
-                ),
+                "NZB-DAV: /direct_play skipping unstreamable fallback "
+                "({}): {}".format(err, url[:120]),
                 xbmc.LOGWARNING,
             )
             continue
@@ -1781,9 +1780,7 @@ def _xml_root_name(response):
         pass
 
     try:
-        root = ET.fromstring(
-            response, parser=parser
-        )  # nosec B314 - trusted service response
+        root = ET.fromstring(response, parser=parser)  # nosec B314 - trusted service response
     except (TypeError, ET.ParseError):
         return ""
     return root.tag.rsplit("}", 1)[-1].lower()

@@ -1018,7 +1018,8 @@ def _wait_direct_playback_prepare(
     if done:
         if not done.wait(max(0, wait_seconds)):
             xbmc.log(
-                "NZB-DAV: Proxy prepare still running; waiting for local proxy handoff",
+                "NZB-DAV: Proxy prepare still running; "
+                "waiting for local proxy handoff",
                 xbmc.LOGWARNING,
             )
             done.wait()
@@ -2437,17 +2438,15 @@ def _maybe_clear_queue_before_submit(
             )
         except (RuntimeError, OSError, TypeError) as error:
             xbmc.log(
-                "NZB-DAV: clear-queue prompt failed; leaving queue intact: {}".format(
-                    error
-                ),
+                "NZB-DAV: clear-queue prompt failed; leaving queue intact: "
+                "{}".format(error),
                 xbmc.LOGWARNING,
             )
             return
         if not confirmed:
             xbmc.log(
-                "NZB-DAV: user kept the existing queue before submitting '{}'".format(
-                    title
-                ),
+                "NZB-DAV: user kept the existing queue before submitting "
+                "'{}'".format(title),
                 xbmc.LOGINFO,
             )
             return
@@ -2567,9 +2566,8 @@ def _submit_nzb_with_retries(
                 # to nzbdav's HTTP 400). There is no nzbdav job to adopt, and
                 # probing queue/history just leaves the progress dialog stuck.
                 xbmc.log(
-                    "NZB-DAV: Submit failed with HTTP {}, not probing queue: {}".format(
-                        status, submit_error["message"]
-                    ),
+                    "NZB-DAV: Submit failed with HTTP {}, not probing queue: "
+                    "{}".format(status, submit_error["message"]),
                     xbmc.LOGERROR,
                 )
                 _close_dialog_before_submit_error(dialog)
@@ -2627,7 +2625,8 @@ def _submit_nzb_with_retries(
 
     if last_submit_error:
         xbmc.log(
-            "NZB-DAV: All {} submit attempts failed for '{}', last HTTP {}: {}".format(
+            "NZB-DAV: All {} submit attempts failed for '{}', "
+            "last HTTP {}: {}".format(
                 max_submit_retries,
                 title,
                 last_submit_error["status"],

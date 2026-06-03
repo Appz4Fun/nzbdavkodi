@@ -1456,9 +1456,8 @@ def _reap_process_async(proc, label):
             proc.wait(timeout=2)
         except subprocess.TimeoutExpired:
             xbmc.log(
-                "NZB-DAV: {} pid={} did not exit within 2 s; leaking to OS reap".format(
-                    label, getattr(proc, "pid", "?")
-                ),
+                "NZB-DAV: {} pid={} did not exit within 2 s; "
+                "leaking to OS reap".format(label, getattr(proc, "pid", "?")),
                 xbmc.LOGWARNING,
             )
         except OSError:
@@ -1661,11 +1660,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
         )
         try:
             proc = subprocess.Popen(
-                cmd,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                shell=False,
+                cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False  # nosec B603
             )
         except OSError as error:
             xbmc.log("NZB-DAV: Failed to start ffmpeg: {}".format(error), xbmc.LOGERROR)
@@ -5394,7 +5389,8 @@ class HlsProducer:
                         )
                     except OSError as e:
                         xbmc.log(
-                            "NZB-DAV: Failed to cache canonical init.mp4: {}".format(e),
+                            "NZB-DAV: Failed to cache canonical "
+                            "init.mp4: {}".format(e),
                             xbmc.LOGWARNING,
                         )
                 return init_path
@@ -5595,7 +5591,7 @@ class HlsProducer:
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=self._ffmpeg_log,
-                    shell=False,
+                    shell=False,  # nosec B603
                     cwd=self.session_dir,
                 )
             except OSError as e:
@@ -6322,7 +6318,7 @@ class StreamProxy:
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
-                shell=False,
+                shell=False,  # nosec B603
             )
             try:
                 output = proc.communicate(timeout=_FFMPEG_CAPABILITY_PROBE_TIMEOUT)
@@ -7361,7 +7357,7 @@ class StreamProxy:
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                shell=False,
+                shell=False,  # nosec B603
             )
             try:
                 stdout_bytes, _ = proc.communicate(timeout=30)
@@ -7434,7 +7430,7 @@ class StreamProxy:
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
-                shell=False,
+                shell=False,  # nosec B603
             )
         except (OSError, subprocess.SubprocessError, ValueError) as e:
             xbmc.log(
@@ -7555,11 +7551,7 @@ class StreamProxy:
         try:
             xbmc.log("NZB-DAV: Temp-file faststart remux starting", xbmc.LOGINFO)
             proc = subprocess.Popen(
-                cmd,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                shell=False,
+                cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False  # nosec B603
             )
             _, stderr = proc.communicate(timeout=600)  # 10 min timeout
             if proc.returncode != 0:
