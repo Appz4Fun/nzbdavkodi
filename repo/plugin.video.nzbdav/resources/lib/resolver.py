@@ -1160,10 +1160,13 @@ def _resume_seconds_for_stream(stream_url, resume_seconds=0.0):
     )
 
 
-def _set_playback_monitor_properties(home, play_url, stream_url):
+def _set_playback_monitor_properties(home, play_url, stream_url, resume_seconds=0.0):
     """Signal the background service with playable and stable stream identities."""
     home.setProperty("nzbdav.stream_url", play_url)
     home.setProperty("nzbdav.resume_key", stream_url)
+    home.setProperty(
+        "nzbdav.resume_offset", str(_coerce_resume_seconds(resume_seconds))
+    )
     home.setProperty("nzbdav.stream_title", stream_url.rsplit("/", 1)[-1])
     home.setProperty("nzbdav.active", "true")
 
@@ -1199,7 +1202,7 @@ def _finish_direct_playback(handle, prepared, resume_seconds=0.0):
             li = _make_playable_listitem(bust_url, stream_headers)
             _apply_resume_start_offset(li, resume_seconds)
             play_url = _build_play_url(bust_url, stream_headers)
-            _set_playback_monitor_properties(home, play_url, stream_url)
+            _set_playback_monitor_properties(home, play_url, stream_url, resume_seconds)
             xbmcplugin.setResolvedUrl(handle, True, li)
             return
 
@@ -1208,7 +1211,7 @@ def _finish_direct_playback(handle, prepared, resume_seconds=0.0):
         _apply_proxy_mime(li, stream_url, stream_info)
         _apply_resume_start_offset(li, resume_seconds)
 
-        _set_playback_monitor_properties(home, proxy_url, stream_url)
+        _set_playback_monitor_properties(home, proxy_url, stream_url, resume_seconds)
         xbmcplugin.setResolvedUrl(handle, True, li)
         return
 
@@ -1222,7 +1225,7 @@ def _finish_direct_playback(handle, prepared, resume_seconds=0.0):
     li = _make_playable_listitem(bust_url, stream_headers)
     _apply_resume_start_offset(li, resume_seconds)
     home = xbmcgui.Window(10000)
-    _set_playback_monitor_properties(home, play_url, stream_url)
+    _set_playback_monitor_properties(home, play_url, stream_url, resume_seconds)
     xbmcplugin.setResolvedUrl(handle, True, li)
 
 
@@ -1247,7 +1250,7 @@ def _finish_player_playback(prepared, resume_seconds=0.0):
             li = _make_playable_listitem(bust_url, stream_headers)
             _apply_resume_start_offset(li, resume_seconds)
             play_url = _build_play_url(bust_url, stream_headers)
-            _set_playback_monitor_properties(home, play_url, stream_url)
+            _set_playback_monitor_properties(home, play_url, stream_url, resume_seconds)
             xbmc.Player().play(li.getPath(), li)
             return
 
@@ -1255,7 +1258,7 @@ def _finish_player_playback(prepared, resume_seconds=0.0):
         li.setContentLookup(False)
         _apply_proxy_mime(li, stream_url, stream_info)
         _apply_resume_start_offset(li, resume_seconds)
-        _set_playback_monitor_properties(home, proxy_url, stream_url)
+        _set_playback_monitor_properties(home, proxy_url, stream_url, resume_seconds)
         xbmc.Player().play(proxy_url, li)
         _show_cache_prompt_after_playback(stream_info)
         return
@@ -1265,7 +1268,7 @@ def _finish_player_playback(prepared, resume_seconds=0.0):
     _apply_resume_start_offset(li, resume_seconds)
     play_url = _build_play_url(bust_url, stream_headers)
     xbmc.log("NZB-DAV: Playing direct (no proxy): {}".format(stream_url), xbmc.LOGINFO)
-    _set_playback_monitor_properties(home, play_url, stream_url)
+    _set_playback_monitor_properties(home, play_url, stream_url, resume_seconds)
     xbmc.Player().play(li.getPath(), li)
 
 

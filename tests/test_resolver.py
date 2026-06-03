@@ -853,6 +853,9 @@ def test_finish_direct_playback_applies_resume_start_offset(
     )
 
     li.setProperty.assert_called_with("StartOffset", "123.0")
+    mock_gui.Window.return_value.setProperty.assert_any_call(
+        "nzbdav.resume_offset", "123.0"
+    )
     mock_plugin.setResolvedUrl.assert_called_once_with(7, True, li)
 
 
@@ -881,6 +884,9 @@ def test_finish_player_playback_applies_resume_start_offset(
     )
 
     li.setProperty.assert_called_with("StartOffset", "456.0")
+    mock_gui.Window.return_value.setProperty.assert_any_call(
+        "nzbdav.resume_offset", "456.0"
+    )
     player.play.assert_called_once_with("http://127.0.0.1:57800/stream/abc", li)
 
 
@@ -913,6 +919,9 @@ def test_finish_direct_playback_applies_stored_stable_resume_offset(
     li.setProperty.assert_called_with("StartOffset", "1565.8")
     mock_gui.Window.return_value.setProperty.assert_any_call(
         "nzbdav.resume_key", "http://webdav/content/movie/movie.mkv"
+    )
+    mock_gui.Window.return_value.setProperty.assert_any_call(
+        "nzbdav.resume_offset", "1565.8"
     )
     mock_plugin.setResolvedUrl.assert_called_once_with(7, True, li)
 

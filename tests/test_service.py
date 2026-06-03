@@ -23,6 +23,7 @@ def test_check_active_reads_window_properties(mock_window):
         "nzbdav.active": "true",
         "nzbdav.stream_url": "http://127.0.0.1:57800/stream",
         "nzbdav.resume_key": "http://webdav:8080/content/movie/movie.mkv",
+        "nzbdav.resume_offset": "1565.8",
         "nzbdav.stream_title": "movie.mkv",
     }.get(key, "")
 
@@ -32,12 +33,14 @@ def test_check_active_reads_window_properties(mock_window):
     assert player._state == PlaybackState.MONITORING
     assert player._stream_url == "http://127.0.0.1:57800/stream"
     assert player._resume_key == "http://webdav:8080/content/movie/movie.mkv"
+    assert player._last_position == 1565.8
     assert player._title == "movie.mkv"
     cleared_keys = {call.args[0] for call in mock_window.clearProperty.call_args_list}
     assert cleared_keys == {
         "nzbdav.active",
         "nzbdav.stream_url",
         "nzbdav.resume_key",
+        "nzbdav.resume_offset",
         "nzbdav.stream_title",
     }
 
