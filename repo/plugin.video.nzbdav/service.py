@@ -33,6 +33,7 @@ from resources.lib.stream_proxy import StreamProxy  # noqa: E402
 # Window property keys for IPC between plugin and service
 _PROP_STREAM_URL = "nzbdav.stream_url"
 _PROP_RESUME_KEY = "nzbdav.resume_key"
+_PROP_RESUME_OFFSET = "nzbdav.resume_offset"
 _PROP_STREAM_TITLE = "nzbdav.stream_title"
 _PROP_ACTIVE = "nzbdav.active"
 # Persistent live-playback liveness flag (distinct from the consume-once
@@ -51,6 +52,15 @@ _PLAYER_RUNTIME_ERRORS = (
     TypeError,
     ValueError,
 )
+
+
+def _coerce_resume_offset(value):
+    """Return a non-negative resume offset from window-property IPC."""
+    try:
+        return max(0.0, float(value or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
 
 # Bounds for retry settings. Without clamps, a typo of "99999" would
 # wedge the player monitor for ~28 hours between attempts (delay) or
@@ -201,10 +211,12 @@ class NzbdavPlayer(xbmc.Player):
         with self._state_lock:
             self._stream_url = _HOME_WINDOW.getProperty(_PROP_STREAM_URL)
             self._resume_key = _HOME_WINDOW.getProperty(_PROP_RESUME_KEY)
+            self._last_position = _coerce_resume_offset(
+                _HOME_WINDOW.getProperty(_PROP_RESUME_OFFSET)
+            )
             self._title = _HOME_WINDOW.getProperty(_PROP_STREAM_TITLE)
             self._state = PlaybackState.MONITORING
             self._retry_count = 0
-            self._last_position = 0.0
             self._av_started = False
             # ``time.monotonic()`` rather than ``time.time()`` so an NTP
             # step that lands during the 30 s startup grace can't trip a
@@ -222,6 +234,7 @@ class NzbdavPlayer(xbmc.Player):
             _PROP_ACTIVE,
             _PROP_STREAM_URL,
             _PROP_RESUME_KEY,
+            _PROP_RESUME_OFFSET,
             _PROP_STREAM_TITLE,
         ):
             try:
@@ -278,6 +291,7 @@ class NzbdavPlayer(xbmc.Player):
             _PROP_ACTIVE,
             _PROP_STREAM_URL,
             _PROP_RESUME_KEY,
+            _PROP_RESUME_OFFSET,
             _PROP_STREAM_TITLE,
         ):
             try:
@@ -597,6 +611,7 @@ def main():
         _PROP_PLAYING,
         _PROP_STREAM_URL,
         _PROP_RESUME_KEY,
+        _PROP_RESUME_OFFSET,
         _PROP_STREAM_TITLE,
         _PROP_PROXY_TOKEN,
     ):
