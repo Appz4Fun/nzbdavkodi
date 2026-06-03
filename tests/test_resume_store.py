@@ -31,6 +31,33 @@ def test_resume_store_round_trips_position_by_stable_key(tmp_path):
     assert list(payload["items"].values())[0]["updated_at"] == 123.0
 
 
+def test_resume_store_uses_sanitized_stream_identity(tmp_path):
+    """Credentials and transient URL parts are not part of the stored key."""
+    store_path = tmp_path / "resume.json"
+
+    resume_store.save_resume(
+        "http://user:old-pass@webdav:8080/content/movie/Movie.mkv?token=one#frag",
+        900.0,
+        duration=7200.0,
+        path=str(store_path),
+    )
+
+    assert (
+        resume_store.get_resume(
+            "http://user:new-pass@webdav:8080/content/movie/Movie.mkv?token=two",
+            path=str(store_path),
+        )
+        == 900.0
+    )
+    assert (
+        resume_store.get_resume(
+            "http://webdav:8080/content/movie/Other.mkv",
+            path=str(store_path),
+        )
+        == 0.0
+    )
+
+
 def test_resume_store_ignores_tiny_and_near_end_positions(tmp_path):
     store_path = tmp_path / "resume.json"
     key = "http://webdav:8080/content/movie/Movie.mkv"

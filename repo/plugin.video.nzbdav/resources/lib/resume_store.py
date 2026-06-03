@@ -8,6 +8,7 @@ import json
 import os
 import tempfile
 import time
+from urllib.parse import urlsplit, urlunsplit
 
 import xbmc
 import xbmcvfs
@@ -27,10 +28,36 @@ def _store_path(path=None):
         return _STORE_PATH
 
 
-def _resume_id(key):
+def _resume_identity(key):
+    """Return a stable stream identity without credentials or transient parts."""
     if not key:
         return ""
-    return hashlib.sha256(str(key).encode("utf-8")).hexdigest()
+    key = str(key)
+    try:
+        parts = urlsplit(key)
+    except ValueError:
+        return key
+    if not parts.scheme or not parts.netloc:
+        return key
+    hostname = parts.hostname or ""
+    if ":" in hostname and not hostname.startswith("["):
+        netloc = "[{}]".format(hostname)
+    else:
+        netloc = hostname
+    try:
+        port = parts.port
+    except ValueError:
+        port = None
+    if port is not None:
+        netloc = "{}:{}".format(netloc, port)
+    return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
+
+
+def _resume_id(key):
+    identity = _resume_identity(key)
+    if not identity:
+        return ""
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
 def _read(path):
