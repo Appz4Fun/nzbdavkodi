@@ -2929,6 +2929,46 @@ def test_stream_upstream_range_counts_cached_prefix_when_remaining_open_fails():
     assert _collect_written(handler) == cached
 
 
+def test_stream_upstream_range_404_after_written_prefix_is_recoverable():
+    """A verified cached prefix proves the file exists; a 404 on the remaining
+    tail is then nzbdav reporting "not downloaded yet" (past its high-water),
+    NOT a missing path. The prefix advances ``start`` past 0, so the 404 lands
+    on the established-stream branch and is reported as a RECOVERABLE short
+    read carrying the prefix bytes — distinct from the network-error
+    ConnectionRefused path above, which never reaches the 404 branch."""
+    from resources.lib.stream_proxy import (
+        _FALLBACK_CURRENT_RANGE_CACHE_KEY,
+        _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE,
+    )
+
+    cached = b"C" * 4096
+    ctx = {
+        "remote_url": "http://webdav/content/fallback.mkv",
+        "auth_header": "Basic fallback",
+        "content_type": "video/x-matroska",
+        "content_length": 8192,
+        _FALLBACK_CURRENT_RANGE_CACHE_KEY: {
+            (
+                "http://webdav/content/fallback.mkv",
+                "Basic fallback",
+                8192,
+                0,
+                4095,
+            ): cached
+        },
+    }
+    handler = _make_handler_with_server(ctx)
+    # nzbdav 404s the tail (bytes 4096-8191) it has not downloaded yet.
+    err = HTTPError("http://webdav/content/fallback.mkv", 404, "Not Found", {}, None)
+
+    with patch("resources.lib.stream_proxy.urlopen", side_effect=err):
+        result, written = handler._stream_upstream_range(ctx, 0, 8191)
+
+    assert result == _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE
+    assert written == len(cached)
+    assert _collect_written(handler) == cached
+
+
 def test_stream_upstream_range_midstream_404_is_awaiting_not_terminal():
     """A 404 on an ESTABLISHED read (start > 0) means nzbdav has not yet
     downloaded this byte range (it 404s past its download high-water), NOT a
