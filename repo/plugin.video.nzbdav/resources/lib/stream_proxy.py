@@ -1278,7 +1278,7 @@ def _maybe_notify_stream_starvation(
     # Only when the stream was genuinely starved — it did NOT deliver the full
     # requested range. A fully-delivered stream the user happened to stop is
     # not starvation.
-    if requested_bytes > 0 and total_streamed >= requested_bytes:
+    if 0 < requested_bytes <= total_streamed:
         return False
 
     context_lock = _get_server_context_lock(server)
@@ -4955,9 +4955,12 @@ class _StreamHandler(BaseHTTPRequestHandler):
                         forward_stall_t0 = now
                     if now - forward_stall_t0 < stall_wait_budget:
                         xbmc.log(
-                            "NZB-DAV: Established forward stream stalled at byte "
-                            "{} (result={}); holding client open and re-reading "
-                            "(elapsed={:.0f}s/{}s, reason=patient_forward_stall)".format(
+                            (
+                                "NZB-DAV: Established forward stream stalled at "
+                                "byte {} (result={}); holding client open and "
+                                "re-reading (elapsed={:.0f}s/{}s, "
+                                "reason=patient_forward_stall)"
+                            ).format(
                                 current,
                                 result,
                                 now - forward_stall_t0,
@@ -5359,6 +5362,30 @@ class _StreamHandler(BaseHTTPRequestHandler):
         except (OSError, ValueError) as e:
             if _is_terminal_http_client_error(e):
                 code = getattr(e, "code", "?")
+                # A 404 on an ESTABLISHED read (start > 0) is nzbdav reporting
+                # "I have not downloaded this byte range yet" — it 404s for
+                # ranges past its download high-water — NOT a permanent path
+                # error. Treat it as a still-downloading short read so the
+                # retry ladder + patient forward-stall wait + fallback cutover
+                # engage, instead of a hard CLIENT_ERROR abort that kills
+                # playback the instant playback catches the download
+                # high-water (the "Dune died on a 404" incident). A 404 on the
+                # INITIAL open (start == 0 — byte 0 must exist if the path is
+                # valid) is a genuine missing path and stays terminal; 401/403
+                # (auth) are always terminal because waiting cannot fix bad
+                # credentials. A cached/verified prefix already written is real
+                # progress, so report it as a recoverable short read.
+                if code == 404 and start > 0:
+                    xbmc.log(
+                        "NZB-DAV: Upstream 404 at byte {} on an established "
+                        "stream; treating as awaiting-download (nzbdav past "
+                        "its download high-water) "
+                        "(reason=client_error_awaiting_download)".format(start),
+                        xbmc.LOGWARNING,
+                    )
+                    if written:
+                        return _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, written
+                    return _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD, 0
                 xbmc.log(
                     "NZB-DAV: Proxy upstream client error at byte {}: HTTP {} "
                     "(reason=upstream_client_error)".format(start, code),
