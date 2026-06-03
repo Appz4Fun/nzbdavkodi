@@ -15821,3 +15821,33 @@ def test_serve_proxy_forward_stall_gives_up_after_budget_exhausted():
     assert mock_stream.call_count == 2
     assert wait_calls["n"] == 1
     mock_zeros.assert_not_called()  # skip-probe returned None -> recovery_exhausted
+
+
+def test_maybe_notify_stream_starvation_fires_on_forward_stall_exhaustion():
+    """A pure slow-backend give-up — the patient forward-stall wait exhausted
+    with NO 5xx outage recorded (download-lag only) — must still tell the user,
+    not fail silently. CFS-2: ctx['forward_stall_exhausted'] is the signal."""
+    from resources.lib import stream_proxy
+
+    ctx = {"upstream_unreachable_count": 0, "forward_stall_exhausted": True}
+    with patch("resources.lib.stream_proxy._notify") as mock_notify:
+        fired = stream_proxy._maybe_notify_stream_starvation(
+            None, ctx, "recovery_exhausted", 5_000_000, 57740611174
+        )
+    assert fired is True
+    mock_notify.assert_called_once()
+    assert "keep up" in mock_notify.call_args[0][1].lower()
+
+
+def test_maybe_notify_stream_starvation_silent_on_density_breaker():
+    """The density breaker emits its own toast at its terminal branch; the
+    starvation guard must not add a redundant second one (REGRESS-RUNTIME-2)."""
+    from resources.lib import stream_proxy
+
+    ctx = {"upstream_unreachable_count": 3, "upstream_down_notified": True}
+    with patch("resources.lib.stream_proxy._notify") as mock_notify:
+        fired = stream_proxy._maybe_notify_stream_starvation(
+            None, ctx, "density_breaker_tripped", 5_000_000, 57740611174
+        )
+    assert fired is False
+    mock_notify.assert_not_called()
