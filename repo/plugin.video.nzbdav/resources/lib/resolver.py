@@ -393,7 +393,20 @@ def _bookmark_columns(cur):
 
 
 def _captured_bookmark_resume_seconds(cur, id_file, bookmark_columns):
-    if "totalTimeInSeconds" in bookmark_columns:
+    has_type = "type" in bookmark_columns
+    has_total_time = "totalTimeInSeconds" in bookmark_columns
+    if has_type and has_total_time:
+        cur.execute(
+            "SELECT timeInSeconds, totalTimeInSeconds FROM bookmark "
+            "WHERE idFile = ? AND type = 1",
+            (id_file,),
+        )
+    elif has_type:
+        cur.execute(
+            "SELECT timeInSeconds, NULL FROM bookmark WHERE idFile = ? AND type = 1",
+            (id_file,),
+        )
+    elif has_total_time:
         cur.execute(
             "SELECT timeInSeconds, totalTimeInSeconds FROM bookmark WHERE idFile = ?",
             (id_file,),
@@ -553,9 +566,9 @@ def _add_tmdb_helper_target_ids(cur, target_ids, params):
 
 def _numeric_query_param_matches(query, params, name):
     expected = (params or {}).get(name)
-    if expected in ("", None):
-        return True
     values = query.get(name)
+    if expected in ("", None):
+        return not any(value not in ("", None) for value in (values or []))
     if not values:
         return False
     actual = values[-1]
