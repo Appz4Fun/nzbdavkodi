@@ -83,6 +83,7 @@ def _build_xxe_safe_parser():
         pass
     return parser
 
+
 def parse_caps(xml_text):
     try:
         root = ET.fromstring(xml_text, parser=_build_xxe_safe_parser())  # nosec B314

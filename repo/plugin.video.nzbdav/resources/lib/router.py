@@ -1780,7 +1780,9 @@ def _xml_root_name(response):
         pass
 
     try:
-        root = ET.fromstring(response, parser=parser)  # nosec B314 - trusted service response
+        root = ET.fromstring(
+            response, parser=parser
+        )  # nosec B314 - trusted service response
     except (TypeError, ET.ParseError):
         return ""
     return root.tag.rsplit("}", 1)[-1].lower()
