@@ -683,8 +683,9 @@ def _bool_from_snapshot(snapshot, setting_id, default=False):
 
 
 def _int_from_snapshot(snapshot, setting_id, default, lo, hi):
-    """Return a clamped int setting from a snapshot. Side-effect free: any parse
-    failure falls back to ``default`` (never calls Kodi)."""
+    """Return a clamped int setting from a snapshot. Does not read Kodi
+    settings: any parse failure falls back to ``default`` (an out-of-range value
+    is still clamped via ``_clamp_int_setting``, which logs a warning)."""
     raw = snapshot.get(setting_id) if isinstance(snapshot, dict) else None
     try:
         value = int(raw) if raw not in (None, "") else default

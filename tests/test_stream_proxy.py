@@ -15735,3 +15735,89 @@ def test_serve_proxy_pre_bytes_stall_does_not_engage_long_wait():
     assert wait_calls["n"] == 0
     mock_zeros.assert_not_called()
     assert _collect_written(handler) == b""
+
+
+def test_serve_proxy_forward_stall_gives_up_after_budget_exhausted():
+    """A TRULY-stuck established forward stream (no progress, backend never
+    recovers) must EXHAUST the patient-wait budget and then give up via the
+    existing path — it must not wait forever. Drives monotonic past the budget
+    so the gate stops waiting after the first backoff and falls through to the
+    recovery_exhausted close (skip-probe returns None)."""
+    import sys
+
+    from resources.lib.stream_proxy import (
+        _PASSTHROUGH_RUNTIME_SETTINGS_KEY,
+        _STRICT_CONTRACT_MODE_OFF,
+        _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD,
+    )
+
+    start, end = 1000, 99_999  # mid-file, established (start>0)
+    ctx = {
+        "remote_url": "http://webdav/remux.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 100_000,
+        "upstream_down_notified": True,
+        "upstream_unreachable_count": 1,
+        _PASSTHROUGH_RUNTIME_SETTINGS_KEY: {
+            "contract_mode": _STRICT_CONTRACT_MODE_OFF,
+            "density_breaker_enabled": False,
+            "zero_fill_budget_enabled": True,
+            "retry_ladder_enabled": False,
+            "send_200_no_range_enabled": False,
+            "passthrough_stall_wait_seconds": 120,
+        },
+    }
+    handler = _make_handler_with_server(
+        ctx, range_header="bytes={}-{}".format(start, end)
+    )
+
+    def stream_range(active_ctx, s, e, contract_mode=None):
+        del active_ctx, contract_mode
+        if s == start:
+            # Established: stream 40 real bytes, then the region is stuck at the
+            # high-water and never advances.
+            handler.wfile.write(b"A" * 40)
+            return _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD, 40
+        return _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD, 0
+
+    # monotonic jumps 1000s per call, so the second gate pass is far past the
+    # 120s budget regardless of incidental monotonic calls -> budget exhausts.
+    mono = {"t": 0}
+
+    def fake_monotonic():
+        value = mono["t"]
+        mono["t"] += 1000
+        return value
+
+    wait_calls = {"n": 0}
+
+    def _counting_wait(timeout=0.0):
+        del timeout
+        wait_calls["n"] += 1
+        return False  # never abort, never really sleep
+
+    monitor = sys.modules["xbmc"].Monitor.return_value
+    original_wait = monitor.waitForAbort.side_effect
+    monitor.waitForAbort.side_effect = _counting_wait
+    try:
+        with patch.object(
+            handler, "_stream_upstream_range", side_effect=stream_range
+        ) as mock_stream, patch.object(
+            handler, "_select_live_fallback_source", return_value=None
+        ), patch.object(
+            handler, "_find_skip_offset", return_value=None
+        ), patch.object(
+            handler, "_write_zeros"
+        ) as mock_zeros, patch(
+            "resources.lib.stream_proxy.time.monotonic", side_effect=fake_monotonic
+        ):
+            handler._serve_proxy(ctx)
+    finally:
+        monitor.waitForAbort.side_effect = original_wait
+
+    # Terminated (no infinite wait): one stalled read, one backoff, then the
+    # next pass saw the budget exhausted and gave up via the existing path.
+    assert mock_stream.call_count == 2
+    assert wait_calls["n"] == 1
+    mock_zeros.assert_not_called()  # skip-probe returned None -> recovery_exhausted
