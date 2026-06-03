@@ -17,6 +17,7 @@ import xbmcgui
 import xbmcplugin
 import xbmcvfs
 
+from resources.lib.download_ledger import record_download
 from resources.lib.fallback_streams import (
     FALLBACK_CANDIDATES_DISABLED,
     build_fallback_job_name,
@@ -3434,6 +3435,8 @@ def _poll_until_ready(
     settings_getter=None,
     selected_indexer=None,
     rejected_completed_ids=None,
+    download_pubdate=None,
+    download_size=None,
 ):
     """Submit NZB and poll until download completes.
 
@@ -3476,6 +3479,18 @@ def _poll_until_ready(
     )
     if not nzo_id:
         return None, None
+    # A fresh submit just happened (not a cache hit -- _existing_completed_stream
+    # returned above for those). Record the release's Usenet post-date keyed by
+    # title so the picker can later distinguish THIS download from a same-name
+    # repost posted on a different day. Fail-soft: never let bookkeeping break
+    # playback.
+    try:
+        record_download(title, download_pubdate, download_size)
+    except Exception as error:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: download-ledger record failed (non-fatal): {}".format(error),
+            xbmc.LOGDEBUG,
+        )
     if on_primary_submitted is not None:
         try:
             on_primary_submitted(nzo_id)
@@ -3661,6 +3676,8 @@ def resolve(handle, params):
                 completed_job_lookup_done=picker_completed_lookup_done,
                 selected_indexer=selected_indexer,
                 rejected_completed_ids=rejected_completed_ids,
+                download_pubdate=params.get("_download_pubdate"),
+                download_size=params.get("_download_size"),
             )
         if stream_url:
             if fallback_state is None:
@@ -3811,6 +3828,8 @@ def resolve_and_play(nzb_url, title, params=None):
                 settings_getter=settings_getter,
                 selected_indexer=selected_indexer,
                 rejected_completed_ids=rejected_completed_ids,
+                download_pubdate=resolve_params.get("_download_pubdate"),
+                download_size=resolve_params.get("_download_size"),
             )
             _resolve_stage("poll until ready done stream={}".format(bool(stream_url)))
         if stream_url:

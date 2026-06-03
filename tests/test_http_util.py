@@ -3,7 +3,13 @@
 
 from unittest.mock import MagicMock, patch
 
-from resources.lib.http_util import HttpResponseTooLarge, http_get, notify, redact_url
+from resources.lib.http_util import (
+    HttpResponseTooLarge,
+    http_get,
+    notify,
+    pubdate_to_epoch,
+    redact_url,
+)
 
 
 @patch("resources.lib.http_util.urlopen")
@@ -257,3 +263,25 @@ def test_redact_url_preserves_userinfo_without_password():
     result = redact_url(url)
     assert "REDACTED" not in result
     assert "alice@host.example.com" in result
+
+
+def test_pubdate_to_epoch_parses_rfc2822_with_timezone():
+    """An RFC-2822 pubdate with an explicit timezone offset converts to
+    the correct absolute UTC epoch (the offset is normalized away)."""
+    # 2021-12-15 12:00:00 +0000
+    assert pubdate_to_epoch("Wed, 15 Dec 2021 12:00:00 +0000") == 1639569600
+    # Same instant expressed as -0500 must yield the SAME epoch.
+    assert pubdate_to_epoch("Wed, 15 Dec 2021 07:00:00 -0500") == 1639569600
+
+
+def test_pubdate_to_epoch_assumes_utc_when_naive():
+    """A pubdate with no timezone is treated as UTC rather than local
+    time, so the epoch is deterministic across machines."""
+    assert pubdate_to_epoch("Wed, 15 Dec 2021 12:00:00") == 1639569600
+
+
+def test_pubdate_to_epoch_returns_none_on_garbage():
+    """Unparseable / empty input returns None (caller fails open)."""
+    assert pubdate_to_epoch("") is None
+    assert pubdate_to_epoch("not a date") is None
+    assert pubdate_to_epoch(None) is None

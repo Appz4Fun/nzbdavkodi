@@ -5447,6 +5447,83 @@ def test_poll_until_ready_success(
     assert headers == {"Authorization": "x"}
 
 
+@patch("resources.lib.resolver.record_download")
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
+@patch("resources.lib.resolver._validate_stream_url", return_value=True)
+@patch("resources.lib.resolver.get_webdav_stream_url_for_path")
+@patch("resources.lib.resolver.find_video_file")
+@patch("resources.lib.resolver.get_job_history")
+@patch("resources.lib.resolver.get_job_status")
+@patch("resources.lib.resolver.submit_nzb")
+@patch("resources.lib.resolver.xbmc")
+def test_poll_until_ready_records_pubdate_on_submit_success(
+    mock_xbmc,
+    mock_submit,
+    mock_status,
+    mock_history,
+    mock_find,
+    mock_stream_url,
+    mock_validate,
+    mock_find_completed,
+    mock_record,
+):
+    """On a fresh submit, the selected result's pubdate is recorded against
+    the title so the picker can later tell this download apart from a
+    same-name repost posted on a different day."""
+    mock_submit.return_value = ("nzo_abc", None)
+    mock_status.return_value = {"status": "Downloading", "percentage": "100"}
+    mock_history.return_value = {
+        "status": "Completed",
+        "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/movie",
+    }
+    mock_find.return_value = "/content/uncategorized/movie/movie.mkv"
+    mock_stream_url.return_value = ("http://webdav/movie.mkv", {"Authorization": "x"})
+    mock_xbmc.Monitor.return_value = _make_monitor()
+
+    url, _ = _poll_until_ready(
+        "http://hydra/nzb",
+        "movie",
+        _make_dialog(),
+        2,
+        3600,
+        download_pubdate="Wed, 15 Dec 2021 12:00:00 +0000",
+        download_size="1000",
+    )
+
+    assert url == "http://webdav/movie.mkv"
+    mock_record.assert_called_once_with(
+        "movie", "Wed, 15 Dec 2021 12:00:00 +0000", "1000"
+    )
+
+
+@patch("resources.lib.resolver.record_download")
+@patch(
+    "resources.lib.resolver._existing_completed_stream",
+    return_value=("http://webdav/cached.mkv", {"Authorization": "x"}),
+)
+@patch("resources.lib.resolver.submit_nzb")
+@patch("resources.lib.resolver.xbmc")
+def test_poll_until_ready_cache_hit_does_not_record(
+    mock_xbmc, mock_submit, mock_existing, mock_record
+):
+    """A cache hit (already-completed row) returns before any submit, so it
+    must not record a pubdate (nothing was downloaded this time)."""
+    mock_xbmc.Monitor.return_value = _make_monitor()
+
+    url, _ = _poll_until_ready(
+        "http://hydra/nzb",
+        "movie",
+        _make_dialog(),
+        2,
+        3600,
+        download_pubdate="Wed, 15 Dec 2021 12:00:00 +0000",
+    )
+
+    assert url == "http://webdav/cached.mkv"
+    mock_record.assert_not_called()
+    mock_submit.assert_not_called()
+
+
 @patch("resources.lib.resolver._handle_history_result")
 @patch("resources.lib.resolver._poll_once")
 @patch("resources.lib.resolver._submit_nzb_with_retries", return_value="nzo_abc")

@@ -2541,6 +2541,9 @@ def test_handle_search_picker_fetches_fallbacks_after_selection(
         "year": "",
         "tmdb_id": "603",
         "_fallback_candidates": [],
+        # Threaded from the selected result so a fresh submit records the
+        # download's identity for later same-name-repost disambiguation.
+        "_download_size": 8589934592,
     }
 
     mock_fetch_manifest.assert_not_called()
@@ -3023,6 +3026,152 @@ def test_tag_available_fails_open_when_size_unknown(mock_completed):
     r2 = {"title": "Movie.mkv", "size": ""}
     _tag_available([r2])
     assert r2.get("_available") is True
+
+
+_PUBDATE_A = "Wed, 15 Dec 2021 12:00:00 +0000"  # epoch 1639569600
+_PUBDATE_B = "Thu, 16 Dec 2021 12:00:00 +0000"  # epoch 1639656000 (1 day later)
+
+
+def test_attach_selected_result_metadata_threads_pubdate_and_size():
+    """The picker must hand the selected result's pubdate and size to the
+    resolver so a fresh download can be recorded for later disambiguation."""
+    from resources.lib.router import _attach_selected_result_metadata
+
+    params = {}
+    _attach_selected_result_metadata(
+        params,
+        {"indexer": "hydra", "pubdate": _PUBDATE_A, "size": "12345"},
+    )
+    assert params["_selected_indexer"] == "hydra"
+    assert params["_download_pubdate"] == _PUBDATE_A
+    assert params["_download_size"] == "12345"
+
+
+def test_attach_selected_result_metadata_omits_absent_fields():
+    """No pubdate/size on the result -> no spurious keys (resolver fails open)."""
+    from resources.lib.router import _attach_selected_result_metadata
+
+    params = {}
+    _attach_selected_result_metadata(params, {"title": "x"})
+    assert "_download_pubdate" not in params
+    assert "_download_size" not in params
+    assert "_selected_indexer" not in params
+
+
+@patch("resources.lib.router.downloaded_pubdate_epochs")
+@patch("resources.lib.router.get_completed_jobs")
+def test_tag_available_requires_pubdate_match(mock_completed, mock_epochs):
+    """Same name AND same size still isn't enough when we have recorded the
+    pubdate of what we actually downloaded: a same-name repost posted on a
+    different day is a DIFFERENT file and must not be marked DL / reused."""
+    from resources.lib.router import _tag_available
+
+    mock_completed.return_value = {
+        "Movie.mkv": {
+            "status": "Completed",
+            "name": "Movie.mkv",
+            "nzo_id": "x",
+            "bytes": 60_000_000_000,
+        },
+    }
+    # We downloaded the release posted at PUBDATE_A.
+    mock_epochs.return_value = [1639569600]
+
+    same_age = {"title": "Movie.mkv", "size": "60000000000", "pubdate": _PUBDATE_A}
+    diff_age = {"title": "Movie.mkv", "size": "60000000000", "pubdate": _PUBDATE_B}
+    _tag_available([same_age, diff_age])
+
+    assert same_age.get("_available") is True
+    assert "_available" not in diff_age
+    assert "_completed_job" not in diff_age
+
+
+@patch("resources.lib.router.downloaded_pubdate_epochs")
+@patch("resources.lib.router.get_completed_jobs")
+def test_tag_available_pubdate_match_within_tolerance(mock_completed, mock_epochs):
+    """Sub-tolerance jitter (indexer rounding / TZ formatting of the SAME
+    post) must still match, so a real cache hit is never hidden."""
+    from resources.lib import router
+
+    mock_completed.return_value = {
+        "Movie.mkv": {"status": "Completed", "name": "Movie.mkv", "bytes": 1000},
+    }
+    mock_epochs.return_value = [1639569600]
+    jittered = 1639569600 + router._PUBDATE_MATCH_TOLERANCE_SECONDS - 1
+    from resources.lib.http_util import pubdate_to_epoch  # sanity on the bound
+
+    assert pubdate_to_epoch(_PUBDATE_A) == 1639569600
+    from datetime import datetime, timezone
+    from email.utils import format_datetime
+
+    result = {
+        "title": "Movie.mkv",
+        "size": "1000",
+        "pubdate": format_datetime(datetime.fromtimestamp(jittered, tz=timezone.utc)),
+    }
+    router._tag_available([result])
+    assert result.get("_available") is True
+
+
+@patch("resources.lib.router.downloaded_pubdate_epochs")
+@patch("resources.lib.router.get_completed_jobs")
+def test_tag_available_fails_open_when_no_recorded_pubdate(mock_completed, mock_epochs):
+    """No recorded pubdate for this name (e.g. downloaded before this feature,
+    or via an external invocation) -> keep prior name+size behavior."""
+    from resources.lib.router import _tag_available
+
+    mock_completed.return_value = {
+        "Movie.mkv": {"status": "Completed", "name": "Movie.mkv", "bytes": 1000},
+    }
+    mock_epochs.return_value = []
+    result = {"title": "Movie.mkv", "size": "1000", "pubdate": _PUBDATE_B}
+    _tag_available([result])
+    assert result.get("_available") is True
+
+
+@patch("resources.lib.router.downloaded_pubdate_epochs")
+@patch("resources.lib.router.get_completed_jobs")
+def test_tag_available_fails_open_when_result_pubdate_missing(
+    mock_completed, mock_epochs
+):
+    """Recorded pubdates exist but the result advertises none -> we can't
+    compare, so fail open rather than hide a real cache hit."""
+    from resources.lib.router import _tag_available
+
+    mock_completed.return_value = {
+        "Movie.mkv": {"status": "Completed", "name": "Movie.mkv", "bytes": 1000},
+    }
+    mock_epochs.return_value = [1639569600]
+    result = {"title": "Movie.mkv", "size": "1000"}  # no pubdate
+    _tag_available([result])
+    assert result.get("_available") is True
+
+
+@patch("resources.lib.router.downloaded_pubdate_epochs")
+@patch("resources.lib.nzbdav_api.find_completed_by_name")
+def test_script_completed_job_for_selection_gates_by_pubdate(mock_find, mock_epochs):
+    """The RunScript completed re-fetch must honor the pubdate gate too, so a
+    same-name same-size repost posted on a different day isn't reused."""
+    from resources.lib.router import _script_completed_job_for_selection
+
+    mock_find.return_value = {
+        "status": "Completed",
+        "name": "Movie.mkv",
+        "nzo_id": "x",
+        "bytes": 60_000_000_000,
+    }
+    mock_epochs.return_value = [1639569600]
+    # Matching pubdate -> returned.
+    assert _script_completed_job_for_selection(
+        {"title": "Movie.mkv", "size": "60000000000", "pubdate": _PUBDATE_A}
+    )
+    # Different pubdate -> dropped (download fresh).
+    assert (
+        _script_completed_job_for_selection(
+            {"title": "Movie.mkv", "size": "60000000000", "pubdate": _PUBDATE_B}
+        )
+        is None
+    )
 
 
 @patch("resources.lib.nzbdav_api.find_completed_by_name")
