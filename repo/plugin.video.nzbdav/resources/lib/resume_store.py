@@ -1,0 +1,164 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 nzbdav contributors
+
+"""Stable playback resume state for streams hidden behind proxy URLs."""
+
+import hashlib
+import json
+import os
+import tempfile
+import time
+
+import xbmc
+import xbmcvfs
+
+_STORE_PATH = "special://profile/addon_data/plugin.video.nzbdav/resume.json"
+_MIN_RESUME_SECONDS = 5.0
+_NEAR_END_SECONDS = 120.0
+_MAX_ITEMS = 256
+
+
+def _store_path(path=None):
+    if path:
+        return path
+    try:
+        return xbmcvfs.translatePath(_STORE_PATH)
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return _STORE_PATH
+
+
+def _resume_id(key):
+    if not key:
+        return ""
+    return hashlib.sha256(str(key).encode("utf-8")).hexdigest()
+
+
+def _read(path):
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            payload = json.load(fh)
+    except (IOError, OSError, TypeError, ValueError):
+        return {"version": 1, "items": {}}
+    if not isinstance(payload, dict):
+        return {"version": 1, "items": {}}
+    items = payload.get("items")
+    if not isinstance(items, dict):
+        payload["items"] = {}
+    else:
+        payload["items"] = {
+            resume_id: item
+            for resume_id, item in items.items()
+            if isinstance(item, dict)
+        }
+    return payload
+
+
+def _write(path, payload):
+    directory = os.path.dirname(path)
+    if directory:
+        try:
+            os.makedirs(directory, exist_ok=True)
+        except OSError:
+            pass
+    fd = None
+    tmp_path = None
+    try:
+        fd, tmp_path = tempfile.mkstemp(prefix="resume-", suffix=".json", dir=directory)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fd = None
+            json.dump(payload, fh, sort_keys=True, separators=(",", ":"))
+        os.replace(tmp_path, path)
+    except (IOError, OSError, TypeError, ValueError) as error:
+        xbmc.log(
+            "NZB-DAV: Failed to write resume state: {}".format(error),
+            xbmc.LOGWARNING,
+        )
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
+def _coerce_position(position):
+    try:
+        value = float(position)
+    except (TypeError, ValueError):
+        return 0.0
+    if value < _MIN_RESUME_SECONDS:
+        return 0.0
+    return value
+
+
+def _near_end(position, duration):
+    try:
+        duration = float(duration)
+    except (TypeError, ValueError):
+        return False
+    return duration > 0.0 and max(0.0, duration - position) <= _NEAR_END_SECONDS
+
+
+def _trim_items(items):
+    if len(items) <= _MAX_ITEMS:
+        return items
+    ordered = sorted(
+        items.items(),
+        key=lambda item: float(item[1].get("updated_at", 0.0) or 0.0),
+        reverse=True,
+    )
+    return dict(ordered[:_MAX_ITEMS])
+
+
+def get_resume(key, path=None):
+    """Return the saved resume offset for a stable stream key."""
+    resume_id = _resume_id(key)
+    if not resume_id:
+        return 0.0
+    payload = _read(_store_path(path))
+    item = payload.get("items", {}).get(resume_id)
+    if not isinstance(item, dict):
+        return 0.0
+    return _coerce_position(item.get("position", 0.0))
+
+
+def save_resume(key, position, duration=None, path=None, now=None):
+    """Persist a useful resume offset for a stable stream key."""
+    resume_id = _resume_id(key)
+    position = _coerce_position(position)
+    if not resume_id:
+        return
+    if position <= 0.0 or _near_end(position, duration):
+        clear_resume(key, path=path)
+        return
+
+    store_path = _store_path(path)
+    payload = _read(store_path)
+    items = payload.setdefault("items", {})
+    now_fn = now or time.time
+    items[resume_id] = {
+        "position": position,
+        "updated_at": float(now_fn()),
+    }
+    payload["items"] = _trim_items(items)
+    payload["version"] = 1
+    _write(store_path, payload)
+
+
+def clear_resume(key, path=None):
+    """Remove the saved resume offset for a stable stream key."""
+    resume_id = _resume_id(key)
+    if not resume_id:
+        return
+    store_path = _store_path(path)
+    payload = _read(store_path)
+    items = payload.setdefault("items", {})
+    if resume_id not in items:
+        return
+    del items[resume_id]
+    payload["version"] = 1
+    _write(store_path, payload)

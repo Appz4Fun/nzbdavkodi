@@ -19,6 +19,7 @@ import xbmcvfs
 
 from resources.lib.dead_candidates import DeadCandidates, is_provably_dead_submit_error
 from resources.lib.download_ledger import record_download
+from resources.lib import resume_store
 from resources.lib.fallback_streams import (
     FALLBACK_CANDIDATES_DISABLED,
     build_fallback_job_name,
@@ -336,7 +337,7 @@ def _clear_kodi_playback_state(params=None):
 
     db_path = _locate_kodi_video_db()
     if not db_path:
-        return
+        return 0.0
 
     try:
         # ``sqlite3.connect`` as a context manager only commits/rolls-back;
@@ -349,19 +350,32 @@ def _clear_kodi_playback_state(params=None):
                 target_ids = _collect_kodi_playback_target_ids(cur, params)
 
                 if not target_ids:
-                    return
+                    return 0.0
 
                 # Narrowest possible mutation: only clear bookmark rows. The
                 # files/settings/streamdetails rows stay intact — Kodi will
                 # treat the file as "never resumed" on the next play, which is
                 # exactly the state we want.
+                resume_seconds = 0.0
                 for id_file in target_ids:
+                    cur.execute(
+                        "SELECT timeInSeconds FROM bookmark WHERE idFile = ?",
+                        (id_file,),
+                    )
+                    for (time_in_seconds,) in cur.fetchall():
+                        try:
+                            resume_seconds = max(
+                                resume_seconds, float(time_in_seconds or 0.0)
+                            )
+                        except (TypeError, ValueError):
+                            pass
                     cur.execute("DELETE FROM bookmark WHERE idFile = ?", (id_file,))
 
         xbmc.log(
             "NZB-DAV: Cleared bookmark for {} file(s)".format(len(target_ids)),
             xbmc.LOGINFO,
         )
+        return resume_seconds
     except sqlite3.OperationalError as e:
         # "database is locked" / busy timeout. Kodi holds the writer; we
         # skip this cleanup and let the next resolve retry.
@@ -374,16 +388,17 @@ def _clear_kodi_playback_state(params=None):
             "NZB-DAV: SQLite error during bookmark cleanup: {}".format(e),
             xbmc.LOGWARNING,
         )
+    return 0.0
 
 
 def _start_playback_state_cleanup(params=None):
     """Start bookmark cleanup in the background and return its state."""
     done = threading.Event()
-    state = {"done": done, "error": None, "thread": None}
+    state = {"done": done, "error": None, "resume_seconds": 0.0, "thread": None}
 
     def _worker():
         try:
-            _clear_kodi_playback_state(params)
+            state["resume_seconds"] = _clear_kodi_playback_state(params)
         except Exception as error:  # pylint: disable=broad-except
             state["error"] = error
             xbmc.log(
@@ -410,7 +425,7 @@ def _wait_playback_state_cleanup(
 ):
     """Wait briefly for bookmark cleanup without blocking playback handoff."""
     if not state:
-        return True
+        return 0.0
     done = state.get("done")
     if done:
         if not done.wait(max(0, wait_seconds)):
@@ -419,11 +434,18 @@ def _wait_playback_state_cleanup(
                 "continuing playback handoff",
                 xbmc.LOGWARNING,
             )
-            return False
+            return 0.0
     error = state.get("error")
     if error is not None:
         raise error
-    return True
+    return _coerce_resume_seconds(state.get("resume_seconds"))
+
+
+def _coerce_resume_seconds(value):
+    """Return a positive numeric resume offset or zero."""
+    if not isinstance(value, (int, float)):
+        return 0.0
+    return max(0.0, float(value))
 
 
 def _locate_kodi_video_db():
@@ -1052,7 +1074,40 @@ def _show_cache_prompt_after_playback(stream_info):
         )
 
 
-def _finish_direct_playback(handle, prepared):
+def _apply_resume_start_offset(li, resume_seconds):
+    """Apply a consumed Kodi resume offset to a playable ListItem."""
+    resume_seconds = _coerce_resume_seconds(resume_seconds)
+    if resume_seconds <= 0.0:
+        return
+    li.setProperty("StartOffset", str(resume_seconds))
+
+
+def _resume_seconds_for_stream(stream_url, resume_seconds=0.0):
+    """Merge Kodi-captured and addon-owned resume offsets for a source stream."""
+    stable_resume_seconds = 0.0
+    if stream_url:
+        try:
+            stable_resume_seconds = resume_store.get_resume(stream_url)
+        except _RESOLVE_RUNTIME_ERRORS as error:
+            xbmc.log(
+                "NZB-DAV: Failed to read resume state: {}".format(error),
+                xbmc.LOGWARNING,
+            )
+    return max(
+        _coerce_resume_seconds(resume_seconds),
+        _coerce_resume_seconds(stable_resume_seconds),
+    )
+
+
+def _set_playback_monitor_properties(home, play_url, stream_url):
+    """Signal the background service with playable and stable stream identities."""
+    home.setProperty("nzbdav.stream_url", play_url)
+    home.setProperty("nzbdav.resume_key", stream_url)
+    home.setProperty("nzbdav.stream_title", stream_url.rsplit("/", 1)[-1])
+    home.setProperty("nzbdav.active", "true")
+
+
+def _finish_direct_playback(handle, prepared, resume_seconds=0.0):
     """Finish resolver playback on the Kodi thread."""
     _resolve_stage("finish_direct_playback_start")
     stream_url = prepared["stream_url"]
@@ -1061,6 +1116,7 @@ def _finish_direct_playback(handle, prepared):
     _resolve_stage(
         "finish_direct_playback_got_params service_port={}".format(service_port)
     )
+    resume_seconds = _resume_seconds_for_stream(stream_url, resume_seconds)
 
     if service_port:
         proxy_url = prepared["proxy_url"]
@@ -1080,20 +1136,18 @@ def _finish_direct_playback(handle, prepared):
             )
             bust_url = _cache_bust_url(stream_url)
             li = _make_playable_listitem(bust_url, stream_headers)
+            _apply_resume_start_offset(li, resume_seconds)
             play_url = _build_play_url(bust_url, stream_headers)
-            home.setProperty("nzbdav.stream_url", play_url)
-            home.setProperty("nzbdav.stream_title", stream_url.rsplit("/", 1)[-1])
-            home.setProperty("nzbdav.active", "true")
+            _set_playback_monitor_properties(home, play_url, stream_url)
             xbmcplugin.setResolvedUrl(handle, True, li)
             return
 
         li = xbmcgui.ListItem(path=proxy_url)
         li.setContentLookup(False)
         _apply_proxy_mime(li, stream_url, stream_info)
+        _apply_resume_start_offset(li, resume_seconds)
 
-        home.setProperty("nzbdav.stream_url", proxy_url)
-        home.setProperty("nzbdav.stream_title", stream_url.rsplit("/", 1)[-1])
-        home.setProperty("nzbdav.active", "true")
+        _set_playback_monitor_properties(home, proxy_url, stream_url)
         xbmcplugin.setResolvedUrl(handle, True, li)
         return
 
@@ -1105,20 +1159,19 @@ def _finish_direct_playback(handle, prepared):
     )
 
     li = _make_playable_listitem(bust_url, stream_headers)
+    _apply_resume_start_offset(li, resume_seconds)
     home = xbmcgui.Window(10000)
-    home.setProperty("nzbdav.stream_url", play_url)
-    home.setProperty("nzbdav.stream_title", stream_url.rsplit("/", 1)[-1])
-    home.setProperty("nzbdav.active", "true")
+    _set_playback_monitor_properties(home, play_url, stream_url)
     xbmcplugin.setResolvedUrl(handle, True, li)
 
 
-def _finish_player_playback(prepared):
+def _finish_player_playback(prepared, resume_seconds=0.0):
     """Finish service-side playback on the Kodi thread."""
     stream_url = prepared["stream_url"]
     stream_headers = prepared["stream_headers"]
     service_port = prepared.get("service_port")
     home = xbmcgui.Window(10000)
-    title = stream_url.rsplit("/", 1)[-1]
+    resume_seconds = _resume_seconds_for_stream(stream_url, resume_seconds)
 
     if service_port:
         proxy_url = prepared["proxy_url"]
@@ -1131,30 +1184,27 @@ def _finish_player_playback(prepared):
             )
             bust_url = _cache_bust_url(stream_url)
             li = _make_playable_listitem(bust_url, stream_headers)
+            _apply_resume_start_offset(li, resume_seconds)
             play_url = _build_play_url(bust_url, stream_headers)
-            home.setProperty("nzbdav.stream_url", play_url)
-            home.setProperty("nzbdav.stream_title", title)
-            home.setProperty("nzbdav.active", "true")
+            _set_playback_monitor_properties(home, play_url, stream_url)
             xbmc.Player().play(li.getPath(), li)
             return
 
         li = xbmcgui.ListItem(path=proxy_url)
         li.setContentLookup(False)
         _apply_proxy_mime(li, stream_url, stream_info)
-        home.setProperty("nzbdav.stream_url", proxy_url)
-        home.setProperty("nzbdav.stream_title", title)
-        home.setProperty("nzbdav.active", "true")
+        _apply_resume_start_offset(li, resume_seconds)
+        _set_playback_monitor_properties(home, proxy_url, stream_url)
         xbmc.Player().play(proxy_url, li)
         _show_cache_prompt_after_playback(stream_info)
         return
 
     bust_url = _cache_bust_url(stream_url)
     li = _make_playable_listitem(bust_url, stream_headers)
+    _apply_resume_start_offset(li, resume_seconds)
     play_url = _build_play_url(bust_url, stream_headers)
     xbmc.log("NZB-DAV: Playing direct (no proxy): {}".format(stream_url), xbmc.LOGINFO)
-    home.setProperty("nzbdav.stream_url", play_url)
-    home.setProperty("nzbdav.stream_title", title)
-    home.setProperty("nzbdav.active", "true")
+    _set_playback_monitor_properties(home, play_url, stream_url)
     xbmc.Player().play(li.getPath(), li)
 
 
@@ -3817,10 +3867,10 @@ def resolve(handle, params):
                 fallback_sources=fallback_sources,
                 service_config_state=None,
             )
-            _wait_playback_state_cleanup(playback_cleanup_state)
+            resume_seconds = _wait_playback_state_cleanup(playback_cleanup_state)
             prepared = _wait_direct_playback_prepare(playback_prepare_state)
             _arm_live_fallback_push(prepared, fallback_state, stream_url, dead=dead)
-            _finish_direct_playback(handle, prepared)
+            _finish_direct_playback(handle, prepared, resume_seconds=resume_seconds)
             # Playback handed off to Kodi: start the fallback worker's "minutes
             # into playback" countdown now, not from the earlier primary submit.
             _signal_fallback_playback_started(fallback_state)
@@ -3979,7 +4029,7 @@ def resolve_and_play(nzb_url, title, params=None):
                 stream_url, stream_headers, **prepare_kwargs
             )
             _resolve_stage("cleanup wait start")
-            _wait_playback_state_cleanup(playback_cleanup_state)
+            resume_seconds = _wait_playback_state_cleanup(playback_cleanup_state)
             _resolve_stage("cleanup wait done")
             _resolve_stage("finish playback start")
             _resolve_stage("prepare wait start")
@@ -3990,7 +4040,7 @@ def resolve_and_play(nzb_url, title, params=None):
                 )
             )
             _arm_live_fallback_push(prepared, fallback_state, stream_url, dead=dead)
-            _finish_player_playback(prepared)
+            _finish_player_playback(prepared, resume_seconds=resume_seconds)
             # Playback handed off to the player: start the fallback worker's
             # "minutes into playback" countdown now, not from the primary submit.
             _signal_fallback_playback_started(fallback_state)

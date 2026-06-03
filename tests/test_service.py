@@ -22,6 +22,7 @@ def test_check_active_reads_window_properties(mock_window):
     mock_window.getProperty.side_effect = lambda key: {
         "nzbdav.active": "true",
         "nzbdav.stream_url": "http://127.0.0.1:57800/stream",
+        "nzbdav.resume_key": "http://webdav:8080/content/movie/movie.mkv",
         "nzbdav.stream_title": "movie.mkv",
     }.get(key, "")
 
@@ -30,11 +31,13 @@ def test_check_active_reads_window_properties(mock_window):
 
     assert player._state == PlaybackState.MONITORING
     assert player._stream_url == "http://127.0.0.1:57800/stream"
+    assert player._resume_key == "http://webdav:8080/content/movie/movie.mkv"
     assert player._title == "movie.mkv"
     cleared_keys = {call.args[0] for call in mock_window.clearProperty.call_args_list}
     assert cleared_keys == {
         "nzbdav.active",
         "nzbdav.stream_url",
+        "nzbdav.resume_key",
         "nzbdav.stream_title",
     }
 
@@ -84,6 +87,58 @@ def test_on_playback_stopped_tears_down_proxy_session():
     proxy.clear_sessions.assert_called_once()
 
 
+@patch("service.resume_store.save_resume")
+def test_on_playback_stopped_saves_stable_resume_offset(mock_save_resume):
+    """User stop persists the position under the source stream key."""
+    player = NzbdavPlayer()
+    player._state = PlaybackState.MONITORING
+    player._resume_key = "http://webdav:8080/content/movie/movie.mkv"
+    player._last_position = 1565.8
+    player._av_started = True
+    player.getTotalTime = MagicMock(return_value=7200.0)
+
+    player.onPlayBackStopped()
+
+    mock_save_resume.assert_called_once_with(
+        "http://webdav:8080/content/movie/movie.mkv",
+        1565.8,
+        duration=7200.0,
+    )
+
+
+@patch("service.resume_store.save_resume")
+def test_on_playback_stopped_ignores_unstarted_resume_offset(mock_save_resume):
+    """Startup failures and immediate stops must not erase saved resume state."""
+    player = NzbdavPlayer()
+    player._state = PlaybackState.MONITORING
+    player._resume_key = "http://webdav:8080/content/movie/movie.mkv"
+    player._last_position = 0.0
+    player._av_started = False
+
+    player.onPlayBackStopped()
+
+    mock_save_resume.assert_not_called()
+
+
+@patch("service.resume_store.save_resume")
+def test_on_playback_stopped_passes_duration_for_near_end_pruning(mock_save_resume):
+    """The real service stop path must let resume_store prune near-end stops."""
+    player = NzbdavPlayer()
+    player._state = PlaybackState.MONITORING
+    player._resume_key = "http://webdav:8080/content/movie/movie.mkv"
+    player._last_position = 7150.0
+    player._av_started = True
+    player.getTotalTime = MagicMock(return_value=7200.0)
+
+    player.onPlayBackStopped()
+
+    mock_save_resume.assert_called_once_with(
+        "http://webdav:8080/content/movie/movie.mkv",
+        7150.0,
+        duration=7200.0,
+    )
+
+
 def test_on_playback_ended_tears_down_proxy_session():
     """Natural end-of-playback must also release the proxy session."""
     proxy = MagicMock()
@@ -93,6 +148,20 @@ def test_on_playback_ended_tears_down_proxy_session():
     player.onPlayBackEnded()
 
     proxy.clear_sessions.assert_called_once()
+
+
+@patch("service.resume_store.clear_resume")
+def test_on_playback_ended_clears_stable_resume_offset(mock_clear_resume):
+    """Natural completion removes the saved resume offset."""
+    player = NzbdavPlayer()
+    player._state = PlaybackState.MONITORING
+    player._resume_key = "http://webdav:8080/content/movie/movie.mkv"
+
+    player.onPlayBackEnded()
+
+    mock_clear_resume.assert_called_once_with(
+        "http://webdav:8080/content/movie/movie.mkv"
+    )
 
 
 def test_playback_stop_hook_survives_proxy_errors():

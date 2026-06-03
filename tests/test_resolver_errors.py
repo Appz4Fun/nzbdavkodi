@@ -142,7 +142,9 @@ def test_resolve_continues_polling_when_webdav_reachable_and_apis_silent(
         service_config_state=None,
     )
     mock_wait_prepare.assert_called_once_with({"state": "prepare"})
-    mock_finish_playback.assert_called_once_with(1, {"state": "prepared"})
+    mock_finish_playback.assert_called_once_with(
+        1, {"state": "prepared"}, resume_seconds=0.0
+    )
 
 
 @patch("resources.lib.resolver.find_completed_by_name", return_value=None)

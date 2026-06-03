@@ -20,6 +20,8 @@ from resources.lib.resolver import (
     _existing_completed_stream,
     _fallback_submit_jobs_snapshot,
     _get_fallback_submit_delay_seconds,
+    _finish_direct_playback,
+    _finish_player_playback,
     _get_poll_settings,
     _get_submit_timeout_seconds,
     _handle_history_result,
@@ -827,6 +829,94 @@ def test_play_via_proxy_routes_mkv_through_proxy(
     assert player.play.call_args[0][0] == "http://127.0.0.1:57800/stream/abc"
 
 
+@patch("resources.lib.resolver.xbmcplugin")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.resume_store")
+def test_finish_direct_playback_applies_resume_start_offset(
+    mock_resume_store, mock_gui, mock_plugin
+):
+    """Captured Kodi bookmark offsets should be applied to resolver handoff."""
+    li = MagicMock()
+    mock_gui.ListItem.return_value = li
+    mock_resume_store.get_resume.return_value = 0.0
+
+    _finish_direct_playback(
+        7,
+        {
+            "service_port": 57800,
+            "stream_url": "http://webdav/content/movie/movie.mkv",
+            "stream_headers": {},
+            "proxy_url": "http://127.0.0.1:57800/stream/abc",
+            "stream_info": {"remux": False, "faststart": False, "direct": False},
+        },
+        resume_seconds=123.0,
+    )
+
+    li.setProperty.assert_called_with("StartOffset", "123.0")
+    mock_plugin.setResolvedUrl.assert_called_once_with(7, True, li)
+
+
+@patch("resources.lib.resolver.xbmc")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.resume_store")
+def test_finish_player_playback_applies_resume_start_offset(
+    mock_resume_store, mock_gui, mock_xbmc
+):
+    """RunPlugin playback should also apply captured resume offsets."""
+    li = MagicMock()
+    mock_gui.ListItem.return_value = li
+    mock_resume_store.get_resume.return_value = 0.0
+    player = MagicMock()
+    mock_xbmc.Player.return_value = player
+
+    _finish_player_playback(
+        {
+            "service_port": 57800,
+            "stream_url": "http://webdav/content/movie/movie.mkv",
+            "stream_headers": {},
+            "proxy_url": "http://127.0.0.1:57800/stream/abc",
+            "stream_info": {"remux": False, "faststart": False, "direct": False},
+        },
+        resume_seconds=456.0,
+    )
+
+    li.setProperty.assert_called_with("StartOffset", "456.0")
+    player.play.assert_called_once_with("http://127.0.0.1:57800/stream/abc", li)
+
+
+@patch("resources.lib.resolver.xbmcplugin")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.resume_store")
+def test_finish_direct_playback_applies_stored_stable_resume_offset(
+    mock_resume_store, mock_gui, mock_plugin
+):
+    """Disposable proxy URLs should still resume from the stable source key."""
+    li = MagicMock()
+    mock_gui.ListItem.return_value = li
+    mock_resume_store.get_resume.return_value = 1565.8
+
+    _finish_direct_playback(
+        7,
+        {
+            "service_port": 57800,
+            "stream_url": "http://webdav/content/movie/movie.mkv",
+            "stream_headers": {},
+            "proxy_url": "http://127.0.0.1:57800/stream/new-session",
+            "stream_info": {"remux": False, "faststart": False, "direct": False},
+        },
+        resume_seconds=0.0,
+    )
+
+    mock_resume_store.get_resume.assert_called_once_with(
+        "http://webdav/content/movie/movie.mkv"
+    )
+    li.setProperty.assert_called_with("StartOffset", "1565.8")
+    mock_gui.Window.return_value.setProperty.assert_any_call(
+        "nzbdav.resume_key", "http://webdav/content/movie/movie.mkv"
+    )
+    mock_plugin.setResolvedUrl.assert_called_once_with(7, True, li)
+
+
 # --- _clear_kodi_playback_state tests ---
 
 
@@ -912,7 +1002,9 @@ def test_clear_kodi_playback_state_deletes_tmdb_helper_url(mock_xbmc, tmp_path):
     with patch("resources.lib.resolver.xbmcvfs") as mock_vfs:
         mock_vfs.translatePath.return_value = str(tmp_path) + "/"
         with patch.object(sys, "argv", fake_argv):
-            _clear_kodi_playback_state({"tmdb_id": "389", "type": "movie"})
+            resume_seconds = _clear_kodi_playback_state(
+                {"tmdb_id": "389", "type": "movie"}
+            )
 
     conn = sqlite3.connect(str(db))
     cur = conn.cursor()
@@ -936,6 +1028,7 @@ def test_clear_kodi_playback_state_deletes_tmdb_helper_url(mock_xbmc, tmp_path):
     assert 2 not in remaining_bookmarks, "bookmark for tmdb_id=389 (v2) should be gone"
     assert 3 in remaining_bookmarks, "bookmark for tmdb_id=3891 should remain"
     assert 4 in remaining_bookmarks, "bookmark for unrelated URL should remain"
+    assert resume_seconds == 100.0
 
 
 @patch("resources.lib.resolver.xbmc")
@@ -975,7 +1068,7 @@ def test_clear_kodi_playback_state_deletes_own_plugin_url(mock_xbmc, tmp_path):
                 "?type=movie&title=Test&year=2025",
             ],
         ):
-            _clear_kodi_playback_state()
+            resume_seconds = _clear_kodi_playback_state()
 
     conn = sqlite3.connect(str(db))
     cur = conn.cursor()
@@ -993,6 +1086,7 @@ def test_clear_kodi_playback_state_deletes_own_plugin_url(mock_xbmc, tmp_path):
     assert bookmark_count == 0, "bookmark row must be deleted"
     assert settings_count == 1, "settings row must be preserved"
     assert streamdetails_count == 1, "streamdetails row must be preserved"
+    assert resume_seconds == 50.0
 
 
 @patch("resources.lib.resolver.xbmc")
@@ -1201,6 +1295,7 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
     mock_start_fallback.return_value = fallback_state
     mock_start_prepare.return_value = prepare_state
     mock_wait_prepare.return_value = prepared_playback
+    mock_clear_state.return_value = 321.0
     call_order = []
 
     def poll_ready(*args, **kwargs):
@@ -1272,7 +1367,9 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
         service_config_state=None,
     )
     mock_wait_prepare.assert_called_once_with(prepare_state)
-    mock_finish_playback.assert_called_once_with(1, prepared_playback)
+    mock_finish_playback.assert_called_once_with(
+        1, prepared_playback, resume_seconds=321.0
+    )
     mock_stop_fallback.assert_not_called()
 
 
@@ -1350,7 +1447,9 @@ def test_resolve_attaches_fallback_handoff_for_mkv_streams(
         service_config_state=None,
     )
     mock_wait_prepare.assert_called_once_with({"state": "prepare"})
-    mock_finish_playback.assert_called_once_with(1, {"state": "prepared"})
+    mock_finish_playback.assert_called_once_with(
+        1, {"state": "prepared"}, resume_seconds=0.0
+    )
 
 
 @patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
@@ -1404,7 +1503,9 @@ def test_resolve_routes_plain_mkv_through_proxy_without_fallbacks(
         service_config_state=None,
     )
     mock_wait_prepare.assert_called_once_with({"state": "prepare"})
-    mock_finish_playback.assert_called_once_with(1, {"state": "prepared"})
+    mock_finish_playback.assert_called_once_with(
+        1, {"state": "prepared"}, resume_seconds=0.0
+    )
 
 
 @patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
@@ -1875,7 +1976,9 @@ def test_resolve_keeps_service_config_lookup_on_resolver_thread(
         service_config_state=None,
     )
     mock_wait_prepare.assert_called_once_with({"state": "prepare"})
-    mock_finish_playback.assert_called_once_with(1, {"state": "prepared"})
+    mock_finish_playback.assert_called_once_with(
+        1, {"state": "prepared"}, resume_seconds=0.0
+    )
     mock_clear_state.assert_called_once()
 
 
@@ -2025,7 +2128,9 @@ def test_resolve_and_play_does_not_wait_forever_for_stuck_bookmark_cleanup(
     ), "resolve_and_play blocked playback on a stuck bookmark cleanup worker"
     mock_start_prepare.assert_called_once()
     mock_wait_prepare.assert_called_once_with({"state": "prepare"})
-    mock_finish_playback.assert_called_once_with({"state": "prepared"})
+    mock_finish_playback.assert_called_once_with(
+        {"state": "prepared"}, resume_seconds=0.0
+    )
     cleanup_can_finish.set()
 
 
@@ -2043,7 +2148,7 @@ def test_resolve_and_play_routes_plain_mkv_through_proxy_without_fallbacks(
     mock_poll_settings,
     mock_gui,
     mock_xbmc,
-    _mock_clear_state,
+    mock_clear_state,
     mock_poll_until_ready,
     mock_start_fallback,
     mock_start_prepare,
@@ -2055,6 +2160,7 @@ def test_resolve_and_play_routes_plain_mkv_through_proxy_without_fallbacks(
     mock_start_fallback.return_value = {"state": "fallback"}
     mock_start_prepare.return_value = {"state": "prepare"}
     mock_wait_prepare.return_value = {"state": "prepared"}
+    mock_clear_state.return_value = 456.0
     mock_xbmc.Monitor.return_value = _make_monitor()
     mock_gui.DialogProgress.return_value = MagicMock()
     mock_poll_until_ready.return_value = (
@@ -2075,7 +2181,9 @@ def test_resolve_and_play_routes_plain_mkv_through_proxy_without_fallbacks(
         service_config_state=None,
     )
     mock_wait_prepare.assert_called_once_with({"state": "prepare"})
-    mock_finish_playback.assert_called_once_with({"state": "prepared"})
+    mock_finish_playback.assert_called_once_with(
+        {"state": "prepared"}, resume_seconds=456.0
+    )
 
 
 @patch("resources.lib.resolver._fallback_submit_jobs_snapshot")
@@ -2147,7 +2255,9 @@ def test_resolve_and_play_attaches_fallback_handoff_for_mkv_streams(
         service_config_state=None,
     )
     mock_wait_prepare.assert_called_once_with({"state": "prepare"})
-    mock_finish_playback.assert_called_once_with({"state": "prepared"})
+    mock_finish_playback.assert_called_once_with(
+        {"state": "prepared"}, resume_seconds=0.0
+    )
 
 
 @patch("resources.lib.cache_prompt.maybe_show_cache_prompt")

@@ -26,11 +26,13 @@ if lib_path not in sys.path:
 import xbmc  # noqa: E402
 import xbmcaddon  # noqa: E402
 import xbmcgui  # noqa: E402
+from resources.lib import resume_store  # noqa: E402
 from resources.lib.http_util import notify as _notify  # noqa: E402
 from resources.lib.stream_proxy import StreamProxy  # noqa: E402
 
 # Window property keys for IPC between plugin and service
 _PROP_STREAM_URL = "nzbdav.stream_url"
+_PROP_RESUME_KEY = "nzbdav.resume_key"
 _PROP_STREAM_TITLE = "nzbdav.stream_title"
 _PROP_ACTIVE = "nzbdav.active"
 # Persistent live-playback liveness flag (distinct from the consume-once
@@ -129,6 +131,7 @@ class NzbdavPlayer(xbmc.Player):
         self._state_lock = threading.RLock()
         self._state = PlaybackState.IDLE
         self._stream_url = ""
+        self._resume_key = ""
         self._title = ""
         self._last_position = 0.0
         self._retry_count = 0
@@ -197,6 +200,7 @@ class NzbdavPlayer(xbmc.Player):
             return
         with self._state_lock:
             self._stream_url = _HOME_WINDOW.getProperty(_PROP_STREAM_URL)
+            self._resume_key = _HOME_WINDOW.getProperty(_PROP_RESUME_KEY)
             self._title = _HOME_WINDOW.getProperty(_PROP_STREAM_TITLE)
             self._state = PlaybackState.MONITORING
             self._retry_count = 0
@@ -214,7 +218,12 @@ class NzbdavPlayer(xbmc.Player):
         # (network blip, _play_via_proxy crash) doesn't leak the prior
         # session's URL/title into the next monitor cycle. The values we
         # need are now snapshotted onto self.* fields. TODO.md §H.2-L29.
-        for prop in (_PROP_ACTIVE, _PROP_STREAM_URL, _PROP_STREAM_TITLE):
+        for prop in (
+            _PROP_ACTIVE,
+            _PROP_STREAM_URL,
+            _PROP_RESUME_KEY,
+            _PROP_STREAM_TITLE,
+        ):
             try:
                 _HOME_WINDOW.clearProperty(prop)
             except _PLAYER_RUNTIME_ERRORS:
@@ -268,6 +277,7 @@ class NzbdavPlayer(xbmc.Player):
             _PROP_PLAYING,
             _PROP_ACTIVE,
             _PROP_STREAM_URL,
+            _PROP_RESUME_KEY,
             _PROP_STREAM_TITLE,
         ):
             try:
@@ -290,6 +300,34 @@ class NzbdavPlayer(xbmc.Player):
             self._state = PlaybackState.IDLE
         self._clear_stream_properties()
 
+    def _save_stable_resume(self):
+        """Persist the last position under the original source stream identity."""
+        with self._state_lock:
+            resume_key = self._resume_key
+            position = self._last_position
+            av_started = self._av_started
+        if not resume_key or not av_started or position <= 0.0:
+            return
+        duration = None
+        try:
+            duration = self.getTotalTime()
+        except _PLAYER_RUNTIME_ERRORS:
+            pass
+        try:
+            resume_store.save_resume(resume_key, position, duration=duration)
+        except _PLAYER_RUNTIME_ERRORS:
+            pass
+
+    def _clear_stable_resume(self):
+        with self._state_lock:
+            resume_key = self._resume_key
+        if not resume_key:
+            return
+        try:
+            resume_store.clear_resume(resume_key)
+        except _PLAYER_RUNTIME_ERRORS:
+            pass
+
     def onPlayBackStopped(self):
         """Mark stream inactive when user stops playback."""
         with self._state_lock:
@@ -305,6 +343,7 @@ class NzbdavPlayer(xbmc.Player):
             "NZB-DAV: Playback stopped for '{}'".format(title),
             xbmc.LOGINFO,
         )
+        self._save_stable_resume()
         self._cleanup_proxy_session()
         self._clear_stream_properties()
 
@@ -319,6 +358,7 @@ class NzbdavPlayer(xbmc.Player):
             "NZB-DAV: Playback completed for '{}'".format(title),
             xbmc.LOGINFO,
         )
+        self._clear_stable_resume()
         self._cleanup_proxy_session()
         self._clear_stream_properties()
 
@@ -558,6 +598,7 @@ def main():
         _PROP_ACTIVE,
         _PROP_PLAYING,
         _PROP_STREAM_URL,
+        _PROP_RESUME_KEY,
         _PROP_STREAM_TITLE,
         _PROP_PROXY_TOKEN,
     ):
