@@ -145,6 +145,42 @@ sys.path.insert(
 )
 
 
+@pytest.fixture(autouse=True)
+def _reap_readahead_threads():
+    """Stop any read-ahead prefetch daemon a test left running.
+
+    ``prepare_stream()`` spawns a per-session ``nzbdav-readahead`` daemon
+    thread (default on via ``readahead_buffer_mb``). In production
+    ``_cleanup_session`` stops it and ``waitForAbort`` really blocks; in the
+    test harness neither happens, so without this reaper one such daemon
+    leaks per ``prepare_stream`` test and they accumulate across the suite,
+    adding timer/GIL load that flakes timing-sensitive tests (e.g. the
+    byte-0 prefetch 0.08s deadline). After each test, signal abort (so the
+    loop's ``waitForAbort`` returns True and it exits) and join briefly,
+    then restore the monitor defaults. Cheap no-op when none were spawned.
+    """
+    yield
+    import threading
+
+    leftover = [
+        t
+        for t in threading.enumerate()
+        if t.name == "nzbdav-readahead" and t.is_alive()
+    ]
+    if not leftover:
+        return
+    monitor = sys.modules["xbmc"].Monitor.return_value
+    saved_side = monitor.waitForAbort.side_effect
+    saved_ret = monitor.waitForAbort.return_value
+    monitor.waitForAbort.side_effect = lambda timeout=0.0: True
+    try:
+        for thread in leftover:
+            thread.join(timeout=2)
+    finally:
+        monitor.waitForAbort.side_effect = saved_side
+        monitor.waitForAbort.return_value = saved_ret
+
+
 @pytest.fixture
 def resolver_mocks():
     """Patch the dependencies that nearly every resolver test needs.

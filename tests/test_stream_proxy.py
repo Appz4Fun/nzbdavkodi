@@ -1142,6 +1142,7 @@ def test_prepare_stream_uses_settings_snapshot_without_kodi_setting_reads():
         "retry_ladder_enabled": True,
         "send_200_no_range_enabled": False,
         "passthrough_stall_wait_seconds": 120,
+        "readahead_buffer_mb": 256,
     }
     assert "_passthrough_runtime_settings_thread" not in ctx
 

@@ -180,6 +180,25 @@ def test_strings_po_has_added_orphan_ids():
     assert "Maximum standby fallback streams" in content
 
 
+def test_strings_po_has_readahead_buffer_label():
+    """settings.xml references #30207 for readahead_buffer_mb; Kodi renders
+    raw numbers without a matching msgctxt entry."""
+    import os
+
+    po_path = os.path.join(
+        "repo",
+        "plugin.video.nzbdav",
+        "resources",
+        "language",
+        "resource.language.en_gb",
+        "strings.po",
+    )
+    with open(po_path, encoding="utf-8") as fh:
+        content = fh.read()
+    assert '"#30207"' in content, "missing msgctxt #30207 in strings.po"
+    assert "Read-ahead buffer" in content
+
+
 def test_settings_xml_uses_30129_for_prowlarr_api_key():
     """The orphan #30129 ("Prowlarr API Key") msgctxt previously had
     no consumer — settings.xml reused the generic #30003 ("API Key")

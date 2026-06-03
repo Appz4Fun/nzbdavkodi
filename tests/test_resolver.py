@@ -2765,6 +2765,7 @@ def test_resolve_and_play_passes_settings_snapshot_to_proxy_prepare(
         "retry_ladder_enabled": "true",
         "send_200_no_range": "false",
         "proxy_convert_subs": "true",
+        "readahead_buffer_mb": "256",
     }
 
     def settings_getter(key, default=""):
@@ -2793,6 +2794,7 @@ def test_prepare_direct_playback_retry_reuses_settings_snapshot():
         "retry_ladder_enabled": "true",
         "send_200_no_range": "false",
         "proxy_convert_subs": "true",
+        "readahead_buffer_mb": "256",
     }
     settings_getter = MagicMock(
         side_effect=lambda key, default="": values.get(key, default)
@@ -2861,7 +2863,7 @@ def test_start_direct_playback_prepare_snapshots_settings_in_worker(
         release_settings.set()
 
     assert prepared["proxy_url"] == "http://127.0.0.1:57800/stream/abc"
-    assert len(calls) == 9
+    assert len(calls) == 10
 
 
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
