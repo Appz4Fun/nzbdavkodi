@@ -1659,9 +1659,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
             xbmc.LOGINFO,
         )
         try:
-            # codeql[py/command-line-injection] safe wrapper
             proc = subprocess.Popen(
-                cmd,
+                cmd,  # codeql[py/command-line-injection]
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -5591,9 +5590,8 @@ class HlsProducer:
                 # stdin (TODO.md §H.3 Low — "ffmpeg Popen omits
                 # stdin=DEVNULL"). Harmless on Kodi but tidies the
                 # under-a-terminal case.
-                # codeql[py/command-line-injection] validated wrapper
                 self._proc = subprocess.Popen(
-                    cmd,
+                    cmd,  # codeql[py/command-line-injection]
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=self._ffmpeg_log,
@@ -6319,9 +6317,8 @@ class StreamProxy:
             return False
         cmd = [ffmpeg_path, "-hide_banner", "-h", "muxer=hls"]
         try:
-            # codeql[py/command-line-injection] validated wrapper
             proc = subprocess.Popen(
-                cmd,
+                cmd,  # codeql[py/command-line-injection]
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
@@ -7359,9 +7356,8 @@ class StreamProxy:
                     input_url,
                 ]
             )
-            # codeql[py/command-line-injection] safe wrapper
             proc = subprocess.Popen(
-                cmd,
+                cmd,  # codeql[py/command-line-injection]
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -7433,9 +7429,8 @@ class StreamProxy:
         cmd.extend(["-i", input_url, "-f", "null", "-"])
 
         try:
-            # codeql[py/command-line-injection] validated wrapper
             proc = subprocess.Popen(
-                cmd,
+                cmd,  # codeql[py/command-line-injection]
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
@@ -7559,9 +7554,8 @@ class StreamProxy:
         proc = None
         try:
             xbmc.log("NZB-DAV: Temp-file faststart remux starting", xbmc.LOGINFO)
-            # codeql[py/command-line-injection] safe wrapper
             proc = subprocess.Popen(
-                cmd,
+                cmd,  # codeql[py/command-line-injection]
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
