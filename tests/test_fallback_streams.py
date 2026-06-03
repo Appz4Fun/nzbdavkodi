@@ -725,7 +725,7 @@ def test_fallback_matching_rejects_different_matrix_encodes_without_prefilled_me
     mock_settings.return_value = (True, 5)
     primary = {
         "title": (
-            "The.Matrix.1999.2160p.BDRip.TrueHD.7.1.Atmos.DV.HDR10." "x265.10bit-MarkII"
+            "The.Matrix.1999.2160p.BDRip.TrueHD.7.1.Atmos.DV.HDR10.x265.10bit-MarkII"
         ),
         "link": "https://idx/primary.nzb",
         "size": 68000000000,
@@ -762,16 +762,14 @@ def test_too_large_manifest_can_attach_same_profile_metadata_fallback(
     mock_settings.return_value = (True, 5)
     primary = {
         "title": (
-            "The.Matrix.1999.UHD.BluRay.2160p.TrueHD.Atmos.7.1."
-            "DV.HEVC.REMUX-FraMeSToR"
+            "The.Matrix.1999.UHD.BluRay.2160p.TrueHD.Atmos.7.1.DV.HEVC.REMUX-FraMeSToR"
         ),
         "link": "https://idx/primary.nzb",
         "size": 61554618879,
     }
     repost = {
         "title": (
-            "The.Matrix.1999.UHD.BluRay.2160p.TrueHD.Atmos.7.1."
-            "DV.HEVC.REMUX.FraMeSToR"
+            "The.Matrix.1999.UHD.BluRay.2160p.TrueHD.Atmos.7.1.DV.HEVC.REMUX.FraMeSToR"
         ),
         "link": "https://idx/repost.nzb",
         "size": 61538207424,
@@ -878,8 +876,7 @@ def test_metadata_only_fallback_rejects_proper_repack_and_edition_mismatches(
     mock_settings.return_value = (True, 5)
     primary = {
         "title": (
-            "Movie.2024.PROPER.REPACK.Extended.Cut.2160p.UHD.BluRay."
-            "REMUX.DV.HEVC-GROUP"
+            "Movie.2024.PROPER.REPACK.Extended.Cut.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP"
         ),
         "link": "https://idx/primary.nzb",
         "size": 60000000000,

@@ -25,7 +25,14 @@ def _parse_local_xml_root(path):
     upper_xml = xml_bytes.upper()
     if b"<!DOCTYPE" in upper_xml or b"<!ENTITY" in upper_xml:
         raise ET.ParseError("DTD/entity declarations are not supported")
-    return ET.fromstring(xml_bytes)
+
+    parser = ET.XMLParser()
+    try:
+        parser.parser.ExternalEntityRefHandler = lambda *_: False
+    except AttributeError:
+        pass
+
+    return ET.fromstring(xml_bytes, parser=parser)
 
 
 def has_cache_memorysize_zero():

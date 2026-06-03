@@ -289,7 +289,7 @@ def test_hls_producer_real_ffmpeg_init_mp4_is_valid_iso_bmff(hls_producer):
     # ISO BMFF: bytes 4-8 should be 'ftyp'
     assert (
         data[4:8] == b"ftyp"
-    ), "init.mp4 does not start with ftyp box: " "got {!r}".format(data[:16])
+    ), "init.mp4 does not start with ftyp box: got {!r}".format(data[:16])
     # The moov box should appear somewhere in the init
     assert b"moov" in data, "init.mp4 has no moov box"
     # The sample description box (codec config carrier)

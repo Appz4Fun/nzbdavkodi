@@ -99,9 +99,9 @@ def test_semantic_block_packing_overlaps_contiguous_chunks():
     functions = []
     for index in range(8):
         functions.append(
-            "def func_{0}():\n"
-            "    label = 'function {0}'\n"
-            "    return label\n".format(index)
+            "def func_{0}():\n    label = 'function {0}'\n    return label\n".format(
+                index
+            )
         )
     source = "\n".join(functions)
 

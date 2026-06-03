@@ -669,8 +669,7 @@ def main():
         proxy.stop()
     except Exception as e:  # pylint: disable=broad-except
         xbmc.log(
-            "NZB-DAV: proxy.stop() raised during shutdown "
-            "(continuing): {!r}".format(e),
+            "NZB-DAV: proxy.stop() raised during shutdown (continuing): {!r}".format(e),
             xbmc.LOGWARNING,
         )
     _HOME_WINDOW.clearProperty(_PROP_PROXY_PORT)

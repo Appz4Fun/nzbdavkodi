@@ -70,7 +70,7 @@ def test_all_preset_urls_use_https_scheme():
     bad = [p for p in presets if not p["api_url"].lower().startswith("https://")]
     assert (
         bad == []
-    ), "Non-https preset URLs leak apikey over the wire on caps fetch: " "{}".format(
+    ), "Non-https preset URLs leak apikey over the wire on caps fetch: {}".format(
         [(p["id"], p["api_url"]) for p in bad]
     )
 

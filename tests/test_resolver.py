@@ -1544,8 +1544,8 @@ def test_resolve_skips_completed_lookup_after_picker_snapshot_miss(
 
     submit_started = []
     mock_find_completed.side_effect = slow_completed_lookup
-    mock_submit.side_effect = (
-        lambda *_args, **_kwargs: submit_started.append(_time.perf_counter()) or None
+    mock_submit.side_effect = lambda *_args, **_kwargs: (
+        submit_started.append(_time.perf_counter()) or None
     )
     mock_xbmc.Monitor.return_value = _make_monitor()
     mock_gui.DialogProgress.return_value = MagicMock()
@@ -3944,7 +3944,7 @@ def test_submit_ui_pump_starts_queue_probe_within_short_grace_window(
     dialog = MagicMock()
     dialog.iscanceled.return_value = False
     monitor = MagicMock()
-    monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
+    monitor.waitForAbort.side_effect = lambda seconds: _time.sleep(seconds) or False
 
     started = _time.monotonic()
     nzo_id, submit_error = _submit_nzb_with_ui_pump(
@@ -3983,7 +3983,7 @@ def test_submit_ui_pump_adopts_existing_queue_without_initial_probe_delay(
     dialog = MagicMock()
     dialog.iscanceled.return_value = False
     monitor = MagicMock()
-    monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
+    monitor.waitForAbort.side_effect = lambda seconds: _time.sleep(seconds) or False
 
     started = _time.perf_counter()
     try:
@@ -4028,7 +4028,7 @@ def test_submit_ui_pump_rechecks_queue_quickly_after_initial_fast_miss(
     dialog = MagicMock()
     dialog.iscanceled.return_value = False
     monitor = MagicMock()
-    monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
+    monitor.waitForAbort.side_effect = lambda seconds: _time.sleep(seconds) or False
 
     started = _time.perf_counter()
     try:
@@ -4076,7 +4076,7 @@ def test_submit_ui_pump_starts_history_probe_after_fast_queue_miss(
     dialog = MagicMock()
     dialog.iscanceled.return_value = False
     monitor = MagicMock()
-    monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
+    monitor.waitForAbort.side_effect = lambda seconds: _time.sleep(seconds) or False
 
     started = _time.perf_counter()
     try:
@@ -4129,7 +4129,7 @@ def test_submit_ui_pump_rechecks_completed_history_quickly_after_initial_miss(
     dialog = MagicMock()
     dialog.iscanceled.return_value = False
     monitor = MagicMock()
-    monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
+    monitor.waitForAbort.side_effect = lambda seconds: _time.sleep(seconds) or False
 
     started = _time.perf_counter()
     try:
@@ -4254,7 +4254,7 @@ def test_submit_ui_pump_rechecks_queue_while_history_miss_is_slow(
     dialog = MagicMock()
     dialog.iscanceled.return_value = False
     monitor = MagicMock()
-    monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
+    monitor.waitForAbort.side_effect = lambda seconds: _time.sleep(seconds) or False
 
     started = _time.perf_counter()
     try:
@@ -4290,7 +4290,7 @@ def test_submit_ui_pump_wakes_when_submit_finishes_before_adoption_tick(
     dialog = MagicMock()
     dialog.iscanceled.return_value = False
     monitor = MagicMock()
-    monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
+    monitor.waitForAbort.side_effect = lambda seconds: _time.sleep(seconds) or False
 
     started = _time.perf_counter()
     nzo_id, submit_error = _submit_nzb_with_ui_pump(
@@ -4333,7 +4333,7 @@ def test_submit_ui_pump_fast_submit_skips_slow_probe_cleanup_wait(
     dialog = MagicMock()
     dialog.iscanceled.return_value = False
     monitor = MagicMock()
-    monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
+    monitor.waitForAbort.side_effect = lambda seconds: _time.sleep(seconds) or False
 
     started = _time.perf_counter()
     try:
@@ -4467,7 +4467,7 @@ def test_submit_ui_pump_retries_queue_probe_quickly_after_initial_miss(
     dialog = MagicMock()
     dialog.iscanceled.return_value = False
     monitor = MagicMock()
-    monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
+    monitor.waitForAbort.side_effect = lambda seconds: _time.sleep(seconds) or False
 
     started = _time.monotonic()
     nzo_id, submit_error = _submit_nzb_with_ui_pump(
@@ -4511,7 +4511,7 @@ def test_submit_ui_pump_keeps_late_queue_probe_cadence_subsecond(
     dialog = MagicMock()
     dialog.iscanceled.return_value = False
     monitor = MagicMock()
-    monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
+    monitor.waitForAbort.side_effect = lambda seconds: _time.sleep(seconds) or False
 
     started = _time.perf_counter()
     try:
@@ -5424,7 +5424,7 @@ def test_poll_until_ready_graces_nearly_complete_queue_for_history(
         return completed_history
 
     monitor = MagicMock()
-    monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
+    monitor.waitForAbort.side_effect = lambda seconds: _time.sleep(seconds) or False
     mock_xbmc.Monitor.return_value = monitor
     mock_status.side_effect = get_status
     mock_history.side_effect = get_history
@@ -5476,7 +5476,7 @@ def test_poll_until_ready_waits_for_full_progress_history_before_poll_tick(
         return completed_history
 
     monitor = MagicMock()
-    monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
+    monitor.waitForAbort.side_effect = lambda seconds: _time.sleep(seconds) or False
     mock_xbmc.Monitor.return_value = monitor
     mock_history.side_effect = get_history
     mock_find.return_value = "/content/uncategorized/movie/movie.mkv"
@@ -5528,7 +5528,7 @@ def test_poll_until_ready_repolls_full_progress_history_miss_before_full_tick(
         return completed_history
 
     monitor = MagicMock()
-    monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
+    monitor.waitForAbort.side_effect = lambda seconds: _time.sleep(seconds) or False
     mock_xbmc.Monitor.return_value = monitor
     mock_history.side_effect = get_history
     mock_find.return_value = "/content/uncategorized/movie/movie.mkv"
@@ -5776,7 +5776,7 @@ def test_poll_until_ready_rechecks_completed_webdav_before_full_poll_interval(
 ):
     """A just-completed job should not wait a full poll tick for WebDAV visibility."""
     monitor = MagicMock()
-    monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
+    monitor.waitForAbort.side_effect = lambda seconds: _time.sleep(seconds) or False
     mock_xbmc.Monitor.return_value = monitor
     mock_find_video.side_effect = [
         None,
@@ -5822,7 +5822,7 @@ def test_poll_until_ready_rechecks_completed_webdav_quickly_after_first_miss(
 ):
     """A first WebDAV miss should not add a fixed 100 ms to video start."""
     monitor = MagicMock()
-    monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
+    monitor.waitForAbort.side_effect = lambda seconds: _time.sleep(seconds) or False
     mock_xbmc.Monitor.return_value = monitor
     mock_find_video.side_effect = [
         None,

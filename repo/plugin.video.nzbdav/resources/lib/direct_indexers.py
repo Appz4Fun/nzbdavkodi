@@ -211,7 +211,12 @@ def build_search_url(api_url, params):
 
 
 def _build_xxe_safe_parser():
-    return ET.XMLParser()  # nosec B314 - Python 3.8+ disables external entities
+    parser = ET.XMLParser()
+    try:
+        parser.parser.ExternalEntityRefHandler = lambda *_: False
+    except AttributeError:
+        pass
+    return parser
 
 
 def _parse_newznab_attrs(item):

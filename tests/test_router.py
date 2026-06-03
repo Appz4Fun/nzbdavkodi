@@ -1806,8 +1806,8 @@ def test_handle_play_empty_completed_snapshot_skips_post_picker_history_lookup(
 
     submit_started = []
     mock_find_completed.side_effect = slow_completed_lookup
-    mock_submit.side_effect = (
-        lambda *_args, **_kwargs: submit_started.append(_time.perf_counter()) or None
+    mock_submit.side_effect = lambda *_args, **_kwargs: (
+        submit_started.append(_time.perf_counter()) or None
     )
 
     started = _time.perf_counter()

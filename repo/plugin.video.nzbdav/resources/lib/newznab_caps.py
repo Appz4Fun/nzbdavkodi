@@ -75,9 +75,18 @@ def _params(value):
     return [item.strip() for item in str(value or "").split(",") if item.strip()]
 
 
+def _build_xxe_safe_parser():
+    parser = ET.XMLParser()
+    try:
+        parser.parser.ExternalEntityRefHandler = lambda *_: False
+    except AttributeError:
+        pass
+    return parser
+
+
 def parse_caps(xml_text):
     try:
-        root = ET.fromstring(xml_text)  # nosec B314 - Python 3.8+ disables entities
+        root = ET.fromstring(xml_text, parser=_build_xxe_safe_parser())  # nosec B314
     except (ET.ParseError, TypeError):
         return _empty_caps()
 
