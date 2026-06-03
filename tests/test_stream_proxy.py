@@ -2929,6 +2929,80 @@ def test_stream_upstream_range_counts_cached_prefix_when_remaining_open_fails():
     assert _collect_written(handler) == cached
 
 
+def test_stream_upstream_range_midstream_404_is_awaiting_not_terminal():
+    """A 404 on an ESTABLISHED read (start > 0) means nzbdav has not yet
+    downloaded this byte range (it 404s past its download high-water), NOT a
+    permanent path error. It must be reported as AWAITING_DOWNLOAD so the
+    retry ladder + patient wait + fallback cutover engage, instead of a hard
+    CLIENT_ERROR abort that kills playback the instant playback catches the
+    download high-water (the "Dune died on a 404" incident)."""
+    from resources.lib.stream_proxy import (
+        _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD,
+    )
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 68867978518,
+    }
+    handler = _make_handler_with_server(ctx)
+    # nzbdav 404s the range past its download high-water mid-file.
+    err = HTTPError("http://host/movie.mkv", 404, "Not Found", {}, None)
+
+    with patch("resources.lib.stream_proxy.urlopen", side_effect=err):
+        result, written = handler._stream_upstream_range(ctx, 321791899, 321800090)
+
+    assert result == _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD
+    assert written == 0
+    handler.wfile.write.assert_not_called()
+
+
+def test_stream_upstream_range_byte_zero_404_stays_terminal():
+    """A 404 on the INITIAL open (start == 0) is a genuine missing path —
+    byte 0 must exist if the path is valid — so it stays a terminal
+    CLIENT_ERROR and must NOT wait the full patient-wait budget."""
+    from resources.lib.stream_proxy import _UPSTREAM_RANGE_CLIENT_ERROR
+
+    ctx = {
+        "remote_url": "http://host/gone.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 2048,
+    }
+    handler = _make_handler_with_server(ctx)
+    err = HTTPError("http://host/gone.mkv", 404, "Not Found", {}, None)
+
+    with patch("resources.lib.stream_proxy.urlopen", side_effect=err):
+        result, written = handler._stream_upstream_range(ctx, 0, 2047)
+
+    assert result == _UPSTREAM_RANGE_CLIENT_ERROR
+    assert written == 0
+
+
+def test_stream_upstream_range_midstream_401_stays_terminal():
+    """Auth failures (401/403) are always terminal even mid-stream — waiting
+    cannot fix bad credentials, and they must not be disguised as a
+    still-downloading range."""
+    from resources.lib.stream_proxy import _UPSTREAM_RANGE_CLIENT_ERROR
+
+    ctx = {
+        "remote_url": "http://host/movie.mkv",
+        "auth_header": "Basic expired",
+        "content_type": "video/x-matroska",
+        "content_length": 4096,
+    }
+    handler = _make_handler_with_server(ctx)
+    err = HTTPError("http://host/movie.mkv", 401, "Unauthorized", {}, None)
+
+    with patch("resources.lib.stream_proxy.urlopen", side_effect=err), patch(
+        "resources.lib.stream_proxy._notify"
+    ):
+        result, written = handler._stream_upstream_range(ctx, 1024, 2047)
+
+    assert result == _UPSTREAM_RANGE_CLIENT_ERROR
+
+
 def test_prepare_stream_falls_back_to_proxy_without_ffmpeg():
     from resources.lib.stream_proxy import StreamProxy
 
@@ -15470,8 +15544,6 @@ def test_maybe_notify_stream_starvation_fires_on_recent_outage_disconnect():
     outage (nzbdav blipped back ~9s before Kodi gave up), only ~140MB of a 57GB
     file delivered. Must fire ONE clear 'can't keep up' toast, not a silent
     black screen."""
-    import time
-
     from resources.lib import stream_proxy
 
     ctx = {
@@ -15503,8 +15575,6 @@ def test_maybe_notify_stream_starvation_silent_on_long_recovered_outage():
     """FP-1/FP-2: a stream that had an EARLY transient outage, recovered, played,
     then was stopped (healthy client_disconnected) must NOT fire — the sticky
     upstream_unreachable_count is gated on recency."""
-    import time
-
     from resources.lib import stream_proxy
 
     ctx = {
