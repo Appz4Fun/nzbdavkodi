@@ -699,6 +699,7 @@ def test_get_completed_jobs_returns_completed_job_map(mock_http, mock_settings):
                             "/mnt/nzbdav/completed-symlinks/uncategorized/Movie.A.2024"
                         ),
                         "nzo_id": "SABnzbd_nzo_a",
+                        "bytes": 12345678901,
                     },
                     {"name": "Movie.B.2023", "status": "Failed"},
                 ]
@@ -719,6 +720,7 @@ def test_get_completed_jobs_returns_completed_job_map(mock_http, mock_settings):
             "storage": ("/mnt/nzbdav/completed-symlinks/uncategorized/Movie.A.2024"),
             "name": "Movie.A.2024",
             "nzo_id": "SABnzbd_nzo_a",
+            "bytes": 12345678901,
             "fail_message": "",
             "completed": None,
         }

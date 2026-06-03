@@ -2970,3 +2970,56 @@ def test_direct_play_decodes_percent_escaped_userinfo_for_basic_auth(
     assert request.full_url == "http://example.test/movie.mkv"
     assert request.headers["Authorization"] == "Basic dXNlckBuYW1lOnBAc3M6d29yZA=="
     mock_xbmcplugin.setResolvedUrl.assert_called_once()
+
+
+@patch("resources.lib.router.get_completed_jobs")
+def test_tag_available_requires_size_match(mock_completed):
+    """nzbdav history is name-keyed, so a name match alone collapses distinct
+    uploads sharing a filename. The DL/cache tag must also require a SIZE match,
+    so a different-size same-name release is NOT marked available / reused."""
+    from resources.lib.router import _tag_available
+
+    mock_completed.return_value = {
+        "Movie.mkv": {
+            "status": "Completed",
+            "name": "Movie.mkv",
+            "nzo_id": "x",
+            "bytes": 60_000_000_000,
+        },
+    }
+    same = {"title": "Movie.mkv", "size": "60500000000"}  # ~same size -> match
+    diff = {"title": "Movie.mkv", "size": "10000000000"}  # clearly different
+    _tag_available([same, diff])
+
+    assert same.get("_available") is True
+    assert same.get("_completed_job")
+    assert "_available" not in diff
+    assert "_completed_job" not in diff
+
+
+@patch("resources.lib.router.get_completed_jobs")
+def test_tag_available_fails_open_when_size_unknown(mock_completed):
+    """When size can't be compared (job has no bytes, or result has no size),
+    keep the prior name-only behavior rather than hide a real cache hit."""
+    from resources.lib.router import _tag_available
+
+    # completed job has no bytes -> cannot disambiguate -> fail open
+    mock_completed.return_value = {
+        "Movie.mkv": {"status": "Completed", "name": "Movie.mkv", "nzo_id": "x"},
+    }
+    r1 = {"title": "Movie.mkv", "size": "60000000000"}
+    _tag_available([r1])
+    assert r1.get("_available") is True
+
+    # result has no size -> fail open
+    mock_completed.return_value = {
+        "Movie.mkv": {
+            "status": "Completed",
+            "name": "Movie.mkv",
+            "nzo_id": "x",
+            "bytes": 60_000_000_000,
+        },
+    }
+    r2 = {"title": "Movie.mkv", "size": ""}
+    _tag_available([r2])
+    assert r2.get("_available") is True

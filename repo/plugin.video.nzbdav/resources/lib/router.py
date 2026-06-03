@@ -781,14 +781,69 @@ def _search_all_providers(
     return deduped, None
 
 
+# How close an indexer result's advertised size must be to a completed nzbdav
+# download's ``bytes`` for them to be treated as the SAME upload. nzbdav history
+# is keyed by NAME only, so a name match alone collapses distinct uploads that
+# merely share a filename (a different release/resolution, or a repost at a
+# different retention). The tolerance is generous enough to absorb the gap
+# between an indexer's advertised NZB size and the actually-downloaded bytes
+# (yEnc/par2/rar overhead) so a genuine cache hit is never hidden, while still
+# separating clearly-different files (e.g. a 1080p vs a 2160p sharing a generic
+# filename). True per-upload identity is the article list, but that is not
+# available at picker time without fetching every NZB.
+_COMPLETED_SIZE_MATCH_TOLERANCE = 0.15
+
+
+def _result_size_bytes(result):
+    """Best-effort parse of an indexer result's advertised size in bytes."""
+    value = result.get("size") if isinstance(result, dict) else None
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, (int, float)):
+        return int(value) if value > 0 else 0
+    if isinstance(value, str):
+        value = value.strip().replace(",", "")
+        if not value:
+            return 0
+        try:
+            return max(0, int(float(value)))
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
+
+def _completed_job_matches_result(result, completed_job):
+    """Return whether a name-matched completed job plausibly IS this result's
+    upload, disambiguating same-filename collisions by size.
+
+    Fails OPEN when either size is unknown (keep the prior name-only behavior
+    rather than hide a real cache hit). A clearly-different size means a
+    different file — do not mark it ``DL`` or reuse its cached stream.
+    """
+    result_size = _result_size_bytes(result)
+    try:
+        job_bytes = int(completed_job.get("bytes") or 0)
+    except (TypeError, ValueError):
+        job_bytes = 0
+    if result_size <= 0 or job_bytes <= 0:
+        return True
+    return (
+        abs(result_size - job_bytes)
+        <= max(result_size, job_bytes) * _COMPLETED_SIZE_MATCH_TOLERANCE
+    )
+
+
 def _tag_available(results, settings_getter=None):
     """
     Mark result entries that already exist in nzbdav by setting the `_available` flag.
 
     Parameters:
         results (list[dict]): Iterable of result dictionaries; entries whose
-            `"title"` matches a completed name in nzbdav will be modified
-            in-place with `result["_available"] = True`.
+            `"title"` matches a completed name in nzbdav AND whose size matches
+            that completed download (see ``_completed_job_matches_result``) are
+            modified in-place with `result["_available"] = True`. The size gate
+            stops distinct uploads that merely share a filename from being
+            collapsed onto one cached stream.
     """
     if not results:
         return {}
@@ -797,7 +852,7 @@ def _tag_available(results, settings_getter=None):
         return completed
     for result in results:
         completed_job = completed.get(result.get("title"))
-        if completed_job:
+        if completed_job and _completed_job_matches_result(result, completed_job):
             result["_available"] = True
             result["_completed_job"] = completed_job
     return completed
