@@ -393,13 +393,16 @@ def _bookmark_columns(cur):
 
 
 def _captured_bookmark_resume_seconds(cur, id_file, bookmark_columns):
-    columns = ["timeInSeconds"]
     if "totalTimeInSeconds" in bookmark_columns:
-        columns.append("totalTimeInSeconds")
-    cur.execute(
-        "SELECT {} FROM bookmark WHERE idFile = ?".format(", ".join(columns)),
-        (id_file,),
-    )
+        cur.execute(
+            "SELECT timeInSeconds, totalTimeInSeconds FROM bookmark WHERE idFile = ?",
+            (id_file,),
+        )
+    else:
+        cur.execute(
+            "SELECT timeInSeconds, NULL FROM bookmark WHERE idFile = ?",
+            (id_file,),
+        )
     resume_seconds = 0.0
     for row in cur.fetchall():
         time_in_seconds = row[0]
@@ -3912,8 +3915,8 @@ def resolve(handle, params):
                 fallback_sources=fallback_sources,
                 service_config_state=None,
             )
-            resume_seconds = _wait_playback_state_cleanup(playback_cleanup_state)
             prepared = _wait_direct_playback_prepare(playback_prepare_state)
+            resume_seconds = _wait_playback_state_cleanup(playback_cleanup_state)
             _arm_live_fallback_push(prepared, fallback_state, stream_url, dead=dead)
             _finish_direct_playback(handle, prepared, resume_seconds=resume_seconds)
             # Playback handed off to Kodi: start the fallback worker's "minutes
@@ -4073,9 +4076,6 @@ def resolve_and_play(nzb_url, title, params=None):
             playback_prepare_state = _start_direct_playback_prepare(
                 stream_url, stream_headers, **prepare_kwargs
             )
-            _resolve_stage("cleanup wait start")
-            resume_seconds = _wait_playback_state_cleanup(playback_cleanup_state)
-            _resolve_stage("cleanup wait done")
             _resolve_stage("finish playback start")
             _resolve_stage("prepare wait start")
             prepared = _wait_direct_playback_prepare(playback_prepare_state)
@@ -4084,6 +4084,9 @@ def resolve_and_play(nzb_url, title, params=None):
                     prepared.get("service_port") if prepared else ""
                 )
             )
+            _resolve_stage("cleanup wait start")
+            resume_seconds = _wait_playback_state_cleanup(playback_cleanup_state)
+            _resolve_stage("cleanup wait done")
             _arm_live_fallback_push(prepared, fallback_state, stream_url, dead=dead)
             _finish_player_playback(prepared, resume_seconds=resume_seconds)
             # Playback handed off to the player: start the fallback worker's

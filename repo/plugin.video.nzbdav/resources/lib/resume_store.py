@@ -3,7 +3,7 @@
 
 """Stable playback resume state for streams hidden behind proxy URLs."""
 
-import hashlib
+import base64
 import json
 import os
 import tempfile
@@ -57,7 +57,8 @@ def _resume_id(key):
     identity = _resume_identity(key)
     if not identity:
         return ""
-    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    encoded = base64.urlsafe_b64encode(identity.encode("utf-8")).decode("ascii")
+    return "url:" + encoded.rstrip("=")
 
 
 def _read(path):
