@@ -20,6 +20,7 @@ import xbmcgui
 import xbmcplugin
 
 from resources.lib import telemetry
+from resources.lib.download_ledger import downloaded_pubdate_epochs
 from resources.lib.fallback_streams import (
     FALLBACK_CANDIDATES_DISABLED,
     attach_fallback_candidates_for_selection,
@@ -30,6 +31,7 @@ from resources.lib.fallback_streams import (
     selection_pool_may_have_fallback_peer,
 )
 from resources.lib.http_util import format_size as _format_size
+from resources.lib.http_util import pubdate_to_epoch
 from resources.lib.i18n import addon_name as _addon_name
 from resources.lib.i18n import fmt as _fmt
 from resources.lib.i18n import string as _string
@@ -427,12 +429,26 @@ def _fallback_candidate_loader_for_selection(selected, results, settings_getter=
     return _load_fallback_candidates
 
 
-def _attach_selected_indexer(resolver_params, selected):
+def _attach_selected_result_metadata(resolver_params, selected):
+    """Thread metadata from the chosen result into the resolver params.
+
+    Beyond the indexer label, this carries the release's ``pubdate`` and
+    ``size`` so that, on a fresh submit, the resolver can record the
+    download's Usenet post-date (see ``download_ledger``). That lets a later
+    picker render tell THIS download apart from a same-name repost posted on
+    a different day. Absent fields are left unset so the resolver fails open.
+    """
     if not isinstance(selected, dict):
         return
     indexer = str(selected.get("indexer", "") or "").strip()
     if indexer:
         resolver_params["_selected_indexer"] = indexer
+    pubdate = selected.get("pubdate")
+    if pubdate:
+        resolver_params["_download_pubdate"] = pubdate
+    size = selected.get("size")
+    if size:
+        resolver_params["_download_size"] = size
 
 
 def _selection_pool_with_peer_first(selected, results, first_peer):
@@ -513,10 +529,13 @@ def _snapshot_settings_getter(settings_getter, defaults):
 def _script_completed_job_for_selection(selected):
     """Look up completed-history metadata for a RunScript picker selection.
 
-    Gated by size the same way ``_tag_available`` is: nzbdav history is keyed by
-    NAME, so a name-only match would reuse the wrong cached stream for a distinct
-    same-filename upload. Only return the completed job when its size matches the
-    selection (fail-open on unknown size).
+    Gated by size AND pubdate the same way ``_tag_available`` is: nzbdav history
+    is keyed by NAME, so a name-only match would reuse the wrong cached stream
+    for a distinct same-filename upload. Only return the completed job when its
+    size matches the selection (fail-open on unknown size) and the selection's
+    pubdate is consistent with what we downloaded under that name (fail-open
+    when unknown), so a same-name same-size repost from a different day isn't
+    reused.
     """
     title = selected.get("title", "") if isinstance(selected, dict) else ""
     if not title:
@@ -525,7 +544,11 @@ def _script_completed_job_for_selection(selected):
         from resources.lib.nzbdav_api import find_completed_by_name
 
         job = find_completed_by_name(title, settings_getter=_get_script_setting)
-        if job and _completed_job_matches_result(selected, job):
+        if (
+            job
+            and _completed_job_matches_result(selected, job)
+            and _result_pubdate_consistent_with_downloads(selected)
+        ):
             return job
         return None
     except Exception as error:  # pylint: disable=broad-except
@@ -842,6 +865,40 @@ def _completed_job_matches_result(result, completed_job):
     )
 
 
+# A same-name release posted on a *different day* is a different upload, even
+# when the size matches (a repost / re-rip). nzbdav history records only the
+# download time, never the Usenet post date, so we compare the result's
+# pubdate against the post-dates we captured at submit time (download_ledger).
+# The tolerance absorbs sub-hour indexer/TZ formatting jitter for the SAME
+# post while still separating day-apart reposts cleanly.
+_PUBDATE_MATCH_TOLERANCE_SECONDS = 3600
+
+
+def _result_pubdate_consistent_with_downloads(result):
+    """Return whether a name+size-matched result's pubdate is consistent with
+    what we actually downloaded under that name.
+
+    Fails OPEN (returns True) when we have no recorded pubdate for the name
+    (e.g. downloaded before this feature, or via an external invocation) or
+    the result advertises no parseable pubdate -- we'd rather keep the prior
+    name+size behavior than hide a real cache hit. Returns False only when we
+    DO have recorded pubdates and the result's pubdate matches none of them,
+    i.e. it is a same-name repost posted at a different time.
+    """
+    if not isinstance(result, dict):
+        return True
+    recorded = downloaded_pubdate_epochs(result.get("title"))
+    if not recorded:
+        return True
+    result_epoch = pubdate_to_epoch(result.get("pubdate"))
+    if result_epoch is None:
+        return True
+    return any(
+        abs(result_epoch - epoch) <= _PUBDATE_MATCH_TOLERANCE_SECONDS
+        for epoch in recorded
+    )
+
+
 def _tag_available(results, settings_getter=None):
     """
     Mark result entries that already exist in nzbdav by setting the `_available` flag.
@@ -861,7 +918,11 @@ def _tag_available(results, settings_getter=None):
         return completed
     for result in results:
         completed_job = completed.get(result.get("title"))
-        if completed_job and _completed_job_matches_result(result, completed_job):
+        if (
+            completed_job
+            and _completed_job_matches_result(result, completed_job)
+            and _result_pubdate_consistent_with_downloads(result)
+        ):
             result["_available"] = True
             result["_completed_job"] = completed_job
     return completed
@@ -1308,7 +1369,7 @@ def _handle_play(handle, params):
                 best, filtered
             ),
         }
-        _attach_selected_indexer(resolver_params, best)
+        _attach_selected_result_metadata(resolver_params, best)
         resolve(
             handle,
             resolver_params,
@@ -1341,7 +1402,7 @@ def _handle_play(handle, params):
             resolver_params["_completed_job"] = completed_job
         elif _completed_lookup_was_done(completed_jobs):
             resolver_params["_completed_job_lookup_done"] = True
-        _attach_selected_indexer(resolver_params, selected)
+        _attach_selected_result_metadata(resolver_params, selected)
         resolve(
             handle,
             resolver_params,
@@ -1491,7 +1552,7 @@ def _handle_search(handle, params):
         resolver_params["_fallback_candidates"] = []
         fallback_loader = _fallback_candidate_loader_for_selection(best, filtered)
         resolver_params["_fallback_candidate_loader"] = fallback_loader
-        _attach_selected_indexer(resolver_params, best)
+        _attach_selected_result_metadata(resolver_params, best)
         resolve_and_play(best["link"], best["title"], params=resolver_params)
         # Same hang class as C1 (router.py): /search is a directory
         # route, so Kodi blocks until endOfDirectory fires. Without
@@ -1525,7 +1586,7 @@ def _handle_search(handle, params):
             resolver_params["_completed_job"] = completed_job
         elif _completed_lookup_was_done(completed_jobs):
             resolver_params["_completed_job_lookup_done"] = True
-        _attach_selected_indexer(resolver_params, selected)
+        _attach_selected_result_metadata(resolver_params, selected)
         resolve_and_play(selected["link"], selected["title"], params=resolver_params)
 
     # Must end the directory or Kodi hangs
@@ -1646,7 +1707,7 @@ def _handle_script_play(params):
         else:
             resolver_params["_completed_job_lookup_done"] = True
         resolver_params["_settings_getter"] = _get_script_setting
-        _attach_selected_indexer(resolver_params, best)
+        _attach_selected_result_metadata(resolver_params, best)
         _script_play_stage("resolve start '{}'".format(best.get("title", "")))
         resolve_and_play(best["link"], best["title"], params=resolver_params)
         _script_play_stage("resolve returned")
@@ -1690,7 +1751,7 @@ def _handle_script_play(params):
         resolver_params["_completed_job"] = completed_job
     elif _completed_lookup_was_done(completed_jobs):
         resolver_params["_completed_job_lookup_done"] = True
-    _attach_selected_indexer(resolver_params, selected)
+    _attach_selected_result_metadata(resolver_params, selected)
     _script_play_stage("resolve start '{}'".format(selected.get("title", "")))
     resolve_and_play(selected["link"], selected["title"], params=resolver_params)
     _script_play_stage("resolve returned")

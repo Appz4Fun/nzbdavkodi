@@ -210,6 +210,33 @@ def get_xml_text(element, tag):
     return ""
 
 
+def pubdate_to_epoch(pubdate_str):
+    """Return absolute UTC epoch seconds for an RFC-2822 pubdate, or None.
+
+    Unlike :func:`calculate_age` (a *relative*, drifting "N days ago"
+    label that changes every day for the same post), the epoch is a
+    stable identity key: one Usenet post always maps to the same value.
+    The picker uses it to tell apart same-name reposts that share a size
+    but were posted on different days. A pubdate without a timezone is
+    assumed UTC so the result is deterministic across hosts.
+    """
+    from datetime import timezone
+    from email.utils import parsedate_to_datetime
+
+    try:
+        pub = parsedate_to_datetime(pubdate_str)
+    except _PUBDATE_ERRORS:
+        return None
+    if pub is None:
+        return None
+    if pub.tzinfo is None:
+        pub = pub.replace(tzinfo=timezone.utc)
+    try:
+        return int(pub.timestamp())
+    except _PUBDATE_ERRORS:
+        return None
+
+
 def calculate_age(pubdate_str):
     """Return a human-readable age string computed from an RFC 2822 date.
 
