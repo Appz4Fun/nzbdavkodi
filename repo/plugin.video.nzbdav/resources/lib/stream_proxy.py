@@ -371,6 +371,35 @@ _TAIL_PREWARM_BYTES = 1048576
 # the defer cancels the prewarm cleanly (no wasted connection) instead of
 # blocking the daemon thread.
 _TAIL_PREWARM_DEFER_SECONDS = 1.5
+# Per-session forward read-ahead prefetch cache. A bounded contiguous in-memory
+# window is filled by a daemon thread that reads sequentially AHEAD of the
+# highest-served offset using the existing upstream-fetch primitive, throttling
+# when full and freeing consumed bytes behind the play head — so it keeps filling
+# WHILE Kodi is paused, letting a pause build a real lead. The serve path
+# consults the window FIRST; on a miss it falls through to today's untouched
+# upstream-read / retry-ladder / patient-forward-stall / fallback-cutover /
+# 404-awaiting path. Gated by readahead_buffer_mb (default 256, 0=off). When
+# disabled or on any miss, behavior is byte-for-byte identical to today.
+_READAHEAD_BUFFER_KEY = "_readahead_buffer"
+_READAHEAD_THREAD_KEY = "_readahead_thread"
+_DEFAULT_READAHEAD_BUFFER_MB = 256
+_READAHEAD_BUFFER_MB_MAX = 4096
+# Reuse the 64KB upstream chunk for heap-friendliness (the MemoryError class on
+# 32-bit/CoreELEC was fixed by small chunked reads).
+_READAHEAD_FETCH_CHUNK = _UPSTREAM_READ_CHUNK
+# Abortable wait when the window is full (keeps it filling while paused yet
+# bounded — resumes as the served offset advances and frees room).
+_READAHEAD_THROTTLE_BACKOFF_SECONDS = 0.25
+# Abortable wait after a best-effort upstream error (prefetch is best-effort and
+# the real serve path owns recovery — this never trips the user-facing taxonomy).
+_READAHEAD_ERROR_BACKOFF_SECONDS = 1.0
+# Hold the read-ahead's FIRST upstream read back a short, abortable beat so the
+# byte-0 prefetch and Kodi's initial range fetch win nzbdav's connection budget
+# first — the read-ahead must never widen the mid-startup stall window the byte-0
+# prefetch / tail prewarm exist to close (transient black-screen). The lead is
+# rebuilt steadily after startup. waitForAbort lets a Kodi shutdown / session
+# stop during the defer cancel the prefetch cleanly.
+_READAHEAD_START_DEFER_SECONDS = 1.5
 _PASSTHROUGH_RUNTIME_SETTINGS_KEY = "_passthrough_runtime_settings"
 _PASSTHROUGH_RUNTIME_SETTINGS_DONE_KEY = "_passthrough_runtime_settings_done"
 _PASSTHROUGH_RUNTIME_SETTINGS_ERROR_KEY = "_passthrough_runtime_settings_error"
@@ -384,7 +413,137 @@ _SETTINGS_SNAPSHOT_KEYS = (
     "retry_ladder_enabled",
     "send_200_no_range",
     "proxy_convert_subs",
+    "readahead_buffer_mb",
 )
+
+
+class ReadAheadBuffer:
+    """A per-session bounded contiguous forward read-ahead window.
+
+    Holds a single contiguous run of bytes ``data`` starting at
+    ``base_offset`` (the first buffered byte). A daemon prefetch thread
+    appends bytes strictly contiguous-forward; the serve path reads the
+    contiguous prefix starting exactly at the requested offset and frees
+    bytes behind the play head. The window never grows past ``cap_bytes``
+    nor past ``content_length``. A SEEK outside the window discards the
+    stale data and repoints ``base_offset`` so the prefetch thread refills
+    from the seek target. All mutation is guarded by a short lock so the
+    serve path never blocks on the prefetch thread for long.
+    """
+
+    def __init__(self, cap_bytes, content_length):
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        try:
+            self.cap_bytes = max(0, int(cap_bytes or 0))
+        except (TypeError, ValueError):
+            self.cap_bytes = 0
+        try:
+            self.content_length = max(0, int(content_length or 0))
+        except (TypeError, ValueError):
+            self.content_length = 0
+        self.base_offset = 0
+        self.data = bytearray()
+        self.served_high_water = 0
+
+    def read_prefix(self, start, end):
+        """Return the contiguous bytes the window holds starting exactly at
+        ``start`` (b'' on miss/gap/seek-mismatch), capped to ``end`` and to
+        what is present. The strict ``start == base_offset`` invariant means a
+        stale window can never feed wrong-offset bytes to Kodi after a seek."""
+        if not isinstance(start, int) or not isinstance(end, int):
+            return b""
+        if end < start:
+            return b""
+        with self._lock:
+            if not self.data or start != self.base_offset:
+                return b""
+            want = end - start + 1
+            return bytes(self.data[:want])
+
+    def append(self, offset, chunk):
+        """Add ``chunk`` only if it is strictly contiguous-forward (``offset``
+        == base_offset+len(data)). Truncates at ``cap_bytes`` and at
+        ``content_length``. Returns True when any bytes were stored."""
+        if not chunk:
+            return False
+        with self._lock:
+            expected = self.base_offset + len(self.data)
+            if offset != expected:
+                return False
+            room = self.cap_bytes - len(self.data)
+            if room <= 0:
+                return False
+            eof_room = self.content_length - expected
+            if eof_room <= 0:
+                return False
+            limit = min(room, eof_room, len(chunk))
+            if limit <= 0:
+                return False
+            self.data.extend(chunk[:limit])
+            return True
+
+    def free_behind(self, served_offset):
+        """Drop bytes before ``served_offset`` and advance ``base_offset``.
+        A no-op when ``served_offset`` is at or behind the current base."""
+        try:
+            served_offset = int(served_offset)
+        except (TypeError, ValueError):
+            return
+        with self._lock:
+            drop = served_offset - self.base_offset
+            if drop <= 0:
+                return
+            drop = min(drop, len(self.data))
+            del self.data[:drop]
+            self.base_offset += drop
+
+    def update_served_high_water(self, offset):
+        """Record the highest offset delivered to the client."""
+        try:
+            offset = int(offset)
+        except (TypeError, ValueError):
+            return
+        with self._lock:
+            self.served_high_water = max(self.served_high_water, offset)
+
+    def note_seek(self, new_start):
+        """Repoint the window on a seek OUTSIDE the buffered range.
+
+        In-window seeks leave the data intact (the read_prefix consult plus
+        free_behind naturally consume the now-behind bytes). An out-of-window
+        seek (forward past the lead or any backward seek) discards the data and
+        sets ``base_offset`` to the seek target so the prefetch thread refills
+        forward. Never blocks the seek — a cheap lock-protected pointer reset."""
+        if not isinstance(new_start, int) or new_start < 0:
+            return
+        with self._lock:
+            window_end = self.base_offset + len(self.data)
+            if self.base_offset <= new_start <= window_end:
+                return
+            self.data = bytearray()
+            self.base_offset = new_start
+            self.served_high_water = max(self.served_high_water, new_start)
+
+    def space_remaining(self):
+        with self._lock:
+            remaining = self.cap_bytes - len(self.data)
+        return remaining if remaining > 0 else 0
+
+    def next_fetch_offset(self):
+        with self._lock:
+            return self.base_offset + len(self.data)
+
+    def is_full(self):
+        with self._lock:
+            return len(self.data) >= self.cap_bytes
+
+    def stop(self):
+        self._stop.set()
+
+    def should_stop(self):
+        return self._stop.is_set()
+
 
 # Shared zero buffer reused across all pass-through responses.
 _ZERO_FILL_BUFFER = bytes(65536)
@@ -766,6 +925,13 @@ def _passthrough_runtime_settings_from_snapshot(snapshot):
             0,
             _PASSTHROUGH_STALL_WAIT_MAX_SECONDS,
         ),
+        "readahead_buffer_mb": _int_from_snapshot(
+            snapshot,
+            "readahead_buffer_mb",
+            _DEFAULT_READAHEAD_BUFFER_MB,
+            0,
+            _READAHEAD_BUFFER_MB_MAX,
+        ),
     }
 
 
@@ -878,6 +1044,20 @@ def _get_passthrough_stall_wait_seconds():
     )
 
 
+def _get_readahead_buffer_mb():
+    """Return the read-ahead prefetch buffer size in MB, clamped [0, MAX].
+
+    0 disables the read-ahead layer (no buffer, no thread) so behavior is
+    byte-for-byte identical to today.
+    """
+    raw = _get_addon_setting("readahead_buffer_mb")
+    try:
+        mb = int(raw) if raw not in (None, "") else _DEFAULT_READAHEAD_BUFFER_MB
+    except (TypeError, ValueError):
+        mb = _DEFAULT_READAHEAD_BUFFER_MB
+    return _clamp_int_setting("readahead_buffer_mb", mb, 0, _READAHEAD_BUFFER_MB_MAX)
+
+
 def _read_passthrough_runtime_settings():
     """Read per-session pass-through recovery settings once."""
     contract_mode = _get_strict_contract_mode()
@@ -888,6 +1068,7 @@ def _read_passthrough_runtime_settings():
         "retry_ladder_enabled": _retry_ladder_enabled(),
         "send_200_no_range_enabled": _send_200_no_range_enabled(),
         "passthrough_stall_wait_seconds": _get_passthrough_stall_wait_seconds(),
+        "readahead_buffer_mb": _get_readahead_buffer_mb(),
     }
 
 
@@ -4536,6 +4717,14 @@ class _StreamHandler(BaseHTTPRequestHandler):
         else:
             start, end = 0, content_length - 1
 
+        # Notify the read-ahead window of the requested start so a SEEK to a
+        # position outside the buffered window discards the stale window and
+        # repoints the prefetch base (does not block the seek). A no-op when the
+        # read-ahead layer is disabled (no buffer on ctx).
+        readahead_buffer = ctx.get(_READAHEAD_BUFFER_KEY)
+        if readahead_buffer is not None:
+            readahead_buffer.note_seek(start)
+
         total_bytes = end - start + 1
         runtime_settings = None
         no_range_status = False
@@ -5316,6 +5505,31 @@ class _StreamHandler(BaseHTTPRequestHandler):
 
         return last_result, total_written, current
 
+    def _serve_from_readahead(self, ctx, start, end):
+        """Write the contiguous read-ahead prefix at ``start`` to the client.
+
+        Returns the number of bytes written directly from the in-RAM window
+        (0 on miss / no buffer). On a hit the served bytes are freed behind the
+        play head and the served high-water is bumped (enabling free-behind so
+        the prefetch thread reclaims room and advances its base). On a miss the
+        caller falls through to today's untouched upstream-read path.
+
+        BrokenPipeError / ConnectionResetError from wfile.write propagate
+        exactly like the existing cached-prefix write so _serve_proxy's outer
+        except still classifies a client disconnect.
+        """
+        buf = ctx.get(_READAHEAD_BUFFER_KEY) if isinstance(ctx, dict) else None
+        if buf is None:
+            return 0
+        body = buf.read_prefix(start, end)
+        if not body:
+            return 0
+        self.wfile.write(body)
+        served_to = start + len(body)
+        buf.free_behind(served_to)
+        buf.update_served_high_water(served_to)
+        return len(body)
+
     def _stream_upstream_range(self, ctx, start, end, contract_mode=None):
         """Stream bytes from upstream to the client.
 
@@ -5335,6 +5549,21 @@ class _StreamHandler(BaseHTTPRequestHandler):
             return _UPSTREAM_RANGE_UPSTREAM_ERROR, 0
         requested_start = start
         written = 0
+        # Read-ahead consult (additive, FIRST): serve the contiguous in-RAM
+        # prefix the prefetch daemon built ahead of the play head. On a hit,
+        # advance start/written; on a partial/empty result fall straight through
+        # to today's untouched upstream-read / retry-ladder / patient-stall /
+        # fallback-cutover / 404-awaiting path below. When the setting is 0 there
+        # is no buffer on ctx, so this returns 0 immediately (identical to
+        # today). The window only ever satisfies a contiguous-forward prefix, so
+        # every existing branch keyed on result/written sees identical inputs on
+        # the miss path.
+        prefix_from_window = self._serve_from_readahead(ctx, start, end)
+        if prefix_from_window:
+            written += prefix_from_window
+            start += prefix_from_window
+            if start > end:
+                return _UPSTREAM_RANGE_OK, written
         cached_prefix = self._pop_cached_fallback_range(ctx, start, end)
         wait_consumed = bool(ctx.pop("_initial_range_prefetch_wait_consumed", False))
         if not cached_prefix and not wait_consumed:
@@ -7013,6 +7242,15 @@ class StreamProxy:
     @staticmethod
     def _cleanup_session(ctx, wait_for_process=True):
         """Release resources associated with a stream session."""
+        # Signal the read-ahead prefetch daemon to stop (per-session close; the
+        # thread is daemon and also aborts on waitForAbort for global shutdown).
+        # This is the single sink reached by every close route, so all sessions
+        # are covered. Never block teardown on the thread — daemon is the
+        # backstop.
+        readahead_buffer = ctx.get(_READAHEAD_BUFFER_KEY)
+        if readahead_buffer is not None:
+            readahead_buffer.stop()
+
         active_ffmpeg = ctx.get("active_ffmpeg")
         if active_ffmpeg:
             try:
@@ -7440,6 +7678,115 @@ class StreamProxy:
             thread.start()
         except RuntimeError:
             ctx.pop("_initial_range_prefetch_thread", None)
+
+    def _run_readahead_prefetch(self, ctx):
+        """Daemon target: fill the read-ahead window forward of the play head.
+
+        Reads sequentially AHEAD of the highest-served offset in 64KB chunks
+        using the same upstream-fetch primitive the serve path uses, throttles
+        when the window is full (so it keeps filling WHILE PAUSED yet bounded),
+        and resumes as free-behind reclaims room. Best-effort: a prefetch
+        upstream error simply backs off and retries WITHOUT tearing down
+        playback or tripping the user-facing recovery taxonomy / notifications /
+        session counters. NEVER raises into anything.
+        """
+        buf = ctx.get(_READAHEAD_BUFFER_KEY) if isinstance(ctx, dict) else None
+        if buf is None:
+            return
+        monitor = xbmc.Monitor()
+        try:
+            content_length = int(ctx.get("content_length", 0) or 0)
+        except (TypeError, ValueError):
+            return
+        remote_url = ctx.get("remote_url")
+        auth_header = ctx.get("auth_header")
+        if not remote_url or content_length <= 0:
+            return
+        # Yield to startup: let the byte-0 prefetch and Kodi's first range fetch
+        # win nzbdav's connection budget before the read-ahead issues its first
+        # upstream read. Abortable so a shutdown during the defer exits cleanly.
+        if buf.should_stop() or monitor.waitForAbort(_READAHEAD_START_DEFER_SECONDS):
+            return
+        while not buf.should_stop() and not monitor.waitForAbort(0):
+            try:
+                fetch_offset = buf.next_fetch_offset()
+                if fetch_offset >= content_length:
+                    # Lead is fully built to EOF; nothing left to prefetch.
+                    return
+                if buf.is_full():
+                    # Throttle: wait (abortably) for free-behind to reclaim room
+                    # as the play head advances. This is what keeps the buffer
+                    # filling while paused yet strictly bounded.
+                    if monitor.waitForAbort(_READAHEAD_THROTTLE_BACKOFF_SECONDS):
+                        return
+                    continue
+                want = min(
+                    _READAHEAD_FETCH_CHUNK,
+                    buf.space_remaining(),
+                    content_length - fetch_offset,
+                )
+                if want <= 0:
+                    if monitor.waitForAbort(_READAHEAD_THROTTLE_BACKOFF_SECONDS):
+                        return
+                    continue
+                end = fetch_offset + want - 1
+                body = _StreamHandler._fetch_primary_range_bytes(
+                    remote_url, auth_header, fetch_offset, end, content_length
+                )
+                if not body:
+                    # Best-effort upstream error or awaiting-download: back off
+                    # and retry. The real serve path owns recovery; do not touch
+                    # the recovery taxonomy / notifications / counters here.
+                    if monitor.waitForAbort(_READAHEAD_ERROR_BACKOFF_SECONDS):
+                        return
+                    continue
+                buf.append(fetch_offset, body)
+            except Exception as exc:  # pylint: disable=broad-except
+                xbmc.log(
+                    "NZB-DAV: Read-ahead prefetch loop error: {}".format(exc),
+                    xbmc.LOGDEBUG,
+                )
+                if monitor.waitForAbort(_READAHEAD_ERROR_BACKOFF_SECONDS):
+                    return
+
+    def _start_readahead_prefetch(self, ctx):
+        """Spawn the per-session read-ahead prefetch daemon (gated + soft).
+
+        Gated on the same passthrough-only guard as the byte-0 prefetch AND on
+        readahead_buffer_mb>0 (read from the prefetched settings snapshot, never
+        a per-request getSetting). RuntimeError-tolerant start matching the
+        sibling prefetch spawns.
+        """
+        if not self._initial_range_prefetchable(ctx):
+            return
+        settings = _passthrough_runtime_settings(ctx)
+        try:
+            mb = int(settings.get("readahead_buffer_mb", 0) or 0)
+        except (TypeError, ValueError):
+            mb = 0
+        if mb <= 0:
+            return
+        try:
+            content_length = int(ctx.get("content_length", 0) or 0)
+        except (TypeError, ValueError):
+            return
+        if content_length <= 0:
+            return
+        cap_bytes = mb * 1024 * 1024
+        buf = ReadAheadBuffer(cap_bytes, content_length)
+        ctx[_READAHEAD_BUFFER_KEY] = buf
+        thread = threading.Thread(
+            target=self._run_readahead_prefetch,
+            args=(ctx,),
+            name="nzbdav-readahead",
+        )
+        thread.daemon = True
+        ctx[_READAHEAD_THREAD_KEY] = thread
+        try:
+            thread.start()
+        except RuntimeError:
+            ctx.pop(_READAHEAD_THREAD_KEY, None)
+            ctx.pop(_READAHEAD_BUFFER_KEY, None)
 
     def _prewarm_tail_range(self, ctx):
         """Warm nzbdav's FILE-TAIL article cache (MKV cues) for instant startup.
@@ -8001,6 +8348,7 @@ class StreamProxy:
             )
         self._start_passthrough_runtime_settings_prefetch(ctx)
         self._start_initial_range_prefetch(ctx)
+        self._start_readahead_prefetch(ctx)
         self._start_tail_prewarm(ctx)
         self._start_fallback_prevalidation(ctx)
 

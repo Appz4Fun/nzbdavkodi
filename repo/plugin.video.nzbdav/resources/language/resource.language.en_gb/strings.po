@@ -789,3 +789,7 @@ msgstr "Seconds into playback before submitting fallback backups"
 msgctxt "#30206"
 msgid "Max seconds to wait for a slow/stalled backend before giving up (0=off)"
 msgstr "Max seconds to wait for a slow/stalled backend before giving up (0=off)"
+
+msgctxt "#30207"
+msgid "Read-ahead buffer size in MB (keeps filling while paused; 0=off)"
+msgstr "Read-ahead buffer size in MB (keeps filling while paused; 0=off)"

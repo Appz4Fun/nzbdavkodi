@@ -159,6 +159,31 @@ def test_prowlarr_indexer_ids_precedes_test_action(settings_root):
 # --- Sanity: every setting has a unique id (when id is present) -----------
 
 
+def _setting_anywhere(root, setting_id):
+    for setting in root.iter("setting"):
+        if setting.get("id") == setting_id:
+            return setting
+    return None
+
+
+def test_readahead_buffer_mb_setting_present(settings_root):
+    """The read-ahead prefetch cache is gated by readahead_buffer_mb; pin its
+    layout (type=number, default=256) like the sibling tuning settings."""
+    setting = _setting_anywhere(settings_root, "readahead_buffer_mb")
+    assert setting is not None, "readahead_buffer_mb setting missing"
+    assert setting.get("type") == "number"
+    assert setting.get("default") == "256"
+    assert setting.get("label") == "30207"
+
+
+def test_passthrough_stall_wait_setting_present(settings_root):
+    """Pin the passthrough_stall_wait layout (was previously unasserted)."""
+    setting = _setting_anywhere(settings_root, "passthrough_stall_wait")
+    assert setting is not None
+    assert setting.get("type") == "number"
+    assert setting.get("default") == "120"
+
+
 def test_no_duplicate_setting_ids(settings_root):
     """Settings with an id attribute should be unique across the file —
     Kodi keys by id, and a dup silently shadows."""
