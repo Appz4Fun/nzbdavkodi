@@ -300,12 +300,8 @@ class NzbdavPlayer(xbmc.Player):
             self._state = PlaybackState.IDLE
         self._clear_stream_properties()
 
-    def _save_stable_resume(self):
+    def _save_stable_resume(self, resume_key, position, av_started):
         """Persist the last position under the original source stream identity."""
-        with self._state_lock:
-            resume_key = self._resume_key
-            position = self._last_position
-            av_started = self._av_started
         if not resume_key or not av_started or position <= 0.0:
             return
         duration = None
@@ -318,9 +314,7 @@ class NzbdavPlayer(xbmc.Player):
         except _PLAYER_RUNTIME_ERRORS:
             pass
 
-    def _clear_stable_resume(self):
-        with self._state_lock:
-            resume_key = self._resume_key
+    def _clear_stable_resume(self, resume_key):
         if not resume_key:
             return
         try:
@@ -335,6 +329,9 @@ class NzbdavPlayer(xbmc.Player):
                 return
             self._state = PlaybackState.IDLE
             title = self._title
+            resume_key = self._resume_key
+            position = self._last_position
+            av_started = self._av_started
         # Cleanup outside the lock — `_cleanup_proxy_session` calls
         # `proxy.clear_sessions()` which kills ffmpeg processes; that
         # must not run while a Kodi callback thread holds the lock or
@@ -343,7 +340,7 @@ class NzbdavPlayer(xbmc.Player):
             "NZB-DAV: Playback stopped for '{}'".format(title),
             xbmc.LOGINFO,
         )
-        self._save_stable_resume()
+        self._save_stable_resume(resume_key, position, av_started)
         self._cleanup_proxy_session()
         self._clear_stream_properties()
 
@@ -354,11 +351,12 @@ class NzbdavPlayer(xbmc.Player):
                 return
             self._state = PlaybackState.IDLE
             title = self._title
+            resume_key = self._resume_key
         xbmc.log(
             "NZB-DAV: Playback completed for '{}'".format(title),
             xbmc.LOGINFO,
         )
-        self._clear_stable_resume()
+        self._clear_stable_resume(resume_key)
         self._cleanup_proxy_session()
         self._clear_stream_properties()
 
