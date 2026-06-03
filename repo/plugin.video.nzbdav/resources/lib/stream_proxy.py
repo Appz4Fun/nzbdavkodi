@@ -4973,6 +4973,14 @@ class _StreamHandler(BaseHTTPRequestHandler):
                         if xbmc.Monitor().waitForAbort(
                             _PASSTHROUGH_STALL_WAIT_BACKOFF_SECONDS
                         ):
+                            # waitForAbort True == Kodi closing the session: a
+                            # client-side teardown, never an upstream error. Mark
+                            # it benign (matches the byte-write client-disconnect
+                            # at the bottom of the loop) so the finally block logs
+                            # at INFO and never blames a pending fallback candidate
+                            # for a clean shutdown. Without this it stays "unknown"
+                            # and a clean teardown reads as a genuine failure.
+                            terminal_reason = "client_disconnected"
                             return
                         # Reset the throughput watchdog window so the stale
                         # pre-wait sample can't trip a spurious stall on the first

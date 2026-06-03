@@ -15933,6 +15933,83 @@ def test_serve_proxy_forward_stall_gives_up_after_budget_exhausted():
     mock_zeros.assert_not_called()  # skip-probe returned None -> recovery_exhausted
 
 
+def test_serve_proxy_forward_stall_kodi_shutdown_is_benign_exit():
+    """A Kodi shutdown (waitForAbort True) landing inside the patient
+    forward-stall backoff must be reported as a BENIGN exit
+    (reason=client_disconnected), not the default reason=unknown. Leaving it
+    'unknown' makes the finally block treat a clean teardown as a genuine
+    failure: WARNING-level summary log and a spurious pending-fallback failure
+    toast. The abort IS Kodi closing the session — client-side, never an
+    upstream error."""
+    import sys
+
+    from resources.lib.stream_proxy import (
+        _PASSTHROUGH_RUNTIME_SETTINGS_KEY,
+        _STRICT_CONTRACT_MODE_OFF,
+        _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD,
+        _UPSTREAM_RANGE_UPSTREAM_ERROR,
+    )
+
+    start, end = 1000, 1099  # mid-file, established (start>0)
+    ctx = {
+        "remote_url": "http://webdav/remux.mkv",
+        "auth_header": None,
+        "content_type": "video/x-matroska",
+        "content_length": 100_000,
+        "upstream_down_notified": True,
+        "upstream_unreachable_count": 1,
+        _PASSTHROUGH_RUNTIME_SETTINGS_KEY: {
+            "contract_mode": _STRICT_CONTRACT_MODE_OFF,
+            "density_breaker_enabled": False,
+            "zero_fill_budget_enabled": True,
+            "retry_ladder_enabled": False,  # stall gate is the only waitForAbort site
+            "send_200_no_range_enabled": False,
+            "passthrough_stall_wait_seconds": 120,
+        },
+    }
+    handler = _make_handler_with_server(
+        ctx, range_header="bytes={}-{}".format(start, end)
+    )
+
+    def stream_range(active_ctx, s, e, contract_mode=None):
+        del active_ctx, e, contract_mode
+        if s == start:
+            # Established read: real bytes flow, so the patient wait is allowed
+            # to engage (streamed_real_upstream_bytes becomes sticky-True).
+            handler.wfile.write(b"A" * 40)
+            return _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD, 40
+        # Then the region stalls -> forward-stall gate engages and backs off.
+        return _UPSTREAM_RANGE_UPSTREAM_ERROR, 0
+
+    monitor = sys.modules["xbmc"].Monitor.return_value
+    original_wait = monitor.waitForAbort.side_effect
+    # Kodi shutdown arrives during the stall backoff.
+    monitor.waitForAbort.side_effect = lambda timeout=0.0: True
+
+    log_lines = []
+    real_log = sys.modules["xbmc"].log
+    sys.modules["xbmc"].log = lambda msg, level=0: log_lines.append(msg)
+    try:
+        with patch.object(
+            handler, "_stream_upstream_range", side_effect=stream_range
+        ), patch.object(
+            handler, "_select_live_fallback_source", return_value=None
+        ), patch.object(
+            handler, "_find_skip_offset", return_value=1
+        ), patch.object(
+            handler, "_write_zeros"
+        ):
+            handler._serve_proxy(ctx)
+    finally:
+        sys.modules["xbmc"].log = real_log
+        monitor.waitForAbort.side_effect = original_wait
+
+    summary = [line for line in log_lines if "Pass-through summary" in line]
+    assert summary, "expected a pass-through summary log line"
+    assert "reason=client_disconnected" in summary[0]
+    assert "reason=unknown" not in summary[0]
+
+
 def test_maybe_notify_stream_starvation_fires_on_forward_stall_exhaustion():
     """A pure slow-backend give-up — the patient forward-stall wait exhausted
     with NO 5xx outage recorded (download-lag only) — must still tell the user,
