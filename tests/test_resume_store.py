@@ -98,3 +98,35 @@ def test_resume_store_drops_malformed_items_before_trimming(tmp_path):
     payload = json.loads(store_path.read_text(encoding="utf-8"))
     assert len(payload["items"]) == 1
     assert list(payload["items"].values())[0]["position"] == 300.0
+
+
+def test_resume_store_treats_malformed_updated_at_as_oldest(tmp_path):
+    """Corrupted timestamps should not block trimming and future saves."""
+    store_path = tmp_path / "resume.json"
+    payload = {
+        "version": 1,
+        "items": {
+            "bad-time": {"position": 120.0, "updated_at": "not-a-number"},
+        },
+    }
+    payload["items"].update(
+        {
+            "old-{}".format(index): {
+                "position": 120.0,
+                "updated_at": float(index),
+            }
+            for index in range(256)
+        }
+    )
+    store_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    resume_store.save_resume(
+        "http://webdav:8080/content/movie/Movie.mkv",
+        300.0,
+        path=str(store_path),
+        now=lambda: 999.0,
+    )
+
+    payload = json.loads(store_path.read_text(encoding="utf-8"))
+    assert len(payload["items"]) == 256
+    assert "bad-time" not in payload["items"]

@@ -130,12 +130,25 @@ def _near_end(position, duration):
     return duration > 0.0 and max(0.0, duration - position) <= _NEAR_END_SECONDS
 
 
+def is_useful_resume(position, duration=None):
+    """Return whether a resume offset is worth persisting or replaying."""
+    position = _coerce_position(position)
+    return position > 0.0 and not _near_end(position, duration)
+
+
+def _coerce_updated_at(item):
+    try:
+        return float(item.get("updated_at", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _trim_items(items):
     if len(items) <= _MAX_ITEMS:
         return items
     ordered = sorted(
         items.items(),
-        key=lambda item: float(item[1].get("updated_at", 0.0) or 0.0),
+        key=lambda item: _coerce_updated_at(item[1]),
         reverse=True,
     )
     return dict(ordered[:_MAX_ITEMS])
@@ -159,7 +172,7 @@ def save_resume(key, position, duration=None, path=None, now=None):
     position = _coerce_position(position)
     if not resume_id:
         return
-    if position <= 0.0 or _near_end(position, duration):
+    if not is_useful_resume(position, duration):
         clear_resume(key, path=path)
         return
 
