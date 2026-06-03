@@ -1246,22 +1246,33 @@ def _maybe_notify_stream_starvation(
     """
     if terminal_reason == "complete":
         return False
+    # The density breaker emits its own toast at its terminal branch, so suppress
+    # the redundant starvation toast for that reason (avoid a double notification).
+    if terminal_reason == "density_breaker_tripped":
+        return False
     # The backend (not a healthy stop) ended this stream when an explicit stall
     # terminal reason fired, OR the upstream is still flagged down, OR an outage
-    # happened very recently. The RECENCY window matters because
-    # ``upstream_unreachable_count`` is a sticky running total and
-    # ``last_upstream_unreachable_at`` can predate a long healthy stretch the
-    # user then stopped — that must NOT fire. It also catches the live incident,
-    # where the upstream momentarily "recovered" a few seconds before Kodi gave
-    # up and disconnected (so a recovered-vs-unreachable ordering check alone
-    # would wrongly stay silent).
+    # happened very recently, OR the patient forward-stall wait exhausted. The
+    # forward-stall signal covers the pure-SLOW case (a still-downloading region
+    # that never caught up: AWAITING with no 5xx, so no outage is recorded) —
+    # without it that give-up would be silent, the exact thing this guard exists
+    # to prevent. The RECENCY window matters because ``upstream_unreachable_count``
+    # is a sticky running total and ``last_upstream_unreachable_at`` can predate a
+    # long healthy stretch the user then stopped — that must NOT fire. It also
+    # catches the live incident, where the upstream momentarily "recovered" a few
+    # seconds before Kodi gave up and disconnected (so a recovered-vs-unreachable
+    # ordering check alone would wrongly stay silent).
     down_now = bool(ctx.get("upstream_down_notified"))
     last_down = float(ctx.get("last_upstream_unreachable_at", 0) or 0)
     recent_outage = (
         last_down > 0 and (time.time() - last_down) <= _STARVATION_RECENT_OUTAGE_SECONDS
     )
+    forward_stall_exhausted = bool(ctx.get("forward_stall_exhausted"))
     if not (
-        terminal_reason in _STARVATION_TERMINAL_REASONS or down_now or recent_outage
+        terminal_reason in _STARVATION_TERMINAL_REASONS
+        or down_now
+        or recent_outage
+        or forward_stall_exhausted
     ):
         return False
     # Only when the stream was genuinely starved — it did NOT deliver the full
@@ -4969,6 +4980,10 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     # Budget exhausted: genuinely stuck. Fall through to the
                     # existing F4 cap-fire / skip-probe give-up so the close is
                     # reported through the established taxonomy (no new exit path).
+                    # Mark the session so the terminal starvation guard fires even
+                    # on a pure slow-backend give-up (AWAITING with no 5xx outage
+                    # recorded) — otherwise that give-up would be silent.
+                    ctx["forward_stall_exhausted"] = True
                     xbmc.log(
                         "NZB-DAV: Patient forward-stall budget exhausted at byte "
                         "{} after {}s with no progress (result={}); giving up "
