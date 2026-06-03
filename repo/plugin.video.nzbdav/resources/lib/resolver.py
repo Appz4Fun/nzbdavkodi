@@ -356,19 +356,15 @@ def _clear_kodi_playback_state(params=None):
                 # files/settings/streamdetails rows stay intact — Kodi will
                 # treat the file as "never resumed" on the next play, which is
                 # exactly the state we want.
+                bookmark_columns = _bookmark_columns(cur)
                 resume_seconds = 0.0
                 for id_file in target_ids:
-                    cur.execute(
-                        "SELECT timeInSeconds FROM bookmark WHERE idFile = ?",
-                        (id_file,),
+                    resume_seconds = max(
+                        resume_seconds,
+                        _captured_bookmark_resume_seconds(
+                            cur, id_file, bookmark_columns
+                        ),
                     )
-                    for (time_in_seconds,) in cur.fetchall():
-                        try:
-                            resume_seconds = max(
-                                resume_seconds, float(time_in_seconds or 0.0)
-                            )
-                        except (TypeError, ValueError):
-                            pass
                     cur.execute("DELETE FROM bookmark WHERE idFile = ?", (id_file,))
 
         xbmc.log(
@@ -389,6 +385,32 @@ def _clear_kodi_playback_state(params=None):
             xbmc.LOGWARNING,
         )
     return 0.0
+
+
+def _bookmark_columns(cur):
+    cur.execute("PRAGMA table_info(bookmark)")
+    return {row[1] for row in cur.fetchall()}
+
+
+def _captured_bookmark_resume_seconds(cur, id_file, bookmark_columns):
+    columns = ["timeInSeconds"]
+    if "totalTimeInSeconds" in bookmark_columns:
+        columns.append("totalTimeInSeconds")
+    cur.execute(
+        "SELECT {} FROM bookmark WHERE idFile = ?".format(", ".join(columns)),
+        (id_file,),
+    )
+    resume_seconds = 0.0
+    for row in cur.fetchall():
+        time_in_seconds = row[0]
+        total_time = row[1] if len(row) > 1 else None
+        if not resume_store.is_useful_resume(time_in_seconds, total_time):
+            continue
+        try:
+            resume_seconds = max(resume_seconds, float(time_in_seconds))
+        except (TypeError, ValueError):
+            pass
+    return resume_seconds
 
 
 def _start_playback_state_cleanup(params=None):
@@ -502,6 +524,7 @@ def _add_own_plugin_target_ids(cur, target_ids):
 def _add_tmdb_helper_target_ids(cur, target_ids, params):
     """Add bookmark targets for matching TMDBHelper URLs."""
     import re
+    from urllib.parse import parse_qs, urlsplit
 
     tmdb_id = (params or {}).get("tmdb_id", "")
     if not tmdb_id:
@@ -519,8 +542,30 @@ def _add_tmdb_helper_target_ids(cur, target_ids, params):
     )
     id_pattern = re.compile(r"tmdb_id=" + re.escape(tmdb_id) + r"(?:[^0-9]|$)")
     for id_file, filename in cur.fetchall():
-        if id_pattern.search(filename):
+        if id_pattern.search(filename) and _tmdb_helper_url_matches_params(
+            parse_qs(urlsplit(filename).query), params
+        ):
             target_ids.add(id_file)
+
+
+def _numeric_query_param_matches(query, params, name):
+    expected = (params or {}).get(name)
+    if expected in ("", None):
+        return True
+    values = query.get(name)
+    if not values:
+        return False
+    actual = values[-1]
+    try:
+        return int(actual) == int(expected)
+    except (TypeError, ValueError):
+        return str(actual) == str(expected)
+
+
+def _tmdb_helper_url_matches_params(query, params):
+    return _numeric_query_param_matches(
+        query, params, "season"
+    ) and _numeric_query_param_matches(query, params, "episode")
 
 
 def _collect_kodi_playback_target_ids(cur, params):
