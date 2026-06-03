@@ -1069,6 +1069,47 @@ def test_clear_kodi_playback_state_ignores_near_end_bookmark(mock_xbmc, tmp_path
 
 
 @patch("resources.lib.resolver.xbmc")
+def test_clear_kodi_playback_state_captures_only_resume_bookmarks(mock_xbmc, tmp_path):
+    """Manual Kodi bookmarks must not be replayed as resume offsets."""
+    import sqlite3
+
+    mock_xbmc.Player.return_value.isPlayingVideo.return_value = False
+    db = _build_fake_videos_db(tmp_path)
+    conn = sqlite3.connect(str(db))
+    cur = conn.cursor()
+    cur.execute("ALTER TABLE bookmark ADD COLUMN type INTEGER")
+    url = (
+        "plugin://plugin.video.themoviedb.helper/?info=play&tmdb_type=movie&tmdb_id=389"
+    )
+    cur.execute(
+        "INSERT INTO files (idFile, idPath, strFilename) VALUES (1, 1, ?)",
+        (url,),
+    )
+    cur.execute(
+        "INSERT INTO bookmark (idFile, timeInSeconds, totalTimeInSeconds, type) "
+        "VALUES (1, 600.0, 7200.0, 1)"
+    )
+    cur.execute(
+        "INSERT INTO bookmark (idFile, timeInSeconds, totalTimeInSeconds, type) "
+        "VALUES (1, 3600.0, 7200.0, 2)"
+    )
+    conn.commit()
+    conn.close()
+
+    with patch("resources.lib.resolver.xbmcvfs") as mock_vfs:
+        mock_vfs.translatePath.return_value = str(tmp_path) + "/"
+        resume_seconds = _clear_kodi_playback_state({"tmdb_id": "389", "type": "movie"})
+
+    conn = sqlite3.connect(str(db))
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM bookmark")
+    bookmark_count = cur.fetchone()[0]
+    conn.close()
+    assert bookmark_count == 0
+    assert resume_seconds == 600.0
+
+
+@patch("resources.lib.resolver.xbmc")
 def test_clear_kodi_playback_state_limits_tmdb_episode_match(mock_xbmc, tmp_path):
     """TV resume harvesting should not borrow offsets from sibling episodes."""
     import sqlite3
@@ -1115,6 +1156,59 @@ def test_clear_kodi_playback_state_limits_tmdb_episode_match(mock_xbmc, tmp_path
                     "season": "1",
                     "episode": "1",
                 }
+            )
+
+    conn = sqlite3.connect(str(db))
+    cur = conn.cursor()
+    cur.execute("SELECT idFile FROM bookmark ORDER BY idFile")
+    remaining_bookmarks = [row[0] for row in cur.fetchall()]
+    conn.close()
+    assert remaining_bookmarks == [2]
+    assert resume_seconds == 600.0
+
+
+@patch("resources.lib.resolver.xbmc")
+def test_clear_kodi_playback_state_movie_does_not_match_episode_url(
+    mock_xbmc, tmp_path
+):
+    """Movie resume harvesting should not borrow offsets from episode URLs."""
+    import sqlite3
+
+    mock_xbmc.Player.return_value.isPlayingVideo.return_value = False
+    db = _build_fake_videos_db(tmp_path)
+    conn = sqlite3.connect(str(db))
+    cur = conn.cursor()
+    tmdb_base = "plugin://plugin.video.themoviedb.helper/?info=play&tmdb_id=42"
+    urls = [
+        tmdb_base + "&tmdb_type=movie",
+        tmdb_base + "&tmdb_type=tv&season=1&episode=1",
+    ]
+    for i, url in enumerate(urls, start=1):
+        cur.execute(
+            "INSERT INTO files (idFile, idPath, strFilename) VALUES (?, 1, ?)",
+            (i, url),
+        )
+    cur.execute(
+        "INSERT INTO bookmark (idFile, timeInSeconds, totalTimeInSeconds) "
+        "VALUES (1, 600.0, 7200.0)"
+    )
+    cur.execute(
+        "INSERT INTO bookmark (idFile, timeInSeconds, totalTimeInSeconds) "
+        "VALUES (2, 1800.0, 3600.0)"
+    )
+    conn.commit()
+    conn.close()
+
+    fake_argv = [
+        "plugin://plugin.video.nzbdav/play",
+        "1",
+        "?type=movie&tmdb_id=42",
+    ]
+    with patch("resources.lib.resolver.xbmcvfs") as mock_vfs:
+        mock_vfs.translatePath.return_value = str(tmp_path) + "/"
+        with patch.object(sys, "argv", fake_argv):
+            resume_seconds = _clear_kodi_playback_state(
+                {"tmdb_id": "42", "type": "movie"}
             )
 
     conn = sqlite3.connect(str(db))
