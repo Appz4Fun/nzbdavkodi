@@ -608,6 +608,11 @@ def _completed_job_from_slot(slot):
         "storage": slot.get("storage", ""),
         "name": slot.get("name", ""),
         "nzo_id": slot.get("nzo_id", ""),
+        # Downloaded byte size. nzbdav history is keyed by NAME, so the picker's
+        # DL/cache match disambiguates same-filename collisions (different
+        # release/resolution, or a repost at a different retention) by comparing
+        # this against the indexer result's advertised size (_tag_available).
+        "bytes": slot.get("bytes"),
         "fail_message": slot.get("fail_message", ""),
         # SABnzbd-compatible: epoch-seconds timestamp the job moved into
         # history. nzbdav-rs reports unix epoch directly. Used by the
