@@ -7698,9 +7698,7 @@ class StreamProxy:
             content_length = int(ctx.get("content_length", 0) or 0)
         except (TypeError, ValueError):
             return
-        remote_url = ctx.get("remote_url")
-        auth_header = ctx.get("auth_header")
-        if not remote_url or content_length <= 0:
+        if not ctx.get("remote_url") or content_length <= 0:
             return
         # Yield to startup: let the byte-0 prefetch and Kodi's first range fetch
         # win nzbdav's connection budget before the read-ahead issues its first
@@ -7730,6 +7728,18 @@ class StreamProxy:
                         return
                     continue
                 end = fetch_offset + want - 1
+                # Re-read the source each iteration: a live fallback cutover
+                # mutates ctx["remote_url"]/["auth_header"] mid-stream, so a
+                # once-hoisted local would keep hammering the dead primary and
+                # the lead would stop growing from the live source. The buffer
+                # is offset-addressed, so bytes from either source are
+                # interchangeable for a given offset (no corruption either way).
+                remote_url = ctx.get("remote_url")
+                auth_header = ctx.get("auth_header")
+                if not remote_url:
+                    if monitor.waitForAbort(_READAHEAD_ERROR_BACKOFF_SECONDS):
+                        return
+                    continue
                 body = _StreamHandler._fetch_primary_range_bytes(
                     remote_url, auth_header, fetch_offset, end, content_length
                 )
