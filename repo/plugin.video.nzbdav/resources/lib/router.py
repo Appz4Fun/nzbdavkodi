@@ -1769,12 +1769,27 @@ def _json_object(response):
     return data if isinstance(data, dict) else {}
 
 
+def _build_xxe_safe_parser():
+    """Return an ElementTree XMLParser with external entities disabled."""
+    import xml.etree.ElementTree as ET
+
+    parser = ET.XMLParser()  # nosec B314 — entities disabled below
+    try:
+        parser.parser.DefaultHandler = lambda _d: None
+        parser.parser.ExternalEntityRefHandler = lambda *_: False
+    except AttributeError:  # pragma: no cover
+        pass
+    return parser
+
+
 def _xml_root_name(response):
     """Return the unqualified root XML tag name, lowercased."""
     import xml.etree.ElementTree as ET  # nosec B405 - trusted service response
 
     try:
-        root = ET.fromstring(response)  # nosec B314 - trusted service response
+        root = ET.fromstring(
+            response, parser=_build_xxe_safe_parser()
+        )  # nosec B314 - entities disabled above
     except (TypeError, ET.ParseError):
         return ""
     return root.tag.rsplit("}", 1)[-1].lower()
