@@ -338,6 +338,45 @@ def test_run_readahead_prefetch_fills_then_stops_at_eof():
     assert buf.read_prefix(0, 0) == b"Y"
 
 
+def test_run_readahead_prefetch_repoints_to_url_after_fallback_cutover():
+    """A live fallback cutover mutates ctx['remote_url']/['auth_header'];
+    the daemon must pick up the NEW source on the next iteration instead of
+    hammering the dead primary. (QA pass #2 finding: the URL was hoisted into
+    a thread-local once at start, so post-cutover prefetch stalled.)"""
+    proxy = _make_proxy()
+    content_length = 200_000
+    buf = ReadAheadBuffer(cap_bytes=10 * 1024 * 1024, content_length=content_length)
+    ctx = {
+        "remote_url": "http://webdav/primary.mkv",
+        "auth_header": "Basic PRIMARY",
+        "content_length": content_length,
+        _READAHEAD_BUFFER_KEY: buf,
+    }
+
+    seen = []
+
+    def fake_fetch(url, auth, start, end, _clen):
+        seen.append((url, auth))
+        # Simulate the live cutover after the first chunk: the serve path has
+        # repointed the session to the fallback source.
+        if len(seen) == 1:
+            ctx["remote_url"] = "http://webdav/fallback.mkv"
+            ctx["auth_header"] = "Basic FALLBACK"
+        return b"Y" * (end - start + 1)
+
+    monitor = _FakeMonitor()
+    with patch("xbmc.Monitor", return_value=monitor), patch.object(
+        _StreamHandler, "_fetch_primary_range_bytes", staticmethod(fake_fetch)
+    ):
+        proxy._run_readahead_prefetch(ctx)
+
+    # First fetch hit the primary; every fetch after the cutover used the
+    # fallback URL + its auth header (not the stale primary).
+    assert seen[0] == ("http://webdav/primary.mkv", "Basic PRIMARY")
+    assert all(s == ("http://webdav/fallback.mkv", "Basic FALLBACK") for s in seen[1:])
+    assert len(seen) > 1  # it kept prefetching from the new source
+
+
 def test_run_readahead_prefetch_bounded_by_cap():
     proxy = _make_proxy()
     content_length = 50 * 1024 * 1024
