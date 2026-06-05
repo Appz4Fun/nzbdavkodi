@@ -27,6 +27,7 @@ import xbmc
 import xbmcaddon
 
 from resources.lib import telemetry
+from resources.lib.http_util import pubdate_to_epoch
 from resources.lib.nzb_manifest import fetch_nzb_video_manifest, make_empty_manifest
 
 
@@ -82,6 +83,12 @@ _FINGERPRINT_DENSE_SAMPLE_MIN_BYTES = 1024 * 1024 * 1024
 _FINGERPRINT_BYTES = 4096
 
 _MAX_FALLBACKS = 5
+# Two fallback candidates whose Usenet post dates fall within this window are
+# treated as the same upload re-listed and collapsed to one (highest tier kept).
+# A candidate within this window of the primary's post date is the same upload
+# as the primary and is dropped — the primary cannot be its own backup. The
+# bound is inclusive: exactly 1h apart counts as the same article.
+_SAME_POST_WINDOW_SECONDS = 3600
 _FALLBACK_MANIFEST_STALL_SPECULATION_SECONDS = 0.05
 _FALLBACK_MANIFEST_OPTIONAL_TAIL_WAIT_SECONDS = 0.1
 _FALLBACK_MANIFEST_CACHE_TTL_SECONDS = 10.0
@@ -1671,6 +1678,83 @@ def _ensure_fallback_manifest(result, manifest_cache):
     result["_fallback_manifest"] = manifest
     result["_fallback_manifest_error"] = manifest.get("unsupported_reason", "")
     return manifest
+
+
+def _candidate_pubdate_epoch(candidate):
+    """Return a candidate's Usenet post date as UTC epoch seconds, or None.
+
+    None (missing or unparseable pubdate) means "always distinct": such a
+    candidate is never collapsed against another and is never suppressed by the
+    primary's date — we cannot prove two undated posts are the same upload.
+    """
+    if not isinstance(candidate, dict):
+        return None
+    pubdate = candidate.get("pubdate", "")
+    if not isinstance(pubdate, str) or not pubdate.strip():
+        return None
+    return pubdate_to_epoch(pubdate)
+
+
+def _best_ranked_in_cluster(cluster):
+    """Return the best fallback tuple from a same-post-date cluster.
+
+    ``cluster`` is a list of ``(order_index, item)`` where ``item`` is a
+    ``(exact_name, tier, size_delta, candidate)`` ranking tuple. Best = lowest
+    ``(exact_name, tier, size_delta)`` (highest similarity tier), with original
+    arrival order as a deterministic final tie-break.
+    """
+    return min(
+        cluster,
+        key=lambda entry: (entry[1][0], entry[1][1], entry[1][2], entry[0]),
+    )[1]
+
+
+def _dedupe_candidates_by_pubdate(target, ranked):
+    """Collapse ranked fallback tuples posted within the same-article window.
+
+    ``ranked`` is a list of ``(exact_name, tier, size_delta, candidate)`` tuples.
+    Candidates whose post dates fall within ``_SAME_POST_WINDOW_SECONDS`` of each
+    other are the same upload re-listed; only the best-ranked member of each such
+    cluster is kept. Candidates within the window of ``target``'s own post date
+    are dropped (the primary cannot be its own backup). Candidates with no
+    parseable post date are always kept.
+
+    Clustering is anchor-based: a candidate joins a cluster only when it is within
+    the window of that cluster's EARLIEST member, so a chain of near-posts does
+    not transitively merge into one blob. The returned list is unordered with
+    respect to rank; callers re-sort before clamping.
+    """
+    primary_epoch = _candidate_pubdate_epoch(target)
+    undated = []
+    dated = []  # (epoch, order_index, item)
+    for order_index, item in enumerate(ranked):
+        epoch = _candidate_pubdate_epoch(item[3])
+        if epoch is None:
+            undated.append(item)
+            continue
+        if (
+            primary_epoch is not None
+            and abs(epoch - primary_epoch) <= _SAME_POST_WINDOW_SECONDS
+        ):
+            continue  # same upload as the primary -> not a real backup
+        dated.append((epoch, order_index, item))
+
+    dated.sort(key=lambda entry: (entry[0], entry[1]))
+    survivors = []
+    cluster = []
+    anchor_epoch = None
+    for epoch, order_index, item in dated:
+        if anchor_epoch is None or epoch - anchor_epoch > _SAME_POST_WINDOW_SECONDS:
+            if cluster:
+                survivors.append(_best_ranked_in_cluster(cluster))
+            cluster = [(order_index, item)]
+            anchor_epoch = epoch
+        else:
+            cluster.append((order_index, item))
+    if cluster:
+        survivors.append(_best_ranked_in_cluster(cluster))
+
+    return undated + survivors
 
 
 def _attach_candidates_for_target(target, pool, max_candidates):

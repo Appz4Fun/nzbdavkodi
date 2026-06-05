@@ -4597,3 +4597,80 @@ def test_rank_fallback_candidates_prefers_exact_same_filename():
 
     assert ranked[0] is exact
     assert ranked[1] is closer
+
+
+def _dated(tier, pubdate, link, exact_name=1, size_delta=0):
+    """Build a (exact_name, tier, size_delta, candidate) ranking tuple."""
+    return (exact_name, tier, size_delta, {"link": link, "pubdate": pubdate})
+
+
+def test_dedupe_pubdate_collapses_same_hour_keeping_best_tier():
+    from resources.lib import fallback_streams
+
+    target = {"pubdate": ""}  # undated primary -> no primary suppression
+    worse = _dated(2, "Mon, 01 Jan 2024 00:10:00 +0000", "https://a/nzb")
+    better = _dated(0, "Mon, 01 Jan 2024 00:50:00 +0000", "https://b/nzb")
+
+    result = fallback_streams._dedupe_candidates_by_pubdate(target, [worse, better])
+
+    assert [item[3]["link"] for item in result] == ["https://b/nzb"]
+
+
+def test_dedupe_pubdate_keeps_candidates_more_than_an_hour_apart():
+    from resources.lib import fallback_streams
+
+    target = {"pubdate": ""}
+    first = _dated(1, "Mon, 01 Jan 2024 00:00:00 +0000", "https://a/nzb")
+    second = _dated(1, "Mon, 01 Jan 2024 02:00:00 +0000", "https://b/nzb")
+
+    result = fallback_streams._dedupe_candidates_by_pubdate(target, [first, second])
+
+    assert {item[3]["link"] for item in result} == {"https://a/nzb", "https://b/nzb"}
+
+
+def test_dedupe_pubdate_is_anchor_based_not_transitive():
+    from resources.lib import fallback_streams
+
+    target = {"pubdate": ""}
+    a = _dated(1, "Mon, 01 Jan 2024 00:00:00 +0000", "https://a/nzb")
+    b = _dated(1, "Mon, 01 Jan 2024 00:50:00 +0000", "https://b/nzb")
+    c = _dated(1, "Mon, 01 Jan 2024 01:40:00 +0000", "https://c/nzb")
+
+    result = fallback_streams._dedupe_candidates_by_pubdate(target, [a, b, c])
+    links = {item[3]["link"] for item in result}
+
+    # a & b (50 min) collapse to one; c is >1h from the a-anchor -> distinct.
+    assert len(result) == 2
+    assert "https://c/nzb" in links
+    assert ("https://a/nzb" in links) != ("https://b/nzb" in links)
+
+
+def test_dedupe_pubdate_drops_candidates_sharing_primary_date():
+    from resources.lib import fallback_streams
+
+    target = {"pubdate": "Mon, 01 Jan 2024 00:00:00 +0000"}
+    same_as_primary = _dated(0, "Mon, 01 Jan 2024 00:30:00 +0000", "https://a/nzb")
+    distinct = _dated(1, "Mon, 01 Jan 2024 03:00:00 +0000", "https://b/nzb")
+
+    result = fallback_streams._dedupe_candidates_by_pubdate(
+        target, [same_as_primary, distinct]
+    )
+
+    assert [item[3]["link"] for item in result] == ["https://b/nzb"]
+
+
+def test_dedupe_pubdate_keeps_all_undated_candidates():
+    from resources.lib import fallback_streams
+
+    target = {"pubdate": ""}
+    one = (1, 1, 0, {"link": "https://a/nzb"})  # no pubdate key
+    two = (1, 1, 0, {"link": "https://b/nzb", "pubdate": ""})  # empty pubdate
+    three = (1, 1, 0, {"link": "https://c/nzb", "pubdate": "not a date"})
+
+    result = fallback_streams._dedupe_candidates_by_pubdate(target, [one, two, three])
+
+    assert {item[3]["link"] for item in result} == {
+        "https://a/nzb",
+        "https://b/nzb",
+        "https://c/nzb",
+    }
