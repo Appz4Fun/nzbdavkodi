@@ -305,3 +305,39 @@ def test_submit_fallback_does_not_record_dead_on_timeout():
         resolver._submit_fallback_candidates(candidates, monitor, dead=dead)
 
     assert not dead.has_url("http://x/slow.nzb")
+
+
+def test_playback_fallback_sources_excludes_dead_nzo():
+    from resources.lib import resolver
+    from resources.lib.dead_candidates import DeadCandidates
+
+    dead = DeadCandidates()
+    dead.add(nzo_id="nzo_dead")
+    jobs = [
+        {"nzo_id": "nzo_dead", "title": "Dead", "nzb_url": "http://x/d.nzb"},
+        {"nzo_id": "nzo_ok", "title": "Ok", "nzb_url": "http://x/o.nzb"},
+    ]
+
+    sources = resolver._playback_fallback_sources_for_stream(
+        "http://primary/stream", jobs, dead=dead
+    )
+
+    assert [s["nzo_id"] for s in sources] == ["nzo_ok"]
+
+
+def test_playback_fallback_sources_excludes_dead_url():
+    from resources.lib import resolver
+    from resources.lib.dead_candidates import DeadCandidates
+
+    dead = DeadCandidates()
+    dead.add(nzb_url="http://x/d.nzb")
+    jobs = [
+        {"nzo_id": "nzo_a", "title": "Dead", "nzb_url": "http://x/d.nzb"},
+        {"nzo_id": "nzo_ok", "title": "Ok", "nzb_url": "http://x/o.nzb"},
+    ]
+
+    sources = resolver._playback_fallback_sources_for_stream(
+        "http://primary/stream", jobs, dead=dead
+    )
+
+    assert [s["nzo_id"] for s in sources] == ["nzo_ok"]

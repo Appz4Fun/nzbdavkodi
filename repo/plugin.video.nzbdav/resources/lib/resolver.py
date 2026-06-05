@@ -516,12 +516,18 @@ def _url_path(url):
     return urlsplit(url).path.lower()
 
 
-def _playback_fallback_sources_for_stream(stream_url, fallback_jobs):
+def _playback_fallback_sources_for_stream(stream_url, fallback_jobs, dead=None):
+    if dead is not None:
+        fallback_jobs = [
+            job
+            for job in fallback_jobs
+            if not (dead.has_nzo(job.get("nzo_id")) or dead.has_url(job.get("nzb_url")))
+        ]
     fallback_sources = build_prepare_fallback_payload(fallback_jobs)
     return fallback_sources
 
 
-def _arm_live_fallback_push(prepared, fallback_state, primary_stream_url):
+def _arm_live_fallback_push(prepared, fallback_state, primary_stream_url, dead=None):
     """Push fallbacks adopted AFTER /prepare into the live proxy session.
 
     The /prepare fallback snapshot is one-shot: when the primary resolves
@@ -551,7 +557,9 @@ def _arm_live_fallback_push(prepared, fallback_state, primary_stream_url):
 
     def _push():
         jobs = _fallback_submit_jobs_snapshot(fallback_state, wait_seconds=0)
-        sources = _playback_fallback_sources_for_stream(primary_stream_url, jobs)
+        sources = _playback_fallback_sources_for_stream(
+            primary_stream_url, jobs, dead=dead
+        )
         if not sources:
             return
         try:
@@ -3729,6 +3737,7 @@ def resolve(handle, params):
                     fallback_state,
                     wait_seconds=_PLAYBACK_PREPARE_HANDOFF_GRACE_SECONDS,
                 ),
+                dead=dead,
             )
             playback_prepare_state = _start_direct_playback_prepare(
                 stream_url,
@@ -3738,7 +3747,7 @@ def resolve(handle, params):
             )
             _wait_playback_state_cleanup(playback_cleanup_state)
             prepared = _wait_direct_playback_prepare(playback_prepare_state)
-            _arm_live_fallback_push(prepared, fallback_state, stream_url)
+            _arm_live_fallback_push(prepared, fallback_state, stream_url, dead=dead)
             _finish_direct_playback(handle, prepared)
             # Playback handed off to Kodi: start the fallback worker's "minutes
             # into playback" countdown now, not from the earlier primary submit.
@@ -3886,6 +3895,7 @@ def resolve_and_play(nzb_url, title, params=None):
                     fallback_state,
                     wait_seconds=_PLAYBACK_PREPARE_HANDOFF_GRACE_SECONDS,
                 ),
+                dead=dead,
             )
             _resolve_stage("prepare playback start")
             prepare_kwargs = {
@@ -3907,7 +3917,7 @@ def resolve_and_play(nzb_url, title, params=None):
                     prepared.get("service_port") if prepared else ""
                 )
             )
-            _arm_live_fallback_push(prepared, fallback_state, stream_url)
+            _arm_live_fallback_push(prepared, fallback_state, stream_url, dead=dead)
             _finish_player_playback(prepared)
             # Playback handed off to the player: start the fallback worker's
             # "minutes into playback" countdown now, not from the primary submit.
