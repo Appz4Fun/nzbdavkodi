@@ -3437,6 +3437,7 @@ def _poll_until_ready(
     rejected_completed_ids=None,
     download_pubdate=None,
     download_size=None,
+    dead=None,
 ):
     """Submit NZB and poll until download completes.
 
@@ -3539,6 +3540,10 @@ def _poll_until_ready(
             job_status, nzo_id, dialog, last_status
         )
         if should_stop:
+            if dead is not None and str(
+                (job_status or {}).get("status", "")
+            ).lower() in ("failed", "deleted"):
+                dead.add(nzb_url=nzb_url, nzo_id=nzo_id)
             return None, None
 
         should_stop, stream_url, stream_headers, no_video_retries = (
@@ -3555,6 +3560,8 @@ def _poll_until_ready(
         if stream_url:
             return stream_url, stream_headers
         if should_stop:
+            if dead is not None and (history or {}).get("status") == "Failed":
+                dead.add(nzb_url=nzb_url, nzo_id=nzo_id)
             return None, None
 
         if _handle_webdav_error(nzo_id, webdav_error):

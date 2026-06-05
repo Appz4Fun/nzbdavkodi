@@ -167,3 +167,67 @@ def test_resolve_surfaces_http_500_body_to_user(
     )
     # Single submit attempt — no retry on 500
     assert resolver_mocks.submit.call_count == 1
+
+
+def test_poll_until_ready_records_dead_on_job_failed(resolver_mocks):
+    """When the queue API reports Failed, _poll_until_ready must record the
+    nzb_url and nzo_id into the dead set (so the fallback pool won't resubmit
+    the same release)."""
+    from resources.lib import resolver
+    from resources.lib.dead_candidates import DeadCandidates
+
+    dead = DeadCandidates()
+    # Queue API returns Failed status — drives _handle_job_status to
+    # should_stop=True via the failed/deleted branch.
+    resolver_mocks.status.return_value = {"status": "Failed", "percentage": "0"}
+    # History returns None so _handle_history_result short-circuits early and
+    # does not itself trigger a stop before we reach the job-status check.
+    resolver_mocks.history.return_value = None
+
+    with patch("resources.lib.resolver._existing_completed_stream", return_value=None):
+        with patch(
+            "resources.lib.resolver._submit_nzb_with_retries", return_value="nzo_1"
+        ):
+            stream_url, _ = resolver._poll_until_ready(
+                "http://x/dead.nzb",
+                "Dead.Release",
+                resolver_mocks.dialog,
+                1,
+                60,
+                dead=dead,
+            )
+
+    assert stream_url is None
+    assert dead.has_url("http://x/dead.nzb")
+    assert dead.has_nzo("nzo_1")
+
+
+def test_poll_until_ready_does_not_record_dead_on_timeout(resolver_mocks):
+    """When the poll loop times out, _poll_until_ready must NOT record the
+    release as dead — a timeout is a transient condition, not a Usenet failure."""
+    from resources.lib import resolver
+    from resources.lib.dead_candidates import DeadCandidates
+
+    dead = DeadCandidates()
+    # Drive the elapsed-time abort: monotonic() returns 0.0 for start_time,
+    # then 10_000.0 for the first elapsed check inside the loop — well past the
+    # 60 s download_timeout — so _abort_poll_before_fetch returns True on
+    # iteration 1 before _poll_once is even called.
+    resolver_mocks.time.monotonic.side_effect = [0.0, 10_000.0]
+    resolver_mocks.history.return_value = None
+
+    with patch("resources.lib.resolver._existing_completed_stream", return_value=None):
+        with patch(
+            "resources.lib.resolver._submit_nzb_with_retries", return_value="nzo_2"
+        ):
+            stream_url, _ = resolver._poll_until_ready(
+                "http://x/slow.nzb",
+                "Slow.Release",
+                resolver_mocks.dialog,
+                1,
+                60,
+                dead=dead,
+            )
+
+    assert stream_url is None
+    assert not dead.has_url("http://x/slow.nzb")
