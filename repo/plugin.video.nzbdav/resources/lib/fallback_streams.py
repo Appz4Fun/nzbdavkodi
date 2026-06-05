@@ -2247,6 +2247,8 @@ def _rank_fallback_candidates(target, candidates):
         candidate_name = _manifest_normalized_video_name(candidate)
         exact_name = 0 if target_name and candidate_name == target_name else 1
         ranked.append((exact_name, tier, size_delta, candidate))
+    # Collapse same-post-date duplicates (same upload re-listed) before ordering.
+    ranked = _dedupe_candidates_by_pubdate(target, ranked)
     ranked.sort(key=lambda item: (item[0], item[1], item[2]))
     return [item[3] for item in ranked]
 

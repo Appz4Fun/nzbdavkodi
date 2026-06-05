@@ -4718,16 +4718,70 @@ def test_attach_candidates_dedupes_same_postdate_keeping_best_tier():
     drop = _result(
         "Example 2026 1080p WEB-DL x265-GROUP",
         "https://drop/nzb",
-        10000000000,
+        11000000000,
         meta=meta,
     )
     drop["_fallback_manifest"] = _manifest(
-        "video", "example.2026.1080p.group.mkv", 10000000000, "drop"
+        "video", "example.2026.1080p.group.mkv", 11000000000, "drop"
     )
     drop["pubdate"] = "Thu, 02 May 2024 00:20:00 +0000"
 
     fallback_streams._attach_candidates_for_target(target, [keep, drop], 5)
 
     links = [c["link"] for c in target["_fallback_candidates"]]
-    assert len(links) == 1
-    assert links[0] in ("https://keep/nzb", "https://drop/nzb")
+    assert links == ["https://keep/nzb"]
+
+
+def test_rank_fallback_candidates_dedupes_same_postdate():
+    from resources.lib import fallback_streams
+
+    meta = _movie_meta(resolution="2160p", codec="x265/HEVC", group="GROUP")
+    target = _result(
+        "Example 2026 2160p BluRay x265-GROUP", "https://t/nzb", 60000000000, meta=meta
+    )
+    target["_fallback_manifest"] = _manifest(
+        "video", "example.2026.2160p.group.mkv", 60000000000, "t"
+    )
+    target["pubdate"] = "Fri, 10 May 2024 08:00:00 +0000"
+
+    early = _result(
+        "Example 2026 2160p BluRay x265-GROUP",
+        "https://early/nzb",
+        60000000000,
+        meta=meta,
+    )
+    early["_fallback_manifest"] = _manifest(
+        "video", "example.2026.2160p.group.mkv", 60000000000, "early"
+    )
+    early["pubdate"] = "Sat, 11 May 2024 09:00:00 +0000"
+
+    # 40 min after `early` -> same article -> must collapse.
+    dupe = _result(
+        "Example 2026 2160p BluRay x265-GROUP",
+        "https://dupe/nzb",
+        60000000000,
+        meta=meta,
+    )
+    dupe["_fallback_manifest"] = _manifest(
+        "video", "example.2026.2160p.group.mkv", 60000000000, "dupe"
+    )
+    dupe["pubdate"] = "Sat, 11 May 2024 09:40:00 +0000"
+
+    # 3 hours after `early` -> distinct -> must survive.
+    distinct = _result(
+        "Example 2026 2160p BluRay x265-GROUP",
+        "https://distinct/nzb",
+        60000000000,
+        meta=meta,
+    )
+    distinct["_fallback_manifest"] = _manifest(
+        "video", "example.2026.2160p.group.mkv", 60000000000, "distinct"
+    )
+    distinct["pubdate"] = "Sat, 11 May 2024 12:00:00 +0000"
+
+    ranked = fallback_streams._rank_fallback_candidates(target, [early, dupe, distinct])
+    links = {c["link"] for c in ranked}
+
+    assert "https://distinct/nzb" in links
+    assert ("https://early/nzb" in links) != ("https://dupe/nzb" in links)
+    assert len(ranked) == 2
