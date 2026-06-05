@@ -7904,12 +7904,16 @@ def test_serve_proxy_survives_five_stream_outages_with_backup_sources():
     assert ctx["auth_header"] == "Basic fallback4"
     assert ctx["fallback_switch_count"] == 5
     assert ctx["fallback_active_index"] == 4
+    # The demoted primary is appended as a last-resort entry (demoted=True,
+    # failed not set) when the first cutover fires, so fallback_sources now
+    # has 6 entries: the original 5 + the demoted primary at the end.
     assert [source.get("failed") for source in fallback_sources] == [
         True,
         True,
         True,
         True,
         False,
+        None,  # demoted primary: not failed, just demoted
     ]
     assert mock_select.call_count == 5
     assert _collect_written(handler) == b"S" * content_length
@@ -16039,3 +16043,63 @@ def test_maybe_notify_stream_starvation_silent_on_density_breaker():
         )
     assert fired is False
     mock_notify.assert_not_called()
+
+
+def test_activate_fallback_readds_demoted_active_source():
+    from resources.lib import stream_proxy
+
+    handler = stream_proxy._StreamHandler.__new__(stream_proxy._StreamHandler)
+    fallback = {
+        "stream_url": "http://fb/stream",
+        "stream_headers": {"Authorization": "Bearer fb"},
+        "content_length": 100,
+    }
+    ctx = {
+        "remote_url": "http://primary/stream",
+        "auth_header": "Bearer primary",
+        "content_length": 100,
+        "fallback_sources": [fallback],
+    }
+
+    handler._activate_fallback_source(ctx, fallback, current=None)
+
+    assert ctx["remote_url"] == "http://fb/stream"
+    demoted = [
+        s
+        for s in ctx["fallback_sources"]
+        if s.get("stream_url") == "http://primary/stream"
+    ]
+    assert len(demoted) == 1
+    assert demoted[0]["stream_headers"]["Authorization"] == "Bearer primary"
+    assert demoted[0]["content_length"] == 100
+
+
+def test_activate_fallback_does_not_duplicate_demoted_source():
+    from resources.lib import stream_proxy
+
+    handler = stream_proxy._StreamHandler.__new__(stream_proxy._StreamHandler)
+    fallback = {
+        "stream_url": "http://fb/stream",
+        "stream_headers": {},
+        "content_length": 100,
+    }
+    already = {
+        "stream_url": "http://primary/stream",
+        "stream_headers": {},
+        "content_length": 100,
+    }
+    ctx = {
+        "remote_url": "http://primary/stream",
+        "auth_header": None,
+        "content_length": 100,
+        "fallback_sources": [fallback, already],
+    }
+
+    handler._activate_fallback_source(ctx, fallback, current=None)
+
+    demoted = [
+        s
+        for s in ctx["fallback_sources"]
+        if s.get("stream_url") == "http://primary/stream"
+    ]
+    assert len(demoted) == 1
