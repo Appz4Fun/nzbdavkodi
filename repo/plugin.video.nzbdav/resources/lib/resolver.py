@@ -17,7 +17,7 @@ import xbmcgui
 import xbmcplugin
 import xbmcvfs
 
-from resources.lib.dead_candidates import is_provably_dead_submit_error
+from resources.lib.dead_candidates import DeadCandidates, is_provably_dead_submit_error
 from resources.lib.download_ledger import record_download
 from resources.lib.fallback_streams import (
     FALLBACK_CANDIDATES_DISABLED,
@@ -2932,6 +2932,8 @@ def _start_fallback_submit_worker(
     settings_getter=None,
     prewarm_delay=0,
     wait_for_playback=False,
+    dead=None,
+    primary_nzb_url=None,
 ):
     """Start background fallback submits and return shared state.
 
@@ -3034,6 +3036,8 @@ def _start_fallback_submit_worker(
                 stop_event=state["stop"],
                 on_job=_append_job,
                 settings_getter=settings_getter,
+                dead=dead,
+                primary_nzb_url=primary_nzb_url,
             )
         except Exception as error:  # pylint: disable=broad-except
             xbmc.log(
@@ -3661,11 +3665,14 @@ def resolve(handle, params):
                     candidate_loader=fallback_candidate_loader,
                     prewarm_delay=_get_fallback_submit_delay_seconds(),
                     wait_for_playback=True,
+                    dead=dead,
+                    primary_nzb_url=nzb_url,
                 )
 
         # One rejected-id set per resolve attempt, shared so a Completed row
         # the picker body probe rejects is honored by the submit/poll paths.
         rejected_completed_ids = set()
+        dead = DeadCandidates()
         completed_stream = _picker_completed_stream(
             title,
             params,
@@ -3711,6 +3718,7 @@ def resolve(handle, params):
                 rejected_completed_ids=rejected_completed_ids,
                 download_pubdate=params.get("_download_pubdate"),
                 download_size=params.get("_download_size"),
+                dead=dead,
             )
         if stream_url:
             if fallback_state is None:
@@ -3797,6 +3805,8 @@ def resolve_and_play(nzb_url, title, params=None):
                         settings_getter
                     ),
                     "wait_for_playback": True,
+                    "dead": dead,
+                    "primary_nzb_url": nzb_url,
                 }
                 fallback_submit_kwargs.update(_settings_getter_kwargs(settings_getter))
                 fallback_state = _start_fallback_submit_worker(
@@ -3807,6 +3817,7 @@ def resolve_and_play(nzb_url, title, params=None):
         # One rejected-id set per resolve attempt, shared so a Completed row
         # the picker body probe rejects is honored by the submit/poll paths.
         rejected_completed_ids = set()
+        dead = DeadCandidates()
         completed_stream = _picker_completed_stream(
             title,
             resolve_params,
@@ -3863,6 +3874,7 @@ def resolve_and_play(nzb_url, title, params=None):
                 rejected_completed_ids=rejected_completed_ids,
                 download_pubdate=resolve_params.get("_download_pubdate"),
                 download_size=resolve_params.get("_download_size"),
+                dead=dead,
             )
             _resolve_stage("poll until ready done stream={}".format(bool(stream_url)))
         if stream_url:
