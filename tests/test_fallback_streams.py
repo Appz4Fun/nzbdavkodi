@@ -4642,7 +4642,22 @@ def test_dedupe_pubdate_is_anchor_based_not_transitive():
     # a & b (50 min) collapse to one; c is >1h from the a-anchor -> distinct.
     assert len(result) == 2
     assert "https://c/nzb" in links
-    assert ("https://a/nzb" in links) != ("https://b/nzb" in links)
+    assert "https://a/nzb" in links  # equal tier -> order_index tie-break keeps first
+    assert "https://b/nzb" not in links
+
+
+def test_dedupe_pubdate_boundary_exactly_one_hour_collapses():
+    from resources.lib import fallback_streams
+
+    target = {"pubdate": ""}
+    first = _dated(1, "Mon, 01 Jan 2024 00:00:00 +0000", "https://a/nzb")
+    # Exactly 3600s later -> inclusive window -> same article -> collapse.
+    second = _dated(1, "Mon, 01 Jan 2024 01:00:00 +0000", "https://b/nzb")
+
+    result = fallback_streams._dedupe_candidates_by_pubdate(target, [first, second])
+
+    assert len(result) == 1
+    assert result[0][3]["link"] == "https://a/nzb"
 
 
 def test_dedupe_pubdate_drops_candidates_sharing_primary_date():
