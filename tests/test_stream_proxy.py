@@ -2797,18 +2797,24 @@ def test_prevalidated_fallback_reuses_current_probe_for_first_fallback_bytes():
     ) as probe_open, patch(
         "resources.lib.stream_proxy.urlopen", side_effect=stream_urlopen
     ) as stream_open:
-        started = time.monotonic()
         handler._serve_proxy(ctx)
 
     assert first_write_at, "fallback did not write playable bytes"
-    first_byte_elapsed = first_write_at[0] - started
     assert ctx["fallback_switch_count"] == 1
     assert _collect_written(handler) == payload
     assert probe_open.call_count == 1
-    assert (
-        first_byte_elapsed < probe_delay + stream_delay
-    ), "first fallback byte took {:.3f}s".format(first_byte_elapsed)
-    assert stream_open.call_count <= 1
+    # The fallback's first range is served from the reused prevalidation probe,
+    # so the live stream path must never open the fallback URL itself. Assert that
+    # behavior directly (zero fallback stream-opens) rather than via a global
+    # call_count or wall-clock timing: a stray background read-ahead open from a
+    # leaked sibling-test daemon, or scheduler jitter under parallel suite load,
+    # would otherwise flake this without indicating any real regression.
+    fallback_stream_opens = sum(
+        1
+        for call in stream_open.call_args_list
+        if call.args and call.args[0].full_url.endswith("/fallback.mkv")
+    )
+    assert fallback_stream_opens == 0
 
 
 def test_prevalidated_fallback_cached_sample_writes_without_post_error_probe():
