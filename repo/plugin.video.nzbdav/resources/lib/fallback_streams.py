@@ -731,6 +731,13 @@ def _same_content(primary, candidate):
             return False
         if bool(primary_seasons) != bool(candidate_seasons):
             return False
+        # A differing parsed year marks a distinct production sharing the same
+        # SxxExx (a reboot/remake, e.g. "Doctor Who 2005 S01E01" vs the 2023
+        # reboot). Mirror the movie-path year reject. Only rejects when BOTH
+        # sides parsed a year and they differ, so same-episode reposts where one
+        # side omits the year are unaffected.
+        if primary_year and candidate_year and primary_year != candidate_year:
+            return False
         return True
 
     if bool(primary_part) != bool(candidate_part):

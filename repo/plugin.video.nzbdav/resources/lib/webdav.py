@@ -29,8 +29,14 @@ _EPISODE_NUM_RE = re.compile(r"e(\d{1,4})", re.IGNORECASE)
 # expand the inclusive span below. _EPISODE_RANGE_MAX_SPAN caps expansion so
 # a malformed/absurd range (e.g. S01E01-E999) can't balloon the tag set --
 # beyond the cap we leave the literal endpoints from _EPISODE_TAG_RE intact.
+# The optional `(?:s\1[. _-]*)?` before the final episode number accepts the
+# repeated full-season form "S01E01-S01E03" in addition to "S01E01-E03" /
+# "S01E01-03". The `\1` backreference forces the SAME season, so a cross-season
+# range like "S01E10-S02E02" does NOT satisfy the repeated-season branch and
+# only the literal endpoints (E10, E02) survive via _EPISODE_TAG_RE.
 _EPISODE_RANGE_RE = re.compile(
-    r"s(\d{1,3})[. _-]*e(\d{1,4})[. _-]*-[. _-]*e?(\d{1,4})", re.IGNORECASE
+    r"s(\d{1,3})[. _-]*e(\d{1,4})[. _-]*-[. _-]*(?:s\1[. _-]*)?e?(\d{1,4})",
+    re.IGNORECASE,
 )
 _EPISODE_RANGE_MAX_SPAN = 64
 # Older/scene-alternate "NxNN" / "NNxNN" episode notation (e.g. 2x05,
@@ -44,6 +50,29 @@ _EPISODE_RANGE_MAX_SPAN = 64
 # x264/x265 from registering as episodes. Accepts the Cyrillic 'х' the PTT
 # handler also allows.
 _EPISODE_NXN_RE = re.compile(r"(?<!\d)(\d{1,2})[xх](\d{1,3})(?!\d)", re.IGNORECASE)
+# Well-known display aspect ratios that share the NxN shape (16x9, 4x3, ...)
+# but are NOT episodes. The season cap on _EPISODE_NXN_RE already rejects
+# resolutions (1920x1080) and codecs (x264), but these small ratios slip
+# through and would mis-parse as episode (16, 9) / (4, 3). We FILTER these
+# exact pairs out of the NxN extraction rather than tightening the regex, so
+# real un-padded single-digit episodes like 2x3 or 1x9 still register.
+_ASPECT_RATIO_PAIRS = frozenset(
+    {
+        (16, 9),
+        (4, 3),
+        (21, 9),
+        (16, 10),
+        (2, 35),
+        (2, 39),
+        (2, 40),
+        (1, 85),
+        (1, 78),
+        (1, 33),
+        (2, 20),
+        (1, 90),
+        (2, 76),
+    }
+)
 # NxN RANGE notation "1x01-03" / "1x01-1x03" -- the NxN sibling of
 # _EPISODE_RANGE_RE (SxxEaa-Ebb). The standalone _EPISODE_NXN_RE above only
 # records the literal endpoints (1x01 and 1x03) and drops a bare "-03" half
@@ -93,6 +122,14 @@ def _episode_tags(value):
         season = int(match.group(1))
         start = int(match.group(2))
         end = int(match.group(3))
+        # An aspect ratio (16x9) never forms a valid range start/end, so a
+        # span anchored on one is spurious -- skip it (the standalone NxN loop
+        # below also filters the literal endpoints).
+        if (season, start) in _ASPECT_RATIO_PAIRS or (
+            season,
+            end,
+        ) in _ASPECT_RATIO_PAIRS:
+            continue
         if start <= end <= start + _EPISODE_RANGE_MAX_SPAN:
             for episode in range(start, end + 1):
                 tags.add((season, episode))
@@ -102,7 +139,13 @@ def _episode_tags(value):
     # so behavior is a strict superset and never regresses. tags is a set, so
     # there is no double-count.
     for match in _EPISODE_NXN_RE.finditer(value):
-        tags.add((int(match.group(1)), int(match.group(2))))
+        pair = (int(match.group(1)), int(match.group(2)))
+        # Skip well-known display aspect ratios (16x9, 4x3, ...) that share the
+        # NxN shape but are not episodes. Real un-padded episodes (2x3, 1x9)
+        # are not in the set, so they still register.
+        if pair in _ASPECT_RATIO_PAIRS:
+            continue
+        tags.add(pair)
     return frozenset(tags)
 
 
@@ -678,7 +721,13 @@ def find_video_file(
             # video missing getcontentlength is skipped so recursion can find
             # the real feature in a subfolder rather than returning a
             # placeholder/teaser.
-            has_signal = size > 0 or ep_score > 0 or tok_score > 0
+            # Token overlap alone must NOT establish a signal: per the
+            # docstring, raw token overlap ranks BELOW size, so a zero-size
+            # placeholder/teaser that merely shares title tokens must not be
+            # adopted and pre-empt recursion into the subfolder holding the
+            # real feature. Only a real size or a positive episode match
+            # establishes a selectable signal.
+            has_signal = size > 0 or ep_score > 0
             if has_signal and (best_file_key is None or file_key > best_file_key):
                 best_file_key = file_key
                 best_size = size

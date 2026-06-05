@@ -15184,6 +15184,83 @@ def test_stuck_inconclusive_source_is_abandoned_after_bound():
     assert source["failed"] is True
 
 
+def test_prevalidation_resets_transient_miss_streak(monkeypatch):
+    """Regression (id 3352749431): a still-downloading source that returned
+    INCONCLUSIVE on earlier live probes, then later PREVALIDATES, must have its
+    transient_miss_count reset so it is not abandoned at the abandon bound once
+    it is proven readable."""
+    from urllib.parse import urlsplit
+
+    from resources.lib import stream_proxy as sp
+
+    content_length = 8192
+    handler = _make_handler()
+    source = {
+        "nzo_id": "nzo-fallback",
+        "stream_url": "http://webdav/content/fallback.mkv",
+        "stream_headers": {"Authorization": "Basic fallback"},
+        "content_length": content_length,
+        "validated": False,
+        "failed": False,
+        # Carried-over streak from earlier still-downloading INCONCLUSIVE probes.
+        "transient_miss_count": sp._FALLBACK_SOURCE_TRANSIENT_MISS_MAX,
+    }
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_length": content_length,
+        "_fallback_probe_bases": (urlsplit("http://webdav/content/"),),
+        "fallback_sources": [source],
+    }
+
+    with patch.object(handler, "_validate_fallback_fingerprint", return_value=True):
+        validated = handler._prevalidate_ready_fallback_sources(ctx)
+
+    assert validated == 1
+    assert source["validated"] is True
+    assert source["failed"] is not True
+    # Stale streak cleared: a subsequent single INCONCLUSIVE probe can no longer
+    # tip it over the abandon bound.
+    assert source.get("transient_miss_count", 0) == 0
+
+
+def test_fallback_source_matches_validated_resets_transient_streak():
+    """A source that returns MATCH from _fallback_source_matches after earlier
+    INCONCLUSIVE probes clears its transient streak as it becomes validated."""
+    from resources.lib import stream_proxy as sp
+
+    handler = _make_handler()
+    source = {
+        "nzo_id": "peer",
+        "stream_url": "http://webdav/fallback.mkv",
+        "content_length": 1000,
+        "validated": False,
+        "failed": False,
+        "transient_miss_count": sp._FALLBACK_SOURCE_TRANSIENT_MISS_MAX,
+    }
+    ctx = {
+        "remote_url": "http://webdav/primary.mkv",
+        "auth_header": "Basic primary",
+        "content_length": 1000,
+        "fallback_sources": [source],
+    }
+
+    with patch.object(
+        handler, "_classify_fallback_fingerprint", return_value=sp._FALLBACK_MATCH
+    ), patch.object(handler, "_fallback_source_auth", return_value=None), patch.object(
+        handler, "_fallback_expected_content_length", return_value=1000
+    ), patch.object(
+        handler, "_fallback_source_content_length", return_value=1000
+    ), patch.object(
+        handler, "_fetch_fallback_current_range_digest", return_value=b"d" * 16
+    ):
+        result = handler._fallback_source_matches(ctx, source, 0, 4094)
+
+    assert result is sp._FALLBACK_MATCH
+    assert source["validated"] is True
+    assert source.get("transient_miss_count", 0) == 0
+
+
 # ---------------------------------------------------------------------------
 # F-route — bounded failover from a STUCK no-progress AWAITING_DOWNLOAD
 #

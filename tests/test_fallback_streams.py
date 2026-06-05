@@ -3904,6 +3904,45 @@ def test_same_content_rejects_different_part_same_episode():
     assert fs._same_content(part_two, part_one) is False
 
 
+def test_same_content_rejects_episode_with_conflicting_years():
+    """REGRESSION GUARD: a same-SxxExx episode whose differing parsed year marks
+    a distinct production (a reboot/remake) is DIFFERENT content. The original
+    Doctor Who (2005) S01E01 must never peer with the reboot (2023) S01E01."""
+    from resources.lib import fallback_streams as fs
+
+    classic = _result(
+        "Doctor.Who.2005.S01E01.1080p.WEB-DL.x265-GROUP",
+        "https://idx/dw-2005.nzb",
+        2000000000,
+    )
+    reboot = _result(
+        "Doctor.Who.2023.S01E01.1080p.WEB-DL.x265-GROUP",
+        "https://idx/dw-2023.nzb",
+        2000000000,
+    )
+    assert fs._same_content(classic, reboot) is False
+    assert fs._same_content(reboot, classic) is False
+
+    # A same-year same-episode repost still peers.
+    same_year = _result(
+        "Doctor.Who.2005.S01E01.1080p.WEB-DL.x265-ALT",
+        "https://idx/dw-2005-alt.nzb",
+        2000000000,
+    )
+    assert fs._same_content(classic, same_year) is True
+    assert fs._same_content(same_year, classic) is True
+
+    # One side omitting the year must NOT reject (only both-parsed-and-differ
+    # rejects), so a yearless repost of the same episode still peers.
+    yearless = _result(
+        "Doctor.Who.S01E01.1080p.WEB-DL.x265-ALT",
+        "https://idx/dw-yearless.nzb",
+        2000000000,
+    )
+    assert fs._same_content(classic, yearless) is True
+    assert fs._same_content(yearless, classic) is True
+
+
 def test_titles_core_related_fails_closed_on_empty_token_set():
     """FS-2: an empty core-title token set must not fail open.
 

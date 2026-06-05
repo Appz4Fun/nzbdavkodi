@@ -40,6 +40,16 @@ def test_timeout_status_is_not_provably_dead():
     assert not is_provably_dead_submit_error({"status": "timeout", "message": "x"})
 
 
+def test_transient_http_status_is_not_provably_dead():
+    for status in (408, 502, 503, 504):
+        assert not is_provably_dead_submit_error({"status": status, "message": "x"})
+
+
+def test_non_transient_http_status_is_provably_dead():
+    for status in (500, 501, 400, 429):
+        assert is_provably_dead_submit_error({"status": status, "message": "x"})
+
+
 def test_none_or_non_dict_is_not_provably_dead():
     assert not is_provably_dead_submit_error(None)
     assert not is_provably_dead_submit_error("oops")

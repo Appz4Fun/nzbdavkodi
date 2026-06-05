@@ -1812,3 +1812,152 @@ def test_find_video_file_movie_hint_keeps_largest_across_sibling_subfolders(
     )
 
     assert path == "/content/Dune/Movie/Dune.mkv"
+
+
+def test_episode_tags_ignores_aspect_ratio_nxn_tokens():
+    """Aspect-ratio NxN tokens (16x9, 4x3, 21x9, ...) must NOT register as
+    episodes, while real un-padded NxN episodes (2x3, 1x9) still do."""
+    from resources.lib.webdav import _episode_tags
+
+    # Well-known aspect ratios yield no episode tag.
+    assert _episode_tags("video.16x9.mkv") == frozenset()
+    assert _episode_tags("video.4x3.mkv") == frozenset()
+    assert _episode_tags("video.21x9.mkv") == frozenset()
+    assert _episode_tags("video.16x10.mkv") == frozenset()
+    # Real episodes -- including the un-padded forms -- still register.
+    assert _episode_tags("Show.2x3.mkv") == frozenset({(2, 3)})
+    assert _episode_tags("Show.1x9.mkv") == frozenset({(1, 9)})
+    assert _episode_tags("Show.2x05.mkv") == frozenset({(2, 5)})
+    assert _episode_tags("Show.10x01.mkv") == frozenset({(10, 1)})
+    assert _episode_tags("Show.1x02.mkv") == frozenset({(1, 2)})
+    assert _episode_tags("Show.12x05.mkv") == frozenset({(12, 5)})
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_aspect_ratio_file_does_not_beat_real_episode(
+    mock_urlopen, mock_settings
+):
+    """An aspect-ratio-named file (video.16x9.mkv) under the requested
+    episode's folder must NOT be mis-parsed as episode (16, 9). Under the bug
+    its basename tag (16, 9) was treated as authoritative and never fell back
+    to the parent's real S01E02, so the file scored a wrong-episode -1000 and a
+    larger wrong-episode sibling (S01E03) wrongly won. After the fix the 16x9
+    basename carries no tag, falls back to the parent S01E02, and wins."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    parent = _propfind_listing(
+        [
+            ("/content/Show/", True, None),
+            ("/content/Show/Show.S01E02/", True, None),
+            ("/content/Show/Show.S01E03/", True, None),
+        ]
+    )
+    e02 = _propfind_listing(
+        [
+            ("/content/Show/Show.S01E02/", True, None),
+            ("/content/Show/Show.S01E02/video.16x9.mkv", False, 2000000000),
+        ]
+    )
+    e03 = _propfind_listing(
+        [
+            ("/content/Show/Show.S01E03/", True, None),
+            ("/content/Show/Show.S01E03/video.mkv", False, 9000000000),
+        ]
+    )
+
+    def propfind(req, **_kwargs):
+        url = req.full_url
+        if url.endswith("/Show/"):
+            return _webdav_response(parent)
+        if url.endswith("/Show.S01E02/"):
+            return _webdav_response(e02)
+        if url.endswith("/Show.S01E03/"):
+            return _webdav_response(e03)
+        raise AssertionError("unexpected PROPFIND URL: {}".format(url))
+
+    mock_urlopen.side_effect = propfind
+
+    path = find_video_file("/content/Show/", title_hint="Show.S01E02.1080p.WEB-DL")
+
+    assert path == "/content/Show/Show.S01E02/video.16x9.mkv"
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_movie_hint_recurses_past_zero_size_token_file(
+    mock_urlopen, mock_settings
+):
+    """A movie hint (no episode tags) must not adopt a zero-size token-matching
+    placeholder at the current level; recursion finds the real large feature in
+    a subfolder. Token overlap must not outrank size."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    parent = _propfind_listing(
+        [
+            ("/content/Dune/", True, None),
+            ("/content/Dune/Dune.Part.Two.teaser.mkv", False, None),
+            ("/content/Dune/Feature/", True, None),
+        ]
+    )
+    feature = _propfind_listing(
+        [
+            ("/content/Dune/Feature/", True, None),
+            ("/content/Dune/Feature/Dune.Part.Two.2024.mkv", False, 9000000000),
+        ]
+    )
+
+    def propfind(req, **_kwargs):
+        url = req.full_url
+        if url.endswith("/Dune/"):
+            return _webdav_response(parent)
+        if url.endswith("/Feature/"):
+            return _webdav_response(feature)
+        raise AssertionError("unexpected PROPFIND URL: {}".format(url))
+
+    mock_urlopen.side_effect = propfind
+
+    path = find_video_file(
+        "/content/Dune/", title_hint="Dune.Part.Two.2024.2160p.BluRay"
+    )
+
+    assert path == "/content/Dune/Feature/Dune.Part.Two.2024.mkv"
+
+
+def test_episode_tags_expands_repeated_season_ranges():
+    """The repeated-season range form S01E01-S01E03 must expand to the full
+    inclusive span, same as S01E01-E03."""
+    from resources.lib.webdav import _episode_tags
+
+    assert _episode_tags("Show.S01E01-S01E03.1080p.mkv") == frozenset(
+        {(1, 1), (1, 2), (1, 3)}
+    )
+    # A wider repeated-season range still expands.
+    assert _episode_tags("Show.S02E01-S02E05.mkv") == frozenset(
+        {(2, 1), (2, 2), (2, 3), (2, 4), (2, 5)}
+    )
+    # Cross-season range keeps only the literal endpoints (backref forces the
+    # same season, so the repeated-season expansion does not apply).
+    assert _episode_tags("Show.S01E10-S02E02.mkv") == frozenset({(1, 10), (2, 2)})
+    # Resolutions / codecs still register nothing.
+    assert _episode_tags("Movie.1920x1080.x265.mkv") == frozenset()
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_repeated_season_pack_covers_middle_episode(
+    mock_urlopen, mock_settings
+):
+    """A hint for a covered middle episode (S01E02) must select the
+    repeated-season pack S01E01-S01E03 over a larger non-covering sibling."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    listing = _propfind_listing(
+        [
+            ("/content/Show/", True, None),
+            ("/content/Show/Show.S01E01-S01E03.1080p.mkv", False, 2000000000),
+            ("/content/Show/Show.S01E05.1080p.mkv", False, 9000000000),
+        ]
+    )
+    mock_urlopen.return_value = _webdav_response(listing)
+
+    path = find_video_file("/content/Show/", title_hint="Show.S01E02.1080p.WEB-DL")
+
+    assert path == "/content/Show/Show.S01E01-S01E03.1080p.mkv"

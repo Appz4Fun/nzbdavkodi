@@ -40,15 +40,27 @@ class DeadCandidates:
         return bool(nzo_id) and nzo_id in self._nzo_ids
 
 
+# Statuses the primary submit path (resolver.py) retries, so a single such
+# failure is a transient backend hiccup, not proof the post is dead. Kept as a
+# local constant to avoid a circular import (resolver imports this module).
+_TRANSIENT_HTTP_STATUSES = (408, 502, 503, 504)
+
+
 def is_provably_dead_submit_error(submit_error):
     """Return True when a ``submit_nzb`` error means the post is dead.
 
     ``submit_nzb`` returns ``(None, {"status": <int|str>, "message": str})`` on
-    failure. Any status other than ``"timeout"`` is treated as provably dead
-    (HTTP 5xx, ``"rejected"``, or an unknown status -- conservatively dead so we
-    do not loop on a doomed candidate). A bare ``None`` (or any non-dict) is not
-    a classified submit error, so it is not provably dead.
+    failure. A ``"timeout"`` status and the transient HTTP statuses the primary
+    submit path retries (``408/502/503/504``) are NOT provably dead -- they
+    signal a slow or hiccuping backend, so the candidate stays eligible. Any
+    other status (HTTP 5xx like ``500``, ``"rejected"``, or an unknown status)
+    is treated as provably dead -- conservatively dead so we do not loop on a
+    doomed candidate. A bare ``None`` (or any non-dict) is not a classified
+    submit error, so it is not provably dead.
     """
     if not isinstance(submit_error, dict):
         return False
-    return submit_error.get("status") != "timeout"
+    status = submit_error.get("status")
+    if status == "timeout" or status in _TRANSIENT_HTTP_STATUSES:
+        return False
+    return True
