@@ -3289,6 +3289,29 @@ class _StreamHandler(BaseHTTPRequestHandler):
         AWAITING_DOWNLOAD failover so both perform identical bookkeeping
         (URL/auth swap, watchdog window reset, switch counters, index).
         """
+        # Demote the currently-active source to a last-resort fallback BEFORE we
+        # repoint at the new one. The original primary is never its own backup at
+        # session start; it only re-enters the pool here, after a real cutover to
+        # a different source. It carries a resolved stream_url, so no nzo
+        # re-resolution is needed; the byte-identity gate still guards serving.
+        demoted_url = ctx.get("remote_url")
+        if demoted_url and demoted_url != fallback.get("stream_url"):
+            sources = ctx.setdefault("fallback_sources", [])
+            already_present = any(
+                src.get("stream_url") == demoted_url for src in sources
+            )
+            if not already_present:
+                demoted_auth = ctx.get("auth_header")
+                sources.append(
+                    {
+                        "stream_url": demoted_url,
+                        "stream_headers": (
+                            {"Authorization": demoted_auth} if demoted_auth else {}
+                        ),
+                        "content_length": ctx.get("content_length", 0) or 0,
+                        "demoted": True,
+                    }
+                )
         ctx["remote_url"] = fallback["stream_url"]
         ctx["auth_header"] = (fallback.get("stream_headers") or {}).get("Authorization")
         ctx.pop("upstream_down_notified", None)
