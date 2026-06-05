@@ -4689,3 +4689,45 @@ def test_dedupe_pubdate_keeps_all_undated_candidates():
         "https://b/nzb",
         "https://c/nzb",
     }
+
+
+def test_attach_candidates_dedupes_same_postdate_keeping_best_tier():
+    from resources.lib import fallback_streams
+
+    meta = _movie_meta(resolution="1080p", codec="x265/HEVC", group="GROUP")
+    target = _result(
+        "Example 2026 1080p WEB-DL x265-GROUP", "https://t/nzb", 10000000000, meta=meta
+    )
+    target["_fallback_manifest"] = _manifest(
+        "video", "example.2026.1080p.group.mkv", 10000000000, "t"
+    )
+    target["pubdate"] = "Wed, 01 May 2024 12:00:00 +0000"
+
+    # Same content + group + size -> tier 0. Posted 20 min apart -> same article.
+    keep = _result(
+        "Example 2026 1080p WEB-DL x265-GROUP",
+        "https://keep/nzb",
+        10000000000,
+        meta=meta,
+    )
+    keep["_fallback_manifest"] = _manifest(
+        "video", "example.2026.1080p.group.mkv", 10000000000, "keep"
+    )
+    keep["pubdate"] = "Thu, 02 May 2024 00:00:00 +0000"
+
+    drop = _result(
+        "Example 2026 1080p WEB-DL x265-GROUP",
+        "https://drop/nzb",
+        10000000000,
+        meta=meta,
+    )
+    drop["_fallback_manifest"] = _manifest(
+        "video", "example.2026.1080p.group.mkv", 10000000000, "drop"
+    )
+    drop["pubdate"] = "Thu, 02 May 2024 00:20:00 +0000"
+
+    fallback_streams._attach_candidates_for_target(target, [keep, drop], 5)
+
+    links = [c["link"] for c in target["_fallback_candidates"]]
+    assert len(links) == 1
+    assert links[0] in ("https://keep/nzb", "https://drop/nzb")
