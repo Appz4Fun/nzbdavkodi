@@ -1787,6 +1787,9 @@ def _attach_candidates_for_target(target, pool, max_candidates):
         seen_links.add(candidate_link)
         if candidate_digest:
             seen_article_digests.add(candidate_digest)
+    # Collapse same-post-date duplicates (same upload re-listed) before ranking
+    # so the _MAX_FALLBACKS clamp keeps the best DISTINCT posts, not dupes.
+    matched = _dedupe_candidates_by_pubdate(target, matched)
     # Exact-same-filename first (0 before 1), then tiered ranking: most-similar
     # first (lower tier), then smallest size delta. Sort is stable so equal keys
     # keep pool order.
