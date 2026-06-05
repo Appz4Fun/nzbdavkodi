@@ -17,6 +17,7 @@ import xbmcgui
 import xbmcplugin
 import xbmcvfs
 
+from resources.lib.dead_candidates import is_provably_dead_submit_error
 from resources.lib.download_ledger import record_download
 from resources.lib.fallback_streams import (
     FALLBACK_CANDIDATES_DISABLED,
@@ -2661,7 +2662,13 @@ def _submit_nzb_with_retries(
 
 
 def _submit_fallback_candidates(
-    candidates, monitor, stop_event=None, on_job=None, settings_getter=None
+    candidates,
+    monitor,
+    stop_event=None,
+    on_job=None,
+    settings_getter=None,
+    dead=None,
+    primary_nzb_url=None,
 ):
     """Submit duplicate fallback candidates as standby nzbdav jobs."""
     fallback_jobs = []
@@ -2674,6 +2681,23 @@ def _submit_fallback_candidates(
         nzb_url = candidate.get("link")
         title = candidate.get("title")
         if not nzb_url or not title:
+            continue
+        # Never re-admit a provably-dead candidate, and never offer the active
+        # primary as its own backup (the original primary only re-enters the
+        # pool after a live cutover demotes it -- handled in stream_proxy).
+        if dead is not None and dead.has_url(nzb_url):
+            xbmc.log(
+                "NZB-DAV: Skipping dead fallback candidate '{}'".format(title),
+                xbmc.LOGINFO,
+            )
+            continue
+        if primary_nzb_url and nzb_url == primary_nzb_url:
+            xbmc.log(
+                "NZB-DAV: Skipping primary's own release as a fallback '{}'".format(
+                    title
+                ),
+                xbmc.LOGINFO,
+            )
             continue
         job_name = build_fallback_job_name(title, nzb_url, index)
         candidate_jobs.append((candidate, nzb_url, title, job_name))
@@ -2737,6 +2761,8 @@ def _submit_fallback_candidates(
                     job_name, monitor, settings_getter=settings_getter
                 )
             if not nzo_id:
+                if dead is not None and is_provably_dead_submit_error(submit_error):
+                    dead.add(nzb_url=nzb_url)
                 xbmc.log(
                     "NZB-DAV: Fallback submit skipped for '{}' (status={}): {}".format(
                         job_name, status, submit_error.get("message", "")

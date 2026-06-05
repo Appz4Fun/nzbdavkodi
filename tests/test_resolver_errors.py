@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 nzbdav contributors
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from resources.lib.resolver import resolve
 
@@ -230,4 +230,78 @@ def test_poll_until_ready_does_not_record_dead_on_timeout(resolver_mocks):
             )
 
     assert stream_url is None
+    assert not dead.has_url("http://x/slow.nzb")
+
+
+def test_submit_fallback_skips_dead_and_primary_url():
+    from resources.lib import resolver
+    from resources.lib.dead_candidates import DeadCandidates
+
+    dead = DeadCandidates()
+    dead.add(nzb_url="http://x/dead.nzb")
+    candidates = [
+        {"link": "http://x/dead.nzb", "title": "Dead.Release"},
+        {"link": "http://x/primary.nzb", "title": "Primary.Release"},
+        {"link": "http://x/good.nzb", "title": "Good.Release"},
+    ]
+    monitor = MagicMock()
+    monitor.waitForAbort.return_value = False
+
+    with patch(
+        "resources.lib.resolver.find_completed_by_names", return_value={}
+    ), patch("resources.lib.resolver.find_queued_by_names", return_value={}), patch(
+        "resources.lib.resolver.submit_nzb", return_value=("nzo_good", None)
+    ) as submit:
+        jobs = resolver._submit_fallback_candidates(
+            candidates,
+            monitor,
+            dead=dead,
+            primary_nzb_url="http://x/primary.nzb",
+        )
+
+    submitted_urls = [call.args[0] for call in submit.call_args_list]
+    assert submitted_urls == ["http://x/good.nzb"]
+    assert [j["nzb_url"] for j in jobs] == ["http://x/good.nzb"]
+
+
+def test_submit_fallback_records_dead_on_provable_submit_error():
+    from resources.lib import resolver
+    from resources.lib.dead_candidates import DeadCandidates
+
+    dead = DeadCandidates()
+    candidates = [{"link": "http://x/bad.nzb", "title": "Bad.Release"}]
+    monitor = MagicMock()
+    monitor.waitForAbort.return_value = False
+
+    with patch(
+        "resources.lib.resolver.find_completed_by_names", return_value={}
+    ), patch("resources.lib.resolver.find_queued_by_names", return_value={}), patch(
+        "resources.lib.resolver.submit_nzb",
+        return_value=(None, {"status": 500, "message": "boom"}),
+    ):
+        jobs = resolver._submit_fallback_candidates(candidates, monitor, dead=dead)
+
+    assert jobs == []
+    assert dead.has_url("http://x/bad.nzb")
+
+
+def test_submit_fallback_does_not_record_dead_on_timeout():
+    from resources.lib import resolver
+    from resources.lib.dead_candidates import DeadCandidates
+
+    dead = DeadCandidates()
+    candidates = [{"link": "http://x/slow.nzb", "title": "Slow.Release"}]
+    monitor = MagicMock()
+    monitor.waitForAbort.return_value = False
+
+    with patch(
+        "resources.lib.resolver.find_completed_by_names", return_value={}
+    ), patch("resources.lib.resolver.find_queued_by_names", return_value={}), patch(
+        "resources.lib.resolver.submit_nzb",
+        return_value=(None, {"status": "timeout", "message": "slow"}),
+    ), patch(
+        "resources.lib.resolver._adopt_queued_or_completed_job", return_value=None
+    ):
+        resolver._submit_fallback_candidates(candidates, monitor, dead=dead)
+
     assert not dead.has_url("http://x/slow.nzb")
