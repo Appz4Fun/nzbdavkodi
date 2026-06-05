@@ -281,7 +281,7 @@ def test_submit_fallback_records_dead_on_provable_submit_error():
     ):
         jobs = resolver._submit_fallback_candidates(candidates, monitor, dead=dead)
 
-    assert jobs == []
+    assert not jobs
     assert dead.has_url("http://x/bad.nzb")
 
 
