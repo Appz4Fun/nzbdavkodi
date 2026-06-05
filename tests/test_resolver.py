@@ -4,7 +4,7 @@
 import sys
 import threading
 import time as _time
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 from resources.lib.resolver import (
     _DOWNLOAD_TIMEOUT_MAX,
@@ -519,7 +519,15 @@ def test_fallback_worker_append_invokes_on_append_hook():
 
     captured = {}
 
-    def fake_submit(cands, monitor, stop_event=None, on_job=None, settings_getter=None):
+    def fake_submit(
+        cands,
+        monitor,
+        stop_event=None,
+        on_job=None,
+        settings_getter=None,
+        dead=None,
+        primary_nzb_url=None,
+    ):
         captured["on_job"] = on_job
 
     with patch(
@@ -600,7 +608,15 @@ def test_fallback_worker_append_swallows_on_append_errors():
 
     captured = {}
 
-    def fake_submit(cands, monitor, stop_event=None, on_job=None, settings_getter=None):
+    def fake_submit(
+        cands,
+        monitor,
+        stop_event=None,
+        on_job=None,
+        settings_getter=None,
+        dead=None,
+        primary_nzb_url=None,
+    ):
         captured["on_job"] = on_job
 
     with patch(
@@ -1196,6 +1212,8 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
             candidate_loader=None,
             prewarm_delay=_FALLBACK_PREWARM_DELAY_SECONDS,
             wait_for_playback=True,
+            dead=ANY,
+            primary_nzb_url="http://hydra/getnzb/primary",
         )
         return (
             "http://webdav/content/primary/movie.mp4",
@@ -1234,6 +1252,8 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
         candidate_loader=None,
         prewarm_delay=_FALLBACK_PREWARM_DELAY_SECONDS,
         wait_for_playback=True,
+        dead=ANY,
+        primary_nzb_url="http://hydra/getnzb/primary",
     )
     mock_start_prepare.assert_called_once_with(
         "http://webdav/content/primary/movie.mp4",
@@ -2613,6 +2633,8 @@ def test_resolve_and_play_defers_fallback_loader_until_primary_accept(
         candidate_loader=loader_kwarg,
         prewarm_delay=_FALLBACK_PREWARM_DELAY_SECONDS,
         wait_for_playback=True,
+        dead=ANY,
+        primary_nzb_url="http://hydra/getnzb/primary",
     )
 
 
