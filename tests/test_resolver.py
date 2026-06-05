@@ -6917,3 +6917,163 @@ def test_maybe_clear_queue_skips_completed_probe_when_picker_already_checked(
 
     mock_find.assert_not_called()
     mock_clear.assert_called_once()
+
+
+# --- (E) download-ledger pubdate recorded only after stream confirmed playable ---
+
+
+def _poll_dialog():
+    dlg = MagicMock()
+    dlg.iscanceled.return_value = False
+    return dlg
+
+
+@patch("resources.lib.resolver.record_download")
+@patch("resources.lib.resolver._handle_history_result")
+@patch("resources.lib.resolver._handle_job_status", return_value=(False, None))
+@patch("resources.lib.resolver._poll_once", return_value=({}, None, None))
+@patch("resources.lib.resolver._submit_nzb_with_retries", return_value="nzo-1")
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
+@patch("resources.lib.resolver.xbmc")
+def test_poll_until_ready_records_ledger_only_on_playable_success(
+    mock_xbmc,
+    _mock_existing,
+    _mock_submit,
+    _mock_poll_once,
+    _mock_status,
+    mock_history,
+    mock_record,
+):
+    """A submit whose poll returns a stream URL DOES record the ledger pubdate
+    (keyed to THIS confirmed-playable download)."""
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    mock_history.return_value = (False, "http://webdav/movie.mkv", {"H": "1"}, 0)
+
+    result = _poll_until_ready(
+        "http://hydra/getnzb/primary",
+        "movie.mkv",
+        _poll_dialog(),
+        poll_interval=1,
+        download_timeout=60,
+        download_pubdate="2026-01-02",
+        download_size=12345,
+    )
+
+    assert result == ("http://webdav/movie.mkv", {"H": "1"})
+    mock_record.assert_called_once_with("movie.mkv", "2026-01-02", 12345)
+
+
+@patch("resources.lib.resolver.record_download")
+@patch("resources.lib.resolver._handle_history_result")
+@patch("resources.lib.resolver._handle_job_status", return_value=(True, None))
+@patch(
+    "resources.lib.resolver._poll_once", return_value=({"status": "Failed"}, None, None)
+)
+@patch("resources.lib.resolver._submit_nzb_with_retries", return_value="nzo-1")
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
+@patch("resources.lib.resolver.xbmc")
+def test_poll_until_ready_does_not_record_ledger_when_poll_fails(
+    mock_xbmc,
+    _mock_existing,
+    _mock_submit,
+    _mock_poll_once,
+    _mock_status,
+    mock_history,
+    mock_record,
+):
+    """A submit that succeeds but whose poll returns (None, None) (job failed /
+    timed out / cancelled) must NOT record a ledger pubdate — otherwise a
+    different repost's same-name completed row could later look adopted."""
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    mock_history.return_value = (False, None, None, 0)
+
+    result = _poll_until_ready(
+        "http://hydra/getnzb/primary",
+        "movie.mkv",
+        _poll_dialog(),
+        poll_interval=1,
+        download_timeout=60,
+        download_pubdate="2026-01-02",
+        download_size=12345,
+    )
+
+    assert result == (None, None)
+    mock_record.assert_not_called()
+
+
+# --- (J) delayed fallback submit aborts when playback goes inactive ---
+
+
+def test_fallback_worker_stop_event_during_prewarm_aborts_submit():
+    """Existing behavior: stop event set during the prewarm wait -> no submit."""
+    from resources.lib.resolver import (
+        _signal_fallback_playback_started,
+        _start_fallback_submit_worker,
+    )
+
+    submitted = []
+
+    def fake_submit(*_args, **_kwargs):
+        submitted.append(True)
+
+    with patch(
+        "resources.lib.resolver._submit_fallback_candidates", side_effect=fake_submit
+    ), patch("resources.lib.resolver._FALLBACK_PREWARM_POLL_SECONDS", 0.01), patch(
+        "resources.lib.resolver.xbmcgui"
+    ) as mock_gui:
+        mock_gui.Window.return_value.getProperty.return_value = "true"
+        state = _start_fallback_submit_worker(
+            candidates=[{"nzb_url": "x"}],
+            prewarm_delay=5,
+            wait_for_playback=True,
+        )
+        _signal_fallback_playback_started(state)
+        _time.sleep(0.05)
+        state["stop"].set()
+        state["thread"].join(timeout=2)
+
+    assert not submitted
+
+
+def test_fallback_worker_inactive_property_during_prewarm_aborts_submit():
+    """NEW: after playback is signaled, the cross-process ``nzbdav.active``
+    property going non-"true" (service.py cleared it on stop/end) must abort the
+    prewarm wait so no standby NZBs are submitted for a dead session."""
+    from resources.lib.resolver import (
+        _signal_fallback_playback_started,
+        _start_fallback_submit_worker,
+    )
+
+    submitted = []
+
+    def fake_submit(*_args, **_kwargs):
+        submitted.append(True)
+
+    active_value = {"v": "true"}
+
+    def get_property(_name):
+        return active_value["v"]
+
+    with patch(
+        "resources.lib.resolver._submit_fallback_candidates", side_effect=fake_submit
+    ), patch("resources.lib.resolver._FALLBACK_PREWARM_POLL_SECONDS", 0.01), patch(
+        "resources.lib.resolver.xbmcgui"
+    ) as mock_gui:
+        mock_gui.Window.return_value.getProperty.side_effect = get_property
+        state = _start_fallback_submit_worker(
+            candidates=[{"nzb_url": "x"}],
+            prewarm_delay=5,
+            wait_for_playback=True,
+        )
+        _signal_fallback_playback_started(state)
+        _time.sleep(0.05)
+        # Simulate service.py clearing nzbdav.active on stop/end (cross-process).
+        active_value["v"] = ""
+        # prewarm_delay is 5s but the worker must abort well before that once the
+        # active flag clears; a short join proves it returned early rather than
+        # the join merely timing out before a still-pending submit.
+        state["thread"].join(timeout=2)
+
+    assert not state["thread"].is_alive(), "worker did not abort on inactive flag"
+    assert not submitted
+    assert not state["stop"].is_set()

@@ -499,13 +499,25 @@ class ReadAheadBuffer:
             self.base_offset += drop
 
     def update_served_high_water(self, offset):
-        """Record the highest offset delivered to the client."""
+        """Record the highest offset delivered to the client.
+
+        When the play head has been served PAST the end of the buffered window
+        (the common startup case: an initial read MISSES the read-ahead window
+        and is served directly from upstream, so ``free_behind`` has no buffered
+        bytes to consume), repoint ``base_offset`` to the served offset and drop
+        any now-behind stale data. This advances ``next_fetch_offset`` so the
+        prefetch daemon builds a FORWARD lead from the play head instead of
+        re-fetching from offset 0 behind it."""
         try:
             offset = int(offset)
         except (TypeError, ValueError):
             return
         with self._lock:
             self.served_high_water = max(self.served_high_water, offset)
+            window_end = self.base_offset + len(self.data)
+            if offset >= window_end:
+                self.data = bytearray()
+                self.base_offset = offset
 
     def note_seek(self, new_start):
         """Repoint the window on a seek OUTSIDE the buffered range.
@@ -3848,6 +3860,14 @@ class _StreamHandler(BaseHTTPRequestHandler):
             # Digests present and provably differ — a different file.
             return _FALLBACK_MISMATCH
         source["validated"] = True
+        # A source that prevalidates after a few INCONCLUSIVE probes (it was
+        # still downloading when first probed) must not carry a stale transient
+        # streak that would later abandon it once it crosses
+        # _FALLBACK_SOURCE_TRANSIENT_MISS_MAX. Reaching validated proves it is
+        # readable, so clear the streak. The "stuck forever" bound still applies
+        # to sources that never validate.
+        if source.get("transient_miss_count"):
+            source["transient_miss_count"] = 0
         return _FALLBACK_MATCH
 
     def _prevalidate_ready_fallback_sources(self, ctx):
@@ -3915,6 +3935,11 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     cache_fallback_range_bytes=True,
                 ):
                     source["validated"] = True
+                    # Prevalidation succeeded after earlier INCONCLUSIVE probes
+                    # (still-downloading at first contact): clear any transient
+                    # streak so it is not later abandoned at the miss bound.
+                    if source.get("transient_miss_count"):
+                        source["transient_miss_count"] = 0
                     validated += 1
             finally:
                 if had_hint:
@@ -5812,6 +5837,17 @@ class _StreamHandler(BaseHTTPRequestHandler):
                         )
                 self.wfile.write(chunk)
                 written += len(chunk)
+                # Tell the read-ahead buffer how far the play head has now been
+                # served directly from upstream. On the common startup MISS the
+                # buffer was never told the served position, so its base stayed
+                # at 0 and the prefetch daemon kept re-fetching bytes already
+                # behind the play head instead of building a forward lead. The
+                # hit path updates the high-water inside _serve_from_readahead;
+                # this covers the bytes served straight from upstream. Idempotent
+                # (max-based) so no double-count with the prefix on a hit.
+                readahead_buf = ctx.get(_READAHEAD_BUFFER_KEY)
+                if readahead_buf is not None:
+                    readahead_buf.update_served_high_water(requested_start + written)
                 # Env-gated fault injection: a single long-lived connection
                 # opened below the threshold can stream past it, so the
                 # entry-only check misses it — re-check the absolute position

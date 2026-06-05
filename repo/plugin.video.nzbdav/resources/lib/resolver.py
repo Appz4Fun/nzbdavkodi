@@ -2872,6 +2872,52 @@ _FALLBACK_PREWARM_DELAY_SECONDS = 120
 # missed signal degrades to a late submit, never a permanently stranded backup).
 _FALLBACK_PLAYBACK_WAIT_POLL_SECONDS = 1.0
 _FALLBACK_PLAYBACK_WAIT_CAP_SECONDS = 300.0
+# Short interval the prewarm wait wakes on to re-check whether playback went
+# inactive cross-process. Small enough to abort promptly, big enough to avoid
+# busy-spinning. Module-level so tests can patch it to run fast.
+_FALLBACK_PREWARM_POLL_SECONDS = 1.0
+
+
+def _playback_still_active():
+    """Best-effort cross-process check that playback hasn't been stopped/ended.
+
+    The fallback submit worker's ``state["stop"]`` event is in-process and can
+    never be set by service.py's player callbacks (a different process). The
+    shared ``nzbdav.active`` window property IS observable across processes, so
+    a cleared/non-"true" value after playback has started signals the session
+    is dead. Guarded so a property-read failure never aborts submission (we
+    return True -- assume active -- on any error).
+    """
+    try:
+        return xbmcgui.Window(10000).getProperty("nzbdav.active") == "true"
+    except Exception:  # pylint: disable=broad-except
+        return True
+
+
+def _wait_prewarm_or_inactive(state, prewarm_delay, playback_signaled):
+    """Wait up to ``prewarm_delay`` seconds, aborting early on stop/inactive.
+
+    Returns True if the worker should ABORT (stop event set, or -- only once
+    ``playback_signaled`` is True -- the cross-process ``nzbdav.active`` flag is
+    no longer "true"). Returns False once the full delay elapses with playback
+    still active. Uses ``Event.wait`` for the polling sleep so a daemon worker
+    never blocks Kodi shutdown. Total wait equals ``prewarm_delay``.
+    """
+    stop = state.get("stop")
+    if not prewarm_delay:
+        return bool(stop is not None and stop.is_set())
+    interval = _FALLBACK_PREWARM_POLL_SECONDS
+    remaining = float(prewarm_delay)
+    while remaining > 0:
+        wait_for = interval if interval < remaining else remaining
+        if stop is not None and stop.wait(wait_for):
+            return True
+        remaining -= wait_for
+        # Only treat "inactive" as a stop AFTER playback was signaled, so we
+        # don't abort during the pre-playback window before active is ever set.
+        if playback_signaled and not _playback_still_active():
+            return True
+    return False
 
 
 def _get_fallback_submit_delay_seconds(settings_getter=None):
@@ -3009,7 +3055,10 @@ def _start_fallback_submit_worker(
             # primary). Both waits are cancellable: a stop aborts before submit.
             if wait_for_playback and not _await_playback_start(state):
                 return
-            if prewarm_delay and state["stop"].wait(prewarm_delay):
+            # ``wait_for_playback`` worker only reaches here once playback was
+            # signaled; a non-waiting worker never gets a cross-process active
+            # flag to honor, so only its stop event aborts the prewarm wait.
+            if _wait_prewarm_or_inactive(state, prewarm_delay, wait_for_playback):
                 return
             active_candidates = candidate_list
             candidate_lookup_disabled = False
@@ -3518,18 +3567,6 @@ def _poll_until_ready(
     )
     if not nzo_id:
         return None, None
-    # A fresh submit just happened (not a cache hit -- _existing_completed_stream
-    # returned above for those). Record the release's Usenet post-date keyed by
-    # title so the picker can later distinguish THIS download from a same-name
-    # repost posted on a different day. Fail-soft: never let bookkeeping break
-    # playback.
-    try:
-        record_download(title, download_pubdate, download_size)
-    except Exception as error:  # pylint: disable=broad-except
-        xbmc.log(
-            "NZB-DAV: download-ledger record failed (non-fatal): {}".format(error),
-            xbmc.LOGDEBUG,
-        )
     if on_primary_submitted is not None:
         try:
             on_primary_submitted(nzo_id)
@@ -3596,6 +3633,22 @@ def _poll_until_ready(
             )
         )
         if stream_url:
+            # The stream is confirmed playable (the only success path). Record
+            # the release's Usenet post-date keyed by title ONLY now -- never on
+            # a submit that later times out / fails / is cancelled -- so the
+            # picker can distinguish THIS completed download from a same-name
+            # repost posted on a different day, and a failed attempt can't make a
+            # different repost's same-name completed row look adopted here.
+            # Fail-soft: never let bookkeeping break playback.
+            try:
+                record_download(title, download_pubdate, download_size)
+            except Exception as error:  # pylint: disable=broad-except
+                xbmc.log(
+                    "NZB-DAV: download-ledger record failed (non-fatal): {}".format(
+                        error
+                    ),
+                    xbmc.LOGDEBUG,
+                )
             return stream_url, stream_headers
         if should_stop:
             if dead is not None and (history or {}).get("status") == "Failed":

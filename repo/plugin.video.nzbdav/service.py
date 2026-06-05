@@ -241,8 +241,15 @@ class NzbdavPlayer(xbmc.Player):
         before writing fresh properties would cause the service to pick
         up the previous session's URL/title if ``nzbdav.active="true"``
         is ever re-set by a stale/racing writer.
+
+        ``nzbdav.active`` is cleared here too so that "playback inactive"
+        is observable cross-process: the in-process ``state["stop"]`` event
+        the fallback submit worker waits on lives in the resolver/plugin
+        process and can't be set from this service process. Clearing the
+        shared window property lets that worker abort its prewarm wait when
+        the user stops/ends playback during the standby-submit window.
         """
-        for prop in (_PROP_STREAM_URL, _PROP_STREAM_TITLE):
+        for prop in (_PROP_ACTIVE, _PROP_STREAM_URL, _PROP_STREAM_TITLE):
             try:
                 _HOME_WINDOW.clearProperty(prop)
             except _PLAYER_RUNTIME_ERRORS:

@@ -147,6 +147,42 @@ def test_is_full_and_space_remaining():
     assert buf.space_remaining() == 0
 
 
+def test_served_high_water_past_window_advances_next_fetch_offset():
+    """Regression (id 3352749425): a direct upstream serve on a read-ahead
+    MISS must advance next_fetch_offset past the served bytes so the prefetch
+    daemon builds a forward lead instead of re-fetching from offset 0."""
+    buf = ReadAheadBuffer(cap_bytes=256 * 1024 * 1024, content_length=10_000_000)
+    # Startup miss: nothing buffered, base still at 0.
+    assert buf.next_fetch_offset() == 0
+    served_end = 4_000_000
+    buf.update_served_high_water(served_end)
+    # Buffer now knows the play head; prefetch resumes AHEAD of it.
+    assert buf.next_fetch_offset() >= served_end
+    assert buf.next_fetch_offset() == served_end
+
+
+def test_served_high_water_within_window_keeps_forward_lead():
+    """A high-water at/behind the buffered window (hit path, post free_behind)
+    must NOT discard the forward lead the prefetch daemon already built."""
+    buf = ReadAheadBuffer(cap_bytes=1024, content_length=10_000)
+    buf.append(0, b"ABCDEFGHIJ")
+    buf.free_behind(5)  # hit path consumes ABCDE; base=5, data=FGHIJ
+    buf.update_served_high_water(5)
+    # Forward lead preserved.
+    assert buf.read_prefix(5, 9) == b"FGHIJ"
+    assert buf.next_fetch_offset() == 10
+
+
+def test_served_high_water_discards_stale_behind_data():
+    """A miss served past stale buffered bytes drops the now-behind data and
+    repoints the base to the served offset."""
+    buf = ReadAheadBuffer(cap_bytes=1024, content_length=10_000)
+    buf.append(0, b"ABCDE")  # stale prefetch at offset 0
+    buf.update_served_high_water(500)  # played far past the stale bytes
+    assert buf.read_prefix(0, 4) == b""
+    assert buf.next_fetch_offset() == 500
+
+
 def test_never_buffers_past_content_length_via_next_fetch_offset():
     buf = ReadAheadBuffer(cap_bytes=1024, content_length=3)
     buf.append(0, b"ABC")
@@ -291,6 +327,52 @@ def test_stream_upstream_range_no_buffer_unchanged():
     ):
         handler._stream_upstream_range(ctx, 0, 99)
     mock_urlopen.assert_called_once()
+
+
+def _mock_range_response(chunks, status=206, headers=None):
+    resp = MagicMock()
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=False)
+    resp.read = MagicMock(side_effect=list(chunks) + [b""])
+    resp.status = status
+    resp.getcode = MagicMock(return_value=status)
+    header_map = {str(k).lower(): v for k, v in (headers or {}).items()}
+    resp.headers.get = MagicMock(
+        side_effect=lambda key, default=None: header_map.get(str(key).lower(), default)
+    )
+    resp.close = MagicMock()
+    return resp
+
+
+def test_stream_upstream_range_miss_updates_served_high_water():
+    """Regression (id 3352749425): on a read-ahead MISS the bytes are served
+    directly from upstream; after the write the buffer must be told the served
+    position so next_fetch_offset advances past it (forward lead, not re-fetch
+    from 0)."""
+    handler = _make_handler()
+    content_length = 10_000_000
+    buf = ReadAheadBuffer(cap_bytes=256 * 1024 * 1024, content_length=content_length)
+    # Startup: nothing buffered -> read_prefix MISS, served straight upstream.
+    assert buf.next_fetch_offset() == 0
+    ctx = {
+        "remote_url": "http://webdav/x.mkv",
+        "auth_header": None,
+        "content_length": content_length,
+        _READAHEAD_BUFFER_KEY: buf,
+    }
+    payload = b"Z" * 100
+    resp = _mock_range_response(
+        [payload],
+        headers={"Content-Range": "bytes 0-99/{}".format(content_length)},
+    )
+    with patch.object(stream_proxy, "urlopen", return_value=resp), patch.object(
+        handler, "_pop_cached_fallback_range", return_value=b""
+    ), patch.object(handler, "_wait_for_initial_range_prefetch"):
+        result, written = handler._stream_upstream_range(ctx, 0, 99)
+    assert result == _UPSTREAM_RANGE_OK
+    assert written == 100
+    served_end = 0 + written
+    assert buf.next_fetch_offset() >= served_end
 
 
 # ---------------------------------------------------------------------------
