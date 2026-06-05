@@ -3294,6 +3294,12 @@ class _StreamHandler(BaseHTTPRequestHandler):
         # session start; it only re-enters the pool here, after a real cutover to
         # a different source. It carries a resolved stream_url, so no nzo
         # re-resolution is needed; the byte-identity gate still guards serving.
+        #
+        # Mark it validated: this source was just actively serving these exact
+        # bytes, so it is content-identical by construction. Without the flag the
+        # prevalidation warmer would treat it as a fresh source and re-fingerprint
+        # it (an extra upstream open of a peer we already trust); validated=True
+        # skips that while leaving it selectable as a last resort.
         demoted_url = ctx.get("remote_url")
         if demoted_url and demoted_url != fallback.get("stream_url"):
             sources = ctx.setdefault("fallback_sources", [])
@@ -3310,6 +3316,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
                         ),
                         "content_length": ctx.get("content_length", 0) or 0,
                         "demoted": True,
+                        "validated": True,
                     }
                 )
         ctx["remote_url"] = fallback["stream_url"]
