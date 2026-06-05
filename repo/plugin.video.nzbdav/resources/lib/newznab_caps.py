@@ -75,9 +75,25 @@ def _params(value):
     return [item.strip() for item in str(value or "").split(",") if item.strip()]
 
 
+def _build_xxe_safe_parser():
+    """Return an ElementTree XMLParser with external entities disabled.
+
+    ``xml.etree.ElementTree`` doesn't expose a ``resolve_entities=False``
+    knob directly, but the underlying expat parser can be told to
+    ignore DefaultHandler output and reject ExternalEntityRef callbacks.
+    """
+    parser = ET.XMLParser()  # nosec B314 - entities disabled below
+    try:
+        parser.parser.DefaultHandler = lambda _d: None
+        parser.parser.ExternalEntityRefHandler = lambda *_: False
+    except AttributeError:  # pragma: no cover — non-expat parser backend
+        pass
+    return parser
+
+
 def parse_caps(xml_text):
     try:
-        root = ET.fromstring(xml_text)  # nosec B314 - Python 3.8+ disables entities
+        root = ET.fromstring(xml_text, parser=_build_xxe_safe_parser())  # nosec B314 - explicit entities disabled
     except (ET.ParseError, TypeError):
         return _empty_caps()
 

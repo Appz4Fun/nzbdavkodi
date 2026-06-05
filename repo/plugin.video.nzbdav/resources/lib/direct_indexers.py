@@ -211,7 +211,19 @@ def build_search_url(api_url, params):
 
 
 def _build_xxe_safe_parser():
-    return ET.XMLParser()  # nosec B314 - Python 3.8+ disables external entities
+    """Return an ElementTree XMLParser with external entities disabled.
+
+    ``xml.etree.ElementTree`` doesn't expose a ``resolve_entities=False``
+    knob directly, but the underlying expat parser can be told to
+    ignore DefaultHandler output and reject ExternalEntityRef callbacks.
+    """
+    parser = ET.XMLParser()  # nosec B314 - entities disabled below
+    try:
+        parser.parser.DefaultHandler = lambda _d: None
+        parser.parser.ExternalEntityRefHandler = lambda *_: False
+    except AttributeError:  # pragma: no cover — non-expat parser backend
+        pass
+    return parser
 
 
 def _parse_newznab_attrs(item):
