@@ -93,7 +93,9 @@ def _build_xxe_safe_parser():
 
 def parse_caps(xml_text):
     try:
-        root = ET.fromstring(xml_text, parser=_build_xxe_safe_parser())  # nosec B314 - explicit entities disabled
+        root = ET.fromstring(
+            xml_text, parser=_build_xxe_safe_parser()
+        )  # nosec B314 - explicit entities disabled
     except (ET.ParseError, TypeError):
         return _empty_caps()
 

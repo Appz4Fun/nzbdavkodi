@@ -1781,7 +1781,9 @@ def _xml_root_name(response):
         pass
 
     try:
-        root = ET.fromstring(response, parser=parser)  # nosec B314 - explicit entities disabled
+        root = ET.fromstring(
+            response, parser=parser
+        )  # nosec B314 - explicit entities disabled
     except (TypeError, ET.ParseError):
         return ""
     return root.tag.rsplit("}", 1)[-1].lower()
