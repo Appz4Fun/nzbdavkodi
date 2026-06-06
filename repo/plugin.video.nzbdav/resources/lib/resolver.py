@@ -3810,6 +3810,22 @@ def _poll_until_ready(
             return None, None
 
 
+def _nzbget_enabled():
+    """Return True when the NZBGet backend toggle is on.
+
+    Read defensively: ``Addon()`` can raise ``RuntimeError`` early in
+    startup and ``getSetting`` can (rarely) return None, so any failure
+    falls back to the nzbdav path instead of letting an exception escape
+    ``resolve`` / ``resolve_and_play`` before a resolution call — the exact
+    resolve-hang that TODO.md §H.2-H9 guards against.
+    """
+    try:
+        value = xbmcaddon.Addon("plugin.video.nzbdav").getSetting("nzbget_enabled")
+        return (value or "").strip().lower() == "true"
+    except (RuntimeError, AttributeError):
+        return False
+
+
 def resolve(handle, params):
     """Handle plugin:// URL resolution (TMDBHelper integration).
 
@@ -3834,6 +3850,16 @@ def resolve(handle, params):
         xbmcgui.Dialog().ok(_addon_name(), _string(30096))
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
         xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
+        return
+
+    # NZBGet backend toggle: when enabled, the whole download+playback path
+    # is handled by the NZBGet resolver (submit to NZBGet, wait, play from
+    # SMB). The nzbdav streaming/fallback machinery below is bypassed. This
+    # is the handle-based entry; setResolvedUrl is the completion signal.
+    if _nzbget_enabled():
+        from resources.lib.nzbget_resolver import resolve_and_play_nzbget
+
+        resolve_and_play_nzbget(handle, params)
         return
 
     dialog = None
@@ -3974,6 +4000,16 @@ def resolve_and_play(nzb_url, title, params=None):
     playback_cleanup_state = None
     try:
         _resolve_stage("enter resolve_and_play")
+        # NZBGet backend toggle (handle-less path). resolve_and_play has no
+        # plugin handle — TMDBHelper /resolve, the in-addon search picker,
+        # and script-play all reach here — so play_nzbget starts playback
+        # via xbmc.Player() rather than setResolvedUrl. The nzbdav
+        # streaming/fallback machinery below is bypassed.
+        if _nzbget_enabled():
+            from resources.lib.nzbget_resolver import play_nzbget
+
+            play_nzbget(nzb_url, title, params)
+            return
         resolve_params = params or {}
         settings_getter = resolve_params.get("_settings_getter")
         selected_indexer = resolve_params.get("_selected_indexer", "")
