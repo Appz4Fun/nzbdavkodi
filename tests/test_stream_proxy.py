@@ -2833,11 +2833,17 @@ def test_prevalidated_fallback_reuses_current_probe_for_first_fallback_bytes():
     # behavior directly (zero fallback stream-opens) rather than via a global
     # call_count or wall-clock timing: a stray background read-ahead open from a
     # leaked sibling-test daemon, or scheduler jitter under parallel suite load,
-    # would otherwise flake this without indicating any real regression.
+    # would otherwise flake this without indicating any real regression. Match on
+    # this test's unique fallback auth header (not just the URL): a leaked sibling
+    # daemon read-ahead also targets a "/fallback.mkv" URL through the same patched
+    # module-level urlopen, but carries a different Authorization, so a bare URL
+    # filter miscounts it as our open.
     fallback_stream_opens = sum(
         1
         for call in stream_open.call_args_list
-        if call.args and call.args[0].full_url.endswith("/fallback.mkv")
+        if call.args
+        and call.args[0].full_url.endswith("/fallback.mkv")
+        and _request_header(call.args[0], "Authorization") == "Basic fallback"
     )
     assert fallback_stream_opens == 0
 
@@ -9523,6 +9529,93 @@ def test_live_fallback_selection_reuses_expected_length_for_standby_refresh():
     assert expected_length.call_count == 1
 
 
+def test_standby_refresh_transient_zero_length_does_not_fail_source():
+    """A transient HEAD probe (length 0) must not permanently fail a standby.
+
+    fetch_content_length() coerces a 5xx/timeout to 0. With an expected
+    length of 1000, the old guard treated 0 != 1000 as a mismatch and set
+    ``failed = True``, dropping an otherwise-valid fallback for the rest of
+    the session. Length 0 is now INCONCLUSIVE: the source stays usable and
+    fingerprint validation gates it on a later pass.
+    """
+    handler = _make_handler()
+    standby = {
+        "nzo_id": "nzo-standby",
+        "stream_url": "",
+        "stream_headers": {},
+        "content_length": 0,
+        "validated": False,
+        "failed": False,
+    }
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": None,
+        "content_length": 1000,
+        "fallback_sources": [standby],
+    }
+
+    with patch(
+        "resources.lib.nzbdav_api.get_job_history",
+        return_value={
+            "status": "Completed",
+            "storage": "/mnt/nzbdav/completed-symlinks/movies/Standby",
+        },
+    ), patch(
+        "resources.lib.webdav.find_video_file",
+        return_value="/content/movies/Standby/fallback.mkv",
+    ), patch(
+        "resources.lib.webdav.get_webdav_stream_url_for_path",
+        return_value=("http://webdav/content/fallback.mkv", {}),
+    ), patch(
+        "resources.lib.fallback_streams.fetch_content_length", return_value=0
+    ), patch.object(
+        handler, "_fallback_source_matches", return_value=True
+    ):
+        source = handler._select_live_fallback_source(ctx, 100, 999)
+
+    assert source is standby
+    assert standby["failed"] is False
+
+
+def test_standby_refresh_positive_length_mismatch_still_fails_source():
+    """A positive, different probed length is still a provable mismatch."""
+    handler = _make_handler()
+    standby = {
+        "nzo_id": "nzo-standby",
+        "stream_url": "",
+        "stream_headers": {},
+        "content_length": 0,
+        "validated": False,
+        "failed": False,
+    }
+    ctx = {
+        "remote_url": "http://webdav/content/primary.mkv",
+        "auth_header": None,
+        "content_length": 1000,
+        "fallback_sources": [standby],
+    }
+
+    with patch(
+        "resources.lib.nzbdav_api.get_job_history",
+        return_value={
+            "status": "Completed",
+            "storage": "/mnt/nzbdav/completed-symlinks/movies/Standby",
+        },
+    ), patch(
+        "resources.lib.webdav.find_video_file",
+        return_value="/content/movies/Standby/fallback.mkv",
+    ), patch(
+        "resources.lib.webdav.get_webdav_stream_url_for_path",
+        return_value=("http://webdav/content/fallback.mkv", {}),
+    ), patch(
+        "resources.lib.fallback_streams.fetch_content_length", return_value=2000
+    ):
+        refreshed = handler._refresh_standby_fallback_source(ctx, standby)
+
+    assert refreshed is False
+    assert standby["failed"] is True
+
+
 def test_live_fallback_selection_reuses_standby_length_for_match_validation():
     """Completed standby validation should reuse the freshly probed source length."""
     handler = _make_handler()
@@ -15567,6 +15660,53 @@ def test_non_awaiting_read_resets_awaiting_streak():
     )
     assert count == 1
     assert ctx["_awaiting_download_no_progress"] == 1
+
+
+def test_awaiting_streak_scoped_to_failing_byte_offset():
+    """A session-wide AWAITING_DOWNLOAD streak must not accrue across unrelated
+    byte offsets. A single session issues many ranges (startup tail probe,
+    reconnects, seeks); a no-progress AWAITING read at one offset must not
+    advance a streak begun at a different offset. Only CONSECUTIVE no-progress
+    reads of the SAME stuck region escalate toward failover. Pins the per-byte
+    scoping of _bump_awaiting_no_progress (CR-2c)."""
+    from resources.lib.stream_proxy import (
+        _AWAITING_DOWNLOAD_NO_PROGRESS_MAX,
+        _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD,
+    )
+
+    ctx = {}
+    handler = _make_handler_with_server(ctx, range_header="bytes=0-9")
+
+    awaiting = _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD
+    count = 0
+    # A no-progress AWAITING read at offset 100 starts the streak.
+    count = handler._bump_awaiting_no_progress(ctx, awaiting, count, 100)
+    assert count == 1
+    count = handler._bump_awaiting_no_progress(ctx, awaiting, count, 100)
+    assert count == 2
+    # A read at a DIFFERENT offset (e.g. a seek / tail probe) must reset the
+    # streak to a fresh 1, NOT advance to 3 and trip a false "stuck" failover.
+    count = handler._bump_awaiting_no_progress(ctx, awaiting, count, 999999)
+    assert count == 1
+    assert ctx["_awaiting_download_no_progress"] == 1
+    assert ctx["_awaiting_download_no_progress_byte"] == 999999
+    # Mixed offsets never let the streak reach the failover cap; only the SAME
+    # offset repeatedly stuck does.
+    assert _AWAITING_DOWNLOAD_NO_PROGRESS_MAX >= 2
+    count = 0
+    ctx2 = {}
+    last = 0
+    for _ in range(_AWAITING_DOWNLOAD_NO_PROGRESS_MAX + 2):
+        last += 1000
+        count = handler._bump_awaiting_no_progress(ctx2, awaiting, count, last)
+        assert count == 1
+    # The Nth CONSECUTIVE no-progress read of the SAME offset DOES reach the cap
+    # (the genuinely-dead-region case that must fail over).
+    count = 0
+    ctx3 = {}
+    for _ in range(_AWAITING_DOWNLOAD_NO_PROGRESS_MAX):
+        count = handler._bump_awaiting_no_progress(ctx3, awaiting, count, 4242)
+    assert count >= _AWAITING_DOWNLOAD_NO_PROGRESS_MAX
 
 
 def test_standby_refresh_threads_source_title_as_find_video_file_hint():

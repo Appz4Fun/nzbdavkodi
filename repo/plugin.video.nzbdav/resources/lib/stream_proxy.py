@@ -3304,7 +3304,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
         return cmd
 
     @staticmethod
-    def _bump_awaiting_no_progress(ctx, result, current_count):
+    def _bump_awaiting_no_progress(ctx, result, current_count, current_byte=None):
         """Advance the session-persistent no-progress AWAITING_DOWNLOAD count.
 
         Only a clean download-high-water short read (AWAITING_DOWNLOAD) that
@@ -3312,12 +3312,26 @@ class _StreamHandler(BaseHTTPRequestHandler):
         (keeping the streak strictly consecutive AWAITING reads). The count
         lives in ctx so it survives Kodi's Connection: close reconnects (a dead
         region reads as a clean short read on every fresh GET). See F-route.
+
+        The streak is also scoped to the failing byte offset: a single session
+        issues many ranges (startup tail probe, reconnects, seeks), and a
+        no-progress AWAITING at one offset must not advance a streak begun at an
+        unrelated offset. When current_byte differs from the offset that last
+        advanced the streak, the count resets first so only CONSECUTIVE
+        no-progress reads of the SAME stuck region escalate to failover.
         """
+        if current_byte is not None:
+            last_byte = ctx.get("_awaiting_download_no_progress_byte")
+            if last_byte is not None and last_byte != current_byte:
+                current_count = 0
         if result == _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD:
             current_count += 1
             ctx["_awaiting_download_no_progress"] = current_count
+            if current_byte is not None:
+                ctx["_awaiting_download_no_progress_byte"] = current_byte
             return current_count
         ctx["_awaiting_download_no_progress"] = 0
+        ctx.pop("_awaiting_download_no_progress_byte", None)
         return 0
 
     def _activate_fallback_source(self, ctx, fallback, current, stuck_awaiting=False):
@@ -3371,6 +3385,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
         # (dead) primary's stuck count must not carry over and prematurely
         # escalate the healthy peer.
         ctx["_awaiting_download_no_progress"] = 0
+        ctx.pop("_awaiting_download_no_progress_byte", None)
         ctx["fallback_switch_count"] = int(ctx.get("fallback_switch_count", 0) or 0) + 1
         try:
             ctx["fallback_active_index"] = ctx.get("fallback_sources", []).index(
@@ -3770,7 +3785,17 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 expected_length = 0
         else:
             expected_length = self._fallback_expected_content_length(ctx)
-        if expected_length > 0 and content_length != expected_length:
+        # Only a POSITIVE, different length is a provable mismatch. A
+        # transient HEAD probe (5xx/timeout) makes fetch_content_length
+        # return 0; coercing that to a "mismatch" would permanently fail an
+        # otherwise-valid standby fallback for the rest of the session over a
+        # momentary WebDAV blip. Leave length 0 INCONCLUSIVE and fall through
+        # so fingerprint validation can gate usability on a later pass.
+        if (
+            expected_length > 0
+            and content_length > 0
+            and content_length != expected_length
+        ):
             source["failed"] = True
             return False
         ctx["_fallback_source_content_length_hint"] = (id(source), content_length)
@@ -5155,7 +5180,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     forward_stall_t0 = None
                 else:
                     awaiting_download_no_progress = self._bump_awaiting_no_progress(
-                        ctx, result, awaiting_download_no_progress
+                        ctx, result, awaiting_download_no_progress, current
                     )
                 awaiting_stuck = (
                     not progressed_this_iter
