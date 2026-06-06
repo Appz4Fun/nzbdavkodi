@@ -7472,3 +7472,48 @@ def test_fallback_worker_submits_when_liveness_never_set():
 
     assert not state["thread"].is_alive()
     assert submitted, "never-live liveness must not strand the late submit"
+
+
+def test_resolve_delegates_to_nzbget_when_enabled():
+    addon = MagicMock()
+    addon.getSetting.side_effect = lambda key: (
+        "true" if key == "nzbget_enabled" else ""
+    )
+    with patch.object(sys.modules["xbmcaddon"], "Addon", return_value=addon), patch(
+        "resources.lib.nzbget_resolver.resolve_and_play_nzbget"
+    ) as nzbget_entry:
+        resolve(7, {"nzburl": "http%3A%2F%2Fi%2Fx.nzb", "title": "X"})
+    nzbget_entry.assert_called_once()
+
+
+def test_resolve_skips_nzbget_when_disabled():
+    addon = MagicMock()
+    addon.getSetting.side_effect = lambda key: ""  # nzbget_enabled falsy
+    with patch.object(sys.modules["xbmcaddon"], "Addon", return_value=addon), patch(
+        "resources.lib.nzbget_resolver.resolve_and_play_nzbget"
+    ) as nzbget_entry, patch(
+        "resources.lib.resolver._picker_completed_stream", return_value=None
+    ), patch(
+        "resources.lib.resolver._get_poll_settings", return_value=(1, 60)
+    ):
+        # Will proceed down the nzbdav path; we only assert NZBGet was not used.
+        try:
+            resolve(7, {"nzburl": "http%3A%2F%2Fi%2Fx.nzb", "title": "X"})
+        except Exception:  # pylint: disable=broad-except
+            pass
+    nzbget_entry.assert_not_called()
+
+
+def test_resolve_and_play_delegates_to_nzbget_when_enabled():
+    # resolve_and_play is the dominant playback entry point (TMDBHelper
+    # /resolve, the in-addon search picker, script-play). With the toggle on
+    # it must hand off to the handle-less play_nzbget, not the nzbdav path.
+    addon = MagicMock()
+    addon.getSetting.side_effect = lambda key: (
+        "true" if key == "nzbget_enabled" else ""
+    )
+    with patch.object(sys.modules["xbmcaddon"], "Addon", return_value=addon), patch(
+        "resources.lib.nzbget_resolver.play_nzbget"
+    ) as play_entry:
+        resolve_and_play("http://i/x.nzb", "X", params={})
+    play_entry.assert_called_once()
