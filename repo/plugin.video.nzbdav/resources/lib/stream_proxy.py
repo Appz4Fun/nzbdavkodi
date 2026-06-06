@@ -511,7 +511,16 @@ class ReadAheadBuffer:
         bytes to consume), repoint ``base_offset`` to the served offset and drop
         any now-behind stale data. This advances ``next_fetch_offset`` so the
         prefetch daemon builds a FORWARD lead from the play head instead of
-        re-fetching from offset 0 behind it."""
+        re-fetching from offset 0 behind it.
+
+        For the IN-WINDOW case (``base_offset < offset < window_end``: a
+        read-ahead miss served directly upstream while the prefetch had already
+        filled bytes from the old ``base_offset``), trim the now-consumed prefix
+        ``[base_offset, offset)`` and advance ``base_offset`` to the served
+        offset. This keeps the forward lead instead of letting the consumed
+        prefix pin the window behind the play head and throttle the prefetch.
+        The trim is INLINED (not ``free_behind``) because ``self._lock`` is a
+        non-reentrant ``threading.Lock`` already held here."""
         try:
             offset = int(offset)
         except (TypeError, ValueError):
@@ -521,6 +530,9 @@ class ReadAheadBuffer:
             window_end = self.base_offset + len(self.data)
             if offset >= window_end:
                 self.data = bytearray()
+                self.base_offset = offset
+            elif offset > self.base_offset:
+                del self.data[: offset - self.base_offset]
                 self.base_offset = offset
 
     def note_seek(self, new_start):

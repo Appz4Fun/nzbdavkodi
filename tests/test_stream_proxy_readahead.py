@@ -194,6 +194,22 @@ def test_served_high_water_within_window_keeps_forward_lead():
     assert buf.next_fetch_offset() == 10
 
 
+def test_served_high_water_in_window_trims_prefix_keeps_lead():
+    """Regression: an IN-WINDOW direct serve (base < offset < window_end) -- a
+    read-ahead miss served upstream while the prefetch already filled bytes from
+    the old base -- must trim the consumed prefix [base, offset) and advance
+    base_offset to the served offset, while KEEPING the forward lead so the
+    prefetch extends ahead instead of refilling behind the play head."""
+    buf = ReadAheadBuffer(cap_bytes=1024, content_length=10_000)
+    buf.append(0, b"ABCDEFGHIJ")  # window [0, 10)
+    buf.update_served_high_water(4)  # in-window: base 0 < 4 < window_end 10
+    # Consumed prefix dropped; base rebased to the served offset.
+    assert buf.read_prefix(4, 9) == b"EFGHIJ"
+    assert buf.read_prefix(0, 9) == b""
+    # Forward lead preserved -- not refetched.
+    assert buf.next_fetch_offset() == 10
+
+
 def test_served_high_water_discards_stale_behind_data():
     """A miss served past stale buffered bytes drops the now-behind data and
     repoints the base to the served offset."""
