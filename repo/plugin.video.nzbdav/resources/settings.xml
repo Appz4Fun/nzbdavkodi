@@ -22,6 +22,17 @@
 		<setting id="prowlarr_indexer_ids" label="30130" type="text" default="" />
 		<setting label="30131" type="action" action="RunPlugin(plugin://plugin.video.nzbdav/test_prowlarr)" option="close" />
 	</category>
+	<category label="30208">
+		<setting label="30209" type="lsep" />
+		<setting id="nzbget_enabled" label="30210" type="bool" default="false" />
+		<setting id="nzbget_url" label="30211" type="text" default="http://localhost:6789" visible="Addon.SettingBool(plugin.video.nzbdav,nzbget_enabled)" />
+		<setting id="nzbget_username" label="30212" type="text" default="nzbget" visible="Addon.SettingBool(plugin.video.nzbdav,nzbget_enabled)" />
+		<setting id="nzbget_password" label="30213" type="text" default="" option="hidden" visible="Addon.SettingBool(plugin.video.nzbdav,nzbget_enabled)" />
+		<setting id="nzbget_category" label="30214" type="text" default="" visible="Addon.SettingBool(plugin.video.nzbdav,nzbget_enabled)" />
+		<setting label="30215" type="action" action="RunPlugin(plugin://plugin.video.nzbdav/test_nzbget)" option="close" visible="Addon.SettingBool(plugin.video.nzbdav,nzbget_enabled)" />
+		<setting id="nzbget_smb_root" label="30216" type="text" default="" visible="Addon.SettingBool(plugin.video.nzbdav,nzbget_enabled)" />
+		<setting label="30217" type="action" action="RunPlugin(plugin://plugin.video.nzbdav/test_nzbget_smb)" option="close" visible="Addon.SettingBool(plugin.video.nzbdav,nzbget_enabled)" />
+	</category>
 	<category label="30163">
 		<setting label="30164" type="lsep" />
 		<setting id="direct_indexers_enabled" label="30165" type="bool" default="false" />

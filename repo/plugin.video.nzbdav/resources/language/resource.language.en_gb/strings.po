@@ -793,3 +793,83 @@ msgstr "Max seconds to wait for a slow/stalled backend before giving up (0=off)"
 msgctxt "#30207"
 msgid "Read-ahead buffer size in MB (keeps filling while paused; 0=off)"
 msgstr "Read-ahead buffer size in MB (keeps filling while paused; 0=off)"
+
+msgctxt "#30208"
+msgid "NZBGet"
+msgstr "NZBGet"
+
+msgctxt "#30209"
+msgid "NZBGet Backend"
+msgstr "NZBGet Backend"
+
+msgctxt "#30210"
+msgid "Use NZBGet instead of nzbdav for playback"
+msgstr "Use NZBGet instead of nzbdav for playback"
+
+msgctxt "#30211"
+msgid "NZBGet URL"
+msgstr "NZBGet URL"
+
+msgctxt "#30212"
+msgid "NZBGet Username"
+msgstr "NZBGet Username"
+
+msgctxt "#30213"
+msgid "NZBGet Password"
+msgstr "NZBGet Password"
+
+msgctxt "#30214"
+msgid "NZBGet Category"
+msgstr "NZBGet Category"
+
+msgctxt "#30215"
+msgid "Test NZBGet Connection"
+msgstr "Test NZBGet Connection"
+
+msgctxt "#30216"
+msgid "SMB Completed Folder"
+msgstr "SMB Completed Folder"
+
+msgctxt "#30217"
+msgid "Test SMB Share"
+msgstr "Test SMB Share"
+
+msgctxt "#30218"
+msgid "Submitting NZB to NZBGet..."
+msgstr "Submitting NZB to NZBGet..."
+
+msgctxt "#30219"
+msgid "Post-processing..."
+msgstr "Post-processing..."
+
+msgctxt "#30220"
+msgid "Download failed in NZBGet"
+msgstr "Download failed in NZBGet"
+
+msgctxt "#30221"
+msgid "NZBGet not configured"
+msgstr "NZBGet not configured"
+
+msgctxt "#30222"
+msgid "Failed to submit NZB to NZBGet"
+msgstr "Failed to submit NZB to NZBGet"
+
+msgctxt "#30223"
+msgid "No video file found on SMB share"
+msgstr "No video file found on SMB share"
+
+msgctxt "#30224"
+msgid "NZBGet connection OK"
+msgstr "NZBGet connection OK"
+
+msgctxt "#30225"
+msgid "NZBGet connection failed"
+msgstr "NZBGet connection failed"
+
+msgctxt "#30226"
+msgid "SMB share reachable"
+msgstr "SMB share reachable"
+
+msgctxt "#30227"
+msgid "SMB share not reachable"
+msgstr "SMB share not reachable"
