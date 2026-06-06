@@ -3203,3 +3203,15 @@ def test_script_completed_job_for_selection_gates_by_size(mock_find):
     assert _script_completed_job_for_selection(
         {"title": "Movie.mkv", "size": "60000000000"}
     )
+
+
+def test_router_routes_test_nzbget():
+    with patch("resources.lib.router._test_nzbget_connection") as handler:
+        route(["plugin://plugin.video.nzbdav/test_nzbget", "-1", ""])
+    handler.assert_called_once()
+
+
+def test_router_routes_test_nzbget_smb():
+    with patch("resources.lib.router._test_nzbget_smb") as handler:
+        route(["plugin://plugin.video.nzbdav/test_nzbget_smb", "-1", ""])
+    handler.assert_called_once()
