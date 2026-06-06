@@ -2023,11 +2023,15 @@ def _test_nzbget_smb():
 
     addon = xbmcaddon.Addon("plugin.video.nzbdav")
     smb_root = addon.getSetting("nzbget_smb_root").strip()
+    # xbmcvfs.listdir() does NOT raise for an unreachable/typo'd/wrong-
+    # credentials SMB path — it returns ([], []) and only logs at the C++
+    # VFS layer — so a non-raising listdir is a false "reachable". Gate on
+    # xbmcvfs.exists(), which returns False for those paths (the same
+    # positive-signal check player_installer.py uses).
     reachable = False
     if smb_root:
         try:
-            xbmcvfs.listdir(smb_root)
-            reachable = True
+            reachable = bool(xbmcvfs.exists(smb_root))
         except Exception:  # pylint: disable=broad-except
             reachable = False
     if reachable:

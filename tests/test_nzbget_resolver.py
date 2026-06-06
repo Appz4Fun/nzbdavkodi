@@ -3,6 +3,7 @@ import sys
 from unittest.mock import MagicMock, patch
 
 from resources.lib.nzbget_resolver import (
+    _read_poll_interval,
     _read_settings,
     play_nzbget,
     poll_nzbget_job,
@@ -23,7 +24,7 @@ class _Dialog:
         self.lines.append((percent, message))
 
 
-class _Monitor:
+class _Monitor:  # pylint: disable=too-few-public-methods
     def __init__(self, aborts_after=999):
         self.calls = 0
         self.aborts_after = aborts_after
@@ -178,9 +179,19 @@ def test_poll_returns_timeout_when_budget_exhausted():
     def getter(k, d=""):
         return {"nzbget_url": "http://box"}.get(k, d)
 
-    # Monitor never aborts; a tiny timeout drives the loop to budget
-    # exhaustion -> exercises the real timeout branch, not aborted.
+    # Monitor never aborts; the wall clock advances past the budget so the
+    # real timeout branch fires (not aborted). Drive monotonic with a
+    # controlled clock that ticks 1s per read so the deadline is reached
+    # deterministically regardless of harness timing.
+    clock = {"t": 0.0}
+
+    def fake_monotonic():
+        clock["t"] += 1.0
+        return clock["t"]
+
     with patch(
+        "resources.lib.nzbget_resolver.time.monotonic", side_effect=fake_monotonic
+    ), patch(
         "resources.lib.nzbget_resolver.nzbget_api.group_status",
         return_value={"present": True, "status": "DOWNLOADING", "percent": 10},
     ), patch(
@@ -193,9 +204,111 @@ def test_poll_returns_timeout_when_budget_exhausted():
     assert result["outcome"] == "timeout"
 
 
+def test_poll_timeout_is_wall_clock_not_per_tick_accumulation():
+    # Regression for the wall-clock-blind timeout: the budget must track real
+    # elapsed time (time.monotonic), so a slow box whose RPCs consume far more
+    # than `interval` per tick can't stretch the configured timeout. Here each
+    # tick "costs" 30s of wall time but the interval arg is only 2s; a
+    # per-tick accumulator (+= interval) would allow ~30 ticks for timeout=60,
+    # while a monotonic deadline allows ~2.
+    def getter(k, d=""):
+        return {"nzbget_url": "http://box"}.get(k, d)
+
+    clock = {"t": 1000.0}
+
+    def fake_monotonic():
+        return clock["t"]
+
+    ticks = {"n": 0}
+
+    def group(nzbid, settings_getter=None):
+        ticks["n"] += 1
+        clock["t"] += 30.0  # each RPC tick burns 30s of wall time
+        return {"present": True, "status": "DOWNLOADING", "percent": 10}
+
+    with patch(
+        "resources.lib.nzbget_resolver.time.monotonic", side_effect=fake_monotonic
+    ), patch(
+        "resources.lib.nzbget_resolver.nzbget_api.group_status",
+        side_effect=group,
+    ), patch(
+        "resources.lib.nzbget_resolver.nzbget_api.history_status",
+        return_value={"present": False, "success": False, "status": "", "dest_dir": ""},
+    ):
+        result = poll_nzbget_job(
+            42, _Dialog(), _Monitor(), timeout=60, settings_getter=getter, interval=2
+        )
+    assert result["outcome"] == "timeout"
+    # With a 60s budget and 30s burned per tick, the deadline is reached after
+    # ~2 ticks — NOT the ~30 a per-interval (2s) accumulator would have run.
+    assert ticks["n"] <= 3
+
+
+def test_poll_post_processing_status_shows_pp_label():
+    # An in-queue post-processing stage (e.g. UNPACKING) is reported by
+    # NZBGet as a bare status while the group is still present; it must show
+    # "Post-processing..." (30219), not a frozen "Downloading... 100%".
+    def getter(k, d=""):
+        return {"nzbget_url": "http://box"}.get(k, d)
+
+    group_seq = [
+        {"present": True, "status": "UNPACKING", "percent": 100},
+        {"present": False, "status": "", "percent": 0},
+    ]
+    dialog = _Dialog()
+    with patch(
+        "resources.lib.nzbget_resolver.nzbget_api.group_status",
+        side_effect=group_seq,
+    ), patch(
+        "resources.lib.nzbget_resolver.nzbget_api.history_status",
+        return_value={
+            "present": True,
+            "success": True,
+            "status": "SUCCESS/ALL",
+            "dest_dir": "/dl/movies/X",
+        },
+    ):
+        result = poll_nzbget_job(
+            42, dialog, _Monitor(), timeout=60, settings_getter=getter
+        )
+    assert result["outcome"] == "success"
+    # The UNPACKING tick must have used the post-processing string (30219),
+    # not the "Downloading... {}%" template (30105).
+    pp_messages = [msg for _pct, msg in dialog.lines if msg]
+    assert any("30219" in m or "Post-processing" in m for m in pp_messages)
+    assert not any("30105" in m or "Downloading" in m for m in pp_messages)
+
+
+def test_poll_honors_custom_interval():
+    # The configured poll_interval must drive waitForAbort, not a hardcoded
+    # cadence. With a tiny timeout the loop exhausts after one tick; assert
+    # the monitor saw the custom interval.
+    def getter(k, d=""):
+        return {"nzbget_url": "http://box"}.get(k, d)
+
+    monitor = MagicMock()
+    monitor.waitForAbort.return_value = False
+    with patch(
+        "resources.lib.nzbget_resolver.nzbget_api.group_status",
+        return_value={"present": True, "status": "DOWNLOADING", "percent": 10},
+    ), patch(
+        "resources.lib.nzbget_resolver.nzbget_api.history_status",
+        return_value={"present": False, "success": False, "status": "", "dest_dir": ""},
+    ):
+        poll_nzbget_job(
+            42, _Dialog(), monitor, timeout=0, settings_getter=getter, interval=7
+        )
+    # timeout=0 means the loop body may run zero or more times before the
+    # deadline; if it polled at all, it polled at the custom interval.
+    for call in monitor.waitForAbort.call_args_list:
+        assert call[0][0] == 7
+
+
 def test_resolve_missing_config_resolves_false():
     plugin = sys.modules["xbmcplugin"]
     plugin.setResolvedUrl = MagicMock()
+    xbmc_mod = sys.modules["xbmc"]
+    xbmc_mod.PlayList = MagicMock()
     resolve_and_play_nzbget(
         7,
         {"nzburl": "http://i/x.nzb", "title": "X"},
@@ -203,6 +316,33 @@ def test_resolve_missing_config_resolves_false():
     )
     plugin.setResolvedUrl.assert_called_once()
     assert plugin.setResolvedUrl.call_args[0][1] is False
+    # Failure path must clear the video playlist (the v0.6.8 retry-loop
+    # guard) to match resolver.resolve()'s failure contract.
+    xbmc_mod.PlayList.assert_called_with(xbmc_mod.PLAYLIST_VIDEO)
+    xbmc_mod.PlayList.return_value.clear.assert_called()
+
+
+def test_resolve_failed_outcome_clears_playlist():
+    # A failed NZBGet download (history FAILURE) must also clear the
+    # playlist on the handle path, not just the missing-config exit.
+    plugin = sys.modules["xbmcplugin"]
+    plugin.setResolvedUrl = MagicMock()
+    xbmc_mod = sys.modules["xbmc"]
+    xbmc_mod.PlayList = MagicMock()
+    with patch(
+        "resources.lib.nzbget_resolver.nzbget_api.append_nzb",
+        return_value=(42, None),
+    ), patch(
+        "resources.lib.nzbget_resolver.poll_nzbget_job",
+        return_value={"outcome": "failed", "status": "FAILURE/UNPACK"},
+    ):
+        resolve_and_play_nzbget(
+            7,
+            {"nzburl": "http://i/x.nzb", "title": "X"},
+            settings_getter=_full_settings(),
+        )
+    assert plugin.setResolvedUrl.call_args[0][1] is False
+    xbmc_mod.PlayList.return_value.clear.assert_called()
 
 
 def test_resolve_success_resolves_true_with_smb_url():
@@ -317,3 +457,66 @@ def test_read_settings_none_uses_single_arg_getsetting():
     assert url == "http://box:6789"
     assert smb_root == "smb://host/completed"
     assert timeout == 600
+
+
+def test_read_poll_interval_reads_and_clamps():
+    # The shared poll_interval setting is honored and clamped to [1..60].
+    assert _read_poll_interval(_settings({"poll_interval": "5"})) == 5
+    assert _read_poll_interval(_settings({"poll_interval": "0"})) == 1
+    assert _read_poll_interval(_settings({"poll_interval": "999"})) == 60
+    # Missing / blank -> default of 1.
+    assert _read_poll_interval(_settings({})) == 1
+
+
+def test_resolve_success_with_category_includes_category_in_smb_target():
+    # End-to-end: with a category configured, the SMB folder handed to
+    # resolve_smb_video must include the category subfolder.
+    plugin = sys.modules["xbmcplugin"]
+    plugin.setResolvedUrl = MagicMock()
+    sys.modules["xbmc"].PlayList = MagicMock()
+    getter = _settings(
+        {
+            "nzbget_url": "http://box:6789",
+            "nzbget_smb_root": "smb://host/completed",
+            "download_timeout": "600",
+            "nzbget_category": "movies",
+        }
+    )
+    captured = {}
+
+    def fake_resolve(folder, monitor=None):
+        captured["folder"] = folder
+        return "{}/movie.mkv".format(folder)
+
+    with patch(
+        "resources.lib.nzbget_resolver.nzbget_api.append_nzb",
+        return_value=(42, None),
+    ), patch(
+        "resources.lib.nzbget_resolver.poll_nzbget_job",
+        return_value={
+            "outcome": "success",
+            "dest_dir": "/downloads/completed/movies/The.Movie",
+        },
+    ), patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video",
+        side_effect=fake_resolve,
+    ):
+        resolve_and_play_nzbget(
+            7,
+            {"nzburl": "http://i/x.nzb", "title": "The.Movie"},
+            settings_getter=getter,
+        )
+    assert captured["folder"] == "smb://host/completed/movies/The.Movie"
+    assert plugin.setResolvedUrl.call_args[0][1] is True
+
+
+def test_play_nzbget_failure_does_not_clear_playlist():
+    # The handle-less path has no plugin handle and must NOT clear the
+    # playlist (mirrors nzbdav resolve_and_play): only notify.
+    player = MagicMock()
+    xbmc_mod = sys.modules["xbmc"]
+    xbmc_mod.PlayList = MagicMock()
+    with patch.object(xbmc_mod, "Player", MagicMock(return_value=player)):
+        play_nzbget("http://i/x.nzb", "X", settings_getter=_settings({}))
+    player.play.assert_not_called()
+    xbmc_mod.PlayList.return_value.clear.assert_not_called()

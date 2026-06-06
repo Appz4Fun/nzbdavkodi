@@ -22,6 +22,7 @@ from resources.lib.router import (
     _test_connection,
     _test_hydra_connection,
     _test_nzbdav_connection,
+    _test_nzbget_smb,
     _test_prowlarr_connection,
     parse_params,
     parse_route,
@@ -3215,3 +3216,54 @@ def test_router_routes_test_nzbget_smb():
     with patch("resources.lib.router._test_nzbget_smb") as handler:
         route(["plugin://plugin.video.nzbdav/test_nzbget_smb", "-1", ""])
     handler.assert_called_once()
+
+
+def _nzbget_smb_addon(smb_root):
+    addon = MagicMock()
+    addon.getSetting.return_value = smb_root
+    return addon
+
+
+def test_test_nzbget_smb_reports_unreachable_when_exists_false():
+    # xbmcvfs.listdir() does NOT raise for a bogus/unreachable SMB path;
+    # success must be gated on a positive exists() signal, so an
+    # unreachable share reports "not reachable" (30227), not "reachable".
+    import sys
+
+    xbmcvfs = sys.modules["xbmcvfs"]
+    notified = {}
+
+    def fake_notify(heading, message, duration=5000):
+        notified["message"] = message
+
+    with patch(
+        "resources.lib.router.xbmcaddon.Addon",
+        return_value=_nzbget_smb_addon("smb://wronghost/completed"),
+    ), patch.object(xbmcvfs, "exists", return_value=False), patch.object(
+        xbmcvfs, "listdir", return_value=([], [])
+    ), patch(
+        "resources.lib.http_util.notify", side_effect=fake_notify
+    ):
+        _test_nzbget_smb()
+    # 30227 == "SMB share not reachable"
+    assert notified["message"] == 30227 or "not reachable" in str(notified["message"])
+
+
+def test_test_nzbget_smb_reports_reachable_when_exists_true():
+    import sys
+
+    xbmcvfs = sys.modules["xbmcvfs"]
+    notified = {}
+
+    def fake_notify(heading, message, duration=5000):
+        notified["message"] = message
+
+    with patch(
+        "resources.lib.router.xbmcaddon.Addon",
+        return_value=_nzbget_smb_addon("smb://host/completed"),
+    ), patch.object(xbmcvfs, "exists", return_value=True), patch(
+        "resources.lib.http_util.notify", side_effect=fake_notify
+    ):
+        _test_nzbget_smb()
+    # 30226 == "SMB share reachable"
+    assert notified["message"] == 30226 or "reachable" in str(notified["message"])
