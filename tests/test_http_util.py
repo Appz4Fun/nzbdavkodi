@@ -286,6 +286,31 @@ def test_redact_text_preserves_userinfo_without_password():
     assert "alice@host" in result
 
 
+def test_redact_text_redacts_password_containing_at_sign():
+    """A password with a literal `@` (common in SMB/NZBGet creds) must be
+    fully scrubbed — the naive userinfo regex stopped at the FIRST `@` and
+    leaked the tail. Split on the LAST `@` of the authority instead."""
+    result = redact_text("refused http://user:p@ss99@box:6789/jsonrpc")
+    assert "ss99" not in result
+    assert "p@ss99" not in result
+    assert "user:REDACTED@box:6789" in result
+
+
+def test_redact_text_redacts_smb_password_containing_at_sign():
+    result = redact_text("SMB error smb://media:My@Secret!@nas.local/completed/Show")
+    assert "Secret!" not in result
+    assert "media:REDACTED@nas.local" in result
+
+
+def test_redact_text_redacts_empty_username_password():
+    """`smb://:password@host` (guest/anonymous share, empty username) must be
+    redacted — the old regex required a non-empty username and left it
+    entirely unscrubbed."""
+    result = redact_text("SMB error: smb://:GuestPw123@nas.local/completed/X")
+    assert "GuestPw123" not in result
+    assert ":REDACTED@nas.local" in result
+
+
 def test_pubdate_to_epoch_parses_rfc2822_with_timezone():
     """An RFC-2822 pubdate with an explicit timezone offset converts to
     the correct absolute UTC epoch (the offset is normalized away)."""

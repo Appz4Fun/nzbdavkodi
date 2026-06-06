@@ -47,7 +47,15 @@ _EMBEDDED_CRED_RE = re.compile(
 # root — which carries the password. ``redact_url`` only strips userinfo from
 # a parseable URL; this handles the embedded-in-an-error-string case so the
 # password does not leak into logs. TODO.md §H.2 (NZBGet path).
-_EMBEDDED_USERINFO_RE = re.compile(r"(://[^/?#@\s:]+):[^/?#@\s]+@")
+#
+# We match a whole URL span and reuse ``redact_url``'s ``rpartition('@')``
+# netloc logic rather than a single password-class regex. A naive
+# ``user:pass@`` pattern leaks whenever the password itself contains an
+# ``@`` (common in SMB/NZBGet credentials — the match stops at the FIRST
+# ``@`` and the tail survives) and fails entirely for an empty username
+# (``smb://:pass@host``). Splitting on the LAST ``@`` of the authority — the
+# same way ``redact_url`` does — handles both.
+_EMBEDDED_URL_RE = re.compile(r"(?:smb|https?|ftp)://[^\s\"'<>]+", re.IGNORECASE)
 
 
 def redact_url(url):
@@ -96,6 +104,31 @@ def redact_url(url):
     )
 
 
+def _redact_url_userinfo_span(match):
+    """Strip the password from a URL span's ``user:pass@host`` userinfo.
+
+    Reuses the same ``rpartition('@')`` / ``partition(':')`` logic as
+    ``redact_url`` so an ``@`` *inside* the password (or an empty username)
+    can't leak. Spans with no userinfo round-trip unchanged.
+    """
+    span = match.group(0)
+    try:
+        parts = urlsplit(span)
+    except (ValueError, TypeError):
+        return span
+    netloc = parts.netloc
+    if not netloc or "@" not in netloc:
+        return span
+    userinfo, _, host = netloc.rpartition("@")
+    if ":" in userinfo:
+        user, _, _password = userinfo.partition(":")
+        netloc = "{}:REDACTED@{}".format(user, host)
+    else:
+        # No `:password` half — userinfo is just a username; keep it.
+        netloc = "{}@{}".format(userinfo, host)
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
 def redact_text(text):
     """Redact apikey-style tokens from free-form text (error bodies, logs).
 
@@ -103,14 +136,15 @@ def redact_text(text):
     payload is a string that might embed credentials — upstream HTTP
     error pages, exception messages, etc. Replaces each matched
     ``<key>=<value>`` pair with ``<key>=REDACTED`` so the structure of
-    the surrounding text is preserved.
+    the surrounding text is preserved, and scrubs the password half of any
+    embedded ``scheme://user:pass@host`` URL.
     """
     if not text:
         return text
     redacted = _EMBEDDED_CRED_RE.sub(
         lambda m: "{}=REDACTED".format(m.group(1)), str(text)
     )
-    return _EMBEDDED_USERINFO_RE.sub(r"\1:REDACTED@", redacted)
+    return _EMBEDDED_URL_RE.sub(_redact_url_userinfo_span, redacted)
 
 
 _ALLOWED_HTTP_SCHEMES = frozenset({"http", "https"})
