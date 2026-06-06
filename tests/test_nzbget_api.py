@@ -136,6 +136,29 @@ def test_history_status_failure_flagged():
     assert status["success"] is False
 
 
+def test_history_status_warning_is_failure_even_with_destdir():
+    # Spec decision #3 guarantees a repaired/unpacked/playable file, so a
+    # terminal WARNING/* (e.g. WARNING/REPAIRABLE / WARNING/DAMAGED, where
+    # par2 repair did not run) is classified as a failure even when a DestDir
+    # is reported — we don't risk playing a corrupt file.
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    hist = [{"NZBID": 42, "Status": "WARNING/HEALTH", "DestDir": "/dl/movies/X"}]
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(hist, None)):
+        status = history_status(42, settings_getter=getter)
+    assert status["present"] is True
+    assert status["success"] is False
+
+
+def test_history_status_deleted_dupe_is_failure_even_with_destdir():
+    # DELETED/DUPE must NOT auto-pass even if a DestDir is reported.
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    hist = [{"NZBID": 42, "Status": "DELETED/DUPE", "DestDir": "/dl/movies/X"}]
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(hist, None)):
+        status = history_status(42, settings_getter=getter)
+    assert status["present"] is True
+    assert status["success"] is False
+
+
 def test_test_connection_ok_on_version():
     getter = _getter({"nzbget_url": "http://box:6789"})
     with patch("resources.lib.nzbget_api._rpc_call", return_value=("24.0", None)):

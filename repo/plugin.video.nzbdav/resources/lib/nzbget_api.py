@@ -156,7 +156,12 @@ def history_status(nzbid, settings_getter=None):
     """Look up a terminal job by NZBID via history.
 
     Returns {"present": bool, "success": bool, "status": str,
-    "dest_dir": str}. "success" is True only for SUCCESS/* statuses.
+    "dest_dir": str}. "success" is True ONLY for SUCCESS/* statuses, per the
+    spec's completion guarantee (full post-processing = a repaired, unpacked,
+    playable file). WARNING/* (incl. WARNING/REPAIRABLE / WARNING/DAMAGED,
+    where par2 repair did not run) is deliberately treated as a failure
+    rather than risk playing a corrupt file — the job is left in history so
+    it can be retried.
     """
     hist, error = _rpc_call("history", [False], settings_getter=settings_getter)
     if error is not None or not isinstance(hist, list):
