@@ -1659,14 +1659,13 @@ class _StreamHandler(BaseHTTPRequestHandler):
             xbmc.LOGINFO,
         )
         try:
-            proc = (
-                subprocess.Popen(  # nosec B603 — cmd validated by _is_safe_ffmpeg_cmd
-                    cmd,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    shell=False,
-                )
+            # nosec B603 — cmd validated by _is_safe_ffmpeg_cmd
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                shell=False,
             )
         except OSError as error:
             xbmc.log("NZB-DAV: Failed to start ffmpeg: {}".format(error), xbmc.LOGERROR)
@@ -5592,7 +5591,8 @@ class HlsProducer:
                 # stdin (TODO.md §H.3 Low — "ffmpeg Popen omits
                 # stdin=DEVNULL"). Harmless on Kodi but tidies the
                 # under-a-terminal case.
-                self._proc = subprocess.Popen(  # nosec B603 — cmd validated by _is_safe_ffmpeg_cmd
+                # nosec B603 — cmd validated by _is_safe_ffmpeg_cmd
+                self._proc = subprocess.Popen(
                     cmd,
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
@@ -6319,14 +6319,13 @@ class StreamProxy:
             return False
         cmd = [ffmpeg_path, "-hide_banner", "-h", "muxer=hls"]
         try:
-            proc = (
-                subprocess.Popen(  # nosec B603 — cmd validated by _is_safe_ffmpeg_cmd
-                    cmd,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.PIPE,
-                    shell=False,
-                )
+            # nosec B603 — cmd validated by _is_safe_ffmpeg_cmd
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                shell=False,
             )
             try:
                 output = proc.communicate(timeout=_FFMPEG_CAPABILITY_PROBE_TIMEOUT)
@@ -7360,14 +7359,13 @@ class StreamProxy:
                     input_url,
                 ]
             )
-            proc = (
-                subprocess.Popen(  # nosec B603 — cmd validated by _is_safe_ffmpeg_cmd
-                    cmd,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    shell=False,
-                )
+            # nosec B603 — cmd validated by _is_safe_ffmpeg_cmd
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                shell=False,
             )
             try:
                 stdout_bytes, _ = proc.communicate(timeout=30)
@@ -7435,14 +7433,13 @@ class StreamProxy:
         cmd.extend(["-i", input_url, "-f", "null", "-"])
 
         try:
-            proc = (
-                subprocess.Popen(  # nosec B603 — cmd validated by _is_safe_ffmpeg_cmd
-                    cmd,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.PIPE,
-                    shell=False,
-                )
+            # nosec B603 — cmd validated by _is_safe_ffmpeg_cmd
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                shell=False,
             )
         except (OSError, subprocess.SubprocessError, ValueError) as e:
             xbmc.log(
@@ -7562,14 +7559,13 @@ class StreamProxy:
         proc = None
         try:
             xbmc.log("NZB-DAV: Temp-file faststart remux starting", xbmc.LOGINFO)
-            proc = (
-                subprocess.Popen(  # nosec B603 — cmd validated by _is_safe_ffmpeg_cmd
-                    cmd,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    shell=False,
-                )
+            # nosec B603 — cmd validated by _is_safe_ffmpeg_cmd
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                shell=False,
             )
             _, stderr = proc.communicate(timeout=600)  # 10 min timeout
             if proc.returncode != 0:
