@@ -1,13 +1,16 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 nzbdav contributors
 
+import json
 from unittest.mock import MagicMock, patch
 
 from resources.lib.http_util import (
     HttpResponseTooLarge,
     http_get,
+    http_post_json,
     notify,
     pubdate_to_epoch,
+    redact_text,
     redact_url,
 )
 
@@ -265,6 +268,24 @@ def test_redact_url_preserves_userinfo_without_password():
     assert "alice@host.example.com" in result
 
 
+def test_redact_text_strips_embedded_url_userinfo_password():
+    """redact_text must also scrub `scheme://user:pass@host` userinfo when
+    a URL is embedded in a free-form error string (e.g. a urllib/xbmcvfs
+    error echoing the NZBGet RPC URL or the smb://user:pass@host root).
+    redact_url only handles a parseable URL; this covers the in-text case."""
+    msg = "URLError refused smb://alice:supersecret@host/completed/The.Movie"
+    result = redact_text(msg)
+    assert "supersecret" not in result
+    assert "alice:REDACTED@host" in result
+
+
+def test_redact_text_preserves_userinfo_without_password():
+    """A bare `user@host` (no password half) must round-trip unchanged."""
+    result = redact_text("connecting to ftp://alice@host/x")
+    assert "REDACTED" not in result
+    assert "alice@host" in result
+
+
 def test_pubdate_to_epoch_parses_rfc2822_with_timezone():
     """An RFC-2822 pubdate with an explicit timezone offset converts to
     the correct absolute UTC epoch (the offset is normalized away)."""
@@ -285,3 +306,50 @@ def test_pubdate_to_epoch_returns_none_on_garbage():
     assert pubdate_to_epoch("") is None
     assert pubdate_to_epoch("not a date") is None
     assert pubdate_to_epoch(None) is None
+
+
+def test_http_post_json_posts_body_and_returns_text():
+    captured = {}
+
+    class FakeResp:
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def getcode(self):
+            return 200
+
+        def read(self):
+            return b'{"result": 7}'
+
+    def fake_urlopen(req, timeout=0):
+        captured["url"] = req.full_url
+        captured["data"] = req.data
+        captured["auth"] = req.get_header("Authorization")
+        captured["ctype"] = req.get_header("Content-type")
+        return FakeResp()
+
+    with patch("resources.lib.http_util.urlopen", side_effect=fake_urlopen):
+        body = http_post_json(
+            "http://host:6789/jsonrpc",
+            {"method": "version"},
+            timeout=10,
+            basic_auth=("nzbget", "pw"),
+        )
+
+    assert json.loads(body) == {"result": 7}
+    assert captured["url"] == "http://host:6789/jsonrpc"
+    assert json.loads(captured["data"].decode("utf-8")) == {"method": "version"}
+    assert captured["ctype"] == "application/json"
+    assert captured["auth"].startswith("Basic ")
+
+
+def test_http_post_json_rejects_non_http_scheme():
+    import pytest
+
+    with pytest.raises(ValueError):
+        http_post_json("file:///etc/passwd", {}, timeout=5)

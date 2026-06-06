@@ -41,6 +41,14 @@ _EMBEDDED_CRED_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Catch ``scheme://user:password@host`` userinfo embedded in free-form text.
+# urllib / socket / xbmcvfs errors sometimes echo the failing URL — e.g. the
+# NZBGet JSON-RPC URL or the ``smb://user:pass@host/...`` completed-folder
+# root — which carries the password. ``redact_url`` only strips userinfo from
+# a parseable URL; this handles the embedded-in-an-error-string case so the
+# password does not leak into logs. TODO.md §H.2 (NZBGet path).
+_EMBEDDED_USERINFO_RE = re.compile(r"(://[^/?#@\s:]+):[^/?#@\s]+@")
+
 
 def redact_url(url):
     """Redact API keys and other credential-style params from URLs for safe logging.
@@ -99,7 +107,10 @@ def redact_text(text):
     """
     if not text:
         return text
-    return _EMBEDDED_CRED_RE.sub(lambda m: "{}=REDACTED".format(m.group(1)), str(text))
+    redacted = _EMBEDDED_CRED_RE.sub(
+        lambda m: "{}=REDACTED".format(m.group(1)), str(text)
+    )
+    return _EMBEDDED_USERINFO_RE.sub(r"\1:REDACTED@", redacted)
 
 
 _ALLOWED_HTTP_SCHEMES = frozenset({"http", "https"})
@@ -174,6 +185,44 @@ def http_get(url, timeout=15, headers=None, max_bytes=None):
                 "HTTP response exceeds {} bytes".format(max_bytes)
             )
         return body.decode("utf-8", errors="replace")
+
+
+def http_post_json(url, payload, timeout=15, headers=None, basic_auth=None):
+    """POST ``payload`` as a JSON body and return the response text.
+
+    Mirrors ``http_get``'s scheme allowlist (urllib would otherwise honor
+    ``file://``/``ftp://``). ``basic_auth`` is an optional ``(user, pass)``
+    tuple sent as an HTTP Basic ``Authorization`` header — used by the
+    NZBGet JSON-RPC client.
+    """
+    import base64
+    import json as _json
+
+    scheme = urlsplit(url).scheme.lower()
+    if scheme not in _ALLOWED_HTTP_SCHEMES:
+        raise ValueError("unsupported URL scheme: {!r}".format(scheme))
+    body = _json.dumps(payload).encode("utf-8")
+    request_headers = {
+        "User-Agent": _HTTP_USER_AGENT,
+        "Content-Type": "application/json",
+    }
+    if headers:
+        request_headers.update(headers)
+    if basic_auth is not None:
+        user, password = basic_auth
+        token = base64.b64encode("{}:{}".format(user, password).encode("utf-8")).decode(
+            "ascii"
+        )
+        request_headers["Authorization"] = "Basic " + token
+    req = Request(url, data=body, headers=request_headers)
+    # nosemgrep
+    with urlopen(  # nosec B310 — scheme allowlist enforced above
+        req, timeout=timeout
+    ) as resp:
+        status = _response_status(resp)
+        if status is not None and not 200 <= status < 300:
+            raise OSError("HTTP status {}".format(status))
+        return resp.read().decode("utf-8", errors="replace")
 
 
 _PUBDATE_ERRORS = (OverflowError, TypeError, ValueError)
