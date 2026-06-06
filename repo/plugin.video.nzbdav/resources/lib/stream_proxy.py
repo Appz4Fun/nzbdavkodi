@@ -1659,7 +1659,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
             xbmc.LOGINFO,
         )
         try:
-            # nosec B603
+            # nosec B603 - cmd validated by _is_safe_ffmpeg_cmd
             proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.DEVNULL,
@@ -5591,7 +5591,7 @@ class HlsProducer:
                 # stdin (TODO.md §H.3 Low — "ffmpeg Popen omits
                 # stdin=DEVNULL"). Harmless on Kodi but tidies the
                 # under-a-terminal case.
-                # nosec B603
+                # nosec B603 - cmd validated by _is_safe_ffmpeg_cmd
                 self._proc = subprocess.Popen(
                     cmd,
                     stdin=subprocess.DEVNULL,
@@ -6319,7 +6319,7 @@ class StreamProxy:
             return False
         cmd = [ffmpeg_path, "-hide_banner", "-h", "muxer=hls"]
         try:
-            # nosec B603
+            # nosec B603 - cmd validated by _is_safe_ffmpeg_cmd
             proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.DEVNULL,
@@ -7359,7 +7359,7 @@ class StreamProxy:
                     input_url,
                 ]
             )
-            # nosec B603
+            # nosec B603 - cmd validated by _is_safe_ffmpeg_cmd
             proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.DEVNULL,
@@ -7433,7 +7433,7 @@ class StreamProxy:
         cmd.extend(["-i", input_url, "-f", "null", "-"])
 
         try:
-            # nosec B603
+            # nosec B603 - cmd validated by _is_safe_ffmpeg_cmd
             proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.DEVNULL,
@@ -7559,7 +7559,7 @@ class StreamProxy:
         proc = None
         try:
             xbmc.log("NZB-DAV: Temp-file faststart remux starting", xbmc.LOGINFO)
-            # nosec B603
+            # nosec B603 - cmd validated by _is_safe_ffmpeg_cmd
             proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.DEVNULL,
