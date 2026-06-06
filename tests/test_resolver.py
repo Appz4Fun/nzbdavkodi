@@ -2788,6 +2788,7 @@ def test_resolve_and_play_passes_settings_snapshot_to_proxy_prepare(
         "send_200_no_range": "false",
         "proxy_convert_subs": "true",
         "readahead_buffer_mb": "256",
+        "passthrough_stall_wait": "120",
     }
 
     def settings_getter(key, default=""):
@@ -2817,6 +2818,7 @@ def test_prepare_direct_playback_retry_reuses_settings_snapshot():
         "send_200_no_range": "false",
         "proxy_convert_subs": "true",
         "readahead_buffer_mb": "256",
+        "passthrough_stall_wait": "120",
     }
     settings_getter = MagicMock(
         side_effect=lambda key, default="": values.get(key, default)
@@ -2885,7 +2887,7 @@ def test_start_direct_playback_prepare_snapshots_settings_in_worker(
         release_settings.set()
 
     assert prepared["proxy_url"] == "http://127.0.0.1:57800/stream/abc"
-    assert len(calls) == 10
+    assert len(calls) == 11
 
 
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
@@ -7036,9 +7038,10 @@ def test_fallback_worker_stop_event_during_prewarm_aborts_submit():
 
 
 def test_fallback_worker_inactive_property_during_prewarm_aborts_submit():
-    """NEW: after playback is signaled, the cross-process ``nzbdav.active``
-    property going non-"true" (service.py cleared it on stop/end) must abort the
-    prewarm wait so no standby NZBs are submitted for a dead session."""
+    """After playback is signaled and the cross-process ``nzbdav.playing``
+    liveness flag has been observed live, it going non-"true" (service.py
+    cleared it on stop/end) must abort the prewarm wait so no standby NZBs are
+    submitted for a dead session."""
     from resources.lib.resolver import (
         _signal_fallback_playback_started,
         _start_fallback_submit_worker,
@@ -7049,10 +7052,10 @@ def test_fallback_worker_inactive_property_during_prewarm_aborts_submit():
     def fake_submit(*_args, **_kwargs):
         submitted.append(True)
 
-    active_value = {"v": "true"}
+    playing_value = {"v": "true"}
 
-    def get_property(_name):
-        return active_value["v"]
+    def get_property(name):
+        return playing_value["v"] if name == "nzbdav.playing" else ""
 
     with patch(
         "resources.lib.resolver._submit_fallback_candidates", side_effect=fake_submit
@@ -7067,13 +7070,85 @@ def test_fallback_worker_inactive_property_during_prewarm_aborts_submit():
         )
         _signal_fallback_playback_started(state)
         _time.sleep(0.05)
-        # Simulate service.py clearing nzbdav.active on stop/end (cross-process).
-        active_value["v"] = ""
+        # Simulate service.py clearing nzbdav.playing on stop/end (cross-process).
+        playing_value["v"] = ""
         # prewarm_delay is 5s but the worker must abort well before that once the
-        # active flag clears; a short join proves it returned early rather than
+        # liveness flag clears; a short join proves it returned early rather than
         # the join merely timing out before a still-pending submit.
         state["thread"].join(timeout=2)
 
     assert not state["thread"].is_alive(), "worker did not abort on inactive flag"
     assert not submitted
     assert not state["stop"].is_set()
+
+
+def test_fallback_worker_submits_when_playback_stays_live():
+    """REGRESSION (J): while ``nzbdav.playing`` stays "true" for the whole
+    prewarm window, the worker must submit the standby backups. The prior fix
+    polled ``nzbdav.active``, which ``service._check_active()`` consumes on the
+    first tick after playback starts, so the worker wrongly read "inactive" and
+    never submitted during normal service-monitored playback."""
+    from resources.lib.resolver import (
+        _signal_fallback_playback_started,
+        _start_fallback_submit_worker,
+    )
+
+    submitted = []
+
+    def fake_submit(*_args, **_kwargs):
+        submitted.append(True)
+
+    def get_property(name):
+        # nzbdav.playing stays live; nzbdav.active is already consumed/empty.
+        return "true" if name == "nzbdav.playing" else ""
+
+    with patch(
+        "resources.lib.resolver._submit_fallback_candidates", side_effect=fake_submit
+    ), patch("resources.lib.resolver._FALLBACK_PREWARM_POLL_SECONDS", 0.01), patch(
+        "resources.lib.resolver.xbmcgui"
+    ) as mock_gui:
+        mock_gui.Window.return_value.getProperty.side_effect = get_property
+        state = _start_fallback_submit_worker(
+            candidates=[{"nzb_url": "x"}],
+            prewarm_delay=0.05,
+            wait_for_playback=True,
+        )
+        _signal_fallback_playback_started(state)
+        state["thread"].join(timeout=2)
+
+    assert not state["thread"].is_alive()
+    assert submitted, "worker must submit while playback stays live"
+
+
+def test_fallback_worker_submits_when_liveness_never_set():
+    """When ``nzbdav.playing`` is never set (e.g. the await-playback cap path /
+    an unusual handoff where service never marked liveness), the seen-live latch
+    never engages, so the worker degrades to a late submit rather than being
+    wrongly stranded."""
+    from resources.lib.resolver import (
+        _signal_fallback_playback_started,
+        _start_fallback_submit_worker,
+    )
+
+    submitted = []
+
+    def fake_submit(*_args, **_kwargs):
+        submitted.append(True)
+
+    with patch(
+        "resources.lib.resolver._submit_fallback_candidates", side_effect=fake_submit
+    ), patch("resources.lib.resolver._FALLBACK_PREWARM_POLL_SECONDS", 0.01), patch(
+        "resources.lib.resolver.xbmcgui"
+    ) as mock_gui:
+        # Liveness flag never observed live (always empty).
+        mock_gui.Window.return_value.getProperty.return_value = ""
+        state = _start_fallback_submit_worker(
+            candidates=[{"nzb_url": "x"}],
+            prewarm_delay=0.05,
+            wait_for_playback=True,
+        )
+        _signal_fallback_playback_started(state)
+        state["thread"].join(timeout=2)
+
+    assert not state["thread"].is_alive()
+    assert submitted, "never-live liveness must not strand the late submit"

@@ -33,6 +33,11 @@ from resources.lib.stream_proxy import StreamProxy  # noqa: E402
 _PROP_STREAM_URL = "nzbdav.stream_url"
 _PROP_STREAM_TITLE = "nzbdav.stream_title"
 _PROP_ACTIVE = "nzbdav.active"
+# Persistent live-playback liveness flag (distinct from the consume-once
+# ``_PROP_ACTIVE`` handoff signal): set while the service monitors a stream and
+# cleared only on stop/end, so the plugin-process fallback submit worker can
+# observe cross-process whether playback is still live during its standby wait.
+_PROP_PLAYING = "nzbdav.playing"
 _PROP_PROXY_PORT = "nzbdav.proxy_port"
 _PROP_PROXY_TOKEN = "nzbdav.proxy_token"  # nosec B105 — settings key, not a secret
 
@@ -214,6 +219,14 @@ class NzbdavPlayer(xbmc.Player):
                 _HOME_WINDOW.clearProperty(prop)
             except _PLAYER_RUNTIME_ERRORS:
                 pass
+        # Raise the persistent liveness flag now that we are monitoring this
+        # stream. Unlike ``_PROP_ACTIVE`` (consumed above), this stays set until
+        # onPlayBackStopped/Ended clears it, giving the plugin-process fallback
+        # submit worker a reliable cross-process "still playing" signal.
+        try:
+            _HOME_WINDOW.setProperty(_PROP_PLAYING, "true")
+        except _PLAYER_RUNTIME_ERRORS:
+            pass
         xbmc.log(
             "NZB-DAV: Service monitoring stream '{}'".format(title),
             xbmc.LOGINFO,
@@ -242,18 +255,40 @@ class NzbdavPlayer(xbmc.Player):
         up the previous session's URL/title if ``nzbdav.active="true"``
         is ever re-set by a stale/racing writer.
 
-        ``nzbdav.active`` is cleared here too so that "playback inactive"
-        is observable cross-process: the in-process ``state["stop"]`` event
-        the fallback submit worker waits on lives in the resolver/plugin
-        process and can't be set from this service process. Clearing the
-        shared window property lets that worker abort its prewarm wait when
-        the user stops/ends playback during the standby-submit window.
+        ``nzbdav.playing`` (the persistent liveness flag) is cleared here too,
+        on stop/end, so that "playback inactive" is observable cross-process:
+        the in-process ``state["stop"]`` event the fallback submit worker waits
+        on lives in the resolver/plugin process and can't be set from this
+        service process. Clearing this shared window property lets that worker
+        abort its prewarm wait when the user stops/ends playback during the
+        standby-submit window. ``nzbdav.active`` is cleared as a belt-and-braces
+        measure (it is normally already consumed by ``_check_active``).
         """
-        for prop in (_PROP_ACTIVE, _PROP_STREAM_URL, _PROP_STREAM_TITLE):
+        for prop in (
+            _PROP_PLAYING,
+            _PROP_ACTIVE,
+            _PROP_STREAM_URL,
+            _PROP_STREAM_TITLE,
+        ):
             try:
                 _HOME_WINDOW.clearProperty(prop)
             except _PLAYER_RUNTIME_ERRORS:
                 pass
+
+    def _enter_idle_and_clear(self):
+        """Transition to IDLE and clear the IPC properties (incl. liveness).
+
+        Used by tick()'s terminal failure paths (never-started, retries
+        disabled, max retries reached, retry relaunch failed). Like the
+        onPlayBackStopped/Ended callbacks, this clears ``nzbdav.playing`` so the
+        plugin-process fallback submit worker observes the session as dead and
+        aborts its standby wait. ERROR is NOT terminal -- a retry that recovers
+        keeps the flag set so backups still arrive into the recovered playback;
+        only these end-of-the-line transitions clear it.
+        """
+        with self._state_lock:
+            self._state = PlaybackState.IDLE
+        self._clear_stream_properties()
 
     def onPlayBackStopped(self):
         """Mark stream inactive when user stops playback."""
@@ -460,8 +495,7 @@ class NzbdavPlayer(xbmc.Player):
                 _notify(_addon_name(), _s(30121), 8000)
                 xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
                 self._cleanup_proxy_session()
-                with self._state_lock:
-                    self._state = PlaybackState.IDLE
+                self._enter_idle_and_clear()
                 return
 
         self._save_position()
@@ -479,8 +513,7 @@ class NzbdavPlayer(xbmc.Player):
             from resources.lib.i18n import string as _s
 
             _notify(_addon_name(), _s(30115), 8000)
-            with self._state_lock:
-                self._state = PlaybackState.IDLE
+            self._enter_idle_and_clear()
             return
 
         if retry_count >= max_retries:
@@ -492,13 +525,11 @@ class NzbdavPlayer(xbmc.Player):
             from resources.lib.i18n import fmt as _f
 
             _notify(_addon_name(), _f(30116, max_retries), 8000)
-            with self._state_lock:
-                self._state = PlaybackState.IDLE
+            self._enter_idle_and_clear()
             return
 
         if not self._retry_playback(max_retries, retry_delay):
-            with self._state_lock:
-                self._state = PlaybackState.IDLE
+            self._enter_idle_and_clear()
 
 
 def check_cache_warning(state):
@@ -525,6 +556,7 @@ def main():
     # service starts from a clean slate. TODO.md §H.2-M34.
     for stale_prop in (
         _PROP_ACTIVE,
+        _PROP_PLAYING,
         _PROP_STREAM_URL,
         _PROP_STREAM_TITLE,
         _PROP_PROXY_TOKEN,
