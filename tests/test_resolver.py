@@ -7007,7 +7007,10 @@ def test_poll_until_ready_does_not_record_ledger_when_poll_fails(
 
 
 def test_fallback_worker_stop_event_during_prewarm_aborts_submit():
-    """Existing behavior: stop event set during the prewarm wait -> no submit."""
+    """Sanity check of the pre-existing in-process stop-event abort (held across
+    the J fix). The nzbdav.playing regression itself is guarded by
+    test_fallback_worker_submits_when_playback_stays_live and
+    test_fallback_worker_inactive_property_during_prewarm_aborts_submit."""
     from resources.lib.resolver import (
         _signal_fallback_playback_started,
         _start_fallback_submit_worker,
@@ -7098,8 +7101,11 @@ def test_fallback_worker_submits_when_playback_stays_live():
     def fake_submit(*_args, **_kwargs):
         submitted.append(True)
 
+    queried = []
+
     def get_property(name):
         # nzbdav.playing stays live; nzbdav.active is already consumed/empty.
+        queried.append(name)
         return "true" if name == "nzbdav.playing" else ""
 
     with patch(
@@ -7118,6 +7124,12 @@ def test_fallback_worker_submits_when_playback_stays_live():
 
     assert not state["thread"].is_alive()
     assert submitted, "worker must submit while playback stays live"
+    # Pin the actual fix: the worker must consult the DEDICATED liveness flag
+    # ``nzbdav.playing``, never the consume-once ``nzbdav.active`` the buggy
+    # version polled. Without this the test is a false-green (the old code also
+    # reaches a submit, just via the degraded never-latched path).
+    assert "nzbdav.playing" in queried
+    assert "nzbdav.active" not in queried
 
 
 def test_fallback_worker_submits_when_liveness_never_set():
