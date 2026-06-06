@@ -8,6 +8,7 @@ here. Honors the same ``setResolvedUrl``-on-failure contract as the nzbdav
 path: exactly one resolution per exit, failures resolve False.
 """
 
+import time
 from urllib.parse import unquote
 
 import xbmc
@@ -26,19 +27,32 @@ from resources.lib.i18n import string as _string
 VIDEO_EXTENSIONS = (".mkv", ".mp4", ".avi", ".m4v", ".ts", ".wmv", ".mov")
 
 
-def nzbget_smb_target(smb_root, dest_dir):
+def nzbget_smb_target(smb_root, dest_dir, category=""):
     """Map NZBGet's server-local DestDir onto the SMB root.
 
-    The SMB root *is* NZBGet's completed dir, so we take DestDir's final
-    path component (the per-release folder) and append it. Returns the
-    smb:// folder URL, or None if dest_dir is empty.
+    ``smb_root`` points at NZBGet's *completed* base dir. With NZBGet's
+    default ``AppendCategoryDir=yes`` a categorized release lands under a
+    per-category subfolder (``<completed>/<category>/<release>``), so the
+    DestDir basename alone (``<release>``) is not enough — the SMB target
+    must include the category segment or it resolves to a folder that does
+    not exist. We append ``<category>/<release>`` when a category is set and
+    DestDir is not already nested under it; otherwise just ``<release>``.
+    Returns the smb:// folder URL, or None if dest_dir is empty.
     """
     if not dest_dir:
         return None
-    release_folder = dest_dir.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    normalized = dest_dir.replace("\\", "/").rstrip("/")
+    release_folder = normalized.rsplit("/", 1)[-1]
     if not release_folder:
         return None
-    return "{}/{}".format(smb_root.rstrip("/"), release_folder)
+    category = (category or "").strip().strip("/")
+    base = smb_root.rstrip("/")
+    if category and category != release_folder:
+        # Only insert the category when the SMB root doesn't already end in
+        # it (user pointed at the completed base, not the category subdir).
+        if not base.endswith("/" + category):
+            return "{}/{}/{}".format(base, category, release_folder)
+    return "{}/{}".format(base, release_folder)
 
 
 def pick_largest_video(filenames, size_of):
@@ -99,26 +113,43 @@ def resolve_smb_video(smb_folder, monitor=None):
 
 _POLL_INTERVAL = 2.0
 
+# listgroups Status values that mean the job is still actively downloading
+# (as opposed to a post-processing stage like UNPACKING / REPAIRING /
+# MOVING / EXECUTING_SCRIPT, which NZBGet reports as bare in-queue status
+# strings while the group is still present). Anything not in this set while
+# the job is present is treated as post-processing for the dialog label.
+_DOWNLOAD_STATUSES = frozenset({"DOWNLOADING", "FETCHING"})
 
-def poll_nzbget_job(nzbid, dialog, monitor, timeout, settings_getter=None):
+
+def poll_nzbget_job(
+    nzbid, dialog, monitor, timeout, settings_getter=None, interval=_POLL_INTERVAL
+):
     """Wait for an NZBGet job to reach a terminal state.
 
     Returns a dict with "outcome" in {"success","failed","canceled",
     "timeout","aborted"} and, on success, "dest_dir". Drives the progress
     dialog: download % from listgroups, then a post-processing message
     once the job leaves the active queue.
+
+    ``timeout`` is enforced against the wall clock (``time.monotonic``) so a
+    slow/stalled NZBGet box whose RPCs take far longer than ``interval``
+    can't stretch the configured budget — see the sibling nzbdav poll loop.
     """
-    elapsed = 0.0
-    while elapsed <= timeout:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         if dialog.iscanceled():
             return {"outcome": "canceled"}
         group = nzbget_api.group_status(nzbid, settings_getter=settings_getter)
         if group["present"]:
-            status = group["status"] or ""
-            if status.startswith("PP") or "POST" in status:
-                dialog.update(group["percent"], _string(30219))
-            else:
+            status = (group["status"] or "").upper()
+            if status in _DOWNLOAD_STATUSES:
                 dialog.update(group["percent"], _fmt(30105, group["percent"]))
+            else:
+                # Every non-download in-queue stage (LOADING_PARS, REPAIRING,
+                # UNPACKING, MOVING, EXECUTING_SCRIPT, QUEUED/PAUSED, ...) is
+                # past the download, so show "Post-processing..." instead of a
+                # frozen "Downloading... 100%".
+                dialog.update(group["percent"], _string(30219))
         else:
             hist = nzbget_api.history_status(nzbid, settings_getter=settings_getter)
             if hist["present"]:
@@ -128,9 +159,8 @@ def poll_nzbget_job(nzbid, dialog, monitor, timeout, settings_getter=None):
             # Not in queue, not yet in history — brief gap during the
             # hand-off; show post-processing and keep waiting.
             dialog.update(100, _string(30219))
-        if monitor.waitForAbort(_POLL_INTERVAL):
+        if monitor.waitForAbort(interval):
             return {"outcome": "aborted"}
-        elapsed += _POLL_INTERVAL
     return {"outcome": "timeout"}
 
 
@@ -138,41 +168,67 @@ _DEFAULT_TIMEOUT = 3600
 _TIMEOUT_MIN = 60
 _TIMEOUT_MAX = 86400
 
+_DEFAULT_POLL_INTERVAL = 1
+_POLL_INTERVAL_MIN = 1
+_POLL_INTERVAL_MAX = 60
+
+
+def _bind_getter(settings_getter):
+    if settings_getter is not None:
+        return settings_getter
+    import xbmcaddon
+
+    addon = xbmcaddon.Addon("plugin.video.nzbdav")
+
+    # Kodi's ``Addon.getSetting`` takes a single positional id; the
+    # injectable ``settings_getter`` contract is ``(key, default)``. Bind
+    # the real getter to that two-arg shape so the call sites don't raise
+    # ``TypeError`` under real Kodi (tests inject their own two-arg getter
+    # and never hit this branch).
+    def getter(key, default=""):
+        value = addon.getSetting(key)
+        return value if value else default
+
+    return getter
+
 
 def _read_settings(settings_getter):
-    if settings_getter is None:
-        import xbmcaddon
-
-        addon = xbmcaddon.Addon("plugin.video.nzbdav")
-
-        # Kodi's ``Addon.getSetting`` takes a single positional id; the
-        # injectable ``settings_getter`` contract is ``(key, default)``.
-        # Bind the real getter to that two-arg shape so the call sites below
-        # don't raise ``TypeError`` under real Kodi (tests inject their own
-        # two-arg getter and never hit this branch).
-        def getter(key, default=""):
-            value = addon.getSetting(key)
-            return value if value else default
-
-    else:
-        getter = settings_getter
+    getter = _bind_getter(settings_getter)
     smb_root = getter("nzbget_smb_root", "").strip()
     url = getter("nzbget_url", "").strip()
     try:
         timeout = int(getter("download_timeout", "") or _DEFAULT_TIMEOUT)
     except (TypeError, ValueError):
         timeout = _DEFAULT_TIMEOUT
-    if timeout < _TIMEOUT_MIN:
-        timeout = _TIMEOUT_MIN
-    if timeout > _TIMEOUT_MAX:
-        timeout = _TIMEOUT_MAX
+    timeout = max(timeout, _TIMEOUT_MIN)
+    timeout = min(timeout, _TIMEOUT_MAX)
     return url, smb_root, timeout
+
+
+def _read_poll_interval(settings_getter):
+    """Read+clamp the shared ``poll_interval`` setting (seconds).
+
+    The NZBGet path honors the same backend-agnostic Polling setting as the
+    nzbdav path (range [1..60]) instead of a hardcoded cadence.
+    """
+    getter = _bind_getter(settings_getter)
+    try:
+        interval = int(getter("poll_interval", "") or _DEFAULT_POLL_INTERVAL)
+    except (TypeError, ValueError):
+        interval = _DEFAULT_POLL_INTERVAL
+    interval = max(interval, _POLL_INTERVAL_MIN)
+    interval = min(interval, _POLL_INTERVAL_MAX)
+    return interval
 
 
 def _resolve_failure(handle, message=None):
     if message:
         _notify(_addon_name(), message, 5000)
     xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+    # Mirror resolver.resolve()'s failure contract: clear the video playlist
+    # so Kodi doesn't advance to / retry the stale item TMDBHelper queued for
+    # the resolve we just failed (the v0.6.8 retry-loop guard).
+    xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
 
 
 def _run_nzbget_backend(nzb_url, title, settings_getter, on_success, on_failure):
@@ -194,6 +250,15 @@ def _run_nzbget_backend(nzb_url, title, settings_getter, on_success, on_failure)
             on_failure(_string(30221))
             return
 
+        interval = _read_poll_interval(settings_getter)
+        # NZBGet nests categorized completed output under a per-category
+        # subfolder (default AppendCategoryDir=yes); the SMB target must
+        # include that segment or it 404s. _get_settings is the canonical
+        # category reader (same one append_nzb uses).
+        _u, _user, _pw, category = nzbget_api._get_settings(
+            settings_getter=settings_getter
+        )
+
         dialog = xbmcgui.DialogProgress()
         dialog.create(_addon_name(), _string(30218))
 
@@ -213,10 +278,11 @@ def _run_nzbget_backend(nzb_url, title, settings_getter, on_success, on_failure)
             xbmc.Monitor(),
             timeout,
             settings_getter=settings_getter,
+            interval=interval,
         )
         outcome = result["outcome"]
 
-        if outcome == "timeout" or outcome == "aborted":
+        if outcome in ("timeout", "aborted"):
             leave_job = True
             on_failure(_string(30101))
             return
@@ -228,7 +294,7 @@ def _run_nzbget_backend(nzb_url, title, settings_getter, on_success, on_failure)
             on_failure(_string(30220))
             return
 
-        smb_folder = nzbget_smb_target(smb_root, result["dest_dir"])
+        smb_folder = nzbget_smb_target(smb_root, result["dest_dir"], category)
         if not smb_folder:
             on_failure(_string(30223))
             return

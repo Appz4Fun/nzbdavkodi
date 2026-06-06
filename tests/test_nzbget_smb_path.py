@@ -3,11 +3,35 @@ from resources.lib.nzbget_resolver import nzbget_smb_target, pick_largest_video
 
 
 def test_smb_target_appends_release_folder():
+    # No category configured -> just the release folder under the root.
     target = nzbget_smb_target(
         "smb://user:pw@host/completed",
         "/downloads/completed/movies/The.Movie.2024.1080p",
     )
     assert target == "smb://user:pw@host/completed/The.Movie.2024.1080p"
+
+
+def test_smb_target_includes_category_subfolder():
+    # With NZBGet's default AppendCategoryDir=yes the release lands under
+    # <completed>/<category>/<release>; the SMB target must include the
+    # category segment or it resolves to a folder that does not exist.
+    target = nzbget_smb_target(
+        "smb://user:pw@host/completed",
+        "/downloads/completed/movies/The.Movie.2024.1080p",
+        category="movies",
+    )
+    assert target == "smb://user:pw@host/completed/movies/The.Movie.2024.1080p"
+
+
+def test_smb_target_does_not_double_category_when_root_already_nested():
+    # If the user pointed nzbget_smb_root at the category subdir already,
+    # don't insert the category twice.
+    target = nzbget_smb_target(
+        "smb://host/completed/movies",
+        "/downloads/completed/movies/The.Movie.2024",
+        category="movies",
+    )
+    assert target == "smb://host/completed/movies/The.Movie.2024"
 
 
 def test_smb_target_handles_trailing_slashes():
