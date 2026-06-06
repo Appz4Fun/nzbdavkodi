@@ -304,6 +304,10 @@ def route(argv):
             _test_webdav_connection()
         elif path == "/test_nzbdav":
             _test_nzbdav_connection()
+        elif path == "/test_nzbget":
+            _test_nzbget_connection()
+        elif path == "/test_nzbget_smb":
+            _test_nzbget_smb()
         elif path == "/menu":
             _handle_main_menu(handle)
             return
@@ -1997,6 +2001,39 @@ def _test_nzbdav_connection():
     }
     test_url = "{}/api?{}".format(url, urlencode(params))
     _test_connection("nzbdav", url, test_url, _nzbdav_queue_response_ok)
+
+
+def _test_nzbget_connection():
+    """Test NZBGet JSON-RPC reachability + auth via the version method."""
+    from resources.lib.http_util import notify
+    from resources.lib.nzbget_api import test_connection
+
+    ok, _error = test_connection()
+    if ok:
+        notify(_addon_name(), _string(30224), 3000)
+    else:
+        notify(_addon_name(), _string(30225), 5000)
+
+
+def _test_nzbget_smb():
+    """Test the SMB completed-folder root is listable via xbmcvfs."""
+    import xbmcvfs
+
+    from resources.lib.http_util import notify
+
+    addon = xbmcaddon.Addon("plugin.video.nzbdav")
+    smb_root = addon.getSetting("nzbget_smb_root").strip()
+    reachable = False
+    if smb_root:
+        try:
+            xbmcvfs.listdir(smb_root)
+            reachable = True
+        except Exception:  # pylint: disable=broad-except
+            reachable = False
+    if reachable:
+        notify(_addon_name(), _string(30226), 3000)
+    else:
+        notify(_addon_name(), _string(30227), 5000)
 
 
 def _handle_main_menu(handle):
