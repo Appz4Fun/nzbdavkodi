@@ -25,6 +25,7 @@ _BARE_FILENAME_RE = re.compile(
 )
 _ARCHIVE_RE = re.compile(r'"?([^"\\/]+?)(?:\.part\d+)?\.(?:rar|r\d{2,3})\b', re.I)
 _ALLOWED_NZB_SCHEMES = frozenset(("http", "https"))
+_NON_WORD_RE = re.compile(r"[\W_]+")
 _METADATA_EXTENSION_RE = re.compile(
     r"\.(par2?|nfo|sfv|jpg|jpeg|png|gif|txt|url|lnk|srt|sub|idx|md5|sha\d*)\b",
     re.I,
@@ -68,9 +69,9 @@ def normalize_video_filename(value):
         return ""
     if "." in value:
         stem, ext = value.rsplit(".", 1)
-        stem = re.sub(r"[\W_]+", " ", stem.lower())
+        stem = _NON_WORD_RE.sub(" ", stem.lower())
         return "{}.{}".format(" ".join(stem.split()), ext.lower())
-    return " ".join(re.sub(r"[\W_]+", " ", value.lower()).split())
+    return " ".join(_NON_WORD_RE.sub(" ", value.lower()).split())
 
 
 def _strip_namespace(tag):
@@ -120,7 +121,7 @@ def _find_archive_base(subject):
     if not match:
         return ""
     base = match.group(1).strip().strip('"').strip("'")
-    base = re.sub(r"[\W_]+", " ", base.lower())
+    base = _NON_WORD_RE.sub(" ", base.lower())
     return " ".join(base.split())
 
 
