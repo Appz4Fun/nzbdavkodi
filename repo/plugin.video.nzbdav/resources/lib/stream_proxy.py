@@ -414,6 +414,10 @@ _SETTINGS_SNAPSHOT_KEYS = (
     "send_200_no_range",
     "proxy_convert_subs",
     "readahead_buffer_mb",
+    # Serialized so _passthrough_runtime_settings_from_snapshot() honors a
+    # user-tuned (or 0-to-disable) patient stall wait on the service /prepare
+    # path; without it the snapshot consumer always fell back to the default.
+    "passthrough_stall_wait",
 )
 
 
@@ -520,18 +524,28 @@ class ReadAheadBuffer:
                 self.base_offset = offset
 
     def note_seek(self, new_start):
-        """Repoint the window on a seek OUTSIDE the buffered range.
+        """Repoint the window for a seek.
 
-        In-window seeks leave the data intact (the read_prefix consult plus
-        free_behind naturally consume the now-behind bytes). An out-of-window
-        seek (forward past the lead or any backward seek) discards the data and
+        ``read_prefix`` only serves when ``start == base_offset``, so an
+        in-window FORWARD seek must advance ``base_offset`` to the seek target
+        or the buffered lead is missed and refetched. We therefore TRIM the
+        now-behind prefix ``[base_offset, new_start)`` and keep the still-ahead
+        bytes ``[new_start, window_end)``, so a skip forward into the buffered
+        lead is served from memory. An out-of-window seek (forward past the
+        lead or any backward seek before ``base_offset``) discards the data and
         sets ``base_offset`` to the seek target so the prefetch thread refills
         forward. Never blocks the seek — a cheap lock-protected pointer reset."""
         if not isinstance(new_start, int) or new_start < 0:
             return
         with self._lock:
             window_end = self.base_offset + len(self.data)
-            if self.base_offset <= new_start <= window_end:
+            if new_start == self.base_offset:
+                return
+            if self.base_offset < new_start <= window_end:
+                # In-window forward seek: drop the consumed prefix, keep the lead.
+                del self.data[: new_start - self.base_offset]
+                self.base_offset = new_start
+                self.served_high_water = max(self.served_high_water, new_start)
                 return
             self.data = bytearray()
             self.base_offset = new_start

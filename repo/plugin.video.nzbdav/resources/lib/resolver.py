@@ -2878,45 +2878,64 @@ _FALLBACK_PLAYBACK_WAIT_CAP_SECONDS = 300.0
 _FALLBACK_PREWARM_POLL_SECONDS = 1.0
 
 
-def _playback_still_active():
-    """Best-effort cross-process check that playback hasn't been stopped/ended.
+def _playback_active_flag():
+    """Tri-state cross-process read of the live-playback liveness flag.
+
+    Returns True when service.py is currently monitoring playback, False when
+    that flag is absent/cleared, or None when the property can't be read.
 
     The fallback submit worker's ``state["stop"]`` event is in-process and can
-    never be set by service.py's player callbacks (a different process). The
-    shared ``nzbdav.active`` window property IS observable across processes, so
-    a cleared/non-"true" value after playback has started signals the session
-    is dead. Guarded so a property-read failure never aborts submission (we
-    return True -- assume active -- on any error).
+    never be set by service.py's player callbacks (a different process), so the
+    worker needs a cross-process signal to know playback ended. We use a
+    DEDICATED ``nzbdav.playing`` window property that service.py sets while
+    monitoring and clears only on stop/end -- NOT the ``nzbdav.active`` handoff
+    flag, which ``service._check_active()`` consumes (clears) on the first tick
+    after playback starts and so would read False mid-playback.
     """
     try:
-        return xbmcgui.Window(10000).getProperty("nzbdav.active") == "true"
+        return xbmcgui.Window(10000).getProperty("nzbdav.playing") == "true"
     except Exception:  # pylint: disable=broad-except
-        return True
+        return None
 
 
 def _wait_prewarm_or_inactive(state, prewarm_delay, playback_signaled):
     """Wait up to ``prewarm_delay`` seconds, aborting early on stop/inactive.
 
-    Returns True if the worker should ABORT (stop event set, or -- only once
-    ``playback_signaled`` is True -- the cross-process ``nzbdav.active`` flag is
-    no longer "true"). Returns False once the full delay elapses with playback
-    still active. Uses ``Event.wait`` for the polling sleep so a daemon worker
-    never blocks Kodi shutdown. Total wait equals ``prewarm_delay``.
+    Returns True if the worker should ABORT: the in-process stop event is set,
+    or -- only once ``playback_signaled`` is True AND we have positively
+    observed the cross-process ``nzbdav.playing`` flag as live at least once --
+    that flag is later cleared (playback stopped/ended during the standby
+    window). Returns False once the full delay elapses with playback still live.
+
+    The "seen live first" latch matters: if playback was never actually
+    signaled (the ``_await_playback_start`` cap path, or an unusual handoff
+    where service never set the flag), we never latch, so the worker degrades to
+    a late submit rather than a wrongly-stranded backup -- and a brief startup
+    race where the worker polls before service sets the flag can't abort it.
+
+    Uses ``Event.wait`` for the polling sleep so a daemon worker never blocks
+    Kodi shutdown. Total wait equals ``prewarm_delay``.
     """
     stop = state.get("stop")
     if not prewarm_delay:
         return bool(stop is not None and stop.is_set())
     interval = _FALLBACK_PREWARM_POLL_SECONDS
     remaining = float(prewarm_delay)
+    seen_live = False
     while remaining > 0:
         wait_for = interval if interval < remaining else remaining
         if stop is not None and stop.wait(wait_for):
             return True
         remaining -= wait_for
-        # Only treat "inactive" as a stop AFTER playback was signaled, so we
-        # don't abort during the pre-playback window before active is ever set.
-        if playback_signaled and not _playback_still_active():
-            return True
+        if playback_signaled:
+            flag = _playback_active_flag()
+            if flag is True:
+                seen_live = True
+            elif flag is False and seen_live:
+                # Was live, now cleared -> playback stopped/ended; abort the
+                # standby submit for this dead session. (flag is None -> read
+                # failed -> leave the latch unchanged and keep waiting.)
+                return True
     return False
 
 

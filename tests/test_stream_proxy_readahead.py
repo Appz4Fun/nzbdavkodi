@@ -114,11 +114,32 @@ def test_free_behind_idempotent_for_old_offset():
     assert buf.read_prefix(4, 9) == b"EFGHIJ"
 
 
-def test_note_seek_in_window_keeps_data():
+def test_note_seek_in_window_trims_prefix_and_serves_lead():
+    """Regression (id 3365909885): an in-window FORWARD seek must rebase the
+    window to the seek target so read_prefix (which only serves at base_offset)
+    serves the still-buffered lead from memory instead of missing and refetching
+    bytes already held. The consumed prefix [old base, new_start) is dropped and
+    the forward lead [new_start, window_end) is kept (next_fetch_offset stays)."""
     buf = ReadAheadBuffer(cap_bytes=1024, content_length=10_000)
     buf.append(0, b"ABCDEFGHIJ")
-    buf.note_seek(3)  # inside [0, 10)
-    assert buf.read_prefix(0, 9) == b"ABCDEFGHIJ"
+    buf.note_seek(3)  # inside [0, 10): forward seek into the buffered lead
+    # The lead from the seek target is served straight from memory...
+    assert buf.read_prefix(3, 9) == b"DEFGHIJ"
+    # ...the consumed prefix is gone (read_prefix only serves at base_offset)...
+    assert buf.read_prefix(0, 9) == b""
+    # ...and the buffered lead was preserved, not discarded for a refetch.
+    assert buf.next_fetch_offset() == 10
+
+
+def test_note_seek_to_window_end_trims_all_and_resumes_forward():
+    """Boundary: a seek to exactly window_end consumes the whole lead -- data
+    empties, base rebases to the target, and the prefetch resumes forward from
+    there (no negative slice / off-by-one)."""
+    buf = ReadAheadBuffer(cap_bytes=1024, content_length=10_000)
+    buf.append(0, b"ABCDEFGHIJ")  # window [0, 10)
+    buf.note_seek(10)  # exactly window_end
+    assert buf.read_prefix(10, 12) == b""
+    assert buf.next_fetch_offset() == 10
 
 
 def test_note_seek_outside_window_discards_and_repoints():

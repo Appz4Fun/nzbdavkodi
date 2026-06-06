@@ -184,6 +184,31 @@ def test_tick_deactivates_when_retries_exhausted(mock_window):
 
 
 @patch("service._HOME_WINDOW")
+def test_tick_terminal_error_clears_playing_flag(mock_window):
+    """Regression (id 3365909884 follow-up): a terminal ERROR->IDLE transition
+    must clear the persistent ``nzbdav.playing`` liveness flag, so the
+    plugin-process fallback submit worker observes the dead session and aborts
+    its standby wait instead of submitting backups. Covers the retries-disabled
+    and max-retries terminal paths."""
+    from service import _PROP_PLAYING
+
+    for read_settings in ((False, 3, 5), (True, 3, 1)):
+        mock_window.reset_mock()
+        mock_window.getProperty.return_value = ""
+        player = NzbdavPlayer()
+        player._state = PlaybackState.ERROR
+        player._retry_count = 5  # already past max for the (True, 3, 1) case
+        player._title = "test"
+
+        with patch.object(player, "_read_settings", return_value=read_settings):
+            player.tick()
+
+        assert player._state == PlaybackState.IDLE
+        cleared = {call.args[0] for call in mock_window.clearProperty.call_args_list}
+        assert _PROP_PLAYING in cleared, (read_settings, cleared)
+
+
+@patch("service._HOME_WINDOW")
 def test_tick_does_nothing_when_no_error(mock_window):
     """tick() does nothing when playback is fine."""
     mock_window.getProperty.return_value = ""

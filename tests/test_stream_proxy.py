@@ -1147,6 +1147,31 @@ def test_prepare_stream_uses_settings_snapshot_without_kodi_setting_reads():
     assert "_passthrough_runtime_settings_thread" not in ctx
 
 
+def test_settings_snapshot_carries_passthrough_stall_wait():
+    """Regression (id 3365909882): passthrough_stall_wait must be serialized into
+    the /prepare settings snapshot so a user-tuned (or 0-to-disable) value is
+    honored on the service-proxied path instead of silently defaulting to 120."""
+    import resources.lib.stream_proxy as sp
+
+    assert "passthrough_stall_wait" in sp._SETTINGS_SNAPSHOT_KEYS
+
+    def getter(key, _default=""):
+        return "0" if key == "passthrough_stall_wait" else ""
+
+    snap = sp.build_settings_snapshot(settings_getter=getter)
+    assert snap["passthrough_stall_wait"] == "0"
+    # 0 disables the patient stall wait — and now actually reaches the consumer.
+    runtime = sp._passthrough_runtime_settings_from_snapshot(snap)
+    assert runtime["passthrough_stall_wait_seconds"] == 0
+
+    def getter45(key, _default=""):
+        return "45" if key == "passthrough_stall_wait" else ""
+
+    snap45 = sp.build_settings_snapshot(settings_getter=getter45)
+    runtime45 = sp._passthrough_runtime_settings_from_snapshot(snap45)
+    assert runtime45["passthrough_stall_wait_seconds"] == 45
+
+
 def test_prepare_stream_unknown_length_mkv_without_ffmpeg_raises_in_matroska_mode():
     """Matroska mode cannot handle unknown-size non-MP4 streams without ffmpeg."""
     from resources.lib.stream_proxy import StreamProxy
