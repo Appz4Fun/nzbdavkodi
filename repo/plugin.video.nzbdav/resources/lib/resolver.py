@@ -17,9 +17,9 @@ import xbmcgui
 import xbmcplugin
 import xbmcvfs
 
+from resources.lib import resume_store
 from resources.lib.dead_candidates import DeadCandidates, is_provably_dead_submit_error
 from resources.lib.download_ledger import record_download
-from resources.lib import resume_store
 from resources.lib.fallback_streams import (
     FALLBACK_CANDIDATES_DISABLED,
     build_fallback_job_name,
