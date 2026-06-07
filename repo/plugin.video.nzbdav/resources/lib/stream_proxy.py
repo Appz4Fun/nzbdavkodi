@@ -2093,7 +2093,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
             ):
                 raise ValueError("Invalid binary")
             proc = subprocess.Popen(
-                cmd,  # lgtm [py/command-line-injection]  # nosec B603
+                cmd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -6681,7 +6681,7 @@ class HlsProducer:
                 ):
                     raise ValueError("Invalid binary")
                 self._proc = subprocess.Popen(
-                    cmd,  # lgtm [py/command-line-injection]  # nosec B603
+                    cmd,
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=self._ffmpeg_log,
@@ -7421,7 +7421,7 @@ class StreamProxy:
             ):
                 raise ValueError("Invalid binary")
             proc = subprocess.Popen(
-                cmd,  # lgtm [py/command-line-injection]  # nosec B603
+                cmd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
@@ -8593,7 +8593,7 @@ class StreamProxy:
             ):
                 raise ValueError("Invalid binary")
             proc = subprocess.Popen(
-                cmd,  # lgtm [py/command-line-injection]  # nosec B603
+                cmd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -8670,7 +8670,7 @@ class StreamProxy:
             ):
                 raise ValueError("Invalid binary")
             proc = subprocess.Popen(
-                cmd,  # lgtm [py/command-line-injection]  # nosec B603
+                cmd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
@@ -8799,7 +8799,7 @@ class StreamProxy:
             ):
                 raise ValueError("Invalid binary")
             proc = subprocess.Popen(
-                cmd,  # lgtm [py/command-line-injection]  # nosec B603
+                cmd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
