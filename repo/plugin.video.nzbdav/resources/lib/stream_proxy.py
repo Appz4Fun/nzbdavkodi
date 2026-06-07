@@ -2089,14 +2089,14 @@ class _StreamHandler(BaseHTTPRequestHandler):
             xbmc.LOGINFO,
         )
         try:
-            kw = {
-                "stdin": subprocess.DEVNULL,
-                "stdout": subprocess.PIPE,
-                "stderr": subprocess.PIPE,
-                "shell": False,
-            }
-            Popen = subprocess.Popen
-            proc = Popen(cmd, **kw)  # lgtm [py/command-line-injection]  # nosec B603
+            # fmt: off
+            proc = subprocess.Popen(cmd,  # lgtm [py/command-line-injection]  # nosec B603
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                shell=False,
+            )
+            # fmt: on
         except OSError as error:
             xbmc.log("NZB-DAV: Failed to start ffmpeg: {}".format(error), xbmc.LOGERROR)
             _notify_error("Failed to start ffmpeg")
@@ -6674,16 +6674,14 @@ class HlsProducer:
                 # stdin (TODO.md §H.3 Low — "ffmpeg Popen omits
                 # stdin=DEVNULL"). Harmless on Kodi but tidies the
                 # under-a-terminal case.
-                kw = {
-                    "stdin": subprocess.DEVNULL,
-                    "stdout": subprocess.DEVNULL,
-                    "stderr": self._ffmpeg_log,
-                    "shell": False,
-                    "cwd": self.session_dir,
-                }
-                Popen = subprocess.Popen
                 # fmt: off
-                self._proc = Popen(cmd, **kw)  # lgtm [py/command-line-injection]  # nosec B603
+                self._proc = subprocess.Popen(cmd,  # lgtm [py/command-line-injection]  # nosec B603
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=self._ffmpeg_log,
+                    shell=False,
+                    cwd=self.session_dir,
+                )
                 # fmt: on
             except OSError as e:
                 xbmc.log(
@@ -7413,14 +7411,14 @@ class StreamProxy:
             return False
         cmd = [ffmpeg_path, "-hide_banner", "-h", "muxer=hls"]
         try:
-            kw = {
-                "stdin": subprocess.DEVNULL,
-                "stdout": subprocess.DEVNULL,
-                "stderr": subprocess.PIPE,
-                "shell": False,
-            }
-            Popen = subprocess.Popen
-            proc = Popen(cmd, **kw)  # lgtm [py/command-line-injection]  # nosec B603
+            # fmt: off
+            proc = subprocess.Popen(cmd,  # lgtm [py/command-line-injection]  # nosec B603
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                shell=False,
+            )
+            # fmt: on
             try:
                 output = proc.communicate(timeout=_FFMPEG_CAPABILITY_PROBE_TIMEOUT)
                 if not isinstance(output, (tuple, list)) or len(output) != 2:
@@ -8582,14 +8580,14 @@ class StreamProxy:
                     input_url,
                 ]
             )
-            kw = {
-                "stdin": subprocess.DEVNULL,
-                "stdout": subprocess.PIPE,
-                "stderr": subprocess.PIPE,
-                "shell": False,
-            }
-            Popen = subprocess.Popen
-            proc = Popen(cmd, **kw)  # lgtm [py/command-line-injection]  # nosec B603
+            # fmt: off
+            proc = subprocess.Popen(cmd,  # lgtm [py/command-line-injection]  # nosec B603
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                shell=False,
+            )
+            # fmt: on
             try:
                 stdout_bytes, _ = proc.communicate(timeout=30)
             except subprocess.TimeoutExpired:
@@ -8656,14 +8654,14 @@ class StreamProxy:
         cmd.extend(["-i", input_url, "-f", "null", "-"])
 
         try:
-            kw = {
-                "stdin": subprocess.DEVNULL,
-                "stdout": subprocess.DEVNULL,
-                "stderr": subprocess.PIPE,
-                "shell": False,
-            }
-            Popen = subprocess.Popen
-            proc = Popen(cmd, **kw)  # lgtm [py/command-line-injection]  # nosec B603
+            # fmt: off
+            proc = subprocess.Popen(cmd,  # lgtm [py/command-line-injection]  # nosec B603
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                shell=False,
+            )
+            # fmt: on
         except (OSError, subprocess.SubprocessError, ValueError) as e:
             xbmc.log(
                 "NZB-DAV: {} probe spawn failed: {}".format(label, e),
@@ -8782,14 +8780,14 @@ class StreamProxy:
         proc = None
         try:
             xbmc.log("NZB-DAV: Temp-file faststart remux starting", xbmc.LOGINFO)
-            kw = {
-                "stdin": subprocess.DEVNULL,
-                "stdout": subprocess.PIPE,
-                "stderr": subprocess.PIPE,
-                "shell": False,
-            }
-            Popen = subprocess.Popen
-            proc = Popen(cmd, **kw)  # lgtm [py/command-line-injection]  # nosec B603
+            # fmt: off
+            proc = subprocess.Popen(cmd,  # lgtm [py/command-line-injection]  # nosec B603
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                shell=False,
+            )
+            # fmt: on
             _, stderr = proc.communicate(timeout=600)  # 10 min timeout
             if proc.returncode != 0:
                 # ffmpeg error messages routinely echo the full input
