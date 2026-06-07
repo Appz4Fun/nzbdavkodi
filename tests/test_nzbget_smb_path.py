@@ -23,6 +23,19 @@ def test_smb_target_includes_category_subfolder():
     assert target == "smb://user:pw@host/completed/movies/The.Movie.2024.1080p"
 
 
+def test_smb_target_omits_category_when_destdir_not_nested():
+    # AppendCategoryDir=no (or a category-specific DestDir): NZBGet reports the
+    # release directly under completed, with no category folder. Even though a
+    # category is configured, the SMB target must follow the *actual* DestDir
+    # layout and NOT insert a synthetic category segment that 404s.
+    target = nzbget_smb_target(
+        "smb://user:pw@host/completed",
+        "/downloads/completed/The.Movie.2024.1080p",
+        category="movies",
+    )
+    assert target == "smb://user:pw@host/completed/The.Movie.2024.1080p"
+
+
 def test_smb_target_does_not_double_category_when_root_already_nested():
     # If the user pointed nzbget_smb_root at the category subdir already,
     # don't insert the category twice.

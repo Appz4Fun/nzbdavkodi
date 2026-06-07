@@ -3396,5 +3396,8 @@ def test_test_nzbget_smb_reports_reachable_when_exists_true():
         "resources.lib.http_util.notify", side_effect=fake_notify
     ):
         _test_nzbget_smb()
-    # 30226 == "SMB share reachable"
-    assert notified["message"] == 30226 or "reachable" in str(notified["message"])
+    # 30226 == "SMB share reachable". Lowercase + exclude the negated phrase so
+    # "not reachable" can't satisfy a bare "reachable" substring check.
+    msg = str(notified["message"]).lower()
+    assert notified["message"] == 30226 or "reachable" in msg
+    assert "not reachable" not in msg

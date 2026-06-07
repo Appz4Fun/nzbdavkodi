@@ -7483,7 +7483,11 @@ def test_resolve_delegates_to_nzbget_when_enabled():
         "resources.lib.nzbget_resolver.resolve_and_play_nzbget"
     ) as nzbget_entry:
         resolve(7, {"nzburl": "http%3A%2F%2Fi%2Fx.nzb", "title": "X"})
-    nzbget_entry.assert_called_once()
+    # Assert the exact handle + params payload is forwarded, so a regression in
+    # handle/params routing is caught (not just that delegation happened).
+    nzbget_entry.assert_called_once_with(
+        7, {"nzburl": "http%3A%2F%2Fi%2Fx.nzb", "title": "X"}
+    )
 
 
 def test_resolve_skips_nzbget_when_disabled():
@@ -7495,12 +7499,15 @@ def test_resolve_skips_nzbget_when_disabled():
         "resources.lib.resolver._picker_completed_stream", return_value=None
     ), patch(
         "resources.lib.resolver._get_poll_settings", return_value=(1, 60)
+    ), patch(
+        "resources.lib.resolver._maybe_clear_queue_before_submit"
+    ), patch(
+        "resources.lib.resolver._poll_until_ready", return_value=(None, None)
     ):
-        # Will proceed down the nzbdav path; we only assert NZBGet was not used.
-        try:
-            resolve(7, {"nzburl": "http%3A%2F%2Fi%2Fx.nzb", "title": "X"})
-        except Exception:  # pylint: disable=broad-except
-            pass
+        # Proceeds down the nzbdav path (poll returns no stream -> resolve False).
+        # No try/except: an unexpected raise here must fail the test, not be
+        # swallowed into a passing assert_not_called.
+        resolve(7, {"nzburl": "http%3A%2F%2Fi%2Fx.nzb", "title": "X"})
     nzbget_entry.assert_not_called()
 
 
@@ -7516,4 +7523,22 @@ def test_resolve_and_play_delegates_to_nzbget_when_enabled():
         "resources.lib.nzbget_resolver.play_nzbget"
     ) as play_entry:
         resolve_and_play("http://i/x.nzb", "X", params={})
-    play_entry.assert_called_once()
+    # Assert the exact nzb_url/title/params payload is forwarded to the
+    # handle-less entry, catching regressions in arg routing.
+    play_entry.assert_called_once_with("http://i/x.nzb", "X", {})
+
+
+def test_resolve_and_play_reads_toggle_via_injected_getter():
+    # The handle-less path passes _settings_getter to avoid Kodi settings-API
+    # reads during RunScript/widget plays. The NZBGet toggle must be read
+    # through that getter; if xbmcaddon.Addon is unavailable the injected
+    # getter still enables NZBGet rather than silently falling back to nzbdav.
+    def injected(key, default=""):
+        return "true" if key == "nzbget_enabled" else default
+
+    with patch.object(
+        sys.modules["xbmcaddon"], "Addon", side_effect=RuntimeError("unavailable")
+    ), patch("resources.lib.nzbget_resolver.play_nzbget") as play_entry:
+        params = {"_settings_getter": injected}
+        resolve_and_play("http://i/x.nzb", "X", params=params)
+    play_entry.assert_called_once_with("http://i/x.nzb", "X", params)

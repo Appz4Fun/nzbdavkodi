@@ -30,28 +30,38 @@ VIDEO_EXTENSIONS = (".mkv", ".mp4", ".avi", ".m4v", ".ts", ".wmv", ".mov")
 def nzbget_smb_target(smb_root, dest_dir, category=""):
     """Map NZBGet's server-local DestDir onto the SMB root.
 
-    ``smb_root`` points at NZBGet's *completed* base dir. With NZBGet's
-    default ``AppendCategoryDir=yes`` a categorized release lands under a
-    per-category subfolder (``<completed>/<category>/<release>``), so the
-    DestDir basename alone (``<release>``) is not enough — the SMB target
-    must include the category segment or it resolves to a folder that does
-    not exist. We append ``<category>/<release>`` when a category is set and
-    DestDir is not already nested under it; otherwise just ``<release>``.
+    ``smb_root`` points at NZBGet's *completed* base dir, exposed over SMB.
+    Whether a categorized release sits under a per-category subfolder is
+    decided by NZBGet itself (``AppendCategoryDir`` / a category-specific
+    ``DestDir``) and is reflected directly in the ``dest_dir`` it reports in
+    history: with ``AppendCategoryDir=yes`` the path is
+    ``<completed>/<category>/<release>``; with ``AppendCategoryDir=no`` (or a
+    custom category DestDir) it is just ``<completed>/<release>``. We mirror
+    that *actual* layout — nesting under the category only when DestDir's own
+    parent segment is the category — rather than synthesizing the segment
+    from the setting, so an ``AppendCategoryDir=no`` box resolves to the real
+    folder instead of a non-existent ``<root>/<category>/<release>``.
     Returns the smb:// folder URL, or None if dest_dir is empty.
     """
     if not dest_dir:
         return None
     normalized = dest_dir.replace("\\", "/").rstrip("/")
-    release_folder = normalized.rsplit("/", 1)[-1]
-    if not release_folder:
+    segments = [seg for seg in normalized.split("/") if seg]
+    if not segments:
         return None
+    release_folder = segments[-1]
+    parent_folder = segments[-2] if len(segments) >= 2 else ""
     category = (category or "").strip().strip("/")
     base = smb_root.rstrip("/")
-    if category and category != release_folder:
-        # Only insert the category when the SMB root doesn't already end in
-        # it (user pointed at the completed base, not the category subdir).
-        if not base.endswith("/" + category):
-            return "{}/{}/{}".format(base, category, release_folder)
+    # Nest under the category only when NZBGet actually placed the release in
+    # a matching category subfolder (DestDir's parent == category), and the
+    # SMB root isn't already pointed at that subfolder.
+    if (
+        category
+        and parent_folder.casefold() == category.casefold()
+        and not base.casefold().endswith("/" + category.casefold())
+    ):
+        return "{}/{}/{}".format(base, parent_folder, release_folder)
     return "{}/{}".format(base, release_folder)
 
 
@@ -76,6 +86,10 @@ def pick_largest_video(filenames, size_of):
 
 _SMB_LIST_RETRIES = 5
 _SMB_LIST_RETRY_INTERVAL = 1.0
+# Releases whose archive unpacks into a nested ``<release>/<inner>/video``
+# layout are common; descend a few levels (like the WebDAV resolver) so they
+# still resolve. Bounded to keep a pathological tree from stalling playback.
+_SMB_MAX_DEPTH = 3
 
 
 def _smb_file_size(path):
@@ -85,26 +99,52 @@ def _smb_file_size(path):
         return 0
 
 
+def _largest_video_in_tree(folder, depth=_SMB_MAX_DEPTH):
+    """Return ``(url, size)`` for the largest video at or below ``folder``.
+
+    Descends up to ``depth`` levels of subdirectories so a video tucked
+    inside a top-level folder (a common archive layout) still resolves
+    instead of failing with "No video file found on SMB share". Returns
+    ``(None, -1)`` when nothing playable is found.
+    """
+    try:
+        dirs, files = xbmcvfs.listdir(folder)
+    except Exception:  # pylint: disable=broad-except
+        return None, -1
+    best, best_size = None, -1
+    for name in files:
+        lower = name.lower()
+        if not any(lower.endswith(ext) for ext in VIDEO_EXTENSIONS):
+            continue
+        path = "{}/{}".format(folder, name)
+        size = _smb_file_size(path)
+        if size > best_size:
+            best, best_size = path, size
+    if depth > 0:
+        for sub in dirs:
+            url, size = _largest_video_in_tree(
+                "{}/{}".format(folder, sub), depth - 1
+            )
+            if url is not None and size > best_size:
+                best, best_size = url, size
+    return best, best_size
+
+
 def resolve_smb_video(smb_folder, monitor=None):
     """List an SMB folder and return the largest video file URL, or None.
 
-    Retries a few times (via Monitor.waitForAbort) to absorb the lag
-    between NZBGet reporting SUCCESS and the files becoming visible over
-    SMB. Returns None if no video file appears.
+    Searches the folder tree (top level plus nested subdirectories, see
+    ``_largest_video_in_tree``) and retries a few times (via
+    Monitor.waitForAbort) to absorb the lag between NZBGet reporting SUCCESS
+    and the files becoming visible over SMB. Returns None if no video file
+    appears.
     """
     if monitor is None:
         monitor = xbmc.Monitor()
     for attempt in range(_SMB_LIST_RETRIES):
-        try:
-            _dirs, files = xbmcvfs.listdir(smb_folder)
-        except Exception:  # pylint: disable=broad-except
-            files = []
-        chosen = pick_largest_video(
-            files,
-            lambda name: _smb_file_size("{}/{}".format(smb_folder, name)),
-        )
-        if chosen is not None:
-            return "{}/{}".format(smb_folder, chosen)
+        url, _size = _largest_video_in_tree(smb_folder)
+        if url is not None:
+            return url
         if attempt < _SMB_LIST_RETRIES - 1:
             if monitor.waitForAbort(_SMB_LIST_RETRY_INTERVAL):
                 return None
