@@ -84,8 +84,15 @@ def pick_largest_video(filenames, size_of):
     return best
 
 
-_SMB_LIST_RETRIES = 5
 _SMB_LIST_RETRY_INTERVAL = 1.0
+# Total wall-clock budget to keep re-listing the SMB share after NZBGet
+# reports SUCCESS. NZBGet only enters history once its move is marked
+# complete, but the moved files can take a while longer to become listable
+# over the Samba export (observed: the containing folder's mtime landing at
+# the exact second we start looking). The old ~4s (5×1s) window lost that
+# race and failed with "No video file found on SMB share" even though the
+# download succeeded. 60s absorbs the visibility lag with wide margin.
+_SMB_RESOLVE_BUDGET = 60.0
 # Releases whose archive unpacks into a nested ``<release>/<inner>/video``
 # layout are common; descend a few levels (like the WebDAV resolver) so they
 # still resolve. Bounded to keep a pathological tree from stalling playback.
@@ -130,25 +137,46 @@ def _largest_video_in_tree(folder, depth=_SMB_MAX_DEPTH):
     return best, best_size
 
 
-def resolve_smb_video(smb_folder, monitor=None):
+def resolve_smb_video(
+    smb_folder,
+    monitor=None,
+    dialog=None,
+    interval=_SMB_LIST_RETRY_INTERVAL,
+    budget=_SMB_RESOLVE_BUDGET,
+):
     """List an SMB folder and return the largest video file URL, or None.
 
     Searches the folder tree (top level plus nested subdirectories, see
-    ``_largest_video_in_tree``) and retries a few times (via
-    Monitor.waitForAbort) to absorb the lag between NZBGet reporting SUCCESS
-    and the files becoming visible over SMB. Returns None if no video file
-    appears.
+    ``_largest_video_in_tree``) and keeps retrying until a video appears or
+    the wall-clock ``budget`` (seconds, ``time.monotonic``) elapses — long
+    enough to absorb the lag between NZBGet reporting SUCCESS and the moved
+    files becoming visible over SMB. Sleeps ``interval`` seconds between
+    attempts via ``Monitor.waitForAbort`` so it stays cancelable and honors
+    Kodi shutdown. When a ``dialog`` (DialogProgress) is supplied, it shows a
+    progress bar over the wait and its Cancel button aborts the search.
+    Returns None if no video file appears within the budget.
     """
     if monitor is None:
         monitor = xbmc.Monitor()
-    for attempt in range(_SMB_LIST_RETRIES):
+    deadline = time.monotonic() + budget
+    while True:
         url, _size = _largest_video_in_tree(smb_folder)
         if url is not None:
             return url
-        if attempt < _SMB_LIST_RETRIES - 1:
-            if monitor.waitForAbort(_SMB_LIST_RETRY_INTERVAL):
+        now = time.monotonic()
+        if now >= deadline:
+            return None
+        if dialog is not None:
+            if dialog.iscanceled():
                 return None
-    return None
+            # Drive the progress bar over the resolve window so the user sees
+            # a "finishing up" indicator instead of being dropped back to the
+            # home screen while the file settles onto the share.
+            elapsed = budget - max(0.0, deadline - now)
+            percent = int(min(100.0, elapsed * 100.0 / budget)) if budget else 100
+            dialog.update(percent, _string(30219))
+        if monitor.waitForAbort(interval):
+            return None
 
 
 _POLL_INTERVAL = 2.0
@@ -313,7 +341,11 @@ def _run_nzbget_backend(nzb_url, title, settings_getter, on_success, on_failure)
         )
         if completed_dir:
             reuse_folder = nzbget_smb_target(smb_root, completed_dir, category)
-            reuse_video = resolve_smb_video(reuse_folder) if reuse_folder else None
+            reuse_video = (
+                resolve_smb_video(reuse_folder, dialog=dialog, interval=interval)
+                if reuse_folder
+                else None
+            )
             if reuse_video:
                 on_success(reuse_video)
                 return
@@ -360,7 +392,7 @@ def _run_nzbget_backend(nzb_url, title, settings_getter, on_success, on_failure)
         if not smb_folder:
             on_failure(_string(30223))
             return
-        video_url = resolve_smb_video(smb_folder)
+        video_url = resolve_smb_video(smb_folder, dialog=dialog, interval=interval)
         if not video_url:
             on_failure(_string(30223))
             return
