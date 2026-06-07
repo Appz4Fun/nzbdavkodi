@@ -1067,23 +1067,26 @@ def _episode_info_from_listitem():
             "Container(50).ListItem.Episode",
         ),
     )
-    show, season, episode = "", "", ""
     try:
+        first_show = ""
         for t_label, s_label, e_label in label_sources:
-            show = show or (xbmc.getInfoLabel(t_label) or "").strip()
-            if not season:
-                cand = (xbmc.getInfoLabel(s_label) or "").strip()
-                if cand.isdigit():
-                    season = cand
-            if not episode:
-                cand = (xbmc.getInfoLabel(e_label) or "").strip()
-                if cand.isdigit():
-                    episode = cand
-            if season and episode:
-                break
+            show = (xbmc.getInfoLabel(t_label) or "").strip()
+            season = (xbmc.getInfoLabel(s_label) or "").strip()
+            episode = (xbmc.getInfoLabel(e_label) or "").strip()
+            if not first_show:
+                first_show = show
+            # Treat each root as an ATOMIC (show, season, episode) candidate:
+            # only pair the numbers with the show from the SAME root. Mixing a
+            # stale show title from one root with numbers from another made the
+            # caller's same-show guard reject the recovered numbers, so the
+            # search/cleanup still ran with blank season/episode.
+            if season.isdigit() and episode.isdigit():
+                return show, season, episode
+        # No root had both numbers; surface a show (for the empty-title widget
+        # branch / logging) but no half-populated numbers.
+        return first_show, "", ""
     except Exception:  # pylint: disable=broad-except
         return "", "", ""
-    return show, season, episode
 
 
 def _handle_direct_play(handle, params):

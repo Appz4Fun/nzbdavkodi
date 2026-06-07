@@ -7482,13 +7482,14 @@ def test_resolve_delegates_to_nzbget_when_enabled():
     with patch.object(sys.modules["xbmcaddon"], "Addon", return_value=addon), patch(
         "resources.lib.nzbget_resolver.resolve_and_play_nzbget"
     ) as nzbget_entry, patch(
-        "resources.lib.resolver._clear_kodi_playback_state"
+        "resources.lib.resolver._clear_kodi_playback_state", return_value=137.0
     ) as scrub:
         resolve(7, {"nzburl": "http%3A%2F%2Fi%2Fx.nzb", "title": "X"})
-    # Assert the exact handle + params payload is forwarded, so a regression in
-    # handle/params routing is caught (not just that delegation happened).
+    # Assert the exact handle + params payload is forwarded, plus the scrubbed
+    # bookmark's resume position — so a regression in handle/params routing or
+    # in carrying the resume offset is caught.
     nzbget_entry.assert_called_once_with(
-        7, {"nzburl": "http%3A%2F%2Fi%2Fx.nzb", "title": "X"}
+        7, {"nzburl": "http%3A%2F%2Fi%2Fx.nzb", "title": "X"}, resume_seconds=137.0
     )
     # The stale TMDBHelper bookmark must be scrubbed before the NZBGet handoff
     # (NZBGet bypasses the nzbdav playback-state cleanup).
@@ -7527,12 +7528,12 @@ def test_resolve_and_play_delegates_to_nzbget_when_enabled():
     with patch.object(sys.modules["xbmcaddon"], "Addon", return_value=addon), patch(
         "resources.lib.nzbget_resolver.play_nzbget"
     ) as play_entry, patch(
-        "resources.lib.resolver._clear_kodi_playback_state"
+        "resources.lib.resolver._clear_kodi_playback_state", return_value=90.0
     ) as scrub:
         resolve_and_play("http://i/x.nzb", "X", params={})
     # Assert the exact nzb_url/title/params payload is forwarded to the
-    # handle-less entry, catching regressions in arg routing.
-    play_entry.assert_called_once_with("http://i/x.nzb", "X", {})
+    # handle-less entry plus the carried resume offset.
+    play_entry.assert_called_once_with("http://i/x.nzb", "X", {}, resume_seconds=90.0)
     scrub.assert_called_once()  # bookmark scrubbed before the NZBGet handoff
 
 
@@ -7547,8 +7548,10 @@ def test_resolve_and_play_reads_toggle_via_injected_getter():
     with patch.object(
         sys.modules["xbmcaddon"], "Addon", side_effect=RuntimeError("unavailable")
     ), patch("resources.lib.nzbget_resolver.play_nzbget") as play_entry, patch(
-        "resources.lib.resolver._clear_kodi_playback_state"
+        "resources.lib.resolver._clear_kodi_playback_state", return_value=0.0
     ):
         params = {"_settings_getter": injected}
         resolve_and_play("http://i/x.nzb", "X", params=params)
-    play_entry.assert_called_once_with("http://i/x.nzb", "X", params)
+    play_entry.assert_called_once_with(
+        "http://i/x.nzb", "X", params, resume_seconds=0.0
+    )

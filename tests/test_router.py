@@ -2254,6 +2254,45 @@ def test_handle_script_play_recovers_episode_numbers_from_container_listitem(
 @patch("resources.lib.filter.filter_results", return_value=([], []))
 @patch("resources.lib.router._search_all_providers", return_value=([], None))
 @patch("resources.lib.router._tag_available")
+def test_handle_script_play_listitem_labels_are_atomic_per_source(
+    mock_tag,
+    mock_search,
+    mock_filter,
+    mock_show,
+    mock_lookup,
+    mock_infolabel,
+    mock_addon,
+):
+    """Each InfoLabel root is an atomic (show, season, episode) candidate. A
+    stale show title in the bare ListItem root (with no numbers) must not be
+    paired with the real numbers from the Container root — otherwise the
+    same-show guard rejects the recovered episode and the search broadens."""
+    from resources.lib.router import _handle_script_play
+
+    info = {
+        # bare ListItem root: a stale/non-focused show, no episode numbers
+        "ListItem.TVShowTitle": "Some Other Show",
+        # Container root: the actual focused episode (matches search title)
+        "Container.ListItem.TVShowTitle": "From",
+        "Container.ListItem.Season": "3",
+        "Container.ListItem.Episode": "5",
+    }
+    mock_infolabel.side_effect = lambda label: info.get(label, "")
+
+    _handle_script_play({"type": "episode", "imdb": "tt9813792", "tmdb_id": "124364"})
+
+    kwargs = mock_search.call_args.kwargs
+    assert kwargs["season"] == "3"
+    assert kwargs["episode"] == "5"
+
+
+@patch("xbmcaddon.Addon")
+@patch("xbmc.getInfoLabel")
+@patch("resources.lib.router._lookup_episode_info", return_value={"title": "From"})
+@patch("resources.lib.results_dialog.show_results_dialog", return_value=None)
+@patch("resources.lib.filter.filter_results", return_value=([], []))
+@patch("resources.lib.router._search_all_providers", return_value=([], None))
+@patch("resources.lib.router._tag_available")
 def test_handle_script_play_ignores_listitem_episode_for_different_show(
     mock_tag,
     mock_search,

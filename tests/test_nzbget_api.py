@@ -137,6 +137,21 @@ def test_history_status_success_returns_destdir():
     assert status["dest_dir"] == "/dl/movies/X"
 
 
+def test_get_settings_uses_schema_defaults_via_injected_getter():
+    # _get_script_setting returns the supplied default for settings the user
+    # left at their schema default (absent from the profile file). Those
+    # fallbacks must match settings.xml, or a user who only set the SMB root is
+    # sent down the NZBGet path and fails "not configured" on a blank URL.
+    def getter(key, default=""):
+        return {"nzbget_smb_root": "smb://host/done"}.get(key, default)
+
+    url, user, password, category = _get_settings(settings_getter=getter)
+    assert url == "http://localhost:6789"
+    assert user == "nzbget"
+    assert password == ""
+    assert category == ""
+
+
 def test_history_status_prefers_finaldir_over_destdir():
     # A post-processing script that moves the output sets FinalDir; the SMB
     # target must follow the file to its final location, not the stale DestDir.
@@ -276,7 +291,12 @@ def test_cancel_job_issues_group_then_history_delete():
 
 
 def test_rpc_call_not_configured_when_url_blank():
-    result, error = _rpc_call("version", [], settings_getter=_getter({}))
+    # An explicitly-blank URL short-circuits to "not_configured" before any
+    # HTTP. (An *absent* nzbget_url now falls back to the schema default
+    # http://localhost:6789 — see test_get_settings_uses_schema_defaults_*.)
+    result, error = _rpc_call(
+        "version", [], settings_getter=_getter({"nzbget_url": ""})
+    )
     assert result is None
     assert error == "not_configured"
 

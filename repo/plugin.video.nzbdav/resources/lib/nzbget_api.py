@@ -20,6 +20,15 @@ from resources.lib.http_util import redact_text as _redact_text
 
 _RPC_TIMEOUT = 30
 
+# settings.xml schema defaults. The injected ``settings_getter``
+# (``_get_script_setting`` on the RunScript/widget path) reads the raw profile
+# XML, where a setting left at its displayed default is simply absent — so it
+# returns the fallback we pass. Mirror the schema defaults here, or a user who
+# enables NZBGet + sets the SMB root but leaves the URL/username untouched is
+# sent down the NZBGet path only to fail "not configured".
+_DEFAULT_URL = "http://localhost:6789"
+_DEFAULT_USER = "nzbget"
+
 
 def _get_settings(settings_getter=None):
     if settings_getter is None:
@@ -29,8 +38,8 @@ def _get_settings(settings_getter=None):
         password = addon.getSetting("nzbget_password")
         category = addon.getSetting("nzbget_category").strip()
     else:
-        url = settings_getter("nzbget_url", "").strip().rstrip("/")
-        user = settings_getter("nzbget_username", "").strip()
+        url = settings_getter("nzbget_url", _DEFAULT_URL).strip().rstrip("/")
+        user = settings_getter("nzbget_username", _DEFAULT_USER).strip()
         password = settings_getter("nzbget_password", "")
         category = settings_getter("nzbget_category", "").strip()
     return url, user, password, category

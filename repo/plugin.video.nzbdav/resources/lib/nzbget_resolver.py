@@ -263,7 +263,10 @@ def _bind_getter(settings_getter):
 def _read_settings(settings_getter):
     getter = _bind_getter(settings_getter)
     smb_root = getter("nzbget_smb_root", "").strip()
-    url = getter("nzbget_url", "").strip()
+    # Default to the settings.xml schema default so a URL left untouched on the
+    # injected-getter (RunScript/widget) path isn't read as empty -> "not
+    # configured". See nzbget_api._DEFAULT_URL.
+    url = getter("nzbget_url", nzbget_api._DEFAULT_URL).strip()
     try:
         timeout = int(getter("download_timeout", "") or _DEFAULT_TIMEOUT)
     except (TypeError, ValueError):
@@ -418,17 +421,34 @@ def _run_nzbget_backend(nzb_url, title, settings_getter, on_success, on_failure)
         _ = leave_job
 
 
-def resolve_and_play_nzbget(handle, params, settings_getter=None):
+def _apply_resume(listitem, resume_seconds):
+    """Set the playback resume point on the ListItem, if any.
+
+    The resolver scrubs the stale plugin/TMDBHelper bookmark before handing
+    off to NZBGet and passes its resume position here so a replay continues
+    where the user left off instead of restarting from zero.
+    """
+    try:
+        seconds = float(resume_seconds or 0)
+    except (TypeError, ValueError):
+        return
+    if seconds > 0:
+        listitem.setProperty("StartOffset", str(seconds))
+
+
+def resolve_and_play_nzbget(handle, params, settings_getter=None, resume_seconds=0.0):
     """NZBGet entry for the handle-based ``resolve`` path (``/play``).
 
     Delivers the finished file via ``setResolvedUrl`` — exactly one
-    resolution per exit (success True, every failure False).
+    resolution per exit (success True, every failure False). ``resume_seconds``
+    carries the scrubbed bookmark's resume position onto the ListItem.
     """
     nzb_url = unquote(params.get("nzburl", ""))
     title = unquote(params.get("title", "")) or "submission"
 
     def on_success(video_url):
         listitem = xbmcgui.ListItem(path=video_url)
+        _apply_resume(listitem, resume_seconds)
         xbmcplugin.setResolvedUrl(handle, True, listitem)
 
     def on_failure(message):
@@ -437,19 +457,23 @@ def resolve_and_play_nzbget(handle, params, settings_getter=None):
     _run_nzbget_backend(nzb_url, title, settings_getter, on_success, on_failure)
 
 
-def play_nzbget(nzb_url, title, params=None, settings_getter=None):
+def play_nzbget(
+    nzb_url, title, params=None, settings_getter=None, resume_seconds=0.0
+):
     """NZBGet entry for the handle-less ``resolve_and_play`` path.
 
     ``resolve_and_play`` (TMDBHelper ``/resolve``, the in-addon search
     picker, and script-play) has no plugin handle, so the finished SMB file
     is started with ``xbmc.Player().play`` and failures only notify —
     mirroring the nzbdav ``resolve_and_play`` "no setResolvedUrl" contract.
+    ``resume_seconds`` carries the scrubbed bookmark's resume position.
     """
     if settings_getter is None:
         settings_getter = (params or {}).get("_settings_getter")
 
     def on_success(video_url):
         listitem = xbmcgui.ListItem(path=video_url)
+        _apply_resume(listitem, resume_seconds)
         xbmc.Player().play(video_url, listitem)
 
     def on_failure(message):

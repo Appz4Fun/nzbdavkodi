@@ -486,6 +486,39 @@ def test_resolve_success_resolves_true_with_smb_url():
     assert plugin.setResolvedUrl.call_args[0][1] is True
 
 
+def test_resolve_success_applies_resume_offset_to_listitem():
+    # The resume position carried from the scrubbed bookmark must be set on the
+    # ListItem as StartOffset so a replay resumes instead of restarting.
+    plugin = sys.modules["xbmcplugin"]
+    plugin.setResolvedUrl = MagicMock()
+    li = MagicMock()
+    with patch.object(
+        sys.modules["xbmcgui"], "ListItem", return_value=li
+    ), patch(
+        "resources.lib.nzbget_resolver.nzbget_api.find_completed_by_name",
+        return_value=None,
+    ), patch(
+        "resources.lib.nzbget_resolver.nzbget_api.find_active_by_name",
+        return_value=None,
+    ), patch(
+        "resources.lib.nzbget_resolver.nzbget_api.append_nzb",
+        return_value=(42, None),
+    ), patch(
+        "resources.lib.nzbget_resolver.poll_nzbget_job",
+        return_value={"outcome": "success", "dest_dir": "/dl/movies/The.Movie"},
+    ), patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video",
+        return_value="smb://host/completed/The.Movie/movie.mkv",
+    ):
+        resolve_and_play_nzbget(
+            7,
+            {"nzburl": "http://i/x.nzb", "title": "The.Movie"},
+            settings_getter=_full_settings(),
+            resume_seconds=137.0,
+        )
+    li.setProperty.assert_called_with("StartOffset", "137.0")
+
+
 def test_resolve_cancel_deletes_job_and_resolves_false():
     plugin = sys.modules["xbmcplugin"]
     plugin.setResolvedUrl = MagicMock()
@@ -632,6 +665,18 @@ def test_read_settings_none_uses_single_arg_getsetting():
     assert url == "http://box:6789"
     assert smb_root == "smb://host/completed"
     assert timeout == 600
+
+
+def test_read_settings_defaults_url_to_schema_default():
+    # nzbget_url left at its schema default is absent from the profile XML, so
+    # the injected getter returns the default we pass — which must be the
+    # settings.xml default, not "" (else "not configured" on the widget path).
+    def getter(key, default=""):
+        return {"nzbget_smb_root": "smb://host/done"}.get(key, default)
+
+    url, smb_root, _timeout = _read_settings(getter)
+    assert url == "http://localhost:6789"
+    assert smb_root == "smb://host/done"
 
 
 def test_read_poll_interval_reads_and_clamps():

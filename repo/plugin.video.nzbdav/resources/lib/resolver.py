@@ -3879,15 +3879,19 @@ def resolve(handle, params):
         # the nzbdav path avoids (TODO.md §H.3). Guarded so a cleanup failure
         # can't escape before the resolve completes and hang Kodi.
         try:
-            _clear_kodi_playback_state(params)
+            resume_seconds = _coerce_resume_seconds(_clear_kodi_playback_state(params))
         except Exception as cleanup_error:  # pylint: disable=broad-except
+            resume_seconds = 0.0
             xbmc.log(
                 "NZB-DAV: NZBGet pre-handoff bookmark cleanup failed: {}".format(
                     cleanup_error
                 ),
                 xbmc.LOGWARNING,
             )
-        resolve_and_play_nzbget(handle, params)
+        # Carry the scrubbed bookmark's resume position into NZBGet playback so
+        # a replay resumes where the user left off instead of restarting (the
+        # nzbdav path applies it as StartOffset; we'd otherwise lose it).
+        resolve_and_play_nzbget(handle, params, resume_seconds=resume_seconds)
         return
 
     dialog = None
@@ -4043,14 +4047,17 @@ def resolve_and_play(nzb_url, title, params=None):
             # stale TMDBHelper/plugin bookmark before handoff or the next replay
             # resumes plugin://... instead of the resolved stream (TODO.md §H.3).
             try:
-                _clear_kodi_playback_state(params)
+                resume_seconds = _coerce_resume_seconds(
+                    _clear_kodi_playback_state(params)
+                )
             except Exception as cleanup_error:  # pylint: disable=broad-except
+                resume_seconds = 0.0
                 xbmc.log(
                     "NZB-DAV: NZBGet pre-handoff bookmark cleanup failed: "
                     "{}".format(cleanup_error),
                     xbmc.LOGWARNING,
                 )
-            play_nzbget(nzb_url, title, params)
+            play_nzbget(nzb_url, title, params, resume_seconds=resume_seconds)
             return
         selected_indexer = resolve_params.get("_selected_indexer", "")
         fallback_candidates = resolve_params.get("_fallback_candidates", [])
