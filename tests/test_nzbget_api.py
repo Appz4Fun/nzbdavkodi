@@ -264,12 +264,15 @@ def test_cancel_job_issues_group_then_history_delete():
     with patch("resources.lib.nzbget_api._rpc_call", side_effect=fake_rpc):
         cancel_job(42, settings_getter=getter)
 
-    # Both deletes must fire, in order, each targeting the NZBID.
+    # Both deletes must fire, in order, each targeting the NZBID. The modern
+    # v18+ editqueue shape is (Command, Args, IDs) — exactly 3 params with NO
+    # legacy int Offset, and the NZBID list last.
     assert [c[0] for c in calls] == ["editqueue", "editqueue"]
-    assert calls[0][1][0] == "GroupFinalDelete"
-    assert calls[1][1][0] == "HistoryFinalDelete"
-    assert calls[0][1][3] == [42]
-    assert calls[1][1][3] == [42]
+    assert calls[0][1] == ["GroupFinalDelete", "", [42]]
+    assert calls[1][1] == ["HistoryFinalDelete", "", [42]]
+    # Guard against a regression to the pre-v18 (Command, Offset, Text, IDs):
+    assert len(calls[0][1]) == 3
+    assert not isinstance(calls[0][1][1], int)
 
 
 def test_rpc_call_not_configured_when_url_blank():

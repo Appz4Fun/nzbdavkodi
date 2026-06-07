@@ -3872,6 +3872,21 @@ def resolve(handle, params):
     if _nzbget_enabled():
         from resources.lib.nzbget_resolver import resolve_and_play_nzbget
 
+        # NZBGet bypasses the nzbdav playback-state cleanup further down, so
+        # scrub the TMDBHelper/plugin bookmark here too. Without it a /play
+        # replay that already had a Kodi bookmark reopens plugin://... on the
+        # next launch instead of the resolved stream — the stale-resume failure
+        # the nzbdav path avoids (TODO.md §H.3). Guarded so a cleanup failure
+        # can't escape before the resolve completes and hang Kodi.
+        try:
+            _clear_kodi_playback_state(params)
+        except Exception as cleanup_error:  # pylint: disable=broad-except
+            xbmc.log(
+                "NZB-DAV: NZBGet pre-handoff bookmark cleanup failed: {}".format(
+                    cleanup_error
+                ),
+                xbmc.LOGWARNING,
+            )
         resolve_and_play_nzbget(handle, params)
         return
 
@@ -4023,6 +4038,18 @@ def resolve_and_play(nzb_url, title, params=None):
         if _nzbget_enabled(settings_getter):
             from resources.lib.nzbget_resolver import play_nzbget
 
+            # Same bookmark scrub as the handle-based resolve() NZBGet branch:
+            # the nzbdav playback-state cleanup below is bypassed, so clear the
+            # stale TMDBHelper/plugin bookmark before handoff or the next replay
+            # resumes plugin://... instead of the resolved stream (TODO.md §H.3).
+            try:
+                _clear_kodi_playback_state(params)
+            except Exception as cleanup_error:  # pylint: disable=broad-except
+                xbmc.log(
+                    "NZB-DAV: NZBGet pre-handoff bookmark cleanup failed: "
+                    "{}".format(cleanup_error),
+                    xbmc.LOGWARNING,
+                )
             play_nzbget(nzb_url, title, params)
             return
         selected_indexer = resolve_params.get("_selected_indexer", "")

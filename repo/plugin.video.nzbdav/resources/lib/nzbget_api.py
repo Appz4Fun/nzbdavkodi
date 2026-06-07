@@ -301,14 +301,18 @@ def cancel_job(nzbid, settings_getter=None):
     and downloaded files), then a history delete in case it already moved
     to history. Best-effort — errors are logged, not raised.
     """
-    # editqueue(Command, Offset, Text, IDs)
+    # editqueue(Command, Args, IDs) — NZBGet v18+ dropped the legacy int
+    # ``Offset`` parameter (pre-v18 was ``Command, Offset, Text, IDs``). The
+    # target boxes run nzbget.com 16+/26.x, which reject the 4-arg shape and
+    # would leave a "canceled" download running; matches the modern 11-arg
+    # append signature this client already sends.
     _rpc_call(
         "editqueue",
-        ["GroupFinalDelete", 0, "", [nzbid]],
+        ["GroupFinalDelete", "", [nzbid]],
         settings_getter=settings_getter,
     )
     _rpc_call(
         "editqueue",
-        ["HistoryFinalDelete", 0, "", [nzbid]],
+        ["HistoryFinalDelete", "", [nzbid]],
         settings_getter=settings_getter,
     )

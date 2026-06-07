@@ -1748,6 +1748,16 @@ def _handle_script_play(params):
                 title = li_show
             season = season or li_season
             episode = episode or li_episode
+            # Thread the recovered numbers back into params so the downstream
+            # resolver_params = dict(params) carries them into
+            # _clear_kodi_playback_state — otherwise the actual SxxExx
+            # TMDBHelper bookmark that triggered the widget play is left behind
+            # (its season/episode wouldn't match the blank params) and the next
+            # replay can still hit the stale plugin-URL resume failure.
+            if season:
+                params["season"] = season
+            if episode:
+                params["episode"] = episode
 
     _script_play_stage(
         "skipping cache for '{}' ({})".format(
