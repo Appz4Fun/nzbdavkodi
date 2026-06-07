@@ -1037,6 +1037,30 @@ def _lookup_episode_info(imdb, tmdb_id=""):
     return None
 
 
+def _episode_info_from_listitem():
+    """Read (show, season, episode) from the currently focused Kodi ListItem.
+
+    TMDBHelper Next-Up / widget / home-screen plays frequently invoke the
+    player with only the *series* ids and empty season/episode, which
+    broadens an episode search to the whole show. The focused widget item
+    still exposes the episode numbers via InfoLabels, so they can be
+    recovered here as a fallback. Returns ``(show, season, episode)`` strings;
+    season/episode are blanked unless numeric, and any failure degrades to
+    empty strings.
+    """
+    try:
+        show = (xbmc.getInfoLabel("ListItem.TVShowTitle") or "").strip()
+        season = (xbmc.getInfoLabel("ListItem.Season") or "").strip()
+        episode = (xbmc.getInfoLabel("ListItem.Episode") or "").strip()
+    except Exception:  # pylint: disable=broad-except
+        return "", "", ""
+    if not season.isdigit():
+        season = ""
+    if not episode.isdigit():
+        episode = ""
+    return show, season, episode
+
+
 def _handle_direct_play(handle, params):
     """Resolve a primary stream URL through stream_proxy and hand
     Kodi the proxy URL via setResolvedUrl.
@@ -1676,6 +1700,29 @@ def _handle_script_play(params):
             title = looked_up.get("title", title)
             season = season or looked_up.get("season", "")
             episode = episode or looked_up.get("episode", "")
+
+    # TMDBHelper Next-Up / widget / home-screen plays often invoke the player
+    # with only the series ids and empty season/episode, so an episode search
+    # broadens to the whole show. Recover the numbers from the focused
+    # ListItem, but trust them only when that item is the same show we're
+    # about to search (the focus may have moved by the time the player fires).
+    if search_type == "episode" and not (season and episode):
+        li_show, li_season, li_episode = _episode_info_from_listitem()
+        xbmc.log(
+            "NZB-DAV: Episode args missing season/episode; ListItem fallback "
+            "show={!r} season={!r} episode={!r} (search title {!r})".format(
+                li_show, li_season, li_episode, title
+            ),
+            xbmc.LOGINFO,
+        )
+        same_show = bool(li_show) and (
+            not title or li_show.strip().lower() == title.strip().lower()
+        )
+        if same_show:
+            if not title:
+                title = li_show
+            season = season or li_season
+            episode = episode or li_episode
 
     _script_play_stage(
         "skipping cache for '{}' ({})".format(

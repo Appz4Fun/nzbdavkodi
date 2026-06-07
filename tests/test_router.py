@@ -2173,6 +2173,78 @@ def test_handle_script_play_shows_background_loading_dialog_before_picker(
     mock_resolve_and_play.assert_called_once()
 
 
+@patch("xbmcaddon.Addon")
+@patch("xbmc.getInfoLabel")
+@patch("resources.lib.router._lookup_episode_info", return_value={"title": "From"})
+@patch("resources.lib.results_dialog.show_results_dialog", return_value=None)
+@patch("resources.lib.filter.filter_results", return_value=([], []))
+@patch("resources.lib.router._search_all_providers", return_value=([], None))
+@patch("resources.lib.router._tag_available")
+def test_handle_script_play_recovers_episode_numbers_from_listitem(
+    mock_tag,
+    mock_search,
+    mock_filter,
+    mock_show,
+    mock_lookup,
+    mock_infolabel,
+    mock_addon,
+):
+    """A Next-Up/widget play passes empty season/episode (only the series
+    ids). Recover them from the focused ListItem so the search narrows to the
+    one episode instead of returning the whole show."""
+    from resources.lib.router import _handle_script_play
+
+    info = {
+        "ListItem.TVShowTitle": "From",
+        "ListItem.Season": "3",
+        "ListItem.Episode": "5",
+    }
+    mock_infolabel.side_effect = lambda label: info.get(label, "")
+
+    _handle_script_play({"type": "episode", "imdb": "tt9813792", "tmdb_id": "124364"})
+
+    mock_search.assert_called_once()
+    kwargs = mock_search.call_args.kwargs
+    assert kwargs["season"] == "3"
+    assert kwargs["episode"] == "5"
+
+
+@patch("xbmcaddon.Addon")
+@patch("xbmc.getInfoLabel")
+@patch("resources.lib.router._lookup_episode_info", return_value={"title": "From"})
+@patch("resources.lib.results_dialog.show_results_dialog", return_value=None)
+@patch("resources.lib.filter.filter_results", return_value=([], []))
+@patch("resources.lib.router._search_all_providers", return_value=([], None))
+@patch("resources.lib.router._tag_available")
+def test_handle_script_play_ignores_listitem_episode_for_different_show(
+    mock_tag,
+    mock_search,
+    mock_filter,
+    mock_show,
+    mock_lookup,
+    mock_infolabel,
+    mock_addon,
+):
+    """The ListItem fallback must not inject season/episode from a focused
+    item that belongs to a different show (focus may have moved by the time
+    the RunScript player fires)."""
+    from resources.lib.router import _handle_script_play
+
+    info = {
+        "ListItem.TVShowTitle": "Severance",  # different show than From
+        "ListItem.Season": "1",
+        "ListItem.Episode": "1",
+    }
+    mock_infolabel.side_effect = lambda label: info.get(label, "")
+
+    _handle_script_play({"type": "episode", "imdb": "tt9813792", "tmdb_id": "124364"})
+
+    mock_search.assert_called_once()
+    kwargs = mock_search.call_args.kwargs
+    assert kwargs["season"] == ""
+    assert kwargs["episode"] == ""
+
+
 @patch(
     "resources.lib.router.fallback_candidate_prefetch_settings", return_value=(True, 2)
 )
