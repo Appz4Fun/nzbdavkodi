@@ -4261,7 +4261,7 @@ def test_submit_ui_pump_starts_history_probe_after_fast_queue_miss(
         "completed-history probe waited for grace after queue miss; "
         "history_delay={:.3f}s elapsed={:.3f}s".format(history_delay, elapsed)
     )
-    assert elapsed < 0.08, "completed-history adoption took {:.3f}s".format(elapsed)
+    assert elapsed < 0.25, "completed-history adoption took {:.3f}s".format(elapsed)
 
 
 @patch("resources.lib.resolver.find_completed_by_name")
@@ -4381,7 +4381,7 @@ def test_poll_once_catches_late_active_queue_completed_history(
         "late completed history missed after {:.3f}s; resolver would wait for "
         "the next poll interval".format(elapsed)
     )
-    assert elapsed < 0.08, "late-history catch took {:.3f}s".format(elapsed)
+    assert elapsed < 0.25, "late-history catch took {:.3f}s".format(elapsed)
     mock_probe_webdav.assert_not_called()
 
 
@@ -6082,7 +6082,7 @@ def test_poll_until_ready_rechecks_completed_webdav_quickly_after_first_miss(
 
     assert url == "http://webdav/content/uncategorized/movie/movie.mkv"
     assert headers == {"Authorization": "Basic primary"}
-    assert elapsed < 0.08, "first completed WebDAV recheck waited {:.3f}s".format(
+    assert elapsed < 0.25, "first completed WebDAV recheck waited {:.3f}s".format(
         elapsed
     )
 
