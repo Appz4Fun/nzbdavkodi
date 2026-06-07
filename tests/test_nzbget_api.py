@@ -67,11 +67,21 @@ def test_append_nzb_fetches_encodes_and_returns_nzbid():
     assert nzbid == 42
     assert error is None
     params = captured["payload"]["params"]
-    # NZBGet append signature: NZBFilename, Content(base64), Category, Priority,
-    # AddToTop, AddPaused, DupeKey, DupeScore, DupeMode
+    # NZBGet append signature (nzbget.com v16+/v26, confirmed against a live
+    # 26.1 box): Filename, Content(base64), Category, Priority, AddToTop,
+    # AddPaused, DupeKey, DupeScore, DupeMode, AutoCategory, PPParameters.
+    # The trailing AutoCategory + PPParameters are NOT optional in practice:
+    # omitting them yields ``Invalid parameter (Parameters)`` (JSON-RPC code 2)
+    # and the NZB never enters the queue.
+    assert len(params) == 11
     assert params[0] == "The.Movie.2024.nzb"
     assert base64.b64decode(params[1]).decode("utf-8") == "<nzb>data</nzb>"
     assert params[2] == "movies"
+    assert params[8] == "SCORE"  # DupeMode
+    # AutoCategory=False so NZBGet keeps the category we send (the SMB path
+    # mapping depends on it); PPParameters=[] (no post-processing params).
+    assert params[9] is False
+    assert params[10] == []
 
 
 def test_append_nzb_returns_error_when_nzbid_not_positive():

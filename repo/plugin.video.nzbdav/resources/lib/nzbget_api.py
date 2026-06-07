@@ -99,8 +99,29 @@ def append_nzb(nzb_url, nzb_name, settings_getter=None):
     content_b64 = base64.b64encode(nzb_bytes).decode("ascii")
     filename = "{}.nzb".format(nzb_name or "submission")
     # append(NZBFilename, Content, Category, Priority, AddToTop, AddPaused,
-    #        DupeKey, DupeScore, DupeMode)
-    params = [filename, content_b64, category, 0, False, False, "", 0, "SCORE"]
+    #        DupeKey, DupeScore, DupeMode, AutoCategory, PPParameters)
+    #
+    # The trailing AutoCategory + PPParameters args are required by NZBGet's
+    # modern append signature (nzbget.com v16+, verified against a live 26.1
+    # box): dropping them makes NZBGet reject the whole call with
+    # ``Invalid parameter (Parameters)`` (JSON-RPC code 2) and the NZB never
+    # enters the queue. AutoCategory=False keeps the explicit category we pass
+    # (the SMB completed-path mapping in nzbget_resolver depends on it rather
+    # than NZBGet auto-reassigning one); PPParameters=[] = no extra
+    # post-processing parameters.
+    params = [
+        filename,
+        content_b64,
+        category,
+        0,
+        False,
+        False,
+        "",
+        0,
+        "SCORE",
+        False,
+        [],
+    ]
     result, error = _rpc_call("append", params, settings_getter=settings_getter)
     if error is not None:
         return None, error
