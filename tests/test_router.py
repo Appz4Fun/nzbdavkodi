@@ -2109,9 +2109,68 @@ def test_handle_script_play_uses_picker_without_plugin_handle_resolution(
         "_fallback_candidates": [],
         "_selected_indexer": "NZBFinder",
     }
-    mock_addon.assert_not_called()
+    # The non-modal loading dialog reads localized text via i18n, which may
+    # construct xbmcaddon.Addon. Addon is patched to raise here, i18n falls
+    # back, and the RunScript flow still completes (asserted above) — so we no
+    # longer assert Addon is untouched, only that no plugin handle is resolved.
     mock_end.assert_not_called()
     mock_set_resolved.assert_not_called()
+
+
+@patch("xbmcaddon.Addon")
+@patch("xbmcgui.DialogProgress")
+@patch("xbmcgui.DialogProgressBG")
+@patch("resources.lib.resolver.resolve_and_play")
+@patch("resources.lib.results_dialog.show_results_dialog")
+@patch("resources.lib.filter.filter_results")
+@patch("resources.lib.router._search_all_providers")
+@patch("resources.lib.router._tag_available")
+@patch("resources.lib.cache.get_cached", return_value=None)
+def test_handle_script_play_shows_background_loading_dialog_before_picker(
+    mock_cache,
+    mock_tag,
+    mock_search,
+    mock_filter,
+    mock_show,
+    mock_resolve_and_play,
+    mock_progress_bg,
+    mock_modal_progress,
+    mock_addon,
+):
+    """The search->picker wait must show a NON-modal background progress
+    dialog (so the multi-second indexer search + filter doesn't look like a
+    freeze), closed before the picker opens.
+
+    It must NOT use the modal xbmcgui.DialogProgress: that native-crashes Kodi
+    on CoreELEC/Arctic Fuse mid-search (the same reason _handle_play avoids it,
+    see test_handle_play_does_not_open_modal_progress_before_picker)."""
+    from resources.lib.router import _handle_script_play
+
+    chosen = {"title": "The.Matrix.1999.mkv", "link": "http://hydra/nzb/x"}
+    mock_search.return_value = ([chosen], None)
+    mock_filter.return_value = ([chosen], [chosen])
+
+    order = []
+    bg_instance = mock_progress_bg.return_value
+    bg_instance.close.side_effect = lambda *a, **k: order.append("bg_close")
+
+    def _show(*_a, **_k):
+        order.append("picker")
+        return chosen
+
+    mock_show.side_effect = _show
+
+    _handle_script_play({"type": "movie", "title": "The Matrix", "year": "1999"})
+
+    # A background (non-modal) loading dialog is created and closed.
+    mock_progress_bg.assert_called_once()
+    bg_instance.create.assert_called_once()
+    bg_instance.close.assert_called_once()
+    # The modal progress dialog must never be used here (crash-safety).
+    mock_modal_progress.assert_not_called()
+    # And the loading dialog must be gone BEFORE the picker opens.
+    assert order == ["bg_close", "picker"]
+    mock_resolve_and_play.assert_called_once()
 
 
 @patch(
@@ -2271,7 +2330,7 @@ def test_handle_script_play_empty_completed_snapshot_skips_post_picker_history_l
     resolver_params = dict(mock_resolve_and_play.call_args.kwargs["params"])
     assert resolver_params["_completed_job_lookup_done"] is True
     assert "_completed_job" not in resolver_params
-    mock_addon.assert_not_called()
+    # Loading dialog touches i18n (Addon patched to raise -> graceful fallback).
     mock_end.assert_not_called()
     mock_set_resolved.assert_not_called()
 
@@ -2324,7 +2383,7 @@ def test_handle_script_play_attaches_completed_job_for_selected_result(
     resolver_params = dict(mock_resolve_and_play.call_args.kwargs["params"])
     assert resolver_params["_completed_job"] == completed_job
     assert "_completed_job_lookup_done" not in resolver_params
-    mock_addon.assert_not_called()
+    # Loading dialog touches i18n (Addon patched to raise -> graceful fallback).
     mock_end.assert_not_called()
     mock_set_resolved.assert_not_called()
 
@@ -2419,7 +2478,7 @@ def test_handle_script_play_auto_select_marks_completed_lookup_done(
     mock_set_cache.assert_not_called()
     mock_tag.assert_not_called()
     mock_dialog.assert_not_called()
-    mock_addon.assert_not_called()
+    # Loading dialog touches i18n (Addon patched to raise -> graceful fallback).
     mock_resolve_and_play.assert_called_once()
     resolver_params = dict(mock_resolve_and_play.call_args.kwargs["params"])
     assert callable(resolver_params.pop("_settings_getter"))
