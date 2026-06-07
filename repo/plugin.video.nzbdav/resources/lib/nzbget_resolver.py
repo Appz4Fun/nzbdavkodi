@@ -302,15 +302,37 @@ def _run_nzbget_backend(nzb_url, title, settings_getter, on_success, on_failure)
         dialog = xbmcgui.DialogProgress()
         dialog.create(_addon_name(), _string(30218))
 
-        nzbid, error = nzbget_api.append_nzb(
-            nzb_url, title, settings_getter=settings_getter
+        # A previous attempt may have timed out / been aborted and
+        # deliberately left its NZBGet job running (see ``leave_job``). Before
+        # submitting, reuse that work instead of blindly re-appending — which
+        # NZBGet would otherwise reject as a duplicate or double-download:
+        #   1. if it already completed, play straight from SMB;
+        #   2. if it's still in the queue, attach to that NZBID and poll it.
+        completed_dir = nzbget_api.find_completed_by_name(
+            title, settings_getter=settings_getter
+        )
+        if completed_dir:
+            reuse_folder = nzbget_smb_target(smb_root, completed_dir, category)
+            reuse_video = resolve_smb_video(reuse_folder) if reuse_folder else None
+            if reuse_video:
+                on_success(reuse_video)
+                return
+            # Completed in history but the file isn't visible over SMB — fall
+            # through to a normal submit/poll rather than failing outright.
+
+        nzbid = nzbget_api.find_active_by_name(
+            title, settings_getter=settings_getter
         )
         if not nzbid:
-            # Surface the specific (already-redacted) NZBGet message —
-            # auth vs dupe vs "append returned 0" — per the spec error
-            # table, falling back to the generic string.
-            on_failure(error or _string(30222))
-            return
+            nzbid, error = nzbget_api.append_nzb(
+                nzb_url, title, settings_getter=settings_getter
+            )
+            if not nzbid:
+                # Surface the specific (already-redacted) NZBGet message —
+                # auth vs dupe vs "append returned 0" — per the spec error
+                # table, falling back to the generic string.
+                on_failure(error or _string(30222))
+                return
 
         result = poll_nzbget_job(
             nzbid,

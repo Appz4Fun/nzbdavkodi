@@ -444,6 +444,62 @@ def test_resolve_timeout_leaves_job_and_resolves_false():
     assert plugin.setResolvedUrl.call_args[0][1] is False
 
 
+def test_resolve_reuses_completed_job_without_appending():
+    # A prior timed-out attempt left a job that has since completed. The retry
+    # must play straight from SMB without re-submitting or polling.
+    plugin = sys.modules["xbmcplugin"]
+    plugin.setResolvedUrl = MagicMock()
+    with patch(
+        "resources.lib.nzbget_resolver.nzbget_api.find_completed_by_name",
+        return_value="/dl/movies/The.Movie",
+    ), patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video",
+        return_value="smb://host/completed/The.Movie/movie.mkv",
+    ), patch(
+        "resources.lib.nzbget_resolver.nzbget_api.append_nzb"
+    ) as append, patch(
+        "resources.lib.nzbget_resolver.poll_nzbget_job"
+    ) as poll:
+        resolve_and_play_nzbget(
+            7,
+            {"nzburl": "http://i/x.nzb", "title": "The.Movie"},
+            settings_getter=_full_settings(),
+        )
+    append.assert_not_called()
+    poll.assert_not_called()
+    assert plugin.setResolvedUrl.call_args[0][1] is True
+
+
+def test_resolve_attaches_to_active_job_without_appending():
+    # A prior attempt left a still-downloading job. The retry must attach to
+    # that NZBID and poll it rather than appending a duplicate.
+    plugin = sys.modules["xbmcplugin"]
+    plugin.setResolvedUrl = MagicMock()
+    with patch(
+        "resources.lib.nzbget_resolver.nzbget_api.find_completed_by_name",
+        return_value=None,
+    ), patch(
+        "resources.lib.nzbget_resolver.nzbget_api.find_active_by_name",
+        return_value=99,
+    ), patch(
+        "resources.lib.nzbget_resolver.nzbget_api.append_nzb"
+    ) as append, patch(
+        "resources.lib.nzbget_resolver.poll_nzbget_job",
+        return_value={"outcome": "success", "dest_dir": "/dl/movies/The.Movie"},
+    ) as poll, patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video",
+        return_value="smb://host/completed/The.Movie/movie.mkv",
+    ):
+        resolve_and_play_nzbget(
+            7,
+            {"nzburl": "http://i/x.nzb", "title": "The.Movie"},
+            settings_getter=_full_settings(),
+        )
+    append.assert_not_called()
+    assert poll.call_args[0][0] == 99  # polled the existing job, not a new one
+    assert plugin.setResolvedUrl.call_args[0][1] is True
+
+
 def test_play_nzbget_success_starts_player_with_smb_url():
     player = MagicMock()
     with patch.object(

@@ -1048,16 +1048,41 @@ def _episode_info_from_listitem():
     season/episode are blanked unless numeric, and any failure degrades to
     empty strings.
     """
+    # Widget/RunScript plays expose the focused item through different
+    # InfoLabel roots depending on the skin/window (bare ``ListItem.*`` vs
+    # ``Container.ListItem.*`` vs ``VideoPlayer.*``), so probe the same set the
+    # handle-based ``_handle_play`` does — reading only bare ``ListItem.*``
+    # returns blank for many widget sources and broadens the search.
+    label_sources = (
+        ("ListItem.TVShowTitle", "ListItem.Season", "ListItem.Episode"),
+        (
+            "Container.ListItem.TVShowTitle",
+            "Container.ListItem.Season",
+            "Container.ListItem.Episode",
+        ),
+        ("VideoPlayer.TVShowTitle", "VideoPlayer.Season", "VideoPlayer.Episode"),
+        (
+            "Container(50).ListItem.TVShowTitle",
+            "Container(50).ListItem.Season",
+            "Container(50).ListItem.Episode",
+        ),
+    )
+    show, season, episode = "", "", ""
     try:
-        show = (xbmc.getInfoLabel("ListItem.TVShowTitle") or "").strip()
-        season = (xbmc.getInfoLabel("ListItem.Season") or "").strip()
-        episode = (xbmc.getInfoLabel("ListItem.Episode") or "").strip()
+        for t_label, s_label, e_label in label_sources:
+            show = show or (xbmc.getInfoLabel(t_label) or "").strip()
+            if not season:
+                cand = (xbmc.getInfoLabel(s_label) or "").strip()
+                if cand.isdigit():
+                    season = cand
+            if not episode:
+                cand = (xbmc.getInfoLabel(e_label) or "").strip()
+                if cand.isdigit():
+                    episode = cand
+            if season and episode:
+                break
     except Exception:  # pylint: disable=broad-except
         return "", "", ""
-    if not season.isdigit():
-        season = ""
-    if not episode.isdigit():
-        episode = ""
     return show, season, episode
 
 

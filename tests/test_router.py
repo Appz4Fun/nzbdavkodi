@@ -2216,6 +2216,44 @@ def test_handle_script_play_recovers_episode_numbers_from_listitem(
 @patch("resources.lib.filter.filter_results", return_value=([], []))
 @patch("resources.lib.router._search_all_providers", return_value=([], None))
 @patch("resources.lib.router._tag_available")
+def test_handle_script_play_recovers_episode_numbers_from_container_listitem(
+    mock_tag,
+    mock_search,
+    mock_filter,
+    mock_show,
+    mock_lookup,
+    mock_infolabel,
+    mock_addon,
+):
+    """Some skins/windows expose the focused widget item via
+    ``Container.ListItem.*`` rather than bare ``ListItem.*``. The fallback must
+    probe those alternate roots (like the handle-based _handle_play) instead of
+    returning blank and broadening the search to the whole show."""
+    from resources.lib.router import _handle_script_play
+
+    info = {
+        # bare ListItem.* empty; only the Container.* root is populated
+        "Container.ListItem.TVShowTitle": "From",
+        "Container.ListItem.Season": "3",
+        "Container.ListItem.Episode": "5",
+    }
+    mock_infolabel.side_effect = lambda label: info.get(label, "")
+
+    _handle_script_play({"type": "episode", "imdb": "tt9813792", "tmdb_id": "124364"})
+
+    mock_search.assert_called_once()
+    kwargs = mock_search.call_args.kwargs
+    assert kwargs["season"] == "3"
+    assert kwargs["episode"] == "5"
+
+
+@patch("xbmcaddon.Addon")
+@patch("xbmc.getInfoLabel")
+@patch("resources.lib.router._lookup_episode_info", return_value={"title": "From"})
+@patch("resources.lib.results_dialog.show_results_dialog", return_value=None)
+@patch("resources.lib.filter.filter_results", return_value=([], []))
+@patch("resources.lib.router._search_all_providers", return_value=([], None))
+@patch("resources.lib.router._tag_available")
 def test_handle_script_play_ignores_listitem_episode_for_different_show(
     mock_tag,
     mock_search,

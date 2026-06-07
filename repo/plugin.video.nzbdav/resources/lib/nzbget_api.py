@@ -196,9 +196,94 @@ def history_status(nzbid, settings_getter=None):
                 "present": True,
                 "success": status.startswith("SUCCESS"),
                 "status": status,
-                "dest_dir": item.get("DestDir", ""),
+                # A post-processing script that moves the output sets FinalDir
+                # to the final location while DestDir stays the original
+                # download dir; prefer FinalDir when present so the SMB target
+                # maps to where the playable file actually landed.
+                "dest_dir": (
+                    item.get("FinalDir") or item.get("DestDir") or ""
+                ),
             }
     return {"present": False, "success": False, "status": "", "dest_dir": ""}
+
+
+def _name_variants(nzb_name):
+    """Case-folded name forms to match against NZBGet's NZBName/Name fields.
+
+    We submit ``<title>.nzb``; NZBGet exposes it as ``Name`` (no extension)
+    or ``NZBName`` (with), so match either with or without the suffix.
+    """
+    base = (nzb_name or "").strip()
+    if not base:
+        return set()
+    folded = base.casefold()
+    variants = {folded, "{}.nzb".format(folded)}
+    if folded.endswith(".nzb"):
+        variants.add(folded[:-4])
+    return variants
+
+
+def _item_names(item):
+    names = []
+    for key in ("NZBName", "Name", "NZBFilename"):
+        value = item.get(key)
+        if value:
+            names.append(str(value).casefold())
+    return names
+
+
+def find_active_by_name(nzb_name, settings_getter=None):
+    """Return the NZBID of an in-queue job matching ``nzb_name``, or None.
+
+    Lets a retry attach to a download a previous (timed-out/aborted) attempt
+    deliberately left running instead of submitting a duplicate. Best-effort:
+    any RPC failure degrades to None so the caller falls back to a fresh
+    submit.
+    """
+    wanted = _name_variants(nzb_name)
+    if not wanted:
+        return None
+    groups, error = _rpc_call("listgroups", [0], settings_getter=settings_getter)
+    if error is not None or not isinstance(groups, list):
+        return None
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        if wanted.intersection(_item_names(group)):
+            try:
+                nzbid = int(group.get("NZBID"))
+            except (TypeError, ValueError):
+                continue
+            if nzbid > 0:
+                return nzbid
+    return None
+
+
+def find_completed_by_name(nzb_name, settings_getter=None):
+    """Return the dest dir of a SUCCESS history item matching ``nzb_name``.
+
+    Lets a retry reuse a download that finished while a prior attempt had
+    already timed out, skipping submit+download entirely. Prefers FinalDir
+    (post-processing move target) over DestDir. Returns None when there is no
+    successful match or on any RPC failure.
+    """
+    wanted = _name_variants(nzb_name)
+    if not wanted:
+        return None
+    hist, error = _rpc_call("history", [False], settings_getter=settings_getter)
+    if error is not None or not isinstance(hist, list):
+        return None
+    for item in hist:
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("Status") or "")
+        if not status.startswith("SUCCESS"):
+            continue
+        if wanted.intersection(_item_names(item)):
+            dest = item.get("FinalDir") or item.get("DestDir") or ""
+            if dest:
+                return dest
+    return None
 
 
 def test_connection(settings_getter=None):

@@ -137,6 +137,74 @@ def test_history_status_success_returns_destdir():
     assert status["dest_dir"] == "/dl/movies/X"
 
 
+def test_history_status_prefers_finaldir_over_destdir():
+    # A post-processing script that moves the output sets FinalDir; the SMB
+    # target must follow the file to its final location, not the stale DestDir.
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    hist = [
+        {
+            "NZBID": 42,
+            "Status": "SUCCESS/ALL",
+            "DestDir": "/dl/intermediate/X",
+            "FinalDir": "/dl/movies/X",
+        }
+    ]
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(hist, None)):
+        status = history_status(42, settings_getter=getter)
+    assert status["dest_dir"] == "/dl/movies/X"
+
+
+def test_find_completed_by_name_returns_finaldir_for_success():
+    from resources.lib.nzbget_api import find_completed_by_name
+
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    hist = [
+        {"Name": "Other.Show", "Status": "SUCCESS/ALL", "DestDir": "/dl/other"},
+        {
+            "NZBName": "The.Movie.2024.nzb",
+            "Status": "SUCCESS/ALL",
+            "DestDir": "/dl/dest/The.Movie.2024",
+            "FinalDir": "/dl/movies/The.Movie.2024",
+        },
+    ]
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(hist, None)):
+        dest = find_completed_by_name("The.Movie.2024", settings_getter=getter)
+    assert dest == "/dl/movies/The.Movie.2024"
+
+
+def test_find_completed_by_name_ignores_non_success_and_mismatch():
+    from resources.lib.nzbget_api import find_completed_by_name
+
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    hist = [
+        {"Name": "The.Movie", "Status": "FAILURE/UNPACK", "DestDir": "/dl/x"},
+        {"Name": "Different.Movie", "Status": "SUCCESS/ALL", "DestDir": "/dl/y"},
+    ]
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(hist, None)):
+        assert find_completed_by_name("The.Movie", settings_getter=getter) is None
+
+
+def test_find_active_by_name_returns_nzbid_for_queued_job():
+    from resources.lib.nzbget_api import find_active_by_name
+
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    groups = [
+        {"NZBID": 7, "NZBName": "Unrelated.nzb"},
+        {"NZBID": 99, "NZBName": "The.Movie.2024.nzb"},
+    ]
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(groups, None)):
+        nzbid = find_active_by_name("The.Movie.2024", settings_getter=getter)
+    assert nzbid == 99
+
+
+def test_find_active_by_name_none_on_rpc_error():
+    from resources.lib.nzbget_api import find_active_by_name
+
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(None, "boom")):
+        assert find_active_by_name("X", settings_getter=getter) is None
+
+
 def test_history_status_failure_flagged():
     getter = _getter({"nzbget_url": "http://box:6789"})
     hist = [{"NZBID": 42, "Status": "FAILURE/UNPACK", "DestDir": "/dl/x"}]
