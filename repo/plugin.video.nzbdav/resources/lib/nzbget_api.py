@@ -283,33 +283,6 @@ def find_active_by_name(nzb_name, settings_getter=None):
     return None
 
 
-def find_completed_by_name(nzb_name, settings_getter=None):
-    """Return the dest dir of a SUCCESS history item matching ``nzb_name``.
-
-    Lets a retry reuse a download that finished while a prior attempt had
-    already timed out, skipping submit+download entirely. Prefers FinalDir
-    (post-processing move target) over DestDir. Returns None when there is no
-    successful match or on any RPC failure.
-    """
-    wanted = _name_variants(nzb_name)
-    if not wanted:
-        return None
-    hist, error = _rpc_call("history", [False], settings_getter=settings_getter)
-    if error is not None or not isinstance(hist, list):
-        return None
-    for item in hist:
-        if not isinstance(item, dict):
-            continue
-        status = str(item.get("Status") or "")
-        if not status.startswith("SUCCESS"):
-            continue
-        if wanted.intersection(_item_names(item)):
-            dest = item.get("FinalDir") or item.get("DestDir") or ""
-            if dest:
-                return dest
-    return None
-
-
 def completed_base_dir(settings_getter=None):
     """Return NZBGet's configured global completed DestDir (absolute), or None.
 

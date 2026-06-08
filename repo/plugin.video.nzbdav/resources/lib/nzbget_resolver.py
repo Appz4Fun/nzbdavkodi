@@ -354,36 +354,18 @@ def _run_nzbget_backend(nzb_url, title, settings_getter, on_success, on_failure)
 
         # A previous attempt may have timed out / been aborted and
         # deliberately left its NZBGet job running (see ``leave_job``). Before
-        # submitting, reuse that work instead of blindly re-appending — which
-        # NZBGet would otherwise reject as a duplicate or double-download:
-        #   1. if it already completed, play straight from SMB;
-        #   2. if it's still in the queue, attach to that NZBID and poll it.
-        completed_dir = nzbget_api.find_completed_by_name(
-            title, settings_getter=settings_getter
-        )
-        if completed_dir:
-            reuse_folder = nzbget_smb_target(
-                smb_root, completed_dir, category, completed_base
-            )
-            reuse_video = (
-                resolve_smb_video(reuse_folder, dialog=dialog, interval=interval)
-                if reuse_folder
-                else None
-            )
-            if reuse_video:
-                on_success(reuse_video)
-                return
-            if dialog.iscanceled() or xbmc.Monitor().abortRequested():
-                # User canceled (or Kodi is shutting down) while we waited for
-                # the already-completed file to appear over SMB — abort the
-                # playback request instead of falling through to submit/attach,
-                # which could issue new RPCs or duplicate/delete an in-flight
-                # same-name job after the abort was already requested.
-                on_failure(None)
-                return
-            # Completed in history but the file isn't visible over SMB — fall
-            # through to a normal submit/poll rather than failing outright.
-
+        # submitting, attach to that still-in-queue job by name instead of
+        # blindly re-appending the same NZB — which NZBGet would otherwise
+        # reject as a duplicate or double-download.
+        #
+        # We deliberately do NOT reuse a *completed* (history) item by name:
+        # unlike the nzbdav completed-cache, the NZBGet history match has no
+        # size/pubdate/indexer corroboration (and that selected-result metadata
+        # isn't available on the handle-based entry path), so a same-named
+        # repost or a different indexer result could play a stale SMB file
+        # instead of the NZB the user just selected. A left job that finished
+        # during the gap is simply re-submitted; NZBGet's own history/dupe
+        # handling covers that case.
         nzbid = nzbget_api.find_active_by_name(title, settings_getter=settings_getter)
         if not nzbid:
             nzbid, error = nzbget_api.append_nzb(
