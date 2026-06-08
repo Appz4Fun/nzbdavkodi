@@ -120,9 +120,7 @@ def test_resolve_smb_video_keeps_retrying_past_legacy_budget():
     ), patch(
         "resources.lib.nzbget_resolver.time.monotonic", side_effect=fake_monotonic
     ):
-        url = resolve_smb_video(
-            "smb://host/completed/The.Movie", monitor=_Monitor()
-        )
+        url = resolve_smb_video("smb://host/completed/The.Movie", monitor=_Monitor())
     assert url == "smb://host/completed/The.Movie/movie.mkv"
     assert calls["n"] >= 8
 
@@ -492,9 +490,7 @@ def test_resolve_success_applies_resume_offset_to_listitem():
     plugin = sys.modules["xbmcplugin"]
     plugin.setResolvedUrl = MagicMock()
     li = MagicMock()
-    with patch.object(
-        sys.modules["xbmcgui"], "ListItem", return_value=li
-    ), patch(
+    with patch.object(sys.modules["xbmcgui"], "ListItem", return_value=li), patch(
         "resources.lib.nzbget_resolver.nzbget_api.find_completed_by_name",
         return_value=None,
     ), patch(

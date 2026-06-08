@@ -57,7 +57,11 @@ def _rpc_call(method, params, settings_getter=None, timeout=_RPC_TIMEOUT):
     base_url, user, password, _category = _get_settings(settings_getter)
     if not base_url:
         return None, "not_configured"
-    payload = {"method": method, "params": list(params), "id": 1}
+    # ``id`` MUST precede ``params``: NZBGet's legacy JSON-RPC parser can
+    # mis-parse fields that appear after ``params`` (maintainer note,
+    # forum.nzbget.net t=2209), making append/poll RPCs fail or pick up an
+    # extra parameter. Order the payload id -> method -> params accordingly.
+    payload = {"id": 1, "method": method, "params": list(params)}
     try:
         text = _http_post_json(
             _rpc_url(base_url),
@@ -157,6 +161,19 @@ def _as_number(value):
         return 0.0
 
 
+def _same_nzbid(left, right):
+    """Compare two NZBID values tolerating str/int mismatch.
+
+    Some NZBGet builds / proxy layers serialize ``NZBID`` as a decimal string
+    while callers pass an int; a strict ``==`` would then treat the job as
+    absent and let the poll fall through to a bogus timeout/failure.
+    """
+    try:
+        return int(left) == int(right)
+    except (TypeError, ValueError):
+        return str(left) == str(right)
+
+
 def group_status(nzbid, settings_getter=None):
     """Look up an active job by NZBID via listgroups.
 
@@ -170,7 +187,7 @@ def group_status(nzbid, settings_getter=None):
     for group in groups:
         if not isinstance(group, dict):
             continue
-        if group.get("NZBID") == nzbid:
+        if _same_nzbid(group.get("NZBID"), nzbid):
             downloaded = _as_number(group.get("DownloadedSizeMB"))
             total = _as_number(group.get("FileSizeMB"))
             percent = int(downloaded * 100 / total) if total else 0
@@ -199,7 +216,7 @@ def history_status(nzbid, settings_getter=None):
     for item in hist:
         if not isinstance(item, dict):
             continue
-        if item.get("NZBID") == nzbid:
+        if _same_nzbid(item.get("NZBID"), nzbid):
             status = str(item.get("Status") or "")
             return {
                 "present": True,
@@ -209,9 +226,7 @@ def history_status(nzbid, settings_getter=None):
                 # to the final location while DestDir stays the original
                 # download dir; prefer FinalDir when present so the SMB target
                 # maps to where the playable file actually landed.
-                "dest_dir": (
-                    item.get("FinalDir") or item.get("DestDir") or ""
-                ),
+                "dest_dir": (item.get("FinalDir") or item.get("DestDir") or ""),
             }
     return {"present": False, "success": False, "status": "", "dest_dir": ""}
 

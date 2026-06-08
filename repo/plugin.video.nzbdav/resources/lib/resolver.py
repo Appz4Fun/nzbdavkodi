@@ -3831,9 +3831,7 @@ def _nzbget_enabled(settings_getter=None):
         if settings_getter is not None:
             value = settings_getter("nzbget_enabled", "")
         else:
-            value = xbmcaddon.Addon("plugin.video.nzbdav").getSetting(
-                "nzbget_enabled"
-            )
+            value = xbmcaddon.Addon("plugin.video.nzbdav").getSetting("nzbget_enabled")
         return (value or "").strip().lower() == "true"
     except (RuntimeError, AttributeError, TypeError):
         return False
@@ -3870,28 +3868,45 @@ def resolve(handle, params):
     # SMB). The nzbdav streaming/fallback machinery below is bypassed. This
     # is the handle-based entry; setResolvedUrl is the completion signal.
     if _nzbget_enabled():
-        from resources.lib.nzbget_resolver import resolve_and_play_nzbget
-
-        # NZBGet bypasses the nzbdav playback-state cleanup further down, so
-        # scrub the TMDBHelper/plugin bookmark here too. Without it a /play
-        # replay that already had a Kodi bookmark reopens plugin://... on the
-        # next launch instead of the resolved stream — the stale-resume failure
-        # the nzbdav path avoids (TODO.md §H.3). Guarded so a cleanup failure
-        # can't escape before the resolve completes and hang Kodi.
+        # Guard the whole delegation: this branch runs before resolve()'s
+        # protected error path, so an import/call failure here must still end in
+        # a failure setResolvedUrl or the handle-based resolve contract hangs
+        # (TODO.md §H.2-H9 no-hang guarantee).
         try:
-            resume_seconds = _coerce_resume_seconds(_clear_kodi_playback_state(params))
-        except Exception as cleanup_error:  # pylint: disable=broad-except
-            resume_seconds = 0.0
+            from resources.lib.nzbget_resolver import resolve_and_play_nzbget
+
+            # NZBGet bypasses the nzbdav playback-state cleanup further down, so
+            # scrub the TMDBHelper/plugin bookmark here too. Without it a /play
+            # replay that already had a Kodi bookmark reopens plugin://... on
+            # the next launch instead of the resolved stream — the stale-resume
+            # failure the nzbdav path avoids (TODO.md §H.3). Guarded so a
+            # cleanup failure can't escape before the resolve completes.
+            try:
+                resume_seconds = _coerce_resume_seconds(
+                    _clear_kodi_playback_state(params)
+                )
+            except Exception as cleanup_error:  # pylint: disable=broad-except
+                resume_seconds = 0.0
+                xbmc.log(
+                    "NZB-DAV: NZBGet pre-handoff bookmark cleanup failed: "
+                    "{}".format(cleanup_error),
+                    xbmc.LOGWARNING,
+                )
+            # Carry the scrubbed bookmark's resume position into NZBGet
+            # playback so a replay resumes where the user left off instead of
+            # restarting (the nzbdav path applies it as StartOffset).
+            resolve_and_play_nzbget(handle, params, resume_seconds=resume_seconds)
+        except Exception as nzbget_error:  # pylint: disable=broad-except
+            from resources.lib.http_util import redact_text
+
             xbmc.log(
-                "NZB-DAV: NZBGet pre-handoff bookmark cleanup failed: {}".format(
-                    cleanup_error
+                "NZB-DAV: NZBGet delegation failed: {}".format(
+                    redact_text(str(nzbget_error))
                 ),
-                xbmc.LOGWARNING,
+                xbmc.LOGERROR,
             )
-        # Carry the scrubbed bookmark's resume position into NZBGet playback so
-        # a replay resumes where the user left off instead of restarting (the
-        # nzbdav path applies it as StartOffset; we'd otherwise lose it).
-        resolve_and_play_nzbget(handle, params, resume_seconds=resume_seconds)
+            xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+            xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
         return
 
     dialog = None

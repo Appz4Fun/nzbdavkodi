@@ -129,9 +129,7 @@ def _largest_video_in_tree(folder, depth=_SMB_MAX_DEPTH):
             best, best_size = path, size
     if depth > 0:
         for sub in dirs:
-            url, size = _largest_video_in_tree(
-                "{}/{}".format(folder, sub), depth - 1
-            )
+            url, size = _largest_video_in_tree("{}/{}".format(folder, sub), depth - 1)
             if url is not None and size > best_size:
                 best, best_size = url, size
     return best, best_size
@@ -355,9 +353,7 @@ def _run_nzbget_backend(nzb_url, title, settings_getter, on_success, on_failure)
             # Completed in history but the file isn't visible over SMB — fall
             # through to a normal submit/poll rather than failing outright.
 
-        nzbid = nzbget_api.find_active_by_name(
-            title, settings_getter=settings_getter
-        )
+        nzbid = nzbget_api.find_active_by_name(title, settings_getter=settings_getter)
         if not nzbid:
             nzbid, error = nzbget_api.append_nzb(
                 nzb_url, title, settings_getter=settings_getter
@@ -457,9 +453,7 @@ def resolve_and_play_nzbget(handle, params, settings_getter=None, resume_seconds
     _run_nzbget_backend(nzb_url, title, settings_getter, on_success, on_failure)
 
 
-def play_nzbget(
-    nzb_url, title, params=None, settings_getter=None, resume_seconds=0.0
-):
+def play_nzbget(nzb_url, title, params=None, settings_getter=None, resume_seconds=0.0):
     """NZBGet entry for the handle-less ``resolve_and_play`` path.
 
     ``resolve_and_play`` (TMDBHelper ``/resolve``, the in-addon search
