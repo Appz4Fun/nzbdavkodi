@@ -2094,9 +2094,9 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 stderr=subprocess.PIPE,
                 shell=False,
             )
-            # lgtm [py/command-line-injection]
-            # nosec B603
-            proc = subprocess.Popen(cmd, **kw)
+            # The executable is validated by _is_safe_ffmpeg_cmd
+            # lgtm[py/command-line-injection]
+            proc = subprocess.Popen(cmd, **kw)  # nosec B603
         except OSError as error:
             xbmc.log("NZB-DAV: Failed to start ffmpeg: {}".format(error), xbmc.LOGERROR)
             _notify_error("Failed to start ffmpeg")
@@ -6681,9 +6681,8 @@ class HlsProducer:
                     shell=False,
                     cwd=self.session_dir,
                 )
-                # lgtm [py/command-line-injection]
-                # nosec B603
-                self._proc = subprocess.Popen(cmd, **kw)
+                # lgtm[py/command-line-injection]
+                self._proc = subprocess.Popen(cmd, **kw)  # nosec B603
             except OSError as e:
                 xbmc.log(
                     "NZB-DAV: HLS producer ffmpeg spawn failed: {}".format(e),
@@ -7418,9 +7417,8 @@ class StreamProxy:
                 stderr=subprocess.PIPE,
                 shell=False,
             )
-            # lgtm [py/command-line-injection]
-            # nosec B603
-            proc = subprocess.Popen(cmd, **kw)
+            # lgtm[py/command-line-injection]
+            proc = subprocess.Popen(cmd, **kw)  # nosec B603
             try:
                 output = proc.communicate(timeout=_FFMPEG_CAPABILITY_PROBE_TIMEOUT)
                 if not isinstance(output, (tuple, list)) or len(output) != 2:
@@ -8588,9 +8586,8 @@ class StreamProxy:
                 stderr=subprocess.PIPE,
                 shell=False,
             )
-            # lgtm [py/command-line-injection]
-            # nosec B603
-            proc = subprocess.Popen(cmd, **kw)
+            # lgtm[py/command-line-injection]
+            proc = subprocess.Popen(cmd, **kw)  # nosec B603
             try:
                 stdout_bytes, _ = proc.communicate(timeout=30)
             except subprocess.TimeoutExpired:
@@ -8663,9 +8660,8 @@ class StreamProxy:
                 stderr=subprocess.PIPE,
                 shell=False,
             )
-            # lgtm [py/command-line-injection]
-            # nosec B603
-            proc = subprocess.Popen(cmd, **kw)
+            # lgtm[py/command-line-injection]
+            proc = subprocess.Popen(cmd, **kw)  # nosec B603
         except (OSError, subprocess.SubprocessError, ValueError) as e:
             xbmc.log(
                 "NZB-DAV: {} probe spawn failed: {}".format(label, e),
@@ -8790,9 +8786,9 @@ class StreamProxy:
                 stderr=subprocess.PIPE,
                 shell=False,
             )
-            # lgtm [py/command-line-injection]
-            # nosec B603
-            proc = subprocess.Popen(cmd, **kw)
+            # The executable is validated by _is_safe_ffmpeg_cmd
+            # lgtm[py/command-line-injection]
+            proc = subprocess.Popen(cmd, **kw)  # nosec B603
             _, stderr = proc.communicate(timeout=600)  # 10 min timeout
             if proc.returncode != 0:
                 # ffmpeg error messages routinely echo the full input
