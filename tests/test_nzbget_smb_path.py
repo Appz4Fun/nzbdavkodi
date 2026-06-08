@@ -23,6 +23,42 @@ def test_smb_target_includes_category_subfolder():
     assert target == "smb://user:pw@host/completed/movies/The.Movie.2024.1080p"
 
 
+def test_smb_target_maps_relative_to_completed_base():
+    # With NZBGet's global completed base known, DestDir maps relative to it —
+    # exact even for a category-specific custom folder whose name differs from
+    # the category setting (Codex: category=movies but DestDir under films/).
+    target = nzbget_smb_target(
+        "smb://host/completed",
+        "/downloads/completed/films/The.Movie.2024",
+        category="movies",
+        completed_base="/downloads/completed",
+    )
+    assert target == "smb://host/completed/films/The.Movie.2024"
+
+
+def test_smb_target_completed_base_no_category_dir():
+    # AppendCategoryDir=no: DestDir sits directly under the completed base.
+    target = nzbget_smb_target(
+        "smb://host/completed",
+        "/downloads/completed/The.Movie.2024",
+        category="movies",
+        completed_base="/downloads/completed",
+    )
+    assert target == "smb://host/completed/The.Movie.2024"
+
+
+def test_smb_target_completed_base_avoids_doubled_tail():
+    # smb_root pointed at a subfolder of the completed base must not double the
+    # relative segment.
+    target = nzbget_smb_target(
+        "smb://host/completed/movies",
+        "/downloads/completed/movies/The.Movie.2024",
+        category="movies",
+        completed_base="/downloads/completed",
+    )
+    assert target == "smb://host/completed/movies/The.Movie.2024"
+
+
 def test_smb_target_omits_category_when_destdir_not_nested():
     # AppendCategoryDir=no (or a category-specific DestDir): NZBGet reports the
     # release directly under completed, with no category folder. Even though a

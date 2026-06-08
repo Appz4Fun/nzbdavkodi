@@ -310,6 +310,31 @@ def find_completed_by_name(nzb_name, settings_getter=None):
     return None
 
 
+def completed_base_dir(settings_getter=None):
+    """Return NZBGet's configured global completed DestDir (absolute), or None.
+
+    Lets ``nzbget_smb_target`` map a history ``DestDir`` *relative* to NZBGet's
+    completed base onto the SMB root, which is exact for any category/custom
+    DestDir layout. Best-effort: any RPC failure or a value that isn't an
+    absolute path (e.g. an unexpanded ``${MainDir}`` template) degrades to None
+    so the caller falls back to its folder heuristic.
+    """
+    cfg, error = _rpc_call("config", [], settings_getter=settings_getter)
+    if error is not None or not isinstance(cfg, list):
+        return None
+    for item in cfg:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("Name", "")).strip().lower() == "destdir":
+            value = str(item.get("Value") or "").strip()
+            # Only trust an absolute path; an unexpanded template wouldn't be a
+            # reliable prefix of the reported history DestDir.
+            if value.startswith("/") or ":\\" in value or value.startswith("\\\\"):
+                return value
+            return None
+    return None
+
+
 def test_connection(settings_getter=None):
     """Probe NZBGet via the version method. Returns (ok, error)."""
     result, error = _rpc_call("version", [], settings_getter=settings_getter)

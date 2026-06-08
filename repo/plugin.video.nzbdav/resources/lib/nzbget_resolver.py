@@ -27,41 +27,58 @@ from resources.lib.i18n import string as _string
 VIDEO_EXTENSIONS = (".mkv", ".mp4", ".avi", ".m4v", ".ts", ".wmv", ".mov")
 
 
-def nzbget_smb_target(smb_root, dest_dir, category=""):
+def nzbget_smb_target(smb_root, dest_dir, category="", completed_base=""):
     """Map NZBGet's server-local DestDir onto the SMB root.
 
     ``smb_root`` points at NZBGet's *completed* base dir, exposed over SMB.
-    Whether a categorized release sits under a per-category subfolder is
-    decided by NZBGet itself (``AppendCategoryDir`` / a category-specific
-    ``DestDir``) and is reflected directly in the ``dest_dir`` it reports in
-    history: with ``AppendCategoryDir=yes`` the path is
-    ``<completed>/<category>/<release>``; with ``AppendCategoryDir=no`` (or a
-    custom category DestDir) it is just ``<completed>/<release>``. We mirror
-    that *actual* layout — nesting under the category only when DestDir's own
-    parent segment is the category — rather than synthesizing the segment
-    from the setting, so an ``AppendCategoryDir=no`` box resolves to the real
-    folder instead of a non-existent ``<root>/<category>/<release>``.
-    Returns the smb:// folder URL, or None if dest_dir is empty.
+
+    Preferred mapping (exact): when ``completed_base`` (NZBGet's configured
+    global completed DestDir) is known and is a prefix of ``dest_dir``, map the
+    *relative* remainder onto ``smb_root``. This mirrors whatever subfolder
+    layout NZBGet actually used — ``AppendCategoryDir`` on/off, a category that
+    matches or a category-specific/custom ``DestDir`` whose folder name differs
+    from the category setting (e.g. ``<completed>/films/<release>`` for category
+    ``movies``) — without guessing.
+
+    Fallback heuristic (``completed_base`` unknown / ``dest_dir`` outside it):
+    derive the category segment from ``dest_dir``'s own parent. Nest under it
+    only when a category is configured and the parent isn't already the SMB
+    root's own trailing segment (the AppendCategoryDir=no case, where the
+    parent is the completed base itself). Returns the smb:// folder URL, or
+    None if dest_dir is empty.
     """
     if not dest_dir:
         return None
     normalized = dest_dir.replace("\\", "/").rstrip("/")
+    base = smb_root.rstrip("/")
+
+    cb = (completed_base or "").replace("\\", "/").rstrip("/")
+    if cb and normalized.casefold() != cb.casefold():
+        if (normalized + "/").casefold().startswith(cb.casefold() + "/"):
+            rel = normalized[len(cb) :].strip("/")
+            # Guard against a doubled tail when smb_root was pointed at a
+            # subfolder of the completed base (e.g. root .../movies + rel
+            # movies/Release): drop rel's leading segment if base already ends
+            # with it.
+            rel_head = rel.split("/", 1)[0] if rel else ""
+            if rel_head and base.casefold().endswith("/" + rel_head.casefold()):
+                rel = rel[len(rel_head) :].strip("/")
+            if rel:
+                return "{}/{}".format(base, rel)
+
     segments = [seg for seg in normalized.split("/") if seg]
     if not segments:
         return None
     release_folder = segments[-1]
     parent_folder = segments[-2] if len(segments) >= 2 else ""
     category = (category or "").strip().strip("/")
-    base = smb_root.rstrip("/")
-    # Nest under the category only when NZBGet actually placed the release in
-    # a matching category subfolder (DestDir's parent == category), and the
-    # SMB root isn't already pointed at that subfolder.
-    if (
-        category
-        and parent_folder.casefold() == category.casefold()
-        and not base.casefold().endswith("/" + category.casefold())
-    ):
-        return "{}/{}/{}".format(base, parent_folder, release_folder)
+    if category and parent_folder:
+        smb_last = base.rsplit("/", 1)[-1]
+        if (
+            parent_folder.casefold() != smb_last.casefold()
+            and not base.casefold().endswith("/" + parent_folder.casefold())
+        ):
+            return "{}/{}/{}".format(base, parent_folder, release_folder)
     return "{}/{}".format(base, release_folder)
 
 
@@ -327,6 +344,10 @@ def _run_nzbget_backend(nzb_url, title, settings_getter, on_success, on_failure)
         _u, _user, _pw, category = nzbget_api._get_settings(
             settings_getter=settings_getter
         )
+        # NZBGet's global completed base, used to map a history DestDir exactly
+        # onto the SMB root regardless of category/custom-DestDir layout. None
+        # when unavailable -> nzbget_smb_target falls back to its heuristic.
+        completed_base = nzbget_api.completed_base_dir(settings_getter=settings_getter)
 
         dialog = xbmcgui.DialogProgress()
         dialog.create(_addon_name(), _string(30218))
@@ -341,7 +362,9 @@ def _run_nzbget_backend(nzb_url, title, settings_getter, on_success, on_failure)
             title, settings_getter=settings_getter
         )
         if completed_dir:
-            reuse_folder = nzbget_smb_target(smb_root, completed_dir, category)
+            reuse_folder = nzbget_smb_target(
+                smb_root, completed_dir, category, completed_base
+            )
             reuse_video = (
                 resolve_smb_video(reuse_folder, dialog=dialog, interval=interval)
                 if reuse_folder
@@ -349,6 +372,13 @@ def _run_nzbget_backend(nzb_url, title, settings_getter, on_success, on_failure)
             )
             if reuse_video:
                 on_success(reuse_video)
+                return
+            if dialog.iscanceled():
+                # User canceled while we waited for the already-completed file
+                # to appear over SMB — abort the playback request instead of
+                # falling through to submit/attach, which could duplicate or
+                # delete an in-flight same-name job.
+                on_failure(None)
                 return
             # Completed in history but the file isn't visible over SMB — fall
             # through to a normal submit/poll rather than failing outright.
@@ -387,7 +417,9 @@ def _run_nzbget_backend(nzb_url, title, settings_getter, on_success, on_failure)
             on_failure(_string(30220))
             return
 
-        smb_folder = nzbget_smb_target(smb_root, result["dest_dir"], category)
+        smb_folder = nzbget_smb_target(
+            smb_root, result["dest_dir"], category, completed_base
+        )
         if not smb_folder:
             on_failure(_string(30223))
             return

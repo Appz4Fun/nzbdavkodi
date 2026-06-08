@@ -613,6 +613,42 @@ def test_resolve_attaches_to_active_job_without_appending():
     assert plugin.setResolvedUrl.call_args[0][1] is True
 
 
+def test_resolve_aborts_when_canceled_during_completed_lookup():
+    # A matching SUCCESS history item exists, but the user cancels while the
+    # completed file is still settling onto SMB. The resolver must abort (no
+    # video, no submit/attach) rather than fall through to append/cancel a
+    # duplicate job.
+    plugin = sys.modules["xbmcplugin"]
+    plugin.setResolvedUrl = MagicMock()
+    sys.modules["xbmc"].PlayList = MagicMock()
+    dialog = MagicMock()
+    dialog.iscanceled.return_value = True
+    with patch.object(
+        sys.modules["xbmcgui"], "DialogProgress", return_value=dialog
+    ), patch(
+        "resources.lib.nzbget_resolver.nzbget_api.completed_base_dir",
+        return_value=None,
+    ), patch(
+        "resources.lib.nzbget_resolver.nzbget_api.find_completed_by_name",
+        return_value="/dl/movies/X",
+    ), patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video",
+        return_value=None,
+    ), patch(
+        "resources.lib.nzbget_resolver.nzbget_api.find_active_by_name"
+    ) as active, patch(
+        "resources.lib.nzbget_resolver.nzbget_api.append_nzb"
+    ) as append:
+        resolve_and_play_nzbget(
+            7,
+            {"nzburl": "http://i/x.nzb", "title": "X"},
+            settings_getter=_full_settings(),
+        )
+    append.assert_not_called()
+    active.assert_not_called()
+    assert plugin.setResolvedUrl.call_args[0][1] is False
+
+
 def test_play_nzbget_success_starts_player_with_smb_url():
     player = MagicMock()
     with patch.object(

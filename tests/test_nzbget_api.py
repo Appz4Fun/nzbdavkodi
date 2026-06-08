@@ -260,6 +260,27 @@ def test_history_status_matches_string_nzbid():
     assert status["success"] is True
 
 
+def test_completed_base_dir_returns_config_destdir():
+    from resources.lib.nzbget_api import completed_base_dir
+
+    getter = _getter({"nzbget_url": "http://box"})
+    cfg = [
+        {"Name": "MainDir", "Value": "/downloads"},
+        {"Name": "DestDir", "Value": "/downloads/completed"},
+    ]
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(cfg, None)):
+        assert completed_base_dir(settings_getter=getter) == "/downloads/completed"
+
+
+def test_completed_base_dir_none_for_unexpanded_template():
+    from resources.lib.nzbget_api import completed_base_dir
+
+    getter = _getter({"nzbget_url": "http://box"})
+    cfg = [{"Name": "DestDir", "Value": "${MainDir}/completed"}]
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(cfg, None)):
+        assert completed_base_dir(settings_getter=getter) is None
+
+
 def test_history_status_failure_flagged():
     getter = _getter({"nzbget_url": "http://box:6789"})
     hist = [{"NZBID": 42, "Status": "FAILURE/UNPACK", "DestDir": "/dl/x"}]
