@@ -3537,7 +3537,7 @@ def test_probe_duration_prefers_ffprobe_when_available():
     assert duration == 8552.576
     # ffprobe must have been invoked — check the argv passed to Popen.
     assert mock_popen.called
-    argv = mock_popen.call_args[0][0] if len(mock_popen.call_args[0]) > 0 else mock_popen.call_args[1].get('args', [])
+    argv = mock_popen.call_args[1].get("args") or mock_popen.call_args[0][0]
     assert argv[0] == "/usr/bin/ffprobe"
     assert "format=duration" in argv
 
@@ -3565,7 +3565,7 @@ def test_probe_duration_ffprobe_uses_headers_for_auth():
         )
 
     assert duration == 8552.576
-    argv = mock_popen.call_args[0][0] if len(mock_popen.call_args[0]) > 0 else mock_popen.call_args[1].get('args', [])
+    argv = mock_popen.call_args[1].get("args") or mock_popen.call_args[0][0]
     headers_idx = argv.index("-headers")
     assert argv[headers_idx + 1] == "Authorization: {}\r\n".format(auth)
     assert argv[-1] == "http://host/shawshank.mkv"
@@ -3698,7 +3698,7 @@ def test_probe_duration_ffmpeg_fallback_uses_headers_for_auth():
         )
 
     assert duration == 600.0
-    argv = mock_popen.call_args[0][0] if len(mock_popen.call_args[0]) > 0 else mock_popen.call_args[1].get('args', [])
+    argv = mock_popen.call_args[1].get("args") or mock_popen.call_args[0][0]
     headers_idx = argv.index("-headers")
     i_idx = argv.index("-i")
     assert headers_idx < i_idx
@@ -3728,7 +3728,11 @@ def test_prepare_tempfile_faststart_uses_headers_for_auth():
         )
 
     try:
-        argv = mock_popen.call_args[0][0] if len(mock_popen.call_args[0]) > 0 else mock_popen.call_args[1].get('args', [])
+        argv = (
+            mock_popen.call_args[0][0]
+            if len(mock_popen.call_args[0]) > 0
+            else mock_popen.call_args[1].get("args", [])
+        )
         headers_idx = argv.index("-headers")
         i_idx = argv.index("-i")
         assert headers_idx < i_idx
@@ -4043,7 +4047,7 @@ def test_serve_remux_continuation_does_not_map_output_byte_to_time():
     ) as mock_popen:
         handler._serve_remux(ctx)
 
-    cmd = mock_popen.call_args[0][0] if len(mock_popen.call_args[0]) > 0 else mock_popen.call_args[1].get('args', [])
+    cmd = mock_popen.call_args[1].get("args") or mock_popen.call_args[0][0]
     assert "-ss" not in cmd
 
 
@@ -4076,7 +4080,7 @@ def test_serve_remux_explicit_seek_does_not_guess_time_from_byte_offset():
 
     old_proc.kill.assert_not_called()
     old_proc.wait.assert_not_called()
-    cmd = mock_popen.call_args[0][0] if len(mock_popen.call_args[0]) > 0 else mock_popen.call_args[1].get('args', [])
+    cmd = mock_popen.call_args[1].get("args") or mock_popen.call_args[0][0]
     assert "-ss" not in cmd
 
 
@@ -5646,7 +5650,7 @@ def test_hls_producer_starts_ffmpeg_when_no_file_exists(tmp_path):
         producer.wait_for_segment(3, timeout=0.5)
 
     mock_popen.assert_called()
-    cmd = mock_popen.call_args[0][0] if len(mock_popen.call_args[0]) > 0 else mock_popen.call_args[1].get('args', [])
+    cmd = mock_popen.call_args[1].get("args") or mock_popen.call_args[0][0]
     ss_idx = cmd.index("-ss")
     start_num_idx = cmd.index("-segment_start_number")
     # Segment 3 at 30 s each → -ss 90.000
@@ -5683,7 +5687,7 @@ def test_hls_producer_restarts_ffmpeg_on_backward_seek(tmp_path):
 
     old_proc.kill.assert_called_once()
     mock_popen.assert_called()
-    cmd = mock_popen.call_args[0][0] if len(mock_popen.call_args[0]) > 0 else mock_popen.call_args[1].get('args', [])
+    cmd = mock_popen.call_args[1].get("args") or mock_popen.call_args[0][0]
     ss_idx = cmd.index("-ss")
     assert cmd[ss_idx + 1] == "300.000"  # 10 * 30 s
 
@@ -5727,7 +5731,7 @@ def test_hls_producer_restarts_ffmpeg_on_five_minute_forward_seek(tmp_path):
 
     alive_proc.kill.assert_called_once()
     mock_popen.assert_called()
-    cmd = mock_popen.call_args[0][0] if len(mock_popen.call_args[0]) > 0 else mock_popen.call_args[1].get('args', [])
+    cmd = mock_popen.call_args[1].get("args") or mock_popen.call_args[0][0]
     ss_idx = cmd.index("-ss")
     start_num_idx = cmd.index("-segment_start_number")
     assert cmd[ss_idx + 1] == "360.000"
@@ -6181,7 +6185,7 @@ def test_hls_producer_concurrent_seek_respawn_starts_single_ffmpeg(tmp_path):
         popen_calls = []
 
         def fake_popen(*args, **kwargs):
-            popen_calls.append(args[0] if len(args) > 0 else kwargs.get('args', []))
+            popen_calls.append(kwargs.get("args") or args[0])
             _time.sleep(0.05)
             return live_proc
 
@@ -6665,7 +6669,7 @@ def test_hls_producer_wait_for_init_respawns_at_current_target_after_crash(tmp_p
 
         assert mock_popen.called
         args, _kwargs = mock_popen.call_args
-        cmd = args[0] if len(args) > 0 else _kwargs.get('args', [])
+        cmd = _kwargs.get("args") or args[0]
         # The new -ss value should be 40 * 30.0 = 1200.0 seconds.
         ss_idx = cmd.index("-ss")
         assert float(cmd[ss_idx + 1]) == 1200.0
@@ -7327,7 +7331,7 @@ def test_serve_remux_non_seekable_no_ss():
     ) as mock_popen:
         handler._serve_remux(ctx)
 
-    cmd = mock_popen.call_args[0][0] if len(mock_popen.call_args[0]) > 0 else mock_popen.call_args[1].get('args', [])
+    cmd = mock_popen.call_args[1].get("args") or mock_popen.call_args[0][0]
     assert "-ss" not in cmd
 
 
