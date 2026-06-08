@@ -67,11 +67,21 @@ def test_append_nzb_fetches_encodes_and_returns_nzbid():
     assert nzbid == 42
     assert error is None
     params = captured["payload"]["params"]
-    # NZBGet append signature: NZBFilename, Content(base64), Category, Priority,
-    # AddToTop, AddPaused, DupeKey, DupeScore, DupeMode
+    # NZBGet append signature (nzbget.com v16+/v26, confirmed against a live
+    # 26.1 box): Filename, Content(base64), Category, Priority, AddToTop,
+    # AddPaused, DupeKey, DupeScore, DupeMode, AutoCategory, PPParameters.
+    # The trailing AutoCategory + PPParameters are NOT optional in practice:
+    # omitting them yields ``Invalid parameter (Parameters)`` (JSON-RPC code 2)
+    # and the NZB never enters the queue.
+    assert len(params) == 11
     assert params[0] == "The.Movie.2024.nzb"
     assert base64.b64decode(params[1]).decode("utf-8") == "<nzb>data</nzb>"
     assert params[2] == "movies"
+    assert params[8] == "SCORE"  # DupeMode
+    # AutoCategory=False so NZBGet keeps the category we send (the SMB path
+    # mapping depends on it); PPParameters=[] (no post-processing params).
+    assert params[9] is False
+    assert params[10] == []
 
 
 def test_append_nzb_returns_error_when_nzbid_not_positive():
@@ -127,6 +137,38 @@ def test_history_status_success_returns_destdir():
     assert status["dest_dir"] == "/dl/movies/X"
 
 
+def test_get_settings_uses_schema_defaults_via_injected_getter():
+    # _get_script_setting returns the supplied default for settings the user
+    # left at their schema default (absent from the profile file). Those
+    # fallbacks must match settings.xml, or a user who only set the SMB root is
+    # sent down the NZBGet path and fails "not configured" on a blank URL.
+    def getter(key, default=""):
+        return {"nzbget_smb_root": "smb://host/done"}.get(key, default)
+
+    url, user, password, category = _get_settings(settings_getter=getter)
+    assert url == "http://localhost:6789"
+    assert user == "nzbget"
+    assert password == ""
+    assert category == ""
+
+
+def test_history_status_prefers_finaldir_over_destdir():
+    # A post-processing script that moves the output sets FinalDir; the SMB
+    # target must follow the file to its final location, not the stale DestDir.
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    hist = [
+        {
+            "NZBID": 42,
+            "Status": "SUCCESS/ALL",
+            "DestDir": "/dl/intermediate/X",
+            "FinalDir": "/dl/movies/X",
+        }
+    ]
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(hist, None)):
+        status = history_status(42, settings_getter=getter)
+    assert status["dest_dir"] == "/dl/movies/X"
+
+
 def test_rpc_call_places_id_before_params():
     # NZBGet's legacy parser can mis-read fields after ``params``; the payload
     # must serialize ``id`` before ``params``.
@@ -167,21 +209,25 @@ def test_history_status_matches_string_nzbid():
     assert status["success"] is True
 
 
-def test_history_status_prefers_finaldir_over_destdir():
-    # A post-processing script that moves the output sets FinalDir; the SMB
-    # target must follow the file to its final location, not the stale DestDir.
+def test_completed_base_dir_returns_config_destdir():
+    from resources.lib.nzbget_api import completed_base_dir
+
     getter = _getter({"nzbget_url": "http://box"})
-    hist = [
-        {
-            "NZBID": 42,
-            "Status": "SUCCESS/ALL",
-            "DestDir": "/dl/dest/X",
-            "FinalDir": "/dl/final/X",
-        }
+    cfg = [
+        {"Name": "MainDir", "Value": "/downloads"},
+        {"Name": "DestDir", "Value": "/downloads/completed"},
     ]
-    with patch("resources.lib.nzbget_api._rpc_call", return_value=(hist, None)):
-        status = history_status(42, settings_getter=getter)
-    assert status["dest_dir"] == "/dl/final/X"
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(cfg, None)):
+        assert completed_base_dir(settings_getter=getter) == "/downloads/completed"
+
+
+def test_completed_base_dir_none_for_unexpanded_template():
+    from resources.lib.nzbget_api import completed_base_dir
+
+    getter = _getter({"nzbget_url": "http://box"})
+    cfg = [{"Name": "DestDir", "Value": "${MainDir}/completed"}]
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(cfg, None)):
+        assert completed_base_dir(settings_getter=getter) is None
 
 
 def test_history_status_failure_flagged():
@@ -249,12 +295,18 @@ def test_cancel_job_issues_group_then_history_delete():
     assert [c[0] for c in calls] == ["editqueue", "editqueue"]
     assert calls[0][1] == ["GroupFinalDelete", "", [42]]
     assert calls[1][1] == ["HistoryFinalDelete", "", [42]]
+    # Guard against a regression to the pre-v18 (Command, Offset, Text, IDs):
     assert len(calls[0][1]) == 3
     assert not isinstance(calls[0][1][1], int)
 
 
 def test_rpc_call_not_configured_when_url_blank():
-    result, error = _rpc_call("version", [], settings_getter=_getter({}))
+    # An explicitly-blank URL short-circuits to "not_configured" before any
+    # HTTP. (An *absent* nzbget_url now falls back to the schema default
+    # http://localhost:6789 — see test_get_settings_uses_schema_defaults_*.)
+    result, error = _rpc_call(
+        "version", [], settings_getter=_getter({"nzbget_url": ""})
+    )
     assert result is None
     assert error == "not_configured"
 

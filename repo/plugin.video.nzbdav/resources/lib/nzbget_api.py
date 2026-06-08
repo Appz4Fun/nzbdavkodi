@@ -20,6 +20,15 @@ from resources.lib.http_util import redact_text as _redact_text
 
 _RPC_TIMEOUT = 30
 
+# settings.xml schema defaults. The injected ``settings_getter``
+# (``_get_script_setting`` on the RunScript/widget path) reads the raw profile
+# XML, where a setting left at its displayed default is simply absent — so it
+# returns the fallback we pass. Mirror the schema defaults here, or a user who
+# enables NZBGet + sets the SMB root but leaves the URL/username untouched is
+# sent down the NZBGet path only to fail "not configured".
+_DEFAULT_URL = "http://localhost:6789"
+_DEFAULT_USER = "nzbget"
+
 
 def _get_settings(settings_getter=None):
     if settings_getter is None:
@@ -29,8 +38,8 @@ def _get_settings(settings_getter=None):
         password = addon.getSetting("nzbget_password")
         category = addon.getSetting("nzbget_category").strip()
     else:
-        url = settings_getter("nzbget_url", "").strip().rstrip("/")
-        user = settings_getter("nzbget_username", "").strip()
+        url = settings_getter("nzbget_url", _DEFAULT_URL).strip().rstrip("/")
+        user = settings_getter("nzbget_username", _DEFAULT_USER).strip()
         password = settings_getter("nzbget_password", "")
         category = settings_getter("nzbget_category", "").strip()
     return url, user, password, category
@@ -103,8 +112,29 @@ def append_nzb(nzb_url, nzb_name, settings_getter=None):
     content_b64 = base64.b64encode(nzb_bytes).decode("ascii")
     filename = "{}.nzb".format(nzb_name or "submission")
     # append(NZBFilename, Content, Category, Priority, AddToTop, AddPaused,
-    #        DupeKey, DupeScore, DupeMode)
-    params = [filename, content_b64, category, 0, False, False, "", 0, "SCORE"]
+    #        DupeKey, DupeScore, DupeMode, AutoCategory, PPParameters)
+    #
+    # The trailing AutoCategory + PPParameters args are required by NZBGet's
+    # modern append signature (nzbget.com v16+, verified against a live 26.1
+    # box): dropping them makes NZBGet reject the whole call with
+    # ``Invalid parameter (Parameters)`` (JSON-RPC code 2) and the NZB never
+    # enters the queue. AutoCategory=False keeps the explicit category we pass
+    # (the SMB completed-path mapping in nzbget_resolver depends on it rather
+    # than NZBGet auto-reassigning one); PPParameters=[] = no extra
+    # post-processing parameters.
+    params = [
+        filename,
+        content_b64,
+        category,
+        0,
+        False,
+        False,
+        "",
+        0,
+        "SCORE",
+        False,
+        [],
+    ]
     result, error = _rpc_call("append", params, settings_getter=settings_getter)
     if error is not None:
         return None, error
@@ -194,11 +224,36 @@ def history_status(nzbid, settings_getter=None):
                 "status": status,
                 # A post-processing script that moves the output sets FinalDir
                 # to the final location while DestDir stays the original
-                # download dir; prefer FinalDir so the SMB target maps to where
-                # the playable file actually landed.
+                # download dir; prefer FinalDir when present so the SMB target
+                # maps to where the playable file actually landed.
                 "dest_dir": (item.get("FinalDir") or item.get("DestDir") or ""),
             }
     return {"present": False, "success": False, "status": "", "dest_dir": ""}
+
+
+def completed_base_dir(settings_getter=None):
+    """Return NZBGet's configured global completed DestDir (absolute), or None.
+
+    Lets ``nzbget_smb_target`` map a history ``DestDir`` *relative* to NZBGet's
+    completed base onto the SMB root, which is exact for any category/custom
+    DestDir layout. Best-effort: any RPC failure or a value that isn't an
+    absolute path (e.g. an unexpanded ``${MainDir}`` template) degrades to None
+    so the caller falls back to its folder heuristic.
+    """
+    cfg, error = _rpc_call("config", [], settings_getter=settings_getter)
+    if error is not None or not isinstance(cfg, list):
+        return None
+    for item in cfg:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("Name", "")).strip().lower() == "destdir":
+            value = str(item.get("Value") or "").strip()
+            # Only trust an absolute path; an unexpanded template wouldn't be a
+            # reliable prefix of the reported history DestDir.
+            if value.startswith("/") or ":\\" in value or value.startswith("\\\\"):
+                return value
+            return None
+    return None
 
 
 def test_connection(settings_getter=None):
@@ -218,8 +273,9 @@ def cancel_job(nzbid, settings_getter=None):
     """
     # editqueue(Command, Args, IDs) — NZBGet v18+ dropped the legacy int
     # ``Offset`` parameter (pre-v18 was ``Command, Offset, Text, IDs``). The
-    # 4-arg form is rejected by modern (16+/26.x) boxes, silently leaving a
-    # "canceled" download in the queue/history.
+    # target boxes run nzbget.com 16+/26.x, which reject the 4-arg shape and
+    # would leave a "canceled" download running; matches the modern 11-arg
+    # append signature this client already sends.
     _rpc_call(
         "editqueue",
         ["GroupFinalDelete", "", [nzbid]],

@@ -88,6 +88,88 @@ def test_resolve_smb_video_descends_into_subdirectory():
     assert url == "smb://host/completed/The.Movie/The.Movie/movie.mkv"
 
 
+def test_resolve_smb_video_keeps_retrying_past_legacy_budget():
+    # Regression: NZBGet reports SUCCESS but the moved files take longer than
+    # the old ~4s (5×1s) window to become listable over SMB. The resolver must
+    # keep retrying within the wider post-success budget instead of giving up
+    # with "No video file found on SMB share".
+    xbmcvfs = sys.modules["xbmcvfs"]
+    calls = {"n": 0}
+
+    def fake_listdir(path):
+        calls["n"] += 1
+        # File becomes visible only on the 8th listing — past the legacy
+        # 5-attempt cap, within the wider budget.
+        if calls["n"] >= 8:
+            return ([], ["movie.mkv"])
+        return ([], [])
+
+    def fake_stat(path):
+        st = MagicMock()
+        st.st_size.return_value = 9000
+        return st
+
+    clock = {"t": 0.0}
+
+    def fake_monotonic():
+        clock["t"] += 1.0
+        return clock["t"]
+
+    with patch.object(xbmcvfs, "listdir", side_effect=fake_listdir), patch.object(
+        xbmcvfs, "Stat", side_effect=fake_stat
+    ), patch(
+        "resources.lib.nzbget_resolver.time.monotonic", side_effect=fake_monotonic
+    ):
+        url = resolve_smb_video("smb://host/completed/The.Movie", monitor=_Monitor())
+    assert url == "smb://host/completed/The.Movie/movie.mkv"
+    assert calls["n"] >= 8
+
+
+def test_resolve_smb_video_drives_progress_dialog_during_wait():
+    # The user must see a progress bar while the file settles onto the share,
+    # not get dropped back to the home screen. With a dialog supplied, the
+    # resolve loop drives dialog.update over the wait window.
+    xbmcvfs = sys.modules["xbmcvfs"]
+    clock = {"t": 0.0}
+
+    def fake_monotonic():
+        clock["t"] += 1.0
+        return clock["t"]
+
+    dialog = MagicMock()
+    dialog.iscanceled.return_value = False
+    with patch.object(xbmcvfs, "listdir", return_value=([], [])), patch.object(
+        xbmcvfs, "Stat", MagicMock()
+    ), patch(
+        "resources.lib.nzbget_resolver.time.monotonic", side_effect=fake_monotonic
+    ):
+        result = resolve_smb_video(
+            "smb://host/x", monitor=_Monitor(), dialog=dialog, interval=1, budget=5
+        )
+    assert result is None
+    dialog.update.assert_called()  # progress bar driven during the wait
+    # percent is a clamped 0..100 int
+    pct = dialog.update.call_args[0][0]
+    assert isinstance(pct, int) and 0 <= pct <= 100
+
+
+def test_resolve_smb_video_honors_dialog_cancel():
+    # Canceling the progress dialog aborts the SMB wait immediately rather than
+    # spinning out the whole budget.
+    xbmcvfs = sys.modules["xbmcvfs"]
+    listdir = MagicMock(return_value=([], []))
+    dialog = MagicMock()
+    dialog.iscanceled.return_value = True
+    with patch.object(xbmcvfs, "listdir", listdir), patch.object(
+        xbmcvfs, "Stat", MagicMock()
+    ):
+        result = resolve_smb_video(
+            "smb://host/x", monitor=_Monitor(), dialog=dialog, budget=60
+        )
+    assert result is None
+    assert listdir.call_count == 1  # bailed on cancel after the first listing
+
+
 def test_resolve_smb_video_returns_none_when_no_video():
     xbmcvfs = sys.modules["xbmcvfs"]
     # Inject a fast monitor (never aborts, never sleeps) so retry exhaustion
@@ -402,6 +484,31 @@ def test_resolve_success_resolves_true_with_smb_url():
     assert plugin.setResolvedUrl.call_args[0][1] is True
 
 
+def test_resolve_success_applies_resume_offset_to_listitem():
+    # The resume position carried from the scrubbed bookmark must be set on the
+    # ListItem as StartOffset so a replay resumes instead of restarting.
+    plugin = sys.modules["xbmcplugin"]
+    plugin.setResolvedUrl = MagicMock()
+    li = MagicMock()
+    with patch.object(sys.modules["xbmcgui"], "ListItem", return_value=li), patch(
+        "resources.lib.nzbget_resolver.nzbget_api.append_nzb",
+        return_value=(42, None),
+    ), patch(
+        "resources.lib.nzbget_resolver.poll_nzbget_job",
+        return_value={"outcome": "success", "dest_dir": "/dl/movies/The.Movie"},
+    ), patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video",
+        return_value="smb://host/completed/The.Movie/movie.mkv",
+    ):
+        resolve_and_play_nzbget(
+            7,
+            {"nzburl": "http://i/x.nzb", "title": "The.Movie"},
+            settings_getter=_full_settings(),
+            resume_seconds=137.0,
+        )
+    li.setProperty.assert_called_with("StartOffset", "137.0")
+
+
 def test_resolve_cancel_deletes_job_and_resolves_false():
     plugin = sys.modules["xbmcplugin"]
     plugin.setResolvedUrl = MagicMock()
@@ -494,6 +601,18 @@ def test_read_settings_none_uses_single_arg_getsetting():
     assert timeout == 600
 
 
+def test_read_settings_defaults_url_to_schema_default():
+    # nzbget_url left at its schema default is absent from the profile XML, so
+    # the injected getter returns the default we pass — which must be the
+    # settings.xml default, not "" (else "not configured" on the widget path).
+    def getter(key, default=""):
+        return {"nzbget_smb_root": "smb://host/done"}.get(key, default)
+
+    url, smb_root, _timeout = _read_settings(getter)
+    assert url == "http://localhost:6789"
+    assert smb_root == "smb://host/done"
+
+
 def test_read_poll_interval_reads_and_clamps():
     # The shared poll_interval setting is honored and clamped to [1..60].
     assert _read_poll_interval(_settings({"poll_interval": "5"})) == 5
@@ -519,7 +638,7 @@ def test_resolve_success_with_category_includes_category_in_smb_target():
     )
     captured = {}
 
-    def fake_resolve(folder, monitor=None):
+    def fake_resolve(folder, monitor=None, **_kwargs):
         captured["folder"] = folder
         return "{}/movie.mkv".format(folder)
 

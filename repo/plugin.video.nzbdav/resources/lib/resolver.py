@@ -3824,7 +3824,8 @@ def _nzbget_enabled(settings_getter=None):
     in startup, an injected getter may raise, and ``getSetting`` can (rarely)
     return None, so any failure falls back to the nzbdav path instead of
     letting an exception escape ``resolve`` / ``resolve_and_play`` before a
-    resolution call — the exact resolve-hang TODO.md §H.2-H9 guards against.
+    resolution call — the exact resolve-hang that TODO.md §H.2-H9 guards
+    against.
     """
     try:
         if settings_getter is not None:
@@ -3867,19 +3868,34 @@ def resolve(handle, params):
     # SMB). The nzbdav streaming/fallback machinery below is bypassed. This
     # is the handle-based entry; setResolvedUrl is the completion signal.
     if _nzbget_enabled():
-        # Guard the delegation: this branch runs before resolve()'s protected
-        # error path, so an import/call failure here must still end in a
-        # failure setResolvedUrl or the handle-based resolve contract hangs
+        # Guard the whole delegation: this branch runs before resolve()'s
+        # protected error path, so an import/call failure here must still end in
+        # a failure setResolvedUrl or the handle-based resolve contract hangs
         # (TODO.md §H.2-H9 no-hang guarantee).
         try:
             from resources.lib.nzbget_resolver import resolve_and_play_nzbget
 
-            # NZBGet bypasses the nzbdav playback-state cleanup further down,
-            # so scrub the stale TMDBHelper/plugin bookmark here too — a /play
-            # replay otherwise reopens plugin://... instead of the resolved
-            # stream (TODO.md §H.3).
-            _clear_kodi_playback_state(params)
-            resolve_and_play_nzbget(handle, params)
+            # NZBGet bypasses the nzbdav playback-state cleanup further down, so
+            # scrub the TMDBHelper/plugin bookmark here too. Without it a /play
+            # replay that already had a Kodi bookmark reopens plugin://... on
+            # the next launch instead of the resolved stream — the stale-resume
+            # failure the nzbdav path avoids (TODO.md §H.3). Guarded so a
+            # cleanup failure can't escape before the resolve completes.
+            try:
+                resume_seconds = _coerce_resume_seconds(
+                    _clear_kodi_playback_state(params)
+                )
+            except Exception as cleanup_error:  # pylint: disable=broad-except
+                resume_seconds = 0.0
+                xbmc.log(
+                    "NZB-DAV: NZBGet pre-handoff bookmark cleanup failed: "
+                    "{}".format(cleanup_error),
+                    xbmc.LOGWARNING,
+                )
+            # Carry the scrubbed bookmark's resume position into NZBGet
+            # playback so a replay resumes where the user left off instead of
+            # restarting (the nzbdav path applies it as StartOffset).
+            resolve_and_play_nzbget(handle, params, resume_seconds=resume_seconds)
         except Exception as nzbget_error:  # pylint: disable=broad-except
             from resources.lib.http_util import redact_text
 
@@ -4041,19 +4057,22 @@ def resolve_and_play(nzb_url, title, params=None):
         if _nzbget_enabled(settings_getter):
             from resources.lib.nzbget_resolver import play_nzbget
 
-            # Bypasses the nzbdav playback-state cleanup below, so scrub the
-            # stale TMDBHelper/plugin bookmark before handing off — otherwise a
-            # replay reopens plugin://... instead of the resolved stream
-            # (TODO.md §H.3).
+            # Same bookmark scrub as the handle-based resolve() NZBGet branch:
+            # the nzbdav playback-state cleanup below is bypassed, so clear the
+            # stale TMDBHelper/plugin bookmark before handoff or the next replay
+            # resumes plugin://... instead of the resolved stream (TODO.md §H.3).
             try:
-                _clear_kodi_playback_state(params)
+                resume_seconds = _coerce_resume_seconds(
+                    _clear_kodi_playback_state(params)
+                )
             except Exception as cleanup_error:  # pylint: disable=broad-except
+                resume_seconds = 0.0
                 xbmc.log(
                     "NZB-DAV: NZBGet pre-handoff bookmark cleanup failed: "
                     "{}".format(cleanup_error),
                     xbmc.LOGWARNING,
                 )
-            play_nzbget(nzb_url, title, params)
+            play_nzbget(nzb_url, title, params, resume_seconds=resume_seconds)
             return
         selected_indexer = resolve_params.get("_selected_indexer", "")
         fallback_candidates = resolve_params.get("_fallback_candidates", [])

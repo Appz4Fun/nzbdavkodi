@@ -2109,9 +2109,258 @@ def test_handle_script_play_uses_picker_without_plugin_handle_resolution(
         "_fallback_candidates": [],
         "_selected_indexer": "NZBFinder",
     }
-    mock_addon.assert_not_called()
+    # The non-modal loading dialog reads localized text via i18n, which may
+    # construct xbmcaddon.Addon. Addon is patched to raise here, i18n falls
+    # back, and the RunScript flow still completes (asserted above) — so we no
+    # longer assert Addon is untouched, only that no plugin handle is resolved.
     mock_end.assert_not_called()
     mock_set_resolved.assert_not_called()
+
+
+@patch("xbmcaddon.Addon")
+@patch("xbmcgui.DialogProgress")
+@patch("xbmcgui.DialogProgressBG")
+@patch("resources.lib.resolver.resolve_and_play")
+@patch("resources.lib.results_dialog.show_results_dialog")
+@patch("resources.lib.filter.filter_results")
+@patch("resources.lib.router._search_all_providers")
+@patch("resources.lib.router._tag_available")
+@patch("resources.lib.cache.get_cached", return_value=None)
+def test_handle_script_play_shows_background_loading_dialog_before_picker(
+    mock_cache,
+    mock_tag,
+    mock_search,
+    mock_filter,
+    mock_show,
+    mock_resolve_and_play,
+    mock_progress_bg,
+    mock_modal_progress,
+    mock_addon,
+):
+    """The search->picker wait must show a NON-modal background progress
+    dialog (so the multi-second indexer search + filter doesn't look like a
+    freeze), closed before the picker opens.
+
+    It must NOT use the modal xbmcgui.DialogProgress: that native-crashes Kodi
+    on CoreELEC/Arctic Fuse mid-search (the same reason _handle_play avoids it,
+    see test_handle_play_does_not_open_modal_progress_before_picker)."""
+    from resources.lib.router import _handle_script_play
+
+    chosen = {"title": "The.Matrix.1999.mkv", "link": "http://hydra/nzb/x"}
+    mock_search.return_value = ([chosen], None)
+    mock_filter.return_value = ([chosen], [chosen])
+
+    order = []
+    bg_instance = mock_progress_bg.return_value
+    bg_instance.close.side_effect = lambda *a, **k: order.append("bg_close")
+
+    def _show(*_a, **_k):
+        order.append("picker")
+        return chosen
+
+    mock_show.side_effect = _show
+
+    _handle_script_play({"type": "movie", "title": "The Matrix", "year": "1999"})
+
+    # A background (non-modal) loading dialog is created and closed.
+    mock_progress_bg.assert_called_once()
+    bg_instance.create.assert_called_once()
+    bg_instance.close.assert_called_once()
+    # The modal progress dialog must never be used here (crash-safety).
+    mock_modal_progress.assert_not_called()
+    # And the loading dialog must be gone BEFORE the picker opens.
+    assert order == ["bg_close", "picker"]
+    mock_resolve_and_play.assert_called_once()
+
+
+@patch("xbmcaddon.Addon")
+@patch("xbmc.getInfoLabel")
+@patch("resources.lib.router._lookup_episode_info", return_value={"title": "From"})
+@patch("resources.lib.results_dialog.show_results_dialog", return_value=None)
+@patch("resources.lib.filter.filter_results", return_value=([], []))
+@patch("resources.lib.router._search_all_providers", return_value=([], None))
+@patch("resources.lib.router._tag_available")
+def test_handle_script_play_recovers_episode_numbers_from_listitem(
+    mock_tag,
+    mock_search,
+    mock_filter,
+    mock_show,
+    mock_lookup,
+    mock_infolabel,
+    mock_addon,
+):
+    """A Next-Up/widget play passes empty season/episode (only the series
+    ids). Recover them from the focused ListItem so the search narrows to the
+    one episode instead of returning the whole show."""
+    from resources.lib.router import _handle_script_play
+
+    info = {
+        "ListItem.TVShowTitle": "From",
+        "ListItem.Season": "3",
+        "ListItem.Episode": "5",
+    }
+    mock_infolabel.side_effect = lambda label: info.get(label, "")
+
+    _handle_script_play({"type": "episode", "imdb": "tt9813792", "tmdb_id": "124364"})
+
+    mock_search.assert_called_once()
+    kwargs = mock_search.call_args.kwargs
+    assert kwargs["season"] == "3"
+    assert kwargs["episode"] == "5"
+
+
+@patch("xbmcaddon.Addon")
+@patch("xbmc.getInfoLabel")
+@patch("resources.lib.router._lookup_episode_info", return_value={"title": "From"})
+@patch("resources.lib.results_dialog.show_results_dialog", return_value=None)
+@patch("resources.lib.filter.filter_results", return_value=([], []))
+@patch("resources.lib.router._search_all_providers", return_value=([], None))
+@patch("resources.lib.router._tag_available")
+def test_handle_script_play_recovers_episode_numbers_from_container_listitem(
+    mock_tag,
+    mock_search,
+    mock_filter,
+    mock_show,
+    mock_lookup,
+    mock_infolabel,
+    mock_addon,
+):
+    """Some skins/windows expose the focused widget item via
+    ``Container.ListItem.*`` rather than bare ``ListItem.*``. The fallback must
+    probe those alternate roots (like the handle-based _handle_play) instead of
+    returning blank and broadening the search to the whole show."""
+    from resources.lib.router import _handle_script_play
+
+    info = {
+        # bare ListItem.* empty; only the Container.* root is populated
+        "Container.ListItem.TVShowTitle": "From",
+        "Container.ListItem.Season": "3",
+        "Container.ListItem.Episode": "5",
+    }
+    mock_infolabel.side_effect = lambda label: info.get(label, "")
+
+    _handle_script_play({"type": "episode", "imdb": "tt9813792", "tmdb_id": "124364"})
+
+    mock_search.assert_called_once()
+    kwargs = mock_search.call_args.kwargs
+    assert kwargs["season"] == "3"
+    assert kwargs["episode"] == "5"
+
+
+@patch("xbmcaddon.Addon")
+@patch("xbmc.getInfoLabel")
+@patch("resources.lib.router._lookup_episode_info", return_value={"title": "From"})
+@patch("resources.lib.results_dialog.show_results_dialog", return_value=None)
+@patch("resources.lib.filter.filter_results", return_value=([], []))
+@patch("resources.lib.router._search_all_providers", return_value=([], None))
+@patch("resources.lib.router._tag_available")
+def test_handle_script_play_listitem_labels_are_atomic_per_source(
+    mock_tag,
+    mock_search,
+    mock_filter,
+    mock_show,
+    mock_lookup,
+    mock_infolabel,
+    mock_addon,
+):
+    """Each InfoLabel root is an atomic (show, season, episode) candidate. A
+    stale show title in the bare ListItem root (with no numbers) must not be
+    paired with the real numbers from the Container root — otherwise the
+    same-show guard rejects the recovered episode and the search broadens."""
+    from resources.lib.router import _handle_script_play
+
+    info = {
+        # bare ListItem root: a stale/non-focused show, no episode numbers
+        "ListItem.TVShowTitle": "Some Other Show",
+        # Container root: the actual focused episode (matches search title)
+        "Container.ListItem.TVShowTitle": "From",
+        "Container.ListItem.Season": "3",
+        "Container.ListItem.Episode": "5",
+    }
+    mock_infolabel.side_effect = lambda label: info.get(label, "")
+
+    _handle_script_play({"type": "episode", "imdb": "tt9813792", "tmdb_id": "124364"})
+
+    kwargs = mock_search.call_args.kwargs
+    assert kwargs["season"] == "3"
+    assert kwargs["episode"] == "5"
+
+
+@patch("xbmcaddon.Addon")
+@patch("xbmc.getInfoLabel")
+@patch("resources.lib.router._lookup_episode_info", return_value={"title": "From"})
+@patch("resources.lib.results_dialog.show_results_dialog", return_value=None)
+@patch("resources.lib.filter.filter_results", return_value=([], []))
+@patch("resources.lib.router._search_all_providers", return_value=([], None))
+@patch("resources.lib.router._tag_available")
+def test_handle_script_play_skips_stale_root_for_title_matching_root(
+    mock_tag,
+    mock_search,
+    mock_filter,
+    mock_show,
+    mock_lookup,
+    mock_infolabel,
+    mock_addon,
+):
+    """A stale bare ``ListItem`` root carries S/E for a *different* show, while
+    the focused item (matching the search title) is exposed by a later
+    ``Container.ListItem.*`` root. The fallback must skip the stale root and
+    recover S/E from the title-matching root instead of dropping them."""
+    from resources.lib.router import _handle_script_play
+
+    info = {
+        # stale/non-focused root: different show, but has S/E
+        "ListItem.TVShowTitle": "Severance",
+        "ListItem.Season": "1",
+        "ListItem.Episode": "1",
+        # the actual focused item, matching the search title "From"
+        "Container.ListItem.TVShowTitle": "From",
+        "Container.ListItem.Season": "3",
+        "Container.ListItem.Episode": "5",
+    }
+    mock_infolabel.side_effect = lambda label: info.get(label, "")
+
+    _handle_script_play({"type": "episode", "imdb": "tt9813792", "tmdb_id": "124364"})
+
+    kwargs = mock_search.call_args.kwargs
+    assert kwargs["season"] == "3"
+    assert kwargs["episode"] == "5"
+
+
+@patch("xbmcaddon.Addon")
+@patch("xbmc.getInfoLabel")
+@patch("resources.lib.router._lookup_episode_info", return_value={"title": "From"})
+@patch("resources.lib.results_dialog.show_results_dialog", return_value=None)
+@patch("resources.lib.filter.filter_results", return_value=([], []))
+@patch("resources.lib.router._search_all_providers", return_value=([], None))
+@patch("resources.lib.router._tag_available")
+def test_handle_script_play_ignores_listitem_episode_for_different_show(
+    mock_tag,
+    mock_search,
+    mock_filter,
+    mock_show,
+    mock_lookup,
+    mock_infolabel,
+    mock_addon,
+):
+    """The ListItem fallback must not inject season/episode from a focused
+    item that belongs to a different show (focus may have moved by the time
+    the RunScript player fires)."""
+    from resources.lib.router import _handle_script_play
+
+    info = {
+        "ListItem.TVShowTitle": "Severance",  # different show than From
+        "ListItem.Season": "1",
+        "ListItem.Episode": "1",
+    }
+    mock_infolabel.side_effect = lambda label: info.get(label, "")
+
+    _handle_script_play({"type": "episode", "imdb": "tt9813792", "tmdb_id": "124364"})
+
+    mock_search.assert_called_once()
+    kwargs = mock_search.call_args.kwargs
+    assert kwargs["season"] == ""
+    assert kwargs["episode"] == ""
 
 
 @patch(
@@ -2271,7 +2520,7 @@ def test_handle_script_play_empty_completed_snapshot_skips_post_picker_history_l
     resolver_params = dict(mock_resolve_and_play.call_args.kwargs["params"])
     assert resolver_params["_completed_job_lookup_done"] is True
     assert "_completed_job" not in resolver_params
-    mock_addon.assert_not_called()
+    # Loading dialog touches i18n (Addon patched to raise -> graceful fallback).
     mock_end.assert_not_called()
     mock_set_resolved.assert_not_called()
 
@@ -2324,7 +2573,7 @@ def test_handle_script_play_attaches_completed_job_for_selected_result(
     resolver_params = dict(mock_resolve_and_play.call_args.kwargs["params"])
     assert resolver_params["_completed_job"] == completed_job
     assert "_completed_job_lookup_done" not in resolver_params
-    mock_addon.assert_not_called()
+    # Loading dialog touches i18n (Addon patched to raise -> graceful fallback).
     mock_end.assert_not_called()
     mock_set_resolved.assert_not_called()
 
@@ -2419,7 +2668,7 @@ def test_handle_script_play_auto_select_marks_completed_lookup_done(
     mock_set_cache.assert_not_called()
     mock_tag.assert_not_called()
     mock_dialog.assert_not_called()
-    mock_addon.assert_not_called()
+    # Loading dialog touches i18n (Addon patched to raise -> graceful fallback).
     mock_resolve_and_play.assert_called_once()
     resolver_params = dict(mock_resolve_and_play.call_args.kwargs["params"])
     assert callable(resolver_params.pop("_settings_getter"))
@@ -3265,5 +3514,8 @@ def test_test_nzbget_smb_reports_reachable_when_exists_true():
         "resources.lib.http_util.notify", side_effect=fake_notify
     ):
         _test_nzbget_smb()
-    # 30226 == "SMB share reachable"
-    assert notified["message"] == 30226 or "reachable" in str(notified["message"])
+    # 30226 == "SMB share reachable". Lowercase + exclude the negated phrase so
+    # "not reachable" can't satisfy a bare "reachable" substring check.
+    msg = str(notified["message"]).lower()
+    assert notified["message"] == 30226 or "reachable" in msg
+    assert "not reachable" not in msg

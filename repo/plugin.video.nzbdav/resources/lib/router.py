@@ -82,6 +82,48 @@ def _script_play_stage(message):
             continue
 
 
+def _open_loading_dialog(title):
+    """Open a NON-modal background progress dialog for the search->picker wait.
+
+    The picker takes several seconds to appear (indexer search + filtering),
+    which otherwise looks like a frozen/crashed screen. A background
+    ``DialogProgressBG`` (top-right) gives a visible "working" indicator.
+
+    We deliberately do NOT use the modal ``xbmcgui.DialogProgress`` here: on
+    CoreELEC/Arctic Fuse it can native-crash Kodi mid-search (the same reason
+    ``_handle_play`` avoids it — see
+    ``test_handle_play_does_not_open_modal_progress_before_picker``). Any
+    failure creating the dialog is swallowed so a missing indicator can never
+    break playback. Returns the dialog handle, or ``None``.
+    """
+    try:
+        dialog = xbmcgui.DialogProgressBG()
+        dialog.create(_addon_name(), _fmt(30083, title or ""))
+        return dialog
+    except Exception:  # pylint: disable=broad-except
+        return None
+
+
+def _update_loading_dialog(dialog, percent, message):
+    """Update the background loading dialog; no-op when it failed to open."""
+    if dialog is None:
+        return
+    try:
+        dialog.update(percent, _addon_name(), message)
+    except Exception:  # pylint: disable=broad-except
+        pass
+
+
+def _close_loading_dialog(dialog):
+    """Close the background loading dialog; safe to call more than once."""
+    if dialog is None:
+        return
+    try:
+        dialog.close()
+    except Exception:  # pylint: disable=broad-except
+        pass
+
+
 def _translate_path(path):
     """Translate Kodi special:// paths, returning empty string on failure."""
     try:
@@ -995,6 +1037,70 @@ def _lookup_episode_info(imdb, tmdb_id=""):
     return None
 
 
+def _episode_info_from_listitem(expected_title=""):
+    """Read (show, season, episode) from the currently focused Kodi ListItem.
+
+    TMDBHelper Next-Up / widget / home-screen plays frequently invoke the
+    player with only the *series* ids and empty season/episode, which
+    broadens an episode search to the whole show. The focused widget item
+    still exposes the episode numbers via InfoLabels, so they can be
+    recovered here as a fallback. Returns ``(show, season, episode)`` strings;
+    season/episode are blanked unless numeric, and any failure degrades to
+    empty strings.
+
+    When ``expected_title`` is given, prefer the InfoLabel root whose show
+    matches it: a stale/bare root that happens to carry S/E for a *different*
+    show must not short-circuit the probe (the caller's same-show guard would
+    reject it and the correct later root — e.g. ``Container.ListItem.*`` —
+    would never be read).
+    """
+    # Widget/RunScript plays expose the focused item through different
+    # InfoLabel roots depending on the skin/window (bare ``ListItem.*`` vs
+    # ``Container.ListItem.*`` vs ``VideoPlayer.*``), so probe the same set the
+    # handle-based ``_handle_play`` does — reading only bare ``ListItem.*``
+    # returns blank for many widget sources and broadens the search.
+    label_sources = (
+        ("ListItem.TVShowTitle", "ListItem.Season", "ListItem.Episode"),
+        (
+            "Container.ListItem.TVShowTitle",
+            "Container.ListItem.Season",
+            "Container.ListItem.Episode",
+        ),
+        ("VideoPlayer.TVShowTitle", "VideoPlayer.Season", "VideoPlayer.Episode"),
+        (
+            "Container(50).ListItem.TVShowTitle",
+            "Container(50).ListItem.Season",
+            "Container(50).ListItem.Episode",
+        ),
+    )
+    want = (expected_title or "").strip().casefold()
+    try:
+        fallback = ("", "", "")
+        for t_label, s_label, e_label in label_sources:
+            show = (xbmc.getInfoLabel(t_label) or "").strip()
+            season = (xbmc.getInfoLabel(s_label) or "").strip()
+            episode = (xbmc.getInfoLabel(e_label) or "").strip()
+            # Treat each root as an ATOMIC (show, season, episode) candidate so
+            # a stale show title from one root is never paired with numbers from
+            # another.
+            if not (season.isdigit() and episode.isdigit()):
+                continue
+            if not want or show.strip().casefold() == want:
+                # Matches the search title (or there's no title to match) —
+                # this is the focused item; use it.
+                return show, season, episode
+            # Complete root but a different show: keep probing later roots,
+            # remembering the first as a no-title fallback only.
+            if fallback == ("", "", ""):
+                fallback = (show, season, episode)
+        # No root matched the title. With a title set, return blanks rather
+        # than inject a different show's numbers; with no title, the first
+        # complete root is the only (and best) signal.
+        return ("", "", "") if want else fallback
+    except Exception:  # pylint: disable=broad-except
+        return "", "", ""
+
+
 def _handle_direct_play(handle, params):
     """Resolve a primary stream URL through stream_proxy and hand
     Kodi the proxy URL via setResolvedUrl.
@@ -1635,6 +1741,39 @@ def _handle_script_play(params):
             season = season or looked_up.get("season", "")
             episode = episode or looked_up.get("episode", "")
 
+    # TMDBHelper Next-Up / widget / home-screen plays often invoke the player
+    # with only the series ids and empty season/episode, so an episode search
+    # broadens to the whole show. Recover the numbers from the focused
+    # ListItem, but trust them only when that item is the same show we're
+    # about to search (the focus may have moved by the time the player fires).
+    if search_type == "episode" and not (season and episode):
+        li_show, li_season, li_episode = _episode_info_from_listitem(title)
+        xbmc.log(
+            "NZB-DAV: Episode args missing season/episode; ListItem fallback "
+            "show={!r} season={!r} episode={!r} (search title {!r})".format(
+                li_show, li_season, li_episode, title
+            ),
+            xbmc.LOGINFO,
+        )
+        same_show = bool(li_show) and (
+            not title or li_show.strip().lower() == title.strip().lower()
+        )
+        if same_show:
+            if not title:
+                title = li_show
+            season = season or li_season
+            episode = episode or li_episode
+            # Thread the recovered numbers back into params so the downstream
+            # resolver_params = dict(params) carries them into
+            # _clear_kodi_playback_state — otherwise the actual SxxExx
+            # TMDBHelper bookmark that triggered the widget play is left behind
+            # (its season/episode wouldn't match the blank params) and the next
+            # replay can still hit the stale plugin-URL resume failure.
+            if season:
+                params["season"] = season
+            if episode:
+                params["episode"] = episode
+
     _script_play_stage(
         "skipping cache for '{}' ({})".format(
             title,
@@ -1644,89 +1783,111 @@ def _handle_script_play(params):
     _script_play_stage(
         "provider search start for '{}'".format(title),
     )
-    results, search_error = _search_all_providers(
-        search_type,
-        title,
-        year=year,
-        imdb=imdb,
-        season=season,
-        episode=episode,
-        settings_getter=_get_script_setting,
-    )
-    _script_play_stage("provider search done count={}".format(len(results or [])))
-    if search_error:
-        xbmc.log(
-            "NZB-DAV: Search stage: provider error - {}".format(search_error),
-            xbmc.LOGWARNING,
+    # The indexer search + filtering below can take several seconds; with no
+    # on-screen indicator the player looks frozen/crashed. Show a NON-modal
+    # background progress dialog (see _open_loading_dialog — the modal
+    # DialogProgress native-crashes Kodi mid-search on CoreELEC/Arctic Fuse).
+    # The finally guarantees it is closed before the picker opens and on every
+    # early return / exception below.
+    loading = _open_loading_dialog(title)
+    try:
+        results, search_error = _search_all_providers(
+            search_type,
+            title,
+            year=year,
+            imdb=imdb,
+            season=season,
+            episode=episode,
+            settings_getter=_get_script_setting,
         )
-        _show_error_dialog(search_error)
-        return
-
-    if not results:
-        xbmc.log(
-            "NZB-DAV: Search stage: no results found for '{}'".format(title),
-            xbmc.LOGINFO,
-        )
-        notify(_addon_name(), _fmt(30087, title), 3000)
-        return
-
-    total_count = len(results)
-    _script_play_stage("filter start count={} for '{}'".format(len(results), title))
-    filtered, all_parsed = filter_results(results, settings_getter=_get_script_setting)
-    _script_play_stage(
-        "filter done filtered={} parsed={}".format(
-            len(filtered or []), len(all_parsed or [])
-        )
-    )
-
-    if not filtered:
-        if all_parsed:
-            choice = xbmcgui.Dialog().yesno(
-                _addon_name(),
-                "All {} results were filtered out. Show unfiltered?".format(
-                    len(all_parsed)
-                ),
+        _script_play_stage("provider search done count={}".format(len(results or [])))
+        if search_error:
+            xbmc.log(
+                "NZB-DAV: Search stage: provider error - {}".format(search_error),
+                xbmc.LOGWARNING,
             )
-            if choice:
-                filtered = all_parsed
-            else:
-                return
-        else:
+            _show_error_dialog(search_error)
+            return
+
+        if not results:
+            xbmc.log(
+                "NZB-DAV: Search stage: no results found for '{}'".format(title),
+                xbmc.LOGINFO,
+            )
             notify(_addon_name(), _fmt(30087, title), 3000)
             return
 
-    if _get_script_setting("auto_select_best", "false").lower() == "true" and filtered:
-        best = filtered[0]
-        from resources.lib.resolver import resolve_and_play
-
-        resolver_params = dict(params)
-        resolver_params["_fallback_candidates"] = []
-        fallback_loader = _fallback_candidate_loader_for_selection(
-            best, filtered, settings_getter=_get_script_setting
+        total_count = len(results)
+        _update_loading_dialog(loading, 60, _string(30088))
+        _script_play_stage("filter start count={} for '{}'".format(len(results), title))
+        filtered, all_parsed = filter_results(
+            results, settings_getter=_get_script_setting
         )
-        resolver_params["_fallback_candidate_loader"] = fallback_loader
-        completed_job = _script_completed_job_for_selection(best)
-        if completed_job:
-            resolver_params["_completed_job"] = completed_job
-        else:
-            resolver_params["_completed_job_lookup_done"] = True
-        resolver_params["_settings_getter"] = _get_script_setting
-        _attach_selected_result_metadata(resolver_params, best)
-        _script_play_stage("resolve start '{}'".format(best.get("title", "")))
-        resolve_and_play(best["link"], best["title"], params=resolver_params)
-        _script_play_stage("resolve returned")
-        return
-
-    completed_jobs = None
-    try:
-        completed_jobs = _tag_available(filtered, settings_getter=_get_script_setting)
-        _script_play_stage("tag available done")
-    except Exception as error:  # pylint: disable=broad-except
-        xbmc.log(
-            "NZB-DAV: Script completed-history tagging failed: {}".format(error),
-            xbmc.LOGDEBUG,
+        _script_play_stage(
+            "filter done filtered={} parsed={}".format(
+                len(filtered or []), len(all_parsed or [])
+            )
         )
-        _script_play_stage("tag available failed")
+
+        if not filtered:
+            if all_parsed:
+                # Close before the modal yes/no so the two don't stack.
+                _close_loading_dialog(loading)
+                choice = xbmcgui.Dialog().yesno(
+                    _addon_name(),
+                    "All {} results were filtered out. Show unfiltered?".format(
+                        len(all_parsed)
+                    ),
+                )
+                if choice:
+                    filtered = all_parsed
+                else:
+                    return
+            else:
+                notify(_addon_name(), _fmt(30087, title), 3000)
+                return
+
+        if (
+            _get_script_setting("auto_select_best", "false").lower() == "true"
+            and filtered
+        ):
+            # resolve_and_play blocks on the download; drop the indicator first.
+            _close_loading_dialog(loading)
+            best = filtered[0]
+            from resources.lib.resolver import resolve_and_play
+
+            resolver_params = dict(params)
+            resolver_params["_fallback_candidates"] = []
+            fallback_loader = _fallback_candidate_loader_for_selection(
+                best, filtered, settings_getter=_get_script_setting
+            )
+            resolver_params["_fallback_candidate_loader"] = fallback_loader
+            completed_job = _script_completed_job_for_selection(best)
+            if completed_job:
+                resolver_params["_completed_job"] = completed_job
+            else:
+                resolver_params["_completed_job_lookup_done"] = True
+            resolver_params["_settings_getter"] = _get_script_setting
+            _attach_selected_result_metadata(resolver_params, best)
+            _script_play_stage("resolve start '{}'".format(best.get("title", "")))
+            resolve_and_play(best["link"], best["title"], params=resolver_params)
+            _script_play_stage("resolve returned")
+            return
+
+        completed_jobs = None
+        try:
+            completed_jobs = _tag_available(
+                filtered, settings_getter=_get_script_setting
+            )
+            _script_play_stage("tag available done")
+        except Exception as error:  # pylint: disable=broad-except
+            xbmc.log(
+                "NZB-DAV: Script completed-history tagging failed: {}".format(error),
+                xbmc.LOGDEBUG,
+            )
+            _script_play_stage("tag available failed")
+    finally:
+        _close_loading_dialog(loading)
 
     from resources.lib.results_dialog import show_results_dialog
 
