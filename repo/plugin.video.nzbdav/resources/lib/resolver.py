@@ -3696,19 +3696,29 @@ def _poll_until_ready(
             return None, None
 
 
-def _nzbget_enabled():
+def _nzbget_enabled(settings_getter=None):
     """Return True when the NZBGet backend toggle is on.
 
-    Read defensively: ``Addon()`` can raise ``RuntimeError`` early in
-    startup and ``getSetting`` can (rarely) return None, so any failure
-    falls back to the nzbdav path instead of letting an exception escape
-    ``resolve`` / ``resolve_and_play`` before a resolution call — the exact
-    resolve-hang that TODO.md §H.2-H9 guards against.
+    When the caller has an injected ``settings_getter`` (the handle-less
+    ``resolve_and_play`` path passes one to avoid Kodi settings-API reads
+    during RunScript/widget invocations), use it so the toggle is read the
+    same way as the rest of that flow — otherwise an unavailable
+    ``xbmcaddon.Addon().getSetting`` would silently disable NZBGet and fall
+    back to nzbdav despite the user enabling it.
+
+    Read defensively either way: ``Addon()`` can raise ``RuntimeError`` early
+    in startup, an injected getter may raise, and ``getSetting`` can (rarely)
+    return None, so any failure falls back to the nzbdav path instead of
+    letting an exception escape ``resolve`` / ``resolve_and_play`` before a
+    resolution call — the exact resolve-hang TODO.md §H.2-H9 guards against.
     """
     try:
-        value = xbmcaddon.Addon("plugin.video.nzbdav").getSetting("nzbget_enabled")
+        if settings_getter is not None:
+            value = settings_getter("nzbget_enabled", "")
+        else:
+            value = xbmcaddon.Addon("plugin.video.nzbdav").getSetting("nzbget_enabled")
         return (value or "").strip().lower() == "true"
-    except (RuntimeError, AttributeError):
+    except (RuntimeError, AttributeError, TypeError):
         return False
 
 
@@ -3750,6 +3760,11 @@ def resolve(handle, params):
         try:
             from resources.lib.nzbget_resolver import resolve_and_play_nzbget
 
+            # NZBGet bypasses the nzbdav playback-state cleanup further down,
+            # so scrub the stale TMDBHelper/plugin bookmark here too — a /play
+            # replay otherwise reopens plugin://... instead of the resolved
+            # stream (TODO.md §H.3).
+            _clear_kodi_playback_state(params)
             resolve_and_play_nzbget(handle, params)
         except Exception as nzbget_error:  # pylint: disable=broad-except
             from resources.lib.http_util import redact_text
@@ -3907,13 +3922,25 @@ def resolve_and_play(nzb_url, title, params=None):
         # and script-play all reach here — so play_nzbget starts playback
         # via xbmc.Player() rather than setResolvedUrl. The nzbdav
         # streaming/fallback machinery below is bypassed.
-        if _nzbget_enabled():
-            from resources.lib.nzbget_resolver import play_nzbget
-
-            play_nzbget(nzb_url, title, params)
-            return
         resolve_params = params or {}
         settings_getter = resolve_params.get("_settings_getter")
+        if _nzbget_enabled(settings_getter):
+            from resources.lib.nzbget_resolver import play_nzbget
+
+            # Bypasses the nzbdav playback-state cleanup below, so scrub the
+            # stale TMDBHelper/plugin bookmark before handing off — otherwise a
+            # replay reopens plugin://... instead of the resolved stream
+            # (TODO.md §H.3).
+            try:
+                _clear_kodi_playback_state(params)
+            except Exception as cleanup_error:  # pylint: disable=broad-except
+                xbmc.log(
+                    "NZB-DAV: NZBGet pre-handoff bookmark cleanup failed: "
+                    "{}".format(cleanup_error),
+                    xbmc.LOGWARNING,
+                )
+            play_nzbget(nzb_url, title, params)
+            return
         selected_indexer = resolve_params.get("_selected_indexer", "")
         fallback_candidates = resolve_params.get("_fallback_candidates", [])
         fallback_candidate_loader = _prefetch_fallback_candidate_loader(

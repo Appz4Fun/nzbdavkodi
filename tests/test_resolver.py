@@ -7173,13 +7173,17 @@ def test_resolve_delegates_to_nzbget_when_enabled():
     )
     with patch.object(sys.modules["xbmcaddon"], "Addon", return_value=addon), patch(
         "resources.lib.nzbget_resolver.resolve_and_play_nzbget"
-    ) as nzbget_entry:
+    ) as nzbget_entry, patch(
+        "resources.lib.resolver._clear_kodi_playback_state"
+    ) as scrub:
         resolve(7, {"nzburl": "http%3A%2F%2Fi%2Fx.nzb", "title": "X"})
     # Assert the exact handle + params payload is forwarded, so a regression in
     # handle/params routing is caught (not just that delegation happened).
     nzbget_entry.assert_called_once_with(
         7, {"nzburl": "http%3A%2F%2Fi%2Fx.nzb", "title": "X"}
     )
+    # The stale TMDBHelper bookmark must be scrubbed before the NZBGet handoff.
+    scrub.assert_called_once()
 
 
 def test_resolve_skips_nzbget_when_disabled():
@@ -7213,8 +7217,29 @@ def test_resolve_and_play_delegates_to_nzbget_when_enabled():
     )
     with patch.object(sys.modules["xbmcaddon"], "Addon", return_value=addon), patch(
         "resources.lib.nzbget_resolver.play_nzbget"
-    ) as play_entry:
+    ) as play_entry, patch(
+        "resources.lib.resolver._clear_kodi_playback_state"
+    ) as scrub:
         resolve_and_play("http://i/x.nzb", "X", params={})
     # Assert the exact nzb_url/title/params payload is forwarded to the
     # handle-less entry, catching regressions in arg routing.
     play_entry.assert_called_once_with("http://i/x.nzb", "X", {})
+    scrub.assert_called_once()  # bookmark scrubbed before the NZBGet handoff
+
+
+def test_resolve_and_play_reads_toggle_via_injected_getter():
+    # The handle-less path passes _settings_getter to avoid Kodi settings-API
+    # reads during RunScript/widget plays. The NZBGet toggle must be read
+    # through that getter; if xbmcaddon.Addon is unavailable the injected getter
+    # still enables NZBGet rather than silently falling back to nzbdav.
+    def injected(key, default=""):
+        return "true" if key == "nzbget_enabled" else default
+
+    with patch.object(
+        sys.modules["xbmcaddon"], "Addon", side_effect=RuntimeError("unavailable")
+    ), patch("resources.lib.nzbget_resolver.play_nzbget") as play_entry, patch(
+        "resources.lib.resolver._clear_kodi_playback_state"
+    ):
+        params = {"_settings_getter": injected}
+        resolve_and_play("http://i/x.nzb", "X", params=params)
+    play_entry.assert_called_once_with("http://i/x.nzb", "X", params)
