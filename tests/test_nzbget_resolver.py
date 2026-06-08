@@ -288,7 +288,18 @@ def test_poll_honors_custom_interval():
 
     monitor = MagicMock()
     monitor.waitForAbort.return_value = False
+    clock = {"t": 0.0}
+
+    def fake_monotonic():
+        # Advance one tick per read: start, one loop body, then past the
+        # deadline. Guarantees exactly one polling iteration so the interval
+        # assertion can't pass vacuously on a zero-iteration loop.
+        clock["t"] += 1.0
+        return clock["t"]
+
     with patch(
+        "resources.lib.nzbget_resolver.time.monotonic", side_effect=fake_monotonic
+    ), patch(
         "resources.lib.nzbget_resolver.nzbget_api.group_status",
         return_value={"present": True, "status": "DOWNLOADING", "percent": 10},
     ), patch(
@@ -296,12 +307,11 @@ def test_poll_honors_custom_interval():
         return_value={"present": False, "success": False, "status": "", "dest_dir": ""},
     ):
         poll_nzbget_job(
-            42, _Dialog(), monitor, timeout=0, settings_getter=getter, interval=7
+            42, _Dialog(), monitor, timeout=2, settings_getter=getter, interval=7
         )
-    # timeout=0 means the loop body may run zero or more times before the
-    # deadline; if it polled at all, it polled at the custom interval.
-    for call in monitor.waitForAbort.call_args_list:
-        assert call[0][0] == 7
+    # The loop ran at least once and every wait used the configured interval.
+    monitor.waitForAbort.assert_called()
+    assert all(call[0][0] == 7 for call in monitor.waitForAbort.call_args_list)
 
 
 def test_resolve_missing_config_resolves_false():
