@@ -2293,6 +2293,47 @@ def test_handle_script_play_listitem_labels_are_atomic_per_source(
 @patch("resources.lib.filter.filter_results", return_value=([], []))
 @patch("resources.lib.router._search_all_providers", return_value=([], None))
 @patch("resources.lib.router._tag_available")
+def test_handle_script_play_skips_stale_root_for_title_matching_root(
+    mock_tag,
+    mock_search,
+    mock_filter,
+    mock_show,
+    mock_lookup,
+    mock_infolabel,
+    mock_addon,
+):
+    """A stale bare ``ListItem`` root carries S/E for a *different* show, while
+    the focused item (matching the search title) is exposed by a later
+    ``Container.ListItem.*`` root. The fallback must skip the stale root and
+    recover S/E from the title-matching root instead of dropping them."""
+    from resources.lib.router import _handle_script_play
+
+    info = {
+        # stale/non-focused root: different show, but has S/E
+        "ListItem.TVShowTitle": "Severance",
+        "ListItem.Season": "1",
+        "ListItem.Episode": "1",
+        # the actual focused item, matching the search title "From"
+        "Container.ListItem.TVShowTitle": "From",
+        "Container.ListItem.Season": "3",
+        "Container.ListItem.Episode": "5",
+    }
+    mock_infolabel.side_effect = lambda label: info.get(label, "")
+
+    _handle_script_play({"type": "episode", "imdb": "tt9813792", "tmdb_id": "124364"})
+
+    kwargs = mock_search.call_args.kwargs
+    assert kwargs["season"] == "3"
+    assert kwargs["episode"] == "5"
+
+
+@patch("xbmcaddon.Addon")
+@patch("xbmc.getInfoLabel")
+@patch("resources.lib.router._lookup_episode_info", return_value={"title": "From"})
+@patch("resources.lib.results_dialog.show_results_dialog", return_value=None)
+@patch("resources.lib.filter.filter_results", return_value=([], []))
+@patch("resources.lib.router._search_all_providers", return_value=([], None))
+@patch("resources.lib.router._tag_available")
 def test_handle_script_play_ignores_listitem_episode_for_different_show(
     mock_tag,
     mock_search,

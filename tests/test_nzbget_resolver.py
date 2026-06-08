@@ -649,6 +649,42 @@ def test_resolve_aborts_when_canceled_during_completed_lookup():
     assert plugin.setResolvedUrl.call_args[0][1] is False
 
 
+def test_resolve_aborts_on_monitor_abort_during_completed_lookup():
+    # Kodi shutdown (Monitor.abortRequested) during the completed-job SMB wait
+    # must terminate, not fall through to find_active_by_name/append_nzb.
+    plugin = sys.modules["xbmcplugin"]
+    plugin.setResolvedUrl = MagicMock()
+    sys.modules["xbmc"].PlayList = MagicMock()
+    dialog = MagicMock()
+    dialog.iscanceled.return_value = False
+    monitor = MagicMock()
+    monitor.abortRequested.return_value = True
+    with patch.object(
+        sys.modules["xbmcgui"], "DialogProgress", return_value=dialog
+    ), patch.object(sys.modules["xbmc"], "Monitor", return_value=monitor), patch(
+        "resources.lib.nzbget_resolver.nzbget_api.completed_base_dir",
+        return_value=None,
+    ), patch(
+        "resources.lib.nzbget_resolver.nzbget_api.find_completed_by_name",
+        return_value="/dl/movies/X",
+    ), patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video",
+        return_value=None,
+    ), patch(
+        "resources.lib.nzbget_resolver.nzbget_api.find_active_by_name"
+    ) as active, patch(
+        "resources.lib.nzbget_resolver.nzbget_api.append_nzb"
+    ) as append:
+        resolve_and_play_nzbget(
+            7,
+            {"nzburl": "http://i/x.nzb", "title": "X"},
+            settings_getter=_full_settings(),
+        )
+    append.assert_not_called()
+    active.assert_not_called()
+    assert plugin.setResolvedUrl.call_args[0][1] is False
+
+
 def test_play_nzbget_success_starts_player_with_smb_url():
     player = MagicMock()
     with patch.object(

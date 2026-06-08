@@ -373,11 +373,12 @@ def _run_nzbget_backend(nzb_url, title, settings_getter, on_success, on_failure)
             if reuse_video:
                 on_success(reuse_video)
                 return
-            if dialog.iscanceled():
-                # User canceled while we waited for the already-completed file
-                # to appear over SMB — abort the playback request instead of
-                # falling through to submit/attach, which could duplicate or
-                # delete an in-flight same-name job.
+            if dialog.iscanceled() or xbmc.Monitor().abortRequested():
+                # User canceled (or Kodi is shutting down) while we waited for
+                # the already-completed file to appear over SMB — abort the
+                # playback request instead of falling through to submit/attach,
+                # which could issue new RPCs or duplicate/delete an in-flight
+                # same-name job after the abort was already requested.
                 on_failure(None)
                 return
             # Completed in history but the file isn't visible over SMB — fall

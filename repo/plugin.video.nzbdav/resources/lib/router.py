@@ -1037,7 +1037,7 @@ def _lookup_episode_info(imdb, tmdb_id=""):
     return None
 
 
-def _episode_info_from_listitem():
+def _episode_info_from_listitem(expected_title=""):
     """Read (show, season, episode) from the currently focused Kodi ListItem.
 
     TMDBHelper Next-Up / widget / home-screen plays frequently invoke the
@@ -1047,6 +1047,12 @@ def _episode_info_from_listitem():
     recovered here as a fallback. Returns ``(show, season, episode)`` strings;
     season/episode are blanked unless numeric, and any failure degrades to
     empty strings.
+
+    When ``expected_title`` is given, prefer the InfoLabel root whose show
+    matches it: a stale/bare root that happens to carry S/E for a *different*
+    show must not short-circuit the probe (the caller's same-show guard would
+    reject it and the correct later root — e.g. ``Container.ListItem.*`` —
+    would never be read).
     """
     # Widget/RunScript plays expose the focused item through different
     # InfoLabel roots depending on the skin/window (bare ``ListItem.*`` vs
@@ -1067,24 +1073,30 @@ def _episode_info_from_listitem():
             "Container(50).ListItem.Episode",
         ),
     )
+    want = (expected_title or "").strip().casefold()
     try:
-        first_show = ""
+        fallback = ("", "", "")
         for t_label, s_label, e_label in label_sources:
             show = (xbmc.getInfoLabel(t_label) or "").strip()
             season = (xbmc.getInfoLabel(s_label) or "").strip()
             episode = (xbmc.getInfoLabel(e_label) or "").strip()
-            if not first_show:
-                first_show = show
-            # Treat each root as an ATOMIC (show, season, episode) candidate:
-            # only pair the numbers with the show from the SAME root. Mixing a
-            # stale show title from one root with numbers from another made the
-            # caller's same-show guard reject the recovered numbers, so the
-            # search/cleanup still ran with blank season/episode.
-            if season.isdigit() and episode.isdigit():
+            # Treat each root as an ATOMIC (show, season, episode) candidate so
+            # a stale show title from one root is never paired with numbers from
+            # another.
+            if not (season.isdigit() and episode.isdigit()):
+                continue
+            if not want or show.strip().casefold() == want:
+                # Matches the search title (or there's no title to match) —
+                # this is the focused item; use it.
                 return show, season, episode
-        # No root had both numbers; surface a show (for the empty-title widget
-        # branch / logging) but no half-populated numbers.
-        return first_show, "", ""
+            # Complete root but a different show: keep probing later roots,
+            # remembering the first as a no-title fallback only.
+            if fallback == ("", "", ""):
+                fallback = (show, season, episode)
+        # No root matched the title. With a title set, return blanks rather
+        # than inject a different show's numbers; with no title, the first
+        # complete root is the only (and best) signal.
+        return ("", "", "") if want else fallback
     except Exception:  # pylint: disable=broad-except
         return "", "", ""
 
@@ -1735,7 +1747,7 @@ def _handle_script_play(params):
     # ListItem, but trust them only when that item is the same show we're
     # about to search (the focus may have moved by the time the player fires).
     if search_type == "episode" and not (season and episode):
-        li_show, li_season, li_episode = _episode_info_from_listitem()
+        li_show, li_season, li_episode = _episode_info_from_listitem(title)
         xbmc.log(
             "NZB-DAV: Episode args missing season/episode; ListItem fallback "
             "show={!r} season={!r} episode={!r} (search title {!r})".format(
