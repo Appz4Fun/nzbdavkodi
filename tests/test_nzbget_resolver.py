@@ -491,9 +491,6 @@ def test_resolve_success_applies_resume_offset_to_listitem():
     plugin.setResolvedUrl = MagicMock()
     li = MagicMock()
     with patch.object(sys.modules["xbmcgui"], "ListItem", return_value=li), patch(
-        "resources.lib.nzbget_resolver.nzbget_api.find_active_by_name",
-        return_value=None,
-    ), patch(
         "resources.lib.nzbget_resolver.nzbget_api.append_nzb",
         return_value=(42, None),
     ), patch(
@@ -552,31 +549,6 @@ def test_resolve_timeout_leaves_job_and_resolves_false():
         )
     cancel.assert_not_called()
     assert plugin.setResolvedUrl.call_args[0][1] is False
-
-
-def test_resolve_attaches_to_active_job_without_appending():
-    # A prior attempt left a still-downloading job. The retry must attach to
-    # that NZBID and poll it rather than appending a duplicate.
-    plugin = sys.modules["xbmcplugin"]
-    plugin.setResolvedUrl = MagicMock()
-    with patch(
-        "resources.lib.nzbget_resolver.nzbget_api.find_active_by_name",
-        return_value=99,
-    ), patch("resources.lib.nzbget_resolver.nzbget_api.append_nzb") as append, patch(
-        "resources.lib.nzbget_resolver.poll_nzbget_job",
-        return_value={"outcome": "success", "dest_dir": "/dl/movies/The.Movie"},
-    ) as poll, patch(
-        "resources.lib.nzbget_resolver.resolve_smb_video",
-        return_value="smb://host/completed/The.Movie/movie.mkv",
-    ):
-        resolve_and_play_nzbget(
-            7,
-            {"nzburl": "http://i/x.nzb", "title": "The.Movie"},
-            settings_getter=_full_settings(),
-        )
-    append.assert_not_called()
-    assert poll.call_args[0][0] == 99  # polled the existing job, not a new one
-    assert plugin.setResolvedUrl.call_args[0][1] is True
 
 
 def test_play_nzbget_success_starts_player_with_smb_url():

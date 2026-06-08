@@ -169,27 +169,6 @@ def test_history_status_prefers_finaldir_over_destdir():
     assert status["dest_dir"] == "/dl/movies/X"
 
 
-def test_find_active_by_name_returns_nzbid_for_queued_job():
-    from resources.lib.nzbget_api import find_active_by_name
-
-    getter = _getter({"nzbget_url": "http://box:6789"})
-    groups = [
-        {"NZBID": 7, "NZBName": "Unrelated.nzb"},
-        {"NZBID": 99, "NZBName": "The.Movie.2024.nzb"},
-    ]
-    with patch("resources.lib.nzbget_api._rpc_call", return_value=(groups, None)):
-        nzbid = find_active_by_name("The.Movie.2024", settings_getter=getter)
-    assert nzbid == 99
-
-
-def test_find_active_by_name_none_on_rpc_error():
-    from resources.lib.nzbget_api import find_active_by_name
-
-    getter = _getter({"nzbget_url": "http://box:6789"})
-    with patch("resources.lib.nzbget_api._rpc_call", return_value=(None, "boom")):
-        assert find_active_by_name("X", settings_getter=getter) is None
-
-
 def test_rpc_call_places_id_before_params():
     # NZBGet's legacy parser can mis-read fields after ``params``; the payload
     # must serialize ``id`` before ``params``.

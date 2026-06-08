@@ -231,58 +231,6 @@ def history_status(nzbid, settings_getter=None):
     return {"present": False, "success": False, "status": "", "dest_dir": ""}
 
 
-def _name_variants(nzb_name):
-    """Case-folded name forms to match against NZBGet's NZBName/Name fields.
-
-    We submit ``<title>.nzb``; NZBGet exposes it as ``Name`` (no extension)
-    or ``NZBName`` (with), so match either with or without the suffix.
-    """
-    base = (nzb_name or "").strip()
-    if not base:
-        return set()
-    folded = base.casefold()
-    variants = {folded, "{}.nzb".format(folded)}
-    if folded.endswith(".nzb"):
-        variants.add(folded[:-4])
-    return variants
-
-
-def _item_names(item):
-    names = []
-    for key in ("NZBName", "Name", "NZBFilename"):
-        value = item.get(key)
-        if value:
-            names.append(str(value).casefold())
-    return names
-
-
-def find_active_by_name(nzb_name, settings_getter=None):
-    """Return the NZBID of an in-queue job matching ``nzb_name``, or None.
-
-    Lets a retry attach to a download a previous (timed-out/aborted) attempt
-    deliberately left running instead of submitting a duplicate. Best-effort:
-    any RPC failure degrades to None so the caller falls back to a fresh
-    submit.
-    """
-    wanted = _name_variants(nzb_name)
-    if not wanted:
-        return None
-    groups, error = _rpc_call("listgroups", [0], settings_getter=settings_getter)
-    if error is not None or not isinstance(groups, list):
-        return None
-    for group in groups:
-        if not isinstance(group, dict):
-            continue
-        if wanted.intersection(_item_names(group)):
-            try:
-                nzbid = int(group.get("NZBID"))
-            except (TypeError, ValueError):
-                continue
-            if nzbid > 0:
-                return nzbid
-    return None
-
-
 def completed_base_dir(settings_getter=None):
     """Return NZBGet's configured global completed DestDir (absolute), or None.
 

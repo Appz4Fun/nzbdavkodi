@@ -59,6 +59,18 @@ def test_smb_target_completed_base_avoids_doubled_tail():
     assert target == "smb://host/completed/movies/The.Movie.2024"
 
 
+def test_smb_target_no_base_share_alias_maps_release_directly():
+    # completed_base unavailable; AppendCategoryDir=no with an SMB share alias
+    # whose name differs from the server-side completed folder. The release must
+    # map directly under the SMB root, NOT nest the server folder name.
+    target = nzbget_smb_target(
+        "smb://nas/nzbget",
+        "/downloads/completed/Release",
+        category="movies",
+    )
+    assert target == "smb://nas/nzbget/Release"
+
+
 def test_smb_target_omits_category_when_destdir_not_nested():
     # AppendCategoryDir=no (or a category-specific DestDir): NZBGet reports the
     # release directly under completed, with no category folder. Even though a
