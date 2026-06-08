@@ -127,6 +127,55 @@ def test_history_status_success_returns_destdir():
     assert status["dest_dir"] == "/dl/movies/X"
 
 
+def test_rpc_call_places_id_before_params():
+    # NZBGet's legacy parser can mis-read fields after ``params``; the payload
+    # must serialize ``id`` before ``params``.
+    captured = {}
+
+    def fake_post(url, payload, timeout=0, basic_auth=None):
+        captured["payload"] = payload
+        return '{"result": 1, "error": null}'
+
+    with patch("resources.lib.nzbget_api._http_post_json", side_effect=fake_post):
+        _rpc_call("version", [], settings_getter=_getter({"nzbget_url": "http://box"}))
+    keys = list(captured["payload"].keys())
+    assert keys.index("id") < keys.index("params")
+
+
+def test_group_status_matches_string_nzbid():
+    # NZBGet may serialize NZBID as a string; an int caller must still match.
+    getter = _getter({"nzbget_url": "http://box"})
+    groups = [
+        {"NZBID": "42", "Status": "DOWNLOADING", "DownloadedSizeMB": 100,
+         "FileSizeMB": 200}
+    ]
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(groups, None)):
+        status = group_status(42, settings_getter=getter)
+    assert status["present"] is True
+
+
+def test_history_status_matches_string_nzbid():
+    getter = _getter({"nzbget_url": "http://box"})
+    hist = [{"NZBID": "42", "Status": "SUCCESS/ALL", "DestDir": "/dl/X"}]
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(hist, None)):
+        status = history_status(42, settings_getter=getter)
+    assert status["present"] is True
+    assert status["success"] is True
+
+
+def test_history_status_prefers_finaldir_over_destdir():
+    # A post-processing script that moves the output sets FinalDir; the SMB
+    # target must follow the file to its final location, not the stale DestDir.
+    getter = _getter({"nzbget_url": "http://box"})
+    hist = [
+        {"NZBID": 42, "Status": "SUCCESS/ALL", "DestDir": "/dl/dest/X",
+         "FinalDir": "/dl/final/X"}
+    ]
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(hist, None)):
+        status = history_status(42, settings_getter=getter)
+    assert status["dest_dir"] == "/dl/final/X"
+
+
 def test_history_status_failure_flagged():
     getter = _getter({"nzbget_url": "http://box:6789"})
     hist = [{"NZBID": 42, "Status": "FAILURE/UNPACK", "DestDir": "/dl/x"}]
@@ -186,12 +235,14 @@ def test_cancel_job_issues_group_then_history_delete():
     with patch("resources.lib.nzbget_api._rpc_call", side_effect=fake_rpc):
         cancel_job(42, settings_getter=getter)
 
-    # Both deletes must fire, in order, each targeting the NZBID.
+    # Both deletes must fire, in order, each targeting the NZBID. The modern
+    # v18+ editqueue shape is (Command, Args, IDs) — exactly 3 params with NO
+    # legacy int Offset, and the NZBID list last.
     assert [c[0] for c in calls] == ["editqueue", "editqueue"]
-    assert calls[0][1][0] == "GroupFinalDelete"
-    assert calls[1][1][0] == "HistoryFinalDelete"
-    assert calls[0][1][3] == [42]
-    assert calls[1][1][3] == [42]
+    assert calls[0][1] == ["GroupFinalDelete", "", [42]]
+    assert calls[1][1] == ["HistoryFinalDelete", "", [42]]
+    assert len(calls[0][1]) == 3
+    assert not isinstance(calls[0][1][1], int)
 
 
 def test_rpc_call_not_configured_when_url_blank():

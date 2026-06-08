@@ -30,28 +30,37 @@ VIDEO_EXTENSIONS = (".mkv", ".mp4", ".avi", ".m4v", ".ts", ".wmv", ".mov")
 def nzbget_smb_target(smb_root, dest_dir, category=""):
     """Map NZBGet's server-local DestDir onto the SMB root.
 
-    ``smb_root`` points at NZBGet's *completed* base dir. With NZBGet's
-    default ``AppendCategoryDir=yes`` a categorized release lands under a
-    per-category subfolder (``<completed>/<category>/<release>``), so the
-    DestDir basename alone (``<release>``) is not enough — the SMB target
-    must include the category segment or it resolves to a folder that does
-    not exist. We append ``<category>/<release>`` when a category is set and
-    DestDir is not already nested under it; otherwise just ``<release>``.
+    ``smb_root`` points at NZBGet's *completed* base dir, exposed over SMB.
+    Whether a categorized release sits under a per-category subfolder is
+    decided by NZBGet itself (``AppendCategoryDir`` / a category-specific
+    ``DestDir``) and is reflected directly in the reported ``dest_dir``: with
+    AppendCategoryDir=yes the path is ``<completed>/<category>/<release>``;
+    otherwise just ``<completed>/<release>``. We mirror that *actual* layout —
+    nesting under the category only when DestDir's own parent segment is the
+    category — rather than synthesizing the segment from the setting, so an
+    ``AppendCategoryDir=no`` box (or custom category DestDir) resolves to the
+    real folder instead of a non-existent ``<root>/<category>/<release>``.
     Returns the smb:// folder URL, or None if dest_dir is empty.
     """
     if not dest_dir:
         return None
     normalized = dest_dir.replace("\\", "/").rstrip("/")
-    release_folder = normalized.rsplit("/", 1)[-1]
-    if not release_folder:
+    segments = [seg for seg in normalized.split("/") if seg]
+    if not segments:
         return None
+    release_folder = segments[-1]
+    parent_folder = segments[-2] if len(segments) >= 2 else ""
     category = (category or "").strip().strip("/")
     base = smb_root.rstrip("/")
-    if category and category != release_folder:
-        # Only insert the category when the SMB root doesn't already end in
-        # it (user pointed at the completed base, not the category subdir).
-        if not base.endswith("/" + category):
-            return "{}/{}/{}".format(base, category, release_folder)
+    # Nest under the category only when NZBGet actually placed the release in a
+    # matching category subfolder (DestDir's parent == category), and the SMB
+    # root isn't already pointed at that subfolder.
+    if (
+        category
+        and parent_folder.casefold() == category.casefold()
+        and not base.casefold().endswith("/" + category.casefold())
+    ):
+        return "{}/{}/{}".format(base, parent_folder, release_folder)
     return "{}/{}".format(base, release_folder)
 
 

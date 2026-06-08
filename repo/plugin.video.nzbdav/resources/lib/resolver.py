@@ -3743,9 +3743,25 @@ def resolve(handle, params):
     # SMB). The nzbdav streaming/fallback machinery below is bypassed. This
     # is the handle-based entry; setResolvedUrl is the completion signal.
     if _nzbget_enabled():
-        from resources.lib.nzbget_resolver import resolve_and_play_nzbget
+        # Guard the delegation: this branch runs before resolve()'s protected
+        # error path, so an import/call failure here must still end in a
+        # failure setResolvedUrl or the handle-based resolve contract hangs
+        # (TODO.md §H.2-H9 no-hang guarantee).
+        try:
+            from resources.lib.nzbget_resolver import resolve_and_play_nzbget
 
-        resolve_and_play_nzbget(handle, params)
+            resolve_and_play_nzbget(handle, params)
+        except Exception as nzbget_error:  # pylint: disable=broad-except
+            from resources.lib.http_util import redact_text
+
+            xbmc.log(
+                "NZB-DAV: NZBGet delegation failed: {}".format(
+                    redact_text(str(nzbget_error))
+                ),
+                xbmc.LOGERROR,
+            )
+            xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+            xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
         return
 
     dialog = None
