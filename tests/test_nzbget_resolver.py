@@ -63,6 +63,31 @@ def test_resolve_smb_video_returns_largest_file_url():
     assert url == "smb://host/completed/The.Movie/movie.mkv"
 
 
+def test_resolve_smb_video_descends_into_subdirectory():
+    # Common archive layout: the release folder holds only a nested
+    # subdirectory, and the video lives inside it. The resolver must descend
+    # rather than fail with "No video file found on SMB share".
+    xbmcvfs = sys.modules["xbmcvfs"]
+    tree = {
+        "smb://host/completed/The.Movie": (["The.Movie"], ["readme.nfo"]),
+        "smb://host/completed/The.Movie/The.Movie": ([], ["movie.mkv"]),
+    }
+
+    def fake_listdir(path):
+        return tree.get(path.rstrip("/"), ([], []))
+
+    def fake_stat(path):
+        st = MagicMock()
+        st.st_size.return_value = 9000 if path.endswith("movie.mkv") else 10
+        return st
+
+    with patch.object(xbmcvfs, "listdir", side_effect=fake_listdir), patch.object(
+        xbmcvfs, "Stat", side_effect=fake_stat
+    ):
+        url = resolve_smb_video("smb://host/completed/The.Movie", monitor=_Monitor())
+    assert url == "smb://host/completed/The.Movie/The.Movie/movie.mkv"
+
+
 def test_resolve_smb_video_returns_none_when_no_video():
     xbmcvfs = sys.modules["xbmcvfs"]
     # Inject a fast monitor (never aborts, never sleeps) so retry exhaustion

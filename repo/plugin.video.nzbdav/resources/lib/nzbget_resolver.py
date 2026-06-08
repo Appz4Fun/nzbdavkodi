@@ -85,6 +85,10 @@ def pick_largest_video(filenames, size_of):
 
 _SMB_LIST_RETRIES = 5
 _SMB_LIST_RETRY_INTERVAL = 1.0
+# Releases whose archive unpacks into a nested ``<release>/<inner>/video``
+# layout are common; descend a few levels (like the WebDAV resolver) so they
+# still resolve. Bounded to keep a pathological tree from stalling playback.
+_SMB_MAX_DEPTH = 3
 
 
 def _smb_file_size(path):
@@ -94,26 +98,50 @@ def _smb_file_size(path):
         return 0
 
 
+def _largest_video_in_tree(folder, depth=_SMB_MAX_DEPTH):
+    """Return ``(url, size)`` for the largest video at or below ``folder``.
+
+    Descends up to ``depth`` levels of subdirectories so a video tucked inside
+    a top-level folder (a common archive layout) still resolves instead of
+    failing with "No video file found on SMB share". Returns ``(None, -1)``
+    when nothing playable is found.
+    """
+    try:
+        dirs, files = xbmcvfs.listdir(folder)
+    except Exception:  # pylint: disable=broad-except
+        return None, -1
+    best, best_size = None, -1
+    for name in files:
+        lower = name.lower()
+        if not any(lower.endswith(ext) for ext in VIDEO_EXTENSIONS):
+            continue
+        path = "{}/{}".format(folder, name)
+        size = _smb_file_size(path)
+        if size > best_size:
+            best, best_size = path, size
+    if depth > 0:
+        for sub in dirs:
+            url, size = _largest_video_in_tree("{}/{}".format(folder, sub), depth - 1)
+            if url is not None and size > best_size:
+                best, best_size = url, size
+    return best, best_size
+
+
 def resolve_smb_video(smb_folder, monitor=None):
     """List an SMB folder and return the largest video file URL, or None.
 
-    Retries a few times (via Monitor.waitForAbort) to absorb the lag
-    between NZBGet reporting SUCCESS and the files becoming visible over
-    SMB. Returns None if no video file appears.
+    Searches the folder tree (top level plus nested subdirectories, see
+    ``_largest_video_in_tree``) and retries a few times (via
+    Monitor.waitForAbort) to absorb the lag between NZBGet reporting SUCCESS
+    and the files becoming visible over SMB. Returns None if no video file
+    appears.
     """
     if monitor is None:
         monitor = xbmc.Monitor()
     for attempt in range(_SMB_LIST_RETRIES):
-        try:
-            _dirs, files = xbmcvfs.listdir(smb_folder)
-        except Exception:  # pylint: disable=broad-except
-            files = []
-        chosen = pick_largest_video(
-            files,
-            lambda name: _smb_file_size("{}/{}".format(smb_folder, name)),
-        )
-        if chosen is not None:
-            return "{}/{}".format(smb_folder, chosen)
+        url, _size = _largest_video_in_tree(smb_folder)
+        if url is not None:
+            return url
         if attempt < _SMB_LIST_RETRIES - 1:
             if monitor.waitForAbort(_SMB_LIST_RETRY_INTERVAL):
                 return None

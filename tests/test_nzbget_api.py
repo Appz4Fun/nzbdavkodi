@@ -146,8 +146,12 @@ def test_group_status_matches_string_nzbid():
     # NZBGet may serialize NZBID as a string; an int caller must still match.
     getter = _getter({"nzbget_url": "http://box"})
     groups = [
-        {"NZBID": "42", "Status": "DOWNLOADING", "DownloadedSizeMB": 100,
-         "FileSizeMB": 200}
+        {
+            "NZBID": "42",
+            "Status": "DOWNLOADING",
+            "DownloadedSizeMB": 100,
+            "FileSizeMB": 200,
+        }
     ]
     with patch("resources.lib.nzbget_api._rpc_call", return_value=(groups, None)):
         status = group_status(42, settings_getter=getter)
@@ -168,8 +172,12 @@ def test_history_status_prefers_finaldir_over_destdir():
     # target must follow the file to its final location, not the stale DestDir.
     getter = _getter({"nzbget_url": "http://box"})
     hist = [
-        {"NZBID": 42, "Status": "SUCCESS/ALL", "DestDir": "/dl/dest/X",
-         "FinalDir": "/dl/final/X"}
+        {
+            "NZBID": 42,
+            "Status": "SUCCESS/ALL",
+            "DestDir": "/dl/dest/X",
+            "FinalDir": "/dl/final/X",
+        }
     ]
     with patch("resources.lib.nzbget_api._rpc_call", return_value=(hist, None)):
         status = history_status(42, settings_getter=getter)
