@@ -2097,7 +2097,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
 
             # fmt: off
 
-            proc = subprocess.Popen(list(cmd), **kw)  # nosec B603  # lgtm [py/command-line-injection]  # noqa: E501
+            proc = subprocess.Popen(list(cmd), **kw)  # lgtm [py/command-line-injection]  # nosec B603  # noqa: E501
 
             # fmt: on
         except OSError as error:
@@ -6687,7 +6687,7 @@ class HlsProducer:
 
                 # fmt: off
 
-                self._proc = subprocess.Popen(list(cmd), **kw)  # nosec B603  # lgtm [py/command-line-injection]  # noqa: E501
+                self._proc = subprocess.Popen(list(cmd), **kw)  # lgtm [py/command-line-injection]  # nosec B603  # noqa: E501
 
                 # fmt: on
             except OSError as e:
@@ -7427,7 +7427,7 @@ class StreamProxy:
 
             # fmt: off
 
-            proc = subprocess.Popen(list(cmd), **kw)  # nosec B603  # lgtm [py/command-line-injection]  # noqa: E501
+            proc = subprocess.Popen(list(cmd), **kw)  # lgtm [py/command-line-injection]  # nosec B603  # noqa: E501
 
             # fmt: on
             try:
@@ -8600,7 +8600,7 @@ class StreamProxy:
 
             # fmt: off
 
-            proc = subprocess.Popen(list(cmd), **kw)  # nosec B603  # lgtm [py/command-line-injection]  # noqa: E501
+            proc = subprocess.Popen(list(cmd), **kw)  # lgtm [py/command-line-injection]  # nosec B603  # noqa: E501
 
             # fmt: on
             try:
@@ -8678,7 +8678,7 @@ class StreamProxy:
 
             # fmt: off
 
-            proc = subprocess.Popen(list(cmd), **kw)  # nosec B603  # lgtm [py/command-line-injection]  # noqa: E501
+            proc = subprocess.Popen(list(cmd), **kw)  # lgtm [py/command-line-injection]  # nosec B603  # noqa: E501
 
             # fmt: on
         except (OSError, subprocess.SubprocessError, ValueError) as e:
@@ -8808,7 +8808,7 @@ class StreamProxy:
 
             # fmt: off
 
-            proc = subprocess.Popen(list(cmd), **kw)  # nosec B603  # lgtm [py/command-line-injection]  # noqa: E501
+            proc = subprocess.Popen(list(cmd), **kw)  # lgtm [py/command-line-injection]  # nosec B603  # noqa: E501
 
             # fmt: on
             _, stderr = proc.communicate(timeout=600)  # 10 min timeout
