@@ -2088,7 +2088,12 @@ class _StreamHandler(BaseHTTPRequestHandler):
             xbmc.LOGINFO,
         )
         try:
-            kw = dict(stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False)
+            kw = dict(
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                shell=False,
+            )
             # fmt: off
             proc = subprocess.Popen(cmd, **kw)  # lgtm [py/command-line-injection]  # nosec B603  # noqa: E501
             # fmt: on
@@ -6669,7 +6674,13 @@ class HlsProducer:
                 # stdin (TODO.md §H.3 Low — "ffmpeg Popen omits
                 # stdin=DEVNULL"). Harmless on Kodi but tidies the
                 # under-a-terminal case.
-                kw = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=self._ffmpeg_log, shell=False, cwd=self.session_dir)
+                kw = dict(
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=self._ffmpeg_log,
+                    shell=False,
+                    cwd=self.session_dir,
+                )
                 # fmt: off
                 self._proc = subprocess.Popen(cmd, **kw)  # lgtm [py/command-line-injection]  # nosec B603  # noqa: E501
                 # fmt: on
@@ -7401,7 +7412,12 @@ class StreamProxy:
             return False
         cmd = [ffmpeg_path, "-hide_banner", "-h", "muxer=hls"]
         try:
-            kw = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, shell=False)
+            kw = dict(
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                shell=False,
+            )
             # fmt: off
             proc = subprocess.Popen(cmd, **kw)  # lgtm [py/command-line-injection]  # nosec B603  # noqa: E501
             # fmt: on
@@ -8566,7 +8582,12 @@ class StreamProxy:
                     input_url,
                 ]
             )
-            kw = dict(stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False)
+            kw = dict(
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                shell=False,
+            )
             # fmt: off
             proc = subprocess.Popen(cmd, **kw)  # lgtm [py/command-line-injection]  # nosec B603  # noqa: E501
             # fmt: on
@@ -8636,7 +8657,12 @@ class StreamProxy:
         cmd.extend(["-i", input_url, "-f", "null", "-"])
 
         try:
-            kw = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, shell=False)
+            kw = dict(
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                shell=False,
+            )
             # fmt: off
             proc = subprocess.Popen(cmd, **kw)  # lgtm [py/command-line-injection]  # nosec B603  # noqa: E501
             # fmt: on
@@ -8758,7 +8784,12 @@ class StreamProxy:
         proc = None
         try:
             xbmc.log("NZB-DAV: Temp-file faststart remux starting", xbmc.LOGINFO)
-            kw = dict(stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False)
+            kw = dict(
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                shell=False,
+            )
             # fmt: off
             proc = subprocess.Popen(cmd, **kw)  # lgtm [py/command-line-injection]  # nosec B603  # noqa: E501
             # fmt: on
