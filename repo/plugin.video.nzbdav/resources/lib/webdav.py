@@ -16,6 +16,7 @@ import xbmc
 _WEBDAV_SUBDIR_SCAN_WORKERS = 4
 _VIDEO_FILE_SIZE_HINTS_MAX = 64
 _VIDEO_FILE_SIZE_HINTS = {}
+_NON_WORD_RE = re.compile(r"[\W_]+")
 # Capture a season followed by one or more episode numbers so a multi-episode
 # file like "S01E01E02E03" yields every episode it contains, not just the
 # first. The episode run allows light separators (e.g. "E01-E02", "E01.E02")
@@ -93,7 +94,7 @@ def _hint_tokens(value):
     """Return lowercased alphanumeric tokens for loose name matching."""
     if not isinstance(value, str) or not value:
         return frozenset()
-    cleaned = re.sub(r"[\W_]+", " ", value.lower())
+    cleaned = _NON_WORD_RE.sub(" ", value.lower())
     return frozenset(token for token in cleaned.split() if token)
 
 
