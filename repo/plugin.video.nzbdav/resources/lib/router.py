@@ -495,6 +495,12 @@ def _attach_selected_result_metadata(resolver_params, selected):
     size = selected.get("size")
     if size:
         resolver_params["_download_size"] = size
+    # NZBGet-mode reuse hint set at picker-tag time (_tag_available_nzbget):
+    # lets the NZBGet resolver play the already-completed files instead of
+    # re-submitting into NZBGet's duplicate check.
+    nzbget_job = selected.get("_nzbget_completed_job")
+    if nzbget_job:
+        resolver_params["_nzbget_completed_job"] = nzbget_job
 
 
 def _selection_pool_with_peer_first(selected, results, first_peer):
@@ -945,9 +951,59 @@ def _result_pubdate_consistent_with_downloads(result):
     )
 
 
+class _LookupDoneJobs(dict):
+    """Empty mapping that still reports a finished completed-history lookup.
+
+    ``_completed_lookup_was_done`` keys on the ``_lookup_done`` attribute, so
+    returning this from a tagging path tells selection not to re-query history.
+    """
+
+    _lookup_done = True
+
+
+def _nzbget_mode_enabled(settings_getter=None):
+    """Return whether the NZBGet backend toggle is on (resolver's reader)."""
+    from resources.lib.resolver import _nzbget_enabled
+
+    return _nzbget_enabled(settings_getter)
+
+
+def _tag_available_nzbget(results, settings_getter=None):
+    """Mark results already completed in NZBGet history (NZBGet-mode "DL").
+
+    A release still in NZBGet's history as SUCCESS already has its finished
+    files on the SMB share, so the picker shows the same "DL" chip the nzbdav
+    cached-stream tag uses, gated by the same name+size(+recorded pubdate)
+    identity checks. The matched row is attached as ``_nzbget_completed_job``
+    so the NZBGet resolver plays the row's completed files directly instead
+    of re-submitting — NZBGet's duplicate check (DupeCheck=yes by default)
+    would dupe-delete a re-submission of a SUCCESS item and fail the resolve.
+    Deliberately does NOT attach ``_completed_job``: that hint is the nzbdav
+    cached-stream reuse contract. Always returns a lookup-done mapping — even
+    when the history RPC fails — because the per-selection nzbdav history
+    fallback it would otherwise trigger is meaningless on the NZBGet path.
+    """
+    from resources.lib import nzbget_api
+
+    completed = nzbget_api.completed_history(settings_getter=settings_getter)
+    for result in results:
+        completed_job = completed.get(result.get("title"))
+        if (
+            completed_job
+            and _completed_job_matches_result(result, completed_job)
+            and _result_pubdate_consistent_with_downloads(result)
+        ):
+            result["_available"] = True
+            result["_nzbget_completed_job"] = completed_job
+    if completed_jobs_lookup_done(completed):
+        return completed
+    return _LookupDoneJobs()
+
+
 def _tag_available(results, settings_getter=None):
     """
-    Mark result entries that already exist in nzbdav by setting the `_available` flag.
+    Mark result entries that already exist in the active download backend by
+    setting the `_available` flag.
 
     Parameters:
         results (list[dict]): Iterable of result dictionaries; entries whose
@@ -956,9 +1012,14 @@ def _tag_available(results, settings_getter=None):
             modified in-place with `result["_available"] = True`. The size gate
             stops distinct uploads that merely share a filename from being
             collapsed onto one cached stream.
+
+    In NZBGet mode the completed-name source is NZBGet's own SUCCESS history
+    instead of nzbdav's (see ``_tag_available_nzbget``); nzbdav is not queried.
     """
     if not results:
         return {}
+    if _nzbget_mode_enabled(settings_getter):
+        return _tag_available_nzbget(results, settings_getter=settings_getter)
     completed = get_completed_jobs(settings_getter=settings_getter)
     if not completed:
         return completed
@@ -1486,7 +1547,7 @@ def _handle_play(handle, params):
         )
         return
 
-    # Tag results already downloaded in nzbdav
+    # Tag results already downloaded in the active backend (nzbdav / NZBGet)
     completed_jobs = _tag_available(filtered)
 
     # Show custom results dialog
@@ -1673,7 +1734,7 @@ def _handle_search(handle, params):
         xbmcplugin.endOfDirectory(handle, succeeded=False)
         return
 
-    # Tag results already downloaded in nzbdav
+    # Tag results already downloaded in the active backend (nzbdav / NZBGet)
     completed_jobs = _tag_available(filtered)
 
     # Show custom results dialog
@@ -1862,7 +1923,13 @@ def _handle_script_play(params):
                 best, filtered, settings_getter=_get_script_setting
             )
             resolver_params["_fallback_candidate_loader"] = fallback_loader
-            completed_job = _script_completed_job_for_selection(best)
+            completed_job = None
+            if not _nzbget_mode_enabled(_get_script_setting):
+                # In NZBGet mode the nzbdav completed-history hint is dead
+                # weight (resolve_and_play delegates to NZBGet before reading
+                # it) — skip the lookup instead of stalling on a stale nzbdav
+                # config.
+                completed_job = _script_completed_job_for_selection(best)
             if completed_job:
                 resolver_params["_completed_job"] = completed_job
             else:

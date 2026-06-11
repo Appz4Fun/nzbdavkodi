@@ -64,6 +64,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **NZBGet mode: pre-cached "DL" indicator in the NZB picker.** With the
+  NZBGet backend enabled, the results picker now tags releases that are
+  already completed in NZBGet's history with the same green `DL` chip the
+  nzbdav cached-stream tag uses. Matching reuses the established identity
+  gates (exact name, ±15% size tolerance, recorded Usenet post-date), and the
+  NZBGet path now records each completed download's post-date in the shared
+  download ledger so a same-name repost from a different day is not mistaken
+  for the cached file. The history lookup is bounded at 10s and fails soft —
+  an unreachable NZBGet just renders an untagged picker.
+
+### Fixed
+
+- **NZBGet mode: replaying an already-downloaded pick no longer fails.**
+  Selecting a `DL`-tagged result now plays the completed files straight from
+  the SMB share instead of re-submitting the NZB — NZBGet's duplicate check
+  (`DupeCheck=yes` default) dupe-deletes a re-submission of a successful
+  download, which previously surfaced as a spurious "Download failed". If the
+  files are gone from the share, the normal submit flow runs as before.
+- **NZBGet mode: script auto-select no longer queries nzbdav.** The RunScript
+  auto-select path skipped the new suppression and could stall on a stale
+  nzbdav config before handing off to NZBGet.
+
 ## [1.2.4] — 2026-05-31
 
 > **Startup playback and live-fallback hardening.** This release closes the

@@ -674,3 +674,261 @@ def test_play_nzbget_failure_does_not_clear_playlist():
         play_nzbget("http://i/x.nzb", "X", settings_getter=_settings({}))
     player.play.assert_not_called()
     xbmc_mod.PlayList.return_value.clear.assert_not_called()
+
+
+_PUBDATE = "Wed, 15 Dec 2021 12:00:00 +0000"
+
+
+def test_resolve_success_records_download_pubdate_in_ledger():
+    # The picker's NZBGet-mode DL tag uses the same download-ledger pubdate
+    # gate as the nzbdav path, so a completed NZBGet download must record the
+    # selected result's pubdate under the job title.
+    plugin = sys.modules["xbmcplugin"]
+    plugin.setResolvedUrl = MagicMock()
+    with patch(
+        "resources.lib.nzbget_resolver.nzbget_api.append_nzb",
+        return_value=(42, None),
+    ), patch(
+        "resources.lib.nzbget_resolver.poll_nzbget_job",
+        return_value={"outcome": "success", "dest_dir": "/dl/movies/The.Movie"},
+    ), patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video",
+        return_value="smb://host/completed/The.Movie/movie.mkv",
+    ), patch(
+        "resources.lib.nzbget_resolver.record_download"
+    ) as record:
+        resolve_and_play_nzbget(
+            7,
+            {
+                "nzburl": "http://i/x.nzb",
+                "title": "The.Movie",
+                "_download_pubdate": _PUBDATE,
+                "_download_size": 123456,
+            },
+            settings_getter=_full_settings(),
+        )
+    record.assert_called_once_with("The.Movie", _PUBDATE, 123456)
+    assert plugin.setResolvedUrl.call_args[0][1] is True
+
+
+def test_resolve_records_ledger_even_when_smb_resolve_fails():
+    # NZBGet completed the download (it IS in history as SUCCESS, so the
+    # picker will tag it DL); a later SMB-mapping failure must not lose the
+    # pubdate record.
+    plugin = sys.modules["xbmcplugin"]
+    plugin.setResolvedUrl = MagicMock()
+    with patch(
+        "resources.lib.nzbget_resolver.nzbget_api.append_nzb",
+        return_value=(42, None),
+    ), patch(
+        "resources.lib.nzbget_resolver.poll_nzbget_job",
+        return_value={"outcome": "success", "dest_dir": "/dl/movies/The.Movie"},
+    ), patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video", return_value=None
+    ), patch(
+        "resources.lib.nzbget_resolver.record_download"
+    ) as record:
+        resolve_and_play_nzbget(
+            7,
+            {
+                "nzburl": "http://i/x.nzb",
+                "title": "The.Movie",
+                "_download_pubdate": _PUBDATE,
+            },
+            settings_getter=_full_settings(),
+        )
+    record.assert_called_once_with("The.Movie", _PUBDATE, None)
+    assert plugin.setResolvedUrl.call_args[0][1] is False
+
+
+def test_resolve_failed_outcome_does_not_record_ledger():
+    # A failed/dupe-deleted job downloaded nothing under this pubdate.
+    plugin = sys.modules["xbmcplugin"]
+    plugin.setResolvedUrl = MagicMock()
+    with patch(
+        "resources.lib.nzbget_resolver.nzbget_api.append_nzb",
+        return_value=(42, None),
+    ), patch(
+        "resources.lib.nzbget_resolver.poll_nzbget_job",
+        return_value={"outcome": "failed", "status": "DELETED/DUPE"},
+    ), patch(
+        "resources.lib.nzbget_resolver.record_download"
+    ) as record:
+        resolve_and_play_nzbget(
+            7,
+            {
+                "nzburl": "http://i/x.nzb",
+                "title": "The.Movie",
+                "_download_pubdate": _PUBDATE,
+            },
+            settings_getter=_full_settings(),
+        )
+    record.assert_not_called()
+    assert plugin.setResolvedUrl.call_args[0][1] is False
+
+
+def test_play_nzbget_records_ledger_from_params():
+    # The handle-less picker/script path threads the selected result's
+    # pubdate the same way.
+    player = MagicMock()
+    with patch.object(
+        sys.modules["xbmc"], "Player", MagicMock(return_value=player)
+    ), patch(
+        "resources.lib.nzbget_resolver.nzbget_api.append_nzb",
+        return_value=(42, None),
+    ), patch(
+        "resources.lib.nzbget_resolver.poll_nzbget_job",
+        return_value={"outcome": "success", "dest_dir": "/dl/movies/The.Movie"},
+    ), patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video",
+        return_value="smb://host/completed/The.Movie/movie.mkv",
+    ), patch(
+        "resources.lib.nzbget_resolver.record_download"
+    ) as record:
+        play_nzbget(
+            "http://i/x.nzb",
+            "The.Movie",
+            params={"_download_pubdate": _PUBDATE, "_download_size": 9},
+            settings_getter=_full_settings(),
+        )
+    record.assert_called_once_with("The.Movie", _PUBDATE, 9)
+    player.play.assert_called_once()
+
+
+_COMPLETED_JOB = {
+    "name": "The.Movie",
+    "status": "SUCCESS/UNPACK",
+    "bytes": 60_000_000_000,
+    "nzbid": 7,
+    "dest_dir": "/dl/movies/The.Movie",
+}
+
+
+def test_resolve_reuses_completed_job_without_resubmitting():
+    # A picker-corroborated SUCCESS history match plays the already-completed
+    # files; re-submitting would hit NZBGet's duplicate check (DupeCheck=yes
+    # default), get dupe-deleted, and fail the resolve.
+    plugin = sys.modules["xbmcplugin"]
+    plugin.setResolvedUrl = MagicMock()
+    captured = {}
+
+    def fake_resolve_smb(folder, **kwargs):
+        captured["folder"] = folder
+        captured["budget"] = kwargs.get("budget")
+        return folder + "/movie.mkv"
+
+    with patch("resources.lib.nzbget_resolver.nzbget_api.append_nzb") as append, patch(
+        "resources.lib.nzbget_resolver.nzbget_api.completed_base_dir",
+        return_value="/dl",
+    ), patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video",
+        side_effect=fake_resolve_smb,
+    ), patch(
+        "resources.lib.nzbget_resolver.record_download"
+    ) as record:
+        resolve_and_play_nzbget(
+            7,
+            {
+                "nzburl": "http://i/x.nzb",
+                "title": "The.Movie",
+                "_nzbget_completed_job": _COMPLETED_JOB,
+            },
+            settings_getter=_full_settings(),
+        )
+
+    append.assert_not_called()
+    # Reuse is not a download: the ledger entry was written by the original
+    # download, mirroring the nzbdav cache-hit no-record behavior.
+    record.assert_not_called()
+    # dest_dir mapped onto the SMB root relative to the completed base.
+    assert captured["folder"] == "smb://host/completed/movies/The.Movie"
+    # Short probe budget: stale rows must not delay the fallback submit.
+    assert captured["budget"] is not None and captured["budget"] <= 10
+    assert plugin.setResolvedUrl.call_args[0][1] is True
+
+
+def test_resolve_reuse_probe_miss_falls_back_to_submit():
+    # History row exists but the files are gone from the share (cleanup):
+    # fall through to the normal submit flow.
+    plugin = sys.modules["xbmcplugin"]
+    plugin.setResolvedUrl = MagicMock()
+    smb_results = iter([None, "smb://host/completed/The.Movie/movie.mkv"])
+
+    with patch(
+        "resources.lib.nzbget_resolver.nzbget_api.append_nzb",
+        return_value=(42, None),
+    ) as append, patch(
+        "resources.lib.nzbget_resolver.nzbget_api.completed_base_dir",
+        return_value="/dl",
+    ), patch(
+        "resources.lib.nzbget_resolver.poll_nzbget_job",
+        return_value={"outcome": "success", "dest_dir": "/dl/movies/The.Movie"},
+    ), patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video",
+        side_effect=lambda *a, **k: next(smb_results),
+    ):
+        resolve_and_play_nzbget(
+            7,
+            {
+                "nzburl": "http://i/x.nzb",
+                "title": "The.Movie",
+                "_nzbget_completed_job": _COMPLETED_JOB,
+            },
+            settings_getter=_full_settings(),
+        )
+
+    append.assert_called_once()
+    assert plugin.setResolvedUrl.call_args[0][1] is True
+
+
+def test_play_nzbget_reuses_completed_job():
+    # Handle-less picker/script path: same reuse, playback via xbmc.Player.
+    player = MagicMock()
+    with patch.object(
+        sys.modules["xbmc"], "Player", MagicMock(return_value=player)
+    ), patch("resources.lib.nzbget_resolver.nzbget_api.append_nzb") as append, patch(
+        "resources.lib.nzbget_resolver.nzbget_api.completed_base_dir",
+        return_value="/dl",
+    ), patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video",
+        return_value="smb://host/completed/movies/The.Movie/movie.mkv",
+    ):
+        play_nzbget(
+            "http://i/x.nzb",
+            "The.Movie",
+            params={"_nzbget_completed_job": _COMPLETED_JOB},
+            settings_getter=_full_settings(),
+        )
+    append.assert_not_called()
+    player.play.assert_called_once()
+    assert (
+        player.play.call_args[0][0] == "smb://host/completed/movies/The.Movie/movie.mkv"
+    )
+
+
+def test_resolve_reuse_applies_resume_offset():
+    # Replaying a tagged result must resume where the user left off.
+    plugin = sys.modules["xbmcplugin"]
+    plugin.setResolvedUrl = MagicMock()
+    li = MagicMock()
+    with patch.object(sys.modules["xbmcgui"], "ListItem", return_value=li), patch(
+        "resources.lib.nzbget_resolver.nzbget_api.append_nzb"
+    ) as append, patch(
+        "resources.lib.nzbget_resolver.nzbget_api.completed_base_dir",
+        return_value="/dl",
+    ), patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video",
+        return_value="smb://host/completed/movies/The.Movie/movie.mkv",
+    ):
+        resolve_and_play_nzbget(
+            7,
+            {
+                "nzburl": "http://i/x.nzb",
+                "title": "The.Movie",
+                "_nzbget_completed_job": _COMPLETED_JOB,
+            },
+            settings_getter=_full_settings(),
+            resume_seconds=137.0,
+        )
+    append.assert_not_called()
+    li.setProperty.assert_called_with("StartOffset", "137.0")

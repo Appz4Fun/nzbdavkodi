@@ -8,6 +8,7 @@ from resources.lib.nzbget_api import (
     _rpc_url,
     append_nzb,
     cancel_job,
+    completed_history,
     group_status,
     history_status,
 )
@@ -386,3 +387,109 @@ def test_append_nzb_returns_error_when_rpc_errors():
         nzbid, error = append_nzb("http://i/x.nzb", "X", settings_getter=getter)
     assert nzbid is None
     assert error == "401 auth"
+
+
+def test_completed_history_keys_success_items_by_name():
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    hist = [
+        {
+            "NZBID": 1,
+            "Name": "Movie.mkv",
+            "Status": "SUCCESS/UNPACK",
+            "FileSizeHi": 1,
+            "FileSizeLo": 5,
+            "DestDir": "/dl/intermediate/Movie",
+            "FinalDir": "/dl/movies/Movie",
+        },
+        {"NZBID": 2, "Name": "Failed.mkv", "Status": "FAILURE/PAR"},
+        {"NZBID": 3, "Name": "Dupe.mkv", "Status": "DELETED/DUPE"},
+        {"NZBID": 4, "Name": "Warn.mkv", "Status": "WARNING/HEALTH"},
+        "junk",
+        {"NZBID": 5, "Status": "SUCCESS/ALL"},  # nameless -> skipped
+    ]
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(hist, None)) as rpc:
+        jobs = completed_history(settings_getter=getter)
+
+    # Only SUCCESS/* rows are "pre-cached": only their completed files can be
+    # reused on selection, so they're the only ones the picker may tag DL.
+    assert set(jobs) == {"Movie.mkv"}
+    assert jobs["Movie.mkv"]["status"] == "SUCCESS/UNPACK"
+    # Exact 64-bit size from the Hi/Lo pair.
+    assert jobs["Movie.mkv"]["bytes"] == (1 << 32) + 5
+    assert jobs["Movie.mkv"]["name"] == "Movie.mkv"
+    assert jobs["Movie.mkv"]["nzbid"] == 1
+    # FinalDir wins over DestDir (post-processing-script move), same
+    # preference as history_status.
+    assert jobs["Movie.mkv"]["dest_dir"] == "/dl/movies/Movie"
+    # Successful lookup is marked done even after filtering.
+    assert getattr(jobs, "_lookup_done", False) is True
+    # Visible history only, same shape history_status uses.
+    assert rpc.call_args[0][0] == "history"
+    assert rpc.call_args[0][1] == [False]
+    # Picker-render path: bounded like nzbdav's 10s picker timeout, not the
+    # 30s resolver-path _RPC_TIMEOUT.
+    assert rpc.call_args.kwargs.get("timeout") == 10
+
+
+def test_completed_history_never_raises_on_broken_settings_getter():
+    # _tag_available's plugin call sites have no try/except; a raising
+    # injected getter must degrade to "no tags", not crash the picker.
+    def broken_getter(key, default=""):
+        raise ValueError("corrupt settings")
+
+    jobs = completed_history(settings_getter=broken_getter)
+    assert jobs == {}
+    assert getattr(jobs, "_lookup_done", False) is False
+
+
+def test_completed_history_falls_back_to_mb_and_tolerates_strings():
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    hist = [
+        {
+            "Name": "Movie.mkv",
+            "Status": "SUCCESS/ALL",
+            "FileSizeHi": "0",
+            "FileSizeLo": None,
+            "FileSizeMB": "2048",
+        }
+    ]
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(hist, None)):
+        jobs = completed_history(settings_getter=getter)
+    assert jobs["Movie.mkv"]["bytes"] == 2048 * 1048576
+
+
+def test_completed_history_unknown_size_is_none():
+    # No size fields at all -> bytes None, so the router's size gate fails
+    # open (name-only match) instead of treating it as a zero-byte mismatch.
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    hist = [{"Name": "Movie.mkv", "Status": "SUCCESS/ALL"}]
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(hist, None)):
+        jobs = completed_history(settings_getter=getter)
+    assert jobs["Movie.mkv"]["bytes"] is None
+
+
+def test_completed_history_rpc_failure_returns_unmarked_empty():
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(None, "401")):
+        jobs = completed_history(settings_getter=getter)
+    assert jobs == {}
+    assert getattr(jobs, "_lookup_done", False) is False
+
+    # A non-list result is malformed, not an empty history.
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=({"x": 1}, None)):
+        jobs = completed_history(settings_getter=getter)
+    assert jobs == {}
+    assert getattr(jobs, "_lookup_done", False) is False
+
+
+def test_completed_history_keeps_newest_same_name_entry():
+    # NZBGet returns history newest-first; for same-name SUCCESS rows the
+    # newest row is what a replay would land on, so keep its size.
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    hist = [
+        {"Name": "Movie.mkv", "Status": "SUCCESS/ALL", "FileSizeMB": 100},
+        {"Name": "Movie.mkv", "Status": "SUCCESS/ALL", "FileSizeMB": 999},
+    ]
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(hist, None)):
+        jobs = completed_history(settings_getter=getter)
+    assert jobs["Movie.mkv"]["bytes"] == 100 * 1048576
