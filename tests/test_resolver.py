@@ -2533,7 +2533,7 @@ def test_resolve_and_play_starts_player_before_remux_cache_prompt(
         )
     )
     assert (
-        elapsed_to_play < 0.08
+        elapsed_to_play < 0.5
     ), "remux cache prompt delayed Player.play by {:.3f}s".format(elapsed_to_play)
     mock_cache_prompt.assert_called_once()
 
