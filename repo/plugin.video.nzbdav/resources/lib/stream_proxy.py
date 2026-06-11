@@ -2088,14 +2088,14 @@ class _StreamHandler(BaseHTTPRequestHandler):
             xbmc.LOGINFO,
         )
         try:
-            kw = dict(
+            # fmt: off
+            proc = subprocess.Popen(
+                cmd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 shell=False,
-            )
-            # fmt: off
-            proc = subprocess.Popen(cmd, **kw)  # noqa: E501  # nosec B603  # lgtm [py/command-line-injection]
+            )  # noqa: E501  # lgtm [py/command-line-injection]  # nosec B603
             # fmt: on
         except OSError as error:
             xbmc.log("NZB-DAV: Failed to start ffmpeg: {}".format(error), xbmc.LOGERROR)
@@ -6674,15 +6674,15 @@ class HlsProducer:
                 # stdin (TODO.md §H.3 Low — "ffmpeg Popen omits
                 # stdin=DEVNULL"). Harmless on Kodi but tidies the
                 # under-a-terminal case.
-                kw = dict(
+                # fmt: off
+                self._proc = subprocess.Popen(
+                    cmd,
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=self._ffmpeg_log,
                     shell=False,
                     cwd=self.session_dir,
-                )
-                # fmt: off
-                self._proc = subprocess.Popen(cmd, **kw)  # noqa: E501  # nosec B603  # lgtm [py/command-line-injection]
+                )  # noqa: E501  # lgtm [py/command-line-injection]  # nosec B603
                 # fmt: on
             except OSError as e:
                 xbmc.log(
@@ -7412,14 +7412,14 @@ class StreamProxy:
             return False
         cmd = [ffmpeg_path, "-hide_banner", "-h", "muxer=hls"]
         try:
-            kw = dict(
+            # fmt: off
+            proc = subprocess.Popen(
+                cmd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 shell=False,
-            )
-            # fmt: off
-            proc = subprocess.Popen(cmd, **kw)  # noqa: E501  # nosec B603  # lgtm [py/command-line-injection]
+            )  # noqa: E501  # lgtm [py/command-line-injection]  # nosec B603
             # fmt: on
             try:
                 output = proc.communicate(timeout=_FFMPEG_CAPABILITY_PROBE_TIMEOUT)
@@ -8582,14 +8582,14 @@ class StreamProxy:
                     input_url,
                 ]
             )
-            kw = dict(
+            # fmt: off
+            proc = subprocess.Popen(
+                cmd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 shell=False,
-            )
-            # fmt: off
-            proc = subprocess.Popen(cmd, **kw)  # noqa: E501  # nosec B603  # lgtm [py/command-line-injection]
+            )  # noqa: E501  # lgtm [py/command-line-injection]  # nosec B603
             # fmt: on
             try:
                 stdout_bytes, _ = proc.communicate(timeout=30)
@@ -8657,14 +8657,14 @@ class StreamProxy:
         cmd.extend(["-i", input_url, "-f", "null", "-"])
 
         try:
-            kw = dict(
+            # fmt: off
+            proc = subprocess.Popen(
+                cmd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 shell=False,
-            )
-            # fmt: off
-            proc = subprocess.Popen(cmd, **kw)  # noqa: E501  # nosec B603  # lgtm [py/command-line-injection]
+            )  # noqa: E501  # lgtm [py/command-line-injection]  # nosec B603
             # fmt: on
         except (OSError, subprocess.SubprocessError, ValueError) as e:
             xbmc.log(
@@ -8784,14 +8784,14 @@ class StreamProxy:
         proc = None
         try:
             xbmc.log("NZB-DAV: Temp-file faststart remux starting", xbmc.LOGINFO)
-            kw = dict(
+            # fmt: off
+            proc = subprocess.Popen(
+                cmd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 shell=False,
-            )
-            # fmt: off
-            proc = subprocess.Popen(cmd, **kw)  # noqa: E501  # nosec B603  # lgtm [py/command-line-injection]
+            )  # noqa: E501  # lgtm [py/command-line-injection]  # nosec B603
             # fmt: on
             _, stderr = proc.communicate(timeout=600)  # 10 min timeout
             if proc.returncode != 0:
