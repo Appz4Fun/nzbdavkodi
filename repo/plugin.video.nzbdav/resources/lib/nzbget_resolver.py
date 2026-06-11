@@ -17,6 +17,7 @@ import xbmcplugin
 import xbmcvfs
 
 from resources.lib import nzbget_api
+from resources.lib.download_ledger import record_download
 from resources.lib.http_util import notify as _notify
 from resources.lib.http_util import redact_text as _redact_text
 from resources.lib.i18n import addon_name as _addon_name
@@ -257,6 +258,12 @@ _DEFAULT_TIMEOUT = 3600
 _TIMEOUT_MIN = 60
 _TIMEOUT_MAX = 86400
 
+# Probe budget when reusing an already-completed job's folder: the files are
+# either visible now or the history row is stale — a short window absorbs a
+# share waking up without delaying the fallback submit the way the
+# post-download 60s settle budget would.
+_SMB_REUSE_PROBE_BUDGET = 3.0
+
 _DEFAULT_POLL_INTERVAL = 1
 _POLL_INTERVAL_MIN = 1
 _POLL_INTERVAL_MAX = 60
@@ -323,8 +330,17 @@ def _resolve_failure(handle, message=None):
     xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
 
 
-def _run_nzbget_backend(nzb_url, title, settings_getter, on_success, on_failure):
-    """Shared NZBGet flow: submit -> poll -> resolve over SMB.
+def _run_nzbget_backend(
+    nzb_url,
+    title,
+    settings_getter,
+    on_success,
+    on_failure,
+    download_pubdate=None,
+    download_size=None,
+    completed_job=None,
+):
+    """Shared NZBGet flow: reuse completed files, else submit -> poll -> SMB.
 
     Calls ``on_success(video_url)`` exactly once on success, or
     ``on_failure(message)`` exactly once on any failure (``message`` is
@@ -332,6 +348,15 @@ def _run_nzbget_backend(nzb_url, title, settings_getter, on_success, on_failure)
     the handle path vs ``xbmc.Player().play`` for the handle-less
     ``resolve_and_play`` path — is the caller's concern; this core
     guarantees a single terminal callback and owns the progress dialog.
+
+    ``download_pubdate``/``download_size`` carry the selected result's
+    advertised Usenet post-date and size; a completed download records them
+    in the download ledger so the picker's NZBGet-mode "DL" tag can tell this
+    upload apart from a same-name repost (same gate as the nzbdav path).
+
+    ``completed_job`` is the picker's corroborated NZBGet history match
+    (``_nzbget_completed_job``): when its ``dest_dir`` still holds a playable
+    video over SMB, that file is played directly and nothing is submitted.
     """
     dialog = None
     nzbid = None
@@ -358,15 +383,37 @@ def _run_nzbget_backend(nzb_url, title, settings_getter, on_success, on_failure)
         dialog = xbmcgui.DialogProgress()
         dialog.create(_addon_name(), _string(30218))
 
-        # Always submit the NZB the user actually selected. We deliberately do
-        # NOT reuse an existing NZBGet job (completed history *or* in-queue) by
-        # name: unlike the nzbdav completed-cache, a name match has no
-        # size/pubdate/indexer corroboration (and that selected-result metadata
-        # isn't available on the handle-based entry path), so a same-named
-        # repost or a different indexer's result could attach to / play the
-        # wrong job instead of the one the user chose. NZBGet's own dupe
-        # handling deals with re-submitting a still-in-flight same-name job on a
-        # quick retry.
+        # Corroborated picker reuse: the router tagged this selection against
+        # a SUCCESS history row (exact name + size/pubdate gates), so play the
+        # already-completed files instead of re-submitting — NZBGet's
+        # duplicate check (DupeCheck=yes by default) dupe-deletes a
+        # re-submission of a SUCCESS item, which would fail the resolve. A
+        # probe miss (files cleaned up / share moved) falls through to the
+        # normal submit flow.
+        if isinstance(completed_job, dict) and completed_job.get("dest_dir"):
+            reuse_folder = nzbget_smb_target(
+                smb_root, completed_job["dest_dir"], category, completed_base
+            )
+            if reuse_folder:
+                video_url = resolve_smb_video(
+                    reuse_folder,
+                    dialog=dialog,
+                    interval=interval,
+                    budget=_SMB_REUSE_PROBE_BUDGET,
+                )
+                if video_url:
+                    on_success(video_url)
+                    return
+
+        # Submit the NZB the user actually selected. Beyond the corroborated
+        # reuse above, we deliberately do NOT reuse an existing NZBGet job
+        # (completed history *or* in-queue) by name: a bare name match has no
+        # size/pubdate/indexer corroboration (and that selected-result
+        # metadata isn't available on the handle-based entry path), so a
+        # same-named repost or a different indexer's result could attach to /
+        # play the wrong job instead of the one the user chose. NZBGet's own
+        # dupe handling deals with re-submitting a still-in-flight same-name
+        # job on a quick retry.
         nzbid, error = nzbget_api.append_nzb(
             nzb_url, title, settings_getter=settings_getter
         )
@@ -398,6 +445,11 @@ def _run_nzbget_backend(nzb_url, title, settings_getter, on_success, on_failure)
         if outcome == "failed":
             on_failure(_string(30220))
             return
+
+        # The download completed (it is now SUCCESS history): remember the
+        # selected result's post-date before the SMB mapping, which can still
+        # fail without un-completing the download. Fail-soft inside.
+        record_download(title, download_pubdate, download_size)
 
         smb_folder = nzbget_smb_target(
             smb_root, result["dest_dir"], category, completed_base
@@ -464,7 +516,16 @@ def resolve_and_play_nzbget(handle, params, settings_getter=None, resume_seconds
     def on_failure(message):
         _resolve_failure(handle, message)
 
-    _run_nzbget_backend(nzb_url, title, settings_getter, on_success, on_failure)
+    _run_nzbget_backend(
+        nzb_url,
+        title,
+        settings_getter,
+        on_success,
+        on_failure,
+        download_pubdate=params.get("_download_pubdate"),
+        download_size=params.get("_download_size"),
+        completed_job=params.get("_nzbget_completed_job"),
+    )
 
 
 def play_nzbget(nzb_url, title, params=None, settings_getter=None, resume_seconds=0.0):
@@ -476,8 +537,9 @@ def play_nzbget(nzb_url, title, params=None, settings_getter=None, resume_second
     mirroring the nzbdav ``resolve_and_play`` "no setResolvedUrl" contract.
     ``resume_seconds`` carries the scrubbed bookmark's resume position.
     """
+    resolve_params = params or {}
     if settings_getter is None:
-        settings_getter = (params or {}).get("_settings_getter")
+        settings_getter = resolve_params.get("_settings_getter")
 
     def on_success(video_url):
         listitem = xbmcgui.ListItem(path=video_url)
@@ -488,4 +550,13 @@ def play_nzbget(nzb_url, title, params=None, settings_getter=None, resume_second
         if message:
             _notify(_addon_name(), message, 5000)
 
-    _run_nzbget_backend(nzb_url, title, settings_getter, on_success, on_failure)
+    _run_nzbget_backend(
+        nzb_url,
+        title,
+        settings_getter,
+        on_success,
+        on_failure,
+        download_pubdate=resolve_params.get("_download_pubdate"),
+        download_size=resolve_params.get("_download_size"),
+        completed_job=resolve_params.get("_nzbget_completed_job"),
+    )

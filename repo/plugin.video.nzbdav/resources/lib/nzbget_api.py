@@ -231,6 +231,109 @@ def history_status(nzbid, settings_getter=None):
     return {"present": False, "success": False, "status": "", "dest_dir": ""}
 
 
+class _CompletedHistory(dict):
+    """Name-keyed SUCCESS history mapping, marked when the lookup succeeded.
+
+    Mirrors nzbdav_api's completed-jobs marker: ``router._completed_lookup_was_done``
+    tells "lookup ran and found nothing" (skip per-selection re-lookups) apart
+    from "lookup failed" via the ``_lookup_done`` attribute.
+    """
+
+    def __init__(self, *args, **kwargs):
+        lookup_done = kwargs.pop("lookup_done", False)
+        super().__init__(*args, **kwargs)
+        self._lookup_done = bool(lookup_done)
+
+
+def _history_item_bytes(item):
+    """Best-effort byte size of a history item, or None when unknown.
+
+    Prefers the exact FileSizeHi/FileSizeLo 64-bit pair, falling back to the
+    rounded FileSizeMB; tolerates str/None fields like the other parsers. A
+    None return makes the picker's size gate fail open (name-only match)
+    instead of treating the row as a zero-byte mismatch.
+    """
+    size = int(_as_number(item.get("FileSizeHi"))) * 4294967296 + int(
+        _as_number(item.get("FileSizeLo"))
+    )
+    if size > 0:
+        return size
+    size_mb = int(_as_number(item.get("FileSizeMB")))
+    if size_mb > 0:
+        return size_mb * 1048576
+    return None
+
+
+# Picker-render RPC bound: ``completed_history`` runs synchronously right
+# before the results dialog opens, so cap the wait the way the nzbdav picker
+# path does (nzbdav_api._API_READ_TIMEOUT = 10, "prevent dialog freeze")
+# instead of the resolver-path _RPC_TIMEOUT — a silently-unreachable NZBGet
+# box must not freeze the picker for 30s.
+_PICKER_RPC_TIMEOUT = 10
+
+
+def completed_history(settings_getter=None):
+    """Fetch NZBGet's SUCCESS/* history keyed by job name.
+
+    Powers the picker's "DL" tag in NZBGet mode: a result whose title matches
+    a SUCCESS history row already has its finished files on disk, and the
+    resolver reuses that row's ``dest_dir`` over SMB on selection instead of
+    re-submitting (NZBGet's duplicate check would dupe-delete a re-submission
+    of a SUCCESS item, failing the resolve). Values carry the same
+    ``name``/``bytes`` shape as nzbdav completed jobs so the router reuses
+    its size gate. Returns a lookup_done-marked mapping on RPC success (even
+    when empty) and a plain empty dict on any failure — never raises (the
+    picker render path has no try/except around tagging). One ``history`` RPC
+    per call — same visible-only view as ``history_status``; avoid calling in
+    tight loops.
+    """
+    try:
+        hist, error = _rpc_call(
+            "history",
+            [False],
+            settings_getter=settings_getter,
+            timeout=_PICKER_RPC_TIMEOUT,
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        # _rpc_call reads settings before its own try block; a raising
+        # injected getter (or an early-startup Addon read) must degrade to
+        # "no tags", not crash the picker render.
+        xbmc.log(
+            "NZB-DAV: NZBGet completed_history failed: {}".format(
+                _redact_text(str(exc))
+            ),
+            xbmc.LOGDEBUG,
+        )
+        return {}
+    if error is not None or not isinstance(hist, list):
+        return {}
+    jobs = _CompletedHistory(lookup_done=True)
+    for item in hist:
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("Status") or "")
+        if not status.startswith("SUCCESS"):
+            continue
+        name = item.get("Name")
+        if not name:
+            continue
+        # History is newest-first; for same-name SUCCESS rows keep the newest
+        # one — that's the row a replay's dupe handling would land on.
+        if name in jobs:
+            continue
+        jobs[name] = {
+            "name": name,
+            "status": status,
+            "bytes": _history_item_bytes(item),
+            "nzbid": item.get("NZBID"),
+            # Where the finished files live. FinalDir preferred over DestDir
+            # like history_status, so a post-processing-script move is
+            # followed to the file's final location.
+            "dest_dir": (item.get("FinalDir") or item.get("DestDir") or ""),
+        }
+    return jobs
+
+
 def completed_base_dir(settings_getter=None):
     """Return NZBGet's configured global completed DestDir (absolute), or None.
 

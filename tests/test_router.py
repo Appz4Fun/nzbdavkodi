@@ -3306,6 +3306,19 @@ def test_attach_selected_result_metadata_omits_absent_fields():
     assert "_download_pubdate" not in params
     assert "_download_size" not in params
     assert "_selected_indexer" not in params
+    assert "_nzbget_completed_job" not in params
+
+
+def test_attach_selected_result_metadata_threads_nzbget_completed_job():
+    """The picker's NZBGet reuse hint must reach the resolver params, so the
+    NZBGet path can play the completed files instead of re-submitting."""
+    from resources.lib.router import _attach_selected_result_metadata
+
+    job = {"name": "x", "dest_dir": "/dl/movies/x", "bytes": 1}
+    params = {}
+    selected = {"title": "x", "_nzbget_completed_job": job}
+    _attach_selected_result_metadata(params, selected)
+    assert params["_nzbget_completed_job"] == job
 
 
 @patch("resources.lib.router.downloaded_pubdate_epochs")
@@ -3395,6 +3408,199 @@ def test_tag_available_fails_open_when_result_pubdate_missing(
     result = {"title": "Movie.mkv", "size": "1000"}  # no pubdate
     _tag_available([result])
     assert result.get("_available") is True
+
+
+class _NzbgetDoneHistory(dict):
+    """Stand-in for nzbget_api's lookup_done-marked completed-history dict."""
+
+    _lookup_done = True
+
+
+def _nzbget_mode_getter(extra=None):
+    values = {"nzbget_enabled": "true"}
+    values.update(extra or {})
+    return lambda key, default="": values.get(key, default)
+
+
+@patch("resources.lib.router.get_completed_jobs")
+@patch("resources.lib.nzbget_api.completed_history")
+def test_tag_available_nzbget_mode_tags_from_nzbget_history(
+    mock_nzbget_history, mock_nzbdav_completed
+):
+    """In NZBGet mode the DL tag must come from NZBGet's SUCCESS history (the
+    backend that answers 'will picking this re-download?'), never from nzbdav
+    history — and it must NOT attach the nzbdav ``_completed_job`` cached-stream
+    hint, because the NZBGet path always re-submits."""
+    from resources.lib.router import _tag_available
+
+    getter = _nzbget_mode_getter()
+    job = {
+        "name": "Movie.mkv",
+        "status": "SUCCESS/UNPACK",
+        "bytes": 60_000_000_000,
+        "nzbid": 7,
+        "dest_dir": "/dl/movies/Movie.mkv",
+    }
+    mock_nzbget_history.return_value = _NzbgetDoneHistory({"Movie.mkv": job})
+    cached = {"title": "Movie.mkv", "size": "60500000000"}
+    other = {"title": "Other.mkv", "size": "60500000000"}
+    completed = _tag_available([cached, other], settings_getter=getter)
+
+    assert cached.get("_available") is True
+    # The corroborated match is attached for selection-time reuse (play the
+    # completed files instead of re-submitting into NZBGet's dupe check)...
+    assert cached.get("_nzbget_completed_job") == job
+    # ...but never as the nzbdav cached-stream hint.
+    assert "_completed_job" not in cached
+    assert "_available" not in other
+    assert "_nzbget_completed_job" not in other
+    mock_nzbget_history.assert_called_once_with(settings_getter=getter)
+    mock_nzbdav_completed.assert_not_called()
+    # The picker-time lookup ran, so selection must not re-query history.
+    from resources.lib.router import _completed_lookup_was_done
+
+    assert _completed_lookup_was_done(completed) is True
+
+
+@patch("resources.lib.router.get_completed_jobs")
+@patch("resources.lib.nzbget_api.completed_history")
+def test_tag_available_nzbget_mode_requires_size_match(
+    mock_nzbget_history, mock_nzbdav_completed
+):
+    """NZBGet history is name-keyed like nzbdav's, so the same size gate must
+    keep a clearly-different same-name release from being marked DL."""
+    from resources.lib.router import _tag_available
+
+    mock_nzbget_history.return_value = _NzbgetDoneHistory(
+        {
+            "Movie.mkv": {
+                "name": "Movie.mkv",
+                "status": "SUCCESS/UNPACK",
+                "bytes": 60_000_000_000,
+            }
+        }
+    )
+    diff = {"title": "Movie.mkv", "size": "10000000000"}
+    unknown = {"title": "Movie.mkv"}  # no size -> fail open
+    _tag_available([diff, unknown], settings_getter=_nzbget_mode_getter())
+
+    assert "_available" not in diff
+    assert unknown.get("_available") is True
+    mock_nzbdav_completed.assert_not_called()
+
+
+@patch("resources.lib.router.downloaded_pubdate_epochs")
+@patch("resources.lib.router.get_completed_jobs")
+@patch("resources.lib.nzbget_api.completed_history")
+def test_tag_available_nzbget_mode_requires_pubdate_match(
+    mock_nzbget_history, mock_nzbdav_completed, mock_epochs
+):
+    """The download-ledger pubdate gate applies in NZBGet mode too: a same-name
+    same-size repost posted on a different day must not be marked DL."""
+    from resources.lib.router import _tag_available
+
+    mock_nzbget_history.return_value = _NzbgetDoneHistory(
+        {
+            "Movie.mkv": {
+                "name": "Movie.mkv",
+                "status": "SUCCESS/UNPACK",
+                "bytes": 60_000_000_000,
+            }
+        }
+    )
+    mock_epochs.return_value = [1639569600]
+    same_age = {"title": "Movie.mkv", "size": "60000000000", "pubdate": _PUBDATE_A}
+    diff_age = {"title": "Movie.mkv", "size": "60000000000", "pubdate": _PUBDATE_B}
+    _tag_available([same_age, diff_age], settings_getter=_nzbget_mode_getter())
+
+    assert same_age.get("_available") is True
+    assert "_available" not in diff_age
+    mock_nzbdav_completed.assert_not_called()
+
+
+@patch("resources.lib.router.get_completed_jobs")
+@patch("resources.lib.nzbget_api.completed_history")
+def test_tag_available_nzbget_mode_marks_lookup_done_even_on_rpc_failure(
+    mock_nzbget_history, mock_nzbdav_completed
+):
+    """When the NZBGet history RPC fails, no result can be tagged — but the
+    return value must still read as 'lookup done' so selection skips the
+    per-name nzbdav history fallback, which is meaningless on the NZBGet
+    path (the resolver always re-submits to NZBGet)."""
+    from resources.lib.router import _completed_lookup_was_done, _tag_available
+
+    mock_nzbget_history.return_value = {}  # unmarked = RPC failure
+    result = {"title": "Movie.mkv", "size": "1000"}
+    completed = _tag_available([result], settings_getter=_nzbget_mode_getter())
+
+    assert "_available" not in result
+    assert _completed_lookup_was_done(completed) is True
+    mock_nzbdav_completed.assert_not_called()
+
+
+@patch("resources.lib.router.get_completed_jobs")
+@patch("resources.lib.nzbget_api.completed_history")
+def test_tag_available_nzbdav_mode_never_queries_nzbget(
+    mock_nzbget_history, mock_nzbdav_completed
+):
+    """With the NZBGet toggle off, tagging must stay on the nzbdav path."""
+    from resources.lib.router import _tag_available
+
+    mock_nzbdav_completed.return_value = {}
+    _tag_available(
+        [{"title": "Movie.mkv"}],
+        settings_getter=lambda key, default="": default,
+    )
+
+    mock_nzbget_history.assert_not_called()
+    mock_nzbdav_completed.assert_called_once()
+
+
+@patch(
+    "resources.lib.router._get_script_setting",
+    side_effect=lambda key, default="": (
+        "true" if key in ("auto_select_best", "nzbget_enabled") else default
+    ),
+)
+@patch("xbmcplugin.endOfDirectory")
+@patch("xbmcplugin.setResolvedUrl")
+@patch("resources.lib.resolver.resolve_and_play")
+@patch("resources.lib.results_dialog.show_results_dialog")
+@patch("resources.lib.filter.filter_results")
+@patch("resources.lib.router._search_all_providers")
+@patch("resources.lib.router._script_completed_job_for_selection")
+@patch("resources.lib.cache.set_cached")
+@patch("resources.lib.cache.get_cached", return_value=None)
+def test_handle_script_play_auto_select_nzbget_mode_skips_nzbdav_lookup(
+    mock_cache,
+    mock_set_cache,
+    mock_script_completed,
+    mock_search,
+    mock_filter,
+    mock_dialog,
+    mock_resolve_and_play,
+    mock_set_resolved,
+    mock_end,
+    mock_script_setting,
+):
+    """The RunScript auto-select branch never runs _tag_available, so it needs
+    its own NZBGet-mode gate: the per-selection nzbdav history lookup is dead
+    weight there (resolve_and_play delegates to NZBGet before reading the
+    hint) and can stall for its full read timeout on a stale nzbdav config."""
+    from resources.lib.router import _handle_script_play
+
+    chosen = {"title": "The.Odyssey.2026.mkv", "link": "http://hydra/nzb/odyssey"}
+    mock_search.return_value = ([chosen], None)
+    mock_filter.return_value = ([chosen], [chosen])
+
+    _handle_script_play({"type": "movie", "title": "The Odyssey", "year": "2026"})
+
+    mock_script_completed.assert_not_called()
+    mock_dialog.assert_not_called()
+    mock_resolve_and_play.assert_called_once()
+    resolver_params = mock_resolve_and_play.call_args.kwargs["params"]
+    assert resolver_params.get("_completed_job_lookup_done") is True
+    assert "_completed_job" not in resolver_params
 
 
 @patch("resources.lib.router.downloaded_pubdate_epochs")
