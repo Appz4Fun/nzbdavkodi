@@ -49,6 +49,9 @@ class _NoRedirectHandler(HTTPRedirectHandler):
 
 _NO_REDIRECT_OPENER = build_opener(_NoRedirectHandler())
 
+_NON_ALPHANUMERIC_RE = re.compile(r"[\W_]+")
+_SAFE_JOB_NAME_RE = re.compile(r"[^A-Za-z0-9._ -]+")
+
 
 def _no_redirect_urlopen(req, timeout):
     """Open ``req`` without following any HTTP redirect.
@@ -404,7 +407,7 @@ def _normalize_title(value):
     """Normalize release titles for conservative duplicate grouping."""
     if not isinstance(value, str):
         return ""
-    normalized = re.sub(r"[\W_]+", " ", value.lower())
+    normalized = _NON_ALPHANUMERIC_RE.sub(" ", value.lower())
     return " ".join(normalized.split())
 
 
@@ -2263,7 +2266,7 @@ def _rank_fallback_candidates(target, candidates):
 def build_fallback_job_name(title, nzb_url, index):
     """Return a stable, traceable nzbdav job name for a fallback candidate."""
     clean_title = title if isinstance(title, str) else ""
-    clean_title = re.sub(r"[^A-Za-z0-9._ -]+", " ", clean_title)
+    clean_title = _SAFE_JOB_NAME_RE.sub(" ", clean_title)
     clean_title = " ".join(clean_title.split())[:180].strip()
     if not clean_title:
         clean_title = "fallback"
@@ -2271,7 +2274,7 @@ def build_fallback_job_name(title, nzb_url, index):
     digest = hashlib.sha256(str(nzb_url).encode("utf-8")).hexdigest()[:8]
     job_name = "{} [fallback-{}-{}]".format(clean_title, index, digest)
     if not _SAFE_JOB_RE.match(job_name):
-        job_name = re.sub(r"[^A-Za-z0-9._ -]+", " ", job_name)
+        job_name = _SAFE_JOB_NAME_RE.sub(" ", job_name)
         job_name = " ".join(job_name.split())
     return job_name
 
