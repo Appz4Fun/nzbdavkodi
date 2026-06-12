@@ -2090,7 +2090,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
         try:
             # lgtm [py/command-line-injection]
             proc = subprocess.Popen(  # nosec B603
-                cmd,
+                cmd,  # lgtm [py/command-line-injection]
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -6675,7 +6675,7 @@ class HlsProducer:
                 # under-a-terminal case.
                 # lgtm [py/command-line-injection]
                 self._proc = subprocess.Popen(  # nosec B603
-                    cmd,
+                    cmd,  # lgtm [py/command-line-injection]
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=self._ffmpeg_log,
@@ -7412,7 +7412,7 @@ class StreamProxy:
         try:
             # lgtm [py/command-line-injection]
             proc = subprocess.Popen(  # nosec B603
-                cmd,
+                cmd,  # lgtm [py/command-line-injection]
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
@@ -8581,7 +8581,7 @@ class StreamProxy:
             )
             # lgtm [py/command-line-injection]
             proc = subprocess.Popen(  # nosec B603
-                cmd,
+                cmd,  # lgtm [py/command-line-injection]
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -8655,7 +8655,7 @@ class StreamProxy:
         try:
             # lgtm [py/command-line-injection]
             proc = subprocess.Popen(  # nosec B603
-                cmd,
+                cmd,  # lgtm [py/command-line-injection]
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
@@ -8781,7 +8781,7 @@ class StreamProxy:
             xbmc.log("NZB-DAV: Temp-file faststart remux starting", xbmc.LOGINFO)
             # lgtm [py/command-line-injection]
             proc = subprocess.Popen(  # nosec B603
-                cmd,
+                cmd,  # lgtm [py/command-line-injection]
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
