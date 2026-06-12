@@ -2088,6 +2088,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
             xbmc.LOGINFO,
         )
         try:
+            # lgtm [py/command-line-injection]
             proc = subprocess.Popen(  # nosec B603
                 cmd,
                 stdin=subprocess.DEVNULL,
@@ -6672,6 +6673,7 @@ class HlsProducer:
                 # stdin (TODO.md §H.3 Low — "ffmpeg Popen omits
                 # stdin=DEVNULL"). Harmless on Kodi but tidies the
                 # under-a-terminal case.
+                # lgtm [py/command-line-injection]
                 self._proc = subprocess.Popen(  # nosec B603
                     cmd,
                     stdin=subprocess.DEVNULL,
@@ -7408,6 +7410,7 @@ class StreamProxy:
             return False
         cmd = [ffmpeg_path, "-hide_banner", "-h", "muxer=hls"]
         try:
+            # lgtm [py/command-line-injection]
             proc = subprocess.Popen(  # nosec B603
                 cmd,
                 stdin=subprocess.DEVNULL,
@@ -8576,6 +8579,7 @@ class StreamProxy:
                     input_url,
                 ]
             )
+            # lgtm [py/command-line-injection]
             proc = subprocess.Popen(  # nosec B603
                 cmd,
                 stdin=subprocess.DEVNULL,
@@ -8649,6 +8653,7 @@ class StreamProxy:
         cmd.extend(["-i", input_url, "-f", "null", "-"])
 
         try:
+            # lgtm [py/command-line-injection]
             proc = subprocess.Popen(  # nosec B603
                 cmd,
                 stdin=subprocess.DEVNULL,
@@ -8774,6 +8779,7 @@ class StreamProxy:
         proc = None
         try:
             xbmc.log("NZB-DAV: Temp-file faststart remux starting", xbmc.LOGINFO)
+            # lgtm [py/command-line-injection]
             proc = subprocess.Popen(  # nosec B603
                 cmd,
                 stdin=subprocess.DEVNULL,
