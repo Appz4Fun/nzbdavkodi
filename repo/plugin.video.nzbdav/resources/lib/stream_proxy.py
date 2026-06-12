@@ -22,17 +22,6 @@ import shutil
 import socket as _socket
 import struct
 import subprocess
-
-# 🛡️ Sentinel: Monkey-patch Popen to prevent child processes from inheriting stdin
-_orig_popen = subprocess.Popen
-
-class _SafePopen(_orig_popen):
-    def __init__(self, *args, **kwargs):
-        kwargs.setdefault("stdin", subprocess.DEVNULL)
-        super(_SafePopen, self).__init__(*args, **kwargs)
-
-subprocess.Popen = _SafePopen
-
 import tempfile
 import threading
 import time
@@ -74,6 +63,18 @@ from resources.lib.dv_source import probe_dolby_vision_source
 from resources.lib.http_util import HTTP_USER_AGENT
 from resources.lib.http_util import notify as _notify
 from resources.lib.http_util import redact_text as _redact_text
+
+# 🛡️ Sentinel: Monkey-patch Popen to prevent child processes from inheriting stdin
+_orig_popen = subprocess.Popen
+
+
+class _SafePopen(_orig_popen):
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("stdin", subprocess.DEVNULL)
+        super(_SafePopen, self).__init__(*args, **kwargs)
+
+
+subprocess.Popen = _SafePopen
 
 # Singleton proxy instance
 _proxy = None
