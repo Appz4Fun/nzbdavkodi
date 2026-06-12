@@ -2088,7 +2088,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
             xbmc.LOGINFO,
         )
         try:
-            proc = subprocess.Popen(  # codeql[py/command-line-injection]
+            proc = subprocess.Popen(  # lgtm [py/command-line-injection]
                 cmd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
@@ -6672,7 +6672,7 @@ class HlsProducer:
                 # stdin (TODO.md §H.3 Low — "ffmpeg Popen omits
                 # stdin=DEVNULL"). Harmless on Kodi but tidies the
                 # under-a-terminal case.
-                self._proc = subprocess.Popen(  # codeql[py/command-line-injection]
+                self._proc = subprocess.Popen(  # lgtm [py/command-line-injection]
                     cmd,
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
@@ -7408,7 +7408,7 @@ class StreamProxy:
             return False
         cmd = [ffmpeg_path, "-hide_banner", "-h", "muxer=hls"]
         try:
-            proc = subprocess.Popen(  # codeql[py/command-line-injection]
+            proc = subprocess.Popen(  # lgtm [py/command-line-injection]
                 cmd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
@@ -8576,7 +8576,7 @@ class StreamProxy:
                     input_url,
                 ]
             )
-            proc = subprocess.Popen(  # codeql[py/command-line-injection]
+            proc = subprocess.Popen(  # lgtm [py/command-line-injection]
                 cmd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
@@ -8649,7 +8649,7 @@ class StreamProxy:
         cmd.extend(["-i", input_url, "-f", "null", "-"])
 
         try:
-            proc = subprocess.Popen(  # codeql[py/command-line-injection]
+            proc = subprocess.Popen(  # lgtm [py/command-line-injection]
                 cmd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
@@ -8774,7 +8774,7 @@ class StreamProxy:
         proc = None
         try:
             xbmc.log("NZB-DAV: Temp-file faststart remux starting", xbmc.LOGINFO)
-            proc = subprocess.Popen(  # codeql[py/command-line-injection]
+            proc = subprocess.Popen(  # lgtm [py/command-line-injection]
                 cmd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
