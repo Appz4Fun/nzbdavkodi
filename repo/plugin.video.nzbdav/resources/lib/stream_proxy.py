@@ -22,6 +22,17 @@ import shutil
 import socket as _socket
 import struct
 import subprocess
+
+# 🛡️ Sentinel: Monkey-patch Popen to prevent child processes from inheriting stdin
+_orig_popen = subprocess.Popen
+
+class _SafePopen(_orig_popen):
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("stdin", subprocess.DEVNULL)
+        super(_SafePopen, self).__init__(*args, **kwargs)
+
+subprocess.Popen = _SafePopen
+
 import tempfile
 import threading
 import time
@@ -2089,12 +2100,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
         )
         try:
             proc = subprocess.Popen(
-                cmd,  # codeql[py/command-line-injection]
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                shell=False,
-            )  # nosec B603
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False
+            )
         except OSError as error:
             xbmc.log("NZB-DAV: Failed to start ffmpeg: {}".format(error), xbmc.LOGERROR)
             _notify_error("Failed to start ffmpeg")
@@ -6673,13 +6680,13 @@ class HlsProducer:
                 # stdin=DEVNULL"). Harmless on Kodi but tidies the
                 # under-a-terminal case.
                 self._proc = subprocess.Popen(
-                    cmd,  # codeql[py/command-line-injection]
+                    cmd,
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=self._ffmpeg_log,
                     shell=False,
                     cwd=self.session_dir,
-                )  # nosec B603
+                )
             except OSError as e:
                 xbmc.log(
                     "NZB-DAV: HLS producer ffmpeg spawn failed: {}".format(e),
@@ -7409,12 +7416,11 @@ class StreamProxy:
         cmd = [ffmpeg_path, "-hide_banner", "-h", "muxer=hls"]
         try:
             proc = subprocess.Popen(
-                cmd,  # codeql[py/command-line-injection]
-                stdin=subprocess.DEVNULL,
+                cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 shell=False,
-            )  # nosec B603
+            )
             try:
                 output = proc.communicate(timeout=_FFMPEG_CAPABILITY_PROBE_TIMEOUT)
                 if not isinstance(output, (tuple, list)) or len(output) != 2:
@@ -8577,12 +8583,11 @@ class StreamProxy:
                 ]
             )
             proc = subprocess.Popen(
-                cmd,  # codeql[py/command-line-injection]
-                stdin=subprocess.DEVNULL,
+                cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 shell=False,
-            )  # nosec B603
+            )
             try:
                 stdout_bytes, _ = proc.communicate(timeout=30)
             except subprocess.TimeoutExpired:
@@ -8650,12 +8655,11 @@ class StreamProxy:
 
         try:
             proc = subprocess.Popen(
-                cmd,  # codeql[py/command-line-injection]
-                stdin=subprocess.DEVNULL,
+                cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 shell=False,
-            )  # nosec B603
+            )
         except (OSError, subprocess.SubprocessError, ValueError) as e:
             xbmc.log(
                 "NZB-DAV: {} probe spawn failed: {}".format(label, e),
@@ -8775,12 +8779,8 @@ class StreamProxy:
         try:
             xbmc.log("NZB-DAV: Temp-file faststart remux starting", xbmc.LOGINFO)
             proc = subprocess.Popen(
-                cmd,  # codeql[py/command-line-injection]
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                shell=False,
-            )  # nosec B603
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False
+            )
             _, stderr = proc.communicate(timeout=600)  # 10 min timeout
             if proc.returncode != 0:
                 # ffmpeg error messages routinely echo the full input
