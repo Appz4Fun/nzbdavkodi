@@ -6682,7 +6682,7 @@ class HlsProducer:
                     cwd=self.session_dir,
                 )
                 # fmt: off
-                self._proc = subprocess.Popen(cmd, **kw)  # noqa: E501  # lgtm [py/command-line-injection]  # nosec B603
+                self._proc = subprocess.Popen(cmd, **kw)  # nosec B603  # lgtm [py/command-line-injection]  # noqa: E501
                 # fmt: on
             except OSError as e:
                 xbmc.log(
