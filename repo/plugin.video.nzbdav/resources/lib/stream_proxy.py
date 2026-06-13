@@ -613,6 +613,11 @@ _PROP_PROXY_TOKEN = "nzbdav.proxy_token"  # nosec B105 — settings key, not a s
 # finished adopting them (the cutover-never-fires race).
 _FALLBACK_UPDATE_PATH_RE = re.compile(r"^/stream/([^/]+)/fallbacks$")
 
+# Performance: pre-compile regexes used in frequent operations
+_DURATION_RE = re.compile(r"Duration:\s*(\d+):(\d+):(\d+)(?:\.(\d+))?")
+_SEGMENT_NORMALIZE_RE = re.compile(r"seg_0*(\d+)\.(m4s|ts)")
+_CONTENT_RANGE_ZERO_RE = re.compile(r"^bytes\s+0-0/(\d+)$")
+
 # HLS segment length. Shorter segments (6 s) minimize the playlist-
 # vs-actual drift that breaks seek accuracy and A/V sync on the fmp4
 # path. The playlist emits fixed-duration EXTINF values based on
@@ -1865,7 +1870,7 @@ def _parse_ffmpeg_duration(stderr_text):
 
     Returns duration in seconds as a float, or None if not found.
     """
-    match = re.search(r"Duration:\s*(\d+):(\d+):(\d+)(?:\.(\d+))?", stderr_text)
+    match = _DURATION_RE.search(stderr_text)
     if not match:
         return None
     hours, minutes, seconds, frac = match.groups()
@@ -6289,7 +6294,7 @@ class HlsProducer:
         def _normalize_segment(match):
             return "seg_{}.{}".format(int(match.group(1)), match.group(2))
 
-        text = re.sub(r"seg_0*(\d+)\.(m4s|ts)", _normalize_segment, text)
+        text = _SEGMENT_NORMALIZE_RE.sub(_normalize_segment, text)
         return text.encode("utf-8")
 
     def _segment_complete(self, seg_n):
@@ -8844,7 +8849,7 @@ class StreamProxy:
                     status = getattr(resp, "status", None)
                     if status is None:
                         status = resp.getcode()
-                    match = re.match(r"^bytes\s+0-0/(\d+)$", cr.strip())
+                    match = _CONTENT_RANGE_ZERO_RE.match(cr.strip())
                     stream_length = int(match.group(1)) if match else 0
                     if status == 206 and stream_length == content_length_hint:
                         return content_length_hint
