@@ -2095,7 +2095,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 shell=False,
             )
             # fmt: off
-            proc = subprocess.Popen(cmd, **kw)  # noqa: E501  # lgtm [py/command-line-injection]  # nosec B603
+            proc = subprocess.Popen(cmd, **kw)  # lgtm [py/command-line-injection]  # nosec B603  # noqa: E501
             # fmt: on
         except OSError as error:
             xbmc.log("NZB-DAV: Failed to start ffmpeg: {}".format(error), xbmc.LOGERROR)
@@ -6682,7 +6682,7 @@ class HlsProducer:
                     cwd=self.session_dir,
                 )
                 # fmt: off
-                self._proc = subprocess.Popen(cmd, **kw)  # noqa: E501  # lgtm [py/command-line-injection]  # nosec B603
+                self._proc = subprocess.Popen(cmd, **kw)  # lgtm [py/command-line-injection]  # nosec B603  # noqa: E501
                 # fmt: on
             except OSError as e:
                 xbmc.log(
