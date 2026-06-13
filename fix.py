@@ -6,8 +6,8 @@ with open("repo/plugin.video.nzbdav/resources/lib/stream_proxy.py", "w") as f:
             indent = line.split("proc")[0]
             if "self._proc" in line:
                 indent = line.split("self._proc")[0]
-                f.write(indent + "self._proc = subprocess.Popen(cmd, **kw)  # lgtm [py/command-line-injection]  # nosec B603  # noqa: E501\n")
+                f.write(indent + "self._proc = subprocess.Popen(cmd, **kw)  # noqa: E501  # lgtm [py/command-line-injection]  # nosec B603\n")
             else:
-                f.write(indent + "proc = subprocess.Popen(cmd, **kw)  # lgtm [py/command-line-injection]  # nosec B603  # noqa: E501\n")
+                f.write(indent + "proc = subprocess.Popen(cmd, **kw)  # noqa: E501  # lgtm [py/command-line-injection]  # nosec B603\n")
         else:
             f.write(line)
