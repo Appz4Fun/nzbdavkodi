@@ -186,8 +186,6 @@ rendering. Power consumption is irrelevant for a plugged-in device.
 | `/storage/.config/uas-rebind.sh` | UAS module load + USB rebind |
 | `/storage/.config/system.d/uas-rebind.service` | runs rebind at sysinit |
 | `/storage/.config/system.d/zram.service` | 2 GB lz4 compressed swap |
-| `/storage/.config/system.d/tmdbhelper-warmup-rs.service` | metadata service |
-| `/storage/.config/system.d/tmdbhelper-warmup-images.service` | image service |
 | `/storage/uas.ko` | compiled UAS kernel module |
 
 ## Verification Commands
@@ -205,7 +203,4 @@ sqlite3 /var/media/CACHE_DRIVE/tmdb/Textures13.db "SELECT idVersion FROM version
 
 # RPS active
 cat /sys/class/net/eth0/queues/rx-0/rps_cpus  # 3f
-
-# Services running
-systemctl is-active tmdbhelper-warmup-rs tmdbhelper-warmup-images  # active active
 ```
