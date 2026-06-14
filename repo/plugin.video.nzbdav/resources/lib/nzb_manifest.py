@@ -5,7 +5,16 @@
 
 import hashlib
 import re
-import xml.etree.ElementTree as ET
+
+try:
+    from defusedxml import ElementTree as ET
+    from defusedxml.common import DefusedXmlException as _UnsafeXmlError
+except ImportError:  # pragma: no cover - Kodi installs may not bundle defusedxml
+    import xml.etree.ElementTree as ET
+
+    class _UnsafeXmlError(ValueError):
+        """Raised when defusedxml rejects DTD/entity declarations."""
+
 from urllib.parse import urlsplit
 
 from resources.lib.http_util import HttpResponseTooLarge, http_get
@@ -389,8 +398,11 @@ def _build_xxe_safe_parser():
 def extract_nzb_video_manifest(nzb_bytes, health_check=None):
     """Return main video-file or provisional archive metadata from an NZB XML."""
     try:
-        root = ET.fromstring(nzb_bytes, parser=_build_xxe_safe_parser())
-    except (ET.ParseError, TypeError):
+        if getattr(ET, "__name__", "").startswith("defusedxml."):
+            root = ET.fromstring(nzb_bytes, forbid_dtd=False)
+        else:
+            root = ET.fromstring(nzb_bytes, parser=_build_xxe_safe_parser())
+    except (ET.ParseError, TypeError, _UnsafeXmlError):
         return _empty_manifest("invalid_xml")
 
     video_candidates = []
