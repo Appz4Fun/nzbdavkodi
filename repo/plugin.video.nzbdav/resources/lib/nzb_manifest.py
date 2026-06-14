@@ -15,6 +15,7 @@ except ImportError:  # pragma: no cover - Kodi installs may not bundle defusedxm
     class _UnsafeXmlError(ValueError):
         """Raised when defusedxml rejects DTD/entity declarations."""
 
+
 from urllib.parse import urlsplit
 
 from resources.lib.http_util import HttpResponseTooLarge, http_get
