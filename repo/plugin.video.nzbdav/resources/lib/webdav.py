@@ -88,12 +88,14 @@ _EPISODE_NXN_RANGE_RE = re.compile(
     re.IGNORECASE,
 )
 
+_NON_ALPHANUM_UNDERSCORE_RE = re.compile(r"[\W_]+")
+
 
 def _hint_tokens(value):
     """Return lowercased alphanumeric tokens for loose name matching."""
     if not isinstance(value, str) or not value:
         return frozenset()
-    cleaned = re.sub(r"[\W_]+", " ", value.lower())
+    cleaned = _NON_ALPHANUM_UNDERSCORE_RE.sub(" ", value.lower())
     return frozenset(token for token in cleaned.split() if token)
 
 

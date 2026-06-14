@@ -77,6 +77,8 @@ urlopen = _NO_REDIRECT_OPENER.open  # noqa: F811
 
 _SAFE_JOB_RE = re.compile(r"^[A-Za-z0-9._ \[\]-]+$")
 _CONTENT_RANGE_RE = re.compile(r"^bytes\s+(\d+)-(\d+)/(\d+|\*)$")
+_NON_ALPHANUM_UNDERSCORE_RE = re.compile(r"[\W_]+")
+_UNSAFE_JOB_CHARS_RE = re.compile(r"[^A-Za-z0-9._ -]+")
 _FINGERPRINT_SAMPLE_COUNT = 100
 _FINGERPRINT_SMALL_SAMPLE_COUNT = 20
 _FINGERPRINT_DENSE_SAMPLE_MIN_BYTES = 1024 * 1024 * 1024
@@ -404,7 +406,7 @@ def _normalize_title(value):
     """Normalize release titles for conservative duplicate grouping."""
     if not isinstance(value, str):
         return ""
-    normalized = re.sub(r"[\W_]+", " ", value.lower())
+    normalized = _NON_ALPHANUM_UNDERSCORE_RE.sub(" ", value.lower())
     return " ".join(normalized.split())
 
 
@@ -2263,7 +2265,7 @@ def _rank_fallback_candidates(target, candidates):
 def build_fallback_job_name(title, nzb_url, index):
     """Return a stable, traceable nzbdav job name for a fallback candidate."""
     clean_title = title if isinstance(title, str) else ""
-    clean_title = re.sub(r"[^A-Za-z0-9._ -]+", " ", clean_title)
+    clean_title = _UNSAFE_JOB_CHARS_RE.sub(" ", clean_title)
     clean_title = " ".join(clean_title.split())[:180].strip()
     if not clean_title:
         clean_title = "fallback"
@@ -2271,7 +2273,7 @@ def build_fallback_job_name(title, nzb_url, index):
     digest = hashlib.sha256(str(nzb_url).encode("utf-8")).hexdigest()[:8]
     job_name = "{} [fallback-{}-{}]".format(clean_title, index, digest)
     if not _SAFE_JOB_RE.match(job_name):
-        job_name = re.sub(r"[^A-Za-z0-9._ -]+", " ", job_name)
+        job_name = _UNSAFE_JOB_CHARS_RE.sub(" ", job_name)
         job_name = " ".join(job_name.split())
     return job_name
 

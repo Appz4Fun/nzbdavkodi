@@ -34,10 +34,13 @@ _PRESETS = (
     ("torbox_newznab", "Torbox (Newznab)", "https://search-api.torbox.app/newznab"),
 )
 
+_NON_ALPHANUM_RE = re.compile(r"[^A-Za-z0-9]+")
+_UNDERSCORE_RE = re.compile(r"_+")
+
 
 def slugify_preset_id(name):
-    value = re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_").lower()
-    return re.sub(r"_+", "_", value)
+    value = _NON_ALPHANUM_RE.sub("_", name).strip("_").lower()
+    return _UNDERSCORE_RE.sub("_", value)
 
 
 def _preset(indexer_id, name, api_url):
