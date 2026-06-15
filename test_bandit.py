@@ -1,3 +1,4 @@
 import subprocess
 kw = {"stdin": None}
-subprocess.Popen(["ls"], **kw) # nosec B603
+# lgtm [py/command-line-injection]
+subprocess.Popen(["ls"], **kw) # noqa: E501 # nosec B603
