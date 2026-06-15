@@ -2094,8 +2094,9 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 stderr=subprocess.PIPE,
                 shell=False,
             )
+            # lgtm [py/command-line-injection]
             # fmt: off
-            proc = subprocess.Popen(cmd, **kw)  # noqa: E501  # nosec B603  # lgtm [py/command-line-injection]
+            proc = subprocess.Popen(cmd, **kw)  # noqa: E501  # nosec B603
             # fmt: on
         except OSError as error:
             xbmc.log("NZB-DAV: Failed to start ffmpeg: {}".format(error), xbmc.LOGERROR)
@@ -6681,8 +6682,9 @@ class HlsProducer:
                     shell=False,
                     cwd=self.session_dir,
                 )
+                # lgtm [py/command-line-injection]
                 # fmt: off
-                self._proc = subprocess.Popen(cmd, **kw)  # noqa: E501  # nosec B603  # lgtm [py/command-line-injection]
+                self._proc = subprocess.Popen(cmd, **kw)  # noqa: E501  # nosec B603
                 # fmt: on
             except OSError as e:
                 xbmc.log(
@@ -7418,8 +7420,9 @@ class StreamProxy:
                 stderr=subprocess.PIPE,
                 shell=False,
             )
+            # lgtm [py/command-line-injection]
             # fmt: off
-            proc = subprocess.Popen(cmd, **kw)  # noqa: E501  # nosec B603  # lgtm [py/command-line-injection]
+            proc = subprocess.Popen(cmd, **kw)  # noqa: E501  # nosec B603
             # fmt: on
             try:
                 output = proc.communicate(timeout=_FFMPEG_CAPABILITY_PROBE_TIMEOUT)
@@ -8588,8 +8591,9 @@ class StreamProxy:
                 stderr=subprocess.PIPE,
                 shell=False,
             )
+            # lgtm [py/command-line-injection]
             # fmt: off
-            proc = subprocess.Popen(cmd, **kw)  # noqa: E501  # nosec B603  # lgtm [py/command-line-injection]
+            proc = subprocess.Popen(cmd, **kw)  # noqa: E501  # nosec B603
             # fmt: on
             try:
                 stdout_bytes, _ = proc.communicate(timeout=30)
@@ -8663,8 +8667,9 @@ class StreamProxy:
                 stderr=subprocess.PIPE,
                 shell=False,
             )
+            # lgtm [py/command-line-injection]
             # fmt: off
-            proc = subprocess.Popen(cmd, **kw)  # noqa: E501  # nosec B603  # lgtm [py/command-line-injection]
+            proc = subprocess.Popen(cmd, **kw)  # noqa: E501  # nosec B603
             # fmt: on
         except (OSError, subprocess.SubprocessError, ValueError) as e:
             xbmc.log(
@@ -8790,8 +8795,9 @@ class StreamProxy:
                 stderr=subprocess.PIPE,
                 shell=False,
             )
+            # lgtm [py/command-line-injection]
             # fmt: off
-            proc = subprocess.Popen(cmd, **kw)  # noqa: E501  # nosec B603  # lgtm [py/command-line-injection]
+            proc = subprocess.Popen(cmd, **kw)  # noqa: E501  # nosec B603
             # fmt: on
             _, stderr = proc.communicate(timeout=600)  # 10 min timeout
             if proc.returncode != 0:
