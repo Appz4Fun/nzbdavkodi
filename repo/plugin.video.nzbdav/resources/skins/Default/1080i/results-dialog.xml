@@ -67,6 +67,7 @@
       <left>0</left><top>60</top><width>1910</width><height>975</height>
       <onright>60</onright>
       <orientation>vertical</orientation>
+      <onright>60</onright>
       <pagecontrol>60</pagecontrol>
       <onright>60</onright>
       <scrolltime>200</scrolltime>
