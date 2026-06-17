@@ -1143,27 +1143,77 @@ def _apply_resume_start_offset(li, resume_seconds):
     li.setProperty("StartOffset", str(resume_seconds))
 
 
-def _resolve_resume_choice(params, scrubbed_seconds):
+def _read_stored_resume(key):
+    """Return the addon-owned stored resume offset for ``key`` (0.0 on miss)."""
+    if not key:
+        return 0.0
+    try:
+        return _coerce_resume_seconds(resume_store.get_resume(key))
+    except _RESOLVE_RUNTIME_ERRORS as error:
+        xbmc.log(
+            "NZB-DAV: Failed to read resume state: {}".format(error),
+            xbmc.LOGWARNING,
+        )
+        return 0.0
+
+
+def _preserve_resume_on_cancel(release_id, scrubbed_seconds):
+    """Persist a scrubbed Kodi bookmark offset when the user cancels the prompt.
+
+    ``_clear_kodi_playback_state`` has already deleted Kodi's bookmark by the
+    time the resume menu is shown, so backing out would otherwise lose the only
+    surviving offset (e.g. the first replay after upgrade, before the addon
+    store has an entry). Save it under the release identity so the next replay
+    still offers it. ``save_resume`` itself drops tiny / near-end positions.
+    """
+    if not release_id:
+        return
+    seconds = _coerce_resume_seconds(scrubbed_seconds)
+    if seconds <= 0.0:
+        return
+    try:
+        resume_store.save_resume(release_id, seconds)
+    except _RESOLVE_RUNTIME_ERRORS as error:
+        xbmc.log(
+            "NZB-DAV: Failed to preserve resume on cancel: {}".format(error),
+            xbmc.LOGWARNING,
+        )
+
+
+def _resume_params_with_title(params, title):
+    """Return resume-lookup params with the selected NZB ``title`` applied.
+
+    ``resolve_and_play`` receives the selected release title as a separate
+    argument; ``params`` may omit it or still carry the original TMDBHelper
+    show/movie title. Copy the selected title in (overriding any stale one) so
+    ``release_identity`` keys on the actual release and does not collapse
+    distinct releases -- or different episodes of a show -- onto one resume key.
+    """
+    resume_params = dict(params or {})
+    if title:
+        resume_params["title"] = title
+    return resume_params
+
+
+def _resolve_resume_choice(params, scrubbed_seconds, legacy_key=""):
     """Resolve the resume offset for a replay, prompting only when Kodi would.
 
     Keys resume on the release identity (title + size + pubdate) rather than
     the churning proxy/SMB/WebDAV URL, merges the scrubbed Kodi bookmark with
     the addon-owned stored offset, then defers to ``resume_choice`` (honoring
-    ``myvideos.selectaction``). Returns ``(release_id, chosen)`` where
-    ``chosen`` is the seconds to start at, ``0.0`` to start over, or ``None``
-    when the user cancelled the prompt. The lookup happens once here so the
-    finish funcs never re-read ``resume_store``.
+    Kodi's native play-action preference). Returns ``(release_id, chosen)``
+    where ``chosen`` is the seconds to start at, ``0.0`` to start over, or
+    ``None`` when the user cancelled the prompt. The lookup happens once here
+    so the finish funcs never re-read ``resume_store``.
+
+    ``legacy_key`` (the source stream URL, when known) is consulted only when
+    the release-identity lookup misses, so resume points saved under the old
+    URL-keyed scheme survive the upgrade to release-identity keys.
     """
     release_id = resume_choice.release_identity(params)
-    stored = 0.0
-    if release_id:
-        try:
-            stored = resume_store.get_resume(release_id)
-        except _RESOLVE_RUNTIME_ERRORS as error:
-            xbmc.log(
-                "NZB-DAV: Failed to read resume state: {}".format(error),
-                xbmc.LOGWARNING,
-            )
+    stored = _read_stored_resume(release_id) if release_id else 0.0
+    if stored <= 0.0 and legacy_key:
+        stored = _read_stored_resume(legacy_key)
     merged = max(
         _coerce_resume_seconds(scrubbed_seconds),
         _coerce_resume_seconds(stored),
@@ -3948,6 +3998,7 @@ def resolve(handle, params):
             # the user cancelled the prompt; fail the resolve like any other.
             release_id, chosen = _resolve_resume_choice(params, scrubbed_seconds)
             if chosen is None:
+                _preserve_resume_on_cancel(release_id, scrubbed_seconds)
                 xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
                 xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
                 return
@@ -4079,8 +4130,11 @@ def resolve(handle, params):
             # Resolve resume once here (release-identity keyed lookup + the
             # native resume prompt). A None choice means the user cancelled the
             # prompt; treat it like any other resolve failure.
-            release_id, chosen = _resolve_resume_choice(params, scrubbed_seconds)
+            release_id, chosen = _resolve_resume_choice(
+                params, scrubbed_seconds, legacy_key=stream_url
+            )
             if chosen is None:
+                _preserve_resume_on_cancel(release_id, scrubbed_seconds)
                 _stop_fallback_submit_worker(fallback_state, cancel_submitted=True)
                 xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
                 xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
@@ -4157,9 +4211,10 @@ def resolve_and_play(nzb_url, title, params=None):
             # native resume prompt). There is no plugin handle on this path, so
             # a cancelled prompt simply does not start playback.
             release_id, chosen = _resolve_resume_choice(
-                resolve_params, scrubbed_seconds
+                _resume_params_with_title(resolve_params, title), scrubbed_seconds
             )
             if chosen is None:
+                _preserve_resume_on_cancel(release_id, scrubbed_seconds)
                 return
             play_nzbget(
                 nzb_url,
@@ -4308,9 +4363,12 @@ def resolve_and_play(nzb_url, title, params=None):
             # a cancelled prompt simply does not start playback (no
             # setResolvedUrl, matching this path's contract).
             release_id, chosen = _resolve_resume_choice(
-                resolve_params, scrubbed_seconds
+                _resume_params_with_title(resolve_params, title),
+                scrubbed_seconds,
+                legacy_key=stream_url,
             )
             if chosen is None:
+                _preserve_resume_on_cancel(release_id, scrubbed_seconds)
                 _stop_fallback_submit_worker(fallback_state, cancel_submitted=True)
                 return
             _arm_live_fallback_push(prepared, fallback_state, stream_url, dead=dead)

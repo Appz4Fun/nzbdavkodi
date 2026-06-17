@@ -15,14 +15,18 @@ from urllib.parse import unquote
 import xbmc
 import xbmcgui
 
-# Kodi SelectAction enum (CSettings myvideos.selectaction). Only RESUME and
-# PLAY map to a deterministic action; everything else (CHOOSE, PLAY_OR_RESUME,
-# INFO, MORE, PLAYLIST, QUEUE, unknown, parse/RPC failure) prompts the user.
+# Kodi's playback preference. ``myvideos.playaction`` ("Default play action")
+# is the resume-specific setting: 1 = Play/Resume (prompt resume vs play for
+# resumable items), 2 = Resume (auto-resume). Older Kodi builds without it fall
+# back to ``myvideos.selectaction`` where only an explicit Resume (2) auto-
+# resumes -- "Play" (and everything else) still offers resume for resumable
+# items, so it maps to a prompt rather than a silent restart.
+_PLAY_ACTION_PLAY_OR_RESUME = 1
+_PLAY_ACTION_RESUME = 2
 _SELECT_ACTION_RESUME = 2
-_SELECT_ACTION_PLAY = 5
 
 # Kodi built-in localized strings used for the prompt labels.
-_STRING_RESUME_FROM = 12022  # "Resume from %s"
+_STRING_RESUME_FROM = 12022  # "Resume from {0:s}"
 _STRING_START_FROM_BEGINNING = 12021  # "Start from beginning"
 
 # Kodi 21 core string #12022 is "Resume from {0:s}" (str.format style); the
@@ -62,12 +66,12 @@ def format_resume_label(seconds):
     return "{:02d}:{:02d}".format(minutes, secs)
 
 
-def native_resume_action():
-    """Return Kodi's resume preference as ``ask``/``resume``/``beginning``.
+def _read_int_setting(setting_id):
+    """Return an integer Kodi setting value over JSON-RPC, or ``None``.
 
-    Reads ``myvideos.selectaction`` over JSON-RPC. Maps RESUME to
-    ``"resume"`` and PLAY to ``"beginning"``; anything else (including any
-    RPC or parse failure) falls back to ``"ask"``. Never raises.
+    Never raises: any RPC, parse, or missing-setting failure yields ``None``
+    so callers can fall back. A missing setting (older Kodi) comes back as a
+    JSON-RPC error with no ``result.value``, which also yields ``None``.
     """
     try:
         raw = xbmc.executeJSONRPC(
@@ -76,21 +80,35 @@ def native_resume_action():
                     "jsonrpc": "2.0",
                     "id": 1,
                     "method": "Settings.GetSettingValue",
-                    "params": {"setting": "myvideos.selectaction"},
+                    "params": {"setting": setting_id},
                 }
             )
         )
         response = json.loads(raw)
-        value = response.get("result", {}).get("value")
-        value = int(value)
+        return int(response.get("result", {}).get("value"))
     except (TypeError, ValueError, KeyError, AttributeError):
-        return "ask"
+        return None
     except Exception:  # noqa: BLE001 - never let a Kodi RPC failure escape
-        return "ask"
-    if value == _SELECT_ACTION_RESUME:
+        return None
+
+
+def native_resume_action():
+    """Return Kodi's resume preference as ``ask``/``resume``.
+
+    Prefers ``myvideos.playaction`` (Kodi's resume-specific "Default play
+    action": ``2`` = Resume → auto-resume, ``1`` = Play/Resume → prompt). Older
+    Kodi builds lacking that setting fall back to ``myvideos.selectaction``,
+    where only an explicit Resume auto-resumes -- "Play" still offers resume for
+    resumable items, so it prompts rather than silently restarting. Any unknown
+    value or RPC failure degrades to ``"ask"`` so the user keeps the choice.
+    """
+    play = _read_int_setting("myvideos.playaction")
+    if play == _PLAY_ACTION_RESUME:
         return "resume"
-    if value == _SELECT_ACTION_PLAY:
-        return "beginning"
+    if play == _PLAY_ACTION_PLAY_OR_RESUME:
+        return "ask"
+    if _read_int_setting("myvideos.selectaction") == _SELECT_ACTION_RESUME:
+        return "resume"
     return "ask"
 
 

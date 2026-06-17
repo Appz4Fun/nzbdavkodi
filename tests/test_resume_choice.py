@@ -97,38 +97,74 @@ def _rpc_response(value):
     return json.dumps({"id": 1, "jsonrpc": "2.0", "result": {"value": value}})
 
 
-def test_native_resume_action_resume():
-    """SelectAction RESUME (2) maps to resume."""
+def _rpc_error():
+    return json.dumps({"id": 1, "jsonrpc": "2.0", "error": {"code": -32602}})
+
+
+def _settings_rpc(values):
+    """executeJSONRPC side_effect mapping setting id -> integer value.
+
+    Ids absent from ``values`` respond with a JSON-RPC error, mirroring how
+    Kodi answers a query for a setting that build does not have.
+    """
+
+    def _call(payload):
+        setting = json.loads(payload)["params"]["setting"]
+        if setting in values:
+            return _rpc_response(values[setting])
+        return _rpc_error()
+
+    return _call
+
+
+def _queried_settings(xbmc_mock):
+    return [
+        json.loads(call.args[0])["params"]["setting"]
+        for call in xbmc_mock.executeJSONRPC.call_args_list
+    ]
+
+
+def test_native_resume_action_playaction_resume():
+    """playaction RESUME (2) auto-resumes without consulting selectaction."""
     with patch("resources.lib.resume_choice.xbmc") as xbmc_mock:
-        xbmc_mock.executeJSONRPC.return_value = _rpc_response(2)
+        xbmc_mock.executeJSONRPC.side_effect = _settings_rpc({"myvideos.playaction": 2})
         assert resume_choice.native_resume_action() == "resume"
+    assert _queried_settings(xbmc_mock) == ["myvideos.playaction"]
 
 
-def test_native_resume_action_beginning():
-    """SelectAction PLAY (5) maps to beginning."""
+def test_native_resume_action_playaction_play_or_resume_is_ask():
+    """playaction PLAY_OR_RESUME (1) prompts."""
     with patch("resources.lib.resume_choice.xbmc") as xbmc_mock:
-        xbmc_mock.executeJSONRPC.return_value = _rpc_response(5)
-        assert resume_choice.native_resume_action() == "beginning"
-
-
-def test_native_resume_action_choose_is_ask():
-    """SelectAction CHOOSE (0) maps to ask."""
-    with patch("resources.lib.resume_choice.xbmc") as xbmc_mock:
-        xbmc_mock.executeJSONRPC.return_value = _rpc_response(0)
+        xbmc_mock.executeJSONRPC.side_effect = _settings_rpc({"myvideos.playaction": 1})
         assert resume_choice.native_resume_action() == "ask"
 
 
-def test_native_resume_action_play_or_resume_is_ask():
-    """SelectAction PLAY_OR_RESUME (1) maps to ask."""
+def test_native_resume_action_falls_back_to_selectaction_resume():
+    """Without playaction, selectaction RESUME (2) still auto-resumes."""
     with patch("resources.lib.resume_choice.xbmc") as xbmc_mock:
-        xbmc_mock.executeJSONRPC.return_value = _rpc_response(1)
+        xbmc_mock.executeJSONRPC.side_effect = _settings_rpc(
+            {"myvideos.selectaction": 2}
+        )
+        assert resume_choice.native_resume_action() == "resume"
+    assert _queried_settings(xbmc_mock) == [
+        "myvideos.playaction",
+        "myvideos.selectaction",
+    ]
+
+
+def test_native_resume_action_selectaction_play_still_prompts():
+    """Without playaction, selectaction Play (5) still offers resume (ask)."""
+    with patch("resources.lib.resume_choice.xbmc") as xbmc_mock:
+        xbmc_mock.executeJSONRPC.side_effect = _settings_rpc(
+            {"myvideos.selectaction": 5}
+        )
         assert resume_choice.native_resume_action() == "ask"
 
 
-def test_native_resume_action_unknown_value_is_ask():
-    """An unknown SelectAction value maps to ask."""
+def test_native_resume_action_both_settings_missing_is_ask():
+    """Neither setting present (older/locked Kodi) degrades to ask."""
     with patch("resources.lib.resume_choice.xbmc") as xbmc_mock:
-        xbmc_mock.executeJSONRPC.return_value = _rpc_response(99)
+        xbmc_mock.executeJSONRPC.side_effect = _settings_rpc({})
         assert resume_choice.native_resume_action() == "ask"
 
 
@@ -146,23 +182,14 @@ def test_native_resume_action_parse_failure_is_ask():
         assert resume_choice.native_resume_action() == "ask"
 
 
-def test_native_resume_action_missing_value_is_ask():
-    """A response without result.value maps to ask."""
+def test_native_resume_action_prefers_playaction_setting():
+    """The primary RPC asks Kodi for the resume-specific playaction setting."""
     with patch("resources.lib.resume_choice.xbmc") as xbmc_mock:
-        xbmc_mock.executeJSONRPC.return_value = json.dumps(
-            {"id": 1, "jsonrpc": "2.0", "result": {}}
-        )
-        assert resume_choice.native_resume_action() == "ask"
-
-
-def test_native_resume_action_sends_select_setting():
-    """The RPC asks Kodi for the myvideos.selectaction setting."""
-    with patch("resources.lib.resume_choice.xbmc") as xbmc_mock:
-        xbmc_mock.executeJSONRPC.return_value = _rpc_response(2)
+        xbmc_mock.executeJSONRPC.side_effect = _settings_rpc({"myvideos.playaction": 2})
         resume_choice.native_resume_action()
-    sent = json.loads(xbmc_mock.executeJSONRPC.call_args[0][0])
-    assert sent["method"] == "Settings.GetSettingValue"
-    assert sent["params"]["setting"] == "myvideos.selectaction"
+    first = json.loads(xbmc_mock.executeJSONRPC.call_args_list[0].args[0])
+    assert first["method"] == "Settings.GetSettingValue"
+    assert first["params"]["setting"] == "myvideos.playaction"
 
 
 # ---------------------------------------------------------------------------
