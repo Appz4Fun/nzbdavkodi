@@ -65,7 +65,6 @@
     <!-- Results list — 2 lines per item, 66px each -->
     <control type="list" id="50">
       <left>0</left><top>60</top><width>1910</width><height>975</height>
-      <onleft>60</onleft>
       <onright>60</onright>
       <orientation>vertical</orientation>
       <pagecontrol>60</pagecontrol>
@@ -234,7 +233,6 @@
     <control type="scrollbar" id="60">
       <left>1910</left><top>60</top><width>10</width><height>975</height>
       <onleft>50</onleft>
-      <onright>50</onright>
       <orientation>vertical</orientation>
       <showonepage>false</showonepage>
       <texturesliderbackground colordiffuse="00FFFFFF">white.png</texturesliderbackground>
