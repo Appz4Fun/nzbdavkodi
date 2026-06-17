@@ -498,12 +498,39 @@ def _apply_resume(listitem, resume_seconds):
         listitem.setProperty("StartOffset", str(seconds))
 
 
-def resolve_and_play_nzbget(handle, params, settings_getter=None, resume_seconds=0.0):
+def _arm_playback_monitor(video_url, resume_seconds, resume_key):
+    """Hand the SMB session to the background ``NzbdavPlayer`` monitor.
+
+    Writes the same Home-window properties resolver's
+    ``_set_playback_monitor_properties`` sets (same keys/order) so the
+    monitor — gated on ``nzbdav.active="true"`` — picks up the NZBGet/SMB
+    playback and persists a resume point under ``nzbdav.resume_key`` on
+    stop. Without this the SMB path is never monitored, so no resume point is
+    ever saved or read for it.
+
+    ``resume_key`` is the resolver-supplied release identity; it falls back to
+    ``video_url`` so a direct script/widget play (no identity threaded) still
+    keys resume on the playable URL. Mirror resolver's keys but avoid importing
+    it here so the two resolvers don't form an import cycle.
+    """
+    home = xbmcgui.Window(10000)
+    home.setProperty("nzbdav.stream_url", video_url)
+    home.setProperty("nzbdav.resume_key", resume_key or video_url)
+    home.setProperty("nzbdav.resume_offset", str(resume_seconds))
+    home.setProperty("nzbdav.stream_title", video_url.rsplit("/", 1)[-1])
+    home.setProperty("nzbdav.active", "true")
+
+
+def resolve_and_play_nzbget(
+    handle, params, settings_getter=None, resume_seconds=0.0, resume_key=""
+):
     """NZBGet entry for the handle-based ``resolve`` path (``/play``).
 
     Delivers the finished file via ``setResolvedUrl`` — exactly one
     resolution per exit (success True, every failure False). ``resume_seconds``
-    carries the scrubbed bookmark's resume position onto the ListItem.
+    carries the scrubbed bookmark's resume position onto the ListItem;
+    ``resume_key`` is the release identity the background monitor persists the
+    new resume point under (falling back to the SMB URL when absent).
     """
     nzb_url = unquote(params.get("nzburl", ""))
     title = unquote(params.get("title", "")) or "submission"
@@ -511,6 +538,7 @@ def resolve_and_play_nzbget(handle, params, settings_getter=None, resume_seconds
     def on_success(video_url):
         listitem = xbmcgui.ListItem(path=video_url)
         _apply_resume(listitem, resume_seconds)
+        _arm_playback_monitor(video_url, resume_seconds, resume_key)
         xbmcplugin.setResolvedUrl(handle, True, listitem)
 
     def on_failure(message):
@@ -528,14 +556,23 @@ def resolve_and_play_nzbget(handle, params, settings_getter=None, resume_seconds
     )
 
 
-def play_nzbget(nzb_url, title, params=None, settings_getter=None, resume_seconds=0.0):
+def play_nzbget(
+    nzb_url,
+    title,
+    params=None,
+    settings_getter=None,
+    resume_seconds=0.0,
+    resume_key="",
+):
     """NZBGet entry for the handle-less ``resolve_and_play`` path.
 
     ``resolve_and_play`` (TMDBHelper ``/resolve``, the in-addon search
     picker, and script-play) has no plugin handle, so the finished SMB file
     is started with ``xbmc.Player().play`` and failures only notify —
     mirroring the nzbdav ``resolve_and_play`` "no setResolvedUrl" contract.
-    ``resume_seconds`` carries the scrubbed bookmark's resume position.
+    ``resume_seconds`` carries the scrubbed bookmark's resume position;
+    ``resume_key`` is the release identity the background monitor persists the
+    new resume point under (falling back to the SMB URL when absent).
     """
     resolve_params = params or {}
     if settings_getter is None:
@@ -544,6 +581,7 @@ def play_nzbget(nzb_url, title, params=None, settings_getter=None, resume_second
     def on_success(video_url):
         listitem = xbmcgui.ListItem(path=video_url)
         _apply_resume(listitem, resume_seconds)
+        _arm_playback_monitor(video_url, resume_seconds, resume_key)
         xbmc.Player().play(video_url, listitem)
 
     def on_failure(message):
