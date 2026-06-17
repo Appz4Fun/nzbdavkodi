@@ -9,11 +9,15 @@ import re
 try:
     from defusedxml import ElementTree as ET
     from defusedxml.common import DefusedXmlException as _UnsafeXmlError
+
+    _USING_DEFUSEDXML = True
 except ImportError:  # pragma: no cover - Kodi installs may not bundle defusedxml
     import xml.etree.ElementTree as ET
 
+    _USING_DEFUSEDXML = False
+
     class _UnsafeXmlError(ValueError):
-        """Raised when defusedxml rejects DTD/entity declarations."""
+        """Raised when the stdlib fallback rejects an entity declaration."""
 
 
 from urllib.parse import urlsplit
@@ -369,40 +373,39 @@ def _split_payload_video_candidates(file_elems, health_check):
     return [candidate]
 
 
-def _build_xxe_safe_parser():
-    """Create an XML parser that prevents External Entity Processing (XXE).
+# Matches an ``<!ENTITY ...>`` markup declaration. XML keywords are
+# case-sensitive, so the literal upper-case form is the only valid spelling.
+# Standard NZB files only carry an (external) ``<!DOCTYPE nzb PUBLIC ...>``
+# declaration and never define their own entities, so any entity declaration
+# is treated as hostile.
+_ENTITY_DECL_RE = re.compile(rb"<!ENTITY\b")
 
-    ``xml.etree.ElementTree`` does not prevent external entities by default
-    on all Python versions. We attach an ``ExternalEntityRefHandler`` that
-    raises an exception on resolution, killing the parse.
 
-    Unlike ``hydra._build_xxe_safe_parser``, we cannot return ``0`` (False)
-    because standard NZB files contain a `<!DOCTYPE nzb PUBLIC ...>` declaration
-    that triggers the handler. We must only raise on an actual SYSTEM entity
-    or known risk. Instead of returning false, we use a simple passthrough
-    for expected NZB namespaces if needed, but since we just want to avoid
-    outbound network calls, we can let expat handle it safely or use a
-    dummy string. For true safety while allowing `<!DOCTYPE nzb ...>` we
-    use a handler that simply ignores it by returning 1 (True).
+def _reject_entity_declarations(nzb_bytes):
+    """Reject NZB payloads that declare XML entities (XXE / billion-laughs).
+
+    ``defusedxml`` does this for us when it is installed. On Kodi installs that
+    only ship the standard library, ``xml.etree`` still expands internal
+    entities and will resolve some external ones, so we refuse outright any
+    document containing an entity declaration before it reaches the parser.
     """
-    parser = ET.XMLParser()
-    try:
-        # Prevent parsing of external entities (XXE) while allowing the standard DOCTYPE
-        # The return value 1 (True) tells expat the entity was handled (ignored),
-        # whereas 0 (False) aborts parsing entirely.
-        parser.parser.ExternalEntityRefHandler = lambda *args: 1
-    except AttributeError:
-        pass
-    return parser
+    payload = nzb_bytes
+    if isinstance(payload, str):
+        payload = payload.encode("utf-8", "ignore")
+    if _ENTITY_DECL_RE.search(payload):
+        raise _UnsafeXmlError("entity declarations are not allowed in NZB XML")
 
 
 def extract_nzb_video_manifest(nzb_bytes, health_check=None):
     """Return main video-file or provisional archive metadata from an NZB XML."""
     try:
-        if getattr(ET, "__name__", "").startswith("defusedxml."):
+        if _USING_DEFUSEDXML:
+            # forbid_dtd=False keeps the standard NZB ``<!DOCTYPE nzb ...>``
+            # working; entity/external-reference defenses stay enabled.
             root = ET.fromstring(nzb_bytes, forbid_dtd=False)
         else:
-            root = ET.fromstring(nzb_bytes, parser=_build_xxe_safe_parser())
+            _reject_entity_declarations(nzb_bytes)
+            root = ET.fromstring(nzb_bytes)
     except (ET.ParseError, TypeError, _UnsafeXmlError):
         return _empty_manifest("invalid_xml")
 
