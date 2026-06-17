@@ -4773,6 +4773,26 @@ def test_serve_hls_playlist_prefers_generated_ffmpeg_durations(tmp_path):
         producer.close()
 
 
+def test_segment_normalize_re_strips_zero_padding():
+    """_SEGMENT_NORMALIZE_RE strips zero-padding from both .m4s and .ts
+    segment names, preserves multi-digit indices, and leaves the all-zero
+    index as a single 0 (parity with the former int()-based callback). The
+    existing playlist test only exercises the fmp4/.m4s path, so this pins
+    the .ts branch and multi-digit stripping directly."""
+    from resources.lib.stream_proxy import _SEGMENT_NORMALIZE_RE
+
+    def norm(text):
+        return _SEGMENT_NORMALIZE_RE.sub(r"seg_\1.\2", text)
+
+    assert norm("seg_000000.m4s") == "seg_0.m4s"
+    assert norm("seg_000001.m4s") == "seg_1.m4s"
+    assert norm("seg_000123.ts") == "seg_123.ts"
+    assert norm("seg_010.ts") == "seg_10.ts"
+    # already minimal -> unchanged
+    assert norm("seg_0.ts") == "seg_0.ts"
+    assert norm("seg_7.m4s") == "seg_7.m4s"
+
+
 def test_serve_hls_playlist_fmp4_version_is_7():
     """fmp4 ctx emits #EXT-X-VERSION:7."""
     from resources.lib.stream_proxy import _StreamHandler
