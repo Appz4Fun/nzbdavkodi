@@ -760,6 +760,55 @@ def test_invalid_xml_is_unsupported_without_raising():
     assert manifest["unsupported_reason"] == "invalid_xml"
 
 
+_XXE_EXTERNAL_ENTITY = (
+    b'<?xml version="1.0"?>'
+    b'<!DOCTYPE nzb [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>'
+    b'<nzb><file subject="&xxe;"/></nzb>'
+)
+_BILLION_LAUGHS = (
+    b'<?xml version="1.0"?>'
+    b"<!DOCTYPE lolz ["
+    b'<!ENTITY a "aaaaaaaaaa">'
+    b'<!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">'
+    b'<!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;">'
+    b"]>"
+    b'<nzb><file subject="&c;"/></nzb>'
+)
+_STANDARD_NZB_DOCTYPE = (
+    b'<?xml version="1.0"?>'
+    b'<!DOCTYPE nzb PUBLIC "-//newzBin//DTD NZB 1.1//EN"'
+    b' "http://www.newzbin.com/DTD/nzb/nzb-1.1.dtd">'
+    b'<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb"><file subject="x"/></nzb>'
+)
+
+
+@pytest.mark.parametrize("payload", [_XXE_EXTERNAL_ENTITY, _BILLION_LAUGHS])
+def test_entity_payloads_are_rejected_as_invalid_xml(payload):
+    manifest = extract_nzb_video_manifest(payload)
+
+    assert manifest["unsupported_reason"] == "invalid_xml"
+
+
+@pytest.mark.parametrize("payload", [_XXE_EXTERNAL_ENTITY, _BILLION_LAUGHS])
+def test_entity_payloads_are_rejected_on_stdlib_fallback(monkeypatch, payload):
+    # Force the no-defusedxml code path Kodi installs typically take.
+    import xml.etree.ElementTree as stdlib_et
+
+    monkeypatch.setattr(_nzb_manifest, "_USING_DEFUSEDXML", False)
+    monkeypatch.setattr(_nzb_manifest, "ET", stdlib_et)
+
+    manifest = extract_nzb_video_manifest(payload)
+
+    assert manifest["unsupported_reason"] == "invalid_xml"
+
+
+def test_standard_nzb_external_doctype_still_parses():
+    # The legitimate external NZB DTD must not be mistaken for an XXE attempt.
+    manifest = extract_nzb_video_manifest(_STANDARD_NZB_DOCTYPE)
+
+    assert manifest["unsupported_reason"] != "invalid_xml"
+
+
 @patch("resources.lib.nzb_manifest.http_get")
 def test_fetch_nzb_video_manifest_fetches_and_parses_valid_nzb(mock_http_get):
     xml = _nzb_xml([_file('"Movie.mkv" yEnc (1/1)', [(1, 1000, "a@id")])])
