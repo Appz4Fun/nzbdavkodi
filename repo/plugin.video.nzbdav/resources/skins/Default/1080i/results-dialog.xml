@@ -68,6 +68,7 @@
       <onright>60</onright>
       <orientation>vertical</orientation>
       <pagecontrol>60</pagecontrol>
+      <onright>60</onright>
       <scrolltime>200</scrolltime>
 
       <!-- ==================== UNFOCUSED ROW ==================== -->
@@ -234,6 +235,7 @@
       <left>1910</left><top>60</top><width>10</width><height>975</height>
       <onleft>50</onleft>
       <orientation>vertical</orientation>
+      <onleft>50</onleft>
       <showonepage>false</showonepage>
       <texturesliderbackground colordiffuse="00FFFFFF">white.png</texturesliderbackground>
       <texturesliderbar colordiffuse="FF4A5568">white.png</texturesliderbar>
