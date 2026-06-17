@@ -509,6 +509,74 @@ def test_resolve_success_applies_resume_offset_to_listitem():
     li.setProperty.assert_called_with("StartOffset", "137.0")
 
 
+def test_resolve_success_arms_playback_monitor_window_properties():
+    # On success the resolver must hand the SMB session to the background
+    # NzbdavPlayer monitor (gated on nzbdav.active="true") so a resume point is
+    # actually saved/read for the NZBGet/SMB path — the persistence gap. Assert
+    # all five monitor window properties, including the supplied resume_key.
+    plugin = sys.modules["xbmcplugin"]
+    plugin.setResolvedUrl = MagicMock()
+    home = MagicMock()
+    with patch.object(
+        sys.modules["xbmcgui"], "Window", MagicMock(return_value=home)
+    ), patch(
+        "resources.lib.nzbget_resolver.nzbget_api.append_nzb",
+        return_value=(42, None),
+    ), patch(
+        "resources.lib.nzbget_resolver.poll_nzbget_job",
+        return_value={"outcome": "success", "dest_dir": "/dl/movies/The.Movie"},
+    ), patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video",
+        return_value="smb://host/completed/The.Movie/movie.mkv",
+    ):
+        resolve_and_play_nzbget(
+            7,
+            {"nzburl": "http://i/x.nzb", "title": "The.Movie"},
+            settings_getter=_full_settings(),
+            resume_seconds=137.0,
+            resume_key="The.Movie|123|pub",
+        )
+    home.setProperty.assert_any_call(
+        "nzbdav.stream_url", "smb://host/completed/The.Movie/movie.mkv"
+    )
+    home.setProperty.assert_any_call("nzbdav.resume_key", "The.Movie|123|pub")
+    home.setProperty.assert_any_call("nzbdav.resume_offset", "137.0")
+    home.setProperty.assert_any_call("nzbdav.stream_title", "movie.mkv")
+    home.setProperty.assert_any_call("nzbdav.active", "true")
+    # setResolvedUrl contract unchanged: exactly one resolution, success True.
+    plugin.setResolvedUrl.assert_called_once()
+    assert plugin.setResolvedUrl.call_args[0][1] is True
+
+
+def test_resolve_success_resume_key_falls_back_to_stream_url():
+    # No release identity threaded (e.g. a bare script/widget play): the monitor
+    # still keys resume on the playable SMB URL so the session is monitored.
+    plugin = sys.modules["xbmcplugin"]
+    plugin.setResolvedUrl = MagicMock()
+    home = MagicMock()
+    with patch.object(
+        sys.modules["xbmcgui"], "Window", MagicMock(return_value=home)
+    ), patch(
+        "resources.lib.nzbget_resolver.nzbget_api.append_nzb",
+        return_value=(42, None),
+    ), patch(
+        "resources.lib.nzbget_resolver.poll_nzbget_job",
+        return_value={"outcome": "success", "dest_dir": "/dl/movies/The.Movie"},
+    ), patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video",
+        return_value="smb://host/completed/The.Movie/movie.mkv",
+    ):
+        resolve_and_play_nzbget(
+            7,
+            {"nzburl": "http://i/x.nzb", "title": "The.Movie"},
+            settings_getter=_full_settings(),
+        )
+    home.setProperty.assert_any_call(
+        "nzbdav.resume_key", "smb://host/completed/The.Movie/movie.mkv"
+    )
+    home.setProperty.assert_any_call("nzbdav.active", "true")
+
+
 def test_resolve_cancel_deletes_job_and_resolves_false():
     plugin = sys.modules["xbmcplugin"]
     plugin.setResolvedUrl = MagicMock()
@@ -570,6 +638,75 @@ def test_play_nzbget_success_starts_player_with_smb_url():
     # setResolvedUrl.
     player.play.assert_called_once()
     assert player.play.call_args[0][0] == "smb://host/completed/The.Movie/movie.mkv"
+
+
+def test_play_nzbget_success_arms_playback_monitor_and_applies_offset():
+    # Handle-less path: the SMB session must also be handed to the background
+    # monitor (all five window properties incl. nzbdav.active="true" and the
+    # resume_key) and StartOffset applied, with NO setResolvedUrl call.
+    plugin = sys.modules["xbmcplugin"]
+    plugin.setResolvedUrl = MagicMock()
+    player = MagicMock()
+    li = MagicMock()
+    home = MagicMock()
+    with patch.object(
+        sys.modules["xbmc"], "Player", MagicMock(return_value=player)
+    ), patch.object(sys.modules["xbmcgui"], "ListItem", return_value=li), patch.object(
+        sys.modules["xbmcgui"], "Window", MagicMock(return_value=home)
+    ), patch(
+        "resources.lib.nzbget_resolver.nzbget_api.append_nzb",
+        return_value=(42, None),
+    ), patch(
+        "resources.lib.nzbget_resolver.poll_nzbget_job",
+        return_value={"outcome": "success", "dest_dir": "/dl/movies/The.Movie"},
+    ), patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video",
+        return_value="smb://host/completed/The.Movie/movie.mkv",
+    ):
+        play_nzbget(
+            "http://i/x.nzb",
+            "The.Movie",
+            settings_getter=_full_settings(),
+            resume_seconds=137.0,
+            resume_key="The.Movie|123|pub",
+        )
+    home.setProperty.assert_any_call(
+        "nzbdav.stream_url", "smb://host/completed/The.Movie/movie.mkv"
+    )
+    home.setProperty.assert_any_call("nzbdav.resume_key", "The.Movie|123|pub")
+    home.setProperty.assert_any_call("nzbdav.resume_offset", "137.0")
+    home.setProperty.assert_any_call("nzbdav.stream_title", "movie.mkv")
+    home.setProperty.assert_any_call("nzbdav.active", "true")
+    li.setProperty.assert_called_with("StartOffset", "137.0")
+    # Handle-less contract: playback via xbmc.Player().play, never setResolvedUrl.
+    player.play.assert_called_once()
+    plugin.setResolvedUrl.assert_not_called()
+
+
+def test_play_nzbget_success_resume_key_falls_back_to_stream_url():
+    # No release identity threaded: key resume on the playable SMB URL.
+    player = MagicMock()
+    home = MagicMock()
+    with patch.object(
+        sys.modules["xbmc"], "Player", MagicMock(return_value=player)
+    ), patch.object(
+        sys.modules["xbmcgui"], "Window", MagicMock(return_value=home)
+    ), patch(
+        "resources.lib.nzbget_resolver.nzbget_api.append_nzb",
+        return_value=(42, None),
+    ), patch(
+        "resources.lib.nzbget_resolver.poll_nzbget_job",
+        return_value={"outcome": "success", "dest_dir": "/dl/movies/The.Movie"},
+    ), patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video",
+        return_value="smb://host/completed/The.Movie/movie.mkv",
+    ):
+        play_nzbget("http://i/x.nzb", "The.Movie", settings_getter=_full_settings())
+    home.setProperty.assert_any_call(
+        "nzbdav.resume_key", "smb://host/completed/The.Movie/movie.mkv"
+    )
+    home.setProperty.assert_any_call("nzbdav.active", "true")
+    player.play.assert_called_once()
 
 
 def test_play_nzbget_missing_config_does_not_start_player():

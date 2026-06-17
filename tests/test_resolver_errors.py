@@ -143,7 +143,7 @@ def test_resolve_continues_polling_when_webdav_reachable_and_apis_silent(
     )
     mock_wait_prepare.assert_called_once_with({"state": "prepare"})
     mock_finish_playback.assert_called_once_with(
-        1, {"state": "prepared"}, resume_seconds=0.0
+        1, {"state": "prepared"}, resume_key="reachable.mkv||", resume_seconds=0.0
     )
 
 

@@ -34,6 +34,7 @@ from resources.lib.resolver import (
     _poll_until_ready,
     _prefetch_fallback_candidate_loader,
     _prepare_direct_playback_with_service_config,
+    _resolve_resume_choice,
     _show_submit_error_dialog,
     _start_direct_playback_prepare,
     _start_fallback_submit_worker,
@@ -835,10 +836,14 @@ def test_play_via_proxy_routes_mkv_through_proxy(
 def test_finish_direct_playback_applies_resume_start_offset(
     mock_resume_store, mock_gui, mock_plugin
 ):
-    """Captured Kodi bookmark offsets should be applied to resolver handoff."""
+    """The already-chosen resume offset/key are applied to resolver handoff.
+
+    The resume lookup happens once earlier (``_resolve_resume_choice``), so the
+    finish func must NOT re-read ``resume_store`` and must write the supplied
+    release identity as ``nzbdav.resume_key``.
+    """
     li = MagicMock()
     mock_gui.ListItem.return_value = li
-    mock_resume_store.get_resume.return_value = 0.0
 
     _finish_direct_playback(
         7,
@@ -849,13 +854,19 @@ def test_finish_direct_playback_applies_resume_start_offset(
             "proxy_url": "http://127.0.0.1:57800/stream/abc",
             "stream_info": {"remux": False, "faststart": False, "direct": False},
         },
+        resume_key="Movie|123|2026",
         resume_seconds=123.0,
     )
 
     li.setProperty.assert_called_with("StartOffset", "123.0")
     mock_gui.Window.return_value.setProperty.assert_any_call(
+        "nzbdav.resume_key", "Movie|123|2026"
+    )
+    mock_gui.Window.return_value.setProperty.assert_any_call(
         "nzbdav.resume_offset", "123.0"
     )
+    # The lookup moved earlier; the finish func must not touch resume_store.
+    mock_resume_store.get_resume.assert_not_called()
     mock_plugin.setResolvedUrl.assert_called_once_with(7, True, li)
 
 
@@ -865,10 +876,9 @@ def test_finish_direct_playback_applies_resume_start_offset(
 def test_finish_player_playback_applies_resume_start_offset(
     mock_resume_store, mock_gui, mock_xbmc
 ):
-    """RunPlugin playback should also apply captured resume offsets."""
+    """RunPlugin playback should also apply the already-chosen resume offset/key."""
     li = MagicMock()
     mock_gui.ListItem.return_value = li
-    mock_resume_store.get_resume.return_value = 0.0
     player = MagicMock()
     mock_xbmc.Player.return_value = player
 
@@ -880,26 +890,35 @@ def test_finish_player_playback_applies_resume_start_offset(
             "proxy_url": "http://127.0.0.1:57800/stream/abc",
             "stream_info": {"remux": False, "faststart": False, "direct": False},
         },
+        resume_key="Movie|456|2026",
         resume_seconds=456.0,
     )
 
     li.setProperty.assert_called_with("StartOffset", "456.0")
     mock_gui.Window.return_value.setProperty.assert_any_call(
+        "nzbdav.resume_key", "Movie|456|2026"
+    )
+    mock_gui.Window.return_value.setProperty.assert_any_call(
         "nzbdav.resume_offset", "456.0"
     )
+    mock_resume_store.get_resume.assert_not_called()
     player.play.assert_called_once_with("http://127.0.0.1:57800/stream/abc", li)
 
 
 @patch("resources.lib.resolver.xbmcplugin")
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver.resume_store")
-def test_finish_direct_playback_applies_stored_stable_resume_offset(
+def test_finish_direct_playback_writes_release_id_and_chosen_offset(
     mock_resume_store, mock_gui, mock_plugin
 ):
-    """Disposable proxy URLs should still resume from the stable source key."""
+    """The monitor keys on the release identity, not the disposable proxy URL.
+
+    The finish func receives the already-resolved ``(release_id, chosen)`` pair
+    and writes them verbatim, so a churning proxy URL can change between plays
+    while the resume point stays keyed on the stable release identity.
+    """
     li = MagicMock()
     mock_gui.ListItem.return_value = li
-    mock_resume_store.get_resume.return_value = 1565.8
 
     _finish_direct_playback(
         7,
@@ -910,20 +929,151 @@ def test_finish_direct_playback_applies_stored_stable_resume_offset(
             "proxy_url": "http://127.0.0.1:57800/stream/new-session",
             "stream_info": {"remux": False, "faststart": False, "direct": False},
         },
-        resume_seconds=0.0,
+        resume_key="The Movie|734003200|Tue, 01 Jan 2026",
+        resume_seconds=1565.8,
     )
 
-    mock_resume_store.get_resume.assert_called_once_with(
-        "http://webdav/content/movie/movie.mkv"
-    )
+    # Lookup happens once earlier; the finish func never re-reads resume_store.
+    mock_resume_store.get_resume.assert_not_called()
     li.setProperty.assert_called_with("StartOffset", "1565.8")
     mock_gui.Window.return_value.setProperty.assert_any_call(
-        "nzbdav.resume_key", "http://webdav/content/movie/movie.mkv"
+        "nzbdav.resume_key", "The Movie|734003200|Tue, 01 Jan 2026"
+    )
+    # stream_title is derived from the source URL, not the disposable play URL.
+    mock_gui.Window.return_value.setProperty.assert_any_call(
+        "nzbdav.stream_title", "movie.mkv"
     )
     mock_gui.Window.return_value.setProperty.assert_any_call(
         "nzbdav.resume_offset", "1565.8"
     )
     mock_plugin.setResolvedUrl.assert_called_once_with(7, True, li)
+
+
+@patch("resources.lib.resolver.xbmcplugin")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.resume_store")
+def test_finish_direct_playback_never_played_sets_no_start_offset(
+    mock_resume_store, mock_gui, mock_plugin
+):
+    """A never-played item (no stored point, no bookmark) gets no StartOffset.
+
+    With ``resume_seconds=0.0`` the finish func must leave the ListItem free of
+    a StartOffset property so Kodi starts from the beginning, and it must not
+    consult resume_store (the lookup already ran once earlier).
+    """
+    li = MagicMock()
+    mock_gui.ListItem.return_value = li
+
+    _finish_direct_playback(
+        7,
+        {
+            "service_port": 57800,
+            "stream_url": "http://webdav/content/movie/movie.mkv",
+            "stream_headers": {},
+            "proxy_url": "http://127.0.0.1:57800/stream/abc",
+            "stream_info": {"remux": False, "faststart": False, "direct": False},
+        },
+        resume_key="Movie|123|2026",
+        resume_seconds=0.0,
+    )
+
+    mock_resume_store.get_resume.assert_not_called()
+    start_offset_calls = [
+        call
+        for call in li.setProperty.call_args_list
+        if call.args and call.args[0] == "StartOffset"
+    ]
+    assert start_offset_calls == []
+    mock_gui.Window.return_value.setProperty.assert_any_call(
+        "nzbdav.resume_offset", "0.0"
+    )
+    mock_plugin.setResolvedUrl.assert_called_once_with(7, True, li)
+
+
+# --- _resolve_resume_choice tests ---
+
+
+@patch("resources.lib.resolver.resume_choice")
+@patch("resources.lib.resolver.resume_store")
+def test_resolve_resume_choice_merges_store_and_bookmark(
+    mock_resume_store, mock_resume_choice
+):
+    """The stored offset and scrubbed bookmark merge to the larger position."""
+    mock_resume_choice.release_identity.return_value = "Movie|123|2026"
+    mock_resume_store.get_resume.return_value = 1565.8
+    mock_resume_choice.choose_resume_seconds.return_value = 1565.8
+
+    params = {"title": "Movie", "_download_size": "123", "_download_pubdate": "2026"}
+    release_id, chosen = _resolve_resume_choice(params, 600.0)
+
+    assert release_id == "Movie|123|2026"
+    assert chosen == 1565.8
+    mock_resume_store.get_resume.assert_called_once_with("Movie|123|2026")
+    # Merged = max(scrubbed 600.0, stored 1565.8) is handed to the chooser.
+    mock_resume_choice.choose_resume_seconds.assert_called_once_with(
+        "Movie|123|2026", 1565.8
+    )
+
+
+@patch("resources.lib.resolver.resume_choice")
+@patch("resources.lib.resolver.resume_store")
+def test_resolve_resume_choice_empty_id_skips_store_lookup(
+    mock_resume_store, mock_resume_choice
+):
+    """An empty release identity must not touch resume_store (caller skips)."""
+    mock_resume_choice.release_identity.return_value = ""
+    mock_resume_choice.choose_resume_seconds.return_value = 0.0
+
+    release_id, chosen = _resolve_resume_choice({}, 0.0)
+
+    assert release_id == ""
+    assert chosen == 0.0
+    mock_resume_store.get_resume.assert_not_called()
+    mock_resume_choice.choose_resume_seconds.assert_called_once_with("", 0.0)
+
+
+@patch("resources.lib.resolver.resume_choice")
+@patch("resources.lib.resolver.resume_store")
+def test_resolve_resume_choice_swallows_store_errors(
+    mock_resume_store, mock_resume_choice
+):
+    """A resume_store read failure degrades to the scrubbed bookmark, no raise."""
+    mock_resume_choice.release_identity.return_value = "Movie|123|2026"
+    mock_resume_store.get_resume.side_effect = KeyError("boom")
+    mock_resume_choice.choose_resume_seconds.return_value = 42.0
+
+    release_id, chosen = _resolve_resume_choice({"title": "Movie"}, 42.0)
+
+    assert release_id == "Movie|123|2026"
+    assert chosen == 42.0
+    # Merged falls back to just the scrubbed bookmark when the store read raises.
+    mock_resume_choice.choose_resume_seconds.assert_called_once_with(
+        "Movie|123|2026", 42.0
+    )
+
+
+@patch("resources.lib.resolver.resume_store")
+def test_resolve_resume_choice_never_played_does_not_prompt(mock_resume_store):
+    """No stored point and no bookmark -> no native prompt, chosen is 0.0.
+
+    Exercises the real ``resume_choice.choose_resume_seconds`` short-circuit
+    (``seconds <= 0`` returns 0.0 before reading the native action or showing a
+    dialog), so a never-played item is never prompted and gets no resume.
+    """
+    mock_resume_store.get_resume.return_value = 0.0
+    dialog = MagicMock()
+
+    with patch(
+        "resources.lib.resume_choice.native_resume_action"
+    ) as native_action, patch("resources.lib.resume_choice.xbmcgui") as mock_choice_gui:
+        mock_choice_gui.Dialog.return_value = dialog
+        params = {"title": "Movie", "_download_size": "9", "_download_pubdate": "2026"}
+        release_id, chosen = _resolve_resume_choice(params, 0.0)
+
+    assert release_id == "Movie|9|2026"
+    assert chosen == 0.0
+    native_action.assert_not_called()
+    dialog.contextmenu.assert_not_called()
 
 
 # --- _clear_kodi_playback_state tests ---
@@ -1458,6 +1608,7 @@ def test_resolve_success(
 
 @patch("resources.lib.resolver._stop_fallback_submit_worker")
 @patch("resources.lib.resolver._fallback_submit_jobs_snapshot")
+@patch("resources.lib.resolver._resolve_resume_choice")
 @patch("resources.lib.resolver._finish_direct_playback")
 @patch("resources.lib.resolver._wait_direct_playback_prepare")
 @patch("resources.lib.resolver._start_direct_playback_prepare")
@@ -1477,6 +1628,7 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
     mock_start_prepare,
     mock_wait_prepare,
     mock_finish_playback,
+    mock_resume_choice,
     mock_snapshot,
     mock_stop_fallback,
 ):
@@ -1494,6 +1646,10 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
     mock_start_prepare.return_value = prepare_state
     mock_wait_prepare.return_value = prepared_playback
     mock_clear_state.return_value = 321.0
+    # Resume resolution is exercised separately; here verify the scrubbed
+    # bookmark position flows through into the finish handoff (release id +
+    # chosen offset). The helper echoes the scrubbed seconds it is handed.
+    mock_resume_choice.side_effect = lambda params, scrubbed: ("rel-id", scrubbed)
     call_order = []
 
     def poll_ready(*args, **kwargs):
@@ -1565,12 +1721,21 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
         service_config_state=None,
     )
     mock_wait_prepare.assert_called_once_with(prepare_state)
+    mock_resume_choice.assert_called_once_with(
+        {
+            "nzburl": "http://hydra/getnzb/primary",
+            "title": "movie.mp4",
+            "_fallback_candidates": fallback_candidates,
+        },
+        321.0,
+    )
     mock_finish_playback.assert_called_once_with(
-        1, prepared_playback, resume_seconds=321.0
+        1, prepared_playback, resume_key="rel-id", resume_seconds=321.0
     )
     mock_stop_fallback.assert_not_called()
 
 
+@patch("resources.lib.resolver._resolve_resume_choice", return_value=("", 0.0))
 @patch("resources.lib.resolver._fallback_submit_jobs_snapshot")
 @patch("resources.lib.resolver._finish_direct_playback")
 @patch("resources.lib.resolver._wait_direct_playback_prepare")
@@ -1594,6 +1759,7 @@ def test_resolve_attaches_fallback_handoff_for_mkv_streams(
     mock_wait_prepare,
     mock_finish_playback,
     mock_snapshot,
+    _mock_resume_choice,
 ):
     mock_poll_settings.return_value = (2, 60)
     fallback_state = {"state": "fallback"}
@@ -1646,10 +1812,11 @@ def test_resolve_attaches_fallback_handoff_for_mkv_streams(
     )
     mock_wait_prepare.assert_called_once_with({"state": "prepare"})
     mock_finish_playback.assert_called_once_with(
-        1, {"state": "prepared"}, resume_seconds=0.0
+        1, {"state": "prepared"}, resume_key="", resume_seconds=0.0
     )
 
 
+@patch("resources.lib.resolver._resolve_resume_choice", return_value=("", 0.0))
 @patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
 @patch("resources.lib.resolver._finish_direct_playback")
 @patch("resources.lib.resolver._wait_direct_playback_prepare")
@@ -1673,6 +1840,7 @@ def test_resolve_routes_plain_mkv_through_proxy_without_fallbacks(
     mock_wait_prepare,
     mock_finish_playback,
     _mock_snapshot,
+    _mock_resume_choice,
 ):
     mock_poll_settings.return_value = (2, 60)
     mock_start_fallback.return_value = {"state": "fallback"}
@@ -1702,7 +1870,7 @@ def test_resolve_routes_plain_mkv_through_proxy_without_fallbacks(
     )
     mock_wait_prepare.assert_called_once_with({"state": "prepare"})
     mock_finish_playback.assert_called_once_with(
-        1, {"state": "prepared"}, resume_seconds=0.0
+        1, {"state": "prepared"}, resume_key="", resume_seconds=0.0
     )
 
 
@@ -2119,6 +2287,7 @@ def test_resolve_sets_resolved_url_before_remux_cache_prompt(
     mock_cache_prompt.assert_not_called()
 
 
+@patch("resources.lib.resolver._resolve_resume_choice", return_value=("", 0.0))
 @patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
 @patch("resources.lib.resolver._finish_direct_playback")
 @patch("resources.lib.resolver._wait_direct_playback_prepare")
@@ -2144,6 +2313,7 @@ def test_resolve_keeps_service_config_lookup_on_resolver_thread(
     mock_wait_prepare,
     mock_finish_playback,
     _mock_snapshot,
+    _mock_resume_choice,
 ):
     """Do not call Kodi Window APIs from a background lookup thread."""
     mock_poll_settings.return_value = (2, 60)
@@ -2175,9 +2345,129 @@ def test_resolve_keeps_service_config_lookup_on_resolver_thread(
     )
     mock_wait_prepare.assert_called_once_with({"state": "prepare"})
     mock_finish_playback.assert_called_once_with(
-        1, {"state": "prepared"}, resume_seconds=0.0
+        1, {"state": "prepared"}, resume_key="", resume_seconds=0.0
     )
     mock_clear_state.assert_called_once()
+
+
+@patch("resources.lib.resolver._resolve_resume_choice", return_value=("rel-id", None))
+@patch("resources.lib.resolver._stop_fallback_submit_worker")
+@patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
+@patch("resources.lib.resolver._finish_direct_playback")
+@patch("resources.lib.resolver._wait_direct_playback_prepare")
+@patch("resources.lib.resolver._start_direct_playback_prepare")
+@patch("resources.lib.resolver._start_fallback_submit_worker")
+@patch("resources.lib.resolver._poll_until_ready")
+@patch("resources.lib.resolver._clear_kodi_playback_state")
+@patch("resources.lib.resolver.xbmc")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.xbmcplugin")
+@patch("resources.lib.resolver._get_poll_settings")
+def test_resolve_cancel_prompt_resolves_false_and_does_not_finish(
+    mock_poll_settings,
+    mock_plugin,
+    mock_gui,
+    mock_xbmc,
+    _mock_clear_state,
+    mock_poll_until_ready,
+    mock_start_fallback,
+    mock_start_prepare,
+    mock_wait_prepare,
+    mock_finish_playback,
+    _mock_snapshot,
+    mock_stop_fallback,
+    _mock_resume_choice,
+):
+    """Cancelling the resume prompt satisfies the setResolvedUrl(False) contract.
+
+    On the handle-based nzbdav path a None choice must fail the resolve (False),
+    clear the video playlist, stop the fallback worker, and never reach the
+    playback finish handoff.
+    """
+    mock_poll_settings.return_value = (2, 60)
+    mock_start_fallback.return_value = {"state": "fallback"}
+    mock_start_prepare.return_value = {"state": "prepare"}
+    mock_wait_prepare.return_value = {"state": "prepared"}
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    mock_gui.DialogProgress.return_value = MagicMock()
+    mock_poll_until_ready.return_value = (
+        "http://webdav/content/primary/movie.mkv",
+        {"Authorization": "Basic primary"},
+    )
+
+    resolve(
+        1,
+        {
+            "nzburl": "http://hydra/getnzb/primary",
+            "title": "movie.mkv",
+            "_fallback_candidates": [],
+        },
+    )
+
+    mock_finish_playback.assert_not_called()
+    assert mock_plugin.setResolvedUrl.call_args[0][:2] == (1, False)
+    mock_xbmc.PlayList.return_value.clear.assert_called_once()
+    mock_stop_fallback.assert_called_once_with(
+        {"state": "fallback"}, cancel_submitted=True
+    )
+
+
+@patch("resources.lib.resolver._resolve_resume_choice", return_value=("rel-id", None))
+@patch("resources.lib.resolver._stop_fallback_submit_worker")
+@patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
+@patch("resources.lib.resolver._finish_player_playback")
+@patch("resources.lib.resolver._wait_direct_playback_prepare")
+@patch("resources.lib.resolver._start_direct_playback_prepare")
+@patch("resources.lib.resolver._start_fallback_submit_worker")
+@patch("resources.lib.resolver._poll_until_ready")
+@patch("resources.lib.resolver._clear_kodi_playback_state")
+@patch("resources.lib.resolver.xbmc")
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.xbmcplugin")
+@patch("resources.lib.resolver._get_poll_settings")
+def test_resolve_and_play_cancel_prompt_does_not_play_or_resolve(
+    mock_poll_settings,
+    mock_plugin,
+    mock_gui,
+    mock_xbmc,
+    _mock_clear_state,
+    mock_poll_until_ready,
+    mock_start_fallback,
+    mock_start_prepare,
+    mock_wait_prepare,
+    mock_finish_playback,
+    _mock_snapshot,
+    mock_stop_fallback,
+    _mock_resume_choice,
+):
+    """Cancelling the resume prompt on the handle-less path simply stops.
+
+    There is no plugin handle here, so a None choice must NOT call
+    setResolvedUrl (matching this path's contract), must not start playback,
+    and must stop the fallback worker.
+    """
+    mock_poll_settings.return_value = (2, 60)
+    mock_start_fallback.return_value = {"state": "fallback"}
+    mock_start_prepare.return_value = {"state": "prepare"}
+    mock_wait_prepare.return_value = {"state": "prepared"}
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    mock_gui.DialogProgress.return_value = MagicMock()
+    mock_poll_until_ready.return_value = (
+        "http://webdav/content/primary/movie.mkv",
+        {"Authorization": "Basic primary"},
+    )
+
+    resolve_and_play(
+        "http://hydra/getnzb/primary",
+        "movie.mkv",
+        params={"_fallback_candidates": []},
+    )
+
+    mock_finish_playback.assert_not_called()
+    mock_plugin.setResolvedUrl.assert_not_called()
+    mock_stop_fallback.assert_called_once_with(
+        {"state": "fallback"}, cancel_submitted=True
+    )
 
 
 @patch("resources.lib.cache_prompt.maybe_show_cache_prompt")
@@ -2266,6 +2556,7 @@ def test_resolve_and_play_overlaps_proxy_prepare_with_bookmark_cleanup_after_rea
     ), "resolve_and_play ready-to-play stayed serial at {:.3f}s".format(elapsed)
 
 
+@patch("resources.lib.resolver._resolve_resume_choice", return_value=("", 0.0))
 @patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
 @patch("resources.lib.resolver._finish_player_playback")
 @patch("resources.lib.resolver._wait_direct_playback_prepare")
@@ -2287,6 +2578,7 @@ def test_resolve_and_play_does_not_wait_forever_for_stuck_bookmark_cleanup(
     mock_wait_prepare,
     mock_finish_playback,
     _mock_snapshot,
+    _mock_resume_choice,
 ):
     """A stuck noncritical bookmark cleanup must not block Player.play()."""
     cleanup_started = threading.Event()
@@ -2327,11 +2619,12 @@ def test_resolve_and_play_does_not_wait_forever_for_stuck_bookmark_cleanup(
     mock_start_prepare.assert_called_once()
     mock_wait_prepare.assert_called_once_with({"state": "prepare"})
     mock_finish_playback.assert_called_once_with(
-        {"state": "prepared"}, resume_seconds=0.0
+        {"state": "prepared"}, resume_key="", resume_seconds=0.0
     )
     cleanup_can_finish.set()
 
 
+@patch("resources.lib.resolver._resolve_resume_choice")
 @patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
 @patch("resources.lib.resolver._finish_player_playback")
 @patch("resources.lib.resolver._wait_direct_playback_prepare")
@@ -2353,12 +2646,16 @@ def test_resolve_and_play_routes_plain_mkv_through_proxy_without_fallbacks(
     mock_wait_prepare,
     mock_finish_playback,
     _mock_snapshot,
+    mock_resume_choice,
 ):
     mock_poll_settings.return_value = (2, 60)
     mock_start_fallback.return_value = {"state": "fallback"}
     mock_start_prepare.return_value = {"state": "prepare"}
     mock_wait_prepare.return_value = {"state": "prepared"}
     mock_clear_state.return_value = 456.0
+    # Echo the scrubbed bookmark position so the carry-through into the
+    # handle-less finish handoff (release id + chosen offset) is verified.
+    mock_resume_choice.side_effect = lambda params, scrubbed: ("rel-id", scrubbed)
     mock_xbmc.Monitor.return_value = _make_monitor()
     mock_gui.DialogProgress.return_value = MagicMock()
     mock_poll_until_ready.return_value = (
@@ -2379,11 +2676,13 @@ def test_resolve_and_play_routes_plain_mkv_through_proxy_without_fallbacks(
         service_config_state=None,
     )
     mock_wait_prepare.assert_called_once_with({"state": "prepare"})
+    mock_resume_choice.assert_called_once_with({"_fallback_candidates": []}, 456.0)
     mock_finish_playback.assert_called_once_with(
-        {"state": "prepared"}, resume_seconds=456.0
+        {"state": "prepared"}, resume_key="rel-id", resume_seconds=456.0
     )
 
 
+@patch("resources.lib.resolver._resolve_resume_choice", return_value=("", 0.0))
 @patch("resources.lib.resolver._fallback_submit_jobs_snapshot")
 @patch("resources.lib.resolver._finish_player_playback")
 @patch("resources.lib.resolver._wait_direct_playback_prepare")
@@ -2405,6 +2704,7 @@ def test_resolve_and_play_attaches_fallback_handoff_for_mkv_streams(
     mock_wait_prepare,
     mock_finish_playback,
     mock_snapshot,
+    _mock_resume_choice,
 ):
     mock_poll_settings.return_value = (2, 60)
     fallback_state = {"state": "fallback"}
@@ -2454,7 +2754,7 @@ def test_resolve_and_play_attaches_fallback_handoff_for_mkv_streams(
     )
     mock_wait_prepare.assert_called_once_with({"state": "prepare"})
     mock_finish_playback.assert_called_once_with(
-        {"state": "prepared"}, resume_seconds=0.0
+        {"state": "prepared"}, resume_key="", resume_seconds=0.0
     )
 
 
@@ -7483,17 +7783,54 @@ def test_resolve_delegates_to_nzbget_when_enabled():
         "resources.lib.nzbget_resolver.resolve_and_play_nzbget"
     ) as nzbget_entry, patch(
         "resources.lib.resolver._clear_kodi_playback_state", return_value=137.0
-    ) as scrub:
+    ) as scrub, patch(
+        "resources.lib.resolver._resolve_resume_choice",
+        side_effect=lambda params, scrubbed: ("rel-id", scrubbed),
+    ) as resume_choice:
         resolve(7, {"nzburl": "http%3A%2F%2Fi%2Fx.nzb", "title": "X"})
-    # Assert the exact handle + params payload is forwarded, plus the scrubbed
-    # bookmark's resume position — so a regression in handle/params routing or
-    # in carrying the resume offset is caught.
+    # Assert the exact handle + params payload is forwarded, plus the chosen
+    # resume offset and the release identity the monitor keys on — so a
+    # regression in handle/params routing or in carrying the resume choice is
+    # caught.
     nzbget_entry.assert_called_once_with(
-        7, {"nzburl": "http%3A%2F%2Fi%2Fx.nzb", "title": "X"}, resume_seconds=137.0
+        7,
+        {"nzburl": "http%3A%2F%2Fi%2Fx.nzb", "title": "X"},
+        resume_seconds=137.0,
+        resume_key="rel-id",
+    )
+    # Resume is resolved (release-identity lookup + native prompt) against the
+    # scrubbed bookmark before the handoff.
+    resume_choice.assert_called_once_with(
+        {"nzburl": "http%3A%2F%2Fi%2Fx.nzb", "title": "X"}, 137.0
     )
     # The stale TMDBHelper bookmark must be scrubbed before the NZBGet handoff
     # (NZBGet bypasses the nzbdav playback-state cleanup).
     scrub.assert_called_once()
+
+
+def test_resolve_nzbget_cancel_prompt_resolves_false_and_does_not_play():
+    # When the user cancels the native resume prompt (chosen is None), the
+    # handle-based NZBGet path must satisfy the setResolvedUrl(False) failure
+    # contract, clear the playlist, and never hand off to NZBGet playback.
+    addon = MagicMock()
+    addon.getSetting.side_effect = lambda key: (
+        "true" if key == "nzbget_enabled" else ""
+    )
+    with patch.object(sys.modules["xbmcaddon"], "Addon", return_value=addon), patch(
+        "resources.lib.nzbget_resolver.resolve_and_play_nzbget"
+    ) as nzbget_entry, patch(
+        "resources.lib.resolver._clear_kodi_playback_state", return_value=137.0
+    ), patch(
+        "resources.lib.resolver._resolve_resume_choice", return_value=("rel-id", None)
+    ), patch(
+        "resources.lib.resolver.xbmcplugin"
+    ) as mock_plugin, patch(
+        "resources.lib.resolver.xbmc"
+    ) as mock_xbmc:
+        resolve(7, {"nzburl": "http%3A%2F%2Fi%2Fx.nzb", "title": "X"})
+    nzbget_entry.assert_not_called()
+    assert mock_plugin.setResolvedUrl.call_args[0][:2] == (7, False)
+    mock_xbmc.PlayList.return_value.clear.assert_called_once()
 
 
 def test_resolve_skips_nzbget_when_disabled():
@@ -7529,12 +7866,37 @@ def test_resolve_and_play_delegates_to_nzbget_when_enabled():
         "resources.lib.nzbget_resolver.play_nzbget"
     ) as play_entry, patch(
         "resources.lib.resolver._clear_kodi_playback_state", return_value=90.0
-    ) as scrub:
+    ) as scrub, patch(
+        "resources.lib.resolver._resolve_resume_choice",
+        side_effect=lambda params, scrubbed: ("rel-id", scrubbed),
+    ) as resume_choice:
         resolve_and_play("http://i/x.nzb", "X", params={})
     # Assert the exact nzb_url/title/params payload is forwarded to the
-    # handle-less entry plus the carried resume offset.
-    play_entry.assert_called_once_with("http://i/x.nzb", "X", {}, resume_seconds=90.0)
+    # handle-less entry plus the carried resume offset and release identity.
+    play_entry.assert_called_once_with(
+        "http://i/x.nzb", "X", {}, resume_seconds=90.0, resume_key="rel-id"
+    )
+    resume_choice.assert_called_once_with({}, 90.0)
     scrub.assert_called_once()  # bookmark scrubbed before the NZBGet handoff
+
+
+def test_resolve_and_play_nzbget_cancel_prompt_does_not_play():
+    # On the handle-less path there is no plugin handle, so a cancelled resume
+    # prompt (chosen is None) must simply not start playback — no setResolvedUrl
+    # in this path, matching its contract.
+    addon = MagicMock()
+    addon.getSetting.side_effect = lambda key: (
+        "true" if key == "nzbget_enabled" else ""
+    )
+    with patch.object(sys.modules["xbmcaddon"], "Addon", return_value=addon), patch(
+        "resources.lib.nzbget_resolver.play_nzbget"
+    ) as play_entry, patch(
+        "resources.lib.resolver._clear_kodi_playback_state", return_value=90.0
+    ), patch(
+        "resources.lib.resolver._resolve_resume_choice", return_value=("rel-id", None)
+    ):
+        resolve_and_play("http://i/x.nzb", "X", params={})
+    play_entry.assert_not_called()
 
 
 def test_resolve_and_play_reads_toggle_via_injected_getter():
@@ -7549,9 +7911,11 @@ def test_resolve_and_play_reads_toggle_via_injected_getter():
         sys.modules["xbmcaddon"], "Addon", side_effect=RuntimeError("unavailable")
     ), patch("resources.lib.nzbget_resolver.play_nzbget") as play_entry, patch(
         "resources.lib.resolver._clear_kodi_playback_state", return_value=0.0
+    ), patch(
+        "resources.lib.resolver._resolve_resume_choice", return_value=("", 0.0)
     ):
         params = {"_settings_getter": injected}
         resolve_and_play("http://i/x.nzb", "X", params=params)
     play_entry.assert_called_once_with(
-        "http://i/x.nzb", "X", params, resume_seconds=0.0
+        "http://i/x.nzb", "X", params, resume_seconds=0.0, resume_key=""
     )
