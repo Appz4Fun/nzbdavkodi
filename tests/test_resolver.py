@@ -4,7 +4,7 @@
 import sys
 import threading
 import time as _time
-from unittest.mock import ANY, MagicMock, patch
+from unittest.mock import ANY, MagicMock, call, patch
 
 from resources.lib.resolver import (
     _DOWNLOAD_TIMEOUT_MAX,
@@ -34,7 +34,9 @@ from resources.lib.resolver import (
     _poll_until_ready,
     _prefetch_fallback_candidate_loader,
     _prepare_direct_playback_with_service_config,
+    _preserve_resume_on_cancel,
     _resolve_resume_choice,
+    _resume_params_with_title,
     _show_submit_error_dialog,
     _start_direct_playback_prepare,
     _start_fallback_submit_worker,
@@ -1076,6 +1078,88 @@ def test_resolve_resume_choice_never_played_does_not_prompt(mock_resume_store):
     dialog.contextmenu.assert_not_called()
 
 
+@patch("resources.lib.resolver.resume_choice")
+@patch("resources.lib.resolver.resume_store")
+def test_resolve_resume_choice_legacy_key_fallback_on_release_miss(
+    mock_resume_store, mock_resume_choice
+):
+    """A release-identity miss falls back to the legacy URL-keyed offset.
+
+    Resume points saved under the old stream-URL scheme survive the upgrade to
+    release-identity keys.
+    """
+    mock_resume_choice.release_identity.return_value = "Movie|123|2026"
+    mock_resume_store.get_resume.side_effect = lambda key: (
+        900.0 if key == "http://webdav/movie.mkv" else 0.0
+    )
+    mock_resume_choice.choose_resume_seconds.return_value = 900.0
+
+    release_id, chosen = _resolve_resume_choice(
+        {"title": "Movie"}, 0.0, legacy_key="http://webdav/movie.mkv"
+    )
+
+    assert release_id == "Movie|123|2026"
+    assert chosen == 900.0
+    # Release id is read first; the legacy URL is consulted only on the miss.
+    assert mock_resume_store.get_resume.call_args_list == [
+        call("Movie|123|2026"),
+        call("http://webdav/movie.mkv"),
+    ]
+    mock_resume_choice.choose_resume_seconds.assert_called_once_with(
+        "Movie|123|2026", 900.0
+    )
+
+
+@patch("resources.lib.resolver.resume_choice")
+@patch("resources.lib.resolver.resume_store")
+def test_resolve_resume_choice_legacy_key_skipped_when_release_hits(
+    mock_resume_store, mock_resume_choice
+):
+    """When the release identity already has an offset, the legacy URL is not read."""
+    mock_resume_choice.release_identity.return_value = "Movie|123|2026"
+    mock_resume_store.get_resume.return_value = 1200.0
+    mock_resume_choice.choose_resume_seconds.return_value = 1200.0
+
+    _resolve_resume_choice(
+        {"title": "Movie"}, 0.0, legacy_key="http://webdav/movie.mkv"
+    )
+
+    mock_resume_store.get_resume.assert_called_once_with("Movie|123|2026")
+
+
+def test_resume_params_with_title_adds_missing_title():
+    assert _resume_params_with_title({"_download_size": "9"}, "Release.Name") == {
+        "_download_size": "9",
+        "title": "Release.Name",
+    }
+
+
+def test_resume_params_with_title_overrides_stale_tmdb_title():
+    """The selected NZB title wins over a stale TMDBHelper title in params."""
+    assert _resume_params_with_title({"title": "Show Name"}, "Show.S01E02.1080p") == {
+        "title": "Show.S01E02.1080p"
+    }
+
+
+def test_resume_params_with_title_keeps_params_when_title_empty():
+    assert _resume_params_with_title({"title": "Existing"}, "") == {"title": "Existing"}
+
+
+@patch("resources.lib.resolver.resume_store")
+def test_preserve_resume_on_cancel_persists_scrubbed_offset(mock_resume_store):
+    """Cancelling the prompt saves the scrubbed bookmark under the release id."""
+    _preserve_resume_on_cancel("Movie|123|2026", 754.0)
+    mock_resume_store.save_resume.assert_called_once_with("Movie|123|2026", 754.0)
+
+
+@patch("resources.lib.resolver.resume_store")
+def test_preserve_resume_on_cancel_skips_without_id_or_offset(mock_resume_store):
+    """Nothing is persisted without a release id or a positive offset."""
+    _preserve_resume_on_cancel("", 754.0)
+    _preserve_resume_on_cancel("Movie|123|2026", 0.0)
+    mock_resume_store.save_resume.assert_not_called()
+
+
 # --- _clear_kodi_playback_state tests ---
 
 
@@ -1649,7 +1733,10 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
     # Resume resolution is exercised separately; here verify the scrubbed
     # bookmark position flows through into the finish handoff (release id +
     # chosen offset). The helper echoes the scrubbed seconds it is handed.
-    mock_resume_choice.side_effect = lambda params, scrubbed: ("rel-id", scrubbed)
+    mock_resume_choice.side_effect = lambda params, scrubbed, legacy_key="": (
+        "rel-id",
+        scrubbed,
+    )
     call_order = []
 
     def poll_ready(*args, **kwargs):
@@ -1728,6 +1815,7 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
             "_fallback_candidates": fallback_candidates,
         },
         321.0,
+        legacy_key="http://webdav/content/primary/movie.mp4",
     )
     mock_finish_playback.assert_called_once_with(
         1, prepared_playback, resume_key="rel-id", resume_seconds=321.0
@@ -2655,7 +2743,10 @@ def test_resolve_and_play_routes_plain_mkv_through_proxy_without_fallbacks(
     mock_clear_state.return_value = 456.0
     # Echo the scrubbed bookmark position so the carry-through into the
     # handle-less finish handoff (release id + chosen offset) is verified.
-    mock_resume_choice.side_effect = lambda params, scrubbed: ("rel-id", scrubbed)
+    mock_resume_choice.side_effect = lambda params, scrubbed, legacy_key="": (
+        "rel-id",
+        scrubbed,
+    )
     mock_xbmc.Monitor.return_value = _make_monitor()
     mock_gui.DialogProgress.return_value = MagicMock()
     mock_poll_until_ready.return_value = (
@@ -2676,7 +2767,11 @@ def test_resolve_and_play_routes_plain_mkv_through_proxy_without_fallbacks(
         service_config_state=None,
     )
     mock_wait_prepare.assert_called_once_with({"state": "prepare"})
-    mock_resume_choice.assert_called_once_with({"_fallback_candidates": []}, 456.0)
+    mock_resume_choice.assert_called_once_with(
+        {"title": "movie.mp4", "_fallback_candidates": []},
+        456.0,
+        legacy_key="http://webdav/content/primary/movie.mkv",
+    )
     mock_finish_playback.assert_called_once_with(
         {"state": "prepared"}, resume_key="rel-id", resume_seconds=456.0
     )
@@ -7876,7 +7971,7 @@ def test_resolve_and_play_delegates_to_nzbget_when_enabled():
     play_entry.assert_called_once_with(
         "http://i/x.nzb", "X", {}, resume_seconds=90.0, resume_key="rel-id"
     )
-    resume_choice.assert_called_once_with({}, 90.0)
+    resume_choice.assert_called_once_with({"title": "X"}, 90.0)
     scrub.assert_called_once()  # bookmark scrubbed before the NZBGet handoff
 
 
