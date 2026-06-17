@@ -65,7 +65,9 @@ def _no_resume_store_disk_writes():
     ``_preserve_resume_on_cancel`` behavior is asserted directly in its own
     unit tests, which mock ``resume_store`` explicitly.
     """
-    with patch("resources.lib.resolver.resume_store.save_resume"):
+    with patch("resources.lib.resolver.resume_store.save_resume"), patch(
+        "resources.lib.resolver.resume_store.clear_resume"
+    ):
         yield
 
 
@@ -1123,6 +1125,10 @@ def test_resolve_resume_choice_legacy_key_fallback_on_release_miss(
         call("Movie|123|2026"),
         call("http://webdav/movie.mkv"),
     ]
+    # The consumed legacy entry is migrated onto the release id and dropped, so
+    # a later natural-end clear of the release key can't be resurrected by it.
+    mock_resume_store.save_resume.assert_called_once_with("Movie|123|2026", 900.0)
+    mock_resume_store.clear_resume.assert_called_once_with("http://webdav/movie.mkv")
     mock_resume_choice.choose_resume_seconds.assert_called_once_with(
         "Movie|123|2026", 900.0
     )
@@ -1166,8 +1172,17 @@ def test_resume_params_with_title_keeps_params_when_title_empty():
 @patch("resources.lib.resolver.resume_store")
 def test_preserve_resume_on_cancel_persists_scrubbed_offset(mock_resume_store):
     """Cancelling the prompt saves the scrubbed bookmark under the release id."""
+    mock_resume_store.get_resume.return_value = 0.0
     _preserve_resume_on_cancel("Movie|123|2026", 754.0)
     mock_resume_store.save_resume.assert_called_once_with("Movie|123|2026", 754.0)
+
+
+@patch("resources.lib.resolver.resume_store")
+def test_preserve_resume_on_cancel_does_not_downgrade_larger_stored(mock_resume_store):
+    """A larger stored point is not overwritten by an older, smaller bookmark."""
+    mock_resume_store.get_resume.return_value = 3600.0
+    _preserve_resume_on_cancel("Movie|123|2026", 600.0)
+    mock_resume_store.save_resume.assert_not_called()
 
 
 @patch("resources.lib.resolver.resume_store")
