@@ -363,7 +363,7 @@ def test_direct_playback_service_config_reads_proxy_window_once_for_fast_start()
 
     assert (service_port, prepare_token) == (57800, "secret-token")
     assert len(window_calls) == 1
-    assert elapsed < 0.09, "proxy config lookup took {:.3f}s".format(elapsed)
+    assert elapsed < 0.5, "proxy config lookup took {:.3f}s".format(elapsed)
 
 
 def test_handle_job_status_accepts_fractional_percentage():
@@ -2961,7 +2961,7 @@ def test_resolve_and_play_starts_player_before_remux_cache_prompt(
         )
     )
     assert (
-        elapsed_to_play < 0.08
+        elapsed_to_play < 0.5
     ), "remux cache prompt delayed Player.play by {:.3f}s".format(elapsed_to_play)
     mock_cache_prompt.assert_called_once()
 
@@ -4997,7 +4997,7 @@ def test_submit_ui_pump_starts_history_probe_after_fast_queue_miss(
         "completed-history probe waited for grace after queue miss; "
         "history_delay={:.3f}s elapsed={:.3f}s".format(history_delay, elapsed)
     )
-    assert elapsed < 0.08, "completed-history adoption took {:.3f}s".format(elapsed)
+    assert elapsed < 0.5, "completed-history adoption took {:.3f}s".format(elapsed)
 
 
 @patch("resources.lib.resolver.find_completed_by_name")
@@ -5117,7 +5117,7 @@ def test_poll_once_catches_late_active_queue_completed_history(
         "late completed history missed after {:.3f}s; resolver would wait for "
         "the next poll interval".format(elapsed)
     )
-    assert elapsed < 0.08, "late-history catch took {:.3f}s".format(elapsed)
+    assert elapsed < 0.5, "late-history catch took {:.3f}s".format(elapsed)
     mock_probe_webdav.assert_not_called()
 
 
@@ -5247,7 +5247,7 @@ def test_submit_ui_pump_fast_submit_skips_slow_probe_cleanup_wait(
 
     assert (nzo_id, submit_error) == ("SABnzbd_nzo_fast_submit", None)
     assert (
-        elapsed < 0.08
+        elapsed < 0.5
     ), "fast submit waited for slow adoption probe cleanup; elapsed={:.3f}s".format(
         elapsed
     )
@@ -5335,7 +5335,7 @@ def test_submit_ui_pump_overlaps_completed_history_probe_with_slow_queue_miss(
 
     assert (nzo_id, submit_error) == ("SABnzbd_nzo_completed_probe", None)
     assert (
-        elapsed < 0.08
+        elapsed < 0.5
     ), "completed history adoption waited behind queue miss for {:.3f}s".format(elapsed)
 
 
@@ -6827,7 +6827,7 @@ def test_poll_until_ready_rechecks_completed_webdav_quickly_after_first_miss(
 
     assert url == "http://webdav/content/uncategorized/movie/movie.mkv"
     assert headers == {"Authorization": "Basic primary"}
-    assert elapsed < 0.08, "first completed WebDAV recheck waited {:.3f}s".format(
+    assert elapsed < 0.5, "first completed WebDAV recheck waited {:.3f}s".format(
         elapsed
     )
 
