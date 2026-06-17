@@ -6,6 +6,7 @@ import threading
 import time as _time
 from unittest.mock import ANY, MagicMock, call, patch
 
+import pytest
 from resources.lib.resolver import (
     _DOWNLOAD_TIMEOUT_MAX,
     _DOWNLOAD_TIMEOUT_MIN,
@@ -49,6 +50,23 @@ from resources.lib.resolver import (
     resolve,
     resolve_and_play,
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_resume_store_disk_writes():
+    """Keep resolver tests hermetic.
+
+    The real cancel path calls ``_preserve_resume_on_cancel`` ->
+    ``resume_store.save_resume`` with the default path, which resolves through
+    the mocked ``xbmcvfs.translatePath`` to a constant ``MagicMock/...`` path
+    and writes ``resume.json`` there -- the same location ``cache`` later uses
+    as its base dir, so the stray file makes ``cache.set_cached`` fail with
+    ``NotADirectoryError`` in unrelated tests (e.g. test_router). The
+    ``_preserve_resume_on_cancel`` behavior is asserted directly in its own
+    unit tests, which mock ``resume_store`` explicitly.
+    """
+    with patch("resources.lib.resolver.resume_store.save_resume"):
+        yield
 
 
 def _make_monitor(abort_after=None):
