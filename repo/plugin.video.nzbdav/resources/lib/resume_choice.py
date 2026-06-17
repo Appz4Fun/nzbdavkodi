@@ -25,7 +25,9 @@ _SELECT_ACTION_PLAY = 5
 _STRING_RESUME_FROM = 12022  # "Resume from %s"
 _STRING_START_FROM_BEGINNING = 12021  # "Start from beginning"
 
-_FALLBACK_RESUME_FROM = "Resume from %s"
+# Kodi 21 core string #12022 is "Resume from {0:s}" (str.format style); the
+# fallback mirrors it. ``_fill_template`` tolerates printf "%s" too.
+_FALLBACK_RESUME_FROM = "Resume from {0:s}"
 _FALLBACK_START_FROM_BEGINNING = "Start from beginning"
 
 
@@ -51,8 +53,7 @@ def format_resume_label(seconds):
         total = int(float(seconds))
     except (TypeError, ValueError):
         total = 0
-    if total < 0:
-        total = 0
+    total = max(total, 0)
     hours = total // 3600
     minutes = (total % 3600) // 60
     secs = total % 60
@@ -104,6 +105,32 @@ def _localized_or(string_id, fallback):
     return fallback
 
 
+def _fill_template(template, value):
+    """Insert ``value`` into a Kodi label template across placeholder styles.
+
+    Kodi 21 core strings use ``str.format`` placeholders ("Resume from
+    {0:s}"); older Kodi builds and the bundled fallbacks use printf
+    ("Resume from %s"). Try ``str.format`` first, then printf, then append —
+    so a placeholder-style mismatch can never raise. The printf path was the
+    bug that crashed ``resolve_and_play`` with "not all arguments converted
+    during string formatting" on Kodi 21's ``{0:s}`` string.
+    """
+    if "{" in template and "}" in template:
+        try:
+            return template.format(value)
+        except (IndexError, KeyError, ValueError):
+            pass
+    if "%" in template:
+        try:
+            return template % (value,)
+        except (TypeError, ValueError):
+            pass
+    base = template.strip()
+    if base:
+        return "{} {}".format(base, value)
+    return value
+
+
 def choose_resume_seconds(release_id, seconds, dialog=None):
     """Resolve the resume offset for a replay, prompting only when needed.
 
@@ -123,8 +150,9 @@ def choose_resume_seconds(release_id, seconds, dialog=None):
     # action == "ask"
     if dialog is None:
         dialog = xbmcgui.Dialog()
-    resume_label = _localized_or(_STRING_RESUME_FROM, _FALLBACK_RESUME_FROM) % (
-        format_resume_label(seconds)
+    resume_label = _fill_template(
+        _localized_or(_STRING_RESUME_FROM, _FALLBACK_RESUME_FROM),
+        format_resume_label(seconds),
     )
     beginning_label = _localized_or(
         _STRING_START_FROM_BEGINNING, _FALLBACK_START_FROM_BEGINNING
