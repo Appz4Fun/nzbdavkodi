@@ -420,6 +420,8 @@ _SETTINGS_SNAPSHOT_KEYS = (
     "passthrough_stall_wait",
 )
 
+_NORMALIZE_SEGMENT_RE = re.compile(r"seg_0*(\d+\.(?:m4s|ts))")
+
 
 class ReadAheadBuffer:
     """A per-session bounded contiguous forward read-ahead window.
@@ -6286,10 +6288,7 @@ class HlsProducer:
         if "#EXTINF:" not in text:
             return None
 
-        def _normalize_segment(match):
-            return "seg_{}.{}".format(int(match.group(1)), match.group(2))
-
-        text = re.sub(r"seg_0*(\d+)\.(m4s|ts)", _normalize_segment, text)
+        text = _NORMALIZE_SEGMENT_RE.sub(r"seg_\1", text)
         return text.encode("utf-8")
 
     def _segment_complete(self, seg_n):
