@@ -1171,6 +1171,11 @@ def _preserve_resume_on_cancel(release_id, scrubbed_seconds):
     seconds = _coerce_resume_seconds(scrubbed_seconds)
     if seconds <= 0.0:
         return
+    # Never downgrade an existing, larger stored point with an older Kodi
+    # bookmark: the prompt was shown using the merged max, so a cancel from a
+    # 1 h stored position with a stale 10 min bookmark must keep the 1 h.
+    if _read_stored_resume(release_id) >= seconds:
+        return
     try:
         resume_store.save_resume(release_id, seconds)
     except _RESOLVE_RUNTIME_ERRORS as error:
@@ -1195,6 +1200,29 @@ def _resume_params_with_title(params, title):
     return resume_params
 
 
+def _migrate_legacy_resume(release_id, legacy_key):
+    """Read a pre-upgrade URL-keyed offset and migrate it onto the release id.
+
+    During playback the service saves/clears only the release key, so a stale
+    URL-keyed entry left behind would survive a natural-end clear of the
+    release key and be resurrected on the next replay. Copy it onto the release
+    identity and drop the old key once consumed. Returns the offset (0.0 on
+    miss).
+    """
+    legacy_stored = _read_stored_resume(legacy_key)
+    if legacy_stored <= 0.0 or not release_id:
+        return legacy_stored
+    try:
+        resume_store.save_resume(release_id, legacy_stored)
+        resume_store.clear_resume(legacy_key)
+    except _RESOLVE_RUNTIME_ERRORS as error:
+        xbmc.log(
+            "NZB-DAV: Failed to migrate legacy resume key: {}".format(error),
+            xbmc.LOGWARNING,
+        )
+    return legacy_stored
+
+
 def _resolve_resume_choice(params, scrubbed_seconds, legacy_key=""):
     """Resolve the resume offset for a replay, prompting only when Kodi would.
 
@@ -1213,7 +1241,7 @@ def _resolve_resume_choice(params, scrubbed_seconds, legacy_key=""):
     release_id = resume_choice.release_identity(params)
     stored = _read_stored_resume(release_id) if release_id else 0.0
     if stored <= 0.0 and legacy_key:
-        stored = _read_stored_resume(legacy_key)
+        stored = _migrate_legacy_resume(release_id, legacy_key)
     merged = max(
         _coerce_resume_seconds(scrubbed_seconds),
         _coerce_resume_seconds(stored),
