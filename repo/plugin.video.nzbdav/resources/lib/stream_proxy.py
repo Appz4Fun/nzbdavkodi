@@ -420,6 +420,10 @@ _SETTINGS_SNAPSHOT_KEYS = (
     "passthrough_stall_wait",
 )
 
+# Strips zero-padding from HLS segment filenames in a playlist body, e.g.
+# "seg_000001.m4s" -> "seg_1.m4s" (matches .m4s/.ts segments only). The greedy
+# "0*" consumes leading zeros while "\d+" keeps at least one digit, so the
+# capture already excludes the padding and "seg_\1" needs no further work.
 _NORMALIZE_SEGMENT_RE = re.compile(r"seg_0*(\d+\.(?:m4s|ts))")
 
 
