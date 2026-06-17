@@ -266,6 +266,45 @@ def test_choose_resume_seconds_ask_falls_back_when_builtins_empty():
     assert labels == ["Resume from 01:05", "Start from beginning"]
 
 
+def test_choose_resume_seconds_ask_handles_kodi21_format_placeholder():
+    """Kodi 21 core string #12022 is 'Resume from {0:s}' (str.format style),
+    not printf '%s'. The label must fill without raising 'not all arguments
+    converted during string formatting' (the crash in resolve_and_play)."""
+    dialog = MagicMock()
+    dialog.contextmenu.return_value = 0
+
+    def _localized(string_id):
+        return {12022: "Resume from {0:s}", 12021: "Play from beginning"}[string_id]
+
+    with patch(
+        "resources.lib.resume_choice.native_resume_action", return_value="ask"
+    ), patch("resources.lib.resume_choice.xbmc") as xbmc_mock:
+        xbmc_mock.getLocalizedString.side_effect = _localized
+        result = resume_choice.choose_resume_seconds("id", 3661.0, dialog=dialog)
+
+    assert result == 3661.0
+    labels = dialog.contextmenu.call_args[0][0]
+    assert labels == ["Resume from 1:01:01", "Play from beginning"]
+
+
+def test_choose_resume_seconds_ask_handles_template_without_placeholder():
+    """A localized template with no placeholder must not raise; append the time."""
+    dialog = MagicMock()
+    dialog.contextmenu.return_value = 0
+
+    def _localized(string_id):
+        return {12022: "Resume from", 12021: "Play from beginning"}[string_id]
+
+    with patch(
+        "resources.lib.resume_choice.native_resume_action", return_value="ask"
+    ), patch("resources.lib.resume_choice.xbmc") as xbmc_mock:
+        xbmc_mock.getLocalizedString.side_effect = _localized
+        resume_choice.choose_resume_seconds("id", 65.0, dialog=dialog)
+
+    labels = dialog.contextmenu.call_args[0][0]
+    assert labels == ["Resume from 01:05", "Play from beginning"]
+
+
 def test_choose_resume_seconds_does_not_clear_store_on_beginning():
     """Choosing beginning never touches resume_store."""
     dialog = MagicMock()
