@@ -3,7 +3,10 @@
 
 """Prowlarr Newznab API client."""
 
-import xml.etree.ElementTree as ET  # nosec B405 — parsing trusted Prowlarr responses from user-configured local service
+try:
+    from defusedxml import ElementTree as ET
+except ImportError:  # pragma: no cover - Kodi installs may not bundle defusedxml
+    import xml.etree.ElementTree as ET  # nosec B405 — parsing trusted Prowlarr responses from user-configured local service
 from urllib.parse import urlencode, urlparse
 
 import xbmc
@@ -278,9 +281,12 @@ def _parse_results_checked(xml_text):
             invalid or not an RSS feed; `None` on success.
     """
     try:
-        root = ET.fromstring(
-            xml_text, parser=_build_xxe_safe_parser()
-        )  # nosec B314 — entities disabled in _build_xxe_safe_parser
+        if getattr(ET, "__name__", "").startswith("defusedxml."):
+            root = ET.fromstring(xml_text)
+        else:
+            root = ET.fromstring(
+                xml_text, parser=_build_xxe_safe_parser()
+            )  # nosec B314 — entities disabled in _build_xxe_safe_parser
     except ET.ParseError as e:
         xbmc.log(
             "NZB-DAV: Failed to parse Prowlarr XML response: {}".format(e),

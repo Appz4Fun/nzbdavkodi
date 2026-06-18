@@ -519,7 +519,10 @@ def find_video_file(
         (three total levels including the starting folder).
         Logs discovered files, recursion steps, and errors to the Kodi log.
     """
-    import xml.etree.ElementTree as ET  # nosec B405 — parsing trusted WebDAV server response
+    try:
+        from defusedxml import ElementTree as ET
+    except ImportError:  # pragma: no cover - Kodi installs may not bundle defusedxml
+        import xml.etree.ElementTree as ET  # nosec B405 — parsing trusted WebDAV server response
 
     if _depth > 2:
         return None
@@ -582,15 +585,18 @@ def find_video_file(
         # the same effect for XXE prevention. Use the expat target builder
         # so a hostile WebDAV server can't coerce us into reading local
         # files via an external entity reference.
-        _xml_parser = ET.XMLParser()  # nosec B314 — entities disabled below
-        try:
-            _xml_parser.parser.DefaultHandler = lambda _d: None
-            _xml_parser.parser.ExternalEntityRefHandler = lambda *_: False
-        except AttributeError:  # pragma: no cover — non-expat parser backend
-            pass
-        root = ET.fromstring(
-            body, parser=_xml_parser
-        )  # nosec B314 — trusted WebDAV server response; entities disabled above
+        if getattr(ET, "__name__", "").startswith("defusedxml."):
+            root = ET.fromstring(body)
+        else:
+            _xml_parser = ET.XMLParser()  # nosec B314 — entities disabled below
+            try:
+                _xml_parser.parser.DefaultHandler = lambda _d: None
+                _xml_parser.parser.ExternalEntityRefHandler = lambda *_: False
+            except AttributeError:  # pragma: no cover — non-expat parser backend
+                pass
+            root = ET.fromstring(
+                body, parser=_xml_parser
+            )  # nosec B314 — trusted WebDAV server response; entities disabled above
         ns = {"D": "DAV:"}
 
         best_file = None
