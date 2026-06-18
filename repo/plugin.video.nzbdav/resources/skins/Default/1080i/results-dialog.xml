@@ -157,6 +157,13 @@
           <colordiffuse>FF182538</colordiffuse>
         </control>
 
+        <!-- Focus Accent Line -->
+        <control type="image">
+          <left>0</left><top>0</top><width>4</width><height>66</height>
+          <texture>white.png</texture>
+          <colordiffuse>FF4A9EFF</colordiffuse>
+        </control>
+
         <!-- LINE 1: Available indicator + Filename + Size + Age + Indexer + Group -->
         <control type="label">
           <left>6</left><top>4</top><width>32</width><height>30</height>
