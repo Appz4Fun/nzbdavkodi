@@ -2289,7 +2289,7 @@ def test_initial_prefetch_skips_probe_base_settings_before_first_get():
     ) as direct_open:
         sp.prepare_stream("http://host/movie.mkv", auth_header="Basic primary")
         thread = sp._server.stream_context.get("_initial_range_prefetch_thread")
-        time.sleep(0.02)
+        time.sleep(0.1)
 
         ctx = sp._server.stream_context
         handler = _make_handler_with_server(ctx, range_header="bytes=0-4095")
