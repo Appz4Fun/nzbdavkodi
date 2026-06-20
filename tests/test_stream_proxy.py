@@ -2289,7 +2289,14 @@ def test_initial_prefetch_skips_probe_base_settings_before_first_get():
     ) as direct_open:
         sp.prepare_stream("http://host/movie.mkv", auth_header="Basic primary")
         thread = sp._server.stream_context.get("_initial_range_prefetch_thread")
-        time.sleep(0.1)
+
+        # Wait until the prefetch thread has actually made the URLOpen call
+        # This prevents the main thread from racing and making its own URLOpen call
+        # before the prefetch thread executes and populates the read-ahead buffer.
+        for _ in range(50):
+            if open_threads:
+                break
+            time.sleep(0.01)
 
         ctx = sp._server.stream_context
         handler = _make_handler_with_server(ctx, range_header="bytes=0-4095")
