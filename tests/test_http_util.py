@@ -8,6 +8,7 @@ from resources.lib.http_util import (
     HttpResponseTooLarge,
     http_get,
     http_post_json,
+    iso8601_to_rfc2822,
     notify,
     pubdate_to_epoch,
     redact_text,
@@ -331,6 +332,43 @@ def test_pubdate_to_epoch_returns_none_on_garbage():
     assert pubdate_to_epoch("") is None
     assert pubdate_to_epoch("not a date") is None
     assert pubdate_to_epoch(None) is None
+
+
+# --- iso8601_to_rfc2822 (Prowlarr native-JSON publishDate normalization) ---
+
+
+def test_iso8601_to_rfc2822_round_trips_through_pubdate_to_epoch():
+    """The whole point: an ISO-8601 publishDate must normalize to an
+    RFC-2822 string that pubdate_to_epoch can then parse to the correct
+    absolute epoch (it rejects raw ISO-8601)."""
+    # Sanity: pubdate_to_epoch genuinely cannot read ISO-8601.
+    assert pubdate_to_epoch("2021-12-15T12:00:00Z") is None
+    rfc = iso8601_to_rfc2822("2021-12-15T12:00:00Z")
+    assert "T" not in rfc  # converted, not passed through
+    assert pubdate_to_epoch(rfc) == 1639569600
+
+
+def test_iso8601_to_rfc2822_handles_offset_and_naive_and_fractional():
+    """Explicit offsets normalize to UTC; naive is assumed UTC; .NET-style
+    7-digit fractional seconds are tolerated."""
+    # Same instant via a -0500 offset.
+    assert pubdate_to_epoch(iso8601_to_rfc2822("2021-12-15T07:00:00-05:00")) == 1639569600
+    # No timezone -> assumed UTC.
+    assert pubdate_to_epoch(iso8601_to_rfc2822("2021-12-15T12:00:00")) == 1639569600
+    # Fractional seconds (7 digits, as .NET emits) are dropped, not fatal.
+    assert (
+        pubdate_to_epoch(iso8601_to_rfc2822("2021-12-15T12:00:00.1234567Z"))
+        == 1639569600
+    )
+
+
+def test_iso8601_to_rfc2822_returns_empty_on_bad_input():
+    """Empty / non-string / unparseable input returns '' (parse loops
+    treat a missing field as an empty string, never an exception)."""
+    assert iso8601_to_rfc2822("") == ""
+    assert iso8601_to_rfc2822(None) == ""
+    assert iso8601_to_rfc2822("not a date") == ""
+    assert iso8601_to_rfc2822(12345) == ""
 
 
 def test_http_post_json_posts_body_and_returns_text():

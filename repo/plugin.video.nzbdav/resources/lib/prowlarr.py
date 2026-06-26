@@ -1,15 +1,31 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 nzbdav contributors
 
-"""Prowlarr Newznab API client."""
+"""Prowlarr search client.
 
+Prowlarr's native ``/api/v1/search`` endpoint (the one this client calls,
+with the Prowlarr API key + ``indexerIds``) returns a **JSON** array of
+release objects — not Newznab RSS/XML. Historically this module parsed the
+response as XML, which crashed with ``syntax error: line 1, column 0`` the
+moment Prowlarr answered (issue #313). The parser now sniffs the payload and
+routes JSON to ``_parse_json_results`` while still understanding Newznab XML
+(e.g. a reverse-proxied per-indexer ``/{id}/api`` feed) via the legacy path.
+"""
+
+import json
 import xml.etree.ElementTree as ET  # nosec B405 — parsing trusted Prowlarr responses from user-configured local service
 from urllib.parse import urlencode, urlparse
 
 import xbmc
 
 from resources.lib.http_util import (
+    age_string_from_days as _age_from_days,
+)
+from resources.lib.http_util import (
     calculate_age as _calculate_age,
+)
+from resources.lib.http_util import (
+    iso8601_to_rfc2822 as _iso_to_rfc2822,
 )
 from resources.lib.http_util import (
     format_request_error as _format_request_error,
@@ -254,7 +270,90 @@ def parse_results(xml_text):
     return results
 
 
-def _parse_results_checked(xml_text):
+def _parse_results_checked(text):
+    """Parse a Prowlarr search response into normalized result dicts.
+
+    Prowlarr's native ``/api/v1/search`` returns a JSON array; a
+    reverse-proxied per-indexer Newznab feed returns RSS/XML. Sniff the
+    first non-whitespace character and dispatch accordingly so both shapes
+    work and a server that switches formats can't silently break search.
+
+    Returns ``(results, error_message)`` — ``error_message`` is ``None`` on
+    success or a short human-readable string on a malformed/unexpected body.
+    """
+    stripped = (text or "").lstrip()
+    if stripped[:1] in ("[", "{"):
+        return _parse_json_results(stripped)
+    return _parse_xml_results(text)
+
+
+def _parse_json_results(text):
+    """Parse a Prowlarr native ``/api/v1/search`` JSON array into result dicts.
+
+    Each element is a Prowlarr ``ReleaseResource``. Torrent releases are
+    skipped — nzbdav only consumes NZB/usenet downloads — and the remaining
+    fields are mapped onto the same ``{title, link, size, indexer, pubdate,
+    age}`` shape the XML path produces, so downstream consumers don't care
+    which transport answered.
+    """
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError) as e:
+        xbmc.log(
+            "NZB-DAV: Failed to parse Prowlarr JSON response: {}".format(e),
+            xbmc.LOGERROR,
+        )
+        return [], "Prowlarr returned an invalid response: {}".format(e)
+
+    if not isinstance(data, list):
+        # Prowlarr error bodies are JSON objects ({"error": ...}), not arrays.
+        message = ""
+        if isinstance(data, dict):
+            message = data.get("error") or data.get("message") or ""
+        xbmc.log(
+            "NZB-DAV: Unexpected Prowlarr JSON payload (not an array): {}".format(
+                message or type(data).__name__
+            ),
+            xbmc.LOGERROR,
+        )
+        detail = ": {}".format(message) if message else ": expected a JSON array"
+        return [], "Prowlarr returned an invalid response{}".format(detail)
+
+    results = []
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+        # nzbdav downloads NZBs; magnet/torrent releases are unusable here.
+        if (entry.get("protocol") or "").lower() == "torrent":
+            continue
+
+        size_val = entry.get("size")
+        if isinstance(size_val, bool):
+            size = ""
+        elif isinstance(size_val, int) and size_val > 0:
+            size = str(size_val)
+        elif isinstance(size_val, str) and size_val.strip().isdigit():
+            size = size_val.strip()
+        else:
+            size = ""
+
+        results.append(
+            {
+                "title": entry.get("title") or "",
+                "link": entry.get("downloadUrl") or "",
+                "size": size,
+                "indexer": entry.get("indexer") or "",
+                # publishDate is ISO-8601; normalize to RFC-2822 so the
+                # pubdate_to_epoch / Age-sort consumers can parse it.
+                "pubdate": _iso_to_rfc2822(entry.get("publishDate")),
+                "age": _age_from_days(entry.get("age")),
+            }
+        )
+
+    return results, None
+
+
+def _parse_xml_results(xml_text):
     """
     Parse a Prowlarr Newznab RSS XML response into a list of normalized
     result dictionaries.

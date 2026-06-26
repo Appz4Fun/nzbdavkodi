@@ -4,7 +4,11 @@
 import os
 from unittest.mock import patch
 
-from resources.lib.prowlarr import parse_results, search_prowlarr
+from resources.lib.prowlarr import (
+    _parse_results_checked,
+    parse_results,
+    search_prowlarr,
+)
 
 
 def _load_fixture(name):
@@ -319,3 +323,166 @@ def test_parse_results_enclosure_length_fills_in_when_attr_size_missing():
     results = parse_results(xml_text)
     assert len(results) == 1
     assert results[0]["size"] == "987654321"
+
+
+# --- native JSON response parsing (issue #313) ---
+#
+# Prowlarr's /api/v1/search endpoint answers with a JSON array, not Newznab
+# XML. The old XML-only parser crashed every search with
+# "syntax error: line 1, column 0". These tests pin the JSON path.
+
+
+def test_parse_results_json_movie():
+    """A native Prowlarr JSON array parses into normalized result dicts."""
+    json_text = _load_fixture("prowlarr_movie_response.json")
+    results = parse_results(json_text)
+    # 3 entries in the fixture, but the torrent release is dropped.
+    assert len(results) == 2
+
+    first = results[0]
+    assert (
+        first["title"]
+        == "The.Matrix.1999.2160p.UHD.BluRay.REMUX.HDR.HEVC.DTS-HD.MA.7.1-GROUP"
+    )
+    assert first["link"].startswith("http://192.168.1.12:9696/1/download")
+    assert first["size"] == "45000000000"
+    assert first["indexer"] == "NZBgeek"
+    assert first["age"] == "1 day"
+
+    # publishDate (ISO-8601) is normalized to RFC-2822 so the stable-identity
+    # and "Age" sort consumers (pubdate_to_epoch / filter._pubdate_sort_key)
+    # can parse it — they reject ISO-8601 outright (issue #313 review).
+    from datetime import datetime, timezone
+
+    from resources.lib.http_util import pubdate_to_epoch
+
+    assert first["pubdate"] != "2026-06-25T11:00:00Z"  # normalized, not raw ISO
+    expected_epoch = int(
+        datetime(2026, 6, 25, 11, 0, 0, tzinfo=timezone.utc).timestamp()
+    )
+    assert pubdate_to_epoch(first["pubdate"]) == expected_epoch
+
+    # 400-day-old release -> 400 // 30 == 13 months.
+    assert results[1]["size"] == "8200000000"
+    assert results[1]["age"] == "13 months"
+    # Distinct, correctly-ordered post identities -> "Age" sort works.
+    assert pubdate_to_epoch(results[1]["pubdate"]) < pubdate_to_epoch(
+        first["pubdate"]
+    )
+
+
+def test_parse_results_json_filters_torrent_releases():
+    """Torrent releases are unusable for an NZB pipeline and must be dropped."""
+    json_text = _load_fixture("prowlarr_movie_response.json")
+    results = parse_results(json_text)
+    titles = [r["title"] for r in results]
+    assert "The.Matrix.1999.1080p.BluRay.x264-TORRENT" not in titles
+    assert all("magnet:" not in r["link"] for r in results)
+
+
+def test_parse_results_json_protocol_filter_case_insensitive():
+    """Prowlarr may serialize the protocol enum as 'Torrent' (capitalized)."""
+    json_text = (
+        '[{"title": "X", "downloadUrl": "http://x/1", "size": 100, '
+        '"protocol": "Torrent"}, '
+        '{"title": "Y", "downloadUrl": "http://x/2", "size": 200, '
+        '"protocol": "Usenet"}]'
+    )
+    results = parse_results(json_text)
+    assert len(results) == 1
+    assert results[0]["title"] == "Y"
+
+
+def test_parse_results_json_empty_array():
+    """An empty JSON array is a valid 'no results' answer, not an error."""
+    results, error = _parse_results_checked("[]")
+    assert results == []
+    assert error is None
+
+
+def test_parse_results_json_error_object_reports_message():
+    """Prowlarr error bodies are JSON objects; surface their message."""
+    results, error = _parse_results_checked('{"error": "Invalid API Key"}')
+    assert results == []
+    assert error == "Prowlarr returned an invalid response: Invalid API Key"
+
+
+def test_parse_results_json_non_array_object_without_message():
+    results, error = _parse_results_checked('{"unexpected": true}')
+    assert results == []
+    assert error == "Prowlarr returned an invalid response: expected a JSON array"
+
+
+def test_parse_results_json_malformed_reports_bad_response():
+    results, error = _parse_results_checked('[{"title": "truncated"')
+    assert results == []
+    assert error.startswith("Prowlarr returned an invalid response:")
+
+
+def test_parse_results_json_missing_fields_degrade_to_empty_strings():
+    """Sparse releases must not raise; missing fields become empty strings."""
+    results = parse_results('[{"title": "Only A Title"}]')
+    assert len(results) == 1
+    assert results[0] == {
+        "title": "Only A Title",
+        "link": "",
+        "size": "",
+        "indexer": "",
+        "pubdate": "",
+        "age": "",
+    }
+
+
+@patch("resources.lib.prowlarr._get_settings")
+@patch("resources.lib.prowlarr._http_get")
+def test_search_prowlarr_parses_json_response(mock_http, mock_settings):
+    """End-to-end regression for issue #313: a JSON body yields results,
+    not 'Prowlarr returned an invalid response'."""
+    mock_settings.return_value = ("http://192.168.1.12:9696", "testkey", ["1"])
+    mock_http.return_value = _load_fixture("prowlarr_movie_response.json")
+
+    results, error = search_prowlarr("movie", "The Avengers", imdb="tt0848228")
+    assert error is None
+    assert len(results) == 2
+
+    call_url = mock_http.call_args[0][0]
+    assert "/api/v1/search" in call_url
+    assert "t=movie" in call_url
+    assert "imdbid=tt0848228" in call_url
+
+
+def test_parse_results_json_size_as_digit_string():
+    """Some indexers serialize size as a numeric string, not an int."""
+    results = parse_results(
+        '[{"title": "Z", "downloadUrl": "http://x/3", "size": "500", '
+        '"protocol": "usenet"}]'
+    )
+    assert len(results) == 1
+    assert results[0]["size"] == "500"
+
+
+def test_parse_results_json_size_non_digit_string_is_dropped():
+    """A non-numeric size string must degrade to empty, not crash/leak."""
+    results = parse_results(
+        '[{"title": "Z", "downloadUrl": "http://x/3", "size": "unknown", '
+        '"protocol": "usenet"}]'
+    )
+    assert len(results) == 1
+    assert results[0]["size"] == ""
+
+
+def test_parse_results_json_error_object_message_key_fallback():
+    """Prowlarr error bodies may use 'message' instead of 'error'."""
+    results, error = _parse_results_checked('{"message": "Indexer offline"}')
+    assert results == []
+    assert error == "Prowlarr returned an invalid response: Indexer offline"
+
+
+def test_parse_results_json_skips_non_dict_array_entries():
+    """A defensive array with stray scalars must skip them, not raise."""
+    results = parse_results(
+        '[null, 42, "junk", {"title": "X", "downloadUrl": "http://x/1", '
+        '"protocol": "Usenet"}]'
+    )
+    assert len(results) == 1
+    assert results[0]["title"] == "X"
