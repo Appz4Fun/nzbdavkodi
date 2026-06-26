@@ -320,6 +320,78 @@ def pubdate_to_epoch(pubdate_str):
         return None
 
 
+def iso8601_to_rfc2822(value):
+    """Convert an ISO-8601 datetime string to an RFC-2822 string.
+
+    Prowlarr's native JSON API reports ``publishDate`` in ISO-8601
+    (e.g. ``"2026-06-25T11:00:00Z"``), but every ``pubdate`` consumer in
+    this addon parses RFC-2822 via ``email.utils.parsedate_to_datetime``:
+    :func:`pubdate_to_epoch` (the stable identity key behind the picker's
+    DL/repost gate and the fallback same-window dedup) and
+    ``filter._pubdate_sort_key`` (the "Age" sort). ISO-8601 makes both
+    silently fail — epoch ``None`` / sort key ``0`` — so we normalize at
+    the source and keep the ``pubdate`` field format uniform rather than
+    teaching every consumer a second grammar.
+
+    Returns ``""`` when the input is empty or unparseable, matching the
+    "missing field becomes empty string" contract of the parse loops.
+    """
+    import re
+    from datetime import datetime, timezone
+    from email.utils import format_datetime
+
+    if not isinstance(value, str):
+        return ""
+    text = value.strip()
+    if not text:
+        return ""
+    # .NET (Prowlarr's stack) can emit up to 7 fractional-second digits,
+    # which pre-3.11 ``datetime.fromisoformat`` rejects; sub-second
+    # precision is irrelevant for identity/sort/age, so drop it.
+    text = re.sub(r"\.\d+", "", text)
+    # ``fromisoformat`` only accepts a trailing 'Z' from Python 3.11 on;
+    # map it to an explicit UTC offset for older Kodi runtimes (3.8–3.9).
+    if text[-1:] in ("Z", "z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except (TypeError, ValueError):
+        return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    try:
+        return format_datetime(dt)
+    except (TypeError, ValueError, OverflowError):
+        return ""
+
+
+def age_string_from_days(days):
+    """Format an integer day-count as a human-readable age string.
+
+    Shared by the RFC-2822 ``pubDate`` path (``calculate_age``) and the
+    Prowlarr native-JSON path, which reports an integer ``age`` (in days)
+    directly rather than a parseable date string. Returns ``"today"``,
+    ``"1 day"``, ``"<n> days"``, ``"1 month"``, ``"<n> months"``, or an
+    empty string when ``days`` is missing, non-numeric, or negative.
+    """
+    try:
+        days = int(days)
+    except (TypeError, ValueError):
+        return ""
+    if days < 0:
+        return ""
+    if days == 0:
+        return "today"
+    if days == 1:
+        return "1 day"
+    if days < 30:
+        return "{} days".format(days)
+    months = days // 30
+    if months == 1:
+        return "1 month"
+    return "{} months".format(months)
+
+
 def calculate_age(pubdate_str):
     """Return a human-readable age string computed from an RFC 2822 date.
 
@@ -334,17 +406,7 @@ def calculate_age(pubdate_str):
         pub = parsedate_to_datetime(pubdate_str)
         now = datetime.now(timezone.utc)
         delta = now - pub
-        days = delta.days
-        if days == 0:
-            return "today"
-        if days == 1:
-            return "1 day"
-        if days < 30:
-            return "{} days".format(days)
-        months = days // 30
-        if months == 1:
-            return "1 month"
-        return "{} months".format(months)
+        return age_string_from_days(delta.days)
     except _PUBDATE_ERRORS:
         return ""
 

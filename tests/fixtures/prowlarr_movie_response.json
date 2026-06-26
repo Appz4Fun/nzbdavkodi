@@ -1,0 +1,47 @@
+[
+  {
+    "guid": "https://nzbgeek.info/details/abc123",
+    "age": 1,
+    "ageHours": 30.5,
+    "ageMinutes": 1830.0,
+    "size": 45000000000,
+    "indexerId": 1,
+    "indexer": "NZBgeek",
+    "title": "The.Matrix.1999.2160p.UHD.BluRay.REMUX.HDR.HEVC.DTS-HD.MA.7.1-GROUP",
+    "publishDate": "2026-06-25T11:00:00Z",
+    "downloadUrl": "http://192.168.1.12:9696/1/download?apikey=REDACTED&link=prowlarr-abc123",
+    "infoUrl": "https://nzbgeek.info/details/abc123",
+    "protocol": "usenet",
+    "categories": [{ "id": 2040, "name": "Movies/HD" }]
+  },
+  {
+    "guid": "https://nzbgeek.info/details/def456",
+    "age": 400,
+    "ageHours": 9600.0,
+    "size": 8200000000,
+    "indexerId": 1,
+    "indexer": "NZBgeek",
+    "title": "The.Matrix.1999.1080p.BluRay.x264-GROUP",
+    "publishDate": "2025-05-22T11:00:00Z",
+    "downloadUrl": "http://192.168.1.12:9696/1/download?apikey=REDACTED&link=prowlarr-def456",
+    "infoUrl": "https://nzbgeek.info/details/def456",
+    "protocol": "usenet",
+    "categories": [{ "id": 2040, "name": "Movies/HD" }]
+  },
+  {
+    "guid": "magnet-stub-xyz",
+    "age": 2,
+    "size": 12000000000,
+    "indexerId": 5,
+    "indexer": "SomeTorrentTracker",
+    "title": "The.Matrix.1999.1080p.BluRay.x264-TORRENT",
+    "publishDate": "2026-06-24T11:00:00Z",
+    "downloadUrl": null,
+    "magnetUrl": "magnet:?xt=urn:btih:DEADBEEF",
+    "infoUrl": "https://tracker.example/xyz",
+    "protocol": "torrent",
+    "seeders": 120,
+    "leechers": 4,
+    "categories": [{ "id": 2040, "name": "Movies/HD" }]
+  }
+]
