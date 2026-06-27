@@ -336,7 +336,6 @@ def iso8601_to_rfc2822(value):
     Returns ``""`` when the input is empty or unparseable, matching the
     "missing field becomes empty string" contract of the parse loops.
     """
-    import re
     from datetime import datetime, timezone
     from email.utils import format_datetime
 
