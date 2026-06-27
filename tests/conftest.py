@@ -193,10 +193,19 @@ def _suppress_readahead_daemon(request):
     patched ``urlopen`` — the root of the nondeterministic
     ``test_prevalidated_fallback_reuses_current_probe`` full-suite flake. No general
     test asserts the daemon spawned (``_serve_proxy`` never spawns it; only
-    ``prepare_stream`` does), so no-op the spawn by default. The few tests that
-    exercise the spawn directly opt back in with ``@pytest.mark.real_readahead``.
+    ``prepare_stream`` does), so no-op the spawn by default.
+
+    Exemptions keep the REAL daemon running:
+      * ``real_readahead`` — unit tests that exercise the spawn directly.
+      * ``functional`` / ``integration`` / ``extreme`` — the live/dev-box suites
+        (``just functional-test`` etc.) exist to catch real prefetch/cutover races
+        against actual playback; users get read-ahead by default, so suppressing it
+        there would hide exactly what those suites validate. They are excluded from
+        the default ``just test`` run, so this does not affect the fast unit suite's
+        speed-up or de-flaking.
     """
-    if request.node.get_closest_marker("real_readahead"):
+    keep_real_daemon = ("real_readahead", "functional", "integration", "extreme")
+    if any(request.node.get_closest_marker(marker) for marker in keep_real_daemon):
         yield
         return
     from resources.lib import stream_proxy
