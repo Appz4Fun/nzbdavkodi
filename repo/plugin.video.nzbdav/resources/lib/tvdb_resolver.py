@@ -175,9 +175,13 @@ def resolve_tvdb_id(
         payload = _query(http_get, "/tv/{}/external_ids".format(series_id), key)
         tvdb = _tvdb_from_external_ids(payload)
     except Exception as error:  # pylint: disable=broad-except
+        # HTTPError/URLError str() can echo the failing URL, which embeds the
+        # TMDB api_key — redact before logging (same defense as hydra/prowlarr).
+        from resources.lib.http_util import redact_text
+
         xbmc.log(
             "NZB-DAV: TVDB resolve failed for tmdb={} imdb={}: {}".format(
-                tmdb_id or "-", imdb or "-", error
+                tmdb_id or "-", imdb or "-", redact_text(str(error))
             ),
             xbmc.LOGDEBUG,
         )

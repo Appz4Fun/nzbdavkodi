@@ -132,6 +132,28 @@ def test_resolve_stores_result_in_cache():
     assert cache.get("tmdb:1396") == "81189"
 
 
+def test_resolve_redacts_api_key_in_error_log():
+    """A URL-bearing TMDB error must not leak the api_key into the Kodi log
+    (the request URL embeds api_key=...) — Codex P2."""
+    secret_url = "https://api.themoviedb.org/3/tv/1396/external_ids?api_key=SECRET123"
+
+    def fake_http_get(url, timeout=15):
+        raise OSError("<urlopen error> " + secret_url)
+
+    with patch("resources.lib.tvdb_resolver.xbmc") as mock_xbmc:
+        tvdb = resolve_tvdb_id(
+            tmdb_id="1396",
+            settings_getter=_key_getter,
+            http_get=fake_http_get,
+            cache={},
+        )
+
+    assert tvdb == ""
+    logged = " ".join(str(c) for c in mock_xbmc.log.call_args_list)
+    assert "SECRET123" not in logged
+    assert "REDACTED" in logged
+
+
 def test_resolve_network_error_returns_empty():
     def fake_http_get(url, timeout=15):
         raise OSError("boom")
