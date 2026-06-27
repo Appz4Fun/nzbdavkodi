@@ -6,8 +6,8 @@ from ptt.transformers import (
     array,
     boolean,
     date,
-    integer,
     first_integer,
+    integer,
     lowercase,
     none,
     range_func,
@@ -2599,8 +2599,6 @@ def add_defaults(parser: Parser):
             ) or regex.search(r"dublado", title, regex.IGNORECASE):
                 result["languages"] = result.get("languages", []) + ["pt"]
 
-        return None
-
     parser.add_handler("languages", infer_language_based_on_naming)
 
     # Subbed
@@ -2710,7 +2708,6 @@ def add_defaults(parser: Parser):
                 and "group" in result
             ):
                 del result["group"]
-        return None
 
     parser.add_handler("group", handle_group)
 
@@ -2921,7 +2918,6 @@ def add_defaults(parser: Parser):
         result = context["result"]
         if "group" in result and result["group"] in ["-", ""]:
             del result["group"]
-        return None
 
     parser.add_handler("group", handle_group_exclusion)
 
