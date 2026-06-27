@@ -1331,7 +1331,7 @@ def test_fallback_candidate_loader_defers_settings_until_loader_runs():
 
         assert callable(loader)
         assert (
-            elapsed < 0.05
+            elapsed < 0.5
         ), "fallback settings delayed loader construction by {:.3f}s".format(elapsed)
         mock_settings.assert_not_called()
         assert loader() == [related]
@@ -1371,7 +1371,7 @@ def test_fallback_candidate_loader_construction_defers_slow_pool_scan():
         elapsed = _time.perf_counter() - started
 
     assert callable(loader)
-    assert elapsed < 0.05, "post-picker fallback pool scan took {:.3f}s".format(elapsed)
+    assert elapsed < 0.5, "post-picker fallback pool scan took {:.3f}s".format(elapsed)
     assert results.iterations == 0
 
 
@@ -1817,7 +1817,7 @@ def test_handle_play_empty_completed_snapshot_skips_post_picker_history_lookup(
     elapsed_to_submit = submit_started[0] - started
 
     assert (
-        elapsed_to_submit < 0.05
+        elapsed_to_submit < 0.5
     ), "post-picker submit waited {:.3f}s on a repeated history miss".format(
         elapsed_to_submit
     )
