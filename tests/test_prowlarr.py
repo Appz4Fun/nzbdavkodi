@@ -28,6 +28,73 @@ def _load_fixture(name):
         return f.read()
 
 
+def _qp(url):
+    """Decode a Prowlarr request URL into {param: last-value} (percent- and
+    plus-decoded), so tests can assert on the real query/type values."""
+    from urllib.parse import parse_qs, urlsplit
+
+    return {k: v[-1] for k, v in parse_qs(urlsplit(url).query).items()}
+
+
+# --- _build_prowlarr_query: Prowlarr's {token:value} query syntax (#313) ---
+# Prowlarr's native /api/v1/search binds only Query/Type/IndexerIds and parses
+# ids/season/episode out of the query TEXT as {tvdbid:..} tokens — it ignores
+# imdbid=/tvdbid=/season=/ep= params entirely (verified against Prowlarr src).
+
+
+def test_build_prowlarr_query_episode_prefers_tvdbid_token():
+    from resources.lib.prowlarr import _build_prowlarr_query
+
+    q = _build_prowlarr_query(
+        "episode",
+        "Breaking Bad",
+        imdb="tt0903747",
+        tvdb="81189",
+        season="5",
+        episode="14",
+    )
+    assert q == "Breaking Bad {tvdbid:81189}{season:5}{episode:14}"
+
+
+def test_build_prowlarr_query_episode_imdb_token_when_no_tvdb():
+    from resources.lib.prowlarr import _build_prowlarr_query
+
+    q = _build_prowlarr_query(
+        "episode", "Breaking Bad", imdb="tt0903747", season="5", episode="14"
+    )
+    # imdb id is reduced to its newznab digits (no "tt") inside the token.
+    assert q == "Breaking Bad {imdbid:0903747}{season:5}{episode:14}"
+
+
+def test_build_prowlarr_query_episode_no_id_keeps_season_episode():
+    from resources.lib.prowlarr import _build_prowlarr_query
+
+    q = _build_prowlarr_query("episode", "Breaking Bad", season="5", episode="14")
+    assert q == "Breaking Bad {season:5}{episode:14}"
+
+
+def test_build_prowlarr_query_movie_imdb_token():
+    from resources.lib.prowlarr import _build_prowlarr_query
+
+    q = _build_prowlarr_query("movie", "The Matrix", imdb="tt0133093")
+    assert q == "The Matrix {imdbid:0133093}"
+
+
+def test_build_prowlarr_query_movie_title_only():
+    from resources.lib.prowlarr import _build_prowlarr_query
+
+    assert _build_prowlarr_query("movie", "The Matrix") == "The Matrix"
+
+
+def test_build_prowlarr_query_sanitizes_decorated_tvdb():
+    from resources.lib.prowlarr import _build_prowlarr_query
+
+    q = _build_prowlarr_query(
+        "episode", "Show", tvdb="tvdb-81189", season="1", episode="2"
+    )
+    assert q == "Show {tvdbid:81189}{season:1}{episode:2}"
+
+
 # --- parse_results tests ---
 
 
@@ -108,8 +175,9 @@ def test_search_prowlarr_movie(mock_http, mock_settings):
 
     call_url = mock_http.call_args[0][0]
     assert "/api/v1/search" in call_url
-    assert "t=movie" in call_url
-    assert "imdbid=tt0133093" in call_url
+    qp = _qp(call_url)
+    assert qp["type"] == "movie"
+    assert qp["query"] == "The Matrix {imdbid:0133093}"
     assert "apikey=testkey" in call_url
     assert "indexerIds=1" in call_url
     assert "indexerIds=2" in call_url
@@ -129,9 +197,9 @@ def test_search_prowlarr_tv(mock_http, mock_settings):
     assert len(results) == 1
 
     call_url = mock_http.call_args[0][0]
-    assert "t=tvsearch" in call_url
-    assert "season=5" in call_url
-    assert "ep=14" in call_url
+    qp = _qp(call_url)
+    assert qp["type"] == "tvsearch"
+    assert qp["query"] == "Breaking Bad {season:5}{episode:14}"
     assert "indexerIds=3" in call_url
 
 
@@ -153,12 +221,12 @@ def test_search_prowlarr_tv_prefers_tvdbid(mock_http, mock_settings):
     )
     assert error is None
 
-    call_url = mock_http.call_args[0][0]
-    assert "t=tvsearch" in call_url
-    assert "tvdbid=81189" in call_url
-    assert "imdbid" not in call_url  # tvdbid preferred, not both
-    assert "season=5" in call_url
-    assert "ep=14" in call_url
+    qp = _qp(mock_http.call_args[0][0])
+    assert qp["type"] == "tvsearch"
+    # The id is embedded as a {tvdbid:..} token in the query (Prowlarr's only
+    # id mechanism); tvdbid is preferred over imdbid, and the title is kept.
+    assert qp["query"] == "Breaking Bad {tvdbid:81189}{season:5}{episode:14}"
+    assert "imdbid" not in qp["query"]
 
 
 @patch("resources.lib.prowlarr._get_settings")
@@ -173,9 +241,9 @@ def test_search_prowlarr_tv_falls_back_to_imdbid_without_tvdb(mock_http, mock_se
     )
     assert error is None
 
-    call_url = mock_http.call_args[0][0]
-    assert "imdbid=tt0903747" in call_url
-    assert "tvdbid" not in call_url
+    qp = _qp(mock_http.call_args[0][0])
+    assert qp["query"] == "Breaking Bad {imdbid:0903747}{season:5}{episode:14}"
+    assert "tvdbid" not in qp["query"]
 
 
 @patch("resources.lib.prowlarr._get_settings")
@@ -187,9 +255,9 @@ def test_search_prowlarr_title_query_when_no_imdb(mock_http, mock_settings):
     results, error = search_prowlarr("movie", "The Matrix")
     assert error is None
 
-    call_url = mock_http.call_args[0][0]
-    assert "q=The+Matrix" in call_url or "q=The%20Matrix" in call_url
-    assert "imdbid" not in call_url
+    qp = _qp(mock_http.call_args[0][0])
+    assert qp["query"] == "The Matrix"
+    assert "imdbid" not in qp["query"]
 
 
 @patch("xbmcaddon.Addon")
@@ -287,9 +355,13 @@ def test_search_prowlarr_imdb_fallback_to_title(mock_http, mock_settings):
     assert error is None
     assert len(results) == 2
     assert mock_http.call_count == 2
-    fallback_url = mock_http.call_args_list[1][0][0]
-    assert "q=The+Matrix" in fallback_url or "q=The%20Matrix" in fallback_url
-    assert "imdbid" not in fallback_url
+    # Primary carried the imdbid token; the fallback drops it, leaving the title.
+    assert (
+        _qp(mock_http.call_args_list[0][0][0])["query"] == "The Matrix {imdbid:0133093}"
+    )
+    fallback_query = _qp(mock_http.call_args_list[1][0][0])["query"]
+    assert fallback_query == "The Matrix"
+    assert "imdbid" not in fallback_query
     assert [call.kwargs["timeout"] for call in mock_http.call_args_list] == [300, 300]
 
 
@@ -314,10 +386,16 @@ def test_search_prowlarr_tvdb_fallback_to_title(mock_http, mock_settings):
     assert error is None
     assert len(results) == 1
     assert mock_http.call_count == 2
-    fallback_url = mock_http.call_args_list[1][0][0]
-    assert "q=Breaking+Bad" in fallback_url or "q=Breaking%20Bad" in fallback_url
-    assert "tvdbid" not in fallback_url
-    assert "imdbid" not in fallback_url
+    # Primary used the tvdbid token; the fallback drops the id but keeps the
+    # title plus season/episode tokens.
+    assert (
+        _qp(mock_http.call_args_list[0][0][0])["query"]
+        == "Breaking Bad {tvdbid:81189}{season:5}{episode:14}"
+    )
+    fallback_query = _qp(mock_http.call_args_list[1][0][0])["query"]
+    assert fallback_query == "Breaking Bad {season:5}{episode:14}"
+    assert "tvdbid" not in fallback_query
+    assert "imdbid" not in fallback_query
 
 
 @patch("resources.lib.prowlarr._get_settings")
@@ -461,6 +539,18 @@ def test_parse_results_json_protocol_filter_case_insensitive():
     assert results[0]["title"] == "Y"
 
 
+def test_parse_results_json_keeps_only_usenet_protocol():
+    """nzbdav is usenet-only: keep strictly ``protocol == 'usenet'`` — drop
+    torrents AND any release with a missing/unknown protocol."""
+    json_text = (
+        '[{"title": "U", "downloadUrl": "http://x/1", "protocol": "usenet"}, '
+        '{"title": "T", "downloadUrl": "http://x/2", "protocol": "torrent"}, '
+        '{"title": "M", "downloadUrl": "http://x/3"}]'  # no protocol -> dropped
+    )
+    results = parse_results(json_text)
+    assert [r["title"] for r in results] == ["U"]
+
+
 def test_parse_results_json_empty_array():
     """An empty JSON array is a valid 'no results' answer, not an error."""
     results, error = _parse_results_checked("[]")
@@ -489,7 +579,7 @@ def test_parse_results_json_malformed_reports_bad_response():
 
 def test_parse_results_json_missing_fields_degrade_to_empty_strings():
     """Sparse releases must not raise; missing fields become empty strings."""
-    results = parse_results('[{"title": "Only A Title"}]')
+    results = parse_results('[{"title": "Only A Title", "protocol": "usenet"}]')
     assert len(results) == 1
     assert results[0] == {
         "title": "Only A Title",
@@ -515,8 +605,9 @@ def test_search_prowlarr_parses_json_response(mock_http, mock_settings):
 
     call_url = mock_http.call_args[0][0]
     assert "/api/v1/search" in call_url
-    assert "t=movie" in call_url
-    assert "imdbid=tt0848228" in call_url
+    qp = _qp(call_url)
+    assert qp["type"] == "movie"
+    assert qp["query"] == "The Avengers {imdbid:0848228}"
 
 
 def test_parse_results_json_size_as_digit_string():

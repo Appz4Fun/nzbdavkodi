@@ -4,7 +4,11 @@
 import json
 from unittest.mock import patch
 
-from resources.lib.tvdb_resolver import _get_tmdb_api_key, resolve_tvdb_id
+from resources.lib.tvdb_resolver import (
+    _cache_path,
+    _get_tmdb_api_key,
+    resolve_tvdb_id,
+)
 
 
 def _key_getter(key, default=""):
@@ -198,6 +202,29 @@ def test_resolve_malformed_json_returns_empty():
 
 def test_get_tmdb_api_key_prefers_own_setting():
     assert _get_tmdb_api_key(_key_getter) == "KEY"
+
+
+# --- _cache_path (must be safe in the RunScript/script-play context) ---
+
+
+def test_cache_path_avoids_xbmcaddon_and_uses_special_protocol():
+    """resolve_tvdb_id can run in the RunScript path (script_play -> search),
+    where the codebase avoids xbmcaddon.Addon (it can SIGSEGV CoreELEC).
+    _cache_path must resolve the profile dir via a special:// path through
+    xbmcvfs, never xbmcaddon.Addon (Codex P2)."""
+    import os
+
+    with patch("resources.lib.tvdb_resolver.xbmcaddon") as mock_addon, patch(
+        "resources.lib.tvdb_resolver.xbmcvfs"
+    ) as mock_vfs, patch.object(os, "makedirs"):
+        mock_vfs.translatePath.return_value = "/x/addon_data/plugin.video.nzbdav"
+        path = _cache_path()
+
+    mock_addon.Addon.assert_not_called()
+    mock_vfs.translatePath.assert_called_once_with(
+        "special://profile/addon_data/plugin.video.nzbdav"
+    )
+    assert path.endswith("tvdb_ids.json")
 
 
 def test_get_tmdb_api_key_falls_back_to_tmdbhelper():

@@ -61,8 +61,13 @@ def _get_tmdb_api_key(settings_getter):
 def _cache_path():
     import os
 
-    addon = xbmcaddon.Addon("plugin.video.nzbdav")
-    profile = xbmcvfs.translatePath(addon.getAddonInfo("profile"))
+    # Resolve the profile dir via special:// rather than
+    # xbmcaddon.Addon(...).getAddonInfo("profile"): resolve_tvdb_id can run in
+    # the RunScript/script-play path (script_player -> _search_all_providers),
+    # where the codebase deliberately avoids xbmcaddon.Addon — repeated/odd
+    # binding use there can SIGSEGV CoreELEC (see webdav._get_settings and
+    # router._get_script_setting). xbmcvfs.translatePath needs no Addon handle.
+    profile = xbmcvfs.translatePath("special://profile/addon_data/plugin.video.nzbdav")
     cache_dir = os.path.join(profile, "cache")
     os.makedirs(cache_dir, exist_ok=True)
     return os.path.join(cache_dir, "tvdb_ids.json")
