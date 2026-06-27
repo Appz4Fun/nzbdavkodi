@@ -5819,7 +5819,16 @@ def test_resolve_poll_interval_respected(
 ):
     """resolve() waits between polls with the configured poll_interval."""
     poll_interval = 7
-    mock_poll.return_value = (poll_interval, 3600)
+    # Tiny download_timeout. status stays "Downloading" forever here, so resolve()
+    # only stops at its deadline. Its per-poll wait (_wait_for_abort_or_timeout)
+    # is mocked instant, so the loop does NOT pace on poll_interval — it busy-spins
+    # until the real-monotonic download_timeout deadline (or MAX_POLL_ITERATIONS).
+    # 3600s meant ~17s of spinning before the iteration cap; a fractional deadline
+    # bounds the wall clock directly. resolve() still calls the wait with
+    # poll_interval each pass, so assert_called_with(monitor, poll_interval) is
+    # unchanged. The wall time is the deadline, not the (machine-dependent)
+    # iteration count, so this stays deterministic.
+    mock_poll.return_value = (poll_interval, 0.1)
     mock_submit.return_value = ("SABnzbd_nzo_poll123", None)
     mock_status.return_value = {"status": "Downloading", "percentage": "50"}
     mock_history.return_value = None
@@ -7039,8 +7048,13 @@ def test_poll_until_ready_cleanup_on_max_iterations(
     mock_status.return_value = {"status": "Downloading", "percentage": "10"}
     mock_xbmc.Monitor.return_value = _make_monitor()
 
+    # poll_interval=0: the per-poll wait here is the REAL _wait_for_abort_or_timeout
+    # (not mocked in this test), which spins on a non-mockable real monotonic()
+    # clock, so a non-zero interval costs that many real seconds PER iteration.
+    # MAX_POLL_ITERATIONS is already patched small; zeroing the interval makes
+    # each iteration instant without changing the cancel-on-exhaustion behavior.
     url, headers = _poll_until_ready(
-        "http://hydra/nzb", "movie", _make_dialog(), 2, 3600
+        "http://hydra/nzb", "movie", _make_dialog(), 0, 3600
     )
 
     assert url is None

@@ -13,6 +13,7 @@ the bounded daemon prefetch run-loop, and lifecycle/teardown.
 import threading
 from unittest.mock import MagicMock, patch
 
+import pytest
 from resources.lib import stream_proxy
 from resources.lib.stream_proxy import (
     _DEFAULT_READAHEAD_BUFFER_MB,
@@ -635,6 +636,7 @@ def _prefetchable_ctx(content_length=1_000_000, mb=256):
     }
 
 
+@pytest.mark.real_readahead
 def test_start_readahead_prefetch_disabled_when_zero():
     proxy = _make_proxy()
     ctx = _prefetchable_ctx(mb=0)
@@ -643,6 +645,7 @@ def test_start_readahead_prefetch_disabled_when_zero():
     assert _READAHEAD_THREAD_KEY not in ctx
 
 
+@pytest.mark.real_readahead
 def test_start_readahead_prefetch_gated_off_for_remux():
     proxy = _make_proxy()
     ctx = _prefetchable_ctx(mb=256)
@@ -651,6 +654,7 @@ def test_start_readahead_prefetch_gated_off_for_remux():
     assert _READAHEAD_BUFFER_KEY not in ctx
 
 
+@pytest.mark.real_readahead
 def test_start_readahead_prefetch_spawns_daemon():
     proxy = _make_proxy()
     ctx = _prefetchable_ctx(mb=256)
@@ -666,6 +670,7 @@ def test_start_readahead_prefetch_spawns_daemon():
         thread.join(2.0)
 
 
+@pytest.mark.real_readahead
 def test_start_readahead_prefetch_runtimeerror_pops_keys():
     proxy = _make_proxy()
     ctx = _prefetchable_ctx(mb=256)
