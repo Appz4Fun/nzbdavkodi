@@ -107,15 +107,15 @@ def test_test_recipe_excludes_extreme_marker():
 
 
 def test_github_workflows_exclude_extreme_marker_from_default_pytest_runs():
+    # CI and release run the default suite via `just test`, whose recipe excludes
+    # the integration/functional/extreme markers and whose testpaths skip
+    # tests-extensive/. Guards against a workflow inlining a raw `pytest tests/`
+    # that would sweep the slow extensive suites back into a default run.
     root = Path(__file__).resolve().parents[1]
-    workflow_paths = [
-        root / ".github" / "workflows" / "ci.yml",
-        root / ".github" / "workflows" / "release.yml",
-    ]
-
-    for workflow_path in workflow_paths:
-        contents = workflow_path.read_text(encoding="utf-8")
-        assert '-m "not integration and not functional and not extreme"' in contents
+    for name in ("ci.yml", "release.yml"):
+        contents = (root / ".github" / "workflows" / name).read_text(encoding="utf-8")
+        assert "just test" in contents
+        assert "pytest tests/" not in contents
 
 
 def test_pages_workflow_deploys_repository_metadata_on_main_push():

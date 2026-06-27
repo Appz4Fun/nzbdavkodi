@@ -1,14 +1,11 @@
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-COMPOSE_FILE = REPO_ROOT / "tests-extensive" / "extreme" / "compose" / "docker-compose.yml"
-SEED_SCRIPT = REPO_ROOT / "tests-extensive" / "extreme" / "scripts" / "seed_nzbdav.sh"
-ADDON_SETTINGS = (
-    REPO_ROOT / "tests-extensive" / "extreme" / "fixtures" / "addon-settings-template.xml"
-)
-STORAGE_DISCOVERY = (
-    REPO_ROOT / "tests-extensive" / "extreme" / "scripts" / "_storage_discovery.py"
-)
+EXTREME = REPO_ROOT / "tests-extensive" / "extreme"
+COMPOSE_FILE = EXTREME / "compose" / "docker-compose.yml"
+SEED_SCRIPT = EXTREME / "scripts" / "seed_nzbdav.sh"
+ADDON_SETTINGS = EXTREME / "fixtures" / "addon-settings-template.xml"
+STORAGE_DISCOVERY = EXTREME / "scripts" / "_storage_discovery.py"
 ENV_EXAMPLE = REPO_ROOT / ".env.example"
 
 

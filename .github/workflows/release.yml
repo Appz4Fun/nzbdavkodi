@@ -18,17 +18,23 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      # Python 3.10 is used by the build/version steps below (build_zip.py, addon.xml).
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.10"
-          cache: 'pip'
 
-      - name: Install test dependencies
-        run: pip install -r requirements-test.txt
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          python-version: "3.14"
 
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
+
+      # Same pinned, reproducible suite as CI (excludes the extensive markers).
       - name: Run tests
-        run: python -m pytest tests/ -v --tb=short -m "not integration and not functional and not extreme"
+        env:
+          UV_PYTHON: "3.14"
+        run: just test
 
       - name: Extract version from tag
         id: version
