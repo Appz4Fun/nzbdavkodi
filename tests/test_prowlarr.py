@@ -366,9 +366,7 @@ def test_parse_results_json_movie():
     assert results[1]["size"] == "8200000000"
     assert results[1]["age"] == "13 months"
     # Distinct, correctly-ordered post identities -> "Age" sort works.
-    assert pubdate_to_epoch(results[1]["pubdate"]) < pubdate_to_epoch(
-        first["pubdate"]
-    )
+    assert pubdate_to_epoch(results[1]["pubdate"]) < pubdate_to_epoch(first["pubdate"])
 
 
 def test_parse_results_json_filters_torrent_releases():
