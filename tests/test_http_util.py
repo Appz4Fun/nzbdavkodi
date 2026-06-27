@@ -352,7 +352,8 @@ def test_iso8601_to_rfc2822_handles_offset_and_naive_and_fractional():
     """Explicit offsets normalize to UTC; naive is assumed UTC; .NET-style
     7-digit fractional seconds are tolerated."""
     # Same instant via a -0500 offset.
-    assert pubdate_to_epoch(iso8601_to_rfc2822("2021-12-15T07:00:00-05:00")) == 1639569600
+    epoch_result = pubdate_to_epoch(iso8601_to_rfc2822("2021-12-15T07:00:00-05:00"))
+    assert epoch_result == 1639569600
     # No timezone -> assumed UTC.
     assert pubdate_to_epoch(iso8601_to_rfc2822("2021-12-15T12:00:00")) == 1639569600
     # Fractional seconds (7 digits, as .NET emits) are dropped, not fatal.

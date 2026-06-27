@@ -366,9 +366,7 @@ def test_parse_results_json_movie():
     assert results[1]["size"] == "8200000000"
     assert results[1]["age"] == "13 months"
     # Distinct, correctly-ordered post identities -> "Age" sort works.
-    assert pubdate_to_epoch(results[1]["pubdate"]) < pubdate_to_epoch(
-        first["pubdate"]
-    )
+    assert pubdate_to_epoch(results[1]["pubdate"]) < pubdate_to_epoch(first["pubdate"])
 
 
 def test_parse_results_json_filters_torrent_releases():
@@ -396,26 +394,26 @@ def test_parse_results_json_protocol_filter_case_insensitive():
 def test_parse_results_json_empty_array():
     """An empty JSON array is a valid 'no results' answer, not an error."""
     results, error = _parse_results_checked("[]")
-    assert results == []
+    assert not results
     assert error is None
 
 
 def test_parse_results_json_error_object_reports_message():
     """Prowlarr error bodies are JSON objects; surface their message."""
     results, error = _parse_results_checked('{"error": "Invalid API Key"}')
-    assert results == []
+    assert not results
     assert error == "Prowlarr returned an invalid response: Invalid API Key"
 
 
 def test_parse_results_json_non_array_object_without_message():
     results, error = _parse_results_checked('{"unexpected": true}')
-    assert results == []
+    assert not results
     assert error == "Prowlarr returned an invalid response: expected a JSON array"
 
 
 def test_parse_results_json_malformed_reports_bad_response():
     results, error = _parse_results_checked('[{"title": "truncated"')
-    assert results == []
+    assert not results
     assert error.startswith("Prowlarr returned an invalid response:")
 
 
@@ -474,7 +472,7 @@ def test_parse_results_json_size_non_digit_string_is_dropped():
 def test_parse_results_json_error_object_message_key_fallback():
     """Prowlarr error bodies may use 'message' instead of 'error'."""
     results, error = _parse_results_checked('{"message": "Indexer offline"}')
-    assert results == []
+    assert not results
     assert error == "Prowlarr returned an invalid response: Indexer offline"
 
 

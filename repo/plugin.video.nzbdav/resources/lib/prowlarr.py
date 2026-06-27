@@ -25,9 +25,6 @@ from resources.lib.http_util import (
     calculate_age as _calculate_age,
 )
 from resources.lib.http_util import (
-    iso8601_to_rfc2822 as _iso_to_rfc2822,
-)
-from resources.lib.http_util import (
     format_request_error as _format_request_error,
 )
 from resources.lib.http_util import (
@@ -35,6 +32,9 @@ from resources.lib.http_util import (
 )
 from resources.lib.http_util import (
     http_get as _http_get,
+)
+from resources.lib.http_util import (
+    iso8601_to_rfc2822 as _iso_to_rfc2822,
 )
 
 NEWZNAB_NS = "http://www.newznab.com/DTD/2010/feeds/attributes/"

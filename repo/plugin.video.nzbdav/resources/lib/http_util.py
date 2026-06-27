@@ -261,6 +261,9 @@ def http_post_json(url, payload, timeout=15, headers=None, basic_auth=None):
 
 _PUBDATE_ERRORS = (OverflowError, TypeError, ValueError)
 
+# Pre-compile regex for performance in frequently called date parser
+_FRACTIONAL_SECONDS_RE = re.compile(r"\.\d+")
+
 
 def format_request_error(error):
     """Return a user-facing HTTP request error without urllib wrapper noise.
@@ -336,7 +339,6 @@ def iso8601_to_rfc2822(value):
     Returns ``""`` when the input is empty or unparseable, matching the
     "missing field becomes empty string" contract of the parse loops.
     """
-    import re
     from datetime import datetime, timezone
     from email.utils import format_datetime
 
@@ -348,7 +350,7 @@ def iso8601_to_rfc2822(value):
     # .NET (Prowlarr's stack) can emit up to 7 fractional-second digits,
     # which pre-3.11 ``datetime.fromisoformat`` rejects; sub-second
     # precision is irrelevant for identity/sort/age, so drop it.
-    text = re.sub(r"\.\d+", "", text)
+    text = _FRACTIONAL_SECONDS_RE.sub("", text)
     # ``fromisoformat`` only accepts a trailing 'Z' from Python 3.11 on;
     # map it to an explicit UTC offset for older Kodi runtimes (3.8–3.9).
     if text[-1:] in ("Z", "z"):
