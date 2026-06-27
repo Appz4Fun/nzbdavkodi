@@ -1,5 +1,5 @@
 try:
-    from functools import cache
+    from functools import cache  # novermin  (3.9+; 3.8 falls back below)
 except ImportError:
     from functools import lru_cache
 
@@ -24,9 +24,9 @@ def load_adult_keywords(filename: str = "combined-keywords.dat") -> Set[str]:
 
 
 def is_adult_content(context):
+    """Check if title contains adult content."""
     if "adult" in context["result"] and context["result"]["adult"]:
         return
-    """Check if title contains adult content."""
     title_lower = context["title"].lower()
     if any(
         keyword in title_lower for keyword in load_adult_keywords()

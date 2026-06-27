@@ -17,37 +17,45 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      UV_PYTHON: "3.14"
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          python-version: "3.14"
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
+      - run: just lint
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    strategy:
-      matrix:
-        # The addon's runtime floor is Python 3.8 (CoreELEC ARM64), but the
-        # test toolchain requires pytest>=9.0.3 to clear GHSA-6w46-j5rx-g56g,
-        # which dropped support for 3.8/3.9. The 3.8 syntax surface is
-        # validated by the separate `pylint.yml` workflow (it runs pylint on
-        # every .py file under Python 3.8, so walrus / match / removeprefix
-        # regressions get caught there). The 3.10 entry here is the lowest
-        # version pytest 9 supports; 3.12 is the released-stable target.
-        python-version: ["3.10", "3.12"]
+    env:
+      UV_PYTHON: "3.14"
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
-          python-version: ${{ matrix.python-version }}
-          cache: 'pip'
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          python-version: "3.14"
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
+      - run: just test
 
-      - name: Install dependencies
-        run: |
-          pip install -r requirements-test.txt
-          pip install "ruff>=0.15" "black>=24"
-
-      - name: Lint
-        run: |
-          ruff check repo/plugin.video.nzbdav/ tests/ scripts/ dev/ --exclude="repo/plugin.video.nzbdav/resources/lib/ptt/"
-          black --check repo/plugin.video.nzbdav/ tests/ scripts/ dev/ --exclude="ptt/"
-
-      - name: Test
-        run: python -m pytest tests/ -v --tb=short -m "not integration and not functional and not extreme"
+  compat-3-8:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.8"
+      - name: Verify runtime parses on the 3.8 floor
+        run: python -m compileall repo/plugin.video.nzbdav/

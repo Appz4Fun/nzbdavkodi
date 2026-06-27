@@ -18,15 +18,16 @@ classifiers = [
 
 [tool.ruff]
 target-version = "py38"
-exclude = ["repo/plugin.video.nzbdav/resources/lib/ptt/"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
 
+[tool.ruff.lint.per-file-ignores]
+"repo/plugin.video.nzbdav/resources/lib/ptt/*" = ["E501"]
+
 [tool.black]
 target-version = ["py38"]
 line-length = 88
-extend-exclude = "ptt/"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

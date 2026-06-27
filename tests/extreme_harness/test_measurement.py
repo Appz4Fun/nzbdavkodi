@@ -1,4 +1,4 @@
-"""Unit tests for tests.extreme.measurement."""
+"""Unit tests for tests.extreme_harness.measurement."""
 
 # pylint: disable=no-name-in-module,redefined-outer-name
 
@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler
 
 import pytest
 
-from tests.extreme import measurement
+from tests.extreme_harness import measurement
 
 
 @pytest.fixture

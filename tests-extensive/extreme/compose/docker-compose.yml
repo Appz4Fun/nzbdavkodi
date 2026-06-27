@@ -71,8 +71,8 @@ services:
 
   fault-proxy:
     build:
-      context: ..
-      dockerfile: compose/Dockerfile.fault-proxy
+      context: ../../../tests/extreme_harness
+      dockerfile: Dockerfile.fault-proxy
     container_name: nzbdav-extreme-fault-proxy
     environment:
       # Upstream uses the docker-network service name (not localhost) since

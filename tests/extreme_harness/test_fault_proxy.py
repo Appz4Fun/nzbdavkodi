@@ -1,4 +1,4 @@
-"""Unit tests for tests.extreme.fault_proxy."""
+"""Unit tests for tests.extreme_harness.fault_proxy."""
 
 # pylint: disable=no-name-in-module,redefined-outer-name
 
@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler
 
 import pytest
 
-from tests.extreme import fault_proxy
+from tests.extreme_harness import fault_proxy
 
 _IncompleteRead = http.client.IncompleteRead
 

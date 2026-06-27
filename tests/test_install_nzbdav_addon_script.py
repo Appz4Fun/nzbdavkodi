@@ -4,7 +4,11 @@ import textwrap
 from pathlib import Path
 
 SCRIPT = (
-    Path(__file__).resolve().parent / "extreme" / "scripts" / "install_nzbdav_addon.sh"
+    Path(__file__).resolve().parent.parent
+    / "tests-extensive"
+    / "extreme"
+    / "scripts"
+    / "install_nzbdav_addon.sh"
 )
 
 

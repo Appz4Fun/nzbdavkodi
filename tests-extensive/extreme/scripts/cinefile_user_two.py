@@ -21,8 +21,9 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-# Local sibling import — same PROPFIND helper the other runners use.
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+# Shared PROPFIND helper from the harness library (same one the other runners use).
+_harness_dir = Path(__file__).resolve().parents[3] / "tests" / "extreme_harness"
+sys.path.insert(0, str(_harness_dir))
 from _storage_discovery import discover_cinefile_storages  # noqa: E402
 
 KODI_URL = os.environ.get("KODI_URL", "http://localhost:8082").rstrip("/")

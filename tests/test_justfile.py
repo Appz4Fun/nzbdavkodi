@@ -30,11 +30,14 @@ def test_make_dev_installs_dependencies_for_all_just_recipes():
 
     body = _recipe_body(justfile_text, "make-dev")
 
-    assert "pip install" in body
+    # uv pre-fetches the pinned interpreters; pip installs are Chroma-only now
+    assert "uv python install" in body
+    # Every pip install must run through the pinned Chroma interpreter (the only
+    # pip escape hatch); the main toolchain stays uv-pinned.
+    pip_lines = [line for line in body.splitlines() if "pip install" in line]
+    assert pip_lines
+    assert all('"$chroma_py" -m pip install' in line for line in pip_lines)
     assert "--break-system-packages" in body
-    assert "-r requirements-test.txt" in body
-    assert '"ruff>=0.15"' in body
-    assert '"black>=24"' in body
     assert "brew install" in body
     assert "brew list --formula --full-name" in body
     assert "ffmpeg" in body
@@ -49,8 +52,9 @@ def test_make_dev_pip_flags_expansion_is_bash32_nounset_safe():
 
     body = _recipe_body(justfile_text, "make-dev")
 
-    assert 'pip install "${pip_flags[@]}" -r requirements-test.txt' not in body
-    assert '${pip_flags+"${pip_flags[@]}"}' in body
+    # The Chroma-specific pip flags still use the nounset-safe expansion form.
+    assert 'pip install "${chroma_pip_flags[@]}"' not in body
+    assert '${chroma_pip_flags+"${chroma_pip_flags[@]}"}' in body
 
     bash = Path("/bin/bash")
     if bash.exists():
@@ -58,7 +62,8 @@ def test_make_dev_pip_flags_expansion_is_bash32_nounset_safe():
             [
                 str(bash),
                 "-uc",
-                'pip_flags=(); args=(${pip_flags+"${pip_flags[@]}"}); '
+                "chroma_pip_flags=(); "
+                'args=(${chroma_pip_flags+"${chroma_pip_flags[@]}"}); '
                 "[[ ${#args[@]} -eq 0 ]]",
             ],
             check=True,
@@ -106,15 +111,15 @@ def test_test_recipe_excludes_extreme_marker():
 
 
 def test_github_workflows_exclude_extreme_marker_from_default_pytest_runs():
+    # CI and release run the default suite via `just test`, whose recipe excludes
+    # the integration/functional/extreme markers and whose testpaths skip
+    # tests-extensive/. Guards against a workflow inlining a raw `pytest tests/`
+    # that would sweep the slow extensive suites back into a default run.
     root = Path(__file__).resolve().parents[1]
-    workflow_paths = [
-        root / ".github" / "workflows" / "ci.yml",
-        root / ".github" / "workflows" / "release.yml",
-    ]
-
-    for workflow_path in workflow_paths:
-        contents = workflow_path.read_text(encoding="utf-8")
-        assert '-m "not integration and not functional and not extreme"' in contents
+    for name in ("ci.yml", "release.yml"):
+        contents = (root / ".github" / "workflows" / name).read_text(encoding="utf-8")
+        assert "just test" in contents
+        assert "pytest" not in contents
 
 
 def test_pages_workflow_deploys_repository_metadata_on_main_push():

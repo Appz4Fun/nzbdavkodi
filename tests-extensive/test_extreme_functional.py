@@ -5,7 +5,7 @@ Run: `just extreme-functional-test`
 Spec: docs/superpowers/specs/2026-05-09-extreme-functional-test-design.md
 Plan: docs/superpowers/plans/2026-05-09-extreme-functional-test.md
 
-This test depends on session-scoped fixtures in tests/extreme/conftest.py.
+This test depends on session-scoped fixtures in tests-extensive/extreme/conftest.py.
 
 Import notes (adjusted from plan):
 - _most_duplicated_group_pool() returns a 2-tuple (group_str, pool_list),
@@ -35,7 +35,10 @@ DEVIATIONS from the spec/plan:
   actual knob is FUNCTIONAL_MIN_FALLBACK_CANDIDATES.
 """
 
-# pylint: disable=inconsistent-return-statements,no-name-in-module
+# wrong-import-order: the test_functional_fallback_playback import is deliberately
+# late (after the os.environ setup it depends on), which pylint's global import-order
+# model can't reconcile with the first-party tests.extreme_harness import above.
+# pylint: disable=inconsistent-return-statements,no-name-in-module,wrong-import-order
 
 from __future__ import annotations
 
@@ -48,18 +51,23 @@ import time
 import urllib.request
 
 import pytest
-
-from tests.extreme import measurement
-from tests.extreme.conftest import (
+from extreme._fixtures import (
     FAULT_PROXY_CONTROL_HOST_PORT,
     KODI_HOST_PORT,
     NZBDAV_HOST_PORT,
 )
 
-# tests/extreme/conftest.py is a sibling of this file, so its fixtures
-# (stack_ready, run_dir, env_loaded, etc.) are not visible via pytest's
-# hierarchical conftest discovery. Register it as a plugin so they are.
-pytest_plugins = ["tests.extreme.conftest"]
+from tests.extreme_harness import measurement
+
+# The session-scoped harness fixtures (stack_ready, run_dir, env_loaded, …)
+# live in extreme/_fixtures.py so they can be loaded here via pytest_plugins
+# without triggering pytest's "Plugin already registered under a different
+# name" error that arises when conftest.py is both registered via
+# pytest_plugins AND discovered hierarchically by pytest's conftest scan.
+# extreme/conftest.py is a thin wrapper that re-declares the same
+# pytest_plugins entry; pytest deduplicates by module name, so the second
+# declaration is a no-op and no ValueError occurs.
+pytest_plugins = ["extreme._fixtures"]
 
 pytestmark = pytest.mark.extreme
 
@@ -82,7 +90,7 @@ os.environ.setdefault("WEBDAV_URL", _NZBDAV_HOST_URL)
 if "WEBDAV_API_KEY" not in os.environ and os.environ.get("NZBDAV_API_KEY"):
     os.environ["WEBDAV_API_KEY"] = os.environ["NZBDAV_API_KEY"]
 
-from tests.test_functional_fallback_playback import (  # noqa: E402
+from test_functional_fallback_playback import (  # noqa: E402
     IMDB_TOP_50_MOVIES,
     _addon_settings,
     _live_env,

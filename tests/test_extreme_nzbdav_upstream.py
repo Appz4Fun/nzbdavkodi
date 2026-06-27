@@ -1,14 +1,11 @@
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-COMPOSE_FILE = REPO_ROOT / "tests" / "extreme" / "compose" / "docker-compose.yml"
-SEED_SCRIPT = REPO_ROOT / "tests" / "extreme" / "scripts" / "seed_nzbdav.sh"
-ADDON_SETTINGS = (
-    REPO_ROOT / "tests" / "extreme" / "fixtures" / "addon-settings-template.xml"
-)
-STORAGE_DISCOVERY = (
-    REPO_ROOT / "tests" / "extreme" / "scripts" / "_storage_discovery.py"
-)
+EXTREME = REPO_ROOT / "tests-extensive" / "extreme"
+COMPOSE_FILE = EXTREME / "compose" / "docker-compose.yml"
+SEED_SCRIPT = EXTREME / "scripts" / "seed_nzbdav.sh"
+ADDON_SETTINGS = EXTREME / "fixtures" / "addon-settings-template.xml"
+STORAGE_DISCOVERY = REPO_ROOT / "tests" / "extreme_harness" / "_storage_discovery.py"
 ENV_EXAMPLE = REPO_ROOT / ".env.example"
 
 
@@ -44,7 +41,7 @@ def test_extreme_addon_fixture_uses_upstream_webdav_root():
 
 def test_extreme_addon_fixture_prefers_same_framestor_avc_profile_as_preflight():
     template = ADDON_SETTINGS.read_text(encoding="utf-8")
-    harness = (REPO_ROOT / "tests" / "test_extreme_functional.py").read_text(
+    harness = (REPO_ROOT / "tests-extensive" / "test_extreme_functional.py").read_text(
         encoding="utf-8"
     )
 

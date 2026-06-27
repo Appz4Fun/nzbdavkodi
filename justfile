@@ -1,17 +1,24 @@
 # NZB-DAV Kodi Addon
 set positional-arguments
 
+# Pinned dev tooling, self-bootstrapping (installs on first run, cached after).
+# UV_PYTHON overrides the interpreter (CI's matrix sets it).
+python_ver := env_var_or_default("UV_PYTHON", "3.14")
+uvdev := "uv run --with-requirements requirements-dev.txt --no-project --python " + python_ver
+
 # Install local development dependencies needed by the other recipes
 make-dev:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    echo "Installing Python test and lint dependencies..."
-    pip_flags=()
-    if python3 -m pip install --help | grep -q -- "--break-system-packages"; then
-        pip_flags+=(--break-system-packages)
+    if ! command -v uv >/dev/null 2>&1; then
+        echo "uv is required to bootstrap the pinned dev toolchain." >&2
+        echo "Install it from https://docs.astral.sh/uv/getting-started/installation/ and rerun: just make-dev" >&2
+        exit 1
     fi
-    python3 -m pip install ${pip_flags+"${pip_flags[@]}"} -r requirements-test.txt "ruff>=0.15" "black>=24"
+
+    echo "Pre-fetching pinned interpreters via uv..."
+    uv python install 3.14 3.8
 
     echo "Installing Python 3.14 Chroma dev dependencies..."
     chroma_py="${CHROMA_PYTHON:-python3.14}"
@@ -68,21 +75,17 @@ make-dev:
     fi
 
     echo "Verifying required command-line tools..."
-    python3 -m pytest --version >/dev/null
-    ruff --version >/dev/null
-    black --version >/dev/null
-    pylint --version >/dev/null
     ffmpeg -version >/dev/null
 
     echo "Development dependencies are installed."
 
 # Run all tests (excluding integration, functional, and extreme tests)
 test:
-    python3 -m pytest tests/ -v --tb=short -m "not integration and not functional and not extreme"
+    {{uvdev}} python -m pytest tests/ -v --tb=short -m "not integration and not functional and not extreme"
 
 # Run tests with coverage
 test-verbose:
-    python3 -m pytest tests/ -v --tb=long -m "not integration and not functional and not extreme"
+    {{uvdev}} python -m pytest tests/ -v --tb=long -m "not integration and not functional and not extreme"
 
 # Run integration tests against a real ffmpeg binary. Spawns the
 # actual fmp4 HLS producer pipeline against a tiny test MKV
@@ -92,17 +95,17 @@ test-verbose:
 # analyzeduration, delay_moov, codec frame size) at PR time. Skips
 # automatically if no ffmpeg is on PATH.
 test-integration:
-    python3 -m pytest tests/ -v --tb=long -m integration
+    {{uvdev}} python -m pytest tests-extensive/ -v --tb=long -m integration
 
 # Run dev-box functional tests against live configured services.
 # Requires local .env credentials and may use real Hydra/indexer responses.
 functional-test:
-    python3 -m pytest tests/test_functional_fallback_playback.py -v --tb=long -m functional
+    {{uvdev}} python -m pytest tests-extensive/test_functional_fallback_playback.py -v --tb=long -m functional
 
 # Run a heavier dev-box fallback sample across random IMDb Top 50 movies.
 # Prefer FrameStor/FraMeSToR releases; otherwise use the most duplicated group.
 functional-test-top-imdb:
-    python3 -m pytest tests/test_functional_fallback_playback.py::test_functional_imdb_top50_random_sample_fallback_playback -v -s --tb=long -m functional
+    {{uvdev}} python -m pytest tests-extensive/test_functional_fallback_playback.py::test_functional_imdb_top50_random_sample_fallback_playback -v -s --tb=long -m functional
 
 # Install Python 3.14 dev-only Chroma Cloud dependencies.
 chroma-install:
@@ -304,18 +307,19 @@ extreme-functional-test:
     export -p > "$env_snapshot"
     set -a; source "$env_file"; set +a
     source "$env_snapshot"
-    python3 -m pytest tests/test_extreme_functional.py -v -s --tb=long -m extreme
+    {{uvdev}} python -m pytest tests-extensive/test_extreme_functional.py -v -s --tb=long -m extreme
 
 # Lint the codebase (matches GitHub CI: ruff + black + pylint)
 lint:
-    ruff check repo/plugin.video.nzbdav/ tests/ --exclude="repo/plugin.video.nzbdav/resources/lib/ptt/"
-    black --check repo/plugin.video.nzbdav/ tests/ --exclude="ptt/"
-    pylint $(git ls-files '*.py')
+    {{uvdev}} ruff check repo/plugin.video.nzbdav/ tests/ tests-extensive/ scripts/
+    {{uvdev}} black --check repo/plugin.video.nzbdav/ tests/ tests-extensive/ scripts/
+    {{uvdev}} pylint $(git ls-files '*.py') --generated-members=chromadb.*
+    {{uvdev}} vermin --target=3.8- --violations repo/plugin.video.nzbdav/
 
 # Auto-fix lint issues
 lint-fix:
-    ruff check repo/plugin.video.nzbdav/ tests/ --exclude="repo/plugin.video.nzbdav/resources/lib/ptt/" --fix
-    black repo/plugin.video.nzbdav/ tests/ --exclude="ptt/"
+    {{uvdev}} ruff check repo/plugin.video.nzbdav/ tests/ tests-extensive/ scripts/ --fix
+    {{uvdev}} black repo/plugin.video.nzbdav/ tests/ tests-extensive/ scripts/
 
 # Build the addon zip for Kodi installation
 release:
@@ -350,9 +354,6 @@ clean:
     rm -f plugin.video.nzbdav*.zip
     find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
     find . -type d -name .pytest_cache -exec rm -rf {} + 2>/dev/null || true
-
-# Run the same checks as GitHub CI (lint + test)
-ci: lint test
 
 # Clean everything including generated Pages output
 dist-clean: clean
