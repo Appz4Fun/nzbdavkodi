@@ -89,17 +89,17 @@ test-verbose:
 # analyzeduration, delay_moov, codec frame size) at PR time. Skips
 # automatically if no ffmpeg is on PATH.
 test-integration:
-    python3 -m pytest tests/ -v --tb=long -m integration
+    {{uvdev}} python -m pytest tests-extensive/ -v --tb=long -m integration
 
 # Run dev-box functional tests against live configured services.
 # Requires local .env credentials and may use real Hydra/indexer responses.
 functional-test:
-    python3 -m pytest tests/test_functional_fallback_playback.py -v --tb=long -m functional
+    {{uvdev}} python -m pytest tests-extensive/test_functional_fallback_playback.py -v --tb=long -m functional
 
 # Run a heavier dev-box fallback sample across random IMDb Top 50 movies.
 # Prefer FrameStor/FraMeSToR releases; otherwise use the most duplicated group.
 functional-test-top-imdb:
-    python3 -m pytest tests/test_functional_fallback_playback.py::test_functional_imdb_top50_random_sample_fallback_playback -v -s --tb=long -m functional
+    {{uvdev}} python -m pytest tests-extensive/test_functional_fallback_playback.py::test_functional_imdb_top50_random_sample_fallback_playback -v -s --tb=long -m functional
 
 # Install Python 3.14 dev-only Chroma Cloud dependencies.
 chroma-install:
@@ -301,7 +301,7 @@ extreme-functional-test:
     export -p > "$env_snapshot"
     set -a; source "$env_file"; set +a
     source "$env_snapshot"
-    python3 -m pytest tests/test_extreme_functional.py -v -s --tb=long -m extreme
+    {{uvdev}} python -m pytest tests-extensive/test_extreme_functional.py -v -s --tb=long -m extreme
 
 # Lint the codebase (matches GitHub CI: ruff + black + pylint)
 lint:
