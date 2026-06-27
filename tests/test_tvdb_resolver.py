@@ -95,7 +95,7 @@ def test_resolve_without_api_key_returns_empty_and_no_network():
     )
 
     assert tvdb == ""
-    assert calls == []
+    assert not calls
 
 
 def test_resolve_uses_cache_and_skips_network():
@@ -114,7 +114,7 @@ def test_resolve_uses_cache_and_skips_network():
     )
 
     assert tvdb == "81189"
-    assert calls == []
+    assert not calls
 
 
 def test_resolve_stores_result_in_cache():
@@ -159,7 +159,7 @@ def test_resolve_missing_tvdb_in_response_returns_empty_and_not_cached():
     )
 
     assert tvdb == ""
-    assert cache == {}  # negatives are not cached
+    assert not cache  # negatives are not cached
 
 
 def test_resolve_find_with_no_tv_results_returns_empty():
@@ -227,19 +227,12 @@ def test_cache_path_avoids_xbmcaddon_and_uses_special_protocol():
     assert path.endswith("tvdb_ids.json")
 
 
-def test_get_tmdb_api_key_falls_back_to_tmdbhelper():
-    """When our setting is blank, borrow TMDBHelper's configured key."""
+def test_get_tmdb_api_key_empty_without_own_setting_and_never_uses_addon():
+    """With no nzbdav tmdb_api_key set, return "" — and NEVER construct
+    xbmcaddon.Addon. The TMDBHelper key-borrow was dropped: the Addon binding
+    can SIGSEGV CoreELEC on the script-play path, and current TMDBHelper has no
+    borrowable tmdb_apikey anyway (CodeRabbit)."""
     with patch("resources.lib.tvdb_resolver.xbmcaddon") as mock_xbmcaddon:
-        mock_xbmcaddon.Addon.return_value.getSetting.return_value = "HELPERKEY"
-        key = _get_tmdb_api_key(_no_key_getter)
-    assert key == "HELPERKEY"
-    mock_xbmcaddon.Addon.assert_called_once_with("plugin.video.themoviedb.helper")
-    # Pin the borrowed setting id so a silent rename can't pass vacuously.
-    mock_xbmcaddon.Addon.return_value.getSetting.assert_called_once_with("tmdb_apikey")
-
-
-def test_get_tmdb_api_key_empty_when_neither_available():
-    with patch("resources.lib.tvdb_resolver.xbmcaddon") as mock_xbmcaddon:
-        mock_xbmcaddon.Addon.side_effect = RuntimeError("not installed")
         key = _get_tmdb_api_key(_no_key_getter)
     assert key == ""
+    mock_xbmcaddon.Addon.assert_not_called()

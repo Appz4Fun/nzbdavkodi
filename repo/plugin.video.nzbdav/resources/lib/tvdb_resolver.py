@@ -21,12 +21,6 @@ import xbmcaddon
 import xbmcvfs
 
 _TMDB_BASE = "https://api.themoviedb.org/3"
-_TMDBHELPER_ADDON_ID = "plugin.video.themoviedb.helper"
-# Best-effort borrow: older TMDBHelper versions exposed a user-entered TMDB v3
-# key under this setting id. Current versions bundle their own key and no longer
-# expose it, so this returns "" there — harmless, the caller then needs nzbdav's
-# own ``tmdb_api_key`` (or just relies on the {tvdb} player token).
-_TMDBHELPER_KEY_SETTING = "tmdb_apikey"
 
 
 def _default_settings_getter():
@@ -39,22 +33,23 @@ def _default_settings_getter():
 
 
 def _get_tmdb_api_key(settings_getter):
-    """Return the TMDB API key: our own setting first, else TMDBHelper's.
+    """Return nzbdav's configured TMDB API key, or ``""`` when unset.
 
-    Returns ``""`` when neither is configured — the caller then skips the
-    network entirely and relies on the imdbid/title fallback.
+    Reads ONLY through the supplied ``settings_getter`` (which, on the
+    RunScript/script-play path, is ``router._get_script_setting`` reading
+    settings.xml off disk). It must never touch ``xbmcaddon.Addon`` — that
+    binding can SIGSEGV CoreELEC in the script context (see
+    ``webdav._get_settings``), and ``resolve_tvdb_id`` runs on that path.
+
+    An earlier best-effort borrow of TMDBHelper's key was dropped: it
+    reintroduced exactly that ``Addon`` risk, and current TMDBHelper bundles
+    its own key and exposes no ``tmdb_apikey`` setting to borrow anyway. When
+    no key is set the caller skips the network and relies on the imdbid/title
+    fallback (the ``{tvdb}`` player token remains the primary path).
     """
     try:
-        own = (settings_getter("tmdb_api_key", "") or "").strip()
+        return (settings_getter("tmdb_api_key", "") or "").strip()
     except Exception:  # pylint: disable=broad-except
-        own = ""
-    if own:
-        return own
-    try:
-        helper = xbmcaddon.Addon(_TMDBHELPER_ADDON_ID)
-        return (helper.getSetting(_TMDBHELPER_KEY_SETTING) or "").strip()
-    except Exception:  # pylint: disable=broad-except
-        # TMDBHelper not installed / no such setting — no borrowable key.
         return ""
 
 
