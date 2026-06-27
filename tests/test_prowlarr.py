@@ -137,6 +137,49 @@ def test_search_prowlarr_tv(mock_http, mock_settings):
 
 @patch("resources.lib.prowlarr._get_settings")
 @patch("resources.lib.prowlarr._http_get")
+def test_search_prowlarr_tv_prefers_tvdbid(mock_http, mock_settings):
+    """When a TVDB id is available, episode searches must key on tvdbid
+    (not imdbid) — many indexers index TV by TheTVDB id (issue #318)."""
+    mock_settings.return_value = ("http://prowlarr:9696", "testkey", ["3"])
+    mock_http.return_value = _load_fixture("prowlarr_tv_response.xml")
+
+    results, error = search_prowlarr(
+        "episode",
+        "Breaking Bad",
+        imdb="tt0903747",
+        tvdb="81189",
+        season="5",
+        episode="14",
+    )
+    assert error is None
+
+    call_url = mock_http.call_args[0][0]
+    assert "t=tvsearch" in call_url
+    assert "tvdbid=81189" in call_url
+    assert "imdbid" not in call_url  # tvdbid preferred, not both
+    assert "season=5" in call_url
+    assert "ep=14" in call_url
+
+
+@patch("resources.lib.prowlarr._get_settings")
+@patch("resources.lib.prowlarr._http_get")
+def test_search_prowlarr_tv_falls_back_to_imdbid_without_tvdb(mock_http, mock_settings):
+    """Absent a TVDB id, the existing imdbid behavior is preserved."""
+    mock_settings.return_value = ("http://prowlarr:9696", "testkey", ["3"])
+    mock_http.return_value = _load_fixture("prowlarr_tv_response.xml")
+
+    results, error = search_prowlarr(
+        "episode", "Breaking Bad", imdb="tt0903747", season="5", episode="14"
+    )
+    assert error is None
+
+    call_url = mock_http.call_args[0][0]
+    assert "imdbid=tt0903747" in call_url
+    assert "tvdbid" not in call_url
+
+
+@patch("resources.lib.prowlarr._get_settings")
+@patch("resources.lib.prowlarr._http_get")
 def test_search_prowlarr_title_query_when_no_imdb(mock_http, mock_settings):
     mock_settings.return_value = ("http://prowlarr:9696", "testkey", ["1"])
     mock_http.return_value = _load_fixture("prowlarr_movie_response.xml")
@@ -248,6 +291,33 @@ def test_search_prowlarr_imdb_fallback_to_title(mock_http, mock_settings):
     assert "q=The+Matrix" in fallback_url or "q=The%20Matrix" in fallback_url
     assert "imdbid" not in fallback_url
     assert [call.kwargs["timeout"] for call in mock_http.call_args_list] == [300, 300]
+
+
+@patch("resources.lib.prowlarr._get_settings")
+@patch("resources.lib.prowlarr._http_get")
+def test_search_prowlarr_tvdb_fallback_to_title(mock_http, mock_settings):
+    """When a tvdbid episode search returns nothing, retry by title and
+    drop the tvdbid — mirrors the imdbid->title fallback (issue #318)."""
+    empty_xml = """<?xml version="1.0" encoding="UTF-8"?>
+    <rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2010/feeds/attributes/">
+        <channel><newznab:response offset="0" total="0"/></channel>
+    </rss>"""
+    mock_settings.return_value = ("http://prowlarr:9696", "testkey", ["3"])
+    mock_http.side_effect = [
+        empty_xml,
+        _load_fixture("prowlarr_tv_response.xml"),
+    ]
+
+    results, error = search_prowlarr(
+        "episode", "Breaking Bad", tvdb="81189", season="5", episode="14"
+    )
+    assert error is None
+    assert len(results) == 1
+    assert mock_http.call_count == 2
+    fallback_url = mock_http.call_args_list[1][0][0]
+    assert "q=Breaking+Bad" in fallback_url or "q=Breaking%20Bad" in fallback_url
+    assert "tvdbid" not in fallback_url
+    assert "imdbid" not in fallback_url
 
 
 @patch("resources.lib.prowlarr._get_settings")
@@ -366,9 +436,7 @@ def test_parse_results_json_movie():
     assert results[1]["size"] == "8200000000"
     assert results[1]["age"] == "13 months"
     # Distinct, correctly-ordered post identities -> "Age" sort works.
-    assert pubdate_to_epoch(results[1]["pubdate"]) < pubdate_to_epoch(
-        first["pubdate"]
-    )
+    assert pubdate_to_epoch(results[1]["pubdate"]) < pubdate_to_epoch(first["pubdate"])
 
 
 def test_parse_results_json_filters_torrent_releases():

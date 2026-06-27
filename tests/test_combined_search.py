@@ -106,6 +106,86 @@ def test_both_providers_returns_combined_results(mock_addon, mock_prowlarr, mock
     assert PROWLARR_RESULT["link"] in links
 
 
+@patch("resources.lib.tvdb_resolver.resolve_tvdb_id")
+@patch("resources.lib.prowlarr.search_prowlarr", return_value=([PROWLARR_RESULT], None))
+@patch("xbmcaddon.Addon")
+def test_episode_passes_explicit_tvdb_to_providers(
+    mock_addon, mock_prowlarr, mock_resolve
+):
+    """A TVDB id from the player token reaches each provider unchanged and
+    does not trigger the (network) resolver (issue #318)."""
+    mock_addon.return_value = _mock_addon(
+        nzbhydra_enabled="false", prowlarr_enabled="true"
+    )
+
+    _search_all_providers(
+        "episode",
+        "Silo",
+        imdb="tt14688458",
+        tvdb="305288",
+        season="2",
+        episode="5",
+    )
+
+    mock_resolve.assert_not_called()
+    assert mock_prowlarr.call_args.kwargs["tvdb"] == "305288"
+
+
+@patch("resources.lib.tvdb_resolver.resolve_tvdb_id", return_value="305288")
+@patch("resources.lib.prowlarr.search_prowlarr", return_value=([PROWLARR_RESULT], None))
+@patch("xbmcaddon.Addon")
+def test_episode_resolves_tvdb_when_absent(mock_addon, mock_prowlarr, mock_resolve):
+    """When no tvdb is supplied, resolve it once from tmdb_id/imdb and pass
+    the result to every provider."""
+    mock_addon.return_value = _mock_addon(
+        nzbhydra_enabled="false", prowlarr_enabled="true"
+    )
+
+    _search_all_providers(
+        "episode",
+        "Silo",
+        imdb="tt14688458",
+        tmdb_id="125988",
+        season="2",
+        episode="5",
+    )
+
+    assert mock_resolve.called
+    assert mock_prowlarr.call_args.kwargs["tvdb"] == "305288"
+
+
+@patch("resources.lib.tvdb_resolver.resolve_tvdb_id")
+@patch("resources.lib.prowlarr.search_prowlarr", return_value=([PROWLARR_RESULT], None))
+@patch("xbmcaddon.Addon")
+def test_movie_search_does_not_resolve_tvdb(mock_addon, mock_prowlarr, mock_resolve):
+    mock_addon.return_value = _mock_addon(
+        nzbhydra_enabled="false", prowlarr_enabled="true"
+    )
+
+    _search_all_providers("movie", "The Matrix", imdb="tt0133093")
+
+    mock_resolve.assert_not_called()
+    assert mock_prowlarr.call_args.kwargs["tvdb"] == ""
+
+
+@patch("resources.lib.tvdb_resolver.resolve_tvdb_id", return_value="")
+@patch("resources.lib.prowlarr.search_prowlarr", return_value=([PROWLARR_RESULT], None))
+@patch("xbmcaddon.Addon")
+def test_episode_unresolved_tvdb_falls_through_empty(
+    mock_addon, mock_prowlarr, mock_resolve
+):
+    """If resolution fails, providers get tvdb='' and keep working (imdbid)."""
+    mock_addon.return_value = _mock_addon(
+        nzbhydra_enabled="false", prowlarr_enabled="true"
+    )
+
+    _search_all_providers(
+        "episode", "Silo", imdb="tt14688458", tmdb_id="125988", season="2", episode="5"
+    )
+
+    assert mock_prowlarr.call_args.kwargs["tvdb"] == ""
+
+
 @patch("resources.lib.hydra.search_hydra", return_value=([HYDRA_RESULT], None))
 @patch(
     "resources.lib.prowlarr.search_prowlarr",

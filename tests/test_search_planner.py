@@ -61,6 +61,127 @@ def test_movie_title_on_nzbgeek_falls_back_to_search():
     assert plan.reason == "direct_movie_title_search_fallback"
 
 
+def _supported_caps_with_tvdbid():
+    caps = _supported_caps()
+    caps["supported_params"]["tvsearch"] = ["q", "imdbid", "tvdbid", "season", "ep"]
+    return caps
+
+
+def test_episode_prefers_tvdbid_when_supported_and_present():
+    """When the indexer advertises tvdbid and we have a TVDB id, prefer it
+    over imdbid — many indexers index TV by TheTVDB id (issue #318)."""
+    plan = plan_newznab_search(
+        provider_kind="direct",
+        host="https://api.example.test",
+        search_type="episode",
+        title="Silo",
+        imdb="tt14688458",
+        tvdb="305288",
+        season="2",
+        episode="5",
+        caps=_supported_caps_with_tvdbid(),
+        api_key="secret",
+        max_results=10,
+    )
+
+    assert plan.primary == {
+        "apikey": "secret",
+        "o": "xml",
+        "limit": 10,
+        "t": "tvsearch",
+        "q": "Silo",
+        "tvdbid": "305288",
+        "season": "2",
+        "ep": "5",
+    }
+    # tvdbid is preferred *instead of* imdbid, not alongside it.
+    assert "imdbid" not in plan.primary
+    assert plan.reason == "episode_tvsearch"
+
+
+def test_episode_uses_imdbid_when_tvdbid_not_in_caps():
+    """A TVDB id must not be sent to an indexer that doesn't advertise
+    tvdbid support; fall back to imdbid."""
+    plan = plan_newznab_search(
+        provider_kind="direct",
+        host="https://api.example.test",
+        search_type="episode",
+        title="Silo",
+        imdb="tt14688458",
+        tvdb="305288",
+        season="2",
+        episode="5",
+        caps=_supported_caps(),  # tvsearch caps lack "tvdbid"
+        api_key="secret",
+        max_results=10,
+    )
+
+    assert "tvdbid" not in plan.primary
+    assert plan.primary["imdbid"] == "14688458"
+
+
+def test_episode_without_tvdb_is_unchanged():
+    """Absent a TVDB id, behavior is identical to before (imdbid path)."""
+    plan = plan_newznab_search(
+        provider_kind="direct",
+        host="https://api.example.test",
+        search_type="episode",
+        title="Silo",
+        imdb="tt14688458",
+        season="2",
+        episode="5",
+        caps=_supported_caps_with_tvdbid(),
+        api_key="secret",
+        max_results=10,
+    )
+
+    assert "tvdbid" not in plan.primary
+    assert plan.primary["imdbid"] == "14688458"
+
+
+def test_episode_tvdb_id_sanitized_to_digits():
+    """A non-numeric-decorated TVDB id is reduced to its digits."""
+    plan = plan_newznab_search(
+        provider_kind="direct",
+        host="https://api.example.test",
+        search_type="episode",
+        title="Silo",
+        tvdb="tvdb-305288",
+        season="2",
+        episode="5",
+        caps=_supported_caps_with_tvdbid(),
+        api_key="secret",
+        max_results=10,
+    )
+
+    assert plan.primary["tvdbid"] == "305288"
+
+
+def test_missing_caps_episode_prefers_tvdbid_when_present():
+    """With no caps to consult, a present TVDB id is still preferred over
+    imdbid for the optimistic tvsearch."""
+    plan = plan_newznab_search(
+        provider_kind="nzbhydra2",
+        host="https://hydra.test",
+        search_type="episode",
+        title="Silo",
+        imdb="tt14688458",
+        tvdb="305288",
+        season="2",
+        episode="5",
+        caps=None,
+        api_key="secret",
+        max_results=10,
+    )
+
+    assert plan.primary["t"] == "tvsearch"
+    assert plan.primary["tvdbid"] == "305288"
+    assert "imdbid" not in plan.primary
+    assert plan.primary["season"] == "2"
+    assert plan.primary["ep"] == "5"
+    assert plan.reason == "missing_caps_episode_default"
+
+
 def test_episode_uses_tvsearch_when_supported():
     plan = plan_newznab_search(
         provider_kind="direct",

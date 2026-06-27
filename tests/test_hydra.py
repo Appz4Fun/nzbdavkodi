@@ -109,6 +109,80 @@ def test_search_hydra_reuses_module_level_url(monkeypatch):
     fake_addon.getSetting.assert_any_call("hydra_api_key")
 
 
+@patch("resources.lib.hydra._get_settings")
+def test_search_hydra_episode_prefers_tvdbid(mock_settings):
+    """When caps advertise tvdbid and a TVDB id is available, the Hydra
+    tvsearch URL must key on tvdbid, not imdbid (issue #318)."""
+    mock_settings.return_value = ("http://hydra:5076", "testkey")
+    with patch("resources.lib.hydra._http_get") as mock_http, patch(
+        "resources.lib.hydra.load_provider_caps"
+    ) as mock_load_caps:
+        mock_load_caps.return_value = {
+            "nzbhydra2": {
+                "base_url": "http://hydra:5076",
+                "checked_at": "2026-05-10T00:00:00Z",
+                "caps": {
+                    "search_types": ["search", "tvsearch", "movie"],
+                    "supported_params": {
+                        "tvsearch": ["q", "imdbid", "tvdbid", "season", "ep"],
+                    },
+                },
+            }
+        }
+        mock_http.return_value = _load_fixture("hydra_tv_response.xml")
+
+        results, error = hydra.search_hydra(
+            "episode",
+            "Breaking Bad",
+            imdb="tt0903747",
+            tvdb="81189",
+            season="5",
+            episode="14",
+        )
+
+    assert error is None
+    url = mock_http.call_args[0][0]
+    assert "t=tvsearch" in url
+    assert "tvdbid=81189" in url
+    assert "imdbid" not in url
+
+
+@patch("resources.lib.hydra._get_settings")
+def test_search_hydra_no_caps_tvdb_fallback_strips_tvdbid(mock_settings):
+    """With no provider caps, the legacy title fallback must drop the failing
+    tvdbid — otherwise the broadened retry stays constrained by it and returns
+    the same empty result (issue #318 regression)."""
+    mock_settings.return_value = ("http://hydra:5076", "testkey")
+    empty_rss = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<rss version="2.0" '
+        'xmlns:newznab="http://www.newznab.com/DTD/2010/feeds/attributes/">'
+        '<channel><newznab:response offset="0" total="0"/></channel></rss>'
+    )
+    with patch("resources.lib.hydra._http_get") as mock_http, patch(
+        "resources.lib.hydra.load_provider_caps"
+    ) as mock_load_caps:
+        mock_load_caps.return_value = {}  # no caps -> legacy fallback path
+        mock_http.side_effect = [empty_rss, _load_fixture("hydra_tv_response.xml")]
+
+        results, error = hydra.search_hydra(
+            "episode",
+            "Breaking Bad",
+            imdb="tt0903747",
+            tvdb="81189",
+            season="5",
+            episode="14",
+        )
+
+    assert error is None
+    assert mock_http.call_count == 2
+    primary_url = mock_http.call_args_list[0][0][0]
+    fallback_url = mock_http.call_args_list[1][0][0]
+    assert "tvdbid=81189" in primary_url  # primary keyed on tvdbid
+    assert "tvdbid" not in fallback_url  # fallback dropped the failing id
+    assert "q=Breaking+Bad" in fallback_url or "q=Breaking%20Bad" in fallback_url
+
+
 def test_parse_results_movie():
     xml_text = _load_fixture("hydra_movie_response.xml")
     results = parse_results(xml_text)

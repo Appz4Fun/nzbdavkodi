@@ -25,9 +25,6 @@ from resources.lib.http_util import (
     calculate_age as _calculate_age,
 )
 from resources.lib.http_util import (
-    iso8601_to_rfc2822 as _iso_to_rfc2822,
-)
-from resources.lib.http_util import (
     format_request_error as _format_request_error,
 )
 from resources.lib.http_util import (
@@ -35,6 +32,9 @@ from resources.lib.http_util import (
 )
 from resources.lib.http_util import (
     http_get as _http_get,
+)
+from resources.lib.http_util import (
+    iso8601_to_rfc2822 as _iso_to_rfc2822,
 )
 
 NEWZNAB_NS = "http://www.newznab.com/DTD/2010/feeds/attributes/"
@@ -127,6 +127,7 @@ def search_prowlarr(
     season="",
     episode="",
     settings_getter=None,
+    tvdb="",
 ):
     """
     Search Prowlarr for NZB results matching a movie or TV episode.
@@ -140,6 +141,9 @@ def search_prowlarr(
             to `title` when present.
         season (str, optional): Season number for TV searches.
         episode (str, optional): Episode number for TV searches.
+        tvdb (str, optional): TheTVDB series id. For episode searches it is
+            preferred over `imdb` (many indexers key TV on tvdbid) — issue
+            #318.
 
     Returns:
         tuple: `(results, error_message)` where `results` is a list of dicts
@@ -181,7 +185,10 @@ def search_prowlarr(
 
     if search_type == "episode":
         params["t"] = "tvsearch"
-        if imdb:
+        # Prefer tvdbid over imdbid for TV (issue #318); send one id, not both.
+        if tvdb:
+            params["tvdbid"] = tvdb
+        elif imdb:
             params["imdbid"] = imdb
         else:
             params["q"] = title
@@ -218,13 +225,14 @@ def search_prowlarr(
     if parse_error:
         return [], parse_error
 
-    # Fallback: if IMDB search returned nothing, retry with title
-    if not results and imdb and title:
+    # Fallback: if an id-based search returned nothing, retry with title.
+    if not results and (tvdb or imdb) and title:
         xbmc.log(
-            "NZB-DAV: Prowlarr: no results with imdbid={}, retrying with "
-            "title '{}'".format(imdb, title),
+            "NZB-DAV: Prowlarr: no results with id (tvdbid={} imdbid={}), "
+            "retrying with title '{}'".format(tvdb or "-", imdb or "-", title),
             xbmc.LOGINFO,
         )
+        params.pop("tvdbid", None)
         params.pop("imdbid", None)
         params["q"] = title
         fallback_url = _build_search_url(base_url, params, indexer_ids)

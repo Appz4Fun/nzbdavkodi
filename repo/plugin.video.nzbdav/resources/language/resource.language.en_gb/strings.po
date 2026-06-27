@@ -873,3 +873,11 @@ msgstr "SMB share reachable"
 msgctxt "#30227"
 msgid "SMB share not reachable"
 msgstr "SMB share not reachable"
+
+msgctxt "#30228"
+msgid "TV search accuracy"
+msgstr "TV search accuracy"
+
+msgctxt "#30229"
+msgid "TMDB API key (optional, improves TV results via TVDB id)"
+msgstr "TMDB API key (optional, improves TV results via TVDB id)"
