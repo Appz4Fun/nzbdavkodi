@@ -12585,10 +12585,42 @@ def test_serve_proxy_closes_without_zero_filling_remainder_when_recovery_exhaust
         except StopIteration:
             return _fail_probe()
 
-    with patch("resources.lib.stream_proxy.urlopen", side_effect=_dispatch), patch(
-        "resources.lib.stream_proxy.time.sleep"
-    ):
-        handler._serve_proxy(ctx)
+    # This test drives the REAL recovery-exhausted close path. It took ~120s
+    # because conftest's shared Monitor.waitForAbort mock REALLY sleeps its
+    # timeout arg (deliberately, so timing-sensitive HLS/probe tests stay
+    # realistic), and the recovery path backs off via waitForAbort on every
+    # retry-ladder (2,4,8s), skip-probe (2,4,6,8s) and patient-forward-stall
+    # iteration — the stall loop holding the client for the whole
+    # `passthrough_stall_wait` budget (default 120s) before giving up. Two scoped
+    # changes collapse the wall clock to ~0s without altering the path or its
+    # assertion:
+    #   * override ONLY this monitor's waitForAbort to return False instantly (no
+    #     abort, no sleep), restored afterwards. Patching the whole xbmc module
+    #     instead breaks the upstream read so the first chunk never lands.
+    #   * pin the runtime-settings seam _serve_proxy reads to a tiny POSITIVE
+    #     stall budget so the patient-stall exhausts at once. It MUST be >0 —
+    #     exactly 0 skips the `if stall_wait_budget > 0` block, so
+    #     forward_stall_exhausted is never set and the loop never terminates.
+    import sys as _sys
+
+    from resources.lib import stream_proxy as _sp_mod
+
+    fast_runtime = dict(_sp_mod._read_passthrough_runtime_settings())
+    fast_runtime["passthrough_stall_wait_seconds"] = 0.01
+
+    _monitor = _sys.modules["xbmc"].Monitor.return_value
+    _saved_side = _monitor.waitForAbort.side_effect
+    _monitor.waitForAbort.side_effect = lambda timeout=0.0: False
+    try:
+        with patch("resources.lib.stream_proxy.urlopen", side_effect=_dispatch), patch(
+            "resources.lib.stream_proxy.time.sleep"
+        ), patch(
+            "resources.lib.stream_proxy._passthrough_runtime_settings",
+            return_value=fast_runtime,
+        ):
+            handler._serve_proxy(ctx)
+    finally:
+        _monitor.waitForAbort.side_effect = _saved_side
 
     written = _collect_written(handler)
     assert written == first_chunk

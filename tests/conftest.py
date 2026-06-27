@@ -181,6 +181,43 @@ def _reap_readahead_threads():
         monitor.waitForAbort.return_value = saved_ret
 
 
+@pytest.fixture(autouse=True)
+def _suppress_readahead_daemon(request):
+    """Skip spawning the read-ahead prefetch daemon in tests that don't target it.
+
+    ``prepare_stream`` spawns a per-session ``nzbdav-readahead`` daemon (read-ahead
+    is on by default). Because ``Monitor.waitForAbort`` REALLY sleeps in this
+    harness, that daemon backs off on real 0.25 s / 1.0 s sleeps: the autouse reaper
+    above then pays ~1.5 s per ``prepare_stream`` test joining it (≈30 s across the
+    suite), and any daemon that outlives the reaper's join races sibling tests'
+    patched ``urlopen`` — the root of the nondeterministic
+    ``test_prevalidated_fallback_reuses_current_probe`` full-suite flake. No general
+    test asserts the daemon spawned (``_serve_proxy`` never spawns it; only
+    ``prepare_stream`` does), so no-op the spawn by default.
+
+    Exemptions keep the REAL daemon running:
+      * ``real_readahead`` — unit tests that exercise the spawn directly.
+      * ``functional`` / ``integration`` / ``extreme`` — the live/dev-box suites
+        (``just functional-test`` etc.) exist to catch real prefetch/cutover races
+        against actual playback; users get read-ahead by default, so suppressing it
+        there would hide exactly what those suites validate. They are excluded from
+        the default ``just test`` run, so this does not affect the fast unit suite's
+        speed-up or de-flaking.
+    """
+    keep_real_daemon = ("real_readahead", "functional", "integration", "extreme")
+    if any(request.node.get_closest_marker(marker) for marker in keep_real_daemon):
+        yield
+        return
+    from resources.lib import stream_proxy
+
+    with patch.object(
+        stream_proxy.StreamProxy,
+        "_start_readahead_prefetch",
+        lambda self, ctx: None,
+    ):
+        yield
+
+
 @pytest.fixture
 def resolver_mocks():
     """Patch the dependencies that nearly every resolver test needs.
