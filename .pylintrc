@@ -4,10 +4,8 @@
 # the same syntax-floor issues (walrus, match, str.removeprefix) on a
 # developer's modern Python without needing a separate 3.8 install.
 py-version=3.8
-# Ignore local dev scripts (on-device smoke test helpers, throwaway repro
-# scripts) that aren't part of the shipped addon. PTT is now owned/linted.
+# Ignore the Rust helper tool (not part of the shipped Python addon).
 ignore-paths=
-    dev/,
     tmdbhelper-warmup-rs/
 
 [MESSAGES CONTROL]
