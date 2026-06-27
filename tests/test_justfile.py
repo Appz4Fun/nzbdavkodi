@@ -30,11 +30,10 @@ def test_make_dev_installs_dependencies_for_all_just_recipes():
 
     body = _recipe_body(justfile_text, "make-dev")
 
+    # uv pre-fetches the pinned interpreters; pip installs are Chroma-only now
+    assert "uv python install" in body
     assert "pip install" in body
     assert "--break-system-packages" in body
-    assert "-r requirements-test.txt" in body
-    assert '"ruff>=0.15"' in body
-    assert '"black>=24"' in body
     assert "brew install" in body
     assert "brew list --formula --full-name" in body
     assert "ffmpeg" in body
@@ -49,8 +48,9 @@ def test_make_dev_pip_flags_expansion_is_bash32_nounset_safe():
 
     body = _recipe_body(justfile_text, "make-dev")
 
-    assert 'pip install "${pip_flags[@]}" -r requirements-test.txt' not in body
-    assert '${pip_flags+"${pip_flags[@]}"}' in body
+    # The Chroma-specific pip flags still use the nounset-safe expansion form.
+    assert 'pip install "${chroma_pip_flags[@]}"' not in body
+    assert '${chroma_pip_flags+"${chroma_pip_flags[@]}"}' in body
 
     bash = Path("/bin/bash")
     if bash.exists():
@@ -58,7 +58,8 @@ def test_make_dev_pip_flags_expansion_is_bash32_nounset_safe():
             [
                 str(bash),
                 "-uc",
-                'pip_flags=(); args=(${pip_flags+"${pip_flags[@]}"}); '
+                "chroma_pip_flags=(); "
+                'args=(${chroma_pip_flags+"${chroma_pip_flags[@]}"}); '
                 "[[ ${#args[@]} -eq 0 ]]",
             ],
             check=True,
