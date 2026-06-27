@@ -657,7 +657,7 @@ def test_find_video_file_parallelizes_sibling_subfolders_for_post_picker_start(
     elapsed = time.perf_counter() - started
 
     assert path == "/content/uncategorized/Serial/C/Movie.mkv"
-    assert elapsed < 0.5, "WebDAV sibling discovery took {:.3f}s".format(elapsed)
+    assert elapsed < 0.30, "WebDAV sibling discovery took {:.3f}s".format(elapsed)
 
 
 @patch("resources.lib.webdav._get_settings")

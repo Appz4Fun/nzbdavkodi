@@ -724,7 +724,7 @@ def test_search_direct_indexers_marks_incomplete_futures_timed_out(
     assert not results
     assert "Direct indexer Slow unavailable:" in error
     assert "timed out" in error
-    assert elapsed < 0.5
+    assert elapsed < 0.15
 
 
 @patch("resources.lib.direct_indexers.get_configured_indexers")
@@ -786,7 +786,7 @@ def test_test_configured_indexers_marks_incomplete_futures_timed_out(
     assert len(errors) == 1
     assert "Direct indexer Slow unavailable:" in errors[0]
     assert "timed out" in errors[0]
-    assert elapsed < 0.5
+    assert elapsed < 0.15
 
 
 @patch("resources.lib.direct_indexers.get_configured_indexers")

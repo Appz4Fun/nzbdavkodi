@@ -406,7 +406,7 @@ def test_handle_job_status_does_not_block_on_stuck_dialog_update():
 
     assert should_stop is False
     assert last_status == "Downloading"
-    assert elapsed < 0.5
+    assert elapsed < 0.2
 
 
 @patch("resources.lib.resolver.find_video_file")
@@ -2126,7 +2126,7 @@ def test_resolve_overlaps_bookmark_cleanup_with_post_submit_poll(
         "after_ready_cleanup={:.3f}s".format(elapsed, after_ready_cleanup)
     )
     assert timing["cleanup_end"] <= timing["play"]
-    assert elapsed < 0.5, "selected-to-play path took {:.3f}s".format(elapsed)
+    assert elapsed < 0.35, "selected-to-play path took {:.3f}s".format(elapsed)
 
 
 @patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
@@ -2333,7 +2333,7 @@ def test_resolve_overlaps_proxy_prepare_with_bookmark_cleanup_after_ready(
     assert timing["prepare_start"] < timing["cleanup_end"]
     assert timing["cleanup_end"] <= timing["resolved"]
     elapsed = timing["resolved"] - timing["ready"]
-    assert elapsed < 0.5, "ready-to-resolved stayed serial at {:.3f}s".format(elapsed)
+    assert elapsed < 0.32, "ready-to-resolved stayed serial at {:.3f}s".format(elapsed)
 
 
 @patch("resources.lib.cache_prompt.maybe_show_cache_prompt")
@@ -2673,7 +2673,7 @@ def test_resolve_and_play_overlaps_proxy_prepare_with_bookmark_cleanup_after_rea
     assert timing["cleanup_end"] <= timing["played"]
     elapsed = timing["played"] - timing["ready"]
     assert (
-        elapsed < 0.5
+        elapsed < 0.32
     ), "resolve_and_play ready-to-play stayed serial at {:.3f}s".format(elapsed)
 
 
@@ -3049,7 +3049,7 @@ def test_resolve_overlaps_bookmark_cleanup_with_existing_completed_fast_path(
         )
     )
     assert timing["cleanup_end"] <= timing["play"]
-    assert elapsed < 0.5, "existing-completed selected-to-play took {:.3f}s".format(
+    assert elapsed < 0.35, "existing-completed selected-to-play took {:.3f}s".format(
         elapsed
     )
 
@@ -3615,7 +3615,7 @@ def test_start_direct_playback_prepare_snapshots_settings_in_worker(
     elapsed = _time.monotonic() - started_at
 
     try:
-        assert elapsed < 0.5
+        assert elapsed < 0.18
         assert slow_started.wait(0.2)
         release_settings.set()
         prepared = _wait_direct_playback_prepare(state)
@@ -4719,7 +4719,7 @@ def test_submit_ui_pump_terminal_error_does_not_wait_for_probe_cleanup(
 
     assert nzo_id is None
     assert submit_error == {"status": 400, "message": "TooManyRequests"}
-    assert elapsed < 0.5
+    assert elapsed < 0.2
 
 
 @patch("resources.lib.resolver._show_submit_error_dialog")
@@ -4853,7 +4853,7 @@ def test_submit_ui_pump_starts_queue_probe_within_short_grace_window(
     elapsed = _time.monotonic() - started
 
     assert (nzo_id, submit_error) == ("SABnzbd_nzo_fast_queue_probe", None)
-    assert elapsed < 0.5
+    assert elapsed < 0.2
 
 
 @patch("resources.lib.resolver.find_queued_by_name")
@@ -4896,7 +4896,7 @@ def test_submit_ui_pump_adopts_existing_queue_without_initial_probe_delay(
 
     assert (nzo_id, submit_error) == ("SABnzbd_nzo_existing_queue", None)
     monitor.waitForAbort.assert_not_called()
-    assert elapsed < 0.5, "existing queue adoption took {:.3f}s".format(elapsed)
+    assert elapsed < 0.2, "existing queue adoption took {:.3f}s".format(elapsed)
 
 
 @patch("resources.lib.resolver._existing_completed_stream", return_value=None)
@@ -4941,7 +4941,7 @@ def test_submit_ui_pump_rechecks_queue_quickly_after_initial_fast_miss(
 
     assert (nzo_id, submit_error) == ("SABnzbd_nzo_second_fast_probe", None)
     assert len(queue_probe_times) == 2
-    assert elapsed < 0.5, "second fast queue probe took {:.3f}s".format(elapsed)
+    assert elapsed < 0.2, "second fast queue probe took {:.3f}s".format(elapsed)
 
 
 @patch("resources.lib.resolver.find_completed_by_name")
@@ -4993,11 +4993,11 @@ def test_submit_ui_pump_starts_history_probe_after_fast_queue_miss(
     history_delay = history_probe_times[0] - queue_probe_times[0]
 
     assert (nzo_id, submit_error) == ("SABnzbd_nzo_completed_fast_history", None)
-    assert history_delay < 0.5, (
+    assert history_delay < 0.18, (
         "completed-history probe waited for grace after queue miss; "
         "history_delay={:.3f}s elapsed={:.3f}s".format(history_delay, elapsed)
     )
-    assert elapsed < 0.5, "completed-history adoption took {:.3f}s".format(elapsed)
+    assert elapsed < 0.18, "completed-history adoption took {:.3f}s".format(elapsed)
 
 
 @patch("resources.lib.resolver.find_completed_by_name")
@@ -5043,7 +5043,7 @@ def test_submit_ui_pump_rechecks_completed_history_quickly_after_initial_miss(
 
     assert (nzo_id, submit_error) == ("SABnzbd_nzo_second_history_probe", None)
     assert (
-        elapsed < 0.5
+        elapsed < 0.2
     ), "second completed-history probe took {:.3f}s; gap was {:.3f}s".format(
         elapsed, history_gap
     )
@@ -5247,7 +5247,7 @@ def test_submit_ui_pump_fast_submit_skips_slow_probe_cleanup_wait(
 
     assert (nzo_id, submit_error) == ("SABnzbd_nzo_fast_submit", None)
     assert (
-        elapsed < 0.5
+        elapsed < 0.2
     ), "fast submit waited for slow adoption probe cleanup; elapsed={:.3f}s".format(
         elapsed
     )
@@ -6091,7 +6091,7 @@ def test_poll_once_returns_completed_history_before_slow_queue(
     job_status, history, webdav_error = _poll_once("nzo_done", "movie", _make_monitor())
     elapsed = _time.monotonic() - started
 
-    assert elapsed < 0.5
+    assert elapsed < 0.2
     assert job_status is None
     assert history == mock_history.return_value
     assert webdav_error is None
@@ -6118,7 +6118,7 @@ def test_poll_once_returns_active_queue_before_slow_history(
     )
     elapsed = _time.monotonic() - started
 
-    assert elapsed < 0.5
+    assert elapsed < 0.2
     assert job_status == mock_status.return_value
     assert history is None
     assert webdav_error is None
@@ -6174,7 +6174,7 @@ def test_poll_once_returns_full_progress_queue_before_slow_history(
     job_status, history, webdav_error = _poll_once("nzo_full", "movie", _make_monitor())
     elapsed = _time.monotonic() - started
 
-    assert elapsed < 0.5, "100% queue row waited on history for {:.3f}s".format(elapsed)
+    assert elapsed < 0.2, "100% queue row waited on history for {:.3f}s".format(elapsed)
     assert job_status == mock_status.return_value
     assert history is None
     assert webdav_error is None
@@ -6477,7 +6477,7 @@ def test_poll_until_ready_waits_for_full_progress_history_before_poll_tick(
     assert url == "http://webdav/movie.mkv"
     assert headers == {"Authorization": "x"}
     assert len(history_calls) == 1
-    assert elapsed < 0.5, "full-progress history missed grace by {:.3f}s".format(
+    assert elapsed < 0.2, "full-progress history missed grace by {:.3f}s".format(
         elapsed
     )
 

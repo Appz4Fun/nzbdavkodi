@@ -2311,7 +2311,7 @@ def test_initial_prefetch_skips_probe_base_settings_before_first_get():
     assert first_write_at, "proxy did not write first playable bytes"
     first_byte_elapsed = first_write_at[0] - started
     assert (
-        first_byte_elapsed < 0.5
+        first_byte_elapsed < 0.13
     ), "first proxy byte waited {:.3f}s on probe-base settings".format(
         first_byte_elapsed
     )
@@ -4310,7 +4310,7 @@ def test_prepare_stream_does_not_block_new_url_on_old_ffmpeg_wait():
         release_wait.set()
         timer.cancel()
 
-    assert elapsed < 0.5, "old ffmpeg wait blocked new proxy URL for {:.3f}s".format(
+    assert elapsed < 0.13, "old ffmpeg wait blocked new proxy URL for {:.3f}s".format(
         elapsed
     )
     assert len(sp._server.stream_sessions) == 1
@@ -4347,7 +4347,7 @@ def test_prepare_stream_does_not_block_new_url_on_old_hls_close():
     elapsed = time.perf_counter() - started
 
     hls_producer.close.assert_called_once_with(wait_for_process=False)
-    assert elapsed < 0.5, "old HLS close blocked new proxy URL for {:.3f}s".format(
+    assert elapsed < 0.13, "old HLS close blocked new proxy URL for {:.3f}s".format(
         elapsed
     )
     assert len(sp._server.stream_sessions) == 1
@@ -6062,7 +6062,7 @@ def test_hls_producer_close_wait_false_kills_without_waiting(tmp_path):
     finally:
         release_wait.set()
 
-    assert elapsed < 0.5, "nonblocking HLS close waited {:.3f}s".format(elapsed)
+    assert elapsed < 0.13, "nonblocking HLS close waited {:.3f}s".format(elapsed)
 
 
 def test_hls_producer_opens_ffmpeg_log_in_init(tmp_path):
@@ -6284,7 +6284,7 @@ def test_hls_producer_prepare_returns_when_init_and_first_segment_appear(
             started = time.perf_counter()
             producer.prepare()  # must not raise
             elapsed = time.perf_counter() - started
-        assert elapsed < 0.5, "fmp4 prepare waited {:.3f}s after early output".format(
+        assert elapsed < 0.30, "fmp4 prepare waited {:.3f}s after early output".format(
             elapsed
         )
     finally:
