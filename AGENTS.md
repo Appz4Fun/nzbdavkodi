@@ -131,7 +131,7 @@ The background service (`service.py`) runs `StreamProxy`. MP4 sources may be rew
 - `http_util.py` owns shared `http_get()` and `notify()` helpers.
 - PTT is vendored with `regex` replaced by `re` and `arrow` replaced by `datetime`.
 - Some PTT regex patterns can trigger `FutureWarning` on newer Python. Escape `[` inside character classes when fixing them.
-- Test tooling is Python 3.10+ because `pytest>=9.0.3` is required for security, even though addon runtime code must remain Python 3.8 compatible.
+- Test/lint tooling runs on Python 3.14 with exact pins in `requirements-dev.txt` (pytest, pylint, ruff, black) executed via uv, even though addon runtime code must remain Python 3.8 compatible.
 
 ## When In Doubt
 
@@ -201,7 +201,7 @@ Prefer evidence first, restart second. If Kodi is actively wedged and logs are a
 
 ## CI/CD
 
-- CI runs on every push to `main` and PRs: tests across Python 3.10/3.12, ruff, and black.
+- CI runs on every push to `main` and PRs: `just lint` (ruff + black + pylint) and `just test` on Python 3.14, plus a `compat-3-8` job that `compileall`s the addon on Python 3.8.
 - Release workflow triggers on `v*` tags: runs tests, verifies `addon.xml` version matches the tag, builds the zip, and creates a GitHub Release.
 - Kodi repo metadata is served from GitHub Pages at `https://appz4fun.github.io/nzbdavkodi/`.
 - The old raw `repo/zips/` endpoint is retained only as a legacy migration endpoint so installed repository add-ons can update to the Pages-backed descriptor.

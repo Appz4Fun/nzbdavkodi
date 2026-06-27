@@ -48,7 +48,6 @@ import time
 import urllib.request
 
 import pytest
-
 from extreme import measurement
 from extreme._fixtures import (
     FAULT_PROXY_CONTROL_HOST_PORT,

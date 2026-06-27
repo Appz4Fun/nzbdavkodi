@@ -1,8 +1,8 @@
 [MAIN]
-# Enforce Python 3.8 rules even when pylint runs on a newer interpreter.
-# CI runs pylint under Python 3.8 directly; this lets `just lint` catch
-# the same syntax-floor issues (walrus, match, str.removeprefix) on a
-# developer's modern Python without needing a separate 3.8 install.
+# Aim version-gated pylint checks at the 3.8 runtime floor even though pylint
+# runs on a newer interpreter. NOTE: pylint parses on the host interpreter, so
+# this does NOT reject 3.10+ syntax (e.g. `match`) — the real 3.8 syntax/parse
+# gate is the `compat-3-8` compileall job in .github/workflows/ci.yml.
 py-version=3.8
 # Ignore the Rust helper tool (not part of the shipped Python addon).
 ignore-paths=

@@ -52,4 +52,4 @@ jobs:
         with:
           python-version: "3.8"
       - name: Verify runtime parses on the 3.8 floor
-        run: python -m compileall repo/plugin.video.nzbdav/resources/lib/
+        run: python -m compileall repo/plugin.video.nzbdav/

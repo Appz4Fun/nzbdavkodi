@@ -1,7 +1,6 @@
 # NZB-DAV Kodi Addon
 
 [![CI](https://github.com/Appz4Fun/nzbdavkodi/actions/workflows/ci.yml/badge.svg)](https://github.com/Appz4Fun/nzbdavkodi/actions/workflows/ci.yml)
-[![Pylint](https://github.com/Appz4Fun/nzbdavkodi/actions/workflows/pylint.yml/badge.svg)](https://github.com/Appz4Fun/nzbdavkodi/actions/workflows/pylint.yml)
 [![CodeQL](https://github.com/Appz4Fun/nzbdavkodi/actions/workflows/codeql.yml/badge.svg)](https://github.com/Appz4Fun/nzbdavkodi/actions/workflows/codeql.yml)
 [![Release](https://github.com/Appz4Fun/nzbdavkodi/actions/workflows/release.yml/badge.svg)](https://github.com/Appz4Fun/nzbdavkodi/actions/workflows/release.yml)
 [![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/Appz4Fun/nzbdavkodi?utm_source=oss&utm_medium=github&utm_campaign=Appz4Fun%2Fnzbdavkodi&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)](https://coderabbit.ai)
@@ -343,10 +342,9 @@ scripts/
 repo/
   repository.nzbdav/     # Repository addon descriptor pointing to Pages metadata
 .github/workflows/
-  ci.yml                 # Test + lint on push/PR (Python 3.10/3.12)
+  ci.yml                 # Lint + test on 3.14 + a 3.8 compileall gate, on push/PR
   release.yml            # Build GitHub Releases on version tags
   pages.yml              # Publish Kodi repository metadata to GitHub Pages
-  pylint.yml             # Pylint analysis (Python 3.8 to validate runtime compat)
   codeql.yml             # CodeQL analysis
   bandit.yml             # Bandit security scan
 tests/

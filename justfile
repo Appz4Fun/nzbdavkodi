@@ -311,14 +311,14 @@ extreme-functional-test:
 
 # Lint the codebase (matches GitHub CI: ruff + black + pylint)
 lint:
-    {{uvdev}} ruff check repo/plugin.video.nzbdav/ tests/ scripts/
-    {{uvdev}} black --check repo/plugin.video.nzbdav/ tests/ scripts/
+    {{uvdev}} ruff check repo/plugin.video.nzbdav/ tests/ tests-extensive/ scripts/
+    {{uvdev}} black --check repo/plugin.video.nzbdav/ tests/ tests-extensive/ scripts/
     {{uvdev}} pylint $(git ls-files '*.py') --generated-members=chromadb.*
 
 # Auto-fix lint issues
 lint-fix:
-    {{uvdev}} ruff check repo/plugin.video.nzbdav/ tests/ scripts/ --fix
-    {{uvdev}} black repo/plugin.video.nzbdav/ tests/ scripts/
+    {{uvdev}} ruff check repo/plugin.video.nzbdav/ tests/ tests-extensive/ scripts/ --fix
+    {{uvdev}} black repo/plugin.video.nzbdav/ tests/ tests-extensive/ scripts/
 
 # Build the addon zip for Kodi installation
 release:
