@@ -101,6 +101,24 @@ def test_player_json_uses_script_handoff_instead_of_plugin_media_url():
     assert roundtripped["name"] == PLAYER_JSON["name"]
 
 
+def test_play_episode_forwards_tvdb_token():
+    """The episode action requests TMDBHelper's {tvdb} token — in episode
+    context it resolves to the show's TheTVDB id, letting providers search
+    by tvdbid (issue #318)."""
+    assert "tvdb={tvdb}" in PLAYER_JSON["play_episode"]
+    # Movies have no series tvdb id; the movie action must not carry it.
+    assert "tvdb=" not in PLAYER_JSON["play_movie"]
+
+
+def test_player_schema_version_bumped_for_tvdb_token():
+    """Adding the {tvdb} token changes the shipped action string, so the
+    schema version must advance to force a re-install over older files."""
+    from resources.lib.player_installer import _PLAYER_SCHEMA_VERSION
+
+    assert _PLAYER_SCHEMA_VERSION >= 7
+    assert PLAYER_JSON["schema_version"] == _PLAYER_SCHEMA_VERSION
+
+
 @patch("resources.lib.player_installer.xbmcaddon")
 @patch("resources.lib.player_installer._notify")
 @patch("resources.lib.player_installer.xbmcvfs")

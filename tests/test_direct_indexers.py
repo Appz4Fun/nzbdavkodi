@@ -397,6 +397,44 @@ def test_search_direct_indexers_episode_uses_tvsearch_params(
 @patch("resources.lib.direct_indexers.get_configured_indexers")
 @patch("resources.lib.direct_indexers.xbmcaddon")
 @patch("resources.lib.direct_indexers._http_get")
+def test_search_direct_indexers_episode_prefers_tvdbid(
+    mock_http, mock_xbmcaddon, mock_configured
+):
+    """A configured TVDB id keys the direct-indexer tvsearch on tvdbid
+    instead of imdbid (issue #318)."""
+    from resources.lib.direct_indexers import search_direct_indexers
+
+    mock_configured.return_value = [
+        {
+            "id": "nzbfinder",
+            "label": "NZBFinder",
+            "api_url": "https://nzbfinder.ws/api",
+            "api_key": "finder-key",
+            "caps": {},
+        }
+    ]
+    mock_xbmcaddon.Addon.return_value = _addon_with_settings({"max_results": "25"})
+    mock_http.return_value = ONE_RESULT_RSS
+
+    results, error = search_direct_indexers(
+        "episode",
+        "Breaking Bad",
+        imdb="tt0903747",
+        tvdb="81189",
+        season="5",
+        episode="14",
+    )
+
+    assert error is None
+    call_url = mock_http.call_args[0][0]
+    assert "t=tvsearch" in call_url
+    assert "tvdbid=81189" in call_url
+    assert "imdbid" not in call_url
+
+
+@patch("resources.lib.direct_indexers.get_configured_indexers")
+@patch("resources.lib.direct_indexers.xbmcaddon")
+@patch("resources.lib.direct_indexers._http_get")
 def test_search_direct_indexers_imdb_empty_retries_with_title(
     mock_http, mock_xbmcaddon, mock_configured
 ):

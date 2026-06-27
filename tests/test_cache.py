@@ -40,6 +40,21 @@ def test_cache_key_distinguishes_titles_that_sanitize_the_same():
     assert _cache_key("movie", "Foo.Bar") != _cache_key("movie", "Foo/Bar")
 
 
+def test_cache_key_distinguishes_tmdb_id_and_tvdb():
+    """Two distinct shows sharing title/season/episode (TMDB-only, no imdb)
+    must not collide, and a tvdb-keyed search must not be shadowed by a
+    non-tvdb one (issue #318)."""
+    base = dict(season="1", episode="1")
+    # Distinct shows, same title+season+episode, differ only by tmdb_id.
+    assert _cache_key("episode", "Echo", tmdb_id="111", **base) != _cache_key(
+        "episode", "Echo", tmdb_id="222", **base
+    )
+    # Same show, with vs without a resolved tvdb -> distinct result sets.
+    assert _cache_key("episode", "Echo", tmdb_id="111", **base) != _cache_key(
+        "episode", "Echo", tmdb_id="111", tvdb="555", **base
+    )
+
+
 def test_cache_key_distinguishes_long_titles_with_same_prefix():
     prefix = "A" * 250
     assert _cache_key("movie", prefix + "one") != _cache_key("movie", prefix + "two")

@@ -161,6 +161,10 @@ def _legacy_hydra_title_fallback(primary, title):
         return None
 
     fallback = dict(primary)
+    # Strip BOTH ids — a title-broadening retry that keeps the failing
+    # tvdbid/imdbid stays just as constrained and returns the same empty
+    # result (issue #318). Mirrors the Prowlarr fallback.
+    fallback.pop("tvdbid", None)
     fallback.pop("imdbid", None)
     fallback["q"] = title
     return fallback
@@ -174,6 +178,7 @@ def search_hydra(
     season="",
     episode="",
     settings_getter=None,
+    tvdb="",
 ):
     """Search NZBHydra2 for NZB entries.
 
@@ -230,6 +235,7 @@ def search_hydra(
         caps=caps,
         api_key=api_key,
         max_results=max_results,
+        tvdb=tvdb,
     )
     if not plan.primary:
         xbmc.log(

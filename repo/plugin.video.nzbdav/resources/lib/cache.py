@@ -28,7 +28,9 @@ def _get_cache_dir():
     return cache_dir
 
 
-def _cache_key(search_type, title, year="", imdb="", season="", episode=""):
+def _cache_key(
+    search_type, title, year="", imdb="", season="", episode="", tvdb="", tmdb_id=""
+):
     """Generate a filesystem-safe, collision-resistant cache key.
 
     Previous implementation collapsed non-alphanumeric characters to ``_``
@@ -44,7 +46,7 @@ def _cache_key(search_type, title, year="", imdb="", season="", episode=""):
     """
     import hashlib
 
-    parts = [search_type, title, year, imdb, season, episode]
+    parts = [search_type, title, year, imdb, season, episode, tvdb, tmdb_id]
     joined = "\x1f".join(
         str(p) for p in parts
     )  # unit-separator — can't appear in inputs

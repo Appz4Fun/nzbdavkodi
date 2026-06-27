@@ -402,7 +402,15 @@ def _fetch_indexer(indexer, params, error_prefix):
 
 
 def _search_one_indexer(
-    indexer, search_type, title, max_results, year="", imdb="", season="", episode=""
+    indexer,
+    search_type,
+    title,
+    max_results,
+    year="",
+    imdb="",
+    season="",
+    episode="",
+    tvdb="",
 ):
     plan = plan_newznab_search(
         provider_kind="direct",
@@ -416,6 +424,7 @@ def _search_one_indexer(
         caps=indexer.get("caps", {}),
         api_key=indexer["api_key"],
         max_results=max_results,
+        tvdb=tvdb,
     )
     params = plan.primary
     if not params:
@@ -461,6 +470,7 @@ def search_direct_indexers(
     episode="",
     indexers=None,
     max_results=None,
+    tvdb="",
 ):
     """Search all configured direct Newznab indexers."""
     indexers = get_configured_indexers() if indexers is None else indexers
@@ -483,6 +493,7 @@ def search_direct_indexers(
             imdb=imdb,
             season=season,
             episode=episode,
+            tvdb=tvdb,
         )
 
     for _indexer, results, error in _run_indexer_fanout(indexers, worker):

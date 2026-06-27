@@ -31,14 +31,15 @@ def plan_newznab_search(
     caps=None,
     api_key="",
     max_results=25,
+    tvdb=None,
 ):
     base = {"apikey": api_key, "o": "xml", "limit": max_results}
     if _missing_caps(caps):
-        return _missing_caps_plan(base, search_type, title, imdb, season, episode)
+        return _missing_caps_plan(base, search_type, title, imdb, season, episode, tvdb)
 
     if search_type == "episode":
         return _episode_plan(
-            base, provider_kind, host, title, imdb, season, episode, caps
+            base, provider_kind, host, title, imdb, season, episode, caps, tvdb
         )
     return _movie_plan(base, provider_kind, host, title, year, imdb, caps)
 
@@ -56,10 +57,13 @@ def _params(base, search_type, **items):
     return params
 
 
-def _missing_caps_plan(base, search_type, title, imdb, season, episode):
+def _missing_caps_plan(base, search_type, title, imdb, season, episode, tvdb=None):
     if search_type == "episode":
         fallback = _generic_search(base, title) if title else None
-        if imdb:
+        tvdbid = _digits(tvdb)
+        if tvdbid:
+            primary = _params(base, "tvsearch", tvdbid=tvdbid)
+        elif imdb:
             primary = _params(base, "tvsearch", imdbid=_imdb_digits(imdb))
         else:
             primary = _params(base, "tvsearch", q=title)
@@ -154,7 +158,9 @@ def _movie_plan(base, provider_kind, host, title, year, imdb, caps):
     return NewznabSearchPlan(primary, fallback, reason)
 
 
-def _episode_plan(base, provider_kind, host, title, imdb, season, episode, caps):
+def _episode_plan(
+    base, provider_kind, host, title, imdb, season, episode, caps, tvdb=None
+):
     fallback = _generic_search(base, title, caps) if title else None
     if _direct_episode_fallback(provider_kind, host) or not _supports(caps, "tvsearch"):
         if fallback is None:
@@ -164,8 +170,14 @@ def _episode_plan(base, provider_kind, host, title, imdb, season, episode, caps)
     params = _params(base, "tvsearch")
     if title and _supports(caps, "tvsearch", "q"):
         params["q"] = title
+    # Prefer tvdbid when the indexer advertises it (issue #318); many index
+    # TV releases by TheTVDB id, so imdbid-keyed tvsearch misses. Send the
+    # tvdbid *instead of* imdbid to avoid ambiguous multi-id queries.
+    tvdbid = _digits(tvdb)
     imdbid = _imdb_digits(imdb)
-    if imdbid and _supports(caps, "tvsearch", "imdbid"):
+    if tvdbid and _supports(caps, "tvsearch", "tvdbid"):
+        params["tvdbid"] = tvdbid
+    elif imdbid and _supports(caps, "tvsearch", "imdbid"):
         params["imdbid"] = imdbid
     if season and _supports(caps, "tvsearch", "season"):
         params["season"] = season
@@ -181,3 +193,14 @@ def _imdb_digits(imdb):
     if value.startswith("tt"):
         value = value[2:]
     return "".join(char for char in value if char.isdigit())
+
+
+def _digits(value):
+    """Return only the decimal digits of ``value`` (TVDB ids are numeric).
+
+    Defensive against a decorated id (e.g. ``"tvdb-305288"``); returns ``""``
+    for empty/None input so callers can treat it as "no id".
+    """
+    if not value:
+        return ""
+    return "".join(char for char in str(value) if char.isdigit())

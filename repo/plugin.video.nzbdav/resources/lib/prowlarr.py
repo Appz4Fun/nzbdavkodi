@@ -25,9 +25,6 @@ from resources.lib.http_util import (
     calculate_age as _calculate_age,
 )
 from resources.lib.http_util import (
-    iso8601_to_rfc2822 as _iso_to_rfc2822,
-)
-from resources.lib.http_util import (
     format_request_error as _format_request_error,
 )
 from resources.lib.http_util import (
@@ -35,6 +32,9 @@ from resources.lib.http_util import (
 )
 from resources.lib.http_util import (
     http_get as _http_get,
+)
+from resources.lib.http_util import (
+    iso8601_to_rfc2822 as _iso_to_rfc2822,
 )
 
 NEWZNAB_NS = "http://www.newznab.com/DTD/2010/feeds/attributes/"
@@ -119,6 +119,49 @@ def _build_search_url(base_url, params, indexer_ids):
     return "{}/api/v1/search?{}".format(base_url, query)
 
 
+def _digits(value):
+    """Return only the decimal digits of ``value`` (ids are numeric)."""
+    if not value:
+        return ""
+    return "".join(ch for ch in str(value) if ch.isdigit())
+
+
+def _build_prowlarr_query(search_type, title, imdb="", tvdb="", season="", episode=""):
+    """Compose Prowlarr's ``query`` value using its ``{token:value}`` syntax.
+
+    Prowlarr's native ``/api/v1/search`` binds only Query/Type/IndexerIds/
+    Categories/Limit/Offset. It extracts ids/season/episode by regex-parsing
+    ``{tvdbid:..}`` / ``{imdbid:..}`` / ``{season:..}`` / ``{episode:..}``
+    tokens out of the query TEXT (``NewznabRequest.QueryToParams``), and only
+    when ``type`` is ``tvsearch``/``movie``. It does NOT bind ``imdbid=`` /
+    ``tvdbid=`` / ``season=`` / ``ep=`` query params, so the only way to do an
+    id-keyed search is to embed the tokens here (verified against Prowlarr
+    source; see issue #313). For TV, tvdbid is preferred over imdbid (#318).
+    """
+    tokens = []
+    if search_type == "episode":
+        tvdbid = _digits(tvdb)
+        imdbid = _digits(imdb)
+        if tvdbid:
+            tokens.append("{{tvdbid:{}}}".format(tvdbid))
+        elif imdbid:
+            tokens.append("{{imdbid:{}}}".format(imdbid))
+        if season:
+            tokens.append("{{season:{}}}".format(season))
+        if episode:
+            tokens.append("{{episode:{}}}".format(episode))
+    else:
+        imdbid = _digits(imdb)
+        if imdbid:
+            tokens.append("{{imdbid:{}}}".format(imdbid))
+
+    token_str = "".join(tokens)
+    text = (title or "").strip()
+    if text and token_str:
+        return "{} {}".format(text, token_str)
+    return text or token_str
+
+
 def search_prowlarr(
     search_type,
     title,
@@ -127,6 +170,7 @@ def search_prowlarr(
     season="",
     episode="",
     settings_getter=None,
+    tvdb="",
 ):
     """
     Search Prowlarr for NZB results matching a movie or TV episode.
@@ -140,6 +184,9 @@ def search_prowlarr(
             to `title` when present.
         season (str, optional): Season number for TV searches.
         episode (str, optional): Episode number for TV searches.
+        tvdb (str, optional): TheTVDB series id. For episode searches it is
+            preferred over `imdb` (many indexers key TV on tvdbid) — issue
+            #318.
 
     Returns:
         tuple: `(results, error_message)` where `results` is a list of dicts
@@ -179,22 +226,14 @@ def search_prowlarr(
     max_results = max(1, min(max_results, 10000))
     params = {"apikey": api_key, "limit": max_results}
 
-    if search_type == "episode":
-        params["t"] = "tvsearch"
-        if imdb:
-            params["imdbid"] = imdb
-        else:
-            params["q"] = title
-        if season:
-            params["season"] = season
-        if episode:
-            params["ep"] = episode
-    else:
-        params["t"] = "movie"
-        if imdb:
-            params["imdbid"] = imdb
-        else:
-            params["q"] = title
+    # Prowlarr's native /api/v1/search binds only Query/Type/IndexerIds/
+    # Categories/Limit/Offset. ids/season/episode are NOT query params here —
+    # they must be embedded as {token:value} inside `query`, and Prowlarr only
+    # parses them when `type` is tvsearch/movie (see _build_prowlarr_query).
+    params["type"] = "tvsearch" if search_type == "episode" else "movie"
+    params["query"] = _build_prowlarr_query(
+        search_type, title, imdb=imdb, tvdb=tvdb, season=season, episode=episode
+    )
 
     from resources.lib.http_util import redact_text, redact_url
 
@@ -218,15 +257,18 @@ def search_prowlarr(
     if parse_error:
         return [], parse_error
 
-    # Fallback: if IMDB search returned nothing, retry with title
-    if not results and imdb and title:
+    # Fallback: an id-keyed query returned nothing — the id may be wrong or the
+    # indexer may not map it. Retry by title (keeping season/episode tokens for
+    # TV), dropping the id token.
+    if not results and (tvdb or imdb) and title:
         xbmc.log(
-            "NZB-DAV: Prowlarr: no results with imdbid={}, retrying with "
-            "title '{}'".format(imdb, title),
+            "NZB-DAV: Prowlarr: no results with id (tvdb={} imdb={}), retrying "
+            "by title '{}'".format(tvdb or "-", imdb or "-", title),
             xbmc.LOGINFO,
         )
-        params.pop("imdbid", None)
-        params["q"] = title
+        params["query"] = _build_prowlarr_query(
+            search_type, title, season=season, episode=episode
+        )
         fallback_url = _build_search_url(base_url, params, indexer_ids)
         try:
             xml_text = _http_get(fallback_url, timeout=300)
@@ -323,8 +365,11 @@ def _parse_json_results(text):
     for entry in data:
         if not isinstance(entry, dict):
             continue
-        # nzbdav downloads NZBs; magnet/torrent releases are unusable here.
-        if (entry.get("protocol") or "").lower() == "torrent":
+        # nzbdav is usenet-only: keep strictly protocol == "usenet", dropping
+        # torrents and any release with a missing/unknown protocol. Prowlarr's
+        # ReleaseResource always sets protocol, so this only excludes torrent
+        # indexers a user added to their Prowlarr id list (and malformed rows).
+        if (entry.get("protocol") or "").lower() != "usenet":
             continue
 
         size_val = entry.get("size")

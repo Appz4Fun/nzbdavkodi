@@ -619,6 +619,8 @@ def _search_all_providers(
     season="",
     episode="",
     settings_getter=None,
+    tvdb="",
+    tmdb_id="",
 ):
     """
     Search enabled indexer providers and return combined, deduplicated results.
@@ -672,6 +674,21 @@ def _search_all_providers(
             "or direct indexers in settings.",
         )
 
+    # For episode searches, prefer a TheTVDB id (issue #318): many indexers
+    # key TV on tvdbid, so imdbid-based tvsearch misses. The TMDBHelper player
+    # token usually supplies tvdb directly; when it doesn't, resolve it once
+    # here (cached, fail-soft) from the tmdb/imdb id so every provider shares
+    # the same id rather than each repeating the lookup.
+    if search_type == "episode" and not tvdb and (tmdb_id or imdb):
+        from resources.lib.tvdb_resolver import resolve_tvdb_id
+
+        resolved_tvdb = resolve_tvdb_id(
+            tmdb_id=tmdb_id, imdb=imdb, settings_getter=settings_getter
+        )
+        if resolved_tvdb:
+            tvdb = resolved_tvdb
+            _script_play_stage("resolved tvdbid={}".format(tvdb))
+
     provider_jobs = []
     provider_settings_getter = _snapshot_settings_getter(
         settings_getter, _PROVIDER_SEARCH_SETTING_DEFAULTS
@@ -694,6 +711,7 @@ def _search_all_providers(
                     "imdb": imdb,
                     "season": season,
                     "episode": episode,
+                    "tvdb": tvdb,
                     "settings_getter": provider_settings_getter,
                 },
             )
@@ -716,6 +734,7 @@ def _search_all_providers(
                     "imdb": imdb,
                     "season": season,
                     "episode": episode,
+                    "tvdb": tvdb,
                     "settings_getter": provider_settings_getter,
                 },
             )
@@ -745,6 +764,7 @@ def _search_all_providers(
                     "imdb": imdb,
                     "season": season,
                     "episode": episode,
+                    "tvdb": tvdb,
                     "indexers": direct_indexers,
                     "max_results": direct_max_results,
                 },
@@ -1377,6 +1397,8 @@ def _handle_play(handle, params):
     title = params.get("title", "")
     year = params.get("year", "")
     imdb = params.get("imdb", "")
+    tvdb = params.get("tvdb", "")
+    tmdb_id = params.get("tmdb_id", "")
     season = params.get("season", "") or params.get("ep_season", "")
     episode = params.get("episode", "") or params.get("ep_episode", "")
 
@@ -1441,7 +1463,9 @@ def _handle_play(handle, params):
         xbmc.LOGDEBUG,
     )
 
-    cache_kwargs = dict(year=year, imdb=imdb, season=season, episode=episode)
+    cache_kwargs = dict(
+        year=year, imdb=imdb, season=season, episode=episode, tvdb=tvdb, tmdb_id=tmdb_id
+    )
     results = get_cached(search_type, title, **cache_kwargs)
 
     if results is None:
@@ -1457,6 +1481,8 @@ def _handle_play(handle, params):
             imdb=imdb,
             season=season,
             episode=episode,
+            tvdb=tvdb,
+            tmdb_id=tmdb_id,
             settings_getter=lambda key, default="": (
                 "true"
                 if key == "nzbhydra_enabled"
@@ -1606,6 +1632,8 @@ def _handle_search(handle, params):
     title = params.get("title", "")
     year = params.get("year", "")
     imdb = params.get("imdb", "")
+    tvdb = params.get("tvdb", "")
+    tmdb_id = params.get("tmdb_id", "")
     season = params.get("season", "") or params.get("ep_season", "")
     episode = params.get("episode", "") or params.get("ep_episode", "")
 
@@ -1617,7 +1645,9 @@ def _handle_search(handle, params):
             season = season or looked_up.get("season", "")
             episode = episode or looked_up.get("episode", "")
 
-    cache_kwargs = dict(year=year, imdb=imdb, season=season, episode=episode)
+    cache_kwargs = dict(
+        year=year, imdb=imdb, season=season, episode=episode, tvdb=tvdb, tmdb_id=tmdb_id
+    )
     xbmc.log(
         "NZB-DAV: Search stage: checking cache for '{}' ({})".format(
             title, search_type
@@ -1638,6 +1668,8 @@ def _handle_search(handle, params):
             imdb=imdb,
             season=season,
             episode=episode,
+            tvdb=tvdb,
+            tmdb_id=tmdb_id,
             settings_getter=lambda key, default="": (
                 "true"
                 if key == "nzbhydra_enabled"
@@ -1781,6 +1813,8 @@ def _handle_script_play(params):
     title = params.get("title", "")
     year = params.get("year", "")
     imdb = params.get("imdb", "")
+    tvdb = params.get("tvdb", "")
+    tmdb_id = params.get("tmdb_id", "")
     season = params.get("season", "") or params.get("ep_season", "")
     episode = params.get("episode", "") or params.get("ep_episode", "")
 
@@ -1859,6 +1893,8 @@ def _handle_script_play(params):
             imdb=imdb,
             season=season,
             episode=episode,
+            tvdb=tvdb,
+            tmdb_id=tmdb_id,
             settings_getter=_get_script_setting,
         )
         _script_play_stage("provider search done count={}".format(len(results or [])))

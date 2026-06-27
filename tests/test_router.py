@@ -294,6 +294,7 @@ def test_search_all_providers_calls_direct_indexers_when_enabled(mock_addon):
         imdb="tt0903747",
         season="5",
         episode="14",
+        tvdb="",
         indexers=ANY,
         max_results=ANY,
     )
