@@ -32,7 +32,11 @@ def test_make_dev_installs_dependencies_for_all_just_recipes():
 
     # uv pre-fetches the pinned interpreters; pip installs are Chroma-only now
     assert "uv python install" in body
-    assert "pip install" in body
+    # Every pip install must run through the pinned Chroma interpreter (the only
+    # pip escape hatch); the main toolchain stays uv-pinned.
+    pip_lines = [line for line in body.splitlines() if "pip install" in line]
+    assert pip_lines
+    assert all('"$chroma_py" -m pip install' in line for line in pip_lines)
     assert "--break-system-packages" in body
     assert "brew install" in body
     assert "brew list --formula --full-name" in body
@@ -115,7 +119,7 @@ def test_github_workflows_exclude_extreme_marker_from_default_pytest_runs():
     for name in ("ci.yml", "release.yml"):
         contents = (root / ".github" / "workflows" / name).read_text(encoding="utf-8")
         assert "just test" in contents
-        assert "pytest tests/" not in contents
+        assert "pytest" not in contents
 
 
 def test_pages_workflow_deploys_repository_metadata_on_main_push():

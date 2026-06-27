@@ -1,5 +1,5 @@
 try:
-    from functools import cache
+    from functools import cache  # novermin  (3.9+; 3.8 falls back below)
 except ImportError:
     from functools import lru_cache
 

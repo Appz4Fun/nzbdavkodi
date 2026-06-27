@@ -11,6 +11,12 @@ make-dev:
     #!/usr/bin/env bash
     set -euo pipefail
 
+    if ! command -v uv >/dev/null 2>&1; then
+        echo "uv is required to bootstrap the pinned dev toolchain." >&2
+        echo "Install it from https://docs.astral.sh/uv/getting-started/installation/ and rerun: just make-dev" >&2
+        exit 1
+    fi
+
     echo "Pre-fetching pinned interpreters via uv..."
     uv python install 3.14 3.8
 
@@ -308,6 +314,7 @@ lint:
     {{uvdev}} ruff check repo/plugin.video.nzbdav/ tests/ tests-extensive/ scripts/
     {{uvdev}} black --check repo/plugin.video.nzbdav/ tests/ tests-extensive/ scripts/
     {{uvdev}} pylint $(git ls-files '*.py') --generated-members=chromadb.*
+    {{uvdev}} vermin --target=3.8- --violations repo/plugin.video.nzbdav/
 
 # Auto-fix lint issues
 lint-fix:

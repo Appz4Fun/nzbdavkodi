@@ -281,7 +281,7 @@ the [architecture overview](docs/architecture.md).
 
 ### Prerequisites
 
-- Python 3.10+ for local test tooling
+- [uv](https://docs.astral.sh/uv/) — runs the pinned test/lint tooling on Python 3.14 (`make-dev` and every `just` test/lint recipe invoke it)
 - Kodi addon runtime remains Python 3.8+
 - [just](https://github.com/casey/just) (command runner)
 
