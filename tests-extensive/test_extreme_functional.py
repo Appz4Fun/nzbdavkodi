@@ -35,7 +35,10 @@ DEVIATIONS from the spec/plan:
   actual knob is FUNCTIONAL_MIN_FALLBACK_CANDIDATES.
 """
 
-# pylint: disable=inconsistent-return-statements,no-name-in-module
+# wrong-import-order: the test_functional_fallback_playback import is deliberately
+# late (after the os.environ setup it depends on), which pylint's global import-order
+# model can't reconcile with the first-party tests.extreme_harness import above.
+# pylint: disable=inconsistent-return-statements,no-name-in-module,wrong-import-order
 
 from __future__ import annotations
 
@@ -48,12 +51,13 @@ import time
 import urllib.request
 
 import pytest
-from extreme import measurement
 from extreme._fixtures import (
     FAULT_PROXY_CONTROL_HOST_PORT,
     KODI_HOST_PORT,
     NZBDAV_HOST_PORT,
 )
+
+from tests.extreme_harness import measurement
 
 # The session-scoped harness fixtures (stack_ready, run_dir, env_loaded, …)
 # live in extreme/_fixtures.py so they can be loaded here via pytest_plugins

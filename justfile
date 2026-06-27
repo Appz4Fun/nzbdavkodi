@@ -101,12 +101,6 @@ functional-test:
 functional-test-top-imdb:
     {{uvdev}} python -m pytest tests-extensive/test_functional_fallback_playback.py::test_functional_imdb_top50_random_sample_fallback_playback -v -s --tb=long -m functional
 
-# Fast unit tests for the extensive-suite harness (fault-proxy, measurement,
-# storage-discovery). Unmarked, so off the default gate/CI — run on demand when
-# touching that infrastructure.
-test-extensive-unit:
-    {{uvdev}} python -m pytest tests-extensive/ -v --tb=short -m "not integration and not functional and not extreme"
-
 # Install Python 3.14 dev-only Chroma Cloud dependencies.
 chroma-install:
     #!/usr/bin/env bash

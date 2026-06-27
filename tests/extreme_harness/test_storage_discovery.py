@@ -3,7 +3,7 @@
 
 import importlib
 
-_storage_discovery = importlib.import_module("extreme.scripts._storage_discovery")
+_storage_discovery = importlib.import_module("tests.extreme_harness._storage_discovery")
 
 
 def test_discover_cinefile_storages_non_positive_limit_skips_propfind(monkeypatch):

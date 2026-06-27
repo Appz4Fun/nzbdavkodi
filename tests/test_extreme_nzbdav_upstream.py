@@ -5,7 +5,7 @@ EXTREME = REPO_ROOT / "tests-extensive" / "extreme"
 COMPOSE_FILE = EXTREME / "compose" / "docker-compose.yml"
 SEED_SCRIPT = EXTREME / "scripts" / "seed_nzbdav.sh"
 ADDON_SETTINGS = EXTREME / "fixtures" / "addon-settings-template.xml"
-STORAGE_DISCOVERY = EXTREME / "scripts" / "_storage_discovery.py"
+STORAGE_DISCOVERY = REPO_ROOT / "tests" / "extreme_harness" / "_storage_discovery.py"
 ENV_EXAMPLE = REPO_ROOT / ".env.example"
 
 
