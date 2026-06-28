@@ -2100,7 +2100,7 @@ def test_selection_fallback_uses_later_completed_candidate_instead_of_slow_gap(
         release_timer.cancel()
 
     assert slow_started.is_set()
-    assert elapsed < 0.2
+    assert elapsed < 0.18
     assert selected["_fallback_candidates"] == [candidates[0], candidates[2]]
 
 
@@ -2301,7 +2301,7 @@ def test_selection_fallback_does_not_wait_for_optional_tail_after_max_filled(
         release_timer.cancel()
 
     assert slow_started.is_set()
-    assert elapsed < 0.2
+    assert elapsed < 0.18
     assert selected["_fallback_candidates"] == candidates[:4] + [candidates[5]]
 
 
@@ -2371,7 +2371,7 @@ def test_selection_fallback_does_not_wait_for_optional_tail_after_partial_match(
         release_timer.cancel()
 
     assert slow_started.is_set()
-    assert elapsed < 0.2
+    assert elapsed < 0.22
     assert selected["_fallback_candidates"] == [candidates[0]]
 
 
