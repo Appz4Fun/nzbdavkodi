@@ -41,14 +41,17 @@ jobs:
         # `semgrep scan --config auto` to pull the community default
         # ruleset from the public registry — same behaviour the old
         # action provided when its publishToken was unset.
-        # --exclude scopes the scan to shipped addon code. Test/harness
-        # suites and vendored PTT are not part of the runtime attack
-        # surface; this matches bandit.yml, which already scans
-        # repo/plugin.video.nzbdav only.
+        # The positional target scopes the scan to shipped addon code
+        # (default is the whole working tree), which excludes top-level
+        # scripts/, tests/, and tests-extensive/. These suites and vendored
+        # PTT are not part of the runtime attack surface; this matches
+        # bandit.yml, which already scans repo/plugin.video.nzbdav only.
+        # --exclude ptt drops the vendored tree that lives inside the target.
         run: >-
           semgrep scan --config auto
-          --exclude tests --exclude tests-extensive --exclude ptt
+          --exclude ptt
           --sarif --output=semgrep.sarif
+          repo/plugin.video.nzbdav/
 
       - name: Drop in-source suppressed Semgrep results
         # Semgrep SARIF includes `# nosemgrep` findings as suppressed

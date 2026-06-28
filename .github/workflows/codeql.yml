@@ -39,14 +39,17 @@ jobs:
       with:
         languages: ${{ matrix.language }}
         build-mode: ${{ matrix.build-mode }}
-        # Scope analysis to shipped addon code. Test/harness suites and
-        # vendored PTT are not part of the runtime attack surface; this
-        # matches bandit.yml, which already scans repo/plugin.video.nzbdav
-        # only. paths-ignore matches interpreted languages like Python.
+        # Scope analysis to shipped addon code. Top-level scripts/, the
+        # test/harness suites, and vendored PTT are not part of the runtime
+        # attack surface; this matches bandit.yml, which already scans
+        # repo/plugin.video.nzbdav only. `paths` positively restricts the
+        # analysis to that subtree (honored for interpreted languages like
+        # Python), which excludes scripts/, tests/, and tests-extensive/;
+        # paths-ignore then drops the vendored PTT that lives inside it.
         config: |
+          paths:
+            - repo/plugin.video.nzbdav
           paths-ignore:
-            - tests
-            - tests-extensive
             - repo/plugin.video.nzbdav/resources/lib/ptt
 
     - name: Perform CodeQL Analysis

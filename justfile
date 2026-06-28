@@ -75,7 +75,7 @@ test-verbose:
 # the addon runtime modules. Consumed by the code-coverage.yml workflow
 # (GitHub Code Quality). Vendored PTT is omitted via pyproject.toml.
 test-cov:
-    {{uvdev}} python -m pytest tests/ --tb=short -m "not integration and not functional and not extreme" --cov=resources.lib --cov-report=xml --cov-report=term-missing
+    {{uvdev}} python -m pytest tests/ --tb=short -m "not integration and not functional and not extreme" --cov --cov-report=xml --cov-report=term-missing
 
 # Run integration tests against a real ffmpeg binary. Spawns the
 # actual fmp4 HLS producer pipeline against a tiny test MKV
