@@ -526,6 +526,19 @@ def parse_title_metadata(title):
     }
 
 
+# Pack-context tokens that, alongside PTT's ``complete`` flag, mark a
+# season-tag-less release as a genuine multi-item pack ("Complete Collection /
+# Series", box sets, sagas) rather than a single-file movie whose title merely
+# contains a standalone "Complete" word (e.g. ``Complete.Unknown.2024``). PTT
+# exposes no collection/series flag, so the raw title is the only signal.
+_PACK_CONTEXT_TOKEN_RE = re.compile(
+    r"(?i)(?<![a-z])("
+    r"collections?|series|saga|box[ ._-]?sets?|mini[ ._-]?series|"
+    r"anthology|duology|trilogy|quadrilogy|complete[ ._-]?pack"
+    r")(?![a-z])"
+)
+
+
 def release_is_pack(title):
     """Return True when a release name denotes a multi-episode / season pack.
 
@@ -534,12 +547,14 @@ def release_is_pack(title):
     stub size-guard (resolver) must therefore SKIP packs, or it would reject a
     real episode for being far smaller than the whole-pack advertised size.
 
-    A title is a pack when it spans more than one episode, more than one
-    season, names a whole season with no single episode (e.g. ``S01``,
-    ``S01E01-E10``, ``S01-S05 COMPLETE``), or is flagged ``complete`` -- which
-    covers season-tag-less "Complete Collection / Series" releases that PTT
-    parses with empty seasons/episodes. A movie or a single ``SxxExx`` episode
-    is NOT a pack.
+    A title is a pack when it spans more than one episode (including
+    ``S01E01E02E03`` multi-tags and ``1x01-1x10`` / ``S01E01-E10`` ranges,
+    which PTT collapses to a single episode but ``_episode_tags`` expands),
+    more than one season, a whole season with no single episode (e.g. ``S01``,
+    ``S01-S05 COMPLETE``), or is flagged ``complete`` AND carries real
+    multi-item context -- a season/episode tag or a collection/series/box-set
+    token. A bare standalone "Complete" in a movie title (PTT: complete=True,
+    seasons=[], episodes=[]) is NOT a pack, nor is a movie or single ``SxxExx``.
 
     On a missing title or a PTT parse error this returns ``False`` ("not a
     pack"), which only ever leaves the caller's size-guard *active* (never
@@ -548,14 +563,21 @@ def release_is_pack(title):
     """
     if not isinstance(title, str) or not title:
         return False
+    # NxN-range packs ("1x01-1x10") and multi-episode tags ("S01E01E02E03")
+    # collapse in PTT to a single (season, episode), so the season/episode-count
+    # checks below miss them. webdav._episode_tags expands NxN ranges, SxxExx
+    # ranges, and multi-episode tags to one (season, episode) tuple each, so
+    # more than one tag is a pack. (webdav does not import filter -> no cycle.)
+    from resources.lib.webdav import _episode_tags
+
+    if len(_episode_tags(title)) > 1:
+        return True
     try:
         from resources.lib.ptt import parse_title
 
         parsed = parse_title(title)
     except Exception:  # pylint: disable=broad-except
         return False
-    if parsed.get("complete"):
-        return True
     seasons = parsed.get("seasons") or []
     episodes = parsed.get("episodes") or []
     if not isinstance(seasons, list):
@@ -565,6 +587,13 @@ def release_is_pack(title):
     if len(episodes) > 1:
         return True
     if len(seasons) > 1:
+        return True
+    # ``complete`` marks a pack only with real multi-item context: a
+    # season/episode tag, or a collection/series/box-set token. A bare
+    # standalone "Complete" in a movie title must NOT skip the #282 stub guard.
+    if parsed.get("complete") and (
+        seasons or episodes or _PACK_CONTEXT_TOKEN_RE.search(title)
+    ):
         return True
     # A season tag with no single episode is a whole-season pack.
     return bool(seasons) and not episodes

@@ -1240,9 +1240,33 @@ def test_release_is_pack_true_for_complete_series():
 def test_release_is_pack_true_for_season_tagless_complete_collection():
     """A 'Complete Collection/Series' release carries no Sxx tag (PTT parses
     seasons=[] episodes=[] complete=True). It is still a pack — picking one
-    episode out of it must not trip the #282 single-file stub guard."""
+    episode out of it must not trip the #282 single-file stub guard. The
+    ``complete`` flag only counts WITH a collection/series/box-set token (see
+    test_release_is_pack_false_for_complete_titled_movie)."""
     assert release_is_pack("Friends.Complete.Collection.1080p.BluRay-GROUP") is True
-    assert release_is_pack("The.Office.US.COMPLETE.1080p.WEB-DL.x264-GROUP") is True
+    assert release_is_pack("The.Office.US.Complete.Series.1080p.WEB-DL-GROUP") is True
+    assert release_is_pack("Friends.Complete.Box.Set.1080p.BluRay-GRP") is True
+
+
+def test_release_is_pack_false_for_complete_titled_movie():
+    """A single-file movie whose title contains a standalone 'Complete' token
+    (PTT sets complete=True, seasons=[], episodes=[]) must NOT be treated as a
+    pack — otherwise it skips the #282 stub guard and the tiny nzbdav job-start
+    stub can be streamed for those titles (e.g. 'Complete Unknown')."""
+    assert release_is_pack("Complete.Unknown.2024.1080p.BluRay.x264-GROUP") is False
+    assert release_is_pack("Some.Movie.Complete.2024.1080p.BluRay-GRP") is False
+
+
+def test_release_is_pack_true_for_nxn_episode_range():
+    """PTT collapses '1x01-1x10' to seasons=[1] episodes=[1], so the
+    episode/season-count checks miss it. _episode_tags expands the NxN range,
+    so the whole-season pack is recognized and the #282 stub guard is skipped."""
+    assert release_is_pack("Some.Show.1x01-1x10.1080p.WEB-DL-GRP") is True
+    assert release_is_pack("Some.Show.01x01-01x10.1080p-GRP") is True
+
+
+def test_release_is_pack_false_for_single_nxn_episode():
+    assert release_is_pack("Some.Show.1x05.1080p-GRP") is False
 
 
 def test_release_is_pack_false_for_empty_or_nonstring():

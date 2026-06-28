@@ -2088,6 +2088,16 @@ _COMPLETED_NO_VIDEO_RECHECK_DELAYS_SECONDS = (0.025, 0.075, 0.1)
 # episode is legitimately a fraction of the whole-pack advertised size.
 _STUB_VIDEO_MIN_ADVERTISED_FRACTION = 0.5
 
+# #340: stub rejections must NOT consume the short symlink-visibility budget
+# (max_no_video_retries, ~5 poll ticks ≈ 5s at the 1s minimum interval). nzbdav
+# flips history to Completed the instant its job-start placeholder lands, so the
+# real tens-of-GB body can still be materializing for minutes. Give stub
+# rejections their own large ceiling so the poll loop keeps waiting -- its own
+# download_timeout / MAX_POLL_ITERATIONS guard is the real stop authority, and
+# this count is the fallback so a release that ONLY ever exposes the stub still
+# surfaces the stub dialog rather than silently waiting out the full timeout.
+_MAX_STUB_RETRIES = 600
+
 
 def _job_nzo_id(match):
     if isinstance(match, dict) and match.get("nzo_id"):
@@ -3750,6 +3760,7 @@ def _handle_history_result(
     settings_getter=None,
     modal_failures=True,
     download_size=None,
+    max_stub_retries=None,
 ):
     """Handle history-based completion and failure states.
 
@@ -3838,8 +3849,17 @@ def _handle_history_result(
     # articles) instead of misdirecting the user to WebDAV settings.
     body_unavailable = bool(video_path)
 
+    # #340: a stub rejection must not be failed at the short symlink-visibility
+    # budget while the real download may still be in flight. Gate the stub case
+    # on the larger _MAX_STUB_RETRIES ceiling so the poll loop keeps waiting up
+    # to its download_timeout; body-unavailable / no-video keep the short
+    # budget. no_video_retries still increments either way (preserves the
+    # 4th-return-value contract), only the ceiling it is compared against moves.
+    if stub_rejected and max_stub_retries is None:
+        max_stub_retries = max(max_no_video_retries, _MAX_STUB_RETRIES)
+    exhaustion_budget = max_stub_retries if stub_rejected else max_no_video_retries
     no_video_retries += 1
-    if no_video_retries >= max_no_video_retries:
+    if no_video_retries >= exhaustion_budget:
         if stub_rejected:
             xbmc.log(
                 "NZB-DAV: '{}' only ever exposed a stub far smaller than the "
@@ -4053,6 +4073,7 @@ def _poll_until_ready(
                 settings_getter=settings_getter,
                 modal_failures=settings_getter is None,
                 download_size=download_size,
+                max_stub_retries=_MAX_STUB_RETRIES,
             )
         )
         if stream_url:

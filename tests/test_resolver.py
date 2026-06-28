@@ -7766,6 +7766,7 @@ def test_handle_history_result_stub_exhaustion_message(
         no_video_retries=4,
         max_no_video_retries=5,
         download_size="81610612736",
+        max_stub_retries=5,  # small ceiling so 4 -> 5 exhausts deterministically
     )
 
     assert should_stop is True
@@ -7774,6 +7775,81 @@ def test_handle_history_result_stub_exhaustion_message(
     dialog_msg = mock_gui.Dialog.return_value.ok.call_args.args[1].lower()
     assert "advertised" in dialog_msg
     assert "smaller" in dialog_msg
+    assert "not found" not in dialog_msg
+
+
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.webdav.get_video_file_size_hint", return_value=362_076_665)
+@patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
+@patch("resources.lib.resolver._find_completed_video_stream_with_rechecks")
+def test_handle_history_result_stub_keeps_polling_past_symlink_budget(
+    mock_find_stream, mock_probe, _mock_size, mock_gui
+):
+    """#340: nzbdav reports Completed the instant its job-start stub lands while
+    the real file is still fetching. A stub rejection must NOT exhaust the short
+    symlink-visibility budget (~5 ticks ≈ 5s); past that budget it keeps polling
+    (no dialog) so the poll loop can wait up to its download_timeout."""
+    mock_find_stream.return_value = (
+        "/content/uncategorized/movie/UNDERTAKERS.mp4",
+        "http://webdav/UNDERTAKERS.mp4",
+        {"Authorization": "Basic x"},
+    )
+
+    # One past max_no_video_retries=5: the OLD shared budget would have failed.
+    should_stop, stream_url, stream_headers, retries = _handle_history_result(
+        {
+            "status": "Completed",
+            "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/movie",
+            "nzo_id": "stub_completed",
+        },
+        "The.Undertakers.2024.2160p.UHD.BluRay.x265-GROUP",
+        no_video_retries=5,
+        max_no_video_retries=5,
+        download_size="81610612736",
+        max_stub_retries=600,
+    )
+
+    assert should_stop is False  # keep polling past the symlink budget
+    assert stream_url is None
+    assert stream_headers is None
+    assert retries == 6  # incremented, but the stub ceiling (600) is not hit
+    mock_gui.Dialog.return_value.ok.assert_not_called()  # no premature failure
+
+
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.webdav.get_video_file_size_hint", return_value=362_076_665)
+@patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
+@patch("resources.lib.resolver._find_completed_video_stream_with_rechecks")
+def test_handle_history_result_persistent_stub_eventually_fails_cleanly(
+    mock_find_stream, mock_probe, _mock_size, mock_gui
+):
+    """#340: a release that ONLY ever exposes the stub still fails cleanly once
+    its larger stub budget is exhausted — with the stub-specific dialog, not the
+    generic 'not found' / WebDAV-settings misdirection."""
+    mock_find_stream.return_value = (
+        "/content/uncategorized/movie/UNDERTAKERS.mp4",
+        "http://webdav/UNDERTAKERS.mp4",
+        {"Authorization": "Basic x"},
+    )
+
+    should_stop, stream_url, _headers, retries = _handle_history_result(
+        {
+            "status": "Completed",
+            "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/movie",
+            "nzo_id": "stub_completed",
+        },
+        "The.Undertakers.2024.2160p.UHD.BluRay.x265-GROUP",
+        no_video_retries=599,  # one below the stub ceiling
+        max_no_video_retries=5,
+        download_size="81610612736",
+        max_stub_retries=600,
+    )
+
+    assert should_stop is True  # stub budget exhausted -> give up cleanly
+    assert stream_url is None
+    assert retries == 600
+    dialog_msg = mock_gui.Dialog.return_value.ok.call_args.args[1].lower()
+    assert "advertised" in dialog_msg
     assert "not found" not in dialog_msg
 
 
