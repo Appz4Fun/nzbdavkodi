@@ -20,22 +20,6 @@ make-dev:
     echo "Pre-fetching pinned interpreters via uv..."
     uv python install 3.14 3.8
 
-    echo "Installing Python 3.14 Chroma dev dependencies..."
-    chroma_py="${CHROMA_PYTHON:-python3.14}"
-    if ! command -v "$chroma_py" >/dev/null 2>&1; then
-        echo "Python 3.14 is required for Chroma dev tooling." >&2
-        echo "Install Python 3.14 or set CHROMA_PYTHON to a compatible Python 3.14 executable." >&2
-        exit 1
-    fi
-    chroma_pip_flags=()
-    if "$chroma_py" -m pip install --help | grep -q -- "--break-system-packages"; then
-        chroma_pip_flags+=(--break-system-packages)
-    fi
-    "$chroma_py" -m pip install ${chroma_pip_flags+"${chroma_pip_flags[@]}"} -r requirements-dev-chroma.txt
-    "$chroma_py" -c "import chromadb"
-    "$chroma_py" scripts/chroma_check_config.py --env-file .env --prompt
-    "$chroma_py" scripts/chroma_agent_check.py --env-file .env --soft
-
     if [[ "$(uname -s)" == "Darwin" ]]; then
         if ! command -v brew >/dev/null 2>&1; then
             echo "Homebrew is required on macOS to install ffmpeg/x265." >&2
@@ -106,29 +90,6 @@ functional-test:
 # Prefer FrameStor/FraMeSToR releases; otherwise use the most duplicated group.
 functional-test-top-imdb:
     {{uvdev}} python -m pytest tests-extensive/test_functional_fallback_playback.py::test_functional_imdb_top50_random_sample_fallback_playback -v -s --tb=long -m functional
-
-# Install Python 3.14 dev-only Chroma Cloud dependencies.
-chroma-install:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    py="${CHROMA_PYTHON:-python3.14}"
-    pip_flags=()
-    if "$py" -m pip install --help | grep -q -- "--break-system-packages"; then
-        pip_flags+=(--break-system-packages)
-    fi
-    "$py" -m pip install ${pip_flags+"${pip_flags[@]}"} -r requirements-dev-chroma.txt
-
-# Index this repo into Chroma Cloud for Codex/dev search. Pass `--reset` to rebuild.
-chroma-index *args:
-    @bash -euo pipefail -c '"${CHROMA_PYTHON:-python3.14}" scripts/chroma_index_repo.py "$@"' bash "$@"
-
-# Search the Chroma Cloud dev index. Quote multi-word queries.
-chroma-search *args:
-    @bash -euo pipefail -c '"${CHROMA_PYTHON:-python3.14}" scripts/chroma_search_repo.py "$@"' bash "$@"
-
-# Verify local Codex Chroma MCP and skill wiring.
-chroma-agent-check *args:
-    @bash -euo pipefail -c '"${CHROMA_PYTHON:-python3.14}" scripts/chroma_agent_check.py "$@"' bash "$@"
 
 # Interactively create the .env file consumed by `just extreme-functional-test`.
 # Asks for NNTP credentials, NZBHydra2 URL+API key, WebDAV credentials, and
@@ -313,7 +274,7 @@ extreme-functional-test:
 lint:
     {{uvdev}} ruff check repo/plugin.video.nzbdav/ tests/ tests-extensive/ scripts/
     {{uvdev}} black --check repo/plugin.video.nzbdav/ tests/ tests-extensive/ scripts/
-    {{uvdev}} pylint $(git ls-files '*.py') --generated-members=chromadb.*
+    {{uvdev}} pylint $(git ls-files '*.py')
     {{uvdev}} vermin --target=3.8- --violations repo/plugin.video.nzbdav/
 
 # Auto-fix lint issues
