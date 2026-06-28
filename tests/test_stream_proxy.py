@@ -15,6 +15,76 @@ from urllib.error import HTTPError
 import pytest
 from resources.lib.stream_proxy import _StreamHandler
 
+
+@pytest.fixture(autouse=True)
+def _no_real_network():
+    """Fail fast on real external network so leaked daemons can't do slow I/O.
+
+    prepare_stream spawns daemon threads (byte-0 prefetch, tail prewarm, fallback
+    prevalidation). Mode-selection tests neither mock nor await them, so a daemon
+    would otherwise open a REAL socket to a fake host: a ~1.5s connect that both
+    slows the suite AND lets the daemon linger into a SIBLING test, where it calls
+    that test's class/module-level patches (urlopen, _fallback_probe_bases, ...)
+    with its own identity and flakes assert_not_called / call-count guards (a real
+    ~1-in-17 cross-test race).
+
+    Stubbing DNS for non-loopback hosts makes any un-mocked network call raise
+    instantly -- the same socket failure a dead upstream raises, which these code
+    paths already handle -- so the daemon dies at once instead of doing real I/O.
+    Loopback (real test HTTP servers) and tests that mock urlopen are unaffected.
+    """
+    import socket
+
+    real_getaddrinfo = socket.getaddrinfo
+    loopback = {"localhost", "127.0.0.1", "::1", "0.0.0.0", ""}
+
+    def _guarded_getaddrinfo(host, *args, **kwargs):
+        if (
+            host is None
+            or host in loopback
+            or (isinstance(host, str) and host.startswith("127."))
+        ):
+            return real_getaddrinfo(host, *args, **kwargs)
+        raise socket.gaierror(
+            socket.EAI_NONAME,
+            "nzbdav tests: real network disabled for {!r}".format(host),
+        )
+
+    # getproxies() on macOS calls SystemConfiguration and can take ~1.5s; the
+    # daemons build an opener per un-mocked urlopen, so stub it to a no-proxy
+    # result. Combined with the DNS guard, an un-mocked daemon urlopen now both
+    # builds its opener and fails its connect instantly. The tail-prewarm daemon
+    # also defers ~1.5s on Monitor.waitForAbort (which REALLY sleeps in this
+    # harness); zero that defer so the daemon reaches (and fast-fails) its read at
+    # once. The dedicated defer tests override waitForAbort themselves and assert
+    # the defer-then-fetch ordering, not the duration, so they are unaffected.
+    with patch("socket.getaddrinfo", side_effect=_guarded_getaddrinfo), patch(
+        "urllib.request.getproxies", return_value={}
+    ), patch("resources.lib.stream_proxy._TAIL_PREWARM_DEFER_SECONDS", 0):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _drain_leaked_nzbdav_daemons(_no_real_network):
+    """Defense-in-depth: reap any nzbdav background daemon after each test.
+
+    Depends on _no_real_network so that fixture tears down LAST -- the daemons'
+    network keeps failing instantly during this join, so it is ~free and merely
+    guarantees nothing survives into the next test's patch window. Bounded, and
+    they stay daemon threads, so a wedged worker can never hang the suite.
+    """
+    yield
+    deadline = time.monotonic() + 2.0
+    current = threading.current_thread()
+    for thread in list(threading.enumerate()):
+        if (
+            thread is not current
+            and thread.name.startswith("nzbdav-")
+            and thread.is_alive()
+        ):
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
+
+
 # ---------------------------------------------------------------------------
 # _StreamHandler._parse_range
 # ---------------------------------------------------------------------------
@@ -2267,12 +2337,18 @@ def test_initial_prefetch_skips_probe_base_settings_before_first_get():
         return ()
 
     def direct_urlopen(req, timeout=None):  # pylint: disable=unused-argument
-        open_threads.append(threading.current_thread().name)
-        assert req.full_url == "http://host/movie.mkv"
-        assert _request_header(req, "Authorization") == "Basic primary"
-        assert _request_header(req, "Range") == "bytes=0-4095"
-        if threading.current_thread().name != "nzbdav-initial-range-prefetch":
-            time.sleep(0.12)
+        # Track opens only for THIS test's request identity. urlopen is patched
+        # module-wide, so a leaked sibling prevalidation daemon (resolving its own
+        # nzo standbys) can hit this patch with a different URL/auth; recording it
+        # would corrupt open_threads / the open count below.
+        if (
+            req.full_url == "http://host/movie.mkv"
+            and _request_header(req, "Authorization") == "Basic primary"
+        ):
+            open_threads.append(threading.current_thread().name)
+            assert _request_header(req, "Range") == "bytes=0-4095"
+            if threading.current_thread().name != "nzbdav-initial-range-prefetch":
+                time.sleep(0.12)
         return _mock_urlopen_response(
             [payload],
             headers={
@@ -2318,9 +2394,30 @@ def test_initial_prefetch_skips_probe_base_settings_before_first_get():
     ), "first proxy byte waited {:.3f}s on probe-base settings".format(
         first_byte_elapsed
     )
-    probe_bases.assert_not_called()
-    fallback_fetch.assert_not_called()
-    assert direct_open.call_count == 1
+    # probe_bases / fallback_fetch / urlopen are patched class/module-wide, so a
+    # leaked sibling prevalidation daemon (its own ctx, URL and auth) can call them
+    # during this test's patch window and corrupt these guards. Scope each to THIS
+    # test's identity — the prepared ctx object, and the "Basic primary" auth /
+    # movie.mkv URL — so a foreign background call cannot flake them. Mirrors
+    # test_prevalidated_fallback_reuses_current_probe's auth-scoped hardening.
+    our_probe_calls = [
+        call for call in probe_bases.call_args_list if call.args and call.args[0] is ctx
+    ]
+    assert not our_probe_calls, "byte-0 prefetch read probe-base settings"
+    our_fallback_fetches = [
+        call
+        for call in fallback_fetch.call_args_list
+        if "Basic primary" in call.args or "Basic primary" in call.kwargs.values()
+    ]
+    assert not our_fallback_fetches, "byte-0 prefetch fetched fallback bytes"
+    our_opens = [
+        call
+        for call in direct_open.call_args_list
+        if call.args
+        and call.args[0].full_url == "http://host/movie.mkv"
+        and _request_header(call.args[0], "Authorization") == "Basic primary"
+    ]
+    assert len(our_opens) == 1
     assert open_threads == ["nzbdav-initial-range-prefetch"]
 
 
