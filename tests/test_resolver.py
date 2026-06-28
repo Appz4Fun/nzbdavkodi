@@ -7935,6 +7935,29 @@ def test_stub_min_size_floor_unknown_advertised_is_zero():
     assert _stub_min_size_floor("not-a-number", "Movie.2024") == 0
 
 
+def test_advertised_size_bytes_non_finite_is_unknown():
+    """#340 Codex review: `inf` and overflowing exponents parse as float but
+    raise OverflowError on int(); the helper must fail OPEN (0) per its docstring
+    rather than let the exception escape the resolver. OverflowError is not in
+    _RESOLVE_RUNTIME_ERRORS, so an uncaught one bypasses the
+    setResolvedUrl-on-failure guarantee."""
+    from resources.lib.resolver import _advertised_size_bytes
+
+    assert _advertised_size_bytes("inf") == 0
+    assert _advertised_size_bytes("-inf") == 0
+    assert _advertised_size_bytes("1e10000") == 0
+    assert _advertised_size_bytes("nan") == 0
+
+
+def test_stub_min_size_floor_non_finite_advertised_is_zero():
+    """A non-finite advertised size is unknown, so there is no floor (0) and the
+    stub guard fails OPEN instead of raising out of discovery."""
+    from resources.lib.resolver import _stub_min_size_floor
+
+    assert _stub_min_size_floor("inf", "Movie.2024") == 0
+    assert _stub_min_size_floor("1e10000", "Movie.2024") == 0
+
+
 @patch("resources.lib.webdav.get_video_file_size_hint", return_value=80_000_000_000)
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 @patch("resources.lib.resolver._find_completed_video_stream_with_rechecks")

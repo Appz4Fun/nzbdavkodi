@@ -582,11 +582,6 @@ def release_is_pack(title):
     """
     if not isinstance(title, str) or not title:
         return False
-    # Season-tag-less collection/complete-series packs, matched as a phrase so a
-    # "Complete"-titled movie or a "Collection" in a movie title does not skip
-    # the stub guard (#340 review).
-    if _PACK_PHRASE_RE.search(title):
-        return True
     # NxN-range packs ("1x01-1x10") and multi-episode tags ("S01E01E02E03")
     # collapse in PTT to a single (season, episode), so the season/episode-count
     # checks below miss them. webdav._episode_tags expands NxN ranges, SxxExx
@@ -594,7 +589,18 @@ def release_is_pack(title):
     # more than one tag is a pack. (webdav does not import filter -> no cycle.)
     from resources.lib.webdav import _episode_tags
 
-    if len(_episode_tags(title)) > 1:
+    episode_tags = _episode_tags(title)
+    if len(episode_tags) > 1:
+        return True
+    # Season-tag-less collection/complete-series packs, matched as a phrase so a
+    # "Complete"-titled movie or a "Collection" in a movie title does not skip
+    # the stub guard (#340 review). Gate on having NO single episode tag: a real
+    # single-episode release whose name happens to contain a pack phrase (e.g.
+    # "Chernobyl.Miniseries.S01E01", "Some.Show.Box.Set.S01E05") advertises a
+    # one-episode size, so it must keep the #282 stub guard -- the episode tag
+    # overrides the phrase. Whole-season miniseries (no episode tag) stay packs
+    # via this branch or the bare-season PTT check below (PR #340 Codex review).
+    if not episode_tags and _PACK_PHRASE_RE.search(title):
         return True
     try:
         from resources.lib.ptt import parse_title

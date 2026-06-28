@@ -1273,6 +1273,25 @@ def test_release_is_pack_false_for_collection_word_in_movie_title():
     assert release_is_pack("Marvel.Collection.2024.1080p.BluRay-GRP") is False
 
 
+def test_release_is_pack_false_for_single_episode_with_pack_phrase():
+    """#340 Codex review: a SINGLE-episode release whose NAME contains a pack
+    phrase ("Miniseries", "Box Set") still advertises a one-episode size, so it
+    must NOT be classified as a pack — the phrase branch must not short-circuit
+    the single-episode-tag check, or the #282 stub guard would be skipped and a
+    job-start stub could stream. The episode tag overrides the phrase."""
+    assert release_is_pack("Chernobyl.Miniseries.S01E01.1080p.WEB.x264-GRP") is False
+    assert release_is_pack("Some.Show.Box.Set.S01E05.1080p.WEB-DL-GRP") is False
+    assert release_is_pack("Some.Show.Boxset.S01E05.1080p.WEB-DL-GRP") is False
+
+
+def test_release_is_pack_true_for_season_tagless_miniseries():
+    """A whole-season miniseries with NO single-episode tag stays a pack: the
+    season-tagless phrase ("Miniseries") classifies it (and the bare-season PTT
+    check backs it up), so the stub guard correctly skips it."""
+    assert release_is_pack("Chernobyl.Miniseries.1080p.WEB-DL-GRP") is True
+    assert release_is_pack("Chernobyl.Miniseries.S01.1080p.WEB-DL-GRP") is True
+
+
 def test_release_is_pack_true_for_reversed_complete_series_phrasing():
     """'<Show>.Series.Complete' (words adjacent, reversed order) is still a
     whole-series pack."""

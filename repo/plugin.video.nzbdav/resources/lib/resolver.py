@@ -3730,7 +3730,11 @@ def _advertised_size_bytes(download_size):
             return 0
         try:
             return max(0, int(float(text)))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # `inf` / overflowing exponents (e.g. "1e10000") parse as float but
+            # raise OverflowError on int(); treat as unknown (fail OPEN) like
+            # every other unparseable size rather than letting it escape the
+            # resolver (OverflowError is not in _RESOLVE_RUNTIME_ERRORS).
             return 0
     return 0
 
