@@ -147,6 +147,24 @@ def redact_text(text):
     return _EMBEDDED_URL_RE.sub(_redact_url_userinfo_span, redacted)
 
 
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def clean_search_query(title):
+    """Normalize a title for use as a Newznab/Prowlarr keyword query.
+
+    Indexers tokenize the ``q``/``query`` text and AND each term against
+    release names. A literal ``&`` (e.g. "Your Friends & Neighbors") becomes a
+    term that no release name carries — releases spell it "and" or drop it
+    entirely — so the search matches nothing and returns zero results (#294).
+    Replace ``&`` with a space and collapse the surrounding whitespace so the
+    remaining words still match; ``&``-free titles are returned unchanged.
+    """
+    if not title:
+        return ""
+    return _WHITESPACE_RE.sub(" ", str(title).replace("&", " ")).strip()
+
+
 _ALLOWED_HTTP_SCHEMES = frozenset({"http", "https"})
 HTTP_USER_AGENT = "NZB-DAV Kodi Addon"
 _HTTP_USER_AGENT = HTTP_USER_AGENT
