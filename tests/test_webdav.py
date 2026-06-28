@@ -1961,3 +1961,199 @@ def test_find_video_file_repeated_season_pack_covers_middle_episode(
     path = find_video_file("/content/Show/", title_hint="Show.S01E02.1080p.WEB-DL")
 
     assert path == "/content/Show/Show.S01E01-S01E03.1080p.mkv"
+
+
+# ---------------------------------------------------------------------------
+# #282 follow-up D: a ``min_video_size`` floor lets discovery treat a grossly
+# undersized current-level candidate (nzbdav's job-start stub) as a non-signal
+# and recurse into subfolders for the real file first, falling back to the
+# small candidate only when nothing better is found. The floor never DROPS a
+# candidate -- it only reorders discovery so a root stub stops masking a real
+# file in a child subfolder. With no floor (default) behavior is unchanged.
+# ---------------------------------------------------------------------------
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_recurses_past_root_stub_to_subfolder_real_file(
+    mock_urlopen, mock_settings
+):
+    """A root-level stub far below the floor must not short-circuit discovery:
+    the real file in a child subfolder is found and returned instead."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    root = _propfind_listing(
+        [
+            ("/content/uncategorized/Movie/", True, None),
+            ("/content/uncategorized/Movie/Real/", True, None),
+            ("/content/uncategorized/Movie/Movie.mp4", False, 1_000_000),  # stub
+        ]
+    )
+    real = _propfind_listing(
+        [
+            ("/content/uncategorized/Movie/Real/", True, None),
+            (
+                "/content/uncategorized/Movie/Real/Movie.1080p.mkv",
+                False,
+                4_000_000_000,
+            ),
+        ]
+    )
+
+    def propfind(req, **_kwargs):
+        url = req.full_url
+        if url.endswith("/Movie/"):
+            return _webdav_response(root)
+        if url.endswith("/Movie/Real/"):
+            return _webdav_response(real)
+        raise AssertionError("unexpected PROPFIND URL: {}".format(url))
+
+    mock_urlopen.side_effect = propfind
+
+    path = find_video_file(
+        "/content/uncategorized/Movie/", min_video_size=2_000_000_000
+    )
+
+    assert path == "/content/uncategorized/Movie/Real/Movie.1080p.mkv"
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_falls_back_to_root_stub_when_no_real_file(
+    mock_urlopen, mock_settings
+):
+    """When no above-floor file exists anywhere (pure stub, the real body is
+    still in flight), discovery must still RETURN the root stub -- not None.
+    Returning None would make the resolver consume its symlink-visibility retry
+    budget; the resolver's own stub guard rejects the stub WITHOUT consuming
+    that budget (#340), so the stub must survive as the fallback here."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    root = _propfind_listing(
+        [
+            ("/content/uncategorized/Pending/", True, None),
+            ("/content/uncategorized/Pending/Sub/", True, None),
+            ("/content/uncategorized/Pending/stub.mp4", False, 1_000_000),
+        ]
+    )
+    empty_sub = _propfind_listing([("/content/uncategorized/Pending/Sub/", True, None)])
+
+    def propfind(req, **_kwargs):
+        url = req.full_url
+        if url.endswith("/Pending/"):
+            return _webdav_response(root)
+        if url.endswith("/Pending/Sub/"):
+            return _webdav_response(empty_sub)
+        raise AssertionError("unexpected PROPFIND URL: {}".format(url))
+
+    mock_urlopen.side_effect = propfind
+
+    path = find_video_file(
+        "/content/uncategorized/Pending/", min_video_size=2_000_000_000
+    )
+
+    assert path == "/content/uncategorized/Pending/stub.mp4"
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_without_floor_returns_root_file_without_recursing(
+    mock_urlopen, mock_settings
+):
+    """Backward-compat: with no floor (default), a small current-level video
+    short-circuits exactly as before -- the subfolder is never scanned even
+    though it holds a larger file. The floor is what unlocks recursion, so the
+    movie/no-hint path is byte-identical to main when no floor is supplied."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    root = _propfind_listing(
+        [
+            ("/content/uncategorized/Movie/", True, None),
+            ("/content/uncategorized/Movie/Real/", True, None),
+            ("/content/uncategorized/Movie/Movie.mp4", False, 1_000_000),
+        ]
+    )
+
+    def propfind(req, **_kwargs):
+        url = req.full_url
+        if url.endswith("/Movie/"):
+            return _webdav_response(root)
+        raise AssertionError("unexpected PROPFIND URL: {}".format(url))
+
+    mock_urlopen.side_effect = propfind
+
+    path = find_video_file("/content/uncategorized/Movie/")
+
+    assert path == "/content/uncategorized/Movie/Movie.mp4"
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_floor_keeps_above_floor_root_file(mock_urlopen, mock_settings):
+    """A current-level file at or above the floor is the real feature; the floor
+    must not defer it into a needless subfolder scan (no recursion happens)."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    root = _propfind_listing(
+        [
+            ("/content/uncategorized/Movie/", True, None),
+            ("/content/uncategorized/Movie/Sub/", True, None),
+            (
+                "/content/uncategorized/Movie/Movie.1080p.mkv",
+                False,
+                4_000_000_000,
+            ),
+        ]
+    )
+
+    def propfind(req, **_kwargs):
+        url = req.full_url
+        if url.endswith("/Movie/"):
+            return _webdav_response(root)
+        raise AssertionError("unexpected PROPFIND URL: {}".format(url))
+
+    mock_urlopen.side_effect = propfind
+
+    path = find_video_file(
+        "/content/uncategorized/Movie/", min_video_size=2_000_000_000
+    )
+
+    assert path == "/content/uncategorized/Movie/Movie.1080p.mkv"
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_floor_prefers_real_episode_over_root_episode_stub(
+    mock_urlopen, mock_settings
+):
+    """A single-episode (non-pack) release can have BOTH the size floor and an
+    episode hint. A root stub carrying the requested episode tag must still be
+    deferred to the full-size real episode in a subfolder."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    root = _propfind_listing(
+        [
+            ("/content/Show/", True, None),
+            ("/content/Show/Real/", True, None),
+            ("/content/Show/Show.S01E05.1080p.mp4", False, 1_000_000),  # ep stub
+        ]
+    )
+    real = _propfind_listing(
+        [
+            ("/content/Show/Real/", True, None),
+            ("/content/Show/Real/Show.S01E05.1080p.mkv", False, 4_000_000_000),
+        ]
+    )
+
+    def propfind(req, **_kwargs):
+        url = req.full_url
+        if url.endswith("/Show/"):
+            return _webdav_response(root)
+        if url.endswith("/Show/Real/"):
+            return _webdav_response(real)
+        raise AssertionError("unexpected PROPFIND URL: {}".format(url))
+
+    mock_urlopen.side_effect = propfind
+
+    path = find_video_file(
+        "/content/Show/",
+        title_hint="Show.S01E05.1080p.WEB-DL",
+        min_video_size=2_000_000_000,
+    )
+
+    assert path == "/content/Show/Real/Show.S01E05.1080p.mkv"

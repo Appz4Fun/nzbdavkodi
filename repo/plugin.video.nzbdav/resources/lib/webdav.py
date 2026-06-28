@@ -364,7 +364,13 @@ def probe_webdav_reachable(
 
 
 def _find_video_file_in_subdirs(
-    subdirs, depth, visited, settings, hint_tokens=None, hint_episode_tags=None
+    subdirs,
+    depth,
+    visited,
+    settings,
+    hint_tokens=None,
+    hint_episode_tags=None,
+    min_video_size=0,
 ):
     """Probe sibling WebDAV subfolders and return the best video found.
 
@@ -413,6 +419,7 @@ def _find_video_file_in_subdirs(
                     settings,
                     title_hint_tokens=hint_tokens,
                     title_hint_episode_tags=hint_episode_tags,
+                    min_video_size=min_video_size,
                 )
             except Exception as e:  # pylint: disable=broad-except
                 xbmc.log(
@@ -484,6 +491,7 @@ def find_video_file(
     title_hint=None,
     title_hint_tokens=None,
     title_hint_episode_tags=None,
+    min_video_size=0,
 ):
     """Browse a WebDAV folder and find the requested (or largest) video file.
 
@@ -506,6 +514,16 @@ def find_video_file(
         title_hint_tokens / title_hint_episode_tags: Internal pre-parsed forms
             of ``title_hint`` threaded through recursion so the hint is parsed
             once per discovery rather than once per folder level.
+        min_video_size: Optional minimum plausible size (bytes) for the real
+            single-file video, precomputed by the resolver from the advertised
+            release size (#282). A current-level candidate whose size is a
+            positive value BELOW this floor is treated as nzbdav's job-start
+            stub: discovery recurses into subfolders for the real file first and
+            falls back to the small candidate only if nothing better is found.
+            ``0`` (the default) disables the floor, keeping the historical
+            current-level short-circuit unchanged. The floor never DROPS a
+            candidate -- it only defers it -- so a release that is legitimately
+            small is still returned. Skipped for packs by passing ``0``.
 
     Returns:
         The WebDAV href path of the largest video file found, typically an
@@ -738,6 +756,20 @@ def find_video_file(
                 # wrong-episode gate compares episode identity, not token noise.
                 best_match_score = ep_score
 
+        # A current-level best that is grossly undersized versus the advertised
+        # release size (#282) is nzbdav's job-start stub. Treat it like the
+        # wrong-episode case below: defer it so discovery recurses into the
+        # subfolder holding the real file first, falling back to the stub only if
+        # the descent finds nothing better. The floor never DROPS the candidate
+        # (a legitimately small release is still returned as the fallback). A 0
+        # floor -- movie/no-floor or pack -- disables this so the historical
+        # current-level short-circuit is byte-identical to before.
+        best_is_stub = (
+            best_file is not None
+            and min_video_size > 0
+            and 0 < best_size < min_video_size
+        )
+
         # When an episode was requested but the current-level best is NOT a
         # confirmed episode match (score below the confirmed-match threshold of
         # 1000), the requested episode may still live in a sibling subdir. This
@@ -747,10 +779,13 @@ def find_video_file(
         # ever scan the subdir holding the exact requested episode. Recurse
         # first; fall back to the current-level file only if the descent finds
         # nothing better. A movie/token-only hint has empty hint_episode_tags so
-        # it keeps the historical short-circuit, as does the no-hint path.
-        if best_file and not (
-            hint_episode_tags and best_match_score < 1000 and subdirs
-        ):
+        # it keeps the historical short-circuit, as does the no-hint path. The
+        # stub case (best_is_stub) defers on the same terms. Both only defer when
+        # there is actually a subdir to descend into.
+        defer_to_subdirs = bool(subdirs) and (
+            (bool(hint_episode_tags) and best_match_score < 1000) or best_is_stub
+        )
+        if best_file and not defer_to_subdirs:
             file_path = best_file
             _remember_video_file_size_hint(file_path, best_size)
             xbmc.log(
@@ -761,9 +796,10 @@ def find_video_file(
 
         if best_file:
             xbmc.log(
-                "NZB-DAV: Current-level video '{}' is a wrong-episode match for "
-                "the requested title; checking sibling subfolders first".format(
-                    best_file
+                "NZB-DAV: Current-level video '{}' is {} for the requested "
+                "title; checking sibling subfolders first".format(
+                    best_file,
+                    "an undersized stub" if best_is_stub else "a wrong-episode match",
                 ),
                 xbmc.LOGDEBUG,
             )
@@ -778,6 +814,7 @@ def find_video_file(
             settings,
             hint_tokens=hint_tokens,
             hint_episode_tags=hint_episode_tags,
+            min_video_size=min_video_size,
         )
         if result:
             # If we deferred a wrong-episode current-level file, only adopt the
@@ -854,15 +891,26 @@ def get_webdav_stream_url_for_path(file_path, settings_getter=None):
     )
 
 
-def find_video_stream_for_folder(folder_path, settings_getter=None, title_hint=None):
+def find_video_stream_for_folder(
+    folder_path, settings_getter=None, title_hint=None, min_video_size=0
+):
     """Find a folder's playable video path and stream URL with one settings read.
 
     ``title_hint`` is the optional requested release name; when supplied it
     steers multi-episode/multi-video folders toward the requested episode
     instead of the largest file (see ``find_video_file``).
+
+    ``min_video_size`` is the optional advertised-size floor that lets discovery
+    recurse past a root-level job-start stub into the subfolder holding the real
+    file (#282); see ``find_video_file``. ``0`` (default) disables the floor.
     """
     settings = _read_settings(settings_getter)
-    video_path = find_video_file(folder_path, _settings=settings, title_hint=title_hint)
+    video_path = find_video_file(
+        folder_path,
+        _settings=settings,
+        title_hint=title_hint,
+        min_video_size=min_video_size,
+    )
     if not video_path:
         return None, None, None
     stream_url, stream_headers = _get_webdav_stream_url_for_path_with_settings(

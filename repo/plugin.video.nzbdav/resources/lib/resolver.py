@@ -1846,7 +1846,9 @@ def _start_existing_completed_cleanup(title, on_existing_completed):
         )
 
 
-def _find_video_stream_for_folder(webdav_folder, settings_getter=None, title_hint=None):
+def _find_video_stream_for_folder(
+    webdav_folder, settings_getter=None, title_hint=None, min_video_size=0
+):
     """Return video path, URL, and headers for a completed WebDAV folder.
 
     ``title_hint`` is the requested release/episode title (e.g. the submitted
@@ -1854,6 +1856,12 @@ def _find_video_stream_for_folder(webdav_folder, settings_getter=None, title_hin
     returns the requested SxxExx episode rather than whichever sibling file is
     largest. When ``None`` (movie / no identifiable episode) the historical
     largest-video-wins behavior is preserved unchanged.
+
+    ``min_video_size`` is the precomputed single-file advertised-size floor
+    (``_stub_min_size_floor``); threading it into discovery lets a root-level
+    job-start stub recurse into the subfolder holding the real file rather than
+    being returned on every poll (#282 follow-up D). ``0`` (default) disables
+    the floor, so movie/pack/unknown-size paths are unchanged.
     """
     try:
         from resources.lib import webdav as _webdav
@@ -1867,6 +1875,7 @@ def _find_video_stream_for_folder(webdav_folder, settings_getter=None, title_hin
             video_path, stream_url, stream_headers = find_video_stream_for_folder(
                 webdav_folder,
                 title_hint=title_hint,
+                min_video_size=min_video_size,
                 **_settings_getter_kwargs(settings_getter),
             )
             if video_path:
@@ -1879,7 +1888,12 @@ def _find_video_stream_for_folder(webdav_folder, settings_getter=None, title_hin
 
     kwargs = _settings_getter_kwargs(settings_getter)
     _resolve_stage("find_video_file_start folder={}".format(webdav_folder))
-    video_path = find_video_file(webdav_folder, title_hint=title_hint, **kwargs)
+    video_path = find_video_file(
+        webdav_folder,
+        title_hint=title_hint,
+        min_video_size=min_video_size,
+        **kwargs,
+    )
     _resolve_stage("find_video_file_done path={}".format(bool(video_path)))
     if not video_path:
         return None, None, None
@@ -1950,8 +1964,16 @@ def _completed_job_stream(
         return None
     webdav_folder = _storage_to_webdav_path(storage)
     _start_existing_completed_cleanup(title, on_existing_completed)
+    # #282 follow-up D: thread the single-file advertised-size floor into
+    # discovery so a stale Completed row whose stub sits at the release root
+    # recurses into the subfolder holding the real file rather than serving the
+    # stub. 0 for packs / unknown size. The stub guard below shares the floor.
+    min_video_size = _stub_min_size_floor(download_size, title)
     video_path, stream_url, stream_headers = _find_video_stream_for_folder(
-        webdav_folder, settings_getter=settings_getter, title_hint=title
+        webdav_folder,
+        settings_getter=settings_getter,
+        title_hint=title,
+        min_video_size=min_video_size,
     )
     if not video_path:
         return None
@@ -3648,17 +3670,24 @@ def _handle_job_status(job_status, nzo_id, dialog, last_status):
 
 
 def _find_completed_video_stream_with_rechecks(
-    webdav_folder, monitor=None, settings_getter=None, title_hint=None
+    webdav_folder, monitor=None, settings_getter=None, title_hint=None, min_video_size=0
 ):
     """Return a completed WebDAV stream, briefly rechecking symlink visibility.
 
     ``title_hint`` (the requested release/episode title) is threaded into
     discovery so a multi-episode pack resolves to the requested episode; with
     ``None`` the historical largest-video behavior is preserved.
+
+    ``min_video_size`` is the single-file advertised-size floor forwarded into
+    discovery so a root-level job-start stub recurses into the subfolder holding
+    the real file (#282 follow-up D). ``0`` (default) disables the floor.
     """
     _resolve_stage("find_video_stream_start")
     video_path, stream_url, stream_headers = _find_video_stream_for_folder(
-        webdav_folder, settings_getter=settings_getter, title_hint=title_hint
+        webdav_folder,
+        settings_getter=settings_getter,
+        title_hint=title_hint,
+        min_video_size=min_video_size,
     )
     _resolve_stage("find_video_stream_done path={}".format(bool(video_path)))
     if video_path or monitor is None:
@@ -3669,7 +3698,10 @@ def _find_completed_video_stream_with_rechecks(
             return None, None, None
         _resolve_stage("find_video_stream_retry delay={}".format(delay_seconds))
         video_path, stream_url, stream_headers = _find_video_stream_for_folder(
-            webdav_folder, settings_getter=settings_getter, title_hint=title_hint
+            webdav_folder,
+            settings_getter=settings_getter,
+            title_hint=title_hint,
+            min_video_size=min_video_size,
         )
         _resolve_stage("find_video_stream_retry_done path={}".format(bool(video_path)))
         if video_path:
@@ -3703,6 +3735,38 @@ def _advertised_size_bytes(download_size):
     return 0
 
 
+def _stub_min_size_floor(download_size, title):
+    """Return the minimum plausible discovered-video size (bytes) for a
+    single-file release, or 0 when no floor applies.
+
+    The floor is ``advertised * _STUB_VIDEO_MIN_ADVERTISED_FRACTION`` -- exactly
+    the threshold ``_discovered_video_is_stub`` rejects below. Returning it (not
+    just a yes/no) lets webdav discovery treat a current-level candidate below
+    the floor as nzbdav's job-start stub and recurse into subfolders for the
+    real file before falling back to it (#282 follow-up D), so the accept-time
+    guard and discovery agree on what "too small" means.
+
+    Returns 0 (no floor) when the advertised size is unknown -- so the guard
+    fails OPEN -- and for packs, whose advertised size spans every episode so a
+    single picked episode is legitimately a fraction of it. May be fractional
+    (the exact float threshold) so callers stay byte-consistent with the
+    ``found < advertised * fraction`` comparison.
+    """
+    advertised = _advertised_size_bytes(download_size)
+    if advertised <= 0:
+        return 0
+    try:
+        from resources.lib.filter import release_is_pack
+
+        if release_is_pack(title):
+            return 0
+    except Exception:  # pylint: disable=broad-except
+        # Pack detection unavailable -> treat as single-file so the guard still
+        # protects the reported (movie) case; the fraction floor is the net.
+        pass
+    return advertised * _STUB_VIDEO_MIN_ADVERTISED_FRACTION
+
+
 def _discovered_video_is_stub(video_path, download_size, title):
     """Return True when a non-pack release's discovered video is implausibly
     small versus the indexer-advertised size (nzbdav's job-start stub, #282).
@@ -3716,20 +3780,12 @@ def _discovered_video_is_stub(video_path, download_size, title):
     Fails OPEN (returns ``False``) when either size is unknown, so a missing
     field never blocks a real stream, and is skipped for packs -- a pack's
     advertised size spans every episode, so one picked episode is legitimately
-    a fraction of it.
+    a fraction of it. Shares ``_stub_min_size_floor`` with webdav discovery so
+    the two never disagree on the threshold.
     """
-    advertised = _advertised_size_bytes(download_size)
-    if advertised <= 0:
+    floor = _stub_min_size_floor(download_size, title)
+    if floor <= 0:
         return False
-    try:
-        from resources.lib.filter import release_is_pack
-
-        if release_is_pack(title):
-            return False
-    except Exception:  # pylint: disable=broad-except
-        # Pack detection unavailable -> treat as single-file so the guard still
-        # protects the reported (movie) case; the fraction floor is the net.
-        pass
     try:
         from resources.lib import webdav as _webdav
 
@@ -3738,7 +3794,7 @@ def _discovered_video_is_stub(video_path, download_size, title):
         return False
     if found <= 0:
         return False
-    return found < advertised * _STUB_VIDEO_MIN_ADVERTISED_FRACTION
+    return found < floor
 
 
 def _handle_history_result(
@@ -3790,11 +3846,18 @@ def _handle_history_result(
     if not storage:
         return False, None, None, no_video_retries
     webdav_folder = _storage_to_webdav_path(storage)
+    # Thread the single-file advertised-size floor into discovery so a root-level
+    # job-start stub recurses into the subfolder holding the real file instead of
+    # being re-picked on every poll until download_timeout (#282 follow-up D).
+    # 0 for packs / unknown size, so those paths are unchanged. The accept-time
+    # guard below shares the same floor via _stub_min_size_floor.
+    min_video_size = _stub_min_size_floor(download_size, title)
     video_path, stream_url, stream_headers = _find_completed_video_stream_with_rechecks(
         webdav_folder,
         monitor=monitor,
         settings_getter=settings_getter,
         title_hint=title,
+        min_video_size=min_video_size,
     )
     # #282: reject nzbdav's job-start stub before the body probe. A single-file
     # release whose discovered video is far below the advertised release size is
