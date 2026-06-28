@@ -63,6 +63,7 @@ devdocs
 -*
 !/.gitignore
 !/.nojekyll
+!/.coderabbit.yaml
 !.env.example
 
 
