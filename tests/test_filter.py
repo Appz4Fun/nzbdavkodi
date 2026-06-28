@@ -1292,6 +1292,34 @@ def test_release_is_pack_true_for_season_tagless_miniseries():
     assert release_is_pack("Chernobyl.Miniseries.S01.1080p.WEB-DL-GRP") is True
 
 
+def test_release_is_pack_true_for_standalone_movie_collection_keywords():
+    """#340 Codex review: movie-collection packs named with only the collection
+    keyword ("Trilogy", "Quadrilogy", "Anthology") carry no season/episode tag,
+    so PTT yields nothing and the phrase's "Complete"-adjacency requirement
+    misses them -- the resolver would then apply the single-file floor and reject
+    a real 20 GB movie out of a 60 GB trilogy as a stub. These unambiguous
+    collection words are pack signals on their own."""
+    assert release_is_pack("The.Matrix.Trilogy.1080p.BluRay.x264-GRP") is True
+    assert release_is_pack("Alien.Quadrilogy.1080p.BluRay-GRP") is True
+    assert release_is_pack("The.Twilight.Zone.Anthology.1080p.BluRay-GRP") is True
+    assert release_is_pack("Nolan.Filmography.2160p.UHD.BluRay-GRP") is True
+
+
+def test_release_is_pack_true_for_limited_series():
+    """#340 Codex review: season-tag-less "Limited Series" packs (e.g.
+    "Chernobyl.Limited.Series") parse to no seasons/episodes in PTT, so they are
+    recognized via the phrase like "Mini Series"."""
+    assert release_is_pack("Chernobyl.Limited.Series.1080p.WEB-DL-GRP") is True
+    assert release_is_pack("The.Queens.Gambit.LimitedSeries.1080p.WEB-GRP") is True
+
+
+def test_release_is_pack_false_for_single_episode_collection_keyword():
+    """A standalone collection keyword must still defer to a single-episode tag:
+    a one-episode release is not a pack even if its name contains a collection
+    word, so the stub guard stays active."""
+    assert release_is_pack("Some.Anthology.Show.S01E03.1080p.WEB-DL-GRP") is False
+
+
 def test_release_is_pack_true_for_reversed_complete_series_phrasing():
     """'<Show>.Series.Complete' (words adjacent, reversed order) is still a
     whole-series pack."""

@@ -824,12 +824,27 @@ def find_video_file(
                 result_ep_score, result_tok_score = _title_hint_match_score(
                     result, hint_tokens, hint_episode_tags
                 )
+                result_size = get_video_file_size_hint(result)
                 result_key = (
                     result_ep_score,
-                    get_video_file_size_hint(result),
+                    result_size,
                     result_tok_score,
                 )
-                if result_key < best_file_key:
+                # When the deferred current-level file is itself a STUB, identity
+                # ranking must not let it win: an episode-tagged root stub
+                # (ep=1000) would otherwise outrank a generically-named but
+                # above-floor real file (ep=0) and get re-served, re-rejected,
+                # and time out (#282 follow-up D / CodeRabbit). Always adopt an
+                # above-floor, non-wrong-episode sibling over the stub; only fall
+                # back to the wrong-episode/size comparison when the deferral was
+                # NOT a stub (the original wrong-episode case).
+                if (
+                    best_is_stub
+                    and result_size >= min_video_size
+                    and result_ep_score >= 0
+                ):
+                    pass
+                elif result_key < best_file_key:
                     result = None
             if result:
                 return result

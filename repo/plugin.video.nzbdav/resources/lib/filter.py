@@ -547,12 +547,26 @@ _PACK_ORDINAL = (
     r"first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|"
     r"final|last|[0-9]{1,2}(?:st|nd|rd|th)"
 )
+# Unambiguous multi-item collection words that mark a pack ON THEIR OWN, without
+# an adjacent "Complete": a "Trilogy"/"Quadrilogy"/"Anthology"/"Filmography"
+# release bundles several films, so its advertised size spans them all and one
+# picked film is legitimately a fraction of it -- without this the single-file
+# floor would reject a real 20 GB movie out of a 60 GB trilogy as a stub (#340
+# Codex review). Deliberately excludes "collection"/"series"/"saga"/"season"/
+# "set"/"pack", which occur in single-movie titles ("The.Collection.2012") and
+# must stay guarded -- those remain pack signals only in the "Complete <kw>" /
+# "<kw> Complete" phrasing below.
+_PACK_STANDALONE_KEYWORD = (
+    r"trilogy|duology|quadrilogy|pentalogy|hexalogy|anthology|filmography"
+)
 _PACK_PHRASE_RE = re.compile(
     r"(?<![a-z])(?:"
     r"complete[ ._-]+(?:(?:" + _PACK_ORDINAL + r")[ ._-]+)?(?:" + _PACK_KEYWORD + r")"
     r"|(?:" + _PACK_KEYWORD + r")[ ._-]+complete"
     r"|box[ ._-]?sets?"
-    r"|mini[ ._-]?series"
+    # "Mini Series" / "Limited Series" season-tag-less TV packs.
+    r"|(?:mini|limited)[ ._-]?series"
+    r"|(?:" + _PACK_STANDALONE_KEYWORD + r")"
     r")(?![a-z])",
     re.IGNORECASE,
 )
@@ -570,10 +584,13 @@ def release_is_pack(title):
     ``S01E01E02E03`` multi-tags and ``1x01-1x10`` / ``S01E01-E10`` ranges,
     which PTT collapses to a single episode but ``_episode_tags`` expands),
     more than one season, a whole season with no single episode (e.g. ``S01``,
-    ``S01-S05 COMPLETE``), or carries whole-collection PHRASING ("Complete
-    Collection / Series", "Box Set"). A movie, a single ``SxxExx`` (even one
-    tagged ``COMPLETE``), and a movie whose title merely contains "Complete" or
-    "Collection" are NOT packs -- they keep the stub guard.
+    ``S01-S05 COMPLETE``), carries whole-collection PHRASING ("Complete
+    Collection / Series", "Box Set", "Mini/Limited Series"), or names an
+    unambiguous multi-film collection on its own ("Trilogy", "Quadrilogy",
+    "Anthology", "Filmography"). A movie, a single ``SxxExx`` (even one tagged
+    ``COMPLETE`` or carrying a collection word), and a movie whose title merely
+    contains "Complete" or "Collection" are NOT packs -- they keep the stub
+    guard (the single episode tag overrides any pack phrase).
 
     On a missing title or a PTT parse error this returns ``False`` ("not a
     pack"), which only ever leaves the caller's size-guard *active* (never

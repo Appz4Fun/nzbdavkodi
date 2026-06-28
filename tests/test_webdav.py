@@ -2157,3 +2157,49 @@ def test_find_video_file_floor_prefers_real_episode_over_root_episode_stub(
     )
 
     assert path == "/content/Show/Real/Show.S01E05.1080p.mkv"
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_floor_prefers_real_file_over_episode_tagged_stub(
+    mock_urlopen, mock_settings
+):
+    """An episode-tagged ROOT stub must not outrank a generically-named
+    above-floor real file in a subfolder. The stub scores ep=1000 on identity
+    while the real file (no tag in its own name) scores ep=0, so on the
+    episode-first ordering the stub's key would win and the real file would be
+    discarded back to the stub -- a re-rejection loop (CodeRabbit #340). When the
+    deferred current-level file is itself a stub, an above-floor, non-wrong
+    sibling must always be adopted over it."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    root = _propfind_listing(
+        [
+            ("/content/Show/", True, None),
+            ("/content/Show/Real/", True, None),
+            ("/content/Show/Show.S01E05.1080p.mp4", False, 1_000_000),  # ep stub
+        ]
+    )
+    real = _propfind_listing(
+        [
+            ("/content/Show/Real/", True, None),
+            ("/content/Show/Real/video.mkv", False, 4_000_000_000),  # generic name
+        ]
+    )
+
+    def propfind(req, **_kwargs):
+        url = req.full_url
+        if url.endswith("/Show/"):
+            return _webdav_response(root)
+        if url.endswith("/Show/Real/"):
+            return _webdav_response(real)
+        raise AssertionError("unexpected PROPFIND URL: {}".format(url))
+
+    mock_urlopen.side_effect = propfind
+
+    path = find_video_file(
+        "/content/Show/",
+        title_hint="Show.S01E05.1080p.WEB-DL",
+        min_video_size=2_000_000_000,
+    )
+
+    assert path == "/content/Show/Real/video.mkv"
