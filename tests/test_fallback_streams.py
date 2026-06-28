@@ -3949,8 +3949,87 @@ def test_normalize_title_collapses_double_escaped_ampersand():
         == fs._normalize_title("Cats Dogs")
         == "cats dogs"
     )
+    # A DOUBLE-escaped entity ("&amp;amp;") must also fully decode, not leave a
+    # residual "&amp;" that becomes a stray "amp" token.
+    assert fs._normalize_title("Cats &amp;amp; Dogs") == "cats dogs"
     # The "&amp;" rewrite is exact: a genuine "amp" word is not a conjunction.
     assert fs._normalize_title("Marshall Amp Sessions") == "marshall amp sessions"
+
+
+def test_normalize_title_keeps_leading_conjunction_word():
+    """A leading "and"/"et"/"und" is a content word, not a conjunction.
+
+    Conjunction folding must only fire INTERIOR (operand on both sides). A
+    leading conjunction is content-bearing -- "And Just Like That" is a
+    different work from "Just Like That" -- so it must survive normalization
+    rather than collapse the two titles to one identity.
+    """
+    from resources.lib import fallback_streams as fs
+
+    assert fs._normalize_title("And Just Like That") == "and just like that"
+    assert fs._normalize_title("And Just Like That") != fs._normalize_title(
+        "Just Like That"
+    )
+
+
+def test_normalize_title_keeps_lone_conjunction_token():
+    """A title that is ONLY a conjunction token (e.g. "ET") is never folded away.
+
+    Folding a lone token to an empty title is dangerous: an empty core title
+    matches any release in the corroborated paths. Interior-only folding keeps
+    boundary tokens, so a non-empty title never normalizes to empty.
+    """
+    from resources.lib import fallback_streams as fs
+
+    assert fs._normalize_title("ET") == "et"
+    assert fs._normalize_title("ET") != ""
+    assert fs._normalize_title("ET 1982") == "et 1982"
+
+
+def test_same_content_rejects_leading_and_vs_bare():
+    """REGRESSION GUARD: a leading-"and" title is different content from the bare.
+
+    "And Just Like That" and "Just Like That" are different shows; with no year
+    or episode to corroborate, the title gate must reject the pair rather than
+    peer them just because the leading "and" was folded away.
+    """
+    from resources.lib import fallback_streams as fs
+
+    leading = _result(
+        "And.Just.Like.That.1080p.WEB-DL.x264-GROUP",
+        "https://idx/and-jlt.nzb",
+        6000000000,
+    )
+    bare = _result(
+        "Just.Like.That.1080p.WEB-DL.x264-GROUP",
+        "https://idx/jlt.nzb",
+        6000000000,
+    )
+    assert fs._same_content(leading, bare) is False
+    assert fs._same_content(bare, leading) is False
+
+
+def test_same_content_rejects_lone_acronym_vs_other_same_year():
+    """REGRESSION GUARD: a lone-token title must not fold to empty and match by year.
+
+    "ET" (parsed title "ET") must not peer with an unrelated movie of the same
+    year. Folding "et" to an empty title would let the year-corroborated path
+    accept any 1982 release.
+    """
+    from resources.lib import fallback_streams as fs
+
+    et_movie = _result(
+        "ET.1982.1080p.BluRay.x264-GROUP",
+        "https://idx/et.nzb",
+        6000000000,
+    )
+    other = _result(
+        "Blade.Runner.1982.1080p.BluRay.x264-GROUP",
+        "https://idx/blade.nzb",
+        6000000000,
+    )
+    assert fs._same_content(et_movie, other) is False
+    assert fs._same_content(other, et_movie) is False
 
 
 def test_normalize_title_only_drops_whole_conjunction_words():

@@ -415,23 +415,36 @@ def _normalize_title(value):
     if not isinstance(value, str):
         return ""
     # "&amp;" is the XML/HTML escape for "&". XML parsing normally decodes it,
-    # but double-escaped feeds ("&amp;amp;") leave a literal "&amp;" in the
-    # title; rewrite the exact entity to "&" so it collapses to nothing (like a
-    # bare "&") instead of leaving a stray "amp" token. The rewrite is exact, so
-    # a genuine "amp" word (e.g. "Marshall Amp") is left untouched.
-    lowered = value.lower().replace("&amp;", "&")
+    # but double-escaped feeds leave a literal entity in the title; rewrite it to
+    # "&" so it collapses to nothing (like a bare "&") instead of leaving a stray
+    # "amp" token. Decode REPEATEDLY so even a double-escaped "&amp;amp;" fully
+    # resolves -- each pass replaces "&amp;" (5 chars) with "&" (1 char), so the
+    # string strictly shrinks and the loop terminates. The rewrite is exact, so a
+    # genuine "amp" word (e.g. "Marshall Amp") is left untouched.
+    lowered = value.lower()
+    while "&amp;" in lowered:
+        lowered = lowered.replace("&amp;", "&")
     normalized = _NON_WORD_RE.sub(" ", lowered)
+    tokens = normalized.split()
     # Treat "&", the conjunction words ("and" plus the common foreign forms
-    # "et"/"und"), and an omitted conjunction as one identity: drop a standalone
-    # conjunction token so "Friends & Neighbors" (the "&" is already stripped by
-    # the non-word sub), "Friends and Neighbors", "Friends Neighbors", and
-    # "Jules et Jim"/"Jules Jim" all normalize equal and peer as fallbacks. Only
-    # a whole conjunction WORD is dropped -- substrings stay intact (e.g.
-    # "Andromeda"/"Planet"/"Underworld"), and ordinal words like Part
+    # "et"/"und"), and an omitted conjunction as one identity: drop a conjunction
+    # token so "Friends & Neighbors" (the "&" is already stripped by the non-word
+    # sub), "Friends and Neighbors", "Friends Neighbors", and "Jules et Jim"/
+    # "Jules Jim" all normalize equal and peer as fallbacks. Fold ONLY an
+    # INTERIOR conjunction (operand on both sides) -- that is the only true
+    # conjunction position. A leading/trailing token is content-bearing ("And
+    # Just Like That" is not "Just Like That"), and a lone token is never a
+    # conjunction ("ET"). Keeping boundary tokens also guarantees a non-empty
+    # title never folds to empty (an empty core title would match anything in the
+    # corroborated identity paths). Whole-token only, so substrings stay intact
+    # ("Andromeda"/"Planet"/"Underworld"), and ordinal words like Part
     # "One"/"Two" are not conjunctions, so part/chapter discrimination is
     # unaffected.
+    last = len(tokens) - 1
     return " ".join(
-        token for token in normalized.split() if token not in _CONJUNCTION_TOKENS
+        token
+        for index, token in enumerate(tokens)
+        if not (0 < index < last and token in _CONJUNCTION_TOKENS)
     )
 
 
