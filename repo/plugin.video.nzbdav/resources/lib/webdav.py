@@ -731,7 +731,17 @@ def find_video_file(
                 )
             else:
                 ep_score, tok_score = 0, 0
-            file_key = (ep_score, size, tok_score)
+            # "Above the advertised-size floor" is the TOP ranking dimension so a
+            # below-floor job-start stub never outranks a real file at the SAME
+            # level: an episode-tagged stub (ep=1000) would otherwise beat a
+            # generically-named above-floor real file (ep=0), win selection, and
+            # -- with no subdir to defer into -- be returned and re-rejected every
+            # poll (#282 follow-up D / Codex). With no floor (min_video_size <= 0)
+            # this flag is constantly True, so the key reduces to the historical
+            # (ep, size, tok) and ranking is byte-identical. A size-0 file is NOT
+            # below-floor (unknown size, not a known stub), so it is unaffected.
+            file_above_floor = size <= 0 or size >= min_video_size
+            file_key = (file_above_floor, ep_score, size, tok_score)
             # A current-level video only displaces "nothing yet" when it
             # carries a positive selection signal: a real (non-zero) size --
             # the historical largest-wins rule, under which main never adopted
@@ -820,31 +830,24 @@ def find_video_file(
             # If we deferred a wrong-episode current-level file, only adopt the
             # sibling when it is at least as good a hint match; otherwise the
             # mismatched current-level file is no worse and stays the fallback.
+            # The key carries the same above-floor flag as the current-level
+            # ranking, so a below-floor stub never wins on episode identity: an
+            # above-floor (or unknown-size) child always outranks a deferred stub
+            # -- including an exact-episode child whose PROPFIND has no
+            # getcontentlength (size hint 0 is NOT below-floor) (#282 / Codex).
             if best_file and have_hint:
                 result_ep_score, result_tok_score = _title_hint_match_score(
                     result, hint_tokens, hint_episode_tags
                 )
                 result_size = get_video_file_size_hint(result)
+                result_above_floor = result_size <= 0 or result_size >= min_video_size
                 result_key = (
+                    result_above_floor,
                     result_ep_score,
                     result_size,
                     result_tok_score,
                 )
-                # When the deferred current-level file is itself a STUB, identity
-                # ranking must not let it win: an episode-tagged root stub
-                # (ep=1000) would otherwise outrank a generically-named but
-                # above-floor real file (ep=0) and get re-served, re-rejected,
-                # and time out (#282 follow-up D / CodeRabbit). Always adopt an
-                # above-floor, non-wrong-episode sibling over the stub; only fall
-                # back to the wrong-episode/size comparison when the deferral was
-                # NOT a stub (the original wrong-episode case).
-                if (
-                    best_is_stub
-                    and result_size >= min_video_size
-                    and result_ep_score >= 0
-                ):
-                    pass
-                elif result_key < best_file_key:
+                if result_key < best_file_key:
                     result = None
             if result:
                 return result

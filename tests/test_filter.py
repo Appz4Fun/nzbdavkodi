@@ -1320,6 +1320,18 @@ def test_release_is_pack_false_for_single_episode_collection_keyword():
     assert release_is_pack("Some.Anthology.Show.S01E03.1080p.WEB-DL-GRP") is False
 
 
+def test_release_is_pack_true_for_reversed_ordinal_season_complete():
+    """#340 Codex review: a reversed-phrase full-season pack with an ordinal or
+    spelled cardinal between the keyword and "Complete" ("Season One Complete",
+    "Season Two Complete", "Season First Complete") parses to no seasons/episodes
+    in PTT (the spelled number is not recognized), so the reversed phrase branch
+    must allow the ordinal/cardinal slot or the single-file floor would reject a
+    real episode of the season pack."""
+    assert release_is_pack("Some.Show.Season.One.Complete.1080p.WEB-DL-GRP") is True
+    assert release_is_pack("Some.Show.Season.Two.Complete.720p.HDTV-GRP") is True
+    assert release_is_pack("Some.Show.Season.First.Complete.1080p.WEB-GRP") is True
+
+
 def test_release_is_pack_true_for_reversed_complete_series_phrasing():
     """'<Show>.Series.Complete' (words adjacent, reversed order) is still a
     whole-series pack."""

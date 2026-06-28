@@ -547,6 +547,11 @@ _PACK_ORDINAL = (
     r"first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|"
     r"final|last|[0-9]{1,2}(?:st|nd|rd|th)"
 )
+# A spelled cardinal that can sit between the keyword and "Complete" in the
+# reversed phrasing ("Season One Complete"): PTT does not parse spelled numbers,
+# so without this the reversed branch only matches "Season Complete" and misses
+# the numbered form (#340 Codex review).
+_PACK_CARDINAL = r"one|two|three|four|five|six|seven|eight|nine|ten"
 # Unambiguous multi-item collection words that mark a pack ON THEIR OWN, without
 # an adjacent "Complete": a "Trilogy"/"Quadrilogy"/"Anthology"/"Filmography"
 # release bundles several films, so its advertised size spans them all and one
@@ -562,7 +567,10 @@ _PACK_STANDALONE_KEYWORD = (
 _PACK_PHRASE_RE = re.compile(
     r"(?<![a-z])(?:"
     r"complete[ ._-]+(?:(?:" + _PACK_ORDINAL + r")[ ._-]+)?(?:" + _PACK_KEYWORD + r")"
-    r"|(?:" + _PACK_KEYWORD + r")[ ._-]+complete"
+    # Reversed phrasing, optionally numbered: "Series Complete", "Season One
+    # Complete", "Season First Complete".
+    r"|(?:" + _PACK_KEYWORD + r")[ ._-]+"
+    r"(?:(?:" + _PACK_ORDINAL + r"|" + _PACK_CARDINAL + r")[ ._-]+)?complete"
     r"|box[ ._-]?sets?"
     # "Mini Series" / "Limited Series" season-tag-less TV packs.
     r"|(?:mini|limited)[ ._-]?series"

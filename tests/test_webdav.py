@@ -2203,3 +2203,83 @@ def test_find_video_file_floor_prefers_real_file_over_episode_tagged_stub(
     )
 
     assert path == "/content/Show/Real/video.mkv"
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_floor_demotes_same_level_episode_stub(
+    mock_urlopen, mock_settings
+):
+    """An episode-tagged stub and a generically-named above-floor real file in
+    the SAME folder (no subdir to defer into): the stub scores ep=1000 and would
+    win the current-level ranking, be returned, and re-rejected every poll. The
+    floor must demote the below-floor stub beneath the above-floor real file
+    during ranking, so the real file is selected here (Codex #340)."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    root = _propfind_listing(
+        [
+            ("/content/Show/", True, None),
+            ("/content/Show/Show.S01E05.1080p.mp4", False, 1_000_000),  # ep stub
+            ("/content/Show/video.mkv", False, 4_000_000_000),  # generic real
+        ]
+    )
+
+    def propfind(req, **_kwargs):
+        url = req.full_url
+        if url.endswith("/Show/"):
+            return _webdav_response(root)
+        raise AssertionError("unexpected PROPFIND URL: {}".format(url))
+
+    mock_urlopen.side_effect = propfind
+
+    path = find_video_file(
+        "/content/Show/",
+        title_hint="Show.S01E05.1080p.WEB-DL",
+        min_video_size=2_000_000_000,
+    )
+
+    assert path == "/content/Show/video.mkv"
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_floor_adopts_size_unknown_exact_episode_child(
+    mock_urlopen, mock_settings
+):
+    """A root undersized stub defers into a subfolder whose child is the exact
+    requested episode but whose PROPFIND carries no getcontentlength (size hint
+    0). It must still be adopted over the stub -- a missing content-length must
+    not send a real file back to the stub and time out (Codex #340)."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    root = _propfind_listing(
+        [
+            ("/content/Show/", True, None),
+            ("/content/Show/Real/", True, None),
+            ("/content/Show/Show.S01E05.1080p.mp4", False, 1_000_000),  # ep stub
+        ]
+    )
+    real = _propfind_listing(
+        [
+            ("/content/Show/Real/", True, None),
+            # No getcontentlength -> size hint 0, but an exact episode match.
+            ("/content/Show/Real/Show.S01E05.1080p.mkv", False, None),
+        ]
+    )
+
+    def propfind(req, **_kwargs):
+        url = req.full_url
+        if url.endswith("/Show/"):
+            return _webdav_response(root)
+        if url.endswith("/Show/Real/"):
+            return _webdav_response(real)
+        raise AssertionError("unexpected PROPFIND URL: {}".format(url))
+
+    mock_urlopen.side_effect = propfind
+
+    path = find_video_file(
+        "/content/Show/",
+        title_hint="Show.S01E05.1080p.WEB-DL",
+        min_video_size=2_000_000_000,
+    )
+
+    assert path == "/content/Show/Real/Show.S01E05.1080p.mkv"
