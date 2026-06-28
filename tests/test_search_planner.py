@@ -61,6 +61,42 @@ def test_movie_title_on_nzbgeek_falls_back_to_search():
     assert plan.reason == "direct_movie_title_search_fallback"
 
 
+def test_movie_title_ampersand_stripped_from_query():
+    """A title with '&' must not put a literal '&' in the keyword query: the
+    indexer ANDs query terms against release names, which spell it 'and' or
+    omit it, so an '&' token matches nothing → zero results (#294)."""
+    plan = plan_newznab_search(
+        provider_kind="direct",
+        host="https://api.example.test",
+        search_type="movie",
+        title="Your Friends & Neighbors",
+        caps=_supported_caps(),
+        api_key="secret",
+        max_results=25,
+    )
+
+    assert plan.primary["q"] == "Your Friends Neighbors"
+    assert "&" not in plan.primary["q"]
+
+
+def test_episode_title_ampersand_stripped_from_query():
+    """The tvsearch keyword (and its title fallback) must also be '&'-free."""
+    plan = plan_newznab_search(
+        provider_kind="direct",
+        host="https://api.example.test",
+        search_type="episode",
+        title="Will & Grace",
+        season="1",
+        episode="1",
+        caps=_supported_caps(),
+        api_key="secret",
+        max_results=25,
+    )
+
+    assert plan.primary["q"] == "Will Grace"
+    assert plan.fallback["q"] == "Will Grace"
+
+
 def _supported_caps_with_tvdbid():
     caps = _supported_caps()
     caps["supported_params"]["tvsearch"] = ["q", "imdbid", "tvdbid", "season", "ep"]
