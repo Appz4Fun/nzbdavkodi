@@ -67,9 +67,15 @@ make-dev:
 test:
     {{uvdev}} python -m pytest tests/ -v --tb=short -m "not integration and not functional and not extreme"
 
-# Run tests with coverage
+# Run the default test selection with long tracebacks
 test-verbose:
     {{uvdev}} python -m pytest tests/ -v --tb=long -m "not integration and not functional and not extreme"
+
+# Run the default test selection and emit a Cobertura coverage.xml for
+# the addon runtime modules. Consumed by the code-coverage.yml workflow
+# (GitHub Code Quality). Vendored PTT is omitted via pyproject.toml.
+test-cov:
+    {{uvdev}} python -m pytest tests/ --tb=short -m "not integration and not functional and not extreme" --cov=resources.lib --cov-report=xml --cov-report=term-missing
 
 # Run integration tests against a real ffmpeg binary. Spawns the
 # actual fmp4 HLS producer pipeline against a tiny test MKV
