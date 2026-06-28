@@ -12,5 +12,13 @@
 # `fail_commit_status: false` stops the can't-review case from posting a failure
 # status. Successful reviews still post a green "success" status, because
 # `commit_status` defaults to true and is left untouched.
+#
+# `inheritance: true` is required, not cosmetic: CodeRabbit config sources do NOT
+# merge by default, so without it this repo file would win outright and every
+# field we don't name here (review profile, path filters, auto-review, learnings,
+# ...) would fall back to CodeRabbit system defaults instead of the Repository/Org
+# UI values. With inheritance on, this file merges with the dashboard/org config
+# and overrides only the single field below.
+inheritance: true
 reviews:
   fail_commit_status: false
