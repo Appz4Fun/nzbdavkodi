@@ -7395,6 +7395,186 @@ def test_handle_history_result_body_unavailable_exhaustion_message(
     assert "not found" not in dialog_msg
 
 
+# ---------------------------------------------------------------------------
+# #282: reject nzbdav's job-start stub .mp4. The completed WebDAV scan can
+# return a tiny placeholder seconds after submit; serving it plays ~30s of a
+# stub instead of the feature. A single-file release whose discovered video is
+# far below the indexer-advertised size is rejected and the poll loop keeps
+# waiting. Packs are exempt (one episode is legitimately a pack fraction).
+# ---------------------------------------------------------------------------
+
+
+@patch("resources.lib.webdav.get_video_file_size_hint", return_value=362_076_665)
+@patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
+@patch("resources.lib.resolver._find_completed_video_stream_with_rechecks")
+def test_handle_history_result_rejects_stub_far_below_advertised(
+    mock_find_stream, mock_probe, _mock_size
+):
+    """A single-file release whose discovered video (362 MB) is a tiny fraction
+    of the advertised size (~81 GB) is nzbdav's job-start stub. It must NOT be
+    streamed; fall through to the retry budget (keep polling for the real
+    download). The body probe is skipped — the size mismatch alone rejects it.
+    """
+    mock_find_stream.return_value = (
+        "/content/uncategorized/movie/UNDERTAKERS.mp4",
+        "http://webdav/UNDERTAKERS.mp4",
+        {"Authorization": "Basic x"},
+    )
+
+    should_stop, stream_url, stream_headers, retries = _handle_history_result(
+        {
+            "status": "Completed",
+            "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/movie",
+            "nzo_id": "stub_completed",
+        },
+        "The.Undertakers.2024.2160p.UHD.BluRay.x265-GROUP",
+        no_video_retries=0,
+        max_no_video_retries=5,
+        download_size="81610612736",  # ~81 GB advertised
+    )
+
+    assert stream_url is None
+    assert stream_headers is None
+    assert should_stop is False  # keep polling, do not hand Kodi the stub
+    assert retries == 1  # consumed one retry from the budget
+    mock_probe.assert_not_called()  # rejected on size before any body probe
+
+
+@patch("resources.lib.webdav.get_video_file_size_hint", return_value=80_000_000_000)
+@patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
+@patch("resources.lib.resolver._find_completed_video_stream_with_rechecks")
+def test_handle_history_result_streams_single_file_matching_advertised(
+    mock_find_stream, mock_probe, _mock_size
+):
+    """A single-file release whose discovered video (~80 GB) is close to the
+    advertised size (~81 GB) is the real feature and streams normally."""
+    mock_find_stream.return_value = (
+        "/content/uncategorized/movie/movie.mkv",
+        "http://webdav/movie.mkv",
+        {"Authorization": "Basic x"},
+    )
+
+    should_stop, stream_url, stream_headers, retries = _handle_history_result(
+        {
+            "status": "Completed",
+            "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/movie",
+            "nzo_id": "good_completed",
+        },
+        "The.Undertakers.2024.2160p.UHD.BluRay.x265-GROUP",
+        no_video_retries=0,
+        max_no_video_retries=5,
+        download_size="81610612736",
+    )
+
+    assert should_stop is True
+    assert stream_url == "http://webdav/movie.mkv"
+    assert stream_headers == {"Authorization": "Basic x"}
+    assert retries == 0
+
+
+@patch("resources.lib.webdav.get_video_file_size_hint", return_value=3_000_000_000)
+@patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
+@patch("resources.lib.resolver._find_completed_video_stream_with_rechecks")
+def test_handle_history_result_streams_pack_episode_below_advertised(
+    mock_find_stream, mock_probe, _mock_size
+):
+    """A season pack's advertised size covers every episode, so the single
+    picked episode (3 GB) is legitimately far below the advertised pack size
+    (30 GB). The stub guard must be SKIPPED for packs and the episode streams.
+    """
+    mock_find_stream.return_value = (
+        "/content/uncategorized/show/show.s01e03.mkv",
+        "http://webdav/show.s01e03.mkv",
+        {"Authorization": "Basic x"},
+    )
+
+    should_stop, stream_url, stream_headers, retries = _handle_history_result(
+        {
+            "status": "Completed",
+            "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/show",
+            "nzo_id": "pack_completed",
+        },
+        "Some.Show.S01.1080p.WEB-DL.x264-GROUP",  # whole-season pack
+        no_video_retries=0,
+        max_no_video_retries=5,
+        download_size="30000000000",  # 30 GB whole pack
+    )
+
+    assert should_stop is True
+    assert stream_url == "http://webdav/show.s01e03.mkv"
+    assert retries == 0
+
+
+@patch("resources.lib.webdav.get_video_file_size_hint", return_value=1_000_000)
+@patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
+@patch("resources.lib.resolver._find_completed_video_stream_with_rechecks")
+def test_handle_history_result_streams_when_advertised_size_unknown(
+    mock_find_stream, mock_probe, _mock_size
+):
+    """Fail OPEN: with no advertised size the guard cannot judge plausibility,
+    so a tiny discovered file streams exactly as before (no regression)."""
+    mock_find_stream.return_value = (
+        "/content/uncategorized/movie/movie.mkv",
+        "http://webdav/movie.mkv",
+        {"Authorization": "Basic x"},
+    )
+
+    should_stop, stream_url, _headers, retries = _handle_history_result(
+        {
+            "status": "Completed",
+            "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/movie",
+            "nzo_id": "no_advertised",
+        },
+        "The.Undertakers.2024.2160p.UHD.BluRay.x265-GROUP",
+        no_video_retries=0,
+        max_no_video_retries=5,
+        download_size=None,
+    )
+
+    assert should_stop is True
+    assert stream_url == "http://webdav/movie.mkv"
+    assert retries == 0
+
+
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.webdav.get_video_file_size_hint", return_value=362_076_665)
+@patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
+@patch("resources.lib.resolver._find_completed_video_stream_with_rechecks")
+def test_handle_history_result_stub_exhaustion_message(
+    mock_find_stream, mock_probe, _mock_size, mock_gui
+):
+    """On retry exhaustion for a stub-rejected release, the user-facing dialog
+    must explain the file is far smaller than the advertised release size, not
+    misdirect to WebDAV settings (a file WAS found — it's just a placeholder).
+    """
+    mock_find_stream.return_value = (
+        "/content/uncategorized/movie/UNDERTAKERS.mp4",
+        "http://webdav/UNDERTAKERS.mp4",
+        {"Authorization": "Basic x"},
+    )
+
+    # no_video_retries=4 -> the increment hits max_no_video_retries=5 (exhaustion).
+    should_stop, stream_url, _headers, retries = _handle_history_result(
+        {
+            "status": "Completed",
+            "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/movie",
+            "nzo_id": "stub_completed",
+        },
+        "The.Undertakers.2024.2160p.UHD.BluRay.x265-GROUP",
+        no_video_retries=4,
+        max_no_video_retries=5,
+        download_size="81610612736",
+    )
+
+    assert should_stop is True
+    assert stream_url is None
+    assert retries == 5
+    dialog_msg = mock_gui.Dialog.return_value.ok.call_args.args[1].lower()
+    assert "advertised" in dialog_msg
+    assert "smaller" in dialog_msg
+    assert "not found" not in dialog_msg
+
+
 @patch("resources.lib.resolver._find_video_stream_for_folder")
 def test_picker_completed_stream_records_rejected_id(mock_find_stream):
     """A picker-supplied completed row rejected by the body probe records its

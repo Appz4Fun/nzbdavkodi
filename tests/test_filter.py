@@ -10,6 +10,7 @@ from resources.lib.filter import (
     filter_results,
     matches_filters,
     parse_title_metadata,
+    release_is_pack,
 )
 
 FILTER_MODULE = (
@@ -1207,3 +1208,43 @@ def test_get_filter_settings_valid_range_unchanged():
 
     assert settings["min_size"] == 1000
     assert settings["max_size"] == 10000
+
+
+# ---------------------------------------------------------------------------
+# release_is_pack: distinguish multi-episode / season packs from single-file
+# releases so the #282 stub size-guard can skip packs (a pack legitimately
+# serves one sub-pack-sized episode).
+# ---------------------------------------------------------------------------
+
+
+def test_release_is_pack_false_for_movie():
+    assert release_is_pack("The.Undertakers.2024.2160p.UHD.BluRay.x265-GROUP") is False
+
+
+def test_release_is_pack_false_for_single_episode():
+    assert release_is_pack("Some.Show.S01E05.1080p.WEB-DL.x264-GROUP") is False
+
+
+def test_release_is_pack_true_for_full_season():
+    assert release_is_pack("Some.Show.S01.1080p.WEB-DL.x264-GROUP") is True
+
+
+def test_release_is_pack_true_for_multi_episode_range():
+    assert release_is_pack("Some.Show.S01E01-E10.1080p.WEB-DL.x264-GROUP") is True
+
+
+def test_release_is_pack_true_for_complete_series():
+    assert release_is_pack("Some.Show.S01-S05.COMPLETE.1080p.WEB-DL.x264-GROUP") is True
+
+
+def test_release_is_pack_true_for_season_tagless_complete_collection():
+    """A 'Complete Collection/Series' release carries no Sxx tag (PTT parses
+    seasons=[] episodes=[] complete=True). It is still a pack — picking one
+    episode out of it must not trip the #282 single-file stub guard."""
+    assert release_is_pack("Friends.Complete.Collection.1080p.BluRay-GROUP") is True
+    assert release_is_pack("The.Office.US.COMPLETE.1080p.WEB-DL.x264-GROUP") is True
+
+
+def test_release_is_pack_false_for_empty_or_nonstring():
+    assert release_is_pack("") is False
+    assert release_is_pack(None) is False

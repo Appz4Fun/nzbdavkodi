@@ -526,6 +526,50 @@ def parse_title_metadata(title):
     }
 
 
+def release_is_pack(title):
+    """Return True when a release name denotes a multi-episode / season pack.
+
+    A pack's advertised size covers many episodes, so the single episode a
+    picker selects out of it is legitimately a fraction of that size. The #282
+    stub size-guard (resolver) must therefore SKIP packs, or it would reject a
+    real episode for being far smaller than the whole-pack advertised size.
+
+    A title is a pack when it spans more than one episode, more than one
+    season, names a whole season with no single episode (e.g. ``S01``,
+    ``S01E01-E10``, ``S01-S05 COMPLETE``), or is flagged ``complete`` -- which
+    covers season-tag-less "Complete Collection / Series" releases that PTT
+    parses with empty seasons/episodes. A movie or a single ``SxxExx`` episode
+    is NOT a pack.
+
+    On a missing title or a PTT parse error this returns ``False`` ("not a
+    pack"), which only ever leaves the caller's size-guard *active* (never
+    weaker); that guard's own conservative fraction floor is the second safety
+    net, so a rare parse glitch cannot turn the protection off.
+    """
+    if not isinstance(title, str) or not title:
+        return False
+    try:
+        from resources.lib.ptt import parse_title
+
+        parsed = parse_title(title)
+    except Exception:  # pylint: disable=broad-except
+        return False
+    if parsed.get("complete"):
+        return True
+    seasons = parsed.get("seasons") or []
+    episodes = parsed.get("episodes") or []
+    if not isinstance(seasons, list):
+        seasons = [seasons]
+    if not isinstance(episodes, list):
+        episodes = [episodes]
+    if len(episodes) > 1:
+        return True
+    if len(seasons) > 1:
+        return True
+    # A season tag with no single episode is a whole-season pack.
+    return bool(seasons) and not episodes
+
+
 def matches_filters(result, meta, settings):
     """True iff every configured filter accepts this result.
 

@@ -2027,6 +2027,18 @@ _SUBMIT_QUEUE_PROBE_INTERVAL_SECONDS = 0.25
 _SUBMIT_HISTORY_PROBE_PARALLEL_GRACE_SECONDS = 0.01
 _COMPLETED_NO_VIDEO_RECHECK_DELAYS_SECONDS = (0.025, 0.075, 0.1)
 
+# #282: nzbdav writes a small placeholder .mp4 at job start; the completed
+# WebDAV scan can pick it up seconds after submit and stream it instead of the
+# feature (playing ~30s of a stub). A single-file (non-pack) release whose
+# discovered video is smaller than this fraction of the indexer-advertised size
+# is treated as that stub and rejected so the poll loop keeps waiting for the
+# real download. Conservatively low: a genuine single file is ~0.85-0.95 of its
+# advertised NZB size (par2/rar/sample overhead), while the reported stub was
+# ~0.004, so 0.5 sits far from both. The guard fails OPEN when either size is
+# unknown and is skipped entirely for packs (release_is_pack), where one
+# episode is legitimately a fraction of the whole-pack advertised size.
+_STUB_VIDEO_MIN_ADVERTISED_FRACTION = 0.5
+
 
 def _job_nzo_id(match):
     if isinstance(match, dict) and match.get("nzo_id"):
@@ -3611,6 +3623,69 @@ def _find_completed_video_stream_with_rechecks(
     return None, None, None
 
 
+def _advertised_size_bytes(download_size):
+    """Best-effort parse of the indexer-advertised size (bytes) into an int.
+
+    ``download_size`` is the selected result's ``size`` threaded through as
+    ``params['_download_size']`` -- a digit string of bytes from Prowlarr /
+    NZBHydra2, but tolerate ints/floats and stray formatting too. Returns 0
+    (unknown) on anything unparseable so callers fail OPEN. Mirrors router's
+    ``_result_size_bytes`` without importing it (avoids a resolver->router
+    dependency).
+    """
+    if isinstance(download_size, bool):
+        return 0
+    if isinstance(download_size, (int, float)):
+        return int(download_size) if download_size > 0 else 0
+    if isinstance(download_size, str):
+        text = download_size.strip().replace(",", "")
+        if not text:
+            return 0
+        try:
+            return max(0, int(float(text)))
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
+
+def _discovered_video_is_stub(video_path, download_size, title):
+    """Return True when a non-pack release's discovered video is implausibly
+    small versus the indexer-advertised size (nzbdav's job-start stub, #282).
+
+    nzbdav writes a small placeholder ``.mp4`` when a job starts; the completed
+    WebDAV scan can return it seconds after submit, and streaming it plays ~30s
+    of a stub instead of the feature. Compare the discovered file's size
+    (captured by webdav discovery as a PROPFIND ``getcontentlength`` hint)
+    against the advertised release size and reject anything far below it.
+
+    Fails OPEN (returns ``False``) when either size is unknown, so a missing
+    field never blocks a real stream, and is skipped for packs -- a pack's
+    advertised size spans every episode, so one picked episode is legitimately
+    a fraction of it.
+    """
+    advertised = _advertised_size_bytes(download_size)
+    if advertised <= 0:
+        return False
+    try:
+        from resources.lib.filter import release_is_pack
+
+        if release_is_pack(title):
+            return False
+    except Exception:  # pylint: disable=broad-except
+        # Pack detection unavailable -> treat as single-file so the guard still
+        # protects the reported (movie) case; the fraction floor is the net.
+        pass
+    try:
+        from resources.lib import webdav as _webdav
+
+        found = _webdav.get_video_file_size_hint(video_path)
+    except Exception:  # pylint: disable=broad-except
+        return False
+    if found <= 0:
+        return False
+    return found < advertised * _STUB_VIDEO_MIN_ADVERTISED_FRACTION
+
+
 def _handle_history_result(
     history,
     title,
@@ -3619,6 +3694,7 @@ def _handle_history_result(
     monitor=None,
     settings_getter=None,
     modal_failures=True,
+    download_size=None,
 ):
     """Handle history-based completion and failure states.
 
@@ -3665,6 +3741,21 @@ def _handle_history_result(
         settings_getter=settings_getter,
         title_hint=title,
     )
+    # #282: reject nzbdav's job-start stub before the body probe. A single-file
+    # release whose discovered video is far below the advertised release size is
+    # the placeholder .mp4 nzbdav writes at job start, not the feature. Null it
+    # out so neither the happy path nor the body-unavailable branch adopts it,
+    # and keep polling for the real download. Skipped for packs / unknown sizes.
+    stub_rejected = False
+    if video_path and _discovered_video_is_stub(video_path, download_size, title):
+        xbmc.log(
+            "NZB-DAV: '{}' discovered video '{}' is far smaller than the "
+            "advertised release size; treating as nzbdav job-start stub and "
+            "awaiting the real download".format(title, video_path),
+            xbmc.LOGWARNING,
+        )
+        stub_rejected = True
+        video_path = stream_url = stream_headers = None
     if video_path and _completed_stream_body_available(stream_url, stream_headers):
         xbmc.log(
             "NZB-DAV: File available, streaming '{}' via WebDAV".format(video_path),
@@ -3694,7 +3785,21 @@ def _handle_history_result(
 
     no_video_retries += 1
     if no_video_retries >= max_no_video_retries:
-        if body_unavailable:
+        if stub_rejected:
+            xbmc.log(
+                "NZB-DAV: '{}' only ever exposed a stub far smaller than the "
+                "advertised release size after {} attempts (storage='{}')".format(
+                    title, no_video_retries, storage
+                ),
+                xbmc.LOGERROR,
+            )
+            msg = (
+                "Download appears to be a placeholder/stub file much smaller "
+                "than the advertised release size:\n{}\n\nnzbdav may still be "
+                "fetching the real file, or this release's articles are "
+                "missing. Try again, or pick a different release."
+            ).format(webdav_folder)
+        elif body_unavailable:
             xbmc.log(
                 "NZB-DAV: '{}' completed but its mid-file body stayed "
                 "unavailable after {} attempts (storage='{}')".format(
@@ -3891,6 +3996,7 @@ def _poll_until_ready(
                 monitor=monitor,
                 settings_getter=settings_getter,
                 modal_failures=settings_getter is None,
+                download_size=download_size,
             )
         )
         if stream_url:
