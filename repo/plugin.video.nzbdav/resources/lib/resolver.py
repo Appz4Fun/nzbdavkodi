@@ -2088,16 +2088,6 @@ _COMPLETED_NO_VIDEO_RECHECK_DELAYS_SECONDS = (0.025, 0.075, 0.1)
 # episode is legitimately a fraction of the whole-pack advertised size.
 _STUB_VIDEO_MIN_ADVERTISED_FRACTION = 0.5
 
-# #340: stub rejections must NOT consume the short symlink-visibility budget
-# (max_no_video_retries, ~5 poll ticks ≈ 5s at the 1s minimum interval). nzbdav
-# flips history to Completed the instant its job-start placeholder lands, so the
-# real tens-of-GB body can still be materializing for minutes. Give stub
-# rejections their own large ceiling so the poll loop keeps waiting -- its own
-# download_timeout / MAX_POLL_ITERATIONS guard is the real stop authority, and
-# this count is the fallback so a release that ONLY ever exposes the stub still
-# surfaces the stub dialog rather than silently waiting out the full timeout.
-_MAX_STUB_RETRIES = 600
-
 
 def _job_nzo_id(match):
     if isinstance(match, dict) and match.get("nzo_id"):
@@ -3760,7 +3750,6 @@ def _handle_history_result(
     settings_getter=None,
     modal_failures=True,
     download_size=None,
-    max_stub_retries=None,
 ):
     """Handle history-based completion and failure states.
 
@@ -3809,10 +3798,15 @@ def _handle_history_result(
     )
     # #282: reject nzbdav's job-start stub before the body probe. A single-file
     # release whose discovered video is far below the advertised release size is
-    # the placeholder .mp4 nzbdav writes at job start, not the feature. Null it
-    # out so neither the happy path nor the body-unavailable branch adopts it,
-    # and keep polling for the real download. Skipped for packs / unknown sizes.
-    stub_rejected = False
+    # the placeholder .mp4 nzbdav writes at job start, not the feature. Keep
+    # polling for the real download and return immediately WITHOUT touching the
+    # no-video retry counter: that budget is the short symlink-visibility window,
+    # and nzbdav may report Completed the instant the stub lands while the real
+    # tens-of-GB body is still in flight. Consuming it would (a) fail an
+    # in-flight download after ~5s and (b) starve a later genuine
+    # symlink-visibility gap of its retries (#340 review). The poll loop's own
+    # download_timeout is the stop authority, so a configured long wait is
+    # honored; the stub never plays. Skipped for packs / unknown sizes.
     if video_path and _discovered_video_is_stub(video_path, download_size, title):
         xbmc.log(
             "NZB-DAV: '{}' discovered video '{}' is far smaller than the "
@@ -3820,8 +3814,7 @@ def _handle_history_result(
             "awaiting the real download".format(title, video_path),
             xbmc.LOGWARNING,
         )
-        stub_rejected = True
-        video_path = stream_url = stream_headers = None
+        return False, None, None, no_video_retries
     if video_path and _completed_stream_body_available(stream_url, stream_headers):
         xbmc.log(
             "NZB-DAV: File available, streaming '{}' via WebDAV".format(video_path),
@@ -3849,32 +3842,9 @@ def _handle_history_result(
     # articles) instead of misdirecting the user to WebDAV settings.
     body_unavailable = bool(video_path)
 
-    # #340: a stub rejection must not be failed at the short symlink-visibility
-    # budget while the real download may still be in flight. Gate the stub case
-    # on the larger _MAX_STUB_RETRIES ceiling so the poll loop keeps waiting up
-    # to its download_timeout; body-unavailable / no-video keep the short
-    # budget. no_video_retries still increments either way (preserves the
-    # 4th-return-value contract), only the ceiling it is compared against moves.
-    if stub_rejected and max_stub_retries is None:
-        max_stub_retries = max(max_no_video_retries, _MAX_STUB_RETRIES)
-    exhaustion_budget = max_stub_retries if stub_rejected else max_no_video_retries
     no_video_retries += 1
-    if no_video_retries >= exhaustion_budget:
-        if stub_rejected:
-            xbmc.log(
-                "NZB-DAV: '{}' only ever exposed a stub far smaller than the "
-                "advertised release size after {} attempts (storage='{}')".format(
-                    title, no_video_retries, storage
-                ),
-                xbmc.LOGERROR,
-            )
-            msg = (
-                "Download appears to be a placeholder/stub file much smaller "
-                "than the advertised release size:\n{}\n\nnzbdav may still be "
-                "fetching the real file, or this release's articles are "
-                "missing. Try again, or pick a different release."
-            ).format(webdav_folder)
-        elif body_unavailable:
+    if no_video_retries >= max_no_video_retries:
+        if body_unavailable:
             xbmc.log(
                 "NZB-DAV: '{}' completed but its mid-file body stayed "
                 "unavailable after {} attempts (storage='{}')".format(
@@ -4073,7 +4043,6 @@ def _poll_until_ready(
                 settings_getter=settings_getter,
                 modal_failures=settings_getter is None,
                 download_size=download_size,
-                max_stub_retries=_MAX_STUB_RETRIES,
             )
         )
         if stream_url:

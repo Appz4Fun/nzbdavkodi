@@ -1257,6 +1257,28 @@ def test_release_is_pack_false_for_complete_titled_movie():
     assert release_is_pack("Some.Movie.Complete.2024.1080p.BluRay-GRP") is False
 
 
+def test_release_is_pack_false_for_single_episode_tagged_complete():
+    """#340 review: a single SxxExx that also carries a 'COMPLETE' token (PTT:
+    one season, one episode, complete=True) is one episode, not a pack — its
+    advertised size is for that episode, so the stub guard must stay active."""
+    assert release_is_pack("Some.Show.S01E05.COMPLETE.1080p.WEB-DL-GRP") is False
+
+
+def test_release_is_pack_false_for_collection_word_in_movie_title():
+    """#340 review: a movie whose own title contains a collection/series word
+    (with 'Complete' separated by the year, or no 'Complete' at all) must NOT be
+    classified as a pack — only adjacent 'Complete Collection'-style phrasing is
+    a pack signal."""
+    assert release_is_pack("The.Collection.2012.COMPLETE.1080p.BluRay-GRP") is False
+    assert release_is_pack("Marvel.Collection.2024.1080p.BluRay-GRP") is False
+
+
+def test_release_is_pack_true_for_reversed_complete_series_phrasing():
+    """'<Show>.Series.Complete' (words adjacent, reversed order) is still a
+    whole-series pack."""
+    assert release_is_pack("Breaking.Bad.Series.Complete.1080p.BluRay-GRP") is True
+
+
 def test_release_is_pack_true_for_nxn_episode_range():
     """PTT collapses '1x01-1x10' to seasons=[1] episodes=[1], so the
     episode/season-count checks miss it. _episode_tags expands the NxN range,

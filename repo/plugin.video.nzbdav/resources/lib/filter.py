@@ -526,16 +526,27 @@ def parse_title_metadata(title):
     }
 
 
-# Pack-context tokens that, alongside PTT's ``complete`` flag, mark a
-# season-tag-less release as a genuine multi-item pack ("Complete Collection /
-# Series", box sets, sagas) rather than a single-file movie whose title merely
-# contains a standalone "Complete" word (e.g. ``Complete.Unknown.2024``). PTT
-# exposes no collection/series flag, so the raw title is the only signal.
-_PACK_CONTEXT_TOKEN_RE = re.compile(
-    r"(?i)(?<![a-z])("
-    r"collections?|series|saga|box[ ._-]?sets?|mini[ ._-]?series|"
-    r"anthology|duology|trilogy|quadrilogy|complete[ ._-]?pack"
-    r")(?![a-z])"
+# Whole-collection / complete-series PHRASING that marks a season-tag-less
+# release as a multi-item pack: the word "complete" ADJACENT to a
+# collection/series/saga/set keyword (either order), or "box set" / "mini
+# series". Matching the phrase -- not PTT's bare ``complete`` flag, nor a lone
+# "collection"/"series" word -- is what keeps the #282 stub guard ACTIVE for a
+# movie whose title merely contains "Complete" (``Complete.Unknown.2024``) or
+# "Collection" (``The.Collection.2012.COMPLETE`` -- the year separates the
+# words, so no phrase matches). PTT exposes no collection flag, so the raw
+# title is the only signal (#340 review).
+_PACK_KEYWORD = (
+    r"collections?|series|saga|seasons?|sets?|pack|anthology|"
+    r"trilogy|duology|quadrilogy|filmography"
+)
+_PACK_PHRASE_RE = re.compile(
+    r"(?<![a-z])(?:"
+    r"complete[ ._-]+(?:" + _PACK_KEYWORD + r")"
+    r"|(?:" + _PACK_KEYWORD + r")[ ._-]+complete"
+    r"|box[ ._-]?sets?"
+    r"|mini[ ._-]?series"
+    r")(?![a-z])",
+    re.IGNORECASE,
 )
 
 
@@ -551,10 +562,10 @@ def release_is_pack(title):
     ``S01E01E02E03`` multi-tags and ``1x01-1x10`` / ``S01E01-E10`` ranges,
     which PTT collapses to a single episode but ``_episode_tags`` expands),
     more than one season, a whole season with no single episode (e.g. ``S01``,
-    ``S01-S05 COMPLETE``), or is flagged ``complete`` AND carries real
-    multi-item context -- a season/episode tag or a collection/series/box-set
-    token. A bare standalone "Complete" in a movie title (PTT: complete=True,
-    seasons=[], episodes=[]) is NOT a pack, nor is a movie or single ``SxxExx``.
+    ``S01-S05 COMPLETE``), or carries whole-collection PHRASING ("Complete
+    Collection / Series", "Box Set"). A movie, a single ``SxxExx`` (even one
+    tagged ``COMPLETE``), and a movie whose title merely contains "Complete" or
+    "Collection" are NOT packs -- they keep the stub guard.
 
     On a missing title or a PTT parse error this returns ``False`` ("not a
     pack"), which only ever leaves the caller's size-guard *active* (never
@@ -563,6 +574,11 @@ def release_is_pack(title):
     """
     if not isinstance(title, str) or not title:
         return False
+    # Season-tag-less collection/complete-series packs, matched as a phrase so a
+    # "Complete"-titled movie or a "Collection" in a movie title does not skip
+    # the stub guard (#340 review).
+    if _PACK_PHRASE_RE.search(title):
+        return True
     # NxN-range packs ("1x01-1x10") and multi-episode tags ("S01E01E02E03")
     # collapse in PTT to a single (season, episode), so the season/episode-count
     # checks below miss them. webdav._episode_tags expands NxN ranges, SxxExx
@@ -587,13 +603,6 @@ def release_is_pack(title):
     if len(episodes) > 1:
         return True
     if len(seasons) > 1:
-        return True
-    # ``complete`` marks a pack only with real multi-item context: a
-    # season/episode tag, or a collection/series/box-set token. A bare
-    # standalone "Complete" in a movie title must NOT skip the #282 stub guard.
-    if parsed.get("complete") and (
-        seasons or episodes or _PACK_CONTEXT_TOKEN_RE.search(title)
-    ):
         return True
     # A season tag with no single episode is a whole-season pack.
     return bool(seasons) and not episodes
