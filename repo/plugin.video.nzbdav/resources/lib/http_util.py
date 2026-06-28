@@ -57,6 +57,8 @@ _EMBEDDED_CRED_RE = re.compile(
 # same way ``redact_url`` does — handles both.
 _EMBEDDED_URL_RE = re.compile(r"(?:smb|https?|ftp)://[^\s\"'<>]+", re.IGNORECASE)
 
+_FRACTIONAL_SECONDS_RE = re.compile(r"\.\d+")
+
 
 def redact_url(url):
     """Redact API keys and other credential-style params from URLs for safe logging.
@@ -347,7 +349,7 @@ def iso8601_to_rfc2822(value):
     # .NET (Prowlarr's stack) can emit up to 7 fractional-second digits,
     # which pre-3.11 ``datetime.fromisoformat`` rejects; sub-second
     # precision is irrelevant for identity/sort/age, so drop it.
-    text = re.sub(r"\.\d+", "", text)
+    text = _FRACTIONAL_SECONDS_RE.sub("", text)
     # ``fromisoformat`` only accepts a trailing 'Z' from Python 3.11 on;
     # map it to an explicit UTC offset for older Kodi runtimes (3.8–3.9).
     if text[-1:] in ("Z", "z"):
