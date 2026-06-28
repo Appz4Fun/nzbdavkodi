@@ -78,6 +78,14 @@ urlopen = _NO_REDIRECT_OPENER.open  # noqa: F811
 _SAFE_JOB_RE = re.compile(r"^[A-Za-z0-9._ \[\]-]+$")
 _CONTENT_RANGE_RE = re.compile(r"^bytes\s+(\d+)-(\d+)/(\d+|\*)$")
 _NON_WORD_RE = re.compile(r"[\W_]+")
+# Conjunction words that name the same work whether spelled out, written as
+# "&", or omitted entirely ("Friends & Neighbors" / "Friends and Neighbors" /
+# "Friends Neighbors", "Jules et Jim" / "Jules Jim"). ``_normalize_title`` drops
+# these as standalone tokens so all spellings share one content identity. Kept
+# to the few high-confidence forms: English "and", French "et", German "und".
+# Single-letter conjunctions (Spanish "y"/"e", Polish "i") are excluded -- they
+# collide with stray single-character junk tokens and would over-collapse.
+_CONJUNCTION_TOKENS = frozenset(("and", "et", "und"))
 _INVALID_TITLE_RE = re.compile(r"[^A-Za-z0-9._ -]+")
 _FINGERPRINT_SAMPLE_COUNT = 100
 _FINGERPRINT_SMALL_SAMPLE_COUNT = 20
@@ -406,15 +414,25 @@ def _normalize_title(value):
     """Normalize release titles for conservative duplicate grouping."""
     if not isinstance(value, str):
         return ""
-    normalized = _NON_WORD_RE.sub(" ", value.lower())
-    # Treat "&", the literal word "and", and an omitted conjunction as one
-    # identity: drop a standalone "and" token so "Friends & Neighbors"
-    # (the "&" is already stripped by the non-word sub), "Friends and
-    # Neighbors", and "Friends Neighbors" all normalize equal and peer as
-    # fallbacks. Only a whole "and" word is dropped -- substrings stay intact
-    # (e.g. "Andromeda" is untouched), and ordinal words like Part "One"/"Two"
-    # are not conjunctions, so part/chapter discrimination is unaffected.
-    return " ".join(token for token in normalized.split() if token != "and")
+    # "&amp;" is the XML/HTML escape for "&". XML parsing normally decodes it,
+    # but double-escaped feeds ("&amp;amp;") leave a literal "&amp;" in the
+    # title; rewrite the exact entity to "&" so it collapses to nothing (like a
+    # bare "&") instead of leaving a stray "amp" token. The rewrite is exact, so
+    # a genuine "amp" word (e.g. "Marshall Amp") is left untouched.
+    lowered = value.lower().replace("&amp;", "&")
+    normalized = _NON_WORD_RE.sub(" ", lowered)
+    # Treat "&", the conjunction words ("and" plus the common foreign forms
+    # "et"/"und"), and an omitted conjunction as one identity: drop a standalone
+    # conjunction token so "Friends & Neighbors" (the "&" is already stripped by
+    # the non-word sub), "Friends and Neighbors", "Friends Neighbors", and
+    # "Jules et Jim"/"Jules Jim" all normalize equal and peer as fallbacks. Only
+    # a whole conjunction WORD is dropped -- substrings stay intact (e.g.
+    # "Andromeda"/"Planet"/"Underworld"), and ordinal words like Part
+    # "One"/"Two" are not conjunctions, so part/chapter discrimination is
+    # unaffected.
+    return " ".join(
+        token for token in normalized.split() if token not in _CONJUNCTION_TOKENS
+    )
 
 
 # Ordinal words PTT keeps inside a movie title (e.g. "Dune Part Two",

@@ -3910,6 +3910,89 @@ def test_same_content_peers_conjunction_variants():
     assert fs._same_content(amp, omitted) is True
 
 
+def test_normalize_title_collapses_foreign_conjunctions():
+    """French "et" and German "und" are conjunctions too, like "and"/"&".
+
+    "Jules et Jim" / "Jules and Jim" / "Jules Jim" name the same work, as do the
+    "und" spellings, so every variant must normalize to one shared identity.
+    """
+    from resources.lib import fallback_streams as fs
+
+    assert (
+        fs._normalize_title("Jules et Jim")
+        == fs._normalize_title("Jules and Jim")
+        == fs._normalize_title("Jules Jim")
+        == "jules jim"
+    )
+    assert (
+        fs._normalize_title("Dog Day und Night")
+        == fs._normalize_title("Dog Day and Night")
+        == fs._normalize_title("Dog Day Night")
+        == "dog day night"
+    )
+
+
+def test_normalize_title_collapses_double_escaped_ampersand():
+    """A literal "&amp;" (from a double-escaped feed) collapses like a bare "&".
+
+    XML parsing normally decodes "&amp;" to "&", but double-escaped feeds
+    ("&amp;amp;") leave the literal entity in the title. It must collapse to the
+    same identity as "&", "and", and the omitted form -- not leave a stray
+    "amp" token. A real "amp" WORD must be left untouched.
+    """
+    from resources.lib import fallback_streams as fs
+
+    assert (
+        fs._normalize_title("Cats &amp; Dogs")
+        == fs._normalize_title("Cats & Dogs")
+        == fs._normalize_title("Cats and Dogs")
+        == fs._normalize_title("Cats Dogs")
+        == "cats dogs"
+    )
+    # The "&amp;" rewrite is exact: a genuine "amp" word is not a conjunction.
+    assert fs._normalize_title("Marshall Amp Sessions") == "marshall amp sessions"
+
+
+def test_normalize_title_only_drops_whole_conjunction_words():
+    """REGRESSION GUARD: only standalone conjunction WORDS are dropped.
+
+    A conjunction spelled as a substring of a real word (e.g. "et" in "Planet",
+    "und" in "Underworld", "and" in "Andromeda") must survive untouched -- the
+    collapse is whole-token only.
+    """
+    from resources.lib import fallback_streams as fs
+
+    assert fs._normalize_title("Planet of the Apes") == "planet of the apes"
+    assert fs._normalize_title("Underworld") == "underworld"
+    assert fs._normalize_title("Andromeda") == "andromeda"
+
+
+def test_same_content_peers_foreign_conjunction_variants():
+    """A yearless/episode-less title peers across "et"/"and"/omitted forms."""
+    from resources.lib import fallback_streams as fs
+
+    et_form = _result(
+        "Jules.et.Jim.1080p.BluRay.x264-GROUP",
+        "https://idx/et.nzb",
+        6000000000,
+    )
+    and_form = _result(
+        "Jules.and.Jim.1080p.BluRay.x264-GROUP",
+        "https://idx/and.nzb",
+        6000000000,
+    )
+    omitted = _result(
+        "Jules.Jim.1080p.BluRay.x264-GROUP",
+        "https://idx/omitted.nzb",
+        6000000000,
+    )
+
+    assert fs._same_content(et_form, and_form) is True
+    assert fs._same_content(and_form, et_form) is True
+    assert fs._same_content(et_form, omitted) is True
+    assert fs._same_content(omitted, et_form) is True
+
+
 def test_same_episode_with_part_token_matches_bare_repost():
     """An episode that carries an episode-title Part/Chapter token must still
     peer with the same SxxExx posted without that token.
