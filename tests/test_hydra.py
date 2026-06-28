@@ -183,6 +183,50 @@ def test_search_hydra_no_caps_tvdb_fallback_strips_tvdbid(mock_settings):
     assert "q=Breaking+Bad" in fallback_url or "q=Breaking%20Bad" in fallback_url
 
 
+def test_legacy_hydra_title_fallback_strips_ampersand():
+    """The no-caps legacy fallback rebuilds q= from the RAW caller title, which
+    bypasses the planner-level clean. It must strip '&' itself (#294) or the
+    broadening retry re-sends a '&' term no release name carries."""
+    from resources.lib.hydra import _legacy_hydra_title_fallback
+
+    primary = {"apikey": "k", "t": "tvsearch", "tvdbid": "305288", "season": "1"}
+    fallback = _legacy_hydra_title_fallback(primary, "Will & Grace")
+
+    assert fallback["q"] == "Will Grace"
+    assert "&" not in fallback["q"]
+    assert "tvdbid" not in fallback  # still drops the failing id (#318)
+
+
+@patch("resources.lib.hydra._get_settings")
+def test_search_hydra_no_caps_title_fallback_strips_ampersand(mock_settings):
+    """End-to-end: with no provider caps the broadening retry's q= must be
+    '&'-free, matching the de-ampersanded query the planner already sends on the
+    primary (#294)."""
+    mock_settings.return_value = ("http://hydra:5076", "testkey")
+    empty_rss = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<rss version="2.0" '
+        'xmlns:newznab="http://www.newznab.com/DTD/2010/feeds/attributes/">'
+        '<channel><newznab:response offset="0" total="0"/></channel></rss>'
+    )
+    with patch("resources.lib.hydra._http_get") as mock_http, patch(
+        "resources.lib.hydra.load_provider_caps"
+    ) as mock_load_caps:
+        mock_load_caps.return_value = {}  # no caps -> legacy fallback path
+        mock_http.side_effect = [empty_rss, empty_rss]
+
+        results, error = hydra.search_hydra(
+            "episode", "Will & Grace", tvdb="305288", season="1", episode="1"
+        )
+
+    assert error is None
+    assert mock_http.call_count == 2
+    fallback_url = mock_http.call_args_list[1][0][0]
+    assert "tvdbid" not in fallback_url  # fallback dropped the failing id
+    assert "%26" not in fallback_url  # '&' stripped, not URL-encoded literal
+    assert _query_params(fallback_url)["q"] == "Will Grace"
+
+
 def test_parse_results_movie():
     xml_text = _load_fixture("hydra_movie_response.xml")
     results = parse_results(xml_text)
