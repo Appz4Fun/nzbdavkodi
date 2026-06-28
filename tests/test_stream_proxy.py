@@ -2153,18 +2153,21 @@ def test_prepare_stream_prefetches_initial_passthrough_bytes_before_first_get():
             first_write_at.append(time.monotonic())
 
     handler.wfile.write.side_effect = record_first_write
-    with patch("resources.lib.stream_proxy.urlopen", side_effect=slow_first_get):
-        started = time.monotonic()
+    with patch(
+        "resources.lib.stream_proxy.urlopen", side_effect=slow_first_get
+    ) as slow_open:
         result, written = handler._stream_upstream_range(ctx, 0, len(payload) - 1)
 
     assert result == _UPSTREAM_RANGE_OK
     assert written == len(payload)
     assert _collect_written(handler) == payload
     assert first_write_at, "proxy did not write first playable bytes"
-    first_byte_elapsed = first_write_at[0] - started
-    assert first_byte_elapsed < 0.5, "first proxy byte took {:.3f}s".format(
-        first_byte_elapsed
-    )
+    # Structural guard (replaces a wall-clock bound): the prepared byte-0 prefetch
+    # is served directly, so the duplicate upstream range GET must never run. A
+    # regression that ignored the prefetch and reopened the range would call
+    # urlopen here and fail deterministically, instead of slipping under a
+    # wall-clock ceiling that exceeds the mocked 0.08s GET delay.
+    slow_open.assert_not_called()
     assert prefetch_started.is_set()
     assert prefetch_finished.is_set()
 
@@ -2547,6 +2550,7 @@ def test_fallback_prevalidation_does_not_delay_initial_prefetch_first_bytes():
     network_slot = threading.Lock()
     prefetch_started = threading.Event()
     prevalidation_started = threading.Event()
+    slot_order = []
 
     def prefetch_bytes(url, auth_header, start, end, content_length):
         assert url == "http://host/movie.mkv"
@@ -2558,6 +2562,7 @@ def test_fallback_prevalidation_does_not_delay_initial_prefetch_first_bytes():
         # same upstream link before this byte-0 prefetch can finish.
         prevalidation_started.wait(0.03)
         with network_slot:
+            slot_order.append("prefetch")
             time.sleep(0.01)
         return payload
 
@@ -2565,6 +2570,7 @@ def test_fallback_prevalidation_does_not_delay_initial_prefetch_first_bytes():
         assert prefetch_started.wait(timeout=1)
         prevalidation_started.set()
         with network_slot:
+            slot_order.append("prevalidation")
             time.sleep(0.12)
 
     def duplicate_first_get(_req, timeout=None):  # pylint: disable=unused-argument
@@ -2600,6 +2606,17 @@ def test_fallback_prevalidation_does_not_delay_initial_prefetch_first_bytes():
             auth_header="Basic primary",
             fallback_sources=fallback_sources,
         )
+        # Byte-0 prefetch and fallback prevalidation run on background threads;
+        # join them while their mocks are still patched so the network-slot
+        # contention this test models is actually exercised. The correct warmer
+        # defers itself behind the prefetch, so the prefetch wins the slot first.
+        prepare_ctx = sp._server.stream_context
+        prefetch_thread = prepare_ctx.get("_initial_range_prefetch_thread")
+        if prefetch_thread:
+            prefetch_thread.join(timeout=1)
+        prevalidation_thread = prepare_ctx.get("_fallback_prevalidation_thread")
+        if prevalidation_thread:
+            prevalidation_thread.join(timeout=1)
 
     ctx = sp._server.stream_context
     handler = _make_handler_with_server(ctx, range_header="bytes=0-4095")
@@ -2611,7 +2628,6 @@ def test_fallback_prevalidation_does_not_delay_initial_prefetch_first_bytes():
 
     handler.wfile.write.side_effect = record_first_write
     with patch("resources.lib.stream_proxy.urlopen", side_effect=duplicate_first_get):
-        started = time.monotonic()
         result, written = handler._stream_upstream_range(ctx, 0, len(payload) - 1)
 
     thread = ctx.get("_fallback_prevalidation_thread")
@@ -2622,11 +2638,17 @@ def test_fallback_prevalidation_does_not_delay_initial_prefetch_first_bytes():
     assert written == len(payload)
     assert _collect_written(handler) == payload
     assert first_write_at, "proxy did not write first playable bytes"
-    first_byte_elapsed = first_write_at[0] - started
+    # Structural guard (replaces a wall-clock bound): the byte-0 prefetch must win
+    # the shared upstream "network slot" before fallback prevalidation. The correct
+    # warmer defers prevalidation behind the prefetch thread, so the prefetch
+    # acquires the slot first; a regression that prevalidated concurrently would
+    # grab the slot first and starve byte-0. Ordering is deterministic, not
+    # wall-clock.
+    assert slot_order, "neither byte-0 prefetch nor prevalidation acquired the slot"
     assert (
-        first_byte_elapsed < 0.5
-    ), "fallback prevalidation delayed first playable bytes by {:.3f}s".format(
-        first_byte_elapsed
+        slot_order[0] == "prefetch"
+    ), "fallback prevalidation contended with the byte-0 prefetch: {}".format(
+        slot_order
     )
 
 
@@ -8333,8 +8355,12 @@ def test_serve_proxy_failure_toast_does_not_delay_next_candidate_cutover():
         timings["candidate2_started_at"] = time.perf_counter()
         return _UPSTREAM_RANGE_OK, 10
 
+    notify_calls = []
+
     def slow_notify(_title, _message):
+        entered = time.perf_counter()
         time.sleep(0.12)
+        notify_calls.append((entered, time.perf_counter()))
 
     with patch.object(
         handler, "_stream_upstream_range", side_effect=stream_range
@@ -8347,10 +8373,20 @@ def test_serve_proxy_failure_toast_does_not_delay_next_candidate_cutover():
     ):
         handler._serve_proxy(ctx)
 
-    cutover_delay = timings["candidate2_started_at"] - timings["candidate1_failed_at"]
-    assert (
-        cutover_delay < 0.5
-    ), "candidate #2 cutover waited {:.3f}s on the failure toast".format(cutover_delay)
+    # Structural guard (replaces a wall-clock bound): no failure toast may run to
+    # completion between candidate #1's failure and candidate #2's read. A
+    # regression that blocked _serve_proxy on the 0.12s notification records a
+    # notify that entered at/after the failure and returned before candidate #2
+    # started; the correct path defers or backgrounds it, so this stays empty
+    # regardless of machine speed.
+    candidate1_failed_at = timings["candidate1_failed_at"]
+    candidate2_started_at = timings["candidate2_started_at"]
+    blocking_toasts = [
+        (entered, returned)
+        for entered, returned in notify_calls
+        if entered >= candidate1_failed_at and returned <= candidate2_started_at
+    ]
+    assert not blocking_toasts, "candidate #2 cutover waited on the failure toast"
 
 
 def test_serve_proxy_starts_fallback_stream_before_slow_switch_notification():
@@ -8389,8 +8425,12 @@ def test_serve_proxy_starts_fallback_stream_before_slow_switch_notification():
         assert stream_ctx["remote_url"] == "http://webdav/fallback.mkv"
         return _UPSTREAM_RANGE_OK, 10
 
+    notify_calls = []
+
     def slow_notify(_title, _message):
+        entered = time.perf_counter()
         time.sleep(0.12)
+        notify_calls.append((entered, time.perf_counter()))
 
     with patch.object(
         handler,
@@ -8406,12 +8446,21 @@ def test_serve_proxy_starts_fallback_stream_before_slow_switch_notification():
     ):
         handler._serve_proxy(ctx)
 
-    cutover_delay = (
-        timings["fallback_stream_started_at"] - timings["upstream_error_returned_at"]
-    )
-    assert (
-        cutover_delay < 0.5
-    ), "fallback stream start waited {:.3f}s after upstream error".format(cutover_delay)
+    # Structural guard (replaces a wall-clock bound): the first fallback read must
+    # begin before the switch notification returns. A regression that blocked
+    # _serve_proxy on the 0.12s notification records a notify that entered at/after
+    # the upstream error and returned before the fallback stream started; the
+    # correct path defers or backgrounds it, so this stays empty regardless of
+    # machine speed.
+    upstream_error_returned_at = timings["upstream_error_returned_at"]
+    fallback_stream_started_at = timings["fallback_stream_started_at"]
+    blocking_toasts = [
+        (entered, returned)
+        for entered, returned in notify_calls
+        if entered >= upstream_error_returned_at
+        and returned <= fallback_stream_started_at
+    ]
+    assert not blocking_toasts, "fallback read waited on the switch notification"
 
 
 def test_select_live_fallback_rejects_same_length_different_fingerprint():
@@ -11528,9 +11577,21 @@ def test_fallback_cutover_parallelizes_fingerprint_probes_before_first_byte():
         handler.wfile.write(b"F" * (end - start + 1))
         return _UPSTREAM_RANGE_OK, end - start + 1
 
+    digest_lock = threading.Lock()
+    digest_concurrency = {"current": 0, "max": 0}
+
     def digest(url, auth_header, start, end, content_length, probe_bases=None):
         del url, auth_header, content_length, probe_bases
-        time.sleep(0.006)
+        with digest_lock:
+            digest_concurrency["current"] += 1
+            digest_concurrency["max"] = max(
+                digest_concurrency["max"], digest_concurrency["current"]
+            )
+        try:
+            time.sleep(0.006)
+        finally:
+            with digest_lock:
+                digest_concurrency["current"] -= 1
         return "digest-{}-{}".format(start, end)
 
     with patch.object(
@@ -11544,10 +11605,14 @@ def test_fallback_cutover_parallelizes_fingerprint_probes_before_first_byte():
     ):
         handler._serve_proxy(ctx)
 
-    cutover_elapsed = timestamps["fallback_first_byte"] - timestamps["primary_error"]
-    assert cutover_elapsed < 0.5, "fallback cutover took {:.3f}s".format(
-        cutover_elapsed
-    )
+    # Structural guard (replaces a wall-clock bound): the fingerprint probes must
+    # run concurrently before the first fallback byte. With 20 ranges at 6ms each,
+    # serial validation peaks at a concurrency of 1; parallel validation overlaps
+    # several digests, so requiring >1 catches a regression that serializes them,
+    # independent of machine speed.
+    assert (
+        digest_concurrency["max"] > 1
+    ), "fallback fingerprint probes were not parallelized"
     assert _collect_written(handler) == b"F" * (range_end - failed_byte + 1)
 
 
