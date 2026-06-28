@@ -407,7 +407,14 @@ def _normalize_title(value):
     if not isinstance(value, str):
         return ""
     normalized = _NON_WORD_RE.sub(" ", value.lower())
-    return " ".join(normalized.split())
+    # Treat "&", the literal word "and", and an omitted conjunction as one
+    # identity: drop a standalone "and" token so "Friends & Neighbors"
+    # (the "&" is already stripped by the non-word sub), "Friends and
+    # Neighbors", and "Friends Neighbors" all normalize equal and peer as
+    # fallbacks. Only a whole "and" word is dropped -- substrings stay intact
+    # (e.g. "Andromeda" is untouched), and ordinal words like Part "One"/"Two"
+    # are not conjunctions, so part/chapter discrimination is unaffected.
+    return " ".join(token for token in normalized.split() if token != "and")
 
 
 # Ordinal words PTT keeps inside a movie title (e.g. "Dune Part Two",

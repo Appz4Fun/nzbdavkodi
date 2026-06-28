@@ -3846,6 +3846,70 @@ def test_same_content_rejects_part_one_vs_part_two():
     assert fs._same_content(part_two, part_one) is False
 
 
+def test_normalize_title_collapses_conjunction_spellings():
+    """ "&", the literal word "and", and an omitted conjunction are one identity.
+
+    "Your Friends & Neighbors", "Your.Friends.and.Neighbors", and
+    "Your.Friends.Neighbors" all name the same work; normalization must
+    collapse all three spellings to a single token sequence so they peer.
+    """
+    from resources.lib import fallback_streams as fs
+
+    amp = fs._normalize_title("Your Friends & Neighbors")
+    andd = fs._normalize_title("Your Friends and Neighbors")
+    omitted = fs._normalize_title("Your Friends Neighbors")
+
+    assert amp == andd == omitted == "your friends neighbors"
+
+
+def test_normalize_title_preserves_part_ordinals():
+    """REGRESSION GUARD: dropping "and" must not weaken part/chapter discrimination.
+
+    The conjunction collapse strips only a standalone "and"; ordinal words that
+    distinguish "Part One" from "Part Two" must survive intact, and a substring
+    like "and" inside a real word (e.g. "Andromeda") must not be touched.
+    """
+    from resources.lib import fallback_streams as fs
+
+    assert fs._normalize_title("Dune Part One") == "dune part one"
+    assert fs._normalize_title("Dune Part Two") == "dune part two"
+    assert fs._normalize_title("Dune Part One") != fs._normalize_title("Dune Part Two")
+    assert fs._normalize_title("Andromeda") == "andromeda"
+
+
+def test_same_content_peers_conjunction_variants():
+    """A yearless/episode-less title peers across "&", "and", and omitted forms.
+
+    Without a year or episode to corroborate identity, the title comparison must
+    stand on its own. Before the conjunction collapse, only "&"-vs-omitted
+    peered; the surviving literal "and" token diverged, so "and"-vs-omitted and
+    "and"-vs-"&" missed legitimate fallback peers.
+    """
+    from resources.lib import fallback_streams as fs
+
+    amp = _result(
+        "Your.Friends.&.Neighbors.1080p.WEB-DL.x264-GROUP",
+        "https://idx/amp.nzb",
+        6000000000,
+    )
+    andd = _result(
+        "Your.Friends.and.Neighbors.1080p.WEB-DL.x264-GROUP",
+        "https://idx/and.nzb",
+        6000000000,
+    )
+    omitted = _result(
+        "Your.Friends.Neighbors.1080p.WEB-DL.x264-GROUP",
+        "https://idx/omitted.nzb",
+        6000000000,
+    )
+
+    assert fs._same_content(amp, andd) is True
+    assert fs._same_content(andd, amp) is True
+    assert fs._same_content(andd, omitted) is True
+    assert fs._same_content(omitted, andd) is True
+    assert fs._same_content(amp, omitted) is True
+
+
 def test_same_episode_with_part_token_matches_bare_repost():
     """An episode that carries an episode-title Part/Chapter token must still
     peer with the same SxxExx posted without that token.
