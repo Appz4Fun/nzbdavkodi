@@ -1279,6 +1279,18 @@ def test_release_is_pack_true_for_reversed_complete_series_phrasing():
     assert release_is_pack("Breaking.Bad.Series.Complete.1080p.BluRay-GRP") is True
 
 
+def test_release_is_pack_true_for_ordinal_complete_season():
+    """#340 review: ordinal complete-season packs ("The Complete First Season",
+    "Complete 2nd Season", "Complete Final Season") carry an ordinal between
+    'complete' and 'season' and leave PTT seasons/episodes empty. They are still
+    whole-season packs and must skip the single-file stub guard."""
+    assert release_is_pack("Some.Show.The.Complete.First.Season.1080p-GRP") is True
+    assert release_is_pack("Some.Show.Complete.2nd.Season.720p-GRP") is True
+    assert release_is_pack("Some.Show.Complete.Final.Season.1080p-GRP") is True
+    # A movie's stray "Complete" + non-keyword word stays NOT-a-pack.
+    assert release_is_pack("Complete.Unknown.2024.1080p.BluRay-GROUP") is False
+
+
 def test_release_is_pack_true_for_nxn_episode_range():
     """PTT collapses '1x01-1x10' to seasons=[1] episodes=[1], so the
     episode/season-count checks miss it. _episode_tags expands the NxN range,

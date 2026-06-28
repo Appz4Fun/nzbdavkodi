@@ -539,9 +539,17 @@ _PACK_KEYWORD = (
     r"collections?|series|saga|seasons?|sets?|pack|anthology|"
     r"trilogy|duology|quadrilogy|filmography"
 )
+# An optional ordinal between "complete" and the keyword: "Complete First
+# Season", "Complete 2nd Season", "Complete Final Season" are all packs. PTT
+# leaves seasons/episodes empty for these ordinal forms, so the phrase is the
+# only signal (#340 review).
+_PACK_ORDINAL = (
+    r"first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|"
+    r"final|last|[0-9]{1,2}(?:st|nd|rd|th)"
+)
 _PACK_PHRASE_RE = re.compile(
     r"(?<![a-z])(?:"
-    r"complete[ ._-]+(?:" + _PACK_KEYWORD + r")"
+    r"complete[ ._-]+(?:(?:" + _PACK_ORDINAL + r")[ ._-]+)?(?:" + _PACK_KEYWORD + r")"
     r"|(?:" + _PACK_KEYWORD + r")[ ._-]+complete"
     r"|box[ ._-]?sets?"
     r"|mini[ ._-]?series"
