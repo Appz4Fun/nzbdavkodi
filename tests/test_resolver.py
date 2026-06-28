@@ -4978,26 +4978,32 @@ def test_submit_ui_pump_starts_history_probe_after_fast_queue_miss(
     monitor = MagicMock()
     monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
 
-    started = _time.perf_counter()
     try:
+        # Push the parallel grace far above the submit worker's 0.75s timeout
+        # so the completed-history probe cannot adopt by waiting the grace out:
+        # it can only fire (and win adoption) via the fast queue-miss handoff
+        # (first_queue_probe_done). A regression that waits the grace would
+        # never reach the history probe before the submit worker returns, so
+        # adoption falls through to the submitted nzo_id and history never runs.
         with patch(
             "resources.lib.resolver._SUBMIT_HISTORY_PROBE_PARALLEL_GRACE_SECONDS",
-            0.2,
+            5.0,
         ):
             nzo_id, submit_error = _submit_nzb_with_ui_pump(
                 "http://hydra/getnzb/abc", "movie.mkv", dialog, monitor
             )
     finally:
         submit_can_finish.set()
-    elapsed = _time.perf_counter() - started
-    history_delay = history_probe_times[0] - queue_probe_times[0]
 
-    assert (nzo_id, submit_error) == ("SABnzbd_nzo_completed_fast_history", None)
-    assert history_delay < 0.18, (
-        "completed-history probe waited for grace after queue miss; "
-        "history_delay={:.3f}s elapsed={:.3f}s".format(history_delay, elapsed)
+    # Structural handoff guard (replaces wall-clock bounds that sat only ~0.02s
+    # below the grace): with the grace disabled, history can only have fired —
+    # and adoption can only resolve to the completed row — via the queue-miss
+    # handoff, not by waiting out the grace.
+    assert history_probe_times, (
+        "completed-history probe never fired; it waited out the grace instead "
+        "of starting on the fast queue-miss handoff"
     )
-    assert elapsed < 0.18, "completed-history adoption took {:.3f}s".format(elapsed)
+    assert (nzo_id, submit_error) == ("SABnzbd_nzo_completed_fast_history", None)
 
 
 @patch("resources.lib.resolver.find_completed_by_name")
@@ -6491,6 +6497,16 @@ def test_poll_until_ready_graces_nearly_complete_queue_for_history(
         len(history_calls) == 1
     ), "nearly-complete grace missed; history polled {} times".format(
         len(history_calls)
+    )
+    # The count asserts alone cannot see a regression that poll-waits the full
+    # 0.2s interval and then reads history in-place (counts stay 1 while the
+    # forbidden startup delay returns, since waitForAbort sleeps in-band). Assert
+    # no full poll-interval wait happened: the grace path reaches history via the
+    # 0.1s grace / fast-repoll, never the 0.2s poll passed to _poll_until_ready.
+    poll_waits = [c.args[0] for c in monitor.waitForAbort.call_args_list if c.args]
+    assert 0.2 not in poll_waits, (
+        "nearly-complete grace waited a full 0.2s poll before history; "
+        "waitForAbort delays={}".format(poll_waits)
     )
 
 

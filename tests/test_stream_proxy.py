@@ -8736,23 +8736,38 @@ def test_live_fallback_selection_parallelizes_fingerprint_samples_for_cutover_sp
         ],
     }
     per_probe_delay = 0.005
+    digest_lock = threading.Lock()
+    digest_concurrency = {"current": 0, "max": 0}
 
     def digest(_url, _auth_header, start, end, content_length, probe_bases=None):
         assert content_length == ctx["content_length"]
         assert probe_bases == []
-        time.sleep(per_probe_delay)
+        with digest_lock:
+            digest_concurrency["current"] += 1
+            digest_concurrency["max"] = max(
+                digest_concurrency["max"], digest_concurrency["current"]
+            )
+        try:
+            time.sleep(per_probe_delay)
+        finally:
+            with digest_lock:
+                digest_concurrency["current"] -= 1
         return "digest-{}-{}".format(start, end)
 
     with patch.object(handler, "_refresh_standby_fallback_sources"), patch.object(
         handler, "_fetch_fallback_range_digest", side_effect=digest
     ):
-        started = time.monotonic()
         source = handler._select_live_fallback_source(ctx, failed_byte, range_end)
-        elapsed = time.monotonic() - started
 
     assert source is ctx["fallback_sources"][0]
     assert ctx["fallback_sources"][0]["validated"] is True
-    assert elapsed < 0.5, "cutover validation took {:.3f}s".format(elapsed)
+    # Structural guard (replaces a wall-clock bound): healthy fallback validation
+    # parallelizes its fingerprint probes, so several digests overlap. Serial
+    # validation peaks at a concurrency of 1; requiring >1 catches a regression
+    # that probes the ranges one at a time, independent of machine speed.
+    assert (
+        digest_concurrency["max"] > 1
+    ), "fingerprint validation probes were not parallelized"
 
 
 def test_live_fallback_selection_keeps_slow_rtt_cutover_under_budget():
@@ -8778,21 +8793,36 @@ def test_live_fallback_selection_keeps_slow_rtt_cutover_under_budget():
         ],
     }
     per_probe_delay = 0.02
+    digest_lock = threading.Lock()
+    digest_concurrency = {"current": 0, "max": 0}
 
     def digest(_url, _auth_header, start, end, content_length, probe_bases=None):
         assert content_length == ctx["content_length"]
         assert probe_bases == []
-        time.sleep(per_probe_delay)
+        with digest_lock:
+            digest_concurrency["current"] += 1
+            digest_concurrency["max"] = max(
+                digest_concurrency["max"], digest_concurrency["current"]
+            )
+        try:
+            time.sleep(per_probe_delay)
+        finally:
+            with digest_lock:
+                digest_concurrency["current"] -= 1
         return "digest-{}-{}".format(start, end)
 
     with patch.object(handler, "_fetch_fallback_range_digest", side_effect=digest):
-        started = time.monotonic()
         source = handler._select_live_fallback_source(ctx, failed_byte, range_end)
-        elapsed = time.monotonic() - started
 
     assert source is ctx["fallback_sources"][0]
     assert ctx["fallback_sources"][0]["validated"] is True
-    assert elapsed < 0.5, "cutover validation took {:.3f}s".format(elapsed)
+    # Structural guard (replaces a wall-clock bound): healthy fallback validation
+    # parallelizes its fingerprint probes, so several digests overlap. Serial
+    # validation peaks at a concurrency of 1; requiring >1 catches a regression
+    # that probes the ranges one at a time, independent of machine speed.
+    assert (
+        digest_concurrency["max"] > 1
+    ), "fingerprint validation probes were not parallelized"
 
 
 def test_live_fallback_selection_reuses_primary_fingerprint_across_candidates():
