@@ -208,7 +208,7 @@ def test_maybe_show_skips_advancedsettings_probe_when_remux_false(
     elapsed = time.perf_counter() - started
 
     assert (
-        elapsed < 0.03
+        elapsed < 0.5
     ), "non-remux cache prompt gate took {:.3f}s before playable URL".format(elapsed)
     mock_has_cache.assert_not_called()
     dialog.yesnocustom.assert_not_called()

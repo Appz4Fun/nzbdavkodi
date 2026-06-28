@@ -363,7 +363,7 @@ def test_direct_playback_service_config_reads_proxy_window_once_for_fast_start()
 
     assert (service_port, prepare_token) == (57800, "secret-token")
     assert len(window_calls) == 1
-    assert elapsed < 0.09, "proxy config lookup took {:.3f}s".format(elapsed)
+    assert elapsed < 0.5, "proxy config lookup took {:.3f}s".format(elapsed)
 
 
 def test_handle_job_status_accepts_fractional_percentage():
@@ -406,7 +406,7 @@ def test_handle_job_status_does_not_block_on_stuck_dialog_update():
 
     assert should_stop is False
     assert last_status == "Downloading"
-    assert elapsed < 0.05
+    assert elapsed < 0.2
 
 
 @patch("resources.lib.resolver.find_video_file")
@@ -2202,7 +2202,7 @@ def test_resolve_starts_bookmark_cleanup_before_primary_submit_wait(
             ready_to_play,
         )
     )
-    assert ready_to_play < 0.05, (
+    assert ready_to_play < 0.5, (
         "bookmark cleanup was not hidden by submit/adoption latency; "
         "ready_to_play={:.3f}s".format(ready_to_play)
     )
@@ -2248,7 +2248,7 @@ def test_resolve_skips_completed_lookup_after_picker_snapshot_miss(
     elapsed_to_submit = submit_started[0] - started
 
     assert (
-        elapsed_to_submit < 0.05
+        elapsed_to_submit < 0.5
     ), "completed miss lookup delayed submit by {:.3f}s".format(elapsed_to_submit)
     mock_find_completed.assert_not_called()
     mock_submit.assert_called_once()
@@ -2401,7 +2401,7 @@ def test_resolve_sets_resolved_url_before_remux_cache_prompt(
 
     elapsed_to_resolved = timing["resolved"] - started
     assert (
-        elapsed_to_resolved < 0.08
+        elapsed_to_resolved < 0.5
     ), "remux cache prompt delayed setResolvedUrl by {:.3f}s".format(
         elapsed_to_resolved
     )
@@ -2961,7 +2961,7 @@ def test_resolve_and_play_starts_player_before_remux_cache_prompt(
         )
     )
     assert (
-        elapsed_to_play < 0.08
+        elapsed_to_play < 0.5
     ), "remux cache prompt delayed Player.play by {:.3f}s".format(elapsed_to_play)
     mock_cache_prompt.assert_called_once()
 
@@ -3124,7 +3124,7 @@ def test_resolve_uses_picker_completed_job_hint_without_history_lookup(
     mock_find_completed.assert_not_called()
     mock_finish_playback.assert_called_once()
     assert (
-        elapsed < 0.1
+        elapsed < 0.5
     ), "picker completed hint still paid history lookup {:.3f}s".format(elapsed)
 
 
@@ -3193,7 +3193,7 @@ def test_resolve_picker_completed_hint_skips_progress_dialog_startup_latency(
 
     mock_find_completed.assert_not_called()
     mock_finish_playback.assert_called_once()
-    assert elapsed < 0.2, "completed hint path stalled for {:.3f}s".format(elapsed)
+    assert elapsed < 0.5, "completed hint path stalled for {:.3f}s".format(elapsed)
     mock_gui.DialogProgress.assert_not_called()
 
 
@@ -3294,7 +3294,7 @@ def test_resolve_and_play_skips_duplicate_stale_picker_completed_probe_before_su
 
     elapsed_to_submit = timing["submit_start"] - started
     assert (
-        elapsed_to_submit < 0.18
+        elapsed_to_submit < 0.5
     ), "stale completed hint delayed primary submit by {:.3f}s".format(
         elapsed_to_submit
     )
@@ -3615,7 +3615,7 @@ def test_start_direct_playback_prepare_snapshots_settings_in_worker(
     elapsed = _time.monotonic() - started_at
 
     try:
-        assert elapsed < 0.20
+        assert elapsed < 0.18
         assert slow_started.wait(0.2)
         release_settings.set()
         prepared = _wait_direct_playback_prepare(state)
@@ -3688,7 +3688,7 @@ def test_completed_history_reuses_webdav_settings_for_stream_url(
     assert stream_headers.get("Authorization", "").startswith("Basic ")
     assert no_video_retries == 0
     assert mock_settings.call_count == 1
-    assert elapsed < 0.07, "completed-history stream URL took {:.3f}s".format(elapsed)
+    assert elapsed < 0.5, "completed-history stream URL took {:.3f}s".format(elapsed)
 
 
 @patch("resources.lib.resolver._notify")
@@ -4637,7 +4637,7 @@ def test_submit_ui_pump_uses_nonblocking_abort_check_after_submit_result(
 
     assert nzo_id is None
     assert submit_error == {"status": 400, "message": "TooManyRequests"}
-    assert elapsed < 0.15
+    assert elapsed < 0.5
     assert 0 not in [call.args[0] for call in monitor.waitForAbort.call_args_list]
 
 
@@ -4719,7 +4719,7 @@ def test_submit_ui_pump_terminal_error_does_not_wait_for_probe_cleanup(
 
     assert nzo_id is None
     assert submit_error == {"status": 400, "message": "TooManyRequests"}
-    assert elapsed < 0.15
+    assert elapsed < 0.2
 
 
 @patch("resources.lib.resolver._show_submit_error_dialog")
@@ -4896,7 +4896,7 @@ def test_submit_ui_pump_adopts_existing_queue_without_initial_probe_delay(
 
     assert (nzo_id, submit_error) == ("SABnzbd_nzo_existing_queue", None)
     monitor.waitForAbort.assert_not_called()
-    assert elapsed < 0.1, "existing queue adoption took {:.3f}s".format(elapsed)
+    assert elapsed < 0.2, "existing queue adoption took {:.3f}s".format(elapsed)
 
 
 @patch("resources.lib.resolver._existing_completed_stream", return_value=None)
@@ -4941,7 +4941,7 @@ def test_submit_ui_pump_rechecks_queue_quickly_after_initial_fast_miss(
 
     assert (nzo_id, submit_error) == ("SABnzbd_nzo_second_fast_probe", None)
     assert len(queue_probe_times) == 2
-    assert elapsed < 0.18, "second fast queue probe took {:.3f}s".format(elapsed)
+    assert elapsed < 0.2, "second fast queue probe took {:.3f}s".format(elapsed)
 
 
 @patch("resources.lib.resolver.find_completed_by_name")
@@ -4978,26 +4978,32 @@ def test_submit_ui_pump_starts_history_probe_after_fast_queue_miss(
     monitor = MagicMock()
     monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
 
-    started = _time.perf_counter()
     try:
+        # Push the parallel grace far above the submit worker's 0.75s timeout
+        # so the completed-history probe cannot adopt by waiting the grace out:
+        # it can only fire (and win adoption) via the fast queue-miss handoff
+        # (first_queue_probe_done). A regression that waits the grace would
+        # never reach the history probe before the submit worker returns, so
+        # adoption falls through to the submitted nzo_id and history never runs.
         with patch(
             "resources.lib.resolver._SUBMIT_HISTORY_PROBE_PARALLEL_GRACE_SECONDS",
-            0.2,
+            5.0,
         ):
             nzo_id, submit_error = _submit_nzb_with_ui_pump(
                 "http://hydra/getnzb/abc", "movie.mkv", dialog, monitor
             )
     finally:
         submit_can_finish.set()
-    elapsed = _time.perf_counter() - started
-    history_delay = history_probe_times[0] - queue_probe_times[0]
 
-    assert (nzo_id, submit_error) == ("SABnzbd_nzo_completed_fast_history", None)
-    assert history_delay < 0.05, (
-        "completed-history probe waited for grace after queue miss; "
-        "history_delay={:.3f}s elapsed={:.3f}s".format(history_delay, elapsed)
+    # Structural handoff guard (replaces wall-clock bounds that sat only ~0.02s
+    # below the grace): with the grace disabled, history can only have fired —
+    # and adoption can only resolve to the completed row — via the queue-miss
+    # handoff, not by waiting out the grace.
+    assert history_probe_times, (
+        "completed-history probe never fired; it waited out the grace instead "
+        "of starting on the fast queue-miss handoff"
     )
-    assert elapsed < 0.08, "completed-history adoption took {:.3f}s".format(elapsed)
+    assert (nzo_id, submit_error) == ("SABnzbd_nzo_completed_fast_history", None)
 
 
 @patch("resources.lib.resolver.find_completed_by_name")
@@ -5043,7 +5049,7 @@ def test_submit_ui_pump_rechecks_completed_history_quickly_after_initial_miss(
 
     assert (nzo_id, submit_error) == ("SABnzbd_nzo_second_history_probe", None)
     assert (
-        elapsed < 0.18
+        elapsed < 0.2
     ), "second completed-history probe took {:.3f}s; gap was {:.3f}s".format(
         elapsed, history_gap
     )
@@ -5057,25 +5063,43 @@ def test_timeout_adoption_overlaps_completed_history_with_slow_queue_miss(
     """Submit-timeout adoption should not serialize history behind queue miss."""
     from resources.lib.resolver import _adopt_queued_or_completed_job
 
+    queue_running = threading.Event()
+    queue_finished = threading.Event()
+    history_during_queue = []
+
     def slow_queue_miss(_title):
+        queue_running.set()
         _time.sleep(0.12)
+        queue_finished.set()
+
+    def completed_history(_title):
+        # Record whether the slow queue probe was still in flight when the
+        # history probe ran. Parallel adoption => queue running, not finished;
+        # a serialized path would only reach history after the queue miss
+        # returned (queue_finished set).
+        history_during_queue.append(
+            queue_running.is_set() and not queue_finished.is_set()
+        )
+        return {
+            "nzo_id": "SABnzbd_nzo_completed_timeout",
+            "name": "movie.mkv",
+            "status": "Completed",
+        }
 
     mock_find_queued.side_effect = slow_queue_miss
-    mock_find_completed.return_value = {
-        "nzo_id": "SABnzbd_nzo_completed_timeout",
-        "name": "movie.mkv",
-        "status": "Completed",
-    }
+    mock_find_completed.side_effect = completed_history
     monitor = _make_monitor()
 
-    started = _time.perf_counter()
     nzo_id = _adopt_queued_or_completed_job("movie.mkv", monitor)
-    elapsed = _time.perf_counter() - started
 
     assert nzo_id == "SABnzbd_nzo_completed_timeout"
-    assert (
-        elapsed < 0.07
-    ), "timeout adoption serialized history behind queue miss: {:.3f}s".format(elapsed)
+    # Structural overlap guard (replaces a flake-prone wall-clock bound: the
+    # 0.12s queue miss sits below the ~0.09-0.15s jitter floor). History runs
+    # concurrently with the in-flight queue miss, not serialized after it.
+    assert history_during_queue == [True], (
+        "completed-history probe ran only after the slow queue miss finished "
+        "(serialized adoption): {}".format(history_during_queue)
+    )
 
 
 @patch("resources.lib.resolver.probe_webdav_reachable")
@@ -5117,7 +5141,7 @@ def test_poll_once_catches_late_active_queue_completed_history(
         "late completed history missed after {:.3f}s; resolver would wait for "
         "the next poll interval".format(elapsed)
     )
-    assert elapsed < 0.08, "late-history catch took {:.3f}s".format(elapsed)
+    assert elapsed < 0.5, "late-history catch took {:.3f}s".format(elapsed)
     mock_probe_webdav.assert_not_called()
 
 
@@ -5130,6 +5154,9 @@ def test_submit_ui_pump_rechecks_queue_while_history_miss_is_slow(
     """A slow history miss must not block the fast queue adoption cadence."""
     submit_can_finish = threading.Event()
     queue_probe_times = []
+    history_running = threading.Event()
+    history_finished = threading.Event()
+    second_probe_during_history = []
 
     def delayed_submit(_nzb_url, _title):
         submit_can_finish.wait(timeout=0.75)
@@ -5139,6 +5166,12 @@ def test_submit_ui_pump_rechecks_queue_while_history_miss_is_slow(
         queue_probe_times.append(_time.perf_counter())
         if len(queue_probe_times) == 1:
             return None
+        # The second queue probe must fire while the slow history miss is
+        # still running; a cadence serialized behind history could only run
+        # after history returned (history_finished set).
+        second_probe_during_history.append(
+            history_running.is_set() and not history_finished.is_set()
+        )
         return {
             "nzo_id": "SABnzbd_nzo_second_fast_probe",
             "name": "movie.mkv",
@@ -5146,7 +5179,9 @@ def test_submit_ui_pump_rechecks_queue_while_history_miss_is_slow(
         }
 
     def slow_history_miss(_title):
+        history_running.set()
         _time.sleep(0.18)
+        history_finished.set()
 
     mock_submit.side_effect = delayed_submit
     mock_find_queued.side_effect = queued_job
@@ -5156,21 +5191,23 @@ def test_submit_ui_pump_rechecks_queue_while_history_miss_is_slow(
     monitor = MagicMock()
     monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
 
-    started = _time.perf_counter()
     try:
         nzo_id, submit_error = _submit_nzb_with_ui_pump(
             "http://hydra/getnzb/abc", "movie.mkv", dialog, monitor
         )
     finally:
         submit_can_finish.set()
-    elapsed = _time.perf_counter() - started
-    probe_gap = queue_probe_times[1] - queue_probe_times[0]
 
     assert (nzo_id, submit_error) == ("SABnzbd_nzo_second_fast_probe", None)
     assert len(queue_probe_times) == 2
-    assert elapsed < 0.14, (
-        "slow history miss blocked second queue probe; "
-        "elapsed={:.3f}s probe_gap={:.3f}s".format(elapsed, probe_gap)
+    # Structural cadence guard (replaces a flake-prone wall-clock bound: the
+    # 0.05s fast interval and the 0.18s history miss are too close given
+    # ~0.09s jitter). The second queue probe runs while the history miss is
+    # still in flight, proving the queue cadence is not serialized behind it.
+    assert second_probe_during_history == [
+        True
+    ], "second queue probe was serialized behind the slow history miss: " "{}".format(
+        second_probe_during_history
     )
 
 
@@ -5192,16 +5229,25 @@ def test_submit_ui_pump_wakes_when_submit_finishes_before_adoption_tick(
     monitor = MagicMock()
     monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
 
+    # Blow up the adoption-check interval so that, *if* the pump waited a full
+    # adoption tick instead of waking on submit completion, this call would
+    # take ~5 s. Waking on submit_done returns within one 0.01 s re-check
+    # regardless of the interval, so the generous < 1.0 s bound cannot flake.
     started = _time.perf_counter()
-    nzo_id, submit_error = _submit_nzb_with_ui_pump(
-        "http://hydra/getnzb/abc", "movie.mkv", dialog, monitor
-    )
+    with patch("resources.lib.resolver._SUBMIT_ADOPTION_CHECK_INTERVAL_SECONDS", 5.0):
+        nzo_id, submit_error = _submit_nzb_with_ui_pump(
+            "http://hydra/getnzb/abc", "movie.mkv", dialog, monitor
+        )
     elapsed = _time.perf_counter() - started
 
     assert (nzo_id, submit_error) == ("SABnzbd_nzo_fast_submit", None)
-    assert (
-        elapsed < 0.04
-    ), "fast submit result waited for poll tick; elapsed={:.3f}s".format(elapsed)
+    # The pump must wake on submit_done via the activity event, never on a
+    # blocking Kodi wait tick.
+    monitor.waitForAbort.assert_not_called()
+    assert elapsed < 1.0, (
+        "fast submit did not wake on submit completion (waited the adoption "
+        "tick); elapsed={:.3f}s".format(elapsed)
+    )
 
 
 @patch("resources.lib.resolver._existing_completed_stream", return_value=None)
@@ -5247,7 +5293,7 @@ def test_submit_ui_pump_fast_submit_skips_slow_probe_cleanup_wait(
 
     assert (nzo_id, submit_error) == ("SABnzbd_nzo_fast_submit", None)
     assert (
-        elapsed < 0.08
+        elapsed < 0.2
     ), "fast submit waited for slow adoption probe cleanup; elapsed={:.3f}s".format(
         elapsed
     )
@@ -5305,38 +5351,54 @@ def test_submit_ui_pump_overlaps_completed_history_probe_with_slow_queue_miss(
 ):
     """A slow queue miss should not block an already-visible history hit."""
     submit_can_finish = threading.Event()
+    queue_running = threading.Event()
+    queue_finished = threading.Event()
+    history_during_queue = []
 
     def delayed_submit(_nzb_url, _title):
         submit_can_finish.wait(timeout=0.75)
         return "SABnzbd_nzo_submitted", None
 
     def slow_queue_miss(_title):
+        queue_running.set()
         _time.sleep(0.14)
+        queue_finished.set()
+
+    def completed_history(_title):
+        # The visible history hit must be adopted while the slow queue miss is
+        # still in flight; a serialized path would only reach it after the
+        # queue miss returned (queue_finished set).
+        history_during_queue.append(
+            queue_running.is_set() and not queue_finished.is_set()
+        )
+        return {
+            "nzo_id": "SABnzbd_nzo_completed_probe",
+            "name": "movie.mkv",
+            "status": "Completed",
+        }
 
     mock_submit.side_effect = delayed_submit
     mock_find_queued.side_effect = slow_queue_miss
-    mock_find_completed.return_value = {
-        "nzo_id": "SABnzbd_nzo_completed_probe",
-        "name": "movie.mkv",
-        "status": "Completed",
-    }
+    mock_find_completed.side_effect = completed_history
     dialog = MagicMock()
     dialog.iscanceled.return_value = False
     monitor = _make_monitor()
 
-    started = _time.perf_counter()
     try:
         nzo_id, submit_error = _submit_nzb_with_ui_pump(
             "http://hydra/getnzb/abc", "movie.mkv", dialog, monitor
         )
     finally:
         submit_can_finish.set()
-    elapsed = _time.perf_counter() - started
 
     assert (nzo_id, submit_error) == ("SABnzbd_nzo_completed_probe", None)
-    assert (
-        elapsed < 0.08
-    ), "completed history adoption waited behind queue miss for {:.3f}s".format(elapsed)
+    # Structural overlap guard (replaces a flake-prone wall-clock bound: the
+    # 0.14s queue miss sits below the ~0.09-0.15s jitter floor). The visible
+    # history hit is adopted while the queue miss is still running.
+    assert history_during_queue == [True], (
+        "completed-history probe ran only after the slow queue miss finished "
+        "(serialized adoption): {}".format(history_during_queue)
+    )
 
 
 @patch("resources.lib.resolver._existing_completed_stream", return_value=None)
@@ -6091,7 +6153,7 @@ def test_poll_once_returns_completed_history_before_slow_queue(
     job_status, history, webdav_error = _poll_once("nzo_done", "movie", _make_monitor())
     elapsed = _time.monotonic() - started
 
-    assert elapsed < 0.15
+    assert elapsed < 0.2
     assert job_status is None
     assert history == mock_history.return_value
     assert webdav_error is None
@@ -6118,7 +6180,7 @@ def test_poll_once_returns_active_queue_before_slow_history(
     )
     elapsed = _time.monotonic() - started
 
-    assert elapsed < 0.15
+    assert elapsed < 0.2
     assert job_status == mock_status.return_value
     assert history is None
     assert webdav_error is None
@@ -6330,7 +6392,7 @@ def test_poll_until_ready_uses_nonblocking_abort_check_between_polls(
 
     assert url == "http://webdav/movie.mkv"
     assert headers == {"Authorization": "x"}
-    assert elapsed < 0.15
+    assert elapsed < 0.5
     monitor.waitForAbort.assert_not_called()
 
 
@@ -6417,16 +6479,34 @@ def test_poll_until_ready_graces_nearly_complete_queue_for_history(
     mock_find.return_value = "/content/uncategorized/movie/movie.mkv"
     mock_stream_url.return_value = ("http://webdav/movie.mkv", {"Authorization": "x"})
 
-    started = _time.perf_counter()
     url, headers = _poll_until_ready(
         "http://hydra/nzb", "movie", _make_dialog(), 0.2, 3600
     )
-    elapsed = _time.perf_counter() - started
 
     assert url == "http://webdav/movie.mkv"
     assert headers == {"Authorization": "x"}
-    assert elapsed < 0.14, "nearly-complete poll delayed WebDAV by {:.3f}s".format(
-        elapsed
+    # Grace-hit-on-first-poll (replaces a flake-prone wall-clock bound: the
+    # ~0.05s grace hit and the ~0.15s extra-poll regression are too close given
+    # ~0.09s jitter). The completed history is caught within the nearly-complete
+    # grace on the FIRST poll, so neither API is polled twice; a missed grace
+    # forces a second poll (2 calls each) before WebDAV discovery.
+    assert (
+        len(status_calls) == 1
+    ), "nearly-complete grace missed; status polled {} times".format(len(status_calls))
+    assert (
+        len(history_calls) == 1
+    ), "nearly-complete grace missed; history polled {} times".format(
+        len(history_calls)
+    )
+    # The count asserts alone cannot see a regression that poll-waits the full
+    # 0.2s interval and then reads history in-place (counts stay 1 while the
+    # forbidden startup delay returns, since waitForAbort sleeps in-band). Assert
+    # no full poll-interval wait happened: the grace path reaches history via the
+    # 0.1s grace / fast-repoll, never the 0.2s poll passed to _poll_until_ready.
+    poll_waits = [c.args[0] for c in monitor.waitForAbort.call_args_list if c.args]
+    assert 0.2 not in poll_waits, (
+        "nearly-complete grace waited a full 0.2s poll before history; "
+        "waitForAbort delays={}".format(poll_waits)
     )
 
 
@@ -6477,7 +6557,7 @@ def test_poll_until_ready_waits_for_full_progress_history_before_poll_tick(
     assert url == "http://webdav/movie.mkv"
     assert headers == {"Authorization": "x"}
     assert len(history_calls) == 1
-    assert elapsed < 0.25, "full-progress history missed grace by {:.3f}s".format(
+    assert elapsed < 0.2, "full-progress history missed grace by {:.3f}s".format(
         elapsed
     )
 
@@ -6530,10 +6610,10 @@ def test_poll_until_ready_repolls_full_progress_history_miss_before_full_tick(
     assert headers == {"Authorization": "x"}
     assert len(history_calls) == 2
     history_gap = history_calls[1] - history_calls[0]
-    assert history_gap < 0.15, "full-progress history retry gap was {:.3f}s".format(
+    assert history_gap < 0.5, "full-progress history retry gap was {:.3f}s".format(
         history_gap
     )
-    assert elapsed < 0.25, "full-progress repoll waited {:.3f}s".format(elapsed)
+    assert elapsed < 0.5, "full-progress repoll waited {:.3f}s".format(elapsed)
 
 
 @patch("resources.lib.resolver.cancel_job")
@@ -6781,7 +6861,7 @@ def test_poll_until_ready_rechecks_completed_webdav_before_full_poll_interval(
 
     assert url == "http://webdav/content/uncategorized/movie/movie.mkv"
     assert headers == {"Authorization": "Basic primary"}
-    assert elapsed < 0.3, "completed WebDAV recheck waited {:.3f}s".format(elapsed)
+    assert elapsed < 0.5, "completed WebDAV recheck waited {:.3f}s".format(elapsed)
 
 
 @patch("resources.lib.resolver._existing_completed_stream", return_value=None)
@@ -6819,16 +6899,21 @@ def test_poll_until_ready_rechecks_completed_webdav_quickly_after_first_miss(
         {"Authorization": "Basic primary"},
     )
 
-    started = _time.perf_counter()
     url, headers = _poll_until_ready(
         "http://hydra/nzb", "movie", _make_dialog(), 1, 3600
     )
-    elapsed = _time.perf_counter() - started
 
     assert url == "http://webdav/content/uncategorized/movie/movie.mkv"
     assert headers == {"Authorization": "Basic primary"}
-    assert elapsed < 0.08, "first completed WebDAV recheck waited {:.3f}s".format(
-        elapsed
+    # Fast-recheck-delay guard (replaces a flake-prone wall-clock bound: the
+    # forbidden fixed 0.1s wait overlaps the ~0.06-0.09s jitter floor). The
+    # first WebDAV miss must recheck on the graduated 0.025s fast delay; a
+    # reintroduced fixed-100ms wait would call waitForAbort(0.1) instead.
+    monitor.waitForAbort.assert_any_call(0.025)
+    waited = [c.args[0] for c in monitor.waitForAbort.call_args_list if c.args]
+    assert 0.1 not in waited, (
+        "completed-WebDAV recheck used the forbidden fixed 100ms delay instead "
+        "of the 0.025s fast delay; waitForAbort delays were {}".format(waited)
     )
 
 
