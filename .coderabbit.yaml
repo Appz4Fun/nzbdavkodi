@@ -1,0 +1,16 @@
+# yaml-language-server: $schema=https://storage.googleapis.com/coderabbit_public_assets/schema.v2.json
+#
+# Minimal CodeRabbit config. The one thing this overrides is commit-status
+# behavior on a *failed* review.
+#
+# When CodeRabbit cannot review a PR -- most commonly because the hourly review
+# rate limit is exceeded -- it was posting a red "CodeRabbit / failure" commit
+# status ("Review rate limit exceeded"; see PR #321). That reads like a failed
+# check even though `main` is not a protected branch and the review just needs a
+# retry on the next push.
+#
+# `fail_commit_status: false` stops the can't-review case from posting a failure
+# status. Successful reviews still post a green "success" status, because
+# `commit_status` defaults to true and is left untouched.
+reviews:
+  fail_commit_status: false
