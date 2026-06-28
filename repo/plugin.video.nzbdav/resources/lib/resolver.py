@@ -1892,18 +1892,41 @@ def _find_video_stream_for_folder(webdav_folder, settings_getter=None, title_hin
     return video_path, stream_url, stream_headers
 
 
+def _record_rejected_completed_id(completed_job, rejected_completed_ids):
+    """Record a rejected Completed row's ``nzo_id`` so the submit / poll-loop
+    by-name paths skip re-adopting the very row we just rejected.
+
+    No-op when no set was provided or the row has no ``nzo_id``. Shared by the
+    pre-submit shortcut's stub guard and its mid-file body probe so both
+    rejection reasons feed the same skip set.
+    """
+    if rejected_completed_ids is None:
+        return
+    rejected_nzo_id = completed_job.get("nzo_id")
+    if rejected_nzo_id:
+        rejected_completed_ids.add(rejected_nzo_id)
+
+
 def _completed_job_stream(
     title,
     completed_job,
     on_existing_completed=None,
     settings_getter=None,
     rejected_completed_ids=None,
+    download_size=None,
 ):
     """Return a WebDAV stream URL from a completed nzbdav history row.
 
     When the mid-file body probe rejects a row and ``rejected_completed_ids``
     is provided, the row's ``nzo_id`` is recorded into that set so the submit
     path that follows does not re-adopt the very row we just rejected.
+
+    ``download_size`` is the indexer-advertised release size (bytes), threaded
+    in from ``params['_download_size']``. It powers the same #282 job-start-stub
+    guard the post-submit accept path applies (``_discovered_video_is_stub``):
+    a stale stub left in a Completed row from a prior failed attempt has an
+    available body and would otherwise pass the probe below. Defaults to
+    ``None`` (guard fails open) so callers without a size are unaffected.
     """
     if not isinstance(completed_job, dict):
         return None
@@ -1932,16 +1955,28 @@ def _completed_job_stream(
     )
     if not video_path:
         return None
+    # #282 follow-up: reject nzbdav's job-start stub before the body probe. A
+    # stale stub left in a Completed row from a prior failed attempt has an
+    # available body and would otherwise pass the probe below and be served --
+    # the same placeholder .mp4 the post-submit accept path (_handle_history_result)
+    # rejects. Null it out here too and record the nzo_id so the submit / poll
+    # paths skip it. Fails open / pack-exempt inside _discovered_video_is_stub.
+    if _discovered_video_is_stub(video_path, download_size, title):
+        xbmc.log(
+            "NZB-DAV: '{}' completed row exposes '{}' far smaller than the "
+            "advertised release size; treating as nzbdav job-start stub and "
+            "re-downloading instead of streaming directly".format(title, video_path),
+            xbmc.LOGWARNING,
+        )
+        _record_rejected_completed_id(completed_job, rejected_completed_ids)
+        return None
     if not _completed_stream_body_available(stream_url, stream_headers):
         xbmc.log(
             "NZB-DAV: '{}' is marked Completed but its mid-file body is "
             "unavailable; re-downloading instead of streaming directly".format(title),
             xbmc.LOGWARNING,
         )
-        if rejected_completed_ids is not None:
-            rejected_nzo_id = completed_job.get("nzo_id")
-            if rejected_nzo_id:
-                rejected_completed_ids.add(rejected_nzo_id)
+        _record_rejected_completed_id(completed_job, rejected_completed_ids)
         return None
     return stream_url, stream_headers
 
@@ -1953,14 +1988,22 @@ def _existing_completed_stream(
     completed_job_lookup_done=False,
     settings_getter=None,
     rejected_completed_ids=None,
+    download_size=None,
 ):
-    """Return an already-downloaded stream URL when the title exists."""
+    """Return an already-downloaded stream URL when the title exists.
+
+    ``download_size`` (indexer-advertised bytes) is threaded to
+    ``_completed_job_stream`` so the pre-submit shortcut rejects the #282
+    job-start stub just like the post-submit accept path. Defaults to ``None``
+    (guard fails open).
+    """
     hinted_stream = _completed_job_stream(
         title,
         completed_job_hint,
         on_existing_completed=on_existing_completed,
         settings_getter=settings_getter,
         rejected_completed_ids=rejected_completed_ids,
+        download_size=download_size,
     )
     if hinted_stream is not None:
         return hinted_stream
@@ -1975,6 +2018,7 @@ def _existing_completed_stream(
         on_existing_completed=on_existing_completed,
         settings_getter=settings_getter,
         rejected_completed_ids=rejected_completed_ids,
+        download_size=download_size,
     )
 
 
@@ -2005,6 +2049,11 @@ def _picker_completed_stream(
         completed_job_lookup_done=lookup_done,
         settings_getter=settings_getter,
         rejected_completed_ids=rejected_completed_ids,
+        # The indexer-advertised size rides along on the picker params; thread it
+        # through so a picker-supplied Completed row that is the #282 job-start
+        # stub is rejected before the progress UI opens, exactly as the
+        # submit/poll paths do.
+        download_size=params.get("_download_size"),
     )
 
 
@@ -2606,6 +2655,12 @@ def _completed_copy_blocks_clear(title, settings_getter):
 
     def _probe():
         try:
+            # No download_size here on purpose: this gate only decides whether to
+            # SKIP clearing OTHER queued jobs, and never serves a stream to Kodi.
+            # Letting a stub look adoptable just leaves the queue intact -- the
+            # conservative default this guard already documents. The #282 stub
+            # guard runs on the authoritative playback probe (_poll_until_ready /
+            # picker), which DOES thread download_size and rejects the stub there.
             result["stream"] = _existing_completed_stream(
                 title, **_settings_getter_kwargs(settings_getter)
             )
@@ -3913,6 +3968,7 @@ def _poll_until_ready(
         completed_job_lookup_done=completed_job_lookup_done,
         settings_getter=settings_getter,
         rejected_completed_ids=rejected_completed_ids,
+        download_size=download_size,
     )
     if existing_stream is not None:
         return existing_stream
