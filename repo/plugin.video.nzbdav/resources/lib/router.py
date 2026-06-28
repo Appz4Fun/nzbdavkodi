@@ -2162,13 +2162,23 @@ def _json_object(response):
     return data if isinstance(data, dict) else {}
 
 
+def _contains_xml_declaration_markup(xml_text):
+    if isinstance(xml_text, bytes):
+        probe = xml_text.lower()
+        return b"<!doctype" in probe or b"<!entity" in probe
+    probe = str(xml_text).lower()
+    return "<!doctype" in probe or "<!entity" in probe
+
+
 def _xml_root_name(response):
     """Return the unqualified root XML tag name, lowercased."""
     import xml.etree.ElementTree as ET  # nosec B405 - trusted service response
 
     try:
+        if _contains_xml_declaration_markup(response):
+            raise ValueError("DTD and entity declarations are not allowed")
         root = ET.fromstring(response)  # nosec B314 - trusted service response
-    except (TypeError, ET.ParseError):
+    except (TypeError, ET.ParseError, ValueError):
         return ""
     return root.tag.rsplit("}", 1)[-1].lower()
 

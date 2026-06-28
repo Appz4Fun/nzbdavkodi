@@ -1,0 +1,5 @@
+## 2025-05-18 - XXE Defense-in-Depth for `ET.fromstring`
+
+**Vulnerability:** Missing XML External Entity (XXE) protections for some standard library XML parsing endpoints.
+**Learning:** Python 3.8+ `xml.etree.ElementTree` attempts to disable external entity resolution by default, but it still resolves internal entities, creating potential Denial of Service (Billion Laughs) vectors. Also, standard library defenses are not as robust as `defusedxml`. While many endpoints used a custom expat parser wrapper (`_build_xxe_safe_parser`), `newznab_caps.py` and `router.py` still invoked `ET.fromstring` directly with only comments noting Python 3.8+ defaults.
+**Prevention:** Always apply defense-in-depth for standard library XML parsing. If `defusedxml` is not available, explicitly reject payloads containing `<!DOCTYPE` or `<!ENTITY` declarations before feeding them to `ET.fromstring`. Add explicit string checks before parsing: e.g., `if _contains_xml_declaration_markup(response): raise ValueError(...)`

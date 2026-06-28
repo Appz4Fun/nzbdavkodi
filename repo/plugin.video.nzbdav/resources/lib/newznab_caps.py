@@ -75,10 +75,20 @@ def _params(value):
     return [item.strip() for item in str(value or "").split(",") if item.strip()]
 
 
+def _contains_xml_declaration_markup(xml_text):
+    if isinstance(xml_text, bytes):
+        probe = xml_text.lower()
+        return b"<!doctype" in probe or b"<!entity" in probe
+    probe = str(xml_text).lower()
+    return "<!doctype" in probe or "<!entity" in probe
+
+
 def parse_caps(xml_text):
     try:
+        if _contains_xml_declaration_markup(xml_text):
+            raise ValueError("DTD and entity declarations are not allowed")
         root = ET.fromstring(xml_text)  # nosec B314 - Python 3.8+ disables entities
-    except (ET.ParseError, TypeError):
+    except (ET.ParseError, TypeError, ValueError):
         return _empty_caps()
 
     search_types = []
