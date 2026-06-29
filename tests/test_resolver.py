@@ -5230,12 +5230,22 @@ def test_submit_ui_pump_adopts_existing_queue_without_initial_probe_delay(
     # a fixed grace, delayed_submit would finish its bounded wait and set
     # submit_completed -> submit_completed_at_return True.
     assert submit_completed_at_return is False
-    # No-initial-probe-delay guard (CodeRabbit Major): a reintroduced non-zero
-    # _SUBMIT_QUEUE_PROBE_INITIAL_DELAY_SECONDS pushes the FIRST queue probe out
-    # by that delay (the worker does `queue_stop.wait(delay)` before its first
-    # find_queued_by_name). Healthy path issues it in ~ms; this generous 0.1s
-    # ceiling sits far below any meaningful reintroduced delay yet well above
-    # scheduling jitter, catching what the submit_completed snapshot cannot.
+    # No-initial-probe-delay guard (CodeRabbit): the load-independent PRIMARY
+    # check is that the production constant is still zero -- it catches ANY
+    # reintroduced non-zero initial grace, including a small one (e.g. 0.05) that
+    # the coarse runtime ceiling below would let slip. The worker does
+    # `queue_stop.wait(_SUBMIT_QUEUE_PROBE_INITIAL_DELAY_SECONDS)` before its
+    # first find_queued_by_name, so a non-zero value delays the FIRST probe --
+    # which the submit_completed snapshot above cannot see.
+    from resources.lib.resolver import (  # pylint: disable=import-outside-toplevel
+        _SUBMIT_QUEUE_PROBE_INITIAL_DELAY_SECONDS,
+    )
+
+    assert _SUBMIT_QUEUE_PROBE_INITIAL_DELAY_SECONDS == 0
+    # Coarse runtime sanity check (secondary): the first probe is issued in ~ms
+    # on the healthy path; this generous 0.1s ceiling sits well above scheduling
+    # jitter and catches a large reintroduced delay even if the constant assert
+    # is somehow bypassed.
     assert first_probe_at, "queue probe never ran"
     first_probe_delay = first_probe_at[0] - started
     assert (
