@@ -448,13 +448,19 @@ def _find_video_file_in_subdirs(
             )
         else:
             ep_score, tok_score = 0, 0
-        # Rank by (episode identity, size, token overlap) and break ties toward
-        # the earlier sibling (negative index sorts a smaller index higher).
-        # Episode match is primary so the requested SxxExx still wins; size
-        # outranks loose token overlap so a small token-rich extra can't beat
-        # the feature. Without a hint both scores stay 0, so this reduces to the
-        # historical largest-wins rule.
-        key = (ep_score, size, tok_score, -index)
+        # Rank by (not-wrong-episode, above-floor, episode identity, size, token
+        # overlap) and break ties toward the earlier sibling (negative index
+        # sorts a smaller index higher). The above-floor dimension mirrors the
+        # current-level key so a child returning a below-floor requested-episode
+        # stub never beats a sibling's above-floor real file on episode identity
+        # alone -- otherwise the stub wins and the resolver re-rejects it every
+        # poll (Codex #340). "not a wrong episode" sits ABOVE the floor flag so a
+        # wrong-episode above-floor sibling can't be promoted over the requested
+        # stub either. Episode match stays primary among same-class candidates;
+        # size outranks loose token overlap. With no hint and no floor every flag
+        # is constant, so this reduces to the historical largest-wins rule.
+        above_floor = size <= 0 or size >= min_video_size
+        key = (ep_score >= 0, above_floor, ep_score, size, tok_score, -index)
         if best_key is None or key > best_key:
             best_path = result
             best_key = key
@@ -466,7 +472,14 @@ def _remember_video_file_size_hint(file_path, size):
         size = int(size or 0)
     except (TypeError, ValueError):
         return
-    if not file_path or size <= 0:
+    if not file_path:
+        return
+    # A non-positive size means this scan saw no getcontentlength for the path
+    # (current size unknown). Drop any prior positive value so a later stub
+    # check fails OPEN on the now-unknown size instead of re-rejecting the path
+    # against a stale cached stub size (#282 / Codex).
+    if size <= 0:
+        _VIDEO_FILE_SIZE_HINTS.pop(file_path, None)
         return
     _VIDEO_FILE_SIZE_HINTS[file_path] = size
     while len(_VIDEO_FILE_SIZE_HINTS) > _VIDEO_FILE_SIZE_HINTS_MAX:
@@ -741,7 +754,17 @@ def find_video_file(
             # (ep, size, tok) and ranking is byte-identical. A size-0 file is NOT
             # below-floor (unknown size, not a known stub), so it is unaffected.
             file_above_floor = size <= 0 or size >= min_video_size
-            file_key = (file_above_floor, ep_score, size, tok_score)
+            # A WRONG-episode file (ep=-1000) must never be promoted above a
+            # requested-episode stub by the above-floor boost: an above-floor
+            # S01E04 would otherwise outrank a below-floor requested-S01E05 stub,
+            # become best_file, pass the resolver's stub guard (its size is real)
+            # and STREAM THE WRONG EPISODE instead of waiting (Codex #340). Rank
+            # "not a wrong episode" ABOVE the floor flag so wrong episodes sink
+            # below everything; the requested-ep stub then stays best_file and the
+            # poll loop keeps waiting. ``ep_score >= 0`` is monotonic in ep_score
+            # at the wrong-ep boundary, so with no floor this term never reverses
+            # the historical (ep, size, tok) ordering.
+            file_key = (ep_score >= 0, file_above_floor, ep_score, size, tok_score)
             # A current-level video only displaces "nothing yet" when it
             # carries a positive selection signal: a real (non-zero) size --
             # the historical largest-wins rule, under which main never adopted
@@ -842,6 +865,7 @@ def find_video_file(
                 result_size = get_video_file_size_hint(result)
                 result_above_floor = result_size <= 0 or result_size >= min_video_size
                 result_key = (
+                    result_ep_score >= 0,
                     result_above_floor,
                     result_ep_score,
                     result_size,

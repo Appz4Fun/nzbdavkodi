@@ -2283,3 +2283,163 @@ def test_find_video_file_floor_adopts_size_unknown_exact_episode_child(
     )
 
     assert path == "/content/Show/Real/Show.S01E05.1080p.mkv"
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_floor_keeps_requested_stub_over_same_level_wrong_episode(
+    mock_urlopen, mock_settings
+):
+    """#340 (Codex): same level, no subdir — the requested-episode stub (S01E05)
+    sits below the floor while a WRONG episode (S01E04) sits above it. The
+    above-floor boost must NOT promote the wrong episode over the requested-ep
+    stub: its real size would pass the resolver's stub guard and Kodi would
+    stream the wrong episode. Keep the requested-ep stub as best_file so the
+    resolver rejects it and the poll loop keeps waiting for S01E05."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    root = _propfind_listing(
+        [
+            ("/content/Show/", True, None),
+            ("/content/Show/Show.S01E05.1080p.mp4", False, 1_000_000),  # ep stub
+            ("/content/Show/Show.S01E04.1080p.mkv", False, 9_000_000_000),  # wrong
+        ]
+    )
+
+    def propfind(req, **_kwargs):
+        url = req.full_url
+        if url.endswith("/Show/"):
+            return _webdav_response(root)
+        raise AssertionError("unexpected PROPFIND URL: {}".format(url))
+
+    mock_urlopen.side_effect = propfind
+
+    path = find_video_file(
+        "/content/Show/",
+        title_hint="Show.S01E05.1080p.WEB-DL",
+        min_video_size=2_000_000_000,
+    )
+
+    assert path == "/content/Show/Show.S01E05.1080p.mp4"
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_floor_keeps_requested_stub_over_sibling_wrong_episode(
+    mock_urlopen, mock_settings
+):
+    """#340 (Codex): sibling-folder version — one sibling holds the requested
+    below-floor S01E05 stub, the other an above-floor WRONG episode (S01E04).
+    The sibling ranking must apply the same above-floor + not-wrong dimensions
+    so the wrong episode never outranks the requested-ep stub, which is kept so
+    the resolver re-waits."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    root = _propfind_listing(
+        [
+            ("/content/Show/", True, None),
+            ("/content/Show/E05/", True, None),
+            ("/content/Show/E04/", True, None),
+        ]
+    )
+    e05 = _propfind_listing(
+        [
+            ("/content/Show/E05/", True, None),
+            ("/content/Show/E05/Show.S01E05.1080p.mp4", False, 1_000_000),  # stub
+        ]
+    )
+    e04 = _propfind_listing(
+        [
+            ("/content/Show/E04/", True, None),
+            ("/content/Show/E04/Show.S01E04.1080p.mkv", False, 9_000_000_000),
+        ]
+    )
+
+    def propfind(req, **_kwargs):
+        url = req.full_url
+        if url.endswith("/Show/"):
+            return _webdav_response(root)
+        if url.endswith("/E05/"):
+            return _webdav_response(e05)
+        if url.endswith("/E04/"):
+            return _webdav_response(e04)
+        raise AssertionError("unexpected PROPFIND URL: {}".format(url))
+
+    mock_urlopen.side_effect = propfind
+
+    path = find_video_file(
+        "/content/Show/",
+        title_hint="Show.S01E05.1080p.WEB-DL",
+        min_video_size=2_000_000_000,
+    )
+
+    assert path == "/content/Show/E05/Show.S01E05.1080p.mp4"
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_file_floor_prefers_generic_real_over_sibling_episode_stub(
+    mock_urlopen, mock_settings
+):
+    """#340: re-confirm the floor goal across siblings — a requested-episode stub
+    (S01E05, below floor) must still LOSE to a generically-named above-floor real
+    file in another sibling. Neither is wrong, so the above-floor flag decides
+    and the streamable real file wins."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    root = _propfind_listing(
+        [
+            ("/content/Show/", True, None),
+            ("/content/Show/Stub/", True, None),
+            ("/content/Show/Real/", True, None),
+        ]
+    )
+    stub = _propfind_listing(
+        [
+            ("/content/Show/Stub/", True, None),
+            ("/content/Show/Stub/Show.S01E05.1080p.mp4", False, 1_000_000),  # stub
+        ]
+    )
+    real = _propfind_listing(
+        [
+            ("/content/Show/Real/", True, None),
+            ("/content/Show/Real/video.mkv", False, 4_000_000_000),  # generic real
+        ]
+    )
+
+    def propfind(req, **_kwargs):
+        url = req.full_url
+        if url.endswith("/Show/"):
+            return _webdav_response(root)
+        if url.endswith("/Stub/"):
+            return _webdav_response(stub)
+        if url.endswith("/Real/"):
+            return _webdav_response(real)
+        raise AssertionError("unexpected PROPFIND URL: {}".format(url))
+
+    mock_urlopen.side_effect = propfind
+
+    path = find_video_file(
+        "/content/Show/",
+        title_hint="Show.S01E05.1080p.WEB-DL",
+        min_video_size=2_000_000_000,
+    )
+
+    assert path == "/content/Show/Real/video.mkv"
+
+
+def test_remember_video_file_size_hint_clears_stale_on_unknown_size():
+    """#282 (Codex): a later scan that sees no getcontentlength (size 0) for a
+    path must drop the prior cached size so the stub guard fails OPEN on the
+    now-unknown size instead of re-rejecting against the stale stub size."""
+    from resources.lib import webdav
+
+    path = "/content/uncategorized/Show/Show.S01E01.mkv"
+    webdav._VIDEO_FILE_SIZE_HINTS.pop(path, None)
+    try:
+        webdav._remember_video_file_size_hint(path, 362 * 1024 * 1024)
+        assert webdav.get_video_file_size_hint(path) == 362 * 1024 * 1024
+
+        webdav._remember_video_file_size_hint(path, 0)
+
+        assert webdav.get_video_file_size_hint(path) == 0
+        assert path not in webdav._VIDEO_FILE_SIZE_HINTS
+    finally:
+        webdav._VIDEO_FILE_SIZE_HINTS.pop(path, None)

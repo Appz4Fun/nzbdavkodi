@@ -1365,3 +1365,34 @@ def test_release_is_pack_false_for_single_nxn_episode():
 def test_release_is_pack_false_for_empty_or_nonstring():
     assert release_is_pack("") is False
     assert release_is_pack(None) is False
+
+
+def test_release_is_pack_true_for_spelled_ordinal_season():
+    """#340 Codex review: a whole-season pack named with a spelled
+    ordinal/cardinal and "Season" but no explicit "Complete" ("First Season",
+    "The Second Season", "3rd Season", "Season Two") parses to no
+    seasons/episodes in PTT (the spelled number is not recognized), so the
+    phrase gate must treat an ordinal/cardinal adjacent to "season(s)" as a pack
+    or the single-file floor would reject a real episode of the season pack."""
+    assert release_is_pack("Some.Show.First.Season.1080p.WEB-DL-GRP") is True
+    assert release_is_pack("Some.Show.The.Second.Season.1080p.WEB-DL-GRP") is True
+    assert release_is_pack("Some.Show.Third.Season.720p.HDTV-GRP") is True
+    assert release_is_pack("Some.Show.3rd.Season.1080p.WEB-GRP") is True
+    assert release_is_pack("Some.Show.Season.Two.1080p.WEB-DL-GRP") is True
+
+
+def test_release_is_pack_false_for_ordinal_in_movie_title():
+    """The ordinal/cardinal season signal requires "season" ADJACENT to the
+    ordinal, so a movie whose title merely begins with an ordinal word
+    ("First Blood", "First Man", "Second Act") does NOT match and keeps the #282
+    stub guard active (#340 Codex review)."""
+    assert release_is_pack("First.Blood.1982.1080p.BluRay.x264-GRP") is False
+    assert release_is_pack("First.Man.2018.1080p.BluRay.x264-GRP") is False
+    assert release_is_pack("Second.Act.2018.1080p.WEB-DL-GRP") is False
+
+
+def test_release_is_pack_false_for_single_episode_ordinal_season():
+    """A single-episode release whose name contains a spelled-ordinal season
+    phrase ("First Season" + S01E05) keeps the stub guard: the episode tag
+    overrides the phrase (#340 Codex review)."""
+    assert release_is_pack("Some.Show.First.Season.S01E05.1080p.WEB-DL-GRP") is False

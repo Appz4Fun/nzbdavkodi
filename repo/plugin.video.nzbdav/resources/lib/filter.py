@@ -571,6 +571,16 @@ _PACK_PHRASE_RE = re.compile(
     # Complete", "Season First Complete".
     r"|(?:" + _PACK_KEYWORD + r")[ ._-]+"
     r"(?:(?:" + _PACK_ORDINAL + r"|" + _PACK_CARDINAL + r")[ ._-]+)?complete"
+    # Spelled ordinal/cardinal adjacent to "season(s)", either order, with no
+    # explicit "Complete": "First Season", "The Second Season", "3rd Season",
+    # "Season Two". PTT does not parse the spelled number, so it leaves
+    # seasons=[]/episodes=[] and the bare-season check below misses these. The
+    # adjacency requirement keeps a bare ordinal in a movie title
+    # ("First.Blood", "First.Man", "Second.Act") from matching (#340 Codex
+    # review). Still gated on ``not episode_tags`` in release_is_pack: a single
+    # "First.Season.S01E05" keeps the stub guard.
+    r"|(?:" + _PACK_ORDINAL + r"|" + _PACK_CARDINAL + r")[ ._-]+seasons?"
+    r"|seasons?[ ._-]+(?:" + _PACK_ORDINAL + r"|" + _PACK_CARDINAL + r")"
     r"|box[ ._-]?sets?"
     # "Mini Series" / "Limited Series" season-tag-less TV packs.
     r"|(?:mini|limited)[ ._-]?series"
