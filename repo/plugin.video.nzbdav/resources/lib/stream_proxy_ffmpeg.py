@@ -32,6 +32,29 @@ from resources.lib.stream_proxy import (  # noqa: E402
 )
 
 
+def _get_private_hls_temp_root():
+    """Return a reusable private temp root for HLS work files.
+
+    The cached singleton and its lock live on ``stream_proxy`` (tests patch
+    ``stream_proxy._HLS_PRIVATE_TEMP_ROOT``), so the read and the write both go
+    through ``_sp`` to mutate that module's global rather than a local one.
+    """
+    with _sp._HLS_PRIVATE_TEMP_ROOT_LOCK:
+        cached = _sp._HLS_PRIVATE_TEMP_ROOT
+        if cached and os.path.isdir(cached) and os.access(cached, os.W_OK):
+            return cached
+
+        temp_root = _sp.tempfile.mkdtemp(prefix="nzbdav-hls-")
+        # 0o700 is restrictive (user-only); semgrep rule is a false positive.
+        try:
+            os.chmod(temp_root, 0o700)  # nosemgrep
+        except OSError:
+            pass
+
+        _sp._HLS_PRIVATE_TEMP_ROOT = temp_root
+        return temp_root
+
+
 def _disk_free_bytes(path):
     usage = shutil.disk_usage(path)
     return getattr(usage, "free", usage[2])
