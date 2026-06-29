@@ -4,116 +4,45 @@
 """Result filtering and sorting using PTT for title parsing."""
 
 import math
-import re
 import time
 from copy import deepcopy
 from types import SimpleNamespace
 
 import xbmc
 import xbmcaddon
-import xbmcgui
+import xbmcgui  # re-exported via __all__ for callers/tests; not used here
 
 from resources.lib import telemetry
+from resources.lib.filter_fallback import (
+    _fallback_audio,
+    _fallback_hdr,
+    _fallback_parse,
+    _fallback_quality,
+    _fallback_year,
+)
+from resources.lib.filter_groups import ALL_RELEASE_GROUPS, configure_groups_dialog
+from resources.lib.filter_normalize import (
+    _normalize_fallback_meta,
+    _normalize_parsed_meta,
+)
+from resources.lib.filter_pack import release_is_pack
 
-# ---------------------------------------------------------------------------
-# Known release groups — master list for multiselect dialogs
-# ---------------------------------------------------------------------------
-
-ALL_RELEASE_GROUPS = [
-    "4KDVS",
-    "Amen",
-    "AOC",
-    "APEX",
-    "B0MBARDiERS",
-    "Ben The Men",
-    "BHDstudio",
-    "BiTOR",
-    "BYNDR",
-    "c0kE",
-    "CiNEPHiLES",
-    "CM",
-    "CMRG",
-    "DDR",
-    "DEFLATE",
-    "DirtyHippie",
-    "DiscoD",
-    "DON",
-    "DreamHD",
-    "DVSUX",
-    "EDITH",
-    "ENDSTATiON",
-    "ETHEL",
-    "EVO",
-    "FETiSH",
-    "FGT",
-    "FLUX",
-    "FraMeSToR",
-    "FrameStor",
-    "FW",
-    "GalaxyRG",
-    "GLHF",
-    "Gungnir",
-    "hallowed",
-    "HDS",
-    "HDT",
-    "HHWEB",
-    "HiDt",
-    "HONE",
-    "HSaber",
-    "IAMABLE",
-    "j3rico",
-    "KC",
-    "Kira",
-    "Kitsune",
-    "KOGi",
-    "KTR",
-    "LEGi0N",
-    "MainFrame",
-    "MgB",
-    "MIXED",
-    "mkv",
-    "mp4",
-    "MZABI",
-    "NAHOM",
-    "Narcos",
-    "NBQ",
-    "NHTFS",
-    "NOGRP",
-    "NTb",
-    "NUXWIO",
-    "P2P",
-    "playWEB",
-    "PSA",
-    "R3MiX",
-    "Ralphy",
-    "RARBG",
-    "SDH",
-    "Sensei",
-    "SESKAPiLE",
-    "SEV",
-    "SiC",
-    "SMURF",
-    "SPHD",
-    "SPx",
-    "STRiKES",
-    "SuccessfulCrab",
-    "SUPPLY",
-    "SURCODE",
-    "SWTYBLZ",
-    "TERMiNAL",
-    "TEPES",
-    "TheBiscuitMan",
-    "ToonsHub",
-    "TrollUHD",
-    "TW",
-    "VSEX",
-    "W4NK3R",
-    "WADU",
-    "WiKi",
-    "WRB",
-    "XEBEC",
-    "XXX",
-    "ZAX",
+# Re-exported so ``resources.lib.filter.<name>`` keeps resolving for callers
+# and tests after the fallback parser, groups dialog, pack detection, and
+# metadata normalization moved to sibling modules (``filter_fallback`` /
+# ``filter_groups`` / ``filter_pack`` / ``filter_normalize``).
+__all__ = [
+    "xbmcgui",
+    "ALL_RELEASE_GROUPS",
+    "configure_groups_dialog",
+    "release_is_pack",
+    "_fallback_audio",
+    "_fallback_hdr",
+    "_fallback_parse",
+    "_fallback_quality",
+    "_fallback_year",
+    "_normalize_fallback_meta",
+    "_normalize_parsed_meta",
 ]
 
 _FILTER_META_KEYS = frozenset(
@@ -157,97 +86,6 @@ DEFAULT_EXCLUDED_GROUPS = {
     "WiKi",
     "ZAX",
 }
-
-_RESOLUTION_MAP = {
-    "2160p": "2160p",
-    "4K": "2160p",
-    "1080p": "1080p",
-    "1080i": "1080p",
-    "720p": "720p",
-    "480p": "480p",
-    "480i": "480p",
-    "SD": "480p",
-}
-
-_HDR_MAP = {
-    "HDR": "HDR10",
-    "HDR10": "HDR10",
-    "HDR10+": "HDR10+",
-    "HDR10Plus": "HDR10+",
-    "DV": "Dolby Vision",
-    "Dolby Vision": "Dolby Vision",
-    "DoVi": "Dolby Vision",
-    "HLG": "HLG",
-}
-
-_AUDIO_MAP = {
-    "Atmos": "Atmos",
-    "TrueHD": "TrueHD",
-    "DTS-HD MA": "DTS-HD MA",
-    "DTS-HD": "DTS-HD MA",
-    "DTS Lossless": "DTS-HD MA",
-    "DTS:X": "DTS:X",
-    "DTS-X": "DTS:X",
-    "DD+": "DD+",
-    "EAC3": "DD+",
-    "E-AC-3": "DD+",
-    "Dolby Digital Plus": "DD+",
-    "DD": "DD",
-    "AC3": "DD",
-    "AC-3": "DD",
-    "Dolby Digital": "DD",
-    "DTS Lossy": "DD",
-    "AAC": "AAC",
-}
-
-_CODEC_MAP = {
-    "x265": "x265/HEVC",
-    "HEVC": "x265/HEVC",
-    "H.265": "x265/HEVC",
-    "h265": "x265/HEVC",
-    "hevc": "x265/HEVC",
-    "x264": "x264/AVC",
-    "AVC": "x264/AVC",
-    "H.264": "x264/AVC",
-    "h264": "x264/AVC",
-    "avc": "x264/AVC",
-    "AV1": "AV1",
-    "av1": "AV1",
-    "VP9": "VP9",
-    "vp9": "VP9",
-    "MPEG2": "MPEG-2",
-    "MPEG-2": "MPEG-2",
-    "mpeg2": "MPEG-2",
-}
-
-# ---------------------------------------------------------------------------
-# Fallback parse compiled regexes
-# ---------------------------------------------------------------------------
-
-_RE_RES = re.compile(r"(?i)\b(2160p|1080p|1080i|720p|480p|4K)\b")
-_RE_CODEC = re.compile(r"(?i)\b(x265|h\.?265|hevc|x264|h\.?264|avc|av1|vp9)\b")
-_RE_ATMOS = re.compile(r"(?i)\batmos\b")
-_RE_TRUEHD = re.compile(r"(?i)\btruehd\b")
-_RE_DTSHD = re.compile(r"(?i)\bdts[-. ]?hd[-. ]?ma\b")
-_RE_DDPLUS = re.compile(r"(?i)\bddp?5[. ]1|eac3|dd\+|dolby.digital.plus\b")
-_RE_DD = re.compile(r"(?i)\bac3|dd[. ]?5[. ]1|dolby.digital\b")
-_RE_AAC = re.compile(r"(?i)\baac\b")
-_RE_DTS = re.compile(r"(?i)\bdts\b")
-_RE_DV = re.compile(r"(?i)\b(dv|dovi|dolby[. ]?vision)\b")
-_RE_HDR10PLUS = re.compile(r"(?i)\b(hdr10\+|hdr10plus)\b")
-_RE_HDR10 = re.compile(r"(?i)\bhdr10\b")
-_RE_HLG = re.compile(r"(?i)\bhlg\b")
-_RE_QUALITY = re.compile(
-    r"(?i)\b(remux|blu[-. ]?ray|bdrip|web[-. ]?dl|webrip|hdtv|dvdrip|hdrip)\b"
-)
-_RE_EDITION = re.compile(
-    r"(?i)\b(uncut|unrated|director'?s[. ]?cut|extended[. ]?cut"
-    r"|recut|theatrical|imax|special[. ]?edition)\b"
-)
-_RE_CHANNELS = re.compile(r"\b(7\.1|5\.1|2\.0)\b")
-_RE_YEAR = re.compile(r"[. (](\d{4})[. )]")
-_RE_UPSCALED = re.compile(r"(?i)\bupscale[d]?\b")
-_RE_GROUP = re.compile(r"-([A-Za-z0-9][A-Za-z0-9_-]*)(?:\.[a-z]{2,4})?$")
 
 
 def _collect_enabled(addon, pairs):
@@ -404,102 +242,6 @@ def _get_filter_settings(settings_getter=None):
     }
 
 
-def _as_list(value):
-    """Coerce a PTT field into a list (wrapping a bare string)."""
-    if isinstance(value, str):
-        return [value]
-    return value
-
-
-def _normalize_parsed_meta(parsed):
-    """Normalize a PTT-style parsed dict into the metadata contract.
-
-    Assumes PTT returned typed data matching its documented contract:
-    strings for resolution/codec/group/year, lists (or strings) for
-    hdr/audio/languages/channels. May raise TypeError/AttributeError/
-    KeyError if PTT drifts from that contract; the caller catches that.
-    """
-    raw_res = parsed.get("resolution", "") or ""
-    resolution = _RESOLUTION_MAP.get(raw_res, raw_res)
-
-    # Dedup HDR / audio lists. PTT can return duplicates when a release
-    # name mentions the same token twice (e.g. "Atmos.TrueHD.Atmos");
-    # the duplicates broke combo-rank logic that uses set-membership +
-    # list-position cues (Atmos+TrueHD combo, language filter). Use a
-    # dict-as-ordered-set to preserve PTT's first-occurrence order.
-    # Closes TODO.md §H.3.
-    raw_hdr = _as_list(parsed.get("hdr", []))
-    hdr_list = list(dict.fromkeys(_HDR_MAP.get(h, h) for h in raw_hdr if h))
-
-    raw_audio = _as_list(parsed.get("audio", []))
-    audio_list = list(dict.fromkeys(_AUDIO_MAP.get(a, a) for a in raw_audio if a))
-
-    raw_codec = parsed.get("codec", "") or ""
-    codec = _CODEC_MAP.get(raw_codec, raw_codec)
-
-    raw_langs = _as_list(parsed.get("languages", []))
-    raw_langs = list(dict.fromkeys(raw_langs))  # dedup, preserve order
-
-    raw_channels = _as_list(parsed.get("channels", []))
-    channels = raw_channels[0] if raw_channels else ""
-
-    meta = _common_parsed_fields(parsed)
-    meta.update(
-        {
-            "resolution": resolution,
-            "hdr": hdr_list,
-            "audio": audio_list,
-            "codec": codec,
-            "languages": raw_langs,
-            "channels": channels,
-        }
-    )
-    return meta
-
-
-def _common_parsed_fields(parsed):
-    """Extract the scalar metadata fields shared by both parse paths."""
-    return {
-        "group": parsed.get("group", "") or "",
-        "quality": parsed.get("quality", "") or "",
-        "edition": parsed.get("edition", "") or "",
-        "proper": bool(parsed.get("proper", False)),
-        "repack": bool(parsed.get("repack", False)),
-        "year": parsed.get("year", 0) or 0,
-        "upscaled": bool(parsed.get("upscaled", False)),
-        "container": parsed.get("container", "") or "",
-    }
-
-
-def _mapped_str_list(parsed, key, mapping):
-    """Map a PTT field's string items through a lookup table."""
-    raw = _as_list(parsed.get(key, []) or [])
-    return [mapping.get(item, item) for item in raw if isinstance(item, str)]
-
-
-def _normalize_fallback_meta(parsed):
-    """Normalize a regex-fallback parsed dict (string-only filtering)."""
-    raw_res = parsed.get("resolution", "") or ""
-    resolution = _RESOLUTION_MAP.get(raw_res, raw_res)
-    hdr_list = _mapped_str_list(parsed, "hdr", _HDR_MAP)
-    audio_list = _mapped_str_list(parsed, "audio", _AUDIO_MAP)
-    codec = _CODEC_MAP.get(parsed.get("codec", ""), parsed.get("codec", ""))
-    raw_langs = _as_list(parsed.get("languages", []) or [])
-
-    meta = _common_parsed_fields(parsed)
-    meta.update(
-        {
-            "resolution": resolution,
-            "hdr": hdr_list,
-            "audio": audio_list,
-            "codec": codec,
-            "languages": raw_langs,
-            "channels": "",
-        }
-    )
-    return meta
-
-
 def parse_title_metadata(title):
     """Parse a scene title and return normalized metadata dict."""
     try:
@@ -533,155 +275,6 @@ def parse_title_metadata(title):
             xbmc.LOGWARNING,
         )
         return _normalize_fallback_meta(_fallback_parse(title))
-
-
-# Whole-collection / complete-series PHRASING that marks a season-tag-less
-# release as a multi-item pack: the word "complete" ADJACENT to a
-# collection/series/saga/set keyword (either order), or "box set" / "mini
-# series". Matching the phrase -- not PTT's bare ``complete`` flag, nor a lone
-# "collection"/"series" word -- is what keeps the #282 stub guard ACTIVE for a
-# movie whose title merely contains "Complete" (``Complete.Unknown.2024``) or
-# "Collection" (``The.Collection.2012.COMPLETE`` -- the year separates the
-# words, so no phrase matches). PTT exposes no collection flag, so the raw
-# title is the only signal (#340 review).
-_PACK_KEYWORD = (
-    r"collections?|series|saga|seasons?|sets?|pack|anthology|"
-    r"trilogy|duology|quadrilogy|filmography"
-)
-# An optional ordinal between "complete" and the keyword: "Complete First
-# Season", "Complete 2nd Season", "Complete Final Season" are all packs. PTT
-# leaves seasons/episodes empty for these ordinal forms, so the phrase is the
-# only signal (#340 review).
-_PACK_ORDINAL = (
-    r"first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|"
-    r"final|last|[0-9]{1,2}(?:st|nd|rd|th)"
-)
-# A spelled cardinal that can sit between the keyword and "Complete" in the
-# reversed phrasing ("Season One Complete"): PTT does not parse spelled numbers,
-# so without this the reversed branch only matches "Season Complete" and misses
-# the numbered form (#340 Codex review).
-_PACK_CARDINAL = r"one|two|three|four|five|six|seven|eight|nine|ten"
-# Ordinals safe to pair with a BARE "Season" (no "Complete"): numeric/positional
-# forms only. ``final``/``last`` are deliberately EXCLUDED here because
-# "The Last Season" / "Final Season" are real single-movie titles -- treating
-# those as packs would skip the #282 stub guard for them. With an adjacent
-# "Complete" the full _PACK_ORDINAL (incl. final/last) is fine, since "Complete
-# Final Season" is unambiguously a whole-season pack (#340 Codex review).
-_PACK_SEASON_ORDINAL = (
-    r"first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|"
-    r"[0-9]{1,2}(?:st|nd|rd|th)"
-)
-# Unambiguous multi-item collection words that mark a pack ON THEIR OWN, without
-# an adjacent "Complete": a "Trilogy"/"Quadrilogy"/"Anthology"/"Filmography"
-# release bundles several films, so its advertised size spans them all and one
-# picked film is legitimately a fraction of it -- without this the single-file
-# floor would reject a real 20 GB movie out of a 60 GB trilogy as a stub (#340
-# Codex review). Deliberately excludes "collection"/"series"/"saga"/"season"/
-# "set"/"pack", which occur in single-movie titles ("The.Collection.2012") and
-# must stay guarded -- those remain pack signals only in the "Complete <kw>" /
-# "<kw> Complete" phrasing below.
-_PACK_STANDALONE_KEYWORD = (
-    r"trilogy|duology|quadrilogy|pentalogy|hexalogy|anthology|filmography"
-)
-_PACK_PHRASE_RE = re.compile(
-    r"(?<![a-z])(?:"
-    r"complete[ ._-]+(?:(?:" + _PACK_ORDINAL + r")[ ._-]+)?(?:" + _PACK_KEYWORD + r")"
-    # Reversed phrasing, optionally numbered: "Series Complete", "Season One
-    # Complete", "Season First Complete".
-    r"|(?:" + _PACK_KEYWORD + r")[ ._-]+"
-    r"(?:(?:" + _PACK_ORDINAL + r"|" + _PACK_CARDINAL + r")[ ._-]+)?complete"
-    # Spelled ordinal/cardinal adjacent to "season(s)", either order, with no
-    # explicit "Complete": "First Season", "The Second Season", "3rd Season",
-    # "Season Two". PTT does not parse the spelled number, so it leaves
-    # seasons=[]/episodes=[] and the bare-season check below misses these. The
-    # adjacency requirement keeps a bare ordinal in a movie title
-    # ("First.Blood", "First.Man", "Second.Act") from matching (#340 Codex
-    # review). Still gated on ``not episode_tags`` in release_is_pack: a single
-    # "First.Season.S01E05" keeps the stub guard.
-    r"|(?:" + _PACK_SEASON_ORDINAL + r"|" + _PACK_CARDINAL + r")[ ._-]+seasons?"
-    r"|seasons?[ ._-]+(?:" + _PACK_SEASON_ORDINAL + r"|" + _PACK_CARDINAL + r")"
-    r"|box[ ._-]?sets?"
-    # "Mini Series" / "Limited Series" season-tag-less TV packs.
-    r"|(?:mini|limited)[ ._-]?series"
-    r"|(?:" + _PACK_STANDALONE_KEYWORD + r")"
-    r")(?![a-z])",
-    re.IGNORECASE,
-)
-
-
-def release_is_pack(title):
-    """Return True when a release name denotes a multi-episode / season pack.
-
-    A pack's advertised size covers many episodes, so the single episode a
-    picker selects out of it is legitimately a fraction of that size. The #282
-    stub size-guard (resolver) must therefore SKIP packs, or it would reject a
-    real episode for being far smaller than the whole-pack advertised size.
-
-    A title is a pack when it spans more than one episode (including
-    ``S01E01E02E03`` multi-tags and ``1x01-1x10`` / ``S01E01-E10`` ranges,
-    which PTT collapses to a single episode but ``_episode_tags`` expands),
-    more than one season, a whole season with no single episode (e.g. ``S01``,
-    ``S01-S05 COMPLETE``), carries whole-collection PHRASING ("Complete
-    Collection / Series", "Box Set", "Mini/Limited Series"), or names an
-    unambiguous multi-film collection on its own ("Trilogy", "Quadrilogy",
-    "Anthology", "Filmography"). A movie, a single ``SxxExx`` (even one tagged
-    ``COMPLETE`` or carrying a collection word), and a movie whose title merely
-    contains "Complete" or "Collection" are NOT packs -- they keep the stub
-    guard (the single episode tag overrides any pack phrase).
-
-    On a missing title or a PTT parse error this returns ``False`` ("not a
-    pack"), which only ever leaves the caller's size-guard *active* (never
-    weaker); that guard's own conservative fraction floor is the second safety
-    net, so a rare parse glitch cannot turn the protection off.
-    """
-    if not isinstance(title, str) or not title:
-        return False
-    # NxN-range packs ("1x01-1x10") and multi-episode tags ("S01E01E02E03")
-    # collapse in PTT to a single (season, episode), so the season/episode-count
-    # checks below miss them. webdav._episode_tags expands NxN ranges, SxxExx
-    # ranges, and multi-episode tags to one (season, episode) tuple each, so
-    # more than one tag is a pack. (webdav does not import filter -> no cycle.)
-    from resources.lib.webdav import _episode_tags
-
-    episode_tags = _episode_tags(title)
-    if len(episode_tags) > 1:
-        return True
-    # Season-tag-less collection/complete-series packs, matched as a phrase so a
-    # "Complete"-titled movie or a "Collection" in a movie title does not skip
-    # the stub guard (#340 review). Gate on having NO single episode tag: a real
-    # single-episode release whose name happens to contain a pack phrase (e.g.
-    # "Chernobyl.Miniseries.S01E01", "Some.Show.Box.Set.S01E05") advertises a
-    # one-episode size, so it must keep the #282 stub guard -- the episode tag
-    # overrides the phrase. Whole-season miniseries (no episode tag) stay packs
-    # via this branch or the bare-season PTT check below (PR #340 Codex review).
-    if not episode_tags and _PACK_PHRASE_RE.search(title):
-        return True
-    return _ptt_season_episode_is_pack(title)
-
-
-def _as_count_list(value):
-    """Coerce a PTT season/episode field to a list (empty when falsy)."""
-    if not value:
-        return []
-    if not isinstance(value, list):
-        return [value]
-    return value
-
-
-def _ptt_season_episode_is_pack(title):
-    """True when PTT's season/episode counts denote a multi-item pack."""
-    try:
-        from resources.lib.ptt import parse_title
-
-        parsed = parse_title(title)
-    except Exception:  # pylint: disable=broad-except
-        return False
-    seasons = _as_count_list(parsed.get("seasons"))
-    episodes = _as_count_list(parsed.get("episodes"))
-    if len(episodes) > 1 or len(seasons) > 1:
-        return True
-    # A season tag with no single episode is a whole-season pack.
-    return bool(seasons) and not episodes
 
 
 def matches_filters(result, meta, settings):
@@ -1004,154 +597,3 @@ def _sort_results(results, settings):
         return sorted(results, key=key, reverse=reverse)
     preferred_lower = [g.lower() for g in settings["release_group"]]
     return sorted(results, key=_make_relevance_key(preferred_lower))
-
-
-_FALLBACK_AUDIO_TAGS = (
-    (_RE_ATMOS, "Atmos"),
-    (_RE_TRUEHD, "TrueHD"),
-    (_RE_DTSHD, "DTS-HD MA"),
-    (_RE_DDPLUS, "DD+"),
-    (_RE_DD, "DD"),
-    (_RE_AAC, "AAC"),
-)
-
-
-def _fallback_audio(t):
-    """Detect audio tags via regex; mirrors PTT's audio list ordering."""
-    audio = [label for regex, label in _FALLBACK_AUDIO_TAGS if regex.search(t)]
-    if _RE_DTS.search(t) and not audio:
-        audio.append("DTS")
-    return audio
-
-
-def _fallback_hdr(t):
-    """Detect HDR tags via regex."""
-    hdr = []
-    if _RE_DV.search(t):
-        hdr.append("DV")
-    # HDR10+ alternation needs both branches anchored to a leading word
-    # boundary so we don't pick up substrings inside another token.
-    if _RE_HDR10PLUS.search(t):
-        hdr.append("HDR10+")
-    # `hdr10` without the optional `0` would match `hdr1`; require the digit.
-    elif _RE_HDR10.search(t):
-        hdr.append("HDR10")
-    if _RE_HLG.search(t):
-        hdr.append("HLG")
-    return hdr
-
-
-def _fallback_quality(t):
-    """Map a quality/source regex hit to a normalized label, or ""."""
-    m = _RE_QUALITY.search(t)
-    if not m:
-        return ""
-    raw_q = m.group(1).upper().replace(" ", "").replace(".", "").replace("-", "")
-    if "REMUX" in raw_q:
-        return "BluRay REMUX"
-    if "BLURAY" in raw_q or "BDRIP" in raw_q:
-        return "BluRay"
-    if "WEBDL" in raw_q:
-        return "WEB-DL"
-    if "WEBRIP" in raw_q:
-        return "WEBRip"
-    if "HDTV" in raw_q:
-        return "HDTV"
-    return raw_q
-
-
-def _fallback_year(t):
-    """Parse a plausible release year from the title, or 0.
-
-    Range chosen broadly enough that this isn't a time bomb the next
-    time we forget to bump it (TODO.md §H.2-M44 was the previous
-    bump — 2030 turned out to be too tight). 2100 is well past any
-    plausible release window for content this addon would index.
-    """
-    m = _RE_YEAR.search(t)
-    if not m:
-        return 0
-    yr = int(m.group(1))
-    if 1920 <= yr <= 2100:
-        return yr
-    return 0
-
-
-def _fallback_parse(title):
-    """Simple regex fallback when PTT fails or returns empty."""
-    result = {
-        "resolution": "",
-        "codec": "",
-        "audio": [],
-        "hdr": [],
-        "languages": [],
-        "group": "",
-        "quality": "",
-        "edition": "",
-        "channels": "",
-        "year": 0,
-        "upscaled": False,
-    }
-
-    t = title.replace("[", ".").replace("]", ".").replace("(", ".").replace(")", ".")
-
-    m = _RE_RES.search(t)
-    if m:
-        result["resolution"] = m.group(1)
-
-    m = _RE_CODEC.search(t)
-    if m:
-        result["codec"] = m.group(1).lower()
-
-    result["audio"] = _fallback_audio(t)
-    result["hdr"] = _fallback_hdr(t)
-    result["quality"] = _fallback_quality(t)
-
-    m = _RE_EDITION.search(t)
-    if m:
-        result["edition"] = m.group(1).replace(".", " ")
-
-    m = _RE_CHANNELS.search(t)
-    if m:
-        result["channels"] = m.group(1)
-
-    result["year"] = _fallback_year(t)
-
-    if _RE_UPSCALED.search(t):
-        result["upscaled"] = True
-
-    # Group (last segment after hyphen). Scene groups can contain hyphens and
-    # underscores, e.g. GROUP-NAME or GROUP_NAME.
-    m = _RE_GROUP.search(title)
-    if m:
-        result["group"] = m.group(1)
-
-    return result
-
-
-def configure_groups_dialog(setting_id, title, default_set):
-    """Show a multiselect dialog for release group configuration.
-
-    Args:
-        setting_id: Kodi setting ID to read/write (comma-separated string).
-        title: Dialog title string.
-        default_set: Set of group names to preselect when setting is empty.
-    """
-    addon = xbmcaddon.Addon("plugin.video.nzbdav")
-    current = _csv_setting(addon, setting_id)
-
-    if current:
-        selected = set(current)
-    else:
-        selected = set(default_set)
-
-    preselect = [i for i, g in enumerate(ALL_RELEASE_GROUPS) if g in selected]
-
-    dialog = xbmcgui.Dialog()
-    result = dialog.multiselect(title, ALL_RELEASE_GROUPS, preselect=preselect)
-
-    if result is None:
-        return
-
-    chosen = [ALL_RELEASE_GROUPS[i] for i in result]
-    addon.setSetting(setting_id, ",".join(chosen))
