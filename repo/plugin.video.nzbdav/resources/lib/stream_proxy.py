@@ -810,6 +810,56 @@ _FMP4_HLS_CAPABILITY_MARKERS = (
 )
 
 
+def _run_ffmpeg_hls_muxer_probe(ffmpeg_path):
+    """Run ``ffmpeg -h muxer=hls`` and return combined output, or None on error.
+
+    Returns the decoded stdout+stderr text on success, or ``None`` when the
+    probe fails to launch, times out, or yields malformed output.
+    """
+    cmd = [ffmpeg_path, "-hide_banner", "-h", "muxer=hls"]
+    try:
+        proc = subprocess.Popen(  # nosec B603 — argv list, shell=False
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            shell=False,
+        )
+        try:
+            output = proc.communicate(timeout=_FFMPEG_CAPABILITY_PROBE_TIMEOUT)
+            if not isinstance(output, (tuple, list)) or len(output) != 2:
+                raise ValueError("invalid ffmpeg capability probe output")
+            stdout, stderr = output
+        except subprocess.TimeoutExpired:
+            _drain_killed_ffmpeg_probe(proc, ffmpeg_path)
+            return None
+    except (OSError, ValueError, subprocess.SubprocessError) as e:
+        xbmc.log(
+            "NZB-DAV: ffmpeg capability probe failed for {}: {}".format(ffmpeg_path, e),
+            xbmc.LOGWARNING,
+        )
+        return None
+
+    return ((stdout or b"") + b"\n" + (stderr or b"")).decode("utf-8", errors="ignore")
+
+
+def _drain_killed_ffmpeg_probe(proc, ffmpeg_path):
+    """Kill a timed-out probe process and bound the post-kill drain.
+
+    If the kill itself hangs (uninterruptible I/O) we don't want service
+    startup to wedge indefinitely waiting on ffmpeg.
+    """
+    proc.kill()
+    try:
+        proc.communicate(timeout=1)
+    except subprocess.TimeoutExpired:
+        pass
+    xbmc.log(
+        "NZB-DAV: ffmpeg capability probe timed out for {}".format(ffmpeg_path),
+        xbmc.LOGWARNING,
+    )
+
+
 def _get_addon_setting(setting_id, default=None):
     """Best-effort Kodi addon setting lookup safe for tests and CLI.
 
@@ -3084,7 +3134,6 @@ class _StreamHandler(BaseHTTPRequestHandler):
         payload_size = ctx["payload_size"]
         header_len = len(header_data)
 
-        # Parse Range header
         range_header = self.headers.get("Range")
         if range_header:
             start, end = self._parse_range(range_header, virtual_size)
@@ -3098,52 +3147,27 @@ class _StreamHandler(BaseHTTPRequestHandler):
 
         bytes_sent = 0
         pos = start
-
         try:
             while bytes_sent < length:
                 remaining = length - bytes_sent
 
                 if pos < header_len:
                     # Serve from cached header (ftyp + moov)
-                    chunk_end = min(header_len, pos + remaining)
-                    self.wfile.write(header_data[pos:chunk_end])
-                    sent = chunk_end - pos
+                    sent = self._faststart_write_header(
+                        header_data, header_len, pos, remaining
+                    )
                     bytes_sent += sent
                     pos += sent
-
                 elif pos < header_len + payload_size:
-                    # Serve from remote payload via a single streaming connection.
-                    # One HTTP range request for the entire remaining payload,
-                    # then stream chunks through to Kodi.  This avoids per-chunk
-                    # connection overhead that causes slow seeking.
-                    payload_offset = pos - header_len
-                    remote_pos = payload_remote_start + payload_offset
-                    payload_remaining = length - bytes_sent
-                    remote_end = min(
-                        payload_remote_start + payload_size - 1,
-                        remote_pos + payload_remaining - 1,
+                    bytes_sent, pos = self._faststart_stream_payload(
+                        ctx,
+                        header_len,
+                        payload_remote_start,
+                        payload_size,
+                        length,
+                        bytes_sent,
+                        pos,
                     )
-
-                    req = Request(ctx["remote_url"])
-                    _add_request_headers(req, ctx.get("auth_header"))
-                    req.add_header(
-                        "Range", "bytes={}-{}".format(remote_pos, remote_end)
-                    )
-
-                    # nosemgrep
-                    with urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
-                        req, timeout=120
-                    ) as resp:
-                        while bytes_sent < length:
-                            chunk = resp.read(1048576)  # 1 MB read buffer
-                            if not chunk:
-                                break
-                            remaining = length - bytes_sent
-                            if len(chunk) > remaining:
-                                chunk = chunk[:remaining]
-                            self.wfile.write(chunk)
-                            bytes_sent += len(chunk)
-                            pos += len(chunk)
                     break  # done streaming
                 else:
                     break
@@ -3152,6 +3176,56 @@ class _StreamHandler(BaseHTTPRequestHandler):
         except (OSError, ValueError, HTTPException) as e:
             xbmc.log("NZB-DAV: Faststart proxy error: {}".format(e), xbmc.LOGERROR)
             _notify_error(e)
+
+    def _faststart_write_header(self, header_data, header_len, pos, remaining):
+        """Write the cached ftyp+moov header slice; return bytes written."""
+        chunk_end = min(header_len, pos + remaining)
+        self.wfile.write(header_data[pos:chunk_end])
+        return chunk_end - pos
+
+    def _faststart_stream_payload(
+        self,
+        ctx,
+        header_len,
+        payload_remote_start,
+        payload_size,
+        length,
+        bytes_sent,
+        pos,
+    ):
+        """Stream the remaining payload over a single range connection.
+
+        One HTTP range request for the entire remaining payload, then stream
+        chunks through to Kodi. This avoids per-chunk connection overhead that
+        causes slow seeking. Returns the updated ``(bytes_sent, pos)``.
+        """
+        payload_offset = pos - header_len
+        remote_pos = payload_remote_start + payload_offset
+        payload_remaining = length - bytes_sent
+        remote_end = min(
+            payload_remote_start + payload_size - 1,
+            remote_pos + payload_remaining - 1,
+        )
+
+        req = Request(ctx["remote_url"])
+        _add_request_headers(req, ctx.get("auth_header"))
+        req.add_header("Range", "bytes={}-{}".format(remote_pos, remote_end))
+
+        # nosemgrep
+        with urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
+            req, timeout=120
+        ) as resp:
+            while bytes_sent < length:
+                chunk = resp.read(1048576)  # 1 MB read buffer
+                if not chunk:
+                    break
+                remaining = length - bytes_sent
+                if len(chunk) > remaining:
+                    chunk = chunk[:remaining]
+                self.wfile.write(chunk)
+                bytes_sent += len(chunk)
+                pos += len(chunk)
+        return bytes_sent, pos
 
     def _send_mp4_range_headers(self, range_header, start, end, total_size):
         """Send the status line + standard MP4 range headers.
@@ -8557,48 +8631,9 @@ class StreamProxy:
         """Return True when ffmpeg exposes the HLS fMP4 muxer flags we use."""
         if not ffmpeg_path:
             return False
-        cmd = [ffmpeg_path, "-hide_banner", "-h", "muxer=hls"]
-        try:
-            proc = subprocess.Popen(  # nosec B603 — argv list, shell=False
-                cmd,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                shell=False,
-            )
-            try:
-                output = proc.communicate(timeout=_FFMPEG_CAPABILITY_PROBE_TIMEOUT)
-                if not isinstance(output, (tuple, list)) or len(output) != 2:
-                    raise ValueError("invalid ffmpeg capability probe output")
-                stdout, stderr = output
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                # Bound the post-kill drain: if the kill itself hangs
-                # (uninterruptible I/O) we don't want service startup to
-                # wedge indefinitely waiting on ffmpeg.
-                try:
-                    stdout, stderr = proc.communicate(timeout=1)
-                except subprocess.TimeoutExpired:
-                    stdout, stderr = b"", b""
-                xbmc.log(
-                    "NZB-DAV: ffmpeg capability probe timed out for {}".format(
-                        ffmpeg_path
-                    ),
-                    xbmc.LOGWARNING,
-                )
-                return False
-        except (OSError, ValueError, subprocess.SubprocessError) as e:
-            xbmc.log(
-                "NZB-DAV: ffmpeg capability probe failed for {}: {}".format(
-                    ffmpeg_path, e
-                ),
-                xbmc.LOGWARNING,
-            )
+        output = _run_ffmpeg_hls_muxer_probe(ffmpeg_path)
+        if output is None:
             return False
-
-        output = ((stdout or b"") + b"\n" + (stderr or b"")).decode(
-            "utf-8", errors="ignore"
-        )
         supported = all(marker in output for marker in _FMP4_HLS_CAPABILITY_MARKERS)
         xbmc.log(
             "NZB-DAV: ffmpeg fmp4 HLS capability {} ({})".format(
