@@ -3133,34 +3133,36 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     ),
                     xbmc.LOGINFO,
                 )
-                active_ffmpeg = ctx.get(
-                    "active_ffmpeg", getattr(self.server, "active_ffmpeg", None)
-                )
-                if active_ffmpeg:
-                    # kill() is cheap, but wait(timeout=2) under the session
-                    # lock adds visible latency to every seek. Send the signal
-                    # now, clear the tracked handle below, and reap the old
-                    # child on a daemon thread while the replacement ffmpeg
-                    # can spawn immediately.
-                    try:
-                        active_ffmpeg.kill()
-                    except OSError:
-                        pass
-                    _reap_process_async(active_ffmpeg, "Seek-kill ffmpeg")
-                    # Compare-and-swap on BOTH storage locations. The prior
-                    # unconditional ``= None`` assignments raced with a
-                    # concurrent _start_remux_process on another handler
-                    # thread that had just written its own proc into
-                    # server.active_ffmpeg — we'd zero out that fresh
-                    # reference, leaving ``B`` streaming with no tracked
-                    # handle for later cleanup. Use the same ``is proc``
-                    # CAS pattern that _finish_remux uses.
-                    if ctx.get("active_ffmpeg") is active_ffmpeg:
-                        ctx["active_ffmpeg"] = None
-                    if getattr(self.server, "active_ffmpeg", None) is active_ffmpeg:
-                        self.server.active_ffmpeg = None
+                self._kill_active_ffmpeg_for_seek(ctx)
 
         return seek_seconds
+
+    def _kill_active_ffmpeg_for_seek(self, ctx):
+        """Kill + async-reap the tracked ffmpeg before a seek respawn."""
+        active_ffmpeg = ctx.get(
+            "active_ffmpeg", getattr(self.server, "active_ffmpeg", None)
+        )
+        if not active_ffmpeg:
+            return
+        # kill() is cheap, but wait(timeout=2) under the session lock adds
+        # visible latency to every seek. Send the signal now, clear the
+        # tracked handle below, and reap the old child on a daemon thread
+        # while the replacement ffmpeg can spawn immediately.
+        try:
+            active_ffmpeg.kill()
+        except OSError:
+            pass
+        _reap_process_async(active_ffmpeg, "Seek-kill ffmpeg")
+        # Compare-and-swap on BOTH storage locations. The prior unconditional
+        # ``= None`` assignments raced with a concurrent _start_remux_process
+        # on another handler thread that had just written its own proc into
+        # server.active_ffmpeg — we'd zero out that fresh reference, leaving
+        # ``B`` streaming with no tracked handle for later cleanup. Use the
+        # same ``is proc`` CAS pattern that _finish_remux uses.
+        if ctx.get("active_ffmpeg") is active_ffmpeg:
+            ctx["active_ffmpeg"] = None
+        if getattr(self.server, "active_ffmpeg", None) is active_ffmpeg:
+            self.server.active_ffmpeg = None
 
     def _serve_remux(self, ctx):
         """Remux MP4 input to piped MKV on the fly, with cache-bounded seek.
@@ -3760,22 +3762,14 @@ class _StreamHandler(BaseHTTPRequestHandler):
     ):
         """Refresh + match standby sources starting at the first standby index."""
         first_standby_index = first_standby["index"]
-        first_standby_stream_url = first_standby["stream_url"]
-        first_standby_nzo_id = first_standby["nzo_id"]
         for index in range(first_standby_index, len(fallback_sources)):
             source = fallback_sources[index]
-            is_first = index == first_standby_index
-            source_failed = False if is_first else source.get("failed")
-            if source_failed:
-                continue
-            stream_url = (
-                first_standby_stream_url if is_first else source.get("stream_url")
+            resolved = self._resolve_standby_source_fields(
+                source, first_standby, index == first_standby_index
             )
-            if stream_url:
+            if resolved is None:
                 continue
-            nzo_id = first_standby_nzo_id if is_first else source.get("nzo_id")
-            if not nzo_id:
-                continue
+            stream_url, nzo_id, source_failed = resolved
             matched = self._try_standby_fallback_source(
                 ctx,
                 source,
@@ -3788,6 +3782,26 @@ class _StreamHandler(BaseHTTPRequestHandler):
             if matched is not None:
                 return matched
         return None
+
+    @staticmethod
+    def _resolve_standby_source_fields(source, first_standby, is_first):
+        """Return (stream_url, nzo_id, source_failed) or None when skippable.
+
+        A source is skipped when it has already failed, when it already
+        carries a resolved stream URL, or when it lacks an nzo_id to refresh.
+        """
+        source_failed = False if is_first else source.get("failed")
+        if source_failed:
+            return None
+        stream_url = (
+            first_standby["stream_url"] if is_first else source.get("stream_url")
+        )
+        if stream_url:
+            return None
+        nzo_id = first_standby["nzo_id"] if is_first else source.get("nzo_id")
+        if not nzo_id:
+            return None
+        return stream_url, nzo_id, source_failed
 
     def _try_standby_fallback_source(
         self,
@@ -4145,6 +4159,27 @@ class _StreamHandler(BaseHTTPRequestHandler):
             and content_length != expected_length
         )
 
+    def _fallback_resolve_self_match(
+        self, ctx, source, source_url, source_auth, primary_url
+    ):
+        """Resolve auth hints and whether the source is the primary itself.
+
+        Returns ``(source_auth, primary_auth, is_self)``. ``primary_auth``
+        stays ``_AUTH_HEADER_NOT_PROVIDED`` unless the source shares the
+        primary URL.
+        """
+        primary_auth = _AUTH_HEADER_NOT_PROVIDED
+        if source_url != primary_url:
+            return source_auth, primary_auth, False
+        if source_auth is _AUTH_HEADER_NOT_PROVIDED:
+            source_auth = self._fallback_source_auth(source)
+        primary_auth = ctx.get(
+            _FALLBACK_PRIMARY_AUTH_HINT_KEY, _AUTH_HEADER_NOT_PROVIDED
+        )
+        if primary_auth is _AUTH_HEADER_NOT_PROVIDED:
+            primary_auth = ctx.get("auth_header")
+        return source_auth, primary_auth, source_auth == primary_auth
+
     def _fallback_source_matches(self, ctx, source, failed_byte, range_end):
         """Classify a fallback as MATCH / MISMATCH / INCONCLUSIVE (F8-dropout).
 
@@ -4166,20 +4201,14 @@ class _StreamHandler(BaseHTTPRequestHandler):
         """
         source_url = self._fallback_source_stream_url(ctx, source)
         source_auth = self._fallback_source_auth_hint(ctx, source)
-        primary_auth = _AUTH_HEADER_NOT_PROVIDED
         primary_url = self._fallback_primary_url(ctx)
-        if source_url == primary_url:
-            if source_auth is _AUTH_HEADER_NOT_PROVIDED:
-                source_auth = self._fallback_source_auth(source)
-            primary_auth = ctx.get(
-                _FALLBACK_PRIMARY_AUTH_HINT_KEY, _AUTH_HEADER_NOT_PROVIDED
-            )
-            if primary_auth is _AUTH_HEADER_NOT_PROVIDED:
-                primary_auth = ctx.get("auth_header")
-            if source_auth == primary_auth:
-                # The source IS the primary — it can never be its own
-                # recovery. A definitive, permanent MISMATCH.
-                return _FALLBACK_MISMATCH
+        source_auth, primary_auth, is_self = self._fallback_resolve_self_match(
+            ctx, source, source_url, source_auth, primary_url
+        )
+        if is_self:
+            # The source IS the primary — it can never be its own
+            # recovery. A definitive, permanent MISMATCH.
+            return _FALLBACK_MISMATCH
         expected_length = self._fallback_expected_content_length(ctx)
         source_length = self._fallback_source_content_length(ctx, source)
         if expected_length <= 0 or source_length != expected_length:
@@ -4205,35 +4234,39 @@ class _StreamHandler(BaseHTTPRequestHandler):
             ):
                 return _FALLBACK_MATCH
             return _FALLBACK_INCONCLUSIVE
-        current_digest = self._fetch_fallback_current_range_digest(
+        identity = (source_url, source_auth, primary_url, primary_auth)
+        return self._classify_unvalidated_fallback_source(
+            ctx,
             source,
             failed_byte,
             range_end,
             expected_length,
             probe_bases,
-            auth_header=source_auth,
-            stream_url=source_url,
-            cache_ctx=ctx,
+            identity,
         )
-        if not current_digest:
+
+    def _classify_unvalidated_fallback_source(
+        self,
+        ctx,
+        source,
+        failed_byte,
+        range_end,
+        expected_length,
+        probe_bases,
+        identity,
+    ):
+        """Fingerprint-classify a not-yet-validated source; mark MATCH ones.
+
+        ``identity`` is ``(source_url, source_auth, primary_url, primary_auth)``.
+        """
+        source_url, source_auth, primary_url, primary_auth = identity
+        current_range = self._fetch_unvalidated_current_range(
+            ctx, source, failed_byte, range_end, expected_length, probe_bases, identity
+        )
+        if current_range is _FALLBACK_INCONCLUSIVE:
             # Range not yet available on the peer (still downloading) or a
             # probe hiccup — transient, do not condemn the source.
             return _FALLBACK_INCONCLUSIVE
-        # Bug 4: only reuse the current_range digest in fingerprint
-        # validation when its (start, end) covers the WHOLE 4096-byte
-        # fingerprint range. When ``range_end`` is shorter than
-        # ``failed_byte + 4095`` (file-tail or short HTTP range),
-        # the digest was computed over fewer than 4096 bytes — the
-        # equality cache in _fetch_fallback_fingerprint_digest would
-        # otherwise accept it as a match for a fingerprint sample whose
-        # natural end is failed_byte + 4095, producing a wrong proof.
-        # In the truncated case, fall through with current_range=None
-        # so the fingerprint loop refetches the natural range.
-        natural_end = failed_byte + 4095
-        if range_end < natural_end:
-            current_range = None
-        else:
-            current_range = (failed_byte, natural_end, current_digest)
         classification = self._classify_fallback_fingerprint(
             ctx,
             source,
@@ -4252,16 +4285,74 @@ class _StreamHandler(BaseHTTPRequestHandler):
         if classification is _FALLBACK_MISMATCH:
             # Digests present and provably differ — a different file.
             return _FALLBACK_MISMATCH
+        self._mark_fallback_source_validated(source)
+        return _FALLBACK_MATCH
+
+    def _fetch_unvalidated_current_range(
+        self,
+        ctx,
+        source,
+        failed_byte,
+        range_end,
+        expected_length,
+        probe_bases,
+        identity,
+    ):
+        """Return the reusable current_range, or INCONCLUSIVE when unfetchable.
+
+        ``identity`` is ``(source_url, source_auth, primary_url, primary_auth)``.
+        A returned ``None`` is a valid (truncated) current_range; the
+        ``_FALLBACK_INCONCLUSIVE`` sentinel means the digest was unavailable.
+        """
+        source_url, source_auth = identity[0], identity[1]
+        current_digest = self._fetch_fallback_current_range_digest(
+            source,
+            failed_byte,
+            range_end,
+            expected_length,
+            probe_bases,
+            auth_header=source_auth,
+            stream_url=source_url,
+            cache_ctx=ctx,
+        )
+        if not current_digest:
+            return _FALLBACK_INCONCLUSIVE
+        return self._fallback_current_range_for_fingerprint(
+            failed_byte, range_end, current_digest
+        )
+
+    @staticmethod
+    def _mark_fallback_source_validated(source):
+        """Mark a source byte-proven and clear any stale transient streak.
+
+        A source that prevalidates after a few INCONCLUSIVE probes (it was
+        still downloading when first probed) must not carry a stale transient
+        streak that would later abandon it once it crosses
+        _FALLBACK_SOURCE_TRANSIENT_MISS_MAX. Reaching validated proves it is
+        readable, so clear the streak. The "stuck forever" bound still applies
+        to sources that never validate.
+        """
         source["validated"] = True
-        # A source that prevalidates after a few INCONCLUSIVE probes (it was
-        # still downloading when first probed) must not carry a stale transient
-        # streak that would later abandon it once it crosses
-        # _FALLBACK_SOURCE_TRANSIENT_MISS_MAX. Reaching validated proves it is
-        # readable, so clear the streak. The "stuck forever" bound still applies
-        # to sources that never validate.
         if source.get("transient_miss_count"):
             source["transient_miss_count"] = 0
-        return _FALLBACK_MATCH
+
+    @staticmethod
+    def _fallback_current_range_for_fingerprint(failed_byte, range_end, current_digest):
+        """Return a reusable current_range tuple, or None when truncated.
+
+        Bug 4: only reuse the current_range digest in fingerprint validation
+        when its (start, end) covers the WHOLE 4096-byte fingerprint range.
+        When ``range_end`` is shorter than ``failed_byte + 4095`` (file-tail
+        or short HTTP range), the digest was computed over fewer than 4096
+        bytes — the equality cache in _fetch_fallback_fingerprint_digest would
+        otherwise accept it as a match for a fingerprint sample whose natural
+        end is failed_byte + 4095, producing a wrong proof. In the truncated
+        case, return None so the fingerprint loop refetches the natural range.
+        """
+        natural_end = failed_byte + 4095
+        if range_end < natural_end:
+            return None
+        return (failed_byte, natural_end, current_digest)
 
     def _prevalidate_ready_fallback_sources(self, ctx):
         """Fingerprint ready fallback URLs before an upstream failure happens."""
@@ -4437,9 +4528,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
         """
         if "_fallback_probe_bases" not in ctx:
             from resources.lib.fallback_streams import (
-                _origin_key,
                 _PrecomputedProbeBase,
-                _split_http_url,
                 configured_stream_probe_bases,
             )
 
@@ -4448,33 +4537,56 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 ctx["_fallback_probe_bases"] = tuple(bases)
                 return ctx["_fallback_probe_bases"]
             seen_origins = {b.origin for b in bases}
-
-            session_urls = []
-            primary = ctx.get("remote_url")
-            if isinstance(primary, str) and primary:
-                session_urls.append(primary)
-            for source in ctx.get("fallback_sources", []) or []:
-                if not isinstance(source, dict):
-                    continue
-                stream_url = source["stream_url"] if "stream_url" in source else None
-                if isinstance(stream_url, str) and stream_url:
-                    session_urls.append(stream_url)
-
-            for url in session_urls:
-                parts = _split_http_url(url.rstrip("/"))
-                if not parts:
-                    continue
-                origin = _origin_key(parts)
-                if origin in seen_origins:
-                    continue
-                seen_origins.add(origin)
-                # Path stays "/" — anything under this origin is
-                # in-scope because the URL was already trusted at
-                # session-prepare time.
-                bases.append(_PrecomputedProbeBase(parts, origin, "/"))
-
+            session_urls = _StreamHandler._fallback_session_urls(ctx)
+            _StreamHandler._extend_probe_bases_with_origins(
+                bases, seen_origins, session_urls
+            )
             ctx["_fallback_probe_bases"] = tuple(bases)
         return ctx["_fallback_probe_bases"]
+
+    @staticmethod
+    def _fallback_session_urls(ctx):
+        """Return this session's primary + fallback stream URLs."""
+        session_urls = []
+        primary = ctx.get("remote_url")
+        if isinstance(primary, str) and primary:
+            session_urls.append(primary)
+        for source in ctx.get("fallback_sources", []) or []:
+            stream_url = _StreamHandler._fallback_source_session_url(source)
+            if stream_url:
+                session_urls.append(stream_url)
+        return session_urls
+
+    @staticmethod
+    def _fallback_source_session_url(source):
+        """Return a source's non-empty string stream URL, else None."""
+        if not isinstance(source, dict):
+            return None
+        stream_url = source["stream_url"] if "stream_url" in source else None
+        if isinstance(stream_url, str) and stream_url:
+            return stream_url
+        return None
+
+    @staticmethod
+    def _extend_probe_bases_with_origins(bases, seen_origins, session_urls):
+        """Append a trusted probe base for each not-yet-seen session origin."""
+        from resources.lib.fallback_streams import (
+            _origin_key,
+            _PrecomputedProbeBase,
+            _split_http_url,
+        )
+
+        for url in session_urls:
+            parts = _split_http_url(url.rstrip("/"))
+            if not parts:
+                continue
+            origin = _origin_key(parts)
+            if origin in seen_origins:
+                continue
+            seen_origins.add(origin)
+            # Path stays "/" — anything under this origin is in-scope
+            # because the URL was already trusted at session-prepare time.
+            bases.append(_PrecomputedProbeBase(parts, origin, "/"))
 
     @staticmethod
     def _fallback_fingerprint_ranges(ctx, content_length):
@@ -4523,6 +4635,18 @@ class _StreamHandler(BaseHTTPRequestHandler):
             is _FALLBACK_MATCH
         )
 
+    def _resolve_fingerprint_identity(
+        self, ctx, source, primary_auth, fallback_url, fallback_auth
+    ):
+        """Default the primary auth / fallback URL+auth from ctx and source."""
+        if primary_auth is _AUTH_HEADER_NOT_PROVIDED:
+            primary_auth = ctx.get("auth_header")
+        if fallback_url is None:
+            fallback_url = self._fallback_source_stream_url(ctx, source)
+        if fallback_auth is _AUTH_HEADER_NOT_PROVIDED:
+            fallback_auth = self._fallback_source_auth(source)
+        return primary_auth, fallback_url, fallback_auth
+
     def _classify_fallback_fingerprint(
         self,
         ctx,
@@ -4543,12 +4667,9 @@ class _StreamHandler(BaseHTTPRequestHandler):
         probe 5xx / timeout) is INCONCLUSIVE — we can't prove same-or-
         different yet, so the caller keeps the source eligible.
         """
-        if primary_auth is _AUTH_HEADER_NOT_PROVIDED:
-            primary_auth = ctx.get("auth_header")
-        if fallback_url is None:
-            fallback_url = self._fallback_source_stream_url(ctx, source)
-        if fallback_auth is _AUTH_HEADER_NOT_PROVIDED:
-            fallback_auth = self._fallback_source_auth(source)
+        primary_auth, fallback_url, fallback_auth = self._resolve_fingerprint_identity(
+            ctx, source, primary_auth, fallback_url, fallback_auth
+        )
         ranges = tuple(self._fallback_fingerprint_ranges(ctx, content_length))
         if len(ranges) > 1 and _FALLBACK_FINGERPRINT_WORKERS > 1:
             return self._classify_fallback_fingerprint_parallel(
@@ -4806,12 +4927,10 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     cache_range_bytes=cache_fallback_range_bytes,
                 )
                 fallback_futures[future] = (start, end)
-            for future in as_completed(fallback_futures):
-                start, end = fallback_futures[future]
-                digest = future.result()
-                if not digest:
-                    return _FALLBACK_INCONCLUSIVE
-                fallback_digests[(start, end)] = digest
+            if not self._collect_parallel_fallback_digests(
+                fallback_futures, fallback_digests
+            ):
+                return _FALLBACK_INCONCLUSIVE
 
             for start, end in ranges:
                 primary_futures[
@@ -4827,20 +4946,42 @@ class _StreamHandler(BaseHTTPRequestHandler):
                         cache_lock,
                     )
                 ] = (start, end)
-            for future in as_completed(primary_futures):
-                start, end = primary_futures[future]
-                primary_digest = future.result()
-                if not primary_digest:
-                    return _FALLBACK_INCONCLUSIVE
-                if primary_digest != fallback_digests.get((start, end)):
-                    return _FALLBACK_MISMATCH
-            return _FALLBACK_MATCH
+            return self._compare_parallel_primary_digests(
+                primary_futures, fallback_digests
+            )
         finally:
             # `cancel_futures` requires Python 3.9+. Cancel explicitly first
             # so Python 3.8 stops any queued probes before nonblocking shutdown.
             self._shutdown_executor_now(
                 executor, tuple(fallback_futures) + tuple(primary_futures)
             )
+
+    @staticmethod
+    def _collect_parallel_fallback_digests(fallback_futures, fallback_digests):
+        """Drain fallback futures into ``fallback_digests``.
+
+        Returns False on the first empty digest (INCONCLUSIVE), True when
+        every probe produced a digest.
+        """
+        for future in as_completed(fallback_futures):
+            start, end = fallback_futures[future]
+            digest = future.result()
+            if not digest:
+                return False
+            fallback_digests[(start, end)] = digest
+        return True
+
+    @staticmethod
+    def _compare_parallel_primary_digests(primary_futures, fallback_digests):
+        """Compare primary futures against collected fallback digests."""
+        for future in as_completed(primary_futures):
+            start, end = primary_futures[future]
+            primary_digest = future.result()
+            if not primary_digest:
+                return _FALLBACK_INCONCLUSIVE
+            if primary_digest != fallback_digests.get((start, end)):
+                return _FALLBACK_MISMATCH
+        return _FALLBACK_MATCH
 
     def _fetch_primary_fallback_range_digest(
         self, ctx, auth_header, start, end, content_length, probe_bases, primary_url
@@ -6383,57 +6524,78 @@ class _StreamHandler(BaseHTTPRequestHandler):
             if target > range_end:
                 return None
             probe_end = min(target + 1023, range_end)
-
-            delays = (0,) + _PROBE_RETRY_DELAYS
-            probe_monitor = xbmc.Monitor()
-            for delay in delays:
-                if time.monotonic() - start_time >= _MAX_RECOVERY_SECONDS:
-                    return None
-                # waitForAbort yields the same backoff as time.sleep but
-                # returns True (and aborts the loop) when Kodi is
-                # shutting down. TODO.md §H.2-M14.
-                if delay and probe_monitor.waitForAbort(delay):
-                    return None
-                req = Request(ctx["remote_url"])
-                _add_request_headers(req, ctx.get("auth_header"))
-                req.add_header("Range", "bytes={}-{}".format(target, probe_end))
-                try:
-                    # nosemgrep
-                    with urlopen(  # nosec B310 — URL from user-configured stream
-                        req, timeout=_SKIP_PROBE_TIMEOUT
-                    ) as resp:
-                        status = getattr(resp, "status", None) or resp.getcode()
-                        if status in (200, 206):
-                            # Validate the probe actually returned bytes —
-                            # an upstream that 206s with an empty body would
-                            # otherwise be accepted as recovered, sending
-                            # the main loop straight back into the same
-                            # bad region on the next range read.
-                            body = resp.read(64)
-                            if not body:
-                                xbmc.log(
-                                    "NZB-DAV: Probe at +{} bytes returned "
-                                    "status={} but empty body; treating as "
-                                    "probe failure".format(skip, status),
-                                    xbmc.LOGWARNING,
-                                )
-                                continue
-                            elapsed = time.monotonic() - start_time
-                            xbmc.log(
-                                "NZB-DAV: Probe succeeded at +{} bytes after "
-                                "{:.1f}s".format(skip, elapsed),
-                                xbmc.LOGINFO,
-                            )
-                            return skip
-                except (OSError, ValueError) as e:
-                    xbmc.log(
-                        "NZB-DAV: Probe at +{} bytes failed ({}): {}".format(
-                            skip, type(e).__name__, e
-                        ),
-                        xbmc.LOGDEBUG,
-                    )
-                    continue
+            succeeded, aborted = _StreamHandler._retry_skip_probe(
+                ctx, skip, target, probe_end, start_time
+            )
+            if succeeded:
+                return skip
+            if aborted:
+                return None
         return None
+
+    @staticmethod
+    def _retry_skip_probe(ctx, skip, target, probe_end, start_time):
+        """Retry one skip size with backoff. Returns (succeeded, aborted).
+
+        ``aborted`` is True when the recovery budget is exhausted or Kodi is
+        shutting down, signalling the caller to stop probing entirely.
+        """
+        probe_monitor = xbmc.Monitor()
+        for delay in (0,) + _PROBE_RETRY_DELAYS:
+            if time.monotonic() - start_time >= _MAX_RECOVERY_SECONDS:
+                return False, True
+            # waitForAbort yields the same backoff as time.sleep but returns
+            # True (and aborts the loop) when Kodi is shutting down.
+            # TODO.md §H.2-M14.
+            if delay and probe_monitor.waitForAbort(delay):
+                return False, True
+            if _StreamHandler._skip_probe_succeeds(
+                ctx, skip, target, probe_end, start_time
+            ):
+                return True, False
+        return False, False
+
+    @staticmethod
+    def _skip_probe_succeeds(ctx, skip, target, probe_end, start_time):
+        """Probe one range; True only when upstream serves non-empty bytes."""
+        req = Request(ctx["remote_url"])
+        _add_request_headers(req, ctx.get("auth_header"))
+        req.add_header("Range", "bytes={}-{}".format(target, probe_end))
+        try:
+            # nosemgrep
+            with urlopen(  # nosec B310 — URL from user-configured stream
+                req, timeout=_SKIP_PROBE_TIMEOUT
+            ) as resp:
+                status = getattr(resp, "status", None) or resp.getcode()
+                if status not in (200, 206):
+                    return False
+                # Validate the probe actually returned bytes — an upstream
+                # that 206s with an empty body would otherwise be accepted
+                # as recovered, sending the main loop straight back into the
+                # same bad region on the next range read.
+                body = resp.read(64)
+                if not body:
+                    xbmc.log(
+                        "NZB-DAV: Probe at +{} bytes returned status={} but "
+                        "empty body; treating as probe failure".format(skip, status),
+                        xbmc.LOGWARNING,
+                    )
+                    return False
+                elapsed = time.monotonic() - start_time
+                xbmc.log(
+                    "NZB-DAV: Probe succeeded at +{} bytes after "
+                    "{:.1f}s".format(skip, elapsed),
+                    xbmc.LOGINFO,
+                )
+                return True
+        except (OSError, ValueError) as e:
+            xbmc.log(
+                "NZB-DAV: Probe at +{} bytes failed ({}): {}".format(
+                    skip, type(e).__name__, e
+                ),
+                xbmc.LOGDEBUG,
+            )
+            return False
 
     def _write_zeros(self, count):
         """Write 'count' zero bytes to the client in fixed-size chunks."""
@@ -6444,33 +6606,51 @@ class _StreamHandler(BaseHTTPRequestHandler):
             remaining -= chunk_size
 
     @staticmethod
+    def _parse_range_spec(range_header):
+        """Return the validated single-range spec text, or None."""
+        if not isinstance(range_header, str) or not range_header.startswith("bytes="):
+            return None
+        range_spec = range_header[len("bytes=") :].strip()
+        if "," in range_spec or "-" not in range_spec:
+            return None
+        return range_spec
+
+    @staticmethod
+    def _parse_suffix_range(suffix_text, content_length):
+        """Parse a ``-N`` suffix range into (start, end) or (None, None)."""
+        suffix = int(suffix_text)
+        if suffix <= 0 or suffix > content_length:
+            return None, None
+        return content_length - suffix, content_length - 1
+
+    @staticmethod
+    def _parse_bounded_range(range_spec, content_length):
+        """Parse a ``start-`` / ``start-end`` range into (start, end)."""
+        start_text, end_text = range_spec.split("-", 1)
+        if not start_text:
+            return None, None
+        start = int(start_text)
+        if start < 0 or start >= content_length:
+            return None, None
+        end = int(end_text) if end_text else content_length - 1
+        if end < start:
+            return None, None
+        return start, min(end, content_length - 1)
+
+    @staticmethod
     def _parse_range(range_header, content_length):
         """Parse Range header, return (start, end) or (None, None)."""
         try:
             if content_length <= 0:
                 return None, None
-            if not isinstance(range_header, str) or not range_header.startswith(
-                "bytes="
-            ):
-                return None, None
-            range_spec = range_header[len("bytes=") :].strip()
-            if "," in range_spec or "-" not in range_spec:
+            range_spec = _StreamHandler._parse_range_spec(range_header)
+            if range_spec is None:
                 return None, None
             if range_spec.startswith("-"):
-                suffix = int(range_spec[1:])
-                if suffix <= 0 or suffix > content_length:
-                    return None, None
-                return content_length - suffix, content_length - 1
-            start_text, end_text = range_spec.split("-", 1)
-            if not start_text:
-                return None, None
-            start = int(start_text)
-            if start < 0 or start >= content_length:
-                return None, None
-            end = int(end_text) if end_text else content_length - 1
-            if end < start:
-                return None, None
-            return start, min(end, content_length - 1)
+                return _StreamHandler._parse_suffix_range(
+                    range_spec[1:], content_length
+                )
+            return _StreamHandler._parse_bounded_range(range_spec, content_length)
         except (ValueError, IndexError):
             return None, None
 
