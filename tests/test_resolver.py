@@ -5075,11 +5075,14 @@ def test_wait_direct_playback_prepare_waits_for_local_proxy_when_prepare_stalls(
     mock_prepare.side_effect = slow_prepare
 
     state = _start_direct_playback_prepare(stream_url, stream_headers)
-    started = _time.perf_counter()
     prepared = _wait_direct_playback_prepare(state, wait_seconds=0.01)
-    elapsed = _time.perf_counter() - started
 
-    assert elapsed >= 0.03
+    # The returned proxy_url is the SLOW prepare's own output (".../stream/slow"),
+    # which only exists once the stalled 0.04s prepare ran to completion -- so a
+    # correct result proves _wait_direct_playback_prepare waited for it. The old
+    # `elapsed >= 0.03` lower bound was redundant with that AND flaked under load
+    # (the worker's 0.04s sleep can begin before `started` is captured, so the
+    # measured span dips below 0.03 even though the wait happened).
     assert prepared["service_port"] == 57800
     assert prepared["stream_url"] == stream_url
     assert prepared["stream_headers"] == stream_headers

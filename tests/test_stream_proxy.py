@@ -6170,25 +6170,34 @@ def test_hls_producer_close_wait_false_kills_without_waiting(tmp_path):
     alive_proc.poll.return_value = None
     wait_entered = threading.Event()
     release_wait = threading.Event()
+    wait_thread = []
 
     def slow_wait(timeout=None):
         assert timeout == 5
+        wait_thread.append(threading.current_thread())
         wait_entered.set()
         release_wait.wait(timeout=1)
 
     alive_proc.wait.side_effect = slow_wait
     producer._proc = alive_proc
 
-    started = time.perf_counter()
+    calling_thread = threading.current_thread()
     try:
         producer.close(wait_for_process=False)
-        elapsed = time.perf_counter() - started
         alive_proc.kill.assert_called_once()
         assert wait_entered.wait(timeout=1)
     finally:
         release_wait.set()
 
-    assert elapsed < 0.13, "nonblocking HLS close waited {:.3f}s".format(elapsed)
+    # Structural guard (load-independent): the deferred wait() must run on a
+    # background thread, NOT the caller of close(wait_for_process=False). A
+    # regression to a synchronous wait would run slow_wait on this calling
+    # thread (blocking until the 1s release), which the thread-identity check
+    # catches without any flake-prone wall-clock bound.
+    assert wait_thread, "ffmpeg wait() never ran"
+    assert (
+        wait_thread[0] is not calling_thread
+    ), "nonblocking HLS close waited on the calling thread"
 
 
 def test_hls_producer_opens_ffmpeg_log_in_init(tmp_path):
@@ -9338,11 +9347,15 @@ def test_live_fallback_selection_pipelines_fingerprint_reads_before_cutover():
     assert source["validated"] is True
     assert len(calls) == 1 + len(ranges) * 2
     sequential_floor = len(calls) * delay
+    # Structural proof of pipelining (load-independent): at least two fingerprint
+    # reads were in flight at once. The old `elapsed < sequential_floor * 0.75`
+    # wall-clock bound proved the same overlap-saves-time property but flaked under
+    # heavy load (CPU starvation serialises the reads), so max_active is the sole
+    # guard -- a regression that serialises the reads keeps max_active at 1.
     assert max_active[0] > 1, (
         "expected overlapped fingerprint reads; max_active={} elapsed={:.3f}s "
         "sequential_floor={:.3f}s".format(max_active[0], elapsed, sequential_floor)
     )
-    assert elapsed < sequential_floor * 0.75
 
 
 def test_live_fallback_selection_tries_ready_source_before_standby_refresh():
