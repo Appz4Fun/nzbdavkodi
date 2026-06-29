@@ -2090,6 +2090,11 @@ def _is_seek_request(current_byte_pos, requested_byte_pos):
     return delta > _SEEK_THRESHOLD
 
 
+def _is_segment_resource(resource):
+    """True if a parsed HLS resource is a ("segment", seg_n, ext) tuple."""
+    return isinstance(resource, tuple) and resource[0] == "segment"
+
+
 def _touch_stream_context(ctx, acquire):
     """Mark a stream context accessed, optionally leasing a handler slot.
 
@@ -2754,49 +2759,53 @@ class _StreamHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
 
-    def do_HEAD(self):
-        """Respond to HEAD with content metadata (type, length, ranges)."""
-        raw_path = getattr(self, "path", "/stream").split("?", 1)[0]
-        if raw_path.startswith("/hls/"):
-            parsed = self._parse_hls_resource(raw_path)
-            if parsed is None:
-                self.send_error(404)
-                return
-            ctx = self._get_stream_context()
-            if ctx is None or ctx.get("mode") != "hls":
-                self.send_error(404)
-                return
-            _session_id, resource = parsed
-            seg_fmt = ctx.get("hls_segment_format", "mpegts")
+    def _hls_head_content_type(self, resource, seg_fmt):
+        """Resolve the Content-Type for an HLS HEAD request.
 
-            if resource == "playlist":
-                content_type = "application/vnd.apple.mpegurl"
-            elif resource == "init":
-                if seg_fmt != "fmp4":
-                    self.send_error(404)
-                    return
-                content_type = "video/mp4"
-            elif isinstance(resource, tuple) and resource[0] == "segment":
-                _, _seg_n, ext = resource
-                expected_ext = "m4s" if seg_fmt == "fmp4" else "ts"
-                if ext != expected_ext:
-                    self.send_error(404)
-                    return
-                content_type = "video/mp4" if seg_fmt == "fmp4" else "video/mp2t"
-            else:
-                self.send_error(404)
-                return
+        Returns the content-type string, or None when the resource is
+        invalid for this session's segment format (caller sends 404).
+        Mirrors the strict extension/mode validation in _handle_hls.
+        """
+        if resource == "playlist":
+            return "application/vnd.apple.mpegurl"
+        if resource == "init":
+            if seg_fmt != "fmp4":
+                return None
+            return "video/mp4"
+        if not _is_segment_resource(resource):
+            return None
+        _, _seg_n, ext = resource
+        expected_ext = "m4s" if seg_fmt == "fmp4" else "ts"
+        if ext != expected_ext:
+            return None
+        return "video/mp4" if seg_fmt == "fmp4" else "video/mp2t"
 
-            self.send_response(200)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Connection", "close")
-            self.end_headers()
-            return
-
-        ctx = self._get_stream_context()
-        if ctx is None:
+    def _do_head_hls(self, raw_path):
+        """Handle HEAD for an /hls/ path. Returns True if it handled the
+        request (sent a response or error), False if not an HLS request.
+        """
+        parsed = self._parse_hls_resource(raw_path)
+        if parsed is None:
             self.send_error(404)
-            return
+            return True
+        ctx = self._get_stream_context()
+        if ctx is None or ctx.get("mode") != "hls":
+            self.send_error(404)
+            return True
+        _session_id, resource = parsed
+        seg_fmt = ctx.get("hls_segment_format", "mpegts")
+        content_type = self._hls_head_content_type(resource, seg_fmt)
+        if content_type is None:
+            self.send_error(404)
+            return True
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Connection", "close")
+        self.end_headers()
+        return True
+
+    def _do_head_stream(self, ctx):
+        """Send HEAD headers for a non-HLS stream context."""
         if ctx.get("faststart"):
             self.send_response(200)
             self.send_header("Content-Type", "video/mp4")
@@ -2824,6 +2833,19 @@ class _StreamHandler(BaseHTTPRequestHandler):
             self.send_header("Accept-Ranges", "bytes")
             self.send_header("Connection", "keep-alive")
             self.end_headers()
+
+    def do_HEAD(self):
+        """Respond to HEAD with content metadata (type, length, ranges)."""
+        raw_path = getattr(self, "path", "/stream").split("?", 1)[0]
+        if raw_path.startswith("/hls/"):
+            self._do_head_hls(raw_path)
+            return
+
+        ctx = self._get_stream_context()
+        if ctx is None:
+            self.send_error(404)
+            return
+        self._do_head_stream(ctx)
 
     def do_GET(self):
         """Route requests to the appropriate handler."""
@@ -2866,27 +2888,35 @@ class _StreamHandler(BaseHTTPRequestHandler):
         try:
             _session_id, resource = parsed
             seg_fmt = ctx.get("hls_segment_format", "mpegts")
-
-            if resource == "playlist":
-                self._serve_hls_playlist(ctx)
-                return
-            if resource == "init":
-                if seg_fmt != "fmp4":
-                    self.send_error(404)
-                    return
-                self._serve_hls_init(ctx)
-                return
-            if isinstance(resource, tuple) and resource[0] == "segment":
-                _, seg_n, ext = resource
-                expected_ext = "m4s" if seg_fmt == "fmp4" else "ts"
-                if ext != expected_ext:
-                    self.send_error(404)
-                    return
-                self._serve_hls_segment(ctx, seg_n)
-                return
-            self.send_error(404)
+            self._dispatch_hls_resource(ctx, resource, seg_fmt)
         finally:
             self._release_stream_context(ctx)
+
+    def _dispatch_hls_resource(self, ctx, resource, seg_fmt):
+        """Serve a parsed HLS resource (playlist/init/segment) for ctx.
+
+        Enforces the strict extension/mode validation: an init request
+        on a non-fmp4 session, or a segment whose extension doesn't
+        match the session format, gets a 404.
+        """
+        if resource == "playlist":
+            self._serve_hls_playlist(ctx)
+            return
+        if resource == "init":
+            if seg_fmt != "fmp4":
+                self.send_error(404)
+                return
+            self._serve_hls_init(ctx)
+            return
+        if _is_segment_resource(resource):
+            _, seg_n, ext = resource
+            expected_ext = "m4s" if seg_fmt == "fmp4" else "ts"
+            if ext != expected_ext:
+                self.send_error(404)
+                return
+            self._serve_hls_segment(ctx, seg_n)
+            return
+        self.send_error(404)
 
     def _build_ffmpeg_cmd(self, ctx, seek_seconds=None):
         """Build the ffmpeg remux command list.
@@ -2986,20 +3016,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
         else:
             start, end = 0, virtual_size - 1
 
-        length = end - start + 1
-        if range_header:
-            self.send_response(206)
-            self.send_header(
-                "Content-Range",
-                "bytes {}-{}/{}".format(start, end, virtual_size),
-            )
-        else:
-            self.send_response(200)
-        self.send_header("Content-Type", "video/mp4")
-        self.send_header("Content-Length", str(length))
-        self.send_header("Accept-Ranges", "bytes")
-        self.send_header("Connection", "keep-alive")
-        self.end_headers()
+        length = self._send_mp4_range_headers(range_header, start, end, virtual_size)
 
         bytes_sent = 0
         pos = start
@@ -3058,6 +3075,28 @@ class _StreamHandler(BaseHTTPRequestHandler):
             xbmc.log("NZB-DAV: Faststart proxy error: {}".format(e), xbmc.LOGERROR)
             _notify_error(e)
 
+    def _send_mp4_range_headers(self, range_header, start, end, total_size):
+        """Send the status line + standard MP4 range headers.
+
+        Emits 206 + Content-Range when range_header is set, else 200.
+        Returns the byte length (end - start + 1) to be served.
+        """
+        length = end - start + 1
+        if range_header:
+            self.send_response(206)
+            self.send_header(
+                "Content-Range",
+                "bytes {}-{}/{}".format(start, end, total_size),
+            )
+        else:
+            self.send_response(200)
+        self.send_header("Content-Type", "video/mp4")
+        self.send_header("Content-Length", str(length))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+        return length
+
     def _serve_temp_faststart(self, ctx):
         """Serve a temp-file faststart MP4 with range support."""
         temp_path = ctx["temp_path"]
@@ -3075,21 +3114,11 @@ class _StreamHandler(BaseHTTPRequestHandler):
         else:
             start, end = 0, file_size - 1
 
-        length = end - start + 1
-        if range_header:
-            self.send_response(206)
-            self.send_header(
-                "Content-Range",
-                "bytes {}-{}/{}".format(start, end, file_size),
-            )
-        else:
-            self.send_response(200)
-        self.send_header("Content-Type", "video/mp4")
-        self.send_header("Content-Length", str(length))
-        self.send_header("Accept-Ranges", "bytes")
-        self.send_header("Connection", "keep-alive")
-        self.end_headers()
+        length = self._send_mp4_range_headers(range_header, start, end, file_size)
+        self._stream_temp_file_range(temp_path, start, length)
 
+    def _stream_temp_file_range(self, temp_path, start, length):
+        """Stream ``length`` bytes from ``temp_path`` starting at ``start``."""
         try:
             with open(temp_path, "rb") as f:
                 f.seek(start)
@@ -3261,21 +3290,9 @@ class _StreamHandler(BaseHTTPRequestHandler):
         """
         producer = ctx.get("hls_producer")
         if producer is not None:
-            generated_playlist_body = getattr(producer, "generated_playlist_body", None)
-            body = (
-                generated_playlist_body() if callable(generated_playlist_body) else None
-            )
+            body = self._producer_generated_playlist_body(producer)
             if isinstance(body, bytes) and body:
-                self.send_response(200)
-                self.send_header("Content-Type", "application/vnd.apple.mpegurl")
-                self.send_header("Content-Length", str(len(body)))
-                self.send_header("Connection", "close")
-                self.close_connection = True
-                self.end_headers()
-                try:
-                    self.wfile.write(body)
-                except (BrokenPipeError, ConnectionResetError):
-                    pass
+                self._send_hls_playlist_body(body)
                 return
 
         duration = ctx.get("duration_seconds") or 0.0
@@ -3284,10 +3301,23 @@ class _StreamHandler(BaseHTTPRequestHandler):
             self.send_error(500)
             return
 
+        is_fmp4 = ctx.get("hls_segment_format") == "fmp4"
+        body = self._build_hls_playlist_body(duration, seg_dur, is_fmp4)
+        self._send_hls_playlist_body(body)
+
+    @staticmethod
+    def _producer_generated_playlist_body(producer):
+        """Return the producer's pre-generated playlist bytes, or None."""
+        generated_playlist_body = getattr(producer, "generated_playlist_body", None)
+        if callable(generated_playlist_body):
+            return generated_playlist_body()
+        return None
+
+    @staticmethod
+    def _build_hls_playlist_body(duration, seg_dur, is_fmp4):
+        """Build the VOD HLS playlist body bytes for the given timing."""
         total_segs = int(math.ceil(duration / seg_dur))
         target = int(math.ceil(seg_dur))
-
-        is_fmp4 = ctx.get("hls_segment_format") == "fmp4"
         seg_ext = "m4s" if is_fmp4 else "ts"
         version = "7" if is_fmp4 else "3"
 
@@ -3308,8 +3338,10 @@ class _StreamHandler(BaseHTTPRequestHandler):
             lines.append("#EXTINF:{:.6f},".format(this_dur))
             lines.append("seg_{}.{}".format(i, seg_ext))
         lines.append("#EXT-X-ENDLIST")
-        body = ("\n".join(lines) + "\n").encode("utf-8")
+        return ("\n".join(lines) + "\n").encode("utf-8")
 
+    def _send_hls_playlist_body(self, body):
+        """Send a 200 playlist response with the given body bytes."""
         self.send_response(200)
         self.send_header("Content-Type", "application/vnd.apple.mpegurl")
         self.send_header("Content-Length", str(len(body)))
@@ -3400,16 +3432,10 @@ class _StreamHandler(BaseHTTPRequestHandler):
         if producer is None:
             self.send_error(500)
             return
-        duration = ctx.get("duration_seconds") or 0.0
-        seg_dur = ctx.get("hls_segment_duration", _HLS_SEGMENT_SECONDS)
-        if duration <= 0 or seg_dur <= 0:
-            self.send_error(500)
+        timing = self._hls_segment_timing(ctx, seg_n)
+        if timing is None:
             return
-        start = seg_n * seg_dur
-        if start >= duration:
-            self.send_error(404)
-            return
-        this_dur = min(seg_dur, duration - start)
+        start, this_dur = timing
 
         segment_path = producer.wait_for_segment(seg_n)
         if segment_path is None:
@@ -3420,24 +3446,59 @@ class _StreamHandler(BaseHTTPRequestHandler):
             self.send_error(504)
             return
 
-        # Open the segment file FIRST, then read its size via fstat(). A
-        # previous version did getsize() → send_header → open(), which
-        # opened a TOCTOU window: a respawn-driven unlink between
-        # getsize() and open() would leave the handler advertising a
-        # size that no longer exists. Holding the fd from the open
-        # pins the underlying inode even if the dir entry is later
-        # unlinked, so Content-Length stays in sync with what we read.
+        opened = self._open_hls_segment_file(segment_path, seg_n)
+        if opened is None:
+            return
+        seg_file, content_length = opened
+
+        # Pick Content-Type based on session segment format so HEAD
+        # and GET agree. fmp4 segments are video/mp4; legacy mpegts
+        # segments are video/mp2t.
+        seg_fmt = ctx.get("hls_segment_format", "mpegts")
+        content_type = "video/mp4" if seg_fmt == "fmp4" else "video/mp2t"
+        self._stream_hls_segment_file(
+            seg_file, content_length, content_type, seg_n, start, this_dur
+        )
+
+    def _hls_segment_timing(self, ctx, seg_n):
+        """Resolve (start_seconds, this_dur) for seg_n, or None on error.
+
+        Sends 500 when duration/segment length are unset, 404 when
+        seg_n starts past the source duration.
+        """
+        duration = ctx.get("duration_seconds") or 0.0
+        seg_dur = ctx.get("hls_segment_duration", _HLS_SEGMENT_SECONDS)
+        if duration <= 0 or seg_dur <= 0:
+            self.send_error(500)
+            return None
+        start = seg_n * seg_dur
+        if start >= duration:
+            self.send_error(404)
+            return None
+        return start, min(seg_dur, duration - start)
+
+    def _open_hls_segment_file(self, segment_path, seg_n):
+        """Open a segment file and fstat its size.
+
+        Returns (file_object, content_length) or None on error (after
+        sending a 500). Opens FIRST then fstat()s to avoid a TOCTOU
+        window: a respawn-driven unlink between getsize() and open()
+        would leave the handler advertising a size that no longer
+        exists. Holding the fd pins the inode even if the dir entry is
+        later unlinked, so Content-Length stays in sync with what we
+        read.
+        """
         try:
             seg_file = open(
                 segment_path, "rb"
-            )  # noqa: SIM115 — closed in finally below
+            )  # noqa: SIM115 — closed by _stream_hls_segment_file / caller
         except OSError as e:
             xbmc.log(
                 "NZB-DAV: HLS seg {} open failed: {}".format(seg_n, e),
                 xbmc.LOGERROR,
             )
             self.send_error(500)
-            return
+            return None
         try:
             content_length = os.fstat(seg_file.fileno()).st_size
         except OSError as e:
@@ -3447,22 +3508,18 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 xbmc.LOGERROR,
             )
             self.send_error(500)
-            return
+            return None
+        return seg_file, content_length
 
-        # Pick Content-Type based on session segment format so HEAD
-        # and GET agree. fmp4 segments are video/mp4; legacy mpegts
-        # segments are video/mp2t.
-        #
-        # Wrap everything from send_response through the read loop in
-        # ``with seg_file``. Previously the file was opened + fstat'd,
-        # THEN send_response/end_headers/settimeout ran as bare
-        # statements before the ``with`` block, so any exception from
-        # those header calls (socket dead, client gone) would leak the
-        # file descriptor. The surrounding ``with`` now guarantees
-        # close on every exit path, caught exception or re-raise.
-        seg_fmt = ctx.get("hls_segment_format", "mpegts")
-        content_type = "video/mp4" if seg_fmt == "fmp4" else "video/mp2t"
+    def _stream_hls_segment_file(
+        self, seg_file, content_length, content_type, seg_n, start, this_dur
+    ):
+        """Send headers and stream a segment file to the client.
 
+        Wraps everything from send_response through the read loop in
+        ``with seg_file`` so the fd is closed on every exit path,
+        including a header call that raises (socket dead, client gone).
+        """
         total = 0
         try:
             with seg_file as f:
@@ -6852,60 +6909,64 @@ class HlsProducer:
         path = self.segment_path(seg_n)
         if not os.path.exists(path):
             return False
-        next_path = self.segment_path(seg_n + 1)
-        if os.path.exists(next_path):
-            # In fMP4 mode, verify the next segment belongs to the
-            # current generation (created after the latest spawn).
-            if self.segment_format == "fmp4":
-                try:
-                    next_mtime = os.path.getmtime(next_path)
-                except OSError:
-                    pass
-                else:
-                    if next_mtime < spawn_time:
-                        # Stale segment from a prior generation —
-                        # ignore it and fall through to mtime check.
-                        pass
-                    else:
-                        return True
-            else:
-                return True
+        if self._next_segment_signals_complete(seg_n, spawn_time):
+            return True
         # Final segment (or ffmpeg briefly mid-transition) — fall back
         # to mtime stability.
         try:
             mtime = os.path.getmtime(path)
         except OSError:
             return False
-        # In fMP4 mode, also require that THIS segment was written by
-        # the current ffmpeg generation. Without this guard, a backward
-        # seek can read a stale ``seg_n.m4s`` from a prior generation
-        # whose mtime is far in the past — the mtime-stability check
-        # is trivially true for such a file, and ``_segment_complete``
-        # would return True. The bytes are technically valid but they
-        # were produced against a different edit list / timestamp
-        # base than the current generation's segments, so Kodi's HLS
-        # demuxer either glitches or stalls when it tries to splice
-        # them. The "next segment exists" branch above already has
-        # this guard; this is the matching guard for the mtime path.
-        if self.segment_format == "fmp4" and mtime < spawn_time:
-            return False
         if self.segment_format == "fmp4":
-            if seg_n >= self.total_segments - 1:
-                with self._lock:
-                    proc = self._proc
-                if proc is not None and proc.poll() is not None:
-                    return True
-            return False
+            return self._fmp4_segment_complete(seg_n, mtime, spawn_time)
         if (time.time() - mtime) * 1000.0 > _HLS_SEGMENT_MTIME_STABLE_MS:
             return True
         # If this is the terminal segment (no N+1 will ever exist),
         # ffmpeg should have exited by now.
         if seg_n >= self.total_segments - 1:
-            with self._lock:
-                proc = self._proc
-            if proc is not None and proc.poll() is not None:
-                return True
+            return self._terminal_ffmpeg_exited()
         return False
+
+    def _next_segment_signals_complete(self, seg_n, spawn_time):
+        """True if seg_n+1's existence proves seg_n is complete.
+
+        In fMP4 mode the next segment is only trusted if it was created
+        after the latest spawn (a stale seg_n+1 from a prior generation
+        must not mark the freshly-written seg_n complete).
+        """
+        next_path = self.segment_path(seg_n + 1)
+        if not os.path.exists(next_path):
+            return False
+        if self.segment_format != "fmp4":
+            return True
+        try:
+            next_mtime = os.path.getmtime(next_path)
+        except OSError:
+            return False
+        return next_mtime >= spawn_time
+
+    def _fmp4_segment_complete(self, seg_n, mtime, spawn_time):
+        """fMP4 mtime-path completeness check for seg_n.
+
+        Requires THIS segment to be from the current ffmpeg generation
+        (mtime >= spawn_time). Without this guard a backward seek can
+        read a stale ``seg_n.m4s`` from a prior generation whose mtime
+        is far in the past — the mtime-stability check is trivially
+        true for such a file. The bytes are valid but were produced
+        against a different edit list / timestamp base, so Kodi's HLS
+        demuxer glitches or stalls when splicing them.
+        """
+        if mtime < spawn_time:
+            return False
+        if seg_n >= self.total_segments - 1:
+            return self._terminal_ffmpeg_exited()
+        return False
+
+    def _terminal_ffmpeg_exited(self):
+        """True if the current ffmpeg process has exited (terminal seg)."""
+        with self._lock:
+            proc = self._proc
+        return proc is not None and proc.poll() is not None
 
     def _init_file_complete(self):
         """True iff init.mp4 was written by the current ffmpeg
@@ -6962,6 +7023,43 @@ class HlsProducer:
         )
         return os.path.exists(first_seg_path)
 
+    def _cache_canonical_init_bytes(self, init_path):
+        """Cache the first init.mp4 we see so later requests (and respawn
+        generations with different edit lists) serve byte-identical data.
+        See the docstring on self._canonical_init_bytes for the full
+        rationale. No-op once the cache is populated.
+        """
+        if self._canonical_init_bytes is not None:
+            return
+        try:
+            with open(init_path, "rb") as f:
+                self._canonical_init_bytes = f.read()
+            xbmc.log(
+                "NZB-DAV: Cached canonical init.mp4 "
+                "({} bytes) for session".format(len(self._canonical_init_bytes)),
+                xbmc.LOGINFO,
+            )
+        except OSError as e:
+            xbmc.log(
+                "NZB-DAV: Failed to cache canonical init.mp4: {}".format(e),
+                xbmc.LOGWARNING,
+            )
+
+    def _spawn_for_init_if_dead(self):
+        """If no ffmpeg is alive, (re)spawn it at its current target.
+
+        Bootstrap (fresh session: target defaults to 0) or respawn at
+        whatever target the last generation had. DO NOT hardcode 0 — a
+        crashed mid-seek producer still has the right start_segment to
+        resume at. If ffmpeg is alive, leave it alone (CRITICAL B).
+        """
+        with self._lock:
+            proc = self._proc
+            alive = proc is not None and proc.poll() is None
+            current_target = self._start_segment
+        if not alive:
+            self._ensure_ffmpeg_headed_for(current_target)
+
     def wait_for_init(self, timeout=_HLS_SEGMENT_WAIT_SECONDS):
         """Block until init.mp4 for the current producer generation
         exists and seg_<start_segment>.m4s proves ffmpeg moved past
@@ -6992,39 +7090,9 @@ class HlsProducer:
             # the file syscall on subsequent calls.
             if self._init_file_complete():
                 self._init_ready = True
-                # Cache the first init.mp4 we see so later requests
-                # (and respawn generations with different edit lists)
-                # serve byte-identical data. See the docstring on
-                # self._canonical_init_bytes for the full rationale.
-                if self._canonical_init_bytes is None:
-                    try:
-                        with open(init_path, "rb") as f:
-                            self._canonical_init_bytes = f.read()
-                        xbmc.log(
-                            "NZB-DAV: Cached canonical init.mp4 "
-                            "({} bytes) for session".format(
-                                len(self._canonical_init_bytes)
-                            ),
-                            xbmc.LOGINFO,
-                        )
-                    except OSError as e:
-                        xbmc.log(
-                            "NZB-DAV: Failed to cache canonical "
-                            "init.mp4: {}".format(e),
-                            xbmc.LOGWARNING,
-                        )
+                self._cache_canonical_init_bytes(init_path)
                 return init_path
-            with self._lock:
-                proc = self._proc
-                alive = proc is not None and proc.poll() is None
-                current_target = self._start_segment
-            if not alive:
-                # No live ffmpeg — bootstrap (fresh session: target
-                # defaults to 0) or respawn at whatever target the
-                # last generation had. DO NOT hardcode 0 here; a
-                # crashed mid-seek producer still has the right
-                # start_segment to resume at.
-                self._ensure_ffmpeg_headed_for(current_target)
+            self._spawn_for_init_if_dead()
             # If ffmpeg is alive, leave it alone — it's either
             # already headed toward the right segment, or the init
             # re-fetch is racing a valid seek that's already
@@ -7056,22 +7124,11 @@ class HlsProducer:
         while time.monotonic() < deadline:
             if self._closed:
                 return None
-            # fmp4 init gate: seg_n cannot be served until the current
-            # generation's init is on disk AND ffmpeg has moved past
-            # the init write phase. For segment requests we DO want to
-            # head toward seg_n specifically — the caller is asking for
-            # a specific segment, so the "seg_n < start_segment"
-            # restart behavior in _ensure_ffmpeg_headed_for is the
-            # right call (unlike wait_for_init, which preserves the
-            # current generation).
-            if self.segment_format == "fmp4" and not self._init_ready:
-                if self._init_file_complete():
-                    self._init_ready = True
-                else:
-                    self._ensure_ffmpeg_headed_for(seg_n)
-                    if xbmc.Monitor().waitForAbort(0.25):
-                        return None
-                    continue
+            gate = self._wait_for_segment_init_gate(seg_n)
+            if gate == "abort":
+                return None
+            if gate == "retry":
+                continue
             if self._segment_complete(seg_n):
                 return self.segment_path(seg_n)
             # Do we need to (re)start ffmpeg to eventually reach seg_n?
@@ -7081,6 +7138,29 @@ class HlsProducer:
             if xbmc.Monitor().waitForAbort(0.25):
                 return None
         return None
+
+    def _wait_for_segment_init_gate(self, seg_n):
+        """fmp4 init gate for wait_for_segment.
+
+        seg_n cannot be served until the current generation's init is
+        on disk AND ffmpeg has moved past the init write phase. For
+        segment requests we DO want to head toward seg_n specifically —
+        the caller asks for a specific segment, so the "seg_n <
+        start_segment" restart in _ensure_ffmpeg_headed_for is the right
+        call (unlike wait_for_init, which preserves the generation).
+
+        Returns "ok" to proceed to the segment check, "retry" to
+        re-enter the wait loop, or "abort" on Kodi shutdown.
+        """
+        if self.segment_format != "fmp4" or self._init_ready:
+            return "ok"
+        if self._init_file_complete():
+            self._init_ready = True
+            return "ok"
+        self._ensure_ffmpeg_headed_for(seg_n)
+        if xbmc.Monitor().waitForAbort(0.25):
+            return "abort"
+        return "retry"
 
     def _ensure_ffmpeg_headed_for(self, seg_n):
         """Start or restart ffmpeg so that it will produce seg_n.
@@ -7097,129 +7177,126 @@ class HlsProducer:
         with self._lock:
             if self._closed:
                 return
-            proc = self._proc
-            proc_alive = proc is not None and proc.poll() is None
-            need_restart = False
-            if not proc_alive:
-                need_restart = True
-            else:
-                # We want ffmpeg's live production segments to eventually
-                # include seg_n. ffmpeg only produces segments >=
-                # start_segment in sequence; a request for a segment
-                # before that means the user seeked backward.
-                if seg_n < self._start_segment:
-                    need_restart = True
-                elif seg_n - self._start_segment > _HLS_FORWARD_WAIT_SEGMENTS:
-                    # Forward seek beyond the near-future buffer window.
-                    # Cheaper to restart at the target than to make Kodi wait
-                    # while ffmpeg writes every intermediate segment.
-                    need_restart = True
-
-            if not need_restart:
+            if not self._needs_ffmpeg_restart(seg_n):
                 return
+            self._stop_old_ffmpeg()
+            self._fmp4_generation_boundary(seg_n)
+            self._spawn_ffmpeg_at(seg_n)
 
-            # Stop the old ffmpeg if any. 2s wait (was 5s): concurrency
-            # audit flagged this as the worst-case hold time on the
-            # HlsProducer lock, which blocks every concurrent
-            # wait_for_segment / wait_for_init / close() call. 2s is
-            # enough for SIGKILL to land on a healthy child; on a
-            # genuinely stuck one we log + let the OS reap (unchanged
-            # behavior) rather than stalling the whole session.
-            if proc is not None and proc.poll() is None:
-                try:
-                    proc.kill()
-                    proc.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    xbmc.log(
-                        "NZB-DAV: HLS ffmpeg pid={} did not exit 2 s after kill; "
-                        "leaking for the OS to reap".format(getattr(proc, "pid", "?")),
-                        xbmc.LOGWARNING,
-                    )
-                except (OSError, subprocess.SubprocessError):
-                    pass
-            self._proc = None
+    def _needs_ffmpeg_restart(self, seg_n):
+        """Decide whether ffmpeg must be (re)started to reach seg_n.
 
-            # fmp4 generation boundary: unlink the new target segment
-            # file so the "seg_<start_segment>.m4s exists"
-            # completeness signal in _init_file_complete is
-            # unambiguously bound to the NEW ffmpeg. Do NOT blanket-
-            # sweep other segments — leaving prior-generation files
-            # in place preserves the backward-seek cache optimization
-            # in _segment_complete. Do NOT unlink init.mp4 either:
-            # the canonical bytes cache in _canonical_init_bytes
-            # already committed to serving the first generation's
-            # init to every Kodi request, so whatever new ffmpeg
-            # writes to the on-disk init.mp4 is irrelevant. Unlinking
-            # would just race the on-disk overwrite and momentarily
-            # fail _init_file_complete for no gain.
-            if self.segment_format == "fmp4":
-                first_seg_path = os.path.join(
-                    self.session_dir, "seg_{:06d}.m4s".format(seg_n)
-                )
-                try:
-                    os.unlink(first_seg_path)
-                except FileNotFoundError:
-                    pass
-                # Reset _init_ready so wait_for_init/wait_for_segment
-                # re-verify the generation boundary (checks that
-                # seg_<new_target>.m4s exists post-spawn) — but the
-                # canonical init bytes persist across the reset.
-                self._init_ready = False
+        MUST be called with self._lock held. ffmpeg only produces
+        segments >= start_segment in sequence; a request before that
+        means a backward seek, and a request far ahead means a forward
+        seek beyond the near-future buffer window — both restart.
+        """
+        proc = self._proc
+        proc_alive = proc is not None and proc.poll() is None
+        if not proc_alive:
+            return True
+        if seg_n < self._start_segment:
+            return True
+        if seg_n - self._start_segment > _HLS_FORWARD_WAIT_SEGMENTS:
+            return True
+        return False
 
-            # Start a new one aimed at seg_n.
-            start_time = seg_n * self.segment_seconds
-            cmd = self._build_cmd(start_time, seg_n)
-            xbmc.log(
-                "NZB-DAV: HLS producer starting ffmpeg at seg {} (t={:.1f}s)".format(
-                    seg_n, start_time
-                ),
-                xbmc.LOGINFO,
-            )
+    def _stop_old_ffmpeg(self):
+        """Kill + reap the current ffmpeg, then clear self._proc.
+
+        MUST be called with self._lock held. 2s wait (was 5s):
+        concurrency audit flagged this as the worst-case hold time on
+        the HlsProducer lock, which blocks every concurrent
+        wait_for_segment / wait_for_init / close() call. 2s is enough
+        for SIGKILL to land on a healthy child; on a genuinely stuck
+        one we log + let the OS reap rather than stalling the session.
+        """
+        proc = self._proc
+        if proc is not None and proc.poll() is None:
             try:
-                # Set _spawn_time + _start_segment BEFORE Popen so a
-                # concurrent _segment_complete() can't observe a stale
-                # _spawn_time of 0 between the Popen return and the
-                # assignment (which would accept a freshly-unlinked
-                # segment from the previous generation as complete).
-                # time.time() is a few ns; the tiny skew where
-                # _spawn_time is slightly before the actual spawn is
-                # harmless for the stale-segment guard.
-                self._start_segment = seg_n
-                self._spawn_time = time.time()
-                # If close() previously ran and closed self._ffmpeg_log,
-                # or any other caller closed it, reopen it before spawning
-                # so the new ffmpeg doesn't inherit a closed fd and swallow
-                # all its stderr into OSError on the first write.
-                if self._ffmpeg_log.closed:
-                    self._ffmpeg_log = open(  # noqa: SIM115 — closed in close()
-                        self._ffmpeg_log_path, "ab", buffering=0
-                    )
-                # cwd=session_dir is REQUIRED for fmp4 mode: ffmpeg
-                # 6.0.1 on CoreELEC rejects absolute paths for
-                # ``-hls_fmp4_init_filename``, so _build_cmd passes
-                # relative filenames (init.mp4, seg_%06d.m4s,
-                # ffmpeg_playlist.m3u8) and relies on the process cwd
-                # to place them in the session directory. mpegts mode
-                # still passes absolute segment paths and tolerates
-                # either cwd, so setting cwd unconditionally is safe.
-                # stdin=DEVNULL so the child doesn't inherit the parent
-                # stdin (TODO.md §H.3 Low — "ffmpeg Popen omits
-                # stdin=DEVNULL"). Harmless on Kodi but tidies the
-                # under-a-terminal case.
-                self._proc = subprocess.Popen(  # nosec B603 — argv list, shell=False
-                    cmd,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=self._ffmpeg_log,
-                    shell=False,
-                    cwd=self.session_dir,
-                )
-            except OSError as e:
+                proc.kill()
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
                 xbmc.log(
-                    "NZB-DAV: HLS producer ffmpeg spawn failed: {}".format(e),
-                    xbmc.LOGERROR,
+                    "NZB-DAV: HLS ffmpeg pid={} did not exit 2 s after kill; "
+                    "leaking for the OS to reap".format(getattr(proc, "pid", "?")),
+                    xbmc.LOGWARNING,
                 )
-                self._proc = None
+            except (OSError, subprocess.SubprocessError):
+                pass
+        self._proc = None
+
+    def _fmp4_generation_boundary(self, seg_n):
+        """Mark the fmp4 generation boundary before a respawn.
+
+        MUST be called with self._lock held. Unlink the new target
+        segment file so the "seg_<start_segment>.m4s exists"
+        completeness signal in _init_file_complete is unambiguously
+        bound to the NEW ffmpeg. Do NOT blanket-sweep other segments —
+        leaving prior-generation files in place preserves the
+        backward-seek cache optimization in _segment_complete. Do NOT
+        unlink init.mp4 either: the canonical bytes cache already
+        committed to serving the first generation's init to every Kodi
+        request, so whatever new ffmpeg writes to the on-disk init.mp4
+        is irrelevant. Unlinking would just race the on-disk overwrite
+        and momentarily fail _init_file_complete for no gain.
+        """
+        if self.segment_format != "fmp4":
+            return
+        first_seg_path = os.path.join(self.session_dir, "seg_{:06d}.m4s".format(seg_n))
+        try:
+            os.unlink(first_seg_path)
+        except FileNotFoundError:
+            pass
+        # Reset _init_ready so wait_for_init/wait_for_segment re-verify
+        # the generation boundary (checks that seg_<new_target>.m4s
+        # exists post-spawn) — but the canonical init bytes persist.
+        self._init_ready = False
+
+    def _spawn_ffmpeg_at(self, seg_n):
+        """Spawn a new ffmpeg aimed at seg_n. Lock MUST be held."""
+        start_time = seg_n * self.segment_seconds
+        cmd = self._build_cmd(start_time, seg_n)
+        xbmc.log(
+            "NZB-DAV: HLS producer starting ffmpeg at seg {} (t={:.1f}s)".format(
+                seg_n, start_time
+            ),
+            xbmc.LOGINFO,
+        )
+        try:
+            # Set _spawn_time + _start_segment BEFORE Popen so a
+            # concurrent _segment_complete() can't observe a stale
+            # _spawn_time of 0 (which would accept a freshly-unlinked
+            # prior-generation segment as complete). The tiny skew
+            # before the actual spawn is harmless for that guard.
+            self._start_segment = seg_n
+            self._spawn_time = time.time()
+            # Reopen the log if close() (or any caller) closed it, so the
+            # new ffmpeg doesn't inherit a closed fd and swallow stderr.
+            if self._ffmpeg_log.closed:
+                self._ffmpeg_log = open(  # noqa: SIM115 — closed in close()
+                    self._ffmpeg_log_path, "ab", buffering=0
+                )
+            # cwd=session_dir is REQUIRED for fmp4: ffmpeg 6.0.1 on
+            # CoreELEC rejects absolute paths for -hls_fmp4_init_filename,
+            # so _build_cmd passes relative filenames and relies on cwd.
+            # mpegts passes absolute paths and tolerates either cwd, so
+            # setting cwd unconditionally is safe. stdin=DEVNULL keeps the
+            # child off the parent stdin (TODO.md §H.3 Low).
+            self._proc = subprocess.Popen(  # nosec B603 — argv list, shell=False
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=self._ffmpeg_log,
+                shell=False,
+                cwd=self.session_dir,
+            )
+        except OSError as e:
+            xbmc.log(
+                "NZB-DAV: HLS producer ffmpeg spawn failed: {}".format(e),
+                xbmc.LOGERROR,
+            )
+            self._proc = None
 
     def _build_cmd(self, start_time, start_segment):
         """Build the persistent-ffmpeg command.
@@ -7479,17 +7556,30 @@ class HlsProducer:
         init_path = os.path.join(self.session_dir, "init.mp4")
         first_seg_path = os.path.join(self.session_dir, "seg_000000.m4s")
 
-        # Window 1: argument-rejection poll (500 ms).
-        # An early exit with rc != 0 is a hard failure (bad argv,
-        # missing muxer, refused experimental codec). An early exit
-        # with rc == 0 is a SUCCESSFUL completion — possible when
-        # the source is shorter than 500 ms of stream-copy work,
-        # which happens with the synthetic test MKV in the
-        # integration suite. Either way, on early exit we drop
-        # straight to the production check and let it verify the
-        # output files exist.
+        ready, early_exit = self._prepare_argv_window(init_path, first_seg_path)
+        if ready:
+            return  # healthy — both files are on disk
+        self._prepare_production_window(init_path, first_seg_path, early_exit)
+
+    @staticmethod
+    def _prepare_outputs_present(init_path, first_seg_path):
+        """True if both prepare() output files are on disk."""
+        return os.path.exists(init_path) and os.path.exists(first_seg_path)
+
+    def _prepare_argv_window(self, init_path, first_seg_path):
+        """Window 1: argument-rejection poll (500 ms).
+
+        An early exit with rc != 0 is a hard failure (bad argv, missing
+        muxer, refused experimental codec). An early exit with rc == 0
+        is a SUCCESSFUL completion — possible when the source is shorter
+        than 500 ms of stream-copy work (the synthetic test MKV). Either
+        way, on early exit we drop straight to the production check.
+
+        Returns (ready, early_exit): ready=True if both output files
+        are already on disk (caller returns); early_exit tracks whether
+        ffmpeg has already exited cleanly.
+        """
         argv_deadline = time.monotonic() + 0.5
-        early_exit = False
         while time.monotonic() < argv_deadline:
             with self._lock:
                 proc = self._proc
@@ -7502,30 +7592,33 @@ class HlsProducer:
                         "ffmpeg exited immediately with code {} — fmp4 "
                         "HLS likely unsupported by this build".format(rc)
                     )
-                early_exit = True
-                break
-            if os.path.exists(init_path) and os.path.exists(first_seg_path):
+                return False, True
+            if self._prepare_outputs_present(init_path, first_seg_path):
                 xbmc.log(
                     "NZB-DAV: HlsProducer.prepare confirmed init.mp4 "
                     "and seg_000000.m4s on disk during argv window",
                     xbmc.LOGINFO,
                 )
-                return  # healthy — both files are on disk
+                return True, False
             # Monitor.waitForAbort instead of bare time.sleep so a Kodi
             # shutdown during HLS warmup unblocks the prepare argv-loop
             # immediately. TODO.md §H.3.
             if xbmc.Monitor().waitForAbort(0.05):
                 raise RuntimeError("Kodi abort requested during HLS prepare")
+        return False, False
 
-        # Window 2: wait for actual output production. Polls the
-        # file system for init.mp4 + the first segment, AND watches
-        # ffmpeg liveness so a late crash surfaces immediately.
-        # If ffmpeg already exited cleanly in window 1 (rc==0), the
-        # output files should already exist; we just need to verify
-        # them once instead of waiting.
+    def _prepare_production_window(self, init_path, first_seg_path, early_exit):
+        """Window 2: wait for actual output production.
+
+        Polls the file system for init.mp4 + the first segment, AND
+        watches ffmpeg liveness so a late crash surfaces immediately.
+        If ffmpeg already exited cleanly in window 1 (early_exit), the
+        output files should already exist; verify once instead of
+        waiting. Raises RuntimeError on timeout or failure.
+        """
         prod_deadline = time.monotonic() + self._PREPARE_PRODUCTION_TIMEOUT_SECONDS
         while time.monotonic() < prod_deadline:
-            if os.path.exists(init_path) and os.path.exists(first_seg_path):
+            if self._prepare_outputs_present(init_path, first_seg_path):
                 xbmc.log(
                     "NZB-DAV: HlsProducer.prepare confirmed init.mp4 "
                     "and seg_000000.m4s on disk",
@@ -7540,23 +7633,11 @@ class HlsProducer:
                     "ffmpeg exited cleanly but produced no init.mp4 / "
                     "seg_000000.m4s — check ffmpeg.log"
                 )
-            with self._lock:
-                proc = self._proc
-            if proc is None:
-                raise RuntimeError(
-                    "ffmpeg disappeared during prepare — check ffmpeg.log"
-                )
-            rc = proc.poll()
-            if rc is not None:
-                # ffmpeg exited mid-window. rc==0 means the source
-                # was short enough to finish during the production
-                # wait — give the file-existence check one more
-                # iteration before declaring failure.
-                if rc != 0:
-                    raise RuntimeError(
-                        "ffmpeg exited with code {} before producing output "
-                        "— check ffmpeg.log".format(rc)
-                    )
+            if self._prepare_ffmpeg_exited_clean():
+                # ffmpeg exited mid-window with rc==0 — the source was
+                # short enough to finish during the production wait.
+                # Give the file-existence check one more iteration
+                # before declaring failure.
                 early_exit = True
                 continue
             if xbmc.Monitor().waitForAbort(0.25):
@@ -7567,6 +7648,28 @@ class HlsProducer:
                 self._PREPARE_PRODUCTION_TIMEOUT_SECONDS
             )
         )
+
+    def _prepare_ffmpeg_exited_clean(self):
+        """Inspect ffmpeg liveness during the production window.
+
+        Returns True iff ffmpeg has exited with rc==0 (caller should
+        re-verify output files). Raises RuntimeError if ffmpeg
+        disappeared or exited with a non-zero code. Returns False while
+        ffmpeg is still running.
+        """
+        with self._lock:
+            proc = self._proc
+        if proc is None:
+            raise RuntimeError("ffmpeg disappeared during prepare — check ffmpeg.log")
+        rc = proc.poll()
+        if rc is None:
+            return False
+        if rc != 0:
+            raise RuntimeError(
+                "ffmpeg exited with code {} before producing output "
+                "— check ffmpeg.log".format(rc)
+            )
+        return True
 
     def _finish_close_after_kill(self, proc, wait_for_proc):
         """Finish HLS cleanup after close() has signaled ffmpeg to stop."""
@@ -9290,13 +9393,19 @@ class StreamProxy:
             return None
 
         _validate_url(url)
-        auth_args = _ffmpeg_auth_args(auth_header)
         fd, temp_path = tempfile.mkstemp(
             prefix="nzbdav_faststart_",
             suffix=".mp4",
         )
         os.close(fd)
 
+        cmd = StreamProxy._build_faststart_cmd(ffmpeg_path, url, auth_header, temp_path)
+        return StreamProxy._run_faststart_remux(cmd, temp_path)
+
+    @staticmethod
+    def _build_faststart_cmd(ffmpeg_path, url, auth_header, temp_path):
+        """Build the temp-file faststart remux ffmpeg argv."""
+        auth_args = _ffmpeg_auth_args(auth_header)
         cmd = [
             ffmpeg_path,
             "-v",
@@ -9322,7 +9431,15 @@ class StreamProxy:
                 temp_path,
             ]
         )
+        return cmd
 
+    @staticmethod
+    def _run_faststart_remux(cmd, temp_path):
+        """Run the faststart remux, returning temp_path on success.
+
+        On any failure (non-zero exit, timeout, subprocess error) the
+        partial output is removed and None is returned.
+        """
         proc = None
         try:
             xbmc.log("NZB-DAV: Temp-file faststart remux starting", xbmc.LOGINFO)
@@ -9334,42 +9451,27 @@ class StreamProxy:
                 shell=False,
             )
             _, stderr = proc.communicate(timeout=600)  # 10 min timeout
-            if proc.returncode != 0:
-                # ffmpeg error messages routinely echo the full input
-                # URL, including embedded basic-auth (legacy callers)
-                # and apikey=... query strings. Strip those before they
-                # land in kodi.log. Closes TODO.md §H.2-H2b.
-                xbmc.log(
-                    "NZB-DAV: Temp faststart failed: {}".format(
-                        _redact_text(stderr.decode(errors="replace")[:300])
-                    ),
-                    xbmc.LOGWARNING,
-                )
-                # Fall through to the cleanup block below instead of
-                # returning early — the partial output that ffmpeg
-                # leaves on a failed remux otherwise leaks until the OS
-                # next clears tempdir. Closes TODO.md §H.3 (mkstemp
-                # leak on TimeoutExpired / SubprocessError) for the
-                # ffmpeg-non-zero-exit case in particular.
-            elif os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
-                return temp_path
+            result = StreamProxy._faststart_remux_result(proc, stderr, temp_path)
+            if result is not None:
+                return result
+            # Fall through to the cleanup block below instead of
+            # returning early — the partial output that ffmpeg
+            # leaves on a failed remux otherwise leaks until the OS
+            # next clears tempdir. Closes TODO.md §H.3 (mkstemp
+            # leak on TimeoutExpired / SubprocessError) for the
+            # ffmpeg-non-zero-exit case in particular.
         except subprocess.TimeoutExpired as e:
             # communicate() timing out does NOT kill the child. Without
             # an explicit kill + reap, the ffmpeg process orphans and
             # holds the output fd + the inbound HTTP socket, potentially
-            # for hours until something external notices. Kill + drain
-            # the pipe before the exception propagates; .communicate()
-            # on the already-killed proc is the documented reap idiom.
+            # for hours. Kill + drain the pipe before the exception
+            # propagates; .communicate() on the killed proc reaps it.
             xbmc.log(
                 "NZB-DAV: Temp faststart timed out after 600s; killing ffmpeg "
                 "(reason=temp_faststart_timeout)",
                 xbmc.LOGWARNING,
             )
-            try:
-                proc.kill()
-                proc.communicate(timeout=5)
-            except (OSError, subprocess.SubprocessError):
-                pass
+            StreamProxy._kill_and_reap_faststart(proc)
             _ = e  # keep linters quiet; exception detail already logged
         except (OSError, subprocess.SubprocessError) as e:
             xbmc.log("NZB-DAV: Temp faststart error: {}".format(e), xbmc.LOGWARNING)
@@ -9378,17 +9480,50 @@ class StreamProxy:
             # reap the child defensively — it's cheap when the proc
             # already exited and essential when it didn't.
             if proc is not None and proc.poll() is None:
-                try:
-                    proc.kill()
-                    proc.communicate(timeout=5)
-                except (OSError, subprocess.SubprocessError):
-                    pass
+                StreamProxy._kill_and_reap_faststart(proc)
+        StreamProxy._remove_temp_file(temp_path)
+        return None
+
+    @staticmethod
+    def _faststart_remux_result(proc, stderr, temp_path):
+        """Evaluate a completed faststart proc.
+
+        Returns temp_path on success (rc==0 and non-empty output), or
+        None on failure (after logging the redacted ffmpeg stderr).
+        """
+        if proc.returncode != 0:
+            # ffmpeg error messages routinely echo the full input URL,
+            # including embedded basic-auth (legacy callers) and
+            # apikey=... query strings. Strip those before they land in
+            # kodi.log. Closes TODO.md §H.2-H2b.
+            xbmc.log(
+                "NZB-DAV: Temp faststart failed: {}".format(
+                    _redact_text(stderr.decode(errors="replace")[:300])
+                ),
+                xbmc.LOGWARNING,
+            )
+            return None
+        if os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
+            return temp_path
+        return None
+
+    @staticmethod
+    def _kill_and_reap_faststart(proc):
+        """Kill + drain a faststart ffmpeg child (documented reap idiom)."""
+        try:
+            proc.kill()
+            proc.communicate(timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    @staticmethod
+    def _remove_temp_file(temp_path):
+        """Best-effort removal of a temp file if it exists."""
         if os.path.exists(temp_path):
             try:
                 os.remove(temp_path)
             except OSError:
                 pass
-        return None
 
     @staticmethod
     def _get_content_length(url, auth_header, content_length_hint=None):
