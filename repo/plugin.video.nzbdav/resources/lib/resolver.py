@@ -1846,7 +1846,9 @@ def _start_existing_completed_cleanup(title, on_existing_completed):
         )
 
 
-def _find_video_stream_for_folder(webdav_folder, settings_getter=None, title_hint=None):
+def _find_video_stream_for_folder(
+    webdav_folder, settings_getter=None, title_hint=None, min_video_size=0
+):
     """Return video path, URL, and headers for a completed WebDAV folder.
 
     ``title_hint`` is the requested release/episode title (e.g. the submitted
@@ -1854,6 +1856,12 @@ def _find_video_stream_for_folder(webdav_folder, settings_getter=None, title_hin
     returns the requested SxxExx episode rather than whichever sibling file is
     largest. When ``None`` (movie / no identifiable episode) the historical
     largest-video-wins behavior is preserved unchanged.
+
+    ``min_video_size`` is the precomputed single-file advertised-size floor
+    (``_stub_min_size_floor``); threading it into discovery lets a root-level
+    job-start stub recurse into the subfolder holding the real file rather than
+    being returned on every poll (#282 follow-up D). ``0`` (default) disables
+    the floor, so movie/pack/unknown-size paths are unchanged.
     """
     try:
         from resources.lib import webdav as _webdav
@@ -1867,6 +1875,7 @@ def _find_video_stream_for_folder(webdav_folder, settings_getter=None, title_hin
             video_path, stream_url, stream_headers = find_video_stream_for_folder(
                 webdav_folder,
                 title_hint=title_hint,
+                min_video_size=min_video_size,
                 **_settings_getter_kwargs(settings_getter),
             )
             if video_path:
@@ -1879,7 +1888,12 @@ def _find_video_stream_for_folder(webdav_folder, settings_getter=None, title_hin
 
     kwargs = _settings_getter_kwargs(settings_getter)
     _resolve_stage("find_video_file_start folder={}".format(webdav_folder))
-    video_path = find_video_file(webdav_folder, title_hint=title_hint, **kwargs)
+    video_path = find_video_file(
+        webdav_folder,
+        title_hint=title_hint,
+        min_video_size=min_video_size,
+        **kwargs,
+    )
     _resolve_stage("find_video_file_done path={}".format(bool(video_path)))
     if not video_path:
         return None, None, None
@@ -1892,18 +1906,41 @@ def _find_video_stream_for_folder(webdav_folder, settings_getter=None, title_hin
     return video_path, stream_url, stream_headers
 
 
+def _record_rejected_completed_id(completed_job, rejected_completed_ids):
+    """Record a rejected Completed row's ``nzo_id`` so the submit / poll-loop
+    by-name paths skip re-adopting the very row we just rejected.
+
+    No-op when no set was provided or the row has no ``nzo_id``. Shared by the
+    pre-submit shortcut's stub guard and its mid-file body probe so both
+    rejection reasons feed the same skip set.
+    """
+    if rejected_completed_ids is None:
+        return
+    rejected_nzo_id = completed_job.get("nzo_id")
+    if rejected_nzo_id:
+        rejected_completed_ids.add(rejected_nzo_id)
+
+
 def _completed_job_stream(
     title,
     completed_job,
     on_existing_completed=None,
     settings_getter=None,
     rejected_completed_ids=None,
+    download_size=None,
 ):
     """Return a WebDAV stream URL from a completed nzbdav history row.
 
     When the mid-file body probe rejects a row and ``rejected_completed_ids``
     is provided, the row's ``nzo_id`` is recorded into that set so the submit
     path that follows does not re-adopt the very row we just rejected.
+
+    ``download_size`` is the indexer-advertised release size (bytes), threaded
+    in from ``params['_download_size']``. It powers the same #282 job-start-stub
+    guard the post-submit accept path applies (``_discovered_video_is_stub``):
+    a stale stub left in a Completed row from a prior failed attempt has an
+    available body and would otherwise pass the probe below. Defaults to
+    ``None`` (guard fails open) so callers without a size are unaffected.
     """
     if not isinstance(completed_job, dict):
         return None
@@ -1927,10 +1964,33 @@ def _completed_job_stream(
         return None
     webdav_folder = _storage_to_webdav_path(storage)
     _start_existing_completed_cleanup(title, on_existing_completed)
+    # #282 follow-up D: thread the single-file advertised-size floor into
+    # discovery so a stale Completed row whose stub sits at the release root
+    # recurses into the subfolder holding the real file rather than serving the
+    # stub. 0 for packs / unknown size. The stub guard below shares the floor.
+    min_video_size = _stub_min_size_floor(download_size, title)
     video_path, stream_url, stream_headers = _find_video_stream_for_folder(
-        webdav_folder, settings_getter=settings_getter, title_hint=title
+        webdav_folder,
+        settings_getter=settings_getter,
+        title_hint=title,
+        min_video_size=min_video_size,
     )
     if not video_path:
+        return None
+    # #282 follow-up: reject nzbdav's job-start stub before the body probe. A
+    # stale stub left in a Completed row from a prior failed attempt has an
+    # available body and would otherwise pass the probe below and be served --
+    # the same placeholder .mp4 the post-submit accept path (_handle_history_result)
+    # rejects. Null it out here too and record the nzo_id so the submit / poll
+    # paths skip it. Fails open / pack-exempt inside _discovered_video_is_stub.
+    if _discovered_video_is_stub(video_path, download_size, title):
+        xbmc.log(
+            "NZB-DAV: '{}' completed row exposes '{}' far smaller than the "
+            "advertised release size; treating as nzbdav job-start stub and "
+            "re-downloading instead of streaming directly".format(title, video_path),
+            xbmc.LOGWARNING,
+        )
+        _record_rejected_completed_id(completed_job, rejected_completed_ids)
         return None
     if not _completed_stream_body_available(stream_url, stream_headers):
         xbmc.log(
@@ -1938,10 +1998,7 @@ def _completed_job_stream(
             "unavailable; re-downloading instead of streaming directly".format(title),
             xbmc.LOGWARNING,
         )
-        if rejected_completed_ids is not None:
-            rejected_nzo_id = completed_job.get("nzo_id")
-            if rejected_nzo_id:
-                rejected_completed_ids.add(rejected_nzo_id)
+        _record_rejected_completed_id(completed_job, rejected_completed_ids)
         return None
     return stream_url, stream_headers
 
@@ -1953,14 +2010,22 @@ def _existing_completed_stream(
     completed_job_lookup_done=False,
     settings_getter=None,
     rejected_completed_ids=None,
+    download_size=None,
 ):
-    """Return an already-downloaded stream URL when the title exists."""
+    """Return an already-downloaded stream URL when the title exists.
+
+    ``download_size`` (indexer-advertised bytes) is threaded to
+    ``_completed_job_stream`` so the pre-submit shortcut rejects the #282
+    job-start stub just like the post-submit accept path. Defaults to ``None``
+    (guard fails open).
+    """
     hinted_stream = _completed_job_stream(
         title,
         completed_job_hint,
         on_existing_completed=on_existing_completed,
         settings_getter=settings_getter,
         rejected_completed_ids=rejected_completed_ids,
+        download_size=download_size,
     )
     if hinted_stream is not None:
         return hinted_stream
@@ -1975,6 +2040,7 @@ def _existing_completed_stream(
         on_existing_completed=on_existing_completed,
         settings_getter=settings_getter,
         rejected_completed_ids=rejected_completed_ids,
+        download_size=download_size,
     )
 
 
@@ -2005,6 +2071,11 @@ def _picker_completed_stream(
         completed_job_lookup_done=lookup_done,
         settings_getter=settings_getter,
         rejected_completed_ids=rejected_completed_ids,
+        # The indexer-advertised size rides along on the picker params; thread it
+        # through so a picker-supplied Completed row that is the #282 job-start
+        # stub is rejected before the progress UI opens, exactly as the
+        # submit/poll paths do.
+        download_size=params.get("_download_size"),
     )
 
 
@@ -2026,6 +2097,18 @@ _SUBMIT_QUEUE_PROBE_FAST_WINDOW_SECONDS = 2.0
 _SUBMIT_QUEUE_PROBE_INTERVAL_SECONDS = 0.25
 _SUBMIT_HISTORY_PROBE_PARALLEL_GRACE_SECONDS = 0.01
 _COMPLETED_NO_VIDEO_RECHECK_DELAYS_SECONDS = (0.025, 0.075, 0.1)
+
+# #282: nzbdav writes a small placeholder .mp4 at job start; the completed
+# WebDAV scan can pick it up seconds after submit and stream it instead of the
+# feature (playing ~30s of a stub). A single-file (non-pack) release whose
+# discovered video is smaller than this fraction of the indexer-advertised size
+# is treated as that stub and rejected so the poll loop keeps waiting for the
+# real download. Conservatively low: a genuine single file is ~0.85-0.95 of its
+# advertised NZB size (par2/rar/sample overhead), while the reported stub was
+# ~0.004, so 0.5 sits far from both. The guard fails OPEN when either size is
+# unknown and is skipped entirely for packs (release_is_pack), where one
+# episode is legitimately a fraction of the whole-pack advertised size.
+_STUB_VIDEO_MIN_ADVERTISED_FRACTION = 0.5
 
 
 def _job_nzo_id(match):
@@ -2594,6 +2677,12 @@ def _completed_copy_blocks_clear(title, settings_getter):
 
     def _probe():
         try:
+            # No download_size here on purpose: this gate only decides whether to
+            # SKIP clearing OTHER queued jobs, and never serves a stream to Kodi.
+            # Letting a stub look adoptable just leaves the queue intact -- the
+            # conservative default this guard already documents. The #282 stub
+            # guard runs on the authoritative playback probe (_poll_until_ready /
+            # picker), which DOES thread download_size and rejects the stub there.
             result["stream"] = _existing_completed_stream(
                 title, **_settings_getter_kwargs(settings_getter)
             )
@@ -3581,17 +3670,24 @@ def _handle_job_status(job_status, nzo_id, dialog, last_status):
 
 
 def _find_completed_video_stream_with_rechecks(
-    webdav_folder, monitor=None, settings_getter=None, title_hint=None
+    webdav_folder, monitor=None, settings_getter=None, title_hint=None, min_video_size=0
 ):
     """Return a completed WebDAV stream, briefly rechecking symlink visibility.
 
     ``title_hint`` (the requested release/episode title) is threaded into
     discovery so a multi-episode pack resolves to the requested episode; with
     ``None`` the historical largest-video behavior is preserved.
+
+    ``min_video_size`` is the single-file advertised-size floor forwarded into
+    discovery so a root-level job-start stub recurses into the subfolder holding
+    the real file (#282 follow-up D). ``0`` (default) disables the floor.
     """
     _resolve_stage("find_video_stream_start")
     video_path, stream_url, stream_headers = _find_video_stream_for_folder(
-        webdav_folder, settings_getter=settings_getter, title_hint=title_hint
+        webdav_folder,
+        settings_getter=settings_getter,
+        title_hint=title_hint,
+        min_video_size=min_video_size,
     )
     _resolve_stage("find_video_stream_done path={}".format(bool(video_path)))
     if video_path or monitor is None:
@@ -3602,13 +3698,107 @@ def _find_completed_video_stream_with_rechecks(
             return None, None, None
         _resolve_stage("find_video_stream_retry delay={}".format(delay_seconds))
         video_path, stream_url, stream_headers = _find_video_stream_for_folder(
-            webdav_folder, settings_getter=settings_getter, title_hint=title_hint
+            webdav_folder,
+            settings_getter=settings_getter,
+            title_hint=title_hint,
+            min_video_size=min_video_size,
         )
         _resolve_stage("find_video_stream_retry_done path={}".format(bool(video_path)))
         if video_path:
             return video_path, stream_url, stream_headers
     _resolve_stage("find_video_stream_rechecks_exhausted")
     return None, None, None
+
+
+def _advertised_size_bytes(download_size):
+    """Best-effort parse of the indexer-advertised size (bytes) into an int.
+
+    ``download_size`` is the selected result's ``size`` threaded through as
+    ``params['_download_size']`` -- a digit string of bytes from Prowlarr /
+    NZBHydra2, but tolerate ints/floats and stray formatting too. Returns 0
+    (unknown) on anything unparseable so callers fail OPEN. Mirrors router's
+    ``_result_size_bytes`` without importing it (avoids a resolver->router
+    dependency).
+    """
+    if isinstance(download_size, bool):
+        return 0
+    if isinstance(download_size, (int, float)):
+        return int(download_size) if download_size > 0 else 0
+    if isinstance(download_size, str):
+        text = download_size.strip().replace(",", "")
+        if not text:
+            return 0
+        try:
+            return max(0, int(float(text)))
+        except (TypeError, ValueError, OverflowError):
+            # `inf` / overflowing exponents (e.g. "1e10000") parse as float but
+            # raise OverflowError on int(); treat as unknown (fail OPEN) like
+            # every other unparseable size rather than letting it escape the
+            # resolver (OverflowError is not in _RESOLVE_RUNTIME_ERRORS).
+            return 0
+    return 0
+
+
+def _stub_min_size_floor(download_size, title):
+    """Return the minimum plausible discovered-video size (bytes) for a
+    single-file release, or 0 when no floor applies.
+
+    The floor is ``advertised * _STUB_VIDEO_MIN_ADVERTISED_FRACTION`` -- exactly
+    the threshold ``_discovered_video_is_stub`` rejects below. Returning it (not
+    just a yes/no) lets webdav discovery treat a current-level candidate below
+    the floor as nzbdav's job-start stub and recurse into subfolders for the
+    real file before falling back to it (#282 follow-up D), so the accept-time
+    guard and discovery agree on what "too small" means.
+
+    Returns 0 (no floor) when the advertised size is unknown -- so the guard
+    fails OPEN -- and for packs, whose advertised size spans every episode so a
+    single picked episode is legitimately a fraction of it. May be fractional
+    (the exact float threshold) so callers stay byte-consistent with the
+    ``found < advertised * fraction`` comparison.
+    """
+    advertised = _advertised_size_bytes(download_size)
+    if advertised <= 0:
+        return 0
+    try:
+        from resources.lib.filter import release_is_pack
+
+        if release_is_pack(title):
+            return 0
+    except Exception:  # pylint: disable=broad-except
+        # Pack detection unavailable -> treat as single-file so the guard still
+        # protects the reported (movie) case; the fraction floor is the net.
+        pass
+    return advertised * _STUB_VIDEO_MIN_ADVERTISED_FRACTION
+
+
+def _discovered_video_is_stub(video_path, download_size, title):
+    """Return True when a non-pack release's discovered video is implausibly
+    small versus the indexer-advertised size (nzbdav's job-start stub, #282).
+
+    nzbdav writes a small placeholder ``.mp4`` when a job starts; the completed
+    WebDAV scan can return it seconds after submit, and streaming it plays ~30s
+    of a stub instead of the feature. Compare the discovered file's size
+    (captured by webdav discovery as a PROPFIND ``getcontentlength`` hint)
+    against the advertised release size and reject anything far below it.
+
+    Fails OPEN (returns ``False``) when either size is unknown, so a missing
+    field never blocks a real stream, and is skipped for packs -- a pack's
+    advertised size spans every episode, so one picked episode is legitimately
+    a fraction of it. Shares ``_stub_min_size_floor`` with webdav discovery so
+    the two never disagree on the threshold.
+    """
+    floor = _stub_min_size_floor(download_size, title)
+    if floor <= 0:
+        return False
+    try:
+        from resources.lib import webdav as _webdav
+
+        found = _webdav.get_video_file_size_hint(video_path)
+    except Exception:  # pylint: disable=broad-except
+        return False
+    if found <= 0:
+        return False
+    return found < floor
 
 
 def _handle_history_result(
@@ -3619,6 +3809,7 @@ def _handle_history_result(
     monitor=None,
     settings_getter=None,
     modal_failures=True,
+    download_size=None,
 ):
     """Handle history-based completion and failure states.
 
@@ -3659,12 +3850,38 @@ def _handle_history_result(
     if not storage:
         return False, None, None, no_video_retries
     webdav_folder = _storage_to_webdav_path(storage)
+    # Thread the single-file advertised-size floor into discovery so a root-level
+    # job-start stub recurses into the subfolder holding the real file instead of
+    # being re-picked on every poll until download_timeout (#282 follow-up D).
+    # 0 for packs / unknown size, so those paths are unchanged. The accept-time
+    # guard below shares the same floor via _stub_min_size_floor.
+    min_video_size = _stub_min_size_floor(download_size, title)
     video_path, stream_url, stream_headers = _find_completed_video_stream_with_rechecks(
         webdav_folder,
         monitor=monitor,
         settings_getter=settings_getter,
         title_hint=title,
+        min_video_size=min_video_size,
     )
+    # #282: reject nzbdav's job-start stub before the body probe. A single-file
+    # release whose discovered video is far below the advertised release size is
+    # the placeholder .mp4 nzbdav writes at job start, not the feature. Keep
+    # polling for the real download and return immediately WITHOUT touching the
+    # no-video retry counter: that budget is the short symlink-visibility window,
+    # and nzbdav may report Completed the instant the stub lands while the real
+    # tens-of-GB body is still in flight. Consuming it would (a) fail an
+    # in-flight download after ~5s and (b) starve a later genuine
+    # symlink-visibility gap of its retries (#340 review). The poll loop's own
+    # download_timeout is the stop authority, so a configured long wait is
+    # honored; the stub never plays. Skipped for packs / unknown sizes.
+    if video_path and _discovered_video_is_stub(video_path, download_size, title):
+        xbmc.log(
+            "NZB-DAV: '{}' discovered video '{}' is far smaller than the "
+            "advertised release size; treating as nzbdav job-start stub and "
+            "awaiting the real download".format(title, video_path),
+            xbmc.LOGWARNING,
+        )
+        return False, None, None, no_video_retries
     if video_path and _completed_stream_body_available(stream_url, stream_headers):
         xbmc.log(
             "NZB-DAV: File available, streaming '{}' via WebDAV".format(video_path),
@@ -3808,6 +4025,7 @@ def _poll_until_ready(
         completed_job_lookup_done=completed_job_lookup_done,
         settings_getter=settings_getter,
         rejected_completed_ids=rejected_completed_ids,
+        download_size=download_size,
     )
     if existing_stream is not None:
         return existing_stream
@@ -3891,6 +4109,7 @@ def _poll_until_ready(
                 monitor=monitor,
                 settings_getter=settings_getter,
                 modal_failures=settings_getter is None,
+                download_size=download_size,
             )
         )
         if stream_url:

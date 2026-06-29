@@ -364,7 +364,13 @@ def probe_webdav_reachable(
 
 
 def _find_video_file_in_subdirs(
-    subdirs, depth, visited, settings, hint_tokens=None, hint_episode_tags=None
+    subdirs,
+    depth,
+    visited,
+    settings,
+    hint_tokens=None,
+    hint_episode_tags=None,
+    min_video_size=0,
 ):
     """Probe sibling WebDAV subfolders and return the best video found.
 
@@ -413,6 +419,7 @@ def _find_video_file_in_subdirs(
                     settings,
                     title_hint_tokens=hint_tokens,
                     title_hint_episode_tags=hint_episode_tags,
+                    min_video_size=min_video_size,
                 )
             except Exception as e:  # pylint: disable=broad-except
                 xbmc.log(
@@ -441,13 +448,19 @@ def _find_video_file_in_subdirs(
             )
         else:
             ep_score, tok_score = 0, 0
-        # Rank by (episode identity, size, token overlap) and break ties toward
-        # the earlier sibling (negative index sorts a smaller index higher).
-        # Episode match is primary so the requested SxxExx still wins; size
-        # outranks loose token overlap so a small token-rich extra can't beat
-        # the feature. Without a hint both scores stay 0, so this reduces to the
-        # historical largest-wins rule.
-        key = (ep_score, size, tok_score, -index)
+        # Rank by (not-wrong-episode, above-floor, episode identity, size, token
+        # overlap) and break ties toward the earlier sibling (negative index
+        # sorts a smaller index higher). The above-floor dimension mirrors the
+        # current-level key so a child returning a below-floor requested-episode
+        # stub never beats a sibling's above-floor real file on episode identity
+        # alone -- otherwise the stub wins and the resolver re-rejects it every
+        # poll (Codex #340). "not a wrong episode" sits ABOVE the floor flag so a
+        # wrong-episode above-floor sibling can't be promoted over the requested
+        # stub either. Episode match stays primary among same-class candidates;
+        # size outranks loose token overlap. With no hint and no floor every flag
+        # is constant, so this reduces to the historical largest-wins rule.
+        above_floor = size <= 0 or size >= min_video_size
+        key = (ep_score >= 0, above_floor, ep_score, size, tok_score, -index)
         if best_key is None or key > best_key:
             best_path = result
             best_key = key
@@ -459,7 +472,14 @@ def _remember_video_file_size_hint(file_path, size):
         size = int(size or 0)
     except (TypeError, ValueError):
         return
-    if not file_path or size <= 0:
+    if not file_path:
+        return
+    # A non-positive size means this scan saw no getcontentlength for the path
+    # (current size unknown). Drop any prior positive value so a later stub
+    # check fails OPEN on the now-unknown size instead of re-rejecting the path
+    # against a stale cached stub size (#282 / Codex).
+    if size <= 0:
+        _VIDEO_FILE_SIZE_HINTS.pop(file_path, None)
         return
     _VIDEO_FILE_SIZE_HINTS[file_path] = size
     while len(_VIDEO_FILE_SIZE_HINTS) > _VIDEO_FILE_SIZE_HINTS_MAX:
@@ -484,6 +504,7 @@ def find_video_file(
     title_hint=None,
     title_hint_tokens=None,
     title_hint_episode_tags=None,
+    min_video_size=0,
 ):
     """Browse a WebDAV folder and find the requested (or largest) video file.
 
@@ -506,6 +527,16 @@ def find_video_file(
         title_hint_tokens / title_hint_episode_tags: Internal pre-parsed forms
             of ``title_hint`` threaded through recursion so the hint is parsed
             once per discovery rather than once per folder level.
+        min_video_size: Optional minimum plausible size (bytes) for the real
+            single-file video, precomputed by the resolver from the advertised
+            release size (#282). A current-level candidate whose size is a
+            positive value BELOW this floor is treated as nzbdav's job-start
+            stub: discovery recurses into subfolders for the real file first and
+            falls back to the small candidate only if nothing better is found.
+            ``0`` (the default) disables the floor, keeping the historical
+            current-level short-circuit unchanged. The floor never DROPS a
+            candidate -- it only defers it -- so a release that is legitimately
+            small is still returned. Skipped for packs by passing ``0``.
 
     Returns:
         The WebDAV href path of the largest video file found, typically an
@@ -713,7 +744,27 @@ def find_video_file(
                 )
             else:
                 ep_score, tok_score = 0, 0
-            file_key = (ep_score, size, tok_score)
+            # "Above the advertised-size floor" is the TOP ranking dimension so a
+            # below-floor job-start stub never outranks a real file at the SAME
+            # level: an episode-tagged stub (ep=1000) would otherwise beat a
+            # generically-named above-floor real file (ep=0), win selection, and
+            # -- with no subdir to defer into -- be returned and re-rejected every
+            # poll (#282 follow-up D / Codex). With no floor (min_video_size <= 0)
+            # this flag is constantly True, so the key reduces to the historical
+            # (ep, size, tok) and ranking is byte-identical. A size-0 file is NOT
+            # below-floor (unknown size, not a known stub), so it is unaffected.
+            file_above_floor = size <= 0 or size >= min_video_size
+            # A WRONG-episode file (ep=-1000) must never be promoted above a
+            # requested-episode stub by the above-floor boost: an above-floor
+            # S01E04 would otherwise outrank a below-floor requested-S01E05 stub,
+            # become best_file, pass the resolver's stub guard (its size is real)
+            # and STREAM THE WRONG EPISODE instead of waiting (Codex #340). Rank
+            # "not a wrong episode" ABOVE the floor flag so wrong episodes sink
+            # below everything; the requested-ep stub then stays best_file and the
+            # poll loop keeps waiting. ``ep_score >= 0`` is monotonic in ep_score
+            # at the wrong-ep boundary, so with no floor this term never reverses
+            # the historical (ep, size, tok) ordering.
+            file_key = (ep_score >= 0, file_above_floor, ep_score, size, tok_score)
             # A current-level video only displaces "nothing yet" when it
             # carries a positive selection signal: a real (non-zero) size --
             # the historical largest-wins rule, under which main never adopted
@@ -738,6 +789,20 @@ def find_video_file(
                 # wrong-episode gate compares episode identity, not token noise.
                 best_match_score = ep_score
 
+        # A current-level best that is grossly undersized versus the advertised
+        # release size (#282) is nzbdav's job-start stub. Treat it like the
+        # wrong-episode case below: defer it so discovery recurses into the
+        # subfolder holding the real file first, falling back to the stub only if
+        # the descent finds nothing better. The floor never DROPS the candidate
+        # (a legitimately small release is still returned as the fallback). A 0
+        # floor -- movie/no-floor or pack -- disables this so the historical
+        # current-level short-circuit is byte-identical to before.
+        best_is_stub = (
+            best_file is not None
+            and min_video_size > 0
+            and 0 < best_size < min_video_size
+        )
+
         # When an episode was requested but the current-level best is NOT a
         # confirmed episode match (score below the confirmed-match threshold of
         # 1000), the requested episode may still live in a sibling subdir. This
@@ -747,10 +812,13 @@ def find_video_file(
         # ever scan the subdir holding the exact requested episode. Recurse
         # first; fall back to the current-level file only if the descent finds
         # nothing better. A movie/token-only hint has empty hint_episode_tags so
-        # it keeps the historical short-circuit, as does the no-hint path.
-        if best_file and not (
-            hint_episode_tags and best_match_score < 1000 and subdirs
-        ):
+        # it keeps the historical short-circuit, as does the no-hint path. The
+        # stub case (best_is_stub) defers on the same terms. Both only defer when
+        # there is actually a subdir to descend into.
+        defer_to_subdirs = bool(subdirs) and (
+            (bool(hint_episode_tags) and best_match_score < 1000) or best_is_stub
+        )
+        if best_file and not defer_to_subdirs:
             file_path = best_file
             _remember_video_file_size_hint(file_path, best_size)
             xbmc.log(
@@ -761,9 +829,10 @@ def find_video_file(
 
         if best_file:
             xbmc.log(
-                "NZB-DAV: Current-level video '{}' is a wrong-episode match for "
-                "the requested title; checking sibling subfolders first".format(
-                    best_file
+                "NZB-DAV: Current-level video '{}' is {} for the requested "
+                "title; checking sibling subfolders first".format(
+                    best_file,
+                    "an undersized stub" if best_is_stub else "a wrong-episode match",
                 ),
                 xbmc.LOGDEBUG,
             )
@@ -778,18 +847,28 @@ def find_video_file(
             settings,
             hint_tokens=hint_tokens,
             hint_episode_tags=hint_episode_tags,
+            min_video_size=min_video_size,
         )
         if result:
             # If we deferred a wrong-episode current-level file, only adopt the
             # sibling when it is at least as good a hint match; otherwise the
             # mismatched current-level file is no worse and stays the fallback.
+            # The key carries the same above-floor flag as the current-level
+            # ranking, so a below-floor stub never wins on episode identity: an
+            # above-floor (or unknown-size) child always outranks a deferred stub
+            # -- including an exact-episode child whose PROPFIND has no
+            # getcontentlength (size hint 0 is NOT below-floor) (#282 / Codex).
             if best_file and have_hint:
                 result_ep_score, result_tok_score = _title_hint_match_score(
                     result, hint_tokens, hint_episode_tags
                 )
+                result_size = get_video_file_size_hint(result)
+                result_above_floor = result_size <= 0 or result_size >= min_video_size
                 result_key = (
+                    result_ep_score >= 0,
+                    result_above_floor,
                     result_ep_score,
-                    get_video_file_size_hint(result),
+                    result_size,
                     result_tok_score,
                 )
                 if result_key < best_file_key:
@@ -854,15 +933,26 @@ def get_webdav_stream_url_for_path(file_path, settings_getter=None):
     )
 
 
-def find_video_stream_for_folder(folder_path, settings_getter=None, title_hint=None):
+def find_video_stream_for_folder(
+    folder_path, settings_getter=None, title_hint=None, min_video_size=0
+):
     """Find a folder's playable video path and stream URL with one settings read.
 
     ``title_hint`` is the optional requested release name; when supplied it
     steers multi-episode/multi-video folders toward the requested episode
     instead of the largest file (see ``find_video_file``).
+
+    ``min_video_size`` is the optional advertised-size floor that lets discovery
+    recurse past a root-level job-start stub into the subfolder holding the real
+    file (#282); see ``find_video_file``. ``0`` (default) disables the floor.
     """
     settings = _read_settings(settings_getter)
-    video_path = find_video_file(folder_path, _settings=settings, title_hint=title_hint)
+    video_path = find_video_file(
+        folder_path,
+        _settings=settings,
+        title_hint=title_hint,
+        min_video_size=min_video_size,
+    )
     if not video_path:
         return None, None, None
     stream_url, stream_headers = _get_webdav_stream_url_for_path_with_settings(
