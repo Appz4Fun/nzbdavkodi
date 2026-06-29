@@ -17,6 +17,9 @@ from resources.lib.http_util import (
     calculate_age as _calculate_age,
 )
 from resources.lib.http_util import (
+    contains_xml_declaration_markup,
+)
+from resources.lib.http_util import (
     format_request_error as _format_request_error,
 )
 from resources.lib.http_util import (
@@ -274,6 +277,12 @@ def _build_result(item, fallback_indexer):
 
 def parse_results(xml_text, fallback_indexer):
     """Parse Newznab XML into the existing normalized result shape."""
+    if contains_xml_declaration_markup(xml_text):
+        return (
+            [],
+            "Direct indexer returned an invalid response: "
+            "DTD and entity declarations are not allowed",
+        )
     try:
         root = ET.fromstring(xml_text, parser=_build_xxe_safe_parser())  # nosec B314
     except ET.ParseError as error:

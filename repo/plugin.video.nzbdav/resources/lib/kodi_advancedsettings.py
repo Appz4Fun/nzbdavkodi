@@ -17,13 +17,14 @@ from xml.etree import ElementTree as ET
 
 import xbmcvfs
 
+from resources.lib.http_util import contains_xml_declaration_markup
+
 
 def _parse_local_xml_root(path):
     """Parse Kodi profile XML while rejecting DTD/entity declarations."""
     with open(path, "rb") as fh:
         xml_bytes = fh.read()
-    upper_xml = xml_bytes.upper()
-    if b"<!DOCTYPE" in upper_xml or b"<!ENTITY" in upper_xml:
+    if contains_xml_declaration_markup(xml_bytes):
         raise ET.ParseError("DTD/entity declarations are not supported")
     return ET.fromstring(xml_bytes)
 

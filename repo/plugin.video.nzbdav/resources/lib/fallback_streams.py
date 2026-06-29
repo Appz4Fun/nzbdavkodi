@@ -27,7 +27,7 @@ import xbmc
 import xbmcaddon
 
 from resources.lib import telemetry
-from resources.lib.http_util import pubdate_to_epoch
+from resources.lib.http_util import contains_xml_declaration_markup, pubdate_to_epoch
 from resources.lib.nzb_manifest import fetch_nzb_video_manifest, make_empty_manifest
 
 
@@ -289,7 +289,11 @@ def _schema_setting_default(setting_id):
     )
     for path in candidate_paths:
         try:
-            root = ET.parse(path).getroot()
+            with open(path, "rb") as fh:
+                xml_bytes = fh.read()
+            if contains_xml_declaration_markup(xml_bytes):
+                continue
+            root = ET.fromstring(xml_bytes)
         except (OSError, ET.ParseError):
             continue
         for setting in root.findall(".//setting"):

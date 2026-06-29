@@ -27,6 +27,9 @@ from resources.lib.http_util import (
     clean_search_query as _clean_search_query,
 )
 from resources.lib.http_util import (
+    contains_xml_declaration_markup,
+)
+from resources.lib.http_util import (
     format_request_error as _format_request_error,
 )
 from resources.lib.http_util import (
@@ -480,20 +483,11 @@ def _build_xxe_safe_parser():
     return parser
 
 
-def _contains_xml_declaration_markup(xml_text):
-    """Return true when XML text declares a DTD/entity block."""
-    if isinstance(xml_text, bytes):
-        probe = xml_text.lower()
-        return b"<!doctype" in probe or b"<!entity" in probe
-    probe = str(xml_text).lower()
-    return "<!doctype" in probe or "<!entity" in probe
-
-
 def _parse_hydra_xml(xml_text):
     """Parse Hydra XML with DTD/entity expansion disabled."""
     if getattr(element_tree, "__name__", "").startswith("defusedxml."):
         return element_tree.fromstring(xml_text)
-    if _contains_xml_declaration_markup(xml_text):
+    if contains_xml_declaration_markup(xml_text):
         raise _UnsafeXmlError("DTD and entity declarations are not allowed")
     return element_tree.fromstring(
         xml_text, parser=_build_xxe_safe_parser()

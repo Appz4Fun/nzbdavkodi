@@ -280,6 +280,15 @@ def http_post_json(url, payload, timeout=15, headers=None, basic_auth=None):
 _PUBDATE_ERRORS = (OverflowError, TypeError, ValueError)
 
 
+def contains_xml_declaration_markup(xml_text):
+    """Return true when XML text declares a DTD/entity block."""
+    if isinstance(xml_text, bytes):
+        probe = xml_text.lower()
+        return b"<!doctype" in probe or b"<!entity" in probe
+    probe = str(xml_text).lower()
+    return "<!doctype" in probe or "<!entity" in probe
+
+
 def format_request_error(error):
     """Return a user-facing HTTP request error without urllib wrapper noise.
 

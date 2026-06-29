@@ -8,7 +8,10 @@ from xml.etree import ElementTree as ET
 
 import xbmc
 
-from resources.lib.http_util import format_request_error
+from resources.lib.http_util import (
+    contains_xml_declaration_markup,
+    format_request_error,
+)
 from resources.lib.http_util import http_get as _http_get
 
 _REQUEST_ERRORS = (AttributeError, OSError, RuntimeError, TypeError, ValueError)
@@ -76,6 +79,8 @@ def _params(value):
 
 
 def parse_caps(xml_text):
+    if contains_xml_declaration_markup(xml_text):
+        return _empty_caps()
     try:
         root = ET.fromstring(xml_text)  # nosec B314 - Python 3.8+ disables entities
     except (ET.ParseError, TypeError):

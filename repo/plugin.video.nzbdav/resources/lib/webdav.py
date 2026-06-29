@@ -13,6 +13,8 @@ from urllib.request import Request, urlopen
 
 import xbmc
 
+from resources.lib.http_util import contains_xml_declaration_markup
+
 _WEBDAV_SUBDIR_SCAN_WORKERS = 4
 _VIDEO_FILE_SIZE_HINTS_MAX = 64
 _VIDEO_FILE_SIZE_HINTS = {}
@@ -582,6 +584,13 @@ def find_video_file(
         # the same effect for XXE prevention. Use the expat target builder
         # so a hostile WebDAV server can't coerce us into reading local
         # files via an external entity reference.
+        if contains_xml_declaration_markup(body):
+            xbmc.log(
+                "NZB-DAV: Rejecting WebDAV XML containing DTD/entity " "declarations",
+                xbmc.LOGERROR,
+            )
+            return None
+
         _xml_parser = ET.XMLParser()  # nosec B314 — entities disabled below
         try:
             _xml_parser.parser.DefaultHandler = lambda _d: None

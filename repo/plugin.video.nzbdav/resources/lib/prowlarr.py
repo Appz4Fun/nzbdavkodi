@@ -28,6 +28,9 @@ from resources.lib.http_util import (
     clean_search_query as _clean_search_query,
 )
 from resources.lib.http_util import (
+    contains_xml_declaration_markup,
+)
+from resources.lib.http_util import (
     format_request_error as _format_request_error,
 )
 from resources.lib.http_util import (
@@ -428,6 +431,12 @@ def _parse_xml_results(xml_text):
         error_message (str or None): Error description when the XML is
             invalid or not an RSS feed; `None` on success.
     """
+    if contains_xml_declaration_markup(xml_text):
+        return (
+            [],
+            "Prowlarr returned an invalid response: "
+            "DTD and entity declarations are not allowed",
+        )
     try:
         root = ET.fromstring(
             xml_text, parser=_build_xxe_safe_parser()
