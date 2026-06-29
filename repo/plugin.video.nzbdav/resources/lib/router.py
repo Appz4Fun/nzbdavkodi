@@ -200,6 +200,35 @@ def _safe_resolve_handle(handle):
     xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
 
 
+def _parse_route_argv(argv):
+    """Parse Kodi's argv into ``(base_url, handle, query_string)`` or ``None``.
+
+    argv length and the handle's numericness are both contractually provided by
+    Kodi, but a misconfigured shortcut / external launcher could violate that
+    and the unhandled IndexError / ValueError used to escape ``route()`` with no
+    setResolvedUrl, hanging Kodi. Surface both as a logged early-return (``None``)
+    instead. Closes TODO.md §H.3.
+    """
+    if len(argv) < 2:
+        xbmc.log(
+            "NZB-DAV: route() called with argv shorter than 2: {!r}".format(argv),
+            xbmc.LOGERROR,
+        )
+        return None
+    base_url = argv[0]
+    try:
+        handle = int(argv[1])
+    except (TypeError, ValueError):
+        xbmc.log(
+            "NZB-DAV: route() got non-numeric handle argv[1]={!r}; "
+            "skipping this invocation".format(argv[1]),
+            xbmc.LOGERROR,
+        )
+        return None
+    query_string = argv[2] if len(argv) > 2 else ""
+    return base_url, handle, query_string
+
+
 def route(argv):
     """
     Route a plugin invocation to the appropriate handler based on the URL.
@@ -217,28 +246,10 @@ def route(argv):
             - argv[1]: numeric handle for Kodi plugin operations (int)
             - argv[2] (optional): query string containing route parameters
     """
-    # argv length and the handle's numericness are both contractually
-    # provided by Kodi, but a misconfigured shortcut / external launcher
-    # could violate that and the unhandled IndexError / ValueError used
-    # to escape `route()` with no setResolvedUrl, hanging Kodi. Surface
-    # both as a logged early-return instead. Closes TODO.md §H.3.
-    if len(argv) < 2:
-        xbmc.log(
-            "NZB-DAV: route() called with argv shorter than 2: {!r}".format(argv),
-            xbmc.LOGERROR,
-        )
+    parsed_argv = _parse_route_argv(argv)
+    if parsed_argv is None:
         return
-    base_url = argv[0]
-    try:
-        handle = int(argv[1])
-    except (TypeError, ValueError):
-        xbmc.log(
-            "NZB-DAV: route() got non-numeric handle argv[1]={!r}; "
-            "skipping this invocation".format(argv[1]),
-            xbmc.LOGERROR,
-        )
-        return
-    query_string = argv[2] if len(argv) > 2 else ""
+    base_url, handle, query_string = parsed_argv
 
     path = parse_route(base_url)
     params = parse_params(query_string)
@@ -416,36 +427,69 @@ def _fallback_candidate_loader_for_selection(selected, results, settings_getter=
     def _load_fallback_candidates():
         # Multi-result distinct-peer scans can walk the full picker pool. Keep
         # them inside the loader so resolver can start the primary submit first.
-        known_first_peer = cached_selection_pool_first_peer(selected, results)
-        if (
-            known_first_peer is None
-            and result_count is not None
-            and result_count != 1
-            and not selection_pool_may_have_fallback_peer(selected, results)
-        ):
-            return FALLBACK_CANDIDATES_DISABLED
-        if known_first_peer is None:
-            known_first_peer = cached_selection_pool_first_peer(selected, results)
-        fallback_settings = _resolve_fallback_prefetch_settings(settings_getter)
-        if not fallback_candidate_prefetch_enabled(fallback_settings):
-            return FALLBACK_CANDIDATES_DISABLED
-
-        extra_uploads = _fetch_fallback_extra_uploads(selected, settings_getter)
-        augmented = chain(results or [], extra_uploads or [])
-        if known_first_peer is None:
-            known_first_peer, disabled = _resolve_known_first_peer(
-                selected, results, result_count, extra_uploads, augmented
-            )
-            if disabled:
-                return FALLBACK_CANDIDATES_DISABLED
-        attach_fallback_candidates_for_selection(
-            selected,
-            _selection_pool_with_peer_first(selected, augmented, known_first_peer),
-            fallback_settings=fallback_settings,
+        return _compute_fallback_candidates(
+            selected, results, result_count, settings_getter
         )
-        return list(selected.get("_fallback_candidates", []) or [])
 
     return _load_fallback_candidates
+
+
+def _pool_has_no_fallback_peer(selected, results, result_count, known_first_peer):
+    """Return whether a multi-result pool provably cannot host a fallback peer."""
+    return (
+        known_first_peer is None
+        and result_count is not None
+        and result_count != 1
+        and not selection_pool_may_have_fallback_peer(selected, results)
+    )
+
+
+def _compute_fallback_candidates(selected, results, result_count, settings_getter):
+    """Run the deferred fallback distinct-peer scan + attach for one selection.
+
+    Extracted verbatim from the former ``_load_fallback_candidates`` closure;
+    every call is preserved in order so the lazy distinct-peer-scan contract is
+    unchanged.
+    """
+    known_first_peer = cached_selection_pool_first_peer(selected, results)
+    if _pool_has_no_fallback_peer(selected, results, result_count, known_first_peer):
+        return FALLBACK_CANDIDATES_DISABLED
+    if known_first_peer is None:
+        known_first_peer = cached_selection_pool_first_peer(selected, results)
+    fallback_settings = _resolve_fallback_prefetch_settings(settings_getter)
+    if not fallback_candidate_prefetch_enabled(fallback_settings):
+        return FALLBACK_CANDIDATES_DISABLED
+
+    augmented, known_first_peer, disabled = _augmented_pool_and_first_peer(
+        selected, results, result_count, settings_getter, known_first_peer
+    )
+    if disabled:
+        return FALLBACK_CANDIDATES_DISABLED
+    attach_fallback_candidates_for_selection(
+        selected,
+        _selection_pool_with_peer_first(selected, augmented, known_first_peer),
+        fallback_settings=fallback_settings,
+    )
+    return list(selected.get("_fallback_candidates", []) or [])
+
+
+def _augmented_pool_and_first_peer(
+    selected, results, result_count, settings_getter, known_first_peer
+):
+    """Build the Hydra-augmented pool and resolve the plausible first peer.
+
+    Returns ``(augmented, known_first_peer, disabled)``; ``disabled`` is True
+    when the augmented pool provably cannot host a fallback peer. Extracted
+    verbatim — every call is preserved in order.
+    """
+    extra_uploads = _fetch_fallback_extra_uploads(selected, settings_getter)
+    augmented = chain(results or [], extra_uploads or [])
+    if known_first_peer is None:
+        known_first_peer, disabled = _resolve_known_first_peer(
+            selected, results, result_count, extra_uploads, augmented
+        )
+        return augmented, known_first_peer, disabled
+    return augmented, known_first_peer, False
 
 
 def _resolve_fallback_prefetch_settings(settings_getter):
@@ -1260,6 +1304,19 @@ def _listitem_episode_candidate(labels):
     return show, season, episode
 
 
+def _direct_play_parse_fallback_urls(fallback_urls_raw):
+    """Parse the ``fallback_urls`` JSON param into a list (``[]`` on bad shape)."""
+    import json as _json
+
+    try:
+        fallback_urls = _json.loads(fallback_urls_raw)
+    except (TypeError, ValueError):
+        fallback_urls = []
+    if not isinstance(fallback_urls, list):
+        fallback_urls = []
+    return fallback_urls
+
+
 def _handle_direct_play(handle, params):
     """Resolve a primary stream URL through stream_proxy and hand
     Kodi the proxy URL via setResolvedUrl.
@@ -1273,13 +1330,6 @@ def _handle_direct_play(handle, params):
     Triggered via ``Player.Open({"file": "plugin://plugin.video.nzbdav/direct_play?..."})``
     so the handle is real and setResolvedUrl actually starts playback.
     """
-    import json as _json
-
-    from resources.lib.resolver import (
-        _direct_playback_service_config,
-        _prepare_direct_playback,
-    )
-
     # Reject non-http(s) URLs before any HEAD: urlopen will happily
     # dereference file:// (reading arbitrary local files) and ftp://,
     # and a junk scheme can throw deep inside urllib. _validate_url
@@ -1293,12 +1343,7 @@ def _handle_direct_play(handle, params):
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
         return
     primary_url, primary_auth = _direct_play_split_auth(primary_url_raw)
-    try:
-        fallback_urls = _json.loads(fallback_urls_raw)
-    except (TypeError, ValueError):
-        fallback_urls = []
-    if not isinstance(fallback_urls, list):
-        fallback_urls = []
+    fallback_urls = _direct_play_parse_fallback_urls(fallback_urls_raw)
 
     try:
         _validate_url(primary_url)
@@ -1319,7 +1364,25 @@ def _handle_direct_play(handle, params):
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
         return
 
-    fallback_sources = _direct_play_fallback_sources(fallback_urls, _validate_url)
+    _direct_play_prepare_and_serve(
+        handle, primary_url, primary_auth, fallback_urls, _validate_url
+    )
+
+
+def _direct_play_prepare_and_serve(
+    handle, primary_url, primary_auth, fallback_urls, validate_url
+):
+    """Build fallback sources, prepare the proxy, and hand Kodi the proxy URL.
+
+    Extracted verbatim from the tail of ``_handle_direct_play``; resolves the
+    handle False on a missing proxy URL and True on success, unchanged.
+    """
+    from resources.lib.resolver import (
+        _direct_playback_service_config,
+        _prepare_direct_playback,
+    )
+
+    fallback_sources = _direct_play_fallback_sources(fallback_urls, validate_url)
 
     xbmc.log(
         "NZB-DAV: /direct_play primary={} fallbacks={}".format(
@@ -1571,6 +1634,15 @@ def _search_with_cache(search_type, title, cache_kwargs):
         )
         return results, None
 
+    return _query_and_cache_providers(search_type, title, cache_kwargs, set_cached)
+
+
+def _query_and_cache_providers(search_type, title, cache_kwargs, set_cached):
+    """Query all enabled providers on a cache miss and cache any results.
+
+    Returns ``(results, search_error)``; caches results only on a clean
+    (non-error) non-empty query. Extracted verbatim from ``_search_with_cache``.
+    """
     addon = xbmcaddon.Addon("plugin.video.nzbdav")
     xbmc.log(
         "NZB-DAV: Search stage: querying providers for '{}'".format(title),
@@ -1722,6 +1794,16 @@ def _handle_play(handle, params):
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
         return
 
+    _handle_play_filter_and_select(handle, results, title, year, notify)
+
+
+def _handle_play_filter_and_select(handle, results, title, year, notify):
+    """Filter, optionally auto-select, tag, and run the picker for ``_handle_play``.
+
+    Resolves the Kodi handle itself (False on abort / no selection, or via the
+    auto-select / picker-selection resolvers). Extracted verbatim from the tail
+    of ``_handle_play``.
+    """
     xbmc.log(
         "NZB-DAV: Search stage: filtering {} results for '{}'".format(
             len(results), title
@@ -1827,7 +1909,6 @@ def _handle_search(handle, params):
         params (dict): Route query parameters (e.g., keys: "type", "title",
             "year", "imdb", "season", "episode", "tmdb_id").
     """
-    from resources.lib.filter import filter_results
     from resources.lib.http_util import notify
 
     params = _clean_params(params)
@@ -1857,6 +1938,17 @@ def _handle_search(handle, params):
         xbmcplugin.endOfDirectory(handle, succeeded=False)
         return
 
+    _handle_search_filter_and_select(handle, params, results, title, year, notify)
+
+
+def _handle_search_filter_and_select(handle, params, results, title, year, notify):
+    """Filter, optionally auto-select, tag, and run the picker for ``_handle_search``.
+
+    Always ends the Kodi directory (succeeded=False) so the route never hangs.
+    Extracted verbatim from the tail of ``_handle_search``.
+    """
+    from resources.lib.filter import filter_results
+
     total_count = len(results)
     xbmc.log(
         "NZB-DAV: Search stage: filtering {} results for '{}'".format(
@@ -1879,15 +1971,17 @@ def _handle_search(handle, params):
         and filtered
     ):
         _handle_search_auto_select(params, filtered[0], filtered)
-        # Same hang class as C1 (router.py): /search is a directory
-        # route, so Kodi blocks until endOfDirectory fires. Without
-        # this, the auto-select branch returned silently and Kodi
-        # waited forever for a directory listing that never came.
-        # Mark the directory as not-succeeded since playback already
-        # ran via resolve_and_play.
+        # Same hang class as C1 (router.py): /search is a directory route, so
+        # Kodi blocks until endOfDirectory fires. Mark the directory as
+        # not-succeeded since playback already ran via resolve_and_play.
         xbmcplugin.endOfDirectory(handle, succeeded=False)
         return
 
+    _handle_search_tag_and_picker(handle, params, filtered, title, year, total_count)
+
+
+def _handle_search_tag_and_picker(handle, params, filtered, title, year, total_count):
+    """Tag, run the picker, resolve a selection, and end the directory."""
     # Tag results already downloaded in the active backend (nzbdav / NZBGet)
     completed_jobs = _tag_available(filtered)
 
@@ -1973,6 +2067,46 @@ def _write_back_episode_params(params, season, episode):
         params["episode"] = episode
 
 
+def _script_play_resolve_episode_args(
+    params, search_type, title, season, episode, imdb
+):
+    """Backfill (title, season, episode) for a RunScript episode play.
+
+    First looks the show up from IMDB when only an IMDB id is present, then
+    recovers a missing season/episode from the focused Kodi ListItem (trusted
+    only when the focused item is the same show). Mirrors the prior inline
+    behaviour exactly; no-op for non-episode searches.
+    """
+    title, season, episode = _lookup_search_episode_args(
+        params, search_type, title, season, episode, imdb
+    )
+
+    # TMDBHelper Next-Up / widget / home-screen plays often invoke the player
+    # with only the series ids and empty season/episode, so an episode search
+    # broadens to the whole show. Recover the numbers from the focused
+    # ListItem, but trust them only when that item is the same show we're
+    # about to search (the focus may have moved by the time the player fires).
+    if search_type == "episode" and not (season and episode):
+        title, season, episode = _script_play_recover_episode_info(
+            params, title, season, episode
+        )
+    return title, season, episode
+
+
+def _script_play_log_route(params, search_type, title, imdb):
+    """Emit the RunScript route entry log + stage line (verbatim split)."""
+    xbmc.log(
+        "NZB-DAV: Script play route: type={!r} title={!r} imdb={!r} "
+        "tmdb_id={!r}".format(search_type, title, imdb, params.get("tmdb_id", "")),
+        xbmc.LOGINFO,
+    )
+    _script_play_stage(
+        "route type={!r} title={!r} imdb={!r} tmdb_id={!r}".format(
+            search_type, title, imdb, params.get("tmdb_id", "")
+        )
+    )
+
+
 def _handle_script_play(params):
     """
     Run the TMDBHelper player flow from a RunScript action.
@@ -1989,33 +2123,11 @@ def _handle_script_play(params):
         _extract_search_params(params)
     )
 
-    xbmc.log(
-        "NZB-DAV: Script play route: type={!r} title={!r} imdb={!r} "
-        "tmdb_id={!r}".format(search_type, title, imdb, params.get("tmdb_id", "")),
-        xbmc.LOGINFO,
-    )
-    _script_play_stage(
-        "route type={!r} title={!r} imdb={!r} tmdb_id={!r}".format(
-            search_type, title, imdb, params.get("tmdb_id", "")
-        )
-    )
+    _script_play_log_route(params, search_type, title, imdb)
 
-    if search_type == "episode" and imdb and not title:
-        looked_up = _lookup_episode_info(imdb, params.get("tmdb_id", ""))
-        if looked_up:
-            title = looked_up.get("title", title)
-            season = season or looked_up.get("season", "")
-            episode = episode or looked_up.get("episode", "")
-
-    # TMDBHelper Next-Up / widget / home-screen plays often invoke the player
-    # with only the series ids and empty season/episode, so an episode search
-    # broadens to the whole show. Recover the numbers from the focused
-    # ListItem, but trust them only when that item is the same show we're
-    # about to search (the focus may have moved by the time the player fires).
-    if search_type == "episode" and not (season and episode):
-        title, season, episode = _script_play_recover_episode_info(
-            params, title, season, episode
-        )
+    title, season, episode = _script_play_resolve_episode_args(
+        params, search_type, title, season, episode, imdb
+    )
 
     _script_play_stage(
         "skipping cache for '{}' ({})".format(
@@ -2035,7 +2147,15 @@ def _handle_script_play(params):
     if prepared is None:
         return
     filtered, total_count, completed_jobs = prepared
+    _script_play_picker_and_resolve(
+        params, filtered, title, year, total_count, completed_jobs
+    )
 
+
+def _script_play_picker_and_resolve(
+    params, filtered, title, year, total_count, completed_jobs
+):
+    """Open the RunScript picker and resolve the selection (no-op on cancel)."""
     from resources.lib.results_dialog import show_results_dialog
 
     _script_play_stage("picker open")
@@ -2049,6 +2169,34 @@ def _handle_script_play(params):
     _script_play_resolve_selected(params, selected, filtered, completed_jobs)
 
 
+def _script_play_search_results(search_type, title, search_kwargs, notify):
+    """Run the RunScript provider search, returning results or ``None`` to stop.
+
+    Shows the provider-error dialog (or the no-results notify) and returns
+    ``None`` so the caller stops, exactly as the prior inline block did.
+    """
+    results, search_error = _search_all_providers(
+        search_type, title, settings_getter=_get_script_setting, **search_kwargs
+    )
+    _script_play_stage("provider search done count={}".format(len(results or [])))
+    if search_error:
+        xbmc.log(
+            "NZB-DAV: Search stage: provider error - {}".format(search_error),
+            xbmc.LOGWARNING,
+        )
+        _show_error_dialog(search_error)
+        return None
+
+    if not results:
+        xbmc.log(
+            "NZB-DAV: Search stage: no results found for '{}'".format(title),
+            xbmc.LOGINFO,
+        )
+        notify(_addon_name(), _fmt(30087, title), 3000)
+        return None
+    return results
+
+
 def _script_play_search_filter_tag(
     params, search_type, title, year, search_kwargs, notify
 ):
@@ -2059,8 +2207,6 @@ def _script_play_search_filter_tag(
     or an auto-selected release was already played), otherwise the
     ``(filtered, total_count, completed_jobs)`` payload for the picker.
     """
-    from resources.lib.filter import filter_results
-
     # The indexer search + filtering below can take several seconds; with no
     # on-screen indicator the player looks frozen/crashed. Show a NON-modal
     # background progress dialog (see _open_loading_dialog — the modal
@@ -2069,58 +2215,48 @@ def _script_play_search_filter_tag(
     # early return / exception below.
     loading = _open_loading_dialog(title)
     try:
-        results, search_error = _search_all_providers(
-            search_type, title, settings_getter=_get_script_setting, **search_kwargs
-        )
-        _script_play_stage("provider search done count={}".format(len(results or [])))
-        if search_error:
-            xbmc.log(
-                "NZB-DAV: Search stage: provider error - {}".format(search_error),
-                xbmc.LOGWARNING,
-            )
-            _show_error_dialog(search_error)
-            return None
-
+        results = _script_play_search_results(search_type, title, search_kwargs, notify)
         if not results:
-            xbmc.log(
-                "NZB-DAV: Search stage: no results found for '{}'".format(title),
-                xbmc.LOGINFO,
-            )
-            notify(_addon_name(), _fmt(30087, title), 3000)
             return None
-
-        total_count = len(results)
-        _update_loading_dialog(loading, 60, _string(30088))
-        _script_play_stage("filter start count={} for '{}'".format(len(results), title))
-        filtered, all_parsed = filter_results(
-            results, settings_getter=_get_script_setting
+        return _script_play_filter_autoselect_tag(
+            loading, params, results, title, notify
         )
-        _script_play_stage(
-            "filter done filtered={} parsed={}".format(
-                len(filtered or []), len(all_parsed or [])
-            )
-        )
-
-        if not filtered:
-            filtered = _script_play_filtered_or_prompt(
-                loading, all_parsed, title, notify
-            )
-            if not filtered:
-                return None
-
-        if (
-            _get_script_setting("auto_select_best", "false").lower() == "true"
-            and filtered
-        ):
-            # resolve_and_play blocks on the download; drop the indicator first.
-            _close_loading_dialog(loading)
-            _script_play_auto_select(params, filtered[0], filtered)
-            return None
-
-        completed_jobs = _script_play_tag_available(filtered)
     finally:
         _close_loading_dialog(loading)
 
+
+def _script_play_filter_autoselect_tag(loading, params, results, title, notify):
+    """Filter, optionally auto-play, and tag for the RunScript flow.
+
+    Returns ``None`` when the caller should stop (unfiltered-prompt declined or
+    an auto-selected release was already played), otherwise the
+    ``(filtered, total_count, completed_jobs)`` payload. Extracted verbatim from
+    the body of ``_script_play_search_filter_tag``'s ``try`` block.
+    """
+    from resources.lib.filter import filter_results
+
+    total_count = len(results)
+    _update_loading_dialog(loading, 60, _string(30088))
+    _script_play_stage("filter start count={} for '{}'".format(len(results), title))
+    filtered, all_parsed = filter_results(results, settings_getter=_get_script_setting)
+    _script_play_stage(
+        "filter done filtered={} parsed={}".format(
+            len(filtered or []), len(all_parsed or [])
+        )
+    )
+
+    if not filtered:
+        filtered = _script_play_filtered_or_prompt(loading, all_parsed, title, notify)
+        if not filtered:
+            return None
+
+    if _get_script_setting("auto_select_best", "false").lower() == "true" and filtered:
+        # resolve_and_play blocks on the download; drop the indicator first.
+        _close_loading_dialog(loading)
+        _script_play_auto_select(params, filtered[0], filtered)
+        return None
+
+    completed_jobs = _script_play_tag_available(filtered)
     return filtered, total_count, completed_jobs
 
 
