@@ -8199,6 +8199,33 @@ def test_discovered_video_is_stub_accepts_short_pack_special(mock_total, _mock_h
     assert is_stub is False
 
 
+@patch("resources.lib.webdav.get_video_file_size_hint", return_value=10 * 1024**2)
+@patch("resources.lib.webdav.folder_video_total_bytes")
+def test_discovered_video_is_stub_rejects_dwarfed_stub_even_when_total_incomplete(
+    mock_total, _mock_hint
+):
+    """#355 Codex review: when the folder-total scan is INCOMPLETE (negative
+    sentinel) but already sized a real sibling that dwarfs the picked file, the
+    picked file is a known job-start stub -- reject it. A transient second-PROPFIND
+    glitch (or a sibling missing getcontentlength) must NOT fail-open a stub when a
+    real sibling is visible. (Pre-fix, the incomplete total fail-opened first and
+    streamed the stub.)"""
+    from resources.lib.resolver import _discovered_video_is_stub
+
+    def total(_folder, settings_getter=None, _stats=None):
+        if _stats is not None:
+            _stats["max"] = 8 * 1024**3  # a real sibling WAS sized
+        return -1  # but the overall scan is INCOMPLETE (negative sentinel)
+
+    mock_total.side_effect = total
+
+    is_stub = _discovered_video_is_stub(
+        "/folder", "/folder/stub.mp4", str(4 * 1024**3)  # floor 2 GB
+    )
+
+    assert is_stub is True
+
+
 @patch("resources.lib.webdav.folder_video_total_bytes", return_value=80_000_000_000)
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 @patch("resources.lib.resolver._find_completed_video_stream_with_rechecks")

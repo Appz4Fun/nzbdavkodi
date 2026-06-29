@@ -3864,23 +3864,25 @@ def _discovered_video_is_stub(
         )
     except Exception:  # pylint: disable=broad-except
         return False
-    # total <= 0 covers both "no video found" (0) and the INCOMPLETE sentinel
-    # (negative): in either case the total is not a trustworthy floor, so fail
-    # OPEN rather than reject real content on partial data.
+    # Stage 2b runs BEFORE the incomplete-total fail-open: if the picked file is
+    # a tiny placeholder dwarfed by a real sibling we ALREADY sized, it is the
+    # job-start stub regardless of whether the rest of the folder summed cleanly.
+    # So a transient second-PROPFIND glitch, or a sibling missing getcontentlength,
+    # can no longer fail-open a KNOWN below-floor stub while a real sibling is
+    # visible (#355 Codex review). The stub is ~0.4% of advertised (<=~3% of a
+    # pack episode) while real short content runs >=~5%, so the fraction sits
+    # between them; falls through when either size is unknown.
+    largest = stats.get("max", 0)
+    if picked_size > 0 and largest > 0:
+        if picked_size < largest * _STUB_VS_LARGEST_VIDEO_FRACTION:
+            return True
+    # No dwarfing sibling to judge by. ``total <= 0`` covers "no video found" (0)
+    # and the INCOMPLETE sentinel (negative): fail OPEN rather than reject on an
+    # unconfirmable total -- rejecting here would block a real pack episode whose
+    # sibling merely lacks a size (a worse, PERSISTENT failure).
     if total <= 0:
         return False
-    if total < floor:
-        return True
-    # Stage 2b: the total cleared the floor. If the picked file is a tiny
-    # placeholder dwarfed by a real sibling, the total was lifted over the floor
-    # by the SIBLING, not by ``video_path`` -- so it is still the job-start stub.
-    # The job-start stub is ~0.4% of advertised (<=~3% of a pack episode) while
-    # real short content runs >=~5%, so the fraction sits between them. Fails OPEN
-    # when either size is unknown (a missing size must never block a real stream).
-    largest = stats.get("max", 0)
-    if picked_size <= 0 or largest <= 0:
-        return False
-    return picked_size < largest * _STUB_VS_LARGEST_VIDEO_FRACTION
+    return total < floor
 
 
 def _handle_history_result(
