@@ -29,6 +29,18 @@ select = ["E", "F", "W", "I"]
 target-version = ["py38"]
 line-length = 88
 
+[tool.coverage.run]
+# Store repo-relative filenames so the Cobertura report maps onto repo
+# files for GitHub Code Quality. resources.lib resolves to
+# repo/plugin.video.nzbdav/resources/lib (tests/kodi_mocks.py adds it to
+# sys.path). Vendored PTT is third-party and excluded by policy.
+relative_files = true
+source = ["resources.lib"]
+omit = ["*/resources/lib/ptt/*"]
+
+[tool.coverage.report]
+omit = ["*/resources/lib/ptt/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [

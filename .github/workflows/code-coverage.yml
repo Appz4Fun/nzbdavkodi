@@ -1,0 +1,58 @@
+name: Code Coverage
+
+# Generates a Cobertura coverage report for the addon runtime modules and
+# uploads it to GitHub Code Quality, which posts a coverage summary on pull
+# requests and tracks coverage on the default branch. Both push (baseline)
+# and pull_request (comparison) triggers are required by the feature. See
+# https://docs.github.com/en/code-security/how-tos/maintain-quality-code/set-up-code-coverage
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      code-quality: write
+    env:
+      UV_PYTHON: "3.14"
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # On pull_request, checkout defaults to the synthetic merge
+          # commit, but upload-code-coverage attaches the report to the PR
+          # head SHA. Pin the checkout to head so coverage.xml is measured
+          # against the same tree the report maps onto. On push, head.sha is
+          # empty and falls back to github.sha (the pushed main commit).
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          python-version: "3.14"
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
+      - name: Run tests with coverage
+        run: just test-cov
+      - name: Upload coverage to GitHub Code Quality
+        # Skip on forked PRs: forks lack code-quality:write, and the action
+        # cannot upload to the base repo from a fork context.
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/upload-code-coverage@82c7aee3fb2ad768e00b00a0a8d749c5815085b6 # v1
+        with:
+          file: coverage.xml
+          language: Python
+          label: code-coverage/pytest
