@@ -494,6 +494,165 @@ def get_video_file_size_hint(file_path):
         return 0
 
 
+_FOLDER_TOTAL_INCOMPLETE = -1
+
+
+def folder_video_total_bytes(
+    folder_path,
+    settings_getter=None,
+    _settings=None,
+    _depth=0,
+    _visited=None,
+    _already_encoded=False,
+):
+    """Return the summed bytes of every video file in a completed WebDAV folder.
+
+    Walks the release tree (same depth cap as ``find_video_file``) and sums each
+    video file's PROPFIND ``getcontentlength``. Unlike ``find_video_file`` this
+    does NOT short-circuit on the first usable file -- it visits the whole tree --
+    so the resolver can compare the folder's REAL content against the advertised
+    release size *pack-agnostically* (#282): a folder whose total video bytes are
+    far below the advertised size is exposing only nzbdav's job-start stub --
+    whether the release is a single movie or a multi-episode pack -- so the stub
+    guard keeps polling; once the real feature/episodes materialise the total
+    reaches the advertised size and playback proceeds. This replaces the old
+    title-keyword ``release_is_pack`` gate, which guessed pack-ness from the name
+    and disabled the stub guard entirely for anything it classified as a pack.
+
+    Return contract -- three outcomes, two of which make the caller fail OPEN
+    (the stub guard only ever BLOCKS playback on positive evidence of a stub, so
+    an unknown total must never under-count into a false reject of real content):
+
+    * ``> 0``  -- a complete, trustworthy total of the folder's video bytes.
+    * ``0``    -- the folder is genuinely empty of video (no files seen).
+    * ``< 0`` (``_FOLDER_TOTAL_INCOMPLETE``) -- the size picture is INCOMPLETE: a
+      PROPFIND/parse error, or a matched video file whose ``getcontentlength`` was
+      missing/non-numeric (so summing it would silently under-count). The caller
+      must fail OPEN here rather than compare a partial total against the floor --
+      ``_discovered_video_is_stub``'s ``total <= 0 -> return False`` does exactly
+      that. Incompleteness propagates up through recursion (a subfolder that
+      could not be fully sized makes the whole folder incomplete).
+    """
+    import xml.etree.ElementTree as ET  # nosec B405 — parsing trusted WebDAV server response
+
+    if _depth > 2:
+        return 0
+    if _visited is None:
+        _visited = set()
+    normalized = (folder_path or "").rstrip("/")
+    if normalized in _visited:
+        return 0
+    _visited.add(normalized)
+
+    settings = _read_settings(settings_getter) if _settings is None else _settings
+    base = settings["webdav_url"] or settings["nzbdav_url"]
+    username = settings["username"]
+    password = settings["password"]
+
+    if _already_encoded:
+        encoded_path = folder_path
+    else:
+        encoded_path = quote(folder_path, safe="/")
+    url = "{}/{}".format(base.rstrip("/"), encoded_path.lstrip("/"))
+    if not url.endswith("/"):
+        url += "/"
+
+    req = Request(url, method="PROPFIND")
+    req.add_header("Depth", "1")
+    for header, value in _build_auth_headers(username, password).items():
+        req.add_header(header, value)
+
+    video_extensions = (".mkv", ".mp4", ".avi", ".m4v", ".ts", ".wmv", ".mov")
+    total = 0
+    incomplete = False
+    subdirs = []
+    try:
+        # nosemgrep
+        with urlopen(  # nosec B310 — URL from user's configured WebDAV setting
+            req, timeout=10
+        ) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+
+        _xml_parser = ET.XMLParser()  # nosec B314 — entities disabled below
+        try:
+            _xml_parser.parser.DefaultHandler = lambda _d: None
+            _xml_parser.parser.ExternalEntityRefHandler = lambda *_: False
+        except AttributeError:  # pragma: no cover — non-expat parser backend
+            pass
+        root = ET.fromstring(body, parser=_xml_parser)  # nosec B314 — entities disabled
+        ns = {"D": "DAV:"}
+
+        from urllib.parse import urlparse
+
+        request_path = urlparse(url).path.rstrip("/")
+
+        for response in root.findall(".//D:response", ns):
+            href = response.find("D:href", ns)
+            if href is None:
+                continue
+            href_text = (href.text or "").strip()
+            if not href_text:
+                continue
+            try:
+                parsed_href = urlparse(href_text)
+                if href_text.startswith("//") or parsed_href.scheme:
+                    href_path = parsed_href.path
+                else:
+                    href_path = href_text
+            except Exception:  # pylint: disable=broad-except
+                continue
+
+            resource_type = response.find(".//D:resourcetype/D:collection", ns)
+            if resource_type is not None:
+                child = href_path.rstrip("/")
+                if child != request_path:
+                    segment = child.rsplit("/", 1)[-1]
+                    if not segment.startswith("."):
+                        subdirs.append(child + "/")
+                continue
+
+            if not any(href_text.lower().endswith(ext) for ext in video_extensions):
+                continue
+
+            # A matched VIDEO file whose getcontentlength is absent or non-numeric
+            # cannot be sized. Silently dropping it (counting 0) would under-count
+            # the folder and risk a FALSE stub reject of a real release, so flag
+            # the whole scan incomplete -> the caller fails OPEN instead (#282).
+            size_el = response.find(".//D:getcontentlength", ns)
+            if size_el is None or not size_el.text:
+                incomplete = True
+                continue
+            try:
+                total += int(size_el.text.strip())
+            except ValueError:
+                incomplete = True
+    except Exception as error:  # pylint: disable=broad-except
+        # A PROPFIND/parse failure means we cannot trust the total; signal
+        # incomplete so the guard fails OPEN rather than rejecting on a partial
+        # (the poll loop re-runs the guard, so this self-heals next iteration).
+        xbmc.log(
+            "NZB-DAV: folder_video_total_bytes scan failed for '{}': {}".format(
+                folder_path, error
+            ),
+            xbmc.LOGDEBUG,
+        )
+        return _FOLDER_TOTAL_INCOMPLETE
+
+    for subdir in subdirs:
+        sub_total = folder_video_total_bytes(
+            subdir,
+            _settings=settings,
+            _depth=_depth + 1,
+            _visited=_visited,
+            _already_encoded=True,
+        )
+        if sub_total < 0:
+            incomplete = True
+        else:
+            total += sub_total
+    return _FOLDER_TOTAL_INCOMPLETE if incomplete else total
+
+
 def find_video_file(
     folder_path,
     _depth=0,
@@ -536,7 +695,11 @@ def find_video_file(
             ``0`` (the default) disables the floor, keeping the historical
             current-level short-circuit unchanged. The floor never DROPS a
             candidate -- it only defers it -- so a release that is legitimately
-            small is still returned. Skipped for packs by passing ``0``.
+            small is still returned. The resolver now threads this floor for ALL
+            releases (it is pack-AGNOSTIC: ``advertised * fraction`` regardless of
+            title); a pack whose episodes all sit below the floor simply has no
+            above-floor candidate, so ranking falls through to episode identity /
+            size and the correct episode is still returned (#282 redesign).
 
     Returns:
         The WebDAV href path of the largest video file found, typically an
