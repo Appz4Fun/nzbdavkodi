@@ -496,6 +496,213 @@ def get_video_file_size_hint(file_path):
 
 _FOLDER_TOTAL_INCOMPLETE = -1
 
+# Video extensions summed by the folder-total walk. Kept module-level so the
+# per-href video test below stays a one-liner (the genuine size accounting
+# lives in ``_folder_total_video_size``).
+_FOLDER_TOTAL_VIDEO_EXTENSIONS = (".mkv", ".mp4", ".avi", ".m4v", ".ts", ".wmv", ".mov")
+
+
+def _folder_total_enter(folder_path, depth, visited):
+    """Apply the depth cap and cycle guard; return ``(visited, skip)``.
+
+    ``skip`` is ``True`` past the depth cap or for an already-visited folder (a
+    hostile/misconfigured server returning a parent or itself as a child). The
+    returned ``visited`` set is lazily created and has this folder marked.
+    """
+    if depth > 2:
+        return visited, True
+    if visited is None:
+        visited = set()
+    normalized = (folder_path or "").rstrip("/")
+    if normalized in visited:
+        return visited, True
+    visited.add(normalized)
+    return visited, False
+
+
+def _folder_total_resolve_url(settings_getter, settings, folder_path, already_encoded):
+    """Resolve WebDAV settings and the PROPFIND URL for ``folder_path``.
+
+    Returns ``(settings, url)``. Recursive calls pass hrefs the PROPFIND
+    response already URL-encoded, so ``already_encoded`` skips a second
+    ``quote()`` that would turn ``%`` into ``%25`` and 404 the probe.
+    """
+    settings = _read_settings(settings_getter) if settings is None else settings
+    base = settings["webdav_url"] or settings["nzbdav_url"]
+    if already_encoded:
+        encoded_path = folder_path
+    else:
+        encoded_path = quote(folder_path, safe="/")
+    url = "{}/{}".format(base.rstrip("/"), encoded_path.lstrip("/"))
+    if not url.endswith("/"):
+        url += "/"
+    return settings, url
+
+
+def _folder_total_fetch_root(url, username, password):
+    """PROPFIND ``url`` and return the parsed XML root with entities disabled.
+
+    External entities are disabled on the expat backend (DefaultHandler /
+    ExternalEntityRefHandler) so a hostile WebDAV server cannot coerce a local
+    file read via an external entity reference -- the ``nosec`` markers below
+    are a defended scanner false positive, not a suppression of a real risk.
+    Raises on any PROPFIND/parse failure; the caller turns that into the
+    INCOMPLETE (fail-open) outcome.
+    """
+    import xml.etree.ElementTree as ET  # nosec B405 — parsing trusted WebDAV server response
+
+    req = Request(url, method="PROPFIND")
+    req.add_header("Depth", "1")
+    for header, value in _build_auth_headers(username, password).items():
+        req.add_header(header, value)
+
+    # nosemgrep
+    with urlopen(  # nosec B310 — URL from user's configured WebDAV setting
+        req, timeout=10
+    ) as resp:
+        body = resp.read().decode("utf-8", errors="replace")
+
+    _xml_parser = ET.XMLParser()  # nosec B314 — entities disabled below
+    try:
+        _xml_parser.parser.DefaultHandler = lambda _d: None
+        _xml_parser.parser.ExternalEntityRefHandler = lambda *_: False
+    except AttributeError:  # pragma: no cover — non-expat parser backend
+        pass
+    return ET.fromstring(body, parser=_xml_parser)  # nosec B314 — entities disabled
+
+
+def _folder_total_href_path(response, ns):
+    """Extract a ``<D:response>``'s href as ``(href_text, href_path)``.
+
+    Returns ``None`` to skip an entry with no/empty or malformed href. The
+    cross-host/scheme normalization keeps only the path component when the
+    server returns an absolute URL (or a scheme-relative ``//host/...``).
+    """
+    from urllib.parse import urlparse
+
+    href = response.find("D:href", ns)
+    if href is None:
+        return None
+    href_text = (href.text or "").strip()
+    if not href_text:
+        return None
+    try:
+        parsed_href = urlparse(href_text)
+        if href_text.startswith("//") or parsed_href.scheme:
+            href_path = parsed_href.path
+        else:
+            href_path = href_text
+    except Exception as e:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: folder_video_total_bytes skipping malformed href "
+            "'{}': {}".format(href_text, e),
+            xbmc.LOGWARNING,
+        )
+        return None
+    return href_text, href_path
+
+
+def _folder_total_collect_subdir(response, href_path, request_path, subdirs, ns):
+    """Append a real child subdir to ``subdirs`` if this entry is a collection.
+
+    Returns ``True`` when the entry is a collection (so the caller stops
+    classifying it as a video) -- the folder itself and dot-prefixed children
+    are recognised as collections but not enqueued for recursion.
+    """
+    resource_type = response.find(".//D:resourcetype/D:collection", ns)
+    if resource_type is None:
+        return False
+    child = href_path.rstrip("/")
+    if child != request_path:
+        segment = child.rsplit("/", 1)[-1]
+        if not segment.startswith("."):
+            subdirs.append(child + "/")
+    return True
+
+
+def _folder_total_video_size(response, ns):
+    """Return ``(size, incomplete)`` for a video entry's getcontentlength.
+
+    A matched video file whose ``getcontentlength`` is absent, non-numeric, or
+    negative cannot be sized; flagging the scan incomplete (rather than counting
+    0) makes the caller fail OPEN instead of under-counting into a false stub
+    reject of real content (#282 / #355 review).
+    """
+    size_el = response.find(".//D:getcontentlength", ns)
+    if size_el is None or not size_el.text:
+        return 0, True
+    try:
+        size = int(size_el.text.strip())
+    except ValueError:
+        return 0, True
+    if size < 0:
+        return 0, True
+    return size, False
+
+
+def _folder_total_track_max(stats, size):
+    """Record the largest single video file seen in ``stats["max"]``."""
+    if stats is not None and size > stats.get("max", 0):
+        stats["max"] = size
+
+
+def _folder_total_scan_entries(root, url, stats):
+    """Walk the PROPFIND responses once; return ``(total, incomplete, subdirs)``.
+
+    Sums every video file's bytes at this level, collects child subdirs for the
+    caller to recurse into, and flags ``incomplete`` when a video file cannot be
+    sized. Tracks the largest single file via ``_folder_total_track_max``.
+    """
+    from urllib.parse import urlparse
+
+    ns = {"D": "DAV:"}
+    request_path = urlparse(url).path.rstrip("/")
+
+    total = 0
+    incomplete = False
+    subdirs = []
+    for response in root.findall(".//D:response", ns):
+        pair = _folder_total_href_path(response, ns)
+        if pair is None:
+            continue
+        href_text, href_path = pair
+        if _folder_total_collect_subdir(response, href_path, request_path, subdirs, ns):
+            continue
+        lowered = href_text.lower()
+        if not any(lowered.endswith(ext) for ext in _FOLDER_TOTAL_VIDEO_EXTENSIONS):
+            continue
+        size, entry_incomplete = _folder_total_video_size(response, ns)
+        if entry_incomplete:
+            incomplete = True
+            continue
+        total += size
+        _folder_total_track_max(stats, size)
+    return total, incomplete, subdirs
+
+
+def _folder_total_sum_subdirs(subdirs, settings, depth, visited, stats):
+    """Recurse into collected subdirs; return ``(added_total, incomplete)``.
+
+    A subfolder that could not be fully sized (negative result) makes the whole
+    folder incomplete; its bytes are otherwise accumulated into ``added_total``.
+    """
+    added = 0
+    incomplete = False
+    for subdir in subdirs:
+        sub_total = folder_video_total_bytes(
+            subdir,
+            _settings=settings,
+            _depth=depth + 1,
+            _visited=visited,
+            _already_encoded=True,
+            _stats=stats,
+        )
+        if sub_total < 0:
+            incomplete = True
+        else:
+            added += sub_total
+    return added, incomplete
+
 
 def folder_video_total_bytes(
     folder_path,
@@ -540,112 +747,17 @@ def folder_video_total_bytes(
     versus a real sibling (the folder total can clear the floor on a sibling's
     bytes while ``video_path`` is still the job-start stub -- #355 review).
     """
-    import xml.etree.ElementTree as ET  # nosec B405 — parsing trusted WebDAV server response
-
-    if _depth > 2:
+    _visited, skip = _folder_total_enter(folder_path, _depth, _visited)
+    if skip:
         return 0
-    if _visited is None:
-        _visited = set()
-    normalized = (folder_path or "").rstrip("/")
-    if normalized in _visited:
-        return 0
-    _visited.add(normalized)
 
-    settings = _read_settings(settings_getter) if _settings is None else _settings
-    base = settings["webdav_url"] or settings["nzbdav_url"]
-    username = settings["username"]
-    password = settings["password"]
+    settings, url = _folder_total_resolve_url(
+        settings_getter, _settings, folder_path, _already_encoded
+    )
 
-    if _already_encoded:
-        encoded_path = folder_path
-    else:
-        encoded_path = quote(folder_path, safe="/")
-    url = "{}/{}".format(base.rstrip("/"), encoded_path.lstrip("/"))
-    if not url.endswith("/"):
-        url += "/"
-
-    req = Request(url, method="PROPFIND")
-    req.add_header("Depth", "1")
-    for header, value in _build_auth_headers(username, password).items():
-        req.add_header(header, value)
-
-    video_extensions = (".mkv", ".mp4", ".avi", ".m4v", ".ts", ".wmv", ".mov")
-    total = 0
-    incomplete = False
-    subdirs = []
     try:
-        # nosemgrep
-        with urlopen(  # nosec B310 — URL from user's configured WebDAV setting
-            req, timeout=10
-        ) as resp:
-            body = resp.read().decode("utf-8", errors="replace")
-
-        _xml_parser = ET.XMLParser()  # nosec B314 — entities disabled below
-        try:
-            _xml_parser.parser.DefaultHandler = lambda _d: None
-            _xml_parser.parser.ExternalEntityRefHandler = lambda *_: False
-        except AttributeError:  # pragma: no cover — non-expat parser backend
-            pass
-        root = ET.fromstring(body, parser=_xml_parser)  # nosec B314 — entities disabled
-        ns = {"D": "DAV:"}
-
-        from urllib.parse import urlparse
-
-        request_path = urlparse(url).path.rstrip("/")
-
-        for response in root.findall(".//D:response", ns):
-            href = response.find("D:href", ns)
-            if href is None:
-                continue
-            href_text = (href.text or "").strip()
-            if not href_text:
-                continue
-            try:
-                parsed_href = urlparse(href_text)
-                if href_text.startswith("//") or parsed_href.scheme:
-                    href_path = parsed_href.path
-                else:
-                    href_path = href_text
-            except Exception as e:  # pylint: disable=broad-except
-                xbmc.log(
-                    "NZB-DAV: folder_video_total_bytes skipping malformed href "
-                    "'{}': {}".format(href_text, e),
-                    xbmc.LOGWARNING,
-                )
-                continue
-
-            resource_type = response.find(".//D:resourcetype/D:collection", ns)
-            if resource_type is not None:
-                child = href_path.rstrip("/")
-                if child != request_path:
-                    segment = child.rsplit("/", 1)[-1]
-                    if not segment.startswith("."):
-                        subdirs.append(child + "/")
-                continue
-
-            if not any(href_text.lower().endswith(ext) for ext in video_extensions):
-                continue
-
-            # A matched VIDEO file whose getcontentlength is absent, non-numeric,
-            # or negative cannot be sized. Silently dropping it (counting 0, or
-            # SUBTRACTING a negative) would under-count the folder and risk a
-            # FALSE stub reject of a real release, so flag the whole scan
-            # incomplete -> the caller fails OPEN instead (#282 / #355 review).
-            size_el = response.find(".//D:getcontentlength", ns)
-            if size_el is None or not size_el.text:
-                incomplete = True
-                continue
-            try:
-                size = int(size_el.text.strip())
-            except ValueError:
-                incomplete = True
-                continue
-            if size < 0:
-                incomplete = True
-                continue
-            total += size
-            if _stats is not None and size > _stats.get("max", 0):
-                _stats["max"] = size
+        root = _folder_total_fetch_root(url, settings["username"], settings["password"])
+        total, incomplete, subdirs = _folder_total_scan_entries(root, url, _stats)
     except Exception as error:  # pylint: disable=broad-except
         # A PROPFIND/parse failure means we cannot trust the total; signal
         # incomplete so the guard fails OPEN rather than rejecting on a partial
@@ -658,19 +770,12 @@ def folder_video_total_bytes(
         )
         return _FOLDER_TOTAL_INCOMPLETE
 
-    for subdir in subdirs:
-        sub_total = folder_video_total_bytes(
-            subdir,
-            _settings=settings,
-            _depth=_depth + 1,
-            _visited=_visited,
-            _already_encoded=True,
-            _stats=_stats,
-        )
-        if sub_total < 0:
-            incomplete = True
-        else:
-            total += sub_total
+    added, sub_incomplete = _folder_total_sum_subdirs(
+        subdirs, settings, _depth, _visited, _stats
+    )
+    total += added
+    if sub_incomplete:
+        incomplete = True
     return _FOLDER_TOTAL_INCOMPLETE if incomplete else total
 
 
