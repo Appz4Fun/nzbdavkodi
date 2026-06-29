@@ -478,14 +478,18 @@ def _common_parsed_fields(parsed):
     }
 
 
+def _mapped_str_list(parsed, key, mapping):
+    """Map a PTT field's string items through a lookup table."""
+    raw = _as_list(parsed.get(key, []) or [])
+    return [mapping.get(item, item) for item in raw if isinstance(item, str)]
+
+
 def _normalize_fallback_meta(parsed):
     """Normalize a regex-fallback parsed dict (string-only filtering)."""
     raw_res = parsed.get("resolution", "") or ""
     resolution = _RESOLUTION_MAP.get(raw_res, raw_res)
-    raw_hdr = _as_list(parsed.get("hdr", []) or [])
-    hdr_list = [_HDR_MAP.get(h, h) for h in raw_hdr if isinstance(h, str)]
-    raw_audio = _as_list(parsed.get("audio", []) or [])
-    audio_list = [_AUDIO_MAP.get(a, a) for a in raw_audio if isinstance(a, str)]
+    hdr_list = _mapped_str_list(parsed, "hdr", _HDR_MAP)
+    audio_list = _mapped_str_list(parsed, "audio", _AUDIO_MAP)
     codec = _CODEC_MAP.get(parsed.get("codec", ""), parsed.get("codec", ""))
     raw_langs = _as_list(parsed.get("languages", []) or [])
 
@@ -662,6 +666,15 @@ def release_is_pack(title):
     return _ptt_season_episode_is_pack(title)
 
 
+def _as_count_list(value):
+    """Coerce a PTT season/episode field to a list (empty when falsy)."""
+    if not value:
+        return []
+    if not isinstance(value, list):
+        return [value]
+    return value
+
+
 def _ptt_season_episode_is_pack(title):
     """True when PTT's season/episode counts denote a multi-item pack."""
     try:
@@ -670,15 +683,9 @@ def _ptt_season_episode_is_pack(title):
         parsed = parse_title(title)
     except Exception:  # pylint: disable=broad-except
         return False
-    seasons = parsed.get("seasons") or []
-    episodes = parsed.get("episodes") or []
-    if not isinstance(seasons, list):
-        seasons = [seasons]
-    if not isinstance(episodes, list):
-        episodes = [episodes]
-    if len(episodes) > 1:
-        return True
-    if len(seasons) > 1:
+    seasons = _as_count_list(parsed.get("seasons"))
+    episodes = _as_count_list(parsed.get("episodes"))
+    if len(episodes) > 1 or len(seasons) > 1:
         return True
     # A season tag with no single episode is a whole-season pack.
     return bool(seasons) and not episodes
@@ -788,20 +795,20 @@ def _size_filter_passes(result, settings):
     return True
 
 
+def _is_str_list(value):
+    """True when value is a list whose every item is a str."""
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
 def _has_filter_metadata_shape(meta):
     """Return True when cached metadata has keys filter_results indexes."""
     if not isinstance(meta, dict) or not _FILTER_META_KEYS <= set(meta):
         return False
-    for key in ("resolution", "codec", "group"):
-        if not isinstance(meta.get(key), str):
-            return False
-    for key in ("hdr", "audio", "languages"):
-        value = meta.get(key)
-        if not isinstance(value, list):
-            return False
-        if any(not isinstance(item, str) for item in value):
-            return False
-    return True
+    scalars_ok = all(
+        isinstance(meta.get(key), str) for key in ("resolution", "codec", "group")
+    )
+    lists_ok = all(_is_str_list(meta.get(key)) for key in ("hdr", "audio", "languages"))
+    return scalars_ok and lists_ok
 
 
 def filter_results(results, settings_getter=None):
@@ -902,6 +909,84 @@ def _size_sort_key(result):
         return 0
 
 
+# Resolution rank: 4K best (0), then 1080p, 720p, 480p, unknown worst
+_RES_RANK = {"2160p": 0, "1080p": 1, "720p": 2, "480p": 3}
+
+# HDR rank: DV best (0), HDR10+ (1), HDR10 (2), HLG (3), none (4)
+_HDR_RANK = {
+    "Dolby Vision": 0,
+    "HDR10+": 1,
+    "HDR10": 2,
+    "HLG": 3,
+}
+
+# Audio rank: TrueHD+Atmos best, then Atmos DD+, TrueHD, DTS:X,
+# DTS-HD MA, DTS, DD+, DD, AAC, unknown
+_AUDIO_RANK = {
+    "TrueHD": 1,
+    "Atmos": 0,
+    "DTS:X": 3,
+    "DTS-HD MA": 4,
+    "DTS": 5,
+    "DD+": 6,
+    "DD": 7,
+    "AAC": 8,
+}
+
+
+def _hdr_rank(hdr_list):
+    """Best (lowest) HDR tier rank present, or 5 when none."""
+    if not hdr_list:
+        return 5  # no HDR = worst
+    return min(_HDR_RANK.get(h, 4) for h in hdr_list)
+
+
+def _audio_rank(audio_list):
+    """Best audio tier rank; Atmos + TrueHD combo is -1 (best)."""
+    if not audio_list:
+        return 10
+    ranks = [_AUDIO_RANK.get(a, 9) for a in audio_list]
+    # Atmos + TrueHD combo = rank 0 (best)
+    if 0 in ranks and 1 in ranks:
+        return -1
+    return min(ranks)
+
+
+def _make_relevance_key(preferred_lower):
+    """Build a sort key: resolution > HDR > preferred group > audio > size."""
+
+    def _relevance_key(r):
+        meta = r.get("_meta", {})
+        res_rank = _RES_RANK.get(meta.get("resolution", ""), 4)
+        is_preferred = 0 if meta.get("group", "").lower() in preferred_lower else 1
+        size = -_size_sort_key(r)  # larger = better, negate for ascending sort
+        return (
+            res_rank,
+            _hdr_rank(meta.get("hdr", [])),
+            is_preferred,
+            _audio_rank(meta.get("audio", [])),
+            size,
+        )
+
+    return _relevance_key
+
+
+def _neg_size_sort_key(result):
+    """Negated size key: largest first, preserving stable tie order."""
+    return -_size_sort_key(result)
+
+
+# Non-relevance sort orders: (key function, reverse). Order 1 negates the
+# key rather than using reverse=True so equal-size ties keep their original
+# relative order (reverse=True would flip ties under Python's stable sort).
+_SORT_SPECS = {
+    1: (_neg_size_sort_key, False),
+    2: (_size_sort_key, False),
+    3: (_pubdate_sort_key, True),
+    4: (_pubdate_sort_key, False),
+}
+
+
 def _sort_results(results, settings):
     """Sort results by configured sort order, with preferred groups boosted.
 
@@ -912,107 +997,27 @@ def _sort_results(results, settings):
         3 = Age (newest first) -- pubdate descending
         4 = Age (oldest first) -- pubdate ascending
     """
+    spec = _SORT_SPECS.get(settings["sort_order"])
+    if spec is not None:
+        key, reverse = spec
+        return sorted(results, key=key, reverse=reverse)
     preferred_lower = [g.lower() for g in settings["release_group"]]
-    sort_order = settings["sort_order"]
+    return sorted(results, key=_make_relevance_key(preferred_lower))
 
-    # Resolution rank: 4K best (0), then 1080p, 720p, 480p, unknown worst
-    _RES_RANK = {"2160p": 0, "1080p": 1, "720p": 2, "480p": 3}
 
-    # HDR rank: DV best (0), HDR10+ (1), HDR10 (2), HLG (3), none (4)
-    _HDR_RANK = {
-        "Dolby Vision": 0,
-        "HDR10+": 1,
-        "HDR10": 2,
-        "HLG": 3,
-    }
-
-    # Audio rank: TrueHD+Atmos best, then Atmos DD+, TrueHD, DTS:X,
-    # DTS-HD MA, DTS, DD+, DD, AAC, unknown
-    _AUDIO_RANK = {
-        "TrueHD": 1,
-        "Atmos": 0,
-        "DTS:X": 3,
-        "DTS-HD MA": 4,
-        "DTS": 5,
-        "DD+": 6,
-        "DD": 7,
-        "AAC": 8,
-    }
-
-    def _relevance_key(r):
-        meta = r.get("_meta", {})
-
-        # 1. Resolution (4K first)
-        res_rank = _RES_RANK.get(meta.get("resolution", ""), 4)
-
-        # 2. Best HDR tier present
-        hdr_list = meta.get("hdr", [])
-        if hdr_list:
-            hdr_rank = min(_HDR_RANK.get(h, 4) for h in hdr_list)
-        else:
-            hdr_rank = 5  # no HDR = worst
-
-        # 3. Preferred release group
-        is_preferred = 0 if meta.get("group", "").lower() in preferred_lower else 1
-
-        # 4. Best audio tier (handle combos like Atmos + TrueHD)
-        audio_list = meta.get("audio", [])
-        if audio_list:
-            ranks = [_AUDIO_RANK.get(a, 9) for a in audio_list]
-            # Atmos + TrueHD combo = rank 0 (best)
-            if 0 in ranks and 1 in ranks:
-                audio_rank = -1
-            else:
-                audio_rank = min(ranks)
-        else:
-            audio_rank = 10
-
-        # 5. Size (larger = better, negate for ascending sort)
-        size = -_size_sort_key(r)
-
-        return (res_rank, hdr_rank, is_preferred, audio_rank, size)
-
-    if sort_order == 1:
-        return sorted(
-            results,
-            key=lambda r: -_size_sort_key(r),
-        )
-    elif sort_order == 2:
-        return sorted(
-            results,
-            key=_size_sort_key,
-        )
-    elif sort_order == 3:
-        return sorted(
-            results,
-            key=_pubdate_sort_key,
-            reverse=True,
-        )
-    elif sort_order == 4:
-        return sorted(
-            results,
-            key=_pubdate_sort_key,
-        )
-    else:
-        # Relevance: resolution > HDR > preferred group > audio > size
-        return sorted(results, key=_relevance_key)
+_FALLBACK_AUDIO_TAGS = (
+    (_RE_ATMOS, "Atmos"),
+    (_RE_TRUEHD, "TrueHD"),
+    (_RE_DTSHD, "DTS-HD MA"),
+    (_RE_DDPLUS, "DD+"),
+    (_RE_DD, "DD"),
+    (_RE_AAC, "AAC"),
+)
 
 
 def _fallback_audio(t):
     """Detect audio tags via regex; mirrors PTT's audio list ordering."""
-    audio = []
-    if _RE_ATMOS.search(t):
-        audio.append("Atmos")
-    if _RE_TRUEHD.search(t):
-        audio.append("TrueHD")
-    if _RE_DTSHD.search(t):
-        audio.append("DTS-HD MA")
-    if _RE_DDPLUS.search(t):
-        audio.append("DD+")
-    if _RE_DD.search(t):
-        audio.append("DD")
-    if _RE_AAC.search(t):
-        audio.append("AAC")
+    audio = [label for regex, label in _FALLBACK_AUDIO_TAGS if regex.search(t)]
     if _RE_DTS.search(t) and not audio:
         audio.append("DTS")
     return audio

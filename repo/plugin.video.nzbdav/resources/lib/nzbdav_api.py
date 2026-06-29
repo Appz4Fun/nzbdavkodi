@@ -131,10 +131,9 @@ def _is_timeout_error(exc):
     """
     if isinstance(exc, socket.timeout):
         return True
-    reason = getattr(exc, "reason", None)
-    if reason is not None and isinstance(reason, socket.timeout):
-        return True
-    return False
+    # ``isinstance(None, socket.timeout)`` is False, so a missing/``None``
+    # ``reason`` falls through without a separate guard.
+    return isinstance(getattr(exc, "reason", None), socket.timeout)
 
 
 def _dump_submitted_nzb(nzb_url, nzb_name):
@@ -243,26 +242,7 @@ def submit_nzb(nzb_url, nzb_name="", settings_getter=None, submit_timeout=None):
         response_text = _http_get(url, timeout=timeout)
         response = _coerce_response_dict(json.loads(response_text))
     except HTTPError as e:
-        # nzbdav returned a structured HTTP error (e.g. 500 on duplicate
-        # submit, 502/503/504 from upstream issues). Capture the body so
-        # the caller can either surface it or classify retries based on
-        # status code. Redact apikey-style tokens: nzbdav's error pages
-        # sometimes echo the failing URL (which carried the indexer's
-        # apikey) back to the client, which then goes into a Kodi dialog
-        # visible to anyone reading the screen / logs.
-        from resources.lib.http_util import redact_text
-
-        body = ""
-        try:
-            body = e.read().decode("utf-8", errors="replace")
-        except Exception:  # pylint: disable=broad-except
-            pass
-        body = redact_text(_sanitize_server_message(body))[:500]
-        xbmc.log(
-            "NZB-DAV: Submit NZB got HTTP {} from nzbdav: {}".format(e.code, body),
-            xbmc.LOGERROR,
-        )
-        return None, {"status": e.code, "message": body}
+        return _submit_http_error_result(e)
     except Exception as e:  # pylint: disable=broad-except
         # ``Exception`` intentionally — the prior ``(socket.timeout, URLError,
         # json.JSONDecodeError, Exception)`` tuple made the three named
@@ -271,27 +251,72 @@ def submit_nzb(nzb_url, nzb_name="", settings_getter=None, submit_timeout=None):
         # the full family (including things we haven't anticipated) keeps
         # the resolver from crashing while still letting caller-level
         # queue/history probes retry.
-        if _is_timeout_error(e):
-            xbmc.log(
-                "NZB-DAV: Submit NZB client-side timeout after {}s — nzbdav "
-                "may have accepted the submit anyway; caller will check "
-                "queue/history for '{}' before retrying".format(timeout, nzb_name),
-                xbmc.LOGWARNING,
-            )
-            return None, {
-                "status": "timeout",
-                "message": "Timed out after {}s".format(timeout),
-            }
-        # Redact: HTTPError / URLError str() can echo the failing URL
-        # (which embeds the indexer apikey) into the log. Same defense as
-        # the prowlarr / hydra fetch paths. TODO.md §H.2-H2f / §H.3.
-        from resources.lib.http_util import redact_text
+        return _submit_request_error_result(e, timeout, nzb_name)
+    return _submit_parse_result(response)
 
+
+def _submit_http_error_result(e):
+    """Build submit_nzb's (None, error) result from an HTTPError.
+
+    nzbdav returned a structured HTTP error (e.g. 500 on duplicate submit,
+    502/503/504 from upstream issues). Capture the body so the caller can
+    either surface it or classify retries based on status code. Redact
+    apikey-style tokens: nzbdav's error pages sometimes echo the failing URL
+    (which carried the indexer's apikey) back to the client, which then goes
+    into a Kodi dialog visible to anyone reading the screen / logs.
+    """
+    from resources.lib.http_util import redact_text
+
+    body = ""
+    try:
+        body = e.read().decode("utf-8", errors="replace")
+    except Exception:  # pylint: disable=broad-except
+        pass
+    body = redact_text(_sanitize_server_message(body))[:500]
+    xbmc.log(
+        "NZB-DAV: Submit NZB got HTTP {} from nzbdav: {}".format(e.code, body),
+        xbmc.LOGERROR,
+    )
+    return None, {"status": e.code, "message": body}
+
+
+def _submit_request_error_result(e, timeout, nzb_name):
+    """Build submit_nzb's (None, error) result from a generic request error.
+
+    Distinguishes a client-side timeout (where nzbdav may have accepted the
+    submit anyway, so the caller should probe queue/history before retrying)
+    from any other failure (caller may retry).
+    """
+    if _is_timeout_error(e):
         xbmc.log(
-            "NZB-DAV: Submit NZB request failed: {}".format(redact_text(str(e))),
-            xbmc.LOGERROR,
+            "NZB-DAV: Submit NZB client-side timeout after {}s — nzbdav "
+            "may have accepted the submit anyway; caller will check "
+            "queue/history for '{}' before retrying".format(timeout, nzb_name),
+            xbmc.LOGWARNING,
         )
-        return None, None
+        return None, {
+            "status": "timeout",
+            "message": "Timed out after {}s".format(timeout),
+        }
+    # Redact: HTTPError / URLError str() can echo the failing URL
+    # (which embeds the indexer apikey) into the log. Same defense as
+    # the prowlarr / hydra fetch paths. TODO.md §H.2-H2f / §H.3.
+    from resources.lib.http_util import redact_text
+
+    xbmc.log(
+        "NZB-DAV: Submit NZB request failed: {}".format(redact_text(str(e))),
+        xbmc.LOGERROR,
+    )
+    return None, None
+
+
+def _submit_parse_result(response):
+    """Build submit_nzb's result from a successfully-parsed response dict.
+
+    Returns (nzo_id, None) on success, or (None, {"status": "rejected", ...})
+    when nzbdav saw the request but rejected the NZB (a 200 with status=false,
+    e.g. empty / truncated / password-only NZB), which is NOT retryable.
+    """
     nzo_ids = response.get("nzo_ids")
     if response.get("status") and isinstance(nzo_ids, list) and nzo_ids and nzo_ids[0]:
         nzo_id = nzo_ids[0]
@@ -300,13 +325,9 @@ def submit_nzb(nzb_url, nzb_name="", settings_getter=None, submit_timeout=None):
             xbmc.LOGINFO,
         )
         return nzo_id, None
-    # Distinguish "nzbdav saw the request but rejected the NZB" from
-    # "request never reached nzbdav". The former returns a 200 with
-    # status=false (e.g. empty / truncated / password-only NZB) and is
-    # NOT retryable — the caller should surface a specific error
-    # immediately. The latter (network failure, timeout) is already
-    # handled in the except branches above.
-    error_msg = response.get("error") if isinstance(response, dict) else None
+    # ``response`` is always a dict here (``_coerce_response_dict`` normalized
+    # non-dict JSON to ``{}``), so ``.get`` is safe.
+    error_msg = response.get("error")
     # Redact: nzbdav can echo back the failing indexer URL (with apikey)
     # inside its rejection payload (e.g. "Failed to fetch <url>"), which
     # would otherwise land in the Kodi log.
@@ -601,6 +622,18 @@ def _history_search_term(name):
     return name.split(".")[0] if "." in name else name
 
 
+def _unique_search_terms(names):
+    """Return non-empty SABnzbd search terms for names, in first-seen order."""
+    terms = []
+    seen = set()
+    for name in names:
+        term = _history_search_term(name)
+        if term and term not in seen:
+            terms.append(term)
+            seen.add(term)
+    return terms
+
+
 def _completed_job_from_slot(slot):
     """Return the public completed-job shape from a SABnzbd history slot."""
     return {
@@ -690,13 +723,7 @@ def find_completed_by_names(names, settings_getter=None):
 
     target_names = set(unique_names)
     found = {}
-    search_terms = []
-    seen_terms = set()
-    for name in unique_names:
-        search_term = _history_search_term(name)
-        if search_term and search_term not in seen_terms:
-            search_terms.append(search_term)
-            seen_terms.add(search_term)
+    search_terms = _unique_search_terms(unique_names)
 
     base_params = {
         "mode": "history",
@@ -790,9 +817,25 @@ def find_queued_by_names(names, settings_getter=None):
     target_names = set(unique_names)
     found = {}
 
-    def _record(slot, name, key):
-        if name in found:
-            return
+    for key in ("filename", "nzo_id_name"):
+        _record_queued_matches(slots, key, target_names, found)
+        if len(found) == len(unique_names):
+            return found
+
+    # Some nzbdav builds report the user-supplied nzbname under "filename"
+    # only after the fetch/parse phase finishes, so a freshly-submitted job
+    # may appear under a different slot key during the first few seconds.
+    # Fall back to a broader scan across any string-valued slot field.
+    _record_queued_matches(slots, "name", target_names, found)
+    return found
+
+
+def _record_queued_matches(slots, key, target_names, found):
+    """Record queue slots whose ``key`` field is a target name into found."""
+    for slot in slots:
+        name = slot.get(key)
+        if name not in target_names or name in found:
+            continue
         xbmc.log(
             "NZB-DAV: Found '{}' in queue via {} (nzo_id={})".format(
                 name, key, slot.get("nzo_id")
@@ -804,24 +847,6 @@ def find_queued_by_names(names, settings_getter=None):
             "name": name,
             "status": slot.get("status", ""),
         }
-
-    for key in ("filename", "nzo_id_name"):
-        for slot in slots:
-            value = slot.get(key)
-            if value in target_names:
-                _record(slot, value, key)
-        if len(found) == len(unique_names):
-            return found
-
-    # Some nzbdav builds report the user-supplied nzbname under "filename"
-    # only after the fetch/parse phase finishes, so a freshly-submitted job
-    # may appear under a different slot key during the first few seconds.
-    # Fall back to a broader scan across any string-valued slot field.
-    for slot in slots:
-        value = slot.get("name")
-        if value in target_names:
-            _record(slot, value, "name")
-    return found
 
 
 class _CompletedJobs(dict):

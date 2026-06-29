@@ -211,11 +211,6 @@ def _setting_int(addon, key, default=0):
         return int(default)
 
 
-def _valid_stream_url(url):
-    """Return True for HTTP(S) stream URLs that are safe to probe."""
-    return _validated_probe_url(url) is not None
-
-
 def _split_http_url(url):
     """Parse a URL and return parts only for simple HTTP(S) URLs.
 
@@ -366,11 +361,6 @@ def _configured_stream_bases():
         if parts:
             bases.append(parts)
     return bases
-
-
-def configured_stream_bases():
-    """Return configured stream bases for callers doing repeated probes."""
-    return _configured_stream_bases()
 
 
 def configured_stream_probe_bases():
@@ -929,19 +919,6 @@ def _release_size_within(primary, candidate, fraction):
     return abs(primary_size - candidate_size) <= primary_size * fraction
 
 
-def _quality_key(result):
-    """Return the conservative duplicate-grouping quality key for a result."""
-    meta = _result_meta(result)
-    return (
-        _normalize_title(result.get("title", "") if isinstance(result, dict) else ""),
-        str(meta.get("resolution", "") or "").strip().lower(),
-        str(meta.get("quality", "") or "").strip().lower(),
-        str(meta.get("codec", "") or "").strip().lower(),
-        str(meta.get("group", "") or "").strip().lower(),
-        str(meta.get("container", "") or "").strip().lower(),
-    )
-
-
 def _result_meta(result):
     """Return parsed title metadata, deriving it when the caller has raw results."""
     if not isinstance(result, dict):
@@ -976,11 +953,6 @@ def _meta_value_from_meta(meta, key):
     return ""
 
 
-def _meta_values(result, key):
-    """Return normalized metadata list values from a result."""
-    return _meta_values_from_meta(_result_meta(result), key)
-
-
 def _meta_values_from_meta(meta, key):
     """Return normalized metadata list values from an existing metadata dict."""
     if not isinstance(meta, dict):
@@ -991,11 +963,6 @@ def _meta_values_from_meta(meta, key):
     if not isinstance(value, list):
         return []
     return [str(item).strip().lower() for item in value if str(item).strip()]
-
-
-def _meta_bool(result, key):
-    """Return a normalized boolean metadata flag from a result."""
-    return _meta_bool_from_meta(_result_meta(result), key)
 
 
 def _meta_bool_from_meta(meta, key):
@@ -1219,23 +1186,6 @@ def _is_title_related_peer(result, selected, selected_link, selected_tokens):
     if not result_link or result_link == selected_link:
         return False
     return _title_token_sets_look_related(selected_tokens, _title_tokens(result))
-
-
-def has_title_related_fallback_peer(selected, results):
-    """Return whether any distinct result can pass the title fallback gate."""
-    if not isinstance(selected, dict):
-        return False
-    selected_link = selected.get("link", "")
-    selected_tokens = _title_tokens(selected)
-    return any(
-        _is_title_related_peer(result, selected, selected_link, selected_tokens)
-        for result in results or []
-    )
-
-
-def has_prefetchable_fallback_peer(selected, results):
-    """Return whether any distinct result can pass the fallback prefetch gate."""
-    return first_prefetchable_fallback_peer(selected, results) is not None
 
 
 def _multi_result_pool_has_no_distinct_peer(selected, results):

@@ -194,19 +194,24 @@ def _title_hint_match_score(file_path, hint_tokens, hint_episode_tags):
     name = unquote(file_path.rsplit("/", 1)[-1]) if file_path else ""
     if not name:
         return (0, 0)
-    episode_score = 0
-    if hint_episode_tags:
-        parent_path = (
-            file_path.rsplit("/", 1)[0] if file_path and "/" in file_path else ""
-        )
-        file_tags = _resolve_file_episode_tags(name, parent_path)
-        if file_tags:
-            # Strong match (same episode present) vs. a named different episode
-            # (never prefer it over a true match, though token overlap may still
-            # rank it among non-episode candidates).
-            episode_score = 1000 if hint_episode_tags & file_tags else -1000
+    episode_score = _episode_match_score(file_path, name, hint_episode_tags)
     token_score = len(hint_tokens & _hint_tokens(name)) if hint_tokens else 0
     return (episode_score, token_score)
+
+
+def _episode_match_score(file_path, name, hint_episode_tags):
+    """Return +1000 for the requested episode, -1000 for a named other, else 0.
+
+    A named different episode is never preferred over a true match, though token
+    overlap may still rank it among non-episode candidates.
+    """
+    if not hint_episode_tags:
+        return 0
+    parent_path = file_path.rsplit("/", 1)[0] if file_path and "/" in file_path else ""
+    file_tags = _resolve_file_episode_tags(name, parent_path)
+    if not file_tags:
+        return 0
+    return 1000 if hint_episode_tags & file_tags else -1000
 
 
 def _resolve_file_episode_tags(name, parent_path):
@@ -428,49 +433,46 @@ def _find_video_file_in_subdirs(
     result_queue = Queue()
     next_index = [0]
     index_lock = threading.Lock()
+    scan_hints = (hint_tokens, hint_episode_tags, min_video_size)
 
-    def _scan_worker():
-        while True:
-            with index_lock:
-                if next_index[0] >= len(pending):
-                    return
-                index = next_index[0]
-                subdir = pending[index]
-                next_index[0] += 1
-            xbmc.log(
-                "NZB-DAV: No video at depth {}, checking subfolder: {}".format(
-                    depth, subdir
-                ),
-                xbmc.LOGDEBUG,
-            )
-            try:
-                result = find_video_file(
-                    subdir,
-                    depth + 1,
-                    visited,
-                    True,
-                    settings,
-                    title_hint_tokens=hint_tokens,
-                    title_hint_episode_tags=hint_episode_tags,
-                    min_video_size=min_video_size,
-                )
-            except Exception as e:  # pylint: disable=broad-except
-                xbmc.log(
-                    "NZB-DAV: Error scanning WebDAV subfolder in parallel: "
-                    "{} ({})".format(e, type(e).__name__),
-                    xbmc.LOGWARNING,
-                )
-                result = None
-            result_queue.put((index, result))
-
+    worker_args = (
+        pending,
+        next_index,
+        index_lock,
+        result_queue,
+        depth,
+        visited,
+        settings,
+        scan_hints,
+    )
     for _index in range(workers):
-        thread = threading.Thread(target=_scan_worker, daemon=True)
+        thread = threading.Thread(
+            target=_scan_subdir_worker, args=worker_args, daemon=True
+        )
         thread.start()
 
+    have_hint = bool(hint_tokens or hint_episode_tags)
+    return _best_sibling_from_queue(
+        result_queue,
+        len(pending),
+        have_hint,
+        hint_tokens,
+        hint_episode_tags,
+        min_video_size,
+    )
+
+
+def _best_sibling_from_queue(
+    result_queue, expected, have_hint, hint_tokens, hint_episode_tags, min_video_size
+):
+    """Drain ``expected`` worker results and return the highest-ranked video path.
+
+    Ties break toward the larger then earlier-listed sibling via
+    :func:`_sibling_rank_key` (negative index), so collection order is stable.
+    """
     best_path = None
     best_key = None
-    have_hint = bool(hint_tokens or hint_episode_tags)
-    for _ in range(len(pending)):
+    for _ in range(expected):
         index, result = result_queue.get()
         if not result:
             continue
@@ -486,6 +488,50 @@ def _find_video_file_in_subdirs(
             best_path = result
             best_key = key
     return best_path
+
+
+def _scan_subdir_worker(
+    pending, next_index, index_lock, result_queue, depth, visited, settings, scan_hints
+):
+    """Worker loop: pull the next pending subdir, scan it, queue ``(index, result)``.
+
+    ``scan_hints`` is the ``(hint_tokens, hint_episode_tags, min_video_size)``
+    tuple shared by every worker. The index counter is guarded by ``index_lock``
+    so each subdir is scanned exactly once across the worker pool.
+    """
+    hint_tokens, hint_episode_tags, min_video_size = scan_hints
+    while True:
+        with index_lock:
+            if next_index[0] >= len(pending):
+                return
+            index = next_index[0]
+            subdir = pending[index]
+            next_index[0] += 1
+        xbmc.log(
+            "NZB-DAV: No video at depth {}, checking subfolder: {}".format(
+                depth, subdir
+            ),
+            xbmc.LOGDEBUG,
+        )
+        try:
+            result = find_video_file(
+                subdir,
+                depth + 1,
+                visited,
+                True,
+                settings,
+                title_hint_tokens=hint_tokens,
+                title_hint_episode_tags=hint_episode_tags,
+                min_video_size=min_video_size,
+            )
+        except Exception as e:  # pylint: disable=broad-except
+            xbmc.log(
+                "NZB-DAV: Error scanning WebDAV subfolder in parallel: "
+                "{} ({})".format(e, type(e).__name__),
+                xbmc.LOGWARNING,
+            )
+            result = None
+        result_queue.put((index, result))
 
 
 def _sibling_rank_key(
@@ -909,22 +955,14 @@ def _resolve_best_or_recurse(
         min_video_size,
     )
     if best_file and not defer_to_subdirs:
-        _remember_video_file_size_hint(best_file, best_size)
-        xbmc.log(
+        return _accept_current_level(
+            best_file,
+            best_size,
             "NZB-DAV: Found video file: {} ({} bytes)".format(best_file, best_size),
-            xbmc.LOGINFO,
         )
-        return best_file
 
     if best_file:
-        xbmc.log(
-            "NZB-DAV: Current-level video '{}' is {} for the requested "
-            "title; checking sibling subfolders first".format(
-                best_file,
-                "an undersized stub" if best_is_stub else "a wrong-episode match",
-            ),
-            xbmc.LOGDEBUG,
-        )
+        _log_defer_reason(best_file, best_is_stub)
 
     result = _recurse_and_adopt_sibling(
         subdirs,
@@ -933,10 +971,7 @@ def _resolve_best_or_recurse(
         settings,
         best_file,
         best_file_key,
-        have_hint,
-        hint_tokens,
-        hint_episode_tags,
-        min_video_size,
+        (have_hint, hint_tokens, hint_episode_tags, min_video_size),
     )
     if result:
         return result
@@ -944,34 +979,44 @@ def _resolve_best_or_recurse(
     # Recursion found nothing better; fall back to the wrong-episode
     # current-level file rather than returning nothing at all.
     if best_file:
-        _remember_video_file_size_hint(best_file, best_size)
-        xbmc.log(
+        return _accept_current_level(
+            best_file,
+            best_size,
             "NZB-DAV: No matching episode in sibling subfolders; falling "
             "back to current-level video: {} ({} bytes)".format(best_file, best_size),
-            xbmc.LOGINFO,
         )
-        return best_file
 
     return None
 
 
+def _log_defer_reason(best_file, best_is_stub):
+    """Log why the current-level best is being deferred for a sibling scan."""
+    reason = "an undersized stub" if best_is_stub else "a wrong-episode match"
+    xbmc.log(
+        "NZB-DAV: Current-level video '{}' is {} for the requested "
+        "title; checking sibling subfolders first".format(best_file, reason),
+        xbmc.LOGDEBUG,
+    )
+
+
+def _accept_current_level(best_file, best_size, message):
+    """Remember the size hint, log ``message`` at INFO, and return ``best_file``."""
+    _remember_video_file_size_hint(best_file, best_size)
+    xbmc.log(message, xbmc.LOGINFO)
+    return best_file
+
+
 def _recurse_and_adopt_sibling(
-    subdirs,
-    _depth,
-    _visited,
-    settings,
-    best_file,
-    best_file_key,
-    have_hint,
-    hint_tokens,
-    hint_episode_tags,
-    min_video_size,
+    subdirs, _depth, _visited, settings, best_file, best_file_key, hint_ctx
 ):
     """Recurse into subdirs and return a sibling only if it beats the deferred.
 
-    Subdirs came from PROPFIND hrefs and are already URL-encoded, so recursive
-    calls skip top-level quote() to avoid `%20` -> `%2520`.
+    ``hint_ctx`` is the ``(have_hint, hint_tokens, hint_episode_tags,
+    min_video_size)`` tuple. Subdirs came from PROPFIND hrefs and are already
+    URL-encoded, so recursive calls skip top-level quote() to avoid
+    `%20` -> `%2520`.
     """
+    have_hint, hint_tokens, hint_episode_tags, min_video_size = hint_ctx
     result = _find_video_file_in_subdirs(
         subdirs,
         _depth,
@@ -1007,6 +1052,25 @@ def _describe_webdav_error(e):
     elif "Connection" in error_detail or "urlopen" in str(type(e).__name__):
         error_detail += " — Check WebDAV server is reachable at configured URL"
     return error_detail
+
+
+def _mark_visited(folder_path, visited):
+    """Record ``folder_path`` in the visited set, or return None if already seen.
+
+    Catches a hostile/misconfigured server that returns its parent (or itself)
+    as a child, which would otherwise recurse until the depth cap.
+    """
+    if visited is None:
+        visited = set()
+    normalized = (folder_path or "").rstrip("/")
+    if normalized in visited:
+        xbmc.log(
+            "NZB-DAV: Skipping already-visited WebDAV folder '{}'".format(folder_path),
+            xbmc.LOGDEBUG,
+        )
+        return None
+    visited.add(normalized)
+    return visited
 
 
 def find_video_file(
@@ -1072,42 +1136,17 @@ def find_video_file(
         title_hint, title_hint_tokens, title_hint_episode_tags
     )
 
+    _visited = _mark_visited(folder_path, _visited)
     if _visited is None:
-        _visited = set()
-    normalized = (folder_path or "").rstrip("/")
-    if normalized in _visited:
-        xbmc.log(
-            "NZB-DAV: Skipping already-visited WebDAV folder '{}'".format(folder_path),
-            xbmc.LOGDEBUG,
-        )
         return None
-    _visited.add(normalized)
 
     settings = _read_settings(settings_getter) if _settings is None else _settings
     req, url = _build_propfind_request(folder_path, _already_encoded, settings)
     have_hint = bool(hint_tokens or hint_episode_tags)
+    hint_ctx = (have_hint, hint_tokens, hint_episode_tags, min_video_size)
 
     try:
-        # nosemgrep
-        with urlopen(  # nosec B310 — URL from user's configured WebDAV setting
-            req, timeout=10
-        ) as resp:
-            body = resp.read().decode("utf-8", errors="replace")
-
-        root = _parse_propfind_xml(body)
-        scan = _scan_propfind_responses(
-            root, url, have_hint, hint_tokens, hint_episode_tags, min_video_size
-        )
-        return _resolve_best_or_recurse(
-            scan,
-            _depth,
-            _visited,
-            settings,
-            have_hint,
-            hint_tokens,
-            hint_episode_tags,
-            min_video_size,
-        )
+        return _browse_and_resolve(req, url, _depth, _visited, settings, hint_ctx)
     except Exception as e:
         error_detail = _describe_webdav_error(e)
         xbmc.log(
@@ -1117,6 +1156,35 @@ def find_video_file(
             xbmc.LOGERROR,
         )
         return None
+
+
+def _browse_and_resolve(req, url, _depth, _visited, settings, hint_ctx):
+    """Issue the PROPFIND, scan responses, and resolve the best video path.
+
+    ``hint_ctx`` is the ``(have_hint, hint_tokens, hint_episode_tags,
+    min_video_size)`` tuple.
+    """
+    have_hint, hint_tokens, hint_episode_tags, min_video_size = hint_ctx
+    # nosemgrep
+    with urlopen(  # nosec B310 — URL from user's configured WebDAV setting
+        req, timeout=10
+    ) as resp:
+        body = resp.read().decode("utf-8", errors="replace")
+
+    root = _parse_propfind_xml(body)
+    scan = _scan_propfind_responses(
+        root, url, have_hint, hint_tokens, hint_episode_tags, min_video_size
+    )
+    return _resolve_best_or_recurse(
+        scan,
+        _depth,
+        _visited,
+        settings,
+        have_hint,
+        hint_tokens,
+        hint_episode_tags,
+        min_video_size,
+    )
 
 
 def _get_webdav_stream_url_for_path_with_settings(file_path, settings):

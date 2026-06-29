@@ -300,16 +300,6 @@ def set_indexer_enabled(indexer_id, enabled):
     return updated, None
 
 
-def enable_indexer(indexer_id):
-    """Enable an indexer and persist the change."""
-    return set_indexer_enabled(indexer_id, True)
-
-
-def disable_indexer(indexer_id):
-    """Disable an indexer and persist the change."""
-    return set_indexer_enabled(indexer_id, False)
-
-
 def toggle_indexer_enabled(indexer_id):
     """Toggle an indexer's enabled flag and persist the change."""
     indexers = load_indexers()

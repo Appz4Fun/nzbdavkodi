@@ -149,22 +149,6 @@ def get_legacy_configured_indexers(addon=None):
     return configured
 
 
-def clear_legacy_indexer_settings(indexer_id, addon=None):
-    """Disable and clear static settings for a migrated legacy indexer."""
-    known_ids = {item[0] for item in PRESET_INDEXERS} | set(_CUSTOM_SLOT_IDS)
-    if indexer_id not in known_ids:
-        return False
-
-    addon = addon or xbmcaddon.Addon("plugin.video.nzbdav")
-    prefix = "direct_indexer_{}".format(indexer_id)
-    addon.setSetting("{}_enabled".format(prefix), "false")
-    addon.setSetting("{}_api_key".format(prefix), "")
-    if indexer_id in _CUSTOM_SLOT_IDS:
-        addon.setSetting("{}_name".format(prefix), "")
-        addon.setSetting("{}_url".format(prefix), "")
-    return True
-
-
 def _json_managed_id(item):
     return str(item.get("id") or item.get("preset_id") or "").strip()
 
