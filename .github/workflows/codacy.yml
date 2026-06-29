@@ -40,6 +40,14 @@ jobs:
 
       # Execute Codacy Analysis CLI and generate a SARIF output with the security issues identified during the analysis
       - name: Run Codacy Analysis CLI
+        # Codacy bundles tools (e.g. Trivy) whose patterns are configured
+        # server-side, outside this repo. When such a tool fails to configure
+        # ("Failed to configure Codacy Trivy: no patterns configured") or emits
+        # output the CLI can't parse, the action exits non-zero and reds the whole
+        # pipeline -- even though our own security gates (bandit, semgrep, codeql)
+        # all pass. Treat Codacy as INFORMATIONAL: its tooling must never break
+        # CI; it still uploads whatever SARIF it produced in the step below.
+        continue-on-error: true
         uses: codacy/codacy-analysis-cli-action@562ee3e92b8e92df8b67e0a5ff8aa8e261919c08
         with:
           # Check https://github.com/codacy/codacy-analysis-cli#project-token to get your project token from your Codacy repository
@@ -56,6 +64,10 @@ jobs:
 
       # Upload the SARIF file generated in the previous step
       - name: Upload SARIF results file
+        # Only upload when Codacy actually produced a SARIF (the step above may
+        # abort before writing it), and never fail the job on the upload itself.
+        if: ${{ hashFiles('results.sarif') != '' }}
+        continue-on-error: true
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: results.sarif
