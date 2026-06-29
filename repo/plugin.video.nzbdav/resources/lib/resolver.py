@@ -4887,6 +4887,43 @@ def _resolve_submit_and_poll(
     return stream_url, stream_headers, dialog
 
 
+def _resolve_finish_or_reject(
+    handle,
+    params,
+    stream,
+    fallback,
+    playback_cleanup_state,
+    dialog,
+):
+    """Run the success/failure tail of the handle-based ``resolve`` path.
+
+    Extracted verbatim from ``resolve``'s ``if stream_url: ... else: ...`` block.
+    ``stream`` is ``(stream_url, stream_headers, dead)``; ``fallback`` is
+    ``(fallback_state, start_fallback_after_primary)`` where the second item is
+    the closure that lazily starts the fallback worker and assigns the outer
+    ``fallback_state``. Returns the (possibly ``None``) progress dialog so the
+    caller's ``finally`` close stays a no-op after this closed it.
+    """
+    stream_url, stream_headers, dead = stream
+    fallback_state, start_fallback_after_primary = fallback
+    if not stream_url:
+        _stop_fallback_submit_worker(fallback_state, cancel_submitted=True)
+        _reject_resolve_handle(handle)
+        return dialog
+    if fallback_state is None:
+        fallback_state = start_fallback_after_primary(None)
+    return _resolve_play_ready_stream(
+        handle,
+        params,
+        stream_url,
+        stream_headers,
+        fallback_state,
+        dead,
+        playback_cleanup_state,
+        dialog,
+    )
+
+
 def _resolve_play_ready_stream(
     handle,
     params,
@@ -4993,6 +5030,7 @@ def resolve(handle, params):
                     dead=dead,
                     primary_nzb_url=nzb_url,
                 )
+            return fallback_state
 
         # One rejected-id set per resolve attempt, shared so a Completed row
         # the picker body probe rejects is honored by the submit/poll paths.
@@ -5017,22 +5055,14 @@ def resolve(handle, params):
                 dead,
                 (_start_fallback_after_primary, _start_playback_cleanup_once),
             )
-        if stream_url:
-            if fallback_state is None:
-                _start_fallback_after_primary(None)
-            dialog = _resolve_play_ready_stream(
-                handle,
-                params,
-                stream_url,
-                stream_headers,
-                fallback_state,
-                dead,
-                playback_cleanup_state,
-                dialog,
-            )
-        else:
-            _stop_fallback_submit_worker(fallback_state, cancel_submitted=True)
-            _reject_resolve_handle(handle)
+        dialog = _resolve_finish_or_reject(
+            handle,
+            params,
+            (stream_url, stream_headers, dead),
+            (fallback_state, _start_fallback_after_primary),
+            playback_cleanup_state,
+            dialog,
+        )
     except _RESOLVE_RUNTIME_ERRORS as error:
         _resolve_stage("resolve_exception {}".format(error))
         _stop_fallback_submit_worker(fallback_state, cancel_submitted=True)
@@ -5127,6 +5157,42 @@ def _resolve_and_play_submit_and_poll(
     )
     _resolve_stage("poll until ready done stream={}".format(bool(stream_url)))
     return stream_url, stream_headers, dialog
+
+
+def _resolve_and_play_finish_or_stop(
+    resume_params,
+    stream,
+    fallback,
+    settings_getter,
+    playback_cleanup_state,
+    dialog,
+):
+    """Run the success/failure tail of the handle-less ``resolve_and_play`` path.
+
+    Extracted verbatim from ``resolve_and_play``'s ``if stream_url: ... else:
+    ...`` block. ``stream`` is ``(stream_url, stream_headers, dead)``;
+    ``fallback`` is ``(fallback_state, start_fallback_after_primary)`` where the
+    second item lazily starts the fallback worker and assigns the outer
+    ``fallback_state``. Returns the (possibly ``None``) progress dialog so the
+    caller's ``finally`` close stays a no-op after this closed it.
+    """
+    stream_url, stream_headers, dead = stream
+    fallback_state, start_fallback_after_primary = fallback
+    if not stream_url:
+        _stop_fallback_submit_worker(fallback_state, cancel_submitted=True)
+        return dialog
+    if fallback_state is None:
+        fallback_state = start_fallback_after_primary(None)
+    return _resolve_and_play_ready_stream(
+        resume_params,
+        stream_url,
+        stream_headers,
+        fallback_state,
+        dead,
+        settings_getter,
+        playback_cleanup_state,
+        dialog,
+    )
 
 
 def _resolve_and_play_ready_stream(
@@ -5292,6 +5358,7 @@ def resolve_and_play(nzb_url, title, params=None):
                     fallback_candidates,
                     **fallback_submit_kwargs,
                 )
+            return fallback_state
 
         # One rejected-id set per resolve attempt, shared so a Completed row
         # the picker body probe rejects is honored by the submit/poll paths.
@@ -5322,21 +5389,14 @@ def resolve_and_play(nzb_url, title, params=None):
                     settings_getter,
                 ),
             )
-        if stream_url:
-            if fallback_state is None:
-                _start_fallback_after_primary(None)
-            dialog = _resolve_and_play_ready_stream(
-                _resume_params_with_title(resolve_params, title),
-                stream_url,
-                stream_headers,
-                fallback_state,
-                dead,
-                settings_getter,
-                playback_cleanup_state,
-                dialog,
-            )
-        else:
-            _stop_fallback_submit_worker(fallback_state, cancel_submitted=True)
+        dialog = _resolve_and_play_finish_or_stop(
+            _resume_params_with_title(resolve_params, title),
+            (stream_url, stream_headers, dead),
+            (fallback_state, _start_fallback_after_primary),
+            settings_getter,
+            playback_cleanup_state,
+            dialog,
+        )
     except _RESOLVE_RUNTIME_ERRORS as error:
         _stop_fallback_submit_worker(fallback_state, cancel_submitted=True)
         _handle_resolve_exception("resolve_and_play", error)
