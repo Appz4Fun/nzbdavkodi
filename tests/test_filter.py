@@ -1448,3 +1448,23 @@ def test_release_is_pack_false_for_series_in_movie_title():
     assert release_is_pack("The.Series.2024.1080p-GRP") is False
     assert release_is_pack("Series.2024.1080p-GRP") is False
     assert release_is_pack("Doctor.Who.Series.One.S01E05.1080p-GRP") is False
+
+
+def test_release_is_pack_true_for_spelled_numbers_above_ten():
+    """#282 follow-up: spelled season/series numbers 11-20 ("Series Eleven",
+    "Twelfth Series", "Fifteenth Season") leave PTT seasons/episodes empty, so
+    the phrase gate must recognize them or the floor rejects a real episode of
+    a long-running whole-series pack. (Numeric 'Series 11' already works.)"""
+    assert release_is_pack("Some.Show.Series.Eleven.1080p-GRP") is True
+    assert release_is_pack("Some.Show.Twelfth.Series.1080p-GRP") is True
+    assert release_is_pack("Some.Show.Series.Twenty.1080p-GRP") is True
+    assert release_is_pack("Some.Show.Complete.Eleventh.Season.1080p-GRP") is True
+    assert release_is_pack("Some.Show.Fifteenth.Season.1080p-GRP") is True
+    assert release_is_pack("Some.Show.Season.Eighteen.1080p-GRP") is True
+
+
+def test_release_is_pack_false_for_spelled_number_in_movie_title():
+    """A spelled number in a movie title that is NOT adjacent to season/series
+    stays non-pack ("Eleventh Hour", a bare "Eleven")."""
+    assert release_is_pack("Eleventh.Hour.2008.1080p.BluRay-GRP") is False
+    assert release_is_pack("Some.Movie.Eleven.2024-GRP") is False

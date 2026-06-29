@@ -543,23 +543,35 @@ _PACK_KEYWORD = (
 # Season", "Complete 2nd Season", "Complete Final Season" are all packs. PTT
 # leaves seasons/episodes empty for these ordinal forms, so the phrase is the
 # only signal (#340 review).
+# Spelled ordinals 1-20. PTT does not parse spelled numbers, so a whole-season
+# pack named "Complete First Season" / "Eleventh Series" leaves seasons/episodes
+# empty. 20 is the practical ceiling: above it release names use digits (covered
+# by the [0-9]{1,2}(?:st|nd|rd|th) / PTT numeric paths), so enumerating further
+# is unnecessary (#282 follow-up review).
 _PACK_ORDINAL = (
     r"first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|"
+    r"eleventh|twelfth|thirteenth|fourteenth|fifteenth|sixteenth|seventeenth|"
+    r"eighteenth|nineteenth|twentieth|"
     r"final|last|[0-9]{1,2}(?:st|nd|rd|th)"
 )
-# A spelled cardinal that can sit between the keyword and "Complete" in the
-# reversed phrasing ("Season One Complete"): PTT does not parse spelled numbers,
-# so without this the reversed branch only matches "Season Complete" and misses
-# the numbered form (#340 Codex review).
-_PACK_CARDINAL = r"one|two|three|four|five|six|seven|eight|nine|ten"
-# Ordinals safe to pair with a BARE "Season" (no "Complete"): numeric/positional
-# forms only. ``final``/``last`` are deliberately EXCLUDED here because
-# "The Last Season" / "Final Season" are real single-movie titles -- treating
-# those as packs would skip the #282 stub guard for them. With an adjacent
-# "Complete" the full _PACK_ORDINAL (incl. final/last) is fine, since "Complete
-# Final Season" is unambiguously a whole-season pack (#340 Codex review).
+# A spelled cardinal (1-20) that can sit adjacent to the keyword ("Season One
+# Complete", "Series Eleven"): PTT does not parse spelled numbers, so without
+# this those forms are missed (#340 / #282 follow-up review).
+_PACK_CARDINAL = (
+    r"one|two|three|four|five|six|seven|eight|nine|ten|"
+    r"eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|"
+    r"nineteen|twenty"
+)
+# Ordinals safe to pair with a BARE "Season"/"Series" (no "Complete"):
+# numeric/positional forms only. ``final``/``last`` are deliberately EXCLUDED
+# here because "The Last Season" / "Final Season" are real single-movie titles --
+# treating those as packs would skip the #282 stub guard for them. With an
+# adjacent "Complete" the full _PACK_ORDINAL (incl. final/last) is fine, since
+# "Complete Final Season" is unambiguously a whole-season pack (#340 review).
 _PACK_SEASON_ORDINAL = (
     r"first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|"
+    r"eleventh|twelfth|thirteenth|fourteenth|fifteenth|sixteenth|seventeenth|"
+    r"eighteenth|nineteenth|twentieth|"
     r"[0-9]{1,2}(?:st|nd|rd|th)"
 )
 # Unambiguous multi-item collection words that mark a pack ON THEIR OWN, without
