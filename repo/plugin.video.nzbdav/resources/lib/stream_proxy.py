@@ -2454,6 +2454,31 @@ class _StreamHandler(BaseHTTPRequestHandler):
         )
 
     @staticmethod
+    def _ffmpeg_argv_shape_ok(cmd):
+        """Reject non-list/empty argv or a non-ffmpeg executable name."""
+        if not isinstance(cmd, (list, tuple)) or not cmd:
+            return False
+        if not all(isinstance(arg, str) for arg in cmd):
+            return False
+        exe_name = os.path.basename(cmd[0]).lower()
+        return exe_name == "ffmpeg"
+
+    @staticmethod
+    def _ffmpeg_arg_control_chars_ok(arg, prev_arg):
+        """Reject NUL anywhere and CR/LF outside the ``-headers`` value.
+
+        The value following ``-headers`` legitimately ends in ``\\r\\n`` as the
+        HTTP header separator; CR/LF is rejected everywhere else.
+        """
+        if "\x00" in arg:
+            return False
+        if prev_arg == "-headers":
+            if not arg.endswith("\r\n"):
+                return False
+            return not ("\n" in arg[:-2] or "\r" in arg[:-2])
+        return not ("\n" in arg or "\r" in arg)
+
+    @staticmethod
     def _is_safe_ffmpeg_cmd(cmd):
         """Validate command shape and executable before subprocess execution.
 
@@ -2464,24 +2489,11 @@ class _StreamHandler(BaseHTTPRequestHandler):
         exemption the force-remux path 500s on every Authorization-carrying
         stream (regression introduced in PR #83's security hardening).
         """
-        if not isinstance(cmd, (list, tuple)) or not cmd:
-            return False
-        if not all(isinstance(arg, str) for arg in cmd):
-            return False
-        exe = cmd[0]
-        exe_name = os.path.basename(exe).lower()
-        if exe_name != "ffmpeg":
+        if not _StreamHandler._ffmpeg_argv_shape_ok(cmd):
             return False
         prev_arg = None
         for arg in cmd:
-            if "\x00" in arg:
-                return False
-            if prev_arg == "-headers":
-                if not arg.endswith("\r\n"):
-                    return False
-                if "\n" in arg[:-2] or "\r" in arg[:-2]:
-                    return False
-            elif "\n" in arg or "\r" in arg:
+            if not _StreamHandler._ffmpeg_arg_control_chars_ok(arg, prev_arg):
                 return False
             prev_arg = arg
         return True
@@ -2530,99 +2542,55 @@ class _StreamHandler(BaseHTTPRequestHandler):
             ]
         )
 
-    def do_POST(self):
-        """Handle POST /prepare and /stream/<id>/fallbacks (plugin → service)."""
-        import json
+    def _prepare_token_ok(self):
+        """Constant-time check of the loopback /prepare auth token.
 
-        raw_path = self.path.split("?", 1)[0]
-        fallback_match = _FALLBACK_UPDATE_PATH_RE.match(raw_path)
-        if fallback_match:
-            self._handle_fallback_update(fallback_match.group(1))
-            return
-        if raw_path != "/prepare":
-            self.send_error(404)
-            return
+        A byte-by-byte != short-circuits on the first differing byte and leaks
+        timing info about the secret that authorizes outbound HTTP from the
+        loopback service. hmac.compare_digest rejects type mismatches, so coerce
+        both sides to str("") if None.
+        """
         expected_token = getattr(self.server, "prepare_token", "")
         supplied_token = self.headers.get(_PREPARE_TOKEN_HEADER)
-        # Constant-time comparison: a byte-by-byte != short-circuits on the
-        # first differing byte and leaks timing info about the secret that
-        # authorizes outbound HTTP from the loopback service. hmac.compare_digest
-        # rejects type mismatches, so coerce both sides to str("") if None.
         if expected_token and not hmac.compare_digest(
             supplied_token or "", expected_token or ""
         ):
-            self.send_error(403)
-            return
+            return False
+        return True
+
+    def _read_json_post_body(self):
+        """Read + JSON-parse a POST body, returning a dict or None.
+
+        On any framing/parse/type error this sends the matching status code
+        (400/413) and returns None; callers must just ``return`` in that case.
+        """
+        import json
+
         try:
             length = int(self.headers.get("Content-Length", 0))
         except (TypeError, ValueError):
             self.send_error(400)
-            return
+            return None
         if length < 0:
             self.send_error(400)
-            return
+            return None
         if length > _PREPARE_REQUEST_MAX_BYTES:
             self.send_error(413)
-            return
+            return None
         body = self.rfile.read(length) if length else b""
         try:
             data = json.loads(body)
         except (ValueError, KeyError):
             self.send_error(400)
-            return
+            return None
         if not isinstance(data, dict):
             self.send_error(400)
-            return
+            return None
+        return data
 
-        remote_url = data.get("remote_url", "")
-        auth_header = data.get("auth_header")
-        fallback_sources = data.get("fallback_sources", [])
-        settings_snapshot = normalize_settings_snapshot(data.get("settings_snapshot"))
-        # Type-validate remote_url BEFORE any clear_sessions / prepare_stream
-        # work. A non-string (list/dict/int) made it into _validate_url and
-        # raised AttributeError on .startswith, but only after prepare_stream
-        # had already invoked clear_sessions(), clobbering an in-flight stream.
-        if not isinstance(remote_url, str) or not remote_url:
-            self.send_error(400)
-            return
-        if not isinstance(fallback_sources, list):
-            self.send_error(400)
-            return
-        try:
-            auth_header = _validate_auth_header(auth_header)
-        except ValueError:
-            self.send_error(400)
-            return
-        content_length_hint = _normalize_content_length_hint(
-            data.get("content_length_hint")
-        )
-
-        proxy = self.server.owner_proxy
-        try:
-            prepare_kwargs = {"fallback_sources": fallback_sources}
-            if content_length_hint > 0:
-                prepare_kwargs["content_length_hint"] = content_length_hint
-            if settings_snapshot:
-                prepare_kwargs["settings_snapshot"] = settings_snapshot
-            proxy_url, stream_info = proxy.prepare_stream(
-                remote_url, auth_header, **prepare_kwargs
-            )
-        except ValueError:
-            self.send_error(400)
-            return
-        except Exception as e:  # noqa: BLE001 — keep loopback handler alive
-            xbmc.log(
-                "NZB-DAV: /prepare failed: {} (reason=prepare_exception)".format(
-                    _redact_text(e)
-                ),
-                xbmc.LOGERROR,
-            )
-            try:
-                proxy.clear_sessions()
-            except Exception:  # noqa: BLE001 — best-effort partial cleanup
-                pass
-            self.send_error(500)
-            return
+    def _send_prepare_success(self, proxy, proxy_url, stream_info):
+        """Write the 200 JSON /prepare response; clean up on client disconnect."""
+        import json
 
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -2654,6 +2622,96 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 xbmc.LOGINFO,
             )
 
+    def _parse_prepare_body(self, data):
+        """Extract + validate /prepare params, returning kwargs for prepare_stream.
+
+        Returns (remote_url, auth_header, prepare_kwargs) or None after sending
+        the matching 400; callers must just ``return`` in that case.
+        """
+        remote_url = data.get("remote_url", "")
+        auth_header = data.get("auth_header")
+        fallback_sources = data.get("fallback_sources", [])
+        settings_snapshot = normalize_settings_snapshot(data.get("settings_snapshot"))
+        # Type-validate remote_url BEFORE any clear_sessions / prepare_stream
+        # work. A non-string (list/dict/int) made it into _validate_url and
+        # raised AttributeError on .startswith, but only after prepare_stream
+        # had already invoked clear_sessions(), clobbering an in-flight stream.
+        if not isinstance(remote_url, str) or not remote_url:
+            self.send_error(400)
+            return None
+        if not isinstance(fallback_sources, list):
+            self.send_error(400)
+            return None
+        try:
+            auth_header = _validate_auth_header(auth_header)
+        except ValueError:
+            self.send_error(400)
+            return None
+        content_length_hint = _normalize_content_length_hint(
+            data.get("content_length_hint")
+        )
+        prepare_kwargs = {"fallback_sources": fallback_sources}
+        if content_length_hint > 0:
+            prepare_kwargs["content_length_hint"] = content_length_hint
+        if settings_snapshot:
+            prepare_kwargs["settings_snapshot"] = settings_snapshot
+        return remote_url, auth_header, prepare_kwargs
+
+    def _run_prepare_stream(self, proxy, remote_url, auth_header, prepare_kwargs):
+        """Call proxy.prepare_stream, returning (proxy_url, stream_info) or None.
+
+        On failure this sends the matching status (400/500) and returns None;
+        callers must just ``return`` in that case.
+        """
+        try:
+            return proxy.prepare_stream(remote_url, auth_header, **prepare_kwargs)
+        except ValueError:
+            self.send_error(400)
+            return None
+        except Exception as e:  # noqa: BLE001 — keep loopback handler alive
+            xbmc.log(
+                "NZB-DAV: /prepare failed: {} (reason=prepare_exception)".format(
+                    _redact_text(e)
+                ),
+                xbmc.LOGERROR,
+            )
+            try:
+                proxy.clear_sessions()
+            except Exception:  # noqa: BLE001 — best-effort partial cleanup
+                pass
+            self.send_error(500)
+            return None
+
+    def do_POST(self):
+        """Handle POST /prepare and /stream/<id>/fallbacks (plugin → service)."""
+        raw_path = self.path.split("?", 1)[0]
+        fallback_match = _FALLBACK_UPDATE_PATH_RE.match(raw_path)
+        if fallback_match:
+            self._handle_fallback_update(fallback_match.group(1))
+            return
+        if raw_path != "/prepare":
+            self.send_error(404)
+            return
+        if not self._prepare_token_ok():
+            self.send_error(403)
+            return
+        data = self._read_json_post_body()
+        if data is None:
+            return
+        parsed = self._parse_prepare_body(data)
+        if parsed is None:
+            return
+        remote_url, auth_header, prepare_kwargs = parsed
+
+        proxy = self.server.owner_proxy
+        prepared = self._run_prepare_stream(
+            proxy, remote_url, auth_header, prepare_kwargs
+        )
+        if prepared is None:
+            return
+        proxy_url, stream_info = prepared
+        self._send_prepare_success(proxy, proxy_url, stream_info)
+
     def _handle_fallback_update(self, session_id):
         """Merge late-adopted fallback sources into a live session (auth'd).
 
@@ -2665,32 +2723,11 @@ class _StreamHandler(BaseHTTPRequestHandler):
         """
         import json
 
-        expected_token = getattr(self.server, "prepare_token", "")
-        supplied_token = self.headers.get(_PREPARE_TOKEN_HEADER)
-        if expected_token and not hmac.compare_digest(
-            supplied_token or "", expected_token or ""
-        ):
+        if not self._prepare_token_ok():
             self.send_error(403)
             return
-        try:
-            length = int(self.headers.get("Content-Length", 0))
-        except (TypeError, ValueError):
-            self.send_error(400)
-            return
-        if length < 0:
-            self.send_error(400)
-            return
-        if length > _PREPARE_REQUEST_MAX_BYTES:
-            self.send_error(413)
-            return
-        body = self.rfile.read(length) if length else b""
-        try:
-            data = json.loads(body)
-        except (ValueError, KeyError):
-            self.send_error(400)
-            return
-        if not isinstance(data, dict):
-            self.send_error(400)
+        data = self._read_json_post_body()
+        if data is None:
             return
         fallback_sources = data.get("fallback_sources", [])
         if not isinstance(fallback_sources, list):
@@ -9262,6 +9299,66 @@ class ServiceProxyUnavailableError(OSError):
     """
 
 
+def _build_prepare_payload(
+    remote_url, auth_header, fallback_sources, content_length_hint, settings_snapshot
+):
+    """Build the /prepare JSON payload, omitting absent optional fields."""
+    payload = {
+        "remote_url": remote_url,
+        "auth_header": auth_header,
+        "fallback_sources": list(fallback_sources or []),
+    }
+    content_length_hint = _normalize_content_length_hint(content_length_hint)
+    if content_length_hint > 0:
+        payload["content_length_hint"] = content_length_hint
+    settings_snapshot = normalize_settings_snapshot(settings_snapshot)
+    if settings_snapshot:
+        payload["settings_snapshot"] = settings_snapshot
+    return payload
+
+
+def _build_prepare_request(url, payload, prepare_token):
+    """Build the POST Request for /prepare, attaching the auth token header."""
+    import json
+
+    req = Request(url, data=json.dumps(payload).encode(), method="POST")
+    req.add_header("User-Agent", HTTP_USER_AGENT)
+    req.add_header("Content-Type", "application/json")
+    if prepare_token is None:
+        prepare_token = get_service_proxy_token()
+    if prepare_token:
+        req.add_header(_PREPARE_TOKEN_HEADER, prepare_token)
+    return req
+
+
+def _prepare_attempt(req):
+    """Perform one /prepare POST, returning (proxy_url, stream_info)."""
+    import json
+
+    # nosemgrep
+    with urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
+        req, timeout=_PREPARE_ATTEMPT_TIMEOUT
+    ) as resp:
+        result = json.loads(resp.read())
+        proxy_url = result.pop("proxy_url")
+        return proxy_url, result
+
+
+def _classify_prepare_url_error(e):
+    """Map a URLError to "retry", "unreachable", or "reraise".
+
+    Retry the fast connection-reset family; treat a wrapped timeout/OSError as
+    unreachable; re-raise everything else (e.g. an HTTPError from a reachable
+    proxy — not a reachability problem).
+    """
+    reason = getattr(e, "reason", None)
+    if isinstance(reason, ConnectionError):
+        return "retry"
+    if isinstance(reason, (_socket.timeout, TimeoutError, OSError)):
+        return "unreachable"
+    return "reraise"
+
+
 def prepare_stream_via_service(
     port,
     remote_url,
@@ -9281,29 +9378,16 @@ def prepare_stream_via_service(
     the user-visible error-dialog layer uses the subclass to substitute
     an actionable message for the opaque ``Connection refused``.
     """
-    import json
-
     url = "http://127.0.0.1:{}/prepare".format(port)
     auth_header = _validate_auth_header(auth_header)
-    payload = {
-        "remote_url": remote_url,
-        "auth_header": auth_header,
-        "fallback_sources": list(fallback_sources or []),
-    }
-    content_length_hint = _normalize_content_length_hint(content_length_hint)
-    if content_length_hint > 0:
-        payload["content_length_hint"] = content_length_hint
-    settings_snapshot = normalize_settings_snapshot(settings_snapshot)
-    if settings_snapshot:
-        payload["settings_snapshot"] = settings_snapshot
-    data = json.dumps(payload)
-    req = Request(url, data=data.encode(), method="POST")
-    req.add_header("User-Agent", HTTP_USER_AGENT)
-    req.add_header("Content-Type", "application/json")
-    if prepare_token is None:
-        prepare_token = get_service_proxy_token()
-    if prepare_token:
-        req.add_header(_PREPARE_TOKEN_HEADER, prepare_token)
+    payload = _build_prepare_payload(
+        remote_url,
+        auth_header,
+        fallback_sources,
+        content_length_hint,
+        settings_snapshot,
+    )
+    req = _build_prepare_request(url, payload, prepare_token)
     unreachable = (
         "NZB-DAV background service unreachable on 127.0.0.1:{} — "
         "restart Kodi or toggle the addon".format(port)
@@ -9311,13 +9395,7 @@ def prepare_stream_via_service(
     last_error = None
     for index in range(_PREPARE_MAX_ATTEMPTS):
         try:
-            # nosemgrep
-            with urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
-                req, timeout=_PREPARE_ATTEMPT_TIMEOUT
-            ) as resp:
-                result = json.loads(resp.read())
-                proxy_url = result.pop("proxy_url")
-                return proxy_url, result
+            return _prepare_attempt(req)
         except ConnectionError as e:
             # FAST transient: a momentarily thread-starved proxy accepted then
             # dropped the loopback socket (RemoteDisconnected / reset / refused).
@@ -9335,10 +9413,10 @@ def prepare_stream_via_service(
             # only the fast connection-reset family; surface a wrapped timeout/
             # OSError as unreachable; re-raise everything else (e.g. HTTPError,
             # a 4xx/5xx from a reachable proxy — not a reachability problem).
-            reason = getattr(e, "reason", None)
-            if isinstance(reason, ConnectionError):
+            disposition = _classify_prepare_url_error(e)
+            if disposition == "retry":
                 last_error = e
-            elif isinstance(reason, (_socket.timeout, TimeoutError, OSError)):
+            elif disposition == "unreachable":
                 raise ServiceProxyUnavailableError(unreachable) from e
             else:
                 raise
