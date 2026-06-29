@@ -574,23 +574,35 @@ _PACK_SEASON_ORDINAL = (
 _PACK_STANDALONE_KEYWORD = (
     r"trilogy|duology|quadrilogy|pentalogy|hexalogy|anthology|filmography"
 )
+# Keywords valid ONLY adjacent to "Complete" (the "Complete <kw>" / "<kw>
+# Complete" branches). "batch(es)" is the anime/TV whole-season term ("Complete
+# Batch") -- kept out of the bare _PACK_KEYWORD and _PACK_STANDALONE_KEYWORD so a
+# lone "Batch" or a movie "The.Batch.2024" stays guarded (#282 follow-up review).
+_PACK_KEYWORD_COMPLETE = _PACK_KEYWORD + r"|batch(?:es)?"
 _PACK_PHRASE_RE = re.compile(
     r"(?<![a-z])(?:"
-    r"complete[ ._-]+(?:(?:" + _PACK_ORDINAL + r")[ ._-]+)?(?:" + _PACK_KEYWORD + r")"
+    r"complete[ ._-]+(?:(?:"
+    + _PACK_ORDINAL
+    + r")[ ._-]+)?(?:"
+    + _PACK_KEYWORD_COMPLETE
+    + r")"
     # Reversed phrasing, optionally numbered: "Series Complete", "Season One
-    # Complete", "Season First Complete".
-    r"|(?:" + _PACK_KEYWORD + r")[ ._-]+"
+    # Complete", "Season First Complete", "Batch Complete".
+    r"|(?:" + _PACK_KEYWORD_COMPLETE + r")[ ._-]+"
     r"(?:(?:" + _PACK_ORDINAL + r"|" + _PACK_CARDINAL + r")[ ._-]+)?complete"
-    # Spelled ordinal/cardinal adjacent to "season(s)", either order, with no
-    # explicit "Complete": "First Season", "The Second Season", "3rd Season",
-    # "Season Two". PTT does not parse the spelled number, so it leaves
-    # seasons=[]/episodes=[] and the bare-season check below misses these. The
-    # adjacency requirement keeps a bare ordinal in a movie title
-    # ("First.Blood", "First.Man", "Second.Act") from matching (#340 Codex
+    # Spelled ordinal/cardinal adjacent to "season(s)" or "series", either order,
+    # with no explicit "Complete": "First Season", "The Second Season", "3rd
+    # Season", "Season Two", and the UK-style "Series One" / "First Series". PTT
+    # does not parse the spelled number, so it leaves seasons=[]/episodes=[] and
+    # the bare-season check below misses these. The adjacency requirement keeps a
+    # bare ordinal in a movie title ("First.Blood", "First.Man", "Second.Act")
+    # and a bare "Series" ("The.Series.2024") from matching (#340 / #282 follow-up
     # review). Still gated on ``not episode_tags`` in release_is_pack: a single
     # "First.Season.S01E05" keeps the stub guard.
     r"|(?:" + _PACK_SEASON_ORDINAL + r"|" + _PACK_CARDINAL + r")[ ._-]+seasons?"
     r"|seasons?[ ._-]+(?:" + _PACK_SEASON_ORDINAL + r"|" + _PACK_CARDINAL + r")"
+    r"|(?:" + _PACK_SEASON_ORDINAL + r"|" + _PACK_CARDINAL + r")[ ._-]+series"
+    r"|series[ ._-]+(?:" + _PACK_SEASON_ORDINAL + r"|" + _PACK_CARDINAL + r")"
     r"|box[ ._-]?sets?"
     # "Mini Series" / "Limited Series" season-tag-less TV packs.
     r"|(?:mini|limited)[ ._-]?series"

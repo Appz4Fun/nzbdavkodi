@@ -8807,3 +8807,21 @@ def test_resolve_and_play_reads_toggle_via_injected_getter():
     play_entry.assert_called_once_with(
         "http://i/x.nzb", "X", params, resume_seconds=0.0, resume_key=""
     )
+
+
+def test_advertised_size_bytes_non_finite_numeric_fails_open():
+    """#282 follow-up: a non-finite numeric size (inf from a JSON overflow
+    literal, or nan) must fail OPEN (return 0) instead of raising OverflowError /
+    ValueError out of the resolver -- neither is in _RESOLVE_RUNTIME_ERRORS, so
+    an escape would skip the setResolvedUrl-on-failure path. The int/float branch
+    now matches the string branch's fail-open contract."""
+    from resources.lib.resolver import _advertised_size_bytes, _stub_min_size_floor
+
+    assert _advertised_size_bytes(float("inf")) == 0
+    assert _advertised_size_bytes(float("-inf")) == 0
+    assert _advertised_size_bytes(float("nan")) == 0
+    # finite values still parse normally.
+    assert _advertised_size_bytes(5.0) == 5
+    assert _advertised_size_bytes(81_610_612_736) == 81_610_612_736
+    # the floor helper must not propagate the error either.
+    assert _stub_min_size_floor(float("inf"), "Movie.2020.1080p.BluRay-GRP") == 0

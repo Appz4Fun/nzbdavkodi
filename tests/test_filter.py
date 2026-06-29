@@ -1410,3 +1410,41 @@ def test_release_is_pack_false_for_last_final_season_movie_titles():
     # Numeric/positional season packs are unaffected.
     assert release_is_pack("Some.Show.First.Season.1080p-GRP") is True
     assert release_is_pack("Some.Show.Season.Two.1080p-GRP") is True
+
+
+def test_release_is_pack_true_for_complete_batch():
+    """#282 follow-up: anime/TV 'Complete Batch' releases are whole-season packs
+    (PTT leaves seasons/episodes empty). 'batch(es)' is a complete-adjacent pack
+    keyword, so the resolver skips the single-file floor for them."""
+    assert release_is_pack("Some.Show.Complete.Batch.1080p-GRP") is True
+    assert release_is_pack("Some.Show.Batch.Complete.1080p-GRP") is True
+    assert release_is_pack("Some.Show.Complete.Batches.1080p-GRP") is True
+
+
+def test_release_is_pack_false_for_bare_batch_and_batch_movie():
+    """'batch' is ONLY a pack signal adjacent to 'Complete'. A bare 'Batch', a
+    movie titled 'The.Batch', and the substring 'Batchelor' stay non-pack (keep
+    the #282 stub guard); a single episode of a batch keeps it too."""
+    assert release_is_pack("Some.Show.Batch.1080p-GRP") is False
+    assert release_is_pack("The.Batch.2024.1080p.BluRay-GRP") is False
+    assert release_is_pack("Some.Movie.Batchelor.2024-GRP") is False
+    assert release_is_pack("Some.Show.Complete.Batch.S01E05.1080p-GRP") is False
+
+
+def test_release_is_pack_true_for_spelled_series():
+    """#282 follow-up: UK-style spelled 'Series One' / 'First Series' whole-series
+    packs (PTT leaves seasons/episodes empty) must be recognized, mirroring the
+    spelled-season handling, or the single-file floor rejects real episodes."""
+    assert release_is_pack("Doctor.Who.Series.One.1080p-GRP") is True
+    assert release_is_pack("Some.Show.First.Series.1080p-GRP") is True
+    assert release_is_pack("Some.Show.Series.Two.1080p-GRP") is True
+    assert release_is_pack("Some.Show.Second.Series.720p-GRP") is True
+    assert release_is_pack("Some.Show.3rd.Series.1080p-GRP") is True
+
+
+def test_release_is_pack_false_for_series_in_movie_title():
+    """A bare 'Series' in a movie title (no adjacent ordinal/cardinal) stays
+    non-pack; a single episode of a spelled-series pack keeps the guard too."""
+    assert release_is_pack("The.Series.2024.1080p-GRP") is False
+    assert release_is_pack("Series.2024.1080p-GRP") is False
+    assert release_is_pack("Doctor.Who.Series.One.S01E05.1080p-GRP") is False

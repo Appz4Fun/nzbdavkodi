@@ -3723,7 +3723,17 @@ def _advertised_size_bytes(download_size):
     if isinstance(download_size, bool):
         return 0
     if isinstance(download_size, (int, float)):
-        return int(download_size) if download_size > 0 else 0
+        if not download_size > 0:
+            return 0
+        try:
+            return int(download_size)
+        except (OverflowError, ValueError):
+            # A non-finite numeric size (``inf`` from a JSON overflow literal,
+            # or ``nan``) is not a real size. Fail OPEN (return 0) like the
+            # string branch rather than letting OverflowError/ValueError escape
+            # the resolver -- neither is in _RESOLVE_RUNTIME_ERRORS, so an escape
+            # would skip the setResolvedUrl-on-failure path (#282 follow-up).
+            return 0
     if isinstance(download_size, str):
         text = download_size.strip().replace(",", "")
         if not text:
