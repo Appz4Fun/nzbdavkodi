@@ -771,11 +771,21 @@ def test_test_configured_indexers_marks_incomplete_futures_timed_out(
         }
     ]
 
+    caps_started = Event()
+    release_caps = Event()
+    caps_completions = [0]
+    completions_lock = Lock()
+
     def slow_caps(*_args, **_kwargs):
-        # Sleep far longer than the 0.05s fan-out timeout so a regression that
-        # waits on the worker (e.g. executor.shutdown(wait=True)) is ~1.0s --
-        # dramatically over the bound -- while the timeout path stays ~0.05s.
-        time.sleep(1.0)
+        caps_started.set()
+        # Released only in the finally below (AFTER the snapshot), with no early
+        # timer, so the caps worker can never complete before we record whether
+        # the fan-out joined it -- the snapshot is load-independent. The 2s cap
+        # only bounds a regression where the fan-out waits on the worker (e.g.
+        # executor.shutdown(wait=True)).
+        release_caps.wait(timeout=2)
+        with completions_lock:
+            caps_completions[0] += 1
         return "<caps></caps>"
 
     mock_http.side_effect = slow_caps
@@ -783,16 +793,24 @@ def test_test_configured_indexers_marks_incomplete_futures_timed_out(
     with patch(
         "resources.lib.direct_indexers._DIRECT_FANOUT_TIMEOUT", 0.05, create=True
     ):
-        started = time.monotonic()
-        ok_count, total_count, errors = test_configured_indexers()
-        elapsed = time.monotonic() - started
+        try:
+            ok_count, total_count, errors = test_configured_indexers()
+            with completions_lock:
+                caps_completions_at_return = caps_completions[0]
+        finally:
+            release_caps.set()
 
+    assert caps_started.wait(0.2)
     assert ok_count == 0
     assert total_count == 1
     assert len(errors) == 1
     assert "Direct indexer Slow unavailable:" in errors[0]
     assert "timed out" in errors[0]
-    assert elapsed < 0.5
+    # Structural proof (load-independent): the fan-out must return at
+    # _DIRECT_FANOUT_TIMEOUT without joining the still-blocked caps worker.
+    # Only the finally above releases it, after the snapshot -- so if the
+    # fan-out wrongly waited, the worker would complete -> count > 0.
+    assert caps_completions_at_return == 0
 
 
 @patch("resources.lib.direct_indexers.get_configured_indexers")

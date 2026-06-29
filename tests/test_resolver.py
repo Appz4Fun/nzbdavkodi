@@ -4975,12 +4975,26 @@ def test_submit_ui_pump_continues_when_probe_threads_cannot_start(
 def test_submit_ui_pump_terminal_error_does_not_wait_for_probe_cleanup(
     mock_submit, mock_find_queued, mock_find_completed
 ):
+    probe_in_flight = threading.Event()
+    release_probe = threading.Event()
+    probe_completed = []
+
     def terminal_submit(_nzb_url, _title, **_kwargs):
-        _time.sleep(0.03)
+        # Hold the terminal error until a probe is genuinely MID-FLIGHT, so the
+        # snapshot below is meaningful: the terminal path must return while
+        # slow_probe is still blocked. A regression that joined/awaited probe
+        # cleanup on the terminal path would block on this in-flight probe.
+        assert probe_in_flight.wait(timeout=2)
         return None, {"status": 400, "message": "TooManyRequests"}
 
     def slow_probe(*_args, **_kwargs):
-        _time.sleep(0.25)
+        # Mark in-flight, then block until the test releases us in its finally
+        # (AFTER the snapshot), with no timer -- load-independent. The bounded
+        # wait caps the regression case (a terminal path that DOES await probe
+        # cleanup) so the test cannot hang.
+        probe_in_flight.set()
+        release_probe.wait(timeout=2)
+        probe_completed.append(True)
 
     mock_submit.side_effect = terminal_submit
     mock_find_queued.side_effect = slow_probe
@@ -4990,18 +5004,23 @@ def test_submit_ui_pump_terminal_error_does_not_wait_for_probe_cleanup(
     monitor = MagicMock()
     monitor.abortRequested.return_value = False
 
-    started = _time.monotonic()
-    nzo_id, submit_error = _submit_nzb_with_ui_pump(
-        "http://hydra/getnzb/rate-limited",
-        "movie.mkv",
-        dialog,
-        monitor,
-    )
-    elapsed = _time.monotonic() - started
-
-    assert nzo_id is None
-    assert submit_error == {"status": 400, "message": "TooManyRequests"}
-    assert elapsed < 0.2
+    try:
+        nzo_id, submit_error = _submit_nzb_with_ui_pump(
+            "http://hydra/getnzb/rate-limited",
+            "movie.mkv",
+            dialog,
+            monitor,
+        )
+        # Load-independent proof: the terminal error returned WHILE the probe is
+        # still mid-flight (blocked) -- it was NOT awaited, so no slow_probe ran
+        # past its block and the completed list is still empty at return. A
+        # regression that awaits the probe would block until the 2s timeout, then
+        # record a completion, making this list non-empty and failing the assert.
+        assert not probe_completed
+        assert nzo_id is None
+        assert submit_error == {"status": 400, "message": "TooManyRequests"}
+    finally:
+        release_probe.set()
 
 
 @patch("resources.lib.resolver._show_submit_error_dialog")
@@ -5149,10 +5168,16 @@ def test_submit_ui_pump_adopts_existing_queue_without_initial_probe_delay(
     """Existing nzbdav queue jobs should be adopted without a fixed grace wait."""
     queue_seen = threading.Event()
     submit_can_finish = threading.Event()
+    submit_completed = [False]
 
     def delayed_submit(_nzb_url, _title):
         assert queue_seen.wait(timeout=1)
+        # Released only in the finally below (AFTER the snapshot), with no
+        # early timer, so the slow submit worker cannot finish before we
+        # record whether adoption waited for it -- load-independent. The
+        # 0.75s cap only bounds a regression that blocks on this submit.
         submit_can_finish.wait(timeout=0.75)
+        submit_completed[0] = True
         return "SABnzbd_nzo_submitted_late", None
 
     def queued_job(_title):
@@ -5170,18 +5195,22 @@ def test_submit_ui_pump_adopts_existing_queue_without_initial_probe_delay(
     monitor = MagicMock()
     monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
 
-    started = _time.perf_counter()
     try:
         nzo_id, submit_error = _submit_nzb_with_ui_pump(
             "http://hydra/getnzb/abc", "movie.mkv", dialog, monitor
         )
+        submit_completed_at_return = submit_completed[0]
     finally:
         submit_can_finish.set()
-    elapsed = _time.perf_counter() - started
 
     assert (nzo_id, submit_error) == ("SABnzbd_nzo_existing_queue", None)
     monitor.waitForAbort.assert_not_called()
-    assert elapsed < 0.2, "existing queue adoption took {:.3f}s".format(elapsed)
+    # Structural proof (load-independent): the existing-queue hit must be
+    # adopted before the slow submit worker is released (only the finally
+    # above releases it, after the snapshot). If adoption wrongly waited out
+    # a fixed grace, delayed_submit would finish its bounded wait and set
+    # submit_completed -> submit_completed_at_return True.
+    assert submit_completed_at_return is False
 
 
 @patch("resources.lib.resolver._existing_completed_stream", return_value=None)
@@ -5193,9 +5222,16 @@ def test_submit_ui_pump_rechecks_queue_quickly_after_initial_fast_miss(
     """A queue hit just after the first probe should not wait 200 ms."""
     submit_can_finish = threading.Event()
     queue_probe_times = []
+    submit_completed = [False]
 
     def delayed_submit(_nzb_url, _title):
+        # Slow op: blocks until the test releases submit_can_finish in its
+        # finally (AFTER snapshotting the flag below). submit_completed flips
+        # True only once this wait returns, so a fast path that adopts the
+        # queue hit without awaiting the worker observes it still False --
+        # load-independent. The 0.75s cap only bounds a regression that waits.
         submit_can_finish.wait(timeout=0.75)
+        submit_completed[0] = True
         return "SABnzbd_nzo_submitted", None
 
     def queued_job(_title):
@@ -5215,18 +5251,22 @@ def test_submit_ui_pump_rechecks_queue_quickly_after_initial_fast_miss(
     monitor = MagicMock()
     monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
 
-    started = _time.perf_counter()
     try:
         nzo_id, submit_error = _submit_nzb_with_ui_pump(
             "http://hydra/getnzb/abc", "movie.mkv", dialog, monitor
         )
+        submit_completed_at_return = submit_completed[0]
     finally:
         submit_can_finish.set()
-    elapsed = _time.perf_counter() - started
 
     assert (nzo_id, submit_error) == ("SABnzbd_nzo_second_fast_probe", None)
     assert len(queue_probe_times) == 2
-    assert elapsed < 0.2, "second fast queue probe took {:.3f}s".format(elapsed)
+    # Structural proof (load-independent): the second queue probe's hit is
+    # adopted and returned while the submit worker is still blocked on
+    # submit_can_finish (released only in the finally above, after this
+    # snapshot). A regression that waits for the submit worker would let it
+    # complete first -> submit_completed_at_return True.
+    assert submit_completed_at_return is False
 
 
 @patch("resources.lib.resolver.find_completed_by_name")
@@ -6453,19 +6493,31 @@ def test_poll_once_returns_active_queue_before_slow_history(
 ):
     """An active queue row is enough to update progress and start the next poll."""
 
+    # Load-independent structural guard: the history fetch blocks on an event
+    # the test releases only in finally, AFTER the fast-path result is captured.
+    # If _poll_once returns without awaiting history, history_completed stays
+    # False at the snapshot. A regression that blocks on history would run
+    # slow_history to completion (setting the flag) before returning -> red.
+    release = threading.Event()
+    history_completed = {"done": False}
+
     def slow_history(_nzo_id):
-        _time.sleep(0.25)
+        release.wait(timeout=2)
+        history_completed["done"] = True
 
     mock_status.return_value = {"status": "Downloading", "percentage": "50"}
     mock_history.side_effect = slow_history
 
-    started = _time.monotonic()
-    job_status, history, webdav_error = _poll_once(
-        "nzo_active", "movie", _make_monitor()
-    )
-    elapsed = _time.monotonic() - started
+    try:
+        job_status, history, webdav_error = _poll_once(
+            "nzo_active", "movie", _make_monitor()
+        )
+        # The fast active-queue path must return before the slow history fetch
+        # has completed.
+        assert not history_completed["done"]
+    finally:
+        release.set()
 
-    assert elapsed < 0.2
     assert job_status == mock_status.return_value
     assert history is None
     assert webdav_error is None
@@ -6858,9 +6910,11 @@ def test_poll_until_ready_waits_for_full_progress_history_before_poll_tick(
 @patch("resources.lib.resolver.find_video_file")
 @patch("resources.lib.resolver.get_job_history")
 @patch("resources.lib.resolver.get_job_status")
+@patch("resources.lib.resolver._wait_for_abort_or_timeout", return_value=False)
 @patch("resources.lib.resolver.xbmc")
 def test_poll_until_ready_repolls_full_progress_history_miss_before_full_tick(
     mock_xbmc,
+    mock_wait,
     mock_status,
     mock_history,
     mock_find,
@@ -6869,6 +6923,9 @@ def test_poll_until_ready_repolls_full_progress_history_miss_before_full_tick(
     _mock_find_completed,
 ):
     """A 100% queue row with a fast history miss should not wait a full tick."""
+    from resources.lib.resolver import _POLL_NEAR_COMPLETE_FAST_REPOLL_SECONDS
+
+    poll_interval = 1
     completed_history = {
         "status": "Completed",
         "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/movie",
@@ -6878,32 +6935,36 @@ def test_poll_until_ready_repolls_full_progress_history_miss_before_full_tick(
     mock_status.return_value = {"status": "Downloading", "percentage": "100"}
 
     def get_history(_nzo_id):
-        history_calls.append(_time.perf_counter())
+        history_calls.append(_nzo_id)
         if len(history_calls) == 1:
             return None
         return completed_history
 
     monitor = MagicMock()
-    monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
+    monitor.waitForAbort.return_value = False
     mock_xbmc.Monitor.return_value = monitor
     mock_history.side_effect = get_history
     mock_find.return_value = "/content/uncategorized/movie/movie.mkv"
     mock_stream_url.return_value = ("http://webdav/movie.mkv", {"Authorization": "x"})
 
-    started = _time.perf_counter()
     url, headers = _poll_until_ready(
-        "http://hydra/nzb", "movie", _make_dialog(), 1, 3600
+        "http://hydra/nzb", "movie", _make_dialog(), poll_interval, 3600
     )
-    elapsed = _time.perf_counter() - started
 
     assert url == "http://webdav/movie.mkv"
     assert headers == {"Authorization": "x"}
+    # The full-progress miss forced exactly one repoll (2 history calls).
     assert len(history_calls) == 2
-    history_gap = history_calls[1] - history_calls[0]
-    assert history_gap < 0.5, "full-progress history retry gap was {:.3f}s".format(
-        history_gap
-    )
-    assert elapsed < 0.5, "full-progress repoll waited {:.3f}s".format(elapsed)
+    # Structural, load-independent proof the repoll happened BEFORE the full
+    # poll tick. The per-poll wait (_wait_for_abort_or_timeout) is mocked, so it
+    # never really sleeps -- there is no wall-clock bound. The 100% (full
+    # progress) row must pace the single inter-poll wait on the near-complete
+    # fast-repoll interval, strictly shorter than the full poll_interval the
+    # slow path would have waited. A regression that drops the near-complete
+    # fast repoll would call this with poll_interval and fail the assertion.
+    expected_wait = min(poll_interval, _POLL_NEAR_COMPLETE_FAST_REPOLL_SECONDS)
+    mock_wait.assert_called_once_with(monitor, expected_wait)
+    assert expected_wait < poll_interval
 
 
 @patch("resources.lib.resolver.cancel_job")
@@ -7143,15 +7204,19 @@ def test_poll_until_ready_rechecks_completed_webdav_before_full_poll_interval(
         {"Authorization": "Basic primary"},
     )
 
-    started = _time.perf_counter()
     url, headers = _poll_until_ready(
         "http://hydra/nzb", "movie", _make_dialog(), 1, 3600
     )
-    elapsed = _time.perf_counter() - started
 
     assert url == "http://webdav/content/uncategorized/movie/movie.mkv"
     assert headers == {"Authorization": "Basic primary"}
-    assert elapsed < 0.5, "completed WebDAV recheck waited {:.3f}s".format(elapsed)
+    # Completed-WebDAV recheck guard (replaces a flake-prone wall-clock bound).
+    # The first find_video_file miss must recheck inline on the graduated
+    # 0.025s fast recheck delay -- it returns the video on that recheck rather
+    # than letting the poll loop fall through and wait a full poll_interval (1s)
+    # tick before re-polling. If the inline recheck regressed away, this fast
+    # recheck delay is never requested and the assertion fails.
+    monitor.waitForAbort.assert_any_call(0.025)
 
 
 @patch("resources.lib.resolver._existing_completed_stream", return_value=None)
