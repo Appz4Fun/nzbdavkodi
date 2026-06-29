@@ -17,6 +17,14 @@ engines:
     exclude_paths:
       - "tests/**"
       - "plugin.video.nzbdav/resources/lib/ptt/**"
+  # Codacy enables Trivy (dependency/vuln scanner) by default, but no patterns are
+  # configured for it in this project, so it aborts ("Failed to configure Codacy
+  # Trivy: no patterns configured") and reds both the Codacy Security Scan workflow
+  # AND the app-side Codacy Static Code Analysis check. Our security coverage is
+  # pylint/prospector/bandit here plus bandit.yml, semgrep.yml and codeql.yml in
+  # CI, so disable the misconfigured engine rather than let it fail the pipeline.
+  trivy:
+    enabled: false
 exclude_paths:
   - "plugin.video.nzbdav/resources/lib/ptt/**"
   - "tests/**"
