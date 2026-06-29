@@ -1789,12 +1789,127 @@ def _normalize_fallback_sources(fallback_sources):
     return normalized
 
 
+def _coerce_nonneg_int(value, default=0):
+    """Int-coerce value, treating falsy/invalid input as the default."""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return default
+
+
 def _normalize_content_length_hint(content_length_hint):
     try:
         hint = int(content_length_hint or 0)
     except (TypeError, ValueError):
         return 0
     return hint if hint > 0 else 0
+
+
+def _probe_content_length_hint(url, auth_header, content_length_hint):
+    """Confirm a known length via a bytes=0-0 range probe; 0 if unconfirmed."""
+    try:
+        req = Request(url)
+        _add_request_headers(req, auth_header)
+        req.add_header("Range", "bytes=0-0")
+        # nosemgrep
+        with urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
+            req, timeout=10
+        ) as resp:
+            cr = resp.headers.get("Content-Range", "")
+            status = getattr(resp, "status", None)
+            if status is None:
+                status = resp.getcode()
+            match = _CONTENT_RANGE_ZERO_RE.match(cr.strip())
+            stream_length = int(match.group(1)) if match else 0
+            if status == 206 and stream_length == content_length_hint:
+                return content_length_hint
+    except (OSError, ValueError):
+        pass
+    return 0
+
+
+def _probe_content_length_tail(url, auth_header):
+    """Read total size from the Content-Range of a bytes=-1 tail probe."""
+    try:
+        req = Request(url)
+        _add_request_headers(req, auth_header)
+        req.add_header("Range", "bytes=-1")
+        # nosemgrep
+        with urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
+            req, timeout=10
+        ) as resp:
+            cr = resp.headers.get("Content-Range", "")
+            return int(cr.split("/")[1]) if "/" in cr else 0
+    except (OSError, ValueError):
+        return 0
+
+
+def _session_last_activity(ctx, default):
+    """Best-known activity timestamp for a session ctx."""
+    return ctx.get("last_access", ctx.get("created_at", default))
+
+
+def _expired_session_ids(sessions, keep_session, now):
+    """Session ids older than the TTL, excluding the kept session."""
+    return [
+        session_id
+        for session_id, ctx in sessions.items()
+        if session_id != keep_session
+        and now - _session_last_activity(ctx, now) > _SESSION_TTL_SECONDS
+    ]
+
+
+def _least_recently_used_session(sessions, keep_session):
+    """Id of the least-recently-active evictable session, or None."""
+    removable = sorted(
+        (_session_last_activity(ctx, 0), session_id)
+        for session_id, ctx in sessions.items()
+        if session_id != keep_session
+    )
+    if not removable:
+        return None
+    return removable[0][1]
+
+
+def _thread_is_alive(thread):
+    """True when thread exists and is still running."""
+    return thread is not None and thread.is_alive()
+
+
+def _fallback_source_needs_prevalidation(source):
+    """Whether a fallback source still has prevalidation work pending."""
+    if source.get("failed") or source.get("validated"):
+        return False
+    # Either a resolved URL ready to fingerprint, or an nzo-only standby we
+    # can resolve into one.
+    return bool(source.get("stream_url") or source.get("nzo_id"))
+
+
+def _fallback_dedup_key(source):
+    # Dedup by nzo_id when present: a pushed source always carries
+    # stream_url="" (jobs only know their nzo_id), but the live cutover
+    # resolves stream_url in place — so a (nzo_id, stream_url) tuple key
+    # would treat a re-push of the same nzo as new once it's resolved,
+    # re-adding a duplicate that un-fails the source. Fall back to the
+    # URL only for url-only sources that have no nzo_id.
+    nzo_id = source.get("nzo_id", "")
+    if nzo_id:
+        return ("nzo", nzo_id)
+    return ("url", source.get("stream_url", ""))
+
+
+def _merge_new_fallback_sources(existing, normalized):
+    """Append not-yet-seen normalized sources into existing; return added count."""
+    seen = {_fallback_dedup_key(s) for s in existing if isinstance(s, dict)}
+    added = 0
+    for src in normalized:
+        key = _fallback_dedup_key(src)
+        if key in seen:
+            continue
+        seen.add(key)
+        existing.append(src)
+        added += 1
+    return added
 
 
 def _attach_fallback_context_fields(ctx, fallback_sources):
@@ -3433,6 +3548,33 @@ class _StreamHandler(BaseHTTPRequestHandler):
         ctx.pop("_awaiting_download_no_progress_byte", None)
         return 0
 
+    @staticmethod
+    def _demote_active_source(ctx, fallback):
+        """Re-add the currently-active (pre-cutover) source as a trusted backup.
+
+        The original was just serving these exact bytes, so it is marked
+        validated and demoted; skipped when it is already in the pool or is
+        the source we are cutting over to.
+        """
+        demoted_url = ctx.get("remote_url")
+        if not demoted_url or demoted_url == fallback.get("stream_url"):
+            return
+        sources = ctx.setdefault("fallback_sources", [])
+        if any(src.get("stream_url") == demoted_url for src in sources):
+            return
+        demoted_auth = ctx.get("auth_header")
+        sources.append(
+            {
+                "stream_url": demoted_url,
+                "stream_headers": (
+                    {"Authorization": demoted_auth} if demoted_auth else {}
+                ),
+                "content_length": ctx.get("content_length", 0) or 0,
+                "demoted": True,
+                "validated": True,
+            }
+        )
+
     def _activate_fallback_source(self, ctx, fallback, current, stuck_awaiting=False):
         """Point the session at a selected fallback source for live cutover.
 
@@ -3451,25 +3593,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
         # prevalidation warmer would treat it as a fresh source and re-fingerprint
         # it (an extra upstream open of a peer we already trust); validated=True
         # skips that while leaving it selectable as a last resort.
-        demoted_url = ctx.get("remote_url")
-        if demoted_url and demoted_url != fallback.get("stream_url"):
-            sources = ctx.setdefault("fallback_sources", [])
-            already_present = any(
-                src.get("stream_url") == demoted_url for src in sources
-            )
-            if not already_present:
-                demoted_auth = ctx.get("auth_header")
-                sources.append(
-                    {
-                        "stream_url": demoted_url,
-                        "stream_headers": (
-                            {"Authorization": demoted_auth} if demoted_auth else {}
-                        ),
-                        "content_length": ctx.get("content_length", 0) or 0,
-                        "demoted": True,
-                        "validated": True,
-                    }
-                )
+        self._demote_active_source(ctx, fallback)
         ctx["remote_url"] = fallback["stream_url"]
         ctx["auth_header"] = (fallback.get("stream_headers") or {}).get("Authorization")
         ctx.pop("upstream_down_notified", None)
@@ -3492,23 +3616,26 @@ class _StreamHandler(BaseHTTPRequestHandler):
             )
         except ValueError:
             ctx["fallback_active_index"] = -1
-        if stuck_awaiting:
-            message = (
-                "NZB-DAV: Primary stuck on no-progress AWAITING_DOWNLOAD at "
-                "byte {}; failing over to fallback nzo_id={} (switch_count={})"
-            )
-        else:
-            message = (
-                "NZB-DAV: Switched pass-through source at byte {} to fallback "
-                "nzo_id={} (switch_count={})"
-            )
         xbmc.log(
-            message.format(
+            self._cutover_log_message(stuck_awaiting).format(
                 current,
                 fallback.get("nzo_id", ""),
                 ctx["fallback_switch_count"],
             ),
             xbmc.LOGWARNING,
+        )
+
+    @staticmethod
+    def _cutover_log_message(stuck_awaiting):
+        """Log-message template for a live fallback cutover."""
+        if stuck_awaiting:
+            return (
+                "NZB-DAV: Primary stuck on no-progress AWAITING_DOWNLOAD at "
+                "byte {}; failing over to fallback nzo_id={} (switch_count={})"
+            )
+        return (
+            "NZB-DAV: Switched pass-through source at byte {} to fallback "
+            "nzo_id={} (switch_count={})"
         )
 
     @staticmethod
@@ -7476,24 +7603,8 @@ class StreamProxy:
         if readahead_buffer is not None:
             readahead_buffer.stop()
 
-        active_ffmpeg = ctx.get("active_ffmpeg")
-        if active_ffmpeg:
-            try:
-                active_ffmpeg.kill()
-            except (OSError, subprocess.SubprocessError, ValueError):
-                pass
-            else:
-                if wait_for_process:
-                    StreamProxy._wait_for_active_ffmpeg(active_ffmpeg)
-                else:
-                    StreamProxy._wait_for_active_ffmpeg_in_background(active_ffmpeg)
-
-        temp_path = ctx.get("temp_path")
-        if temp_path and os.path.exists(temp_path):
-            try:
-                os.remove(temp_path)
-            except OSError:
-                pass
+        StreamProxy._kill_session_ffmpeg(ctx, wait_for_process)
+        StreamProxy._remove_session_tempfile(ctx)
 
         hls_producer = ctx.get("hls_producer")
         if hls_producer is not None:
@@ -7504,6 +7615,31 @@ class StreamProxy:
                     "NZB-DAV: HLS producer close failed: {}".format(e),
                     xbmc.LOGWARNING,
                 )
+
+    @staticmethod
+    def _kill_session_ffmpeg(ctx, wait_for_process):
+        """Kill the session's ffmpeg process and reap it (sync or background)."""
+        active_ffmpeg = ctx.get("active_ffmpeg")
+        if not active_ffmpeg:
+            return
+        try:
+            active_ffmpeg.kill()
+        except (OSError, subprocess.SubprocessError, ValueError):
+            return
+        if wait_for_process:
+            StreamProxy._wait_for_active_ffmpeg(active_ffmpeg)
+        else:
+            StreamProxy._wait_for_active_ffmpeg_in_background(active_ffmpeg)
+
+    @staticmethod
+    def _remove_session_tempfile(ctx):
+        """Best-effort removal of the session's temp faststart file."""
+        temp_path = ctx.get("temp_path")
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
 
     @staticmethod
     def _probe_hls_fmp4_capability(ffmpeg_path):
@@ -7714,30 +7850,16 @@ class StreamProxy:
         now = time.time()
         evicted = []
 
-        expired = [
-            session_id
-            for session_id, ctx in sessions.items()
-            if session_id != keep_session
-            and now - ctx.get("last_access", ctx.get("created_at", now))
-            > _SESSION_TTL_SECONDS
-        ]
+        expired = _expired_session_ids(sessions, keep_session, now)
         for session_id in expired:
             ctx = sessions.pop(session_id, None)
             if ctx is not None:
                 evicted.append(ctx)
 
         while len(sessions) > _MAX_STREAM_SESSIONS:
-            removable = sorted(
-                (
-                    ctx.get("last_access", ctx.get("created_at", 0)),
-                    session_id,
-                )
-                for session_id, ctx in sessions.items()
-                if session_id != keep_session
-            )
-            if not removable:
+            session_id = _least_recently_used_session(sessions, keep_session)
+            if session_id is None:
                 break
-            _, session_id = removable[0]
             ctx = sessions.pop(session_id, None)
             if ctx is not None:
                 evicted.append(ctx)
@@ -7789,15 +7911,7 @@ class StreamProxy:
             )
             return
         sources = ctx.get("fallback_sources") or []
-
-        def _has_work(source):
-            if source.get("failed") or source.get("validated"):
-                return False
-            # Either a resolved URL ready to fingerprint, or an nzo-only
-            # standby we can resolve into one.
-            return bool(source.get("stream_url") or source.get("nzo_id"))
-
-        pending = [s for s in sources if _has_work(s)]
+        pending = [s for s in sources if _fallback_source_needs_prevalidation(s)]
         xbmc.log(
             "NZB-DAV: prevalidation pending sources={}/{} expected_length={}".format(
                 len(pending), len(sources), expected_length
@@ -7811,24 +7925,11 @@ class StreamProxy:
         # the session dirty and let a single running warmer re-loop to pick up
         # late arrivals, instead of spawning a thread per push.
         ctx["_fallback_prevalidation_dirty"] = True
-        existing = ctx.get("_fallback_prevalidation_thread")
-        if existing is not None and existing.is_alive():
+        if _thread_is_alive(ctx.get("_fallback_prevalidation_thread")):
             return
 
         def _warm():
-            prefetch_thread = ctx.get("_initial_range_prefetch_thread")
-            if prefetch_thread and prefetch_thread is not threading.current_thread():
-                try:
-                    prefetch_thread.join()
-                except RuntimeError:
-                    pass
-            # Resolve nzo-only standbys into WebDAV URLs, then fingerprint the
-            # resolved sources — so the live cutover is an instant pointer swap.
-            # The dirty flag lets a merge that lands mid-pass trigger one more
-            # pass; it terminates once no new push has arrived.
-            while ctx.pop("_fallback_prevalidation_dirty", False):
-                self._refresh_session_standby_fallbacks(ctx)
-                self._prevalidate_fallback_sources(ctx)
+            self._run_fallback_prevalidation_warmer(ctx)
 
         thread = threading.Thread(target=_warm, name="nzbdav-fallback-prevalidate")
         thread.daemon = True
@@ -7839,6 +7940,24 @@ class StreamProxy:
             # Out of thread budget — match the sibling prefetch spawns and fail
             # soft so prevalidation never wedges /prepare.
             ctx.pop("_fallback_prevalidation_thread", None)
+
+    def _run_fallback_prevalidation_warmer(self, ctx):
+        """Warmer-thread body: drain the dirty flag, resolving + fingerprinting.
+
+        Resolves nzo-only standbys into WebDAV URLs, then fingerprints the
+        resolved sources so the live cutover is an instant pointer swap. The
+        dirty flag lets a merge that lands mid-pass trigger one more pass; it
+        terminates once no new push has arrived.
+        """
+        prefetch_thread = ctx.get("_initial_range_prefetch_thread")
+        if prefetch_thread and prefetch_thread is not threading.current_thread():
+            try:
+                prefetch_thread.join()
+            except RuntimeError:
+                pass
+        while ctx.pop("_fallback_prevalidation_dirty", False):
+            self._refresh_session_standby_fallbacks(ctx)
+            self._prevalidate_fallback_sources(ctx)
 
     @staticmethod
     def _initial_range_prefetchable(ctx):
@@ -7996,16 +8115,10 @@ class StreamProxy:
         if not self._initial_range_prefetchable(ctx):
             return
         settings = _passthrough_runtime_settings(ctx)
-        try:
-            mb = int(settings.get("readahead_buffer_mb", 0) or 0)
-        except (TypeError, ValueError):
-            mb = 0
+        mb = _coerce_nonneg_int(settings.get("readahead_buffer_mb", 0))
         if mb <= 0:
             return
-        try:
-            content_length = int(ctx.get("content_length", 0) or 0)
-        except (TypeError, ValueError):
-            return
+        content_length = _coerce_nonneg_int(ctx.get("content_length", 0))
         if content_length <= 0:
             return
         cap_bytes = mb * 1024 * 1024
@@ -8134,18 +8247,6 @@ class StreamProxy:
         """
         normalized = _normalize_fallback_sources(fallback_sources)
 
-        def _dedup_key(source):
-            # Dedup by nzo_id when present: a pushed source always carries
-            # stream_url="" (jobs only know their nzo_id), but the live cutover
-            # resolves stream_url in place — so a (nzo_id, stream_url) tuple key
-            # would treat a re-push of the same nzo as new once it's resolved,
-            # re-adding a duplicate that un-fails the source. Fall back to the
-            # URL only for url-only sources that have no nzo_id.
-            nzo_id = source.get("nzo_id", "")
-            if nzo_id:
-                return ("nzo", nzo_id)
-            return ("url", source.get("stream_url", ""))
-
         with self._context_lock:
             sessions = getattr(self._server, "stream_sessions", None)
             if not isinstance(sessions, dict):
@@ -8154,15 +8255,7 @@ class StreamProxy:
             if not isinstance(ctx, dict):
                 return None
             existing = list(ctx.get("fallback_sources") or [])
-            seen = {_dedup_key(s) for s in existing if isinstance(s, dict)}
-            added = 0
-            for src in normalized:
-                key = _dedup_key(src)
-                if key in seen:
-                    continue
-                seen.add(key)
-                existing.append(src)
-                added += 1
+            added = _merge_new_fallback_sources(existing, normalized)
             if added:
                 ctx["fallback_sources"] = existing
         if added:
@@ -8947,24 +9040,11 @@ class StreamProxy:
         """Get file size via HEAD or range probe."""
         content_length_hint = _normalize_content_length_hint(content_length_hint)
         if content_length_hint > 0:
-            try:
-                req = Request(url)
-                _add_request_headers(req, auth_header)
-                req.add_header("Range", "bytes=0-0")
-                # nosemgrep
-                with urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
-                    req, timeout=10
-                ) as resp:
-                    cr = resp.headers.get("Content-Range", "")
-                    status = getattr(resp, "status", None)
-                    if status is None:
-                        status = resp.getcode()
-                    match = _CONTENT_RANGE_ZERO_RE.match(cr.strip())
-                    stream_length = int(match.group(1)) if match else 0
-                    if status == 206 and stream_length == content_length_hint:
-                        return content_length_hint
-            except (OSError, ValueError):
-                pass
+            confirmed = _probe_content_length_hint(
+                url, auth_header, content_length_hint
+            )
+            if confirmed > 0:
+                return confirmed
 
         req = Request(url, method="HEAD")
         _add_request_headers(req, auth_header)
@@ -8976,18 +9056,7 @@ class StreamProxy:
                 return int(resp.headers.get("Content-Length", 0))
         except (OSError, ValueError):
             pass
-        try:
-            req = Request(url)
-            _add_request_headers(req, auth_header)
-            req.add_header("Range", "bytes=-1")
-            # nosemgrep
-            with urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
-                req, timeout=10
-            ) as resp:
-                cr = resp.headers.get("Content-Range", "")
-                return int(cr.split("/")[1]) if "/" in cr else 0
-        except (OSError, ValueError):
-            return 0
+        return _probe_content_length_tail(url, auth_header)
 
     @staticmethod
     def _detect_content_type(url):
