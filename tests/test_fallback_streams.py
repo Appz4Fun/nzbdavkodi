@@ -2403,6 +2403,14 @@ def test_selection_fallback_does_not_wait_for_optional_tail_after_partial_match(
     assert not slow_completed_at_return
     # The list assertion confirms the slow optional tail was not attached.
     assert selected["_fallback_candidates"] == [candidates[0]]
+    # Premise pin (load-independent): the structural slow_completed guard proves
+    # the scan does not BLOCK on the optional tail, but it cannot see drift in the
+    # bounded wait the scan grants before giving up. Widening that wait (e.g. to
+    # 0.2s) would keep this test green yet slow every real partial-match path.
+    # Pin the documented optional-tail wait so such a drift goes red here.
+    from resources.lib import fallback_streams
+
+    assert fallback_streams._FALLBACK_MANIFEST_OPTIONAL_TAIL_WAIT_SECONDS == 0.1
 
 
 @patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")

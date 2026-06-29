@@ -3899,6 +3899,13 @@ def test_start_direct_playback_prepare_snapshots_settings_in_worker(
         settings_getter=settings_getter,
     )
 
+    # Load-independent thread-handle proof: the returned state must carry the
+    # live worker thread. If thread.start() raised and prepare ran synchronously
+    # (or a refactor dropped the handle / took the ready-state path), state
+    # carries "thread": None. This goes red even when the in-flight gate timing
+    # below stays green (e.g. a dropped ``state["thread"] = thread`` assignment).
+    assert state["thread"] is not None
+
     try:
         # The worker is genuinely in-flight (it has entered the blocked settings
         # read) but cannot have finished prepare while the gate above is closed
@@ -5314,8 +5321,16 @@ def test_submit_ui_pump_rechecks_queue_quickly_after_initial_fast_miss(
     # interval while still going red on a slow-interval regression.
     from resources.lib.resolver import (  # pylint: disable=import-outside-toplevel
         _SUBMIT_QUEUE_PROBE_FAST_INTERVAL_SECONDS,
+        _SUBMIT_QUEUE_PROBE_FAST_WINDOW_SECONDS,
         _SUBMIT_QUEUE_PROBE_INTERVAL_SECONDS,
     )
+
+    # Premise pin (load-independent): the cadence proof assumes the 2nd probe
+    # (~0.05s in) lands inside the fast-retry window. Shrinking the window to an
+    # intermediate value (e.g. 0.06s) would still keep probe_gap < midpoint green
+    # yet degrade behavior by ending the fast cadence prematurely. Pin the
+    # documented window so such a config drift goes red here.
+    assert _SUBMIT_QUEUE_PROBE_FAST_WINDOW_SECONDS >= 2.0
 
     probe_gap = queue_probe_times[1] - queue_probe_times[0]
     fast_slow_midpoint = (
@@ -6981,6 +6996,16 @@ def test_poll_until_ready_waits_for_full_progress_history_before_poll_tick(
         "full-progress grace missed history on poll 1 and slept a poll wait "
         "before resolving; waitForAbort delays={}".format(poll_waits)
     )
+    # Premise pin (load-independent): the structural proof above rides on the
+    # ~0.02s simulated history latency landing inside the documented grace. An
+    # intermediate grace reduction (e.g. 0.07) would still sit above 0.02 and
+    # keep the len==1 / no-poll-wait snapshot green, yet shrink the real-world
+    # safety margin. Pin the documented grace so such a drift goes red here.
+    from resources.lib.resolver import (  # pylint: disable=import-outside-toplevel
+        _POLL_FULL_PROGRESS_HISTORY_GRACE_SECONDS,
+    )
+
+    assert _POLL_FULL_PROGRESS_HISTORY_GRACE_SECONDS == 0.14
 
 
 @patch("resources.lib.resolver._existing_completed_stream", return_value=None)
