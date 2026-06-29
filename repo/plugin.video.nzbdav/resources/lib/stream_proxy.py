@@ -8999,21 +8999,451 @@ class StreamProxy:
             self._start_fallback_prevalidation(ctx)
         return added
 
-    def prepare_stream(
+    @staticmethod
+    def _probe_dv_source(remote_url, auth_header, content_length):
+        """Run the pure-Python DV source probe, failing safe on crash."""
+        try:
+            dv_result = probe_dolby_vision_source(
+                remote_url,
+                auth_header,
+                file_size=content_length if content_length else None,
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            xbmc.log(
+                "NZB-DAV: DV probe crashed -- failing safe to "
+                "matroska: {!r}".format(exc),
+                xbmc.LOGWARNING,
+            )
+            from resources.lib.dv_source import DolbyVisionSourceResult
+
+            dv_result = DolbyVisionSourceResult("dv_unknown", "probe_crashed")
+        xbmc.log(
+            "NZB-DAV: dv_probe classification={} reason={} "
+            "profile={} el_type={}".format(
+                dv_result.classification,
+                dv_result.reason,
+                dv_result.profile,
+                dv_result.el_type,
+            ),
+            xbmc.LOGDEBUG,
+        )
+        return dv_result
+
+    def _dv_route_allows_fmp4(self, remote_url, auth_header, content_length):
+        """Gate fmp4 HLS on DV profile via the pure-Python source probe.
+
+        Returns True when the source may use fmp4 HLS, False when it must
+        fall back to matroska. Probes the first HEVC access unit to classify
+        DV profile/EL and applies the 2026-04-23 routing matrix verbatim.
+        """
+        dv_result = self._probe_dv_source(remote_url, auth_header, content_length)
+        if dv_result.classification == "dv_profile_7_fel":
+            xbmc.log(
+                "NZB-DAV: dv_route=matroska reason={} "
+                "profile={} el_type={}".format(
+                    dv_result.reason,
+                    dv_result.profile,
+                    dv_result.el_type,
+                ),
+                xbmc.LOGWARNING,
+            )
+            return False
+        if (
+            dv_result.classification == "dv_allowed_for_fmp4"
+            and dv_result.profile == 7
+            and dv_result.el_type == "MEL"
+        ):
+            xbmc.log(
+                "NZB-DAV: dv_route=fmp4 reason={} profile=7 "
+                "el_type=MEL (experimental -- metadata-only EL "
+                "does not exercise CAMLCodec dual-layer init)".format(dv_result.reason),
+                xbmc.LOGINFO,
+            )
+            return True
+        return self._dv_route_tail(dv_result)
+
+    @staticmethod
+    def _dv_route_tail(dv_result):
+        """Tail of the DV routing matrix: non-P7 fmp4, non_dv, unknown."""
+        if dv_result.classification == "dv_allowed_for_fmp4":
+            xbmc.log(
+                "NZB-DAV: dv_route=matroska reason={} "
+                "profile={} (non-P7 DV hangs CAMLCodec "
+                "onAVStarted on fmp4 per 2026-04-15 "
+                "testing)".format(dv_result.reason, dv_result.profile),
+                xbmc.LOGWARNING,
+            )
+            return False
+        if dv_result.classification == "non_dv":
+            xbmc.log(
+                "NZB-DAV: dv_route=fmp4 reason={}".format(dv_result.reason),
+                xbmc.LOGDEBUG,
+            )
+            return True
+        xbmc.log(
+            "NZB-DAV: dv_route=matroska reason={} "
+            "profile={} el_type={} (unknown DV state -- "
+            "failing safe)".format(
+                dv_result.reason,
+                dv_result.profile,
+                dv_result.el_type,
+            ),
+            xbmc.LOGWARNING,
+        )
+        return False
+
+    def _build_ctx_fallback(
+        self, remote_url, auth_header, content_length_hint, content_type, is_mp4
+    ):
+        """Pass-through proxy context for fallback-enabled streams."""
+        content_length = self._get_content_length(
+            remote_url, auth_header, content_length_hint=content_length_hint
+        )
+        if content_length <= 0:
+            raise OSError(
+                "Unable to determine content length for fallback-enabled stream"
+            )
+        ctx = {
+            "remote_url": remote_url,
+            "auth_header": auth_header,
+            "content_length": content_length,
+            "content_type": "video/mp4" if is_mp4 else content_type,
+            "remux": False,
+            "faststart": False,
+            "seekable": True,
+        }
+        xbmc.log(
+            "NZB-DAV: Fallback streams attached; using pass-through proxy "
+            "before MP4 repair or remux rescue tiers",
+            xbmc.LOGINFO,
+        )
+        return ctx
+
+    def _resolve_mp4_temp_path(
+        self,
+        ffmpeg_path,
+        remote_url,
+        auth_header,
+        content_length,
+        content_length_unknown,
+    ):
+        """Tier 2 decision: temp-file faststart path, or None to skip.
+
+        Skip for large files (>4GB) — temp remux would take too long and
+        would time out the prepare_stream_via_service call.
+        """
+        _TEMP_FASTSTART_MAX = 4 * 1073741824  # 4 GB
+        if content_length_unknown:
+            xbmc.log(
+                "NZB-DAV: MP4 content length unknown; skipping temp-file faststart",
+                xbmc.LOGWARNING,
+            )
+            return None
+        if content_length > _TEMP_FASTSTART_MAX:
+            xbmc.log(
+                "NZB-DAV: File too large for temp-file faststart "
+                "({}B > {}B), skipping to MKV remux".format(
+                    content_length, _TEMP_FASTSTART_MAX
+                ),
+                xbmc.LOGINFO,
+            )
+            return None
+        if ffmpeg_path:
+            return self._prepare_tempfile_faststart(
+                ffmpeg_path, remote_url, auth_header
+            )
+        return None
+
+    def _build_ctx_mp4_tempfile_or_remux(
+        self, remote_url, auth_header, content_length, content_length_unknown
+    ):
+        """MP4 tiers 2/3: temp-file faststart, MKV remux, or direct proxy."""
+        # Tier 2: Try temp-file faststart (ffmpeg -movflags +faststart)
+        ffmpeg_path = self._get_ffmpeg_capabilities().get("ffmpeg_path")
+        temp_path = self._resolve_mp4_temp_path(
+            ffmpeg_path,
+            remote_url,
+            auth_header,
+            content_length,
+            content_length_unknown,
+        )
+
+        if temp_path:
+            temp_size = os.path.getsize(temp_path)
+            ctx = {
+                "remote_url": remote_url,
+                "auth_header": auth_header,
+                "content_type": "video/mp4",
+                "faststart": False,
+                "remux": False,
+                "temp_faststart": True,
+                "temp_path": temp_path,
+                "content_length": temp_size,
+            }
+            xbmc.log(
+                "NZB-DAV: MP4 temp-file faststart ({}B)".format(temp_size),
+                xbmc.LOGINFO,
+            )
+            return ctx
+        if ffmpeg_path:
+            return self._ctx_mp4_mkv_remux(
+                remote_url, auth_header, ffmpeg_path, content_length
+            )
+        if content_length_unknown:
+            raise OSError(
+                "Unable to determine content length for MP4 stream "
+                "and ffmpeg unavailable"
+            )
+        # Last resort: direct proxy (may fail for large files)
+        return {
+            "remote_url": remote_url,
+            "auth_header": auth_header,
+            "content_length": content_length,
+            "content_type": "video/mp4",
+            "remux": False,
+            "faststart": False,
+        }
+
+    def _ctx_mp4_mkv_remux(self, remote_url, auth_header, ffmpeg_path, content_length):
+        """Tier 3: MKV remux fallback for an MP4 source (existing behavior)."""
+        duration = self._probe_duration(ffmpeg_path, remote_url, auth_header)
+        ctx = {
+            "remote_url": remote_url,
+            "auth_header": auth_header,
+            "content_type": "video/x-matroska",
+            "remux": True,
+            "faststart": False,
+            "ffmpeg_path": ffmpeg_path,
+            "total_bytes": content_length,
+            "duration_seconds": duration,
+            "seekable": duration is not None and content_length > 0,
+        }
+        xbmc.log("NZB-DAV: MP4 fallback to MKV remux", xbmc.LOGWARNING)
+        return ctx
+
+    def _build_ctx_mp4(self, remote_url, auth_header, content_length_hint):
+        """MP4 proxy context: faststart layout, then temp/remux tiers."""
+        content_length = self._get_content_length(
+            remote_url, auth_header, content_length_hint=content_length_hint
+        )
+        content_length_unknown = content_length <= 0
+        faststart = self._try_faststart_layout(remote_url, content_length, auth_header)
+
+        if faststart is not None and not faststart.get("already_faststart"):
+            ctx = {
+                "remote_url": remote_url,
+                "auth_header": auth_header,
+                "content_type": "video/mp4",
+                "faststart": True,
+                "remux": False,
+                "header_data": faststart["header_data"],
+                "virtual_size": faststart["virtual_size"],
+                "payload_remote_start": faststart["payload_remote_start"],
+                "payload_remote_end": faststart["payload_remote_end"],
+                "payload_size": faststart["payload_size"],
+                "range_cache": RangeCache(),
+            }
+            xbmc.log(
+                "NZB-DAV: MP4 faststart proxy (virtual={}B, header={}B)".format(
+                    faststart["virtual_size"], len(faststart["header_data"])
+                ),
+                xbmc.LOGINFO,
+            )
+            return ctx
+        if faststart is not None and faststart.get("already_faststart"):
+            xbmc.log(
+                "NZB-DAV: MP4 already faststart; using pass-through proxy",
+                xbmc.LOGINFO,
+            )
+            return {
+                "remote_url": remote_url,
+                "auth_header": auth_header,
+                "content_length": content_length,
+                "content_type": "video/mp4",
+                "remux": False,
+                "faststart": False,
+                "seekable": True,
+            }
+        return self._build_ctx_mp4_tempfile_or_remux(
+            remote_url, auth_header, content_length, content_length_unknown
+        )
+
+    def _build_ctx_default_remux(
         self,
         remote_url,
-        auth_header=None,
-        fallback_sources=None,
-        content_length_hint=None,
-        settings_snapshot=None,
+        auth_header,
+        content_length,
+        force_mode,
+        ffmpeg_caps,
+        threshold,
     ):
-        """Set up proxy for a new stream.
+        """ffmpeg-available remux context: fmp4 HLS or piped MKV.
 
-        Returns (local_proxy_url, stream_info_dict).
-        stream_info_dict contains duration_seconds, total_bytes, seekable, remux,
-        faststart, and virtual_size.
+        Force-remux exists for 32-bit Kodi builds (Amlogic CoreELEC and
+        similar) that throw ``Open - Unhandled exception`` on pass-through
+        HTTP above ~4 GB Content-Length. force_remux_mode picks the shape:
+        "matroska" (default, piped MKV, cache-bounded seek) or "hls_fmp4"
+        (experimental fragmented-MP4 HLS VOD, full random seek, DV-capable).
         """
-        started = time.monotonic()
+        ffmpeg_path = ffmpeg_caps.get("ffmpeg_path")
+        duration = self._probe_duration(ffmpeg_path, remote_url, auth_header)
+        use_fmp4 = (
+            force_mode == "hls_fmp4"
+            and ffmpeg_caps.get("hls_fmp4", False)
+            and duration is not None
+            and duration > 0
+        )
+        if force_mode == "hls_fmp4" and not ffmpeg_caps.get("hls_fmp4", False):
+            xbmc.log(
+                "NZB-DAV: ffmpeg lacks required fmp4 HLS flags; "
+                "falling back to piped Matroska",
+                xbmc.LOGWARNING,
+            )
+        if use_fmp4:
+            use_fmp4 = self._dv_route_allows_fmp4(
+                remote_url, auth_header, content_length
+            )
+        if use_fmp4:
+            return self._ctx_fmp4_hls(
+                remote_url, auth_header, ffmpeg_path, content_length, duration
+            )
+        return self._ctx_piped_mkv(
+            remote_url, auth_header, ffmpeg_path, content_length, duration, threshold
+        )
+
+    @staticmethod
+    def _ctx_fmp4_hls(remote_url, auth_header, ffmpeg_path, content_length, duration):
+        """fMP4 HLS remux context (experimental, full random seek)."""
+        ctx = {
+            "remote_url": remote_url,
+            "auth_header": auth_header,
+            "content_type": "application/vnd.apple.mpegurl",
+            "mode": "hls",
+            "remux": True,
+            "faststart": False,
+            "ffmpeg_path": ffmpeg_path,
+            "total_bytes": content_length,
+            "duration_seconds": duration,
+            "seekable": True,
+            "hls_segment_duration": _HLS_SEGMENT_SECONDS,
+            "hls_segment_format": "fmp4",
+        }
+        xbmc.log(
+            "NZB-DAV: Force-remuxing {}B file via fMP4 HLS "
+            "(experimental, duration={:.1f}s)".format(content_length, duration),
+            xbmc.LOGWARNING,
+        )
+        return ctx
+
+    @staticmethod
+    def _ctx_piped_mkv(
+        remote_url, auth_header, ffmpeg_path, content_length, duration, threshold
+    ):
+        """Piped Matroska remux context (cache-bounded seek)."""
+        ctx = {
+            "remote_url": remote_url,
+            "auth_header": auth_header,
+            "content_type": "video/x-matroska",
+            "remux": True,
+            "faststart": False,
+            "ffmpeg_path": ffmpeg_path,
+            "total_bytes": content_length,
+            "duration_seconds": duration,
+            "seekable": duration is not None and content_length > 0,
+        }
+        xbmc.log(
+            "NZB-DAV: Force-remuxing large {}B file via piped MKV "
+            "(duration={}, threshold={}B)".format(
+                content_length,
+                "{:.1f}s".format(duration) if duration else "unknown",
+                threshold,
+            ),
+            xbmc.LOGWARNING,
+        )
+        return ctx
+
+    @staticmethod
+    def _decide_force_remux(content_length, content_length_unknown, settings_snapshot):
+        """Resolve (threshold, force_mode, needs_remux) for a non-MP4 source."""
+        if settings_snapshot:
+            threshold = _force_remux_threshold_bytes_from_snapshot(settings_snapshot)
+            force_mode = _force_remux_mode_from_snapshot(settings_snapshot)
+        else:
+            threshold = _get_force_remux_threshold_bytes()
+            force_mode = _get_force_remux_mode()
+        force_remux_requested = threshold > 0 and force_mode in (
+            "matroska",
+            "hls_fmp4",
+        )
+        needs_remux = force_remux_requested and (
+            content_length_unknown or content_length >= threshold
+        )
+        if needs_remux and content_length_unknown:
+            xbmc.log(
+                "NZB-DAV: Content length unknown; forcing live remux "
+                "instead of zero-byte pass-through",
+                xbmc.LOGWARNING,
+            )
+        return threshold, force_mode, needs_remux
+
+    def _build_ctx_default(
+        self,
+        remote_url,
+        auth_header,
+        content_length_hint,
+        content_type,
+        settings_snapshot,
+    ):
+        """Non-MP4 context: force-remux decision then remux or pass-through."""
+        content_length = self._get_content_length(
+            remote_url, auth_header, content_length_hint=content_length_hint
+        )
+        content_length_unknown = content_length <= 0
+        threshold, force_mode, needs_remux = self._decide_force_remux(
+            content_length, content_length_unknown, settings_snapshot
+        )
+        ffmpeg_caps = self._get_ffmpeg_capabilities() if needs_remux else {}
+        if ffmpeg_caps.get("ffmpeg_path"):
+            return self._build_ctx_default_remux(
+                remote_url,
+                auth_header,
+                content_length,
+                force_mode,
+                ffmpeg_caps,
+                threshold,
+            )
+        if needs_remux:
+            if content_length_unknown:
+                raise OSError(
+                    "Unable to determine content length for stream "
+                    "and ffmpeg unavailable"
+                )
+            xbmc.log(
+                "NZB-DAV: {}B file exceeds remux threshold but no "
+                "ffmpeg found — falling back to pass-through, "
+                "playback may fail on 32-bit Kodi".format(content_length),
+                xbmc.LOGWARNING,
+            )
+        return {
+            "remote_url": remote_url,
+            "auth_header": auth_header,
+            "content_length": content_length,
+            "content_type": content_type,
+            "remux": False,
+        }
+
+    def _validate_and_classify(
+        self,
+        remote_url,
+        auth_header,
+        fallback_sources,
+        content_length_hint,
+        settings_snapshot,
+    ):
+        """Validate/normalize inputs, clear stale sessions, classify the URL.
+
+        Returns the normalized inputs plus content_type and is_mp4.
+        """
         _validate_url(remote_url)
         auth_header = _validate_auth_header(auth_header)
         fallback_sources = _normalize_fallback_sources(fallback_sources)
@@ -9029,381 +9459,17 @@ class StreamProxy:
         content_type = self._detect_content_type(remote_url)
         lower_url = remote_url.lower()
         is_mp4 = lower_url.endswith((".mp4", ".m4v"))
+        return (
+            auth_header,
+            fallback_sources,
+            content_length_hint,
+            settings_snapshot,
+            content_type,
+            is_mp4,
+        )
 
-        if fallback_sources:
-            content_length = self._get_content_length(
-                remote_url, auth_header, content_length_hint=content_length_hint
-            )
-            if content_length <= 0:
-                raise OSError(
-                    "Unable to determine content length for fallback-enabled stream"
-                )
-            ctx = {
-                "remote_url": remote_url,
-                "auth_header": auth_header,
-                "content_length": content_length,
-                "content_type": "video/mp4" if is_mp4 else content_type,
-                "remux": False,
-                "faststart": False,
-                "seekable": True,
-            }
-            xbmc.log(
-                "NZB-DAV: Fallback streams attached; using pass-through proxy "
-                "before MP4 repair or remux rescue tiers",
-                xbmc.LOGINFO,
-            )
-        elif is_mp4:
-            content_length = self._get_content_length(
-                remote_url, auth_header, content_length_hint=content_length_hint
-            )
-            content_length_unknown = content_length <= 0
-            faststart = self._try_faststart_layout(
-                remote_url, content_length, auth_header
-            )
-
-            if faststart is not None and not faststart.get("already_faststart"):
-                ctx = {
-                    "remote_url": remote_url,
-                    "auth_header": auth_header,
-                    "content_type": "video/mp4",
-                    "faststart": True,
-                    "remux": False,
-                    "header_data": faststart["header_data"],
-                    "virtual_size": faststart["virtual_size"],
-                    "payload_remote_start": faststart["payload_remote_start"],
-                    "payload_remote_end": faststart["payload_remote_end"],
-                    "payload_size": faststart["payload_size"],
-                    "range_cache": RangeCache(),
-                }
-                xbmc.log(
-                    "NZB-DAV: MP4 faststart proxy (virtual={}B, header={}B)".format(
-                        faststart["virtual_size"], len(faststart["header_data"])
-                    ),
-                    xbmc.LOGINFO,
-                )
-            elif faststart is not None and faststart.get("already_faststart"):
-                xbmc.log(
-                    "NZB-DAV: MP4 already faststart; using pass-through proxy",
-                    xbmc.LOGINFO,
-                )
-                ctx = {
-                    "remote_url": remote_url,
-                    "auth_header": auth_header,
-                    "content_length": content_length,
-                    "content_type": "video/mp4",
-                    "remux": False,
-                    "faststart": False,
-                    "seekable": True,
-                }
-            else:
-                # Tier 2: Try temp-file faststart (ffmpeg -movflags +faststart)
-                # Skip for large files (>4GB) — temp remux would take too long
-                # and would time out the prepare_stream_via_service call.
-                _TEMP_FASTSTART_MAX = 4 * 1073741824  # 4 GB
-                ffmpeg_path = self._get_ffmpeg_capabilities().get("ffmpeg_path")
-                if content_length_unknown:
-                    xbmc.log(
-                        "NZB-DAV: MP4 content length unknown; skipping "
-                        "temp-file faststart",
-                        xbmc.LOGWARNING,
-                    )
-                    temp_path = None
-                elif content_length > _TEMP_FASTSTART_MAX:
-                    xbmc.log(
-                        "NZB-DAV: File too large for temp-file faststart "
-                        "({}B > {}B), skipping to MKV remux".format(
-                            content_length, _TEMP_FASTSTART_MAX
-                        ),
-                        xbmc.LOGINFO,
-                    )
-                    temp_path = None
-                else:
-                    temp_path = (
-                        self._prepare_tempfile_faststart(
-                            ffmpeg_path, remote_url, auth_header
-                        )
-                        if ffmpeg_path
-                        else None
-                    )
-
-                if temp_path:
-                    temp_size = os.path.getsize(temp_path)
-                    ctx = {
-                        "remote_url": remote_url,
-                        "auth_header": auth_header,
-                        "content_type": "video/mp4",
-                        "faststart": False,
-                        "remux": False,
-                        "temp_faststart": True,
-                        "temp_path": temp_path,
-                        "content_length": temp_size,
-                    }
-                    xbmc.log(
-                        "NZB-DAV: MP4 temp-file faststart ({}B)".format(temp_size),
-                        xbmc.LOGINFO,
-                    )
-                elif ffmpeg_path:
-                    # Tier 3: MKV remux fallback (existing behavior)
-                    duration = self._probe_duration(
-                        ffmpeg_path, remote_url, auth_header
-                    )
-                    ctx = {
-                        "remote_url": remote_url,
-                        "auth_header": auth_header,
-                        "content_type": "video/x-matroska",
-                        "remux": True,
-                        "faststart": False,
-                        "ffmpeg_path": ffmpeg_path,
-                        "total_bytes": content_length,
-                        "duration_seconds": duration,
-                        "seekable": duration is not None and content_length > 0,
-                    }
-                    xbmc.log("NZB-DAV: MP4 fallback to MKV remux", xbmc.LOGWARNING)
-                else:
-                    if content_length_unknown:
-                        raise OSError(
-                            "Unable to determine content length for MP4 stream "
-                            "and ffmpeg unavailable"
-                        )
-                    # Last resort: direct proxy (may fail for large files)
-                    ctx = {
-                        "remote_url": remote_url,
-                        "auth_header": auth_header,
-                        "content_length": content_length,
-                        "content_type": "video/mp4",
-                        "remux": False,
-                        "faststart": False,
-                    }
-        else:
-            content_length = self._get_content_length(
-                remote_url, auth_header, content_length_hint=content_length_hint
-            )
-            content_length_unknown = content_length <= 0
-            if settings_snapshot:
-                threshold = _force_remux_threshold_bytes_from_snapshot(
-                    settings_snapshot
-                )
-                force_mode = _force_remux_mode_from_snapshot(settings_snapshot)
-            else:
-                threshold = _get_force_remux_threshold_bytes()
-                force_mode = _get_force_remux_mode()
-            force_remux_requested = threshold > 0 and force_mode in (
-                "matroska",
-                "hls_fmp4",
-            )
-            needs_remux = force_remux_requested and (
-                content_length_unknown or content_length >= threshold
-            )
-            if needs_remux:
-                if content_length_unknown:
-                    xbmc.log(
-                        "NZB-DAV: Content length unknown; forcing live remux "
-                        "instead of zero-byte pass-through",
-                        xbmc.LOGWARNING,
-                    )
-            ffmpeg_caps = self._get_ffmpeg_capabilities() if needs_remux else {}
-            ffmpeg_path = ffmpeg_caps.get("ffmpeg_path")
-            if ffmpeg_path:
-                # 32-bit Kodi builds (Amlogic CoreELEC and similar) throw
-                # `Open - Unhandled exception` on pass-through HTTP when the
-                # advertised Content-Length exceeds ~4 GB — a cache/offset
-                # overflow inside Kodi itself that no proxy tweak can fix.
-                # Force a remux through ffmpeg so Kodi sees a streamed
-                # file shape without the problematic Content-Length.
-                #
-                # Two output shapes, driven by the force_remux_mode
-                # setting:
-                #
-                # - "matroska" (default): piped MKV via _serve_remux,
-                #   cache-bounded seek (~3 min forward), ffmpeg
-                #   restart on large seeks. Known-good on DV HEVC.
-                # - "hls_fmp4" (experimental): fragmented-MP4 HLS VOD
-                #   playlist, full random seek. DV RPU SEI NALs survive
-                #   fmp4 fragment boundaries (unlike mpegts PES
-                #   packetization), so this is the DV-capable path.
-                #   Gated behind a setting because fmp4 HLS on Amlogic
-                #   Kodi is unproven in the field.
-                duration = self._probe_duration(ffmpeg_path, remote_url, auth_header)
-                use_fmp4 = (
-                    force_mode == "hls_fmp4"
-                    and ffmpeg_caps.get("hls_fmp4", False)
-                    and duration is not None
-                    and duration > 0
-                )
-                if force_mode == "hls_fmp4" and not ffmpeg_caps.get("hls_fmp4", False):
-                    xbmc.log(
-                        "NZB-DAV: ffmpeg lacks required fmp4 HLS flags; "
-                        "falling back to piped Matroska",
-                        xbmc.LOGWARNING,
-                    )
-                if use_fmp4:
-                    # Gate fmp4 HLS on DV profile via the pure-Python
-                    # source probe (dv_source.probe_dolby_vision_source)
-                    # that parses the first HEVC access unit and
-                    # extracts real RPU data to classify profile 5/7/8
-                    # and — for profile 7 — MEL vs FEL from the NLQ
-                    # fields.
-                    #
-                    # Routing matrix (2026-04-23):
-                    #   - profile 7 FEL: dual-layer, fmp4 can't carry
-                    #     both layers → matroska.
-                    #   - profile 8 / profile 5 / unknown: 2026-04-15
-                    #     testing on Evangelion 3.0+1.0 2160p DV P8
-                    #     showed the Amlogic CAMLCodec decoder hangs
-                    #     at onAVStarted even when ffmpeg produces
-                    #     clean fmp4 segments → matroska.
-                    #   - profile 7 MEL: ~2 Mbps of NLQ metadata
-                    #     (mapping coefficients, no second HEVC layer
-                    #     to reassemble) so it does not hit the
-                    #     CAMLCodec init path that tripped P8 →
-                    #     fmp4 HLS. If field testing shows MEL also
-                    #     hangs, tighten this branch to match P8.
-                    #   - non-DV: fmp4 HLS as requested.
-                    # Pass the real content-length so moov-at-tail MP4 files
-                    # can be located (the probe's default 1 MB ceiling only
-                    # finds moov-at-front layouts, silently regressing SDR
-                    # moov-at-tail MP4s off the fmp4 path).
-                    try:
-                        dv_result = probe_dolby_vision_source(
-                            remote_url,
-                            auth_header,
-                            file_size=content_length if content_length else None,
-                        )
-                    except Exception as exc:  # pylint: disable=broad-except
-                        xbmc.log(
-                            "NZB-DAV: DV probe crashed -- failing safe to "
-                            "matroska: {!r}".format(exc),
-                            xbmc.LOGWARNING,
-                        )
-                        from resources.lib.dv_source import DolbyVisionSourceResult
-
-                        dv_result = DolbyVisionSourceResult(
-                            "dv_unknown", "probe_crashed"
-                        )
-                    xbmc.log(
-                        "NZB-DAV: dv_probe classification={} reason={} "
-                        "profile={} el_type={}".format(
-                            dv_result.classification,
-                            dv_result.reason,
-                            dv_result.profile,
-                            dv_result.el_type,
-                        ),
-                        xbmc.LOGDEBUG,
-                    )
-                    if dv_result.classification == "dv_profile_7_fel":
-                        xbmc.log(
-                            "NZB-DAV: dv_route=matroska reason={} "
-                            "profile={} el_type={}".format(
-                                dv_result.reason,
-                                dv_result.profile,
-                                dv_result.el_type,
-                            ),
-                            xbmc.LOGWARNING,
-                        )
-                        use_fmp4 = False
-                    elif (
-                        dv_result.classification == "dv_allowed_for_fmp4"
-                        and dv_result.profile == 7
-                        and dv_result.el_type == "MEL"
-                    ):
-                        xbmc.log(
-                            "NZB-DAV: dv_route=fmp4 reason={} profile=7 "
-                            "el_type=MEL (experimental -- metadata-only EL "
-                            "does not exercise CAMLCodec dual-layer init)".format(
-                                dv_result.reason
-                            ),
-                            xbmc.LOGINFO,
-                        )
-                    elif dv_result.classification == "dv_allowed_for_fmp4":
-                        xbmc.log(
-                            "NZB-DAV: dv_route=matroska reason={} "
-                            "profile={} (non-P7 DV hangs CAMLCodec "
-                            "onAVStarted on fmp4 per 2026-04-15 "
-                            "testing)".format(dv_result.reason, dv_result.profile),
-                            xbmc.LOGWARNING,
-                        )
-                        use_fmp4 = False
-                    elif dv_result.classification == "non_dv":
-                        xbmc.log(
-                            "NZB-DAV: dv_route=fmp4 reason={}".format(dv_result.reason),
-                            xbmc.LOGDEBUG,
-                        )
-                    else:
-                        xbmc.log(
-                            "NZB-DAV: dv_route=matroska reason={} "
-                            "profile={} el_type={} (unknown DV state -- "
-                            "failing safe)".format(
-                                dv_result.reason,
-                                dv_result.profile,
-                                dv_result.el_type,
-                            ),
-                            xbmc.LOGWARNING,
-                        )
-                        use_fmp4 = False
-                if use_fmp4:
-                    ctx = {
-                        "remote_url": remote_url,
-                        "auth_header": auth_header,
-                        "content_type": "application/vnd.apple.mpegurl",
-                        "mode": "hls",
-                        "remux": True,
-                        "faststart": False,
-                        "ffmpeg_path": ffmpeg_path,
-                        "total_bytes": content_length,
-                        "duration_seconds": duration,
-                        "seekable": True,
-                        "hls_segment_duration": _HLS_SEGMENT_SECONDS,
-                        "hls_segment_format": "fmp4",
-                    }
-                    xbmc.log(
-                        "NZB-DAV: Force-remuxing {}B file via fMP4 HLS "
-                        "(experimental, duration={:.1f}s)".format(
-                            content_length, duration
-                        ),
-                        xbmc.LOGWARNING,
-                    )
-                else:
-                    ctx = {
-                        "remote_url": remote_url,
-                        "auth_header": auth_header,
-                        "content_type": "video/x-matroska",
-                        "remux": True,
-                        "faststart": False,
-                        "ffmpeg_path": ffmpeg_path,
-                        "total_bytes": content_length,
-                        "duration_seconds": duration,
-                        "seekable": duration is not None and content_length > 0,
-                    }
-                    xbmc.log(
-                        "NZB-DAV: Force-remuxing large {}B file via piped MKV "
-                        "(duration={}, threshold={}B)".format(
-                            content_length,
-                            "{:.1f}s".format(duration) if duration else "unknown",
-                            threshold,
-                        ),
-                        xbmc.LOGWARNING,
-                    )
-            else:
-                if needs_remux:
-                    if content_length_unknown:
-                        raise OSError(
-                            "Unable to determine content length for stream "
-                            "and ffmpeg unavailable"
-                        )
-                    xbmc.log(
-                        "NZB-DAV: {}B file exceeds remux threshold but no "
-                        "ffmpeg found — falling back to pass-through, "
-                        "playback may fail on 32-bit Kodi".format(content_length),
-                        xbmc.LOGWARNING,
-                    )
-                ctx = {
-                    "remote_url": remote_url,
-                    "auth_header": auth_header,
-                    "content_length": content_length,
-                    "content_type": content_type,
-                    "remux": False,
-                }
-
+    def _finalize_and_register(self, ctx, fallback_sources, settings_snapshot, started):
+        """Attach runtime fields, start prefetch, register session, return info."""
         _attach_fallback_context_fields(ctx, fallback_sources)
         if settings_snapshot:
             ctx[_PASSTHROUGH_RUNTIME_SETTINGS_KEY] = (
@@ -9448,6 +9514,74 @@ class StreamProxy:
             remux=ctx.get("remux", False),
         )
         return local_url, stream_info
+
+    def prepare_stream(
+        self,
+        remote_url,
+        auth_header=None,
+        fallback_sources=None,
+        content_length_hint=None,
+        settings_snapshot=None,
+    ):
+        """Set up proxy for a new stream.
+
+        Returns (local_proxy_url, stream_info_dict).
+        stream_info_dict contains duration_seconds, total_bytes, seekable, remux,
+        faststart, and virtual_size.
+        """
+        started = time.monotonic()
+        (
+            auth_header,
+            fallback_sources,
+            content_length_hint,
+            settings_snapshot,
+            content_type,
+            is_mp4,
+        ) = self._validate_and_classify(
+            remote_url,
+            auth_header,
+            fallback_sources,
+            content_length_hint,
+            settings_snapshot,
+        )
+
+        ctx = self._build_stream_context(
+            remote_url,
+            auth_header,
+            content_length_hint,
+            content_type,
+            is_mp4,
+            fallback_sources,
+            settings_snapshot,
+        )
+        return self._finalize_and_register(
+            ctx, fallback_sources, settings_snapshot, started
+        )
+
+    def _build_stream_context(
+        self,
+        remote_url,
+        auth_header,
+        content_length_hint,
+        content_type,
+        is_mp4,
+        fallback_sources,
+        settings_snapshot,
+    ):
+        """Decide playback mode and build the matching stream context."""
+        if fallback_sources:
+            return self._build_ctx_fallback(
+                remote_url, auth_header, content_length_hint, content_type, is_mp4
+            )
+        if is_mp4:
+            return self._build_ctx_mp4(remote_url, auth_header, content_length_hint)
+        return self._build_ctx_default(
+            remote_url,
+            auth_header,
+            content_length_hint,
+            content_type,
+            settings_snapshot,
+        )
 
     @staticmethod
     def _probe_duration(ffmpeg_path, url, auth_header):
