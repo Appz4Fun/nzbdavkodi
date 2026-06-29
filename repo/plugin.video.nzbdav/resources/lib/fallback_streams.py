@@ -1178,16 +1178,6 @@ def cached_selection_pool_first_peer(selected, results):
     return peer
 
 
-def _is_title_related_peer(result, selected, selected_link, selected_tokens):
-    """Return whether ``result`` is a distinct title-related fallback peer."""
-    if result is selected or not isinstance(result, dict):
-        return False
-    result_link = result.get("link", "")
-    if not result_link or result_link == selected_link:
-        return False
-    return _title_token_sets_look_related(selected_tokens, _title_tokens(result))
-
-
 def _multi_result_pool_has_no_distinct_peer(selected, results):
     """Return True when a multi-result pool has no distinct fallback peer."""
     if not isinstance(selected, dict):

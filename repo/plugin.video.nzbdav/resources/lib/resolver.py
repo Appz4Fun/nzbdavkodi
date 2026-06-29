@@ -199,35 +199,46 @@ def _completed_stream_body_available(url, headers, probe_bytes=65536, timeout=20
     if os.environ.get("NZBDAV_FAULT_REJECT_COMPLETED"):
         return False
 
-    from urllib.error import HTTPError
+    length = _completed_stream_head_length(url, headers, timeout)
+    if length is None or length <= probe_bytes * 2:
+        # Unknown length, or too small to distinguish a missing "middle" from
+        # header/tail — fail open.
+        return True
+    return _completed_stream_midfile_present(url, headers, length, probe_bytes, timeout)
+
+
+def _add_request_headers(req, headers):
+    if headers:
+        for key, value in headers.items():
+            req.add_header(key, value)
+
+
+def _completed_stream_head_length(url, headers, timeout):
+    """Return the Content-Length via HEAD, or None on any ambiguous failure."""
     from urllib.request import Request, urlopen
 
-    def _add_headers(req):
-        if headers:
-            for key, value in headers.items():
-                req.add_header(key, value)
-
-    # Learn the length so we can target the middle. Any failure here is
-    # ambiguous (e.g. server rejects HEAD) — don't block on it.
+    # Any failure here is ambiguous (e.g. server rejects HEAD) — don't block.
     try:
         head = Request(url, method="HEAD")
-        _add_headers(head)
+        _add_request_headers(head, headers)
         # nosemgrep
         with urlopen(head, timeout=timeout) as resp:  # nosec B310
-            length = int(resp.headers.get("Content-Length", 0) or 0)
+            return int(resp.headers.get("Content-Length", 0) or 0)
     except (OSError, ValueError, http.client.HTTPException):
-        return True
+        return None
 
-    if length <= probe_bytes * 2:
-        # Too small to distinguish a missing "middle" from header/tail.
-        return True
+
+def _completed_stream_midfile_present(url, headers, length, probe_bytes, timeout):
+    """Probe a mid-file byte range: False only on a definitive empty/4xx body."""
+    from urllib.error import HTTPError
+    from urllib.request import Request, urlopen
 
     start = length // 2
     end = min(start + probe_bytes - 1, length - 1)
     try:
         req = Request(url)
         req.add_header("Range", "bytes={}-{}".format(start, end))
-        _add_headers(req)
+        _add_request_headers(req, headers)
         # nosemgrep
         with urlopen(req, timeout=timeout) as resp:  # nosec B310
             if resp.getcode() >= 400:
@@ -983,15 +994,31 @@ def _settings_getter_kwargs(settings_getter):
     return {"settings_getter": settings_getter} if settings_getter is not None else {}
 
 
-def _safe_dialog_update(dialog, progress, message):
-    """Best-effort progress update that cannot block the resolver loop."""
-    key = id(dialog)
+def _claim_dialog_update_slot(key):
+    """Reserve the single in-flight update slot for ``key`` or return None."""
     with _DIALOG_UPDATE_LOCK:
         inflight = _DIALOG_UPDATE_INFLIGHT.get(key)
         if inflight is not None and not inflight.is_set():
-            return False
+            return None
         done = threading.Event()
         _DIALOG_UPDATE_INFLIGHT[key] = done
+    return done
+
+
+def _release_dialog_update_slot(key, done):
+    """Drop the in-flight update slot for ``key`` when ``done`` still owns it."""
+    done.set()
+    with _DIALOG_UPDATE_LOCK:
+        if _DIALOG_UPDATE_INFLIGHT.get(key) is done:
+            _DIALOG_UPDATE_INFLIGHT.pop(key, None)
+
+
+def _safe_dialog_update(dialog, progress, message):
+    """Best-effort progress update that cannot block the resolver loop."""
+    key = id(dialog)
+    done = _claim_dialog_update_slot(key)
+    if done is None:
+        return False
 
     def _worker():
         try:
@@ -1002,10 +1029,7 @@ def _safe_dialog_update(dialog, progress, message):
                 xbmc.LOGDEBUG,
             )
         finally:
-            done.set()
-            with _DIALOG_UPDATE_LOCK:
-                if _DIALOG_UPDATE_INFLIGHT.get(key) is done:
-                    _DIALOG_UPDATE_INFLIGHT.pop(key, None)
+            _release_dialog_update_slot(key, done)
 
     try:
         threading.Thread(
@@ -1013,10 +1037,7 @@ def _safe_dialog_update(dialog, progress, message):
         ).start()
         return True
     except RuntimeError as error:
-        done.set()
-        with _DIALOG_UPDATE_LOCK:
-            if _DIALOG_UPDATE_INFLIGHT.get(key) is done:
-                _DIALOG_UPDATE_INFLIGHT.pop(key, None)
+        _release_dialog_update_slot(key, done)
         xbmc.log(
             "NZB-DAV: progress dialog update thread failed: {}".format(error),
             xbmc.LOGDEBUG,
@@ -1839,22 +1860,15 @@ def _start_existing_completed_cleanup(title, on_existing_completed):
         )
 
 
-def _find_video_stream_for_folder(
-    webdav_folder, settings_getter=None, title_hint=None, min_video_size=0
+def _delegated_find_video_stream_for_folder(
+    webdav_folder, settings_getter, title_hint, min_video_size
 ):
-    """Return video path, URL, and headers for a completed WebDAV folder.
+    """Return the webdav one-shot discovery tuple, or None when not delegable.
 
-    ``title_hint`` is the requested release/episode title (e.g. the submitted
-    scene name). It is threaded into webdav discovery so a multi-episode pack
-    returns the requested SxxExx episode rather than whichever sibling file is
-    largest. When ``None`` (movie / no identifiable episode) the historical
-    largest-video-wins behavior is preserved unchanged.
-
-    ``min_video_size`` is the precomputed single-file advertised-size floor
-    (``_stub_min_size_floor``); threading it into discovery lets a root-level
-    job-start stub recurse into the subfolder holding the real file rather than
-    being returned on every poll (#282 follow-up D). ``0`` (default) disables
-    the floor, so movie/pack/unknown-size paths are unchanged.
+    Returns the ``(video_path, stream_url, stream_headers)`` tuple when the
+    module-level webdav helpers are un-patched (so the single-call path is
+    authoritative); ``None`` when delegation does not apply and the caller must
+    fall back to the explicit find/url steps.
     """
     try:
         from resources.lib import webdav as _webdav
@@ -1878,6 +1892,31 @@ def _find_video_stream_for_folder(
             return video_path, stream_url, stream_headers
     except (AttributeError, ImportError):
         pass
+    return None
+
+
+def _find_video_stream_for_folder(
+    webdav_folder, settings_getter=None, title_hint=None, min_video_size=0
+):
+    """Return video path, URL, and headers for a completed WebDAV folder.
+
+    ``title_hint`` is the requested release/episode title (e.g. the submitted
+    scene name). It is threaded into webdav discovery so a multi-episode pack
+    returns the requested SxxExx episode rather than whichever sibling file is
+    largest. When ``None`` (movie / no identifiable episode) the historical
+    largest-video-wins behavior is preserved unchanged.
+
+    ``min_video_size`` is the precomputed single-file advertised-size floor
+    (``_stub_min_size_floor``); threading it into discovery lets a root-level
+    job-start stub recurse into the subfolder holding the real file rather than
+    being returned on every poll (#282 follow-up D). ``0`` (default) disables
+    the floor, so movie/pack/unknown-size paths are unchanged.
+    """
+    delegated = _delegated_find_video_stream_for_folder(
+        webdav_folder, settings_getter, title_hint, min_video_size
+    )
+    if delegated is not None:
+        return delegated
 
     kwargs = _settings_getter_kwargs(settings_getter)
     _resolve_stage("find_video_file_start folder={}".format(webdav_folder))
@@ -1914,26 +1953,11 @@ def _record_rejected_completed_id(completed_job, rejected_completed_ids):
         rejected_completed_ids.add(rejected_nzo_id)
 
 
-def _completed_job_stream(
-    title,
-    completed_job,
-    on_existing_completed=None,
-    settings_getter=None,
-    rejected_completed_ids=None,
-    download_size=None,
-):
-    """Return a WebDAV stream URL from a completed nzbdav history row.
+def _completed_job_webdav_folder(title, completed_job):
+    """Validate a completed history row and return its WebDAV folder, or None.
 
-    When the mid-file body probe rejects a row and ``rejected_completed_ids``
-    is provided, the row's ``nzo_id`` is recorded into that set so the submit
-    path that follows does not re-adopt the very row we just rejected.
-
-    ``download_size`` is the indexer-advertised release size (bytes), threaded
-    in from ``params['_download_size']``. It powers the same #282 job-start-stub
-    guard the post-submit accept path applies (``_discovered_video_is_stub``):
-    a stale stub left in a Completed row from a prior failed attempt has an
-    available body and would otherwise pass the probe below. Defaults to
-    ``None`` (guard fails open) so callers without a size are unaffected.
+    Rejects non-dicts, rows whose status is set but not ``Completed``, rows whose
+    name does not match ``title``, and rows lacking a storage path.
     """
     if not isinstance(completed_job, dict):
         return None
@@ -1955,7 +1979,33 @@ def _completed_job_stream(
             xbmc.LOGWARNING,
         )
         return None
-    webdav_folder = _storage_to_webdav_path(storage)
+    return _storage_to_webdav_path(storage)
+
+
+def _completed_job_stream(
+    title,
+    completed_job,
+    on_existing_completed=None,
+    settings_getter=None,
+    rejected_completed_ids=None,
+    download_size=None,
+):
+    """Return a WebDAV stream URL from a completed nzbdav history row.
+
+    When the mid-file body probe rejects a row and ``rejected_completed_ids``
+    is provided, the row's ``nzo_id`` is recorded into that set so the submit
+    path that follows does not re-adopt the very row we just rejected.
+
+    ``download_size`` is the indexer-advertised release size (bytes), threaded
+    in from ``params['_download_size']``. It powers the same #282 job-start-stub
+    guard the post-submit accept path applies (``_discovered_video_is_stub``):
+    a stale stub left in a Completed row from a prior failed attempt has an
+    available body and would otherwise pass the probe below. Defaults to
+    ``None`` (guard fails open) so callers without a size are unaffected.
+    """
+    webdav_folder = _completed_job_webdav_folder(title, completed_job)
+    if webdav_folder is None:
+        return None
     _start_existing_completed_cleanup(title, on_existing_completed)
     # #282 follow-up D: thread the single-file advertised-size floor into
     # discovery so a stale Completed row whose stub sits at the release root
@@ -1970,12 +2020,37 @@ def _completed_job_stream(
     )
     if not video_path:
         return None
-    # #282 follow-up: reject nzbdav's job-start stub before the body probe. A
-    # stale stub left in a Completed row from a prior failed attempt has an
-    # available body and would otherwise pass the probe below and be served --
-    # the same placeholder .mp4 the post-submit accept path (_handle_history_result)
-    # rejects. Null it out here too and record the nzo_id so the submit / poll
-    # paths skip it. Fails open / pack-exempt inside _discovered_video_is_stub.
+    if _completed_job_video_rejected(
+        title,
+        completed_job,
+        video_path,
+        stream_url,
+        stream_headers,
+        download_size,
+        rejected_completed_ids,
+    ):
+        return None
+    return stream_url, stream_headers
+
+
+def _completed_job_video_rejected(
+    title,
+    completed_job,
+    video_path,
+    stream_url,
+    stream_headers,
+    download_size,
+    rejected_completed_ids,
+):
+    """Return True if a discovered completed video is a stub or has no body.
+
+    Rejects nzbdav's job-start stub before the body probe (a stale stub from a
+    prior failed attempt has an available body and would otherwise be served --
+    the same placeholder .mp4 the post-submit accept path rejects), then rejects
+    a Completed row whose mid-file body is unavailable. Records the row's nzo_id
+    on either rejection so the submit / poll paths skip it. Fails open /
+    pack-exempt inside ``_discovered_video_is_stub``.
+    """
     if _discovered_video_is_stub(video_path, download_size, title):
         xbmc.log(
             "NZB-DAV: '{}' completed row exposes '{}' far smaller than the "
@@ -1984,7 +2059,7 @@ def _completed_job_stream(
             xbmc.LOGWARNING,
         )
         _record_rejected_completed_id(completed_job, rejected_completed_ids)
-        return None
+        return True
     if not _completed_stream_body_available(stream_url, stream_headers):
         xbmc.log(
             "NZB-DAV: '{}' is marked Completed but its mid-file body is "
@@ -1992,8 +2067,8 @@ def _completed_job_stream(
             xbmc.LOGWARNING,
         )
         _record_rejected_completed_id(completed_job, rejected_completed_ids)
-        return None
-    return stream_url, stream_headers
+        return True
+    return False
 
 
 def _existing_completed_stream(
@@ -2707,6 +2782,11 @@ def _completed_copy_blocks_clear(title, settings_getter):
     )
     worker.start()
     worker.join(_CLEAR_QUEUE_PROBE_TIMEOUT)
+    return _completed_copy_blocks_clear_result(worker, result)
+
+
+def _completed_copy_blocks_clear_result(worker, result):
+    """Interpret the adopt-probe outcome: True means SKIP the queue clear."""
     if worker.is_alive():
         xbmc.log(
             "NZB-DAV: completed-adopt probe exceeded {}s before clearing the "
@@ -2723,6 +2803,56 @@ def _completed_copy_blocks_clear(title, settings_getter):
         )
         return True
     return bool(result.get("stream"))
+
+
+def _probe_clearable_queue_slots(title, settings_getter):
+    """Return the queued slots eligible to clear (this title's own job removed).
+
+    Probes the queue FIRST (bounded, best-effort), before any history lookup, so
+    an empty queue -- or a slow nzbdav -- never blocks the resolver thread when
+    there is nothing to clear. On timeout/error returns []. Never includes THIS
+    title's own in-flight job (the submit path adopts and resumes it; clearing it
+    would restart the download the user is playing).
+    """
+    try:
+        slots = get_queue_slots(
+            timeout=_CLEAR_QUEUE_PROBE_TIMEOUT,
+            **_settings_getter_kwargs(settings_getter),
+        )
+    except Exception as error:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: queue probe before submit failed; leaving queue intact: "
+            "{}".format(error),
+            xbmc.LOGWARNING,
+        )
+        return []
+    return [s for s in slots if not _queue_slot_is_title(s, title)]
+
+
+def _confirm_queue_clear(title, slots):
+    """Show the ask-mode yes/no prompt; True to clear, False to keep the queue."""
+    try:
+        confirmed = xbmcgui.Dialog().yesno(
+            _addon_name(),
+            _queue_clear_prompt_message(slots),
+            nolabel=_string(30201),
+            yeslabel=_string(30202),
+        )
+    except (RuntimeError, OSError, TypeError) as error:
+        xbmc.log(
+            "NZB-DAV: clear-queue prompt failed; leaving queue intact: "
+            "{}".format(error),
+            xbmc.LOGWARNING,
+        )
+        return False
+    if not confirmed:
+        xbmc.log(
+            "NZB-DAV: user kept the existing queue before submitting "
+            "'{}'".format(title),
+            xbmc.LOGINFO,
+        )
+        return False
+    return True
 
 
 def _maybe_clear_queue_before_submit(
@@ -2744,79 +2874,53 @@ def _maybe_clear_queue_before_submit(
     mode = _clear_queue_on_submit_mode(settings_getter)
     if mode == "never":
         return
-    # Probe the queue FIRST (bounded, best-effort), before any history lookup,
-    # so an empty queue — or a slow nzbdav — never blocks the resolver thread
-    # when there is nothing to clear. This runs before the threaded
-    # submit/dialog pump; on timeout/error get_queue_slots returns [].
-    try:
-        slots = get_queue_slots(
-            timeout=_CLEAR_QUEUE_PROBE_TIMEOUT,
-            **_settings_getter_kwargs(settings_getter),
-        )
-    except Exception as error:  # pylint: disable=broad-except
-        xbmc.log(
-            "NZB-DAV: queue probe before submit failed; leaving queue intact: "
-            "{}".format(error),
-            xbmc.LOGWARNING,
-        )
-        return
-    # Never cancel THIS title's own in-flight queue job: the submit path adopts
-    # and resumes it, so clearing it would restart the download the user is
-    # playing. Drop it from the clear set (and from the prompt list below).
-    slots = [s for s in slots if not _queue_slot_is_title(s, title)]
+    slots = _probe_clearable_queue_slots(title, settings_getter)
     if not slots:
         return
-    # Don't clear when this title is already downloaded AND playable: playback
-    # adopts the completed copy (no new download is submitted), so cancelling
-    # other active jobs would be wrong. Validate with the SAME body probe the
-    # adopt path uses (_existing_completed_stream) so a STALE Completed row whose
-    # storage is missing or fails the probe does NOT suppress the clear:
-    # _poll_until_ready will reject that row and submit a new download, which is
-    # exactly when the clear should run. That probe carries multi-second socket
-    # timeouts and this guard runs BEFORE the progress dialog, so it is
-    # hard-bounded to the queue-probe budget (_completed_copy_blocks_clear): on a
-    # slow/unreachable nzbdav the guard returns promptly and leaves the queue
-    # intact rather than freezing playback with no UI. This bounded check is a
-    # best-effort gate, NOT the authoritative adopt decision -- _poll_until_ready
-    # re-runs the probe at full timeout with the dialog visible/abortable and
-    # makes the real adopt-or-submit call; trusting this short-timeout result to
-    # skip that probe would risk a spurious re-download on a slow-but-working
-    # nzbdav, so the (cheap, bounded) re-check is intentional. Only the
-    # no-picker-hint paths (/resolve, auto-select) need it: gated on
-    # completed_lookup_done, so when the picker already validated completed and
-    # we still reached the submit path (submit certain) it is skipped. It runs
-    # only after the queue probe confirmed there ARE other jobs to clear, so an
-    # empty queue never pays for it.
-    if not completed_lookup_done and _completed_copy_blocks_clear(
-        title, settings_getter
-    ):
+    if _adoptable_copy_suppresses_clear(title, settings_getter, completed_lookup_done):
         return
-    if mode == "ask":
-        try:
-            confirmed = xbmcgui.Dialog().yesno(
-                _addon_name(),
-                _queue_clear_prompt_message(slots),
-                nolabel=_string(30201),
-                yeslabel=_string(30202),
-            )
-        except (RuntimeError, OSError, TypeError) as error:
-            xbmc.log(
-                "NZB-DAV: clear-queue prompt failed; leaving queue intact: "
-                "{}".format(error),
-                xbmc.LOGWARNING,
-            )
-            return
-        if not confirmed:
-            xbmc.log(
-                "NZB-DAV: user kept the existing queue before submitting "
-                "'{}'".format(title),
-                xbmc.LOGINFO,
-            )
-            return
-    # Cancel exactly the slots we probed/showed — not a fresh fetch — so a job
-    # that appeared between the prompt and now is never cancelled unseen. Bound
-    # each delete with the same short timeout as the probe so a stalled nzbdav
-    # can't freeze the resolver for minutes across several deletes.
+    if mode == "ask" and not _confirm_queue_clear(title, slots):
+        return
+    _clear_queue_slots(title, slots, settings_getter)
+
+
+def _adoptable_copy_suppresses_clear(title, settings_getter, completed_lookup_done):
+    """True when an already-playable completed copy means the clear must be skipped.
+
+    Don't clear when this title is already downloaded AND playable: playback
+    adopts the completed copy (no new download is submitted), so cancelling other
+    active jobs would be wrong. Validate with the SAME body probe the adopt path
+    uses (_existing_completed_stream) so a STALE Completed row whose storage is
+    missing or fails the probe does NOT suppress the clear: _poll_until_ready will
+    reject that row and submit a new download, which is exactly when the clear
+    should run. That probe carries multi-second socket timeouts and this guard
+    runs BEFORE the progress dialog, so it is hard-bounded to the queue-probe
+    budget (_completed_copy_blocks_clear): on a slow/unreachable nzbdav the guard
+    returns promptly and leaves the queue intact rather than freezing playback
+    with no UI. This bounded check is a best-effort gate, NOT the authoritative
+    adopt decision -- _poll_until_ready re-runs the probe at full timeout with the
+    dialog visible/abortable and makes the real adopt-or-submit call; trusting
+    this short-timeout result to skip that probe would risk a spurious
+    re-download on a slow-but-working nzbdav, so the (cheap, bounded) re-check is
+    intentional. Only the no-picker-hint paths (/resolve, auto-select) need it:
+    gated on completed_lookup_done, so when the picker already validated completed
+    and we still reached the submit path (submit certain) it is skipped. It runs
+    only after the queue probe confirmed there ARE other jobs to clear, so an
+    empty queue never pays for it.
+    """
+    return not completed_lookup_done and _completed_copy_blocks_clear(
+        title, settings_getter
+    )
+
+
+def _clear_queue_slots(title, slots, settings_getter):
+    """Cancel exactly the probed/shown slots and log the count.
+
+    Cancels exactly the slots we probed/showed -- not a fresh fetch -- so a job
+    that appeared between the prompt and now is never cancelled unseen. Each
+    delete is bound with the same short timeout as the probe so a stalled nzbdav
+    can't freeze the resolver for minutes across several deletes.
+    """
     cleared = clear_queue(
         slots=slots,
         timeout=_CLEAR_QUEUE_PROBE_TIMEOUT,
@@ -3025,32 +3129,37 @@ def _collect_fallback_candidate_jobs(
     for index, candidate in enumerate(candidates or [], start=1):
         if stop_event is not None and stop_event.is_set():
             break
-        if not isinstance(candidate, dict):
-            continue
-        nzb_url = candidate.get("link")
-        title = candidate.get("title")
-        if not nzb_url or not title:
-            continue
-        # Never re-admit a provably-dead candidate, and never offer the active
-        # primary as its own backup (the original primary only re-enters the
-        # pool after a live cutover demotes it -- handled in stream_proxy).
-        if dead is not None and dead.has_url(nzb_url):
-            xbmc.log(
-                "NZB-DAV: Skipping dead fallback candidate '{}'".format(title),
-                xbmc.LOGINFO,
-            )
-            continue
-        if primary_nzb_url and nzb_url == primary_nzb_url:
-            xbmc.log(
-                "NZB-DAV: Skipping primary's own release as a fallback '{}'".format(
-                    title
-                ),
-                xbmc.LOGINFO,
-            )
-            continue
-        job_name = build_fallback_job_name(title, nzb_url, index)
-        candidate_jobs.append((candidate, nzb_url, title, job_name))
+        row = _fallback_candidate_row(candidate, index, dead, primary_nzb_url)
+        if row is not None:
+            candidate_jobs.append(row)
     return candidate_jobs
+
+
+def _fallback_candidate_row(candidate, index, dead, primary_nzb_url):
+    """Return the ``(candidate, nzb_url, title, job_name)`` row or None to skip."""
+    if not isinstance(candidate, dict):
+        return None
+    nzb_url = candidate.get("link")
+    title = candidate.get("title")
+    if not nzb_url or not title:
+        return None
+    # Never re-admit a provably-dead candidate, and never offer the active
+    # primary as its own backup (the original primary only re-enters the
+    # pool after a live cutover demotes it -- handled in stream_proxy).
+    if dead is not None and dead.has_url(nzb_url):
+        xbmc.log(
+            "NZB-DAV: Skipping dead fallback candidate '{}'".format(title),
+            xbmc.LOGINFO,
+        )
+        return None
+    if primary_nzb_url and nzb_url == primary_nzb_url:
+        xbmc.log(
+            "NZB-DAV: Skipping primary's own release as a fallback '{}'".format(title),
+            xbmc.LOGINFO,
+        )
+        return None
+    job_name = build_fallback_job_name(title, nzb_url, index)
+    return (candidate, nzb_url, title, job_name)
 
 
 def _lookup_existing_fallback_jobs(job_names, settings_getter=None):
@@ -3082,32 +3191,43 @@ def _submit_one_fallback_candidate(
         )
         return None
     if not nzo_id and submit_error:
-        status = submit_error.get("status")
-        if status == "timeout":
-            xbmc.log(
-                "NZB-DAV: Fallback submit timed out for '{}'; probing "
-                "queue/history in background".format(job_name),
-                xbmc.LOGWARNING,
-            )
-            nzo_id = _adopt_queued_or_completed_job(
-                job_name, monitor, settings_getter=settings_getter
-            )
-        if not nzo_id:
-            if dead is not None and is_provably_dead_submit_error(submit_error):
-                dead.add(nzb_url=nzb_url)
-            xbmc.log(
-                "NZB-DAV: Fallback submit skipped for '{}' (status={}): {}".format(
-                    job_name, status, submit_error.get("message", "")
-                ),
-                xbmc.LOGWARNING,
-            )
-            return None
+        nzo_id = _recover_fallback_submit_error(
+            submit_error, nzb_url, job_name, monitor, settings_getter, dead
+        )
     if not nzo_id:
+        if submit_error is None:
+            xbmc.log(
+                "NZB-DAV: Fallback submit did not create job for '{}'".format(job_name),
+                xbmc.LOGWARNING,
+            )
+        return None
+    return nzo_id
+
+
+def _recover_fallback_submit_error(
+    submit_error, nzb_url, job_name, monitor, settings_getter, dead
+):
+    """Adopt a timed-out fallback submit, or log+mark-dead and return None."""
+    status = submit_error.get("status")
+    nzo_id = None
+    if status == "timeout":
         xbmc.log(
-            "NZB-DAV: Fallback submit did not create job for '{}'".format(job_name),
+            "NZB-DAV: Fallback submit timed out for '{}'; probing "
+            "queue/history in background".format(job_name),
             xbmc.LOGWARNING,
         )
-        return None
+        nzo_id = _adopt_queued_or_completed_job(
+            job_name, monitor, settings_getter=settings_getter
+        )
+    if not nzo_id:
+        if dead is not None and is_provably_dead_submit_error(submit_error):
+            dead.add(nzb_url=nzb_url)
+        xbmc.log(
+            "NZB-DAV: Fallback submit skipped for '{}' (status={}): {}".format(
+                job_name, status, submit_error.get("message", "")
+            ),
+            xbmc.LOGWARNING,
+        )
     return nzo_id
 
 
@@ -3161,29 +3281,40 @@ def _submit_fallback_candidates(
     for _candidate, nzb_url, title, job_name in candidate_jobs:
         if stop_event is not None and stop_event.is_set():
             break
-        existing_job = existing_jobs.get(job_name)
-        if existing_job and existing_job.get("nzo_id"):
-            _record(
-                _adopt_existing_fallback_job(existing_job, nzb_url, title, job_name)
-            )
-            continue
-        nzo_id = _submit_one_fallback_candidate(
-            nzb_url, job_name, monitor, settings_getter=settings_getter, dead=dead
+        job = _resolve_fallback_candidate_job(
+            existing_jobs.get(job_name),
+            nzb_url,
+            title,
+            job_name,
+            monitor,
+            settings_getter,
+            dead,
         )
-        if not nzo_id:
-            continue
-        _record(
-            {
-                "title": title,
-                "nzb_url": nzb_url,
-                "job_name": job_name,
-                "nzo_id": nzo_id,
-                "stream_url": "",
-                "stream_headers": {},
-                "content_length": 0,
-            }
-        )
+        if job is not None:
+            _record(job)
     return fallback_jobs
+
+
+def _resolve_fallback_candidate_job(
+    existing_job, nzb_url, title, job_name, monitor, settings_getter, dead
+):
+    """Adopt an existing fallback job or submit a new one; return record or None."""
+    if existing_job and existing_job.get("nzo_id"):
+        return _adopt_existing_fallback_job(existing_job, nzb_url, title, job_name)
+    nzo_id = _submit_one_fallback_candidate(
+        nzb_url, job_name, monitor, settings_getter=settings_getter, dead=dead
+    )
+    if not nzo_id:
+        return None
+    return {
+        "title": title,
+        "nzb_url": nzb_url,
+        "job_name": job_name,
+        "nzo_id": nzo_id,
+        "stream_url": "",
+        "stream_headers": {},
+        "content_length": 0,
+    }
 
 
 def _fallback_streams_enabled(settings_getter=None):
@@ -3309,20 +3440,30 @@ def _wait_prewarm_or_inactive(state, prewarm_delay, playback_signaled):
     remaining = float(prewarm_delay)
     seen_live = False
     while remaining > 0:
-        wait_for = interval if interval < remaining else remaining
+        wait_for = min(interval, remaining)
         if stop is not None and stop.wait(wait_for):
             return True
         remaining -= wait_for
         if playback_signaled:
-            flag = _playback_active_flag()
-            if flag is True:
-                seen_live = True
-            elif flag is False and seen_live:
-                # Was live, now cleared -> playback stopped/ended; abort the
-                # standby submit for this dead session. (flag is None -> read
-                # failed -> leave the latch unchanged and keep waiting.)
+            seen_live, aborted = _prewarm_playback_latch(seen_live)
+            if aborted:
                 return True
     return False
+
+
+def _prewarm_playback_latch(seen_live):
+    """Advance the seen-live latch; return ``(seen_live, should_abort)``.
+
+    ``flag is True`` latches that playback was observed live; ``flag is False``
+    once it was live means playback stopped/ended (abort). ``flag is None`` (read
+    failed) leaves the latch unchanged and keeps waiting.
+    """
+    flag = _playback_active_flag()
+    if flag is True:
+        return True, False
+    if flag is False and seen_live:
+        return seen_live, True
+    return seen_live, False
 
 
 def _get_fallback_submit_delay_seconds(settings_getter=None):
@@ -3595,22 +3736,26 @@ def _cancel_fallback_submitted_jobs(state):
     return cancelled
 
 
+def _await_fallback_worker_finish(thread, finished, wait_seconds):
+    """Briefly wait for the fallback worker to finish, bounded by wait_seconds."""
+    if not thread or wait_seconds <= 0:
+        return
+    deadline = time.monotonic() + max(0, wait_seconds)
+    while thread.is_alive():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        if finished and finished.wait(min(0.05, remaining)):
+            break
+
+
 def _fallback_submit_jobs_snapshot(state, wait_seconds=0.5):
     """Return fallback jobs submitted so far, waiting briefly for completion."""
     if not state:
         return []
-    thread = state.get("thread")
-    finished = state.get("finished")
-    if thread and thread.is_alive() and wait_seconds > 0:
-        deadline = time.monotonic() + max(0, wait_seconds)
-        while thread.is_alive() and time.monotonic() < deadline:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            wait_for = min(0.05, remaining)
-            if finished and finished.wait(wait_for):
-                break
-
+    _await_fallback_worker_finish(
+        state.get("thread"), state.get("finished"), wait_seconds
+    )
     with state["lock"]:
         return [dict(job) if isinstance(job, dict) else job for job in state["jobs"]]
 

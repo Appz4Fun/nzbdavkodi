@@ -701,6 +701,20 @@ def _disk_free_bytes(path):
     return getattr(usage, "free", usage[2])
 
 
+def _workdir_has_free_space(base, required_bytes):
+    """Return True when ``base`` has at least ``required_bytes`` free.
+
+    Treats an unreadable free-space probe as "not enough" so callers can
+    simply skip the candidate.
+    """
+    if not required_bytes:
+        return True
+    try:
+        return _disk_free_bytes(base) >= required_bytes
+    except OSError:
+        return False
+
+
 def _choose_hls_workdir(required_bytes=0):
     """Return a writable base directory for HLS session working files.
 
@@ -719,26 +733,14 @@ def _choose_hls_workdir(required_bytes=0):
             os.makedirs(base, exist_ok=True)
         except OSError:
             continue
-        if required_bytes:
-            try:
-                if _disk_free_bytes(base) < required_bytes:
-                    continue
-            except OSError:
-                continue
+        if not _workdir_has_free_space(base, required_bytes):
+            continue
         return base
     fallback = _get_private_hls_temp_root()
-    if required_bytes:
-        try:
-            if _disk_free_bytes(fallback) < required_bytes:
-                raise OSError(
-                    "No HLS workdir has at least {} bytes free space".format(
-                        required_bytes
-                    )
-                )
-        except OSError as error:
-            raise OSError(
-                "No HLS workdir has at least {} bytes free space".format(required_bytes)
-            ) from error
+    if not _workdir_has_free_space(fallback, required_bytes):
+        raise OSError(
+            "No HLS workdir has at least {} bytes free space".format(required_bytes)
+        )
     return fallback
 
 
@@ -4735,6 +4737,39 @@ class _StreamHandler(BaseHTTPRequestHandler):
         ] = body
 
     @staticmethod
+    def _cached_range_entry_matches(key, body, prefix, start, end, require_cover_end):
+        """Return True when a cache entry is a usable prefix for this range."""
+        if not isinstance(key, tuple) or len(key) != 5:
+            return False
+        if key[:4] != prefix or not isinstance(body, bytes):
+            return False
+        cached_end = key[4]
+        if require_cover_end and cached_end < end:
+            return False
+        return cached_end == start + len(body) - 1
+
+    @staticmethod
+    def _best_cached_fallback_range(cache, prefix, start, end, require_cover_end):
+        """Find the longest cached fallback body matching prefix for this range.
+
+        Returns ``(selected_key, selected_body)`` where ``selected_key`` is
+        ``None`` when no cached entry matches.
+        """
+        selected_key = None
+        selected_body = b""
+        requested_length = end - start + 1
+        for key, body in list(cache.items()):
+            if not _StreamHandler._cached_range_entry_matches(
+                key, body, prefix, start, end, require_cover_end
+            ):
+                continue
+            candidate = body[:requested_length]
+            if len(candidate) > len(selected_body):
+                selected_key = key
+                selected_body = candidate
+        return selected_key, selected_body
+
+    @staticmethod
     def _cached_fallback_range_body(
         ctx, stream_url, auth_header, content_length, start, end
     ):
@@ -4745,19 +4780,9 @@ class _StreamHandler(BaseHTTPRequestHandler):
         if not isinstance(cache, dict):
             return b""
         prefix = (stream_url, auth_header, content_length, start)
-        selected_body = b""
-        requested_length = end - start + 1
-        for key, body in list(cache.items()):
-            if not isinstance(key, tuple) or len(key) != 5:
-                continue
-            if key[:4] != prefix or not isinstance(body, bytes):
-                continue
-            cached_end = key[4]
-            if cached_end < end or cached_end != start + len(body) - 1:
-                continue
-            candidate = body[:requested_length]
-            if len(candidate) > len(selected_body):
-                selected_body = candidate
+        _, selected_body = _StreamHandler._best_cached_fallback_range(
+            cache, prefix, start, end, True
+        )
         return selected_body
 
     @staticmethod
@@ -4771,20 +4796,9 @@ class _StreamHandler(BaseHTTPRequestHandler):
         except (TypeError, ValueError):
             return b""
         prefix = (ctx.get("remote_url"), ctx.get("auth_header"), content_length, start)
-        selected_key = None
-        selected_body = b""
-        for key, body in list(cache.items()):
-            if not isinstance(key, tuple) or len(key) != 5:
-                continue
-            if key[:4] != prefix or not isinstance(body, bytes):
-                continue
-            cached_end = key[4]
-            if cached_end != start + len(body) - 1:
-                continue
-            candidate = body[: end - start + 1]
-            if len(candidate) > len(selected_body):
-                selected_key = key
-                selected_body = candidate
+        selected_key, selected_body = _StreamHandler._best_cached_fallback_range(
+            cache, prefix, start, end, False
+        )
         if selected_key is None:
             return b""
         cache.pop(selected_key, None)
