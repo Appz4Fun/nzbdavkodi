@@ -7429,29 +7429,21 @@ class HlsProducer:
         else:
             self._finish_close_after_kill_in_background(proc, wait_for_proc)
 
-    def _archive_ffmpeg_log(self):
-        """Copy the session's ffmpeg.log to /storage/.kodi/temp/
-        nzbdav-hls-logs/ and trim to the most recent 10."""
-        import shutil as _shutil
+    @staticmethod
+    def _resolve_ffmpeg_log_archive_dir():
+        """Pick the archive directory for session ffmpeg logs.
 
-        src = self._ffmpeg_log_path
-        if not os.path.exists(src):
-            return
-        try:
-            size = os.path.getsize(src)
-        except OSError:
-            return
-        if size == 0:
-            return  # empty log — nothing useful to preserve
-
+        Prefers Kodi's ``special://temp/nzbdav-hls-logs/`` but only when
+        translatePath yields a genuine string (in tests xbmcvfs is mocked
+        and returns a MagicMock, which would leak a "MagicMock" dir in
+        cwd). Falls back to the system temp dir. Returns the created
+        directory path, or None if it could not be created.
+        """
         archive_dir = None
         try:
             import xbmcvfs
 
             candidate = xbmcvfs.translatePath("special://temp/nzbdav-hls-logs/")
-            # In tests xbmcvfs is mocked and translatePath returns a
-            # MagicMock. Only accept genuine string results so we
-            # don't leak a "MagicMock" directory in cwd.
             if isinstance(candidate, str):
                 archive_dir = candidate
         except Exception:  # pylint: disable=broad-except
@@ -7461,16 +7453,12 @@ class HlsProducer:
         try:
             os.makedirs(archive_dir, exist_ok=True)
         except OSError:
-            return
+            return None
+        return archive_dir
 
-        session_id = os.path.basename(self.session_dir)
-        dst = os.path.join(archive_dir, "ffmpeg-{}.log".format(session_id))
-        try:
-            _shutil.copy2(src, dst)
-        except OSError:
-            return
-
-        # Trim: keep the 10 most recent archived logs.
+    @staticmethod
+    def _trim_archived_ffmpeg_logs(archive_dir):
+        """Keep only the 10 most recent ``ffmpeg-*.log`` files in dir."""
         try:
             entries = []
             for name in os.listdir(archive_dir):
@@ -7489,6 +7477,34 @@ class HlsProducer:
                     pass
         except OSError:
             pass
+
+    def _archive_ffmpeg_log(self):
+        """Copy the session's ffmpeg.log to /storage/.kodi/temp/
+        nzbdav-hls-logs/ and trim to the most recent 10."""
+        import shutil as _shutil
+
+        src = self._ffmpeg_log_path
+        if not os.path.exists(src):
+            return
+        try:
+            size = os.path.getsize(src)
+        except OSError:
+            return
+        if size == 0:
+            return  # empty log — nothing useful to preserve
+
+        archive_dir = self._resolve_ffmpeg_log_archive_dir()
+        if not archive_dir:
+            return
+
+        session_id = os.path.basename(self.session_dir)
+        dst = os.path.join(archive_dir, "ffmpeg-{}.log".format(session_id))
+        try:
+            _shutil.copy2(src, dst)
+        except OSError:
+            return
+
+        self._trim_archived_ffmpeg_logs(archive_dir)
 
         xbmc.log(
             "NZB-DAV: Archived session ffmpeg.log to {}".format(dst),
@@ -7813,6 +7829,80 @@ class StreamProxy:
         if callable(is_owned) and not is_owned():
             raise AssertionError("_prune_sessions_locked requires _context_lock")
 
+    def _add_pending_context(self, session_id, ctx):
+        """Register ctx in the server's pending-context map (locked)."""
+        with self._context_lock:
+            pending = getattr(self._server, "pending_stream_contexts", None)
+            if not isinstance(pending, dict):
+                pending = {}
+                self._server.pending_stream_contexts = pending
+            pending[session_id] = ctx
+
+    def _drop_pending_context(self, session_id):
+        """Remove session_id from the server's pending-context map (locked)."""
+        with self._context_lock:
+            pending = getattr(self._server, "pending_stream_contexts", {})
+            if isinstance(pending, dict):
+                pending.pop(session_id, None)
+
+    @staticmethod
+    def _rewrite_ctx_to_matroska(ctx):
+        """Rewrite an HLS ctx in-place to the known-good matroska shape.
+
+        ctx already has ffmpeg_path / total_bytes / duration_seconds from
+        prepare_stream's fmp4 branch, so _serve_remux has everything it
+        needs once the HLS-specific keys are dropped.
+        """
+        ctx.pop("mode", None)
+        ctx.pop("hls_segment_format", None)
+        ctx.pop("hls_segment_duration", None)
+        ctx.pop("hls_producer", None)
+        ctx["content_type"] = "video/x-matroska"
+        ctx["seekable"] = (
+            ctx.get("duration_seconds") is not None and ctx.get("total_bytes", 0) > 0
+        )
+
+    def _register_hls_session(self, ctx, session_id):
+        """Spawn the HLS producer for ctx, falling back to matroska.
+
+        Eager spawn-time validation catches ffmpeg builds that reject
+        ``-hls_segment_type fmp4`` BEFORE the HLS URL is returned to Kodi,
+        so the matroska rewrite fires for the most likely failure mode
+        (no-op for mpegts, which spawns lazily). Raises RuntimeError if
+        the prepare was cancelled mid-flight.
+        """
+        self._add_pending_context(session_id, ctx)
+        workdir = _choose_hls_workdir(ctx.get("total_bytes", 0) or 0)
+        producer = None
+        try:
+            producer = HlsProducer(ctx, workdir)
+            ctx["hls_producer"] = producer
+            producer.prepare()
+        except Exception as e:  # noqa: BLE001 — fall back either way
+            if ctx.get("_cleanup_started"):
+                self._drop_pending_context(session_id)
+                raise RuntimeError("HLS prepare was cancelled") from e
+            xbmc.log(
+                "NZB-DAV: HLS producer setup failed ({}), "
+                "rewriting session to matroska fallback".format(e),
+                xbmc.LOGWARNING,
+            )
+            # Best-effort cleanup of the partially initialized producer.
+            # HlsProducer.__init__ owns disk resources (session_dir,
+            # ffmpeg.log) that need close()'ing on the prepare()-failure
+            # path; the `producer = None` sentinel protects against
+            # AttributeError when the constructor itself raised.
+            if producer is not None:
+                try:
+                    producer.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            self._rewrite_ctx_to_matroska(ctx)
+        finally:
+            self._drop_pending_context(session_id)
+        if ctx.get("_cleanup_started"):
+            raise RuntimeError("HLS prepare was cancelled")
+
     def _register_session(self, ctx):
         """Store a per-stream context and return its unique proxy URL.
 
@@ -7840,70 +7930,7 @@ class StreamProxy:
         ctx["_cleanup_started"] = False
 
         if ctx.get("mode") == "hls":
-            with self._context_lock:
-                pending = getattr(self._server, "pending_stream_contexts", None)
-                if not isinstance(pending, dict):
-                    pending = {}
-                    self._server.pending_stream_contexts = pending
-                pending[session_id] = ctx
-            workdir = _choose_hls_workdir(ctx.get("total_bytes", 0) or 0)
-            producer = None
-            try:
-                producer = HlsProducer(ctx, workdir)
-                ctx["hls_producer"] = producer
-                # Eager spawn-time validation: catches ffmpeg builds
-                # that reject -hls_segment_type fmp4 BEFORE the HLS
-                # URL is returned to Kodi, so the matroska fallback
-                # below actually fires for the most likely failure
-                # mode. No-op for mpegts (lazy spawn).
-                producer.prepare()
-            except Exception as e:  # noqa: BLE001 — fall back either way
-                if ctx.get("_cleanup_started"):
-                    with self._context_lock:
-                        pending = getattr(self._server, "pending_stream_contexts", {})
-                        if isinstance(pending, dict):
-                            pending.pop(session_id, None)
-                    raise RuntimeError("HLS prepare was cancelled") from e
-                xbmc.log(
-                    "NZB-DAV: HLS producer setup failed ({}), "
-                    "rewriting session to matroska fallback".format(e),
-                    xbmc.LOGWARNING,
-                )
-                # Best-effort cleanup of the partially initialized
-                # producer. HlsProducer.__init__ owns disk resources
-                # (session_dir, ffmpeg.log) that need close()'ing on
-                # the prepare()-failure path; otherwise opt-in fmp4
-                # plays against an unsupported ffmpeg build orphan
-                # the session directory and rely on GC for the file
-                # handle. The `producer = None` sentinel above
-                # protects against AttributeError when the
-                # constructor itself raised (no producer ever
-                # assigned).
-                if producer is not None:
-                    try:
-                        producer.close()
-                    except Exception:  # noqa: BLE001
-                        pass
-                # Rewrite ctx in-place to the known-good matroska shape.
-                # ctx already has ffmpeg_path / total_bytes /
-                # duration_seconds from prepare_stream's fmp4 branch,
-                # so _serve_remux has everything it needs.
-                ctx.pop("mode", None)
-                ctx.pop("hls_segment_format", None)
-                ctx.pop("hls_segment_duration", None)
-                ctx.pop("hls_producer", None)
-                ctx["content_type"] = "video/x-matroska"
-                ctx["seekable"] = (
-                    ctx.get("duration_seconds") is not None
-                    and ctx.get("total_bytes", 0) > 0
-                )
-            finally:
-                with self._context_lock:
-                    pending = getattr(self._server, "pending_stream_contexts", {})
-                    if isinstance(pending, dict):
-                        pending.pop(session_id, None)
-            if ctx.get("_cleanup_started"):
-                raise RuntimeError("HLS prepare was cancelled")
+            self._register_hls_session(ctx, session_id)
 
         with self._context_lock:
             if not isinstance(getattr(self._server, "stream_sessions", None), dict):
@@ -8121,67 +8148,16 @@ class StreamProxy:
         playback or tripping the user-facing recovery taxonomy / notifications /
         session counters. NEVER raises into anything.
         """
-        buf = ctx.get(_READAHEAD_BUFFER_KEY) if isinstance(ctx, dict) else None
-        if buf is None:
+        setup = self._readahead_prefetch_setup(ctx)
+        if setup is None:
             return
-        monitor = xbmc.Monitor()
-        try:
-            content_length = int(ctx.get("content_length", 0) or 0)
-        except (TypeError, ValueError):
-            return
-        if not ctx.get("remote_url") or content_length <= 0:
-            return
-        # Yield to startup: let the byte-0 prefetch and Kodi's first range fetch
-        # win nzbdav's connection budget before the read-ahead issues its first
-        # upstream read. Abortable so a shutdown during the defer exits cleanly.
-        if buf.should_stop() or monitor.waitForAbort(_READAHEAD_START_DEFER_SECONDS):
+        buf, monitor, content_length = setup
+        if self._readahead_defer_start(buf, monitor):
             return
         while not buf.should_stop() and not monitor.waitForAbort(0):
             try:
-                fetch_offset = buf.next_fetch_offset()
-                if fetch_offset >= content_length:
-                    # Lead is fully built to EOF; nothing left to prefetch.
+                if self._readahead_prefetch_once(ctx, buf, monitor, content_length):
                     return
-                if buf.is_full():
-                    # Throttle: wait (abortably) for free-behind to reclaim room
-                    # as the play head advances. This is what keeps the buffer
-                    # filling while paused yet strictly bounded.
-                    if monitor.waitForAbort(_READAHEAD_THROTTLE_BACKOFF_SECONDS):
-                        return
-                    continue
-                want = min(
-                    _READAHEAD_FETCH_CHUNK,
-                    buf.space_remaining(),
-                    content_length - fetch_offset,
-                )
-                if want <= 0:
-                    if monitor.waitForAbort(_READAHEAD_THROTTLE_BACKOFF_SECONDS):
-                        return
-                    continue
-                end = fetch_offset + want - 1
-                # Re-read the source each iteration: a live fallback cutover
-                # mutates ctx["remote_url"]/["auth_header"] mid-stream, so a
-                # once-hoisted local would keep hammering the dead primary and
-                # the lead would stop growing from the live source. The buffer
-                # is offset-addressed, so bytes from either source are
-                # interchangeable for a given offset (no corruption either way).
-                remote_url = ctx.get("remote_url")
-                auth_header = ctx.get("auth_header")
-                if not remote_url:
-                    if monitor.waitForAbort(_READAHEAD_ERROR_BACKOFF_SECONDS):
-                        return
-                    continue
-                body = _StreamHandler._fetch_primary_range_bytes(
-                    remote_url, auth_header, fetch_offset, end, content_length
-                )
-                if not body:
-                    # Best-effort upstream error or awaiting-download: back off
-                    # and retry. The real serve path owns recovery; do not touch
-                    # the recovery taxonomy / notifications / counters here.
-                    if monitor.waitForAbort(_READAHEAD_ERROR_BACKOFF_SECONDS):
-                        return
-                    continue
-                buf.append(fetch_offset, body)
             except Exception as exc:  # pylint: disable=broad-except
                 xbmc.log(
                     "NZB-DAV: Read-ahead prefetch loop error: {}".format(exc),
@@ -8189,6 +8165,82 @@ class StreamProxy:
                 )
                 if monitor.waitForAbort(_READAHEAD_ERROR_BACKOFF_SECONDS):
                     return
+
+    @staticmethod
+    def _readahead_prefetch_setup(ctx):
+        """Validate ctx and build the read-ahead loop inputs.
+
+        Returns ``(buf, monitor, content_length)`` when prefetch should run,
+        or None when the ctx is missing a buffer / remote_url / positive
+        content_length (the daemon then exits without looping).
+        """
+        buf = ctx.get(_READAHEAD_BUFFER_KEY) if isinstance(ctx, dict) else None
+        if buf is None:
+            return None
+        try:
+            content_length = int(ctx.get("content_length", 0) or 0)
+        except (TypeError, ValueError):
+            return None
+        if not ctx.get("remote_url") or content_length <= 0:
+            return None
+        return buf, xbmc.Monitor(), content_length
+
+    @staticmethod
+    def _readahead_defer_start(buf, monitor):
+        """Yield to startup before the first read-ahead fetch; True to abort.
+
+        Lets the byte-0 prefetch and Kodi's first range fetch win nzbdav's
+        connection budget before the read-ahead issues its first upstream
+        read. Abortable so a shutdown during the defer exits cleanly. Returns
+        True when the loop should not start (stop requested or abort).
+        """
+        return buf.should_stop() or monitor.waitForAbort(_READAHEAD_START_DEFER_SECONDS)
+
+    @staticmethod
+    def _readahead_prefetch_once(ctx, buf, monitor, content_length):
+        """Run one read-ahead fetch iteration; return True to stop the loop.
+
+        Returns True when the lead has reached EOF or an abort was signalled
+        during a backoff wait (the loop should `return`); False to continue
+        to the next iteration. Mirrors the original inline body's throttle /
+        error-backoff branches exactly.
+        """
+        fetch_offset = buf.next_fetch_offset()
+        if fetch_offset >= content_length:
+            # Lead is fully built to EOF; nothing left to prefetch.
+            return True
+        if buf.is_full():
+            # Throttle: wait (abortably) for free-behind to reclaim room as
+            # the play head advances. This is what keeps the buffer filling
+            # while paused yet strictly bounded.
+            return monitor.waitForAbort(_READAHEAD_THROTTLE_BACKOFF_SECONDS)
+        want = min(
+            _READAHEAD_FETCH_CHUNK,
+            buf.space_remaining(),
+            content_length - fetch_offset,
+        )
+        if want <= 0:
+            return monitor.waitForAbort(_READAHEAD_THROTTLE_BACKOFF_SECONDS)
+        end = fetch_offset + want - 1
+        # Re-read the source each iteration: a live fallback cutover mutates
+        # ctx["remote_url"]/["auth_header"] mid-stream, so a once-hoisted local
+        # would keep hammering the dead primary and the lead would stop growing
+        # from the live source. The buffer is offset-addressed, so bytes from
+        # either source are interchangeable for a given offset.
+        remote_url = ctx.get("remote_url")
+        auth_header = ctx.get("auth_header")
+        if not remote_url:
+            return monitor.waitForAbort(_READAHEAD_ERROR_BACKOFF_SECONDS)
+        body = _StreamHandler._fetch_primary_range_bytes(
+            remote_url, auth_header, fetch_offset, end, content_length
+        )
+        if not body:
+            # Best-effort upstream error or awaiting-download: back off and
+            # retry. The real serve path owns recovery; do not touch the
+            # recovery taxonomy / notifications / counters here.
+            return monitor.waitForAbort(_READAHEAD_ERROR_BACKOFF_SECONDS)
+        buf.append(fetch_offset, body)
+        return False
 
     def _start_readahead_prefetch(self, ctx):
         """Spawn the per-session read-ahead prefetch daemon (gated + soft).
