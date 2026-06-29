@@ -1676,6 +1676,56 @@ def _poll_once_await_apis(
         history_ready.wait(min(0.05, remaining))
 
 
+def _by_name_completed_after_submit(by_name, submit_started_wall):
+    """Whether a by-name slot's ``completed`` epoch is at/after this submit.
+
+    Requires a parseable ``completed`` timestamp >= the submit start (with a 5 s
+    clock-skew tolerance). A slot lacking ``completed`` entirely (older
+    nzbdav-rs builds) returns False so the by-name path never fires a
+    false-failure on a stale prior-attempt row.
+    """
+    completed = by_name.get("completed")
+    try:
+        completed_ts = int(completed) if completed is not None else None
+    except (ValueError, TypeError):
+        return False
+    return (
+        completed_ts is not None
+        and submit_started_wall is not None
+        and completed_ts >= int(submit_started_wall) - 5
+    )
+
+
+def _by_name_terminal_history(
+    title, settings_getter, submit_started_wall, rejected_terminal_ids
+):
+    """Return a synthesized terminal history row from a by-name slot, or None.
+
+    nzbdav-rs remaps the nzo_id when a job is moved from queue to history
+    (keyed by name, not nzo_id). This timestamp-gated by-name fallback finds a
+    Failed/Completed slot, suppressing stale prior-attempt false positives on
+    resubmit (see ``_by_name_completed_after_submit``) and skipping rows already
+    rejected by the body probe.
+    """
+    from resources.lib.nzbdav_api import find_terminal_by_name
+
+    by_name = find_terminal_by_name(title, **_settings_getter_kwargs(settings_getter))
+    if not (
+        by_name
+        and by_name.get("status")
+        and by_name.get("nzo_id") not in rejected_terminal_ids
+    ):
+        return None
+    if not _by_name_completed_after_submit(by_name, submit_started_wall):
+        return None
+    return {
+        "status": by_name.get("status", ""),
+        "storage": by_name.get("storage", ""),
+        "name": by_name.get("name", ""),
+        "fail_message": by_name.get("fail_message", ""),
+    }
+
+
 def _poll_once(
     nzo_id,
     title,
@@ -1735,48 +1785,16 @@ def _poll_once(
                 nzo_id, **_settings_getter_kwargs(settings_getter)
             )
             # nzbdav-rs remaps the nzo_id when a job is moved from queue to
-            # history (different storage layer keyed by name, not nzo_id).
-            # Without a name-based fallback the addon polls indefinitely
-            # for the original nzo_id even though the job has clearly
-            # landed in history with status=Failed.
+            # history (keyed by name, not nzo_id); without a name-based
+            # fallback the addon would poll indefinitely for the original
+            # nzo_id even though the job has landed in history.
             if history_status[0] is None and title:
-                from resources.lib.nzbdav_api import find_terminal_by_name
-
-                by_name = find_terminal_by_name(
-                    title, **_settings_getter_kwargs(settings_getter)
+                history_status[0] = _by_name_terminal_history(
+                    title,
+                    settings_getter,
+                    submit_started_wall,
+                    rejected_terminal_ids,
                 )
-                # Suppress stale prior-attempt false positives on
-                # resubmit: a Failed slot from a previous resolver run
-                # would otherwise be reported as "this job failed" and
-                # surface a Failed-history error dialog before the
-                # current submit had a chance to land. Require the
-                # slot's ``completed`` timestamp to be >= the current
-                # submit start (with a 5 s tolerance for clock skew
-                # between the addon and nzbdav-rs). If the slot lacks
-                # ``completed`` entirely (older nzbdav-rs builds),
-                # don't trigger the by-name path at all — better to
-                # wait out the timeout than to fire a false-failure.
-                if (
-                    by_name
-                    and by_name.get("status")
-                    and by_name.get("nzo_id") not in rejected_terminal_ids
-                ):
-                    completed = by_name.get("completed")
-                    try:
-                        completed_ts = int(completed) if completed is not None else None
-                    except (ValueError, TypeError):
-                        completed_ts = None
-                    if (
-                        completed_ts is not None
-                        and submit_started_wall is not None
-                        and completed_ts >= int(submit_started_wall) - 5
-                    ):
-                        history_status[0] = {
-                            "status": by_name.get("status", ""),
-                            "storage": by_name.get("storage", ""),
-                            "name": by_name.get("name", ""),
-                            "fail_message": by_name.get("fail_message", ""),
-                        }
             if _history_status_is_terminal(history_status[0]):
                 history_ready.set()
         finally:
@@ -2199,6 +2217,47 @@ def _job_nzo_id(match):
     return None
 
 
+def _submit_probe_interval(probe_started):
+    """Fast cadence inside the initial window, then the slower steady interval."""
+    elapsed = time.monotonic() - probe_started
+    if elapsed < _SUBMIT_QUEUE_PROBE_FAST_WINDOW_SECONDS:
+        return _SUBMIT_QUEUE_PROBE_FAST_INTERVAL_SECONDS
+    return _SUBMIT_QUEUE_PROBE_INTERVAL_SECONDS
+
+
+def _drop_rejected_completed_match(match, rejected_ids):
+    """Return ``match`` unless its nzo_id was already body-probe rejected.
+
+    The pre-submit body probe records Completed rows whose mid-file body is
+    unavailable; re-adopting one would bypass the intended re-download, so drop
+    it (return None) and let the caller keep probing.
+    """
+    if match is not None and _job_nzo_id(match) in rejected_ids:
+        return None
+    return match
+
+
+def _start_probe_thread_or_run(target, thread_name):
+    """Start ``target`` on a daemon thread, falling back to inline on failure."""
+    thread = threading.Thread(target=target, name=thread_name, daemon=True)
+    try:
+        thread.start()
+    except RuntimeError:
+        target()
+
+
+def _safe_probe_by_name(find_fn, title, settings_getter, probe_label):
+    """Call a find-by-name probe, logging+swallowing any error (returns None)."""
+    try:
+        return find_fn(title, **_settings_getter_kwargs(settings_getter))
+    except Exception as e:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: concurrent {} probe raised: {}".format(probe_label, e),
+            xbmc.LOGWARNING,
+        )
+        return None
+
+
 def _find_adoptable_job_during_submit(
     title, settings_getter=None, rejected_completed_ids=None
 ):
@@ -2217,43 +2276,24 @@ def _find_adoptable_job_during_submit(
         progress.set()
 
     def _probe_queue():
-        try:
-            match = find_queued_by_name(
-                title, **_settings_getter_kwargs(settings_getter)
-            )
-        except Exception as e:  # pylint: disable=broad-except
-            xbmc.log(
-                "NZB-DAV: concurrent queue probe raised: {}".format(e),
-                xbmc.LOGWARNING,
-            )
-            match = None
-        _record_match(match)
+        _record_match(
+            _safe_probe_by_name(find_queued_by_name, title, settings_getter, "queue")
+        )
 
     def _probe_history():
-        try:
-            match = find_completed_by_name(
-                title, **_settings_getter_kwargs(settings_getter)
+        # Don't re-adopt a Completed row the pre-submit body probe already
+        # rejected (mid-file body unavailable); it would bypass the intended
+        # re-download. See finding #7.
+        _record_match(
+            _drop_rejected_completed_match(
+                _safe_probe_by_name(
+                    find_completed_by_name, title, settings_getter, "history"
+                ),
+                rejected_ids,
             )
-        except Exception as e:  # pylint: disable=broad-except
-            xbmc.log(
-                "NZB-DAV: concurrent history probe raised: {}".format(e),
-                xbmc.LOGWARNING,
-            )
-            match = None
-        if match is not None and _job_nzo_id(match) in rejected_ids:
-            # Don't re-adopt a Completed row the pre-submit body probe already
-            # rejected (mid-file body unavailable); it would bypass the
-            # intended re-download. See finding #7.
-            match = None
-        _record_match(match)
+        )
 
-    queue_thread = threading.Thread(
-        target=_probe_queue, name="nzbdav-submit-queue-probe", daemon=True
-    )
-    try:
-        queue_thread.start()
-    except RuntimeError:
-        _probe_queue()
+    _start_probe_thread_or_run(_probe_queue, "nzbdav-submit-queue-probe")
 
     progress.wait(_SUBMIT_HISTORY_PROBE_PARALLEL_GRACE_SECONDS)
     with lock:
@@ -2266,16 +2306,14 @@ def _find_adoptable_job_during_submit(
         with lock:
             return result["nzo_id"]
 
-    history_thread = threading.Thread(
-        target=_probe_history, name="nzbdav-submit-history-probe", daemon=True
-    )
-    try:
-        history_thread.start()
-        expected_done = 2
-    except RuntimeError:
-        _probe_history()
-        expected_done = 2
+    _start_probe_thread_or_run(_probe_history, "nzbdav-submit-history-probe")
+    expected_done = 2
 
+    return _await_adoptable_probe_result(lock, result, progress, expected_done)
+
+
+def _await_adoptable_probe_result(lock, result, progress, expected_done):
+    """Wait for the concurrent queue/history probes to settle; return nzo_id."""
     while True:
         with lock:
             nzo_id = result["nzo_id"]
@@ -2378,16 +2416,9 @@ def _submit_nzb_with_ui_pump(
         probe_started = time.monotonic()
         first_probe = True
         while not queue_stop.is_set() and not submit_done.is_set():
-            try:
-                match = find_queued_by_name(
-                    title, **_settings_getter_kwargs(settings_getter)
-                )
-            except Exception as e:  # pylint: disable=broad-except
-                xbmc.log(
-                    "NZB-DAV: concurrent queue probe raised: {}".format(e),
-                    xbmc.LOGWARNING,
-                )
-                match = None
+            match = _safe_probe_by_name(
+                find_queued_by_name, title, settings_getter, "queue"
+            )
             try:
                 if _record_adoption_hit(match):
                     return
@@ -2395,13 +2426,7 @@ def _submit_nzb_with_ui_pump(
                 if first_probe:
                     first_probe = False
                     first_queue_probe_done.set()
-            elapsed = time.monotonic() - probe_started
-            interval = (
-                _SUBMIT_QUEUE_PROBE_FAST_INTERVAL_SECONDS
-                if elapsed < _SUBMIT_QUEUE_PROBE_FAST_WINDOW_SECONDS
-                else _SUBMIT_QUEUE_PROBE_INTERVAL_SECONDS
-            )
-            if queue_stop.wait(interval):
+            if queue_stop.wait(_submit_probe_interval(probe_started)):
                 return
 
     def _wait_for_history_probe_start():
@@ -2429,31 +2454,15 @@ def _submit_nzb_with_ui_pump(
             and not submit_done.is_set()
             and not _current_adoption_hit()
         ):
-            try:
-                match = find_completed_by_name(
-                    title, **_settings_getter_kwargs(settings_getter)
-                )
-            except Exception as e:  # pylint: disable=broad-except
-                xbmc.log(
-                    "NZB-DAV: concurrent history probe raised: {}".format(e),
-                    xbmc.LOGWARNING,
-                )
-                match = None
-            if match is not None and _job_nzo_id(match) in rejected_ids:
-                # The pre-submit body probe already rejected this exact
-                # Completed row (mid-file body unavailable). Re-adopting it
-                # would bypass the intended re-download, so ignore it and keep
-                # probing while the real addurl submit proceeds.
-                match = None
+            match = _drop_rejected_completed_match(
+                _safe_probe_by_name(
+                    find_completed_by_name, title, settings_getter, "history"
+                ),
+                rejected_ids,
+            )
             if _record_adoption_hit(match):
                 return
-            elapsed = time.monotonic() - probe_started
-            interval = (
-                _SUBMIT_QUEUE_PROBE_FAST_INTERVAL_SECONDS
-                if elapsed < _SUBMIT_QUEUE_PROBE_FAST_WINDOW_SECONDS
-                else _SUBMIT_QUEUE_PROBE_INTERVAL_SECONDS
-            )
-            if queue_stop.wait(interval):
+            if queue_stop.wait(_submit_probe_interval(probe_started)):
                 return
 
     submit_t = threading.Thread(
@@ -3630,6 +3639,86 @@ def _signal_fallback_playback_started(state):
         event.set()
 
 
+def _resolve_active_fallback_candidates(candidate_list, candidate_loader):
+    """Return ``(active_candidates, lookup_disabled)`` for the fallback worker.
+
+    Uses the prefetched list when there is no loader; otherwise runs the loader,
+    mapping the disabled sentinel to ``([], True)`` and any error to ``([],
+    False)`` (logged) so the worker keeps its original branching unchanged.
+    """
+    if candidate_loader is None:
+        return candidate_list, False
+    try:
+        loaded_candidates = candidate_loader()
+    except Exception as error:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: Fallback candidate lookup failed: {}".format(error),
+            xbmc.LOGWARNING,
+        )
+        return [], False
+    if loaded_candidates is FALLBACK_CANDIDATES_DISABLED:
+        return [], True
+    return list(loaded_candidates or []), False
+
+
+def _notify_no_fallback_candidates(candidate_lookup_disabled, settings_getter):
+    """Show the "no fallbacks" toast unless lookup was disabled or off."""
+    if candidate_lookup_disabled or not _fallback_streams_enabled(
+        settings_getter=settings_getter
+    ):
+        return
+    try:
+        _notify(_addon_name(), _string(30187), 4000)
+    except (RuntimeError, OSError):
+        pass
+
+
+def _run_fallback_on_append_hook(state):
+    """Push a late-adopted fallback into the live proxy session, if hook armed.
+
+    The ``on_append`` hook (installed after /prepare returns a session id) is
+    best-effort: a push failure must never disrupt fallback submission.
+    """
+    hook = state.get("on_append")
+    if hook is None:
+        return
+    try:
+        hook()
+    except Exception as error:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: fallback on_append hook failed: {}".format(error),
+            xbmc.LOGWARNING,
+        )
+
+
+def _load_and_submit_fallback_candidates(state, submit_inputs):
+    """Load fallback candidates then submit them as standby nzbdav jobs.
+
+    ``submit_inputs`` carries the worker's captured submit args (candidate list /
+    loader, settings_getter, dead, primary_nzb_url, on_job). No-ops once the stop
+    event is set or when there are no candidates (toasting once in that case).
+    """
+    active_candidates, candidate_lookup_disabled = _resolve_active_fallback_candidates(
+        submit_inputs["candidate_list"], submit_inputs["candidate_loader"]
+    )
+    if state["stop"].is_set():
+        return
+    if not active_candidates:
+        _notify_no_fallback_candidates(
+            candidate_lookup_disabled, submit_inputs["settings_getter"]
+        )
+        return
+    _submit_fallback_candidates(
+        active_candidates,
+        xbmc.Monitor(),
+        stop_event=state["stop"],
+        on_job=submit_inputs["on_job"],
+        settings_getter=submit_inputs["settings_getter"],
+        dead=submit_inputs["dead"],
+        primary_nzb_url=submit_inputs["primary_nzb_url"],
+    )
+
+
 def _start_fallback_submit_worker(
     candidates=None,
     candidate_loader=None,
@@ -3683,18 +3772,16 @@ def _start_fallback_submit_worker(
         if should_cancel:
             _cancel_fallback_job(state, job)
             return
-        # Push this late-adopted fallback into the live proxy session if a
-        # push hook has been armed (after /prepare returns a session id).
-        # Best-effort: a push failure must never disrupt fallback submission.
-        hook = state.get("on_append")
-        if hook is not None:
-            try:
-                hook()
-            except Exception as error:  # pylint: disable=broad-except
-                xbmc.log(
-                    "NZB-DAV: fallback on_append hook failed: {}".format(error),
-                    xbmc.LOGWARNING,
-                )
+        _run_fallback_on_append_hook(state)
+
+    submit_inputs = {
+        "candidate_list": candidate_list,
+        "candidate_loader": candidate_loader,
+        "settings_getter": settings_getter,
+        "dead": dead,
+        "primary_nzb_url": primary_nzb_url,
+        "on_job": _append_job,
+    }
 
     def _worker():
         try:
@@ -3710,42 +3797,7 @@ def _start_fallback_submit_worker(
             # flag to honor, so only its stop event aborts the prewarm wait.
             if _wait_prewarm_or_inactive(state, prewarm_delay, wait_for_playback):
                 return
-            active_candidates = candidate_list
-            candidate_lookup_disabled = False
-            if candidate_loader is not None:
-                try:
-                    loaded_candidates = candidate_loader()
-                    if loaded_candidates is FALLBACK_CANDIDATES_DISABLED:
-                        candidate_lookup_disabled = True
-                        active_candidates = []
-                    else:
-                        active_candidates = list(loaded_candidates or [])
-                except Exception as error:  # pylint: disable=broad-except
-                    xbmc.log(
-                        "NZB-DAV: Fallback candidate lookup failed: {}".format(error),
-                        xbmc.LOGWARNING,
-                    )
-                    active_candidates = []
-            if state["stop"].is_set():
-                return
-            if not active_candidates:
-                if not candidate_lookup_disabled and _fallback_streams_enabled(
-                    settings_getter=settings_getter
-                ):
-                    try:
-                        _notify(_addon_name(), _string(30187), 4000)
-                    except (RuntimeError, OSError):
-                        pass
-                return
-            _submit_fallback_candidates(
-                active_candidates,
-                xbmc.Monitor(),
-                stop_event=state["stop"],
-                on_job=_append_job,
-                settings_getter=settings_getter,
-                dead=dead,
-                primary_nzb_url=primary_nzb_url,
-            )
+            _load_and_submit_fallback_candidates(state, submit_inputs)
         except Exception as error:  # pylint: disable=broad-except
             xbmc.log(
                 "NZB-DAV: Fallback submit worker failed: {}".format(error),
@@ -4399,6 +4451,43 @@ def _job_status_is_dead(job_status):
     return str((job_status or {}).get("status", "")).lower() in ("failed", "deleted")
 
 
+def _mark_dead_on_terminal_job_status(job_status, nzo_id, mark_dead):
+    """Mark the candidate dead when a terminal job status is failed/deleted."""
+    if _job_status_is_dead(job_status):
+        mark_dead(nzo_id)
+
+
+def _mark_dead_on_failed_history(history, nzo_id, mark_dead):
+    """Mark the candidate dead when the terminal history row reports Failed."""
+    if (history or {}).get("status") == "Failed":
+        mark_dead(nzo_id)
+
+
+def _wait_between_polls(monitor, wait_seconds, nzo_id, settings_getter):
+    """Wait the inter-poll interval; cancel + stop on shutdown, else continue.
+
+    Returns ``(None, None)`` to stop ``_poll_until_ready`` (Kodi is shutting
+    down) or the ``_POLL_CONTINUE`` sentinel to keep looping.
+    """
+    if _wait_for_abort_or_timeout(monitor, wait_seconds):
+        _cancel_job_on_shutdown(nzo_id, settings_getter)
+        return None, None
+    return _POLL_CONTINUE
+
+
+def _notify_primary_submitted(on_primary_submitted, nzo_id):
+    """Fire the primary-submitted callback, never letting it break the poll loop."""
+    if on_primary_submitted is None:
+        return
+    try:
+        on_primary_submitted(nzo_id)
+    except Exception as error:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: Fallback submit worker start failed: {}".format(error),
+            xbmc.LOGWARNING,
+        )
+
+
 def _cancel_job_on_shutdown(nzo_id, settings_getter):
     """Cancel the job on Kodi shutdown, matching the settings-getter contract."""
     xbmc.log("NZB-DAV: Kodi shutdown detected, aborting resolve", xbmc.LOGINFO)
@@ -4467,14 +4556,7 @@ def _poll_until_ready(
     )
     if not nzo_id:
         return None, None
-    if on_primary_submitted is not None:
-        try:
-            on_primary_submitted(nzo_id)
-        except Exception as error:  # pylint: disable=broad-except
-            xbmc.log(
-                "NZB-DAV: Fallback submit worker start failed: {}".format(error),
-                xbmc.LOGWARNING,
-            )
+    _notify_primary_submitted(on_primary_submitted, nzo_id)
 
     xbmc.log(
         "NZB-DAV: NZB submitted, nzo_id={}, polling every {}s (timeout={}s)".format(
@@ -4518,8 +4600,7 @@ def _poll_until_ready(
             job_status, nzo_id, dialog, last_status
         )
         if should_stop:
-            if _job_status_is_dead(job_status):
-                _mark_dead(nzo_id)
+            _mark_dead_on_terminal_job_status(job_status, nzo_id, _mark_dead)
             return None, None
 
         should_stop, stream_url, stream_headers, no_video_retries = (
@@ -4538,8 +4619,7 @@ def _poll_until_ready(
             _record_download_soft(title, download_pubdate, download_size)
             return stream_url, stream_headers
         if should_stop:
-            if (history or {}).get("status") == "Failed":
-                _mark_dead(nzo_id)
+            _mark_dead_on_failed_history(history, nzo_id, _mark_dead)
             return None, None
 
         if _handle_webdav_error(nzo_id, webdav_error):
@@ -4554,10 +4634,7 @@ def _poll_until_ready(
         wait_seconds, near_complete_fast_repolls = _poll_wait_after_status(
             job_status, poll_interval, near_complete_fast_repolls
         )
-        if _wait_for_abort_or_timeout(monitor, wait_seconds):
-            _cancel_job_on_shutdown(nzo_id, settings_getter)
-            return None, None
-        return _POLL_CONTINUE
+        return _wait_between_polls(monitor, wait_seconds, nzo_id, settings_getter)
 
     while True:
         iteration += 1
@@ -4617,6 +4694,19 @@ def _scrub_bookmark_for_nzbget(params):
         return 0.0
 
 
+def _reject_resolve_handle(handle, notify_message=None):
+    """Fail the handle-based resolve: optional notify, then setResolvedUrl(False).
+
+    Preserves the exact failure sequence shared across ``resolve`` and its
+    helpers: an optional user-facing dialog, the ``setResolvedUrl(handle,
+    False)`` completion signal Kodi waits on, then clearing the video playlist.
+    """
+    if notify_message is not None:
+        xbmcgui.Dialog().ok(_addon_name(), notify_message)
+    xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+    xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
+
+
 def _resolve_nzbget_delegate(handle, params):
     """Run the handle-based NZBGet delegation branch of ``resolve``.
 
@@ -4639,8 +4729,7 @@ def _resolve_nzbget_delegate(handle, params):
         release_id, chosen = _resolve_resume_choice(params, scrubbed_seconds)
         if chosen is None:
             _preserve_resume_on_cancel(release_id, scrubbed_seconds)
-            xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
-            xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
+            _reject_resolve_handle(handle)
             return
         # Carry the chosen resume position + release identity into NZBGet
         # playback so a replay resumes where the user left off (applied as
@@ -4658,8 +4747,7 @@ def _resolve_nzbget_delegate(handle, params):
             ),
             xbmc.LOGERROR,
         )
-        xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
-        xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
+        _reject_resolve_handle(handle)
 
 
 def _prepare_ready_stream_for_handoff(
@@ -4835,8 +4923,7 @@ def _resolve_play_ready_stream(
     if chosen is None:
         _preserve_resume_on_cancel(release_id, scrubbed_seconds)
         _stop_fallback_submit_worker(fallback_state, cancel_submitted=True)
-        xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
-        xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
+        _reject_resolve_handle(handle)
         return dialog
     _arm_live_fallback_push(prepared, fallback_state, stream_url, dead=dead)
     _finish_direct_playback(
@@ -4869,9 +4956,7 @@ def resolve(handle, params):
     playback_cleanup_state = None
 
     if not nzb_url:
-        xbmcgui.Dialog().ok(_addon_name(), _string(30096))
-        xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
-        xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
+        _reject_resolve_handle(handle, notify_message=_string(30096))
         return
 
     # NZBGet backend toggle: when enabled, the whole download+playback path
@@ -4947,8 +5032,7 @@ def resolve(handle, params):
             )
         else:
             _stop_fallback_submit_worker(fallback_state, cancel_submitted=True)
-            xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
-            xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
+            _reject_resolve_handle(handle)
     except _RESOLVE_RUNTIME_ERRORS as error:
         _resolve_stage("resolve_exception {}".format(error))
         _stop_fallback_submit_worker(fallback_state, cancel_submitted=True)
