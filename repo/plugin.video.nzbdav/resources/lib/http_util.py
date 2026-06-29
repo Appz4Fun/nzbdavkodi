@@ -41,6 +41,10 @@ _EMBEDDED_CRED_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Pre-compile the regex for stripping fractional seconds in ISO-8601 strings
+# to avoid runtime compilation overhead on every `iso8601_to_rfc2822` call.
+_FRACTIONAL_SECONDS_RE = re.compile(r"\.\d+")
+
 # Catch ``scheme://user:password@host`` userinfo embedded in free-form text.
 # urllib / socket / xbmcvfs errors sometimes echo the failing URL — e.g. the
 # NZBGet JSON-RPC URL or the ``smb://user:pass@host/...`` completed-folder
@@ -365,7 +369,7 @@ def iso8601_to_rfc2822(value):
     # .NET (Prowlarr's stack) can emit up to 7 fractional-second digits,
     # which pre-3.11 ``datetime.fromisoformat`` rejects; sub-second
     # precision is irrelevant for identity/sort/age, so drop it.
-    text = re.sub(r"\.\d+", "", text)
+    text = _FRACTIONAL_SECONDS_RE.sub("", text)
     # ``fromisoformat`` only accepts a trailing 'Z' from Python 3.11 on;
     # map it to an explicit UTC offset for older Kodi runtimes (3.8–3.9).
     if text[-1:] in ("Z", "z"):
