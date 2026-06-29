@@ -1,244 +1,48 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 nzbdav contributors
 
-"""WebDAV availability checker for nzbdav streams."""
+"""WebDAV availability checker for nzbdav streams.
+
+The PROPFIND scan/recurse internals live in ``webdav_discovery`` and the
+episode/title match scoring in ``webdav_match``; this module keeps the
+test-patched surface (``find_video_file``, ``probe_webdav_reachable``,
+``_get_settings``, ``_http_head``, ``urlopen``, the size-hint store) plus the
+public stream-URL helpers, and re-exports the moved names so existing imports
+(e.g. ``filter_pack``'s ``_episode_tags``) keep working.
+"""
 
 import base64
-import re
-import threading
-from queue import Queue
 from urllib.error import HTTPError
-from urllib.parse import quote, unquote
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 import xbmc
 
-_WEBDAV_SUBDIR_SCAN_WORKERS = 4
+from resources.lib.webdav_match import (
+    _episode_tags,
+    _hint_tokens,
+    _title_hint_match_score,
+)
+
+# Re-exported for callers/tests that resolve these names on ``webdav``.
+__all__ = [
+    "_episode_tags",
+    "_hint_tokens",
+    "_title_hint_match_score",
+    "_get_settings",
+    "_http_head",
+    "probe_webdav_reachable",
+    "get_video_file_size_hint",
+    "find_video_file",
+    "find_video_stream_for_folder",
+    "get_webdav_stream_url_for_path",
+    "check_file_in_folder",
+    "_build_auth_headers",
+    "_remember_video_file_size_hint",
+]
+
 _VIDEO_FILE_SIZE_HINTS_MAX = 64
 _VIDEO_FILE_SIZE_HINTS = {}
-# Capture a season followed by one or more episode numbers so a multi-episode
-# file like "S01E01E02E03" yields every episode it contains, not just the
-# first. The episode run allows light separators (e.g. "E01-E02", "E01.E02")
-# between consecutive episode numbers within the same Sxx tag.
-_EPISODE_TAG_RE = re.compile(r"s(\d{1,3})[. _-]*((?:e\d{1,4}[. _-]*)+)", re.IGNORECASE)
-_EPISODE_NUM_RE = re.compile(r"e(\d{1,4})", re.IGNORECASE)
-# Episode RANGE notation "SxxEaa-Ebb" / "SxxEaa-bb" (e.g. S01E01-E03,
-# S01E01-03). The base _EPISODE_TAG_RE only records the literal endpoints
-# (E01 and E03) and drops a bare "-03" half entirely, so a request for a
-# covered middle episode (E02) would be scored as a different episode. We
-# expand the inclusive span below. _EPISODE_RANGE_MAX_SPAN caps expansion so
-# a malformed/absurd range (e.g. S01E01-E999) can't balloon the tag set --
-# beyond the cap we leave the literal endpoints from _EPISODE_TAG_RE intact.
-# The optional `(?:s\1[. _-]*)?` before the final episode number accepts the
-# repeated full-season form "S01E01-S01E03" in addition to "S01E01-E03" /
-# "S01E01-03". The `\1` backreference forces the SAME season, so a cross-season
-# range like "S01E10-S02E02" does NOT satisfy the repeated-season branch and
-# only the literal endpoints (E10, E02) survive via _EPISODE_TAG_RE.
-_EPISODE_RANGE_RE = re.compile(
-    r"s(\d{1,3})[. _-]*e(\d{1,4})[. _-]*-[. _-]*(?:s\1[. _-]*)?e?(\d{1,4})",
-    re.IGNORECASE,
-)
-_EPISODE_RANGE_MAX_SPAN = 64
-# Older/scene-alternate "NxNN" / "NNxNN" episode notation (e.g. 2x05,
-# 02x05) that PTT's parse_title recognizes (ptt/handlers.py:1444 season
-# handler) but the SxxExx regex above does not. Zero-width `(?<!\d)` /
-# `(?!\d)` digit-lookarounds anchor the tag without CONSUMING the
-# surrounding separator, so adjacent tags ("2x05.2x06") both register
-# instead of the boundary eating the gap and dropping the second (and the
-# middle of a 3-pack). The `\d{1,2}` season cap (unchanged) is what keeps
-# resolutions like 1920x1080 / 1280x720 / 3840x2160 and codec tokens like
-# x264/x265 from registering as episodes. Accepts the Cyrillic 'х' the PTT
-# handler also allows.
-_EPISODE_NXN_RE = re.compile(r"(?<!\d)(\d{1,2})[xх](\d{1,3})(?!\d)", re.IGNORECASE)
-# Well-known display aspect ratios that share the NxN shape (16x9, 4x3, ...)
-# but are NOT episodes. The season cap on _EPISODE_NXN_RE already rejects
-# resolutions (1920x1080) and codecs (x264), but these small ratios slip
-# through and would mis-parse as episode (16, 9) / (4, 3). We FILTER these
-# exact pairs out of the NxN extraction rather than tightening the regex, so
-# real un-padded single-digit episodes like 2x3 or 1x9 still register.
-_ASPECT_RATIO_PAIRS = frozenset(
-    {
-        (16, 9),
-        (4, 3),
-        (21, 9),
-        (16, 10),
-        (2, 35),
-        (2, 39),
-        (2, 40),
-        (1, 85),
-        (1, 78),
-        (1, 33),
-        (2, 20),
-        (1, 90),
-        (2, 76),
-    }
-)
-# NxN RANGE notation "1x01-03" / "1x01-1x03" -- the NxN sibling of
-# _EPISODE_RANGE_RE (SxxEaa-Ebb). The standalone _EPISODE_NXN_RE above only
-# records the literal endpoints (1x01 and 1x03) and drops a bare "-03" half
-# entirely, so a request for a covered middle episode (1x02) would mis-score
-# and a larger non-covering sibling could win. We expand the inclusive span
-# below, capped by _EPISODE_RANGE_MAX_SPAN. The `\d{1,2}` season cap and the
-# trailing `(?!\d)` are the resolution/codec guard (1920x1080, 1280x720,
-# 3840x2160, 1920x1080-1920x1200 and 1x01-1080 all register nothing). The
-# optional `(?:\d{1,2}[xх])?` handles both "1x01-03" and "1x01-1x03"; the
-# literal '-' means dot-separated adjacent tags ("2x05.2x06") never collapse.
-_EPISODE_NXN_RANGE_RE = re.compile(
-    r"(?<!\d)(\d{1,2})[xх](\d{1,3})[. _-]*-[. _-]*(?:\d{1,2}[xх])?(\d{1,3})(?!\d)",
-    re.IGNORECASE,
-)
-
-_NON_WORD_RE = re.compile(r"[\W_]+")
-
-
-def _hint_tokens(value):
-    """Return lowercased alphanumeric tokens for loose name matching."""
-    if not isinstance(value, str) or not value:
-        return frozenset()
-    cleaned = _NON_WORD_RE.sub(" ", value.lower())
-    return frozenset(token for token in cleaned.split() if token)
-
-
-def _add_span_tags(tags, season, start, end):
-    """Add every (season, episode) in an inclusive span, capped by max span."""
-    if start <= end <= start + _EPISODE_RANGE_MAX_SPAN:
-        for episode in range(start, end + 1):
-            tags.add((season, episode))
-
-
-def _add_multi_episode_tags(tags, value):
-    """Expand "SxxEaaEbb" multi-episode tags into individual (season, ep)."""
-    for match in _EPISODE_TAG_RE.finditer(value):
-        season = int(match.group(1))
-        for episode in _EPISODE_NUM_RE.findall(match.group(2)):
-            tags.add((season, int(episode)))
-
-
-def _add_range_tags(tags, value):
-    """Expand "SxxEaa-Ebb" episode-range notation into individual tags."""
-    for match in _EPISODE_RANGE_RE.finditer(value):
-        season = int(match.group(1))
-        _add_span_tags(tags, season, int(match.group(2)), int(match.group(3)))
-
-
-def _add_nxn_range_tags(tags, value):
-    """Expand "1x01-03" NxN range notation, skipping aspect-ratio anchors."""
-    for match in _EPISODE_NXN_RANGE_RE.finditer(value):
-        season = int(match.group(1))
-        start = int(match.group(2))
-        end = int(match.group(3))
-        # An aspect ratio (16x9) never forms a valid range start/end, so a
-        # span anchored on one is spurious -- skip it (the standalone NxN loop
-        # also filters the literal endpoints).
-        if (season, start) in _ASPECT_RATIO_PAIRS or (
-            season,
-            end,
-        ) in _ASPECT_RATIO_PAIRS:
-            continue
-        _add_span_tags(tags, season, start, end)
-
-
-def _add_nxn_tags(tags, value):
-    """Add standalone "NxNN" episode tags, skipping aspect ratios."""
-    # Run AFTER the range expansion: it preserves the literal endpoints when
-    # the range guard rejects a span (reversed 1x05-1x02 or cross-season
-    # 1x10-2x02, where start<=end is False, or beyond the cap), so behavior is
-    # a strict superset and never regresses. tags is a set, so there is no
-    # double-count.
-    for match in _EPISODE_NXN_RE.finditer(value):
-        pair = (int(match.group(1)), int(match.group(2)))
-        # Skip well-known display aspect ratios (16x9, 4x3, ...) that share the
-        # NxN shape but are not episodes. Real un-padded episodes (2x3, 1x9)
-        # are not in the set, so they still register.
-        if pair in _ASPECT_RATIO_PAIRS:
-            continue
-        tags.add(pair)
-
-
-def _episode_tags(value):
-    """Return the set of (season, episode) tags found in a release name.
-
-    A multi-episode tag such as "S01E01E02E03" expands to every episode it
-    spans -- {(1, 1), (1, 2), (1, 3)} -- so a request for a middle episode
-    (E02) still matches the combined file rather than only its first episode.
-    """
-    if not isinstance(value, str) or not value:
-        return frozenset()
-    tags = set()
-    _add_multi_episode_tags(tags, value)
-    _add_range_tags(tags, value)
-    _add_nxn_range_tags(tags, value)
-    _add_nxn_tags(tags, value)
-    return frozenset(tags)
-
-
-def _title_hint_match_score(file_path, hint_tokens, hint_episode_tags):
-    """Return how strongly a video file name matches the requested title hint.
-
-    Returns a 2-tuple ``(episode_score, token_score)`` so callers can rank
-    episode identity ABOVE size but raw token overlap BELOW it:
-
-    * ``episode_score`` is the strongest signal -- ``1000`` when the requested
-      SxxExx episode is present, ``-1000`` when the file names a different
-      episode, ``0`` when no episode comparison applies. An episode pack must
-      pick the requested episode, not the largest file.
-    * ``token_score`` is the raw token-overlap count (``0`` when there is no
-      token hint). For a movie hint (no episode tag) this must NOT outrank
-      size, or a small token-rich extra/trailer would hijack the feature; the
-      folder/sibling sort keys therefore place size between the two scores.
-
-    Returns ``(0, 0)`` when there is no usable hint or the name is empty.
-    """
-    if not hint_tokens and not hint_episode_tags:
-        return (0, 0)
-    name = unquote(file_path.rsplit("/", 1)[-1]) if file_path else ""
-    if not name:
-        return (0, 0)
-    episode_score = _episode_match_score(file_path, name, hint_episode_tags)
-    token_score = len(hint_tokens & _hint_tokens(name)) if hint_tokens else 0
-    return (episode_score, token_score)
-
-
-def _episode_match_score(file_path, name, hint_episode_tags):
-    """Return +1000 for the requested episode, -1000 for a named other, else 0.
-
-    A named different episode is never preferred over a true match, though token
-    overlap may still rank it among non-episode candidates.
-    """
-    if not hint_episode_tags:
-        return 0
-    parent_path = file_path.rsplit("/", 1)[0] if file_path and "/" in file_path else ""
-    file_tags = _resolve_file_episode_tags(name, parent_path)
-    if not file_tags:
-        return 0
-    return 1000 if hint_episode_tags & file_tags else -1000
-
-
-def _resolve_file_episode_tags(name, parent_path):
-    """Resolve the authoritative episode tags for a file via a layered fallback.
-
-    Basename FIRST: the file's own episode tag is authoritative. Only when the
-    basename carries no episode tag (a generically-named file like "video.mkv")
-    do we fall back to the directory -- this is a LAYERED fallback, NOT a union:
-    a matching dir tag must never mask a wrong-episode FILENAME, or the
-    wrong-episode gate would regress.
-
-    The fallback scores the NEAREST parent SEGMENT and treats it as
-    authoritative when it carries its OWN episode tag (most-specific identity),
-    so a wrong nearer dir like "Show.S01E03" is correctly wrong and is NOT
-    rescued by an ancestor pack folder ("Show.S01E02.Pack"). It widens to scan
-    the FULL ancestor path only when the nearest dir is generic (e.g. "1080p"),
-    so a grandparent's tag ("Show.S01E02/1080p/video.mkv") still supplies the
-    match. A season-complete parent ("Show.S01.Complete") yields no tag, so
-    largest-wins is preserved there.
-    """
-    file_tags = _episode_tags(name)
-    if not file_tags and parent_path:
-        nearest_tags = _episode_tags(unquote(parent_path.rsplit("/", 1)[-1]))
-        file_tags = (
-            nearest_tags if nearest_tags else _episode_tags(unquote(parent_path))
-        )
-    return file_tags
 
 
 def _get_settings(settings_getter=None):
@@ -411,170 +215,6 @@ def _classify_probe_status(status):
     return True, None
 
 
-def _find_video_file_in_subdirs(
-    subdirs,
-    depth,
-    visited,
-    settings,
-    hint_tokens=None,
-    hint_episode_tags=None,
-    min_video_size=0,
-):
-    """Probe sibling WebDAV subfolders and return the best video found.
-
-    When a requested title/episode hint is available, a sibling whose video
-    name matches the hint (especially the requested SxxExx episode) is preferred
-    over the largest video — so a multi-episode pack returns the requested
-    episode instead of whichever sibling happens to be biggest. With no hint
-    (or no hint match) the historical "largest video wins" behavior is kept.
-
-    Every sibling is scanned (no early-exit on the first match) so a polluted
-    release folder can't win by ordering. Among equally-scored hint matches, or
-    when no hint matches, ties break toward the larger then earlier-listed
-    sibling so behavior stays stable.
-    """
-    if not subdirs:
-        return None
-    hint_tokens = hint_tokens or frozenset()
-    hint_episode_tags = hint_episode_tags or frozenset()
-
-    pending = list(subdirs)
-    scan_hints = (hint_tokens, hint_episode_tags, min_video_size)
-    result_queue = _launch_subdir_scan(pending, depth, visited, settings, scan_hints)
-
-    have_hint = bool(hint_tokens or hint_episode_tags)
-    return _best_sibling_from_queue(
-        result_queue,
-        len(pending),
-        have_hint,
-        hint_tokens,
-        hint_episode_tags,
-        min_video_size,
-    )
-
-
-def _launch_subdir_scan(pending, depth, visited, settings, scan_hints):
-    """Start the sibling-scan worker pool and return its result queue."""
-    workers = max(1, min(_WEBDAV_SUBDIR_SCAN_WORKERS, len(pending)))
-    result_queue = Queue()
-    worker_args = (
-        pending,
-        [0],
-        threading.Lock(),
-        result_queue,
-        depth,
-        visited,
-        settings,
-        scan_hints,
-    )
-    for _index in range(workers):
-        thread = threading.Thread(
-            target=_scan_subdir_worker, args=worker_args, daemon=True
-        )
-        thread.start()
-    return result_queue
-
-
-def _best_sibling_from_queue(
-    result_queue, expected, have_hint, hint_tokens, hint_episode_tags, min_video_size
-):
-    """Drain ``expected`` worker results and return the highest-ranked video path.
-
-    Ties break toward the larger then earlier-listed sibling via
-    :func:`_sibling_rank_key` (negative index), so collection order is stable.
-    """
-    best_path = None
-    best_key = None
-    for _ in range(expected):
-        index, result = result_queue.get()
-        if not result:
-            continue
-        key = _sibling_rank_key(
-            result,
-            index,
-            have_hint,
-            hint_tokens,
-            hint_episode_tags,
-            min_video_size,
-        )
-        if best_key is None or key > best_key:
-            best_path = result
-            best_key = key
-    return best_path
-
-
-def _scan_subdir_worker(
-    pending, next_index, index_lock, result_queue, depth, visited, settings, scan_hints
-):
-    """Worker loop: pull the next pending subdir, scan it, queue ``(index, result)``.
-
-    ``scan_hints`` is the ``(hint_tokens, hint_episode_tags, min_video_size)``
-    tuple shared by every worker. The index counter is guarded by ``index_lock``
-    so each subdir is scanned exactly once across the worker pool.
-    """
-    hint_tokens, hint_episode_tags, min_video_size = scan_hints
-    while True:
-        with index_lock:
-            if next_index[0] >= len(pending):
-                return
-            index = next_index[0]
-            subdir = pending[index]
-            next_index[0] += 1
-        xbmc.log(
-            "NZB-DAV: No video at depth {}, checking subfolder: {}".format(
-                depth, subdir
-            ),
-            xbmc.LOGDEBUG,
-        )
-        try:
-            result = find_video_file(
-                subdir,
-                depth + 1,
-                visited,
-                True,
-                settings,
-                title_hint_tokens=hint_tokens,
-                title_hint_episode_tags=hint_episode_tags,
-                min_video_size=min_video_size,
-            )
-        except Exception as e:  # pylint: disable=broad-except
-            xbmc.log(
-                "NZB-DAV: Error scanning WebDAV subfolder in parallel: "
-                "{} ({})".format(e, type(e).__name__),
-                xbmc.LOGWARNING,
-            )
-            result = None
-        result_queue.put((index, result))
-
-
-def _sibling_rank_key(
-    result, index, have_hint, hint_tokens, hint_episode_tags, min_video_size
-):
-    """Build the ranking key for a sibling-subfolder scan result.
-
-    Rank by (not-wrong-episode, above-floor, episode identity, size, token
-    overlap) and break ties toward the earlier sibling (negative index sorts a
-    smaller index higher). The above-floor dimension mirrors the current-level
-    key so a child returning a below-floor requested-episode stub never beats a
-    sibling's above-floor real file on episode identity alone -- otherwise the
-    stub wins and the resolver re-rejects it every poll (Codex #340). "not a
-    wrong episode" sits ABOVE the floor flag so a wrong-episode above-floor
-    sibling can't be promoted over the requested stub either. Episode match
-    stays primary among same-class candidates; size outranks loose token
-    overlap. With no hint and no floor every flag is constant, so this reduces
-    to the historical largest-wins rule.
-    """
-    size = get_video_file_size_hint(result)
-    if have_hint:
-        ep_score, tok_score = _title_hint_match_score(
-            result, hint_tokens, hint_episode_tags
-        )
-    else:
-        ep_score, tok_score = 0, 0
-    above_floor = size <= 0 or size >= min_video_size
-    return (ep_score >= 0, above_floor, ep_score, size, tok_score, -index)
-
-
 def _remember_video_file_size_hint(file_path, size):
     try:
         size = int(size or 0)
@@ -600,502 +240,6 @@ def get_video_file_size_hint(file_path):
         return int(_VIDEO_FILE_SIZE_HINTS.get(file_path, 0) or 0)
     except (TypeError, ValueError):
         return 0
-
-
-_VIDEO_EXTENSIONS = (".mkv", ".mp4", ".avi", ".m4v", ".ts", ".wmv", ".mov")
-_DAV_NS = {"D": "DAV:"}
-
-
-def _resolve_hint_sets(title_hint, title_hint_tokens, title_hint_episode_tags):
-    """Resolve the (tokens, episode-tags) hint sets for this discovery.
-
-    Parse the title hint once at the top of a discovery; recursive calls
-    receive the already-parsed token/episode-tag sets so the cost is paid once,
-    not per folder level.
-    """
-    if title_hint_tokens is None and title_hint_episode_tags is None:
-        return _hint_tokens(title_hint), _episode_tags(title_hint)
-    return (
-        title_hint_tokens or frozenset(),
-        title_hint_episode_tags or frozenset(),
-    )
-
-
-def _build_propfind_request(folder_path, _already_encoded, settings):
-    """Build the PROPFIND Request and return (request, url)."""
-    base = settings["webdav_url"] or settings["nzbdav_url"]
-    # Recursive calls pass hrefs that the PROPFIND response already
-    # URL-encoded for us (e.g. "My%20Show"). Re-running quote() on that
-    # would turn ``%`` into ``%25``, 404'ing every subdirectory probe.
-    # Top-level callers pass a raw path which needs encoding.
-    if _already_encoded:
-        encoded_path = folder_path
-    else:
-        encoded_path = quote(folder_path, safe="/")
-    url = "{}/{}".format(base.rstrip("/"), encoded_path.lstrip("/"))
-    if not url.endswith("/"):
-        url += "/"
-
-    req = Request(url, method="PROPFIND")
-    req.add_header("Depth", "1")
-    for header, value in _build_auth_headers(
-        settings["username"], settings["password"]
-    ).items():
-        req.add_header(header, value)
-    return req, url
-
-
-def _parse_propfind_xml(body):
-    """Parse a PROPFIND XML body with external entities disabled (XXE-safe)."""
-    import xml.etree.ElementTree as ET  # nosec B405 — parsing trusted WebDAV server response
-
-    # Python's stdlib XMLParser doesn't accept resolve_entities as a kwarg, but
-    # calling expat to disable external DTD loading has the same effect for XXE
-    # prevention. Use the expat target builder so a hostile WebDAV server can't
-    # coerce us into reading local files via an external entity reference.
-    _xml_parser = ET.XMLParser()  # nosec B314 — entities disabled below
-    try:
-        _xml_parser.parser.DefaultHandler = lambda _d: None
-        _xml_parser.parser.ExternalEntityRefHandler = lambda *_: False
-    except AttributeError:  # pragma: no cover — non-expat parser backend
-        pass
-    return ET.fromstring(
-        body, parser=_xml_parser
-    )  # nosec B314 — trusted WebDAV server response; entities disabled above
-
-
-def _extract_href_path(href_text, base_host):
-    """Return the path portion of a PROPFIND href, or None if unusable.
-
-    Handles cross-host hrefs. nzbdav legitimately returns its INTERNAL hostname
-    in PROPFIND hrefs (e.g. localhost:8080) while we address it at the
-    configured public endpoint (e.g. 192.168.1.93:3000). Trust only the PATH
-    portion of the href -- all follow-up requests hit the configured WebDAV
-    host anyway, so an attacker-controlled href host cannot redirect us
-    off-server. Previously we rejected the entire href on host mismatch, which
-    broke real users with reverse-proxied nzbdav setups ("Completed but no
-    video found").
-    """
-    from urllib.parse import urlparse
-
-    try:
-        parsed_href_obj = urlparse(href_text)
-        if href_text.startswith("//"):
-            if parsed_href_obj.netloc != base_host:
-                xbmc.log(
-                    "NZB-DAV: cross-host href '{}' — using path "
-                    "portion only".format(href_text),
-                    xbmc.LOGDEBUG,
-                )
-            return parsed_href_obj.path
-        if parsed_href_obj.scheme:
-            if parsed_href_obj.netloc != base_host:
-                xbmc.log(
-                    "NZB-DAV: cross-origin href '{}' — using path "
-                    "portion only".format(href_text),
-                    xbmc.LOGDEBUG,
-                )
-            return parsed_href_obj.path
-        return href_text
-    except Exception as e:
-        xbmc.log(
-            "NZB-DAV: Skipping malformed href '{}': {}".format(href_text, e),
-            xbmc.LOGWARNING,
-        )
-        return None
-
-
-def _collect_subdir(href_path, request_path, subdirs):
-    """Append a non-hidden child collection to subdirs (skip self / dot dirs)."""
-    # Skip the folder itself (href matches our request URL)
-    child = href_path.rstrip("/")
-    if child == request_path:
-        return
-    # Skip hidden (dot-prefixed) subfolders. nzbdav release folders sometimes
-    # get polluted with a leading-dot child holding a different (often wrong,
-    # smaller) movie — e.g. a '.and_justice_for_all...1080p...' folder
-    # hijacking a 2160p release. Leading dots are not URL-encoded, so the
-    # encoded path segment still starts with ".".
-    segment = child.rsplit("/", 1)[-1]
-    if segment.startswith("."):
-        xbmc.log(
-            "NZB-DAV: Skipping hidden WebDAV subfolder '{}'".format(child),
-            xbmc.LOGDEBUG,
-        )
-    else:
-        subdirs.append(child + "/")
-
-
-def _parse_content_length(response, href_path):
-    """Return the integer getcontentlength for a response, 0 if missing/bad."""
-    size_el = response.find(".//D:getcontentlength", _DAV_NS)
-    if size_el is None or not size_el.text:
-        return 0
-    try:
-        return int(size_el.text.strip())
-    except ValueError:
-        # Malformed getcontentlength body — log so a server bug doesn't
-        # silently cause every file to be reported as size 0 (and thus never
-        # selected as "largest").
-        xbmc.log(
-            "NZB-DAV: Non-numeric getcontentlength '{}' for "
-            "href '{}'; treating as 0".format(size_el.text[:40], href_path),
-            xbmc.LOGWARNING,
-        )
-        return 0
-
-
-def _current_level_file_key(
-    href_path, size, have_hint, hint_tokens, hint_episode_tags, min_video_size
-):
-    """Return (file_key, ep_score) ranking a current-level candidate video.
-
-    Rank candidate videos by (episode identity, size, token overlap). Without a
-    hint both scores are 0, so this stays the historical largest-wins rule.
-    With a hint, the requested SxxExx episode outranks a larger non-matching
-    sibling, while size outranks loose token overlap so a small token-rich
-    extra can't beat the feature.
-
-    "Above the advertised-size floor" is the TOP ranking dimension so a
-    below-floor job-start stub never outranks a real file at the SAME level: an
-    episode-tagged stub (ep=1000) would otherwise beat a generically-named
-    above-floor real file (ep=0), win selection, and -- with no subdir to defer
-    into -- be returned and re-rejected every poll (#282 follow-up D / Codex).
-    With no floor (min_video_size <= 0) this flag is constantly True, so the key
-    reduces to the historical (ep, size, tok) and ranking is byte-identical. A
-    size-0 file is NOT below-floor (unknown size, not a known stub), so it is
-    unaffected.
-
-    A WRONG-episode file (ep=-1000) must never be promoted above a
-    requested-episode stub by the above-floor boost: an above-floor S01E04
-    would otherwise outrank a below-floor requested-S01E05 stub, become
-    best_file, pass the resolver's stub guard (its size is real) and STREAM THE
-    WRONG EPISODE instead of waiting (Codex #340). Rank "not a wrong episode"
-    ABOVE the floor flag so wrong episodes sink below everything; the
-    requested-ep stub then stays best_file and the poll loop keeps waiting.
-    ``ep_score >= 0`` is monotonic in ep_score at the wrong-ep boundary, so with
-    no floor this term never reverses the historical (ep, size, tok) ordering.
-    """
-    if have_hint:
-        ep_score, tok_score = _title_hint_match_score(
-            href_path, hint_tokens, hint_episode_tags
-        )
-    else:
-        ep_score, tok_score = 0, 0
-    file_above_floor = size <= 0 or size >= min_video_size
-    file_key = (ep_score >= 0, file_above_floor, ep_score, size, tok_score)
-    return file_key, ep_score
-
-
-def _classify_propfind_response(response, base_host, request_path, subdirs):
-    """Classify one PROPFIND response.
-
-    Returns ``(href_path, size)`` for a video file. For a collection it appends
-    to ``subdirs`` and returns None; returns None for any non-video or
-    skipped/malformed response.
-    """
-    href = response.find("D:href", _DAV_NS)
-    if href is None:
-        return None
-    href_text = (href.text or "").strip()
-    if not href_text:
-        xbmc.log(
-            "NZB-DAV: Skipping response with empty href in PROPFIND",
-            xbmc.LOGWARNING,
-        )
-        return None
-
-    href_path = _extract_href_path(href_text, base_host)
-    if href_path is None:
-        return None
-
-    # Check if it's a collection (subdirectory)
-    if response.find(".//D:resourcetype/D:collection", _DAV_NS) is not None:
-        _collect_subdir(href_path, request_path, subdirs)
-        return None
-
-    # Check if it's a video file
-    lower_href = href_text.lower()
-    if not any(lower_href.endswith(ext) for ext in _VIDEO_EXTENSIONS):
-        return None
-
-    return href_path, _parse_content_length(response, href_path)
-
-
-def _scan_propfind_responses(
-    root, url, have_hint, hint_tokens, hint_episode_tags, min_video_size
-):
-    """Scan all PROPFIND responses, returning the best video and the subdirs.
-
-    Returns a tuple ``(best_file, best_size, best_file_key, best_match_score,
-    subdirs)``.
-    """
-    from urllib.parse import urlparse
-
-    parsed_request_url = urlparse(url)
-    base_host = parsed_request_url.netloc
-    request_path = parsed_request_url.path.rstrip("/")
-
-    best_file = None
-    best_size = 0
-    best_file_key = None
-    best_match_score = 0
-    subdirs = []
-
-    for response in root.findall(".//D:response", _DAV_NS):
-        candidate = _classify_propfind_response(
-            response, base_host, request_path, subdirs
-        )
-        if candidate is None:
-            continue
-        href_path, size = candidate
-        file_key, ep_score = _current_level_file_key(
-            href_path, size, have_hint, hint_tokens, hint_episode_tags, min_video_size
-        )
-        if _propfind_candidate_wins(size, ep_score, file_key, best_file_key):
-            best_file_key = file_key
-            best_size = size
-            best_file = href_path
-            # Keep the episode score as the recurse/adoption signal so the
-            # wrong-episode gate compares episode identity, not token noise.
-            best_match_score = ep_score
-
-    return best_file, best_size, best_file_key, best_match_score, subdirs
-
-
-def _propfind_candidate_wins(size, ep_score, file_key, best_file_key):
-    """Return True when a current-level video should displace the best so far.
-
-    A current-level video only displaces "nothing yet" when it carries a
-    positive selection signal: a real (non-zero) size -- the historical
-    largest-wins rule, under which main never adopted a size-0 file but
-    recursed past it -- or, with a hint, a positive episode/token score.
-    This keeps the no-hint movie path byte-identical to main (deliberate
-    decision f12b3c3): a top-level video missing getcontentlength is skipped
-    so recursion can find the real feature in a subfolder rather than
-    returning a placeholder/teaser.
-
-    Token overlap alone must NOT establish a signal: per the docstring, raw
-    token overlap ranks BELOW size, so a zero-size placeholder/teaser that
-    merely shares title tokens must not be adopted and pre-empt recursion into
-    the subfolder holding the real feature. Only a real size or a positive
-    episode match establishes a selectable signal.
-    """
-    has_signal = size > 0 or ep_score > 0
-    return has_signal and (best_file_key is None or file_key > best_file_key)
-
-
-def _sibling_beats_deferred(
-    result, best_file_key, have_hint, hint_tokens, hint_episode_tags, min_video_size
-):
-    """Return True if a sibling result should be adopted over the deferred file.
-
-    If we deferred a wrong-episode current-level file, only adopt the sibling
-    when it is at least as good a hint match; otherwise the mismatched
-    current-level file is no worse and stays the fallback. The key carries the
-    same above-floor flag as the current-level ranking, so a below-floor stub
-    never wins on episode identity: an above-floor (or unknown-size) child
-    always outranks a deferred stub -- including an exact-episode child whose
-    PROPFIND has no getcontentlength (size hint 0 is NOT below-floor)
-    (#282 / Codex).
-    """
-    if not have_hint:
-        return True
-    result_ep_score, result_tok_score = _title_hint_match_score(
-        result, hint_tokens, hint_episode_tags
-    )
-    result_size = get_video_file_size_hint(result)
-    result_above_floor = result_size <= 0 or result_size >= min_video_size
-    result_key = (
-        result_ep_score >= 0,
-        result_above_floor,
-        result_ep_score,
-        result_size,
-        result_tok_score,
-    )
-    return result_key >= best_file_key
-
-
-def _defer_decision(
-    best_file, best_size, best_match_score, subdirs, hint_episode_tags, min_video_size
-):
-    """Return ``(best_is_stub, defer_to_subdirs)`` for the current-level best.
-
-    A current-level best that is grossly undersized versus the advertised
-    release size (#282) is nzbdav's job-start stub. Treat it like the
-    wrong-episode case: defer it so discovery recurses into the subfolder
-    holding the real file first, falling back to the stub only if the descent
-    finds nothing better. The floor never DROPS the candidate (a legitimately
-    small release is still returned as the fallback). A 0 floor -- movie/no-floor
-    or pack -- disables this so the historical current-level short-circuit is
-    byte-identical to before.
-
-    When an episode was requested but the current-level best is NOT a confirmed
-    episode match (score below the confirmed-match threshold of 1000), the
-    requested episode may still live in a sibling subdir. This covers both an
-    explicit wrong-episode file (score -1000) AND a generic current-level video
-    that merely shares show tokens but carries no SxxExx tag (score 0) -- either
-    would otherwise be returned before we ever scan the subdir holding the exact
-    requested episode. A movie/token-only hint has empty hint_episode_tags so it
-    keeps the historical short-circuit, as does the no-hint path. The stub case
-    defers on the same terms. Both only defer when there is actually a subdir to
-    descend into.
-    """
-    best_is_stub = (
-        best_file is not None and min_video_size > 0 and 0 < best_size < min_video_size
-    )
-    defer_to_subdirs = bool(subdirs) and (
-        (bool(hint_episode_tags) and best_match_score < 1000) or best_is_stub
-    )
-    return best_is_stub, defer_to_subdirs
-
-
-def _resolve_best_or_recurse(
-    scan,
-    _depth,
-    _visited,
-    settings,
-    have_hint,
-    hint_tokens,
-    hint_episode_tags,
-    min_video_size,
-):
-    """Decide between the current-level best, a sibling, or recursion.
-
-    ``scan`` is the tuple returned by :func:`_scan_propfind_responses`. Returns
-    the chosen video href path, or None.
-    """
-    best_file, best_size, best_file_key, best_match_score, subdirs = scan
-
-    best_is_stub, defer_to_subdirs = _defer_decision(
-        best_file,
-        best_size,
-        best_match_score,
-        subdirs,
-        hint_episode_tags,
-        min_video_size,
-    )
-    if best_file and not defer_to_subdirs:
-        return _accept_current_level(
-            best_file,
-            best_size,
-            "NZB-DAV: Found video file: {} ({} bytes)".format(best_file, best_size),
-        )
-
-    if best_file:
-        _log_defer_reason(best_file, best_is_stub)
-
-    result = _recurse_and_adopt_sibling(
-        subdirs,
-        _depth,
-        _visited,
-        settings,
-        best_file,
-        best_file_key,
-        (have_hint, hint_tokens, hint_episode_tags, min_video_size),
-    )
-    if result:
-        return result
-
-    return _fallback_to_current_level(best_file, best_size)
-
-
-def _fallback_to_current_level(best_file, best_size):
-    """Return the deferred current-level video when recursion found nothing."""
-    if not best_file:
-        return None
-    # Recursion found nothing better; fall back to the wrong-episode
-    # current-level file rather than returning nothing at all.
-    return _accept_current_level(
-        best_file,
-        best_size,
-        "NZB-DAV: No matching episode in sibling subfolders; falling "
-        "back to current-level video: {} ({} bytes)".format(best_file, best_size),
-    )
-
-
-def _log_defer_reason(best_file, best_is_stub):
-    """Log why the current-level best is being deferred for a sibling scan."""
-    reason = "an undersized stub" if best_is_stub else "a wrong-episode match"
-    xbmc.log(
-        "NZB-DAV: Current-level video '{}' is {} for the requested "
-        "title; checking sibling subfolders first".format(best_file, reason),
-        xbmc.LOGDEBUG,
-    )
-
-
-def _accept_current_level(best_file, best_size, message):
-    """Remember the size hint, log ``message`` at INFO, and return ``best_file``."""
-    _remember_video_file_size_hint(best_file, best_size)
-    xbmc.log(message, xbmc.LOGINFO)
-    return best_file
-
-
-def _recurse_and_adopt_sibling(
-    subdirs, _depth, _visited, settings, best_file, best_file_key, hint_ctx
-):
-    """Recurse into subdirs and return a sibling only if it beats the deferred.
-
-    ``hint_ctx`` is the ``(have_hint, hint_tokens, hint_episode_tags,
-    min_video_size)`` tuple. Subdirs came from PROPFIND hrefs and are already
-    URL-encoded, so recursive calls skip top-level quote() to avoid
-    `%20` -> `%2520`.
-    """
-    have_hint, hint_tokens, hint_episode_tags, min_video_size = hint_ctx
-    result = _find_video_file_in_subdirs(
-        subdirs,
-        _depth,
-        _visited,
-        settings,
-        hint_tokens=hint_tokens,
-        hint_episode_tags=hint_episode_tags,
-        min_video_size=min_video_size,
-    )
-    if not result:
-        return None
-    if best_file and not _sibling_beats_deferred(
-        result,
-        best_file_key,
-        have_hint,
-        hint_tokens,
-        hint_episode_tags,
-        min_video_size,
-    ):
-        return None
-    return result
-
-
-def _describe_webdav_error(e):
-    """Append a human-readable hint to a WebDAV browse exception detail."""
-    error_detail = "{}".format(e)
-    if "401" in error_detail or "Unauthorized" in error_detail:
-        error_detail += " — Check WebDAV username/password in addon settings"
-    elif "404" in error_detail or "Not Found" in error_detail:
-        error_detail += (
-            " — WebDAV folder not found, check nzbdav is creating " "/content/ symlinks"
-        )
-    elif "Connection" in error_detail or "urlopen" in str(type(e).__name__):
-        error_detail += " — Check WebDAV server is reachable at configured URL"
-    return error_detail
-
-
-def _mark_visited(folder_path, visited):
-    """Record ``folder_path`` in the visited set, or return None if already seen.
-
-    Catches a hostile/misconfigured server that returns its parent (or itself)
-    as a child, which would otherwise recurse until the depth cap.
-    """
-    if visited is None:
-        visited = set()
-    normalized = (folder_path or "").rstrip("/")
-    if normalized in visited:
-        xbmc.log(
-            "NZB-DAV: Skipping already-visited WebDAV folder '{}'".format(folder_path),
-            xbmc.LOGDEBUG,
-        )
-        return None
-    visited.add(normalized)
-    return visited
 
 
 def find_video_file(
@@ -1154,26 +298,30 @@ def find_video_file(
         (three total levels including the starting folder).
         Logs discovered files, recursion steps, and errors to the Kodi log.
     """
+    from resources.lib import webdav_discovery
+
     if _depth > 2:
         return None
 
-    hint_tokens, hint_episode_tags = _resolve_hint_sets(
+    hint_tokens, hint_episode_tags = webdav_discovery._resolve_hint_sets(
         title_hint, title_hint_tokens, title_hint_episode_tags
     )
 
-    _visited = _mark_visited(folder_path, _visited)
+    _visited = webdav_discovery._mark_visited(folder_path, _visited)
     if _visited is None:
         return None
 
     settings = _read_settings(settings_getter) if _settings is None else _settings
-    req, url = _build_propfind_request(folder_path, _already_encoded, settings)
+    req, url = webdav_discovery._build_propfind_request(
+        folder_path, _already_encoded, settings
+    )
     have_hint = bool(hint_tokens or hint_episode_tags)
     hint_ctx = (have_hint, hint_tokens, hint_episode_tags, min_video_size)
 
     try:
         return _browse_and_resolve(req, url, _depth, _visited, settings, hint_ctx)
     except Exception as e:
-        error_detail = _describe_webdav_error(e)
+        error_detail = webdav_discovery._describe_webdav_error(e)
         xbmc.log(
             "NZB-DAV: Error browsing WebDAV folder '{}': {} ({})".format(
                 folder_path, error_detail, type(e).__name__
@@ -1189,6 +337,8 @@ def _browse_and_resolve(req, url, _depth, _visited, settings, hint_ctx):
     ``hint_ctx`` is the ``(have_hint, hint_tokens, hint_episode_tags,
     min_video_size)`` tuple.
     """
+    from resources.lib import webdav_discovery
+
     have_hint, hint_tokens, hint_episode_tags, min_video_size = hint_ctx
     # nosemgrep
     with urlopen(  # nosec B310 — URL from user's configured WebDAV setting
@@ -1196,11 +346,11 @@ def _browse_and_resolve(req, url, _depth, _visited, settings, hint_ctx):
     ) as resp:
         body = resp.read().decode("utf-8", errors="replace")
 
-    root = _parse_propfind_xml(body)
-    scan = _scan_propfind_responses(
+    root = webdav_discovery._parse_propfind_xml(body)
+    scan = webdav_discovery._scan_propfind_responses(
         root, url, have_hint, hint_tokens, hint_episode_tags, min_video_size
     )
-    return _resolve_best_or_recurse(
+    return webdav_discovery._resolve_best_or_recurse(
         scan,
         _depth,
         _visited,
