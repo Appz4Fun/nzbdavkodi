@@ -30,6 +30,16 @@ from resources.lib import resume_store  # noqa: E402
 from resources.lib.http_util import notify as _notify  # noqa: E402
 from resources.lib.stream_proxy import StreamProxy  # noqa: E402
 
+# Proxy-lifecycle helpers live in a sibling module to keep this entry module
+# under the file-size budget. The thin wrappers below preserve the original
+# signatures and bind the proxy class / Home window from THIS module's
+# namespace, so ``@patch("service.StreamProxy")`` and
+# ``@patch("service._HOME_WINDOW")`` reach the implementations and there is no
+# import cycle back into ``service``. (E402: this import follows sys.path setup.)
+from service_proxy import _restart_dead_proxy as _restart_dead_proxy_impl  # noqa: E402
+from service_proxy import _shutdown_proxy as _shutdown_proxy_impl  # noqa: E402
+from service_proxy import _start_proxy as _start_proxy_impl  # noqa: E402
+
 # Window property keys for IPC between plugin and service
 _PROP_STREAM_URL = "nzbdav.stream_url"
 _PROP_RESUME_KEY = "nzbdav.resume_key"
@@ -634,68 +644,6 @@ def _clear_stale_ipc_properties():
             pass
 
 
-def _publish_proxy_props(proxy):
-    """Advertise the live proxy's port/token to plugin-side callers."""
-    _HOME_WINDOW.setProperty(_PROP_PROXY_PORT, str(proxy.port))
-    _HOME_WINDOW.setProperty(_PROP_PROXY_TOKEN, proxy.prepare_token)
-
-
-def _clear_proxy_props():
-    """Drop the proxy port/token so plugin callers fall back quickly."""
-    _HOME_WINDOW.clearProperty(_PROP_PROXY_PORT)
-    _HOME_WINDOW.clearProperty(_PROP_PROXY_TOKEN)
-
-
-def _restart_dead_proxy(proxy, player):
-    """Rebuild the proxy when its daemon thread has died; return the proxy.
-
-    The HTTP server runs in a daemon thread. If serve_forever ever exits
-    (unhandled exception, socket error, rare memory-pressure path), every
-    subsequent /prepare call hangs on "connection refused" with no recovery.
-    Detect the dead thread and rebuild so streams keep working. Returns the
-    same proxy when it is still alive, otherwise the freshly built one.
-    """
-    if proxy.is_alive():
-        return proxy
-    xbmc.log(
-        "NZB-DAV: Stream proxy thread is dead; restarting "
-        "(reason=proxy_thread_died)",
-        xbmc.LOGERROR,
-    )
-    try:
-        proxy.stop()
-    except Exception as e:  # pylint: disable=broad-except
-        # Logged at LOGWARNING (not LOGERROR) because we're about
-        # to spawn a fresh proxy anyway — the stop failure is
-        # diagnostic-only, not user-actionable. Closes §H.3.
-        xbmc.log(
-            "NZB-DAV: proxy.stop() raised during restart "
-            "(continuing): {!r}".format(e),
-            xbmc.LOGWARNING,
-        )
-    proxy = StreamProxy()
-    try:
-        proxy.start()
-    except Exception as e:  # pylint: disable=broad-except
-        xbmc.log(
-            "NZB-DAV: Stream proxy restart failed: {} "
-            "(reason=proxy_restart_failed)".format(e),
-            xbmc.LOGERROR,
-        )
-        _clear_proxy_props()
-    else:
-        _publish_proxy_props(proxy)
-        # The player holds a reference to the old proxy for cleanup calls
-        # from onPlayBackStopped; point it at the new one so the next
-        # stop() fires on the live proxy.
-        player._proxy = proxy  # pylint: disable=protected-access
-        xbmc.log(
-            "NZB-DAV: Stream proxy restarted on port {}".format(proxy.port),
-            xbmc.LOGINFO,
-        )
-    return proxy
-
-
 def _run_tick(player, consecutive_failures):
     """Run one player.tick(), absorbing crashes; return the failure streak.
 
@@ -725,54 +673,23 @@ def _run_tick(player, consecutive_failures):
         return consecutive_failures
 
 
+# Thin wrappers preserving the original proxy-helper signatures. They bind the
+# Home window and ``StreamProxy`` class from this module's namespace at call
+# time so test patches on ``service._HOME_WINDOW`` / ``service.StreamProxy``
+# flow into ``service_proxy``'s injected implementations.
 def _start_proxy(monitor):
-    """Start the stream proxy; return it, or None if startup failed.
+    """Start the stream proxy; return it, or None if startup failed."""
+    return _start_proxy_impl(_HOME_WINDOW, StreamProxy, monitor)
 
-    The proxy lives in this long-lived service process because plugin scripts
-    are short-lived — their daemon threads get killed when Kodi's
-    CPythonInvoker destroys the interpreter after the script exits.
 
-    On a start failure (socket bind / port in use, permission error, etc) the
-    service must not die silently — every plugin-side /prepare would then hang
-    on "connection refused" with no log hint. Surface it, clear the port
-    property so callers fall back fast, then idle until Kodi shuts down (so we
-    aren't restarted every few seconds spamming the same failure) and return
-    None to signal the caller to exit.
-    """
-    proxy = StreamProxy()
-    try:
-        proxy.start()
-    except Exception as e:  # pylint: disable=broad-except
-        xbmc.log(
-            "NZB-DAV: Service failed to start stream proxy: {}".format(e),
-            xbmc.LOGERROR,
-        )
-        _clear_proxy_props()
-        while not monitor.abortRequested():
-            if monitor.waitForAbort(5):
-                break
-        return None
-    _publish_proxy_props(proxy)
-    return proxy
+def _restart_dead_proxy(proxy, player):
+    """Rebuild the proxy when its daemon thread has died; return the proxy."""
+    return _restart_dead_proxy_impl(_HOME_WINDOW, StreamProxy, proxy, player)
 
 
 def _shutdown_proxy(proxy):
-    """Stop the proxy and clear its port/token, guarding the stop().
-
-    The stop() is guarded the same way the restart path is: without it an
-    exception (socket already closed, thread join timeout, etc.) would skip
-    clearing ``_PROP_PROXY_PORT`` and leave a stale port visible to the next
-    service launch, so clients would connect to a dead port. TODO.md §H.2-M36.
-    """
-    try:
-        proxy.stop()
-    except Exception as e:  # pylint: disable=broad-except
-        xbmc.log(
-            "NZB-DAV: proxy.stop() raised during shutdown "
-            "(continuing): {!r}".format(e),
-            xbmc.LOGWARNING,
-        )
-    _clear_proxy_props()
+    """Stop the proxy and clear its port/token, guarding the stop()."""
+    _shutdown_proxy_impl(_HOME_WINDOW, proxy)
 
 
 def main():
