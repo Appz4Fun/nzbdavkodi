@@ -677,9 +677,10 @@ def test_completed_job_stream_threads_stub_floor_into_discovery(
     mock_find_stream, _mock_probe, _mock_size
 ):
     """#282 follow-up D: the pre-submit cache-hit path also threads the
-    single-file advertised-size floor into discovery, so a stale Completed row
-    whose stub sits at the release root recurses into the subfolder holding the
-    real file instead of serving the stub. Packs/unknown pass a 0 floor."""
+    advertised-size floor into discovery, so a stale Completed row whose stub
+    sits at the release root recurses into the subfolder holding the real file
+    instead of serving the stub. Only an unknown advertised size passes a 0
+    floor (the floor is now pack-agnostic -- advertised*0.5 for any known size)."""
     from resources.lib.resolver import _STUB_VIDEO_MIN_ADVERTISED_FRACTION
 
     mock_find_stream.return_value = (
@@ -8091,6 +8092,85 @@ def test_discovered_video_is_stub_walks_when_picked_size_unknown(
 
     assert is_stub is True
     mock_total.assert_called_once()
+
+
+# Stage 2b (#355 review): the folder TOTAL clearing the floor does not prove the
+# PICKED file is real -- a materialised sibling can lift the total while the
+# requested file is still a stub. Reject a picked file dwarfed by the largest
+# video; accept a real episode comparable to its siblings.
+
+
+@patch("resources.lib.webdav.get_video_file_size_hint", return_value=10 * 1024**2)
+@patch("resources.lib.webdav.folder_video_total_bytes")
+def test_discovered_video_is_stub_rejects_below_floor_pick_dwarfed_by_sibling(
+    mock_total, _mock_hint
+):
+    """The picked file (10 MB stub) is below the floor, the folder total clears
+    the floor ONLY because an 8 GB sibling materialised. Pre-stage-2b this wrongly
+    ACCEPTED (the total >= floor); now the picked file being ~0.1% of the largest
+    video is rejected so the poll loop keeps waiting for the real requested file.
+    """
+    from resources.lib.resolver import _discovered_video_is_stub
+
+    def total(_folder, settings_getter=None, _stats=None):
+        if _stats is not None:
+            _stats["max"] = 8 * 1024**3  # the large materialised sibling
+        return 10 * 1024**2 + 8 * 1024**3  # >= floor, but driven by the sibling
+
+    mock_total.side_effect = total
+
+    is_stub = _discovered_video_is_stub(
+        "/content/x/Show.S01.Pack/",
+        "/content/x/Show.S01.Pack/Show.S01E05.mkv",
+        str(4 * 1024**3),  # advertised 4 GB -> floor 2 GB
+    )
+
+    assert is_stub is True
+
+
+@patch("resources.lib.webdav.get_video_file_size_hint", return_value=3 * 1024**3)
+@patch("resources.lib.webdav.folder_video_total_bytes")
+def test_discovered_video_is_stub_accepts_real_pack_episode_comparable_to_siblings(
+    mock_total, _mock_hint
+):
+    """A real pack episode (3 GB) below the half-pack floor but comparable in size
+    to its largest sibling (3 GB) must still stream -- stage 2b only rejects a file
+    ANOMALOUSLY tiny versus the largest video, never a legitimate episode."""
+    from resources.lib.resolver import _discovered_video_is_stub
+
+    def total(_folder, settings_getter=None, _stats=None):
+        if _stats is not None:
+            _stats["max"] = 3 * 1024**3
+        return 24 * 1024**3  # whole-pack total
+
+    mock_total.side_effect = total
+
+    is_stub = _discovered_video_is_stub(
+        "/content/x/Show.S01.Complete/",
+        "/content/x/Show.S01.Complete/Show.S01E05.mkv",
+        str(24 * 1024**3),  # advertised 24 GB -> floor 12 GB
+    )
+
+    assert is_stub is False
+
+
+@patch("resources.lib.webdav.get_video_file_size_hint", return_value=10 * 1024**2)
+@patch("resources.lib.webdav.folder_video_total_bytes")
+def test_discovered_video_is_stub_stage2b_fails_open_when_largest_unknown(
+    mock_total, _mock_hint
+):
+    """If the walk reported a total >= floor but no per-file max (largest 0),
+    stage 2b cannot judge and fails OPEN rather than reject real content."""
+    from resources.lib.resolver import _discovered_video_is_stub
+
+    def total(_folder, settings_getter=None, _stats=None):
+        return 8 * 1024**3  # >= floor, but leaves _stats empty (no max recorded)
+
+    mock_total.side_effect = total
+
+    is_stub = _discovered_video_is_stub("/folder", "/folder/x.mkv", str(4 * 1024**3))
+
+    assert is_stub is False
 
 
 @patch("resources.lib.webdav.folder_video_total_bytes", return_value=80_000_000_000)

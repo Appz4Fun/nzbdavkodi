@@ -2114,6 +2114,15 @@ _COMPLETED_NO_VIDEO_RECHECK_DELAYS_SECONDS = (0.025, 0.075, 0.1)
 # sum to ~advertised and pass, while a stub-only folder (movie OR pack) falls far
 # below and is rejected. The guard fails OPEN when the advertised size is unknown.
 _STUB_VIDEO_MIN_ADVERTISED_FRACTION = 0.5
+# #355 review (stage 2b): even when the folder TOTAL clears the floor, the picked
+# file may still be the job-start stub if a real SIBLING video supplied the bytes
+# (the advertised size is the SELECTED result's own size, so one materialised
+# sibling can lift the total over the floor while the requested file is still a
+# placeholder). A real pack episode is a substantial fraction of its largest
+# sibling (>=~20%); the stub is ~0.1% of it. 0.1 sits in that two-orders-of-
+# magnitude gap: it rejects the stub without rejecting a legitimately short
+# episode among longer ones. Only applied when picked < floor AND total >= floor.
+_STUB_VS_LARGEST_VIDEO_FRACTION = 0.1
 
 
 def _job_nzo_id(match):
@@ -3803,13 +3812,22 @@ def _discovered_video_is_stub(
        falls far below and is rejected, so the poll loop keeps waiting. This is
        what makes the guard work for packs WITHOUT the old title-based exemption
        that disabled it for them entirely.
+    2b. The total clears the floor but may have been lifted over it by a SIBLING
+       video while ``video_path`` is still the placeholder (the advertised size
+       is the SELECTED result's own size, so one materialised sibling can clear
+       the floor while the requested file is still a stub -- #355 review). A real
+       pack episode is a substantial fraction of its largest sibling; the stub is
+       orders of magnitude smaller. Reject when the picked file is anomalously
+       tiny versus the folder's largest video.
 
     Fails OPEN (returns ``False``) -- never blocks a real stream on missing data --
     when the advertised size is unknown (floor 0), when the folder scan yields no
-    video, OR when the scan is INCOMPLETE (``folder_video_total_bytes`` returns a
+    video, when the scan is INCOMPLETE (``folder_video_total_bytes`` returns a
     negative sentinel: a PROPFIND error, or a video file whose size the server did
-    not report, either of which would otherwise under-count into a false reject).
-    Only a complete folder total that is genuinely below the floor rejects.
+    not report, either of which would otherwise under-count into a false reject),
+    or when the picked / largest-sibling size is unknown. Only a complete folder
+    total that is genuinely below the floor -- or a picked file dwarfed by a real
+    sibling -- rejects.
     """
     floor = _stub_min_size_floor(download_size)
     if floor <= 0:
@@ -3830,10 +3848,12 @@ def _discovered_video_is_stub(
     # Picked file is small (or its size is unknown): could be the job-start stub
     # OR a legitimate pack episode. Disambiguate by the folder's total real video
     # content -- a real pack's episodes sum to ~advertised and pass; a stub-only
-    # folder falls far below and is rejected.
+    # folder falls far below and is rejected. ``stats["max"]`` captures the
+    # largest single video in the same walk (no extra PROPFIND) for stage 2b.
+    stats = {}
     try:
         total = _webdav.folder_video_total_bytes(
-            webdav_folder, settings_getter=settings_getter
+            webdav_folder, settings_getter=settings_getter, _stats=stats
         )
     except Exception:  # pylint: disable=broad-except
         return False
@@ -3842,7 +3862,22 @@ def _discovered_video_is_stub(
     # OPEN rather than reject real content on partial data.
     if total <= 0:
         return False
-    return total < floor
+    if total < floor:
+        return True
+    # Stage 2b: the total cleared the floor. If the picked file is a tiny
+    # placeholder dwarfed by a real sibling, the total was lifted over the floor
+    # by the SIBLING, not by ``video_path`` -- so it is still the job-start stub.
+    # The gap is two orders of magnitude (stub ~0.1% of the largest real file vs
+    # a real episode >=~20%), so the fraction sits safely between them. Fails
+    # OPEN when either size is unknown.
+    largest = stats.get("max", 0)
+    if (
+        picked_size > 0
+        and largest > 0
+        and picked_size < largest * _STUB_VS_LARGEST_VIDEO_FRACTION
+    ):
+        return True
+    return False
 
 
 def _handle_history_result(

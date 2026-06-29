@@ -504,6 +504,7 @@ def folder_video_total_bytes(
     _depth=0,
     _visited=None,
     _already_encoded=False,
+    _stats=None,
 ):
     """Return the summed bytes of every video file in a completed WebDAV folder.
 
@@ -527,11 +528,17 @@ def folder_video_total_bytes(
     * ``0``    -- the folder is genuinely empty of video (no files seen).
     * ``< 0`` (``_FOLDER_TOTAL_INCOMPLETE``) -- the size picture is INCOMPLETE: a
       PROPFIND/parse error, or a matched video file whose ``getcontentlength`` was
-      missing/non-numeric (so summing it would silently under-count). The caller
-      must fail OPEN here rather than compare a partial total against the floor --
-      ``_discovered_video_is_stub``'s ``total <= 0 -> return False`` does exactly
-      that. Incompleteness propagates up through recursion (a subfolder that
-      could not be fully sized makes the whole folder incomplete).
+      missing/non-numeric/negative (so summing it would silently under-count). The
+      caller must fail OPEN here rather than compare a partial total against the
+      floor -- ``_discovered_video_is_stub``'s ``total <= 0 -> return False`` does
+      exactly that. Incompleteness propagates up through recursion (a subfolder
+      that could not be fully sized makes the whole folder incomplete).
+
+    ``_stats`` (internal): when a dict is passed, ``_stats["max"]`` is populated
+    with the size of the LARGEST single video file seen across the whole tree.
+    The stub guard uses it to reject a picked file that is anomalously tiny
+    versus a real sibling (the folder total can clear the floor on a sibling's
+    bytes while ``video_path`` is still the job-start stub -- #355 review).
     """
     import xml.etree.ElementTree as ET  # nosec B405 — parsing trusted WebDAV server response
 
@@ -599,7 +606,12 @@ def folder_video_total_bytes(
                     href_path = parsed_href.path
                 else:
                     href_path = href_text
-            except Exception:  # pylint: disable=broad-except
+            except Exception as e:  # pylint: disable=broad-except
+                xbmc.log(
+                    "NZB-DAV: folder_video_total_bytes skipping malformed href "
+                    "'{}': {}".format(href_text, e),
+                    xbmc.LOGWARNING,
+                )
                 continue
 
             resource_type = response.find(".//D:resourcetype/D:collection", ns)
@@ -614,18 +626,26 @@ def folder_video_total_bytes(
             if not any(href_text.lower().endswith(ext) for ext in video_extensions):
                 continue
 
-            # A matched VIDEO file whose getcontentlength is absent or non-numeric
-            # cannot be sized. Silently dropping it (counting 0) would under-count
-            # the folder and risk a FALSE stub reject of a real release, so flag
-            # the whole scan incomplete -> the caller fails OPEN instead (#282).
+            # A matched VIDEO file whose getcontentlength is absent, non-numeric,
+            # or negative cannot be sized. Silently dropping it (counting 0, or
+            # SUBTRACTING a negative) would under-count the folder and risk a
+            # FALSE stub reject of a real release, so flag the whole scan
+            # incomplete -> the caller fails OPEN instead (#282 / #355 review).
             size_el = response.find(".//D:getcontentlength", ns)
             if size_el is None or not size_el.text:
                 incomplete = True
                 continue
             try:
-                total += int(size_el.text.strip())
+                size = int(size_el.text.strip())
             except ValueError:
                 incomplete = True
+                continue
+            if size < 0:
+                incomplete = True
+                continue
+            total += size
+            if _stats is not None and size > _stats.get("max", 0):
+                _stats["max"] = size
     except Exception as error:  # pylint: disable=broad-except
         # A PROPFIND/parse failure means we cannot trust the total; signal
         # incomplete so the guard fails OPEN rather than rejecting on a partial
@@ -645,6 +665,7 @@ def folder_video_total_bytes(
             _depth=_depth + 1,
             _visited=_visited,
             _already_encoded=True,
+            _stats=_stats,
         )
         if sub_total < 0:
             incomplete = True

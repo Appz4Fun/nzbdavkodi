@@ -291,8 +291,8 @@ def test_find_video_file_records_propfind_content_length_hint(
 # the completed folder tree so the resolver can compare the folder's real
 # content against the advertised release size, instead of guessing pack-ness
 # from the title. Walks the whole tree (no first-match short-circuit), recurses
-# (depth cap 2), and fails OPEN (0) on any error so a missing field never blocks
-# a real stream.
+# (depth cap 2), and returns a negative incomplete sentinel on sizing errors so
+# the resolver (which treats <= 0 as fail-open) never blocks a real stream.
 # ---------------------------------------------------------------------------
 
 
@@ -575,6 +575,88 @@ def test_folder_video_total_bytes_stub_only_folder_is_small(
     total = folder_video_total_bytes("/content/uncategorized/Pack/")
 
     assert total == 362076665  # far below any multi-GB advertised release size
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_folder_video_total_bytes_stats_records_largest_video(
+    mock_urlopen, mock_settings
+):
+    """The optional _stats out-param captures the LARGEST single video across the
+    whole tree (root + subfolder) in the same walk -- the resolver's stage 2b uses
+    it to reject a picked file dwarfed by a real sibling (#355 review)."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    root_xml = """<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/content/uncategorized/Pack/</D:href>
+    <D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/content/uncategorized/Pack/Sub/</D:href>
+    <D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/content/uncategorized/Pack/stub.mp4</D:href>
+    <D:propstat><D:prop><D:getcontentlength>10000000</D:getcontentlength>
+      <D:resourcetype/></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+</D:multistatus>"""
+    sub_xml = """<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/content/uncategorized/Pack/Sub/</D:href>
+    <D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/content/uncategorized/Pack/Sub/Show.S01E04.mkv</D:href>
+    <D:propstat><D:prop><D:getcontentlength>8000000000</D:getcontentlength>
+      <D:resourcetype/></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+</D:multistatus>"""
+    mock_urlopen.side_effect = [_propfind_resp(root_xml), _propfind_resp(sub_xml)]
+
+    stats = {}
+    total = folder_video_total_bytes("/content/uncategorized/Pack/", _stats=stats)
+
+    assert total == 10000000 + 8000000000
+    assert stats["max"] == 8000000000  # the subfolder sibling, not the root stub
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_folder_video_total_bytes_negative_length_is_incomplete(
+    mock_urlopen, mock_settings
+):
+    """A negative getcontentlength is malformed metadata; it must be treated as
+    incomplete (negative sentinel) -- NOT subtracted from the total, which would
+    under-count a real folder into a false stub reject (#355 review)."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    xml = """<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/content/uncategorized/Movie/</D:href>
+    <D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/content/uncategorized/Movie/real.mkv</D:href>
+    <D:propstat><D:prop><D:getcontentlength>8000000000</D:getcontentlength>
+      <D:resourcetype/></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/content/uncategorized/Movie/weird.mp4</D:href>
+    <D:propstat><D:prop><D:getcontentlength>-1</D:getcontentlength>
+      <D:resourcetype/></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+</D:multistatus>"""
+    mock_urlopen.return_value = _propfind_resp(xml)
+
+    # The -1 must not subtract (would give 7999999999); it flags incomplete.
+    assert folder_video_total_bytes("/content/uncategorized/Movie/") < 0
 
 
 @patch("resources.lib.webdav._get_settings")
