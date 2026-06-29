@@ -83,5 +83,5 @@ jobs:
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: semgrep.sarif
-          category: "semgrep-scan"
+          category: "semgrep"
         if: always()

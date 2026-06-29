@@ -54,9 +54,28 @@ jobs:
           # This will handover control about PR rejection to the GitHub side
           max-allowed-issues: 2147483647
 
+
+      - name: Combine SARIF runs
+        run: |
+          python3 -c '
+          import json
+          with open("results.sarif", "r") as f:
+              data = json.load(f)
+          if len(data.get("runs", [])) > 1:
+              first_run = data["runs"][0]
+              for other_run in data["runs"][1:]:
+                  if "results" in other_run:
+                      first_run.setdefault("results", []).extend(other_run["results"])
+                  if "tool" in other_run and "driver" in other_run["tool"]:
+                      if "rules" in other_run["tool"]["driver"]:
+                          first_run["tool"]["driver"].setdefault("rules", []).extend(other_run["tool"]["driver"]["rules"])
+              data["runs"] = [first_run]
+          with open("results.sarif", "w") as f:
+              json.dump(data, f)
+          '
       # Upload the SARIF file generated in the previous step
       - name: Upload SARIF results file
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: results.sarif
-          category: "codacy-security-scan"
+          category: "codacy"
