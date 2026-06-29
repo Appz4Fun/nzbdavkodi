@@ -2065,6 +2065,36 @@ def _start_selection_manifest_fetch(kind, index, target, result_queue):
         _fetch_selection_manifest_for_queue(kind, index, target, result_queue)
 
 
+def _advance_past_consumed(next_to_attach, consumed_indices):
+    """Advance the ordered cursor past every already-consumed index."""
+    while next_to_attach[0] in consumed_indices:
+        next_to_attach[0] += 1
+
+
+def _consume_ready_candidate(
+    selected,
+    completed,
+    ready_index,
+    candidates,
+    seen_candidate_links,
+    seen_article_digests,
+    misses_seen,
+    consumed_indices,
+):
+    """Pop one ready candidate, attach it, and count a miss when it does not match."""
+    ready_candidate = completed.pop(ready_index)
+    consumed_indices.add(ready_index)
+    attached = _attach_manifest_candidate_if_matching(
+        selected,
+        ready_candidate,
+        candidates,
+        seen_candidate_links,
+        seen_article_digests,
+    )
+    if not attached:
+        misses_seen[0] += 1
+
+
 def _attach_ready_selection_candidates(
     selected,
     completed,
@@ -2077,43 +2107,66 @@ def _attach_ready_selection_candidates(
     consumed_indices,
 ):
     """Attach completed candidate manifests in result order."""
-    while next_to_attach[0] in consumed_indices:
-        next_to_attach[0] += 1
+    _advance_past_consumed(next_to_attach, consumed_indices)
     while next_to_attach[0] in completed:
-        ready_index = next_to_attach[0]
-        ready_candidate = completed.pop(ready_index)
-        consumed_indices.add(ready_index)
-        attached = _attach_manifest_candidate_if_matching(
+        _consume_ready_candidate(
             selected,
-            ready_candidate,
+            completed,
+            next_to_attach[0],
             candidates,
             seen_candidate_links,
             seen_article_digests,
+            misses_seen,
+            consumed_indices,
         )
-        if not attached:
-            misses_seen[0] += 1
         next_to_attach[0] += 1
-        while next_to_attach[0] in consumed_indices:
-            next_to_attach[0] += 1
+        _advance_past_consumed(next_to_attach, consumed_indices)
         if len(candidates) >= max_candidates:
             return True
     remaining_slots = max_candidates - len(candidates)
     if len(completed) >= remaining_slots > 0:
         for ready_index in sorted(completed):
-            ready_candidate = completed.pop(ready_index)
-            consumed_indices.add(ready_index)
-            attached = _attach_manifest_candidate_if_matching(
+            _consume_ready_candidate(
                 selected,
-                ready_candidate,
+                completed,
+                ready_index,
                 candidates,
                 seen_candidate_links,
                 seen_article_digests,
+                misses_seen,
+                consumed_indices,
             )
-            if not attached:
-                misses_seen[0] += 1
             if len(candidates) >= max_candidates:
                 return True
     return False
+
+
+def _prime_first_candidate(candidate_iter, pending_to_start, candidate_exhausted):
+    """Queue the first candidate for fetch; report an empty-iterator early exit.
+
+    Preserves the original priming order: the first ``next(candidate_iter)`` is
+    buffered into ``pending_to_start`` so the window fill dispatches it before
+    pulling further candidates, matching the streaming dispatch timing exactly.
+    """
+    try:
+        pending_to_start.append(next(candidate_iter))
+    except StopIteration:
+        candidate_exhausted[0] = True
+    return not pending_to_start and candidate_exhausted[0]
+
+
+def _post_record_action(selected_ready, selected_can_match, attach_ready):
+    """Return the loop action after recording one streamed manifest result.
+
+    ``attach_ready`` is the zero-arg attach call run only when the selected
+    manifest is ready and still able to match a peer; preserving that gate keeps
+    strict candidate validation before any source switch.
+    """
+    if selected_ready and not selected_can_match:
+        return "return_false"
+    if selected_ready and selected_can_match and attach_ready():
+        return "return_true"
+    return "continue"
 
 
 def _attach_selection_candidates_streaming(
@@ -2207,12 +2260,7 @@ def _attach_selection_candidates_streaming(
             )
         return max(0, optional_tail_deadline[0] - now)
 
-    try:
-        pending_to_start.append(next(candidate_iter))
-    except StopIteration:
-        candidate_exhausted[0] = True
-
-    if not pending_to_start and candidate_exhausted[0]:
+    if _prime_first_candidate(candidate_iter, pending_to_start, candidate_exhausted):
         return True
 
     if include_selected_manifest:
@@ -2251,6 +2299,19 @@ def _attach_selection_candidates_streaming(
             seen_article_digests.add(selected_digest)
         selected_can_match[0] = _manifest_may_match_any_peer(selected)
 
+    def _attach_ready():
+        return _attach_ready_selection_candidates(
+            selected,
+            completed,
+            next_to_attach,
+            candidates,
+            seen_candidate_links,
+            seen_article_digests,
+            max_candidates,
+            misses_seen,
+            consumed_indices,
+        )
+
     _fill_candidate_window()
 
     while active[0]:
@@ -2262,22 +2323,13 @@ def _attach_selection_candidates_streaming(
         kind, index, target = message
         _record_result(kind, index, target)
 
-        if selected_ready[0] and not selected_can_match[0]:
+        post_record = _post_record_action(
+            selected_ready[0], selected_can_match[0], _attach_ready
+        )
+        if post_record == "return_false":
             return False
-
-        if selected_ready[0] and selected_can_match[0]:
-            if _attach_ready_selection_candidates(
-                selected,
-                completed,
-                next_to_attach,
-                candidates,
-                seen_candidate_links,
-                seen_article_digests,
-                max_candidates,
-                misses_seen,
-                consumed_indices,
-            ):
-                return True
+        if post_record == "return_true":
+            return True
 
         _fill_candidate_window()
 
