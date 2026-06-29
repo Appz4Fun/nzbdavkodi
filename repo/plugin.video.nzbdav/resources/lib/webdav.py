@@ -586,7 +586,8 @@ def find_video_file(
         # files via an external entity reference.
         if contains_xml_declaration_markup(body):
             xbmc.log(
-                "NZB-DAV: Rejecting WebDAV XML containing DTD/entity " "declarations",
+                "NZB-DAV: Rejecting WebDAV XML containing DTD/entity declarations",
+                # pylint: disable=line-too-long
                 xbmc.LOGERROR,
             )
             return None
