@@ -339,23 +339,33 @@ def probe_webdav_reachable(
         except Exception as e:  # pylint: disable=broad-except
             attempt += 1
             if attempt > max_retries:
-                xbmc.log(
-                    "NZB-DAV: WebDAV probe connection error after {} "
-                    "attempts: {} ({})".format(max_retries + 1, e, type(e).__name__),
-                    xbmc.LOGERROR,
-                )
+                _log_probe_exhausted(e, max_retries)
                 return False, "connection_error"
-            xbmc.log(
-                "NZB-DAV: WebDAV probe connection error "
-                "(attempt {}/{}): {} ({})".format(
-                    attempt, max_retries, e, type(e).__name__
-                ),
-                xbmc.LOGDEBUG,
-            )
+            _log_probe_retry(e, attempt, max_retries)
             if mon.waitForAbort(retry_delay):
                 return False, "connection_error"
     # Unreachable in normal flow — defensive safety net for static analysis.
     return False, "connection_error"
+
+
+def _log_probe_exhausted(error, max_retries):
+    """Log a WebDAV probe failure after all retries were exhausted."""
+    xbmc.log(
+        "NZB-DAV: WebDAV probe connection error after {} "
+        "attempts: {} ({})".format(max_retries + 1, error, type(error).__name__),
+        xbmc.LOGERROR,
+    )
+
+
+def _log_probe_retry(error, attempt, max_retries):
+    """Log a single WebDAV probe connection error before retrying."""
+    xbmc.log(
+        "NZB-DAV: WebDAV probe connection error "
+        "(attempt {}/{}): {} ({})".format(
+            attempt, max_retries, error, type(error).__name__
+        ),
+        xbmc.LOGDEBUG,
+    )
 
 
 def _probe_content_root(settings_getter):
@@ -429,16 +439,28 @@ def _find_video_file_in_subdirs(
     hint_episode_tags = hint_episode_tags or frozenset()
 
     pending = list(subdirs)
+    scan_hints = (hint_tokens, hint_episode_tags, min_video_size)
+    result_queue = _launch_subdir_scan(pending, depth, visited, settings, scan_hints)
+
+    have_hint = bool(hint_tokens or hint_episode_tags)
+    return _best_sibling_from_queue(
+        result_queue,
+        len(pending),
+        have_hint,
+        hint_tokens,
+        hint_episode_tags,
+        min_video_size,
+    )
+
+
+def _launch_subdir_scan(pending, depth, visited, settings, scan_hints):
+    """Start the sibling-scan worker pool and return its result queue."""
     workers = max(1, min(_WEBDAV_SUBDIR_SCAN_WORKERS, len(pending)))
     result_queue = Queue()
-    next_index = [0]
-    index_lock = threading.Lock()
-    scan_hints = (hint_tokens, hint_episode_tags, min_video_size)
-
     worker_args = (
         pending,
-        next_index,
-        index_lock,
+        [0],
+        threading.Lock(),
         result_queue,
         depth,
         visited,
@@ -450,16 +472,7 @@ def _find_video_file_in_subdirs(
             target=_scan_subdir_worker, args=worker_args, daemon=True
         )
         thread.start()
-
-    have_hint = bool(hint_tokens or hint_episode_tags)
-    return _best_sibling_from_queue(
-        result_queue,
-        len(pending),
-        have_hint,
-        hint_tokens,
-        hint_episode_tags,
-        min_video_size,
-    )
+    return result_queue
 
 
 def _best_sibling_from_queue(
@@ -839,21 +852,7 @@ def _scan_propfind_responses(
         file_key, ep_score = _current_level_file_key(
             href_path, size, have_hint, hint_tokens, hint_episode_tags, min_video_size
         )
-        # A current-level video only displaces "nothing yet" when it carries a
-        # positive selection signal: a real (non-zero) size -- the historical
-        # largest-wins rule, under which main never adopted a size-0 file but
-        # recursed past it -- or, with a hint, a positive episode/token score.
-        # This keeps the no-hint movie path byte-identical to main (deliberate
-        # decision f12b3c3): a top-level video missing getcontentlength is
-        # skipped so recursion can find the real feature in a subfolder rather
-        # than returning a placeholder/teaser.
-        # Token overlap alone must NOT establish a signal: per the docstring,
-        # raw token overlap ranks BELOW size, so a zero-size placeholder/teaser
-        # that merely shares title tokens must not be adopted and pre-empt
-        # recursion into the subfolder holding the real feature. Only a real
-        # size or a positive episode match establishes a selectable signal.
-        has_signal = size > 0 or ep_score > 0
-        if has_signal and (best_file_key is None or file_key > best_file_key):
+        if _propfind_candidate_wins(size, ep_score, file_key, best_file_key):
             best_file_key = file_key
             best_size = size
             best_file = href_path
@@ -862,6 +861,28 @@ def _scan_propfind_responses(
             best_match_score = ep_score
 
     return best_file, best_size, best_file_key, best_match_score, subdirs
+
+
+def _propfind_candidate_wins(size, ep_score, file_key, best_file_key):
+    """Return True when a current-level video should displace the best so far.
+
+    A current-level video only displaces "nothing yet" when it carries a
+    positive selection signal: a real (non-zero) size -- the historical
+    largest-wins rule, under which main never adopted a size-0 file but
+    recursed past it -- or, with a hint, a positive episode/token score.
+    This keeps the no-hint movie path byte-identical to main (deliberate
+    decision f12b3c3): a top-level video missing getcontentlength is skipped
+    so recursion can find the real feature in a subfolder rather than
+    returning a placeholder/teaser.
+
+    Token overlap alone must NOT establish a signal: per the docstring, raw
+    token overlap ranks BELOW size, so a zero-size placeholder/teaser that
+    merely shares title tokens must not be adopted and pre-empt recursion into
+    the subfolder holding the real feature. Only a real size or a positive
+    episode match establishes a selectable signal.
+    """
+    has_signal = size > 0 or ep_score > 0
+    return has_signal and (best_file_key is None or file_key > best_file_key)
 
 
 def _sibling_beats_deferred(
@@ -976,17 +997,21 @@ def _resolve_best_or_recurse(
     if result:
         return result
 
+    return _fallback_to_current_level(best_file, best_size)
+
+
+def _fallback_to_current_level(best_file, best_size):
+    """Return the deferred current-level video when recursion found nothing."""
+    if not best_file:
+        return None
     # Recursion found nothing better; fall back to the wrong-episode
     # current-level file rather than returning nothing at all.
-    if best_file:
-        return _accept_current_level(
-            best_file,
-            best_size,
-            "NZB-DAV: No matching episode in sibling subfolders; falling "
-            "back to current-level video: {} ({} bytes)".format(best_file, best_size),
-        )
-
-    return None
+    return _accept_current_level(
+        best_file,
+        best_size,
+        "NZB-DAV: No matching episode in sibling subfolders; falling "
+        "back to current-level video: {} ({} bytes)".format(best_file, best_size),
+    )
 
 
 def _log_defer_reason(best_file, best_is_stub):

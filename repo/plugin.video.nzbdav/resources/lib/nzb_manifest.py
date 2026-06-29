@@ -187,6 +187,23 @@ def _segment_row_sort_key(row):
     return row[0], row[2]
 
 
+def _parse_segment(segment):
+    """Parse one ``<segment>`` into a ``(number, size, msgid)`` row, or None.
+
+    Returns ``None`` for unparseable numeric attrs, non-positive sizes, or a
+    missing Message-ID.
+    """
+    try:
+        number = int(segment.attrib.get("number", "0") or 0)
+        size = int(segment.attrib.get("bytes", "0") or 0)
+    except ValueError:
+        return None
+    msgid = (segment.text or "").strip().strip("<>").lower()
+    if size <= 0 or not msgid:
+        return None
+    return number, size, msgid
+
+
 def _segment_rows(file_elem):
     """Return sorted NZB segment rows as number, byte size, and Message-ID."""
     rows = []
@@ -194,19 +211,14 @@ def _segment_rows(file_elem):
     previous_key = None
     for segments in _children_by_name(file_elem, "segments"):
         for segment in _children_by_name(segments, "segment"):
-            try:
-                number = int(segment.attrib.get("number", "0") or 0)
-                size = int(segment.attrib.get("bytes", "0") or 0)
-            except ValueError:
+            row = _parse_segment(segment)
+            if row is None:
                 continue
-            msgid = (segment.text or "").strip().strip("<>").lower()
-            if size <= 0 or not msgid:
-                continue
-            row_key = (number, msgid)
+            row_key = (row[0], row[2])
             if previous_key is not None and row_key < previous_key:
                 rows_ordered = False
             previous_key = row_key
-            rows.append((number, size, msgid))
+            rows.append(row)
     if not rows_ordered:
         rows.sort(key=_segment_row_sort_key)
     return rows
@@ -326,17 +338,26 @@ def _dominant_blob_video_candidates(file_elems, health_check):
         payload_total += total
         if largest is None or total > largest[1]:
             largest = (rows, total)
-    if largest is None or payload_total <= 0:
-        return []
-    if largest[1] < payload_total * _DOMINANT_BLOB_THRESHOLD_FRACTION:
-        return []
-    if largest[1] < _SYNTHETIC_VIDEO_MIN_PAYLOAD_BYTES:
+    if not _blob_dominates(largest, payload_total):
         return []
     rows, total = largest
     candidate = _synthetic_video_candidate(rows, total, health_check)
     if candidate is None:
         return []
     return [candidate]
+
+
+def _blob_dominates(largest, payload_total):
+    """Return whether ``largest`` is a single dominant payload blob.
+
+    Requires a non-empty payload, the blob covering at least the configured
+    fraction of all non-metadata bytes, and a minimum absolute size.
+    """
+    if largest is None or payload_total <= 0:
+        return False
+    if largest[1] < payload_total * _DOMINANT_BLOB_THRESHOLD_FRACTION:
+        return False
+    return largest[1] >= _SYNTHETIC_VIDEO_MIN_PAYLOAD_BYTES
 
 
 def _split_payload_video_candidates(file_elems, health_check):
@@ -561,17 +582,25 @@ def extract_nzb_video_manifest(nzb_bytes, health_check=None):
     )
 
 
+def _safe_nzb_url_parts(parts):
+    """Return whether parsed URL parts describe a safe HTTP(S) NZB target.
+
+    Rejects non-HTTP(S) schemes, missing host, and embedded credentials.
+    """
+    if parts.scheme.lower() not in _ALLOWED_NZB_SCHEMES:
+        return False
+    if not parts.netloc or not parts.hostname:
+        return False
+    return not (parts.username or parts.password)
+
+
 def _valid_nzb_url(url):
     """Return True for simple HTTP(S) NZB URLs that are safe to fetch."""
     if not isinstance(url, str) or any(ord(char) < 0x20 for char in url):
         return False
     try:
         parts = urlsplit(url)
-        if parts.scheme.lower() not in _ALLOWED_NZB_SCHEMES:
-            return False
-        if not parts.netloc or not parts.hostname:
-            return False
-        if parts.username or parts.password:
+        if not _safe_nzb_url_parts(parts):
             return False
         _port = parts.port
     except ValueError:

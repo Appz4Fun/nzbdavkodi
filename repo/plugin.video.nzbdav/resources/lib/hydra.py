@@ -224,6 +224,84 @@ def _run_hydra_fallback(base_url, fallback, redact_url):
     )
 
 
+def _fetch_hydra_with_fallback(base_url, plan, title, has_provider_caps):
+    """Run the primary Hydra query then a fallback when it returns nothing."""
+    from resources.lib.http_util import redact_url
+
+    primary_url = _search_url(base_url, plan.primary)
+    xbmc.log(
+        "NZB-DAV: Hydra search URL: {}".format(redact_url(primary_url)), xbmc.LOGDEBUG
+    )
+
+    results, error = _fetch_planned_hydra_results(
+        base_url, plan.primary, "Hydra search request failed"
+    )
+    if error:
+        return [], error
+
+    fallback = _select_hydra_fallback(plan, title, has_provider_caps)
+    if not results and fallback:
+        results, error = _run_hydra_fallback(base_url, fallback, redact_url)
+        if error:
+            return [], error
+    return results, None
+
+
+def _execute_hydra_plan(base_url, plan, title, has_provider_caps):
+    """Run a planned Hydra search, logging the skip/result outcome."""
+    if not plan.primary:
+        xbmc.log(
+            "NZB-DAV: Hydra search skipped: no supported query for '{}'".format(title),
+            xbmc.LOGINFO,
+        )
+        return [], None
+
+    results, error = _fetch_hydra_with_fallback(
+        base_url, plan, title, has_provider_caps
+    )
+    if error:
+        return [], error
+
+    xbmc.log(
+        "NZB-DAV: Hydra returned {} results for '{}'".format(len(results), title),
+        xbmc.LOGINFO,
+    )
+    return results, None
+
+
+def _read_hydra_settings(settings_getter):
+    """Return (base_url, api_key, error) for the configured Hydra instance."""
+    try:
+        base_url, api_key = _get_settings(settings_getter)
+    except _HYDRA_REQUEST_ERRORS as error:
+        xbmc.log(
+            "NZB-DAV: Failed to read Hydra settings: {}".format(error), xbmc.LOGERROR
+        )
+        return "", "", "Failed to read NZBHydra settings"
+    return base_url, api_key, None
+
+
+def _plan_hydra_search(base_url, api_key, search_type, fields):
+    """Build the Newznab search plan and caps-availability flag."""
+    max_results = _resolve_max_results(fields["settings_getter"])
+    caps, has_provider_caps = _get_hydra_caps_for_search(base_url, api_key)
+    plan = plan_newznab_search(
+        provider_kind="nzbhydra2",
+        host=base_url,
+        search_type=search_type,
+        title=fields["title"],
+        year=fields["year"],
+        imdb=fields["imdb"],
+        season=fields["season"],
+        episode=fields["episode"],
+        caps=caps,
+        api_key=api_key,
+        max_results=max_results,
+        tvdb=fields["tvdb"],
+    )
+    return plan, has_provider_caps
+
+
 def search_hydra(
     search_type,
     title,
@@ -255,61 +333,21 @@ def search_hydra(
         when an imdb-based search returns no results).
         Logs search URLs and errors to the Kodi log.
     """
-    try:
-        base_url, api_key = _get_settings(settings_getter)
-    except _HYDRA_REQUEST_ERRORS as error:
-        xbmc.log(
-            "NZB-DAV: Failed to read Hydra settings: {}".format(error), xbmc.LOGERROR
-        )
-        return [], "Failed to read NZBHydra settings"
+    base_url, api_key, settings_error = _read_hydra_settings(settings_getter)
+    if settings_error:
+        return [], settings_error
 
-    max_results = _resolve_max_results(settings_getter)
-    caps, has_provider_caps = _get_hydra_caps_for_search(base_url, api_key)
-    plan = plan_newznab_search(
-        provider_kind="nzbhydra2",
-        host=base_url,
-        search_type=search_type,
-        title=title,
-        year=year,
-        imdb=imdb,
-        season=season,
-        episode=episode,
-        caps=caps,
-        api_key=api_key,
-        max_results=max_results,
-        tvdb=tvdb,
-    )
-    if not plan.primary:
-        xbmc.log(
-            "NZB-DAV: Hydra search skipped: no supported query for '{}'".format(title),
-            xbmc.LOGINFO,
-        )
-        return [], None
-
-    primary_url = _search_url(base_url, plan.primary)
-    from resources.lib.http_util import redact_url
-
-    xbmc.log(
-        "NZB-DAV: Hydra search URL: {}".format(redact_url(primary_url)), xbmc.LOGDEBUG
-    )
-
-    results, error = _fetch_planned_hydra_results(
-        base_url, plan.primary, "Hydra search request failed"
-    )
-    if error:
-        return [], error
-
-    fallback = _select_hydra_fallback(plan, title, has_provider_caps)
-    if not results and fallback:
-        results, error = _run_hydra_fallback(base_url, fallback, redact_url)
-        if error:
-            return [], error
-
-    xbmc.log(
-        "NZB-DAV: Hydra returned {} results for '{}'".format(len(results), title),
-        xbmc.LOGINFO,
-    )
-    return results, None
+    fields = {
+        "title": title,
+        "year": year,
+        "imdb": imdb,
+        "season": season,
+        "episode": episode,
+        "settings_getter": settings_getter,
+        "tvdb": tvdb,
+    }
+    plan, has_provider_caps = _plan_hydra_search(base_url, api_key, search_type, fields)
+    return _execute_hydra_plan(base_url, plan, title, has_provider_caps)
 
 
 def parse_results(xml_text):

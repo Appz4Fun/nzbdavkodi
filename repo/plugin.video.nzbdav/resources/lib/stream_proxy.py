@@ -316,15 +316,21 @@ _FAULT_PRIMARY_FAIL_AFTER_BYTES_ENV = "NZBDAV_FAULT_PRIMARY_FAIL_AFTER_BYTES"
 _FAULT_TAIL_GUARD_BYTES = 1073741824  # 1 GiB
 
 
-def _fault_forced_primary_failure(ctx, start):
+def _fault_primary_fail_threshold():
+    """Parse the fault-injection byte threshold env, or None when disabled."""
     raw = os.environ.get(_FAULT_PRIMARY_FAIL_AFTER_BYTES_ENV)
     if not raw:
-        return False
+        return None
     try:
         threshold = int(raw)
     except (TypeError, ValueError):
-        return False
-    if threshold <= 0:
+        return None
+    return threshold if threshold > 0 else None
+
+
+def _fault_forced_primary_failure(ctx, start):
+    threshold = _fault_primary_fail_threshold()
+    if threshold is None:
         return False
     # Only fail the primary; once cut over to a fallback, let it stream so
     # playback can actually recover.
@@ -335,9 +341,12 @@ def _fault_forced_primary_failure(ctx, start):
     # the file is large enough that the tail guard and the threshold band
     # don't overlap — small test files keep the simple start>=threshold rule.
     content_length = int(ctx.get("content_length", 0) or 0)
-    if content_length > _FAULT_TAIL_GUARD_BYTES + threshold:
-        if start >= content_length - _FAULT_TAIL_GUARD_BYTES:
-            return False
+    in_tail_guard = (
+        content_length > _FAULT_TAIL_GUARD_BYTES + threshold
+        and start >= content_length - _FAULT_TAIL_GUARD_BYTES
+    )
+    if in_tail_guard:
+        return False
     return start >= threshold
 
 
@@ -1174,6 +1183,46 @@ def _is_terminal_http_client_error(error):
     return 400 <= code < 500 and code not in _RECOVERABLE_HTTP_RANGE_ERROR_CODES
 
 
+def _strip_header_value(value):
+    """Trim RFC-9110-permitted surrounding whitespace from a header value."""
+    if isinstance(value, str):
+        return value.strip()
+    return value
+
+
+def _classify_contract_status(status, is_full_object):
+    """Flag a non-206 status that isn't a permitted full-object 200."""
+    if status == 206:
+        return None, False
+    if status == 200 and is_full_object:
+        return None, False
+    return "status={} expected=206".format(status), True
+
+
+def _classify_contract_range(status, content_range, expected_range, is_full_object):
+    """Flag a missing/mismatched Content-Range against the expected value."""
+    if status == 206 and content_range in (None, ""):
+        # Tightening this to hard=True is the RFC-strict reading
+        # but in practice it broke test fixtures and at least one
+        # real upstream that returned 206 with valid Content-Length
+        # but no Content-Range. Left as a soft (warn-logged) issue;
+        # the chunk loop's `requested = end - start + 1` clamp
+        # bounds what we actually stream, so the upside of going
+        # hard is purely diagnostic. See TODO.md §H.3.
+        return (
+            "Content-Range missing expected={!r}".format(expected_range),
+            False,
+        )
+    if content_range in (None, "") or content_range == expected_range:
+        return None, False
+    if status != 206 and status == 200 and is_full_object:
+        return None, False
+    return (
+        "Content-Range={!r} expected={!r}".format(content_range, expected_range),
+        True,
+    )
+
+
 def _classify_contract_mismatch(
     status, content_range, content_length, start, end, total
 ):
@@ -1184,54 +1233,26 @@ def _classify_contract_mismatch(
     # HTTP/1.1 (RFC 9110) permits optional leading/trailing whitespace in
     # header values. Strip so an upstream that emits "Content-Length: 1024 "
     # (trailing space) doesn't get flagged as a protocol mismatch.
-    if isinstance(content_range, str):
-        content_range = content_range.strip()
-    if isinstance(content_length, str):
-        content_length = content_length.strip()
+    content_range = _strip_header_value(content_range)
+    content_length = _strip_header_value(content_length)
+    checks = [
+        _classify_contract_status(status, is_full_object),
+        _classify_contract_range(status, content_range, expected_range, is_full_object),
+    ]
+    if content_length != str(expected_length):
+        detail = "Content-Length={!r} expected={!r}".format(
+            content_length, str(expected_length)
+        )
+        checks.append((detail, False))
+
     problems = []
     hard = False
-
-    if status != 206:
-        if status == 200 and is_full_object:
-            pass
-        else:
-            problems.append("status={} expected=206".format(status))
+    for detail, is_hard in checks:
+        if detail is None:
+            continue
+        problems.append(detail)
+        if is_hard:
             hard = True
-
-    if status == 206:
-        if content_range in (None, ""):
-            problems.append(
-                "Content-Range missing expected={!r}".format(expected_range)
-            )
-            # Tightening this to hard=True is the RFC-strict reading
-            # but in practice it broke test fixtures and at least one
-            # real upstream that returned 206 with valid Content-Length
-            # but no Content-Range. Left as a soft (warn-logged) issue;
-            # the chunk loop's `requested = end - start + 1` clamp
-            # bounds what we actually stream, so the upside of going
-            # hard is purely diagnostic. See TODO.md §H.3.
-        elif content_range != expected_range:
-            problems.append(
-                "Content-Range={!r} expected={!r}".format(content_range, expected_range)
-            )
-            hard = True
-    elif (
-        status != 206
-        and content_range not in (None, "")
-        and content_range != expected_range
-    ):
-        if not (status == 200 and is_full_object):
-            problems.append(
-                "Content-Range={!r} expected={!r}".format(content_range, expected_range)
-            )
-            hard = True
-
-    if content_length != str(expected_length):
-        problems.append(
-            "Content-Length={!r} expected={!r}".format(
-                content_length, str(expected_length)
-            )
-        )
 
     if not problems:
         return None, False
@@ -1326,13 +1347,33 @@ def _classify_upstream_error(error):
     # URLError wraps the underlying reason (socket.gaierror, timeout, etc.)
     if isinstance(error, URLError):
         reason = getattr(error, "reason", None)
-        if isinstance(reason, (ConnectionError, _socket.timeout, TimeoutError)):
-            return _UPSTREAM_REACHABILITY_UNREACHABLE_NETWORK
-        if isinstance(reason, OSError):
+        if isinstance(
+            reason, (ConnectionError, _socket.timeout, TimeoutError, OSError)
+        ):
             return _UPSTREAM_REACHABILITY_UNREACHABLE_NETWORK
     if isinstance(error, (ConnectionError, _socket.timeout, TimeoutError)):
         return _UPSTREAM_REACHABILITY_UNREACHABLE_NETWORK
     return _UPSTREAM_REACHABILITY_OTHER
+
+
+def _clear_upstream_unreachable_flag(ctx, observed_at):
+    """Reset the one-shot notify gate when ``observed_at`` is the newest event.
+
+    Returns True when the flag was cleared (caller holds the context lock),
+    False when nothing was notified or a newer failure supersedes this
+    success observation.
+    """
+    if not ctx.get("upstream_down_notified"):
+        return False
+    last_down = float(ctx.get("last_upstream_unreachable_at", 0) or 0)
+    # Drop stale success observations — a newer failure takes
+    # precedence. When timestamps tie (same millisecond), prefer
+    # success since that's the happy-path default.
+    if last_down > observed_at:
+        return False
+    ctx["upstream_down_notified"] = False
+    ctx["upstream_last_recovered_at"] = observed_at
+    return True
 
 
 def _record_upstream_recovered(server, ctx, observed_at=None):
@@ -1364,17 +1405,7 @@ def _record_upstream_recovered(server, ctx, observed_at=None):
     context_lock = _get_server_context_lock(server)
 
     def _update():
-        if not ctx.get("upstream_down_notified"):
-            return False
-        last_down = float(ctx.get("last_upstream_unreachable_at", 0) or 0)
-        # Drop stale success observations — a newer failure takes
-        # precedence. When timestamps tie (same millisecond), prefer
-        # success since that's the happy-path default.
-        if last_down > observed_at:
-            return False
-        ctx["upstream_down_notified"] = False
-        ctx["upstream_last_recovered_at"] = observed_at
-        return True
+        return _clear_upstream_unreachable_flag(ctx, observed_at)
 
     if context_lock is None:
         cleared = _update()
@@ -1451,71 +1482,77 @@ _STARVATION_TERMINAL_REASONS = (
 _STARVATION_RECENT_OUTAGE_SECONDS = 60
 
 
+def _claim_one_shot_flag(ctx, flag):
+    """Set a one-shot context flag, returning True only on the first claim.
+
+    Caller holds the context lock; subsequent calls with the flag already
+    set return False so a debounced notification fires at most once.
+    """
+    if ctx.get(flag):
+        return False
+    ctx[flag] = True
+    return True
+
+
+def _stream_starvation_evident(ctx, terminal_reason):
+    """Whether a non-clean stream end shows evidence of backend starvation.
+
+    The backend (not a healthy stop) ended this stream when an explicit stall
+    terminal reason fired, OR the upstream is still flagged down, OR an outage
+    happened very recently, OR the patient forward-stall wait exhausted. The
+    forward-stall signal covers the pure-SLOW case (a still-downloading region
+    that never caught up: AWAITING with no 5xx, so no outage is recorded) —
+    without it that give-up would be silent, the exact thing this guard exists
+    to prevent. The RECENCY window matters because ``upstream_unreachable_count``
+    is a sticky running total and ``last_upstream_unreachable_at`` can predate a
+    long healthy stretch the user then stopped — that must NOT fire. It also
+    catches the live incident, where the upstream momentarily "recovered" a few
+    seconds before Kodi gave up and disconnected (so a recovered-vs-unreachable
+    ordering check alone would wrongly stay silent).
+
+    ``complete`` and ``density_breaker_tripped`` (which emits its own toast)
+    never count.
+    """
+    if terminal_reason in ("complete", "density_breaker_tripped"):
+        return False
+    if terminal_reason in _STARVATION_TERMINAL_REASONS:
+        return True
+    if ctx.get("upstream_down_notified") or ctx.get("forward_stall_exhausted"):
+        return True
+    last_down = float(ctx.get("last_upstream_unreachable_at", 0) or 0)
+    return (
+        last_down > 0 and (time.time() - last_down) <= _STARVATION_RECENT_OUTAGE_SECONDS
+    )
+
+
 def _maybe_notify_stream_starvation(
     server, ctx, terminal_reason, total_streamed, requested_bytes
 ):
     """Fire ONE clear notification when a pass-through stream ends because the
     backend could not keep up, so the user gets an explanation instead of a
-    silent black screen.
-
-    This is the graceful-starvation guard for the live failure mode where
-    nzbdav delivers far below the release's bitrate and/or returns HTTP 5xx for
-    a sustained period: playback exhausts the downloaded head-start, the demuxer
-    EOFs, and Kodi stops with no on-screen reason. No proxy change can stream
-    bytes that were never downloaded, but the user should at least learn WHY.
+    silent black screen. This is the graceful-starvation guard for the live
+    failure mode where nzbdav delivers far below the release's bitrate and/or
+    returns HTTP 5xx for a sustained period: playback exhausts the head-start,
+    the demuxer EOFs, and Kodi stops with no reason. The user should learn WHY.
 
     Distinct from the early one-shot ``_record_upstream_unreachable`` toast
     (which warns when an outage STARTS): this explains why playback STOPPED. It
-    fires only for an abnormal end (not ``complete``) that shows evidence of
-    backend trouble — a recorded upstream outage this session, or an explicit
-    stall terminal reason — and never for a clean finish or a healthy user stop
-    of a stream that delivered its full range. Debounced once per session via
-    ``starvation_notified``. Returns whether the notification fired.
+    fires only for an abnormal end that shows backend trouble (see
+    ``_stream_starvation_evident``) and never for a clean finish or a healthy
+    stop of a fully-delivered stream. Debounced once per session via
+    ``starvation_notified``; returns whether the notification fired.
     """
-    if terminal_reason == "complete":
+    if not _stream_starvation_evident(ctx, terminal_reason):
         return False
-    # The density breaker emits its own toast at its terminal branch, so suppress
-    # the redundant starvation toast for that reason (avoid a double notification).
-    if terminal_reason == "density_breaker_tripped":
-        return False
-    # The backend (not a healthy stop) ended this stream when an explicit stall
-    # terminal reason fired, OR the upstream is still flagged down, OR an outage
-    # happened very recently, OR the patient forward-stall wait exhausted. The
-    # forward-stall signal covers the pure-SLOW case (a still-downloading region
-    # that never caught up: AWAITING with no 5xx, so no outage is recorded) —
-    # without it that give-up would be silent, the exact thing this guard exists
-    # to prevent. The RECENCY window matters because ``upstream_unreachable_count``
-    # is a sticky running total and ``last_upstream_unreachable_at`` can predate a
-    # long healthy stretch the user then stopped — that must NOT fire. It also
-    # catches the live incident, where the upstream momentarily "recovered" a few
-    # seconds before Kodi gave up and disconnected (so a recovered-vs-unreachable
-    # ordering check alone would wrongly stay silent).
-    down_now = bool(ctx.get("upstream_down_notified"))
-    last_down = float(ctx.get("last_upstream_unreachable_at", 0) or 0)
-    recent_outage = (
-        last_down > 0 and (time.time() - last_down) <= _STARVATION_RECENT_OUTAGE_SECONDS
-    )
-    forward_stall_exhausted = bool(ctx.get("forward_stall_exhausted"))
-    if not (
-        terminal_reason in _STARVATION_TERMINAL_REASONS
-        or down_now
-        or recent_outage
-        or forward_stall_exhausted
-    ):
-        return False
-    # Only when the stream was genuinely starved — it did NOT deliver the full
-    # requested range. A fully-delivered stream the user happened to stop is
-    # not starvation.
+    # Only when genuinely starved — a fully-delivered range the user happened
+    # to stop is not starvation.
     if 0 < requested_bytes <= total_streamed:
         return False
 
     context_lock = _get_server_context_lock(server)
 
     def _update():
-        if ctx.get("starvation_notified"):
-            return False
-        ctx["starvation_notified"] = True
-        return True
+        return _claim_one_shot_flag(ctx, "starvation_notified")
 
     if context_lock is None:
         fire = _update()
@@ -1591,6 +1628,26 @@ def _project_session_zero_fill_ratio(
         return _project()
 
 
+def _prepare_recovery_summary(ctx, now, zero_fill_bytes, recovery_count):
+    """Compute the (skipped, recoveries) summary payload, or None.
+
+    Returns None when there is nothing to report or the toast is still
+    inside the debounce window. Stamps the last-notify time when a payload
+    is returned (caller holds the context lock).
+    """
+    state = _read_session_recovery_state(ctx)
+    skipped = state["zero_fill"] if zero_fill_bytes is None else zero_fill_bytes
+    recoveries = state["recoveries"] if recovery_count is None else recovery_count
+    if recoveries <= 0:
+        return None
+    if state["last_notify"] and (
+        now - state["last_notify"] < _RECOVERY_NOTIFY_DEBOUNCE_SECONDS
+    ):
+        return None
+    ctx["last_recovery_notify_at"] = now
+    return skipped, recoveries
+
+
 def _maybe_notify_recovery_summary(
     server, ctx, zero_fill_bytes=None, recovery_count=None
 ):
@@ -1618,17 +1675,7 @@ def _maybe_notify_recovery_summary(
     now = time.time()
 
     def _prepare():
-        state = _read_session_recovery_state(ctx)
-        skipped = state["zero_fill"] if zero_fill_bytes is None else zero_fill_bytes
-        recoveries = state["recoveries"] if recovery_count is None else recovery_count
-        if recoveries <= 0:
-            return None
-        if state["last_notify"] and (
-            now - state["last_notify"] < _RECOVERY_NOTIFY_DEBOUNCE_SECONDS
-        ):
-            return None
-        ctx["last_recovery_notify_at"] = now
-        return skipped, recoveries
+        return _prepare_recovery_summary(ctx, now, zero_fill_bytes, recovery_count)
 
     if context_lock is None:
         payload = _prepare()
@@ -1705,38 +1752,40 @@ def _validate_auth_header(auth_header):
     return auth_header
 
 
+def _normalize_fallback_source(source):
+    """Normalize one fallback source dict, or None if it is unusable."""
+    if not isinstance(source, dict):
+        return None
+    stream_url = source.get("stream_url") or ""
+    nzo_id = source.get("nzo_id") or ""
+    if not stream_url and not nzo_id:
+        return None
+    if stream_url:
+        _validate_url(stream_url)
+    stream_headers = source.get("stream_headers")
+    if not isinstance(stream_headers, dict):
+        stream_headers = {}
+    content_length = _normalize_content_length_hint(source.get("content_length"))
+    return {
+        "title": source.get("title", ""),
+        "nzb_url": source.get("nzb_url", ""),
+        "job_name": source.get("job_name", ""),
+        "nzo_id": nzo_id,
+        "stream_url": stream_url,
+        "stream_headers": dict(stream_headers),
+        "content_length": content_length,
+        "validated": bool(source.get("validated", False)),
+        "failed": bool(source.get("failed", False)),
+    }
+
+
 def _normalize_fallback_sources(fallback_sources):
     """Validate and normalize fallback stream metadata for session contexts."""
     normalized = []
     for source in fallback_sources or []:
-        if not isinstance(source, dict):
-            continue
-        stream_url = source.get("stream_url") or ""
-        nzo_id = source.get("nzo_id") or ""
-        if not stream_url and not nzo_id:
-            continue
-        if stream_url:
-            _validate_url(stream_url)
-        stream_headers = source.get("stream_headers")
-        if not isinstance(stream_headers, dict):
-            stream_headers = {}
-        try:
-            content_length = int(source.get("content_length") or 0)
-        except (TypeError, ValueError):
-            content_length = 0
-        normalized.append(
-            {
-                "title": source.get("title", ""),
-                "nzb_url": source.get("nzb_url", ""),
-                "job_name": source.get("job_name", ""),
-                "nzo_id": nzo_id,
-                "stream_url": stream_url,
-                "stream_headers": dict(stream_headers),
-                "content_length": max(0, content_length),
-                "validated": bool(source.get("validated", False)),
-                "failed": bool(source.get("failed", False)),
-            }
-        )
+        entry = _normalize_fallback_source(source)
+        if entry is not None:
+            normalized.append(entry)
     return normalized
 
 
@@ -1926,6 +1975,74 @@ def _is_seek_request(current_byte_pos, requested_byte_pos):
     return delta > _SEEK_THRESHOLD
 
 
+def _touch_stream_context(ctx, acquire):
+    """Mark a stream context accessed, optionally leasing a handler slot.
+
+    Returns the context, or None when it is missing or already tearing down.
+    """
+    if ctx is None or ctx.get("_cleanup_started"):
+        return None
+    ctx["last_access"] = time.time()
+    if acquire:
+        ctx["_active_handlers"] = int(ctx.get("_active_handlers", 0) or 0) + 1
+    return ctx
+
+
+def _parse_hls_segment_resource(resource):
+    """Parse a ``seg_<N>.ts`` / ``seg_<N>.m4s`` resource into a segment tuple.
+
+    Returns ``("segment", N, ext)`` for a well-formed non-negative segment,
+    or None for any non-segment or malformed resource.
+    """
+    if not resource.startswith("seg_"):
+        return None
+    for ext in ("ts", "m4s"):
+        suffix = "." + ext
+        if not resource.endswith(suffix):
+            continue
+        try:
+            seg_n = int(resource[len("seg_") : -len(suffix)])
+        except ValueError:
+            return None
+        if seg_n < 0:
+            return None
+        return ("segment", seg_n, ext)
+    return None
+
+
+def _release_handler_lease(ctx):
+    """Decrement the active-handler lease and claim deferred cleanup if due.
+
+    Returns True (caller holds the context lock) when this release drops the
+    last handler on a context that has pending cleanup not yet started.
+    """
+    active = max(0, int(ctx.get("_active_handlers", 0) or 0) - 1)
+    ctx["_active_handlers"] = active
+    if active == 0 and ctx.get("_cleanup_pending") and not ctx.get("_cleanup_started"):
+        ctx["_cleanup_started"] = True
+        return True
+    return False
+
+
+def _stream_context_session_id(path):
+    """Extract a session id from a /stream/<id> or /hls/<id>/... path.
+
+    Returns the session id string, or None when the path is malformed or
+    not a session-scoped stream/HLS path.
+    """
+    if path.startswith("/stream/"):
+        session_id = path[len("/stream/") :]
+        if not session_id or "/" in session_id:
+            return None
+        return session_id
+    if path.startswith("/hls/"):
+        parts = path[len("/hls/") :].split("/", 1)
+        if len(parts) != 2 or not parts[0]:
+            return None
+        return parts[0]
+    return None
+
+
 class _StreamHandler(BaseHTTPRequestHandler):
     """HTTP handler that remuxes MP4 to MKV or proxies other formats."""
 
@@ -1947,12 +2064,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
         """
 
         def _touch(ctx):
-            if ctx is None or ctx.get("_cleanup_started"):
-                return None
-            ctx["last_access"] = time.time()
-            if acquire:
-                ctx["_active_handlers"] = int(ctx.get("_active_handlers", 0) or 0) + 1
-            return ctx
+            return _touch_stream_context(ctx, acquire)
 
         raw_path = getattr(self, "path", "/stream")
         path = raw_path.split("?", 1)[0]
@@ -1963,17 +2075,8 @@ class _StreamHandler(BaseHTTPRequestHandler):
             with context_lock:
                 return _touch(getattr(self.server, "stream_context", None))
 
-        session_id = None
-        if path.startswith("/stream/"):
-            session_id = path[len("/stream/") :]
-            if not session_id or "/" in session_id:
-                return None
-        elif path.startswith("/hls/"):
-            parts = path[len("/hls/") :].split("/", 1)
-            if len(parts) != 2 or not parts[0]:
-                return None
-            session_id = parts[0]
-        else:
+        session_id = _stream_context_session_id(path)
+        if session_id is None:
             return None
 
         if context_lock is None:
@@ -1990,16 +2093,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
             return
 
         def _release():
-            active = max(0, int(ctx.get("_active_handlers", 0) or 0) - 1)
-            ctx["_active_handlers"] = active
-            if (
-                active == 0
-                and ctx.get("_cleanup_pending")
-                and not ctx.get("_cleanup_started")
-            ):
-                ctx["_cleanup_started"] = True
-                return True
-            return False
+            return _release_handler_lease(ctx)
 
         context_lock = _get_server_context_lock(getattr(self, "server", None))
         if context_lock is None:
@@ -2045,18 +2139,10 @@ class _StreamHandler(BaseHTTPRequestHandler):
             return session_id, "playlist"
         if resource == "init.mp4":
             return session_id, "init"
-        if resource.startswith("seg_"):
-            for ext in ("ts", "m4s"):
-                suffix = "." + ext
-                if resource.endswith(suffix):
-                    try:
-                        seg_n = int(resource[len("seg_") : -len(suffix)])
-                    except ValueError:
-                        return None
-                    if seg_n < 0:
-                        return None
-                    return session_id, ("segment", seg_n, ext)
-        return None
+        segment = _parse_hls_segment_resource(resource)
+        if segment is None:
+            return None
+        return session_id, segment
 
     @staticmethod
     def _ctx_lock(ctx, server):

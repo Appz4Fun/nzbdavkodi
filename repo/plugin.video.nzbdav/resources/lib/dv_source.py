@@ -134,6 +134,27 @@ def _find_unspec62_nal(sample):
     return None
 
 
+def _video_stbl_in_trak(moov_data, trak_body_start, trak_end):
+    """Return the stbl box of a video track, or None if this trak isn't video."""
+    mdia = _find_child(moov_data, trak_body_start, trak_end, b"mdia")
+    if mdia is None:
+        return None
+    _, mdia_body_start, mdia_end = mdia
+    hdlr = _find_child(moov_data, mdia_body_start, mdia_end, b"hdlr")
+    if hdlr is None:
+        return None
+    _, hdlr_body_start, _ = hdlr
+    # hdlr body: 4 bytes version+flags, 4 bytes pre_defined, 4 bytes
+    # handler_type ("vide" for video), then reserved/name.
+    if moov_data[hdlr_body_start + 8 : hdlr_body_start + 12] != b"vide":
+        return None
+    minf = _find_child(moov_data, mdia_body_start, mdia_end, b"minf")
+    if minf is None:
+        return None
+    _, minf_body_start, minf_end = minf
+    return _find_child(moov_data, minf_body_start, minf_end, b"stbl")
+
+
 def _find_first_video_stbl(moov_data):
     """Walk moov → trak → mdia → minf → stbl for the first video track.
 
@@ -149,26 +170,9 @@ def _find_first_video_stbl(moov_data):
     ):
         if moov_data[trak_offset + 4 : trak_offset + 8] != b"trak":
             continue
-        mdia = _find_child(moov_data, trak_body_start, trak_end, b"mdia")
-        if mdia is None:
-            continue
-        _, mdia_body_start, mdia_end = mdia
-        hdlr = _find_child(moov_data, mdia_body_start, mdia_end, b"hdlr")
-        if hdlr is None:
-            continue
-        _, hdlr_body_start, _ = hdlr
-        # hdlr body: 4 bytes version+flags, 4 bytes pre_defined, 4 bytes
-        # handler_type ("vide" for video), then reserved/name.
-        if moov_data[hdlr_body_start + 8 : hdlr_body_start + 12] != b"vide":
-            continue
-        minf = _find_child(moov_data, mdia_body_start, mdia_end, b"minf")
-        if minf is None:
-            continue
-        _, minf_body_start, minf_end = minf
-        stbl = _find_child(moov_data, minf_body_start, minf_end, b"stbl")
-        if stbl is None:
-            continue
-        return stbl
+        stbl = _video_stbl_in_trak(moov_data, trak_body_start, trak_end)
+        if stbl is not None:
+            return stbl
     return None
 
 
@@ -198,16 +202,12 @@ def _read_chunk_offset(moov, stbl_body_start, stbl_end):
     return None
 
 
-def _extract_mp4_first_sample(url, file_size, auth_header):
-    layout = fetch_remote_mp4_layout(url, file_size, auth_header=auth_header)
-    if layout is None:
-        return None
-    moov = layout["moov_data"]
-    stbl = _find_first_video_stbl(moov)
-    if stbl is None:
-        return None
-    _, stbl_body_start, stbl_end = stbl
+def _read_first_sample_size(moov, stbl_body_start, stbl_end):
+    """Return the first sample's byte size from the stbl's stsz box, or None.
 
+    Returns None when stsz is missing, the buffer is too short, the sample
+    count is zero, or the declared size is out of the clamped range.
+    """
     stsz = _find_child(moov, stbl_body_start, stbl_end, b"stsz")
     if stsz is None:
         return None
@@ -232,6 +232,22 @@ def _extract_mp4_first_sample(url, file_size, auth_header):
         first_sample_size = sample_size
     if first_sample_size <= 0 or first_sample_size > _MAX_FIRST_SAMPLE_SIZE:
         # Clamp: a malicious moov could declare a 4 GiB first sample.
+        return None
+    return first_sample_size
+
+
+def _extract_mp4_first_sample(url, file_size, auth_header):
+    layout = fetch_remote_mp4_layout(url, file_size, auth_header=auth_header)
+    if layout is None:
+        return None
+    moov = layout["moov_data"]
+    stbl = _find_first_video_stbl(moov)
+    if stbl is None:
+        return None
+    _, stbl_body_start, stbl_end = stbl
+
+    first_sample_size = _read_first_sample_size(moov, stbl_body_start, stbl_end)
+    if first_sample_size is None:
         return None
 
     chunk_offset = _read_chunk_offset(moov, stbl_body_start, stbl_end)

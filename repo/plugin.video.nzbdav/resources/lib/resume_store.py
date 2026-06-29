@@ -28,17 +28,8 @@ def _store_path(path=None):
         return _STORE_PATH
 
 
-def _resume_identity(key):
-    """Return a stable stream identity without credentials or transient parts."""
-    if not key:
-        return ""
-    key = str(key)
-    try:
-        parts = urlsplit(key)
-    except ValueError:
-        return key
-    if not parts.scheme or not parts.netloc:
-        return key
+def _identity_netloc(parts):
+    """Return host[:port] for a URL, bracketing IPv6 hosts."""
     hostname = parts.hostname or ""
     if ":" in hostname and not hostname.startswith("["):
         netloc = "[{}]".format(hostname)
@@ -50,6 +41,21 @@ def _resume_identity(key):
         port = None
     if port is not None:
         netloc = "{}:{}".format(netloc, port)
+    return netloc
+
+
+def _resume_identity(key):
+    """Return a stable stream identity without credentials or transient parts."""
+    if not key:
+        return ""
+    key = str(key)
+    try:
+        parts = urlsplit(key)
+    except ValueError:
+        return key
+    if not parts.scheme or not parts.netloc:
+        return key
+    netloc = _identity_netloc(parts)
     return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
 
 
@@ -81,6 +87,19 @@ def _read(path):
     return payload
 
 
+def _discard_temp(fd, tmp_path):
+    if fd is not None:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+    if tmp_path:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
 def _write(path, payload):
     directory = os.path.dirname(path)
     if directory:
@@ -101,16 +120,7 @@ def _write(path, payload):
             "NZB-DAV: Failed to write resume state: {}".format(error),
             xbmc.LOGWARNING,
         )
-        if fd is not None:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-        if tmp_path:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+        _discard_temp(fd, tmp_path)
 
 
 def _coerce_position(position):

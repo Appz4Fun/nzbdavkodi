@@ -297,84 +297,60 @@ def _int_setting(addon, key, default):
         return default
 
 
-def _get_filter_settings(settings_getter=None):
-    """Read filter settings from Kodi addon config."""
-    if settings_getter is None:
-        addon = xbmcaddon.Addon("plugin.video.nzbdav")
-    else:
-        addon = SimpleNamespace(getSetting=lambda key: settings_getter(key, ""))
+# Setting-key -> filter-value specs, consumed by _get_filter_settings via
+# _collect_enabled. ISO 639-1 language codes match PTT's
+# `parsed["languages"]` output (lowercase two-letter codes); `matches_filters`
+# does a direct ``lang in settings["languages"]`` membership check against PTT
+# output, so comparing "en" against "English" never matched and any enabled
+# language filter rejected every result. Closes TODO.md §H.2-H11.
+_RESOLUTION_SETTINGS = [
+    ("filter_2160p", "2160p"),
+    ("filter_1080p", "1080p"),
+    ("filter_720p", "720p"),
+    ("filter_480p", "480p"),
+]
+_HDR_SETTINGS = [
+    ("filter_hdr10", "HDR10"),
+    ("filter_hdr10plus", "HDR10+"),
+    ("filter_dolby_vision", "Dolby Vision"),
+    ("filter_hlg", "HLG"),
+    ("filter_sdr", "SDR"),
+]
+_AUDIO_SETTINGS = [
+    ("filter_atmos", "Atmos"),
+    ("filter_truehd", "TrueHD"),
+    ("filter_dtshd_ma", "DTS-HD MA"),
+    ("filter_dtsx", "DTS:X"),
+    ("filter_ddplus", "DD+"),
+    ("filter_dd", "DD"),
+    ("filter_aac", "AAC"),
+]
+_CODEC_SETTINGS = [
+    ("filter_hevc", "x265/HEVC"),
+    ("filter_avc", "x264/AVC"),
+    ("filter_av1", "AV1"),
+    ("filter_vp9", "VP9"),
+    ("filter_mpeg2", "MPEG-2"),
+]
+_LANGUAGE_SETTINGS = [
+    ("filter_english", "en"),
+    ("filter_spanish", "es"),
+    ("filter_french", "fr"),
+    ("filter_german", "de"),
+    ("filter_italian", "it"),
+    ("filter_portuguese", "pt"),
+    ("filter_dutch", "nl"),
+    ("filter_russian", "ru"),
+    ("filter_japanese", "ja"),
+    ("filter_korean", "ko"),
+    ("filter_chinese", "zh"),
+    ("filter_arabic", "ar"),
+    ("filter_hindi", "hi"),
+]
 
-    resolutions = _collect_enabled(
-        addon,
-        [
-            ("filter_2160p", "2160p"),
-            ("filter_1080p", "1080p"),
-            ("filter_720p", "720p"),
-            ("filter_480p", "480p"),
-        ],
-    )
 
-    hdr = _collect_enabled(
-        addon,
-        [
-            ("filter_hdr10", "HDR10"),
-            ("filter_hdr10plus", "HDR10+"),
-            ("filter_dolby_vision", "Dolby Vision"),
-            ("filter_hlg", "HLG"),
-            ("filter_sdr", "SDR"),
-        ],
-    )
-
-    audio = _collect_enabled(
-        addon,
-        [
-            ("filter_atmos", "Atmos"),
-            ("filter_truehd", "TrueHD"),
-            ("filter_dtshd_ma", "DTS-HD MA"),
-            ("filter_dtsx", "DTS:X"),
-            ("filter_ddplus", "DD+"),
-            ("filter_dd", "DD"),
-            ("filter_aac", "AAC"),
-        ],
-    )
-
-    codecs = _collect_enabled(
-        addon,
-        [
-            ("filter_hevc", "x265/HEVC"),
-            ("filter_avc", "x264/AVC"),
-            ("filter_av1", "AV1"),
-            ("filter_vp9", "VP9"),
-            ("filter_mpeg2", "MPEG-2"),
-        ],
-    )
-
-    # ISO 639-1 codes match PTT's `parsed["languages"]` output (lowercase
-    # two-letter codes). The UI labels would have been more readable in
-    # the settings collection, but `matches_filters` does a direct
-    # ``lang in settings["languages"]`` membership check against PTT
-    # output — comparing "en" against "English" never matched, so any
-    # enabled language filter rejected every result. Closes
-    # TODO.md §H.2-H11.
-    languages = _collect_enabled(
-        addon,
-        [
-            ("filter_english", "en"),
-            ("filter_spanish", "es"),
-            ("filter_french", "fr"),
-            ("filter_german", "de"),
-            ("filter_italian", "it"),
-            ("filter_portuguese", "pt"),
-            ("filter_dutch", "nl"),
-            ("filter_russian", "ru"),
-            ("filter_japanese", "ja"),
-            ("filter_korean", "ko"),
-            ("filter_chinese", "zh"),
-            ("filter_arabic", "ar"),
-            ("filter_hindi", "hi"),
-        ],
-    )
-
+def _resolve_size_bounds(addon):
+    """Read min/max size, disabling the filter on an inverted range."""
     min_size = _int_setting(addon, "filter_min_size", 0)
     max_size = _int_setting(addon, "filter_max_size", 0)
     if 0 < max_size < min_size:
@@ -385,6 +361,23 @@ def _get_filter_settings(settings_getter=None):
         )
         min_size = 0
         max_size = 0
+    return min_size, max_size
+
+
+def _get_filter_settings(settings_getter=None):
+    """Read filter settings from Kodi addon config."""
+    if settings_getter is None:
+        addon = xbmcaddon.Addon("plugin.video.nzbdav")
+    else:
+        addon = SimpleNamespace(getSetting=lambda key: settings_getter(key, ""))
+
+    resolutions = _collect_enabled(addon, _RESOLUTION_SETTINGS)
+    hdr = _collect_enabled(addon, _HDR_SETTINGS)
+    audio = _collect_enabled(addon, _AUDIO_SETTINGS)
+    codecs = _collect_enabled(addon, _CODEC_SETTINGS)
+    languages = _collect_enabled(addon, _LANGUAGE_SETTINGS)
+
+    min_size, max_size = _resolve_size_bounds(addon)
 
     return {
         "resolutions": resolutions,
@@ -811,6 +804,33 @@ def _has_filter_metadata_shape(meta):
     return scalars_ok and lists_ok
 
 
+def _resolve_result_meta(result, parsed_by_title):
+    """Return the metadata for a result, reusing the per-title cache."""
+    meta = result.get("_meta")
+    title = result["title"]
+    if _has_filter_metadata_shape(meta):
+        if title not in parsed_by_title:
+            parsed_by_title[title] = meta
+        return meta
+    cached_meta = parsed_by_title.get(title)
+    if cached_meta is not None:
+        return deepcopy(cached_meta)
+    meta = parse_title_metadata(title)
+    parsed_by_title[title] = meta
+    return meta
+
+
+def _log_filter_summary(total, matched_count, shown):
+    """Log the filter result counts, noting truncation when it occurred."""
+    if shown < matched_count:
+        message = "NZB-DAV: Filtered {} -> {} results (showing {})".format(
+            total, matched_count, shown
+        )
+    else:
+        message = "NZB-DAV: Filtered {} -> {} results".format(total, shown)
+    xbmc.log(message, xbmc.LOGDEBUG)
+
+
 def filter_results(results, settings_getter=None):
     """Apply filters, sort, truncate. Returns (filtered, all_parsed).
 
@@ -829,18 +849,7 @@ def filter_results(results, settings_getter=None):
     all_parsed = []
     filtered = []
     for result in results:
-        meta = result.get("_meta")
-        title = result["title"]
-        if _has_filter_metadata_shape(meta):
-            if title not in parsed_by_title:
-                parsed_by_title[title] = meta
-        else:
-            cached_meta = parsed_by_title.get(title)
-            if cached_meta is not None:
-                meta = deepcopy(cached_meta)
-            else:
-                meta = parse_title_metadata(title)
-                parsed_by_title[title] = meta
+        meta = _resolve_result_meta(result, parsed_by_title)
         result["_meta"] = meta
         all_parsed.append(result)
         if matches_filters(result, meta, settings):
@@ -854,15 +863,7 @@ def filter_results(results, settings_getter=None):
     if max_results > 0:
         filtered = filtered[:max_results]
 
-    if len(filtered) < matched_count:
-        message = "NZB-DAV: Filtered {} -> {} results (showing {})".format(
-            len(all_parsed), matched_count, len(filtered)
-        )
-    else:
-        message = "NZB-DAV: Filtered {} -> {} results".format(
-            len(all_parsed), len(filtered)
-        )
-    xbmc.log(message, xbmc.LOGDEBUG)
+    _log_filter_summary(len(all_parsed), matched_count, len(filtered))
     telemetry.log_timing(
         "filter_results",
         (time.monotonic() - started) * 1000.0,

@@ -174,6 +174,32 @@ def _dump_submitted_nzb(nzb_url, nzb_name):
         )
 
 
+def _build_submit_request(
+    base_url, api_key, nzb_url, nzb_name, settings_getter, submit_timeout
+):
+    """Return the (url, timeout) for an addurl submit and log the request."""
+    params = {
+        "mode": "addurl",
+        "name": nzb_url,
+        "nzbname": nzb_name,
+        "apikey": api_key,
+        "output": "json",
+    }
+    url = "{}/api?{}".format(base_url, urlencode(params))
+    from resources.lib.http_util import redact_url
+
+    timeout = (
+        submit_timeout
+        if submit_timeout is not None
+        else _get_submit_timeout(settings_getter=settings_getter)
+    )
+    xbmc.log(
+        "NZB-DAV: Submit NZB URL (timeout={}s): {}".format(timeout, redact_url(url)),
+        xbmc.LOGDEBUG,
+    )
+    return url, timeout
+
+
 def submit_nzb(nzb_url, nzb_name="", settings_getter=None, submit_timeout=None):
     """Submit an NZB URL to nzbdav's SABnzbd-compatible API.
 
@@ -213,24 +239,8 @@ def submit_nzb(nzb_url, nzb_name="", settings_getter=None, submit_timeout=None):
             xbmc.LOGERROR,
         )
         return None, None
-    params = {
-        "mode": "addurl",
-        "name": nzb_url,
-        "nzbname": nzb_name,
-        "apikey": api_key,
-        "output": "json",
-    }
-    url = "{}/api?{}".format(base_url, urlencode(params))
-    from resources.lib.http_util import redact_url
-
-    timeout = (
-        submit_timeout
-        if submit_timeout is not None
-        else _get_submit_timeout(settings_getter=settings_getter)
-    )
-    xbmc.log(
-        "NZB-DAV: Submit NZB URL (timeout={}s): {}".format(timeout, redact_url(url)),
-        xbmc.LOGDEBUG,
+    url, timeout = _build_submit_request(
+        base_url, api_key, nzb_url, nzb_name, settings_getter, submit_timeout
     )
     # Optional NZB dump for the extreme functional test: when
     # NZBDAV_DUMP_NZBS_DIR is set, fetch the NZB body the addon is about
@@ -238,6 +248,11 @@ def submit_nzb(nzb_url, nzb_name="", settings_getter=None, submit_timeout=None):
     # post-mortem inspect the exact bytes that went into nzbdav-rs's
     # deobfuscator (e.g. for "no importable video file found" failures).
     _dump_submitted_nzb(nzb_url, nzb_name)
+    return _execute_submit(url, timeout, nzb_name)
+
+
+def _execute_submit(url, timeout, nzb_name):
+    """Perform the addurl GET and classify the (nzo_id, error) outcome."""
     try:
         response_text = _http_get(url, timeout=timeout)
         response = _coerce_response_dict(json.loads(response_text))
@@ -343,6 +358,25 @@ def _submit_parse_result(response):
     }
 
 
+def _build_cancel_url(base_url, api_key, nzo_id, timeout):
+    """Build the queue-delete URL for cancel_job and log the request."""
+    params = {
+        "mode": "queue",
+        "name": "delete",
+        "value": nzo_id,
+        "apikey": api_key,
+        "output": "json",
+    }
+    url = "{}/api?{}".format(base_url, urlencode(params))
+    from resources.lib.http_util import redact_url
+
+    xbmc.log(
+        "NZB-DAV: cancel_job URL (timeout={}s): {}".format(timeout, redact_url(url)),
+        xbmc.LOGDEBUG,
+    )
+    return url
+
+
 def cancel_job(nzo_id, timeout=30, settings_getter=None):
     """Cancel an in-flight nzbdav job by removing it from the queue.
 
@@ -386,23 +420,18 @@ def cancel_job(nzo_id, timeout=30, settings_getter=None):
         )
         return False
 
-    params = {
-        "mode": "queue",
-        "name": "delete",
-        "value": nzo_id,
-        "apikey": api_key,
-        "output": "json",
-    }
-    url = "{}/api?{}".format(base_url, urlencode(params))
-    from resources.lib.http_util import redact_url
+    url = _build_cancel_url(base_url, api_key, nzo_id, timeout)
+    response = _fetch_cancel_response(url, nzo_id, timeout)
+    if response is None:
+        return False
+    return _cancel_job_outcome(response, nzo_id)
 
-    xbmc.log(
-        "NZB-DAV: cancel_job URL (timeout={}s): {}".format(timeout, redact_url(url)),
-        xbmc.LOGDEBUG,
-    )
+
+def _fetch_cancel_response(url, nzo_id, timeout):
+    """GET the cancel URL, returning the parsed dict or None on failure."""
     try:
         response_text = _http_get(url, timeout=timeout)
-        response = _coerce_response_dict(json.loads(response_text))
+        return _coerce_response_dict(json.loads(response_text))
     except Exception as e:  # pylint: disable=broad-except
         # cancel_job is a "make the mess go away" path — anything that
         # prevents the cancel from reaching nzbdav should just get logged
@@ -413,7 +442,11 @@ def cancel_job(nzo_id, timeout=30, settings_getter=None):
             ),
             xbmc.LOGWARNING,
         )
-        return False
+        return None
+
+
+def _cancel_job_outcome(response, nzo_id):
+    """Return whether nzbdav reported the queue DELETE succeeded."""
     # Truthy match (not `is True` identity) — submit_nzb's success branch
     # uses the same loose check, and at least one nzbdav build returns
     # status="ok" (string) instead of the documented JSON `true`. Closes
@@ -906,15 +939,20 @@ def get_completed_jobs(settings_getter=None):
         )
         return {}
 
-    slots = _response_slots(response, "history")
-    jobs = _CompletedJobs(lookup_done=True)
-    for slot in slots:
-        if slot.get("status") == "Completed" and slot.get("name"):
-            jobs[slot["name"]] = _completed_job_from_slot(slot)
+    jobs = _completed_jobs_from_slots(_response_slots(response, "history"))
     xbmc.log(
         "NZB-DAV: Loaded {} completed downloads from history".format(len(jobs)),
         xbmc.LOGDEBUG,
     )
+    return jobs
+
+
+def _completed_jobs_from_slots(slots):
+    """Build the name->metadata map of Completed history slots."""
+    jobs = _CompletedJobs(lookup_done=True)
+    for slot in slots:
+        if slot.get("status") == "Completed" and slot.get("name"):
+            jobs[slot["name"]] = _completed_job_from_slot(slot)
     return jobs
 
 
@@ -977,21 +1015,27 @@ def get_job_status(nzo_id, settings_getter=None):
         )
         return None
     slots = _response_slots(response, "queue")
+    return _job_status_from_slots(slots, nzo_id)
+
+
+def _job_status_from_slots(slots, nzo_id):
+    """Return the status dict for nzo_id within queue slots, or None."""
     for slot in slots:
-        if slot.get("nzo_id") == nzo_id:
-            status = slot.get("status", "Unknown")
-            percentage = slot.get("percentage", "0")
-            xbmc.log(
-                "NZB-DAV: Job {} status={} percentage={}".format(
-                    nzo_id, status, percentage
-                ),
-                xbmc.LOGDEBUG,
-            )
-            return {
-                "status": status,
-                "percentage": percentage,
-                "filename": slot.get("filename", ""),
-            }
+        if slot.get("nzo_id") != nzo_id:
+            continue
+        status = slot.get("status", "Unknown")
+        percentage = slot.get("percentage", "0")
+        xbmc.log(
+            "NZB-DAV: Job {} status={} percentage={}".format(
+                nzo_id, status, percentage
+            ),
+            xbmc.LOGDEBUG,
+        )
+        return {
+            "status": status,
+            "percentage": percentage,
+            "filename": slot.get("filename", ""),
+        }
     xbmc.log(
         "NZB-DAV: Job {} not found in queue (may be complete)".format(nzo_id),
         xbmc.LOGDEBUG,

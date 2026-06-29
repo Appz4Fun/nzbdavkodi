@@ -73,6 +73,37 @@ def _get_cache_ttl_seconds():
         return DEFAULT_CACHE_TTL_SECONDS
 
 
+def _try_remove(path):
+    """Best-effort file removal; ignore filesystem errors."""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _read_fresh_cache(path, cache_ttl, title):
+    """Return cached results if present and fresh, else None.
+
+    Deletes the file when its timestamp is missing/stale or its JSON is
+    corrupt. Reuses ``get_cached``'s log line on a hit.
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    timestamp = data.get("timestamp")
+    if not isinstance(timestamp, (int, float)):
+        _try_remove(path)
+        return None
+    if time.time() - timestamp > cache_ttl:
+        _try_remove(path)
+        return None
+    try:
+        os.utime(path, None)
+    except OSError:
+        pass
+    xbmc.log("NZB-DAV: Cache hit for '{}'".format(title), xbmc.LOGDEBUG)
+    return data.get("results", [])
+
+
 def get_cached(search_type, title, **kwargs):
     """Get cached results if fresh enough. Returns list or None."""
     cache_ttl = _get_cache_ttl_seconds()
@@ -86,32 +117,9 @@ def get_cached(search_type, title, **kwargs):
         return None
 
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        timestamp = data.get("timestamp")
-        if not isinstance(timestamp, (int, float)):
-            try:
-                os.remove(path)
-            except OSError:
-                pass
-            return None
-        if time.time() - timestamp > cache_ttl:
-            try:
-                os.remove(path)
-            except OSError:
-                pass
-            return None
-        try:
-            os.utime(path, None)
-        except OSError:
-            pass
-        xbmc.log("NZB-DAV: Cache hit for '{}'".format(title), xbmc.LOGDEBUG)
-        return data.get("results", [])
+        return _read_fresh_cache(path, cache_ttl, title)
     except json.JSONDecodeError:
-        try:
-            os.remove(path)
-        except OSError:
-            pass
+        _try_remove(path)
         return None
     except OSError:
         return None
@@ -162,46 +170,60 @@ def _cache_size_from_stat(stat):
     return stat.st_size
 
 
+def _scan_cache_entries(cache_dir):
+    """Return (total_bytes, [(mtime, path, size), ...]) for cache JSON files."""
+    total = 0
+    entries = []
+    for f in os.listdir(cache_dir):
+        if not f.endswith(".json"):
+            continue
+        path = os.path.join(cache_dir, f)
+        try:
+            stat = os.stat(path)
+        except OSError:
+            continue
+        size = _cache_size_from_stat(stat)
+        total += size
+        entries.append((getattr(stat, "st_mtime", 0), path, size))
+    return total, entries
+
+
+def _over_limit(total, count):
+    """True while either the byte or entry-count cap is still exceeded."""
+    return total > MAX_CACHE_SIZE_BYTES or count > MAX_CACHE_ENTRY_COUNT
+
+
+def _evict_entries(entries, total):
+    """Remove oldest cache files until both limits are satisfied."""
+    current_count = len(entries)
+    while entries and _over_limit(total, current_count):
+        _mtime, path, size = entries.pop(0)
+        try:
+            os.remove(path)
+        except OSError:
+            if not os.path.exists(path):
+                total -= size
+                current_count -= 1
+            continue
+        total -= size
+        current_count -= 1
+        xbmc.log(
+            "NZB-DAV: Cache evicted '{}'".format(os.path.basename(path)),
+            xbmc.LOGDEBUG,
+        )
+
+
 def _evict_oldest():
     """Delete oldest cache files until size and entry-count limits are met."""
     cache_dir = _get_cache_dir()
     try:
-        total = 0
-        entries = []
-        for f in os.listdir(cache_dir):
-            if not f.endswith(".json"):
-                continue
-            path = os.path.join(cache_dir, f)
-            try:
-                stat = os.stat(path)
-            except OSError:
-                continue
-            size = _cache_size_from_stat(stat)
-            total += size
-            entries.append((getattr(stat, "st_mtime", 0), path, size))
+        total, entries = _scan_cache_entries(cache_dir)
 
-        if total <= MAX_CACHE_SIZE_BYTES and len(entries) <= MAX_CACHE_ENTRY_COUNT:
+        if not _over_limit(total, len(entries)):
             return
         # Sort by mtime ascending (oldest first)
         entries.sort(key=lambda entry: entry[0])
-        current_count = len(entries)
-        while entries and (
-            total > MAX_CACHE_SIZE_BYTES or current_count > MAX_CACHE_ENTRY_COUNT
-        ):
-            _mtime, path, size = entries.pop(0)
-            try:
-                os.remove(path)
-            except OSError:
-                if not os.path.exists(path):
-                    total -= size
-                    current_count -= 1
-                continue
-            total -= size
-            current_count -= 1
-            xbmc.log(
-                "NZB-DAV: Cache evicted '{}'".format(os.path.basename(path)),
-                xbmc.LOGDEBUG,
-            )
+        _evict_entries(entries, total)
     except OSError:
         pass
 

@@ -90,18 +90,27 @@ def redact_url(url):
     # is a real shape some users hand-paste into settings (and that the
     # WebDAV stack used to accept). Strip the password half before
     # logging. TODO.md §H.2-H2d.
-    netloc = parts.netloc
-    if netloc and "@" in netloc:
-        userinfo, _, host = netloc.rpartition("@")
-        if ":" in userinfo:
-            user, _, _ = userinfo.partition(":")
-            netloc = "{}:REDACTED@{}".format(user, host)
-        else:
-            # No `:password` half — userinfo is just a username.
-            netloc = "{}@{}".format(userinfo, host)
+    netloc = _redact_netloc_userinfo(parts.netloc)
     return urlunsplit(
         (parts.scheme, netloc, parts.path, urlencode(query), parts.fragment)
     )
+
+
+def _redact_netloc_userinfo(netloc):
+    """Strip the password half of a ``user:pass@host`` netloc for logging.
+
+    An ``@`` inside the password or an empty username can't leak, since
+    ``rpartition`` splits on the last ``@`` and only the username survives.
+    Netlocs with no userinfo round-trip unchanged.
+    """
+    if not netloc or "@" not in netloc:
+        return netloc
+    userinfo, _, host = netloc.rpartition("@")
+    if ":" in userinfo:
+        user, _, _password = userinfo.partition(":")
+        return "{}:REDACTED@{}".format(user, host)
+    # No `:password` half — userinfo is just a username.
+    return "{}@{}".format(userinfo, host)
 
 
 def _redact_url_userinfo_span(match):
@@ -116,16 +125,9 @@ def _redact_url_userinfo_span(match):
         parts = urlsplit(span)
     except (ValueError, TypeError):
         return span
-    netloc = parts.netloc
-    if not netloc or "@" not in netloc:
+    if not parts.netloc or "@" not in parts.netloc:
         return span
-    userinfo, _, host = netloc.rpartition("@")
-    if ":" in userinfo:
-        user, _, _password = userinfo.partition(":")
-        netloc = "{}:REDACTED@{}".format(user, host)
-    else:
-        # No `:password` half — userinfo is just a username; keep it.
-        netloc = "{}@{}".format(userinfo, host)
+    netloc = _redact_netloc_userinfo(parts.netloc)
     return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
 
 
@@ -188,6 +190,38 @@ def _response_status(resp):
     return None
 
 
+def _read_size_for_limit(resp, max_bytes):
+    """Validate a non-negative ``max_bytes`` and return the capped read size.
+
+    Raises ``HttpResponseTooLarge`` when the response's Content-Length
+    already exceeds the limit. Callers pass a normalized ``int``.
+    """
+    try:
+        content_length = int(resp.headers.get("Content-Length", "0") or 0)
+    except (AttributeError, TypeError, ValueError):
+        content_length = 0
+    if content_length > max_bytes:
+        raise HttpResponseTooLarge("HTTP response exceeds {} bytes".format(max_bytes))
+    return max_bytes + 1
+
+
+def _read_capped_body(resp, max_bytes):
+    """Read the response body, enforcing ``max_bytes`` when not None.
+
+    Raises ``ValueError`` for a negative limit and ``HttpResponseTooLarge``
+    when the body (by Content-Length or actual read) exceeds the limit.
+    """
+    if max_bytes is None:
+        return resp.read()
+    max_bytes = int(max_bytes)
+    if max_bytes < 0:
+        raise ValueError("max_bytes must be non-negative")
+    body = resp.read(_read_size_for_limit(resp, max_bytes))
+    if len(body) > max_bytes:
+        raise HttpResponseTooLarge("HTTP response exceeds {} bytes".format(max_bytes))
+    return body
+
+
 def http_get(url, timeout=15, headers=None, max_bytes=None):
     """Perform an HTTP GET and return the response body as text.
 
@@ -217,25 +251,7 @@ def http_get(url, timeout=15, headers=None, max_bytes=None):
         status = _response_status(resp)
         if status is not None and not 200 <= status < 300:
             raise OSError("HTTP status {}".format(status))
-        read_size = None
-        if max_bytes is not None:
-            max_bytes = int(max_bytes)
-            if max_bytes < 0:
-                raise ValueError("max_bytes must be non-negative")
-            try:
-                content_length = int(resp.headers.get("Content-Length", "0") or 0)
-            except (AttributeError, TypeError, ValueError):
-                content_length = 0
-            if content_length > max_bytes:
-                raise HttpResponseTooLarge(
-                    "HTTP response exceeds {} bytes".format(max_bytes)
-                )
-            read_size = max_bytes + 1
-        body = resp.read(read_size) if read_size is not None else resp.read()
-        if max_bytes is not None and len(body) > max_bytes:
-            raise HttpResponseTooLarge(
-                "HTTP response exceeds {} bytes".format(max_bytes)
-            )
+        body = _read_capped_body(resp, max_bytes)
         return body.decode("utf-8", errors="replace")
 
 

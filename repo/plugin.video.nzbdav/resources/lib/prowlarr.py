@@ -237,10 +237,11 @@ def _execute_prowlarr_search(url):
 
 
 def _title_fallback_search(
-    base_url, params, indexer_ids, search_type, title, imdb, tvdb, season, episode
+    base_url, params, indexer_ids, search_type, title, ids, season, episode
 ):
     """Retry the search by title after an id-keyed query found nothing.
 
+    ``ids`` is the ``(imdb, tvdb)`` pair, used only for the diagnostic log line.
     Mutates ``params['query']`` to drop the id token (keeping season/episode
     tokens for TV) and re-issues the request. Returns ``(results, error)``
     where ``error`` is non-``None`` (a parse error or "Prowlarr unavailable"
@@ -248,6 +249,7 @@ def _title_fallback_search(
     """
     from resources.lib.http_util import redact_text
 
+    imdb, tvdb = ids
     xbmc.log(
         "NZB-DAV: Prowlarr: no results with id (tvdb={} imdb={}), retrying "
         "by title '{}'".format(tvdb or "-", imdb or "-", title),
@@ -269,6 +271,39 @@ def _title_fallback_search(
             xbmc.LOGERROR,
         )
         return [], _prowlarr_unavailable_error(e)
+
+
+def _build_initial_params(
+    api_key, settings_getter, search_type, title, imdb, tvdb, season, episode
+):
+    """Build the primary Prowlarr search params dict.
+
+    Prowlarr's native /api/v1/search binds only Query/Type/IndexerIds/
+    Categories/Limit/Offset. ids/season/episode are NOT query params here —
+    they must be embedded as {token:value} inside ``query``, and Prowlarr only
+    parses them when ``type`` is tvsearch/movie (see ``_build_prowlarr_query``).
+    """
+    params = {"apikey": api_key, "limit": _resolve_max_results(settings_getter)}
+    params["type"] = "tvsearch" if search_type == "episode" else "movie"
+    params["query"] = _build_prowlarr_query(
+        search_type, title, imdb=imdb, tvdb=tvdb, season=season, episode=episode
+    )
+    return params
+
+
+def _read_prowlarr_settings(settings_getter):
+    """Read Prowlarr settings, returning ``(settings_tuple, error)``.
+
+    ``settings_tuple`` is ``(base_url, api_key, indexer_ids)`` on success and
+    ``None`` on failure; ``error`` is a short message when reading failed.
+    """
+    try:
+        return _get_settings(settings_getter), None
+    except Exception as e:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: Failed to read Prowlarr settings: {}".format(e), xbmc.LOGERROR
+        )
+        return None, "Failed to read Prowlarr settings"
 
 
 def search_prowlarr(
@@ -304,13 +339,10 @@ def search_prowlarr(
             describing the failure. Returns `([], None)` when Prowlarr is
             enabled but no indexer IDs are configured.
     """
-    try:
-        base_url, api_key, indexer_ids = _get_settings(settings_getter)
-    except Exception as e:
-        xbmc.log(
-            "NZB-DAV: Failed to read Prowlarr settings: {}".format(e), xbmc.LOGERROR
-        )
-        return [], "Failed to read Prowlarr settings"
+    settings, settings_error = _read_prowlarr_settings(settings_getter)
+    if settings_error:
+        return [], settings_error
+    base_url, api_key, indexer_ids = settings
 
     if not indexer_ids:
         xbmc.log(
@@ -319,16 +351,8 @@ def search_prowlarr(
         )
         return [], None
 
-    max_results = _resolve_max_results(settings_getter)
-    params = {"apikey": api_key, "limit": max_results}
-
-    # Prowlarr's native /api/v1/search binds only Query/Type/IndexerIds/
-    # Categories/Limit/Offset. ids/season/episode are NOT query params here —
-    # they must be embedded as {token:value} inside `query`, and Prowlarr only
-    # parses them when `type` is tvsearch/movie (see _build_prowlarr_query).
-    params["type"] = "tvsearch" if search_type == "episode" else "movie"
-    params["query"] = _build_prowlarr_query(
-        search_type, title, imdb=imdb, tvdb=tvdb, season=season, episode=episode
+    params = _build_initial_params(
+        api_key, settings_getter, search_type, title, imdb, tvdb, season, episode
     )
 
     url = _build_search_url(base_url, params, indexer_ids)
@@ -336,24 +360,40 @@ def search_prowlarr(
     if primary_error:
         return [], primary_error
 
-    # Fallback: an id-keyed query returned nothing — the id may be wrong or the
-    # indexer may not map it. Retry by title (keeping season/episode tokens for
-    # TV), dropping the id token.
-    if not results and (tvdb or imdb) and title:
-        results, fallback_error = _title_fallback_search(
-            base_url,
-            params,
-            indexer_ids,
-            search_type,
-            title,
-            imdb,
-            tvdb,
-            season,
-            episode,
-        )
-        if fallback_error:
-            return [], fallback_error
+    search_args = (search_type, title, imdb, tvdb, season, episode)
+    results, fallback_error = _apply_title_fallback(
+        results, base_url, params, indexer_ids, search_args
+    )
+    if fallback_error:
+        return [], fallback_error
+    return _log_and_return(results, title)
 
+
+def _apply_title_fallback(results, base_url, params, indexer_ids, search_args):
+    """Retry by title when an id-keyed query returned nothing.
+
+    ``search_args`` is ``(search_type, title, imdb, tvdb, season, episode)``.
+    Returns ``(results, error)`` unchanged when the fallback does not apply
+    (results already present, no id, or no title) — the id may be wrong or the
+    indexer may not map it.
+    """
+    search_type, title, imdb, tvdb, season, episode = search_args
+    if results or not (tvdb or imdb) or not title:
+        return results, None
+    return _title_fallback_search(
+        base_url,
+        params,
+        indexer_ids,
+        search_type,
+        title,
+        (imdb, tvdb),
+        season,
+        episode,
+    )
+
+
+def _log_and_return(results, title):
+    """Log the result count and return ``(results, None)``."""
     xbmc.log(
         "NZB-DAV: Prowlarr returned {} results for '{}'".format(len(results), title),
         xbmc.LOGINFO,
