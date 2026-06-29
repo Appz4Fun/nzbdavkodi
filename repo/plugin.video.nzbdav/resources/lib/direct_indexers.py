@@ -165,6 +165,10 @@ def clear_legacy_indexer_settings(indexer_id, addon=None):
     return True
 
 
+def _json_managed_id(item):
+    return str(item.get("id") or item.get("preset_id") or "").strip()
+
+
 def get_configured_indexers():
     """Return enabled direct indexers with complete URL and API key config."""
     addon = xbmcaddon.Addon("plugin.video.nzbdav")
@@ -172,21 +176,16 @@ def get_configured_indexers():
         return []
 
     json_indexers = load_indexers()
-    json_managed_ids = {
-        str(item.get("id") or item.get("preset_id") or "").strip()
-        for item in json_indexers
-    }
-    json_configured = []
-    for item in json_indexers:
-        configured = _configured_json_indexer(item)
-        if configured:
-            json_configured.append(configured)
+    json_managed_ids = {_json_managed_id(item) for item in json_indexers}
+    configured = [
+        result
+        for result in (_configured_json_indexer(item) for item in json_indexers)
+        if result
+    ]
 
-    configured = list(json_configured)
     for item in get_legacy_configured_indexers(addon):
-        if item["id"] in json_managed_ids:
-            continue
-        configured.append(item)
+        if item["id"] not in json_managed_ids:
+            configured.append(item)
     return configured
 
 
@@ -250,18 +249,23 @@ def _source_hostname(item):
         return ""
 
 
+def _apply_enclosure_fallback(item, link, size):
+    enclosure = item.find("enclosure")
+    if enclosure is None:
+        return link, size
+    return (
+        link or enclosure.get("url", ""),
+        size or enclosure.get("length", ""),
+    )
+
+
 def _build_result(item, fallback_indexer):
     title = _get_text(item, "title")
     link = _get_text(item, "link")
     pubdate = _get_text(item, "pubDate")
     size, attr_indexer = _parse_newznab_attrs(item)
     indexer = attr_indexer or _source_hostname(item) or fallback_indexer
-    enclosure = item.find("enclosure")
-    if enclosure is not None:
-        if not link:
-            link = enclosure.get("url", "")
-        if not size:
-            size = enclosure.get("length", "")
+    link, size = _apply_enclosure_fallback(item, link, size)
     return {
         "title": title or "",
         "link": link or "",
@@ -344,6 +348,19 @@ def _wait_for_fanout(futures, timeout_seconds):
         sleeper.wait(min(_DIRECT_FANOUT_POLL_INTERVAL, remaining))
 
 
+def _resolve_fanout_outcome(indexer, future, done, not_done, timeout_seconds):
+    if future in not_done:
+        future.cancel()
+        return indexer, None, _indexer_timeout_error(indexer, timeout_seconds)
+    if future not in done:
+        return indexer, None, _indexer_timeout_error(indexer, timeout_seconds)
+    try:
+        value, error = future.result()
+    except _DIRECT_REQUEST_ERRORS as error:
+        return indexer, None, _indexer_unavailable_error(indexer, error)
+    return indexer, value, error
+
+
 def _run_indexer_fanout(indexers, worker, timeout_seconds=None):
     timeout_seconds = (
         _DIRECT_FANOUT_TIMEOUT if timeout_seconds is None else timeout_seconds
@@ -357,28 +374,10 @@ def _run_indexer_fanout(indexers, worker, timeout_seconds=None):
         done, not_done = _wait_for_fanout(
             [future for _indexer, future in entries], timeout_seconds
         )
-        outcomes = []
-        for indexer, future in entries:
-            if future in not_done:
-                future.cancel()
-                outcomes.append(
-                    (indexer, None, _indexer_timeout_error(indexer, timeout_seconds))
-                )
-                continue
-            if future not in done:
-                outcomes.append(
-                    (indexer, None, _indexer_timeout_error(indexer, timeout_seconds))
-                )
-                continue
-            try:
-                value, error = future.result()
-            except _DIRECT_REQUEST_ERRORS as error:
-                outcomes.append(
-                    (indexer, None, _indexer_unavailable_error(indexer, error))
-                )
-                continue
-            outcomes.append((indexer, value, error))
-        return outcomes
+        return [
+            _resolve_fanout_outcome(indexer, future, done, not_done, timeout_seconds)
+            for indexer, future in entries
+        ]
     finally:
         executor.shutdown(wait=False)
 
@@ -399,6 +398,16 @@ def _fetch_indexer(indexer, params, error_prefix):
             xbmc.LOGERROR,
         )
         return None, _indexer_unavailable_error(indexer, error)
+
+
+def _fetch_and_parse(indexer, params, error_prefix):
+    xml_text, request_error = _fetch_indexer(indexer, params, error_prefix)
+    if request_error:
+        return None, request_error
+    results, parse_error = parse_results(xml_text, indexer["label"])
+    if parse_error:
+        return None, parse_error
+    return results, None
 
 
 def _search_one_indexer(
@@ -436,27 +445,21 @@ def _search_one_indexer(
         )
         return [], None
 
-    xml_text, request_error = _fetch_indexer(
+    results, error = _fetch_and_parse(
         indexer, params, "Direct indexer {} search failed".format(indexer["label"])
     )
-    if request_error:
-        return [], request_error
-    results, parse_error = parse_results(xml_text, indexer["label"])
-    if parse_error:
-        return [], parse_error
+    if error:
+        return [], error
 
     fallback = plan.fallback
     if not results and fallback and fallback != params:
-        xml_text, request_error = _fetch_indexer(
+        results, error = _fetch_and_parse(
             indexer,
             fallback,
             "Direct indexer {} title fallback failed".format(indexer["label"]),
         )
-        if request_error:
-            return [], request_error
-        results, parse_error = parse_results(xml_text, indexer["label"])
-        if parse_error:
-            return [], parse_error
+        if error:
+            return [], error
 
     return results, None
 

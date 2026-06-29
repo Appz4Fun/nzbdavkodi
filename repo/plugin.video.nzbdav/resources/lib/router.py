@@ -243,14 +243,7 @@ def route(argv):
     path = parse_route(base_url)
     params = parse_params(query_string)
 
-    safe_params = {
-        k: (
-            "***"
-            if "url" in k.lower() or "api" in k.lower() or "key" in k.lower()
-            else v
-        )
-        for k, v in params.items()
-    }
+    safe_params = _redact_route_params(params)
     xbmc.log(
         "NZB-DAV: Routing path='{}' params={}".format(path, safe_params), xbmc.LOGDEBUG
     )
@@ -274,6 +267,16 @@ def route(argv):
         raise
 
     _safe_resolve_handle(handle)
+
+
+def _redact_route_params(params):
+    """Mask url/api/key-bearing param values before they reach the debug log."""
+    redacted = {}
+    for key, value in params.items():
+        lowered = key.lower()
+        sensitive = "url" in lowered or "api" in lowered or "key" in lowered
+        redacted[key] = "***" if sensitive else value
+    return redacted
 
 
 def _self_resolving_route(path):
@@ -495,15 +498,7 @@ def _resolve_known_first_peer(
     and the loader should return ``FALLBACK_CANDIDATES_DISABLED``.
     """
     if not _has_extra_uploads(extra_uploads):
-        try:
-            len(results)
-        except TypeError:
-            return None, False
-        if result_count == 1 or not selection_pool_may_have_fallback_peer(
-            selected, results
-        ):
-            return None, True
-        return cached_selection_pool_first_peer(selected, results), False
+        return _resolve_first_peer_no_extras(selected, results, result_count)
     if (
         isinstance(results, (list, tuple))
         and len(results) == 1
@@ -513,6 +508,19 @@ def _resolve_known_first_peer(
     if not selection_pool_may_have_fallback_peer(selected, augmented):
         return None, True
     return cached_selection_pool_first_peer(selected, augmented), False
+
+
+def _resolve_first_peer_no_extras(selected, results, result_count):
+    """Resolve ``(peer, disabled)`` when no extra Hydra uploads are available."""
+    try:
+        len(results)
+    except TypeError:
+        return None, False
+    if result_count == 1 or not selection_pool_may_have_fallback_peer(
+        selected, results
+    ):
+        return None, True
+    return cached_selection_pool_first_peer(selected, results), False
 
 
 def _attach_selected_result_metadata(resolver_params, selected):
@@ -1113,11 +1121,21 @@ def _hydra_duplicate_lookup_enabled(selected, settings_getter=None):
     if not isinstance(selected, dict):
         return False
     if settings_getter is not None:
-        enabled = settings_getter("nzbhydra_enabled", "false")
-        if str(enabled).lower() != "true":
-            return False
-        hydra_url = settings_getter("hydra_url", "")
-        return bool(str(hydra_url or "").strip())
+        return _hydra_lookup_enabled_by_settings(settings_getter)
+    return _hydra_lookup_enabled_by_selection(selected)
+
+
+def _hydra_lookup_enabled_by_settings(settings_getter):
+    """Hydra-duplicate gate when an explicit settings getter is available."""
+    enabled = settings_getter("nzbhydra_enabled", "false")
+    if str(enabled).lower() != "true":
+        return False
+    hydra_url = settings_getter("hydra_url", "")
+    return bool(str(hydra_url or "").strip())
+
+
+def _hydra_lookup_enabled_by_selection(selected):
+    """Hydra-duplicate gate inferred from the selected row's own fields."""
     if "indexer" not in selected and "link" not in selected:
         return False
     indexer = str(selected.get("indexer", "") or "").lower()
@@ -1202,30 +1220,44 @@ def _episode_info_from_listitem(expected_title=""):
     )
     want = (expected_title or "").strip().casefold()
     try:
-        fallback = ("", "", "")
-        for t_label, s_label, e_label in label_sources:
-            show = (xbmc.getInfoLabel(t_label) or "").strip()
-            season = (xbmc.getInfoLabel(s_label) or "").strip()
-            episode = (xbmc.getInfoLabel(e_label) or "").strip()
-            # Treat each root as an ATOMIC (show, season, episode) candidate so
-            # a stale show title from one root is never paired with numbers from
-            # another.
-            if not (season.isdigit() and episode.isdigit()):
-                continue
-            if not want or show.strip().casefold() == want:
-                # Matches the search title (or there's no title to match) —
-                # this is the focused item; use it.
-                return show, season, episode
-            # Complete root but a different show: keep probing later roots,
-            # remembering the first as a no-title fallback only.
-            if fallback == ("", "", ""):
-                fallback = (show, season, episode)
-        # No root matched the title. With a title set, return blanks rather
-        # than inject a different show's numbers; with no title, the first
-        # complete root is the only (and best) signal.
-        return ("", "", "") if want else fallback
+        return _scan_listitem_episode_sources(label_sources, want)
     except Exception:  # pylint: disable=broad-except
         return "", "", ""
+
+
+def _scan_listitem_episode_sources(label_sources, want):
+    """Probe InfoLabel roots for the (show, season, episode) matching ``want``.
+
+    Treats each root as an ATOMIC candidate so a stale show title from one root
+    is never paired with numbers from another. With a title set and no root
+    matching, returns blanks rather than inject a different show's numbers; with
+    no title, the first complete root is the only (and best) signal.
+    """
+    fallback = ("", "", "")
+    for labels in label_sources:
+        candidate = _listitem_episode_candidate(labels)
+        if candidate is None:
+            continue
+        show = candidate[0]
+        if not want or show.strip().casefold() == want:
+            return candidate
+        if fallback == ("", "", ""):
+            fallback = candidate
+    return ("", "", "") if want else fallback
+
+
+def _listitem_episode_candidate(labels):
+    """Read an atomic (show, season, episode) from one InfoLabel root.
+
+    Returns ``None`` when the root lacks numeric season AND episode digits.
+    """
+    t_label, s_label, e_label = labels
+    show = (xbmc.getInfoLabel(t_label) or "").strip()
+    season = (xbmc.getInfoLabel(s_label) or "").strip()
+    episode = (xbmc.getInfoLabel(e_label) or "").strip()
+    if not (season.isdigit() and episode.isdigit()):
+        return None
+    return show, season, episode
 
 
 def _handle_direct_play(handle, params):
@@ -1345,24 +1377,27 @@ def _direct_play_split_auth(url):
     return clean, "Basic " + encoded
 
 
+def _head_content_length(resp):
+    """Return (length, error) from a HEAD response's Content-Length header."""
+    resp_headers = getattr(resp, "headers", {}) or {}
+    length = int(resp_headers.get("Content-Length", "1") or 1)
+    if length > 0:
+        return length, ""
+    return 0, "missing-length"
+
+
 def _direct_play_head_length(url, auth_header):
     """HEAD ``url`` and return (content_length, error). error is "" on success."""
     from urllib.error import HTTPError, URLError
     from urllib.request import Request
 
+    headers = {"Authorization": auth_header} if auth_header else {}
     try:
-        headers = {}
-        if auth_header:
-            headers["Authorization"] = auth_header
         req = Request(url, method="HEAD", headers=headers)
         # nosemgrep
         opener = urllib_request.urlopen if urlopen is _ORIGINAL_URLOPEN else urlopen
         with opener(req, timeout=10) as resp:  # nosec B310
-            headers = getattr(resp, "headers", {}) or {}
-            length = int(headers.get("Content-Length", "1") or 1)
-            if length <= 0:
-                return 0, "missing-length"
-            return length, ""
+            return _head_content_length(resp)
     except HTTPError as exc:
         return 0, "http-{}".format(exc.code)
     except URLError as exc:
@@ -1461,6 +1496,30 @@ _PLAY_INFOLABEL_SOURCES = [
 ]
 
 
+def _numeric_infolabel(label):
+    """Read an InfoLabel that carries a season/episode number, else "".
+
+    "0" is a real season (specials) and episode (pilot/E0) value — only
+    "" / "-1" mean Kodi has no selection. The previous filter dropped specials
+    entirely. TODO.md §H.2-M30.
+    """
+    value = xbmc.getInfoLabel(label)
+    if value and value not in ("", "-1"):
+        return value
+    return ""
+
+
+def _infolabel_backfill_from_source(source, title, season, episode):
+    """Backfill (title, season, episode) from one InfoLabel root."""
+    _src_name, s_label, e_label, t_label = source
+    season = season or _numeric_infolabel(s_label)
+    episode = episode or _numeric_infolabel(e_label)
+    il_t = xbmc.getInfoLabel(t_label)
+    if il_t and not title:
+        title = il_t
+    return title, season, episode
+
+
 def _episode_info_from_infolabels(title, season, episode):
     """Backfill (title, season, episode) for a play from focused-item InfoLabels.
 
@@ -1468,25 +1527,16 @@ def _episode_info_from_infolabels(title, season, episode):
     season AND episode wins (and is the only source logged). Mirrors the prior
     inline ``_handle_play`` behaviour exactly.
     """
-    for src_name, s_label, e_label, t_label in _PLAY_INFOLABEL_SOURCES:
-        il_s = xbmc.getInfoLabel(s_label)
-        il_e = xbmc.getInfoLabel(e_label)
-        il_t = xbmc.getInfoLabel(t_label)
-        # "0" is a real season (specials) and episode (pilot/E0) value — only
-        # "" / "-1" mean Kodi has no selection. The previous filter dropped
-        # specials entirely. TODO.md §H.2-M30.
-        if il_s and il_s not in ("", "-1"):
-            season = season or il_s
-        if il_e and il_e not in ("", "-1"):
-            episode = episode or il_e
-        if il_t and not title:
-            title = il_t
+    for source in _PLAY_INFOLABEL_SOURCES:
+        title, season, episode = _infolabel_backfill_from_source(
+            source, title, season, episode
+        )
         if season and episode:
             # Only log the winning source; logging every probed source in the
             # success path made a noisy 4-line log entry per play.
             xbmc.log(
                 "NZB-DAV: InfoLabel resolved: '{}' S{}E{} (from {})".format(
-                    title, season, episode, src_name
+                    title, season, episode, source[0]
                 ),
                 xbmc.LOGINFO,
             )
@@ -1587,6 +1637,26 @@ def _apply_completed_job_hint(resolver_params, selected, completed_jobs):
         resolver_params["_completed_job_lookup_done"] = True
 
 
+def _extract_search_params(params):
+    """Pull the common (search_type, title, year, imdb, tvdb, tmdb_id, season,
+    episode) tuple from cleaned route params.
+
+    ``season``/``episode`` fall back to the TMDBHelper ``ep_*`` aliases.
+    """
+    season = params.get("season", "") or params.get("ep_season", "")
+    episode = params.get("episode", "") or params.get("ep_episode", "")
+    return (
+        params.get("type", "movie"),
+        params.get("title", ""),
+        params.get("year", ""),
+        params.get("imdb", ""),
+        params.get("tvdb", ""),
+        params.get("tmdb_id", ""),
+        season,
+        episode,
+    )
+
+
 def _resolve_play_episode_args(params, search_type, title, season, episode, imdb):
     """Backfill episode (title, season, episode) for ``_handle_play``.
 
@@ -1626,14 +1696,9 @@ def _handle_play(handle, params):
     from resources.lib.http_util import notify
 
     params = _clean_params(params)
-    search_type = params.get("type", "movie")
-    title = params.get("title", "")
-    year = params.get("year", "")
-    imdb = params.get("imdb", "")
-    tvdb = params.get("tvdb", "")
-    tmdb_id = params.get("tmdb_id", "")
-    season = params.get("season", "") or params.get("ep_season", "")
-    episode = params.get("episode", "") or params.get("ep_episode", "")
+    search_type, title, year, imdb, tvdb, tmdb_id, season, episode = (
+        _extract_search_params(params)
+    )
 
     title, season, episode = _resolve_play_episode_args(
         params, search_type, title, season, episode, imdb
@@ -1766,14 +1831,9 @@ def _handle_search(handle, params):
     from resources.lib.http_util import notify
 
     params = _clean_params(params)
-    search_type = params.get("type", "movie")
-    title = params.get("title", "")
-    year = params.get("year", "")
-    imdb = params.get("imdb", "")
-    tvdb = params.get("tvdb", "")
-    tmdb_id = params.get("tmdb_id", "")
-    season = params.get("season", "") or params.get("ep_season", "")
-    episode = params.get("episode", "") or params.get("ep_episode", "")
+    search_type, title, year, imdb, tvdb, tmdb_id, season, episode = (
+        _extract_search_params(params)
+    )
 
     title, season, episode = _lookup_search_episode_args(
         params, search_type, title, season, episode, imdb
@@ -1895,16 +1955,22 @@ def _script_play_recover_episode_info(params, title, season, episode):
     same_show = bool(li_show) and (
         not title or li_show.strip().lower() == title.strip().lower()
     )
-    if same_show:
-        if not title:
-            title = li_show
-        season = season or li_season
-        episode = episode or li_episode
-        if season:
-            params["season"] = season
-        if episode:
-            params["episode"] = episode
+    if not same_show:
+        return title, season, episode
+    if not title:
+        title = li_show
+    season = season or li_season
+    episode = episode or li_episode
+    _write_back_episode_params(params, season, episode)
     return title, season, episode
+
+
+def _write_back_episode_params(params, season, episode):
+    """Thread recovered season/episode back into ``params`` (skip blanks)."""
+    if season:
+        params["season"] = season
+    if episode:
+        params["episode"] = episode
 
 
 def _handle_script_play(params):
@@ -1919,14 +1985,9 @@ def _handle_script_play(params):
     from resources.lib.http_util import notify
 
     params = _clean_params(params)
-    search_type = params.get("type", "movie")
-    title = params.get("title", "")
-    year = params.get("year", "")
-    imdb = params.get("imdb", "")
-    tvdb = params.get("tvdb", "")
-    tmdb_id = params.get("tmdb_id", "")
-    season = params.get("season", "") or params.get("ep_season", "")
-    episode = params.get("episode", "") or params.get("ep_episode", "")
+    search_type, title, year, imdb, tvdb, tmdb_id, season, episode = (
+        _extract_search_params(params)
+    )
 
     xbmc.log(
         "NZB-DAV: Script play route: type={!r} title={!r} imdb={!r} "
@@ -2159,45 +2220,57 @@ def _format_info_line(item):
              31.2 GB | FLUX | NZBgeek | today
     """
     meta = item.get("_meta", {})
-    parts = []
-
-    res = meta.get("resolution", "")
-    if res:
-        parts.append(res)
-
-    hdr = meta.get("hdr", [])
-    if hdr:
-        parts.append(" ".join(hdr))
-
-    codec = meta.get("codec", "")
-    if codec:
-        parts.append(codec)
-
-    audio = meta.get("audio", [])
-    if audio:
-        parts.append(" ".join(audio))
-
-    langs = meta.get("languages", [])
-    if langs:
-        parts.append("/".join(langs))
-
-    size_str = _format_size(item.get("size"))
-    if size_str:
-        parts.append(size_str)
-
-    group = meta.get("group", "")
-    if group:
-        parts.append(group)
-
-    indexer = item.get("indexer", "")
-    if indexer:
-        parts.append(indexer)
-
-    age = item.get("age", "")
-    if age:
-        parts.append(age)
-
+    candidates = [
+        meta.get("resolution", ""),
+        " ".join(meta.get("hdr", [])),
+        meta.get("codec", ""),
+        " ".join(meta.get("audio", [])),
+        "/".join(meta.get("languages", [])),
+        _format_size(item.get("size")),
+        meta.get("group", ""),
+        item.get("indexer", ""),
+        item.get("age", ""),
+    ]
+    parts = [part for part in candidates if part]
     return " | ".join(parts) if parts else "Unknown"
+
+
+def _fetch_imdb_suggestion_poster(imdb_id):
+    """Issue the IMDb suggestion request and return its poster URL (or "").
+
+    Best-effort: any failure is logged at DEBUG and yields "". The TMDBHelper
+    panel already has its own artwork so a miss here is not user-visible, but
+    silently swallowing made this branch impossible to diagnose when the IMDb
+    suggestion API changes shape.
+    """
+    import json
+
+    # Use TMDB's find endpoint (no API key needed for basic lookups via v3)
+    # Fall back to a free poster service
+    url = "https://v2.sg.media-imdb.com/suggestion/t/{}.json".format(imdb_id)
+    try:
+        # nosemgrep
+        opener = urllib_request.urlopen if urlopen is _ORIGINAL_URLOPEN else urlopen
+        with opener(  # nosec B310 — IMDB suggestion API (trusted)
+            url, timeout=3
+        ) as resp:
+            data = json.loads(resp.read())
+            results = data.get("d", [])
+            poster = ""
+            if results and results[0].get("i"):
+                poster = results[0]["i"].get("imageUrl", "")
+            if poster:
+                xbmc.log(
+                    "NZB-DAV: Got poster for {}: {}".format(imdb_id, poster[:80]),
+                    xbmc.LOGDEBUG,
+                )
+            return poster
+    except Exception as e:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: TMDB poster lookup failed for {}: {}".format(imdb_id, e),
+            xbmc.LOGDEBUG,
+        )
+        return ""
 
 
 def _get_tmdb_poster(imdb_id):
@@ -2205,40 +2278,7 @@ def _get_tmdb_poster(imdb_id):
     if not imdb_id or not _IMDB_ID_RE.match(imdb_id):
         return ""
     try:
-        import json
-
-        # Use TMDB's find endpoint (no API key needed for basic lookups via v3)
-        # Fall back to a free poster service
-        url = "https://v2.sg.media-imdb.com/suggestion/t/{}.json".format(imdb_id)
-        try:
-            # nosemgrep
-            opener = urllib_request.urlopen if urlopen is _ORIGINAL_URLOPEN else urlopen
-            with opener(  # nosec B310 — IMDB suggestion API (trusted)
-                url, timeout=3
-            ) as resp:
-                data = json.loads(resp.read())
-                results = data.get("d", [])
-                if results and results[0].get("i"):
-                    poster = results[0]["i"].get("imageUrl", "")
-                    if poster:
-                        xbmc.log(
-                            "NZB-DAV: Got poster for {}: {}".format(
-                                imdb_id, poster[:80]
-                            ),
-                            xbmc.LOGDEBUG,
-                        )
-                        return poster
-        except Exception as e:  # pylint: disable=broad-except
-            # Poster lookup is best-effort — the TMDBHelper panel already
-            # has its own artwork so a miss here is not user-visible. But
-            # silently swallowing with no log made this branch impossible
-            # to diagnose when the IMDb suggestion API changes shape.
-            xbmc.log(
-                "NZB-DAV: TMDB poster lookup failed for {}: {}".format(imdb_id, e),
-                xbmc.LOGDEBUG,
-            )
-
-        return ""
+        return _fetch_imdb_suggestion_poster(imdb_id)
     except Exception as e:  # pylint: disable=broad-except
         xbmc.log(
             "NZB-DAV: TMDB poster lookup aborted for {}: {}".format(imdb_id, e),

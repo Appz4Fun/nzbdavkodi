@@ -396,30 +396,22 @@ def _bookmark_columns(cur):
     return {row[1] for row in cur.fetchall()}
 
 
+def _bookmark_resume_query(bookmark_columns):
+    """Pick the bookmark SELECT matching the available columns."""
+    total_col = (
+        "totalTimeInSeconds" if "totalTimeInSeconds" in bookmark_columns else "NULL"
+    )
+    type_filter = " AND type = 1" if "type" in bookmark_columns else ""
+    return (
+        "SELECT timeInSeconds, "
+        + total_col
+        + " FROM bookmark WHERE idFile = ?"
+        + type_filter
+    )
+
+
 def _captured_bookmark_resume_seconds(cur, id_file, bookmark_columns):
-    has_type = "type" in bookmark_columns
-    has_total_time = "totalTimeInSeconds" in bookmark_columns
-    if has_type and has_total_time:
-        cur.execute(
-            "SELECT timeInSeconds, totalTimeInSeconds FROM bookmark "
-            "WHERE idFile = ? AND type = 1",
-            (id_file,),
-        )
-    elif has_type:
-        cur.execute(
-            "SELECT timeInSeconds, NULL FROM bookmark WHERE idFile = ? AND type = 1",
-            (id_file,),
-        )
-    elif has_total_time:
-        cur.execute(
-            "SELECT timeInSeconds, totalTimeInSeconds FROM bookmark WHERE idFile = ?",
-            (id_file,),
-        )
-    else:
-        cur.execute(
-            "SELECT timeInSeconds, NULL FROM bookmark WHERE idFile = ?",
-            (id_file,),
-        )
+    cur.execute(_bookmark_resume_query(bookmark_columns), (id_file,))
     resume_seconds = 0.0
     for row in cur.fetchall():
         time_in_seconds = row[0]
@@ -663,6 +655,15 @@ def _arm_live_fallback_push(prepared, fallback_state, primary_stream_url, dead=N
     _push()
 
 
+def _video_mime_for_path(path):
+    """Map a (lowercased) URL path to a Kodi mime type, defaulting to MKV."""
+    if path.endswith(".mp4") or path.endswith(".m4v"):
+        return "video/mp4"
+    if path.endswith(".avi"):
+        return "video/x-msvideo"
+    return "video/x-matroska"
+
+
 def _make_playable_listitem(url, headers):
     """Create a ListItem with URL and optional HTTP auth headers.
 
@@ -678,16 +679,20 @@ def _make_playable_listitem(url, headers):
     li.setContentLookup(False)
     # Set mime type based on file extension so Kodi doesn't need HEAD.
     # Strip query/fragment first so cache-busted URLs still detect correctly.
-    path = _url_path(url)
-    if path.endswith(".mkv"):
-        li.setMimeType("video/x-matroska")
-    elif path.endswith(".mp4") or path.endswith(".m4v"):
-        li.setMimeType("video/mp4")
-    elif path.endswith(".avi"):
-        li.setMimeType("video/x-msvideo")
-    else:
-        li.setMimeType("video/x-matroska")
+    li.setMimeType(_video_mime_for_path(_url_path(url)))
     return li
+
+
+def _apply_remux_proxy_mime(li, stream_info):
+    """Set the remux-proxy mime type and optional duration metadata."""
+    is_hls = (
+        stream_info.get("mode") == "hls"
+        or stream_info.get("content_type") == "application/vnd.apple.mpegurl"
+    )
+    li.setMimeType("application/vnd.apple.mpegurl" if is_hls else "video/x-matroska")
+    duration = stream_info.get("duration_seconds")
+    if duration:
+        li.getVideoInfoTag().setDuration(int(duration))
 
 
 def _apply_proxy_mime(li, stream_url, stream_info):
@@ -698,17 +703,7 @@ def _apply_proxy_mime(li, stream_url, stream_info):
             "NZB-DAV: Playing via remux proxy: {}".format(proxy_url),
             xbmc.LOGINFO,
         )
-        if (
-            stream_info.get("mode") == "hls"
-            or stream_info.get("content_type") == "application/vnd.apple.mpegurl"
-        ):
-            li.setMimeType("application/vnd.apple.mpegurl")
-        else:
-            li.setMimeType("video/x-matroska")
-        duration = stream_info.get("duration_seconds")
-        if duration:
-            info_tag = li.getVideoInfoTag()
-            info_tag.setDuration(int(duration))
+        _apply_remux_proxy_mime(li, stream_info)
     elif stream_info.get("faststart"):
         xbmc.log(
             "NZB-DAV: Playing via faststart proxy: {}".format(proxy_url),
@@ -720,13 +715,7 @@ def _apply_proxy_mime(li, stream_url, stream_info):
             "NZB-DAV: Playing via pass-through proxy: {}".format(proxy_url),
             xbmc.LOGINFO,
         )
-        path = _url_path(stream_url)
-        if path.endswith(".mp4") or path.endswith(".m4v"):
-            li.setMimeType("video/mp4")
-        elif path.endswith(".avi"):
-            li.setMimeType("video/x-msvideo")
-        else:
-            li.setMimeType("video/x-matroska")
+        li.setMimeType(_video_mime_for_path(_url_path(stream_url)))
 
 
 def _stream_auth_header(stream_headers):
@@ -3561,21 +3550,27 @@ def _fallback_job_pending(job):
     return str(status).strip().lower() not in _FALLBACK_TERMINAL_STATUSES
 
 
+def _invoke_fallback_job_cancel(job, nzo_id, cancel_callable):
+    """Run the first applicable cancel strategy; True if one fired."""
+    if nzo_id and cancel_callable:
+        cancel_callable(nzo_id)
+        return True
+    if hasattr(job, "cancel"):
+        job.cancel()
+        return True
+    if hasattr(job, "abort"):
+        job.abort()
+        return True
+    return False
+
+
 def _cancel_fallback_job(state, job):
     cancel_callable = state.get("cancel_job") or cancel_job
     if not _fallback_job_pending(job):
         return False
     nzo_id = _fallback_job_value(job, "nzo_id")
     try:
-        if nzo_id and cancel_callable:
-            cancel_callable(nzo_id)
-            return True
-        if hasattr(job, "cancel"):
-            job.cancel()
-            return True
-        if hasattr(job, "abort"):
-            job.abort()
-            return True
+        return _invoke_fallback_job_cancel(job, nzo_id, cancel_callable)
     except Exception as error:  # pylint: disable=broad-except
         xbmc.log(
             "NZB-DAV: Failed to cancel fallback submit job {}: {}".format(
