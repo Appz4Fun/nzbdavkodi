@@ -552,6 +552,16 @@ _PACK_ORDINAL = (
 # so without this the reversed branch only matches "Season Complete" and misses
 # the numbered form (#340 Codex review).
 _PACK_CARDINAL = r"one|two|three|four|five|six|seven|eight|nine|ten"
+# Ordinals safe to pair with a BARE "Season" (no "Complete"): numeric/positional
+# forms only. ``final``/``last`` are deliberately EXCLUDED here because
+# "The Last Season" / "Final Season" are real single-movie titles -- treating
+# those as packs would skip the #282 stub guard for them. With an adjacent
+# "Complete" the full _PACK_ORDINAL (incl. final/last) is fine, since "Complete
+# Final Season" is unambiguously a whole-season pack (#340 Codex review).
+_PACK_SEASON_ORDINAL = (
+    r"first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|"
+    r"[0-9]{1,2}(?:st|nd|rd|th)"
+)
 # Unambiguous multi-item collection words that mark a pack ON THEIR OWN, without
 # an adjacent "Complete": a "Trilogy"/"Quadrilogy"/"Anthology"/"Filmography"
 # release bundles several films, so its advertised size spans them all and one
@@ -579,8 +589,8 @@ _PACK_PHRASE_RE = re.compile(
     # ("First.Blood", "First.Man", "Second.Act") from matching (#340 Codex
     # review). Still gated on ``not episode_tags`` in release_is_pack: a single
     # "First.Season.S01E05" keeps the stub guard.
-    r"|(?:" + _PACK_ORDINAL + r"|" + _PACK_CARDINAL + r")[ ._-]+seasons?"
-    r"|seasons?[ ._-]+(?:" + _PACK_ORDINAL + r"|" + _PACK_CARDINAL + r")"
+    r"|(?:" + _PACK_SEASON_ORDINAL + r"|" + _PACK_CARDINAL + r")[ ._-]+seasons?"
+    r"|seasons?[ ._-]+(?:" + _PACK_SEASON_ORDINAL + r"|" + _PACK_CARDINAL + r")"
     r"|box[ ._-]?sets?"
     # "Mini Series" / "Limited Series" season-tag-less TV packs.
     r"|(?:mini|limited)[ ._-]?series"

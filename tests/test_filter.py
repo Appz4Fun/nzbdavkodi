@@ -1396,3 +1396,17 @@ def test_release_is_pack_false_for_single_episode_ordinal_season():
     phrase ("First Season" + S01E05) keeps the stub guard: the episode tag
     overrides the phrase (#340 Codex review)."""
     assert release_is_pack("Some.Show.First.Season.S01E05.1080p.WEB-DL-GRP") is False
+
+
+def test_release_is_pack_false_for_last_final_season_movie_titles():
+    """#340 Codex review: 'The Last Season' / 'Final Season' are real single-movie
+    titles. The bare ordinal+season branch must NOT treat 'last'/'final' season as
+    a pack (only numeric/positional ordinals), or the stub guard is skipped for
+    those movies. With an adjacent 'Complete' they stay packs."""
+    assert release_is_pack("The.Last.Season.2007.1080p.BluRay.x264-GRP") is False
+    assert release_is_pack("Final.Season.2024.1080p.WEB-DL-GRP") is False
+    # "Complete Final Season" is unambiguously a whole-season pack -> still True.
+    assert release_is_pack("Some.Show.Complete.Final.Season.1080p-GRP") is True
+    # Numeric/positional season packs are unaffected.
+    assert release_is_pack("Some.Show.First.Season.1080p-GRP") is True
+    assert release_is_pack("Some.Show.Season.Two.1080p-GRP") is True
