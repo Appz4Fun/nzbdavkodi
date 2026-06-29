@@ -44,5 +44,5 @@ jobs:
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: bandit.sarif
-          category: "bandit"
+          category: "bandit-scan"
         if: always()
