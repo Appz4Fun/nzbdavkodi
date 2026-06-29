@@ -2163,6 +2163,73 @@ def _stream_context_session_id(path):
     return None
 
 
+class _ProxyStreamState:  # pylint: disable=too-few-public-methods
+    """Mutable per-request state for ``_StreamHandler._serve_proxy``.
+
+    A plain attribute holder that lets the pass-through loop body be split
+    into cohesive per-phase helpers without changing behavior: every value
+    that the original single-function loop kept as a local now lives here so
+    the extracted step methods can read and mutate the SAME state, in the SAME
+    order, exactly as the inline code did.
+    """
+
+    __slots__ = (
+        "start",
+        "end",
+        "current",
+        "total_streamed",
+        "total_skipped",
+        "recovery_count",
+        "terminal_reason",
+        "fallback_pending_fallthroughs",
+        "last_fallthrough_streamed",
+        "awaiting_download_no_progress",
+        "density_window",
+        "active_ctx",
+        "fallback_pending_candidate",
+        "candidate_delivered",
+        "fallback_failed_to_notify",
+        "streamed_real_upstream_bytes",
+        "forward_stall_t0",
+        "stall_wait_budget",
+        "contract_mode",
+        "density_breaker_enabled",
+        "zero_fill_budget_enabled",
+        "retry_ladder_enabled",
+        "result",
+        "progressed_this_iter",
+    )
+
+    def __init__(self):
+        # Slot defaults; every field is overwritten by _serve_proxy_init_state /
+        # _serve_proxy_unpack_runtime before it is read. Declared here so the
+        # extracted step helpers don't trip attribute-defined-outside-init.
+        self.start = 0
+        self.end = 0
+        self.current = 0
+        self.total_streamed = 0
+        self.total_skipped = 0
+        self.recovery_count = 0
+        self.terminal_reason = "unknown"
+        self.fallback_pending_fallthroughs = 0
+        self.last_fallthrough_streamed = -1
+        self.awaiting_download_no_progress = 0
+        self.density_window = None
+        self.active_ctx = None
+        self.fallback_pending_candidate = None
+        self.candidate_delivered = False
+        self.fallback_failed_to_notify = None
+        self.streamed_real_upstream_bytes = 0
+        self.forward_stall_t0 = None
+        self.stall_wait_budget = 0
+        self.contract_mode = None
+        self.density_breaker_enabled = False
+        self.zero_fill_budget_enabled = False
+        self.retry_ladder_enabled = False
+        self.result = None
+        self.progressed_this_iter = False
+
+
 class _StreamHandler(BaseHTTPRequestHandler):
     """HTTP handler that remuxes MP4 to MKV or proxies other formats."""
 
@@ -5606,20 +5673,13 @@ class _StreamHandler(BaseHTTPRequestHandler):
     def _serve_proxy(self, ctx):
         """Proxy a byte-range request to upstream with missing-article recovery.
 
-        Reads the requested range using ``ctx["content_length"]`` and
+        Reads the requested range using ``ctx["content_length"]`` /
         ``ctx["content_type"]``, streams whatever upstream can serve, probes
-        forward past unreadable regions, zero-fills the gaps to bridge them,
-        and — per the runtime pass-through settings — may switch to a validated
-        fallback source or retry the original range. Updates the session's
-        recovery counters and emits per-fallback outcome and recovery-summary
-        toasts as cutover/recovery events occur. Sends the final HTTP response
-        (headers and body) and returns no value.
-
-        Parameters:
-            ctx (dict): Session context with stream metadata and runtime state.
-                Must include at least ``content_length`` and ``content_type``;
-                may also carry the upstream URL/auth, fallback sources, and
-                pass-through runtime flags.
+        forward past unreadable regions, zero-fills the gaps, and — per the
+        runtime pass-through settings — may switch to a validated fallback
+        source or retry the original range. Updates the session recovery
+        counters, emits per-fallback / recovery-summary toasts, sends the final
+        HTTP response (headers and body), and returns no value.
         """
         content_length = ctx["content_length"]
         range_header = self.headers.get("Range")
@@ -5632,14 +5692,42 @@ class _StreamHandler(BaseHTTPRequestHandler):
         else:
             start, end = 0, content_length - 1
 
-        # Notify the read-ahead window of the requested start so a SEEK to a
-        # position outside the buffered window discards the stale window and
-        # repoints the prefetch base (does not block the seek). A no-op when the
-        # read-ahead layer is disabled (no buffer on ctx).
+        # Notify the read-ahead window of the requested start so a SEEK outside
+        # the buffered window discards it (no-op when read-ahead is disabled).
         readahead_buffer = ctx.get(_READAHEAD_BUFFER_KEY)
         if readahead_buffer is not None:
             readahead_buffer.note_seek(start)
 
+        runtime_settings = self._serve_proxy_send_headers(
+            ctx, range_header, start, end, content_length
+        )
+        self._serve_proxy_set_write_timeout()
+
+        st = self._serve_proxy_init_state(ctx, start, end)
+
+        try:
+            if self._serve_proxy_emit_prefetch_prefix(ctx, st, range_header):
+                return
+            self._serve_proxy_unpack_runtime(ctx, st, runtime_settings)
+
+            while st.current <= st.end:
+                if self._serve_proxy_loop_body(ctx, st) == "return":
+                    return
+            # Normal loop exit means ``current > end`` — every requested byte
+            # was delivered (streamed and/or zero-filled): a genuine completion.
+            st.terminal_reason = "complete"
+        except (BrokenPipeError, ConnectionResetError, _socket.timeout):
+            self._serve_proxy_classify_disconnect(st)
+        finally:
+            self._serve_proxy_finalize(ctx, st)
+
+    def _serve_proxy_send_headers(self, ctx, range_header, start, end, content_length):
+        """Emit the pass-through response status line and headers.
+
+        Returns the resolved ``runtime_settings`` dict (already loaded when the
+        no-Range 200/206 decision needed it, else None) so the caller can reuse
+        it without a second lookup. Verbatim move of the header phase.
+        """
         total_bytes = end - start + 1
         runtime_settings = None
         no_range_status = False
@@ -5673,7 +5761,10 @@ class _StreamHandler(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.close_connection = True
         self.end_headers()
+        return runtime_settings
 
+    def _serve_proxy_set_write_timeout(self):
+        """Apply the per-handler socket write timeout. Verbatim move."""
         # Write timeout so a stalled Kodi (DB vacuum, audio sync error, etc.)
         # can't block this handler in wfile.write() forever.  Without this,
         # a 14 s Kodi vacuum recreated the exact zombie pattern we fixed in
@@ -5685,685 +5776,693 @@ class _StreamHandler(BaseHTTPRequestHandler):
         except (OSError, AttributeError):
             pass
 
-        current = start
-        total_streamed = 0
-        total_skipped = 0
-        recovery_count = 0
-        # Default to a DISTINCT sentinel, NOT "complete". Only the genuine
-        # success paths (full range delivered) set terminal_reason="complete"
-        # explicitly; any early return/raise that leaves it unset must read as
-        # a non-benign exit so the finally block still reports a still-pending
-        # fallback candidate as failed instead of silently swallowing it.
-        terminal_reason = "unknown"
-        # Bounded exhaustion guard: count consecutive cutover fall-throughs
-        # where fallback sources are attached but none validated AND the
-        # primary made no forward progress since the prior fall-through. A
-        # transient trickle re-enters the retry ladder and recovers (resetting
-        # this), but a genuinely-dead primary with never-validating fallbacks
-        # is stopped after the cap instead of spinning the ladder / zero-fill
-        # forever (the indefinite-hang regression). See e3a74a1 + F4.
-        fallback_pending_fallthroughs = 0
-        last_fallthrough_streamed = -1
-        # F-route: count CONSECUTIVE clean download-high-water short reads
-        # (AWAITING_DOWNLOAD) that make NO forward progress. 58f3d4f routes a
-        # still-downloading short read to the retry ladder (wait on the
-        # primary) rather than failing over, which is correct while the
-        # primary is genuinely advancing. But a DEAD primary whose missing
-        # region reads as a clean short read would spin the ladder forever and
-        # never fail over. Once this many no-progress AWAITING_DOWNLOAD reads
-        # accrue, allow a failover into the live-cutover path. Any genuine
-        # forward progress resets the counter, so a primary that IS still
-        # downloading keeps using the ladder (preserving 58f3d4f's intent).
-        #
-        # Kept in ctx (not a local) so it survives Kodi's Connection: close
-        # reconnects: a dead region reads as a clean short read on every fresh
-        # GET, and a per-request local would reset to 0 each time and never
-        # escalate. Genuine progress (this request or any prior one) clears it.
-        awaiting_download_no_progress = int(
+    def _serve_proxy_init_state(self, ctx, start, end):
+        """Build the per-request loop state. Verbatim move of the local init.
+
+        ``terminal_reason`` defaults to a DISTINCT "unknown" sentinel (NOT
+        "complete") so any early return/raise reads as a non-benign exit and
+        the finally block still reports a still-pending fallback candidate as
+        failed instead of silently swallowing it. The fall-through /
+        AWAITING_DOWNLOAD no-progress counters bound the indefinite-hang
+        regression (e3a74a1 + F4 / 58f3d4f); ``awaiting_download_no_progress``
+        seeds from ctx so it survives Kodi's Connection: close reconnects.
+        """
+        st = _ProxyStreamState()
+        st.start = start
+        st.end = end
+        st.current = start
+        st.total_streamed = 0
+        st.total_skipped = 0
+        st.recovery_count = 0
+        st.terminal_reason = "unknown"
+        st.fallback_pending_fallthroughs = 0
+        st.last_fallthrough_streamed = -1
+        st.awaiting_download_no_progress = int(
             ctx.get("_awaiting_download_no_progress", 0) or 0
         )
-        density_window = deque()
+        st.density_window = deque()
         # Reset the throughput watchdog window per request. ctx may be reused
         # across requests for the same session, so explicit re-init avoids
         # stale state from a prior wedge polluting the current sample.
         ctx["passthrough_window_t0"] = time.monotonic()
         ctx["passthrough_window_bytes"] = 0
         ctx["passthrough_stall_detected"] = False
+        st.active_ctx = ctx
+        # fallback_pending_candidate: the 1-based candidate we switched to and
+        # await first bytes from. candidate_delivered flips True only at the
+        # success-toast sites; fallback_failed_to_notify defers a dead
+        # candidate's toast until the successor read starts so a slow Kodi
+        # notification never stalls the cutover. The finally block reports a
+        # still-pending, never-delivered candidate as failed (the F11/F12 hole).
+        st.fallback_pending_candidate = None
+        st.candidate_delivered = False
+        st.fallback_failed_to_notify = None
+        return st
 
-        active_ctx = ctx
-        # The candidate number (1-based) we last switched to and are awaiting
-        # first bytes from, or None. Drives the per-fallback success/failure
-        # toast: success when bytes flow, failure when we switch away or
-        # exhaust the queue before it delivers anything.
-        fallback_pending_candidate = None
-        # Whether the currently-pending candidate has PROVABLY delivered real
-        # bytes yet. Set True only at the sites that emit the success toast
-        # (where written/retry_written > 0), and reset to False on every fresh
-        # switch. The finally block reports a still-pending candidate that never
-        # delivered as a failure regardless of terminal_reason — closing the
-        # F11/F12 hole where a benign exit (zero-fill "complete" or a client
-        # disconnect AFTER the switch but BEFORE any byte) silently swallowed a
-        # dead/wrong fallback. A candidate that DID deliver already cleared
-        # fallback_pending_candidate to None at the success site, so it is never
-        # re-toasted here.
-        candidate_delivered = False
-        # A failed candidate number whose toast is deferred until after the
-        # NEXT candidate's read has started, so a slow Kodi notification can
-        # never stall the cutover between a dead candidate and its successor
-        # (the success toast is deferred past the read the same way).
-        fallback_failed_to_notify = None
+    def _serve_proxy_emit_prefetch_prefix(self, ctx, st, range_header):
+        """Serve the cached byte-0 prefetch prefix when present. Verbatim move.
 
-        try:
-            waited_for_initial_prefetch = False
-            if range_header and current == 0:
-                cached_prefix = self._pop_cached_fallback_range(ctx, current, end)
-                if not cached_prefix:
-                    self._wait_for_initial_range_prefetch(ctx, current)
-                    waited_for_initial_prefetch = True
-                    cached_prefix = self._pop_cached_fallback_range(ctx, current, end)
-                if cached_prefix:
-                    self.wfile.write(cached_prefix)
-                    written = len(cached_prefix)
-                    total_streamed += written
-                    current += written
-                    _update_session_recovery_state(self.server, ctx, streamed=written)
-                    _record_density_window(density_window, "progress", written)
-                    if current > end:
-                        terminal_reason = "complete"
-                        return
+        Returns True when the whole range was satisfied by the prefix (caller
+        must return immediately), else False to proceed into the read loop.
+        """
+        waited_for_initial_prefetch = False
+        if range_header and st.current == 0:
+            cached_prefix = self._pop_cached_fallback_range(ctx, st.current, st.end)
+            if not cached_prefix:
+                self._wait_for_initial_range_prefetch(ctx, st.current)
+                waited_for_initial_prefetch = True
+                cached_prefix = self._pop_cached_fallback_range(ctx, st.current, st.end)
+            if cached_prefix:
+                self.wfile.write(cached_prefix)
+                written = len(cached_prefix)
+                st.total_streamed += written
+                st.current += written
+                _update_session_recovery_state(self.server, ctx, streamed=written)
+                _record_density_window(st.density_window, "progress", written)
+                if st.current > st.end:
+                    st.terminal_reason = "complete"
+                    return True
 
-            if waited_for_initial_prefetch:
-                ctx["_initial_range_prefetch_wait_consumed"] = True
+        if waited_for_initial_prefetch:
+            ctx["_initial_range_prefetch_wait_consumed"] = True
+        return False
 
-            if runtime_settings is None:
-                runtime_settings = _passthrough_runtime_settings(ctx)
-            contract_mode = runtime_settings["contract_mode"]
-            density_breaker_enabled = runtime_settings["density_breaker_enabled"]
-            zero_fill_budget_enabled = runtime_settings["zero_fill_budget_enabled"]
-            retry_ladder_enabled = runtime_settings["retry_ladder_enabled"]
+    def _serve_proxy_unpack_runtime(self, ctx, st, runtime_settings):
+        """Resolve and unpack the pass-through runtime settings. Verbatim move."""
+        if runtime_settings is None:
+            runtime_settings = _passthrough_runtime_settings(ctx)
+        st.contract_mode = runtime_settings["contract_mode"]
+        st.density_breaker_enabled = runtime_settings["density_breaker_enabled"]
+        st.zero_fill_budget_enabled = runtime_settings["zero_fill_budget_enabled"]
+        st.retry_ladder_enabled = runtime_settings["retry_ladder_enabled"]
 
-            # Whether any REAL upstream bytes have been delivered in this request
-            # yet. The byte-0 prefetch prefix is served instantly from cache and
-            # advances ``current`` WITHOUT counting as buffered playback, so the
-            # first-byte retry schedule keys on this (not ``current``) to tell a
-            # genuine first content read from a mid-stream rebuffer.
-            streamed_real_upstream_bytes = False
-            # Patient forward-stall clock: monotonic time when an ESTABLISHED
-            # stream first stalled with NO forward progress (None while it is
-            # advancing; set on the first stalled pass and CLEARED on any genuine
-            # streamed byte below). The budget is consumed only by a truly-stuck
-            # stream, never by a slow-but-healthy one.
-            forward_stall_t0 = None
-            stall_wait_budget = runtime_settings.get(
-                "passthrough_stall_wait_seconds",
-                _DEFAULT_PASSTHROUGH_STALL_WAIT_SECONDS,
+        # Whether any REAL upstream bytes have been delivered in this request
+        # yet. The byte-0 prefetch prefix is served instantly from cache and
+        # advances ``current`` WITHOUT counting as buffered playback, so the
+        # first-byte retry schedule keys on this (not ``current``) to tell a
+        # genuine first content read from a mid-stream rebuffer.
+        st.streamed_real_upstream_bytes = False
+        # Patient forward-stall clock: monotonic time when an ESTABLISHED
+        # stream first stalled with NO forward progress (None while it is
+        # advancing; set on the first stalled pass and CLEARED on any genuine
+        # streamed byte below). The budget is consumed only by a truly-stuck
+        # stream, never by a slow-but-healthy one.
+        st.forward_stall_t0 = None
+        st.stall_wait_budget = runtime_settings.get(
+            "passthrough_stall_wait_seconds",
+            _DEFAULT_PASSTHROUGH_STALL_WAIT_SECONDS,
+        )
+
+    def _serve_proxy_loop_body(self, ctx, st):
+        """Run one pass-through loop iteration via its ordered phase steps.
+
+        Each step reads and mutates ``st`` exactly as the inline loop body did
+        and returns a control signal: ``"return"`` (exit ``_serve_proxy``),
+        ``"continue"`` (restart the loop), or None (proceed to the next step).
+        The first non-None signal short-circuits the rest of the iteration —
+        identical to the original ``return``/``continue`` control flow.
+        """
+        steps = (
+            self._serve_proxy_read_step,
+            self._serve_proxy_cutover_step,
+            self._serve_proxy_retry_step,
+            self._serve_proxy_progress_step,
+            self._serve_proxy_awaiting_step,
+            self._serve_proxy_stall_step,
+            self._serve_proxy_capfire_step,
+            self._serve_proxy_abort_step,
+            self._serve_proxy_zerofill_step,
+        )
+        for step in steps:
+            signal = step(ctx, st)
+            if signal:
+                return signal
+        return None
+
+    def _serve_proxy_mark_candidate_delivered(self, st, wrote):
+        """Emit the success toast when the pending candidate delivered bytes."""
+        if st.fallback_pending_candidate is not None and wrote:
+            st.candidate_delivered = True
+            _notify_fallback_outcome(st.fallback_pending_candidate, True)
+            st.fallback_pending_candidate = None
+
+    def _serve_proxy_read_step(self, ctx, st):
+        """Read upstream once, account for bytes, and notify candidates."""
+        result, written = self._stream_upstream_range(
+            st.active_ctx, st.current, st.end, contract_mode=st.contract_mode
+        )
+        st.result = result
+        st.total_streamed += written
+        if written:
+            st.streamed_real_upstream_bytes = True
+        _update_session_recovery_state(self.server, ctx, streamed=written)
+        _record_density_window(st.density_window, "progress", written)
+        st.current += written
+        if st.fallback_failed_to_notify is not None:
+            # The prior candidate failed; emit its toast now — after
+            # this (successor) read has already begun — so it never
+            # delays the cutover.
+            _notify_fallback_outcome(st.fallback_failed_to_notify, False)
+            st.fallback_failed_to_notify = None
+        # The candidate we switched to just delivered playable bytes — the
+        # cutover worked.
+        self._serve_proxy_mark_candidate_delivered(st, written)
+        if st.current > st.end:
+            st.terminal_reason = "complete"
+            return "return"
+
+        # F-route: track consecutive AWAITING_DOWNLOAD iterations that
+        # made NO forward progress. The reset happens here for the main
+        # read; the retry ladder below feeds back into this counter via
+        # ``awaiting_download_stuck`` so a primary that the ladder can
+        # still coax forward (genuinely downloading, per 58f3d4f) keeps
+        # waiting, while a stuck/dead primary escalates to failover.
+        st.progressed_this_iter = bool(written)
+        return None
+
+    def _serve_proxy_cutover_step(self, ctx, st):
+        """Switch to a validated live fallback, or note a pending fall-through."""
+        if st.current <= st.end and st.result in (
+            _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE,
+            _UPSTREAM_RANGE_UPSTREAM_ERROR,
+        ):
+            fallback = self._select_live_fallback_source(ctx, st.current, st.end)
+            if fallback:
+                self._activate_fallback_source(ctx, fallback, st.current)
+                self._serve_proxy_begin_pending_candidate(ctx, st)
+                return "continue"
+            if ctx.get("fallback_sources"):
+                self._serve_proxy_note_pending_fallthrough(st)
+        return None
+
+    def _serve_proxy_note_pending_fallthrough(self, st):
+        """Count a fruitless cutover re-entry and log it. Verbatim move.
+
+        Fallback sources are attached but none validated yet, so instead of a
+        hard close (which made a fallback-enabled stream MORE brittle than a
+        plain one — the "Silence of the Lambs went dark" regression) we fall
+        through to give the primary a fresh retry-ladder chance; the existing
+        skip-probe / zero-fill safeguards bound the damage. The pending
+        candidate stays set so the finally block still emits its failure toast.
+        BOUNDED EXHAUSTION (F4): count CONSECUTIVE fall-throughs that streamed
+        NO new REAL upstream bytes (zero-fill is black frames, not recovery, so
+        must NOT reset the bound); any genuine streamed byte resets the count.
+        The cap-fire runs AFTER the retry ladder + progress-reset, so the
+        primary spends its FINAL ladder attempt before fallback_exhausted is
+        declared — WITHOUT reintroducing e3a74a1's immediate hard-close.
+        """
+        if st.total_streamed == st.last_fallthrough_streamed:
+            st.fallback_pending_fallthroughs += 1
+        else:
+            st.fallback_pending_fallthroughs = 1
+            st.last_fallthrough_streamed = st.total_streamed
+        xbmc.log(
+            "NZB-DAV: No validated fallback source available at "
+            "byte {}; re-entering retry ladder on the primary "
+            "instead of closing (attempt {}/{}) "
+            "(reason=fallback_pending_retry_primary)".format(
+                st.current,
+                st.fallback_pending_fallthroughs,
+                _FALLBACK_PENDING_FALLTHROUGH_MAX,
+            ),
+            xbmc.LOGWARNING,
+        )
+
+    def _serve_proxy_retry_step(self, ctx, st):
+        """Run the retry ladder on the still-unread range. Verbatim move."""
+        if st.retry_ladder_enabled and st.result in (
+            _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE,
+            _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD,
+            _UPSTREAM_RANGE_UPSTREAM_ERROR,
+        ):
+            (
+                st.result,
+                retry_written,
+                st.current,
+            ) = self._retry_original_range(
+                st.active_ctx,
+                st.current,
+                st.end,
+                st.contract_mode,
+                # The player's first content read takes the SHORT,
+                # first-read-patient schedule; a mid-stream rebuffer keeps
+                # the long wait-on-primary ladder (58f3d4f). "First read"
+                # = a front-of-file open (start == 0) on which no REAL
+                # upstream bytes have streamed yet. We must NOT key on
+                # ``current`` alone: a byte-0 open serves its cached ~64KB
+                # prefetch prefix first, advancing ``current`` to 65536
+                # before this ladder runs, so ``current == 0`` wrongly
+                # took the long ladder for the genuine first content read
+                # (Interstellar 64KB-then-EOF). Nor on ``start`` alone:
+                # once real bytes have streamed from byte 0, a later stall
+                # is a mid-stream rebuffer and must keep the long ladder.
+                first_byte=(st.start == 0 and not st.streamed_real_upstream_bytes),
+            )
+            st.total_streamed += retry_written
+            if retry_written:
+                st.streamed_real_upstream_bytes = True
+            _update_session_recovery_state(self.server, ctx, streamed=retry_written)
+            _record_density_window(st.density_window, "progress", retry_written)
+            # The candidate delivered its first bytes via the retry ladder
+            # (its initial read was a download-high-water short read) — the
+            # cutover worked.
+            self._serve_proxy_mark_candidate_delivered(st, retry_written)
+            if retry_written:
+                st.progressed_this_iter = True
+            if st.current > st.end:
+                st.terminal_reason = "complete"
+                return "return"
+        return None
+
+    def _serve_proxy_progress_step(self, ctx, st):
+        """Reset or bump the no-progress streak after the ladder. Verbatim move."""
+        # F-route: the retry ladder has now had its chance to coax the
+        # primary forward. If this whole iteration delivered bytes, the
+        # primary IS still downloading — reset the streak and keep
+        # waiting on it (58f3d4f's intent). If the result is STILL a
+        # clean AWAITING_DOWNLOAD short read with no progress, the
+        # primary's needed region is stuck/dead; after a bounded number
+        # of such no-progress passes, fail over to a validated fallback
+        # (the same live-cutover path the recoverable cases use) rather
+        # than spinning the ladder / zero-filling toward EOF forever.
+        if st.progressed_this_iter:
+            st.awaiting_download_no_progress = 0
+            ctx["_awaiting_download_no_progress"] = 0
+            # SM-1 (F4): genuine streamed progress means the chain is
+            # alive — reset the bounded-exhaustion counters so a later
+            # fruitless read starts from a fresh budget, not a stale count.
+            st.fallback_pending_fallthroughs = 0
+            st.last_fallthrough_streamed = -1
+            # Genuine forward progress — drop the patient-stall clock so a
+            # healthy still-downloading stream never consumes the wait
+            # budget (only CONSECUTIVE no-progress time is counted).
+            st.forward_stall_t0 = None
+        else:
+            st.awaiting_download_no_progress = self._bump_awaiting_no_progress(
+                ctx, st.result, st.awaiting_download_no_progress, st.current
             )
 
-            while current <= end:
-                result, written = self._stream_upstream_range(
-                    active_ctx, current, end, contract_mode=contract_mode
+    def _serve_proxy_awaiting_stuck(self, ctx, st):
+        """Whether a no-progress AWAITING_DOWNLOAD streak has hit its cap."""
+        return (
+            not st.progressed_this_iter
+            and st.current <= st.end
+            and st.result == _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD
+            and st.awaiting_download_no_progress >= _AWAITING_DOWNLOAD_NO_PROGRESS_MAX
+            and ctx.get("fallback_sources")
+        )
+
+    def _serve_proxy_begin_pending_candidate(self, ctx, st):
+        """Bookkeeping after a cutover activation. Verbatim move shared by both sites.
+
+        Resets the bounded-exhaustion counters, repoints ``active_ctx``, defers
+        any prior candidate's failure toast, and arms the new pending candidate.
+        """
+        st.awaiting_download_no_progress = 0
+        # SM-1 (F4): a successful cutover is genuine progress on the fallback
+        # chain — reset the bounded-exhaustion counters so a freshly-switched
+        # source gets its FULL fruitless-read budget instead of inheriting the
+        # stale primary-driven count (which could trip fallback_exhausted after
+        # ~one fruitless read).
+        st.fallback_pending_fallthroughs = 0
+        st.last_fallthrough_streamed = -1
+        st.active_ctx = ctx
+        if st.fallback_pending_candidate is not None:
+            # Switching away from a candidate that never delivered a byte — it
+            # failed. Defer the toast to after the next candidate's read starts
+            # (handled at the top of the loop) so a slow notification can't
+            # stall the cutover.
+            st.fallback_failed_to_notify = st.fallback_pending_candidate
+        st.fallback_pending_candidate = (
+            ctx["fallback_active_index"] + 1
+            if ctx["fallback_active_index"] >= 0
+            else int(ctx.get("fallback_switch_count", 0) or 0)
+        )
+        st.candidate_delivered = False
+
+    def _serve_proxy_awaiting_step(self, ctx, st):
+        """Fail over when a no-progress AWAITING_DOWNLOAD streak caps. Verbatim."""
+        awaiting_fallback = (
+            self._select_live_fallback_source(ctx, st.current, st.end)
+            if self._serve_proxy_awaiting_stuck(ctx, st)
+            else None
+        )
+        if awaiting_fallback:
+            self._activate_fallback_source(
+                ctx, awaiting_fallback, st.current, stuck_awaiting=True
+            )
+            self._serve_proxy_begin_pending_candidate(ctx, st)
+            return "continue"
+        return None
+
+    def _serve_proxy_stall_step(self, ctx, st):
+        """Patiently wait out an established forward stall. Verbatim move.
+
+        An ESTABLISHED forward stream (real bytes already delivered) that
+        stalls on a RECOVERABLE backend condition must NOT close on the spot:
+        the session breaker short-circuits the retry ladder / skip-probe to an
+        instant give-up that Kodi reads as demuxer EOF (the 4K REMUX black
+        screen). Hold the client open and re-read with abortable backoff until
+        the budget elapses, then fall through to the existing give-up paths.
+        forward_stall_t0 resets on genuine progress, so only a truly-stuck
+        stream exhausts the budget. Scope: established only (issue-#214
+        fast-fail preserved for fresh seeks) and AWAITING_DOWNLOAD /
+        UPSTREAM_ERROR only; runs AFTER the cutover routes so a validated
+        alternate is always preferred over waiting.
+        """
+        if (
+            st.stall_wait_budget > 0
+            and st.streamed_real_upstream_bytes
+            and st.current <= st.end
+            and st.result
+            in (
+                _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD,
+                _UPSTREAM_RANGE_UPSTREAM_ERROR,
+            )
+        ):
+            now = time.monotonic()
+            if st.forward_stall_t0 is None:
+                st.forward_stall_t0 = now
+            if now - st.forward_stall_t0 < st.stall_wait_budget:
+                return self._serve_proxy_stall_wait(ctx, st, now)
+            # Budget exhausted: genuinely stuck. Fall through to the
+            # existing F4 cap-fire / skip-probe give-up so the close is
+            # reported through the established taxonomy (no new exit path).
+            # Mark the session so the terminal starvation guard fires even
+            # on a pure slow-backend give-up (AWAITING with no 5xx outage
+            # recorded) — otherwise that give-up would be silent.
+            ctx["forward_stall_exhausted"] = True
+            xbmc.log(
+                "NZB-DAV: Patient forward-stall budget exhausted at byte "
+                "{} after {}s with no progress (result={}); giving up "
+                "(reason=patient_forward_stall_exhausted)".format(
+                    st.current, st.stall_wait_budget, st.result
+                ),
+                xbmc.LOGWARNING,
+            )
+        return None
+
+    def _serve_proxy_stall_wait(self, ctx, st, now):
+        """Log the stall and wait one abortable backoff. Verbatim move.
+
+        Returns ``"return"`` on a Kodi abort (client teardown) or ``"continue"``
+        to re-read after the backoff elapses.
+        """
+        xbmc.log(
+            (
+                "NZB-DAV: Established forward stream stalled at "
+                "byte {} (result={}); holding client open and "
+                "re-reading (elapsed={:.0f}s/{}s, "
+                "reason=patient_forward_stall)"
+            ).format(
+                st.current,
+                st.result,
+                now - st.forward_stall_t0,
+                st.stall_wait_budget,
+            ),
+            xbmc.LOGINFO,
+        )
+        # Abortable: a Kodi shutdown / session stop breaks the
+        # wait immediately so the budget never blocks teardown.
+        if xbmc.Monitor().waitForAbort(_PASSTHROUGH_STALL_WAIT_BACKOFF_SECONDS):
+            # waitForAbort True == Kodi closing the session: a
+            # client-side teardown, never an upstream error. Mark
+            # it benign (matches the byte-write client-disconnect
+            # at the bottom of the loop) so the finally block logs
+            # at INFO and never blames a pending fallback candidate
+            # for a clean shutdown. Without this it stays "unknown"
+            # and a clean teardown reads as a genuine failure.
+            st.terminal_reason = "client_disconnected"
+            return "return"
+        # Reset the throughput watchdog window so the stale
+        # pre-wait sample can't trip a spurious stall on the first
+        # post-recovery read.
+        ctx["passthrough_window_t0"] = time.monotonic()
+        ctx["passthrough_window_bytes"] = 0
+        return "continue"
+
+    def _serve_proxy_capfire_step(self, ctx, st):
+        """Close cleanly once the bounded-exhaustion cap fires. Verbatim move."""
+        # BOUNDED EXHAUSTION (F4) cap-fire: now that the retry ladder
+        # has run AND the progress-reset above has cleared the count on
+        # any genuine byte, a still-positive fall-through count at the
+        # cap means the primary spent its final ladder attempt with no
+        # recovery and no validated candidate. Close cleanly with
+        # fallback_exhausted instead of looping — WITHOUT reintroducing
+        # e3a74a1's immediate hard-close. A recovering primary's count
+        # is 0 here (the SM-1 reset fired), so this won't condemn it.
+        # Guard: when the final ladder attempt returned a terminal
+        # 401/403/contract-mismatch, fall through to the
+        # CLIENT_ERROR/PROTOCOL_MISMATCH branch below so the real root
+        # cause is surfaced instead of being masked as fallback_exhausted.
+        if (
+            st.fallback_pending_fallthroughs >= _FALLBACK_PENDING_FALLTHROUGH_MAX
+            and st.result
+            not in (
+                _UPSTREAM_RANGE_CLIENT_ERROR,
+                _UPSTREAM_RANGE_PROTOCOL_MISMATCH,
+            )
+        ):
+            st.terminal_reason = "fallback_exhausted"
+            xbmc.log(
+                "NZB-DAV: Fallback chain exhausted at byte {} "
+                "after {} fruitless cutover re-entries with no "
+                "validated source and no primary progress; "
+                "closing cleanly (reason={})".format(
+                    st.current,
+                    st.fallback_pending_fallthroughs,
+                    st.terminal_reason,
+                ),
+                xbmc.LOGERROR,
+            )
+            return "return"
+        return None
+
+    def _serve_proxy_abort_step(self, ctx, st):
+        """Abort on a terminal client/protocol error result. Verbatim move."""
+        if st.result in (
+            _UPSTREAM_RANGE_CLIENT_ERROR,
+            _UPSTREAM_RANGE_PROTOCOL_MISMATCH,
+        ):
+            st.terminal_reason = (
+                "upstream_client_error"
+                if st.result == _UPSTREAM_RANGE_CLIENT_ERROR
+                else "protocol_mismatch"
+            )
+            xbmc.log(
+                "NZB-DAV: Aborting pass-through at byte {} "
+                "(result={}, reason={})".format(
+                    st.current, st.result, st.terminal_reason
+                ),
+                xbmc.LOGERROR,
+            )
+            return "return"
+        return None
+
+    def _serve_proxy_recovery_exhausted(self, st, skip, remaining):
+        """Close when no probe is readable or the zero-fill budget is spent."""
+        if skip is None or (
+            st.zero_fill_budget_enabled
+            and st.total_skipped + skip > _MAX_TOTAL_ZERO_FILL
+        ):
+            st.terminal_reason = "recovery_exhausted"
+            detail = (
+                "no readable probe" if skip is None else "zero-fill budget exceeded"
+            )
+            xbmc.log(
+                "NZB-DAV: Zero-fill recovery exhausted at byte {}; "
+                "closing with {} bytes unread ({}, reason={})".format(
+                    st.current, remaining, detail, st.terminal_reason
+                ),
+                xbmc.LOGERROR,
+            )
+            return True
+        return False
+
+    def _serve_proxy_density_breaker_tripped(self, st, skip):
+        """Close when the recovery density breaker trips. Verbatim move."""
+        if st.density_breaker_enabled and _would_trip_density_breaker(
+            st.density_window, skip
+        ):
+            st.terminal_reason = "density_breaker_tripped"
+            xbmc.log(
+                "NZB-DAV: Recovery density breaker tripped at byte {} "
+                "(result={}, skip={}, ratio={:.2f}, reason={})".format(
+                    st.current,
+                    st.result,
+                    skip,
+                    _density_ratio(st.density_window),
+                    st.terminal_reason,
+                ),
+                xbmc.LOGWARNING,
+            )
+            try:
+                _notify(
+                    "NZB-DAV",
+                    "Stream aborted after repeated zero-fill recovery",
                 )
-                total_streamed += written
-                if written:
-                    streamed_real_upstream_bytes = True
-                _update_session_recovery_state(self.server, ctx, streamed=written)
-                _record_density_window(density_window, "progress", written)
-                current += written
-                if fallback_failed_to_notify is not None:
-                    # The prior candidate failed; emit its toast now — after
-                    # this (successor) read has already begun — so it never
-                    # delays the cutover.
-                    _notify_fallback_outcome(fallback_failed_to_notify, False)
-                    fallback_failed_to_notify = None
-                if fallback_pending_candidate is not None and written:
-                    # The candidate we switched to just delivered playable
-                    # bytes — the cutover worked.
-                    candidate_delivered = True
-                    _notify_fallback_outcome(fallback_pending_candidate, True)
-                    fallback_pending_candidate = None
-                if current > end:
-                    terminal_reason = "complete"
-                    return
+            except (RuntimeError, OSError):
+                pass
+            return True
+        return False
 
-                # F-route: track consecutive AWAITING_DOWNLOAD iterations that
-                # made NO forward progress. The reset happens here for the main
-                # read; the retry ladder below feeds back into this counter via
-                # ``awaiting_download_stuck`` so a primary that the ladder can
-                # still coax forward (genuinely downloading, per 58f3d4f) keeps
-                # waiting, while a stuck/dead primary escalates to failover.
-                progressed_this_iter = bool(written)
+    def _serve_proxy_zerofill_step(self, ctx, st):
+        """Probe forward and zero-fill the unreadable gap. Verbatim move."""
+        remaining = st.end - st.current + 1
+        skip = self._find_skip_offset(st.active_ctx, st.current, st.end)
 
-                if current <= end and result in (
-                    _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE,
-                    _UPSTREAM_RANGE_UPSTREAM_ERROR,
-                ):
-                    fallback = self._select_live_fallback_source(ctx, current, end)
-                    if fallback:
-                        self._activate_fallback_source(ctx, fallback, current)
-                        awaiting_download_no_progress = 0
-                        # SM-1 (F4): a successful cutover is genuine progress on
-                        # the fallback chain — reset the bounded-exhaustion
-                        # counters so a freshly-switched source gets its FULL
-                        # fruitless-read budget instead of inheriting the stale
-                        # primary-driven count (which could trip
-                        # fallback_exhausted after ~one fruitless read).
-                        fallback_pending_fallthroughs = 0
-                        last_fallthrough_streamed = -1
-                        active_ctx = ctx
-                        if fallback_pending_candidate is not None:
-                            # Switching away from a candidate that never
-                            # delivered a byte — it failed. Defer the toast to
-                            # after the next candidate's read starts (handled at
-                            # the top of the loop) so a slow notification can't
-                            # stall the cutover.
-                            fallback_failed_to_notify = fallback_pending_candidate
-                        fallback_pending_candidate = (
-                            ctx["fallback_active_index"] + 1
-                            if ctx["fallback_active_index"] >= 0
-                            else int(ctx.get("fallback_switch_count", 0) or 0)
-                        )
-                        candidate_delivered = False
-                        continue
-                    if ctx.get("fallback_sources"):
-                        # Fallback sources are attached but none validated yet
-                        # (they may still be downloading). Closing here made a
-                        # fallback-enabled stream MORE brittle than a plain
-                        # one: the hard close skipped the retry ladder and
-                        # zero-fill rescue that a no-fallback stream still
-                        # gets, so a transient primary trickle/short read
-                        # bounced playback back to the TMDBHelper player
-                        # dialog (the "Silence of the Lambs went dark"
-                        # regression). Fall through so the primary gets a
-                        # fresh chance via the retry ladder; if it stays dead,
-                        # the existing skip-probe / zero-fill safeguards
-                        # (density breaker, session budget) bound the damage —
-                        # exactly as they do without fallbacks attached.
-                        #
-                        # The pending candidate stays set; its failure toast is
-                        # still emitted by the finally block (the single sink for
-                        # every terminal exit) whenever the stream does end, so
-                        # falling through here doesn't drop the notification.
-                        #
-                        # BOUNDED EXHAUSTION (F4): re-entering the retry ladder
-                        # is correct for a TRANSIENT trickle, but a primary that
-                        # never recovers while its fallbacks never validate would
-                        # otherwise spin the ladder / zero-fill indefinitely
-                        # (looks like a hang/dropout). Count consecutive
-                        # fall-throughs that streamed NO new REAL upstream bytes
-                        # (zero-fill "progress" is black frames, not recovery, so
-                        # it must NOT reset the bound). Any genuine streamed byte
-                        # since the last fall-through resets the count, so a
-                        # recovering primary is never penalised. The cap-fire
-                        # check itself now runs AFTER the retry ladder + the
-                        # progress-reset below, so the primary gets its FINAL
-                        # ladder attempt spent before fallback_exhausted is
-                        # declared (matching the no-fallback path, which always
-                        # runs the ladder); when it finally fires it closes
-                        # cleanly with fallback_exhausted instead of looping —
-                        # WITHOUT reintroducing e3a74a1's immediate hard-close.
-                        if total_streamed == last_fallthrough_streamed:
-                            fallback_pending_fallthroughs += 1
-                        else:
-                            fallback_pending_fallthroughs = 1
-                            last_fallthrough_streamed = total_streamed
-                        xbmc.log(
-                            "NZB-DAV: No validated fallback source available at "
-                            "byte {}; re-entering retry ladder on the primary "
-                            "instead of closing (attempt {}/{}) "
-                            "(reason=fallback_pending_retry_primary)".format(
-                                current,
-                                fallback_pending_fallthroughs,
-                                _FALLBACK_PENDING_FALLTHROUGH_MAX,
-                            ),
-                            xbmc.LOGWARNING,
-                        )
+        if self._serve_proxy_recovery_exhausted(st, skip, remaining):
+            return "return"
+        if self._serve_proxy_density_breaker_tripped(st, skip):
+            return "return"
+        if self._serve_proxy_session_budget_exceeded(ctx, st, skip):
+            return "return"
 
-                if retry_ladder_enabled and result in (
-                    _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE,
-                    _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD,
-                    _UPSTREAM_RANGE_UPSTREAM_ERROR,
-                ):
-                    (
-                        result,
-                        retry_written,
-                        current,
-                    ) = self._retry_original_range(
-                        active_ctx,
-                        current,
-                        end,
-                        contract_mode,
-                        # The player's first content read takes the SHORT,
-                        # first-read-patient schedule; a mid-stream rebuffer keeps
-                        # the long wait-on-primary ladder (58f3d4f). "First read"
-                        # = a front-of-file open (start == 0) on which no REAL
-                        # upstream bytes have streamed yet. We must NOT key on
-                        # ``current`` alone: a byte-0 open serves its cached ~64KB
-                        # prefetch prefix first, advancing ``current`` to 65536
-                        # before this ladder runs, so ``current == 0`` wrongly
-                        # took the long ladder for the genuine first content read
-                        # (Interstellar 64KB-then-EOF). Nor on ``start`` alone:
-                        # once real bytes have streamed from byte 0, a later stall
-                        # is a mid-stream rebuffer and must keep the long ladder.
-                        first_byte=(start == 0 and not streamed_real_upstream_bytes),
-                    )
-                    total_streamed += retry_written
-                    if retry_written:
-                        streamed_real_upstream_bytes = True
-                    _update_session_recovery_state(
-                        self.server, ctx, streamed=retry_written
-                    )
-                    _record_density_window(density_window, "progress", retry_written)
-                    if fallback_pending_candidate is not None and retry_written:
-                        # The candidate delivered its first bytes via the retry
-                        # ladder (its initial read was a download-high-water
-                        # short read) — the cutover worked.
-                        candidate_delivered = True
-                        _notify_fallback_outcome(fallback_pending_candidate, True)
-                        fallback_pending_candidate = None
-                    if retry_written:
-                        progressed_this_iter = True
-                    if current > end:
-                        terminal_reason = "complete"
-                        return
+        self._write_zeros(skip)
+        st.total_skipped += skip
+        st.recovery_count += 1
+        st.current += skip
+        _record_density_window(st.density_window, "zero_fill", skip)
+        _update_session_recovery_state(self.server, ctx, zero_fill=skip, recoveries=1)
+        _maybe_notify_recovery_summary(self.server, ctx)
+        xbmc.log(
+            "NZB-DAV: Zero-filled {} bytes at offset {} to skip bad "
+            "usenet articles (reason=zero_fill_resume)".format(skip, st.current - skip),
+            xbmc.LOGWARNING,
+        )
+        return None
 
-                # F-route: the retry ladder has now had its chance to coax the
-                # primary forward. If this whole iteration delivered bytes, the
-                # primary IS still downloading — reset the streak and keep
-                # waiting on it (58f3d4f's intent). If the result is STILL a
-                # clean AWAITING_DOWNLOAD short read with no progress, the
-                # primary's needed region is stuck/dead; after a bounded number
-                # of such no-progress passes, fail over to a validated fallback
-                # (the same live-cutover path the recoverable cases use) rather
-                # than spinning the ladder / zero-filling toward EOF forever.
-                if progressed_this_iter:
-                    awaiting_download_no_progress = 0
-                    ctx["_awaiting_download_no_progress"] = 0
-                    # SM-1 (F4): genuine streamed progress means the chain is
-                    # alive — reset the bounded-exhaustion counters so a later
-                    # fruitless read starts from a fresh budget, not a stale count.
-                    fallback_pending_fallthroughs = 0
-                    last_fallthrough_streamed = -1
-                    # Genuine forward progress — drop the patient-stall clock so a
-                    # healthy still-downloading stream never consumes the wait
-                    # budget (only CONSECUTIVE no-progress time is counted).
-                    forward_stall_t0 = None
-                else:
-                    awaiting_download_no_progress = self._bump_awaiting_no_progress(
-                        ctx, result, awaiting_download_no_progress, current
-                    )
-                awaiting_stuck = (
-                    not progressed_this_iter
-                    and current <= end
-                    and result == _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD
-                    and awaiting_download_no_progress
-                    >= _AWAITING_DOWNLOAD_NO_PROGRESS_MAX
-                    and ctx.get("fallback_sources")
-                )
-                awaiting_fallback = (
-                    self._select_live_fallback_source(ctx, current, end)
-                    if awaiting_stuck
-                    else None
-                )
-                if awaiting_fallback:
-                    self._activate_fallback_source(
-                        ctx, awaiting_fallback, current, stuck_awaiting=True
-                    )
-                    awaiting_download_no_progress = 0
-                    # SM-1 (F4): see the live-cutover reset above — a successful
-                    # awaiting-stuck cutover likewise resets the bounded-
-                    # exhaustion counters so the new source gets a fresh budget.
-                    fallback_pending_fallthroughs = 0
-                    last_fallthrough_streamed = -1
-                    active_ctx = ctx
-                    if fallback_pending_candidate is not None:
-                        fallback_failed_to_notify = fallback_pending_candidate
-                    fallback_pending_candidate = (
-                        ctx["fallback_active_index"] + 1
-                        if ctx["fallback_active_index"] >= 0
-                        else int(ctx.get("fallback_switch_count", 0) or 0)
-                    )
-                    candidate_delivered = False
-                    continue
+    def _serve_proxy_session_budget_exceeded(self, ctx, st, skip):
+        """Check (and report) the session zero-fill ratio budget. Verbatim move.
 
-                # PATIENT FORWARD-STALL WAIT. An ESTABLISHED forward stream (real
-                # bytes already delivered) that stalls on a RECOVERABLE backend
-                # condition must NOT close on the spot: the session breaker
-                # (upstream_down_notified) short-circuited the retry ladder and
-                # skip-probe to instant give-up, so without this we hit the F4
-                # cap-fire or the recovery_exhausted close in ms and Kodi reads
-                # the premature Connection: close as demuxer EOF (the live 4K
-                # REMUX black screen). Hold the client connection open and re-read
-                # with abortable backoff until the budget elapses, then fall
-                # through to the existing give-up paths below. forward_stall_t0
-                # resets on genuine progress (above), so a healthy
-                # still-downloading stream never trips this; only a truly-stuck
-                # one exhausts the budget. Scope: established only
-                # (streamed_real_upstream_bytes) so a byte-0 first read / fresh
-                # never-streamed seek keep the issue-#214 fast-fail; and
-                # AWAITING_DOWNLOAD / UPSTREAM_ERROR only, so SHORT_READ_RECOVERABLE
-                # (genuinely-missing articles) still zero-fills past below. Runs
-                # AFTER the fallback cutover routes, so a validated alternate is
-                # always preferred over waiting.
-                if (
-                    stall_wait_budget > 0
-                    and streamed_real_upstream_bytes
-                    and current <= end
-                    and result
-                    in (
-                        _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD,
-                        _UPSTREAM_RANGE_UPSTREAM_ERROR,
-                    )
-                ):
-                    now = time.monotonic()
-                    if forward_stall_t0 is None:
-                        forward_stall_t0 = now
-                    if now - forward_stall_t0 < stall_wait_budget:
-                        xbmc.log(
-                            (
-                                "NZB-DAV: Established forward stream stalled at "
-                                "byte {} (result={}); holding client open and "
-                                "re-reading (elapsed={:.0f}s/{}s, "
-                                "reason=patient_forward_stall)"
-                            ).format(
-                                current,
-                                result,
-                                now - forward_stall_t0,
-                                stall_wait_budget,
-                            ),
-                            xbmc.LOGINFO,
-                        )
-                        # Abortable: a Kodi shutdown / session stop breaks the
-                        # wait immediately so the budget never blocks teardown.
-                        if xbmc.Monitor().waitForAbort(
-                            _PASSTHROUGH_STALL_WAIT_BACKOFF_SECONDS
-                        ):
-                            # waitForAbort True == Kodi closing the session: a
-                            # client-side teardown, never an upstream error. Mark
-                            # it benign (matches the byte-write client-disconnect
-                            # at the bottom of the loop) so the finally block logs
-                            # at INFO and never blames a pending fallback candidate
-                            # for a clean shutdown. Without this it stays "unknown"
-                            # and a clean teardown reads as a genuine failure.
-                            terminal_reason = "client_disconnected"
-                            return
-                        # Reset the throughput watchdog window so the stale
-                        # pre-wait sample can't trip a spurious stall on the first
-                        # post-recovery read.
-                        ctx["passthrough_window_t0"] = time.monotonic()
-                        ctx["passthrough_window_bytes"] = 0
-                        continue
-                    # Budget exhausted: genuinely stuck. Fall through to the
-                    # existing F4 cap-fire / skip-probe give-up so the close is
-                    # reported through the established taxonomy (no new exit path).
-                    # Mark the session so the terminal starvation guard fires even
-                    # on a pure slow-backend give-up (AWAITING with no 5xx outage
-                    # recorded) — otherwise that give-up would be silent.
-                    ctx["forward_stall_exhausted"] = True
-                    xbmc.log(
-                        "NZB-DAV: Patient forward-stall budget exhausted at byte "
-                        "{} after {}s with no progress (result={}); giving up "
-                        "(reason=patient_forward_stall_exhausted)".format(
-                            current, stall_wait_budget, result
-                        ),
-                        xbmc.LOGWARNING,
-                    )
-
-                # BOUNDED EXHAUSTION (F4) cap-fire: now that the retry ladder
-                # has run AND the progress-reset above has cleared the count on
-                # any genuine byte, a still-positive fall-through count at the
-                # cap means the primary spent its final ladder attempt with no
-                # recovery and no validated candidate. Close cleanly with
-                # fallback_exhausted instead of looping — WITHOUT reintroducing
-                # e3a74a1's immediate hard-close. A recovering primary's count
-                # is 0 here (the SM-1 reset fired), so this won't condemn it.
-                # Guard: when the final ladder attempt returned a terminal
-                # 401/403/contract-mismatch, fall through to the
-                # CLIENT_ERROR/PROTOCOL_MISMATCH branch below so the real root
-                # cause is surfaced instead of being masked as fallback_exhausted.
-                if (
-                    fallback_pending_fallthroughs >= _FALLBACK_PENDING_FALLTHROUGH_MAX
-                    and result
-                    not in (
-                        _UPSTREAM_RANGE_CLIENT_ERROR,
-                        _UPSTREAM_RANGE_PROTOCOL_MISMATCH,
-                    )
-                ):
-                    terminal_reason = "fallback_exhausted"
-                    xbmc.log(
-                        "NZB-DAV: Fallback chain exhausted at byte {} "
-                        "after {} fruitless cutover re-entries with no "
-                        "validated source and no primary progress; "
-                        "closing cleanly (reason={})".format(
-                            current,
-                            fallback_pending_fallthroughs,
-                            terminal_reason,
-                        ),
-                        xbmc.LOGERROR,
-                    )
-                    return
-
-                if result in (
-                    _UPSTREAM_RANGE_CLIENT_ERROR,
-                    _UPSTREAM_RANGE_PROTOCOL_MISMATCH,
-                ):
-                    terminal_reason = (
-                        "upstream_client_error"
-                        if result == _UPSTREAM_RANGE_CLIENT_ERROR
-                        else "protocol_mismatch"
-                    )
-                    xbmc.log(
-                        "NZB-DAV: Aborting pass-through at byte {} "
-                        "(result={}, reason={})".format(
-                            current, result, terminal_reason
-                        ),
-                        xbmc.LOGERROR,
-                    )
-                    return
-
-                remaining = end - current + 1
-                skip = self._find_skip_offset(active_ctx, current, end)
-
-                if skip is None or (
-                    zero_fill_budget_enabled
-                    and total_skipped + skip > _MAX_TOTAL_ZERO_FILL
-                ):
-                    terminal_reason = "recovery_exhausted"
-                    detail = (
-                        "no readable probe"
-                        if skip is None
-                        else "zero-fill budget exceeded"
-                    )
-                    xbmc.log(
-                        "NZB-DAV: Zero-fill recovery exhausted at byte {}; "
-                        "closing with {} bytes unread ({}, reason={})".format(
-                            current, remaining, detail, terminal_reason
-                        ),
-                        xbmc.LOGERROR,
-                    )
-                    return
-
-                if density_breaker_enabled and _would_trip_density_breaker(
-                    density_window, skip
-                ):
-                    terminal_reason = "density_breaker_tripped"
-                    xbmc.log(
-                        "NZB-DAV: Recovery density breaker tripped at byte {} "
-                        "(result={}, skip={}, ratio={:.2f}, reason={})".format(
-                            current,
-                            result,
-                            skip,
-                            _density_ratio(density_window),
-                            terminal_reason,
-                        ),
-                        xbmc.LOGWARNING,
-                    )
-                    try:
-                        _notify(
-                            "NZB-DAV",
-                            "Stream aborted after repeated zero-fill recovery",
-                        )
-                    except (RuntimeError, OSError):
-                        pass
-                    return
-
-                projected_zero_fill = None
-                projected_recoveries = None
-                projected_ratio = None
-                if zero_fill_budget_enabled:
-                    (
+        Returns True when the projected ratio exceeds the cap and the stream
+        must close, else False.
+        """
+        projected_zero_fill = None
+        projected_recoveries = None
+        projected_ratio = None
+        if st.zero_fill_budget_enabled:
+            (
+                projected_zero_fill,
+                projected_recoveries,
+                projected_ratio,
+            ) = _project_session_zero_fill_ratio(
+                self.server, ctx, extra_zero_fill=skip, extra_recoveries=1
+            )
+            if projected_ratio > _SESSION_ZERO_FILL_RATIO_MAX:
+                st.terminal_reason = "session_zero_fill_budget_exceeded"
+                xbmc.log(
+                    "NZB-DAV: Session zero-fill budget exceeded at byte {} "
+                    "(projected_ratio={:.3f}, skipped={}, recoveries={}, "
+                    "reason={})".format(
+                        st.current,
+                        projected_ratio,
                         projected_zero_fill,
                         projected_recoveries,
-                        projected_ratio,
-                    ) = _project_session_zero_fill_ratio(
-                        self.server, ctx, extra_zero_fill=skip, extra_recoveries=1
-                    )
-                    if projected_ratio > _SESSION_ZERO_FILL_RATIO_MAX:
-                        terminal_reason = "session_zero_fill_budget_exceeded"
-                        xbmc.log(
-                            "NZB-DAV: Session zero-fill budget exceeded at byte {} "
-                            "(projected_ratio={:.3f}, skipped={}, recoveries={}, "
-                            "reason={})".format(
-                                current,
-                                projected_ratio,
-                                projected_zero_fill,
-                                projected_recoveries,
-                                terminal_reason,
-                            ),
-                            xbmc.LOGWARNING,
-                        )
-                        _maybe_notify_recovery_summary(
-                            self.server,
-                            ctx,
-                            zero_fill_bytes=projected_zero_fill,
-                            recovery_count=projected_recoveries,
-                        )
-                        return
+                        st.terminal_reason,
+                    ),
+                    xbmc.LOGWARNING,
+                )
+                _maybe_notify_recovery_summary(
+                    self.server,
+                    ctx,
+                    zero_fill_bytes=projected_zero_fill,
+                    recovery_count=projected_recoveries,
+                )
+                return True
+        return False
 
-                self._write_zeros(skip)
-                total_skipped += skip
-                recovery_count += 1
-                current += skip
-                _record_density_window(density_window, "zero_fill", skip)
-                _update_session_recovery_state(
-                    self.server, ctx, zero_fill=skip, recoveries=1
-                )
-                _maybe_notify_recovery_summary(self.server, ctx)
-                xbmc.log(
-                    "NZB-DAV: Zero-filled {} bytes at offset {} to skip bad "
-                    "usenet articles (reason=zero_fill_resume)".format(
-                        skip, current - skip
-                    ),
-                    xbmc.LOGWARNING,
-                )
-            # The while loop only exits normally when ``current > end`` — every
-            # requested byte was delivered (streamed and/or zero-filled). That
-            # is a genuine completion, so mark it explicitly rather than leaning
-            # on the default sentinel.
-            terminal_reason = "complete"
-        except (BrokenPipeError, ConnectionResetError, _socket.timeout):
-            # socket.timeout has TWO causes here:
-            #   1. Kodi stopped reading from us for longer than
-            #      _REMUX_WRITE_TIMEOUT (DB vacuum, decoder stall) — surfaces
-            #      as terminal_reason="client_disconnected".
-            #   2. The throughput watchdog detected upstream-driven trickle
-            #      that Kodi can't keep up with — surfaces as
-            #      terminal_reason="passthrough_stall". The
-            #      ``passthrough_stall_detected`` ctx flag is set right
-            #      before the raise so we can tell them apart here.
-            # Either way we unwind the handler and let BaseHTTPServer tear
-            # down the socket; Kodi's CCurlFile will reconnect if it still
-            # wants bytes.
-            if active_ctx.get("passthrough_stall_detected"):
-                terminal_reason = "passthrough_stall"
-                xbmc.log(
-                    "NZB-DAV: Pass-through stall at byte {} "
-                    "(rate={:.0f} B/s over {:.1f}s; threshold={} B/s) — "
-                    "closing to force Kodi reconnect (reason={})".format(
-                        current,
-                        active_ctx.get("passthrough_stall_bps", 0.0),
-                        active_ctx.get("passthrough_stall_window_seconds", 0.0),
-                        _PASSTHROUGH_MIN_THROUGHPUT_BPS,
-                        terminal_reason,
-                    ),
-                    xbmc.LOGWARNING,
-                )
-            else:
-                terminal_reason = "client_disconnected"
-                # client_disconnected is Kodi closing a connection (a demuxer
-                # probe/seek abandoning a range, or a normal stop) — a
-                # client-side event, never an upstream error. Log at INFO so
-                # routine startup-probe churn doesn't masquerade as warnings.
-                xbmc.log(
-                    "NZB-DAV: Pass-through write aborted at byte {} "
-                    "(client stalled or disconnected, reason={})".format(
-                        current, terminal_reason
-                    ),
-                    xbmc.LOGINFO,
-                )
-        finally:
-            # Benign terminal reasons (full success / client closed the
-            # connection) log at INFO; only genuine failures (recovery/
-            # fallback exhausted, upstream errors) warrant WARNING — and only
-            # those genuine failures blame a still-pending fallback candidate.
-            _benign_summary = terminal_reason in ("complete", "client_disconnected")
-            # A candidate we switched AWAY from never delivered, so its deferred
-            # failure is genuine regardless of how the stream ends — always
-            # report it (and flush a deferred failure an abrupt exit skipped
-            # before the next read).
-            if fallback_failed_to_notify is not None:
-                _notify_fallback_outcome(fallback_failed_to_notify, False)
-                fallback_failed_to_notify = None
-            # A candidate that PROVABLY delivered real bytes cleared
-            # fallback_pending_candidate to None at its success site, so reaching
-            # here with it still set means the candidate switched in but
-            # candidate_delivered never flipped True. That covers the F11 hole —
-            # a full zero-fill to EOF (reason="complete") where the candidate
-            # genuinely never wrote a real byte — which the candidate_delivered
-            # catch correctly reports as a failure.
-            #
-            # But 4decdd4's invariant exempts terminal_reason="client_disconnected":
-            # a BrokenPipeError yielding that reason can ONLY originate at the
-            # client body write (self.wfile.write(chunk)), reached only AFTER
-            # resp.read() returned a non-empty chunk — so the candidate's
-            # upstream WAS serving bytes and the CLIENT went away (a Kodi demuxer
-            # probe/seek abandoning the range, or a user stop). candidate_delivered
-            # stays False because the BrokenPipeError raises before
-            # _stream_upstream_range returns (written>0), so without this exempt a
-            # live/working candidate (including one disconnected mid multi-chunk
-            # delivery) would be falsely toasted as failed. Suppress the toast on
-            # that genuinely-benign exit; every genuine failure exit still blames it.
-            if (
-                fallback_pending_candidate is not None
-                and not candidate_delivered
-                and terminal_reason != "client_disconnected"
-            ):
-                _notify_fallback_outcome(fallback_pending_candidate, False)
-            fallback_pending_candidate = None
+    def _serve_proxy_classify_disconnect(self, st):
+        """Classify a BrokenPipe/timeout teardown. Verbatim move of the except."""
+        # socket.timeout has TWO causes here:
+        #   1. Kodi stopped reading from us for longer than
+        #      _REMUX_WRITE_TIMEOUT (DB vacuum, decoder stall) — surfaces
+        #      as terminal_reason="client_disconnected".
+        #   2. The throughput watchdog detected upstream-driven trickle
+        #      that Kodi can't keep up with — surfaces as
+        #      terminal_reason="passthrough_stall". The
+        #      ``passthrough_stall_detected`` ctx flag is set right
+        #      before the raise so we can tell them apart here.
+        # Either way we unwind the handler and let BaseHTTPServer tear
+        # down the socket; Kodi's CCurlFile will reconnect if it still
+        # wants bytes.
+        if st.active_ctx.get("passthrough_stall_detected"):
+            st.terminal_reason = "passthrough_stall"
             xbmc.log(
-                "NZB-DAV: Pass-through summary reason={} range={}-{} "
-                "streamed={} zero_fill={} recoveries={} "
-                "upstream_unreachable={} upstream_notified={} "
-                "session_streamed={} session_zero_fill={}".format(
-                    terminal_reason,
-                    start,
-                    end,
-                    total_streamed,
-                    total_skipped,
-                    recovery_count,
-                    ctx.get("upstream_unreachable_count", 0),
-                    bool(ctx.get("upstream_down_notified")),
-                    ctx.get("session_streamed_bytes", 0),
-                    ctx.get("session_zero_fill_bytes", 0),
+                "NZB-DAV: Pass-through stall at byte {} "
+                "(rate={:.0f} B/s over {:.1f}s; threshold={} B/s) — "
+                "closing to force Kodi reconnect (reason={})".format(
+                    st.current,
+                    st.active_ctx.get("passthrough_stall_bps", 0.0),
+                    st.active_ctx.get("passthrough_stall_window_seconds", 0.0),
+                    _PASSTHROUGH_MIN_THROUGHPUT_BPS,
+                    st.terminal_reason,
                 ),
-                xbmc.LOGINFO if _benign_summary else xbmc.LOGWARNING,
+                xbmc.LOGWARNING,
             )
-            # Graceful-starvation guard: if this stream ended because the
-            # backend could not keep up (a sustained outage or a throughput
-            # stall), tell the user once instead of leaving a silent black
-            # screen. No-op on a clean finish or a healthy user stop.
-            _maybe_notify_stream_starvation(
-                self.server, ctx, terminal_reason, total_streamed, end - start + 1
+        else:
+            st.terminal_reason = "client_disconnected"
+            # client_disconnected is Kodi closing a connection (a demuxer
+            # probe/seek abandoning a range, or a normal stop) — a
+            # client-side event, never an upstream error. Log at INFO so
+            # routine startup-probe churn doesn't masquerade as warnings.
+            xbmc.log(
+                "NZB-DAV: Pass-through write aborted at byte {} "
+                "(client stalled or disconnected, reason={})".format(
+                    st.current, st.terminal_reason
+                ),
+                xbmc.LOGINFO,
             )
+
+    def _serve_proxy_finalize(self, ctx, st):
+        """Flush fallback toasts and emit the summary. Verbatim move of finally.
+
+        Benign reasons log at INFO; failures at WARNING and blame a pending
+        candidate. A candidate switched AWAY from is always failed; a still-
+        pending never-delivered candidate too (the F11 hole) — EXCEPT on
+        client_disconnected, which (per 4decdd4) can only arise at the client
+        body write AFTER a non-empty read, so the candidate WAS serving bytes.
+        """
+        _benign_summary = st.terminal_reason in ("complete", "client_disconnected")
+        if st.fallback_failed_to_notify is not None:
+            _notify_fallback_outcome(st.fallback_failed_to_notify, False)
+            st.fallback_failed_to_notify = None
+        if (
+            st.fallback_pending_candidate is not None
+            and not st.candidate_delivered
+            and st.terminal_reason != "client_disconnected"
+        ):
+            _notify_fallback_outcome(st.fallback_pending_candidate, False)
+        st.fallback_pending_candidate = None
+        xbmc.log(
+            "NZB-DAV: Pass-through summary reason={} range={}-{} "
+            "streamed={} zero_fill={} recoveries={} "
+            "upstream_unreachable={} upstream_notified={} "
+            "session_streamed={} session_zero_fill={}".format(
+                st.terminal_reason,
+                st.start,
+                st.end,
+                st.total_streamed,
+                st.total_skipped,
+                st.recovery_count,
+                ctx.get("upstream_unreachable_count", 0),
+                bool(ctx.get("upstream_down_notified")),
+                ctx.get("session_streamed_bytes", 0),
+                ctx.get("session_zero_fill_bytes", 0),
+            ),
+            xbmc.LOGINFO if _benign_summary else xbmc.LOGWARNING,
+        )
+        # Graceful-starvation guard: if this stream ended because the
+        # backend could not keep up (a sustained outage or a throughput
+        # stall), tell the user once instead of leaving a silent black
+        # screen. No-op on a clean finish or a healthy user stop.
+        _maybe_notify_stream_starvation(
+            self.server,
+            ctx,
+            st.terminal_reason,
+            st.total_streamed,
+            st.end - st.start + 1,
+        )
 
     def _retry_original_range(self, ctx, start, end, contract_mode, first_byte=False):
         """Retry the still-unread upstream range before falling back to skip.
