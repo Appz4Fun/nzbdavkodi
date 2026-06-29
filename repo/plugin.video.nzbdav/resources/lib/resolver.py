@@ -4598,6 +4598,256 @@ def _nzbget_enabled(settings_getter=None):
         return False
 
 
+def _scrub_bookmark_for_nzbget(params):
+    """Clear the TMDBHelper/plugin bookmark before an NZBGet handoff.
+
+    NZBGet bypasses the nzbdav playback-state cleanup, so scrub the stale
+    bookmark here or the next replay reopens plugin://... instead of the
+    resolved stream (TODO.md §H.3). Guarded so a cleanup failure can't escape
+    before the resolve completes; returns the scrubbed resume offset.
+    """
+    try:
+        return _coerce_resume_seconds(_clear_kodi_playback_state(params))
+    except Exception as cleanup_error:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: NZBGet pre-handoff bookmark cleanup failed: "
+            "{}".format(cleanup_error),
+            xbmc.LOGWARNING,
+        )
+        return 0.0
+
+
+def _resolve_nzbget_delegate(handle, params):
+    """Run the handle-based NZBGet delegation branch of ``resolve``.
+
+    Extracted verbatim from ``resolve`` so the no-hang resolve contract is
+    preserved: every path ends in a ``setResolvedUrl`` (True via
+    ``resolve_and_play_nzbget`` on success / False on cancel or delegation
+    failure). Guards the whole delegation because it runs before resolve()'s
+    protected error path, so an import/call failure here must still end in a
+    failure setResolvedUrl or the handle-based resolve contract hangs
+    (TODO.md §H.2-H9 no-hang guarantee).
+    """
+    try:
+        from resources.lib.nzbget_resolver import resolve_and_play_nzbget
+
+        scrubbed_seconds = _scrub_bookmark_for_nzbget(params)
+        # Resolve resume once here (release-identity keyed lookup + the
+        # native resume prompt) so the NZBGet path honors the same
+        # resume/start-over choice as the nzbdav path. A None choice means
+        # the user cancelled the prompt; fail the resolve like any other.
+        release_id, chosen = _resolve_resume_choice(params, scrubbed_seconds)
+        if chosen is None:
+            _preserve_resume_on_cancel(release_id, scrubbed_seconds)
+            xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+            xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
+            return
+        # Carry the chosen resume position + release identity into NZBGet
+        # playback so a replay resumes where the user left off (applied as
+        # StartOffset) and the background monitor persists the next point
+        # under the release identity.
+        resolve_and_play_nzbget(
+            handle, params, resume_seconds=chosen, resume_key=release_id
+        )
+    except Exception as nzbget_error:  # pylint: disable=broad-except
+        from resources.lib.http_util import redact_text
+
+        xbmc.log(
+            "NZB-DAV: NZBGet delegation failed: {}".format(
+                redact_text(str(nzbget_error))
+            ),
+            xbmc.LOGERROR,
+        )
+        xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+        xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
+
+
+def _prepare_ready_stream_for_handoff(
+    stream_url,
+    stream_headers,
+    fallback_state,
+    dead,
+    playback_cleanup_state,
+    dialog,
+):
+    """Prepare the proxy + wait for the bookmark scrub for a ready stream.
+
+    Shared verbatim by both resolve paths: snapshot the live fallback sources,
+    start/await the proxy prepare, await the background bookmark-cleanup scrub,
+    then close the progress dialog before the resume prompt so the
+    Resume/Start-over contextmenu is never stacked behind the modal
+    DialogProgress. Returns ``(prepared, scrubbed_seconds, dialog)`` where
+    ``dialog`` is ``None`` once closed (the caller's ``finally`` stays a no-op).
+    """
+    fallback_sources = _playback_fallback_sources_for_stream(
+        stream_url,
+        _fallback_submit_jobs_snapshot(
+            fallback_state,
+            wait_seconds=_PLAYBACK_PREPARE_HANDOFF_GRACE_SECONDS,
+        ),
+        dead=dead,
+    )
+    playback_prepare_state = _start_direct_playback_prepare(
+        stream_url,
+        stream_headers,
+        fallback_sources=fallback_sources,
+        service_config_state=None,
+    )
+    prepared = _wait_direct_playback_prepare(playback_prepare_state)
+    scrubbed_seconds = _wait_playback_state_cleanup(playback_cleanup_state)
+    if dialog is not None:
+        dialog.close()
+        dialog = None
+    return prepared, scrubbed_seconds, dialog
+
+
+def _invoke_poll_until_ready(
+    nzb_url,
+    title,
+    dialog,
+    poll_interval,
+    download_timeout,
+    params_src,
+    picker_completed_lookup_done,
+    extras,
+):
+    """Verbatim ``_poll_until_ready`` invocation shared by both submit helpers.
+
+    ``params_src`` is the params/resolve_params dict whose ``_completed_job`` /
+    ``_download_pubdate`` / ``_download_size`` are threaded through, and
+    ``extras`` is ``(on_primary_submitted, on_existing_completed,
+    selected_indexer, rejected_completed_ids, dead, settings_getter)``. The
+    resolve path passes ``settings_getter=None`` (its default), so this stays
+    byte-identical to the original handle-based call. Returns
+    ``(stream_url, stream_headers)``.
+    """
+    (
+        on_primary_submitted,
+        on_existing_completed,
+        selected_indexer,
+        rejected_completed_ids,
+        dead,
+        settings_getter,
+    ) = extras
+    completed_job_hint = (
+        None if picker_completed_lookup_done else params_src.get("_completed_job")
+    )
+    return _poll_until_ready(
+        nzb_url,
+        title,
+        dialog,
+        poll_interval,
+        download_timeout,
+        on_primary_submitted=on_primary_submitted,
+        on_existing_completed=on_existing_completed,
+        completed_job_hint=completed_job_hint,
+        completed_job_lookup_done=picker_completed_lookup_done,
+        settings_getter=settings_getter,
+        selected_indexer=selected_indexer,
+        rejected_completed_ids=rejected_completed_ids,
+        download_pubdate=params_src.get("_download_pubdate"),
+        download_size=params_src.get("_download_size"),
+        dead=dead,
+    )
+
+
+def _resolve_submit_and_poll(
+    nzb_url,
+    title,
+    params,
+    picker_completed_lookup_done,
+    selected_indexer,
+    rejected_completed_ids,
+    dead,
+    callbacks,
+):
+    """Submit + poll for the handle-based ``resolve`` path (no completed hit).
+
+    Extracted verbatim from the ``else`` branch of ``resolve``. ``callbacks`` is
+    ``(on_primary_submitted, on_existing_completed)``. See
+    ``_resolve_and_play_submit_and_poll`` for the bookmark-cleanup timing
+    rationale. Returns ``(stream_url, stream_headers, dialog)``.
+    """
+    on_primary_submitted, on_existing_completed = callbacks
+    poll_interval, download_timeout = _get_poll_settings()
+    # Offer the pre-submit queue clear before the dialog so the yes/no prompt
+    # is never stacked behind a modal DialogProgress.
+    _maybe_clear_queue_before_submit(
+        title, completed_lookup_done=picker_completed_lookup_done
+    )
+    dialog = xbmcgui.DialogProgress()
+    dialog.create(_addon_name(), _string(30097))
+    if not picker_completed_lookup_done:
+        on_existing_completed()
+    stream_url, stream_headers = _invoke_poll_until_ready(
+        nzb_url,
+        title,
+        dialog,
+        poll_interval,
+        download_timeout,
+        params,
+        picker_completed_lookup_done,
+        (
+            on_primary_submitted,
+            on_existing_completed,
+            selected_indexer,
+            rejected_completed_ids,
+            dead,
+            None,
+        ),
+    )
+    return stream_url, stream_headers, dialog
+
+
+def _resolve_play_ready_stream(
+    handle,
+    params,
+    stream_url,
+    stream_headers,
+    fallback_state,
+    dead,
+    playback_cleanup_state,
+    dialog,
+):
+    """Hand a ready stream off to playback on the handle-based ``resolve`` path.
+
+    Extracted verbatim from the ``if stream_url:`` success block of
+    ``resolve``: prepare the proxy, wait for the bookmark-cleanup scrub,
+    resolve the resume choice, then finish with ``setResolvedUrl(handle, True)``
+    — or, on a cancelled resume prompt, ``setResolvedUrl(handle, False)``.
+    Returns the (possibly ``None``) progress dialog so the caller's ``finally``
+    close stays a no-op after this closed it.
+    """
+    prepared, scrubbed_seconds, dialog = _prepare_ready_stream_for_handoff(
+        stream_url,
+        stream_headers,
+        fallback_state,
+        dead,
+        playback_cleanup_state,
+        dialog,
+    )
+    # Resolve resume once here (release-identity keyed lookup + the
+    # native resume prompt). A None choice means the user cancelled the
+    # prompt; treat it like any other resolve failure.
+    release_id, chosen = _resolve_resume_choice(
+        params, scrubbed_seconds, legacy_key=stream_url
+    )
+    if chosen is None:
+        _preserve_resume_on_cancel(release_id, scrubbed_seconds)
+        _stop_fallback_submit_worker(fallback_state, cancel_submitted=True)
+        xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+        xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
+        return dialog
+    _arm_live_fallback_push(prepared, fallback_state, stream_url, dead=dead)
+    _finish_direct_playback(
+        handle, prepared, resume_key=release_id, resume_seconds=chosen
+    )
+    # Playback handed off to Kodi: start the fallback worker's "minutes
+    # into playback" countdown now, not from the earlier primary submit.
+    _signal_fallback_playback_started(fallback_state)
+    return dialog
+
+
 def resolve(handle, params):
     """Handle plugin:// URL resolution (TMDBHelper integration).
 
@@ -4629,58 +4879,7 @@ def resolve(handle, params):
     # SMB). The nzbdav streaming/fallback machinery below is bypassed. This
     # is the handle-based entry; setResolvedUrl is the completion signal.
     if _nzbget_enabled():
-        # Guard the whole delegation: this branch runs before resolve()'s
-        # protected error path, so an import/call failure here must still end in
-        # a failure setResolvedUrl or the handle-based resolve contract hangs
-        # (TODO.md §H.2-H9 no-hang guarantee).
-        try:
-            from resources.lib.nzbget_resolver import resolve_and_play_nzbget
-
-            # NZBGet bypasses the nzbdav playback-state cleanup further down, so
-            # scrub the TMDBHelper/plugin bookmark here too. Without it a /play
-            # replay that already had a Kodi bookmark reopens plugin://... on
-            # the next launch instead of the resolved stream — the stale-resume
-            # failure the nzbdav path avoids (TODO.md §H.3). Guarded so a
-            # cleanup failure can't escape before the resolve completes.
-            try:
-                scrubbed_seconds = _coerce_resume_seconds(
-                    _clear_kodi_playback_state(params)
-                )
-            except Exception as cleanup_error:  # pylint: disable=broad-except
-                scrubbed_seconds = 0.0
-                xbmc.log(
-                    "NZB-DAV: NZBGet pre-handoff bookmark cleanup failed: "
-                    "{}".format(cleanup_error),
-                    xbmc.LOGWARNING,
-                )
-            # Resolve resume once here (release-identity keyed lookup + the
-            # native resume prompt) so the NZBGet path honors the same
-            # resume/start-over choice as the nzbdav path. A None choice means
-            # the user cancelled the prompt; fail the resolve like any other.
-            release_id, chosen = _resolve_resume_choice(params, scrubbed_seconds)
-            if chosen is None:
-                _preserve_resume_on_cancel(release_id, scrubbed_seconds)
-                xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
-                xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
-                return
-            # Carry the chosen resume position + release identity into NZBGet
-            # playback so a replay resumes where the user left off (applied as
-            # StartOffset) and the background monitor persists the next point
-            # under the release identity.
-            resolve_and_play_nzbget(
-                handle, params, resume_seconds=chosen, resume_key=release_id
-            )
-        except Exception as nzbget_error:  # pylint: disable=broad-except
-            from resources.lib.http_util import redact_text
-
-            xbmc.log(
-                "NZB-DAV: NZBGet delegation failed: {}".format(
-                    redact_text(str(nzbget_error))
-                ),
-                xbmc.LOGERROR,
-            )
-            xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
-            xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
+        _resolve_nzbget_delegate(handle, params)
         return
 
     dialog = None
@@ -4723,90 +4922,29 @@ def resolve(handle, params):
         if completed_stream is not None:
             stream_url, stream_headers = completed_stream
         else:
-            poll_interval, download_timeout = _get_poll_settings()
-            # Offer to clear the existing nzbdav queue before this download
-            # starts — before the progress dialog is created, so the yes/no
-            # prompt is never stacked behind a modal DialogProgress.
-            _maybe_clear_queue_before_submit(
-                title, completed_lookup_done=picker_completed_lookup_done
-            )
-            dialog = xbmcgui.DialogProgress()
-            dialog.create(_addon_name(), _string(30097))
-            # Bookmark cleanup does not depend on the accepted nzo_id. Start it
-            # before the submit/poll wait so selected-result latency hides the
-            # DB scan/write instead of paying it after WebDAV readiness.
-            # When the picker already performed a completed-history miss,
-            # avoid putting any other pre-submit work back on that fast path;
-            # the primary-submitted callback still starts cleanup before
-            # playback can be handed off.
-            if not picker_completed_lookup_done:
-                _start_playback_cleanup_once()
-            stream_url, stream_headers = _poll_until_ready(
+            stream_url, stream_headers, dialog = _resolve_submit_and_poll(
                 nzb_url,
                 title,
-                dialog,
-                poll_interval,
-                download_timeout,
-                on_primary_submitted=_start_fallback_after_primary,
-                on_existing_completed=_start_playback_cleanup_once,
-                completed_job_hint=(
-                    None
-                    if picker_completed_lookup_done
-                    else params.get("_completed_job")
-                ),
-                completed_job_lookup_done=picker_completed_lookup_done,
-                selected_indexer=selected_indexer,
-                rejected_completed_ids=rejected_completed_ids,
-                download_pubdate=params.get("_download_pubdate"),
-                download_size=params.get("_download_size"),
-                dead=dead,
+                params,
+                picker_completed_lookup_done,
+                selected_indexer,
+                rejected_completed_ids,
+                dead,
+                (_start_fallback_after_primary, _start_playback_cleanup_once),
             )
         if stream_url:
             if fallback_state is None:
                 _start_fallback_after_primary(None)
-            fallback_sources = _playback_fallback_sources_for_stream(
-                stream_url,
-                _fallback_submit_jobs_snapshot(
-                    fallback_state,
-                    wait_seconds=_PLAYBACK_PREPARE_HANDOFF_GRACE_SECONDS,
-                ),
-                dead=dead,
-            )
-            playback_prepare_state = _start_direct_playback_prepare(
+            dialog = _resolve_play_ready_stream(
+                handle,
+                params,
                 stream_url,
                 stream_headers,
-                fallback_sources=fallback_sources,
-                service_config_state=None,
+                fallback_state,
+                dead,
+                playback_cleanup_state,
+                dialog,
             )
-            prepared = _wait_direct_playback_prepare(playback_prepare_state)
-            scrubbed_seconds = _wait_playback_state_cleanup(playback_cleanup_state)
-            # Close the progress dialog before the resume prompt so the
-            # Resume/Start-over contextmenu is never stacked behind the modal
-            # DialogProgress (the same modal-over-modal anti-pattern
-            # _maybe_clear_queue_before_submit avoids). The finally close below
-            # is None-guarded, so this stays a safe no-op there.
-            if dialog is not None:
-                dialog.close()
-                dialog = None
-            # Resolve resume once here (release-identity keyed lookup + the
-            # native resume prompt). A None choice means the user cancelled the
-            # prompt; treat it like any other resolve failure.
-            release_id, chosen = _resolve_resume_choice(
-                params, scrubbed_seconds, legacy_key=stream_url
-            )
-            if chosen is None:
-                _preserve_resume_on_cancel(release_id, scrubbed_seconds)
-                _stop_fallback_submit_worker(fallback_state, cancel_submitted=True)
-                xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
-                xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
-                return
-            _arm_live_fallback_push(prepared, fallback_state, stream_url, dead=dead)
-            _finish_direct_playback(
-                handle, prepared, resume_key=release_id, resume_seconds=chosen
-            )
-            # Playback handed off to Kodi: start the fallback worker's "minutes
-            # into playback" countdown now, not from the earlier primary submit.
-            _signal_fallback_playback_started(fallback_state)
         else:
             _stop_fallback_submit_worker(fallback_state, cancel_submitted=True)
             xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
@@ -4818,6 +4956,191 @@ def resolve(handle, params):
     finally:
         if dialog is not None:
             dialog.close()
+
+
+def _resolve_and_play_nzbget_delegate(nzb_url, title, params, resolve_params):
+    """Run the handle-less NZBGet delegation branch of ``resolve_and_play``.
+
+    Extracted verbatim from ``resolve_and_play``. There is no plugin handle on
+    this path, so a cancelled resume prompt simply does not start playback (no
+    setResolvedUrl, matching this path's contract). Same bookmark scrub as the
+    handle-based resolve() NZBGet branch: the nzbdav playback-state cleanup is
+    bypassed, so clear the stale TMDBHelper/plugin bookmark before handoff or
+    the next replay resumes plugin://... instead of the resolved stream
+    (TODO.md §H.3).
+    """
+    from resources.lib.nzbget_resolver import play_nzbget
+
+    scrubbed_seconds = _scrub_bookmark_for_nzbget(params)
+    # Resolve resume once here (release-identity keyed lookup + the native
+    # resume prompt). There is no plugin handle on this path, so a cancelled
+    # prompt simply does not start playback.
+    release_id, chosen = _resolve_resume_choice(
+        _resume_params_with_title(resolve_params, title), scrubbed_seconds
+    )
+    if chosen is None:
+        _preserve_resume_on_cancel(release_id, scrubbed_seconds)
+        return
+    play_nzbget(
+        nzb_url,
+        title,
+        params,
+        resume_seconds=chosen,
+        resume_key=release_id,
+    )
+
+
+def _resolve_and_play_submit_and_poll(
+    nzb_url,
+    title,
+    resolve_params,
+    picker_completed_lookup_done,
+    selected_indexer,
+    rejected_completed_ids,
+    dead,
+    callbacks,
+):
+    """Submit + poll (handle-less path); verbatim ``resolve_and_play`` ``else``.
+
+    Mirrors ``_resolve_submit_and_poll`` with resolve-stage logging and a
+    threaded ``settings_getter``. ``callbacks`` is ``(on_primary_submitted,
+    on_existing_completed, settings_getter)``.
+    """
+    on_primary_submitted, on_existing_completed, settings_getter = callbacks
+    _resolve_stage("poll settings start")
+    poll_interval, download_timeout = _get_poll_settings(
+        settings_getter=settings_getter
+    )
+    _resolve_stage("poll settings done")
+    _maybe_clear_queue_before_submit(
+        title,
+        settings_getter=settings_getter,
+        completed_lookup_done=picker_completed_lookup_done,
+    )
+    _resolve_stage("progress create start")
+    dialog = xbmcgui.DialogProgress()
+    dialog.create(_addon_name(), _string(30097))
+    _resolve_stage("progress create done")
+    if not picker_completed_lookup_done:
+        on_existing_completed()
+    _resolve_stage("poll until ready start")
+    stream_url, stream_headers = _invoke_poll_until_ready(
+        nzb_url,
+        title,
+        dialog,
+        poll_interval,
+        download_timeout,
+        resolve_params,
+        picker_completed_lookup_done,
+        (
+            on_primary_submitted,
+            on_existing_completed,
+            selected_indexer,
+            rejected_completed_ids,
+            dead,
+            settings_getter,
+        ),
+    )
+    _resolve_stage("poll until ready done stream={}".format(bool(stream_url)))
+    return stream_url, stream_headers, dialog
+
+
+def _resolve_and_play_ready_stream(
+    resume_params,
+    stream_url,
+    stream_headers,
+    fallback_state,
+    dead,
+    settings_getter,
+    playback_cleanup_state,
+    dialog,
+):
+    """Hand a ready stream off to playback on the handle-less ``resolve_and_play``.
+
+    Extracted verbatim from the ``if stream_url:`` success block of
+    ``resolve_and_play`` (resolve-stage logging and the ``settings_getter``
+    prepare kwarg included). There is no plugin handle on this path, so a
+    cancelled resume prompt simply does not start playback (no setResolvedUrl,
+    matching this path's contract). ``resume_params`` is the title-applied
+    resume-lookup dict. Returns the (possibly ``None``) progress dialog so the
+    caller's ``finally`` close stays a no-op after this closed it.
+    """
+    prepared, scrubbed_seconds, dialog = _prepare_player_ready_stream_for_handoff(
+        stream_url,
+        stream_headers,
+        fallback_state,
+        dead,
+        settings_getter,
+        playback_cleanup_state,
+        dialog,
+    )
+    release_id, chosen = _resolve_resume_choice(
+        resume_params,
+        scrubbed_seconds,
+        legacy_key=stream_url,
+    )
+    if chosen is None:
+        _preserve_resume_on_cancel(release_id, scrubbed_seconds)
+        _stop_fallback_submit_worker(fallback_state, cancel_submitted=True)
+        return dialog
+    _arm_live_fallback_push(prepared, fallback_state, stream_url, dead=dead)
+    _finish_player_playback(prepared, resume_key=release_id, resume_seconds=chosen)
+    # Playback handed off to the player: start the fallback worker's
+    # "minutes into playback" countdown now, not from the primary submit.
+    _signal_fallback_playback_started(fallback_state)
+    _resolve_stage("player playback started")
+    return dialog
+
+
+def _prepare_player_ready_stream_for_handoff(
+    stream_url,
+    stream_headers,
+    fallback_state,
+    dead,
+    settings_getter,
+    playback_cleanup_state,
+    dialog,
+):
+    """Prepare the proxy + scrub wait for the handle-less ``resolve_and_play``.
+
+    Same shape as ``_prepare_ready_stream_for_handoff`` but threads
+    ``settings_getter`` into the prepare kwargs and keeps the resolve-stage
+    logging woven in verbatim (this path emits stages; the handle-based path
+    does not). Returns ``(prepared, scrubbed_seconds, dialog)`` with ``dialog``
+    set to ``None`` once closed before the resume prompt.
+    """
+    fallback_sources = _playback_fallback_sources_for_stream(
+        stream_url,
+        _fallback_submit_jobs_snapshot(
+            fallback_state,
+            wait_seconds=_PLAYBACK_PREPARE_HANDOFF_GRACE_SECONDS,
+        ),
+        dead=dead,
+    )
+    _resolve_stage("prepare playback start")
+    prepare_kwargs = {
+        "fallback_sources": fallback_sources,
+        "service_config_state": None,
+    }
+    prepare_kwargs.update(_settings_getter_kwargs(settings_getter))
+    playback_prepare_state = _start_direct_playback_prepare(
+        stream_url, stream_headers, **prepare_kwargs
+    )
+    _resolve_stage("finish playback start")
+    _resolve_stage("prepare wait start")
+    prepared = _wait_direct_playback_prepare(playback_prepare_state)
+    _resolve_stage(
+        "prepare wait done service_port={}".format(
+            prepared.get("service_port") if prepared else ""
+        )
+    )
+    _resolve_stage("cleanup wait start")
+    scrubbed_seconds = _wait_playback_state_cleanup(playback_cleanup_state)
+    _resolve_stage("cleanup wait done")
+    if dialog is not None:
+        dialog.close()
+        dialog = None
+    return prepared, scrubbed_seconds, dialog
 
 
 def resolve_and_play(nzb_url, title, params=None):
@@ -4851,39 +5174,7 @@ def resolve_and_play(nzb_url, title, params=None):
         resolve_params = params or {}
         settings_getter = resolve_params.get("_settings_getter")
         if _nzbget_enabled(settings_getter):
-            from resources.lib.nzbget_resolver import play_nzbget
-
-            # Same bookmark scrub as the handle-based resolve() NZBGet branch:
-            # the nzbdav playback-state cleanup below is bypassed, so clear the
-            # stale TMDBHelper/plugin bookmark before handoff or the next replay
-            # resumes plugin://... instead of the resolved stream (TODO.md §H.3).
-            try:
-                scrubbed_seconds = _coerce_resume_seconds(
-                    _clear_kodi_playback_state(params)
-                )
-            except Exception as cleanup_error:  # pylint: disable=broad-except
-                scrubbed_seconds = 0.0
-                xbmc.log(
-                    "NZB-DAV: NZBGet pre-handoff bookmark cleanup failed: "
-                    "{}".format(cleanup_error),
-                    xbmc.LOGWARNING,
-                )
-            # Resolve resume once here (release-identity keyed lookup + the
-            # native resume prompt). There is no plugin handle on this path, so
-            # a cancelled prompt simply does not start playback.
-            release_id, chosen = _resolve_resume_choice(
-                _resume_params_with_title(resolve_params, title), scrubbed_seconds
-            )
-            if chosen is None:
-                _preserve_resume_on_cancel(release_id, scrubbed_seconds)
-                return
-            play_nzbget(
-                nzb_url,
-                title,
-                params,
-                resume_seconds=chosen,
-                resume_key=release_id,
-            )
+            _resolve_and_play_nzbget_delegate(nzb_url, title, params, resolve_params)
             return
         selected_indexer = resolve_params.get("_selected_indexer", "")
         fallback_candidates = resolve_params.get("_fallback_candidates", [])
@@ -4933,113 +5224,33 @@ def resolve_and_play(nzb_url, title, params=None):
         if completed_stream is not None:
             stream_url, stream_headers = completed_stream
         else:
-            _resolve_stage("poll settings start")
-            poll_interval, download_timeout = _get_poll_settings(
-                settings_getter=settings_getter
-            )
-            _resolve_stage("poll settings done")
-            # Offer to clear the queue before opening the progress dialog, so
-            # the yes/no prompt is not stacked behind a modal DialogProgress.
-            _maybe_clear_queue_before_submit(
-                title,
-                settings_getter=settings_getter,
-                completed_lookup_done=picker_completed_lookup_done,
-            )
-            _resolve_stage("progress create start")
-            dialog = xbmcgui.DialogProgress()
-            dialog.create(_addon_name(), _string(30097))
-            _resolve_stage("progress create done")
-            # Bookmark cleanup does not depend on the accepted nzo_id. Start it
-            # before the submit/poll wait so selected-result latency hides the
-            # DB scan/write instead of paying it after WebDAV readiness.
-            # When the picker already performed a completed-history miss,
-            # avoid putting any other pre-submit work back on that fast path;
-            # the primary-submitted callback still starts cleanup before
-            # playback can be handed off.
-            if not picker_completed_lookup_done:
-                _start_playback_cleanup_once()
-            _resolve_stage("poll until ready start")
-            stream_url, stream_headers = _poll_until_ready(
+            stream_url, stream_headers, dialog = _resolve_and_play_submit_and_poll(
                 nzb_url,
                 title,
-                dialog,
-                poll_interval,
-                download_timeout,
-                on_primary_submitted=_start_fallback_after_primary,
-                on_existing_completed=_start_playback_cleanup_once,
-                completed_job_hint=(
-                    None
-                    if picker_completed_lookup_done
-                    else resolve_params.get("_completed_job")
+                resolve_params,
+                picker_completed_lookup_done,
+                selected_indexer,
+                rejected_completed_ids,
+                dead,
+                (
+                    _start_fallback_after_primary,
+                    _start_playback_cleanup_once,
+                    settings_getter,
                 ),
-                completed_job_lookup_done=picker_completed_lookup_done,
-                settings_getter=settings_getter,
-                selected_indexer=selected_indexer,
-                rejected_completed_ids=rejected_completed_ids,
-                download_pubdate=resolve_params.get("_download_pubdate"),
-                download_size=resolve_params.get("_download_size"),
-                dead=dead,
             )
-            _resolve_stage("poll until ready done stream={}".format(bool(stream_url)))
         if stream_url:
             if fallback_state is None:
                 _start_fallback_after_primary(None)
-            fallback_sources = _playback_fallback_sources_for_stream(
-                stream_url,
-                _fallback_submit_jobs_snapshot(
-                    fallback_state,
-                    wait_seconds=_PLAYBACK_PREPARE_HANDOFF_GRACE_SECONDS,
-                ),
-                dead=dead,
-            )
-            _resolve_stage("prepare playback start")
-            prepare_kwargs = {
-                "fallback_sources": fallback_sources,
-                "service_config_state": None,
-            }
-            prepare_kwargs.update(_settings_getter_kwargs(settings_getter))
-            playback_prepare_state = _start_direct_playback_prepare(
-                stream_url, stream_headers, **prepare_kwargs
-            )
-            _resolve_stage("finish playback start")
-            _resolve_stage("prepare wait start")
-            prepared = _wait_direct_playback_prepare(playback_prepare_state)
-            _resolve_stage(
-                "prepare wait done service_port={}".format(
-                    prepared.get("service_port") if prepared else ""
-                )
-            )
-            _resolve_stage("cleanup wait start")
-            scrubbed_seconds = _wait_playback_state_cleanup(playback_cleanup_state)
-            _resolve_stage("cleanup wait done")
-            # Close the progress dialog before the resume prompt so the
-            # Resume/Start-over contextmenu is never stacked behind the modal
-            # DialogProgress. The finally close below is None-guarded, so this
-            # stays a safe no-op there.
-            if dialog is not None:
-                dialog.close()
-                dialog = None
-            # Resolve resume once here (release-identity keyed lookup + the
-            # native resume prompt). There is no plugin handle on this path, so
-            # a cancelled prompt simply does not start playback (no
-            # setResolvedUrl, matching this path's contract).
-            release_id, chosen = _resolve_resume_choice(
+            dialog = _resolve_and_play_ready_stream(
                 _resume_params_with_title(resolve_params, title),
-                scrubbed_seconds,
-                legacy_key=stream_url,
+                stream_url,
+                stream_headers,
+                fallback_state,
+                dead,
+                settings_getter,
+                playback_cleanup_state,
+                dialog,
             )
-            if chosen is None:
-                _preserve_resume_on_cancel(release_id, scrubbed_seconds)
-                _stop_fallback_submit_worker(fallback_state, cancel_submitted=True)
-                return
-            _arm_live_fallback_push(prepared, fallback_state, stream_url, dead=dead)
-            _finish_player_playback(
-                prepared, resume_key=release_id, resume_seconds=chosen
-            )
-            # Playback handed off to the player: start the fallback worker's
-            # "minutes into playback" countdown now, not from the primary submit.
-            _signal_fallback_playback_started(fallback_state)
-            _resolve_stage("player playback started")
         else:
             _stop_fallback_submit_worker(fallback_state, cancel_submitted=True)
     except _RESOLVE_RUNTIME_ERRORS as error:
