@@ -24,6 +24,9 @@ from resources.lib.http_util import (
     calculate_age as _calculate_age,
 )
 from resources.lib.http_util import (
+    clean_search_query as _clean_search_query,
+)
+from resources.lib.http_util import (
     format_request_error as _format_request_error,
 )
 from resources.lib.http_util import (
@@ -166,7 +169,11 @@ def _legacy_hydra_title_fallback(primary, title):
     # result (issue #318). Mirrors the Prowlarr fallback.
     fallback.pop("tvdbid", None)
     fallback.pop("imdbid", None)
-    fallback["q"] = title
+    # Clean the raw caller title here too (#294): this fallback is built in
+    # hydra (not via plan_newznab_search), so it bypasses the planner-level
+    # clean_search_query and would otherwise re-send a literal '&' the primary
+    # query already stripped — a term no release name carries.
+    fallback["q"] = _clean_search_query(title)
     return fallback
 
 

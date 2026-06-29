@@ -25,6 +25,9 @@ from resources.lib.http_util import (
     calculate_age as _calculate_age,
 )
 from resources.lib.http_util import (
+    clean_search_query as _clean_search_query,
+)
+from resources.lib.http_util import (
     format_request_error as _format_request_error,
 )
 from resources.lib.http_util import (
@@ -156,7 +159,11 @@ def _build_prowlarr_query(search_type, title, imdb="", tvdb="", season="", episo
             tokens.append("{{imdbid:{}}}".format(imdbid))
 
     token_str = "".join(tokens)
-    text = (title or "").strip()
+    # Strip query-breaking '&' from the keyword title (#294): Prowlarr passes
+    # the query text through to the indexer, which ANDs each term against
+    # release names that spell '&' as "and" or omit it. The {token:value} ids
+    # are appended after, so they are never touched.
+    text = _clean_search_query(title)
     if text and token_str:
         return "{} {}".format(text, token_str)
     return text or token_str

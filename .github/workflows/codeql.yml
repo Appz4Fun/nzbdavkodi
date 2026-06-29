@@ -35,10 +35,22 @@ jobs:
       uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
     - name: Initialize CodeQL
-      uses: github/codeql-action/init@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4
+      uses: github/codeql-action/init@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4
       with:
         languages: ${{ matrix.language }}
         build-mode: ${{ matrix.build-mode }}
+        # Scope analysis to shipped addon code. Top-level scripts/, the
+        # test/harness suites, and vendored PTT are not part of the runtime
+        # attack surface; this matches bandit.yml, which already scans
+        # repo/plugin.video.nzbdav only. `paths` positively restricts the
+        # analysis to that subtree (honored for interpreted languages like
+        # Python), which excludes scripts/, tests/, and tests-extensive/;
+        # paths-ignore then drops the vendored PTT that lives inside it.
+        config: |
+          paths:
+            - repo/plugin.video.nzbdav
+          paths-ignore:
+            - repo/plugin.video.nzbdav/resources/lib/ptt
 
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4

@@ -3846,6 +3846,232 @@ def test_same_content_rejects_part_one_vs_part_two():
     assert fs._same_content(part_two, part_one) is False
 
 
+def test_normalize_title_collapses_conjunction_spellings():
+    """ "&", the literal word "and", and an omitted conjunction are one identity.
+
+    "Your Friends & Neighbors", "Your.Friends.and.Neighbors", and
+    "Your.Friends.Neighbors" all name the same work; normalization must
+    collapse all three spellings to a single token sequence so they peer.
+    """
+    from resources.lib import fallback_streams as fs
+
+    amp = fs._normalize_title("Your Friends & Neighbors")
+    andd = fs._normalize_title("Your Friends and Neighbors")
+    omitted = fs._normalize_title("Your Friends Neighbors")
+
+    assert amp == andd == omitted == "your friends neighbors"
+
+
+def test_normalize_title_preserves_part_ordinals():
+    """REGRESSION GUARD: dropping "and" must not weaken part/chapter discrimination.
+
+    The conjunction collapse strips only a standalone "and"; ordinal words that
+    distinguish "Part One" from "Part Two" must survive intact, and a substring
+    like "and" inside a real word (e.g. "Andromeda") must not be touched.
+    """
+    from resources.lib import fallback_streams as fs
+
+    assert fs._normalize_title("Dune Part One") == "dune part one"
+    assert fs._normalize_title("Dune Part Two") == "dune part two"
+    assert fs._normalize_title("Dune Part One") != fs._normalize_title("Dune Part Two")
+    assert fs._normalize_title("Andromeda") == "andromeda"
+
+
+def test_same_content_peers_conjunction_variants():
+    """A yearless/episode-less title peers across "&", "and", and omitted forms.
+
+    Without a year or episode to corroborate identity, the title comparison must
+    stand on its own. Before the conjunction collapse, only "&"-vs-omitted
+    peered; the surviving literal "and" token diverged, so "and"-vs-omitted and
+    "and"-vs-"&" missed legitimate fallback peers.
+    """
+    from resources.lib import fallback_streams as fs
+
+    amp = _result(
+        "Your.Friends.&.Neighbors.1080p.WEB-DL.x264-GROUP",
+        "https://idx/amp.nzb",
+        6000000000,
+    )
+    andd = _result(
+        "Your.Friends.and.Neighbors.1080p.WEB-DL.x264-GROUP",
+        "https://idx/and.nzb",
+        6000000000,
+    )
+    omitted = _result(
+        "Your.Friends.Neighbors.1080p.WEB-DL.x264-GROUP",
+        "https://idx/omitted.nzb",
+        6000000000,
+    )
+
+    assert fs._same_content(amp, andd) is True
+    assert fs._same_content(andd, amp) is True
+    assert fs._same_content(andd, omitted) is True
+    assert fs._same_content(omitted, andd) is True
+    assert fs._same_content(amp, omitted) is True
+
+
+def test_normalize_title_collapses_foreign_conjunctions():
+    """French "et" and German "und" are conjunctions too, like "and"/"&".
+
+    "Jules et Jim" / "Jules and Jim" / "Jules Jim" name the same work, as do the
+    "und" spellings, so every variant must normalize to one shared identity.
+    """
+    from resources.lib import fallback_streams as fs
+
+    assert (
+        fs._normalize_title("Jules et Jim")
+        == fs._normalize_title("Jules and Jim")
+        == fs._normalize_title("Jules Jim")
+        == "jules jim"
+    )
+    assert (
+        fs._normalize_title("Dog Day und Night")
+        == fs._normalize_title("Dog Day and Night")
+        == fs._normalize_title("Dog Day Night")
+        == "dog day night"
+    )
+
+
+def test_normalize_title_collapses_double_escaped_ampersand():
+    """A literal "&amp;" (from a double-escaped feed) collapses like a bare "&".
+
+    XML parsing normally decodes "&amp;" to "&", but double-escaped feeds
+    ("&amp;amp;") leave the literal entity in the title. It must collapse to the
+    same identity as "&", "and", and the omitted form -- not leave a stray
+    "amp" token. A real "amp" WORD must be left untouched.
+    """
+    from resources.lib import fallback_streams as fs
+
+    assert (
+        fs._normalize_title("Cats &amp; Dogs")
+        == fs._normalize_title("Cats & Dogs")
+        == fs._normalize_title("Cats and Dogs")
+        == fs._normalize_title("Cats Dogs")
+        == "cats dogs"
+    )
+    # A DOUBLE-escaped entity ("&amp;amp;") must also fully decode, not leave a
+    # residual "&amp;" that becomes a stray "amp" token.
+    assert fs._normalize_title("Cats &amp;amp; Dogs") == "cats dogs"
+    # The "&amp;" rewrite is exact: a genuine "amp" word is not a conjunction.
+    assert fs._normalize_title("Marshall Amp Sessions") == "marshall amp sessions"
+
+
+def test_normalize_title_keeps_leading_conjunction_word():
+    """A leading "and"/"et"/"und" is a content word, not a conjunction.
+
+    Conjunction folding must only fire INTERIOR (operand on both sides). A
+    leading conjunction is content-bearing -- "And Just Like That" is a
+    different work from "Just Like That" -- so it must survive normalization
+    rather than collapse the two titles to one identity.
+    """
+    from resources.lib import fallback_streams as fs
+
+    assert fs._normalize_title("And Just Like That") == "and just like that"
+    assert fs._normalize_title("And Just Like That") != fs._normalize_title(
+        "Just Like That"
+    )
+
+
+def test_normalize_title_keeps_lone_conjunction_token():
+    """A title that is ONLY a conjunction token (e.g. "ET") is never folded away.
+
+    Folding a lone token to an empty title is dangerous: an empty core title
+    matches any release in the corroborated paths. Interior-only folding keeps
+    boundary tokens, so a non-empty title never normalizes to empty.
+    """
+    from resources.lib import fallback_streams as fs
+
+    assert fs._normalize_title("ET") == "et"
+    assert fs._normalize_title("ET") != ""
+    assert fs._normalize_title("ET 1982") == "et 1982"
+
+
+def test_same_content_rejects_leading_and_vs_bare():
+    """REGRESSION GUARD: a leading-"and" title is different content from the bare.
+
+    "And Just Like That" and "Just Like That" are different shows; with no year
+    or episode to corroborate, the title gate must reject the pair rather than
+    peer them just because the leading "and" was folded away.
+    """
+    from resources.lib import fallback_streams as fs
+
+    leading = _result(
+        "And.Just.Like.That.1080p.WEB-DL.x264-GROUP",
+        "https://idx/and-jlt.nzb",
+        6000000000,
+    )
+    bare = _result(
+        "Just.Like.That.1080p.WEB-DL.x264-GROUP",
+        "https://idx/jlt.nzb",
+        6000000000,
+    )
+    assert fs._same_content(leading, bare) is False
+    assert fs._same_content(bare, leading) is False
+
+
+def test_same_content_rejects_lone_acronym_vs_other_same_year():
+    """REGRESSION GUARD: a lone-token title must not fold to empty and match by year.
+
+    "ET" (parsed title "ET") must not peer with an unrelated movie of the same
+    year. Folding "et" to an empty title would let the year-corroborated path
+    accept any 1982 release.
+    """
+    from resources.lib import fallback_streams as fs
+
+    et_movie = _result(
+        "ET.1982.1080p.BluRay.x264-GROUP",
+        "https://idx/et.nzb",
+        6000000000,
+    )
+    other = _result(
+        "Blade.Runner.1982.1080p.BluRay.x264-GROUP",
+        "https://idx/blade.nzb",
+        6000000000,
+    )
+    assert fs._same_content(et_movie, other) is False
+    assert fs._same_content(other, et_movie) is False
+
+
+def test_normalize_title_only_drops_whole_conjunction_words():
+    """REGRESSION GUARD: only standalone conjunction WORDS are dropped.
+
+    A conjunction spelled as a substring of a real word (e.g. "et" in "Planet",
+    "und" in "Underworld", "and" in "Andromeda") must survive untouched -- the
+    collapse is whole-token only.
+    """
+    from resources.lib import fallback_streams as fs
+
+    assert fs._normalize_title("Planet of the Apes") == "planet of the apes"
+    assert fs._normalize_title("Underworld") == "underworld"
+    assert fs._normalize_title("Andromeda") == "andromeda"
+
+
+def test_same_content_peers_foreign_conjunction_variants():
+    """A yearless/episode-less title peers across "et"/"and"/omitted forms."""
+    from resources.lib import fallback_streams as fs
+
+    et_form = _result(
+        "Jules.et.Jim.1080p.BluRay.x264-GROUP",
+        "https://idx/et.nzb",
+        6000000000,
+    )
+    and_form = _result(
+        "Jules.and.Jim.1080p.BluRay.x264-GROUP",
+        "https://idx/and.nzb",
+        6000000000,
+    )
+    omitted = _result(
+        "Jules.Jim.1080p.BluRay.x264-GROUP",
+        "https://idx/omitted.nzb",
+        6000000000,
+    )
+
+    assert fs._same_content(et_form, and_form) is True
+    assert fs._same_content(and_form, et_form) is True
+    assert fs._same_content(et_form, omitted) is True
+    assert fs._same_content(omitted, et_form) is True
+
+
 def test_same_episode_with_part_token_matches_bare_repost():
     """An episode that carries an episode-title Part/Chapter token must still
     peer with the same SxxExx posted without that token.

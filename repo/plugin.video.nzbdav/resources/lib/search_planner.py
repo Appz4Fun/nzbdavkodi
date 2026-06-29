@@ -5,6 +5,7 @@
 
 from dataclasses import dataclass
 
+from resources.lib.http_util import clean_search_query
 from resources.lib.indexer_presets import (
     DIRECT_FALLBACK_HOSTS,
     DOGNZB_TVSEARCH_FALLBACK_HOSTS,
@@ -34,6 +35,10 @@ def plan_newznab_search(
     tvdb=None,
 ):
     base = {"apikey": api_key, "o": "xml", "limit": max_results}
+    # Strip query-breaking '&' from the keyword title once, so every q=title
+    # branch below (and its title fallback) searches a term the indexer can
+    # actually match (#294). Id-keyed searches are unaffected.
+    title = clean_search_query(title)
     if _missing_caps(caps):
         return _missing_caps_plan(base, search_type, title, imdb, season, episode, tvdb)
 

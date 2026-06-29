@@ -95,6 +95,28 @@ def test_build_prowlarr_query_sanitizes_decorated_tvdb():
     assert q == "Show {tvdbid:81189}{season:1}{episode:2}"
 
 
+def test_build_prowlarr_query_strips_ampersand_from_title():
+    """A '&' in the title must not reach Prowlarr's keyword query — indexers
+    AND query terms against release names that spell it 'and' or omit it, so
+    an '&' token matches nothing and the search returns nothing (#294)."""
+    from resources.lib.prowlarr import _build_prowlarr_query
+
+    assert (
+        _build_prowlarr_query("movie", "Your Friends & Neighbors")
+        == "Your Friends Neighbors"
+    )
+
+
+def test_build_prowlarr_query_strips_ampersand_but_keeps_tokens():
+    """Title cleaning must leave the {token:value} ids intact."""
+    from resources.lib.prowlarr import _build_prowlarr_query
+
+    q = _build_prowlarr_query(
+        "episode", "Will & Grace", tvdb="305288", season="1", episode="2"
+    )
+    assert q == "Will Grace {tvdbid:305288}{season:1}{episode:2}"
+
+
 # --- parse_results tests ---
 
 

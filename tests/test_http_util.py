@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from resources.lib.http_util import (
     HttpResponseTooLarge,
+    clean_search_query,
     http_get,
     http_post_json,
     iso8601_to_rfc2822,
@@ -418,3 +419,29 @@ def test_http_post_json_rejects_non_http_scheme():
 
     with pytest.raises(ValueError):
         http_post_json("file:///etc/passwd", {}, timeout=5)
+
+
+# --- clean_search_query: strip query-breaking '&' from keyword searches (#294) ---
+
+
+def test_clean_search_query_drops_ampersand():
+    """A literal '&' in the title (e.g. 'Your Friends & Neighbors') must not
+    reach the indexer keyword search: release names spell it 'and' or omit it,
+    so an '&' token matches nothing and the search returns zero results (#294).
+    """
+    assert clean_search_query("Your Friends & Neighbors") == "Your Friends Neighbors"
+
+
+def test_clean_search_query_collapses_whitespace_left_by_ampersand():
+    """Removing '&' must not leave a double space that becomes an empty token."""
+    assert clean_search_query("Law & Order") == "Law Order"
+    assert clean_search_query("AT&T") == "AT T"
+
+
+def test_clean_search_query_leaves_plain_title_untouched():
+    assert clean_search_query("The Matrix") == "The Matrix"
+
+
+def test_clean_search_query_handles_empty_and_none():
+    assert clean_search_query("") == ""
+    assert clean_search_query(None) == ""
