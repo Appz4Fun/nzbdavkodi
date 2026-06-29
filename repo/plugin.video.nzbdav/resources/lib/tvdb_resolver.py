@@ -119,6 +119,75 @@ def _series_tmdb_id_from_imdb(http_get, imdb, key):
     return str(series_id) if series_id else ""
 
 
+def _cache_key_for(tmdb_id, imdb):
+    """Build the cache key for a ``tmdb``/``imdb`` lookup (``""`` if neither)."""
+    if tmdb_id:
+        return "tmdb:{}".format(tmdb_id)
+    if imdb:
+        return "imdb:{}".format(imdb)
+    return ""
+
+
+def _resolve_settings_getter(settings_getter):
+    """Return the supplied getter or the default; ``None`` if it can't bind."""
+    if settings_getter is not None:
+        return settings_getter
+    try:
+        return _default_settings_getter()
+    except Exception:  # pylint: disable=broad-except
+        return None
+
+
+def _api_key_or_empty(settings_getter):
+    """Resolve the settings getter then read the TMDB API key (``""`` on fail)."""
+    settings_getter = _resolve_settings_getter(settings_getter)
+    if settings_getter is None:
+        return ""
+    return _get_tmdb_api_key(settings_getter)
+
+
+def _store_tvdb(store, cache_key, tvdb, use_file):
+    """Persist a resolved tvdb id into the cache store (and disk, if file-backed)."""
+    if tvdb:
+        store[cache_key] = tvdb
+        if use_file:
+            _save_file_cache(store)
+
+
+def _resolve_http_get(http_get):
+    """Return the supplied ``http_get`` or lazily import the production one."""
+    if http_get is not None:
+        return http_get
+    from resources.lib.http_util import http_get as _http_get
+
+    return _http_get
+
+
+def _resolve_tvdb_via_api(http_get, key, tmdb_id, imdb):
+    """Look up the tvdb id over the network; ``""`` on miss/failure (no raise)."""
+    try:
+        if tmdb_id:
+            series_id = tmdb_id
+        else:
+            series_id = _series_tmdb_id_from_imdb(http_get, imdb, key)
+            if not series_id:
+                return ""
+        payload = _query(http_get, "/tv/{}/external_ids".format(series_id), key)
+        return _tvdb_from_external_ids(payload)
+    except Exception as error:  # pylint: disable=broad-except
+        # HTTPError/URLError str() can echo the failing URL, which embeds the
+        # TMDB api_key — redact before logging (same defense as hydra/prowlarr).
+        from resources.lib.http_util import redact_text
+
+        xbmc.log(
+            "NZB-DAV: TVDB resolve failed for tmdb={} imdb={}: {}".format(
+                tmdb_id or "-", imdb or "-", redact_text(str(error))
+            ),
+            xbmc.LOGDEBUG,
+        )
+        return ""
+
+
 def resolve_tvdb_id(
     tmdb_id="",
     imdb="",
@@ -137,11 +206,7 @@ def resolve_tvdb_id(
     """
     tmdb_id = (str(tmdb_id) if tmdb_id else "").strip()
     imdb = (str(imdb) if imdb else "").strip()
-    cache_key = (
-        "tmdb:{}".format(tmdb_id)
-        if tmdb_id
-        else ("imdb:{}".format(imdb) if imdb else "")
-    )
+    cache_key = _cache_key_for(tmdb_id, imdb)
     if not cache_key:
         return ""
 
@@ -151,44 +216,11 @@ def resolve_tvdb_id(
     if cached:
         return cached
 
-    if settings_getter is None:
-        try:
-            settings_getter = _default_settings_getter()
-        except Exception:  # pylint: disable=broad-except
-            return ""
-    key = _get_tmdb_api_key(settings_getter)
+    key = _api_key_or_empty(settings_getter)
     if not key:
         return ""
 
-    if http_get is None:
-        from resources.lib.http_util import http_get as _http_get
-
-        http_get = _http_get
-
-    try:
-        if tmdb_id:
-            series_id = tmdb_id
-        else:
-            series_id = _series_tmdb_id_from_imdb(http_get, imdb, key)
-            if not series_id:
-                return ""
-        payload = _query(http_get, "/tv/{}/external_ids".format(series_id), key)
-        tvdb = _tvdb_from_external_ids(payload)
-    except Exception as error:  # pylint: disable=broad-except
-        # HTTPError/URLError str() can echo the failing URL, which embeds the
-        # TMDB api_key — redact before logging (same defense as hydra/prowlarr).
-        from resources.lib.http_util import redact_text
-
-        xbmc.log(
-            "NZB-DAV: TVDB resolve failed for tmdb={} imdb={}: {}".format(
-                tmdb_id or "-", imdb or "-", redact_text(str(error))
-            ),
-            xbmc.LOGDEBUG,
-        )
-        return ""
-
-    if tvdb:
-        store[cache_key] = tvdb
-        if use_file:
-            _save_file_cache(store)
+    http_get = _resolve_http_get(http_get)
+    tvdb = _resolve_tvdb_via_api(http_get, key, tmdb_id, imdb)
+    _store_tvdb(store, cache_key, tvdb, use_file)
     return tvdb

@@ -139,21 +139,26 @@ def _find_archive_base(subject):
     return " ".join(base.split())
 
 
-def _subject_may_be_archive(subject):
-    """Return whether a subject is worth checking with the archive regex."""
-    if not isinstance(subject, str):
-        return False
-    lower = subject.lower()
-    if ".r" not in lower:
-        return False
+def _is_token_boundary(text, index):
+    """Return whether index ends a token (out of range or a non-word char)."""
+    if index >= len(text):
+        return True
+    return not (text[index].isalnum() or text[index] == "_")
+
+
+def _has_rar_extension(lower):
+    """Return whether the subject carries a boundary-delimited ``.rar`` token."""
     start = lower.find(".rar")
     while start != -1:
         boundary_index = start + 4
-        if boundary_index >= len(lower) or not (
-            lower[boundary_index].isalnum() or lower[boundary_index] == "_"
-        ):
+        if _is_token_boundary(lower, boundary_index):
             return True
         start = lower.find(".rar", boundary_index)
+    return False
+
+
+def _has_rar_volume_extension(lower):
+    """Return whether the subject carries a boundary-delimited ``.rNN`` token."""
     start = lower.find(".r")
     while start != -1:
         digits_start = start + 2
@@ -161,13 +166,20 @@ def _subject_may_be_archive(subject):
         max_digits_end = min(len(lower), digits_start + 3)
         while digits_end < max_digits_end and lower[digits_end].isdigit():
             digits_end += 1
-        if digits_end - digits_start >= 2 and (
-            digits_end >= len(lower)
-            or not (lower[digits_end].isalnum() or lower[digits_end] == "_")
-        ):
+        if digits_end - digits_start >= 2 and _is_token_boundary(lower, digits_end):
             return True
         start = lower.find(".r", start + 2)
     return False
+
+
+def _subject_may_be_archive(subject):
+    """Return whether a subject is worth checking with the archive regex."""
+    if not isinstance(subject, str):
+        return False
+    lower = subject.lower()
+    if ".r" not in lower:
+        return False
+    return _has_rar_extension(lower) or _has_rar_volume_extension(lower)
 
 
 def _segment_row_sort_key(row):
@@ -262,6 +274,43 @@ def _subject_looks_like_metadata(subject):
     return _METADATA_EXTENSION_RE.search(subject) is not None
 
 
+def _non_metadata_payload_files(file_elems):
+    """Yield (rows, total_bytes) for each non-metadata file with real payload."""
+    for elem in file_elems:
+        subject = elem.attrib.get("subject", "")
+        if _subject_looks_like_metadata(subject):
+            continue
+        rows = _segment_rows(elem)
+        if not rows:
+            continue
+        total = sum(row[1] for row in rows)
+        if total <= 0:
+            continue
+        yield rows, total
+
+
+def _synthetic_video_candidate(rows, payload_total, health_check):
+    """Build a synthetic obfuscated-payload video candidate, or None."""
+    article_digest = _digest_articles(rows)
+    if not article_digest:
+        return None
+    candidate = {
+        "payload_kind": "video",
+        "group_name": "",
+        "group_bytes": payload_total,
+        "video_name": "",
+        "normalized_video_name": "",
+        "video_bytes": payload_total,
+        "archive_base_name": "",
+        "article_digest": article_digest,
+        "article_count": len(rows),
+        "unsupported_reason": "",
+    }
+    if health_check is not None:
+        candidate["message_ids"] = [row[2] for row in rows]
+    return candidate
+
+
 def _dominant_blob_video_candidates(file_elems, health_check):
     """Return a synthetic video candidate when one obfuscated file dominates.
 
@@ -273,16 +322,7 @@ def _dominant_blob_video_candidates(file_elems, health_check):
     """
     payload_total = 0
     largest = None  # (rows, total_bytes)
-    for elem in file_elems:
-        subject = elem.attrib.get("subject", "")
-        if _subject_looks_like_metadata(subject):
-            continue
-        rows = _segment_rows(elem)
-        if not rows:
-            continue
-        total = sum(row[1] for row in rows)
-        if total <= 0:
-            continue
+    for rows, total in _non_metadata_payload_files(file_elems):
         payload_total += total
         if largest is None or total > largest[1]:
             largest = (rows, total)
@@ -293,23 +333,9 @@ def _dominant_blob_video_candidates(file_elems, health_check):
     if largest[1] < _SYNTHETIC_VIDEO_MIN_PAYLOAD_BYTES:
         return []
     rows, total = largest
-    article_digest = _digest_articles(rows)
-    if not article_digest:
+    candidate = _synthetic_video_candidate(rows, total, health_check)
+    if candidate is None:
         return []
-    candidate = {
-        "payload_kind": "video",
-        "group_name": "",
-        "group_bytes": total,
-        "video_name": "",
-        "normalized_video_name": "",
-        "video_bytes": total,
-        "archive_base_name": "",
-        "article_digest": article_digest,
-        "article_count": len(rows),
-        "unsupported_reason": "",
-    }
-    if health_check is not None:
-        candidate["message_ids"] = [row[2] for row in rows]
     return [candidate]
 
 
@@ -328,16 +354,7 @@ def _split_payload_video_candidates(file_elems, health_check):
     """
     payload_rows = []
     sizes = []
-    for elem in file_elems:
-        subject = elem.attrib.get("subject", "")
-        if _subject_looks_like_metadata(subject):
-            continue
-        rows = _segment_rows(elem)
-        if not rows:
-            continue
-        total = sum(row[1] for row in rows)
-        if total <= 0:
-            continue
+    for rows, total in _non_metadata_payload_files(file_elems):
         payload_rows.append(rows)
         sizes.append(total)
     if len(sizes) < _SPLIT_PAYLOAD_MIN_FILE_COUNT:
@@ -354,23 +371,9 @@ def _split_payload_video_candidates(file_elems, health_check):
     combined_rows = []
     for rows in payload_rows:
         combined_rows.extend(rows)
-    article_digest = _digest_articles(combined_rows)
-    if not article_digest:
+    candidate = _synthetic_video_candidate(combined_rows, payload_total, health_check)
+    if candidate is None:
         return []
-    candidate = {
-        "payload_kind": "video",
-        "group_name": "",
-        "group_bytes": payload_total,
-        "video_name": "",
-        "normalized_video_name": "",
-        "video_bytes": payload_total,
-        "archive_base_name": "",
-        "article_digest": article_digest,
-        "article_count": len(combined_rows),
-        "unsupported_reason": "",
-    }
-    if health_check is not None:
-        candidate["message_ids"] = [row[2] for row in combined_rows]
     return [candidate]
 
 
@@ -397,63 +400,72 @@ def _reject_entity_declarations(nzb_bytes):
         raise _UnsafeXmlError("entity declarations are not allowed in NZB XML")
 
 
-def extract_nzb_video_manifest(nzb_bytes, health_check=None):
-    """Return main video-file or provisional archive metadata from an NZB XML."""
+def _parse_nzb_root(nzb_bytes):
+    """Parse NZB bytes into an XML root, or None on parse/safety failure."""
     try:
         if _USING_DEFUSEDXML:
             # forbid_dtd=False keeps the standard NZB ``<!DOCTYPE nzb ...>``
             # working; entity/external-reference defenses stay enabled.
-            root = ET.fromstring(nzb_bytes, forbid_dtd=False)
-        else:
-            _reject_entity_declarations(nzb_bytes)
-            root = ET.fromstring(nzb_bytes)
+            return ET.fromstring(nzb_bytes, forbid_dtd=False)
+        _reject_entity_declarations(nzb_bytes)
+        return ET.fromstring(nzb_bytes)
     except (ET.ParseError, TypeError, _UnsafeXmlError):
-        return _empty_manifest("invalid_xml")
+        return None
 
+
+def _video_file_candidate(file_elem, video_name, health_check):
+    """Build a named-video-file candidate from a file element, or None."""
+    rows = _segment_rows(file_elem)
+    video_bytes = sum(row[1] for row in rows)
+    article_digest = _digest_articles(rows)
+    if video_bytes <= 0 or not article_digest:
+        return None
+    normalized = normalize_video_filename(video_name)
+    candidate = {
+        "payload_kind": "video",
+        "group_name": normalized,
+        "group_bytes": video_bytes,
+        "video_name": video_name,
+        "normalized_video_name": normalized,
+        "video_bytes": video_bytes,
+        "archive_base_name": "",
+        "article_digest": article_digest,
+        "article_count": len(rows),
+        "unsupported_reason": "",
+    }
+    if health_check is not None:
+        candidate["message_ids"] = [row[2] for row in rows]
+    return candidate
+
+
+def _partition_video_files(root, health_check):
+    """Split files into named-video candidates and remaining file elements."""
     video_candidates = []
     non_video_file_candidates = []
     for file_elem in _children_by_name(root, "file"):
         subject = file_elem.attrib.get("subject", "")
         video_name = _find_video_name(subject) if _subject_may_be_video(subject) else ""
-        if video_name:
-            rows = _segment_rows(file_elem)
-            video_bytes = sum(row[1] for row in rows)
-            article_digest = _digest_articles(rows)
-            if video_bytes <= 0 or not article_digest:
-                continue
-            normalized = normalize_video_filename(video_name)
-            candidate = {
-                "payload_kind": "video",
-                "group_name": normalized,
-                "group_bytes": video_bytes,
-                "video_name": video_name,
-                "normalized_video_name": normalized,
-                "video_bytes": video_bytes,
-                "archive_base_name": "",
-                "article_digest": article_digest,
-                "article_count": len(rows),
-                "unsupported_reason": "",
-            }
-            if health_check is not None:
-                candidate["message_ids"] = [row[2] for row in rows]
+        candidate = (
+            _video_file_candidate(file_elem, video_name, health_check)
+            if video_name
+            else None
+        )
+        if candidate is not None:
             video_candidates.append(candidate)
-            continue
-        non_video_file_candidates.append(file_elem)
-
+        elif not video_name:
+            non_video_file_candidates.append(file_elem)
     video_candidates.sort(
         key=lambda item: (item["video_bytes"], item["article_count"]),
         reverse=True,
     )
-    video_skipped_candidates = []
-    if video_candidates:
-        video_manifest = _select_healthy_candidate(video_candidates, health_check)
-        if not video_manifest.get("unsupported_reason"):
-            return video_manifest
-        video_skipped_candidates = video_manifest.get("skipped_candidates", [])
+    return video_candidates, non_video_file_candidates
 
+
+def _group_archive_rows(file_elems):
+    """Group RAR-style file rows by normalized archive base name."""
     archive_groups = {}
     archive_group_file_counts = {}
-    for file_elem in non_video_file_candidates:
+    for file_elem in file_elems:
         subject = file_elem.attrib.get("subject", "")
         if not _subject_may_be_archive(subject):
             continue
@@ -467,6 +479,12 @@ def extract_nzb_video_manifest(nzb_bytes, health_check=None):
         archive_group_file_counts[archive_base] = (
             archive_group_file_counts.get(archive_base, 0) + 1
         )
+    return archive_groups, archive_group_file_counts
+
+
+def _archive_candidates(file_elems, health_check):
+    """Build sorted archive candidates from non-video file elements."""
+    archive_groups, archive_group_file_counts = _group_archive_rows(file_elems)
     archive_candidates = []
     for archive_base, rows in archive_groups.items():
         if archive_group_file_counts.get(archive_base, 0) > 1:
@@ -489,8 +507,28 @@ def extract_nzb_video_manifest(nzb_bytes, health_check=None):
         if health_check is not None:
             candidate["message_ids"] = [row[2] for row in rows]
         archive_candidates.append(candidate)
-
     archive_candidates.sort(key=lambda item: item["article_count"], reverse=True)
+    return archive_candidates
+
+
+def extract_nzb_video_manifest(nzb_bytes, health_check=None):
+    """Return main video-file or provisional archive metadata from an NZB XML."""
+    root = _parse_nzb_root(nzb_bytes)
+    if root is None:
+        return _empty_manifest("invalid_xml")
+
+    video_candidates, non_video_file_candidates = _partition_video_files(
+        root, health_check
+    )
+
+    video_skipped_candidates = []
+    if video_candidates:
+        video_manifest = _select_healthy_candidate(video_candidates, health_check)
+        if not video_manifest.get("unsupported_reason"):
+            return video_manifest
+        video_skipped_candidates = video_manifest.get("skipped_candidates", [])
+
+    archive_candidates = _archive_candidates(non_video_file_candidates, health_check)
     if archive_candidates:
         return _select_healthy_candidate(
             archive_candidates,

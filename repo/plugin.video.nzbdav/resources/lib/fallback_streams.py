@@ -583,6 +583,41 @@ def _release_identity(result):
     return identity
 
 
+def _subset_titles_related(left, right, left_tokens, right_tokens, corroborated):
+    """Return whether two titles in a subset relation name the same work.
+
+    One token set is a subset of the other (the equality case is handled by the
+    caller). Accept only a junk-SUFFIX repost: the longer title's extra tokens
+    are a single trailing noise token. More than one extra token, or extra
+    tokens that are not a trailing tail, look like a distinguishing subtitle and
+    are rejected without corroboration.
+    """
+    if corroborated:
+        return True
+    if left <= right:
+        shorter, longer = left_tokens, right_tokens
+    else:
+        shorter, longer = right_tokens, left_tokens
+    prefix_match = longer[: len(shorter)] == shorter
+    extra = len(longer) - len(shorter)
+    if prefix_match and extra <= 1:
+        # A lone trailing numeric token ("Avatar" -> "Avatar 2") is a sequel
+        # discriminator, not junk. PTT leaves the sequel number inside the
+        # title (years/resolutions are already stripped into year/meta), so a
+        # numeric tail that survives normalization is content-distinguishing.
+        # The same holds for MULTI-CHARACTER Roman-numeral / ordinal-word
+        # sequel tails ("Rocky" -> "Rocky IV", "Iron Man" -> "Iron Man
+        # Three"). Single-letter romans (i/v/x) and "one"/"eleven"+ are
+        # deliberately NOT in _SEQUEL_TAIL_TOKENS, so a stray "Movie x"/junk
+        # tail stays a legitimate junk-suffix repost. Reject these tails
+        # without corroboration; any other trailing token ("Movie" ->
+        # "Movie mirror") stays a legitimate junk-suffix repost.
+        if extra == 1 and (longer[-1].isdigit() or longer[-1] in _SEQUEL_TAIL_TOKENS):
+            return False
+        return True
+    return False
+
+
 def _titles_core_related(primary_title, candidate_title, corroborated=False):
     """Return whether two normalized core titles plausibly name the same work.
 
@@ -603,36 +638,9 @@ def _titles_core_related(primary_title, candidate_title, corroborated=False):
     if left == right:
         return True
     if left <= right or right <= left:
-        if corroborated:
-            return True
-        # Accept only a junk-SUFFIX repost: the longer title's extra tokens are
-        # a single trailing noise token. More than one extra token, or extra
-        # tokens that are not a trailing tail, look like a distinguishing
-        # subtitle and are rejected without corroboration.
-        if left <= right:
-            shorter, longer = left_tokens, right_tokens
-        else:
-            shorter, longer = right_tokens, left_tokens
-        prefix_match = longer[: len(shorter)] == shorter
-        extra = len(longer) - len(shorter)
-        if prefix_match and extra <= 1:
-            # A lone trailing numeric token ("Avatar" -> "Avatar 2") is a sequel
-            # discriminator, not junk. PTT leaves the sequel number inside the
-            # title (years/resolutions are already stripped into year/meta), so a
-            # numeric tail that survives normalization is content-distinguishing.
-            # The same holds for MULTI-CHARACTER Roman-numeral / ordinal-word
-            # sequel tails ("Rocky" -> "Rocky IV", "Iron Man" -> "Iron Man
-            # Three"). Single-letter romans (i/v/x) and "one"/"eleven"+ are
-            # deliberately NOT in _SEQUEL_TAIL_TOKENS, so a stray "Movie x"/junk
-            # tail stays a legitimate junk-suffix repost. Reject these tails
-            # without corroboration; any other trailing token ("Movie" ->
-            # "Movie mirror") stays a legitimate junk-suffix repost.
-            if extra == 1 and (
-                longer[-1].isdigit() or longer[-1] in _SEQUEL_TAIL_TOKENS
-            ):
-                return False
-            return True
-        return False
+        return _subset_titles_related(
+            left, right, left_tokens, right_tokens, corroborated
+        )
     # Neither title's token set is a subset of the other, so each carries its
     # own distinguishing tail. A MULTI-token distinguishing tail on either side
     # looks like a different work in a franchise ("Mission Impossible Fallout"
@@ -673,6 +681,91 @@ def _content_discriminators_match(primary, candidate):
     return True
 
 
+def _identity_corroborated(primary_identity, candidate_identity):
+    """Return whether matching year or season+episode sets corroborate identity."""
+    primary_title, primary_year, primary_seasons, primary_episodes, _ = primary_identity
+    (
+        candidate_title,
+        candidate_year,
+        candidate_seasons,
+        candidate_episodes,
+        _,
+    ) = candidate_identity
+    del primary_title, candidate_title
+    if primary_year and candidate_year and primary_year == candidate_year:
+        return True
+    return bool(
+        primary_seasons
+        and candidate_seasons
+        and primary_episodes
+        and candidate_episodes
+        and primary_seasons == candidate_seasons
+        and primary_episodes == candidate_episodes
+    )
+
+
+def _collapse_phantom_season(primary_identity, candidate_identity):
+    """Return season tuples with a phantom (mis-parsed) lone season collapsed.
+
+    A movie whose release-group suffix mis-parses as a season (e.g.
+    "...HEVC-REMUX-ALT01" -> seasons=[1], episodes=[]) would otherwise look
+    episodic, and the season-presence parity check would then reject the same
+    movie posted by a normal group (seasons=[]). When BOTH sides have no
+    episode, the season PRESENCE differs, and both parsed the SAME year, treat
+    the lone "season" as the phantom it is and collapse it away. The
+    matching-year gate is required: genuine TV is always season-tagged on both
+    sides (presence matches), so it never reaches this collapse and stays
+    subject to season equality. NOTE: extending this collapse to the
+    both-years-ABSENT case was attempted and reverted -- a yearless phantom
+    season and a yearless REAL season pack ("Show.S01"/"Show.Сезон.1") share an
+    identical parsed identity, and no heuristic could tell them apart without
+    re-implementing (and forever chasing) PTT's multilingual season vocabulary,
+    so every loosening leaked a dangerous false-ACCEPT of different content. The
+    yearless-phantom-movie false-reject is an accepted fail-safe limitation
+    (never serves wrong content), per the "never loosen _same_content to win
+    coverage" rule.
+    """
+    _, primary_year, primary_seasons, primary_episodes, _ = primary_identity
+    _, candidate_year, candidate_seasons, candidate_episodes, _ = candidate_identity
+    same_year = bool(primary_year) and primary_year == candidate_year
+    if (
+        not primary_episodes
+        and not candidate_episodes
+        and bool(primary_seasons) != bool(candidate_seasons)
+        and same_year
+    ):
+        return (), ()
+    return primary_seasons, candidate_seasons
+
+
+def _episode_content_matches(primary_identity, candidate_identity):
+    """Return whether two episodic releases are the same episode content."""
+    _, primary_year, primary_seasons, primary_episodes, _ = primary_identity
+    _, candidate_year, candidate_seasons, candidate_episodes, _ = candidate_identity
+    if primary_seasons and candidate_seasons and primary_seasons != candidate_seasons:
+        return False
+    if (
+        primary_episodes
+        and candidate_episodes
+        and primary_episodes != candidate_episodes
+    ):
+        return False
+    # An episode must not peer with a different episode that simply omitted
+    # its SxxExx tokens; require both to carry the same episode evidence.
+    if bool(primary_episodes) != bool(candidate_episodes):
+        return False
+    if bool(primary_seasons) != bool(candidate_seasons):
+        return False
+    # A differing parsed year marks a distinct production sharing the same
+    # SxxExx (a reboot/remake, e.g. "Doctor Who 2005 S01E01" vs the 2023
+    # reboot). Mirror the movie-path year reject. Only rejects when BOTH
+    # sides parsed a year and they differ, so same-episode reposts where one
+    # side omits the year are unaffected.
+    if primary_year and candidate_year and primary_year != candidate_year:
+        return False
+    return True
+
+
 def _same_content(primary, candidate):
     """Return whether two releases are the SAME content (content-identity gate).
 
@@ -685,35 +778,12 @@ def _same_content(primary, candidate):
     """
     if not _content_discriminators_match(primary, candidate):
         return False
-    (
-        primary_title,
-        primary_year,
-        primary_seasons,
-        primary_episodes,
-        primary_part,
-    ) = _release_identity(primary)
-    (
-        candidate_title,
-        candidate_year,
-        candidate_seasons,
-        candidate_episodes,
-        candidate_part,
-    ) = _release_identity(candidate)
+    primary_identity = _release_identity(primary)
+    candidate_identity = _release_identity(candidate)
+    primary_title, primary_year, _, _, primary_part = primary_identity
+    candidate_title, candidate_year, _, _, candidate_part = candidate_identity
 
-    # Corroborating positive identity rescues otherwise-ambiguous title
-    # relations: a matching parsed year, or a matching season+episode set.
-    corroborated = bool(
-        (primary_year and candidate_year and primary_year == candidate_year)
-        or (
-            primary_seasons
-            and candidate_seasons
-            and primary_episodes
-            and candidate_episodes
-            and primary_seasons == candidate_seasons
-            and primary_episodes == candidate_episodes
-        )
-    )
-
+    corroborated = _identity_corroborated(primary_identity, candidate_identity)
     if not _titles_core_related(
         primary_title, candidate_title, corroborated=corroborated
     ):
@@ -723,62 +793,31 @@ def _same_content(primary, candidate):
     if primary_part and candidate_part and primary_part != candidate_part:
         return False
 
-    # A movie whose release-group suffix mis-parses as a season (e.g.
-    # "...HEVC-REMUX-ALT01" -> seasons=[1], episodes=[]) would otherwise look
-    # episodic, and the season-presence parity check below would then reject the
-    # same movie posted by a normal group (seasons=[]). When BOTH sides have no
-    # episode, the season PRESENCE differs, and both parsed the SAME year, treat
-    # the lone "season" as the phantom it is and collapse it away. The
-    # matching-year gate is required: genuine TV is always season-tagged on both
-    # sides (presence matches), so it never reaches this collapse and stays
-    # subject to season equality. NOTE: extending this collapse to the
-    # both-years-ABSENT case was attempted and reverted -- a yearless phantom
-    # season and a yearless REAL season pack ("Show.S01"/"Show.Сезон.1") share an
-    # identical parsed identity, and no heuristic could tell them apart without
-    # re-implementing (and forever chasing) PTT's multilingual season vocabulary,
-    # so every loosening leaked a dangerous false-ACCEPT of different content. The
-    # yearless-phantom-movie false-reject is an accepted fail-safe limitation
-    # (never serves wrong content), per the "never loosen _same_content to win
-    # coverage" rule.
-    same_year = bool(primary_year) and primary_year == candidate_year
-    if (
-        not primary_episodes
-        and not candidate_episodes
-        and bool(primary_seasons) != bool(candidate_seasons)
-        and same_year
-    ):
-        primary_seasons = ()
-        candidate_seasons = ()
+    primary_seasons, candidate_seasons = _collapse_phantom_season(
+        primary_identity, candidate_identity
+    )
+    primary_episodes = primary_identity[3]
+    candidate_episodes = candidate_identity[3]
 
     primary_is_episode = bool(primary_seasons or primary_episodes)
     candidate_is_episode = bool(candidate_seasons or candidate_episodes)
     if primary_is_episode or candidate_is_episode:
-        if (
-            primary_seasons
-            and candidate_seasons
-            and primary_seasons != candidate_seasons
-        ):
-            return False
-        if (
-            primary_episodes
-            and candidate_episodes
-            and primary_episodes != candidate_episodes
-        ):
-            return False
-        # An episode must not peer with a different episode that simply omitted
-        # its SxxExx tokens; require both to carry the same episode evidence.
-        if bool(primary_episodes) != bool(candidate_episodes):
-            return False
-        if bool(primary_seasons) != bool(candidate_seasons):
-            return False
-        # A differing parsed year marks a distinct production sharing the same
-        # SxxExx (a reboot/remake, e.g. "Doctor Who 2005 S01E01" vs the 2023
-        # reboot). Mirror the movie-path year reject. Only rejects when BOTH
-        # sides parsed a year and they differ, so same-episode reposts where one
-        # side omits the year are unaffected.
-        if primary_year and candidate_year and primary_year != candidate_year:
-            return False
-        return True
+        return _episode_content_matches(
+            (
+                primary_title,
+                primary_year,
+                primary_seasons,
+                primary_episodes,
+                primary_part,
+            ),
+            (
+                candidate_title,
+                candidate_year,
+                candidate_seasons,
+                candidate_episodes,
+                candidate_part,
+            ),
+        )
 
     if bool(primary_part) != bool(candidate_part):
         # PTT keeps the part word inside the title ("Dune Part Two"), so the
@@ -1149,29 +1188,26 @@ def has_prefetchable_fallback_peer(selected, results):
     return first_prefetchable_fallback_peer(selected, results) is not None
 
 
-def _sized_pool_has_no_distinct_peer(selected, results):
-    """Return True when a sized pool cannot contain any fallback peer."""
+def _multi_result_pool_has_no_distinct_peer(selected, results):
+    """Return True when a multi-result pool has no distinct fallback peer."""
+    if not isinstance(selected, dict):
+        return False
+    selected_link = selected.get("link", "")
     try:
-        result_count = len(results)
+        for result in results:
+            if result is selected or not isinstance(result, dict):
+                continue
+            result_link = result.get("link", "")
+            if result_link and result_link != selected_link:
+                _remember_selection_pool_first_peer(selected, results, result)
+                return False
     except TypeError:
         return False
-    if result_count == 0:
-        return True
-    if result_count != 1:
-        if not isinstance(selected, dict):
-            return False
-        selected_link = selected.get("link", "")
-        try:
-            for result in results:
-                if result is selected or not isinstance(result, dict):
-                    continue
-                result_link = result.get("link", "")
-                if result_link and result_link != selected_link:
-                    _remember_selection_pool_first_peer(selected, results, result)
-                    return False
-        except TypeError:
-            return False
-        return True
+    return True
+
+
+def _single_result_pool_has_no_distinct_peer(selected, results):
+    """Return True when a one-result pool has no distinct fallback peer."""
     try:
         only_result = results[0]
     except (IndexError, KeyError, TypeError):
@@ -1188,6 +1224,95 @@ def _sized_pool_has_no_distinct_peer(selected, results):
     return True
 
 
+def _sized_pool_has_no_distinct_peer(selected, results):
+    """Return True when a sized pool cannot contain any fallback peer."""
+    try:
+        result_count = len(results)
+    except TypeError:
+        return False
+    if result_count == 0:
+        return True
+    if result_count != 1:
+        return _multi_result_pool_has_no_distinct_peer(selected, results)
+    return _single_result_pool_has_no_distinct_peer(selected, results)
+
+
+def _prefetch_peer_state(selected):
+    """Return mutable [tokens, meta, meta_ready] scan state for a selected result."""
+    selected_meta = (
+        selected.get("_meta") if isinstance(selected.get("_meta"), dict) else None
+    )
+    return [None, selected_meta, selected_meta is not None]
+
+
+def _prefetch_peer_tokens(selected, state):
+    """Return cached selected title tokens, computing them once on demand."""
+    if state[0] is None:
+        state[0] = _title_tokens(selected)
+    return state[0]
+
+
+def _prefetch_peer_meta(selected, state):
+    """Return the selected metadata dict, deriving + caching it on demand."""
+    if not state[2]:
+        state[1] = _result_meta(selected)
+        state[2] = True
+    return state[1]
+
+
+def _prefetch_peer_match(selected, result, candidate_meta, state):
+    """Return ``result`` when it passes the full prefetch gate, else ``None``.
+
+    Mirrors the original per-candidate branch structure exactly: the cheap
+    profile gate runs first only when both metadata dicts are ready; otherwise
+    the title prefilter runs before the profile parse.
+    """
+    if state[2] and candidate_meta is not None:
+        if not _metadata_profiles_match(
+            selected,
+            result,
+            primary_meta=state[1],
+            candidate_meta=candidate_meta,
+            require_same_group=True,
+        ):
+            return None
+        tokens = _prefetch_peer_tokens(selected, state)
+        if _title_token_sets_look_related(
+            tokens, _title_tokens(result)
+        ) and _same_content(selected, result):
+            _remember_prefetch_gate_match(selected, result, state[1], candidate_meta)
+            return result
+        return None
+
+    tokens = _prefetch_peer_tokens(selected, state)
+    if not _title_token_sets_look_related(tokens, _title_tokens(result)):
+        return None
+    if candidate_meta is not None:
+        selected_meta = _prefetch_peer_meta(selected, state)
+        if _metadata_profiles_match(
+            selected,
+            result,
+            primary_meta=selected_meta,
+            candidate_meta=candidate_meta,
+            require_same_group=True,
+        ) and _same_content(selected, result):
+            _remember_prefetch_gate_match(
+                selected, result, selected_meta, candidate_meta
+            )
+            return result
+        return None
+    selected_meta = _prefetch_peer_meta(selected, state)
+    if _metadata_profiles_match(
+        selected, result, primary_meta=selected_meta, require_same_group=True
+    ) and _same_content(selected, result):
+        resolved_meta = result.get("_meta")
+        if not isinstance(resolved_meta, dict):
+            resolved_meta = None
+        _remember_prefetch_gate_match(selected, result, selected_meta, resolved_meta)
+        return result
+    return None
+
+
 def first_prefetchable_fallback_peer(
     selected, results, distinct_peer_already_checked=False
 ):
@@ -1198,11 +1323,7 @@ def first_prefetchable_fallback_peer(
         selected, results
     ):
         return None
-    selected_tokens = None
-    selected_meta = (
-        selected.get("_meta") if isinstance(selected.get("_meta"), dict) else None
-    )
-    selected_meta_ready = selected_meta is not None
+    state = _prefetch_peer_state(selected)
     seen_links = {selected.get("link", "")}
     for result in results or []:
         if not isinstance(result, dict):
@@ -1213,58 +1334,9 @@ def first_prefetchable_fallback_peer(
         candidate_meta = (
             result.get("_meta") if isinstance(result.get("_meta"), dict) else None
         )
-        if selected_meta_ready and candidate_meta is not None:
-            if not _metadata_profiles_match(
-                selected,
-                result,
-                primary_meta=selected_meta,
-                candidate_meta=candidate_meta,
-                require_same_group=True,
-            ):
-                continue
-            if selected_tokens is None:
-                selected_tokens = _title_tokens(selected)
-            if _title_token_sets_look_related(
-                selected_tokens, _title_tokens(result)
-            ) and _same_content(selected, result):
-                _remember_prefetch_gate_match(
-                    selected, result, selected_meta, candidate_meta
-                )
-                return result
-            continue
-        if selected_tokens is None:
-            selected_tokens = _title_tokens(selected)
-        if not _title_token_sets_look_related(selected_tokens, _title_tokens(result)):
-            continue
-        if candidate_meta is not None:
-            if not selected_meta_ready:
-                selected_meta = _result_meta(selected)
-                selected_meta_ready = True
-            if _metadata_profiles_match(
-                selected,
-                result,
-                primary_meta=selected_meta,
-                candidate_meta=candidate_meta,
-                require_same_group=True,
-            ) and _same_content(selected, result):
-                _remember_prefetch_gate_match(
-                    selected, result, selected_meta, candidate_meta
-                )
-                return result
-            continue
-        if not selected_meta_ready:
-            selected_meta = _result_meta(selected)
-            selected_meta_ready = True
-        if _metadata_profiles_match(
-            selected, result, primary_meta=selected_meta, require_same_group=True
-        ) and _same_content(selected, result):
-            candidate_meta = result.get("_meta")
-            if not isinstance(candidate_meta, dict):
-                candidate_meta = None
-            _remember_prefetch_gate_match(
-                selected, result, selected_meta, candidate_meta
-            )
-            return result
+        match = _prefetch_peer_match(selected, result, candidate_meta, state)
+        if match is not None:
+            return match
     return None
 
 
@@ -1289,21 +1361,36 @@ def _metadata_profiles_match(
         primary_meta = _result_meta(primary)
     if candidate_meta is None:
         candidate_meta = _result_meta(candidate)
-    if require_same_group:
-        left_group = _meta_value_from_meta(primary_meta, "group")
-        right_group = _meta_value_from_meta(candidate_meta, "group")
-        if not left_group or left_group != right_group:
-            return False
-        # require same RESOLUTION too (user requirement): fail CLOSED like the
-        # group gate -- reject when either side's resolution is unparsed or
-        # differs, so an unparsed-resolution candidate can never slip a
-        # different-resolution encode past the gate. The shared resolution
-        # check below only fails OPEN when one side is unknown, so this stricter
-        # gate is what enforces "same resolution as parsed by PTT".
-        left_res = _meta_value_from_meta(primary_meta, "resolution")
-        right_res = _meta_value_from_meta(candidate_meta, "resolution")
-        if not left_res or left_res != right_res:
-            return False
+    if require_same_group and not _same_group_resolution_gate(
+        primary_meta, candidate_meta
+    ):
+        return False
+    if not _shared_profile_fields_match(primary_meta, candidate_meta):
+        return False
+    return _hdr_audio_channels_match(primary_meta, candidate_meta)
+
+
+def _same_group_resolution_gate(primary_meta, candidate_meta):
+    """Return whether group + resolution fail-closed gates pass for both sides."""
+    left_group = _meta_value_from_meta(primary_meta, "group")
+    right_group = _meta_value_from_meta(candidate_meta, "group")
+    if not left_group or left_group != right_group:
+        return False
+    # require same RESOLUTION too (user requirement): fail CLOSED like the
+    # group gate -- reject when either side's resolution is unparsed or
+    # differs, so an unparsed-resolution candidate can never slip a
+    # different-resolution encode past the gate. The shared resolution
+    # check below only fails OPEN when one side is unknown, so this stricter
+    # gate is what enforces "same resolution as parsed by PTT".
+    left_res = _meta_value_from_meta(primary_meta, "resolution")
+    right_res = _meta_value_from_meta(candidate_meta, "resolution")
+    if not left_res or left_res != right_res:
+        return False
+    return True
+
+
+def _shared_profile_fields_match(primary_meta, candidate_meta):
+    """Return whether res/codec/container, edition, flags, and quality match."""
     for key in ("resolution", "codec", "container"):
         left = _meta_value_from_meta(primary_meta, key)
         right = _meta_value_from_meta(candidate_meta, key)
@@ -1325,7 +1412,11 @@ def _metadata_profiles_match(
     right_quality = _quality_family(_meta_value_from_meta(candidate_meta, "quality"))
     if left_quality and right_quality and left_quality != right_quality:
         return False
+    return True
 
+
+def _hdr_audio_channels_match(primary_meta, candidate_meta):
+    """Return whether HDR, audio, and channel metadata are compatible."""
     left_hdr = set(_meta_values_from_meta(primary_meta, "hdr"))
     right_hdr = set(_meta_values_from_meta(candidate_meta, "hdr"))
     if left_hdr != right_hdr:
@@ -1804,6 +1895,34 @@ def _dedupe_candidates_by_pubdate(target, ranked):
     return undated + survivors
 
 
+def _candidate_is_fresh_peer(
+    target,
+    candidate,
+    candidate_link,
+    candidate_digest,
+    seen_links,
+    seen_article_digests,
+):
+    """Return whether a candidate is a new, distinct, matching fallback peer."""
+    if not candidate_link or candidate_link in seen_links:
+        return False
+    if candidate_digest and candidate_digest in seen_article_digests:
+        return False
+    return _fallback_peer_matches(target, candidate)
+
+
+def _ranking_tuple_for_candidate(target, candidate, target_size, target_name):
+    """Return the (exact_name, tier, size_delta, candidate) tuple, or None."""
+    tier = _release_similarity(target, candidate)
+    if tier is None:
+        return None
+    candidate_size = _release_size_bytes(candidate)
+    size_delta = abs(target_size - candidate_size) if target_size else 0
+    candidate_name = _manifest_normalized_video_name(candidate)
+    exact_name = 0 if target_name and candidate_name == target_name else 1
+    return (exact_name, tier, size_delta, candidate)
+
+
 def _attach_candidates_for_target(target, pool, max_candidates):
     matched = []
     seen_links = {target.get("link", "")}
@@ -1816,21 +1935,21 @@ def _attach_candidates_for_target(target, pool, max_candidates):
             continue
         candidate_link = candidate.get("link", "")
         candidate_digest = _article_digest(candidate)
-        if (
-            not candidate_link
-            or candidate_link in seen_links
-            or (candidate_digest and candidate_digest in seen_article_digests)
-            or not _fallback_peer_matches(target, candidate)
+        if not _candidate_is_fresh_peer(
+            target,
+            candidate,
+            candidate_link,
+            candidate_digest,
+            seen_links,
+            seen_article_digests,
         ):
             continue
-        tier = _release_similarity(target, candidate)
-        if tier is None:
+        ranking_tuple = _ranking_tuple_for_candidate(
+            target, candidate, target_size, target_name
+        )
+        if ranking_tuple is None:
             continue
-        candidate_size = _release_size_bytes(candidate)
-        size_delta = abs(target_size - candidate_size) if target_size else 0
-        candidate_name = _manifest_normalized_video_name(candidate)
-        exact_name = 0 if target_name and candidate_name == target_name else 1
-        matched.append((exact_name, tier, size_delta, candidate))
+        matched.append(ranking_tuple)
         seen_links.add(candidate_link)
         if candidate_digest:
             seen_article_digests.add(candidate_digest)
@@ -2042,36 +2161,48 @@ def _attach_selection_candidates_streaming(
         active[0] += 1
         _start_selection_manifest_fetch("selected", -1, selected, result_queue)
 
-    _fill_candidate_window()
-
-    while active[0]:
+    def _receive_next():
+        # Returns (action, message) where action is "got" (message is the
+        # (kind, index, target) tuple), "return_true", or "continue".
         try:
             tail_wait = _optional_tail_wait_remaining()
             if tail_wait is not None:
                 if tail_wait <= 0:
-                    return True
-                kind, index, target = result_queue.get(timeout=tail_wait)
-            elif _can_start_stall_speculation():
-                kind, index, target = result_queue.get(
+                    return "return_true", None
+                return "got", result_queue.get(timeout=tail_wait)
+            if _can_start_stall_speculation():
+                return "got", result_queue.get(
                     timeout=_FALLBACK_MANIFEST_STALL_SPECULATION_SECONDS
                 )
-            else:
-                kind, index, target = result_queue.get()
+            return "got", result_queue.get()
         except Empty:
             if _optional_tail_wait_remaining() is not None:
-                return True
+                return "return_true", None
             _start_stall_speculation()
-            continue
+            return "continue", None
+
+    def _record_result(kind, index, target):
         active[0] -= 1
         if kind == "candidate":
             active_candidates[0] -= 1
             completed[index] = target
-        else:
-            selected_ready[0] = True
-            selected_digest = _article_digest(selected)
-            if selected_digest:
-                seen_article_digests.add(selected_digest)
-            selected_can_match[0] = _manifest_may_match_any_peer(selected)
+            return
+        selected_ready[0] = True
+        selected_digest = _article_digest(selected)
+        if selected_digest:
+            seen_article_digests.add(selected_digest)
+        selected_can_match[0] = _manifest_may_match_any_peer(selected)
+
+    _fill_candidate_window()
+
+    while active[0]:
+        action, message = _receive_next()
+        if action == "return_true":
+            return True
+        if action == "continue":
+            continue
+        kind, index, target = message
+        _record_result(kind, index, target)
 
         if selected_ready[0] and not selected_can_match[0]:
             return False
@@ -2175,6 +2306,41 @@ def attach_fallback_candidates(results):
     return results
 
 
+def _selection_prefetch_candidate_matches(
+    selected, candidate, seen_prefetch_links, tokens_ref, meta_ref
+):
+    """Return whether a selection-pool candidate is worth fetching a manifest for.
+
+    ``tokens_ref`` / ``meta_ref`` are single-element lists used to lazily cache
+    the selected result's title tokens and metadata across candidates, exactly
+    as the original inline generator did.
+    """
+    if _has_prefetch_gate_match(selected, candidate):
+        prefetch_match = True
+    else:
+        candidate_meta = candidate.get("_meta")
+        if not isinstance(candidate_meta, dict):
+            candidate_meta = None
+        prefetch_tokens = tokens_ref[0]
+        if prefetch_tokens is None and (meta_ref[0] is None or candidate_meta is None):
+            prefetch_tokens = _title_tokens(selected)
+            tokens_ref[0] = prefetch_tokens
+        prefetch_match = _prefetch_candidate_matches(
+            selected,
+            candidate,
+            seen_prefetch_links,
+            prefetch_tokens,
+            meta_ref[0],
+        )
+        if tokens_ref[0] is None:
+            tokens_ref[0] = _cached_title_tokens(selected)
+    if meta_ref[0] is None:
+        cached_selected_meta = selected.get("_meta")
+        if isinstance(cached_selected_meta, dict):
+            meta_ref[0] = cached_selected_meta
+    return prefetch_match
+
+
 def attach_fallback_candidates_for_selection(selected, results, fallback_settings=None):
     """Attach fallback candidates only for the result the user selected."""
     if selected:
@@ -2220,35 +2386,15 @@ def attach_fallback_candidates_for_selection(selected, results, fallback_setting
                 continue
             if not _prefetch_size_gate_match(selected, candidate):
                 continue
-            if _has_prefetch_gate_match(selected, candidate):
-                prefetch_match = True
-            else:
-                candidate_meta = candidate.get("_meta")
-                if not isinstance(candidate_meta, dict):
-                    candidate_meta = None
-                prefetch_tokens = selected_title_tokens_ref[0]
-                if prefetch_tokens is None and (
-                    selected_meta_ref[0] is None or candidate_meta is None
-                ):
-                    prefetch_tokens = _title_tokens(selected)
-                    selected_title_tokens_ref[0] = prefetch_tokens
-                prefetch_match = _prefetch_candidate_matches(
-                    selected,
-                    candidate,
-                    seen_prefetch_links,
-                    prefetch_tokens,
-                    selected_meta_ref[0],
-                )
-                if selected_title_tokens_ref[0] is None:
-                    selected_title_tokens_ref[0] = _cached_title_tokens(selected)
-            if selected_meta_ref[0] is None:
-                cached_selected_meta = selected.get("_meta")
-                if isinstance(cached_selected_meta, dict):
-                    selected_meta_ref[0] = cached_selected_meta
-            if not prefetch_match:
-                continue
-            seen_prefetch_links.add(candidate_link)
-            yield candidate
+            if _selection_prefetch_candidate_matches(
+                selected,
+                candidate,
+                seen_prefetch_links,
+                selected_title_tokens_ref,
+                selected_meta_ref,
+            ):
+                seen_prefetch_links.add(candidate_link)
+                yield candidate
 
     started = time.monotonic()
     selected_manifest_fetch = not selected_manifest_ready
@@ -2411,16 +2557,8 @@ def _content_range_matches_request(content_range, start, end, content_length=0):
         return False
 
 
-def fetch_range_bytes(
-    url,
-    auth_header,
-    start,
-    end,
-    timeout=10,
-    content_length=0,
-    probe_bases=None,
-):
-    """Read a validated byte range from a configured WebDAV stream URL."""
+def _normalized_range_content_length(start, end, content_length):
+    """Return a validated content_length for a range request, or None if invalid."""
     if not isinstance(start, int) or not isinstance(end, int):
         return None
     try:
@@ -2431,14 +2569,11 @@ def fetch_range_bytes(
         return None
     if content_length and end >= content_length:
         return None
+    return content_length
 
-    probe_url = _validated_probe_url_for_fetch(url, probe_bases=probe_bases)
-    if not probe_url:
-        return None
-    req = Request(probe_url)
-    if auth_header:
-        req.add_header("Authorization", auth_header)
-    req.add_header("Range", "bytes={}-{}".format(start, end))
+
+def _read_validated_range(req, start, end, content_length, timeout):
+    """Open ``req`` and return the verified range body, or None on any mismatch."""
     try:
         with _no_redirect_urlopen(req, timeout=timeout) as resp:
             status = getattr(resp, "status", None) or resp.getcode()
@@ -2454,6 +2589,30 @@ def fetch_range_bytes(
     if len(body) != end - start + 1:
         return None
     return body
+
+
+def fetch_range_bytes(
+    url,
+    auth_header,
+    start,
+    end,
+    timeout=10,
+    content_length=0,
+    probe_bases=None,
+):
+    """Read a validated byte range from a configured WebDAV stream URL."""
+    content_length = _normalized_range_content_length(start, end, content_length)
+    if content_length is None:
+        return None
+
+    probe_url = _validated_probe_url_for_fetch(url, probe_bases=probe_bases)
+    if not probe_url:
+        return None
+    req = Request(probe_url)
+    if auth_header:
+        req.add_header("Authorization", auth_header)
+    req.add_header("Range", "bytes={}-{}".format(start, end))
+    return _read_validated_range(req, start, end, content_length, timeout)
 
 
 def fetch_range_digest(

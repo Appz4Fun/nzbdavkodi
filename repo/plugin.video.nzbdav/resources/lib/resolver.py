@@ -48,6 +48,10 @@ from resources.lib.webdav import (
     probe_webdav_reachable,
 )
 
+# Sentinel returned by the per-iteration poll helper to mean "keep looping"
+# (distinct from the ``(None, None)`` tuple, which is a terminal failure).
+_POLL_CONTINUE = object()
+
 _POLL_INTERVAL_MIN = 1
 _POLL_INTERVAL_MAX = 60
 _DOWNLOAD_TIMEOUT_MIN = 60
@@ -2414,7 +2418,6 @@ def _submit_nzb_with_ui_pump(
     # accumulation under-reports on slow skins because dialog.update()
     # itself can block for tens of milliseconds.
     loop_start = time.monotonic()
-    last_dialog_update = loop_start
     submit_msg = _string(30097)
 
     def _probe_adoption_result():
@@ -2455,7 +2458,26 @@ def _submit_nzb_with_ui_pump(
             activity_ready.clear()
         return False
 
-    try:
+    def _pump_dialog_progress(last_update):
+        """Advance the dialog progress bar; return the next ``last_update``."""
+        now = time.monotonic()
+        if now - last_update < _SUBMIT_UI_PUMP_INTERVAL_SECONDS:
+            return last_update
+        elapsed = now - loop_start
+        pct = int((elapsed * 100) / submit_timeout_seconds) % 100
+        _safe_dialog_update(
+            dialog,
+            pct,
+            "{}\n{} ({}s)".format(submit_msg, title[:60], int(elapsed)),
+        )
+        return now
+
+    def _run_pump_loop():
+        """Pump the dialog until submit finishes or a terminal result occurs.
+
+        Returns the ``(nzo_id, error)`` tuple to return from the caller.
+        """
+        last_dialog_update = loop_start
         while not submit_done.is_set():
             probe_result = _probe_adoption_result()
             if probe_result:
@@ -2473,17 +2495,7 @@ def _submit_nzb_with_ui_pump(
             probe_result = _probe_adoption_result()
             if probe_result:
                 return probe_result
-            now = time.monotonic()
-            elapsed = now - loop_start
-            if now - last_dialog_update < _SUBMIT_UI_PUMP_INTERVAL_SECONDS:
-                continue
-            last_dialog_update = now
-            pct = int((elapsed * 100) / submit_timeout_seconds) % 100
-            _safe_dialog_update(
-                dialog,
-                pct,
-                "{}\n{} ({}s)".format(submit_msg, title[:60], int(elapsed)),
-            )
+            last_dialog_update = _pump_dialog_progress(last_dialog_update)
         # Race window re-check: prefer adopted nzo_id over a failed submit.
         nzo_id = _current_adoption_hit()
         if nzo_id and not submit_result[0]:
@@ -2495,24 +2507,31 @@ def _submit_nzb_with_ui_pump(
             )
             return nzo_id, None
         return submit_result[0], submit_result[1]
-    finally:
+
+    def _skip_thread_join(t):
+        """Whether the cleanup loop should leave thread ``t`` un-joined."""
+        if t is submit_t and adopted_during_submit[0] and not submit_done.is_set():
+            return True
+        if t in (probe_t, history_probe_t) and (
+            _current_adoption_hit() or submit_result[0] or submit_result[1]
+        ):
+            # A successful addurl response is authoritative. The adoption
+            # probe may still be blocked in a read-only queue/history API
+            # call, so do not keep the post-picker submit path waiting on
+            # cleanup after we already have the nzo_id or submitted result.
+            # A terminal submit error is just as authoritative for the
+            # immediate UI path; retries/adoption happen in the caller.
+            return True
+        return False
+
+    def _join_started_threads():
         # Signal the probe worker to exit its wait loop, then give cleanup a
         # brief bounded window. If we already adopted while addurl is still
         # blocked, waiting on that uninterruptible HTTP worker only adds
         # latency; it is daemon=True and will die with the plugin interpreter.
         queue_stop.set()
         for t in started_threads:
-            if t is submit_t and adopted_during_submit[0] and not submit_done.is_set():
-                continue
-            if t in (probe_t, history_probe_t) and (
-                _current_adoption_hit() or submit_result[0] or submit_result[1]
-            ):
-                # A successful addurl response is authoritative. The adoption
-                # probe may still be blocked in a read-only queue/history API
-                # call, so do not keep the post-picker submit path waiting on
-                # cleanup after we already have the nzo_id or submitted result.
-                # A terminal submit error is just as authoritative for the
-                # immediate UI path; retries/adoption happen in the caller.
+            if _skip_thread_join(t):
                 continue
             try:
                 t.join(timeout=1)
@@ -2526,6 +2545,11 @@ def _submit_nzb_with_ui_pump(
                     "NZB-DAV: Resolver worker join failed: {}".format(e),
                     xbmc.LOGDEBUG,
                 )
+
+    try:
+        return _run_pump_loop()
+    finally:
+        _join_started_threads()
 
 
 def _get_submit_timeout_seconds(settings_getter=None):
@@ -3000,17 +3024,14 @@ def _submit_nzb_with_retries(
     return None
 
 
-def _submit_fallback_candidates(
-    candidates,
-    monitor,
-    stop_event=None,
-    on_job=None,
-    settings_getter=None,
-    dead=None,
-    primary_nzb_url=None,
+def _collect_fallback_candidate_jobs(
+    candidates, stop_event=None, dead=None, primary_nzb_url=None
 ):
-    """Submit duplicate fallback candidates as standby nzbdav jobs."""
-    fallback_jobs = []
+    """Filter raw candidates into ``(candidate, nzb_url, title, job_name)`` rows.
+
+    Drops non-dicts, entries missing a link/title, provably-dead URLs, and the
+    active primary's own release.
+    """
     candidate_jobs = []
     for index, candidate in enumerate(candidates or [], start=1):
         if stop_event is not None and stop_event.is_set():
@@ -3040,8 +3061,11 @@ def _submit_fallback_candidates(
             continue
         job_name = build_fallback_job_name(title, nzb_url, index)
         candidate_jobs.append((candidate, nzb_url, title, job_name))
+    return candidate_jobs
 
-    job_names = [row[3] for row in candidate_jobs]
+
+def _lookup_existing_fallback_jobs(job_names, settings_getter=None):
+    """Return ``{job_name: job}`` for fallback names already in nzbdav."""
     completed_jobs = find_completed_by_names(
         job_names, **_settings_getter_kwargs(settings_getter)
     )
@@ -3051,71 +3075,115 @@ def _submit_fallback_candidates(
     )
     existing_jobs = dict(completed_jobs)
     existing_jobs.update(queued_jobs)
+    return existing_jobs
+
+
+def _submit_one_fallback_candidate(
+    nzb_url, job_name, monitor, settings_getter=None, dead=None
+):
+    """Submit a single fallback candidate; return its ``nzo_id`` or ``None``."""
+    try:
+        nzo_id, submit_error = submit_nzb(
+            nzb_url, job_name, **_settings_getter_kwargs(settings_getter)
+        )
+    except Exception as error:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: Fallback submit failed for '{}': {}".format(job_name, error),
+            xbmc.LOGWARNING,
+        )
+        return None
+    if not nzo_id and submit_error:
+        status = submit_error.get("status")
+        if status == "timeout":
+            xbmc.log(
+                "NZB-DAV: Fallback submit timed out for '{}'; probing "
+                "queue/history in background".format(job_name),
+                xbmc.LOGWARNING,
+            )
+            nzo_id = _adopt_queued_or_completed_job(
+                job_name, monitor, settings_getter=settings_getter
+            )
+        if not nzo_id:
+            if dead is not None and is_provably_dead_submit_error(submit_error):
+                dead.add(nzb_url=nzb_url)
+            xbmc.log(
+                "NZB-DAV: Fallback submit skipped for '{}' (status={}): {}".format(
+                    job_name, status, submit_error.get("message", "")
+                ),
+                xbmc.LOGWARNING,
+            )
+            return None
+    if not nzo_id:
+        xbmc.log(
+            "NZB-DAV: Fallback submit did not create job for '{}'".format(job_name),
+            xbmc.LOGWARNING,
+        )
+        return None
+    return nzo_id
+
+
+def _adopt_existing_fallback_job(existing_job, nzb_url, title, job_name):
+    """Build the fallback-job record for an already-present nzbdav job."""
+    xbmc.log(
+        "NZB-DAV: Adopting existing fallback job '{}' nzo_id={}".format(
+            job_name, existing_job["nzo_id"]
+        ),
+        xbmc.LOGINFO,
+    )
+    return {
+        "title": title,
+        "nzb_url": nzb_url,
+        "job_name": job_name,
+        "nzo_id": existing_job["nzo_id"],
+        "stream_url": "",
+        "stream_headers": {},
+        "content_length": 0,
+        "status": existing_job.get("status", ""),
+    }
+
+
+def _submit_fallback_candidates(
+    candidates,
+    monitor,
+    stop_event=None,
+    on_job=None,
+    settings_getter=None,
+    dead=None,
+    primary_nzb_url=None,
+):
+    """Submit duplicate fallback candidates as standby nzbdav jobs."""
+    candidate_jobs = _collect_fallback_candidate_jobs(
+        candidates,
+        stop_event=stop_event,
+        dead=dead,
+        primary_nzb_url=primary_nzb_url,
+    )
+    existing_jobs = _lookup_existing_fallback_jobs(
+        [row[3] for row in candidate_jobs], settings_getter=settings_getter
+    )
+
+    fallback_jobs = []
+
+    def _record(job):
+        fallback_jobs.append(job)
+        if on_job is not None:
+            on_job(dict(job))
 
     for _candidate, nzb_url, title, job_name in candidate_jobs:
         if stop_event is not None and stop_event.is_set():
             break
         existing_job = existing_jobs.get(job_name)
         if existing_job and existing_job.get("nzo_id"):
-            xbmc.log(
-                "NZB-DAV: Adopting existing fallback job '{}' nzo_id={}".format(
-                    job_name, existing_job["nzo_id"]
-                ),
-                xbmc.LOGINFO,
-            )
-            fallback_jobs.append(
-                {
-                    "title": title,
-                    "nzb_url": nzb_url,
-                    "job_name": job_name,
-                    "nzo_id": existing_job["nzo_id"],
-                    "stream_url": "",
-                    "stream_headers": {},
-                    "content_length": 0,
-                    "status": existing_job.get("status", ""),
-                }
-            )
-            if on_job is not None:
-                on_job(dict(fallback_jobs[-1]))
-            continue
-        try:
-            nzo_id, submit_error = submit_nzb(
-                nzb_url, job_name, **_settings_getter_kwargs(settings_getter)
-            )
-        except Exception as error:  # pylint: disable=broad-except
-            xbmc.log(
-                "NZB-DAV: Fallback submit failed for '{}': {}".format(job_name, error),
-                xbmc.LOGWARNING,
+            _record(
+                _adopt_existing_fallback_job(existing_job, nzb_url, title, job_name)
             )
             continue
-        if not nzo_id and submit_error:
-            status = submit_error.get("status")
-            if status == "timeout":
-                xbmc.log(
-                    "NZB-DAV: Fallback submit timed out for '{}'; probing "
-                    "queue/history in background".format(job_name),
-                    xbmc.LOGWARNING,
-                )
-                nzo_id = _adopt_queued_or_completed_job(
-                    job_name, monitor, settings_getter=settings_getter
-                )
-            if not nzo_id:
-                if dead is not None and is_provably_dead_submit_error(submit_error):
-                    dead.add(nzb_url=nzb_url)
-                xbmc.log(
-                    "NZB-DAV: Fallback submit skipped for '{}' (status={}): {}".format(
-                        job_name, status, submit_error.get("message", "")
-                    ),
-                    xbmc.LOGWARNING,
-                )
-                continue
+        nzo_id = _submit_one_fallback_candidate(
+            nzb_url, job_name, monitor, settings_getter=settings_getter, dead=dead
+        )
         if not nzo_id:
-            xbmc.log(
-                "NZB-DAV: Fallback submit did not create job for '{}'".format(job_name),
-                xbmc.LOGWARNING,
-            )
             continue
-        fallback_jobs.append(
+        _record(
             {
                 "title": title,
                 "nzb_url": nzb_url,
@@ -3126,8 +3194,6 @@ def _submit_fallback_candidates(
                 "content_length": 0,
             }
         )
-        if on_job is not None:
-            on_job(dict(fallback_jobs[-1]))
     return fallback_jobs
 
 
@@ -3987,6 +4053,37 @@ def _handle_resolve_exception(label, error, handle=None):
         xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
 
 
+def _record_download_soft(title, download_pubdate, download_size):
+    """Record a confirmed-playable download, never letting bookkeeping raise."""
+    # The stream is confirmed playable (the only success path). Record the
+    # release's Usenet post-date keyed by title ONLY now -- never on a submit
+    # that later times out / fails / is cancelled -- so the picker can
+    # distinguish THIS completed download from a same-name repost posted on a
+    # different day, and a failed attempt can't make a different repost's
+    # same-name completed row look adopted here. Fail-soft: never let
+    # bookkeeping break playback.
+    try:
+        record_download(title, download_pubdate, download_size)
+    except Exception as error:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: download-ledger record failed (non-fatal): {}".format(error),
+            xbmc.LOGDEBUG,
+        )
+
+
+def _job_status_is_dead(job_status):
+    return str((job_status or {}).get("status", "")).lower() in ("failed", "deleted")
+
+
+def _cancel_job_on_shutdown(nzo_id, settings_getter):
+    """Cancel the job on Kodi shutdown, matching the settings-getter contract."""
+    xbmc.log("NZB-DAV: Kodi shutdown detected, aborting resolve", xbmc.LOGINFO)
+    if settings_getter is None:
+        cancel_job(nzo_id)
+    else:
+        cancel_job(nzo_id, settings_getter=settings_getter)
+
+
 def _poll_until_ready(
     nzb_url,
     title,
@@ -4073,14 +4170,17 @@ def _poll_until_ready(
     max_no_video_retries = 5
     near_complete_fast_repolls = 0
 
-    while True:
-        iteration += 1
-        elapsed = time.monotonic() - start_time
-        if _abort_poll_before_fetch(
-            iteration, elapsed, download_timeout, dialog, nzo_id, title
-        ):
-            return None, None
+    def _mark_dead(nzo):
+        if dead is not None:
+            dead.add(nzb_url=nzb_url, nzo_id=nzo)
 
+    def _run_one_poll():
+        """Run one poll iteration.
+
+        Returns the ``(stream_url, stream_headers)`` tuple to return from
+        ``_poll_until_ready``, or ``_POLL_CONTINUE`` to keep looping.
+        """
+        nonlocal last_status, no_video_retries, near_complete_fast_repolls
         job_status, history, webdav_error = _poll_once(
             nzo_id,
             title,
@@ -4094,10 +4194,8 @@ def _poll_until_ready(
             job_status, nzo_id, dialog, last_status
         )
         if should_stop:
-            if dead is not None and str(
-                (job_status or {}).get("status", "")
-            ).lower() in ("failed", "deleted"):
-                dead.add(nzb_url=nzb_url, nzo_id=nzo_id)
+            if _job_status_is_dead(job_status):
+                _mark_dead(nzo_id)
             return None, None
 
         should_stop, stream_url, stream_headers, no_video_retries = (
@@ -4113,26 +4211,11 @@ def _poll_until_ready(
             )
         )
         if stream_url:
-            # The stream is confirmed playable (the only success path). Record
-            # the release's Usenet post-date keyed by title ONLY now -- never on
-            # a submit that later times out / fails / is cancelled -- so the
-            # picker can distinguish THIS completed download from a same-name
-            # repost posted on a different day, and a failed attempt can't make a
-            # different repost's same-name completed row look adopted here.
-            # Fail-soft: never let bookkeeping break playback.
-            try:
-                record_download(title, download_pubdate, download_size)
-            except Exception as error:  # pylint: disable=broad-except
-                xbmc.log(
-                    "NZB-DAV: download-ledger record failed (non-fatal): {}".format(
-                        error
-                    ),
-                    xbmc.LOGDEBUG,
-                )
+            _record_download_soft(title, download_pubdate, download_size)
             return stream_url, stream_headers
         if should_stop:
-            if dead is not None and (history or {}).get("status") == "Failed":
-                dead.add(nzb_url=nzb_url, nzo_id=nzo_id)
+            if (history or {}).get("status") == "Failed":
+                _mark_dead(nzo_id)
             return None, None
 
         if _handle_webdav_error(nzo_id, webdav_error):
@@ -4148,13 +4231,20 @@ def _poll_until_ready(
             job_status, poll_interval, near_complete_fast_repolls
         )
         if _wait_for_abort_or_timeout(monitor, wait_seconds):
-            # Kodi is shutting down
-            xbmc.log("NZB-DAV: Kodi shutdown detected, aborting resolve", xbmc.LOGINFO)
-            if settings_getter is None:
-                cancel_job(nzo_id)
-            else:
-                cancel_job(nzo_id, settings_getter=settings_getter)
+            _cancel_job_on_shutdown(nzo_id, settings_getter)
             return None, None
+        return _POLL_CONTINUE
+
+    while True:
+        iteration += 1
+        elapsed = time.monotonic() - start_time
+        if _abort_poll_before_fetch(
+            iteration, elapsed, download_timeout, dialog, nzo_id, title
+        ):
+            return None, None
+        result = _run_one_poll()
+        if result is not _POLL_CONTINUE:
+            return result
 
 
 def _nzbget_enabled(settings_getter=None):

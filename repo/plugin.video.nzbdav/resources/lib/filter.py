@@ -411,6 +411,98 @@ def _get_filter_settings(settings_getter=None):
     }
 
 
+def _as_list(value):
+    """Coerce a PTT field into a list (wrapping a bare string)."""
+    if isinstance(value, str):
+        return [value]
+    return value
+
+
+def _normalize_parsed_meta(parsed):
+    """Normalize a PTT-style parsed dict into the metadata contract.
+
+    Assumes PTT returned typed data matching its documented contract:
+    strings for resolution/codec/group/year, lists (or strings) for
+    hdr/audio/languages/channels. May raise TypeError/AttributeError/
+    KeyError if PTT drifts from that contract; the caller catches that.
+    """
+    raw_res = parsed.get("resolution", "") or ""
+    resolution = _RESOLUTION_MAP.get(raw_res, raw_res)
+
+    # Dedup HDR / audio lists. PTT can return duplicates when a release
+    # name mentions the same token twice (e.g. "Atmos.TrueHD.Atmos");
+    # the duplicates broke combo-rank logic that uses set-membership +
+    # list-position cues (Atmos+TrueHD combo, language filter). Use a
+    # dict-as-ordered-set to preserve PTT's first-occurrence order.
+    # Closes TODO.md §H.3.
+    raw_hdr = _as_list(parsed.get("hdr", []))
+    hdr_list = list(dict.fromkeys(_HDR_MAP.get(h, h) for h in raw_hdr if h))
+
+    raw_audio = _as_list(parsed.get("audio", []))
+    audio_list = list(dict.fromkeys(_AUDIO_MAP.get(a, a) for a in raw_audio if a))
+
+    raw_codec = parsed.get("codec", "") or ""
+    codec = _CODEC_MAP.get(raw_codec, raw_codec)
+
+    raw_langs = _as_list(parsed.get("languages", []))
+    raw_langs = list(dict.fromkeys(raw_langs))  # dedup, preserve order
+
+    raw_channels = _as_list(parsed.get("channels", []))
+    channels = raw_channels[0] if raw_channels else ""
+
+    meta = _common_parsed_fields(parsed)
+    meta.update(
+        {
+            "resolution": resolution,
+            "hdr": hdr_list,
+            "audio": audio_list,
+            "codec": codec,
+            "languages": raw_langs,
+            "channels": channels,
+        }
+    )
+    return meta
+
+
+def _common_parsed_fields(parsed):
+    """Extract the scalar metadata fields shared by both parse paths."""
+    return {
+        "group": parsed.get("group", "") or "",
+        "quality": parsed.get("quality", "") or "",
+        "edition": parsed.get("edition", "") or "",
+        "proper": bool(parsed.get("proper", False)),
+        "repack": bool(parsed.get("repack", False)),
+        "year": parsed.get("year", 0) or 0,
+        "upscaled": bool(parsed.get("upscaled", False)),
+        "container": parsed.get("container", "") or "",
+    }
+
+
+def _normalize_fallback_meta(parsed):
+    """Normalize a regex-fallback parsed dict (string-only filtering)."""
+    raw_res = parsed.get("resolution", "") or ""
+    resolution = _RESOLUTION_MAP.get(raw_res, raw_res)
+    raw_hdr = _as_list(parsed.get("hdr", []) or [])
+    hdr_list = [_HDR_MAP.get(h, h) for h in raw_hdr if isinstance(h, str)]
+    raw_audio = _as_list(parsed.get("audio", []) or [])
+    audio_list = [_AUDIO_MAP.get(a, a) for a in raw_audio if isinstance(a, str)]
+    codec = _CODEC_MAP.get(parsed.get("codec", ""), parsed.get("codec", ""))
+    raw_langs = _as_list(parsed.get("languages", []) or [])
+
+    meta = _common_parsed_fields(parsed)
+    meta.update(
+        {
+            "resolution": resolution,
+            "hdr": hdr_list,
+            "audio": audio_list,
+            "codec": codec,
+            "languages": raw_langs,
+            "channels": "",
+        }
+    )
+    return meta
+
+
 def parse_title_metadata(title):
     """Parse a scene title and return normalized metadata dict."""
     try:
@@ -429,101 +521,21 @@ def parse_title_metadata(title):
         if fallback.get("resolution") or fallback.get("codec"):
             parsed = fallback
 
-    # The normalization block below assumes PTT returned typed data
-    # matching its documented contract: strings for resolution/codec/group/
-    # year, lists (or strings) for hdr/audio/languages/channels. If the
-    # vendored PTT drifts from that contract (or a custom transformer
-    # returns e.g. a dict for hdr), the comprehensions below explode with
-    # TypeError. Catch that so a single bad release name doesn't kill the
-    # whole search; fall back to the regex-only metadata extractor.
+    # The normalization assumes PTT returned typed data matching its
+    # documented contract. If the vendored PTT drifts from that contract
+    # (or a custom transformer returns e.g. a dict for hdr), the
+    # comprehensions explode with TypeError. Catch that so a single bad
+    # release name doesn't kill the whole search; fall back to the
+    # regex-only metadata extractor.
     try:
-        raw_res = parsed.get("resolution", "") or ""
-        resolution = _RESOLUTION_MAP.get(raw_res, raw_res)
-
-        # Dedup HDR / audio lists. PTT can return duplicates when a release
-        # name mentions the same token twice (e.g. "Atmos.TrueHD.Atmos");
-        # the duplicates broke combo-rank logic that uses set-membership +
-        # list-position cues (Atmos+TrueHD combo, language filter). Use a
-        # dict-as-ordered-set to preserve PTT's first-occurrence order.
-        # Closes TODO.md §H.3.
-        raw_hdr = parsed.get("hdr", [])
-        if isinstance(raw_hdr, str):
-            raw_hdr = [raw_hdr]
-        hdr_list = list(dict.fromkeys(_HDR_MAP.get(h, h) for h in raw_hdr if h))
-
-        raw_audio = parsed.get("audio", [])
-        if isinstance(raw_audio, str):
-            raw_audio = [raw_audio]
-        audio_list = list(dict.fromkeys(_AUDIO_MAP.get(a, a) for a in raw_audio if a))
-
-        raw_codec = parsed.get("codec", "") or ""
-        codec = _CODEC_MAP.get(raw_codec, raw_codec)
-
-        raw_langs = parsed.get("languages", [])
-        if isinstance(raw_langs, str):
-            raw_langs = [raw_langs]
-        raw_langs = list(dict.fromkeys(raw_langs))  # dedup, preserve order
-
-        group = parsed.get("group", "") or ""
-        quality = parsed.get("quality", "") or ""
-        edition = parsed.get("edition", "") or ""
-        proper = bool(parsed.get("proper", False))
-        repack = bool(parsed.get("repack", False))
-        year = parsed.get("year", 0) or 0
-        upscaled = bool(parsed.get("upscaled", False))
-        container = parsed.get("container", "") or ""
-
-        raw_channels = parsed.get("channels", [])
-        if isinstance(raw_channels, str):
-            raw_channels = [raw_channels]
-        channels = raw_channels[0] if raw_channels else ""
+        return _normalize_parsed_meta(parsed)
     except (TypeError, AttributeError, KeyError) as e:
         xbmc.log(
             "NZB-DAV: PTT metadata normalisation failed for '{}': {}; "
             "falling back to regex parse".format(title, e),
             xbmc.LOGWARNING,
         )
-        parsed = _fallback_parse(title)
-        raw_res = parsed.get("resolution", "") or ""
-        resolution = _RESOLUTION_MAP.get(raw_res, raw_res)
-        raw_hdr = parsed.get("hdr", []) or []
-        if isinstance(raw_hdr, str):
-            raw_hdr = [raw_hdr]
-        hdr_list = [_HDR_MAP.get(h, h) for h in raw_hdr if isinstance(h, str)]
-        raw_audio = parsed.get("audio", []) or []
-        if isinstance(raw_audio, str):
-            raw_audio = [raw_audio]
-        audio_list = [_AUDIO_MAP.get(a, a) for a in raw_audio if isinstance(a, str)]
-        codec = _CODEC_MAP.get(parsed.get("codec", ""), parsed.get("codec", ""))
-        raw_langs = parsed.get("languages", []) or []
-        if isinstance(raw_langs, str):
-            raw_langs = [raw_langs]
-        group = parsed.get("group", "") or ""
-        quality = parsed.get("quality", "") or ""
-        edition = parsed.get("edition", "") or ""
-        proper = bool(parsed.get("proper", False))
-        repack = bool(parsed.get("repack", False))
-        year = parsed.get("year", 0) or 0
-        upscaled = bool(parsed.get("upscaled", False))
-        container = parsed.get("container", "") or ""
-        channels = ""
-
-    return {
-        "resolution": resolution,
-        "hdr": hdr_list,
-        "audio": audio_list,
-        "codec": codec,
-        "languages": raw_langs,
-        "group": group,
-        "quality": quality,
-        "edition": edition,
-        "proper": proper,
-        "repack": repack,
-        "channels": channels,
-        "year": year,
-        "upscaled": upscaled,
-        "container": container,
-    }
+        return _normalize_fallback_meta(_fallback_parse(title))
 
 
 # Whole-collection / complete-series PHRASING that marks a season-tag-less
@@ -647,6 +659,11 @@ def release_is_pack(title):
     # via this branch or the bare-season PTT check below (PR #340 Codex review).
     if not episode_tags and _PACK_PHRASE_RE.search(title):
         return True
+    return _ptt_season_episode_is_pack(title)
+
+
+def _ptt_season_episode_is_pack(title):
+    """True when PTT's season/episode counts denote a multi-item pack."""
     try:
         from resources.lib.ptt import parse_title
 
@@ -683,47 +700,82 @@ def matches_filters(result, meta, settings):
         ``False`` the first time any filter excludes it. Pure function
         — does not mutate any input.
     """
-    title_lower = result["title"].lower()
-
-    if settings["resolutions"] and meta["resolution"]:
-        if meta["resolution"] not in settings["resolutions"]:
-            return False
-
-    if settings["hdr"] and meta["hdr"]:
-        if not any(h in settings["hdr"] for h in meta["hdr"]):
-            return False
-    if settings["hdr"] and not meta["hdr"] and "SDR" not in settings["hdr"]:
+    if not _meta_filters_pass(meta, settings):
         return False
+    if not _keyword_filters_pass(result["title"].lower(), settings):
+        return False
+    if meta["group"] and meta["group"].lower() in settings["exclude_release_group"]:
+        return False
+    if not _size_filter_passes(result, settings):
+        return False
+    return True
 
+
+def _resolution_filter_passes(meta, settings):
+    if settings["resolutions"] and meta["resolution"]:
+        return meta["resolution"] in settings["resolutions"]
+    return True
+
+
+def _hdr_filter_passes(meta, settings):
+    wanted = settings["hdr"]
+    if not wanted:
+        return True
+    if meta["hdr"]:
+        return any(h in wanted for h in meta["hdr"])
+    return "SDR" in wanted
+
+
+def _audio_filter_passes(meta, settings):
     if settings["audio"] and meta["audio"]:
-        if not any(a in settings["audio"] for a in meta["audio"]):
-            return False
+        return any(a in settings["audio"] for a in meta["audio"])
+    return True
 
+
+def _codec_filter_passes(meta, settings):
     if settings["codecs"] and meta["codec"]:
-        if meta["codec"] not in settings["codecs"]:
-            return False
+        return meta["codec"] in settings["codecs"]
+    return True
 
+
+def _language_filter_passes(meta, settings):
     if settings["languages"] and meta["languages"]:
-        if not any(lang in settings["languages"] for lang in meta["languages"]):
-            return False
+        return any(lang in settings["languages"] for lang in meta["languages"])
+    return True
 
+
+def _meta_filters_pass(meta, settings):
+    """True iff the resolution/HDR/audio/codec/language filters all accept."""
+    return (
+        _resolution_filter_passes(meta, settings)
+        and _hdr_filter_passes(meta, settings)
+        and _audio_filter_passes(meta, settings)
+        and _codec_filter_passes(meta, settings)
+        and _language_filter_passes(meta, settings)
+    )
+
+
+def _keyword_filters_pass(title_lower, settings):
+    """True iff exclude/require keyword filters accept this title."""
     for kw in settings["exclude_keywords"]:
         if kw in title_lower:
             return False
-
     for kw in settings["require_keywords"]:
         if kw not in title_lower:
             return False
+    return True
 
-    if meta["group"] and meta["group"].lower() in settings["exclude_release_group"]:
-        return False
 
-    # Size filter: a 0-byte / missing-size placeholder result used to
-    # skip both bounds because `if result.get("size"):` is falsy for
-    # "0" and "". That let unparseable / placeholder rows slip past
-    # min_size when the user wanted to filter them out. Now: reach the
-    # size check unconditionally; treat unparseable size as 0 MB so a
-    # min_size>0 filter rejects it. Closes TODO.md §H.3.
+def _size_filter_passes(result, settings):
+    """True iff the result's size is within the configured bounds.
+
+    A 0-byte / missing-size placeholder result used to skip both bounds
+    because `if result.get("size"):` is falsy for "0" and "". That let
+    unparseable / placeholder rows slip past min_size when the user
+    wanted to filter them out. Now: reach the size check unconditionally;
+    treat unparseable size as 0 MB so a min_size>0 filter rejects it.
+    Closes TODO.md §H.3.
+    """
     raw_size = result.get("size", "")
     try:
         size_mb = int(raw_size) / 1048576 if raw_size not in (None, "") else 0
@@ -733,7 +785,6 @@ def matches_filters(result, meta, settings):
         return False
     if settings["max_size"] > 0 and size_mb > settings["max_size"]:
         return False
-
     return True
 
 
@@ -947,6 +998,79 @@ def _sort_results(results, settings):
         return sorted(results, key=_relevance_key)
 
 
+def _fallback_audio(t):
+    """Detect audio tags via regex; mirrors PTT's audio list ordering."""
+    audio = []
+    if _RE_ATMOS.search(t):
+        audio.append("Atmos")
+    if _RE_TRUEHD.search(t):
+        audio.append("TrueHD")
+    if _RE_DTSHD.search(t):
+        audio.append("DTS-HD MA")
+    if _RE_DDPLUS.search(t):
+        audio.append("DD+")
+    if _RE_DD.search(t):
+        audio.append("DD")
+    if _RE_AAC.search(t):
+        audio.append("AAC")
+    if _RE_DTS.search(t) and not audio:
+        audio.append("DTS")
+    return audio
+
+
+def _fallback_hdr(t):
+    """Detect HDR tags via regex."""
+    hdr = []
+    if _RE_DV.search(t):
+        hdr.append("DV")
+    # HDR10+ alternation needs both branches anchored to a leading word
+    # boundary so we don't pick up substrings inside another token.
+    if _RE_HDR10PLUS.search(t):
+        hdr.append("HDR10+")
+    # `hdr10` without the optional `0` would match `hdr1`; require the digit.
+    elif _RE_HDR10.search(t):
+        hdr.append("HDR10")
+    if _RE_HLG.search(t):
+        hdr.append("HLG")
+    return hdr
+
+
+def _fallback_quality(t):
+    """Map a quality/source regex hit to a normalized label, or ""."""
+    m = _RE_QUALITY.search(t)
+    if not m:
+        return ""
+    raw_q = m.group(1).upper().replace(" ", "").replace(".", "").replace("-", "")
+    if "REMUX" in raw_q:
+        return "BluRay REMUX"
+    if "BLURAY" in raw_q or "BDRIP" in raw_q:
+        return "BluRay"
+    if "WEBDL" in raw_q:
+        return "WEB-DL"
+    if "WEBRIP" in raw_q:
+        return "WEBRip"
+    if "HDTV" in raw_q:
+        return "HDTV"
+    return raw_q
+
+
+def _fallback_year(t):
+    """Parse a plausible release year from the title, or 0.
+
+    Range chosen broadly enough that this isn't a time bomb the next
+    time we forget to bump it (TODO.md §H.2-M44 was the previous
+    bump — 2030 turned out to be too tight). 2100 is well past any
+    plausible release window for content this addon would index.
+    """
+    m = _RE_YEAR.search(t)
+    if not m:
+        return 0
+    yr = int(m.group(1))
+    if 1920 <= yr <= 2100:
+        return yr
+    return 0
+
+
 def _fallback_parse(title):
     """Simple regex fallback when PTT fails or returns empty."""
     result = {
@@ -965,88 +1089,28 @@ def _fallback_parse(title):
 
     t = title.replace("[", ".").replace("]", ".").replace("(", ".").replace(")", ".")
 
-    # Resolution
     m = _RE_RES.search(t)
     if m:
         result["resolution"] = m.group(1)
 
-    # Codec
     m = _RE_CODEC.search(t)
     if m:
         result["codec"] = m.group(1).lower()
 
-    # Audio
-    audio = []
-    if _RE_ATMOS.search(t):
-        audio.append("Atmos")
-    if _RE_TRUEHD.search(t):
-        audio.append("TrueHD")
-    if _RE_DTSHD.search(t):
-        audio.append("DTS-HD MA")
-    if _RE_DDPLUS.search(t):
-        audio.append("DD+")
-    if _RE_DD.search(t):
-        audio.append("DD")
-    if _RE_AAC.search(t):
-        audio.append("AAC")
-    if _RE_DTS.search(t) and not audio:
-        audio.append("DTS")
-    result["audio"] = audio
+    result["audio"] = _fallback_audio(t)
+    result["hdr"] = _fallback_hdr(t)
+    result["quality"] = _fallback_quality(t)
 
-    # HDR
-    hdr = []
-    if _RE_DV.search(t):
-        hdr.append("DV")
-    # HDR10+ alternation needs both branches anchored to a leading word
-    # boundary so we don't pick up substrings inside another token.
-    if _RE_HDR10PLUS.search(t):
-        hdr.append("HDR10+")
-    # `hdr10` without the optional `0` would match `hdr1`; require the digit.
-    elif _RE_HDR10.search(t):
-        hdr.append("HDR10")
-    if _RE_HLG.search(t):
-        hdr.append("HLG")
-    result["hdr"] = hdr
-
-    # Quality / Source
-    m = _RE_QUALITY.search(t)
-    if m:
-        raw_q = m.group(1).upper().replace(" ", "").replace(".", "").replace("-", "")
-        if "REMUX" in raw_q:
-            result["quality"] = "BluRay REMUX"
-        elif "BLURAY" in raw_q or "BDRIP" in raw_q:
-            result["quality"] = "BluRay"
-        elif "WEBDL" in raw_q:
-            result["quality"] = "WEB-DL"
-        elif "WEBRIP" in raw_q:
-            result["quality"] = "WEBRip"
-        elif "HDTV" in raw_q:
-            result["quality"] = "HDTV"
-        else:
-            result["quality"] = raw_q
-
-    # Edition
     m = _RE_EDITION.search(t)
     if m:
         result["edition"] = m.group(1).replace(".", " ")
 
-    # Channels
     m = _RE_CHANNELS.search(t)
     if m:
         result["channels"] = m.group(1)
 
-    # Year
-    # Range chosen broadly enough that this isn't a time bomb the next
-    # time we forget to bump it (TODO.md §H.2-M44 was the previous
-    # bump — 2030 turned out to be too tight). 2100 is well past any
-    # plausible release window for content this addon would index.
-    m = _RE_YEAR.search(t)
-    if m:
-        yr = int(m.group(1))
-        if 1920 <= yr <= 2100:
-            result["year"] = yr
+    result["year"] = _fallback_year(t)
 
-    # Upscaled
     if _RE_UPSCALED.search(t):
         result["upscaled"] = True
 

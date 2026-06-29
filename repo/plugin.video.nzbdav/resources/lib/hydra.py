@@ -177,6 +177,53 @@ def _legacy_hydra_title_fallback(primary, title):
     return fallback
 
 
+def _resolve_max_results(settings_getter):
+    """Read and clamp the user's ``max_results`` setting.
+
+    `max_results` is exposed via Kodi's number input but the addon also
+    ships with old user profiles that may have the setting as a non-
+    numeric string (legacy text input, hand-edited XML). Guard the int
+    conversion + clamp to a sensible range — TODO.md §H.2-M20 / §H.3.
+    """
+    if settings_getter is not None:
+        raw_max = settings_getter("max_results", "25")
+    else:
+        raw_max = addon.getSetting("max_results")
+    try:
+        max_results = int(raw_max) if raw_max not in (None, "") else 25
+    except (TypeError, ValueError):
+        max_results = 25
+    return max(1, min(max_results, 10000))
+
+
+def _select_hydra_fallback(plan, title, has_provider_caps):
+    """Pick the fallback query, or None when retrying would be pointless."""
+    fallback = (
+        plan.fallback
+        if has_provider_caps
+        else _legacy_hydra_title_fallback(plan.primary, title)
+    )
+    if fallback and fallback != plan.primary:
+        return fallback
+    return None
+
+
+def _run_hydra_fallback(base_url, fallback, redact_url):
+    """Run a fallback Hydra query and return (results, error)."""
+    xbmc.log(
+        "NZB-DAV: No results with primary Hydra query, retrying fallback",
+        xbmc.LOGINFO,
+    )
+    fallback_url = _search_url(base_url, fallback)
+    xbmc.log(
+        "NZB-DAV: Hydra fallback URL: {}".format(redact_url(fallback_url)),
+        xbmc.LOGDEBUG,
+    )
+    return _fetch_planned_hydra_results(
+        base_url, fallback, "Hydra fallback search failed"
+    )
+
+
 def search_hydra(
     search_type,
     title,
@@ -216,19 +263,7 @@ def search_hydra(
         )
         return [], "Failed to read NZBHydra settings"
 
-    # `max_results` is exposed via Kodi's number input but the addon also
-    # ships with old user profiles that may have the setting as a non-
-    # numeric string (legacy text input, hand-edited XML). Guard the int
-    # conversion + clamp to a sensible range — TODO.md §H.2-M20 / §H.3.
-    if settings_getter is not None:
-        raw_max = settings_getter("max_results", "25")
-    else:
-        raw_max = addon.getSetting("max_results")
-    try:
-        max_results = int(raw_max) if raw_max not in (None, "") else 25
-    except (TypeError, ValueError):
-        max_results = 25
-    max_results = max(1, min(max_results, 10000))
+    max_results = _resolve_max_results(settings_getter)
     caps, has_provider_caps = _get_hydra_caps_for_search(base_url, api_key)
     plan = plan_newznab_search(
         provider_kind="nzbhydra2",
@@ -264,24 +299,9 @@ def search_hydra(
     if error:
         return [], error
 
-    fallback = (
-        plan.fallback
-        if has_provider_caps
-        else _legacy_hydra_title_fallback(plan.primary, title)
-    )
-    if not results and fallback and fallback != plan.primary:
-        xbmc.log(
-            "NZB-DAV: No results with primary Hydra query, retrying fallback",
-            xbmc.LOGINFO,
-        )
-        fallback_url = _search_url(base_url, fallback)
-        xbmc.log(
-            "NZB-DAV: Hydra fallback URL: {}".format(redact_url(fallback_url)),
-            xbmc.LOGDEBUG,
-        )
-        results, error = _fetch_planned_hydra_results(
-            base_url, fallback, "Hydra fallback search failed"
-        )
+    fallback = _select_hydra_fallback(plan, title, has_provider_caps)
+    if not results and fallback:
+        results, error = _run_hydra_fallback(base_url, fallback, redact_url)
         if error:
             return [], error
 
@@ -298,31 +318,16 @@ def parse_results(xml_text):
     return results
 
 
-def fetch_release_duplicate_uploads(picked, settings_getter=None):
-    """Return all Usenet uploads that share ``picked``'s release title.
+def _fetch_hydra_internal_search(base_url, title):
+    """POST to Hydra's internal search API and return its raw search results.
 
-    NZBHydra2's standard Newznab endpoint deduplicates results so the
-    runtime picker only sees one row per release group. This calls the
-    internal API with ``showSingleResultPerSearchResultGroup=false`` and
-    keeps rows whose exact ``title`` matches ``picked``'s, so the
-    resolver's fallback worker has real same-release/different-upload
-    peers to feed nzbdav-rs ahead of the first article failure.
+    Returns a list of raw result dicts (empty on any network/parse failure).
     """
     import json as _json
     from urllib.error import HTTPError as _HTTPError
     from urllib.error import URLError as _URLError
     from urllib.request import Request as _Request
     from urllib.request import urlopen as _urlopen
-
-    try:
-        base_url, _api_key = _get_settings(settings_getter)
-    except _HYDRA_REQUEST_ERRORS:
-        return []
-    if not base_url:
-        return []
-    title = picked.get("title", "") if isinstance(picked, dict) else ""
-    if not title:
-        return []
 
     payload = {
         "query": title,
@@ -350,30 +355,61 @@ def fetch_release_duplicate_uploads(picked, settings_getter=None):
         )
         return []
 
-    raw_results = data.get("searchResults", []) if isinstance(data, dict) else []
+    return data.get("searchResults", []) if isinstance(data, dict) else []
+
+
+def _duplicate_upload_from_raw(raw, title, picked_link):
+    """Normalize one raw internal-API row into a peer upload dict.
+
+    Returns ``None`` when the row is not a same-title/different-upload peer.
+    """
+    if not isinstance(raw, dict):
+        return None
+    if raw.get("title", "") != title:
+        return None
+    link = raw.get("link", "") or ""
+    if not link or link == picked_link:
+        return None
+    # Hydra's internal API uses different field names than the public
+    # Newznab one. Normalize back into the addon's standard result
+    # shape so downstream filter/profile/peer code is unchanged.
+    return {
+        "title": raw.get("title", ""),
+        "link": link,
+        "size": raw.get("size", "") or "",
+        "indexer": raw.get("indexer", "") or "",
+        "pubdate": "",
+        "age": "",
+    }
+
+
+def fetch_release_duplicate_uploads(picked, settings_getter=None):
+    """Return all Usenet uploads that share ``picked``'s release title.
+
+    NZBHydra2's standard Newznab endpoint deduplicates results so the
+    runtime picker only sees one row per release group. This calls the
+    internal API with ``showSingleResultPerSearchResultGroup=false`` and
+    keeps rows whose exact ``title`` matches ``picked``'s, so the
+    resolver's fallback worker has real same-release/different-upload
+    peers to feed nzbdav-rs ahead of the first article failure.
+    """
+    try:
+        base_url, _api_key = _get_settings(settings_getter)
+    except _HYDRA_REQUEST_ERRORS:
+        return []
+    if not base_url:
+        return []
+    title = picked.get("title", "") if isinstance(picked, dict) else ""
+    if not title:
+        return []
+
+    raw_results = _fetch_hydra_internal_search(base_url, title)
     picked_link = picked.get("link", "") if isinstance(picked, dict) else ""
     uploads = []
     for raw in raw_results:
-        if not isinstance(raw, dict):
-            continue
-        if raw.get("title", "") != title:
-            continue
-        link = raw.get("link", "") or ""
-        if not link or link == picked_link:
-            continue
-        # Hydra's internal API uses different field names than the public
-        # Newznab one. Normalize back into the addon's standard result
-        # shape so downstream filter/profile/peer code is unchanged.
-        uploads.append(
-            {
-                "title": raw.get("title", ""),
-                "link": link,
-                "size": raw.get("size", "") or "",
-                "indexer": raw.get("indexer", "") or "",
-                "pubdate": "",
-                "age": "",
-            }
-        )
+        upload = _duplicate_upload_from_raw(raw, title, picked_link)
+        if upload is not None:
+            uploads.append(upload)
     return uploads
 
 
