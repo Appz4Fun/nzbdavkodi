@@ -18,7 +18,12 @@ import math
 import os
 import re
 import select as _select
-import shutil
+
+# shutil is no longer used directly here (the ffmpeg/workdir helpers moved to
+# stream_proxy_ffmpeg), but tests patch ``stream_proxy.shutil.disk_usage`` and
+# the sibling reaches it through the shared module object, so keep it imported
+# on this module as the patch surface.
+import shutil  # noqa: F401  pylint: disable=unused-import
 import socket as _socket
 import struct
 import subprocess
@@ -31,14 +36,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn as _ThreadingMixIn
-from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 import xbmc
 
 try:
-    import xbmcaddon
+    # Imported for the Stage 1 sibling modules, which reach it via
+    # ``_sp.xbmcaddon`` (kept here so the try/except availability fallback and
+    # any test patch of ``stream_proxy.xbmcaddon`` stay on this module).
+    import xbmcaddon  # pylint: disable=unused-import
 except ImportError:
     xbmcaddon = None
 
@@ -60,7 +66,6 @@ except (ImportError, ModuleNotFoundError):
 
 from resources.lib import telemetry
 from resources.lib.dv_source import probe_dolby_vision_source
-from resources.lib.http_util import HTTP_USER_AGENT
 from resources.lib.http_util import notify as _notify
 from resources.lib.http_util import redact_text as _redact_text
 
@@ -188,42 +193,6 @@ _PASSTHROUGH_MIN_THROUGHPUT_BPS = 102400
 _PASSTHROUGH_THROUGHPUT_WINDOW_SECONDS = 20.0
 
 
-def _passthrough_watchdog_applies(ctx):
-    """True if the throughput watchdog should monitor this stream.
-
-    Only video gets the watchdog — audio bit rates legitimately fall under
-    the 100 KB/s floor (a 64 kbps MP3 is 8 KB/s). Surfaced as a helper so
-    the caller is short and the policy is testable in isolation.
-    """
-    content_type = (ctx.get("content_type") or "").lower()
-    return content_type.startswith("video/")
-
-
-def _set_upstream_read_timeout(resp, timeout):
-    """Best-effort: arm a recv() deadline on an urlopen response's socket.
-
-    urllib inherits the urlopen connect timeout for reads, but we set a
-    tighter, explicit deadline on the body socket so a stalled upstream
-    surfaces as a recoverable read error promptly (which drives live
-    fallback) rather than blocking until the equal proxy->Kodi write
-    timeout fires first and the stall is misattributed to a client
-    disconnect. Tolerant of the CPython-internal attribute path
-    (BufferedReader -> SocketIO -> socket) being absent on other
-    implementations; on failure the inherited urlopen timeout still
-    applies. See https://github.com/Appz4Fun/nzbdavkodi/issues/214
-    """
-    try:
-        sock = resp.fp.raw._sock
-    except AttributeError:
-        return
-    if sock is None:
-        return
-    try:
-        sock.settimeout(timeout)
-    except OSError:
-        pass
-
-
 # Chunk size for reading from the upstream HTTP response in _serve_proxy.
 # Kept small (64 KB) because on 32-bit Kodi the address space is ~3 GB and
 # Kodi's CFileCache can reserve up to ~1.5 GB on its own. A 1 MB read
@@ -316,40 +285,6 @@ _FAULT_PRIMARY_FAIL_AFTER_BYTES_ENV = "NZBDAV_FAULT_PRIMARY_FAIL_AFTER_BYTES"
 _FAULT_TAIL_GUARD_BYTES = 1073741824  # 1 GiB
 
 
-def _fault_primary_fail_threshold():
-    """Parse the fault-injection byte threshold env, or None when disabled."""
-    raw = os.environ.get(_FAULT_PRIMARY_FAIL_AFTER_BYTES_ENV)
-    if not raw:
-        return None
-    try:
-        threshold = int(raw)
-    except (TypeError, ValueError):
-        return None
-    return threshold if threshold > 0 else None
-
-
-def _fault_forced_primary_failure(ctx, start):
-    threshold = _fault_primary_fail_threshold()
-    if threshold is None:
-        return False
-    # Only fail the primary; once cut over to a fallback, let it stream so
-    # playback can actually recover.
-    if int(ctx.get("fallback_switch_count", 0) or 0) > 0:
-        return False
-    # Spare the tail so the demuxer initializes and playback survives long
-    # enough for fallbacks to attach (see _FAULT_TAIL_GUARD_BYTES). Only when
-    # the file is large enough that the tail guard and the threshold band
-    # don't overlap — small test files keep the simple start>=threshold rule.
-    content_length = int(ctx.get("content_length", 0) or 0)
-    in_tail_guard = (
-        content_length > _FAULT_TAIL_GUARD_BYTES + threshold
-        and start >= content_length - _FAULT_TAIL_GUARD_BYTES
-    )
-    if in_tail_guard:
-        return False
-    return start >= threshold
-
-
 _FALLBACK_PRIMARY_URL_HINT_KEY = "_fallback_primary_url_hint"
 _FALLBACK_PRIMARY_AUTH_HINT_KEY = "_fallback_primary_auth_hint"
 _FALLBACK_CURRENT_RANGE_CACHE_KEY = "_fallback_current_range_cache"
@@ -428,168 +363,6 @@ _SETTINGS_SNAPSHOT_KEYS = (
     # path; without it the snapshot consumer always fell back to the default.
     "passthrough_stall_wait",
 )
-
-
-class ReadAheadBuffer:
-    """A per-session bounded contiguous forward read-ahead window.
-
-    Holds a single contiguous run of bytes ``data`` starting at
-    ``base_offset`` (the first buffered byte). A daemon prefetch thread
-    appends bytes strictly contiguous-forward; the serve path reads the
-    contiguous prefix starting exactly at the requested offset and frees
-    bytes behind the play head. The window never grows past ``cap_bytes``
-    nor past ``content_length``. A SEEK outside the window discards the
-    stale data and repoints ``base_offset`` so the prefetch thread refills
-    from the seek target. All mutation is guarded by a short lock so the
-    serve path never blocks on the prefetch thread for long.
-    """
-
-    def __init__(self, cap_bytes, content_length):
-        self._lock = threading.Lock()
-        self._stop = threading.Event()
-        try:
-            self.cap_bytes = max(0, int(cap_bytes or 0))
-        except (TypeError, ValueError):
-            self.cap_bytes = 0
-        try:
-            self.content_length = max(0, int(content_length or 0))
-        except (TypeError, ValueError):
-            self.content_length = 0
-        self.base_offset = 0
-        self.data = bytearray()
-        self.served_high_water = 0
-
-    def read_prefix(self, start, end):
-        """Return the contiguous bytes the window holds starting exactly at
-        ``start`` (b'' on miss/gap/seek-mismatch), capped to ``end`` and to
-        what is present. The strict ``start == base_offset`` invariant means a
-        stale window can never feed wrong-offset bytes to Kodi after a seek."""
-        if not isinstance(start, int) or not isinstance(end, int):
-            return b""
-        if end < start:
-            return b""
-        with self._lock:
-            if not self.data or start != self.base_offset:
-                return b""
-            want = end - start + 1
-            return bytes(self.data[:want])
-
-    def append(self, offset, chunk):
-        """Add ``chunk`` only if it is strictly contiguous-forward (``offset``
-        == base_offset+len(data)). Truncates at ``cap_bytes`` and at
-        ``content_length``. Returns True when any bytes were stored."""
-        if not chunk:
-            return False
-        with self._lock:
-            expected = self.base_offset + len(self.data)
-            if offset != expected:
-                return False
-            room = self.cap_bytes - len(self.data)
-            if room <= 0:
-                return False
-            eof_room = self.content_length - expected
-            if eof_room <= 0:
-                return False
-            limit = min(room, eof_room, len(chunk))
-            if limit <= 0:
-                return False
-            self.data.extend(chunk[:limit])
-            return True
-
-    def free_behind(self, served_offset):
-        """Drop bytes before ``served_offset`` and advance ``base_offset``.
-        A no-op when ``served_offset`` is at or behind the current base."""
-        try:
-            served_offset = int(served_offset)
-        except (TypeError, ValueError):
-            return
-        with self._lock:
-            drop = served_offset - self.base_offset
-            if drop <= 0:
-                return
-            drop = min(drop, len(self.data))
-            del self.data[:drop]
-            self.base_offset += drop
-
-    def update_served_high_water(self, offset):
-        """Record the highest offset delivered to the client.
-
-        When the play head has been served PAST the end of the buffered window
-        (the common startup case: an initial read MISSES the read-ahead window
-        and is served directly from upstream, so ``free_behind`` has no buffered
-        bytes to consume), repoint ``base_offset`` to the served offset and drop
-        any now-behind stale data. This advances ``next_fetch_offset`` so the
-        prefetch daemon builds a FORWARD lead from the play head instead of
-        re-fetching from offset 0 behind it.
-
-        For the IN-WINDOW case (``base_offset < offset < window_end``: a
-        read-ahead miss served directly upstream while the prefetch had already
-        filled bytes from the old ``base_offset``), trim the now-consumed prefix
-        ``[base_offset, offset)`` and advance ``base_offset`` to the served
-        offset. This keeps the forward lead instead of letting the consumed
-        prefix pin the window behind the play head and throttle the prefetch.
-        The trim is INLINED (not ``free_behind``) because ``self._lock`` is a
-        non-reentrant ``threading.Lock`` already held here."""
-        try:
-            offset = int(offset)
-        except (TypeError, ValueError):
-            return
-        with self._lock:
-            self.served_high_water = max(self.served_high_water, offset)
-            window_end = self.base_offset + len(self.data)
-            if offset >= window_end:
-                self.data = bytearray()
-                self.base_offset = offset
-            elif offset > self.base_offset:
-                del self.data[: offset - self.base_offset]
-                self.base_offset = offset
-
-    def note_seek(self, new_start):
-        """Repoint the window for a seek.
-
-        ``read_prefix`` only serves when ``start == base_offset``, so an
-        in-window FORWARD seek must advance ``base_offset`` to the seek target
-        or the buffered lead is missed and refetched. We therefore TRIM the
-        now-behind prefix ``[base_offset, new_start)`` and keep the still-ahead
-        bytes ``[new_start, window_end)``, so a skip forward into the buffered
-        lead is served from memory. An out-of-window seek (forward past the
-        lead or any backward seek before ``base_offset``) discards the data and
-        sets ``base_offset`` to the seek target so the prefetch thread refills
-        forward. Never blocks the seek — a cheap lock-protected pointer reset."""
-        if not isinstance(new_start, int) or new_start < 0:
-            return
-        with self._lock:
-            window_end = self.base_offset + len(self.data)
-            if new_start == self.base_offset:
-                return
-            if self.base_offset < new_start <= window_end:
-                # In-window forward seek: drop the consumed prefix, keep the lead.
-                del self.data[: new_start - self.base_offset]
-                self.base_offset = new_start
-                self.served_high_water = max(self.served_high_water, new_start)
-                return
-            self.data = bytearray()
-            self.base_offset = new_start
-            self.served_high_water = max(self.served_high_water, new_start)
-
-    def space_remaining(self):
-        with self._lock:
-            remaining = self.cap_bytes - len(self.data)
-        return remaining if remaining > 0 else 0
-
-    def next_fetch_offset(self):
-        with self._lock:
-            return self.base_offset + len(self.data)
-
-    def is_full(self):
-        with self._lock:
-            return len(self.data) >= self.cap_bytes
-
-    def stop(self):
-        self._stop.set()
-
-    def should_stop(self):
-        return self._stop.is_set()
 
 
 # Shared zero buffer reused across all pass-through responses.
@@ -684,93 +457,6 @@ _HLS_SEGMENT_MTIME_STABLE_MS = 500
 # path past the plugin client's 60 s /prepare timeout.
 _PROBE_DEADLINE_SECONDS = 30.0
 
-
-def _get_private_hls_temp_root():
-    """Return a reusable private temp root for HLS work files."""
-    global _HLS_PRIVATE_TEMP_ROOT  # pylint: disable=global-statement
-
-    with _HLS_PRIVATE_TEMP_ROOT_LOCK:
-        cached = _HLS_PRIVATE_TEMP_ROOT
-        if cached and os.path.isdir(cached) and os.access(cached, os.W_OK):
-            return cached
-
-        temp_root = tempfile.mkdtemp(prefix="nzbdav-hls-")
-        # 0o700 is restrictive (user-only); semgrep rule is a false positive.
-        try:
-            os.chmod(temp_root, 0o700)  # nosemgrep
-        except OSError:
-            pass
-
-        _HLS_PRIVATE_TEMP_ROOT = temp_root
-        return temp_root
-
-
-def _disk_free_bytes(path):
-    usage = shutil.disk_usage(path)
-    return getattr(usage, "free", usage[2])
-
-
-def _workdir_has_free_space(base, required_bytes):
-    """Return True when ``base`` has at least ``required_bytes`` free.
-
-    Treats an unreadable free-space probe as "not enough" so callers can
-    simply skip the candidate.
-    """
-    if not required_bytes:
-        return True
-    try:
-        return _disk_free_bytes(base) >= required_bytes
-    except OSError:
-        return False
-
-
-def _choose_hls_workdir(required_bytes=0):
-    """Return a writable base directory for HLS session working files.
-
-    Walks the candidate list in order and returns the first entry
-    whose parent exists, is writable, and has enough free space.
-    Creates the leaf directory if missing. Falls back to a private
-    temp directory as a last resort.
-    """
-    for base in _HLS_WORKDIR_CANDIDATES:
-        parent = os.path.dirname(base) or "/"
-        if not os.path.isdir(parent):
-            continue
-        if not os.access(parent, os.W_OK):
-            continue
-        try:
-            os.makedirs(base, exist_ok=True)
-        except OSError:
-            continue
-        if not _workdir_has_free_space(base, required_bytes):
-            continue
-        return base
-    fallback = _get_private_hls_temp_root()
-    if not _workdir_has_free_space(fallback, required_bytes):
-        raise OSError(
-            "No HLS workdir has at least {} bytes free space".format(required_bytes)
-        )
-    return fallback
-
-
-def _find_ffmpeg():
-    """Find an ffmpeg binary on the system."""
-    for path in _FFMPEG_PATHS:
-        found = shutil.which(path)
-        if found:
-            return found
-    return None
-
-
-def _find_ffprobe():
-    """Find an ffprobe binary on the system."""
-    for path in _FFPROBE_PATHS:
-        found = shutil.which(path)
-        if found:
-            return found
-    return None
-
-
 # Default threshold above which non-MP4 files are force-remuxed through
 # ffmpeg instead of served as HTTP pass-through.  0 disables force-remux
 # entirely.
@@ -810,710 +496,30 @@ _FMP4_HLS_CAPABILITY_MARKERS = (
 )
 
 
-def _run_ffmpeg_hls_muxer_probe(ffmpeg_path):
-    """Run ``ffmpeg -h muxer=hls`` and return combined output, or None on error.
+def _get_private_hls_temp_root():
+    """Return a reusable private temp root for HLS work files."""
+    global _HLS_PRIVATE_TEMP_ROOT  # pylint: disable=global-statement
 
-    Returns the decoded stdout+stderr text on success, or ``None`` when the
-    probe fails to launch, times out, or yields malformed output.
-    """
-    cmd = [ffmpeg_path, "-hide_banner", "-h", "muxer=hls"]
-    try:
-        proc = subprocess.Popen(  # nosec B603 — argv list, shell=False
-            cmd,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            shell=False,
-        )
+    with _HLS_PRIVATE_TEMP_ROOT_LOCK:
+        cached = _HLS_PRIVATE_TEMP_ROOT
+        if cached and os.path.isdir(cached) and os.access(cached, os.W_OK):
+            return cached
+
+        temp_root = tempfile.mkdtemp(prefix="nzbdav-hls-")
+        # 0o700 is restrictive (user-only); semgrep rule is a false positive.
         try:
-            output = proc.communicate(timeout=_FFMPEG_CAPABILITY_PROBE_TIMEOUT)
-            if not isinstance(output, (tuple, list)) or len(output) != 2:
-                raise ValueError("invalid ffmpeg capability probe output")
-            stdout, stderr = output
-        except subprocess.TimeoutExpired:
-            _drain_killed_ffmpeg_probe(proc, ffmpeg_path)
-            return None
-    except (OSError, ValueError, subprocess.SubprocessError) as e:
-        xbmc.log(
-            "NZB-DAV: ffmpeg capability probe failed for {}: {}".format(ffmpeg_path, e),
-            xbmc.LOGWARNING,
-        )
-        return None
-
-    return ((stdout or b"") + b"\n" + (stderr or b"")).decode("utf-8", errors="ignore")
-
-
-def _drain_killed_ffmpeg_probe(proc, ffmpeg_path):
-    """Kill a timed-out probe process and bound the post-kill drain.
-
-    If the kill itself hangs (uninterruptible I/O) we don't want service
-    startup to wedge indefinitely waiting on ffmpeg.
-    """
-    proc.kill()
-    try:
-        proc.communicate(timeout=1)
-    except subprocess.TimeoutExpired:
-        pass
-    xbmc.log(
-        "NZB-DAV: ffmpeg capability probe timed out for {}".format(ffmpeg_path),
-        xbmc.LOGWARNING,
-    )
-
-
-def _get_addon_setting(setting_id, default=None):
-    """Best-effort Kodi addon setting lookup safe for tests and CLI.
-
-    Prefer the Kodi API when it is available, so tests and live settings
-    overrides win. Fall back to reading the addon's ``settings.xml``
-    directly only when the Kodi binding is unavailable or raises during
-    script-mode startup.
-    """
-    if xbmcaddon is not None:
-        try:
-            value = xbmcaddon.Addon("plugin.video.nzbdav").getSetting(setting_id)
-            return default if value is None else value
-        except _KODI_SETTING_ERRORS:
+            os.chmod(temp_root, 0o700)  # nosemgrep
+        except OSError:
             pass
-    try:
-        from resources.lib.router import _get_script_setting
 
-        value = _get_script_setting(setting_id, default if default is not None else "")
-        if value or default is None:
-            return value
-    except Exception:  # pylint: disable=broad-except
-        pass
-    return default
-
-
-def normalize_settings_snapshot(settings_snapshot):
-    """Return a sanitized prepare-time setting snapshot."""
-    if not isinstance(settings_snapshot, dict):
-        return {}
-    snapshot = {}
-    for key in _SETTINGS_SNAPSHOT_KEYS:
-        value = settings_snapshot.get(key)
-        if isinstance(value, str):
-            snapshot[key] = value
-    return snapshot
-
-
-def build_settings_snapshot(settings_getter=None):
-    """Read proxy settings on the caller side before the service /prepare hop."""
-    snapshot = {}
-    for key in _SETTINGS_SNAPSHOT_KEYS:
-        if settings_getter is None:
-            value = _get_addon_setting(key, "")
-        else:
-            try:
-                value = settings_getter(key, "")
-            except _KODI_SETTING_ERRORS:
-                value = ""
-        snapshot[key] = value if isinstance(value, str) else ""
-    return snapshot
-
-
-def _set_addon_setting(setting_id, value):
-    """Best-effort Kodi addon setting write safe for tests and CLI."""
-    if xbmcaddon is None:
-        return False
-    try:
-        xbmcaddon.Addon("plugin.video.nzbdav").setSetting(setting_id, value)
-    except _KODI_SETTING_ERRORS:
-        return False
-    return True
-
-
-def _clamp_int_setting(setting_id, value, lo, hi):
-    """Clamp an integer setting and log when user input was out of range."""
-    clamped = value
-    if value < lo:
-        clamped = lo
-    elif value > hi:
-        clamped = hi
-    if clamped != value:
-        xbmc.log(
-            "NZB-DAV: Setting {}={} out of range [{}..{}]; clamping to {}".format(
-                setting_id, value, lo, hi, clamped
-            ),
-            xbmc.LOGWARNING,
-        )
-    return clamped
-
-
-def _bool_from_snapshot(snapshot, setting_id, default=False):
-    raw = snapshot.get(setting_id) if isinstance(snapshot, dict) else None
-    if raw in (None, ""):
-        return default
-    return str(raw).strip().lower() in ("1", "true", "yes", "on")
-
-
-def _int_from_snapshot(snapshot, setting_id, default, lo, hi):
-    """Return a clamped int setting from a snapshot. Does not read Kodi
-    settings: any parse failure falls back to ``default`` (an out-of-range value
-    is still clamped via ``_clamp_int_setting``, which logs a warning)."""
-    raw = snapshot.get(setting_id) if isinstance(snapshot, dict) else None
-    try:
-        value = int(raw) if raw not in (None, "") else default
-    except (TypeError, ValueError):
-        value = default
-    return _clamp_int_setting(setting_id, value, lo, hi)
-
-
-def _strict_contract_mode_from_snapshot(snapshot):
-    raw = snapshot.get("strict_contract_mode") if isinstance(snapshot, dict) else None
-    key = str(raw).strip().lower() if raw is not None else ""
-    mapping = {
-        "0": _STRICT_CONTRACT_MODE_OFF,
-        _STRICT_CONTRACT_MODE_OFF: _STRICT_CONTRACT_MODE_OFF,
-        "1": _STRICT_CONTRACT_MODE_WARN,
-        _STRICT_CONTRACT_MODE_WARN: _STRICT_CONTRACT_MODE_WARN,
-        "2": _STRICT_CONTRACT_MODE_ENFORCE,
-        _STRICT_CONTRACT_MODE_ENFORCE: _STRICT_CONTRACT_MODE_ENFORCE,
-    }
-    return mapping.get(key, _STRICT_CONTRACT_MODE_WARN)
-
-
-def _force_remux_threshold_bytes_from_snapshot(snapshot):
-    raw = (
-        snapshot.get("force_remux_threshold_mb") if isinstance(snapshot, dict) else None
-    )
-    try:
-        mb = int(raw) if raw not in (None, "") else _DEFAULT_FORCE_REMUX_THRESHOLD_MB
-    except (TypeError, ValueError):
-        mb = _DEFAULT_FORCE_REMUX_THRESHOLD_MB
-    mb = _clamp_int_setting(
-        "force_remux_threshold_mb", mb, 0, _FORCE_REMUX_THRESHOLD_MB_MAX
-    )
-    if mb == 0:
-        return 0
-    return mb * 1024 * 1024
-
-
-def _force_remux_mode_from_snapshot(snapshot):
-    raw = snapshot.get("force_remux_mode") if isinstance(snapshot, dict) else None
-    migrated = (
-        snapshot.get("force_remux_mode_v2_migrated", "false")
-        if isinstance(snapshot, dict)
-        else "false"
-    )
-    if str(migrated).lower() != "true" and raw == "2":
-        raw = "0"
-    if raw == "1":
-        return "hls_fmp4"
-    if raw == "2":
-        return "matroska"
-    return "passthrough"
-
-
-def _passthrough_runtime_settings_from_snapshot(snapshot):
-    contract_mode = _strict_contract_mode_from_snapshot(snapshot)
-    density_breaker_enabled = False
-    if contract_mode != _STRICT_CONTRACT_MODE_OFF:
-        density_breaker_enabled = _bool_from_snapshot(
-            snapshot, "density_breaker_enabled", default=False
-        )
-    return {
-        "contract_mode": contract_mode,
-        "density_breaker_enabled": density_breaker_enabled,
-        "zero_fill_budget_enabled": _bool_from_snapshot(
-            snapshot, "zero_fill_budget_enabled", default=True
-        ),
-        "retry_ladder_enabled": _bool_from_snapshot(
-            snapshot, "retry_ladder_enabled", default=True
-        ),
-        "send_200_no_range_enabled": _bool_from_snapshot(
-            snapshot, "send_200_no_range", default=False
-        ),
-        "passthrough_stall_wait_seconds": _int_from_snapshot(
-            snapshot,
-            "passthrough_stall_wait",
-            _DEFAULT_PASSTHROUGH_STALL_WAIT_SECONDS,
-            0,
-            _PASSTHROUGH_STALL_WAIT_MAX_SECONDS,
-        ),
-        "readahead_buffer_mb": _int_from_snapshot(
-            snapshot,
-            "readahead_buffer_mb",
-            _DEFAULT_READAHEAD_BUFFER_MB,
-            0,
-            _READAHEAD_BUFFER_MB_MAX,
-        ),
-    }
-
-
-def _get_server_context_lock(server):
-    """Return the proxy's context lock when the handler is attached to one."""
-    server_state = getattr(server, "__dict__", None)
-    if not isinstance(server_state, dict):
-        return None
-    owner_proxy = server_state.get("owner_proxy")
-    return getattr(owner_proxy, "_context_lock", None)
-
-
-def _get_force_remux_threshold_bytes():
-    """Return the remux-force threshold in bytes, or 0 to disable."""
-    raw = _get_addon_setting("force_remux_threshold_mb")
-    try:
-        mb = int(raw) if raw not in (None, "") else _DEFAULT_FORCE_REMUX_THRESHOLD_MB
-    except (TypeError, ValueError):
-        mb = _DEFAULT_FORCE_REMUX_THRESHOLD_MB
-    mb = _clamp_int_setting(
-        "force_remux_threshold_mb", mb, 0, _FORCE_REMUX_THRESHOLD_MB_MAX
-    )
-    if mb == 0:
-        return 0
-    return mb * 1024 * 1024
-
-
-def _get_force_remux_mode():
-    """Return 'matroska', 'hls_fmp4', or 'passthrough' for the force-remux
-    branch.
-
-    Empty string, unset, or '0' -> 'passthrough' (default).
-    '1' -> 'hls_fmp4' (experimental, DV-capable).
-    '2' -> 'matroska' (compatibility remux).
-    Any other value -> 'passthrough'.
-    """
-    raw = _get_addon_setting("force_remux_mode")
-    migrated = _get_addon_setting("force_remux_mode_v2_migrated", "false")
-    if str(migrated).lower() != "true":
-        if raw == "2":
-            # Before pass-through became the default, enum value 2 meant
-            # explicit pass-through. Preserve that intent once, then let
-            # future value 2 selections mean Matroska compatibility mode.
-            _set_addon_setting("force_remux_mode", "0")
-            raw = "0"
-        _set_addon_setting("force_remux_mode_v2_migrated", "true")
-    if raw == "1":
-        return "hls_fmp4"
-    if raw == "2":
-        return "matroska"
-    return "passthrough"
-
-
-def _get_strict_contract_mode():
-    """Return off/warn/enforce for upstream response validation."""
-    raw = _get_addon_setting("strict_contract_mode")
-    key = str(raw).strip().lower() if raw is not None else ""
-    mapping = {
-        "0": _STRICT_CONTRACT_MODE_OFF,
-        _STRICT_CONTRACT_MODE_OFF: _STRICT_CONTRACT_MODE_OFF,
-        "1": _STRICT_CONTRACT_MODE_WARN,
-        _STRICT_CONTRACT_MODE_WARN: _STRICT_CONTRACT_MODE_WARN,
-        "2": _STRICT_CONTRACT_MODE_ENFORCE,
-        _STRICT_CONTRACT_MODE_ENFORCE: _STRICT_CONTRACT_MODE_ENFORCE,
-    }
-    return mapping.get(key, _STRICT_CONTRACT_MODE_WARN)
-
-
-def _get_bool_setting(setting_id, default=False):
-    """Return a Kodi bool-like setting with a safe default."""
-    raw = _get_addon_setting(setting_id)
-    if raw in (None, ""):
-        return default
-    return str(raw).strip().lower() in ("1", "true", "yes", "on")
-
-
-def _density_breaker_enabled(contract_mode=None):
-    """Return True when the recovery density breaker should run."""
-    mode = contract_mode or _get_strict_contract_mode()
-    if mode == _STRICT_CONTRACT_MODE_OFF:
-        return False
-    return _get_bool_setting("density_breaker_enabled", default=False)
-
-
-def _zero_fill_budget_enabled():
-    return _get_bool_setting("zero_fill_budget_enabled", default=True)
-
-
-def _retry_ladder_enabled():
-    return _get_bool_setting("retry_ladder_enabled", default=True)
-
-
-def _send_200_no_range_enabled():
-    return _get_bool_setting("send_200_no_range", default=False)
-
-
-def _get_passthrough_stall_wait_seconds():
-    """Return the patient forward-stall budget in seconds, clamped [0, 600]."""
-    raw = _get_addon_setting("passthrough_stall_wait")
-    try:
-        secs = (
-            int(raw)
-            if raw not in (None, "")
-            else _DEFAULT_PASSTHROUGH_STALL_WAIT_SECONDS
-        )
-    except (TypeError, ValueError):
-        secs = _DEFAULT_PASSTHROUGH_STALL_WAIT_SECONDS
-    return _clamp_int_setting(
-        "passthrough_stall_wait", secs, 0, _PASSTHROUGH_STALL_WAIT_MAX_SECONDS
-    )
-
-
-def _get_readahead_buffer_mb():
-    """Return the read-ahead prefetch buffer size in MB, clamped [0, MAX].
-
-    0 disables the read-ahead layer (no buffer, no thread) so behavior is
-    byte-for-byte identical to today.
-    """
-    raw = _get_addon_setting("readahead_buffer_mb")
-    try:
-        mb = int(raw) if raw not in (None, "") else _DEFAULT_READAHEAD_BUFFER_MB
-    except (TypeError, ValueError):
-        mb = _DEFAULT_READAHEAD_BUFFER_MB
-    return _clamp_int_setting("readahead_buffer_mb", mb, 0, _READAHEAD_BUFFER_MB_MAX)
-
-
-def _read_passthrough_runtime_settings():
-    """Read per-session pass-through recovery settings once."""
-    contract_mode = _get_strict_contract_mode()
-    return {
-        "contract_mode": contract_mode,
-        "density_breaker_enabled": _density_breaker_enabled(contract_mode),
-        "zero_fill_budget_enabled": _zero_fill_budget_enabled(),
-        "retry_ladder_enabled": _retry_ladder_enabled(),
-        "send_200_no_range_enabled": _send_200_no_range_enabled(),
-        "passthrough_stall_wait_seconds": _get_passthrough_stall_wait_seconds(),
-        "readahead_buffer_mb": _get_readahead_buffer_mb(),
-    }
-
-
-def _passthrough_runtime_settings(ctx):
-    """Return cached pass-through settings, waiting for a prefetch if present."""
-    if isinstance(ctx, dict):
-        settings = ctx.get(_PASSTHROUGH_RUNTIME_SETTINGS_KEY)
-        if isinstance(settings, dict):
-            return settings
-        done = ctx.get(_PASSTHROUGH_RUNTIME_SETTINGS_DONE_KEY)
-        if done is not None:
-            try:
-                done.wait()
-            except (AttributeError, RuntimeError):
-                pass
-            settings = ctx.get(_PASSTHROUGH_RUNTIME_SETTINGS_KEY)
-            if isinstance(settings, dict):
-                return settings
-            error = ctx.get(_PASSTHROUGH_RUNTIME_SETTINGS_ERROR_KEY)
-            if error is not None:
-                xbmc.log(
-                    "NZB-DAV: Pass-through settings prefetch failed: {}".format(error),
-                    xbmc.LOGDEBUG,
-                )
-
-    settings = _read_passthrough_runtime_settings()
-    if isinstance(ctx, dict):
-        ctx[_PASSTHROUGH_RUNTIME_SETTINGS_KEY] = settings
-    return settings
-
-
-def _expected_content_range(start, end, content_length):
-    return "bytes {}-{}/{}".format(start, end, content_length)
-
-
-def _get_header(resp, name):
-    headers = getattr(resp, "headers", None)
-    if headers is None:
-        return None
-    return headers.get(name)
-
-
-def _add_request_headers(req, auth_header=None):
-    """Apply standard proxy outbound headers to a urllib Request."""
-    req.add_header("User-Agent", HTTP_USER_AGENT)
-    if auth_header:
-        auth_header = _validate_auth_header(auth_header)
-        req.add_header("Authorization", auth_header)
-    return req
-
-
-def _is_terminal_http_client_error(error):
-    if not isinstance(error, HTTPError):
-        return False
-    code = getattr(error, "code", 0) or 0
-    return 400 <= code < 500 and code not in _RECOVERABLE_HTTP_RANGE_ERROR_CODES
-
-
-def _strip_header_value(value):
-    """Trim RFC-9110-permitted surrounding whitespace from a header value."""
-    if isinstance(value, str):
-        return value.strip()
-    return value
-
-
-def _classify_contract_status(status, is_full_object):
-    """Flag a non-206 status that isn't a permitted full-object 200."""
-    if status == 206:
-        return None, False
-    if status == 200 and is_full_object:
-        return None, False
-    return "status={} expected=206".format(status), True
-
-
-def _classify_contract_range(status, content_range, expected_range, is_full_object):
-    """Flag a missing/mismatched Content-Range against the expected value."""
-    if status == 206 and content_range in (None, ""):
-        # Tightening this to hard=True is the RFC-strict reading
-        # but in practice it broke test fixtures and at least one
-        # real upstream that returned 206 with valid Content-Length
-        # but no Content-Range. Left as a soft (warn-logged) issue;
-        # the chunk loop's `requested = end - start + 1` clamp
-        # bounds what we actually stream, so the upside of going
-        # hard is purely diagnostic. See TODO.md §H.3.
-        return (
-            "Content-Range missing expected={!r}".format(expected_range),
-            False,
-        )
-    if content_range in (None, "") or content_range == expected_range:
-        return None, False
-    if status != 206 and status == 200 and is_full_object:
-        return None, False
-    return (
-        "Content-Range={!r} expected={!r}".format(content_range, expected_range),
-        True,
-    )
-
-
-def _classify_contract_mismatch(
-    status, content_range, content_length, start, end, total
-):
-    """Classify upstream header contract issues as hard or soft mismatches."""
-    expected_length = end - start + 1
-    expected_range = _expected_content_range(start, end, total)
-    is_full_object = start == 0 and end == total - 1
-    # HTTP/1.1 (RFC 9110) permits optional leading/trailing whitespace in
-    # header values. Strip so an upstream that emits "Content-Length: 1024 "
-    # (trailing space) doesn't get flagged as a protocol mismatch.
-    content_range = _strip_header_value(content_range)
-    content_length = _strip_header_value(content_length)
-    checks = [
-        _classify_contract_status(status, is_full_object),
-        _classify_contract_range(status, content_range, expected_range, is_full_object),
-    ]
-    if content_length != str(expected_length):
-        detail = "Content-Length={!r} expected={!r}".format(
-            content_length, str(expected_length)
-        )
-        checks.append((detail, False))
-
-    problems = []
-    hard = False
-    for detail, is_hard in checks:
-        if detail is None:
-            continue
-        problems.append(detail)
-        if is_hard:
-            hard = True
-
-    if not problems:
-        return None, False
-    return "; ".join(problems), hard
-
-
-def _log_contract_mismatch(start, end, status, content_range, content_length, detail):
-    xbmc.log(
-        "NZB-DAV: Upstream contract mismatch for {}-{} status={} "
-        "Content-Range={!r} Content-Length={!r} detail={} "
-        "(reason=protocol_mismatch)".format(
-            start, end, status, content_range, content_length, detail
-        ),
-        xbmc.LOGWARNING,
-    )
-
-
-def _record_density_window(window, kind, count):
-    """Track recent forward progress vs. zero-fill bytes in a fixed window."""
-    if count <= 0:
-        return
-    window.append([kind, count])
-    total = sum(item[1] for item in window)
-    while total > _DENSITY_BREAKER_WINDOW_BYTES and window:
-        overflow = total - _DENSITY_BREAKER_WINDOW_BYTES
-        head = window[0]
-        trim = min(head[1], overflow)
-        head[1] -= trim
-        total -= trim
-        if head[1] == 0:
-            window.popleft()
-
-
-def _density_ratio(window):
-    total = sum(item[1] for item in window)
-    if total <= 0:
-        return 0.0
-    zero_fill = sum(item[1] for item in window if item[0] == "zero_fill")
-    return float(zero_fill) / float(total)
-
-
-def _would_trip_density_breaker(window, skip):
-    if skip <= 0:
-        return False
-    # An empty recovery window means "no progress samples yet" — most
-    # commonly, the very first range read failed before any bytes were
-    # streamed. Returning True here would 100%-trip the breaker on the
-    # very first recovery attempt and abort the stream before any
-    # genuine recovery had a chance to land. Require at least one
-    # progress sample before letting the breaker fire. Closes
-    # TODO.md §H.3 ("density breaker trips on empty recovery window").
-    if not window:
-        return False
-    trial = deque([item[:] for item in window])
-    _record_density_window(trial, "zero_fill", skip)
-    return _density_ratio(trial) > _DENSITY_BREAKER_ZERO_FILL_RATIO
+        _HLS_PRIVATE_TEMP_ROOT = temp_root
+        return temp_root
 
 
 _UPSTREAM_REACHABILITY_UNREACHABLE_NETWORK = "unreachable_network"
 _UPSTREAM_REACHABILITY_HTTP_SERVER_ERROR = "http_5xx"
 _UPSTREAM_REACHABILITY_HTTP_CLIENT_ERROR = "http_4xx"
 _UPSTREAM_REACHABILITY_OTHER = "other"
-
-
-def _classify_upstream_error(error):
-    """Bucket a urlopen exception into a reachability category.
-
-    Returns one of:
-      * ``_UPSTREAM_REACHABILITY_UNREACHABLE_NETWORK`` — DNS / TCP-refused /
-        socket timeout / connection reset. Strong signal that nzbdav (or
-        the network path to it) is down, not that the stream itself is
-        bad. Worth surfacing to the user.
-      * ``_UPSTREAM_REACHABILITY_HTTP_SERVER_ERROR`` — HTTPError with
-        status 5xx. nzbdav is up but stressed/erroring.
-      * ``_UPSTREAM_REACHABILITY_HTTP_CLIENT_ERROR`` — HTTPError with
-        status 4xx. Auth or path issue, not an outage.
-      * ``_UPSTREAM_REACHABILITY_OTHER`` — any other OSError / ValueError
-        that doesn't fit the above.
-
-    The distinction matters because the stream-proxy's zero-fill /
-    skip-probe recovery can disguise a total upstream outage as a
-    "bad stream" to the user. Classifying lets us emit an actionable
-    notification instead of silently zero-filling the rest of the file.
-    """
-    if isinstance(error, HTTPError):
-        code = getattr(error, "code", 0) or 0
-        if 500 <= code < 600:
-            return _UPSTREAM_REACHABILITY_HTTP_SERVER_ERROR
-        if 400 <= code < 500:
-            return _UPSTREAM_REACHABILITY_HTTP_CLIENT_ERROR
-        return _UPSTREAM_REACHABILITY_OTHER
-    # URLError wraps the underlying reason (socket.gaierror, timeout, etc.)
-    if isinstance(error, URLError):
-        reason = getattr(error, "reason", None)
-        if isinstance(
-            reason, (ConnectionError, _socket.timeout, TimeoutError, OSError)
-        ):
-            return _UPSTREAM_REACHABILITY_UNREACHABLE_NETWORK
-    if isinstance(error, (ConnectionError, _socket.timeout, TimeoutError)):
-        return _UPSTREAM_REACHABILITY_UNREACHABLE_NETWORK
-    return _UPSTREAM_REACHABILITY_OTHER
-
-
-def _clear_upstream_unreachable_flag(ctx, observed_at):
-    """Reset the one-shot notify gate when ``observed_at`` is the newest event.
-
-    Returns True when the flag was cleared (caller holds the context lock),
-    False when nothing was notified or a newer failure supersedes this
-    success observation.
-    """
-    if not ctx.get("upstream_down_notified"):
-        return False
-    last_down = float(ctx.get("last_upstream_unreachable_at", 0) or 0)
-    # Drop stale success observations — a newer failure takes
-    # precedence. When timestamps tie (same millisecond), prefer
-    # success since that's the happy-path default.
-    if last_down > observed_at:
-        return False
-    ctx["upstream_down_notified"] = False
-    ctx["upstream_last_recovered_at"] = observed_at
-    return True
-
-
-def _record_upstream_recovered(server, ctx, observed_at=None):
-    """Clear the session's unreachable flag once upstream bytes flow again.
-
-    Paired with ``_record_upstream_unreachable``: after a prolonged
-    outage notification has fired, a subsequent successful upstream
-    read means nzbdav is back. Clearing the flag lets a LATER outage
-    in the same session fire a fresh notification instead of staying
-    silent under the "already notified" guard.
-
-    **Timestamp ordering** guards a concurrency race: with the
-    ThreadingHTTPServer, Thread A can be handling a successful
-    urlopen while Thread B is mid-failure on a different range
-    request. Without ordering, A's "cleared" update could stomp B's
-    "marked down" update (or vice versa), producing a silently-
-    latched or silently-cleared flag that didn't reflect the most
-    recent observation. Callers pass ``observed_at`` (the wall-clock
-    time at which they opened the socket); the helper only clears
-    the flag when that observation is NEWER than the most recent
-    recorded unreachable event. An older observation is dropped as
-    stale.
-
-    Preserves ``upstream_unreachable_count`` as a running total for
-    diagnostics — we only reset the one-shot notification gate.
-    """
-    if observed_at is None:
-        observed_at = time.time()
-    context_lock = _get_server_context_lock(server)
-
-    def _update():
-        return _clear_upstream_unreachable_flag(ctx, observed_at)
-
-    if context_lock is None:
-        cleared = _update()
-    else:
-        with context_lock:
-            cleared = _update()
-
-    if cleared:
-        xbmc.log(
-            "NZB-DAV: Upstream reachable again after outage "
-            "(reason=upstream_recovered)",
-            xbmc.LOGINFO,
-        )
-
-
-def _record_upstream_unreachable(server, ctx, error):
-    """Track an upstream-unreachable event on the session and fire a
-    one-shot user notification the first time it happens.
-
-    The handler that decides to zero-fill / retry / abort is unchanged —
-    this is purely a visibility layer so the user learns "nzbdav is
-    unreachable" instead of watching silent playback glitch through to
-    the end. Subsequent failures in the same session bump the counter
-    but stay silent to avoid spamming the UI during a prolonged outage.
-    Pair with ``_record_upstream_recovered`` so a later outage in the
-    same session can fire a fresh notification instead of remaining
-    silent behind the "already notified" guard.
-    """
-    context_lock = _get_server_context_lock(server)
-
-    def _update():
-        already_notified = bool(ctx.get("upstream_down_notified"))
-        count = int(ctx.get("upstream_unreachable_count", 0) or 0) + 1
-        ctx["upstream_unreachable_count"] = count
-        ctx["last_upstream_unreachable_at"] = time.time()
-        if already_notified:
-            return False
-        ctx["upstream_down_notified"] = True
-        return True
-
-    if context_lock is None:
-        should_notify = _update()
-    else:
-        with context_lock:
-            should_notify = _update()
-
-    if not should_notify:
-        return
-
-    xbmc.log(
-        "NZB-DAV: Upstream appears unreachable ({}); notifying user once "
-        "(reason=upstream_unreachable)".format(type(error).__name__),
-        xbmc.LOGERROR,
-    )
-    try:
-        _notify("NZB-DAV", "nzbdav unreachable — playback may glitch")
-    except (RuntimeError, OSError):
-        pass
 
 
 # Pass-through terminal reasons that mean the BACKEND could not deliver the
@@ -1532,593 +538,6 @@ _STARVATION_TERMINAL_REASONS = (
 _STARVATION_RECENT_OUTAGE_SECONDS = 60
 
 
-def _claim_one_shot_flag(ctx, flag):
-    """Set a one-shot context flag, returning True only on the first claim.
-
-    Caller holds the context lock; subsequent calls with the flag already
-    set return False so a debounced notification fires at most once.
-    """
-    if ctx.get(flag):
-        return False
-    ctx[flag] = True
-    return True
-
-
-def _stream_starvation_evident(ctx, terminal_reason):
-    """Whether a non-clean stream end shows evidence of backend starvation.
-
-    The backend (not a healthy stop) ended this stream when an explicit stall
-    terminal reason fired, OR the upstream is still flagged down, OR an outage
-    happened very recently, OR the patient forward-stall wait exhausted. The
-    forward-stall signal covers the pure-SLOW case (a still-downloading region
-    that never caught up: AWAITING with no 5xx, so no outage is recorded) —
-    without it that give-up would be silent, the exact thing this guard exists
-    to prevent. The RECENCY window matters because ``upstream_unreachable_count``
-    is a sticky running total and ``last_upstream_unreachable_at`` can predate a
-    long healthy stretch the user then stopped — that must NOT fire. It also
-    catches the live incident, where the upstream momentarily "recovered" a few
-    seconds before Kodi gave up and disconnected (so a recovered-vs-unreachable
-    ordering check alone would wrongly stay silent).
-
-    ``complete`` and ``density_breaker_tripped`` (which emits its own toast)
-    never count.
-    """
-    if terminal_reason in ("complete", "density_breaker_tripped"):
-        return False
-    if terminal_reason in _STARVATION_TERMINAL_REASONS:
-        return True
-    if ctx.get("upstream_down_notified") or ctx.get("forward_stall_exhausted"):
-        return True
-    last_down = float(ctx.get("last_upstream_unreachable_at", 0) or 0)
-    return (
-        last_down > 0 and (time.time() - last_down) <= _STARVATION_RECENT_OUTAGE_SECONDS
-    )
-
-
-def _maybe_notify_stream_starvation(
-    server, ctx, terminal_reason, total_streamed, requested_bytes
-):
-    """Fire ONE clear notification when a pass-through stream ends because the
-    backend could not keep up, so the user gets an explanation instead of a
-    silent black screen. This is the graceful-starvation guard for the live
-    failure mode where nzbdav delivers far below the release's bitrate and/or
-    returns HTTP 5xx for a sustained period: playback exhausts the head-start,
-    the demuxer EOFs, and Kodi stops with no reason. The user should learn WHY.
-
-    Distinct from the early one-shot ``_record_upstream_unreachable`` toast
-    (which warns when an outage STARTS): this explains why playback STOPPED. It
-    fires only for an abnormal end that shows backend trouble (see
-    ``_stream_starvation_evident``) and never for a clean finish or a healthy
-    stop of a fully-delivered stream. Debounced once per session via
-    ``starvation_notified``; returns whether the notification fired.
-    """
-    if not _stream_starvation_evident(ctx, terminal_reason):
-        return False
-    # Only when genuinely starved — a fully-delivered range the user happened
-    # to stop is not starvation.
-    if 0 < requested_bytes <= total_streamed:
-        return False
-
-    context_lock = _get_server_context_lock(server)
-
-    def _update():
-        return _claim_one_shot_flag(ctx, "starvation_notified")
-
-    if context_lock is None:
-        fire = _update()
-    else:
-        with context_lock:
-            fire = _update()
-    if not fire:
-        return False
-
-    xbmc.log(
-        "NZB-DAV: Stream stalled — backend could not keep up "
-        "(terminal={} streamed={} requested={} reason=stream_starvation)".format(
-            terminal_reason, total_streamed, requested_bytes
-        ),
-        xbmc.LOGWARNING,
-    )
-    try:
-        _notify("NZB-DAV", "nzbdav can't keep up — playback stalled")
-    except (RuntimeError, OSError):
-        pass
-    return True
-
-
-def _read_session_recovery_state(ctx):
-    return {
-        "streamed": int(ctx.get("session_streamed_bytes", 0) or 0),
-        "zero_fill": int(ctx.get("session_zero_fill_bytes", 0) or 0),
-        "recoveries": int(ctx.get("session_recovery_count", 0) or 0),
-        "last_notify": float(ctx.get("last_recovery_notify_at", 0) or 0),
-    }
-
-
-def _update_session_recovery_state(server, ctx, streamed=0, zero_fill=0, recoveries=0):
-    """Apply session-level recovery counters under the proxy context lock."""
-    context_lock = _get_server_context_lock(server)
-
-    def _update():
-        state = _read_session_recovery_state(ctx)
-        state["streamed"] += streamed
-        state["zero_fill"] += zero_fill
-        state["recoveries"] += recoveries
-        ctx["session_streamed_bytes"] = state["streamed"]
-        ctx["session_zero_fill_bytes"] = state["zero_fill"]
-        ctx["session_recovery_count"] = state["recoveries"]
-        return state
-
-    if context_lock is None:
-        return _update()
-    with context_lock:
-        return _update()
-
-
-def _project_session_zero_fill_ratio(
-    server, ctx, extra_zero_fill=0, extra_recoveries=0
-):
-    """Return the projected session zero-fill ratio if another gap is skipped."""
-    context_lock = _get_server_context_lock(server)
-
-    def _project():
-        state = _read_session_recovery_state(ctx)
-        projected_zero_fill = state["zero_fill"] + extra_zero_fill
-        projected_recoveries = state["recoveries"] + extra_recoveries
-        denominator = max(
-            int(ctx.get("content_length", 0) or 0),
-            state["streamed"] + projected_zero_fill,
-        )
-        ratio = float(projected_zero_fill) / float(denominator or 1)
-        return projected_zero_fill, projected_recoveries, ratio
-
-    if context_lock is None:
-        return _project()
-    with context_lock:
-        return _project()
-
-
-def _prepare_recovery_summary(ctx, now, zero_fill_bytes, recovery_count):
-    """Compute the (skipped, recoveries) summary payload, or None.
-
-    Returns None when there is nothing to report or the toast is still
-    inside the debounce window. Stamps the last-notify time when a payload
-    is returned (caller holds the context lock).
-    """
-    state = _read_session_recovery_state(ctx)
-    skipped = state["zero_fill"] if zero_fill_bytes is None else zero_fill_bytes
-    recoveries = state["recoveries"] if recovery_count is None else recovery_count
-    if recoveries <= 0:
-        return None
-    if state["last_notify"] and (
-        now - state["last_notify"] < _RECOVERY_NOTIFY_DEBOUNCE_SECONDS
-    ):
-        return None
-    ctx["last_recovery_notify_at"] = now
-    return skipped, recoveries
-
-
-def _maybe_notify_recovery_summary(
-    server, ctx, zero_fill_bytes=None, recovery_count=None
-):
-    """Emit a debounced toast summarizing skipped bytes and recovery count.
-
-    ``zero_fill_bytes`` and ``recovery_count``, when provided, override the
-    stored per-session counters used in the summary. Notifications are
-    rate-limited by ``_RECOVERY_NOTIFY_DEBOUNCE_SECONDS`` to avoid frequent
-    toasts.
-
-    Parameters:
-        server: Server instance owning the session context (used for optional
-            context locking).
-        ctx (dict): Session context with recovery counters and the last-notify
-            timestamp.
-        zero_fill_bytes (int | None): Optional override for the total
-            skipped/zero-filled bytes to report.
-        recovery_count (int | None): Optional override for the recovery count.
-
-    Returns:
-        bool: ``True`` if a notification was emitted, ``False`` otherwise
-        (debounced, nothing to report, or an internal notification error).
-    """
-    context_lock = _get_server_context_lock(server)
-    now = time.time()
-
-    def _prepare():
-        return _prepare_recovery_summary(ctx, now, zero_fill_bytes, recovery_count)
-
-    if context_lock is None:
-        payload = _prepare()
-    else:
-        with context_lock:
-            payload = _prepare()
-
-    if payload is None:
-        return False
-    skipped, recoveries = payload
-    try:
-        _notify(
-            "NZB-DAV",
-            "Skipped {} bytes across {} recoveries".format(skipped, recoveries),
-        )
-    except (RuntimeError, OSError):
-        return False
-    return True
-
-
-def _notify_fallback_outcome(candidate_number, success):
-    """Toast the outcome of switching to a live fallback candidate.
-
-    Parameters:
-        candidate_number (int): 1-based position of the fallback candidate in
-            the session's list.
-        success (bool): ``True`` if the candidate began delivering bytes (the
-            cutover succeeded), ``False`` if it was abandoned before any bytes
-            arrived.
-
-    Returns:
-        bool: ``True`` if the toast was posted, ``False`` on a runtime/OS error.
-    """
-    outcome = "successful" if success else "was a failure"
-    try:
-        _notify(
-            "NZB-DAV",
-            "fall back to candidate #{} {}".format(candidate_number, outcome),
-        )
-    except (RuntimeError, OSError):
-        return False
-    return True
-
-
-def _validate_url(url):
-    """Reject URLs that could inject into downstream argv / HTTP framing.
-
-    The URL eventually lands as a ``-i`` / ``-headers`` argument to
-    ffmpeg, and as the path of an outgoing HTTP request. Two guards:
-
-    - **Scheme allow-list**: only ``http://`` / ``https://`` accepted.
-      Catches ``file://``, ``ftp://``, and the junk a local process
-      might POST to our loopback proxy.
-    - **Control-char reject**: any byte below 0x20 (CR, LF, NUL, tab,
-      etc.) in the URL string is rejected. Without this, a URL with an
-      embedded ``\\r\\n`` could inject an HTTP header into ffmpeg's
-      outbound request, and a URL with ``\\n`` in an ffmpeg ``-i``
-      could be mis-parsed as a separate argv entry on older ffmpeg.
-    """
-    if not url or not url.startswith(("http://", "https://")):
-        raise ValueError("Invalid URL scheme: {}".format(repr(url)[:30]))
-    if any(ord(c) < 0x20 for c in url):
-        raise ValueError("URL contains control characters: {}".format(repr(url)[:60]))
-
-
-def _validate_auth_header(auth_header):
-    """Validate an Authorization header value before forwarding it."""
-    if auth_header in (None, ""):
-        return None
-    if not isinstance(auth_header, str):
-        raise ValueError("Authorization header must be a string")
-    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in auth_header):
-        raise ValueError("Authorization header contains control characters")
-    return auth_header
-
-
-def _normalize_fallback_source(source):
-    """Normalize one fallback source dict, or None if it is unusable."""
-    if not isinstance(source, dict):
-        return None
-    stream_url = source.get("stream_url") or ""
-    nzo_id = source.get("nzo_id") or ""
-    if not stream_url and not nzo_id:
-        return None
-    if stream_url:
-        _validate_url(stream_url)
-    stream_headers = source.get("stream_headers")
-    if not isinstance(stream_headers, dict):
-        stream_headers = {}
-    content_length = _normalize_content_length_hint(source.get("content_length"))
-    return {
-        "title": source.get("title", ""),
-        "nzb_url": source.get("nzb_url", ""),
-        "job_name": source.get("job_name", ""),
-        "nzo_id": nzo_id,
-        "stream_url": stream_url,
-        "stream_headers": dict(stream_headers),
-        "content_length": content_length,
-        "validated": bool(source.get("validated", False)),
-        "failed": bool(source.get("failed", False)),
-    }
-
-
-def _normalize_fallback_sources(fallback_sources):
-    """Validate and normalize fallback stream metadata for session contexts."""
-    normalized = []
-    for source in fallback_sources or []:
-        entry = _normalize_fallback_source(source)
-        if entry is not None:
-            normalized.append(entry)
-    return normalized
-
-
-def _coerce_nonneg_int(value, default=0):
-    """Int-coerce value, treating falsy/invalid input as the default."""
-    try:
-        return int(value or 0)
-    except (TypeError, ValueError):
-        return default
-
-
-def _normalize_content_length_hint(content_length_hint):
-    try:
-        hint = int(content_length_hint or 0)
-    except (TypeError, ValueError):
-        return 0
-    return hint if hint > 0 else 0
-
-
-def _probe_content_length_hint(url, auth_header, content_length_hint):
-    """Confirm a known length via a bytes=0-0 range probe; 0 if unconfirmed."""
-    try:
-        req = Request(url)
-        _add_request_headers(req, auth_header)
-        req.add_header("Range", "bytes=0-0")
-        # nosemgrep
-        with urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
-            req, timeout=10
-        ) as resp:
-            cr = resp.headers.get("Content-Range", "")
-            status = getattr(resp, "status", None)
-            if status is None:
-                status = resp.getcode()
-            match = _CONTENT_RANGE_ZERO_RE.match(cr.strip())
-            stream_length = int(match.group(1)) if match else 0
-            if status == 206 and stream_length == content_length_hint:
-                return content_length_hint
-    except (OSError, ValueError):
-        pass
-    return 0
-
-
-def _probe_content_length_tail(url, auth_header):
-    """Read total size from the Content-Range of a bytes=-1 tail probe."""
-    try:
-        req = Request(url)
-        _add_request_headers(req, auth_header)
-        req.add_header("Range", "bytes=-1")
-        # nosemgrep
-        with urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
-            req, timeout=10
-        ) as resp:
-            cr = resp.headers.get("Content-Range", "")
-            return int(cr.split("/")[1]) if "/" in cr else 0
-    except (OSError, ValueError):
-        return 0
-
-
-def _session_last_activity(ctx, default):
-    """Best-known activity timestamp for a session ctx."""
-    return ctx.get("last_access", ctx.get("created_at", default))
-
-
-def _expired_session_ids(sessions, keep_session, now):
-    """Session ids older than the TTL, excluding the kept session."""
-    return [
-        session_id
-        for session_id, ctx in sessions.items()
-        if session_id != keep_session
-        and now - _session_last_activity(ctx, now) > _SESSION_TTL_SECONDS
-    ]
-
-
-def _least_recently_used_session(sessions, keep_session):
-    """Id of the least-recently-active evictable session, or None."""
-    removable = sorted(
-        (_session_last_activity(ctx, 0), session_id)
-        for session_id, ctx in sessions.items()
-        if session_id != keep_session
-    )
-    if not removable:
-        return None
-    return removable[0][1]
-
-
-def _thread_is_alive(thread):
-    """True when thread exists and is still running."""
-    return thread is not None and thread.is_alive()
-
-
-def _fallback_source_needs_prevalidation(source):
-    """Whether a fallback source still has prevalidation work pending."""
-    if source.get("failed") or source.get("validated"):
-        return False
-    # Either a resolved URL ready to fingerprint, or an nzo-only standby we
-    # can resolve into one.
-    return bool(source.get("stream_url") or source.get("nzo_id"))
-
-
-def _fallback_dedup_key(source):
-    # Dedup by nzo_id when present: a pushed source always carries
-    # stream_url="" (jobs only know their nzo_id), but the live cutover
-    # resolves stream_url in place — so a (nzo_id, stream_url) tuple key
-    # would treat a re-push of the same nzo as new once it's resolved,
-    # re-adding a duplicate that un-fails the source. Fall back to the
-    # URL only for url-only sources that have no nzo_id.
-    nzo_id = source.get("nzo_id", "")
-    if nzo_id:
-        return ("nzo", nzo_id)
-    return ("url", source.get("stream_url", ""))
-
-
-def _merge_new_fallback_sources(existing, normalized):
-    """Append not-yet-seen normalized sources into existing; return added count."""
-    seen = {_fallback_dedup_key(s) for s in existing if isinstance(s, dict)}
-    added = 0
-    for src in normalized:
-        key = _fallback_dedup_key(src)
-        if key in seen:
-            continue
-        seen.add(key)
-        existing.append(src)
-        added += 1
-    return added
-
-
-def _attach_fallback_context_fields(ctx, fallback_sources):
-    """Attach fallback tracking fields to a stream context or stream info."""
-    ctx["fallback_sources"] = list(fallback_sources)
-    ctx["fallback_active_index"] = -1
-    ctx["fallback_switch_count"] = 0
-    return ctx
-
-
-def _storage_to_webdav_path(storage):
-    """Convert nzbdav history storage path to a WebDAV /content path."""
-    if storage.startswith("/content/"):
-        return storage.rstrip("/") + "/"
-
-    for prefix in (
-        "/mnt/nzbdav/completed-symlinks/",
-        "/mnt/data/completed-symlinks/",
-    ):
-        if storage.startswith(prefix):
-            relative = storage[len(prefix) :]
-            return "/content/{}/".format(relative)
-
-    parts = storage.rstrip("/").split("/")
-    relative = "/".join(parts[-2:]) if len(parts) >= 2 else parts[-1]
-    return "/content/{}/".format(relative)
-
-
-def _extract_session_id_from_proxy_url(proxy_url):
-    """Pull the session id back out of a `/stream/<id>` or `/hls/<id>/...` URL.
-
-    Used by the orphan-session cleanup path on /prepare write-failure.
-    Returns the session id string or None if the URL doesn't match the
-    expected proxy-URL shapes.
-    """
-    if not proxy_url:
-        return None
-    try:
-        path = urlsplit(proxy_url).path
-    except (TypeError, ValueError):
-        return None
-    if path.startswith("/stream/"):
-        rest = path[len("/stream/") :]
-        return rest.split("/", 1)[0] or None
-    if path.startswith("/hls/"):
-        rest = path[len("/hls/") :]
-        return rest.split("/", 1)[0] or None
-    return None
-
-
-def _notify_error(message):
-    """Best-effort notification helper safe to call from proxy threads."""
-    try:
-        _notify("NZB-DAV", str(message)[:80])
-    except (RuntimeError, OSError):
-        pass
-
-
-def _embed_auth_in_url(url, auth_header):
-    """Embed Basic auth credentials into a URL for ffmpeg.
-
-    DEPRECATED for new code paths — prefer ``_ffmpeg_auth_args``,
-    which passes the Authorization header to ffmpeg via ``-headers``
-    instead of splicing ``user:password@host`` into the URL. The URL
-    form leaks credentials into ffmpeg's argv, where they're visible
-    via ``ps`` and ``/proc/<pid>/cmdline``, and (worse) into ffmpeg
-    error messages that can end up in the persistent ffmpeg.log
-    archive. Kept here only for callers that still embed-then-pass.
-    """
-    if auth_header and auth_header.startswith("Basic "):
-        import base64
-
-        try:
-            decoded = base64.b64decode(auth_header[6:], validate=True).decode("utf-8")
-        except (ValueError, UnicodeDecodeError):
-            return url
-
-        username, sep, password = decoded.partition(":")
-        if not sep:
-            return url
-
-        parsed = urlsplit(url)
-        host_part = parsed.netloc.rsplit("@", 1)[-1]
-        userinfo = "{}:{}".format(quote(username, safe=""), quote(password, safe=""))
-        return urlunsplit(
-            (
-                parsed.scheme,
-                "{}@{}".format(userinfo, host_part),
-                parsed.path,
-                parsed.query,
-                parsed.fragment,
-            )
-        )
-    return url
-
-
-def _ffmpeg_auth_args(auth_header):
-    """Return ffmpeg ``-headers ...`` argv fragment for an
-    Authorization header, or an empty list if no auth is present.
-
-    Pass the result to ``cmd.extend(...)`` BEFORE the ``-i URL``
-    pair. ffmpeg's HTTP demuxer reads ``-headers`` as a string of
-    HTTP headers separated by ``\\r\\n``; the trailing ``\\r\\n``
-    is required to terminate the header line.
-
-    Why this exists: the URL-embedding form (``_embed_auth_in_url``)
-    splices ``user:password@host`` into argv, where the cleartext
-    credentials are visible to other local processes via ``ps`` /
-    ``/proc/cmdline``, and end up in ffmpeg error messages and
-    therefore in the persistent ffmpeg.log archive. The ``-headers``
-    form keeps the URL clean for logging and only puts the (still
-    base64-encoded) Authorization line into argv. On a single-user
-    Kodi appliance this is mostly a defense-in-depth + log-redaction
-    win, but on multi-user systems the difference is meaningful.
-    """
-    if not auth_header:
-        return []
-    auth_header = _validate_auth_header(auth_header)
-    if not auth_header:
-        return []
-    return ["-headers", "Authorization: {}\r\n".format(auth_header)]
-
-
-def _parse_ffmpeg_duration(stderr_text):
-    """Parse 'Duration: HH:MM:SS.xx' from ffmpeg stderr output.
-
-    Returns duration in seconds as a float, or None if not found.
-    """
-    match = _DURATION_RE.search(stderr_text)
-    if not match:
-        return None
-    hours, minutes, seconds, frac = match.groups()
-    return (
-        int(hours) * 3600
-        + int(minutes) * 60
-        + int(seconds)
-        + (int(frac) / (10 ** len(frac)) if frac else 0)
-    )
-
-
-def _reap_process_async(proc, label):
-    """Wait for a killed child process in the background."""
-
-    def _reap():
-        try:
-            proc.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            xbmc.log(
-                "NZB-DAV: {} pid={} did not exit within 2 s; "
-                "leaking to OS reap".format(label, getattr(proc, "pid", "?")),
-                xbmc.LOGWARNING,
-            )
-        except OSError:
-            pass
-
-    thread = threading.Thread(target=_reap, daemon=True)
-    thread.start()
-
-
 # Byte-offset delta used to distinguish a Kodi buffer-reconnect from a
 # user-initiated seek.  When Kodi reconnects after a brief network hiccup it
 # resumes very close to where it left off; a true seek jumps much further.
@@ -2126,91 +545,6 @@ def _reap_process_async(proc, label):
 # overlap, small enough to catch seeks that would noticeably re-position
 # the stream.  Adjust if you observe unnecessary ffmpeg restarts in logs.
 _SEEK_THRESHOLD = 10 * 1024 * 1024
-
-
-def _is_seek_request(current_byte_pos, requested_byte_pos):
-    """Determine if a range request is a genuine seek or a continuation.
-
-    Returns True if the request is far from the current position (>10MB
-    gap or backward), meaning ffmpeg should be restarted with -ss.
-    """
-    delta = requested_byte_pos - current_byte_pos
-    if delta < 0:
-        return True  # backward seek
-    return delta > _SEEK_THRESHOLD
-
-
-def _is_segment_resource(resource):
-    """True if a parsed HLS resource is a ("segment", seg_n, ext) tuple."""
-    return isinstance(resource, tuple) and resource[0] == "segment"
-
-
-def _touch_stream_context(ctx, acquire):
-    """Mark a stream context accessed, optionally leasing a handler slot.
-
-    Returns the context, or None when it is missing or already tearing down.
-    """
-    if ctx is None or ctx.get("_cleanup_started"):
-        return None
-    ctx["last_access"] = time.time()
-    if acquire:
-        ctx["_active_handlers"] = int(ctx.get("_active_handlers", 0) or 0) + 1
-    return ctx
-
-
-def _parse_hls_segment_resource(resource):
-    """Parse a ``seg_<N>.ts`` / ``seg_<N>.m4s`` resource into a segment tuple.
-
-    Returns ``("segment", N, ext)`` for a well-formed non-negative segment,
-    or None for any non-segment or malformed resource.
-    """
-    if not resource.startswith("seg_"):
-        return None
-    for ext in ("ts", "m4s"):
-        suffix = "." + ext
-        if not resource.endswith(suffix):
-            continue
-        try:
-            seg_n = int(resource[len("seg_") : -len(suffix)])
-        except ValueError:
-            return None
-        if seg_n < 0:
-            return None
-        return ("segment", seg_n, ext)
-    return None
-
-
-def _release_handler_lease(ctx):
-    """Decrement the active-handler lease and claim deferred cleanup if due.
-
-    Returns True (caller holds the context lock) when this release drops the
-    last handler on a context that has pending cleanup not yet started.
-    """
-    active = max(0, int(ctx.get("_active_handlers", 0) or 0) - 1)
-    ctx["_active_handlers"] = active
-    if active == 0 and ctx.get("_cleanup_pending") and not ctx.get("_cleanup_started"):
-        ctx["_cleanup_started"] = True
-        return True
-    return False
-
-
-def _stream_context_session_id(path):
-    """Extract a session id from a /stream/<id> or /hls/<id>/... path.
-
-    Returns the session id string, or None when the path is malformed or
-    not a session-scoped stream/HLS path.
-    """
-    if path.startswith("/stream/"):
-        session_id = path[len("/stream/") :]
-        if not session_id or "/" in session_id:
-            return None
-        return session_id
-    if path.startswith("/hls/"):
-        parts = path[len("/hls/") :].split("/", 1)
-        if len(parts) != 2 or not parts[0]:
-            return None
-        return parts[0]
-    return None
 
 
 class _ProxyStreamState:  # pylint: disable=too-few-public-methods
@@ -10277,173 +8611,6 @@ _ORIGINAL_GET_SERVICE_PROXY_PORT = get_service_proxy_port
 _ORIGINAL_GET_SERVICE_PROXY_TOKEN = get_service_proxy_token
 
 
-class ServiceProxyUnavailableError(OSError):
-    """Raised when the NZB-DAV background service's proxy is unreachable.
-
-    Distinct from the underlying OSError so resolver's error-handling
-    layer can present the user a specific "background service not
-    running" message instead of the raw ``[Errno 61] Connection
-    refused`` shape. Still inherits OSError so existing broad
-    ``except OSError`` clauses (resolver's _RESOLVE_RUNTIME_ERRORS)
-    keep catching it without a code change.
-    """
-
-
-def _build_prepare_payload(
-    remote_url, auth_header, fallback_sources, content_length_hint, settings_snapshot
-):
-    """Build the /prepare JSON payload, omitting absent optional fields."""
-    payload = {
-        "remote_url": remote_url,
-        "auth_header": auth_header,
-        "fallback_sources": list(fallback_sources or []),
-    }
-    content_length_hint = _normalize_content_length_hint(content_length_hint)
-    if content_length_hint > 0:
-        payload["content_length_hint"] = content_length_hint
-    settings_snapshot = normalize_settings_snapshot(settings_snapshot)
-    if settings_snapshot:
-        payload["settings_snapshot"] = settings_snapshot
-    return payload
-
-
-def _build_prepare_request(url, payload, prepare_token):
-    """Build the POST Request for /prepare, attaching the auth token header."""
-    import json
-
-    req = Request(url, data=json.dumps(payload).encode(), method="POST")
-    req.add_header("User-Agent", HTTP_USER_AGENT)
-    req.add_header("Content-Type", "application/json")
-    if prepare_token is None:
-        prepare_token = get_service_proxy_token()
-    if prepare_token:
-        req.add_header(_PREPARE_TOKEN_HEADER, prepare_token)
-    return req
-
-
-def _prepare_attempt(req):
-    """Perform one /prepare POST, returning (proxy_url, stream_info)."""
-    import json
-
-    # nosemgrep
-    with urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
-        req, timeout=_PREPARE_ATTEMPT_TIMEOUT
-    ) as resp:
-        result = json.loads(resp.read())
-        proxy_url = result.pop("proxy_url")
-        return proxy_url, result
-
-
-def _classify_prepare_url_error(e):
-    """Map a URLError to "retry", "unreachable", or "reraise".
-
-    Retry the fast connection-reset family; treat a wrapped timeout/OSError as
-    unreachable; re-raise everything else (e.g. an HTTPError from a reachable
-    proxy — not a reachability problem).
-    """
-    reason = getattr(e, "reason", None)
-    if isinstance(reason, ConnectionError):
-        return "retry"
-    if isinstance(reason, (_socket.timeout, TimeoutError, OSError)):
-        return "unreachable"
-    return "reraise"
-
-
-def prepare_stream_via_service(
-    port,
-    remote_url,
-    auth_header=None,
-    prepare_token=None,
-    fallback_sources=None,
-    content_length_hint=None,
-    settings_snapshot=None,
-):
-    """Ask the service's proxy to prepare a stream.
-
-    Returns (proxy_url, stream_info) where stream_info contains
-    duration_seconds, total_bytes, seekable, remux.
-
-    Raises ServiceProxyUnavailableError when the local proxy port is
-    stale / service crashed / firewall ate the loopback connection —
-    the user-visible error-dialog layer uses the subclass to substitute
-    an actionable message for the opaque ``Connection refused``.
-    """
-    url = "http://127.0.0.1:{}/prepare".format(port)
-    auth_header = _validate_auth_header(auth_header)
-    payload = _build_prepare_payload(
-        remote_url,
-        auth_header,
-        fallback_sources,
-        content_length_hint,
-        settings_snapshot,
-    )
-    req = _build_prepare_request(url, payload, prepare_token)
-    unreachable = (
-        "NZB-DAV background service unreachable on 127.0.0.1:{} — "
-        "restart Kodi or toggle the addon".format(port)
-    )
-    last_error = None
-    for index in range(_PREPARE_MAX_ATTEMPTS):
-        try:
-            return _prepare_attempt(req)
-        except ConnectionError as e:
-            # FAST transient: a momentarily thread-starved proxy accepted then
-            # dropped the loopback socket (RemoteDisconnected / reset / refused).
-            # It clears in well under a second once a handler thread frees up,
-            # so retry before surfacing the terminal error rather than failing
-            # the whole playback on the first transient hiccup.
-            last_error = e
-        except (_socket.timeout, TimeoutError) as e:
-            # The proxy accepted but never answered within the budget: wedged,
-            # not starved. Retrying another full budget won't help, so surface
-            # immediately — same worst case as before this retry loop existed.
-            raise ServiceProxyUnavailableError(unreachable) from e
-        except URLError as e:
-            # URLError wraps the same family of errors when urlopen fails. Retry
-            # only the fast connection-reset family; surface a wrapped timeout/
-            # OSError as unreachable; re-raise everything else (e.g. HTTPError,
-            # a 4xx/5xx from a reachable proxy — not a reachability problem).
-            disposition = _classify_prepare_url_error(e)
-            if disposition == "retry":
-                last_error = e
-            elif disposition == "unreachable":
-                raise ServiceProxyUnavailableError(unreachable) from e
-            else:
-                raise
-        if index < _PREPARE_MAX_ATTEMPTS - 1:
-            time.sleep(_PREPARE_RETRY_BACKOFF)
-    # Every attempt failed with a fast connection reset.
-    raise ServiceProxyUnavailableError(unreachable) from last_error
-
-
-def update_stream_fallbacks_via_service(
-    port, session_id, fallback_sources, prepare_token=None
-):
-    """Push late-adopted fallback sources into a live proxy session.
-
-    Best-effort: the caller should swallow exceptions (the cutover still works
-    for whatever was attached at /prepare time). Returns the parsed JSON
-    response (``{"added": n}``) on success.
-    """
-    import json
-
-    url = "http://127.0.0.1:{}/stream/{}/fallbacks".format(port, session_id)
-    payload = {"fallback_sources": list(fallback_sources or [])}
-    req = Request(url, data=json.dumps(payload).encode(), method="POST")
-    req.add_header("User-Agent", HTTP_USER_AGENT)
-    req.add_header("Content-Type", "application/json")
-    if prepare_token is None:
-        prepare_token = get_service_proxy_token()
-    if prepare_token:
-        req.add_header(_PREPARE_TOKEN_HEADER, prepare_token)
-    # Short timeout: this is an in-process loopback service that answers in
-    # well under a second, and the flush push runs inline on the resolver
-    # thread just before playback handoff — a long timeout would stall it.
-    # nosemgrep
-    with urlopen(req, timeout=3) as resp:  # nosec B310 — loopback service URL
-        return json.loads(resp.read())
-
-
 def get_proxy():
     """Get or create the singleton stream proxy."""
     global _proxy
@@ -10470,3 +8637,127 @@ def reset_proxy_singleton():
     global _proxy
     with _proxy_lock:
         _proxy = None
+
+
+# ---------------------------------------------------------------------------
+# Stage 1 decomposition re-exports.
+#
+# Cohesive units that used to live inline in this module now live in sibling
+# ``stream_proxy_*`` modules. They are imported here, at the END of module
+# load, so every name stays resolvable as ``stream_proxy.<name>`` for callers
+# and for test ``@patch`` targets (including ``_StreamHandler``, which is still
+# defined above and calls these helpers as bare module globals). The siblings
+# import the constants they need back from this module (a deliberate, documented
+# import cycle: the constants are all defined above, before these imports
+# execute) and reach this module's helpers / patched names at call time via
+# ``import resources.lib.stream_proxy as _sp`` so monkeypatching keeps working.
+#
+# These are re-exports for external callers / test patches, so pylint's
+# unused-import is expected and disabled for the block.
+# ---------------------------------------------------------------------------
+# pylint: disable=unused-import
+from resources.lib.stream_proxy_buffer import ReadAheadBuffer  # noqa: E402,F401
+from resources.lib.stream_proxy_contract import (  # noqa: E402,F401
+    _add_request_headers,
+    _classify_contract_mismatch,
+    _classify_contract_range,
+    _classify_contract_status,
+    _density_ratio,
+    _expected_content_range,
+    _fault_forced_primary_failure,
+    _fault_primary_fail_threshold,
+    _get_header,
+    _is_terminal_http_client_error,
+    _log_contract_mismatch,
+    _passthrough_watchdog_applies,
+    _record_density_window,
+    _set_upstream_read_timeout,
+    _strip_header_value,
+    _would_trip_density_breaker,
+)
+from resources.lib.stream_proxy_fallback import (  # noqa: E402,F401
+    _attach_fallback_context_fields,
+    _coerce_nonneg_int,
+    _expired_session_ids,
+    _extract_session_id_from_proxy_url,
+    _fallback_dedup_key,
+    _fallback_source_needs_prevalidation,
+    _is_seek_request,
+    _is_segment_resource,
+    _least_recently_used_session,
+    _merge_new_fallback_sources,
+    _normalize_content_length_hint,
+    _normalize_fallback_source,
+    _normalize_fallback_sources,
+    _notify_error,
+    _parse_hls_segment_resource,
+    _probe_content_length_hint,
+    _probe_content_length_tail,
+    _release_handler_lease,
+    _session_last_activity,
+    _storage_to_webdav_path,
+    _stream_context_session_id,
+    _thread_is_alive,
+    _touch_stream_context,
+    _validate_auth_header,
+    _validate_url,
+)
+from resources.lib.stream_proxy_ffmpeg import (  # noqa: E402,F401
+    _choose_hls_workdir,
+    _disk_free_bytes,
+    _drain_killed_ffmpeg_probe,
+    _embed_auth_in_url,
+    _ffmpeg_auth_args,
+    _find_ffmpeg,
+    _find_ffprobe,
+    _parse_ffmpeg_duration,
+    _reap_process_async,
+    _run_ffmpeg_hls_muxer_probe,
+    _workdir_has_free_space,
+)
+from resources.lib.stream_proxy_recovery import (  # noqa: E402,F401
+    _claim_one_shot_flag,
+    _classify_upstream_error,
+    _clear_upstream_unreachable_flag,
+    _maybe_notify_recovery_summary,
+    _maybe_notify_stream_starvation,
+    _notify_fallback_outcome,
+    _prepare_recovery_summary,
+    _project_session_zero_fill_ratio,
+    _read_session_recovery_state,
+    _record_upstream_recovered,
+    _record_upstream_unreachable,
+    _stream_starvation_evident,
+    _update_session_recovery_state,
+)
+from resources.lib.stream_proxy_service import (  # noqa: E402,F401
+    ServiceProxyUnavailableError,
+    prepare_stream_via_service,
+    update_stream_fallbacks_via_service,
+)
+from resources.lib.stream_proxy_settings import (  # noqa: E402,F401
+    _bool_from_snapshot,
+    _clamp_int_setting,
+    _density_breaker_enabled,
+    _force_remux_mode_from_snapshot,
+    _force_remux_threshold_bytes_from_snapshot,
+    _get_addon_setting,
+    _get_bool_setting,
+    _get_force_remux_mode,
+    _get_force_remux_threshold_bytes,
+    _get_passthrough_stall_wait_seconds,
+    _get_readahead_buffer_mb,
+    _get_server_context_lock,
+    _get_strict_contract_mode,
+    _int_from_snapshot,
+    _passthrough_runtime_settings,
+    _passthrough_runtime_settings_from_snapshot,
+    _read_passthrough_runtime_settings,
+    _retry_ladder_enabled,
+    _send_200_no_range_enabled,
+    _set_addon_setting,
+    _strict_contract_mode_from_snapshot,
+    _zero_fill_budget_enabled,
+    build_settings_snapshot,
+    normalize_settings_snapshot,
+)
