@@ -2090,27 +2090,33 @@ def test_selection_fallback_uses_later_completed_candidate_instead_of_slow_gap(
     }
     slow_started = threading.Event()
     release_slow = threading.Event()
+    slow_completed = threading.Event()
 
     def fetch(url, **_kwargs):
         if url == candidates[1]["link"]:
             slow_started.set()
+            # Released only in the finally below (after the snapshot), with no
+            # early timer, so the slow gap candidate can never complete before
+            # we record whether the scan waited for it -- load-independent.
             release_slow.wait(timeout=1)
+            slow_completed.set()
         return manifests[url]
 
     mock_fetch.side_effect = fetch
-    release_timer = threading.Timer(0.25, release_slow.set)
-    release_timer.start()
     try:
         attach_fallback_candidates_for_selection(selected, [selected] + candidates)
+        slow_completed_at_return = slow_completed.is_set()
     finally:
         release_slow.set()
-        release_timer.cancel()
 
     assert slow_started.is_set()
-    # Structural proof subsumes the wall-clock bound: if the scan had blocked on
-    # the slow candidate[1] (GAP02) instead of using the faster-completing
-    # candidate[2] (GAP03), the attached list would be [candidates[0],
-    # candidates[1]]. The list assertion below is the load-independent guard.
+    # Structural proof (load-independent): the slow gap candidate (GAP02) is left
+    # in flight and never released here, so a healthy early-return that uses the
+    # faster candidate[2] (GAP03) must NOT have waited for it. A
+    # "waits-but-same-result" regression (drain the slow in-flight fetch, then
+    # discard it) would block until it completed -> slow_completed set.
+    assert not slow_completed_at_return
+    # The list assertion then confirms the right (faster) candidate was attached.
     assert selected["_fallback_candidates"] == [candidates[0], candidates[2]]
 
 
@@ -2369,28 +2375,33 @@ def test_selection_fallback_does_not_wait_for_optional_tail_after_partial_match(
     }
     slow_started = threading.Event()
     release_slow = threading.Event()
+    slow_completed = threading.Event()
 
     def fetch(url, **_kwargs):
         if url == candidates[1]["link"]:
             slow_started.set()
+            # Released only in the finally below (after the snapshot), with no
+            # early timer, so the slow optional-tail candidate can never complete
+            # before we record whether the scan waited for it -- load-independent.
             release_slow.wait(timeout=1)
+            slow_completed.set()
         return manifests[url]
 
     mock_fetch.side_effect = fetch
-    release_timer = threading.Timer(0.3, release_slow.set)
-    release_timer.start()
     try:
         attach_fallback_candidates_for_selection(selected, [selected] + candidates)
+        slow_completed_at_return = slow_completed.is_set()
     finally:
         release_slow.set()
-        release_timer.cancel()
 
     assert slow_started.is_set()
-    # Structural proof subsumes the wall-clock bound: candidates[1] (PARTIAL02)
-    # is itself a match, so if the scan had blocked on it until the slow release
-    # it would have been consumed and attached, making the list
-    # [candidates[0], candidates[1]]. The list assertion below is the
-    # load-independent guard that the slow optional tail was not awaited.
+    # Structural proof (load-independent): the slow optional-tail candidate is
+    # left in flight and never released here, so a healthy bounded tail-wait must
+    # give up and return WITHOUT it completing. A "waits-but-same-result"
+    # regression (drain the slow in-flight fetch, then discard it) would block
+    # until it completed -> slow_completed set.
+    assert not slow_completed_at_return
+    # The list assertion confirms the slow optional tail was not attached.
     assert selected["_fallback_candidates"] == [candidates[0]]
 
 

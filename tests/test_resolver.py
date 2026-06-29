@@ -2404,7 +2404,7 @@ def test_resolve_overlaps_bookmark_cleanup_with_post_submit_poll(
     assert timing["cleanup_end"] <= timing["play"]
     # Intervals [cleanup_start, cleanup_end] and [poll_start, poll_end] intersect
     # => cleanup ran in parallel with the post-submit poll (serial would not overlap).
-    assert timing["cleanup_start"] < timing["poll_end"]
+    # cleanup_start < poll_end is already asserted (with a message) above.
     assert timing["poll_start"] < timing["cleanup_end"]
 
 
@@ -2613,7 +2613,7 @@ def test_resolve_overlaps_proxy_prepare_with_bookmark_cleanup_after_ready(
     assert timing["cleanup_end"] <= timing["resolved"]
     # Intervals [prepare_start, prepare_end] and [cleanup_start, cleanup_end]
     # intersect => proxy prepare overlapped the in-flight cleanup (not serial).
-    assert timing["prepare_start"] < timing["cleanup_end"]
+    # prepare_start < cleanup_end is already asserted above.
     assert timing["cleanup_start"] < timing["prepare_end"]
 
 
@@ -3884,7 +3884,12 @@ def test_start_direct_playback_prepare_snapshots_settings_in_worker(
         calls.append(key)
         if len(calls) == 1:
             slow_started.set()
-            release_settings.wait(0.2)
+            # Block on a test-controlled gate released ONLY in the finally below
+            # (AFTER the snapshot), NOT a self-releasing timer: the worker stays
+            # in-flight until then, so ``done`` cannot be set before the snapshot.
+            # A self-releasing wait here would let the worker finish on its own
+            # under load and false-fail the snapshot.
+            release_settings.wait(timeout=2)
         return default
 
     state = _start_direct_playback_prepare(
@@ -3895,10 +3900,12 @@ def test_start_direct_playback_prepare_snapshots_settings_in_worker(
     )
 
     try:
-        # Prepare returns while the worker is still blocked in the slow settings
-        # getter => the work was dispatched to a background thread, not awaited.
+        # The worker is genuinely in-flight (it has entered the blocked settings
+        # read) but cannot have finished prepare while the gate above is closed
+        # => structural proof prepare runs off the caller's thread. A
+        # synchronous-prepare regression sets ``done`` before this point.
+        assert slow_started.wait(2)
         assert not state["done"].is_set()
-        assert slow_started.wait(0.2)
         release_settings.set()
         prepared = _wait_direct_playback_prepare(state)
     finally:
@@ -5005,18 +5012,26 @@ def test_submit_ui_pump_terminal_error_does_not_wait_for_probe_cleanup(
     monitor.abortRequested.return_value = False
 
     try:
+        started = _time.monotonic()
         nzo_id, submit_error = _submit_nzb_with_ui_pump(
             "http://hydra/getnzb/rate-limited",
             "movie.mkv",
             dialog,
             monitor,
         )
+        elapsed = _time.monotonic() - started
         # Load-independent proof: the terminal error returned WHILE the probe is
         # still mid-flight (blocked) -- it was NOT awaited, so no slow_probe ran
-        # past its block and the completed list is still empty at return. A
-        # regression that awaits the probe would block until the 2s timeout, then
-        # record a completion, making this list non-empty and failing the assert.
+        # past its block and the completed list is still empty at return. Catches
+        # an UNBOUNDED await of the still-parked probe threads.
         assert not probe_completed
+        # Bounded-join guard (test-analyzer): dropping the terminal-error
+        # early-skip would let cleanup fall through to t.join(timeout=1) on each
+        # still-parked probe, pinning the return at ~1-2s. The healthy terminal
+        # path returns in ~ms (>=10x margin); this generous 0.5s ceiling sits
+        # well below the ~1s+ regression, staying load-independent while still
+        # going red on the bounded join that `not probe_completed` alone misses.
+        assert elapsed < 0.5
         assert nzo_id is None
         assert submit_error == {"status": 400, "message": "TooManyRequests"}
     finally:
@@ -5169,6 +5184,7 @@ def test_submit_ui_pump_adopts_existing_queue_without_initial_probe_delay(
     queue_seen = threading.Event()
     submit_can_finish = threading.Event()
     submit_completed = [False]
+    first_probe_at = []
 
     def delayed_submit(_nzb_url, _title):
         assert queue_seen.wait(timeout=1)
@@ -5181,6 +5197,8 @@ def test_submit_ui_pump_adopts_existing_queue_without_initial_probe_delay(
         return "SABnzbd_nzo_submitted_late", None
 
     def queued_job(_title):
+        if not first_probe_at:
+            first_probe_at.append(_time.perf_counter())
         queue_seen.set()
         return {
             "nzo_id": "SABnzbd_nzo_existing_queue",
@@ -5195,6 +5213,7 @@ def test_submit_ui_pump_adopts_existing_queue_without_initial_probe_delay(
     monitor = MagicMock()
     monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
 
+    started = _time.perf_counter()
     try:
         nzo_id, submit_error = _submit_nzb_with_ui_pump(
             "http://hydra/getnzb/abc", "movie.mkv", dialog, monitor
@@ -5211,6 +5230,19 @@ def test_submit_ui_pump_adopts_existing_queue_without_initial_probe_delay(
     # a fixed grace, delayed_submit would finish its bounded wait and set
     # submit_completed -> submit_completed_at_return True.
     assert submit_completed_at_return is False
+    # No-initial-probe-delay guard (CodeRabbit Major): a reintroduced non-zero
+    # _SUBMIT_QUEUE_PROBE_INITIAL_DELAY_SECONDS pushes the FIRST queue probe out
+    # by that delay (the worker does `queue_stop.wait(delay)` before its first
+    # find_queued_by_name). Healthy path issues it in ~ms; this generous 0.1s
+    # ceiling sits far below any meaningful reintroduced delay yet well above
+    # scheduling jitter, catching what the submit_completed snapshot cannot.
+    assert first_probe_at, "queue probe never ran"
+    first_probe_delay = first_probe_at[0] - started
+    assert (
+        first_probe_delay < 0.1
+    ), "first queue probe was delayed {:.3f}s (initial grace reintroduced?)".format(
+        first_probe_delay
+    )
 
 
 @patch("resources.lib.resolver._existing_completed_stream", return_value=None)
@@ -5261,6 +5293,32 @@ def test_submit_ui_pump_rechecks_queue_quickly_after_initial_fast_miss(
 
     assert (nzo_id, submit_error) == ("SABnzbd_nzo_second_fast_probe", None)
     assert len(queue_probe_times) == 2
+    # Cadence guard (CodeRabbit Major): two probes happening is not enough -- the
+    # second probe must have been paced by the FAST retry interval, not the
+    # normal slow poll. A regression dropping the recheck to the slow poll (still
+    # < the 0.75s submit timeout) keeps len == 2 and the submit-not-completed
+    # snapshot green. The probe worker waits via queue_stop.wait(interval) (a
+    # real Event, not mockable), so the inter-probe GAP is the only observable
+    # signal; pin it below the fast/slow midpoint, derived from the production
+    # constants so it tracks them and tolerates load overrun up to ~3x the fast
+    # interval while still going red on a slow-interval regression.
+    from resources.lib.resolver import (  # pylint: disable=import-outside-toplevel
+        _SUBMIT_QUEUE_PROBE_FAST_INTERVAL_SECONDS,
+        _SUBMIT_QUEUE_PROBE_INTERVAL_SECONDS,
+    )
+
+    probe_gap = queue_probe_times[1] - queue_probe_times[0]
+    fast_slow_midpoint = (
+        _SUBMIT_QUEUE_PROBE_FAST_INTERVAL_SECONDS + _SUBMIT_QUEUE_PROBE_INTERVAL_SECONDS
+    ) / 2
+    assert probe_gap < fast_slow_midpoint, (
+        "second queue probe used the slow {:.3f}s poll instead of the fast "
+        "{:.3f}s retry; inter-probe gap was {:.3f}s".format(
+            _SUBMIT_QUEUE_PROBE_INTERVAL_SECONDS,
+            _SUBMIT_QUEUE_PROBE_FAST_INTERVAL_SECONDS,
+            probe_gap,
+        )
+    )
     # Structural proof (load-independent): the second queue probe's hit is
     # adopted and returned while the submit worker is still blocked on
     # submit_can_finish (released only in the finally above, after this
@@ -6879,8 +6937,13 @@ def test_poll_until_ready_waits_for_full_progress_history_before_poll_tick(
 
     def get_history(_nzo_id):
         history_calls.append(_time.perf_counter())
+        # Simulate a small history-arrival latency that lands comfortably inside
+        # _POLL_FULL_PROGRESS_HISTORY_GRACE_SECONDS (0.14). The earlier 0.12 sleep
+        # sat only 0.02s under the grace, so under CPU load it stretched past 0.14
+        # and forced a false 2nd poll. ~0.02 keeps a wide margin while still
+        # exercising the grace-wait path.
         if len(history_calls) == 1:
-            _time.sleep(0.12)
+            _time.sleep(0.02)
         return completed_history
 
     monitor = MagicMock()
@@ -6896,12 +6959,18 @@ def test_poll_until_ready_waits_for_full_progress_history_before_poll_tick(
 
     assert url == "http://webdav/movie.mkv"
     assert headers == {"Authorization": "x"}
-    # Structural guard (replaces a flake-prone wall-clock bound that sat only
-    # ~0.05s above the 0.12s history latency + 0.14s grace): get_history returns
-    # the completed row immediately on every call, so finishing with exactly one
-    # history call proves the 100% row caught history inside the full-progress
-    # grace on the first poll. A missed grace forces a second poll -> 2 calls.
+    # Structural red-on-regression signal (load-independent): the 100% grace
+    # caught completed history on the FIRST poll, so history was fetched once and
+    # no poll-tick / fast-repoll waitForAbort ran before resolving. If the
+    # full-progress grace regresses (shrinks below the history latency), the 100%
+    # row misses history on poll 1 and the loop sleeps a poll wait then re-fetches
+    # history -> len(history_calls) == 2 and a poll wait appears.
     assert len(history_calls) == 1
+    poll_waits = [c.args[0] for c in monitor.waitForAbort.call_args_list if c.args]
+    assert not poll_waits, (
+        "full-progress grace missed history on poll 1 and slept a poll wait "
+        "before resolving; waitForAbort delays={}".format(poll_waits)
+    )
 
 
 @patch("resources.lib.resolver._existing_completed_stream", return_value=None)
