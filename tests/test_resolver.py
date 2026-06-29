@@ -388,25 +388,36 @@ def test_handle_job_status_accepts_fractional_percentage():
 
 
 def test_handle_job_status_does_not_block_on_stuck_dialog_update():
+    update_started = threading.Event()
+    release_update = threading.Event()
+    update_finished = threading.Event()
+
     def stuck_update(*_args):
-        _time.sleep(0.25)
+        update_started.set()
+        release_update.wait(5)
+        update_finished.set()
 
     dialog = MagicMock()
     dialog.iscanceled.return_value = False
     dialog.update.side_effect = stuck_update
 
-    started = _time.perf_counter()
-    should_stop, last_status = _handle_job_status(
-        {"status": "Downloading", "percentage": "99"},
-        "nzo_stuck_dialog",
-        dialog,
-        None,
-    )
-    elapsed = _time.perf_counter() - started
+    try:
+        should_stop, last_status = _handle_job_status(
+            {"status": "Downloading", "percentage": "99"},
+            "nzo_stuck_dialog",
+            dialog,
+            None,
+        )
 
-    assert should_stop is False
-    assert last_status == "Downloading"
-    assert elapsed < 0.2
+        # The call returns while the (blocked) dialog.update is still in flight:
+        # proves the update was dispatched to a background thread, not awaited.
+        assert update_started.wait(1.0)
+        assert not update_finished.is_set()
+        assert should_stop is False
+        assert last_status == "Downloading"
+    finally:
+        release_update.set()
+        update_finished.wait(1.0)
 
 
 @patch("resources.lib.resolver.find_video_file")
@@ -2391,7 +2402,10 @@ def test_resolve_overlaps_bookmark_cleanup_with_post_submit_poll(
         "after_ready_cleanup={:.3f}s".format(elapsed, after_ready_cleanup)
     )
     assert timing["cleanup_end"] <= timing["play"]
-    assert elapsed < 0.35, "selected-to-play path took {:.3f}s".format(elapsed)
+    # Intervals [cleanup_start, cleanup_end] and [poll_start, poll_end] intersect
+    # => cleanup ran in parallel with the post-submit poll (serial would not overlap).
+    assert timing["cleanup_start"] < timing["poll_end"]
+    assert timing["poll_start"] < timing["cleanup_end"]
 
 
 @patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
@@ -2597,8 +2611,10 @@ def test_resolve_overlaps_proxy_prepare_with_bookmark_cleanup_after_ready(
 
     assert timing["prepare_start"] < timing["cleanup_end"]
     assert timing["cleanup_end"] <= timing["resolved"]
-    elapsed = timing["resolved"] - timing["ready"]
-    assert elapsed < 0.32, "ready-to-resolved stayed serial at {:.3f}s".format(elapsed)
+    # Intervals [prepare_start, prepare_end] and [cleanup_start, cleanup_end]
+    # intersect => proxy prepare overlapped the in-flight cleanup (not serial).
+    assert timing["prepare_start"] < timing["cleanup_end"]
+    assert timing["cleanup_start"] < timing["prepare_end"]
 
 
 @patch("resources.lib.cache_prompt.maybe_show_cache_prompt")
@@ -3314,9 +3330,10 @@ def test_resolve_overlaps_bookmark_cleanup_with_existing_completed_fast_path(
         )
     )
     assert timing["cleanup_end"] <= timing["play"]
-    assert elapsed < 0.35, "existing-completed selected-to-play took {:.3f}s".format(
-        elapsed
-    )
+    # Intervals [cleanup_start, cleanup_end] and [video_scan_start, video_scan_end]
+    # intersect => cleanup overlapped the completed-path video scan (serial would not).
+    assert timing["cleanup_start"] < timing["video_scan_end"]
+    assert timing["video_scan_start"] < timing["cleanup_end"]
 
 
 @patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
@@ -3870,17 +3887,17 @@ def test_start_direct_playback_prepare_snapshots_settings_in_worker(
             release_settings.wait(0.2)
         return default
 
-    started_at = _time.monotonic()
     state = _start_direct_playback_prepare(
         "http://webdav/content/movie.mkv",
         {"Authorization": "Basic abc"},
         fallback_sources=[],
         settings_getter=settings_getter,
     )
-    elapsed = _time.monotonic() - started_at
 
     try:
-        assert elapsed < 0.18
+        # Prepare returns while the worker is still blocked in the slow settings
+        # getter => the work was dispatched to a background thread, not awaited.
+        assert not state["done"].is_set()
         assert slow_started.wait(0.2)
         release_settings.set()
         prepared = _wait_direct_playback_prepare(state)
@@ -6491,8 +6508,13 @@ def test_poll_once_returns_full_progress_queue_before_slow_history(
 ):
     """A 100% queue row should not block behind a slow history request."""
 
+    # Slow path is pushed far above the bound so the assertion stays
+    # red-on-regression: the legitimate path returns after the ~0.14s
+    # full-progress grace, while a regression that blocks on history would
+    # take ~2s and fail the widened bound. The wide gap (0.14s grace vs 2.0s
+    # block, bound 1.0s) makes the wall-clock check load-robust.
     def slow_history(_nzo_id):
-        _time.sleep(0.25)
+        _time.sleep(2.0)
 
     mock_status.return_value = {"status": "Downloading", "percentage": "100"}
     mock_history.side_effect = slow_history
@@ -6501,7 +6523,7 @@ def test_poll_once_returns_full_progress_queue_before_slow_history(
     job_status, history, webdav_error = _poll_once("nzo_full", "movie", _make_monitor())
     elapsed = _time.monotonic() - started
 
-    assert elapsed < 0.2, "100% queue row waited on history for {:.3f}s".format(elapsed)
+    assert elapsed < 1.0, "100% queue row waited on history for {:.3f}s".format(elapsed)
     assert job_status == mock_status.return_value
     assert history is None
     assert webdav_error is None
@@ -6813,18 +6835,18 @@ def test_poll_until_ready_waits_for_full_progress_history_before_poll_tick(
     mock_find.return_value = "/content/uncategorized/movie/movie.mkv"
     mock_stream_url.return_value = ("http://webdav/movie.mkv", {"Authorization": "x"})
 
-    started = _time.perf_counter()
     url, headers = _poll_until_ready(
         "http://hydra/nzb", "movie", _make_dialog(), 0.25, 3600
     )
-    elapsed = _time.perf_counter() - started
 
     assert url == "http://webdav/movie.mkv"
     assert headers == {"Authorization": "x"}
+    # Structural guard (replaces a flake-prone wall-clock bound that sat only
+    # ~0.05s above the 0.12s history latency + 0.14s grace): get_history returns
+    # the completed row immediately on every call, so finishing with exactly one
+    # history call proves the 100% row caught history inside the full-progress
+    # grace on the first poll. A missed grace forces a second poll -> 2 calls.
     assert len(history_calls) == 1
-    assert elapsed < 0.2, "full-progress history missed grace by {:.3f}s".format(
-        elapsed
-    )
 
 
 @patch("resources.lib.resolver._existing_completed_stream", return_value=None)

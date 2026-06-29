@@ -679,15 +679,15 @@ def test_search_direct_indexers_fans_out_concurrently(mock_xbmcaddon, mock_confi
         time.sleep(0.2)
         return ([{"title": indexer["label"], "link": indexer["id"]}], None)
 
-    started = time.monotonic()
     with patch("resources.lib.direct_indexers._search_one_indexer", new=slow_search):
         results, error = search_direct_indexers("movie", "The Matrix")
-    elapsed = time.monotonic() - started
 
     assert error is None
     assert len(results) == 2
+    # both_started.is_set() (set only when both workers are concurrently in-flight)
+    # plus error is None / len == 2 already prove the fan-out ran in parallel; the
+    # removed wall-clock bound proved nothing further and only flaked under load.
     assert both_started.is_set()
-    assert elapsed < 0.55
 
 
 @patch("resources.lib.direct_indexers.get_configured_indexers")
@@ -709,7 +709,10 @@ def test_search_direct_indexers_marks_incomplete_futures_timed_out(
     mock_xbmcaddon.Addon.return_value = _addon_with_settings({"max_results": "25"})
 
     def slow_search(*_args, **_kwargs):
-        time.sleep(0.2)
+        # Sleep far longer than the 0.05s fan-out timeout so a regression that
+        # waits on the worker (e.g. executor.shutdown(wait=True)) is ~1.0s --
+        # dramatically over the bound -- while the timeout path stays ~0.05s.
+        time.sleep(1.0)
         return ([{"title": "late", "link": "late"}], None)
 
     mock_search_one.side_effect = slow_search
@@ -724,7 +727,7 @@ def test_search_direct_indexers_marks_incomplete_futures_timed_out(
     assert not results
     assert "Direct indexer Slow unavailable:" in error
     assert "timed out" in error
-    assert elapsed < 0.15
+    assert elapsed < 0.5
 
 
 @patch("resources.lib.direct_indexers.get_configured_indexers")
@@ -769,7 +772,10 @@ def test_test_configured_indexers_marks_incomplete_futures_timed_out(
     ]
 
     def slow_caps(*_args, **_kwargs):
-        time.sleep(0.2)
+        # Sleep far longer than the 0.05s fan-out timeout so a regression that
+        # waits on the worker (e.g. executor.shutdown(wait=True)) is ~1.0s --
+        # dramatically over the bound -- while the timeout path stays ~0.05s.
+        time.sleep(1.0)
         return "<caps></caps>"
 
     mock_http.side_effect = slow_caps
@@ -786,7 +792,7 @@ def test_test_configured_indexers_marks_incomplete_futures_timed_out(
     assert len(errors) == 1
     assert "Direct indexer Slow unavailable:" in errors[0]
     assert "timed out" in errors[0]
-    assert elapsed < 0.15
+    assert elapsed < 0.5
 
 
 @patch("resources.lib.direct_indexers.get_configured_indexers")

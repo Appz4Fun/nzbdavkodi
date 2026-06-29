@@ -3,7 +3,6 @@
 
 import hashlib
 import threading
-import time as _time
 from unittest.mock import ANY, MagicMock, patch
 from urllib.error import URLError
 from urllib.parse import urlsplit
@@ -1393,26 +1392,36 @@ def test_selection_fallback_skips_candidate_wait_after_unusable_selected_manifes
     candidate_started = threading.Event()
     release_candidates = threading.Event()
 
+    candidate_completions = [0]
+    completions_lock = threading.Lock()
+
     def fetch(url, **_kwargs):
         if url == selected["link"]:
             return manifests[url]
         candidate_started.set()
-        release_candidates.wait(timeout=1)
+        # Released only in the finally below (AFTER the snapshot), with no early
+        # timer, so a candidate fetch can never complete before we record whether
+        # the scan consumed it -- the snapshot is load-independent. The 2s cap
+        # only bounds a regression where the scan wrongly waits for this fetch.
+        release_candidates.wait(timeout=2)
+        with completions_lock:
+            candidate_completions[0] += 1
         return manifests[url]
 
     mock_fetch.side_effect = fetch
-    release_timer = threading.Timer(0.3, release_candidates.set)
-    release_timer.start()
     try:
-        before = _time.monotonic()
         attach_fallback_candidates_for_selection(selected, [selected] + candidates)
-        elapsed = _time.monotonic() - before
+        with completions_lock:
+            candidate_completions_at_return = candidate_completions[0]
     finally:
         release_candidates.set()
-        release_timer.cancel()
 
     assert candidate_started.wait(0.2)
-    assert elapsed < 0.2
+    # Structural proof (load-independent): the unusable selected manifest must
+    # abort the scan before any blocked candidate fetch is released (only the
+    # finally above releases it, after the snapshot). If the scan wrongly kept
+    # waiting, a candidate fetch would complete and be consumed -> count > 0.
+    assert candidate_completions_at_return == 0
     assert selected["_fallback_candidates"] == []
     assert selected["_fallback_manifest_error"] == "fetch_error"
 
@@ -2092,15 +2101,16 @@ def test_selection_fallback_uses_later_completed_candidate_instead_of_slow_gap(
     release_timer = threading.Timer(0.25, release_slow.set)
     release_timer.start()
     try:
-        before = _time.monotonic()
         attach_fallback_candidates_for_selection(selected, [selected] + candidates)
-        elapsed = _time.monotonic() - before
     finally:
         release_slow.set()
         release_timer.cancel()
 
     assert slow_started.is_set()
-    assert elapsed < 0.18
+    # Structural proof subsumes the wall-clock bound: if the scan had blocked on
+    # the slow candidate[1] (GAP02) instead of using the faster-completing
+    # candidate[2] (GAP03), the attached list would be [candidates[0],
+    # candidates[1]]. The list assertion below is the load-independent guard.
     assert selected["_fallback_candidates"] == [candidates[0], candidates[2]]
 
 
@@ -2283,25 +2293,32 @@ def test_selection_fallback_does_not_wait_for_optional_tail_after_max_filled(
     slow_started = threading.Event()
     release_slow = threading.Event()
 
+    tail_completed = [False]
+
     def fetch(url, **_kwargs):
         if url == candidates[6]["link"]:
             slow_started.set()
-            release_slow.wait(timeout=1)
+            # Released only in the finally below (AFTER the snapshot), with no
+            # early timer, so the optional-tail fetch cannot complete before we
+            # record whether the scan waited for it -- load-independent. The 2s
+            # cap only bounds a regression where the scan blocks on this fetch.
+            release_slow.wait(timeout=2)
+            tail_completed[0] = True
         return manifests[url]
 
     mock_fetch.side_effect = fetch
-    release_timer = threading.Timer(0.25, release_slow.set)
-    release_timer.start()
     try:
-        before = _time.monotonic()
         attach_fallback_candidates_for_selection(selected, [selected] + candidates)
-        elapsed = _time.monotonic() - before
+        tail_completed_at_return = tail_completed[0]
     finally:
         release_slow.set()
-        release_timer.cancel()
 
     assert slow_started.is_set()
-    assert elapsed < 0.18
+    # Structural proof (load-independent): with max_candidates already filled,
+    # the scan must return before the optional-tail fetch (candidates[6]) is
+    # released (only the finally above releases it, after the snapshot). If it
+    # wrongly waited, that fetch would complete -> tail_completed_at_return True.
+    assert tail_completed_at_return is False
     assert selected["_fallback_candidates"] == candidates[:4] + [candidates[5]]
 
 
@@ -2363,15 +2380,17 @@ def test_selection_fallback_does_not_wait_for_optional_tail_after_partial_match(
     release_timer = threading.Timer(0.3, release_slow.set)
     release_timer.start()
     try:
-        before = _time.monotonic()
         attach_fallback_candidates_for_selection(selected, [selected] + candidates)
-        elapsed = _time.monotonic() - before
     finally:
         release_slow.set()
         release_timer.cancel()
 
     assert slow_started.is_set()
-    assert elapsed < 0.22
+    # Structural proof subsumes the wall-clock bound: candidates[1] (PARTIAL02)
+    # is itself a match, so if the scan had blocked on it until the slow release
+    # it would have been consumed and attached, making the list
+    # [candidates[0], candidates[1]]. The list assertion below is the
+    # load-independent guard that the slow optional tail was not awaited.
     assert selected["_fallback_candidates"] == [candidates[0]]
 
 

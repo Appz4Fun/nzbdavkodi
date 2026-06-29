@@ -4406,9 +4406,11 @@ def test_prepare_stream_does_not_block_new_url_on_old_ffmpeg_wait():
 
     wait_entered = threading.Event()
     release_wait = threading.Event()
+    wait_thread = []
 
     def slow_wait(timeout=None):
         assert timeout == 5
+        wait_thread.append(threading.current_thread())
         wait_entered.set()
         release_wait.wait(timeout=1)
 
@@ -4418,20 +4420,25 @@ def test_prepare_stream_does_not_block_new_url_on_old_ffmpeg_wait():
 
     timer = threading.Timer(0.18, release_wait.set)
     timer.start()
-    started = time.perf_counter()
+    calling_thread = threading.current_thread()
     try:
         with patch.object(sp, "_get_content_length", return_value=200000):
             sp.prepare_stream("http://host/two.mkv")
-        elapsed = time.perf_counter() - started
         assert old_proc.kill.called
         assert wait_entered.wait(timeout=1)
     finally:
         release_wait.set()
         timer.cancel()
 
-    assert elapsed < 0.13, "old ffmpeg wait blocked new proxy URL for {:.3f}s".format(
-        elapsed
-    )
+    # Structural guard (load-independent): the old ffmpeg's blocking wait() must
+    # run on the background reap thread, NOT on the thread that returns the new
+    # proxy URL. If teardown regressed to a synchronous wait on the prepare
+    # path, slow_wait would run on this calling thread and prepare_stream would
+    # block until the 0.18 s timer released it.
+    assert wait_thread, "old ffmpeg wait() never ran"
+    assert (
+        wait_thread[0] is not calling_thread
+    ), "old ffmpeg wait blocked the new proxy URL on the calling thread"
     assert len(sp._server.stream_sessions) == 1
 
 
@@ -6403,7 +6410,12 @@ def test_hls_producer_prepare_returns_when_init_and_first_segment_appear(
             started = time.perf_counter()
             producer.prepare()  # must not raise
             elapsed = time.perf_counter() - started
-        assert elapsed < 0.30, "fmp4 prepare waited {:.3f}s after early output".format(
+        # Bound sits between the ~0.1 s file-write delay (plus 0.05 s poll
+        # granularity) and the 0.5 s argv-rejection window: a regression that
+        # stopped returning early when init.mp4 + seg_000000.m4s are on disk
+        # would wait the full argv window (>= 0.5 s). 0.40 stays red on that
+        # regression while tolerating CI load spikes.
+        assert elapsed < 0.40, "fmp4 prepare waited {:.3f}s after early output".format(
             elapsed
         )
     finally:
