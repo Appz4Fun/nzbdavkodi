@@ -201,6 +201,15 @@ class NzbdavPlayer(xbmc.Player):
         )
         return enabled, max_retries, retry_delay
 
+    @staticmethod
+    def _clear_props(props):
+        """Best-effort clear of the given window properties."""
+        for prop in props:
+            try:
+                _HOME_WINDOW.clearProperty(prop)
+            except _PLAYER_RUNTIME_ERRORS:
+                pass
+
     def _check_active(self):
         """Check if the plugin signaled a new stream via window properties."""
         import time
@@ -230,17 +239,15 @@ class NzbdavPlayer(xbmc.Player):
         # (network blip, _play_via_proxy crash) doesn't leak the prior
         # session's URL/title into the next monitor cycle. The values we
         # need are now snapshotted onto self.* fields. TODO.md §H.2-L29.
-        for prop in (
-            _PROP_ACTIVE,
-            _PROP_STREAM_URL,
-            _PROP_RESUME_KEY,
-            _PROP_RESUME_OFFSET,
-            _PROP_STREAM_TITLE,
-        ):
-            try:
-                _HOME_WINDOW.clearProperty(prop)
-            except _PLAYER_RUNTIME_ERRORS:
-                pass
+        self._clear_props(
+            (
+                _PROP_ACTIVE,
+                _PROP_STREAM_URL,
+                _PROP_RESUME_KEY,
+                _PROP_RESUME_OFFSET,
+                _PROP_STREAM_TITLE,
+            )
+        )
         # Raise the persistent liveness flag now that we are monitoring this
         # stream. Unlike ``_PROP_ACTIVE`` (consumed above), this stays set until
         # onPlayBackStopped/Ended clears it, giving the plugin-process fallback
@@ -286,18 +293,16 @@ class NzbdavPlayer(xbmc.Player):
         standby-submit window. ``nzbdav.active`` is cleared as a belt-and-braces
         measure (it is normally already consumed by ``_check_active``).
         """
-        for prop in (
-            _PROP_PLAYING,
-            _PROP_ACTIVE,
-            _PROP_STREAM_URL,
-            _PROP_RESUME_KEY,
-            _PROP_RESUME_OFFSET,
-            _PROP_STREAM_TITLE,
-        ):
-            try:
-                _HOME_WINDOW.clearProperty(prop)
-            except _PLAYER_RUNTIME_ERRORS:
-                pass
+        self._clear_props(
+            (
+                _PROP_PLAYING,
+                _PROP_ACTIVE,
+                _PROP_STREAM_URL,
+                _PROP_RESUME_KEY,
+                _PROP_RESUME_OFFSET,
+                _PROP_STREAM_TITLE,
+            )
+        )
 
     def _enter_idle_and_clear(self):
         """Transition to IDLE and clear the IPC properties (incl. liveness).
@@ -467,6 +472,15 @@ class NzbdavPlayer(xbmc.Player):
         li.setProperty("StartOffset", str(position))
         self.play(stream_url, li)
 
+        return self._await_playback_start()
+
+    def _await_playback_start(self):
+        """Poll until the relaunched stream starts, fails, or abort (10s).
+
+        Returns True if playback is confirmed live, False on abort. When the
+        poll window elapses without a terminal transition the final state
+        decides: anything other than ERROR is treated as a successful retry.
+        """
         # Wait for playback to start or fail (10s timeout)
         for _ in range(20):
             with self._state_lock:
@@ -493,8 +507,6 @@ class NzbdavPlayer(xbmc.Player):
         ``_retry_playback``) — those re-acquire internally as needed.
         Closes TODO.md §H.2-H16.
         """
-        import time
-
         self._check_active()
 
         with self._state_lock:
@@ -502,53 +514,8 @@ class NzbdavPlayer(xbmc.Player):
         if state == PlaybackState.IDLE:
             return
 
-        # Detect playback that never started (stream error, auth failure, etc.)
-        # The timeout has to comfortably exceed the worst-case
-        # proxy-side startup latency, which on the fmp4 HLS path is
-        # roughly: HlsProducer spawn (~0.1 s) + prepare() early-exit
-        # poll (~0.5 s) + ffmpeg analyzeduration (2 s, bumped from 0
-        # to fix DTS/TrueHD AV sync) + first init.mp4 + first segment
-        # write (~0.5 s) + Kodi HLS demuxer + decoder init (~1-3 s).
-        # That can land at 4-6 s on the test box even when everything
-        # is healthy. The previous 5 s threshold was tripping before
-        # Kodi could fire onAVStarted on the new fmp4 path. 30 s
-        # gives all the legitimate paths headroom while still
-        # catching genuinely dead streams within a reasonable window.
-        # The three error paths below used to call ``xbmcgui.Dialog().ok()``
-        # which is a *modal* dialog — it blocks the calling thread until
-        # the user dismisses it. The service tick runs at ~1 Hz, so a
-        # modal here meant the entire monitor loop (heartbeat, abort
-        # detection, state transitions) was wedged for as long as the
-        # user was away from the TV. Switched to ``_notify`` (a toast via
-        # ``xbmc.executebuiltin("Notification(...)")``) which is
-        # fire-and-forget. Each path still logs the underlying error
-        # at ``LOGERROR``, so a user investigating later via kodi.log
-        # gets the same context that the modal would have shown.
-        # Closes TODO.md §H.2-H8.
-        with self._state_lock:
-            in_startup_grace = (
-                self._state == PlaybackState.MONITORING and not self._av_started
-            )
-            play_time = self._play_time
-            title = self._title
-
-        if in_startup_grace:
-            elapsed = time.monotonic() - play_time
-            if elapsed > 30 and not self.isPlaying():
-                xbmc.log(
-                    "NZB-DAV: Playback never started for '{}' after {:.0f}s".format(
-                        title, elapsed
-                    ),
-                    xbmc.LOGERROR,
-                )
-                from resources.lib.i18n import addon_name as _addon_name
-                from resources.lib.i18n import string as _s
-
-                _notify(_addon_name(), _s(30121), 8000)
-                xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
-                self._cleanup_proxy_session()
-                self._enter_idle_and_clear()
-                return
+        if self._handle_startup_grace():
+            return
 
         self._save_position()
 
@@ -559,6 +526,54 @@ class NzbdavPlayer(xbmc.Player):
         if state != PlaybackState.ERROR:
             return
 
+        self._handle_error_retry(retry_count, title)
+
+    def _handle_startup_grace(self):
+        """Catch playback that never started; return True if handled terminally.
+
+        Detects playback that never started (stream error, auth failure, etc).
+        Returns True only when the never-started timeout fired and the session
+        was torn down (so tick() stops processing this iteration); else False.
+
+        The 30 s timeout exceeds worst-case fmp4 HLS startup latency (producer
+        spawn + ffmpeg analyzeduration + demuxer/decoder init can hit 4-6 s on
+        the test box); the old 5 s threshold tripped before onAVStarted fired.
+        Notification uses the fire-and-forget ``_notify`` toast rather than a
+        modal dialog (which would wedge this ~1 Hz tick thread); the error is
+        still logged at LOGERROR. Closes TODO.md §H.2-H8.
+        """
+        import time
+
+        with self._state_lock:
+            in_startup_grace = (
+                self._state == PlaybackState.MONITORING and not self._av_started
+            )
+            play_time = self._play_time
+            title = self._title
+
+        if not in_startup_grace:
+            return False
+        elapsed = time.monotonic() - play_time
+        if elapsed <= 30 or self.isPlaying():
+            return False
+
+        xbmc.log(
+            "NZB-DAV: Playback never started for '{}' after {:.0f}s".format(
+                title, elapsed
+            ),
+            xbmc.LOGERROR,
+        )
+        from resources.lib.i18n import addon_name as _addon_name
+        from resources.lib.i18n import string as _s
+
+        _notify(_addon_name(), _s(30121), 8000)
+        xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
+        self._cleanup_proxy_session()
+        self._enter_idle_and_clear()
+        return True
+
+    def _handle_error_retry(self, retry_count, title):
+        """Drive the ERROR-state retry decision (retry, give up, or relaunch)."""
         enabled, max_retries, retry_delay = self._read_settings()
         if not enabled:
             from resources.lib.i18n import addon_name as _addon_name
@@ -595,17 +610,15 @@ def check_cache_warning(state):
     return None
 
 
-def main():
-    """Service entry point — runs for the lifetime of Kodi."""
-    monitor = xbmc.Monitor()
+def _clear_stale_ipc_properties():
+    """Drop nzbdav.* IPC window properties left over from a prior service.
 
-    # Clear any nzbdav.* IPC window properties left behind by a previous
-    # service that didn't shut down cleanly (Kodi crash, force-stop, etc).
-    # Window 10000 (Home) properties survive across the Kodi restart that
-    # kills the service, so a stale `nzbdav.active="true"` would cause
-    # this service's first tick to immediately enter MONITORING with the
-    # prior session's stream metadata. Drop them on entry so the new
-    # service starts from a clean slate. TODO.md §H.2-M34.
+    Window 10000 (Home) properties survive across the Kodi restart that
+    kills the service, so a stale ``nzbdav.active="true"`` would cause this
+    service's first tick to immediately enter MONITORING with the prior
+    session's stream metadata. Clearing them on entry starts from a clean
+    slate. TODO.md §H.2-M34.
+    """
     for stale_prop in (
         _PROP_ACTIVE,
         _PROP_PLAYING,
@@ -620,35 +633,157 @@ def main():
         except Exception:  # noqa: BLE001 — best-effort, never block startup
             pass
 
-    # Start the stream proxy in this long-lived service process.
-    # Plugin scripts are short-lived — their daemon threads get killed
-    # when Kodi's CPythonInvoker destroys the interpreter after the script
-    # exits, so the proxy must live here instead.
+
+def _publish_proxy_props(proxy):
+    """Advertise the live proxy's port/token to plugin-side callers."""
+    _HOME_WINDOW.setProperty(_PROP_PROXY_PORT, str(proxy.port))
+    _HOME_WINDOW.setProperty(_PROP_PROXY_TOKEN, proxy.prepare_token)
+
+
+def _clear_proxy_props():
+    """Drop the proxy port/token so plugin callers fall back quickly."""
+    _HOME_WINDOW.clearProperty(_PROP_PROXY_PORT)
+    _HOME_WINDOW.clearProperty(_PROP_PROXY_TOKEN)
+
+
+def _restart_dead_proxy(proxy, player):
+    """Rebuild the proxy when its daemon thread has died; return the proxy.
+
+    The HTTP server runs in a daemon thread. If serve_forever ever exits
+    (unhandled exception, socket error, rare memory-pressure path), every
+    subsequent /prepare call hangs on "connection refused" with no recovery.
+    Detect the dead thread and rebuild so streams keep working. Returns the
+    same proxy when it is still alive, otherwise the freshly built one.
+    """
+    if proxy.is_alive():
+        return proxy
+    xbmc.log(
+        "NZB-DAV: Stream proxy thread is dead; restarting "
+        "(reason=proxy_thread_died)",
+        xbmc.LOGERROR,
+    )
+    try:
+        proxy.stop()
+    except Exception as e:  # pylint: disable=broad-except
+        # Logged at LOGWARNING (not LOGERROR) because we're about
+        # to spawn a fresh proxy anyway — the stop failure is
+        # diagnostic-only, not user-actionable. Closes §H.3.
+        xbmc.log(
+            "NZB-DAV: proxy.stop() raised during restart "
+            "(continuing): {!r}".format(e),
+            xbmc.LOGWARNING,
+        )
     proxy = StreamProxy()
     try:
         proxy.start()
     except Exception as e:  # pylint: disable=broad-except
-        # Socket bind failure (port in use), permission error, or any other
-        # startup exception. Without this guard the service dies silently
-        # and every plugin-side /prepare call hangs on "connection refused"
-        # with no hint in the log. Surface it clearly, clear the port
-        # property so plugin callers fall back quickly, and keep the service
-        # alive so the user can fix the config and trigger a re-run.
+        xbmc.log(
+            "NZB-DAV: Stream proxy restart failed: {} "
+            "(reason=proxy_restart_failed)".format(e),
+            xbmc.LOGERROR,
+        )
+        _clear_proxy_props()
+    else:
+        _publish_proxy_props(proxy)
+        # The player holds a reference to the old proxy for cleanup calls
+        # from onPlayBackStopped; point it at the new one so the next
+        # stop() fires on the live proxy.
+        player._proxy = proxy  # pylint: disable=protected-access
+        xbmc.log(
+            "NZB-DAV: Stream proxy restarted on port {}".format(proxy.port),
+            xbmc.LOGINFO,
+        )
+    return proxy
+
+
+def _run_tick(player, consecutive_failures):
+    """Run one player.tick(), absorbing crashes; return the failure streak.
+
+    A crash inside tick() used to kill the whole service, silently breaking
+    all future streams until Kodi restart. Absorb it so the loop keeps
+    running. The full trace is rate-limited to the first failure of a streak;
+    subsequent failures log a single line with the streak counter so a
+    chronic bug is visible without flooding the log.
+    """
+    try:
+        player.tick()
+        return 0
+    except Exception as e:  # pylint: disable=broad-except
+        consecutive_failures += 1
+        if consecutive_failures == 1:
+            xbmc.log(
+                "NZB-DAV: Unhandled exception in player.tick(): {} "
+                "(reason=tick_exception)".format(e),
+                xbmc.LOGERROR,
+            )
+        else:
+            xbmc.log(
+                "NZB-DAV: player.tick() still failing "
+                "(streak={}, latest={})".format(consecutive_failures, e),
+                xbmc.LOGERROR,
+            )
+        return consecutive_failures
+
+
+def _start_proxy(monitor):
+    """Start the stream proxy; return it, or None if startup failed.
+
+    The proxy lives in this long-lived service process because plugin scripts
+    are short-lived — their daemon threads get killed when Kodi's
+    CPythonInvoker destroys the interpreter after the script exits.
+
+    On a start failure (socket bind / port in use, permission error, etc) the
+    service must not die silently — every plugin-side /prepare would then hang
+    on "connection refused" with no log hint. Surface it, clear the port
+    property so callers fall back fast, then idle until Kodi shuts down (so we
+    aren't restarted every few seconds spamming the same failure) and return
+    None to signal the caller to exit.
+    """
+    proxy = StreamProxy()
+    try:
+        proxy.start()
+    except Exception as e:  # pylint: disable=broad-except
         xbmc.log(
             "NZB-DAV: Service failed to start stream proxy: {}".format(e),
             xbmc.LOGERROR,
         )
-        _HOME_WINDOW.clearProperty(_PROP_PROXY_PORT)
-        _HOME_WINDOW.clearProperty(_PROP_PROXY_TOKEN)
-        # Idle-loop until Kodi shuts down so the service process stays alive;
-        # otherwise Kodi keeps restarting us every few seconds and spams the
-        # log with the same start failure.
+        _clear_proxy_props()
         while not monitor.abortRequested():
             if monitor.waitForAbort(5):
                 break
+        return None
+    _publish_proxy_props(proxy)
+    return proxy
+
+
+def _shutdown_proxy(proxy):
+    """Stop the proxy and clear its port/token, guarding the stop().
+
+    The stop() is guarded the same way the restart path is: without it an
+    exception (socket already closed, thread join timeout, etc.) would skip
+    clearing ``_PROP_PROXY_PORT`` and leave a stale port visible to the next
+    service launch, so clients would connect to a dead port. TODO.md §H.2-M36.
+    """
+    try:
+        proxy.stop()
+    except Exception as e:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: proxy.stop() raised during shutdown "
+            "(continuing): {!r}".format(e),
+            xbmc.LOGWARNING,
+        )
+    _clear_proxy_props()
+
+
+def main():
+    """Service entry point — runs for the lifetime of Kodi."""
+    monitor = xbmc.Monitor()
+
+    _clear_stale_ipc_properties()
+
+    proxy = _start_proxy(monitor)
+    if proxy is None:
         return
-    _HOME_WINDOW.setProperty(_PROP_PROXY_PORT, str(proxy.port))
-    _HOME_WINDOW.setProperty(_PROP_PROXY_TOKEN, proxy.prepare_token)
 
     # Pass the proxy to the player so stop/end callbacks can tear down
     # active remux ffmpeg processes immediately instead of leaving them
@@ -673,51 +808,7 @@ def main():
         if monitor.waitForAbort(1):
             break
 
-        # Proxy health check: the HTTP server runs in a daemon thread.
-        # If the serve_forever loop ever exits (unhandled exception,
-        # socket error, rare memory-pressure path), every subsequent
-        # /prepare call from the plugin side hangs on "connection
-        # refused" with no log hint and no recovery. Detect the dead
-        # thread and rebuild the proxy so streams keep working.
-        if not proxy.is_alive():
-            xbmc.log(
-                "NZB-DAV: Stream proxy thread is dead; restarting "
-                "(reason=proxy_thread_died)",
-                xbmc.LOGERROR,
-            )
-            try:
-                proxy.stop()
-            except Exception as e:  # pylint: disable=broad-except
-                # Logged at LOGWARNING (not LOGERROR) because we're about
-                # to spawn a fresh proxy anyway — the stop failure is
-                # diagnostic-only, not user-actionable. Closes §H.3.
-                xbmc.log(
-                    "NZB-DAV: proxy.stop() raised during restart "
-                    "(continuing): {!r}".format(e),
-                    xbmc.LOGWARNING,
-                )
-            proxy = StreamProxy()
-            try:
-                proxy.start()
-            except Exception as e:  # pylint: disable=broad-except
-                xbmc.log(
-                    "NZB-DAV: Stream proxy restart failed: {} "
-                    "(reason=proxy_restart_failed)".format(e),
-                    xbmc.LOGERROR,
-                )
-                _HOME_WINDOW.clearProperty(_PROP_PROXY_PORT)
-                _HOME_WINDOW.clearProperty(_PROP_PROXY_TOKEN)
-            else:
-                _HOME_WINDOW.setProperty(_PROP_PROXY_PORT, str(proxy.port))
-                _HOME_WINDOW.setProperty(_PROP_PROXY_TOKEN, proxy.prepare_token)
-                # The player holds a reference to the old proxy for
-                # cleanup calls from onPlayBackStopped; point it at the
-                # new one so the next stop() fires on the live proxy.
-                player._proxy = proxy  # pylint: disable=protected-access
-                xbmc.log(
-                    "NZB-DAV: Stream proxy restarted on port {}".format(proxy.port),
-                    xbmc.LOGINFO,
-                )
+        proxy = _restart_dead_proxy(proxy, player)
 
         try:
             check_cache_warning(cache_warn_state)
@@ -728,46 +819,9 @@ def main():
                 xbmc.LOGERROR,
             )
 
-        try:
-            player.tick()
-            consecutive_tick_failures = 0
-        except Exception as e:  # pylint: disable=broad-except
-            # A crash inside tick() used to kill the whole service,
-            # silently breaking all future streams until Kodi restart.
-            # Absorb it so the loop keeps running. Rate-limit the full
-            # trace to the first failure of a streak; subsequent
-            # failures log a single line with the streak counter so a
-            # chronic bug is visible without flooding the log.
-            consecutive_tick_failures += 1
-            if consecutive_tick_failures == 1:
-                xbmc.log(
-                    "NZB-DAV: Unhandled exception in player.tick(): {} "
-                    "(reason=tick_exception)".format(e),
-                    xbmc.LOGERROR,
-                )
-            else:
-                xbmc.log(
-                    "NZB-DAV: player.tick() still failing "
-                    "(streak={}, latest={})".format(consecutive_tick_failures, e),
-                    xbmc.LOGERROR,
-                )
+        consecutive_tick_failures = _run_tick(player, consecutive_tick_failures)
 
-    # Guard the shutdown stop the same way the restart path does.
-    # Without the guard, an exception in `proxy.stop()` (socket already
-    # closed, thread join timeout, etc.) would skip the
-    # `clearProperty(_PROP_PROXY_PORT)` line and leave a stale port
-    # visible to the next service launch — clients would then connect
-    # to a dead port. TODO.md §H.2-M36.
-    try:
-        proxy.stop()
-    except Exception as e:  # pylint: disable=broad-except
-        xbmc.log(
-            "NZB-DAV: proxy.stop() raised during shutdown "
-            "(continuing): {!r}".format(e),
-            xbmc.LOGWARNING,
-        )
-    _HOME_WINDOW.clearProperty(_PROP_PROXY_PORT)
-    _HOME_WINDOW.clearProperty(_PROP_PROXY_TOKEN)
+    _shutdown_proxy(proxy)
     xbmc.log("NZB-DAV: Service stopped", xbmc.LOGINFO)
 
 

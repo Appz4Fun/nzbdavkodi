@@ -1321,13 +1321,18 @@ def first_prefetchable_fallback_peer(
     for result in results or []:
         if not _is_distinct_dict_peer(result, selected, seen_links):
             continue
-        candidate_meta = (
-            result.get("_meta") if isinstance(result.get("_meta"), dict) else None
+        match = _prefetch_peer_match(
+            selected, result, _result_meta_or_none(result), state
         )
-        match = _prefetch_peer_match(selected, result, candidate_meta, state)
         if match is not None:
             return match
     return None
+
+
+def _result_meta_or_none(result):
+    """Return a result's already-computed ``_meta`` dict, or None."""
+    meta = result.get("_meta")
+    return meta if isinstance(meta, dict) else None
 
 
 def _is_distinct_dict_peer(result, selected, seen_links):
@@ -1459,7 +1464,7 @@ def _manifest_group_key(result):
     kind = manifest.get("payload_kind", "")
     name = manifest.get("group_name", "")
     digest = manifest.get("article_digest", "")
-    if not (kind and name and digest):
+    if not _manifest_group_key_fields_present(kind, name, digest):
         return None
     # Parse group_bytes before the kind branches so an unparseable size
     # rejects every kind (incl. archive), matching the original ordering.
@@ -1468,9 +1473,14 @@ def _manifest_group_key(result):
         return None
     if kind == "archive":
         return kind, name
-    if kind != "video":
-        return None
-    return (kind, name, size) if size > 0 else None
+    if kind == "video" and size > 0:
+        return kind, name, size
+    return None
+
+
+def _manifest_group_key_fields_present(kind, name, digest):
+    """Return whether all required manifest group-key fields are non-empty."""
+    return bool(kind and name and digest)
 
 
 def _manifest_group_size_bytes(manifest):
@@ -2386,22 +2396,9 @@ def _selection_prefetch_candidate_matches(
     if _has_prefetch_gate_match(selected, candidate):
         prefetch_match = True
     else:
-        candidate_meta = candidate.get("_meta")
-        if not isinstance(candidate_meta, dict):
-            candidate_meta = None
-        prefetch_tokens = tokens_ref[0]
-        if prefetch_tokens is None and (meta_ref[0] is None or candidate_meta is None):
-            prefetch_tokens = _title_tokens(selected)
-            tokens_ref[0] = prefetch_tokens
-        prefetch_match = _prefetch_candidate_matches(
-            selected,
-            candidate,
-            seen_prefetch_links,
-            prefetch_tokens,
-            meta_ref[0],
+        prefetch_match = _selection_prefetch_uncached_match(
+            selected, candidate, seen_prefetch_links, tokens_ref, meta_ref
         )
-        if tokens_ref[0] is None:
-            tokens_ref[0] = _cached_title_tokens(selected)
     if meta_ref[0] is None:
         cached_selected_meta = selected.get("_meta")
         if isinstance(cached_selected_meta, dict):
@@ -2409,66 +2406,123 @@ def _selection_prefetch_candidate_matches(
     return prefetch_match
 
 
+def _selection_prefetch_uncached_match(
+    selected, candidate, seen_prefetch_links, tokens_ref, meta_ref
+):
+    """Run the non-cached prefetch gate, caching selected tokens lazily."""
+    candidate_meta = candidate.get("_meta")
+    if not isinstance(candidate_meta, dict):
+        candidate_meta = None
+    prefetch_tokens = tokens_ref[0]
+    if prefetch_tokens is None and (meta_ref[0] is None or candidate_meta is None):
+        prefetch_tokens = _title_tokens(selected)
+        tokens_ref[0] = prefetch_tokens
+    prefetch_match = _prefetch_candidate_matches(
+        selected,
+        candidate,
+        seen_prefetch_links,
+        prefetch_tokens,
+        meta_ref[0],
+    )
+    if tokens_ref[0] is None:
+        tokens_ref[0] = _cached_title_tokens(selected)
+    return prefetch_match
+
+
+def _iter_selection_prefetch_candidates(
+    selected, results, seen_prefetch_links, selected_meta
+):
+    """Yield selection-pool candidates worth fetching a manifest for.
+
+    Prefiltering stays lazy so all-matching pools still stop after the cap
+    instead of fetching manifests for the rest of the result list.
+    """
+    selected_title_tokens_ref = [None]
+    selected_meta_ref = [selected_meta]
+    for candidate in results or []:
+        if not _selection_prefetch_candidate_eligible(
+            selected, candidate, seen_prefetch_links
+        ):
+            continue
+        if _selection_prefetch_candidate_matches(
+            selected,
+            candidate,
+            seen_prefetch_links,
+            selected_title_tokens_ref,
+            selected_meta_ref,
+        ):
+            seen_prefetch_links.add(candidate.get("link", ""))
+            yield candidate
+
+
+def _selection_prefetch_candidate_eligible(selected, candidate, seen_prefetch_links):
+    """Return whether a candidate clears the cheap distinctness + size gates."""
+    if candidate is selected or not isinstance(candidate, dict):
+        return False
+    candidate_link = candidate.get("link", "")
+    if not candidate_link or candidate_link in seen_prefetch_links:
+        return False
+    return _prefetch_size_gate_match(selected, candidate)
+
+
+def _selection_seed_article_digests(selected, selected_manifest_ready):
+    """Return the initial seen-article-digest set for a selection scan."""
+    seen_article_digests = set()
+    if selected_manifest_ready:
+        selected_digest = _article_digest(selected)
+        if selected_digest:
+            seen_article_digests.add(selected_digest)
+    return seen_article_digests
+
+
+def _selection_pool_admits_fallback(selected, results):
+    """Return whether a selection + pool can still yield a fallback peer."""
+    if not selected:
+        return False
+    if not selected_manifest_may_have_fallback_peer(selected):
+        return False
+    if results is None or _sized_pool_has_no_distinct_peer(selected, results):
+        return False
+    return True
+
+
+def _resolve_fallback_settings(fallback_settings):
+    """Return (enabled, max_candidates), loading from Kodi when not supplied."""
+    if fallback_settings is None:
+        return _fallback_settings()
+    return fallback_settings
+
+
 def attach_fallback_candidates_for_selection(selected, results, fallback_settings=None):
     """Attach fallback candidates only for the result the user selected."""
     if selected:
         selected["_fallback_candidates"] = []
 
-    if not selected:
-        return selected
-    if not selected_manifest_may_have_fallback_peer(selected):
-        return selected
-    if results is None or _sized_pool_has_no_distinct_peer(selected, results):
+    if not _selection_pool_admits_fallback(selected, results):
         return selected
 
-    if fallback_settings is None:
-        fallback_settings = _fallback_settings()
-    enabled, max_candidates = fallback_settings
+    enabled, max_candidates = _resolve_fallback_settings(fallback_settings)
     if not enabled or max_candidates <= 0:
         return selected
 
     seen_prefetch_links = {selected.get("link", "")}
-    selected_title_tokens = None
     selected_meta = selected.get("_meta")
     if not isinstance(selected_meta, dict):
         selected_meta = None
     candidates = []
     seen_candidate_links = {selected.get("link", "")}
-    seen_article_digests = set()
     selected_manifest_ready = isinstance(selected.get("_fallback_manifest"), dict)
-    if selected_manifest_ready:
-        selected_digest = _article_digest(selected)
-        if selected_digest:
-            seen_article_digests.add(selected_digest)
-
-    def _prefetch_candidates():
-        # Keep prefiltering lazy so all-matching pools still stop after the cap
-        # instead of fetching manifests for the rest of the result list.
-        selected_title_tokens_ref = [selected_title_tokens]
-        selected_meta_ref = [selected_meta]
-        for candidate in results or []:
-            if candidate is selected or not isinstance(candidate, dict):
-                continue
-            candidate_link = candidate.get("link", "")
-            if not candidate_link or candidate_link in seen_prefetch_links:
-                continue
-            if not _prefetch_size_gate_match(selected, candidate):
-                continue
-            if _selection_prefetch_candidate_matches(
-                selected,
-                candidate,
-                seen_prefetch_links,
-                selected_title_tokens_ref,
-                selected_meta_ref,
-            ):
-                seen_prefetch_links.add(candidate_link)
-                yield candidate
+    seen_article_digests = _selection_seed_article_digests(
+        selected, selected_manifest_ready
+    )
 
     started = time.monotonic()
     selected_manifest_fetch = not selected_manifest_ready
     _attach_selection_candidates_streaming(
         selected,
-        _prefetch_candidates(),
+        _iter_selection_prefetch_candidates(
+            selected, results, seen_prefetch_links, selected_meta
+        ),
         candidates,
         seen_candidate_links,
         seen_article_digests,
