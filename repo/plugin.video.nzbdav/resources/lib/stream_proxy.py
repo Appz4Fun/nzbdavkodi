@@ -2302,8 +2302,27 @@ class _StreamHandler(BaseHTTPRequestHandler):
             "NZB-DAV: Remuxing to MKV (seek={})".format(seek_seconds),
             xbmc.LOGINFO,
         )
+        proc = self._spawn_remux_proc(cmd)
+        if proc is None:
+            return None, None
+
+        lock = self._ctx_lock(ctx, self.server)
+        with lock:
+            existing = ctx.get("active_ffmpeg")
+            if existing is not None and existing.poll() is None:
+                self._kill_cas_loser(proc, existing)
+                self.send_error(409)
+                return None, None
+            ctx["active_ffmpeg"] = proc
+            ctx["current_byte_pos"] = requested_start
+            self.server.active_ffmpeg = proc
+            self.server.current_byte_pos = requested_start
+        return proc, lock
+
+    def _spawn_remux_proc(self, cmd):
+        """Spawn the remux ffmpeg process; send 500 + return None on failure."""
         try:
-            proc = subprocess.Popen(  # nosec B603 — argv list, shell=False
+            return subprocess.Popen(  # nosec B603 — argv list, shell=False
                 cmd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
@@ -2314,36 +2333,28 @@ class _StreamHandler(BaseHTTPRequestHandler):
             xbmc.log("NZB-DAV: Failed to start ffmpeg: {}".format(error), xbmc.LOGERROR)
             _notify_error("Failed to start ffmpeg")
             self.send_error(500)
-            return None, None
+            return None
 
-        lock = self._ctx_lock(ctx, self.server)
-        with lock:
-            existing = ctx.get("active_ffmpeg")
-            if existing is not None and existing.poll() is None:
-                # Another thread won the race. Kill our orphan.
-                try:
-                    proc.kill()
-                except OSError:
-                    pass
-                try:
-                    proc.wait(timeout=2)
-                except (subprocess.TimeoutExpired, OSError):
-                    pass
-                xbmc.log(
-                    "NZB-DAV: CAS-killed duplicate ffmpeg pid={} "
-                    "(winner pid={})".format(
-                        getattr(proc, "pid", "?"),
-                        getattr(existing, "pid", "?"),
-                    ),
-                    xbmc.LOGWARNING,
-                )
-                self.send_error(409)
-                return None, None
-            ctx["active_ffmpeg"] = proc
-            ctx["current_byte_pos"] = requested_start
-            self.server.active_ffmpeg = proc
-            self.server.current_byte_pos = requested_start
-        return proc, lock
+    @staticmethod
+    def _kill_cas_loser(proc, existing):
+        """Kill the just-spawned ffmpeg that lost the CAS race against existing."""
+        # Another thread won the race. Kill our orphan.
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        try:
+            proc.wait(timeout=2)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        xbmc.log(
+            "NZB-DAV: CAS-killed duplicate ffmpeg pid={} "
+            "(winner pid={})".format(
+                getattr(proc, "pid", "?"),
+                getattr(existing, "pid", "?"),
+            ),
+            xbmc.LOGWARNING,
+        )
 
     @staticmethod
     def _start_stderr_drain(proc):
@@ -3926,59 +3937,144 @@ class _StreamHandler(BaseHTTPRequestHandler):
         start_index = max(0, start_index)
         if expected_length is None:
             expected_length = self._coerce_ctx_content_length(ctx)
-        primary_url = _FALLBACK_SOURCE_STATE_NOT_PROVIDED
-        primary_auth_for_url = _AUTH_HEADER_NOT_PROVIDED
+        selection = {
+            "start_index": start_index,
+            "failed_byte": failed_byte,
+            "range_end": range_end,
+            "expected_length": expected_length,
+            "first_stream_url": first_stream_url,
+            "first_failed": first_failed,
+            "first_nzo_id": first_nzo_id,
+            "first_standby": first_standby,
+        }
+        state = {
+            "primary_url": _FALLBACK_SOURCE_STATE_NOT_PROVIDED,
+            "primary_auth_for_url": _AUTH_HEADER_NOT_PROVIDED,
+        }
         for index in range(start_index, len(sources)):
-            source = sources[index]
-            is_first = index == start_index
-            source_failed = self._resolved_override(
-                is_first, first_failed, source, "failed"
+            matched = self._evaluate_resolved_source(
+                ctx, sources[index], index, selection, state
             )
-            if source_failed:
-                continue
-            stream_url = self._resolved_override(
-                is_first, first_stream_url, source, "stream_url"
-            )
-            if not stream_url:
-                first_nzo_id_for_index = self._resolved_override(
-                    is_first, first_nzo_id, None, None
-                )
-                self._capture_first_standby(
-                    source, index, first_standby, first_nzo_id_for_index
-                )
-                continue
-            if primary_url is _FALLBACK_SOURCE_STATE_NOT_PROVIDED:
-                primary_url = ctx.get("remote_url")
-            (
-                is_primary_self,
-                source_auth,
-                primary_auth,
-                primary_auth_for_url,
-            ) = self._resolved_primary_self_match(
-                ctx, source, stream_url, primary_url, primary_auth_for_url
-            )
-            if is_primary_self:
-                source["failed"] = True
-                continue
-            if expected_length > 0:
-                source_length = self._coerce_source_length(source)
-                if source_length != expected_length:
-                    source["failed"] = True
-                    continue
-            hint_values = {
-                "stream_url": stream_url,
-                "source_length": source_length,
-                "source_auth": source_auth,
-                "primary_url": primary_url,
-                "primary_auth": primary_auth,
-            }
-            matches = self._match_resolved_source_with_hints(
-                ctx, source, failed_byte, range_end, hint_values
-            )
-            if not self._apply_fallback_match_result(source, matches):
-                continue
+            if matched is not None:
+                return matched
+        return None
+
+    def _evaluate_resolved_source(self, ctx, source, index, selection, state):
+        """Evaluate one resolved candidate; return the source when it matches.
+
+        ``state`` carries the lazily-resolved primary URL/auth across the
+        selector loop; ``selection`` holds the per-call gate inputs.
+        """
+        is_first = index == selection["start_index"]
+        stream_url = self._resolved_candidate_stream_url(
+            source,
+            index,
+            is_first,
+            selection["first_failed"],
+            selection["first_stream_url"],
+            selection["first_nzo_id"],
+            selection["first_standby"],
+        )
+        if not stream_url:
+            return None
+        if state["primary_url"] is _FALLBACK_SOURCE_STATE_NOT_PROVIDED:
+            state["primary_url"] = ctx.get("remote_url")
+        (
+            is_primary_self,
+            source_auth,
+            primary_auth,
+            state["primary_auth_for_url"],
+        ) = self._resolved_primary_self_match(
+            ctx,
+            source,
+            stream_url,
+            state["primary_url"],
+            state["primary_auth_for_url"],
+        )
+        if is_primary_self:
+            source["failed"] = True
+            return None
+        identity = self._resolved_identity(
+            stream_url, source_auth, state["primary_url"], primary_auth
+        )
+        if self._resolved_source_matches(
+            ctx,
+            source,
+            selection["failed_byte"],
+            selection["range_end"],
+            selection["expected_length"],
+            identity,
+        ):
             return source
         return None
+
+    @staticmethod
+    def _resolved_identity(stream_url, source_auth, primary_url, primary_auth):
+        """Bundle selector-hint identity values for a resolved candidate."""
+        return {
+            "stream_url": stream_url,
+            "source_auth": source_auth,
+            "primary_url": primary_url,
+            "primary_auth": primary_auth,
+        }
+
+    def _resolved_candidate_stream_url(
+        self,
+        source,
+        index,
+        is_first,
+        first_failed,
+        first_stream_url,
+        first_nzo_id,
+        first_standby,
+    ):
+        """Return a usable resolved stream URL, or "" to skip this source.
+
+        Captures the first unresolved standby for later refresh, matching the
+        original inline skip semantics (failed sources and empty URLs).
+        """
+        source_failed = self._resolved_override(
+            is_first, first_failed, source, "failed"
+        )
+        if source_failed:
+            return ""
+        stream_url = self._resolved_override(
+            is_first, first_stream_url, source, "stream_url"
+        )
+        if not stream_url:
+            first_nzo_id_for_index = self._resolved_override(
+                is_first, first_nzo_id, None, None
+            )
+            self._capture_first_standby(
+                source, index, first_standby, first_nzo_id_for_index
+            )
+            return ""
+        return stream_url
+
+    def _resolved_source_matches(
+        self, ctx, source, failed_byte, range_end, expected_length, identity
+    ):
+        """Apply the length gate + fingerprint match for one resolved source.
+
+        ``identity`` carries ``stream_url``, ``source_auth``, ``primary_url``
+        and ``primary_auth`` for the selector hint snapshot.
+        """
+        if expected_length > 0:
+            source_length = self._coerce_source_length(source)
+            if source_length != expected_length:
+                source["failed"] = True
+                return False
+        hint_values = {
+            "stream_url": identity["stream_url"],
+            "source_length": source_length,
+            "source_auth": identity["source_auth"],
+            "primary_url": identity["primary_url"],
+            "primary_auth": identity["primary_auth"],
+        }
+        matches = self._match_resolved_source_with_hints(
+            ctx, source, failed_byte, range_end, hint_values
+        )
+        return self._apply_fallback_match_result(source, matches)
 
     @staticmethod
     def _resolved_override(is_first, override_value, source, key):
@@ -4105,6 +4201,18 @@ class _StreamHandler(BaseHTTPRequestHandler):
             auth_header,
             probe_bases=self._fallback_probe_bases(ctx),
         )
+        return self._finalize_refreshed_standby_source(
+            ctx, source, stream_url, stream_headers, auth_header, content_length
+        )
+
+    def _finalize_refreshed_standby_source(
+        self, ctx, source, stream_url, stream_headers, auth_header, content_length
+    ):
+        """Store a freshly-resolved standby URL + seed selector hints.
+
+        Rejects a provable positive-length mismatch; otherwise records the
+        selector hints and reports whether a usable stream URL was stored.
+        """
         try:
             content_length = int(content_length or 0)
         except (TypeError, ValueError):
@@ -4432,49 +4540,69 @@ class _StreamHandler(BaseHTTPRequestHandler):
             )
             if not eligible:
                 continue
-
-            hint_key = "_fallback_source_content_length_hint"
-            auth_hint_key = "_fallback_source_auth_hint"
-            stream_url_hint_key = _FALLBACK_SOURCE_STREAM_URL_HINT_KEY
-            primary_url_hint_key = _FALLBACK_PRIMARY_URL_HINT_KEY
-            primary_auth_hint_key = _FALLBACK_PRIMARY_AUTH_HINT_KEY
-            hint_snapshot = self._snapshot_fallback_hint_keys(
-                ctx,
-                (
-                    hint_key,
-                    auth_hint_key,
-                    stream_url_hint_key,
-                    primary_url_hint_key,
-                    primary_auth_hint_key,
-                ),
-            )
-            ctx[hint_key] = (id(source), source_length)
-            ctx[stream_url_hint_key] = (id(source), source_url)
-            ctx[primary_url_hint_key] = primary_url
-            ctx[auth_hint_key] = (id(source), source_auth)
-            ctx[primary_auth_hint_key] = primary_auth
-            try:
-                if self._validate_fallback_fingerprint(
-                    ctx,
-                    source,
-                    expected_length,
-                    probe_bases,
-                    primary_url=primary_url,
-                    fallback_url=source_url,
-                    fallback_auth=source_auth,
-                    primary_auth=primary_auth,
-                    cache_fallback_range_bytes=True,
-                ):
-                    source["validated"] = True
-                    # Prevalidation succeeded after earlier INCONCLUSIVE probes
-                    # (still-downloading at first contact): clear any transient
-                    # streak so it is not later abandoned at the miss bound.
-                    if source.get("transient_miss_count"):
-                        source["transient_miss_count"] = 0
-                    validated += 1
-            finally:
-                self._restore_fallback_hint_keys(ctx, hint_snapshot)
+            identity = {
+                "primary_url": primary_url,
+                "primary_auth": primary_auth,
+                "source_url": source_url,
+                "source_auth": source_auth,
+                "source_length": source_length,
+            }
+            if self._prevalidate_validate_source(
+                ctx, source, expected_length, probe_bases, identity
+            ):
+                validated += 1
         return validated
+
+    def _prevalidate_validate_source(
+        self, ctx, source, expected_length, probe_bases, identity
+    ):
+        """Seed selector hints, fingerprint one source, mark it validated.
+
+        Returns True when the source proves a match (and is flagged
+        ``validated``); restores the hint keys regardless of outcome.
+        """
+        hint_key = "_fallback_source_content_length_hint"
+        auth_hint_key = "_fallback_source_auth_hint"
+        stream_url_hint_key = _FALLBACK_SOURCE_STREAM_URL_HINT_KEY
+        primary_url_hint_key = _FALLBACK_PRIMARY_URL_HINT_KEY
+        primary_auth_hint_key = _FALLBACK_PRIMARY_AUTH_HINT_KEY
+        hint_snapshot = self._snapshot_fallback_hint_keys(
+            ctx,
+            (
+                hint_key,
+                auth_hint_key,
+                stream_url_hint_key,
+                primary_url_hint_key,
+                primary_auth_hint_key,
+            ),
+        )
+        ctx[hint_key] = (id(source), identity["source_length"])
+        ctx[stream_url_hint_key] = (id(source), identity["source_url"])
+        ctx[primary_url_hint_key] = identity["primary_url"]
+        ctx[auth_hint_key] = (id(source), identity["source_auth"])
+        ctx[primary_auth_hint_key] = identity["primary_auth"]
+        try:
+            if self._validate_fallback_fingerprint(
+                ctx,
+                source,
+                expected_length,
+                probe_bases,
+                primary_url=identity["primary_url"],
+                fallback_url=identity["source_url"],
+                fallback_auth=identity["source_auth"],
+                primary_auth=identity["primary_auth"],
+                cache_fallback_range_bytes=True,
+            ):
+                source["validated"] = True
+                # Prevalidation succeeded after earlier INCONCLUSIVE probes
+                # (still-downloading at first contact): clear any transient
+                # streak so it is not later abandoned at the miss bound.
+                if source.get("transient_miss_count"):
+                    source["transient_miss_count"] = 0
+                return True
+            return False
+        finally:
+            self._restore_fallback_hint_keys(ctx, hint_snapshot)
 
     def _prevalidate_source_eligibility(
         self, source, expected_length, primary_url, primary_auth
@@ -4728,45 +4856,93 @@ class _StreamHandler(BaseHTTPRequestHandler):
             ctx, source, primary_auth, fallback_url, fallback_auth
         )
         ranges = tuple(self._fallback_fingerprint_ranges(ctx, content_length))
+        cfg = self._fingerprint_probe_cfg(
+            content_length,
+            probe_bases,
+            current_range,
+            primary_url,
+            fallback_url,
+            fallback_auth,
+            primary_auth,
+            cache_fallback_range_bytes,
+        )
         if len(ranges) > 1 and _FALLBACK_FINGERPRINT_WORKERS > 1:
-            return self._classify_fallback_fingerprint_parallel(
-                ctx,
-                ranges,
-                content_length,
-                probe_bases,
-                current_range,
-                primary_url,
-                fallback_url,
-                fallback_auth,
-                primary_auth,
-                cache_fallback_range_bytes,
-            )
+            return self._classify_parallel_from_cfg(ctx, ranges, cfg)
         for start, end in ranges:
-            fallback_digest = self._fetch_fallback_fingerprint_digest(
-                (start, end),
-                content_length,
-                probe_bases,
-                current_range,
-                fallback_url,
-                fallback_auth,
-                cache_ctx=ctx,
-                cache_range_bytes=cache_fallback_range_bytes,
-            )
-            if not fallback_digest:
-                return _FALLBACK_INCONCLUSIVE
-            primary_digest = self._fetch_primary_fallback_range_digest(
-                ctx,
-                primary_auth,
-                start,
-                end,
-                content_length,
-                probe_bases,
-                primary_url,
-            )
-            if not primary_digest:
-                return _FALLBACK_INCONCLUSIVE
-            if primary_digest != fallback_digest:
-                return _FALLBACK_MISMATCH
+            verdict = self._classify_one_fingerprint_range(start, end, ctx, cfg)
+            if verdict != _FALLBACK_MATCH:
+                return verdict
+        return _FALLBACK_MATCH
+
+    def _classify_parallel_from_cfg(self, ctx, ranges, cfg):
+        """Dispatch to the parallel classifier, unpacking the shared cfg dict."""
+        return self._classify_fallback_fingerprint_parallel(
+            ctx,
+            ranges,
+            cfg["content_length"],
+            cfg["probe_bases"],
+            cfg["current_range"],
+            cfg["primary_url"],
+            cfg["fallback_url"],
+            cfg["fallback_auth"],
+            cfg["primary_auth"],
+            cfg["cache_fallback_range_bytes"],
+        )
+
+    @staticmethod
+    def _fingerprint_probe_cfg(
+        content_length,
+        probe_bases,
+        current_range,
+        primary_url,
+        fallback_url,
+        fallback_auth,
+        primary_auth,
+        cache_fallback_range_bytes,
+    ):
+        """Bundle the shared fingerprint probe parameters into one dict."""
+        return {
+            "content_length": content_length,
+            "probe_bases": probe_bases,
+            "current_range": current_range,
+            "primary_url": primary_url,
+            "fallback_url": fallback_url,
+            "fallback_auth": fallback_auth,
+            "primary_auth": primary_auth,
+            "cache_fallback_range_bytes": cache_fallback_range_bytes,
+        }
+
+    def _classify_one_fingerprint_range(self, start, end, ctx, cfg):
+        """Classify a single sampled range; returns MATCH/MISMATCH/INCONCLUSIVE.
+
+        ``cfg`` carries the shared probe parameters (lengths, URLs, auths,
+        current-range short circuit, byte-caching flag).
+        """
+        fallback_digest = self._fetch_fallback_fingerprint_digest(
+            (start, end),
+            cfg["content_length"],
+            cfg["probe_bases"],
+            cfg["current_range"],
+            cfg["fallback_url"],
+            cfg["fallback_auth"],
+            cache_ctx=ctx,
+            cache_range_bytes=cfg["cache_fallback_range_bytes"],
+        )
+        if not fallback_digest:
+            return _FALLBACK_INCONCLUSIVE
+        primary_digest = self._fetch_primary_fallback_range_digest(
+            ctx,
+            cfg["primary_auth"],
+            start,
+            end,
+            cfg["content_length"],
+            cfg["probe_bases"],
+            cfg["primary_url"],
+        )
+        if not primary_digest:
+            return _FALLBACK_INCONCLUSIVE
+        if primary_digest != fallback_digest:
+            return _FALLBACK_MISMATCH
         return _FALLBACK_MATCH
 
     def _fetch_fallback_fingerprint_digest(
@@ -4965,44 +5141,38 @@ class _StreamHandler(BaseHTTPRequestHandler):
         # in-flight probes.
         executor = ThreadPoolExecutor(max_workers=workers)
 
+        cfg = self._fingerprint_probe_cfg(
+            content_length,
+            probe_bases,
+            current_range,
+            primary_url,
+            fallback_url,
+            fallback_auth,
+            primary_auth,
+            cache_fallback_range_bytes,
+        )
+        return self._run_parallel_fingerprint_probes(
+            ctx, ranges, cfg, executor, cache_lock, fallback_digests
+        )
+
+    def _run_parallel_fingerprint_probes(
+        self, ctx, ranges, cfg, executor, cache_lock, fallback_digests
+    ):
+        """Drive the fallback/primary probe submission + comparison on executor."""
         fallback_futures = {}
         primary_futures = {}
         try:
-            for start, end in ranges:
-                if current_range and current_range[:2] == (start, end):
-                    fallback_digests[(start, end)] = current_range[2]
-                    continue
-                future = executor.submit(
-                    self._fetch_fallback_fingerprint_digest,
-                    (start, end),
-                    content_length,
-                    probe_bases,
-                    current_range,
-                    fallback_url,
-                    fallback_auth,
-                    cache_ctx=ctx,
-                    cache_range_bytes=cache_fallback_range_bytes,
-                )
-                fallback_futures[future] = (start, end)
+            self._submit_parallel_fallback_futures(
+                executor, ranges, ctx, cfg, fallback_digests, fallback_futures
+            )
             if not self._collect_parallel_fallback_digests(
                 fallback_futures, fallback_digests
             ):
                 return _FALLBACK_INCONCLUSIVE
 
-            for start, end in ranges:
-                primary_futures[
-                    executor.submit(
-                        self._fetch_primary_fallback_range_digest_threadsafe,
-                        ctx,
-                        primary_auth,
-                        start,
-                        end,
-                        content_length,
-                        probe_bases,
-                        primary_url,
-                        cache_lock,
-                    )
-                ] = (start, end)
+            self._submit_parallel_primary_futures(
+                executor, ranges, ctx, cfg, cache_lock, primary_futures
+            )
             return self._compare_parallel_primary_digests(
                 primary_futures, fallback_digests
             )
@@ -5012,6 +5182,47 @@ class _StreamHandler(BaseHTTPRequestHandler):
             self._shutdown_executor_now(
                 executor, tuple(fallback_futures) + tuple(primary_futures)
             )
+
+    def _submit_parallel_fallback_futures(
+        self, executor, ranges, ctx, cfg, fallback_digests, fallback_futures
+    ):
+        """Submit one fallback-digest probe per range (or short-circuit current)."""
+        current_range = cfg["current_range"]
+        for start, end in ranges:
+            if current_range and current_range[:2] == (start, end):
+                fallback_digests[(start, end)] = current_range[2]
+                continue
+            future = executor.submit(
+                self._fetch_fallback_fingerprint_digest,
+                (start, end),
+                cfg["content_length"],
+                cfg["probe_bases"],
+                current_range,
+                cfg["fallback_url"],
+                cfg["fallback_auth"],
+                cache_ctx=ctx,
+                cache_range_bytes=cfg["cache_fallback_range_bytes"],
+            )
+            fallback_futures[future] = (start, end)
+
+    def _submit_parallel_primary_futures(
+        self, executor, ranges, ctx, cfg, cache_lock, primary_futures
+    ):
+        """Submit one threadsafe primary-digest probe per range."""
+        for start, end in ranges:
+            primary_futures[
+                executor.submit(
+                    self._fetch_primary_fallback_range_digest_threadsafe,
+                    ctx,
+                    cfg["primary_auth"],
+                    start,
+                    end,
+                    cfg["content_length"],
+                    cfg["probe_bases"],
+                    cfg["primary_url"],
+                    cache_lock,
+                )
+            ] = (start, end)
 
     @staticmethod
     def _collect_parallel_fallback_digests(fallback_futures, fallback_digests):
@@ -5154,6 +5365,27 @@ class _StreamHandler(BaseHTTPRequestHandler):
         )
         if cached_body:
             return hashlib.sha256(cached_body).hexdigest()
+        return self._fetch_and_cache_current_range_digest(
+            stream_url,
+            auth_header,
+            failed_byte,
+            probe_end,
+            content_length,
+            probe_bases,
+            cache_ctx,
+        )
+
+    def _fetch_and_cache_current_range_digest(
+        self,
+        stream_url,
+        auth_header,
+        failed_byte,
+        probe_end,
+        content_length,
+        probe_bases,
+        cache_ctx,
+    ):
+        """Fetch the current-range body (caching it), else fall back to a digest."""
         body = self._fetch_fallback_range_bytes(
             stream_url,
             auth_header,
@@ -5216,13 +5448,10 @@ class _StreamHandler(BaseHTTPRequestHandler):
     @staticmethod
     def _fetch_primary_range_bytes(url, auth_header, start, end, content_length):
         """Return validated range bytes from the already-selected primary URL."""
-        if not isinstance(start, int) or not isinstance(end, int):
-            return None
-        try:
-            content_length = int(content_length or 0)
-        except (TypeError, ValueError):
-            return None
-        if start < 0 or end < start or content_length <= 0 or end >= content_length:
+        content_length = _StreamHandler._coerce_primary_range_bounds(
+            start, end, content_length
+        )
+        if content_length is None:
             return None
 
         expected_length = end - start + 1
@@ -5232,18 +5461,9 @@ class _StreamHandler(BaseHTTPRequestHandler):
             req.add_header("Range", "bytes={}-{}".format(start, end))
             # nosemgrep
             with urlopen(req, timeout=10) as resp:  # nosec B310
-                status = getattr(resp, "status", None) or resp.getcode()
-                content_range = _get_header(resp, "Content-Range")
-                header_length = _get_header(resp, "Content-Length")
-                if isinstance(content_range, str):
-                    content_range = content_range.strip()
-                if isinstance(header_length, str):
-                    header_length = header_length.strip()
-                if status != 206:
-                    return None
-                if content_range != _expected_content_range(start, end, content_length):
-                    return None
-                if header_length != str(expected_length):
+                if not _StreamHandler._primary_range_response_ok(
+                    resp, start, end, content_length, expected_length
+                ):
                     return None
                 body = resp.read(expected_length)
         except (OSError, TypeError, ValueError):
@@ -5251,6 +5471,36 @@ class _StreamHandler(BaseHTTPRequestHandler):
         if len(body) != expected_length:
             return None
         return body
+
+    @staticmethod
+    def _coerce_primary_range_bounds(start, end, content_length):
+        """Validate a primary range request; return coerced length or None."""
+        if not isinstance(start, int) or not isinstance(end, int):
+            return None
+        try:
+            content_length = int(content_length or 0)
+        except (TypeError, ValueError):
+            return None
+        in_bounds = 0 <= start <= end < content_length
+        if content_length <= 0 or not in_bounds:
+            return None
+        return content_length
+
+    @staticmethod
+    def _primary_range_response_ok(resp, start, end, content_length, expected_length):
+        """Return True when a 206 response matches the requested range exactly."""
+        status = getattr(resp, "status", None) or resp.getcode()
+        content_range = _get_header(resp, "Content-Range")
+        header_length = _get_header(resp, "Content-Length")
+        if isinstance(content_range, str):
+            content_range = content_range.strip()
+        if isinstance(header_length, str):
+            header_length = header_length.strip()
+        if status != 206:
+            return False
+        if content_range != _expected_content_range(start, end, content_length):
+            return False
+        return header_length == str(expected_length)
 
     @staticmethod
     def _cache_fallback_range(
@@ -7336,6 +7586,33 @@ class HlsProducer:
         only the seek boundary has any chance of overlap — and at a
         seek Kodi expects a discontinuity anyway.
         """
+        cmd = self._build_base_input_args(start_time)
+        if self.segment_format == "fmp4":
+            self._append_fmp4_output_args(cmd, start_segment)
+        else:
+            self._append_mpegts_output_args(cmd, start_segment)
+        return cmd
+
+    def _append_mpegts_output_args(self, cmd, start_segment):
+        """Append the legacy mpegts segment-muxer output args (unchanged)."""
+        # mpegts branch — unchanged filename pattern.
+        seg_pattern = os.path.join(self.session_dir, "seg_%06d.ts")
+        cmd.extend(
+            [
+                "-f",
+                "segment",
+                "-segment_format",
+                "mpegts",
+                "-segment_time",
+                "{:.3f}".format(self.segment_seconds),
+                "-segment_start_number",
+                str(start_segment),
+                seg_pattern,
+            ]
+        )
+
+    def _build_base_input_args(self, start_time):
+        """Build the shared ffmpeg input args (auth + map + copy) for _build_cmd."""
         _validate_url(self.remote_url)
         # Pass auth via -headers (not URL-embedded) so credentials
         # don't leak into argv / ffmpeg.log / error messages. See
@@ -7381,6 +7658,12 @@ class HlsProducer:
             "-reconnect_streamed",
             "1",
         ]
+        self._append_input_map_args(cmd, auth_args, input_url)
+        return cmd
+
+    @staticmethod
+    def _append_input_map_args(cmd, auth_args, input_url):
+        """Append auth headers + ``-i`` input and the v/a copy mapping."""
         # Auth headers MUST come before -i so they apply to the input.
         cmd.extend(auth_args)
         cmd.extend(
@@ -7400,108 +7683,101 @@ class HlsProducer:
             ]
         )
 
-        if self.segment_format == "fmp4":
-            # IMPORTANT: fmp4 arguments must be RELATIVE filenames, not
-            # absolute paths. ffmpeg 6.0.1 on CoreELEC fails on absolute
-            # paths for ``-hls_fmp4_init_filename`` with "Failed to open
-            # segment <path>: No such file or directory", even when the
-            # parent directory exists and is writable. Relative names
-            # work reliably when ffmpeg is spawned with cwd set to the
-            # session dir (see ``_ensure_ffmpeg_headed_for``'s ``Popen``
-            # call). Reproduced 2026-04-14 on a 48 GB DV HEVC REMUX
-            # and a 27 GB AVC REMUX; both failed with absolute paths,
-            # both succeeded with relative.
-            init_path = "init.mp4"
-            seg_pattern = "seg_%06d.m4s"
-            playlist_path = "ffmpeg_playlist.m3u8"
-            # -strict -2 (== -strict experimental) unlocks TrueHD and
-            # DTS-HD MA output in the MP4/fMP4 muxer. ffmpeg 6.0.1
-            # otherwise refuses with "truehd in MP4 support is
-            # experimental, add '-strict -2' if you want to use it"
-            # / "dts in MP4 support is experimental, ..." and fails
-            # to write the init header at all. Virtually every UHD
-            # REMUX uses one of those codecs, so without this flag
-            # the fmp4 HLS path never produces a playable output
-            # on real content. Verified 2026-04-14 against The
-            # Machinist (TrueHD) — failed without -strict, succeeded
-            # with it.
-            cmd.extend(["-strict", "-2"])
-            # Timestamp and fragment flags for seek-respawn stability:
-            # -start_at_zero pairs with -copyts so seeked output starts from
-            # a deterministic timeline, while avoid_negative_ts prevents
-            # pre-roll from surfacing as negative fragment timestamps.
-            # bitexact strips volatile muxer metadata, and the CMAF-style
-            # movflags keep fragments self-relative across respawns. Do not
-            # enable hls delete_segments here; this proxy owns segment
-            # retention and may serve recently-produced files during a
-            # reconnect or backward seek.
-            cmd.extend(
-                [
-                    "-start_at_zero",
-                    "-avoid_negative_ts",
-                    "make_zero",
-                    "-fflags",
-                    "+bitexact+flush_packets",
-                    "-flags",
-                    "+bitexact",
-                ]
-            )
-            cmd.extend(
-                [
-                    "-movflags",
-                    "+frag_custom+dash+delay_moov+separate_moof"
-                    "+default_base_moof+omit_tfhd_offset",
-                ]
-            )
-            # Force the HLS-spec sample entry tag on the video track.
-            # fMP4 HLS mandates ``hvc1`` for HEVC (parameter sets in the
-            # sample description box, not inband), and Amlogic's HLS
-            # demuxer looks at ``hvc1``/``hev1`` to decide whether to
-            # inspect the ``dvcC``/``dvvC`` DV configuration records in
-            # the init segment. ``-tag:v hvc1`` is a metadata swap,
-            # not a re-encode; ffmpeg pulls SPS/PPS/VPS into ``hvcC``
-            # at the muxer and leaves the bitstream otherwise
-            # untouched.
-            cmd.extend(["-tag:v", "hvc1"])
-            cmd.extend(
-                [
-                    "-f",
-                    "hls",
-                    "-hls_time",
-                    "{:.3f}".format(self.segment_seconds),
-                    "-hls_segment_type",
-                    "fmp4",
-                    "-hls_fmp4_init_filename",
-                    init_path,
-                    "-hls_segment_filename",
-                    seg_pattern,
-                    "-hls_playlist_type",
-                    "vod",
-                    "-hls_flags",
-                    "independent_segments+omit_endlist",
-                    "-start_number",
-                    str(start_segment),
-                    playlist_path,
-                ]
-            )
-            return cmd
-
-        # mpegts branch — unchanged filename pattern.
-        seg_pattern = os.path.join(self.session_dir, "seg_%06d.ts")
+    def _append_fmp4_output_args(self, cmd, start_segment):
+        """Append the fmp4 HLS output flags to ``cmd`` in their exact order."""
+        # IMPORTANT: fmp4 arguments must be RELATIVE filenames, not
+        # absolute paths. ffmpeg 6.0.1 on CoreELEC fails on absolute
+        # paths for ``-hls_fmp4_init_filename`` with "Failed to open
+        # segment <path>: No such file or directory", even when the
+        # parent directory exists and is writable. Relative names
+        # work reliably when ffmpeg is spawned with cwd set to the
+        # session dir (see ``_ensure_ffmpeg_headed_for``'s ``Popen``
+        # call). Reproduced 2026-04-14 on a 48 GB DV HEVC REMUX
+        # and a 27 GB AVC REMUX; both failed with absolute paths,
+        # both succeeded with relative.
+        init_path = "init.mp4"
+        seg_pattern = "seg_%06d.m4s"
+        playlist_path = "ffmpeg_playlist.m3u8"
+        self._append_fmp4_stability_args(cmd)
         cmd.extend(
             [
                 "-f",
-                "segment",
-                "-segment_format",
-                "mpegts",
-                "-segment_time",
+                "hls",
+                "-hls_time",
                 "{:.3f}".format(self.segment_seconds),
-                "-segment_start_number",
-                str(start_segment),
+                "-hls_segment_type",
+                "fmp4",
+                "-hls_fmp4_init_filename",
+                init_path,
+                "-hls_segment_filename",
                 seg_pattern,
+                "-hls_playlist_type",
+                "vod",
+                "-hls_flags",
+                "independent_segments+omit_endlist",
+                "-start_number",
+                str(start_segment),
+                playlist_path,
             ]
         )
-        return cmd
+
+    @staticmethod
+    def _append_fmp4_strict_args(cmd):
+        """Append ``-strict -2`` so the fMP4 muxer accepts TrueHD/DTS-HD MA."""
+        # -strict -2 (== -strict experimental) unlocks TrueHD and
+        # DTS-HD MA output in the MP4/fMP4 muxer. ffmpeg 6.0.1
+        # otherwise refuses with "truehd in MP4 support is
+        # experimental, add '-strict -2' if you want to use it"
+        # / "dts in MP4 support is experimental, ..." and fails
+        # to write the init header at all. Virtually every UHD
+        # REMUX uses one of those codecs, so without this flag
+        # the fmp4 HLS path never produces a playable output
+        # on real content. Verified 2026-04-14 against The
+        # Machinist (TrueHD) — failed without -strict, succeeded
+        # with it.
+        cmd.extend(["-strict", "-2"])
+
+    @staticmethod
+    def _append_fmp4_stability_args(cmd):
+        """Append the fmp4 codec/timestamp/movflags/tag flags in exact order."""
+        HlsProducer._append_fmp4_strict_args(cmd)
+        # Timestamp and fragment flags for seek-respawn stability:
+        # -start_at_zero pairs with -copyts so seeked output starts from
+        # a deterministic timeline, while avoid_negative_ts prevents
+        # pre-roll from surfacing as negative fragment timestamps.
+        # bitexact strips volatile muxer metadata, and the CMAF-style
+        # movflags keep fragments self-relative across respawns. Do not
+        # enable hls delete_segments here; this proxy owns segment
+        # retention and may serve recently-produced files during a
+        # reconnect or backward seek.
+        cmd.extend(
+            [
+                "-start_at_zero",
+                "-avoid_negative_ts",
+                "make_zero",
+                "-fflags",
+                "+bitexact+flush_packets",
+                "-flags",
+                "+bitexact",
+            ]
+        )
+        cmd.extend(
+            [
+                "-movflags",
+                "+frag_custom+dash+delay_moov+separate_moof"
+                "+default_base_moof+omit_tfhd_offset",
+            ]
+        )
+        # Force the HLS-spec sample entry tag on the video track.
+        # fMP4 HLS mandates ``hvc1`` for HEVC (parameter sets in the
+        # sample description box, not inband), and Amlogic's HLS
+        # demuxer looks at ``hvc1``/``hev1`` to decide whether to
+        # inspect the ``dvcC``/``dvvC`` DV configuration records in
+        # the init segment. ``-tag:v hvc1`` is a metadata swap,
+        # not a re-encode; ffmpeg pulls SPS/PPS/VPS into ``hvcC``
+        # at the muxer and leaves the bitstream otherwise
+        # untouched.
+        cmd.extend(["-tag:v", "hvc1"])
 
     # How long prepare() will wait for ffmpeg to actually produce
     # init.mp4 + the first segment before declaring the fmp4 path
@@ -9303,8 +9579,38 @@ class StreamProxy:
             cmd.extend(auth_args)
         cmd.extend(["-i", input_url, "-f", "null", "-"])
 
+        proc = StreamProxy._spawn_probe_proc(cmd, label)
+        if proc is None:
+            return None
+
+        collected = [""]
+        done = threading.Event()
+        # 64 KB budget: large enough that a 30-subtitle Blu-ray remux's
+        # wall of per-stream probe warnings can't push the match line out.
+        budget = 65536
+
+        reader = threading.Thread(
+            target=StreamProxy._probe_stderr_reader,
+            args=(proc, parser, collected, budget, done, label),
+            name="nzbdav-probe-reader",
+            daemon=True,
+        )
+        reader.start()
+
+        if not done.wait(timeout=_PROBE_DEADLINE_SECONDS):
+            xbmc.log(
+                "NZB-DAV: {} probe wall-clock deadline ({}s) exceeded, "
+                "killing ffmpeg".format(label, _PROBE_DEADLINE_SECONDS),
+                xbmc.LOGWARNING,
+            )
+
+        return StreamProxy._finish_probe(proc, reader, parser, collected, budget, label)
+
+    @staticmethod
+    def _spawn_probe_proc(cmd, label):
+        """Spawn an ffmpeg probe process; log + return None on spawn failure."""
         try:
-            proc = subprocess.Popen(  # nosec B603 — argv list, shell=False
+            return subprocess.Popen(  # nosec B603 — argv list, shell=False
                 cmd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
@@ -9318,45 +9624,32 @@ class StreamProxy:
             )
             return None
 
-        collected = [""]
-        done = threading.Event()
-        # 64 KB budget: large enough that a 30-subtitle Blu-ray remux's
-        # wall of per-stream probe warnings can't push the match line out.
-        budget = 65536
-
-        def _reader():
-            try:
-                for line in proc.stderr:
-                    collected[0] += line.decode(errors="replace")
-                    if parser(collected[0]) is not None:
-                        return
-                    if len(collected[0]) > budget:
-                        return
-            except Exception as exc:  # pylint: disable=broad-except
-                # Log the failure mode rather than swallowing silently —
-                # a stderr decode error or pipe close that hides a real
-                # probe failure used to surface as duration=None with no
-                # diagnostic in kodi.log. Closes TODO.md §H.3 silent
-                # stderr-reader failure.
-                xbmc.log(
-                    "NZB-DAV: {} probe stderr-reader failed: {}".format(label, exc),
-                    xbmc.LOGWARNING,
-                )
-            finally:
-                done.set()
-
-        reader = threading.Thread(
-            target=_reader, name="nzbdav-probe-reader", daemon=True
-        )
-        reader.start()
-
-        if not done.wait(timeout=_PROBE_DEADLINE_SECONDS):
+    @staticmethod
+    def _probe_stderr_reader(proc, parser, collected, budget, done, label):
+        """Read ffmpeg stderr into ``collected`` until match/budget/EOF."""
+        try:
+            for line in proc.stderr:
+                collected[0] += line.decode(errors="replace")
+                if parser(collected[0]) is not None:
+                    return
+                if len(collected[0]) > budget:
+                    return
+        except Exception as exc:  # pylint: disable=broad-except
+            # Log the failure mode rather than swallowing silently —
+            # a stderr decode error or pipe close that hides a real
+            # probe failure used to surface as duration=None with no
+            # diagnostic in kodi.log. Closes TODO.md §H.3 silent
+            # stderr-reader failure.
             xbmc.log(
-                "NZB-DAV: {} probe wall-clock deadline ({}s) exceeded, "
-                "killing ffmpeg".format(label, _PROBE_DEADLINE_SECONDS),
+                "NZB-DAV: {} probe stderr-reader failed: {}".format(label, exc),
                 xbmc.LOGWARNING,
             )
+        finally:
+            done.set()
 
+    @staticmethod
+    def _finish_probe(proc, reader, parser, collected, budget, label):
+        """Kill the probe proc, join its reader, and return the parsed result."""
         try:
             proc.kill()
         except OSError:
