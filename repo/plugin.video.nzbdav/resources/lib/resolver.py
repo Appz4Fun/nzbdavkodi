@@ -2118,11 +2118,15 @@ _STUB_VIDEO_MIN_ADVERTISED_FRACTION = 0.5
 # file may still be the job-start stub if a real SIBLING video supplied the bytes
 # (the advertised size is the SELECTED result's own size, so one materialised
 # sibling can lift the total over the floor while the requested file is still a
-# placeholder). A real pack episode is a substantial fraction of its largest
-# sibling (>=~20%); the stub is ~0.1% of it. 0.1 sits in that two-orders-of-
-# magnitude gap: it rejects the stub without rejecting a legitimately short
-# episode among longer ones. Only applied when picked < floor AND total >= floor.
-_STUB_VS_LARGEST_VIDEO_FRACTION = 0.1
+# placeholder). Reject when the picked file is a tiny fraction of the folder's
+# largest video. The job-start stub is ~0.4% of the advertised size (the original
+# #282 datum), i.e. <=~3% of a single pack episode; real short content (recaps,
+# OVAs, specials) runs >=~5% of a full episode. 0.05 sits between them: it catches
+# the stub while NOT rejecting a legitimately short pack item (#355 Codex review).
+# Only applied when picked < floor AND total >= floor. Note this conflict is
+# pack-only -- a single-episode selection's short special clears the floor via its
+# OWN advertised size (stage 1) and never reaches here.
+_STUB_VS_LARGEST_VIDEO_FRACTION = 0.05
 
 
 def _job_nzo_id(match):
@@ -3815,10 +3819,13 @@ def _discovered_video_is_stub(
     2b. The total clears the floor but may have been lifted over it by a SIBLING
        video while ``video_path`` is still the placeholder (the advertised size
        is the SELECTED result's own size, so one materialised sibling can clear
-       the floor while the requested file is still a stub -- #355 review). A real
-       pack episode is a substantial fraction of its largest sibling; the stub is
-       orders of magnitude smaller. Reject when the picked file is anomalously
-       tiny versus the folder's largest video.
+       the floor while the requested file is still a stub -- #355 review). Reject
+       when the picked file is a tiny fraction (< ``_STUB_VS_LARGEST_VIDEO_FRACTION``)
+       of the folder's largest video: the job-start stub is ~0.4% of advertised
+       (<=~3% of a pack episode) while real short content (recaps/specials) runs
+       >=~5%. This conflict is pack-only -- a single-episode selection's short
+       special clears the floor via its own advertised size at stage 1 and never
+       reaches here (#355 Codex review).
 
     Fails OPEN (returns ``False``) -- never blocks a real stream on missing data --
     when the advertised size is unknown (floor 0), when the folder scan yields no
@@ -3867,17 +3874,13 @@ def _discovered_video_is_stub(
     # Stage 2b: the total cleared the floor. If the picked file is a tiny
     # placeholder dwarfed by a real sibling, the total was lifted over the floor
     # by the SIBLING, not by ``video_path`` -- so it is still the job-start stub.
-    # The gap is two orders of magnitude (stub ~0.1% of the largest real file vs
-    # a real episode >=~20%), so the fraction sits safely between them. Fails
-    # OPEN when either size is unknown.
+    # The job-start stub is ~0.4% of advertised (<=~3% of a pack episode) while
+    # real short content runs >=~5%, so the fraction sits between them. Fails OPEN
+    # when either size is unknown (a missing size must never block a real stream).
     largest = stats.get("max", 0)
-    if (
-        picked_size > 0
-        and largest > 0
-        and picked_size < largest * _STUB_VS_LARGEST_VIDEO_FRACTION
-    ):
-        return True
-    return False
+    if picked_size <= 0 or largest <= 0:
+        return False
+    return picked_size < largest * _STUB_VS_LARGEST_VIDEO_FRACTION
 
 
 def _handle_history_result(

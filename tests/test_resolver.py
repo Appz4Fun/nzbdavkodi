@@ -8173,6 +8173,32 @@ def test_discovered_video_is_stub_stage2b_fails_open_when_largest_unknown(
     assert is_stub is False
 
 
+@patch("resources.lib.webdav.get_video_file_size_hint", return_value=300 * 1024**2)
+@patch("resources.lib.webdav.folder_video_total_bytes")
+def test_discovered_video_is_stub_accepts_short_pack_special(mock_total, _mock_hint):
+    """#355 Codex review: a legitimately SHORT requested pack item (a 300 MB
+    recap/special, ~7% of the 4 GB longest episode) must still stream -- it is real
+    content, not a job-start stub. The folder total proves the pack is present; the
+    picked file at ~7% of the largest is above the stub fraction (0.05), so it is
+    accepted. (At the original 0.1 fraction this was wrongly rejected.)"""
+    from resources.lib.resolver import _discovered_video_is_stub
+
+    def total(_folder, settings_getter=None, _stats=None):
+        if _stats is not None:
+            _stats["max"] = 4 * 1024**3  # longest episode in the pack
+        return 30 * 1024**3  # whole pack materialised
+
+    mock_total.side_effect = total
+
+    is_stub = _discovered_video_is_stub(
+        "/content/x/Show.S01.Complete/",
+        "/content/x/Show.S01.Complete/Show.S01E00.Recap.mkv",
+        str(30 * 1024**3),  # pack advertised 30 GB -> floor 15 GB
+    )
+
+    assert is_stub is False
+
+
 @patch("resources.lib.webdav.folder_video_total_bytes", return_value=80_000_000_000)
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 @patch("resources.lib.resolver._find_completed_video_stream_with_rechecks")
