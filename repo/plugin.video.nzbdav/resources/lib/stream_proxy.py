@@ -6544,6 +6544,418 @@ class _StreamHandler(BaseHTTPRequestHandler):
         buf.update_served_high_water(served_to)
         return len(body)
 
+    def _stream_upstream_prelude(self, ctx, start, end):
+        """Serve any in-RAM read-ahead / cached prefix before the upstream open.
+
+        Returns ``(start, written, early)`` where ``start``/``written`` are the
+        advanced positions and ``early`` is ``None`` or a final
+        ``(result_enum, written)`` tuple the caller must return immediately.
+        Writes to ``self.wfile`` happen in the SAME order as the inline code.
+        """
+        written = 0
+        # Read-ahead consult (additive, FIRST): serve the contiguous in-RAM
+        # prefix the prefetch daemon built ahead of the play head. On a hit,
+        # advance start/written; on a partial/empty result fall straight through
+        # to today's untouched upstream-read / retry-ladder / patient-stall /
+        # fallback-cutover / 404-awaiting path below. When the setting is 0 there
+        # is no buffer on ctx, so this returns 0 immediately (identical to
+        # today). The window only ever satisfies a contiguous-forward prefix, so
+        # every existing branch keyed on result/written sees identical inputs on
+        # the miss path.
+        prefix_from_window = self._serve_from_readahead(ctx, start, end)
+        if prefix_from_window:
+            written += prefix_from_window
+            start += prefix_from_window
+            if start > end:
+                return start, written, (_UPSTREAM_RANGE_OK, written)
+        cached_prefix = self._pop_cached_fallback_range(ctx, start, end)
+        wait_consumed = bool(ctx.pop("_initial_range_prefetch_wait_consumed", False))
+        if not cached_prefix and not wait_consumed:
+            self._wait_for_initial_range_prefetch(ctx, start)
+            cached_prefix = self._pop_cached_fallback_range(ctx, start, end)
+        if cached_prefix:
+            self.wfile.write(cached_prefix)
+            written += len(cached_prefix)
+            start += len(cached_prefix)
+            if start > end:
+                return start, written, (_UPSTREAM_RANGE_OK, written)
+        return start, written, None
+
+    def _open_upstream_range_response(self, ctx, start, end, written):
+        """Open the upstream Range request, classifying any open-time error.
+
+        Returns ``(resp, early)``: on success ``resp`` is the live response and
+        ``early`` is ``None``; on failure ``resp`` is ``None`` and ``early`` is
+        the final ``(result_enum, written)`` tuple. Performs the post-open
+        recovery signal + read-timeout arming verbatim on the success path.
+        """
+        req = Request(ctx["remote_url"])
+        _add_request_headers(req, ctx.get("auth_header"))
+        req.add_header("Range", "bytes={}-{}".format(start, end))
+
+        # Capture the observation timestamp BEFORE urlopen for the
+        # flag-clearing path below. A post-urlopen time.time() would race a
+        # concurrent thread that recorded a failure between socket-open and
+        # response-processing — the earlier timestamp is conservative.
+        observed_at = time.time()
+        try:
+            # nosemgrep
+            resp = (
+                urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
+                    req, timeout=_UPSTREAM_OPEN_TIMEOUT
+                )
+            )
+        except (OSError, ValueError) as e:
+            return None, self._classify_upstream_open_error(ctx, e, start, written)
+
+        # urlopen returned without raising → nzbdav gave a 2xx/3xx. Clear the
+        # session "upstream down" flag so a later outage can re-notify (4xx/5xx
+        # never reaches here — HTTPError is caught above). ``server`` may be
+        # absent when a test builds __new__ directly; tolerate that. observed_at
+        # lets the helper drop this signal if a concurrent thread recorded a
+        # more-recent failure (notifier-flap race from the concurrency audit).
+        _record_upstream_recovered(
+            getattr(self, "server", None), ctx, observed_at=observed_at
+        )
+
+        # Arm a tighter recv() deadline on the body socket now headers are in,
+        # so a stalled backend surfaces as a recoverable read error within
+        # _UPSTREAM_READ_TIMEOUT (driving live fallback) instead of blocking on
+        # the inherited 60 s timeout and mis-logging as client_disconnected. #214
+        _set_upstream_read_timeout(resp, _UPSTREAM_READ_TIMEOUT)
+        return resp, None
+
+    def _classify_upstream_open_error(self, ctx, e, start, written):
+        """Map an open-time OSError/ValueError to a final ``(enum, written)``."""
+        if _is_terminal_http_client_error(e):
+            code = getattr(e, "code", "?")
+            # A 404 on an ESTABLISHED read (start > 0) is nzbdav saying "not
+            # downloaded yet" (past its download high-water), NOT a permanent
+            # path error: treat as a still-downloading short read so the retry
+            # ladder + forward-stall wait + fallback cutover engage instead of a
+            # hard CLIENT_ERROR abort (the "Dune died on a 404" incident). A 404
+            # on the INITIAL open (start == 0, byte 0 must exist) is a genuine
+            # missing path and stays terminal; 401/403 are always terminal
+            # (waiting can't fix bad creds). An already-written prefix is real
+            # progress → report a recoverable short read.
+            if code == 404 and start > 0:
+                xbmc.log(
+                    "NZB-DAV: Upstream 404 at byte {} on an established "
+                    "stream; treating as awaiting-download (nzbdav past "
+                    "its download high-water) "
+                    "(reason=client_error_awaiting_download)".format(start),
+                    xbmc.LOGWARNING,
+                )
+                if written:
+                    return _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, written
+                return _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD, 0
+            xbmc.log(
+                "NZB-DAV: Proxy upstream client error at byte {}: HTTP {} "
+                "(reason=upstream_client_error)".format(start, code),
+                xbmc.LOGERROR,
+            )
+            if code in (401, 403):
+                _notify_error(
+                    "WebDAV returned HTTP {}; check credentials/path".format(code)
+                )
+            return _UPSTREAM_RANGE_CLIENT_ERROR, written
+        category = _classify_upstream_error(e)
+        xbmc.log(
+            "NZB-DAV: Proxy upstream open failed at byte {}: {} "
+            "(reason=upstream_open_failed category={})".format(start, e, category),
+            xbmc.LOGWARNING,
+        )
+        if category in (
+            _UPSTREAM_REACHABILITY_UNREACHABLE_NETWORK,
+            _UPSTREAM_REACHABILITY_HTTP_SERVER_ERROR,
+        ):
+            _record_upstream_unreachable(self.server, ctx, e)
+        if written:
+            return _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, written
+        return _UPSTREAM_RANGE_UPSTREAM_ERROR, 0
+
+    @staticmethod
+    def _check_upstream_contract(resp, ctx, start, end, contract_mode):
+        """Inspect response headers for a Range-contract mismatch.
+
+        Returns ``(headers, early)`` where ``headers`` is
+        ``(status, content_range, content_length, mismatch_detail,
+        hard_mismatch)`` and ``early`` is ``None`` or a final
+        ``(result_enum, written)`` tuple (hard mismatch rejection).
+        """
+        status = getattr(resp, "status", None) or resp.getcode()
+        content_range = _get_header(resp, "Content-Range")
+        content_length = _get_header(resp, "Content-Length")
+        mismatch_detail = None
+        hard_mismatch = False
+
+        if contract_mode != _STRICT_CONTRACT_MODE_OFF:
+            mismatch_detail, hard_mismatch = _classify_contract_mismatch(
+                status,
+                content_range,
+                content_length,
+                start,
+                end,
+                ctx["content_length"],
+            )
+            if mismatch_detail:
+                _log_contract_mismatch(
+                    start,
+                    end,
+                    status,
+                    content_range,
+                    content_length,
+                    mismatch_detail,
+                )
+                if hard_mismatch:
+                    # Hard mismatch (e.g. 206 with wrong Content-Range)
+                    # would feed wrong bytes to Kodi at wrong offsets —
+                    # silent corruption. Reject regardless of mode.
+                    # Soft mismatches (status 200 + valid range covering
+                    # the full object, which nzbdav legitimately produces
+                    # for `Range: bytes=0-`) fall through and stream so
+                    # ENFORCE doesn't kill playback at byte 0.
+                    # Per TODO.md §D.8.1.
+                    return None, (_UPSTREAM_RANGE_PROTOCOL_MISMATCH, 0)
+        headers = (
+            status,
+            content_range,
+            content_length,
+            mismatch_detail,
+            hard_mismatch,
+        )
+        return headers, None
+
+    @staticmethod
+    def _read_upstream_chunk(resp, headers, start, end, written):
+        """Read one upstream chunk, classifying a read-time failure.
+
+        Returns ``(chunk, early)``: ``chunk`` is the bytes read (possibly empty
+        on EOF) with ``early`` ``None``, or ``chunk`` is ``None`` and ``early``
+        is the final ``(result_enum, written)`` tuple on a read error.
+        """
+        status, content_range, content_length = headers[0], headers[1], headers[2]
+        try:
+            # 64 KB chunks — on 32-bit Kodi the whole process has
+            # ~3 GB of address space, and Kodi's CFileCache alone can
+            # reserve up to 1.5 GB (cachemembuffersize * readbufferfactor).
+            # A 1 MB read buffer used to hit MemoryError when a second
+            # connection opened during recovery doubled the proxy's
+            # live allocations. 64 KB matches the zero-fill buffer
+            # size and is allocation-friendly on a fragmented heap.
+            chunk = resp.read(_UPSTREAM_READ_CHUNK)
+        except (MemoryError, OSError, ValueError) as e:
+            xbmc.log(
+                "NZB-DAV: Proxy upstream read failed at byte {}: {}".format(
+                    start + written, e
+                )
+                + " (reason=upstream_read_failed)",
+                xbmc.LOGWARNING,
+            )
+            if written:
+                xbmc.log(
+                    "NZB-DAV: Upstream short read for {}-{} wrote={} "
+                    "status={} Content-Range={!r} Content-Length={!r} "
+                    "(reason=short_read_recoverable)".format(
+                        start,
+                        end,
+                        written,
+                        status,
+                        content_range,
+                        content_length,
+                    ),
+                    xbmc.LOGWARNING,
+                )
+                return None, (_UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, written)
+            return None, (_UPSTREAM_RANGE_UPSTREAM_ERROR, 0)
+        return chunk, None
+
+    @staticmethod
+    def _handle_upstream_eof(headers, requested, start, end, written):
+        """Classify a clean EOF (empty chunk) into a final ``(enum, written)``."""
+        status, content_range, content_length = headers[0], headers[1], headers[2]
+        mismatch_detail, hard_mismatch = headers[3], headers[4]
+        if written == requested:
+            if mismatch_detail and hard_mismatch:
+                return _UPSTREAM_RANGE_PROTOCOL_MISMATCH, written
+            return _UPSTREAM_RANGE_OK, written
+        xbmc.log(
+            (
+                "NZB-DAV: Upstream short read for {}-{} wrote={} "
+                "expected={} status={} Content-Range={!r} "
+                "Content-Length={!r} "
+                "(reason=short_read_awaiting_download)"
+            ).format(
+                start,
+                end,
+                written,
+                requested,
+                status,
+                content_range,
+                content_length,
+            ),
+            xbmc.LOGWARNING,
+        )
+        # Clean EOF before the full range: the upload is still
+        # downloading and hasn't reached this byte yet. Wait on the
+        # primary (retry ladder) instead of declaring fallbacks
+        # exhausted. See _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD.
+        return _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD, written
+
+    def _passthrough_throughput_watchdog(self, ctx, start, written, chunk_len):
+        """Sample the per-chunk throughput watchdog; may return early or raise.
+
+        Returns ``None`` to continue the loop or a final ``(enum, written)``
+        tuple (recoverable cutover). Raises ``socket.timeout`` on a sub-floor
+        stall with no fallback attached, exactly as the inline code did.
+        """
+        if not _passthrough_watchdog_applies(ctx):
+            return None
+        # Self-initialize (tests call this directly; _serve_proxy resets per
+        # request). Explicit `in` check rather than ctx.setdefault(...,
+        # time.monotonic()) which would evaluate time.monotonic() every
+        # iteration even when the key exists — wasted clock reads on the hot
+        # per-chunk path AND non-deterministic for finite mocked side_effects.
+        if "passthrough_window_t0" not in ctx:
+            ctx["passthrough_window_t0"] = time.monotonic()
+        ctx["passthrough_window_bytes"] = (
+            ctx.get("passthrough_window_bytes", 0) + chunk_len
+        )
+        window_elapsed = time.monotonic() - ctx["passthrough_window_t0"]
+        if window_elapsed < _PASSTHROUGH_THROUGHPUT_WINDOW_SECONDS:
+            return None
+        bps = ctx["passthrough_window_bytes"] / window_elapsed
+        if bps < _PASSTHROUGH_MIN_THROUGHPUT_BPS:
+            return self._passthrough_stall_action(
+                ctx, start, written, bps, window_elapsed
+            )
+        ctx["passthrough_window_t0"] = time.monotonic()
+        ctx["passthrough_window_bytes"] = 0
+        return None
+
+    @staticmethod
+    def _passthrough_stall_action(ctx, start, written, bps, window_elapsed):
+        """React to a confirmed sub-floor window: cut over or raise a stall.
+
+        Returns a recoverable ``(enum, written)`` when a fallback is attached,
+        else marks the stall on ``ctx`` and raises ``socket.timeout`` exactly
+        as the inline code did.
+        """
+        # With a live fallback attached, a sustained sub-floor trickle should
+        # switch sources rather than reconnect to the SAME stalled upload
+        # (which just wedges again). Returning recoverable hands control to
+        # _serve_proxy's cutover; the no-fallback path is unchanged so
+        # passthrough_stall reconnect + audio-skip holds. #214.
+        if ctx.get("fallback_sources"):
+            xbmc.log(
+                "NZB-DAV: Pass-through trickle below floor "
+                "at byte {} ({:.0f} B/s over {:.1f}s) with "
+                "fallback attached; returning recoverable to "
+                "trigger cutover "
+                "(reason=passthrough_stall_fallback)".format(
+                    start + written, bps, window_elapsed
+                ),
+                xbmc.LOGWARNING,
+            )
+            return _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, written
+        # Mark before raising so _serve_proxy distinguishes stall-induced unwind
+        # from a real Kodi disconnect. socket.timeout (an OSError subclass)
+        # bypasses the inner read-loop except (which would mis-classify it as
+        # upstream short read) and reaches the outer handler.
+        ctx["passthrough_stall_detected"] = True
+        ctx["passthrough_stall_bps"] = bps
+        ctx["passthrough_stall_window_seconds"] = window_elapsed
+        raise _socket.timeout(
+            "passthrough throughput stall: "
+            "{:.0f} B/s over {:.1f}s".format(bps, window_elapsed)
+        )
+
+    @staticmethod
+    def _trim_chunk_to_range(headers, chunk, remaining, start, end, contract_mode):
+        """Clip a chunk to the bytes still requested, logging an overshoot."""
+        if len(chunk) > remaining:
+            chunk = chunk[:remaining]
+            mismatch_detail = headers[3] or "read beyond requested range"
+            if contract_mode != _STRICT_CONTRACT_MODE_OFF:
+                _log_contract_mismatch(
+                    start,
+                    end,
+                    headers[0],
+                    headers[1],
+                    headers[2],
+                    mismatch_detail,
+                )
+        return chunk
+
+    def _relay_upstream_chunk(self, ctx, headers, chunk, requested, geom):
+        """Trim, write, and account one non-empty chunk; run mid-stream checks.
+
+        ``geom`` is ``(requested_start, start, end, written, contract_mode)``.
+        Returns ``(written, early)``: ``written`` is the updated byte count and
+        ``early`` is ``None`` to continue or a final ``(enum, written)`` tuple.
+        May raise ``socket.timeout`` from the throughput watchdog.
+        """
+        requested_start, start, end, written, contract_mode = geom
+        chunk = self._trim_chunk_to_range(
+            headers, chunk, requested - written, start, end, contract_mode
+        )
+        self.wfile.write(chunk)
+        written += len(chunk)
+        # Tell the read-ahead buffer how far the play head has been served
+        # straight from upstream, so the prefetch daemon advances its base
+        # instead of re-fetching bytes already behind the play head. The hit
+        # path bumps the high-water inside _serve_from_readahead; this covers
+        # upstream-served bytes. Idempotent (max-based) so no double-count.
+        readahead_buf = ctx.get(_READAHEAD_BUFFER_KEY)
+        if readahead_buf is not None:
+            readahead_buf.update_served_high_water(requested_start + written)
+        # Env-gated fault injection: a long-lived connection opened below the
+        # threshold can stream past it, so re-check the absolute position
+        # mid-stream. Inert unless the fault env var is set.
+        if _fault_forced_primary_failure(ctx, requested_start + written):
+            xbmc.log(
+                "NZB-DAV: [FAULT] forcing primary upstream failure "
+                "mid-stream at byte {} ({}) (reason=fault_injection)".format(
+                    requested_start + written,
+                    _FAULT_PRIMARY_FAIL_AFTER_BYTES_ENV,
+                ),
+                xbmc.LOGWARNING,
+            )
+            return written, (_UPSTREAM_RANGE_UPSTREAM_ERROR, written)
+        # Throughput watchdog: only sampled inside the read loop because that's
+        # where bytes-in-flight match what Kodi sees (a _serve_proxy-level check
+        # would mis-attribute zero-fill bytes as real progress). Video-only —
+        # audio bit rates legitimately fall below the 100 KB/s floor.
+        early = self._passthrough_throughput_watchdog(ctx, start, written, len(chunk))
+        return written, early
+
+    def _stream_upstream_read_loop(self, ctx, resp, headers, requested, geom):
+        """Drive the per-chunk read/write loop until a final result.
+
+        ``geom`` is ``(requested_start, start, end, written, contract_mode)``
+        where ``written`` seeds the byte count with the prelude/prefix bytes the
+        caller already accounted. Returns the final ``(result_enum, written)``
+        tuple.
+        """
+        requested_start, start, end, written, contract_mode = geom
+        while True:
+            chunk, early = self._read_upstream_chunk(resp, headers, start, end, written)
+            if early is not None:
+                return early
+            if not chunk:
+                return self._handle_upstream_eof(
+                    headers, requested, start, end, written
+                )
+            written, early = self._relay_upstream_chunk(
+                ctx,
+                headers,
+                chunk,
+                requested,
+                (requested_start, start, end, written, contract_mode),
+            )
+            if early is not None:
+                return early
+
     def _stream_upstream_range(self, ctx, start, end, contract_mode=None):
         """Stream bytes from upstream to the client.
 
@@ -6562,328 +6974,30 @@ class _StreamHandler(BaseHTTPRequestHandler):
             )
             return _UPSTREAM_RANGE_UPSTREAM_ERROR, 0
         requested_start = start
-        written = 0
-        # Read-ahead consult (additive, FIRST): serve the contiguous in-RAM
-        # prefix the prefetch daemon built ahead of the play head. On a hit,
-        # advance start/written; on a partial/empty result fall straight through
-        # to today's untouched upstream-read / retry-ladder / patient-stall /
-        # fallback-cutover / 404-awaiting path below. When the setting is 0 there
-        # is no buffer on ctx, so this returns 0 immediately (identical to
-        # today). The window only ever satisfies a contiguous-forward prefix, so
-        # every existing branch keyed on result/written sees identical inputs on
-        # the miss path.
-        prefix_from_window = self._serve_from_readahead(ctx, start, end)
-        if prefix_from_window:
-            written += prefix_from_window
-            start += prefix_from_window
-            if start > end:
-                return _UPSTREAM_RANGE_OK, written
-        cached_prefix = self._pop_cached_fallback_range(ctx, start, end)
-        wait_consumed = bool(ctx.pop("_initial_range_prefetch_wait_consumed", False))
-        if not cached_prefix and not wait_consumed:
-            self._wait_for_initial_range_prefetch(ctx, start)
-            cached_prefix = self._pop_cached_fallback_range(ctx, start, end)
-        if cached_prefix:
-            self.wfile.write(cached_prefix)
-            written += len(cached_prefix)
-            start += len(cached_prefix)
-            if start > end:
-                return _UPSTREAM_RANGE_OK, written
-
-        req = Request(ctx["remote_url"])
-        _add_request_headers(req, ctx.get("auth_header"))
-        req.add_header("Range", "bytes={}-{}".format(start, end))
+        start, written, early = self._stream_upstream_prelude(ctx, start, end)
+        if early is not None:
+            return early
 
         contract_mode = contract_mode or _get_strict_contract_mode()
         requested = end - requested_start + 1
-        # Capture the observation timestamp BEFORE urlopen so we can pass
-        # it into the flag-clearing path below. Using a post-urlopen
-        # ``time.time()`` would race with a concurrent thread that
-        # recorded a failure between "we opened the socket" and "we're
-        # now processing the response" — ordering by the earlier
-        # timestamp is the conservative choice.
-        observed_at = time.time()
-        try:
-            # nosemgrep
-            resp = (
-                urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
-                    req, timeout=_UPSTREAM_OPEN_TIMEOUT
-                )
-            )
-        except (OSError, ValueError) as e:
-            if _is_terminal_http_client_error(e):
-                code = getattr(e, "code", "?")
-                # A 404 on an ESTABLISHED read (start > 0) is nzbdav reporting
-                # "I have not downloaded this byte range yet" — it 404s for
-                # ranges past its download high-water — NOT a permanent path
-                # error. Treat it as a still-downloading short read so the
-                # retry ladder + patient forward-stall wait + fallback cutover
-                # engage, instead of a hard CLIENT_ERROR abort that kills
-                # playback the instant playback catches the download
-                # high-water (the "Dune died on a 404" incident). A 404 on the
-                # INITIAL open (start == 0 — byte 0 must exist if the path is
-                # valid) is a genuine missing path and stays terminal; 401/403
-                # (auth) are always terminal because waiting cannot fix bad
-                # credentials. A cached/verified prefix already written is real
-                # progress, so report it as a recoverable short read.
-                if code == 404 and start > 0:
-                    xbmc.log(
-                        "NZB-DAV: Upstream 404 at byte {} on an established "
-                        "stream; treating as awaiting-download (nzbdav past "
-                        "its download high-water) "
-                        "(reason=client_error_awaiting_download)".format(start),
-                        xbmc.LOGWARNING,
-                    )
-                    if written:
-                        return _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, written
-                    return _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD, 0
-                xbmc.log(
-                    "NZB-DAV: Proxy upstream client error at byte {}: HTTP {} "
-                    "(reason=upstream_client_error)".format(start, code),
-                    xbmc.LOGERROR,
-                )
-                if code in (401, 403):
-                    _notify_error(
-                        "WebDAV returned HTTP {}; check credentials/path".format(code)
-                    )
-                return _UPSTREAM_RANGE_CLIENT_ERROR, written
-            category = _classify_upstream_error(e)
-            xbmc.log(
-                "NZB-DAV: Proxy upstream open failed at byte {}: {} "
-                "(reason=upstream_open_failed category={})".format(start, e, category),
-                xbmc.LOGWARNING,
-            )
-            if category in (
-                _UPSTREAM_REACHABILITY_UNREACHABLE_NETWORK,
-                _UPSTREAM_REACHABILITY_HTTP_SERVER_ERROR,
-            ):
-                _record_upstream_unreachable(self.server, ctx, e)
-            if written:
-                return _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, written
-            return _UPSTREAM_RANGE_UPSTREAM_ERROR, 0
 
-        # urlopen returned without raising → nzbdav responded with a
-        # 2xx/3xx status. Clear the session's "upstream down" flag so a
-        # subsequent outage in the same session can fire a fresh
-        # notification. 4xx/5xx never reaches here — HTTPError is raised
-        # from urlopen and caught in the except block above. ``server``
-        # may be absent when a test constructs _StreamHandler.__new__
-        # directly without wiring the server attribute; tolerate that.
-        # observed_at lets the helper drop this "success" signal if a
-        # concurrent thread recorded a more-recent failure, preventing
-        # the notifier-flap race surfaced by the concurrency audit.
-        _record_upstream_recovered(
-            getattr(self, "server", None), ctx, observed_at=observed_at
-        )
-
-        # Arm a dedicated, shorter recv() deadline on the body socket now that
-        # headers are in. A stalled backend (e.g. looping on article-not-found)
-        # then surfaces as a recoverable read error within _UPSTREAM_READ_TIMEOUT
-        # — driving the live fallback cutover below — instead of blocking on the
-        # inherited 60 s timeout until Kodi gives up and the stall is logged as
-        # client_disconnected. See issue #214.
-        _set_upstream_read_timeout(resp, _UPSTREAM_READ_TIMEOUT)
+        resp, early = self._open_upstream_range_response(ctx, start, end, written)
+        if early is not None:
+            return early
 
         try:
-            status = getattr(resp, "status", None) or resp.getcode()
-            content_range = _get_header(resp, "Content-Range")
-            content_length = _get_header(resp, "Content-Length")
-            mismatch_detail = None
-            hard_mismatch = False
-
-            if contract_mode != _STRICT_CONTRACT_MODE_OFF:
-                mismatch_detail, hard_mismatch = _classify_contract_mismatch(
-                    status,
-                    content_range,
-                    content_length,
-                    start,
-                    end,
-                    ctx["content_length"],
-                )
-                if mismatch_detail:
-                    _log_contract_mismatch(
-                        start,
-                        end,
-                        status,
-                        content_range,
-                        content_length,
-                        mismatch_detail,
-                    )
-                    if hard_mismatch:
-                        # Hard mismatch (e.g. 206 with wrong Content-Range)
-                        # would feed wrong bytes to Kodi at wrong offsets —
-                        # silent corruption. Reject regardless of mode.
-                        # Soft mismatches (status 200 + valid range covering
-                        # the full object, which nzbdav legitimately produces
-                        # for `Range: bytes=0-`) fall through and stream so
-                        # ENFORCE doesn't kill playback at byte 0.
-                        # Per TODO.md §D.8.1.
-                        return _UPSTREAM_RANGE_PROTOCOL_MISMATCH, 0
-
-            while True:
-                try:
-                    # 64 KB chunks — on 32-bit Kodi the whole process has
-                    # ~3 GB of address space, and Kodi's CFileCache alone can
-                    # reserve up to 1.5 GB (cachemembuffersize * readbufferfactor).
-                    # A 1 MB read buffer used to hit MemoryError when a second
-                    # connection opened during recovery doubled the proxy's
-                    # live allocations. 64 KB matches the zero-fill buffer
-                    # size and is allocation-friendly on a fragmented heap.
-                    chunk = resp.read(_UPSTREAM_READ_CHUNK)
-                except (MemoryError, OSError, ValueError) as e:
-                    xbmc.log(
-                        "NZB-DAV: Proxy upstream read failed at byte {}: {}".format(
-                            start + written, e
-                        )
-                        + " (reason=upstream_read_failed)",
-                        xbmc.LOGWARNING,
-                    )
-                    if written:
-                        xbmc.log(
-                            "NZB-DAV: Upstream short read for {}-{} wrote={} "
-                            "status={} Content-Range={!r} Content-Length={!r} "
-                            "(reason=short_read_recoverable)".format(
-                                start,
-                                end,
-                                written,
-                                status,
-                                content_range,
-                                content_length,
-                            ),
-                            xbmc.LOGWARNING,
-                        )
-                        return _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, written
-                    return _UPSTREAM_RANGE_UPSTREAM_ERROR, 0
-                if not chunk:
-                    if written == requested:
-                        if mismatch_detail and hard_mismatch:
-                            return _UPSTREAM_RANGE_PROTOCOL_MISMATCH, written
-                        return _UPSTREAM_RANGE_OK, written
-                    xbmc.log(
-                        (
-                            "NZB-DAV: Upstream short read for {}-{} wrote={} "
-                            "expected={} status={} Content-Range={!r} "
-                            "Content-Length={!r} "
-                            "(reason=short_read_awaiting_download)"
-                        ).format(
-                            start,
-                            end,
-                            written,
-                            requested,
-                            status,
-                            content_range,
-                            content_length,
-                        ),
-                        xbmc.LOGWARNING,
-                    )
-                    # Clean EOF before the full range: the upload is still
-                    # downloading and hasn't reached this byte yet. Wait on the
-                    # primary (retry ladder) instead of declaring fallbacks
-                    # exhausted. See _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD.
-                    return _UPSTREAM_RANGE_SHORT_READ_AWAITING_DOWNLOAD, written
-                remaining = requested - written
-                if len(chunk) > remaining:
-                    chunk = chunk[:remaining]
-                    mismatch_detail = mismatch_detail or "read beyond requested range"
-                    if contract_mode != _STRICT_CONTRACT_MODE_OFF:
-                        _log_contract_mismatch(
-                            start,
-                            end,
-                            status,
-                            content_range,
-                            content_length,
-                            mismatch_detail,
-                        )
-                self.wfile.write(chunk)
-                written += len(chunk)
-                # Tell the read-ahead buffer how far the play head has now been
-                # served directly from upstream. On the common startup MISS the
-                # buffer was never told the served position, so its base stayed
-                # at 0 and the prefetch daemon kept re-fetching bytes already
-                # behind the play head instead of building a forward lead. The
-                # hit path updates the high-water inside _serve_from_readahead;
-                # this covers the bytes served straight from upstream. Idempotent
-                # (max-based) so no double-count with the prefix on a hit.
-                readahead_buf = ctx.get(_READAHEAD_BUFFER_KEY)
-                if readahead_buf is not None:
-                    readahead_buf.update_served_high_water(requested_start + written)
-                # Env-gated fault injection: a single long-lived connection
-                # opened below the threshold can stream past it, so the
-                # entry-only check misses it — re-check the absolute position
-                # mid-stream. Inert unless the fault env var is set.
-                if _fault_forced_primary_failure(ctx, requested_start + written):
-                    xbmc.log(
-                        "NZB-DAV: [FAULT] forcing primary upstream failure "
-                        "mid-stream at byte {} ({}) (reason=fault_injection)".format(
-                            requested_start + written,
-                            _FAULT_PRIMARY_FAIL_AFTER_BYTES_ENV,
-                        ),
-                        xbmc.LOGWARNING,
-                    )
-                    return _UPSTREAM_RANGE_UPSTREAM_ERROR, written
-                # Throughput watchdog: only sampled inside the read loop
-                # because that's where bytes-in-flight matches what Kodi
-                # actually sees. A separate check at the _serve_proxy level
-                # would mis-attribute zero-fill bytes as real progress.
-                # Skip entirely on non-video streams — audio bit rates are
-                # legitimately below the 100 KB/s floor.
-                if _passthrough_watchdog_applies(ctx):
-                    # Self-initialize so tests that call this method
-                    # directly still work; _serve_proxy resets per request
-                    # to avoid carry-over. Use an explicit `in` check
-                    # rather than ctx.setdefault(..., time.monotonic())
-                    # because the latter evaluates time.monotonic() every
-                    # iteration even when the key exists — wasted clock
-                    # reads on the hot per-chunk path AND non-deterministic
-                    # for tests that mock time.monotonic with a finite
-                    # side_effect list.
-                    if "passthrough_window_t0" not in ctx:
-                        ctx["passthrough_window_t0"] = time.monotonic()
-                    ctx["passthrough_window_bytes"] = ctx.get(
-                        "passthrough_window_bytes", 0
-                    ) + len(chunk)
-                    window_elapsed = time.monotonic() - ctx["passthrough_window_t0"]
-                    if window_elapsed >= _PASSTHROUGH_THROUGHPUT_WINDOW_SECONDS:
-                        bps = ctx["passthrough_window_bytes"] / window_elapsed
-                        if bps < _PASSTHROUGH_MIN_THROUGHPUT_BPS:
-                            # When a live fallback upload is attached, a
-                            # sustained sub-floor trickle should switch sources
-                            # rather than blindly close for a reconnect to the
-                            # SAME stalled upload (which just wedges again on a
-                            # dead/missing-article release). Returning a
-                            # recoverable result hands control to _serve_proxy's
-                            # cutover (which calls _select_live_fallback_source);
-                            # the no-fallback path below is unchanged so the
-                            # existing passthrough_stall reconnect + audio-skip
-                            # behavior and its tests still hold. See issue #214.
-                            if ctx.get("fallback_sources"):
-                                xbmc.log(
-                                    "NZB-DAV: Pass-through trickle below floor "
-                                    "at byte {} ({:.0f} B/s over {:.1f}s) with "
-                                    "fallback attached; returning recoverable to "
-                                    "trigger cutover "
-                                    "(reason=passthrough_stall_fallback)".format(
-                                        start + written, bps, window_elapsed
-                                    ),
-                                    xbmc.LOGWARNING,
-                                )
-                                return _UPSTREAM_RANGE_SHORT_READ_RECOVERABLE, written
-                            # Mark before raising so the _serve_proxy handler
-                            # can distinguish stall-induced unwind from a
-                            # real Kodi disconnect. socket.timeout is an
-                            # OSError subclass, so it bypasses the inner
-                            # read-loop except (which would otherwise
-                            # mis-classify it as upstream short read) and
-                            # propagates to the outer handler.
-                            ctx["passthrough_stall_detected"] = True
-                            ctx["passthrough_stall_bps"] = bps
-                            ctx["passthrough_stall_window_seconds"] = window_elapsed
-                            raise _socket.timeout(
-                                "passthrough throughput stall: "
-                                "{:.0f} B/s over {:.1f}s".format(bps, window_elapsed)
-                            )
-                        ctx["passthrough_window_t0"] = time.monotonic()
-                        ctx["passthrough_window_bytes"] = 0
+            headers, early = self._check_upstream_contract(
+                resp, ctx, start, end, contract_mode
+            )
+            if early is not None:
+                return early
+            return self._stream_upstream_read_loop(
+                ctx,
+                resp,
+                headers,
+                requested,
+                (requested_start, start, end, written, contract_mode),
+            )
         finally:
             try:
                 resp.close()
