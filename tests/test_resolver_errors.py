@@ -354,6 +354,9 @@ def _dialog_close_called_when_poll_raises(helper_name, callbacks):
     from resources.lib import resolver
 
     dialog = MagicMock()
+    # Patch the exact seam both helpers call (resolver_flow._invoke_poll_until_ready)
+    # rather than the inner resolver._poll_until_ready it currently delegates to, so
+    # the exception path stays forced even if that delegation ever changes.
     with patch("resources.lib.resolver.xbmcgui") as gui, patch(
         "resources.lib.resolver._get_poll_settings", return_value=(1, 10)
     ), patch("resources.lib.resolver._maybe_clear_queue_before_submit"), patch(
@@ -361,7 +364,8 @@ def _dialog_close_called_when_poll_raises(helper_name, callbacks):
     ), patch(
         "resources.lib.resolver._string", return_value="msg"
     ), patch(
-        "resources.lib.resolver._poll_until_ready", side_effect=RuntimeError("boom")
+        "resources.lib.resolver_flow._invoke_poll_until_ready",
+        side_effect=RuntimeError("boom"),
     ):
         gui.DialogProgress.return_value = dialog
         helper = getattr(resolver, helper_name)
