@@ -164,6 +164,27 @@ def _set_playback_monitor_properties(
     home.setProperty("nzbdav.active", "true")
 
 
+def _resolve_direct_no_proxy(
+    handle, stream_url, stream_headers, monitor_key, resume_seconds
+):
+    """Resolve a direct (no service-proxy) stream and start handle playback."""
+    bust_url = _resolver._cache_bust_url(stream_url)
+    play_url = _resolver._build_play_url(bust_url, stream_headers)
+    _resolver.xbmc.log(
+        "NZB-DAV: Playing direct (no proxy) (handle={}): {}".format(
+            handle, _resolver._redact_log(bust_url)
+        ),
+        _resolver.xbmc.LOGINFO,
+    )
+    li = _resolver._make_playable_listitem(bust_url, stream_headers)
+    _apply_resume_start_offset(li, resume_seconds)
+    home = _resolver.xbmcgui.Window(10000)
+    _set_playback_monitor_properties(
+        home, play_url, stream_url, monitor_key, resume_seconds
+    )
+    _resolver.xbmcplugin.setResolvedUrl(handle, True, li)
+
+
 def _finish_direct_playback(handle, prepared, resume_key="", resume_seconds=0.0):
     """Finish resolver playback on the Kodi thread.
 
@@ -221,21 +242,9 @@ def _finish_direct_playback(handle, prepared, resume_key="", resume_seconds=0.0)
         _resolver.xbmcplugin.setResolvedUrl(handle, True, li)
         return
 
-    bust_url = _resolver._cache_bust_url(stream_url)
-    play_url = _resolver._build_play_url(bust_url, stream_headers)
-    safe_bust = _resolver._redact_log(bust_url)
-    _resolver.xbmc.log(
-        "NZB-DAV: Playing direct (no proxy) (handle={}): {}".format(handle, safe_bust),
-        _resolver.xbmc.LOGINFO,
+    _resolve_direct_no_proxy(
+        handle, stream_url, stream_headers, monitor_key, resume_seconds
     )
-
-    li = _resolver._make_playable_listitem(bust_url, stream_headers)
-    _apply_resume_start_offset(li, resume_seconds)
-    home = _resolver.xbmcgui.Window(10000)
-    _set_playback_monitor_properties(
-        home, play_url, stream_url, monitor_key, resume_seconds
-    )
-    _resolver.xbmcplugin.setResolvedUrl(handle, True, li)
 
 
 def _finish_player_playback(prepared, resume_key="", resume_seconds=0.0):
