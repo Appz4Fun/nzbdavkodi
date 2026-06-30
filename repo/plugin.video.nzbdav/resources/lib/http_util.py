@@ -148,6 +148,7 @@ def redact_text(text):
 
 
 _WHITESPACE_RE = re.compile(r"\s+")
+_FRACTIONAL_SECONDS_RE = re.compile(r"\.\d+")
 
 
 def clean_search_query(title):
@@ -365,7 +366,9 @@ def iso8601_to_rfc2822(value):
     # .NET (Prowlarr's stack) can emit up to 7 fractional-second digits,
     # which pre-3.11 ``datetime.fromisoformat`` rejects; sub-second
     # precision is irrelevant for identity/sort/age, so drop it.
-    text = re.sub(r"\.\d+", "", text)
+    # Pre-compiled regex avoids inline evaluation overhead during high-volume
+    # result parsing.
+    text = _FRACTIONAL_SECONDS_RE.sub("", text)
     # ``fromisoformat`` only accepts a trailing 'Z' from Python 3.11 on;
     # map it to an explicit UTC offset for older Kodi runtimes (3.8–3.9).
     if text[-1:] in ("Z", "z"):
