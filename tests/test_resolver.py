@@ -5220,7 +5220,6 @@ def test_submit_ui_pump_adopts_existing_queue_without_initial_probe_delay(
     monitor = MagicMock()
     monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
 
-    started = _time.perf_counter()
     try:
         nzo_id, submit_error = _submit_nzb_with_ui_pump(
             "http://hydra/getnzb/abc", "movie.mkv", dialog, monitor
@@ -5249,17 +5248,12 @@ def test_submit_ui_pump_adopts_existing_queue_without_initial_probe_delay(
     )
 
     assert _SUBMIT_QUEUE_PROBE_INITIAL_DELAY_SECONDS == 0
-    # Coarse runtime sanity check (secondary): the first probe is issued in ~ms
-    # on the healthy path; this generous 0.1s ceiling sits well above scheduling
-    # jitter and catches a large reintroduced delay even if the constant assert
-    # is somehow bypassed.
+    # Non-vacuity: the queue probe actually ran, so the adoption above was
+    # genuinely exercised. The previous 0.1s wall-clock ceiling on the first
+    # probe was removed (Codex P2): it measured thread creation + worker
+    # scheduling, so a loaded runner could exceed it even with a healthy zero
+    # initial delay -- the constant pin above is the load-independent guard.
     assert first_probe_at, "queue probe never ran"
-    first_probe_delay = first_probe_at[0] - started
-    assert (
-        first_probe_delay < 0.1
-    ), "first queue probe was delayed {:.3f}s (initial grace reintroduced?)".format(
-        first_probe_delay
-    )
 
 
 @patch("resources.lib.resolver._existing_completed_stream", return_value=None)
@@ -5300,48 +5294,62 @@ def test_submit_ui_pump_rechecks_queue_quickly_after_initial_fast_miss(
     monitor = MagicMock()
     monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
 
+    # Record the actual interval the probe worker waits between probes by
+    # capturing queue_stop.wait(interval) directly (Codex P2) -- a load-robust
+    # signal that does not depend on scheduler-delayed wall-clock gaps.
+    recorded_probe_waits = []
+
+    class _RecordingEvent(threading.Event):
+        def wait(self, timeout=None):
+            recorded_probe_waits.append(timeout)
+            return super().wait(timeout)
+
     try:
-        nzo_id, submit_error = _submit_nzb_with_ui_pump(
-            "http://hydra/getnzb/abc", "movie.mkv", dialog, monitor
-        )
+        with patch("resources.lib.resolver.threading.Event", _RecordingEvent):
+            nzo_id, submit_error = _submit_nzb_with_ui_pump(
+                "http://hydra/getnzb/abc", "movie.mkv", dialog, monitor
+            )
         submit_completed_at_return = submit_completed[0]
     finally:
         submit_can_finish.set()
 
     assert (nzo_id, submit_error) == ("SABnzbd_nzo_second_fast_probe", None)
     assert len(queue_probe_times) == 2
-    # Cadence guard (CodeRabbit Major): two probes happening is not enough -- the
-    # second probe must have been paced by the FAST retry interval, not the
-    # normal slow poll. A regression dropping the recheck to the slow poll (still
-    # < the 0.75s submit timeout) keeps len == 2 and the submit-not-completed
-    # snapshot green. The probe worker waits via queue_stop.wait(interval) (a
-    # real Event, not mockable), so the inter-probe GAP is the only observable
-    # signal; pin it below the fast/slow midpoint, derived from the production
-    # constants so it tracks them and tolerates load overrun up to ~3x the fast
-    # interval while still going red on a slow-interval regression.
+    # Cadence guard (CodeRabbit Major + Codex P2): two probes happening is not
+    # enough -- the second probe must have been paced by the FAST retry interval,
+    # not the normal slow poll. A regression dropping the recheck to the slow poll
+    # (still < the 0.75s submit timeout) keeps len == 2 and the submit-not-
+    # completed snapshot green. Instead of measuring the scheduler-delayed inter-
+    # probe wall-clock gap (which flakes under load), the recording Event above
+    # captured the actual interval the worker passed to queue_stop.wait(); assert
+    # the slow interval was never used to pace a reprobe.
     from resources.lib.resolver import (  # pylint: disable=import-outside-toplevel
         _SUBMIT_QUEUE_PROBE_FAST_INTERVAL_SECONDS,
         _SUBMIT_QUEUE_PROBE_FAST_WINDOW_SECONDS,
         _SUBMIT_QUEUE_PROBE_INTERVAL_SECONDS,
     )
 
-    # Premise pin (load-independent): the cadence proof assumes the 2nd probe
-    # (~0.05s in) lands inside the fast-retry window. Shrinking the window to an
-    # intermediate value (e.g. 0.06s) would still keep probe_gap < midpoint green
-    # yet degrade behavior by ending the fast cadence prematurely. Pin the
-    # documented window so such a config drift goes red here.
+    # Premise pin (load-independent): the fast cadence only applies while elapsed
+    # < the fast window; shrinking the window to an intermediate value would end
+    # the fast cadence prematurely. Pin the documented window.
     assert _SUBMIT_QUEUE_PROBE_FAST_WINDOW_SECONDS >= 2.0
 
-    probe_gap = queue_probe_times[1] - queue_probe_times[0]
-    fast_slow_midpoint = (
-        _SUBMIT_QUEUE_PROBE_FAST_INTERVAL_SECONDS + _SUBMIT_QUEUE_PROBE_INTERVAL_SECONDS
-    ) / 2
-    assert probe_gap < fast_slow_midpoint, (
-        "second queue probe used the slow {:.3f}s poll instead of the fast "
-        "{:.3f}s retry; inter-probe gap was {:.3f}s".format(
+    probe_interval_waits = [
+        timeout
+        for timeout in recorded_probe_waits
+        if timeout
+        in (
+            _SUBMIT_QUEUE_PROBE_FAST_INTERVAL_SECONDS,
+            _SUBMIT_QUEUE_PROBE_INTERVAL_SECONDS,
+        )
+    ]
+    assert probe_interval_waits, "probe worker never paced a reprobe"
+    assert _SUBMIT_QUEUE_PROBE_INTERVAL_SECONDS not in probe_interval_waits, (
+        "reprobe used the slow {:.3f}s poll interval instead of the fast {:.3f}s "
+        "retry; intervals waited={}".format(
             _SUBMIT_QUEUE_PROBE_INTERVAL_SECONDS,
             _SUBMIT_QUEUE_PROBE_FAST_INTERVAL_SECONDS,
-            probe_gap,
+            probe_interval_waits,
         )
     )
     # Structural proof (load-independent): the second queue probe's hit is
@@ -7315,12 +7323,20 @@ def test_poll_until_ready_rechecks_completed_webdav_before_full_poll_interval(
     assert url == "http://webdav/content/uncategorized/movie/movie.mkv"
     assert headers == {"Authorization": "Basic primary"}
     # Completed-WebDAV recheck guard (replaces a flake-prone wall-clock bound).
-    # The first find_video_file miss must recheck inline on the graduated
-    # 0.025s fast recheck delay -- it returns the video on that recheck rather
-    # than letting the poll loop fall through and wait a full poll_interval (1s)
-    # tick before re-polling. If the inline recheck regressed away, this fast
-    # recheck delay is never requested and the assertion fails.
-    monitor.waitForAbort.assert_any_call(0.025)
+    # The first find_video_file miss must recheck inline on the graduated 0.025s
+    # fast recheck delay AND return the video on that recheck -- it must NOT fall
+    # through to a full poll_interval (1s) tick before consuming the second
+    # lookup.
+    wait_delays = [c.args[0] for c in monitor.waitForAbort.call_args_list if c.args]
+    assert 0.025 in wait_delays, "inline 0.025s fast recheck was not requested"
+    # Ordering guard (Codex P2): a 0.025s recheck followed by a full poll wait
+    # would still satisfy the assert_any_call above yet delay playback ~1s, which
+    # the removed total-latency bound caught. Assert no full poll tick ran before
+    # resolving -- load-independent (call-args, not wall-clock).
+    assert 1 not in wait_delays, (
+        "completed-WebDAV path waited a full poll tick before consuming the "
+        "recheck result; waitForAbort delays={}".format(wait_delays)
+    )
 
 
 @patch("resources.lib.resolver._existing_completed_stream", return_value=None)
