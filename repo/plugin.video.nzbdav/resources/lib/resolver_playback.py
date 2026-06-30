@@ -323,7 +323,7 @@ def _bookmark_resume_query(bookmark_columns):
     )
     type_filter = " AND type = 1" if "type" in bookmark_columns else ""
     return (
-        "SELECT timeInSeconds, "
+        "SELECT timeInSeconds, "  # nosec B608 — params bound, trusted local DB
         + total_col
         + " FROM bookmark WHERE idFile = ?"
         + type_filter
