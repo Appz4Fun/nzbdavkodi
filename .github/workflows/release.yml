@@ -62,3 +62,23 @@ jobs:
         with:
           files: plugin.video.nzbdav-${{ steps.version.outputs.version }}.zip
           generate_release_notes: true
+
+      # Ping the Appz4Fun Kodi repository so it rebuilds within seconds instead
+      # of waiting for its daily schedule. Needs a fine-grained PAT with
+      # Contents: read+write on Appz4Fun/Appz4Fun-Kodi-Repo, stored here as the
+      # secret REPO_DISPATCH_TOKEN. Best-effort: never fails the release.
+      - name: Notify Appz4Fun Kodi repository
+        continue-on-error: true
+        env:
+          DISPATCH_TOKEN: ${{ secrets.REPO_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$DISPATCH_TOKEN" ]; then
+            echo "REPO_DISPATCH_TOKEN not set; skipping (Kodi repo still rebuilds on its daily schedule)."
+            exit 0
+          fi
+          curl -sS -f -X POST \
+            -H "Authorization: Bearer $DISPATCH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/Appz4Fun/Appz4Fun-Kodi-Repo/dispatches \
+            -d '{"event_type":"addon-released"}' \
+            && echo "Triggered Appz4Fun-Kodi-Repo rebuild."
