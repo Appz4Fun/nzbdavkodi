@@ -5334,22 +5334,27 @@ def test_submit_ui_pump_rechecks_queue_quickly_after_initial_fast_miss(
     # the fast cadence prematurely. Pin the documented window.
     assert _SUBMIT_QUEUE_PROBE_FAST_WINDOW_SECONDS >= 2.0
 
-    probe_interval_waits = [
+    # Every reprobe-pacing wait must be the fast interval. Waits below it (the
+    # 0.0 initial-delay wait and the <=0.01 history-probe coordination polls) are
+    # not cadence; any wait at or above the fast interval that isn't exactly the
+    # fast interval -- the slow poll OR an intermediate value like 0.1 -- is a
+    # cadence regression (CodeRabbit). The healthy run records only [~0.003, 0.01,
+    # 0.05], so the fast interval is the sole >= -fast value.
+    reprobe_interval_waits = [
         timeout
         for timeout in recorded_probe_waits
-        if timeout
-        in (
-            _SUBMIT_QUEUE_PROBE_FAST_INTERVAL_SECONDS,
-            _SUBMIT_QUEUE_PROBE_INTERVAL_SECONDS,
-        )
+        if timeout and timeout >= _SUBMIT_QUEUE_PROBE_FAST_INTERVAL_SECONDS
     ]
-    assert probe_interval_waits, "probe worker never paced a reprobe"
-    assert _SUBMIT_QUEUE_PROBE_INTERVAL_SECONDS not in probe_interval_waits, (
-        "reprobe used the slow {:.3f}s poll interval instead of the fast {:.3f}s "
-        "retry; intervals waited={}".format(
-            _SUBMIT_QUEUE_PROBE_INTERVAL_SECONDS,
+    assert reprobe_interval_waits, "probe worker never paced a reprobe"
+    assert all(
+        timeout == _SUBMIT_QUEUE_PROBE_FAST_INTERVAL_SECONDS
+        for timeout in reprobe_interval_waits
+    ), (
+        "reprobe used a non-fast interval (slow poll or intermediate value); "
+        "intervals >= fast were {} (fast={:.3f}s, slow={:.3f}s)".format(
+            reprobe_interval_waits,
             _SUBMIT_QUEUE_PROBE_FAST_INTERVAL_SECONDS,
-            probe_interval_waits,
+            _SUBMIT_QUEUE_PROBE_INTERVAL_SECONDS,
         )
     )
     # Structural proof (load-independent): the second queue probe's hit is
@@ -7316,26 +7321,42 @@ def test_poll_until_ready_rechecks_completed_webdav_before_full_poll_interval(
         {"Authorization": "Basic primary"},
     )
 
-    url, headers = _poll_until_ready(
-        "http://hydra/nzb", "movie", _make_dialog(), 1, 3600
-    )
+    from resources.lib import (
+        resolver as _resolver,
+    )  # pylint: disable=import-outside-toplevel
+
+    helper_poll_waits = []
+    _real_wait_for_abort = _resolver._wait_for_abort_or_timeout
+
+    def _spy_wait_for_abort(mon, wait_seconds, *args, **kwargs):
+        helper_poll_waits.append(wait_seconds)
+        return _real_wait_for_abort(mon, wait_seconds, *args, **kwargs)
+
+    with patch.object(_resolver, "_wait_for_abort_or_timeout", _spy_wait_for_abort):
+        url, headers = _poll_until_ready(
+            "http://hydra/nzb", "movie", _make_dialog(), 1, 3600
+        )
 
     assert url == "http://webdav/content/uncategorized/movie/movie.mkv"
     assert headers == {"Authorization": "Basic primary"}
     # Completed-WebDAV recheck guard (replaces a flake-prone wall-clock bound).
     # The first find_video_file miss must recheck inline on the graduated 0.025s
     # fast recheck delay AND return the video on that recheck -- it must NOT fall
-    # through to a full poll_interval (1s) tick before consuming the second
-    # lookup.
+    # through to a full poll_interval (1s) tick before consuming the second lookup.
     wait_delays = [c.args[0] for c in monitor.waitForAbort.call_args_list if c.args]
     assert 0.025 in wait_delays, "inline 0.025s fast recheck was not requested"
-    # Ordering guard (Codex P2): a 0.025s recheck followed by a full poll wait
-    # would still satisfy the assert_any_call above yet delay playback ~1s, which
-    # the removed total-latency bound caught. Assert no full poll tick ran before
-    # resolving -- load-independent (call-args, not wall-clock).
+    # The full poll tick is requested two ways and BOTH must be absent before the
+    # recheck resolves (Codex P2): monitor.waitForAbort(poll_interval), and the
+    # helper _wait_for_abort_or_timeout(monitor, poll_interval), which waits on a
+    # threading.Event rather than waitForAbort. A 0.025s recheck followed by
+    # either would delay playback ~1s while still returning the right URL.
     assert 1 not in wait_delays, (
-        "completed-WebDAV path waited a full poll tick before consuming the "
-        "recheck result; waitForAbort delays={}".format(wait_delays)
+        "completed-WebDAV path waited a full poll tick (waitForAbort) before "
+        "consuming the recheck result; delays={}".format(wait_delays)
+    )
+    assert 1 not in helper_poll_waits, (
+        "completed-WebDAV path waited a full poll tick via "
+        "_wait_for_abort_or_timeout; helper waits={}".format(helper_poll_waits)
     )
 
 
