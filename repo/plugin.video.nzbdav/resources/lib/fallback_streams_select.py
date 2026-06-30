@@ -196,7 +196,13 @@ def _attach_ready_selection_candidates(
     misses_seen,
     consumed_indices,
 ):
-    """Attach completed candidate manifests in result order."""
+    """Attach completed candidate manifests strictly in result order.
+
+    Stops at the first index that has not completed yet (a gap). Filling the cap
+    from later out-of-order completions is handled separately by
+    ``_fill_cap_from_completed`` once that gap has had its settle window, so an
+    earlier (higher-priority) peer that is merely slow is never skipped here.
+    """
     _fs._advance_past_consumed(next_to_attach, consumed_indices)
     while next_to_attach[0] in completed:
         _fs._consume_ready_candidate(
@@ -213,21 +219,39 @@ def _attach_ready_selection_candidates(
         _fs._advance_past_consumed(next_to_attach, consumed_indices)
         if len(candidates) >= max_candidates:
             return True
+    return False
+
+
+def _fill_cap_from_completed(
+    selected,
+    completed,
+    candidates,
+    seen_candidate_links,
+    seen_article_digests,
+    max_candidates,
+    misses_seen,
+    consumed_indices,
+):
+    """Fill the remaining cap slots from out-of-order completions, lowest index
+    first. Called only once the earlier in-flight gap has settled (completed or
+    exceeded its settle window), so this no longer skips an earlier peer that is
+    about to arrive. Returns True when the cap is reached."""
     remaining_slots = max_candidates - len(candidates)
-    if len(completed) >= remaining_slots > 0:
-        for ready_index in sorted(completed):
-            _fs._consume_ready_candidate(
-                selected,
-                completed,
-                ready_index,
-                candidates,
-                seen_candidate_links,
-                seen_article_digests,
-                misses_seen,
-                consumed_indices,
-            )
-            if len(candidates) >= max_candidates:
-                return True
+    if len(completed) < remaining_slots or remaining_slots <= 0:
+        return False
+    for ready_index in sorted(completed):
+        _fs._consume_ready_candidate(
+            selected,
+            completed,
+            ready_index,
+            candidates,
+            seen_candidate_links,
+            seen_article_digests,
+            misses_seen,
+            consumed_indices,
+        )
+        if len(candidates) >= max_candidates:
+            return True
     return False
 
 
@@ -283,6 +307,8 @@ def _attach_selection_candidates_streaming(
     selected_ready = [not include_selected_manifest]
     selected_can_match = [True]
     optional_tail_deadline = [None]
+    settle_pending = [False]
+    settle_deadline = [None]
     max_workers = min(max_candidates, _fs._MAX_FALLBACKS)
 
     def _start_candidate_fetch():
@@ -361,8 +387,17 @@ def _attach_selection_candidates_streaming(
 
     def _receive_next():
         # Returns (action, message) where action is "got" (message is the
-        # (kind, index, target) tuple), "return_true", or "continue".
+        # (kind, index, target) tuple), "return_true", "settle_expired", or
+        # "continue".
         try:
+            if settle_pending[0]:
+                # A cap-fill is held pending an earlier in-flight peer; wait at
+                # most the remaining settle window for it before filling from
+                # later out-of-order completions.
+                settle_remaining = settle_deadline[0] - time.monotonic()
+                if settle_remaining <= 0:
+                    return "settle_expired", None
+                return "got", result_queue.get(timeout=settle_remaining)
             tail_wait = _optional_tail_wait_remaining()
             if tail_wait is not None:
                 if tail_wait <= 0:
@@ -374,6 +409,8 @@ def _attach_selection_candidates_streaming(
                 )
             return "got", result_queue.get()
         except Empty:
+            if settle_pending[0]:
+                return "settle_expired", None
             if _optional_tail_wait_remaining() is not None:
                 return "return_true", None
             _start_stall_speculation()
@@ -404,12 +441,50 @@ def _attach_selection_candidates_streaming(
             consumed_indices,
         )
 
+    def _maybe_fill_cap(force):
+        # Fill remaining cap slots from out-of-order completions, but only once
+        # the earlier in-flight gap has settled. Same selected-ready gate as the
+        # in-order attach. ``force`` is set when the settle window has elapsed.
+        if not (selected_ready[0] and selected_can_match[0]):
+            settle_pending[0] = False
+            settle_deadline[0] = None
+            return False
+        remaining_slots = max_candidates - len(candidates)
+        if len(completed) < remaining_slots or remaining_slots <= 0:
+            settle_pending[0] = False
+            settle_deadline[0] = None
+            return False
+        gap_in_flight = next_to_attach[0] < next_candidate_index[0]
+        if gap_in_flight and not force:
+            if not settle_pending[0]:
+                settle_pending[0] = True
+                settle_deadline[0] = (
+                    time.monotonic() + _fs._FALLBACK_MANIFEST_SETTLE_WINDOW_SECONDS
+                )
+            return False
+        settle_pending[0] = False
+        settle_deadline[0] = None
+        return _fs._fill_cap_from_completed(
+            selected,
+            completed,
+            candidates,
+            seen_candidate_links,
+            seen_article_digests,
+            max_candidates,
+            misses_seen,
+            consumed_indices,
+        )
+
     _fill_candidate_window()
 
     while active[0]:
         action, message = _receive_next()
         if action == "return_true":
             return True
+        if action == "settle_expired":
+            if _maybe_fill_cap(force=True):
+                return True
+            continue
         if action == "continue":
             continue
         kind, index, target = message
@@ -421,6 +496,8 @@ def _attach_selection_candidates_streaming(
         if post_record == "return_false":
             return False
         if post_record == "return_true":
+            return True
+        if _maybe_fill_cap(force=False):
             return True
 
         _fill_candidate_window()

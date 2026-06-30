@@ -2106,6 +2106,71 @@ def test_selection_fallback_uses_later_completed_candidate_instead_of_slow_gap(
 
 @patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
 @patch("resources.lib.fallback_streams._fallback_settings")
+def test_selection_fallback_prefers_earlier_candidate_completing_within_settle_window(
+    mock_settings, mock_fetch
+):
+    """An earlier candidate (index 1) that finishes slightly out of order but
+    WITHIN the settle window must be preferred over a later index that completed
+    first, so the cap-fill shortcut never skips an earlier exact-name/tier-0
+    peer. Regression for the out-of-order candidate-cap settle-window fix."""
+    mock_settings.return_value = (True, 2)
+    selected = _result(
+        "The.Matrix.1999.2160p.UHD.BluRay.REMUX.DV.HEVC-GROUP",
+        "https://idx/selected-settle.nzb",
+        60000000000,
+        meta={
+            "resolution": "2160p",
+            "quality": "REMUX",
+            "codec": "x265/HEVC",
+            "hdr": ["Dolby Vision"],
+            "audio": ["TrueHD", "Atmos"],
+            "group": "GROUP",
+            "container": "mkv",
+        },
+    )
+    candidates = [
+        _result(
+            "The.Matrix.1999.UHD.BluRay.2160p.DV.HEVC.REMUX-GAP{:02d}".format(index),
+            "https://idx/fallback-settle-{}.nzb".format(index),
+            60000000000,
+            meta=selected["_meta"],
+        )
+        for index in range(1, 4)
+    ]
+    manifests = {
+        selected["link"]: _manifest(
+            "video", "the matrix 1999 remux.mkv", 60000000000, "selected"
+        ),
+        candidates[0]["link"]: _manifest(
+            "video", "the matrix 1999 remux.mkv", 60000000000, "match-1"
+        ),
+        candidates[1]["link"]: _manifest(
+            "video", "the matrix 1999 remux.mkv", 60000000000, "earlier-2"
+        ),
+        candidates[2]["link"]: _manifest(
+            "video", "the matrix 1999 remux.mkv", 60000000000, "later-3"
+        ),
+    }
+
+    def fetch(url, **_kwargs):
+        # Index 1 lands a hair after index 2 but far inside the settle window,
+        # so it must still win the second slot ahead of the later index 2.
+        if url == candidates[1]["link"]:
+            _time.sleep(0.02)
+        return manifests[url]
+
+    mock_fetch.side_effect = fetch
+    with patch(
+        "resources.lib.fallback_streams._FALLBACK_MANIFEST_SETTLE_WINDOW_SECONDS",
+        0.3,
+    ):
+        attach_fallback_candidates_for_selection(selected, [selected] + candidates)
+
+    assert selected["_fallback_candidates"] == [candidates[0], candidates[1]]
+
+
+@patch("resources.lib.fallback_streams.fetch_nzb_video_manifest")
+@patch("resources.lib.fallback_streams._fallback_settings")
 def test_selection_fallback_starts_followup_fetch_before_first_wave_tail_finishes(
     mock_settings, mock_fetch
 ):

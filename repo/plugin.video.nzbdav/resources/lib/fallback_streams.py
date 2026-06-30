@@ -81,6 +81,11 @@ _MAX_FALLBACKS = 5
 _SAME_POST_WINDOW_SECONDS = 3600
 _FALLBACK_MANIFEST_STALL_SPECULATION_SECONDS = 0.05
 _FALLBACK_MANIFEST_OPTIONAL_TAIL_WAIT_SECONDS = 0.1
+# Grace period to let an earlier-indexed candidate that is still in flight
+# finish before the cap is filled from later out-of-order completions. Keeps
+# the non-blocking "skip a genuinely slow gap" behavior while never skipping an
+# earlier (higher-priority) peer that is about to arrive.
+_FALLBACK_MANIFEST_SETTLE_WINDOW_SECONDS = 0.04
 _METADATA_ONLY_MANIFEST_REASONS = frozenset(("too_large",))
 _INDEXER_SIZE_SYNTHETIC_MANIFEST_REASONS = frozenset(("invalid_xml", "no_video_file"))
 _INDEXER_SIZE_SYNTHETIC_MIN_BYTES = 100 * 1024 * 1024
@@ -261,6 +266,7 @@ from resources.lib.fallback_streams_select import (  # noqa: F401,E402  pylint: 
     _ensure_fallback_manifests,
     _fallback_settings,
     _fetch_selection_manifest_for_queue,
+    _fill_cap_from_completed,
     _iter_selection_prefetch_candidates,
     _post_record_action,
     _prefetchable_results,
