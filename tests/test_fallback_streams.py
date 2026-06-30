@@ -5066,6 +5066,10 @@ def test_path_is_under_base_rejects_encoded_traversal():
     assert fs._path_is_under_base("/dav", "/dav") is True
     assert fs._path_is_under_base("/dav/movie.mkv", "/dav") is True
     assert fs._path_is_under_base("/dav/a%20b/movie.mkv", "/dav") is True
+    # An encoded slash decodes to a genuine under-base path and is accepted
+    # (the WebDAV server resolves it the same way); decode-then-normalize is
+    # intentionally more permissive than a raw prefix match in this direction.
+    assert fs._path_is_under_base("/dav%2Fadmin", "/dav") is True
     # Encoded ".." traversal under the base must be rejected.
     assert fs._path_is_under_base("/dav/%2e%2e/admin", "/dav") is False
     assert fs._path_is_under_base("/dav/sub/%2e%2e/%2e%2e/etc", "/dav") is False

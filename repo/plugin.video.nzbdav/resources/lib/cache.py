@@ -74,7 +74,12 @@ def _get_cache_ttl_seconds():
 
 
 def _try_remove(path):
-    """Best-effort file removal; ignore filesystem errors."""
+    """Best-effort removal of a stale/corrupt/expired cache file.
+
+    A failed delete (perms/race/already-gone) is non-fatal: the caller returns
+    None and the stale file is simply ignored until the next write or eviction,
+    so any OSError is swallowed rather than propagated.
+    """
     try:
         os.remove(path)
     except OSError:

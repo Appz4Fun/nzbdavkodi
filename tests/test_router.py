@@ -3806,6 +3806,7 @@ def test_direct_play_rejects_primary_with_unparseable_content_length(
     """A non-integer Content-Length is treated as unknown (failure), never as
     length 1."""
     from resources.lib.router import _handle_direct_play
+    from resources.lib.router_directplay import _head_content_length
 
     class Response:  # pylint: disable=too-few-public-methods
         status = 200
@@ -3816,6 +3817,14 @@ def test_direct_play_rejects_primary_with_unparseable_content_length(
 
         def __exit__(self, *_args):
             return False
+
+    # Unit-pin the explicit invalid-length branch (router_directplay#116-117):
+    # the parse must RETURN (0, "invalid-length"), not raise. Without that
+    # branch ``int("not-a-number")`` raises ValueError here, so this assertion
+    # is red-on-regression. The end-to-end assertions below would otherwise
+    # pass either way (the raised ValueError propagates to the outer handler
+    # and still rejects the primary), making them tautological on their own.
+    assert _head_content_length(Response()) == (0, "invalid-length")
 
     mock_urlopen.return_value = Response()
     mock_config.return_value = {"base_url": "http://127.0.0.1:45678", "token": "tok"}
@@ -3862,3 +3871,37 @@ def test_xml_root_name_does_not_resolve_external_entities():
     # Must not raise, must not embed the file contents in any result.
     result = _xml_root_name(payload)
     assert result in ("rss", "")
+
+
+def test_xml_root_name_rejects_internal_entity_expansion():
+    """The XXE-hardened parser must refuse to expand internal entities
+    (router_conn#65) when ``defusedxml`` is bundled. This is the behaviour that
+    distinguishes the hardened path from an unhardened ``ET.fromstring``: the
+    stdlib parser expands ``&a;`` and reports the ``rss`` root tag (a
+    billion-laughs DoS vector), whereas ``defusedxml`` raises
+    ``EntitiesForbidden`` (a ``ValueError`` subclass) so ``_xml_root_name``
+    falls through to the empty-string fallback.
+
+    Skipped when ``defusedxml`` is unavailable: the stdlib-only fallback parser
+    only disables *external* entity refs and does not block internal entity
+    expansion, so this guard would not apply to that path.
+    """
+    import pytest
+
+    pytest.importorskip(
+        "defusedxml",
+        reason="defusedxml not bundled; internal-entity blocking N/A",
+    )
+
+    from resources.lib.router import _xml_root_name
+
+    payload = (
+        '<?xml version="1.0"?>'
+        '<!DOCTYPE rss [<!ENTITY a "AAAAAAAAAA">'
+        '<!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">]>'
+        "<rss>&b;&b;&b;&b;&b;</rss>"
+    )
+
+    # Hardened (defusedxml) parser forbids entity expansion -> "". An
+    # unhardened ET.fromstring would expand the entities and return "rss".
+    assert _xml_root_name(payload) == ""
