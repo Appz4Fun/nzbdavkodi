@@ -4,7 +4,16 @@
 """Newznab caps parsing and fetching."""
 
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
-from xml.etree import ElementTree as ET
+
+try:
+    from defusedxml import ElementTree as ET
+    from defusedxml.common import DefusedXmlException as _UnsafeXmlError
+except ImportError:  # pragma: no cover - Kodi installs may not bundle defusedxml
+    from xml.etree import ElementTree as ET
+
+    class _UnsafeXmlError(ValueError):
+        """Raised when stdlib fallback rejects DTD/entity declarations."""
+
 
 import xbmc
 
@@ -75,10 +84,24 @@ def _params(value):
     return [item.strip() for item in str(value or "").split(",") if item.strip()]
 
 
+def _contains_xml_declaration_markup(xml_text):
+    """Return true when XML text declares a DTD/entity block."""
+    if isinstance(xml_text, bytes):
+        probe = xml_text.lower()
+        return b"<!doctype" in probe or b"<!entity" in probe
+    probe = str(xml_text).lower()
+    return "<!doctype" in probe or "<!entity" in probe
+
+
 def parse_caps(xml_text):
     try:
-        root = ET.fromstring(xml_text)  # nosec B314 - Python 3.8+ disables entities
-    except (ET.ParseError, TypeError):
+        if getattr(ET, "__name__", "").startswith("defusedxml."):
+            root = ET.fromstring(xml_text)
+        else:
+            if _contains_xml_declaration_markup(xml_text):
+                raise _UnsafeXmlError("DTD/entity declarations are not allowed")
+            root = ET.fromstring(xml_text)  # nosec B314
+    except (ET.ParseError, TypeError, _UnsafeXmlError):
         return _empty_caps()
 
     search_types = []
