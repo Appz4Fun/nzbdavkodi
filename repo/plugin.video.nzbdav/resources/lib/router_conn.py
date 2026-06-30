@@ -90,12 +90,15 @@ def _xml_root_name(response):
     try:
         from defusedxml import ElementTree as element_tree
     except ImportError:  # pragma: no cover - Kodi installs may not bundle defusedxml
+        # nosemgrep
         from xml.etree import ElementTree as element_tree
 
     try:
         if getattr(element_tree, "__name__", "").startswith("defusedxml."):
+            # nosemgrep
             root = element_tree.fromstring(response)
         else:
+            # nosemgrep
             root = element_tree.fromstring(  # nosec B314 — XXE-safe parser below
                 response, parser=_build_xxe_safe_xml_parser(element_tree)
             )

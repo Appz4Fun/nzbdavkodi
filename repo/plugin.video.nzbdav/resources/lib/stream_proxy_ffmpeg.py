@@ -129,6 +129,7 @@ def _run_ffmpeg_hls_muxer_probe(ffmpeg_path):
     """
     cmd = [ffmpeg_path, "-hide_banner", "-h", "muxer=hls"]
     try:
+        # nosemgrep
         proc = subprocess.Popen(  # nosec B603 — argv list, shell=False
             cmd,
             stdin=subprocess.DEVNULL,

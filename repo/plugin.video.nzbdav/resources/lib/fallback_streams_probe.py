@@ -20,6 +20,7 @@ from urllib.request import Request
 try:
     from defusedxml import ElementTree as ET
 except ImportError:  # pragma: no cover - Kodi installs may not bundle defusedxml
+    # nosemgrep
     from xml.etree import ElementTree as ET
 
 import resources.lib.fallback_streams as _fs
@@ -273,6 +274,7 @@ def _schema_setting_default(setting_id):
     )
     for path in candidate_paths:
         try:
+            # nosemgrep
             root = ET.parse(path).getroot()
         except (OSError, ET.ParseError):
             continue

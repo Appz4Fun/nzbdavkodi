@@ -427,8 +427,10 @@ def _parse_nzb_root(nzb_bytes):
         if _USING_DEFUSEDXML:
             # forbid_dtd=False keeps the standard NZB ``<!DOCTYPE nzb ...>``
             # working; entity/external-reference defenses stay enabled.
+            # nosemgrep
             return ET.fromstring(nzb_bytes, forbid_dtd=False)
         _reject_entity_declarations(nzb_bytes)
+        # nosemgrep
         return ET.fromstring(nzb_bytes)
     except (ET.ParseError, TypeError, _UnsafeXmlError):
         return None

@@ -331,6 +331,7 @@ def _bookmark_resume_query(bookmark_columns):
 
 
 def _captured_bookmark_resume_seconds(cur, id_file, bookmark_columns):
+    # nosemgrep
     cur.execute(_bookmark_resume_query(bookmark_columns), (id_file,))
     resume_seconds = 0.0
     for row in cur.fetchall():

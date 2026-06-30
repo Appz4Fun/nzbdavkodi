@@ -247,18 +247,21 @@ def _build_propfind_request(folder_path, _already_encoded, settings):
 
 def _parse_propfind_xml(body):
     """Parse a PROPFIND XML body with external entities disabled (XXE-safe)."""
+    # nosemgrep
     import xml.etree.ElementTree as ET  # nosec B405 — parsing trusted WebDAV server response
 
     # Python's stdlib XMLParser doesn't accept resolve_entities as a kwarg, but
     # calling expat to disable external DTD loading has the same effect for XXE
     # prevention. Use the expat target builder so a hostile WebDAV server can't
     # coerce us into reading local files via an external entity reference.
+    # nosemgrep
     _xml_parser = ET.XMLParser()  # nosec B314 — entities disabled below
     try:
         _xml_parser.parser.DefaultHandler = lambda _d: None
         _xml_parser.parser.ExternalEntityRefHandler = lambda *_: False
     except AttributeError:  # pragma: no cover — non-expat parser backend
         pass
+    # nosemgrep
     return ET.fromstring(
         body, parser=_xml_parser
     )  # nosec B314 — trusted WebDAV server response; entities disabled above

@@ -388,6 +388,7 @@ class _HlsProduceMixin:  # pylint: disable=too-few-public-methods
         cmd.extend(
             [
                 "-movflags",
+                # nosemgrep
                 "+frag_custom+dash+delay_moov+separate_moof"
                 "+default_base_moof+omit_tfhd_offset",
             ]

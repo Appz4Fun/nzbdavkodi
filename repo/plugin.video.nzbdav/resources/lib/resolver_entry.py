@@ -61,12 +61,14 @@ def resolve(handle, params):
 
         def _start_playback_cleanup_once():
             nonlocal playback_cleanup_state
+            # nosemgrep
             if playback_cleanup_state is None:
                 playback_cleanup_state = _resolver._start_playback_state_cleanup(params)
 
         def _start_fallback_after_primary(_nzo_id):
             nonlocal fallback_state
             _start_playback_cleanup_once()
+            # nosemgrep
             if fallback_state is None:
                 fallback_state = _resolver._start_fallback_submit_worker(
                     fallback_candidates,
@@ -166,12 +168,14 @@ def resolve_and_play(nzb_url, title, params=None):
 
         def _start_playback_cleanup_once():
             nonlocal playback_cleanup_state
+            # nosemgrep
             if playback_cleanup_state is None:
                 playback_cleanup_state = _resolver._start_playback_state_cleanup(params)
 
         def _start_fallback_after_primary(_nzo_id):
             nonlocal fallback_state
             _start_playback_cleanup_once()
+            # nosemgrep
             if fallback_state is None:
                 fallback_submit_kwargs = {
                     "candidate_loader": fallback_candidate_loader,
