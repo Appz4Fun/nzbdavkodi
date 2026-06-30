@@ -2335,15 +2335,6 @@ def test_selection_fallback_does_not_wait_for_optional_tail_after_max_filled(
             # completes -> tail_completed -> caught below).
             release_slow.wait(timeout=3)
             tail_completed[0] = True
-        elif url == selected["link"]:
-            # Load-independent gate: no candidate is attached, and the scan cannot
-            # return, until selected_ready. Block the selected manifest until the
-            # optional-tail candidate (candidates[6]) has actually started. It is
-            # submitted by the post-miss window refill, which does NOT require
-            # selected_ready, so this cannot deadlock -- slow_started is set
-            # before the scan returns at realistic load. The 30s is a hang-safety
-            # bound only (a normally scheduled daemon thread starts in ms).
-            slow_started.wait(30)
         return manifests[url]
 
     mock_fetch.side_effect = fetch
@@ -2353,9 +2344,14 @@ def test_selection_fallback_does_not_wait_for_optional_tail_after_max_filled(
     finally:
         release_slow.set()
 
-    # Deterministic via the selected-manifest gate above: slow_started is
-    # guaranteed set before the scan returns, so this assert is load-independent.
-    assert slow_started.is_set()
+    # Unlike the other optional-tail tests, the in-flight tail here
+    # (candidates[6]) is beyond max_candidates, so the rolling window submits it
+    # only AFTER the selected manifest is ready -- it cannot be gated on the
+    # selected fetch without deadlocking the scan (Codex P2). Confirm it started
+    # with a generous 10s bound (a normally scheduled daemon thread starts in
+    # ms); the not-completed-at-return snapshot below is the real structural
+    # proof and does not depend on this.
+    assert slow_started.wait(10)
     # Structural proof (load-independent): with max_candidates already filled,
     # the scan must return before the optional-tail fetch (candidates[6]) is
     # released (only the finally above releases it, after the snapshot). If it
