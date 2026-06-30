@@ -83,6 +83,7 @@ def _try_remove(path):
     try:
         os.remove(path)
     except OSError:
+        # Best-effort delete; a perms/race/already-gone error is non-fatal.
         pass
 
 
@@ -104,6 +105,7 @@ def _read_fresh_cache(path, cache_ttl, title):
     try:
         os.utime(path, None)
     except OSError:
+        # Best-effort mtime touch; still return the cache hit if it fails.
         pass
     xbmc.log("NZB-DAV: Cache hit for '{}'".format(title), xbmc.LOGDEBUG)
     return data.get("results", [])

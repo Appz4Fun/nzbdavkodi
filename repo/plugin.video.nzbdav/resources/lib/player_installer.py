@@ -150,7 +150,10 @@ def _existing_player_is_current(file_path, target_name):
         _notify(_addon_name(), _fmt(30094, target_name))
         return True
 
-    # Schema change — back up the old file before overwriting.
+    # Schema change — back up the old file before overwriting. If the backup
+    # cannot be written, re-raise so the caller's handler aborts the install
+    # (LOGERROR + "Failed" toast) and the user's existing file is preserved
+    # rather than silently overwritten without a backup.
     backup_path = os.path.splitext(file_path)[0] + ".bak"
     try:
         xbmcvfs.copy(file_path, backup_path)
@@ -159,6 +162,7 @@ def _existing_player_is_current(file_path, target_name):
             "NZB-DAV: Could not back up {} to {}: {}".format(file_path, backup_path, e),
             xbmc.LOGWARNING,
         )
+        raise
     return False
 
 

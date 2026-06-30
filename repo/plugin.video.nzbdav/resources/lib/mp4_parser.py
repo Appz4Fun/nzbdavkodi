@@ -399,6 +399,14 @@ def _layout_for_front_moov(url, head_data, head_layout, ftyp_data, ftyp_end, aut
     """Build a faststart layout when moov is already at the front, else None."""
     moov_offset = head_layout["moov_offset"]
     moov_size = head_layout["moov_size"]
+    # The already-faststart shortcut serves moov verbatim (no stco/co64
+    # rewrite) and emits only ftyp+moov as the header. That is only correct
+    # when moov sits immediately after ftyp. For [ftyp][free|wide|uuid][moov]
+    # the gap atoms would be dropped while chunk offsets stay unrewritten,
+    # addressing mdat too early. Fall through (return None -> proxy fails safe
+    # to no-faststart) instead of corrupting playback.
+    if moov_offset != ftyp_end:
+        return None
     if moov_offset + moov_size <= len(head_data):
         moov_data = head_data[moov_offset : moov_offset + moov_size]
     else:

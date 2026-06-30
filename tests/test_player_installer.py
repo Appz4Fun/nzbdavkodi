@@ -75,6 +75,42 @@ def test_install_player_handles_write_failure(mock_vfs, mock_notify):
     assert any("Failed" in s or "failed" in s for s in notify_calls)
 
 
+@patch("resources.lib.player_installer._notify")
+@patch("resources.lib.player_installer.xbmcvfs")
+def test_install_player_aborts_without_overwrite_when_backup_fails(
+    mock_vfs, mock_notify
+):
+    """A schema-mismatch backup failure must NOT overwrite the user's file:
+    the install aborts (Failed toast) so existing customizations are preserved
+    instead of being silently replaced with no backup."""
+    from resources.lib.player_installer import _PLAYER_SCHEMA_VERSION
+
+    mock_vfs.translatePath.side_effect = lambda p: p.replace(
+        "special://profile", "/home/kodi/.kodi/userdata"
+    )
+    mock_vfs.exists.return_value = True
+    mock_read_file = MagicMock()
+    mock_read_file.read.return_value = json.dumps(
+        {"name": "stale", "schema_version": _PLAYER_SCHEMA_VERSION - 1}
+    )
+    mock_write_file = MagicMock()
+
+    def _file_factory(_path, *args, **kwargs):
+        mode = args[0] if args else kwargs.get("mode", "r")
+        return mock_read_file if mode == "r" else mock_write_file
+
+    mock_vfs.File.side_effect = _file_factory
+    mock_vfs.copy.side_effect = OSError("backup target read-only")
+
+    install_player()  # must not raise out of the public entrypoint
+
+    assert mock_vfs.copy.called  # backup was attempted
+    mock_write_file.write.assert_not_called()  # the overwrite never happened
+    assert any(
+        "Failed" in str(c) or "failed" in str(c) for c in mock_notify.call_args_list
+    )
+
+
 def test_player_json_uses_script_handoff_instead_of_plugin_media_url():
     assert PLAYER_JSON["is_resolvable"] == "false"
     assert PLAYER_JSON["play_movie"].startswith(

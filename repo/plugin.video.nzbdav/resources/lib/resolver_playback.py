@@ -17,8 +17,11 @@ import resources.lib.resolver as _resolver  # noqa: F401  pylint: disable=unused
 
 
 def _resolve_stage(message):
+    # One caller (resolver_entry) threads raw exception text into the stage
+    # label; redact before it reaches the Kodi log AND the persisted stage file.
+    safe_message = _redact_log(message)
     _resolver.xbmc.log(
-        "NZB-DAV: Resolve stage: {}".format(message), _resolver.xbmc.LOGINFO
+        "NZB-DAV: Resolve stage: {}".format(safe_message), _resolver.xbmc.LOGINFO
     )
     try:
         import os
@@ -26,7 +29,7 @@ def _resolve_stage(message):
         with open(
             _resolver._SCRIPT_PLAY_STAGE_PATH, "a", encoding="utf-8"
         ) as stage_file:
-            stage_file.write("resolve: " + message + "\n")
+            stage_file.write("resolve: " + safe_message + "\n")
             stage_file.flush()
             os.fsync(stage_file.fileno())
     except OSError:

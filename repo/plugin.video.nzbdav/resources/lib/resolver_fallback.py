@@ -85,7 +85,9 @@ def _submit_one_fallback_candidate(
         )
     except Exception as error:  # pylint: disable=broad-except
         _resolver.xbmc.log(
-            "NZB-DAV: Fallback submit failed for '{}': {}".format(job_name, error),
+            "NZB-DAV: Fallback submit failed for '{}': {}".format(
+                job_name, _resolver._redact_log(error)
+            ),
             _resolver.xbmc.LOGWARNING,
         )
         return None
@@ -123,7 +125,7 @@ def _recover_fallback_submit_error(
             dead.add(nzb_url=nzb_url)
         _resolver.xbmc.log(
             "NZB-DAV: Fallback submit skipped for '{}' (status={}): {}".format(
-                job_name, status, submit_error.get("message", "")
+                job_name, status, _resolver._redact_log(submit_error.get("message", ""))
             ),
             _resolver.xbmc.LOGWARNING,
         )
@@ -420,7 +422,9 @@ def _resolve_active_fallback_candidates(candidate_list, candidate_loader):
         loaded_candidates = candidate_loader()
     except Exception as error:  # pylint: disable=broad-except
         _resolver.xbmc.log(
-            "NZB-DAV: Fallback candidate lookup failed: {}".format(error),
+            "NZB-DAV: Fallback candidate lookup failed: {}".format(
+                _resolver._redact_log(error)
+            ),
             _resolver.xbmc.LOGWARNING,
         )
         return [], False
@@ -457,7 +461,9 @@ def _run_fallback_on_append_hook(state):
         hook()
     except Exception as error:  # pylint: disable=broad-except
         _resolver.xbmc.log(
-            "NZB-DAV: fallback on_append hook failed: {}".format(error),
+            "NZB-DAV: fallback on_append hook failed: {}".format(
+                _resolver._redact_log(error)
+            ),
             _resolver.xbmc.LOGWARNING,
         )
 
@@ -571,7 +577,9 @@ def _start_fallback_submit_worker(
             _load_and_submit_fallback_candidates(state, submit_inputs)
         except Exception as error:  # pylint: disable=broad-except
             _resolver.xbmc.log(
-                "NZB-DAV: Fallback submit worker failed: {}".format(error),
+                "NZB-DAV: Fallback submit worker failed: {}".format(
+                    _resolver._redact_log(error)
+                ),
                 _resolver.xbmc.LOGWARNING,
             )
             _cancel_fallback_submitted_jobs(state)
@@ -636,7 +644,7 @@ def _cancel_fallback_job(state, job):
     except Exception as error:  # pylint: disable=broad-except
         _resolver.xbmc.log(
             "NZB-DAV: Failed to cancel fallback submit job {}: {}".format(
-                nzo_id or job, error
+                _resolver._redact_log(nzo_id or job), _resolver._redact_log(error)
             ),
             _resolver.xbmc.LOGWARNING,
         )

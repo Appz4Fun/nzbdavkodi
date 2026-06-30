@@ -246,26 +246,35 @@ def _resolve_submit_and_poll(
     )
     dialog = _resolver.xbmcgui.DialogProgress()
     dialog.create(_resolver._addon_name(), _resolver._string(30097))
-    if not picker_completed_lookup_done:
-        on_existing_completed()
-    stream_url, stream_headers = _invoke_poll_until_ready(
-        nzb_url,
-        title,
-        dialog,
-        poll_interval,
-        download_timeout,
-        params,
-        picker_completed_lookup_done,
-        (
-            on_primary_submitted,
-            on_existing_completed,
-            selected_indexer,
-            rejected_completed_ids,
-            dead,
-            None,
-        ),
-    )
-    return stream_url, stream_headers, dialog
+    # Own the modal locally until we hand it back. A raise before the return
+    # would otherwise leave the caller's dialog None, so its outer finally
+    # could never close this modal (no-hang invariant; AGENTS.md).
+    owner = dialog
+    try:
+        if not picker_completed_lookup_done:
+            on_existing_completed()
+        stream_url, stream_headers = _invoke_poll_until_ready(
+            nzb_url,
+            title,
+            dialog,
+            poll_interval,
+            download_timeout,
+            params,
+            picker_completed_lookup_done,
+            (
+                on_primary_submitted,
+                on_existing_completed,
+                selected_indexer,
+                rejected_completed_ids,
+                dead,
+                None,
+            ),
+        )
+        owner = None
+        return stream_url, stream_headers, dialog
+    finally:
+        if owner is not None:
+            owner.close()
 
 
 def _resolve_finish_or_reject(
@@ -416,28 +425,37 @@ def _resolve_and_play_submit_and_poll(
     dialog = _resolver.xbmcgui.DialogProgress()
     dialog.create(_resolver._addon_name(), _resolver._string(30097))
     _resolver._resolve_stage("progress create done")
-    if not picker_completed_lookup_done:
-        on_existing_completed()
-    _resolver._resolve_stage("poll until ready start")
-    stream_url, stream_headers = _invoke_poll_until_ready(
-        nzb_url,
-        title,
-        dialog,
-        poll_interval,
-        download_timeout,
-        resolve_params,
-        picker_completed_lookup_done,
-        (
-            on_primary_submitted,
-            on_existing_completed,
-            selected_indexer,
-            rejected_completed_ids,
-            dead,
-            settings_getter,
-        ),
-    )
-    _resolver._resolve_stage("poll until ready done stream={}".format(bool(stream_url)))
-    return stream_url, stream_headers, dialog
+    # Own the modal locally until we hand it back; see _resolve_submit_and_poll.
+    owner = dialog
+    try:
+        if not picker_completed_lookup_done:
+            on_existing_completed()
+        _resolver._resolve_stage("poll until ready start")
+        stream_url, stream_headers = _invoke_poll_until_ready(
+            nzb_url,
+            title,
+            dialog,
+            poll_interval,
+            download_timeout,
+            resolve_params,
+            picker_completed_lookup_done,
+            (
+                on_primary_submitted,
+                on_existing_completed,
+                selected_indexer,
+                rejected_completed_ids,
+                dead,
+                settings_getter,
+            ),
+        )
+        _resolver._resolve_stage(
+            "poll until ready done stream={}".format(bool(stream_url))
+        )
+        owner = None
+        return stream_url, stream_headers, dialog
+    finally:
+        if owner is not None:
+            owner.close()
 
 
 def _resolve_and_play_finish_or_stop(

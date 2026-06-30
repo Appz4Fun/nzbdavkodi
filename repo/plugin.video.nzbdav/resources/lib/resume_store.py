@@ -99,11 +99,13 @@ def _discard_temp(fd, tmp_path):
         try:
             os.close(fd)
         except OSError:
+            # Best-effort close of the dangling fd; non-fatal if it fails.
             pass
     if tmp_path:
         try:
             os.unlink(tmp_path)
         except OSError:
+            # Best-effort unlink of the orphaned temp file; non-fatal if it fails.
             pass
 
 

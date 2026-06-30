@@ -117,7 +117,21 @@ def _completed_copy_blocks_clear(title, settings_getter):
     worker = _resolver.threading.Thread(
         target=_probe, name="nzbdav-clearqueue-adopt-probe", daemon=True
     )
-    worker.start()
+    try:
+        worker.start()
+    except RuntimeError as error:
+        # Thread creation can fail during Kodi shutdown / interpreter
+        # teardown. This guard is best-effort; fail soft like a probe timeout:
+        # leave the queue intact (return True = SKIP the clear) rather than
+        # letting the RuntimeError escape and abort the submit path.
+        _resolver.xbmc.log(
+            "NZB-DAV: completed-adopt probe thread did not start before "
+            "clearing the queue; leaving queue intact: {}".format(
+                _resolver._redact_log(error)
+            ),
+            _resolver.xbmc.LOGWARNING,
+        )
+        return True
     worker.join(_resolver._CLEAR_QUEUE_PROBE_TIMEOUT)
     return _completed_copy_blocks_clear_result(worker, result)
 

@@ -646,7 +646,8 @@ def find_queued_by_names(names, settings_getter=None):
     # Some nzbdav builds report the user-supplied nzbname under "filename"
     # only after the fetch/parse phase finishes, so a freshly-submitted job
     # may appear under a different slot key during the first few seconds.
-    # Fall back to a broader scan across any string-valued slot field.
+    # Fall back to the "name" slot key (the third and last key nzbdav uses
+    # for the submitted name; see resolver_queueclear._queue_slot_is_title).
     _record_queued_matches(slots, "name", target_names, found)
     return found
 

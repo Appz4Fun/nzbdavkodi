@@ -112,8 +112,12 @@ def _fetch_fallback_extra_uploads(selected, settings_getter):
             selected, settings_getter=settings_getter
         )
     except Exception as error:  # pylint: disable=broad-except
+        from resources.lib.http_util import redact_text
+
         xbmc.log(
-            "NZB-DAV: duplicate-uploads lookup raised: {}".format(error),
+            "NZB-DAV: duplicate-uploads lookup raised: {}".format(
+                redact_text(str(error))
+            ),
             xbmc.LOGDEBUG,
         )
         return []

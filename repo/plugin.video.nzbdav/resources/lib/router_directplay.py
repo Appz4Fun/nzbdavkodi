@@ -39,6 +39,7 @@ def _direct_play_prepare_and_serve(
     handle False on a missing proxy URL and True on success, unchanged.
     """
     import resources.lib.router as _router
+    from resources.lib.http_util import redact_text, redact_url
     from resources.lib.resolver import (
         _direct_playback_service_config,
         _prepare_direct_playback,
@@ -48,7 +49,7 @@ def _direct_play_prepare_and_serve(
 
     xbmc.log(
         "NZB-DAV: /direct_play primary={} fallbacks={}".format(
-            primary_url[:120], len(fallback_sources)
+            redact_text(redact_url(primary_url))[:120], len(fallback_sources)
         ),
         xbmc.LOGINFO,
     )
@@ -67,7 +68,9 @@ def _direct_play_prepare_and_serve(
         _router.xbmcplugin.setResolvedUrl(handle, False, _router.xbmcgui.ListItem())
         return
     xbmc.log(
-        "NZB-DAV: /direct_play handing Kodi proxy URL: {}".format(proxy_url[:160]),
+        "NZB-DAV: /direct_play handing Kodi proxy URL: {}".format(
+            redact_text(redact_url(proxy_url))[:160]
+        ),
         xbmc.LOGINFO,
     )
     listitem = _router.xbmcgui.ListItem(path=proxy_url)
@@ -153,6 +156,8 @@ def _direct_play_fallback_sources(fallback_urls, validate_url):
     Skips non-string/empty entries, non-http(s) URLs, and unstreamable peers
     (HEAD error or non-positive length), logging each skip exactly as before.
     """
+    from resources.lib.http_util import redact_text, redact_url
+
     fallback_sources = []
     for idx, url_raw in enumerate(fallback_urls):
         if not isinstance(url_raw, str) or not url_raw:
@@ -163,7 +168,7 @@ def _direct_play_fallback_sources(fallback_urls, validate_url):
         except (ValueError, TypeError):
             xbmc.log(
                 "NZB-DAV: /direct_play skipping non-http(s) fallback: {}".format(
-                    url_raw[:120]
+                    redact_text(redact_url(url_raw))[:120]
                 ),
                 xbmc.LOGWARNING,
             )
@@ -172,7 +177,9 @@ def _direct_play_fallback_sources(fallback_urls, validate_url):
         if err or length <= 0:
             xbmc.log(
                 "NZB-DAV: /direct_play skipping unstreamable fallback "
-                "({}): {}".format(err, url[:120]),
+                "({}): {}".format(
+                    redact_text(str(err)), redact_text(redact_url(url))[:120]
+                ),
                 xbmc.LOGWARNING,
             )
             continue

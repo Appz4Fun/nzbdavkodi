@@ -57,7 +57,9 @@ def _safe_probe_by_name(find_fn, title, settings_getter, probe_label):
         return find_fn(title, **_resolver._settings_getter_kwargs(settings_getter))
     except Exception as e:  # pylint: disable=broad-except
         _resolver.xbmc.log(
-            "NZB-DAV: concurrent {} probe raised: {}".format(probe_label, e),
+            "NZB-DAV: concurrent {} probe raised: {}".format(
+                probe_label, _resolver._redact_log(e)
+            ),
             _resolver.xbmc.LOGWARNING,
         )
         return None
@@ -218,7 +220,9 @@ def _submit_nzb_with_ui_pump(
                 _cancel_late_accepted_submit(submit_result[0], title, settings_getter)
         except Exception as e:  # pylint: disable=broad-except
             _resolver.xbmc.log(
-                "NZB-DAV: submit_nzb worker raised: {}".format(e),
+                "NZB-DAV: submit_nzb worker raised: {}".format(
+                    _resolver._redact_log(e)
+                ),
                 _resolver.xbmc.LOGERROR,
             )
             submit_result[0], submit_result[1] = None, None

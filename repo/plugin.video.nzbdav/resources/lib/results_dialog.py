@@ -87,7 +87,10 @@ def _build_result_item(result, row_index):
     # Container (MKV, MP4, etc.) — default to MKV since most scene releases
     # are MKV and only MP4 releases tag the title.
     container = (meta.get("container", "") or "MKV").upper()
-    container_color = "FF34D399" if container == "MKV" else "FFEF4444"
+    # MKV green; everything else (incl. MP4, which is fully supported via the
+    # stream proxy) gets neutral grey rather than error-red, so a supported
+    # container is not flagged as a false negative.
+    container_color = "FF34D399" if container == "MKV" else "FFA1A1AA"
     li.setProperty("container", _c(container, container_color))
 
     li.setProperty("size", _c(_format_size(result.get("size")), "FFA1A1AA"))

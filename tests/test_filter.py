@@ -1465,3 +1465,15 @@ def test_partial_cached_meta_is_reparsed_not_reused(mock_settings):
     # ...and the values reflect the real title, not the stale partial dict.
     assert meta["resolution"] == "2160p"
     assert _has_filter_metadata_shape(meta) is True
+
+
+def test_normalize_fallback_meta_preserves_channels():
+    """Regex-fallback normalization must thread the extracted channels (5.1/7.1)
+    instead of hardcoding "", so fallback_streams_match sees the real signal
+    (parity with the PTT path). Red-on-regression: the old code returned ""."""
+    from resources.lib.filter import _fallback_parse, _normalize_fallback_meta
+
+    parsed = _fallback_parse("Movie.2024.1080p.BluRay.DTS.5.1.x264-GROUP")
+    assert parsed["channels"] == "5.1"  # regex fallback extracts it
+    meta = _normalize_fallback_meta(parsed)
+    assert meta["channels"] == "5.1"

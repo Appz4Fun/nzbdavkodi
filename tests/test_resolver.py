@@ -8993,3 +8993,20 @@ def test_locate_kodi_video_db_picks_highest_numeric_version():
         ]
         result = _locate_kodi_video_db()
     assert result == "/db/MyVideos131.db"
+
+
+def test_completed_copy_blocks_clear_fails_soft_on_probe_thread_start_failure():
+    """A RuntimeError from the adopt-probe thread.start() (Kodi teardown) must
+    not escape the clear-queue guard: fail soft like a probe timeout and leave
+    the queue intact (return True = SKIP the clear) instead of aborting submit."""
+    from resources.lib.resolver_queueclear import _completed_copy_blocks_clear
+
+    with patch("resources.lib.resolver.xbmc"), patch(
+        "resources.lib.resolver.threading.Thread"
+    ) as thread_cls:
+        thread = MagicMock()
+        thread.start.side_effect = RuntimeError("can't start new thread")
+        thread_cls.return_value = thread
+        # Must not raise; must return True (queue left intact).
+        blocked = _completed_copy_blocks_clear("Title", lambda _k, _d=None: "")
+    assert blocked is True

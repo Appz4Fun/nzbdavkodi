@@ -154,6 +154,8 @@ def _normalize_fallback_meta(parsed):
     audio_list = _mapped_str_list(parsed, "audio", _AUDIO_MAP)
     codec = _CODEC_MAP.get(parsed.get("codec", ""), parsed.get("codec", ""))
     raw_langs = _as_list(parsed.get("languages", []) or [])
+    raw_channels = _as_list(parsed.get("channels", []) or [])
+    channels = raw_channels[0] if raw_channels else ""
 
     meta = _common_parsed_fields(parsed)
     meta.update(
@@ -163,7 +165,7 @@ def _normalize_fallback_meta(parsed):
             "audio": audio_list,
             "codec": codec,
             "languages": raw_langs,
-            "channels": "",
+            "channels": channels,
         }
     )
     return meta

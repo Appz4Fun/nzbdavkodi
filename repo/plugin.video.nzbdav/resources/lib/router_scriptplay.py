@@ -261,8 +261,12 @@ def _script_play_tag_available(filtered):
         _router._script_play_stage("tag available done")
         return completed_jobs
     except Exception as error:  # pylint: disable=broad-except
+        from resources.lib.http_util import redact_text
+
         xbmc.log(
-            "NZB-DAV: Script completed-history tagging failed: {}".format(error),
+            "NZB-DAV: Script completed-history tagging failed: {}".format(
+                redact_text(str(error))
+            ),
             xbmc.LOGDEBUG,
         )
         _router._script_play_stage("tag available failed")
