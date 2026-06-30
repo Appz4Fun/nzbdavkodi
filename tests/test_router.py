@@ -3853,6 +3853,7 @@ def test_xml_root_name_does_not_resolve_external_entities():
     an XXE local-file read; the entity must not expand into the parsed tree
     (router_conn#73). Either the parser rejects the payload (-> "") or the
     entity is left unexpanded, but the file contents must never leak."""
+    import os
     import tempfile
 
     from resources.lib.router import _xml_root_name
@@ -3861,16 +3862,19 @@ def test_xml_root_name_does_not_resolve_external_entities():
         handle.write("TOP-SECRET-XXE-CANARY")
         secret_path = handle.name
 
-    payload = (
-        '<?xml version="1.0"?>'
-        "<!DOCTYPE rss [<!ENTITY xxe SYSTEM "
-        '"file://{}">]>'
-        "<rss>&xxe;</rss>"
-    ).format(secret_path)
+    try:
+        payload = (
+            '<?xml version="1.0"?>'
+            "<!DOCTYPE rss [<!ENTITY xxe SYSTEM "
+            '"file://{}">]>'
+            "<rss>&xxe;</rss>"
+        ).format(secret_path)
 
-    # Must not raise, must not embed the file contents in any result.
-    result = _xml_root_name(payload)
-    assert result in ("rss", "")
+        # Must not raise, must not embed the file contents in any result.
+        result = _xml_root_name(payload)
+        assert result in ("rss", "")
+    finally:
+        os.unlink(secret_path)
 
 
 def test_xml_root_name_rejects_internal_entity_expansion():
