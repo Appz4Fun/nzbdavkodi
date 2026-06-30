@@ -166,6 +166,11 @@ def _submit_nzb_with_ui_pump(
     submit_result = [None, None]
     submit_done = _resolver.threading.Event()
     activity_ready = _resolver.threading.Event()
+    # Set when the user cancels or Kodi aborts while the (uninterruptible)
+    # addurl worker is still in flight. The worker re-checks this AFTER
+    # submit_nzb returns and cancels a late-accepted nzo_id so a user-cancelled
+    # download is never left running in nzbdav.
+    cancel_after_submit = _resolver.threading.Event()
     submit_timeout_seconds = max(
         _resolver._get_submit_timeout_seconds(
             **_resolver._settings_getter_kwargs(settings_getter)
@@ -183,6 +188,28 @@ def _submit_nzb_with_ui_pump(
                 title,
                 **submit_kwargs,
             )
+            if submit_result[0] and cancel_after_submit.is_set():
+                # The user cancelled / Kodi aborted while addurl was still
+                # blocked; this nzo_id was accepted too late. Cancel it so the
+                # download does not keep running unattended in nzbdav.
+                try:
+                    _resolver.cancel_job(
+                        submit_result[0],
+                        **_resolver._settings_getter_kwargs(settings_getter),
+                    )
+                    _resolver.xbmc.log(
+                        "NZB-DAV: Cancelled late-accepted submit nzo_id={} for "
+                        "'{}' after user abort".format(submit_result[0], title),
+                        _resolver.xbmc.LOGINFO,
+                    )
+                except Exception as cancel_error:  # pylint: disable=broad-except
+                    _resolver.xbmc.log(
+                        "NZB-DAV: Failed to cancel late-accepted submit "
+                        "nzo_id={}: {}".format(
+                            submit_result[0], _resolver._redact_log(cancel_error)
+                        ),
+                        _resolver.xbmc.LOGWARNING,
+                    )
         except Exception as e:  # pylint: disable=broad-except
             _resolver.xbmc.log(
                 "NZB-DAV: submit_nzb worker raised: {}".format(e),
@@ -384,10 +411,12 @@ def _submit_nzb_with_ui_pump(
                     "NZB-DAV: User cancelled during submit for '{}'".format(title),
                     _resolver.xbmc.LOGINFO,
                 )
+                cancel_after_submit.set()
                 return None, {"status": "cancelled", "message": ""}
             if _wait_for_submit_activity_or_abort(
                 _resolver._SUBMIT_ADOPTION_CHECK_INTERVAL_SECONDS
             ):
+                cancel_after_submit.set()
                 return None, {"status": "shutdown", "message": ""}
             probe_result = _probe_adoption_result()
             if probe_result:
@@ -574,7 +603,10 @@ def _submit_nzb_with_retries(
     )
 
     for attempt in range(1, max_submit_retries + 1):
-        nzo_id, submit_error = _submit_nzb_with_ui_pump(
+        # Resolve through the resolver surface so the documented
+        # ``@patch("resources.lib.resolver._submit_nzb_with_ui_pump")`` target
+        # intercepts this call (same re-exported object in production).
+        nzo_id, submit_error = _resolver._submit_nzb_with_ui_pump(
             nzb_url,
             title,
             dialog,

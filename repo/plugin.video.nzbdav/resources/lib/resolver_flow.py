@@ -74,7 +74,16 @@ def _reject_resolve_handle(handle, notify_message=None):
     False)`` completion signal Kodi waits on, then clearing the video playlist.
     """
     if notify_message is not None:
-        _resolver.xbmcgui.Dialog().ok(_resolver._addon_name(), notify_message)
+        # The notification is optional UI; if Dialog().ok() raises (e.g. during
+        # shutdown) the handle-based resolve must still receive its False
+        # resolution below or Kodi hangs (TODO.md §H.2-H9 no-hang guarantee).
+        try:
+            _resolver.xbmcgui.Dialog().ok(_resolver._addon_name(), notify_message)
+        except (RuntimeError, OSError, TypeError) as error:
+            _resolver.xbmc.log(
+                "NZB-DAV: resolve rejection notification failed: {}".format(error),
+                _resolver.xbmc.LOGWARNING,
+            )
     _resolver.xbmcplugin.setResolvedUrl(handle, False, _resolver.xbmcgui.ListItem())
     _resolver.xbmc.PlayList(_resolver.xbmc.PLAYLIST_VIDEO).clear()
 

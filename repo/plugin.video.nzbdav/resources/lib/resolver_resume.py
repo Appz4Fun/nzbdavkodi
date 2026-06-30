@@ -196,7 +196,9 @@ def _finish_direct_playback(handle, prepared, resume_key="", resume_seconds=0.0)
         home = _resolver.xbmcgui.Window(10000)
         if stream_info.get("direct"):
             _resolver.xbmc.log(
-                "NZB-DAV: MP4 already faststart, direct play: {}".format(stream_url),
+                "NZB-DAV: MP4 already faststart, direct play: {}".format(
+                    _resolver._redact_log(stream_url)
+                ),
                 _resolver.xbmc.LOGINFO,
             )
             bust_url = _resolver._cache_bust_url(stream_url)
@@ -223,7 +225,9 @@ def _finish_direct_playback(handle, prepared, resume_key="", resume_seconds=0.0)
     bust_url = _resolver._cache_bust_url(stream_url)
     play_url = _resolver._build_play_url(bust_url, stream_headers)
     _resolver.xbmc.log(
-        "NZB-DAV: Playing direct (no proxy) (handle={}): {}".format(handle, bust_url),
+        "NZB-DAV: Playing direct (no proxy) (handle={}): {}".format(
+            handle, _resolver._redact_log(bust_url)
+        ),
         _resolver.xbmc.LOGINFO,
     )
 
@@ -259,7 +263,9 @@ def _finish_player_playback(prepared, resume_key="", resume_seconds=0.0):
 
         if stream_info.get("direct"):
             _resolver.xbmc.log(
-                "NZB-DAV: MP4 already faststart, direct play: {}".format(stream_url),
+                "NZB-DAV: MP4 already faststart, direct play: {}".format(
+                    _resolver._redact_log(stream_url)
+                ),
                 _resolver.xbmc.LOGINFO,
             )
             bust_url = _resolver._cache_bust_url(stream_url)
@@ -288,7 +294,9 @@ def _finish_player_playback(prepared, resume_key="", resume_seconds=0.0):
     _apply_resume_start_offset(li, resume_seconds)
     play_url = _resolver._build_play_url(bust_url, stream_headers)
     _resolver.xbmc.log(
-        "NZB-DAV: Playing direct (no proxy): {}".format(stream_url),
+        "NZB-DAV: Playing direct (no proxy): {}".format(
+            _resolver._redact_log(stream_url)
+        ),
         _resolver.xbmc.LOGINFO,
     )
     _set_playback_monitor_properties(

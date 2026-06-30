@@ -472,10 +472,15 @@ def _json_payload_error(data):
     """Return an error message for a non-list JSON payload, logging it.
 
     Prowlarr error bodies are JSON objects (``{"error": ...}``), not arrays.
+    The payload can echo the indexer apikey, so the message is redacted before
+    it lands in the log line or the returned error string.
     """
+    from resources.lib.http_util import redact_text
+
     message = ""
     if isinstance(data, dict):
-        message = data.get("error") or data.get("message") or ""
+        raw_message = data.get("error") or data.get("message") or ""
+        message = redact_text(str(raw_message)) if raw_message else ""
     xbmc.log(
         "NZB-DAV: Unexpected Prowlarr JSON payload (not an array): {}".format(
             message or type(data).__name__

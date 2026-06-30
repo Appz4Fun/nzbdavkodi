@@ -62,13 +62,44 @@ def _json_object(response):
     return data if isinstance(data, dict) else {}
 
 
+def _build_xxe_safe_xml_parser(element_tree):
+    """Return an ElementTree XMLParser with external entities disabled.
+
+    Mirrors ``prowlarr._build_xxe_safe_parser`` / ``hydra``: a hostile or
+    compromised Hydra/Newznab instance could otherwise coerce us into reading
+    arbitrary local files via an XXE payload in its (user-configured) response.
+    """
+    parser = element_tree.XMLParser()  # nosec B314 — entities disabled below
+    try:
+        parser.parser.DefaultHandler = lambda _d: None
+        parser.parser.ExternalEntityRefHandler = lambda *_: False
+    except AttributeError:  # pragma: no cover — non-expat parser backend
+        pass
+    return parser
+
+
 def _xml_root_name(response):
-    """Return the unqualified root XML tag name, lowercased."""
-    import xml.etree.ElementTree as ET  # nosec B405 - trusted service response
+    """Return the unqualified root XML tag name, lowercased.
+
+    The payload is a user-configured Hydra/Newznab service response, so it is
+    parsed with external entity resolution disabled (defusedxml when bundled,
+    otherwise an XXE-hardened stdlib parser) to keep parity with the other XML
+    clients. ``defusedxml``'s ``DefusedXmlException`` subclasses ``ValueError``,
+    so a hostile payload falls through to the empty-string fallback.
+    """
+    try:
+        from defusedxml import ElementTree as element_tree
+    except ImportError:  # pragma: no cover - Kodi installs may not bundle defusedxml
+        from xml.etree import ElementTree as element_tree
 
     try:
-        root = ET.fromstring(response)  # nosec B314 - trusted service response
-    except (TypeError, ET.ParseError):
+        if getattr(element_tree, "__name__", "").startswith("defusedxml."):
+            root = element_tree.fromstring(response)
+        else:
+            root = element_tree.fromstring(  # nosec B314 — XXE-safe parser below
+                response, parser=_build_xxe_safe_xml_parser(element_tree)
+            )
+    except (TypeError, ValueError, element_tree.ParseError):
         return ""
     return root.tag.rsplit("}", 1)[-1].lower()
 

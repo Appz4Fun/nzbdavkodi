@@ -275,6 +275,11 @@ def _by_name_terminal_history(
         "storage": by_name.get("storage", ""),
         "name": by_name.get("name", ""),
         "fail_message": by_name.get("fail_message", ""),
+        # Thread the validated terminal timestamp through so the synthesized
+        # row carries the same ``completed`` contract as a real history slot
+        # (downstream consumers can re-apply the stale-row guard without it
+        # being silently absent). The gate above guarantees it parses to int.
+        "completed": int(by_name.get("completed")),
     }
 
 

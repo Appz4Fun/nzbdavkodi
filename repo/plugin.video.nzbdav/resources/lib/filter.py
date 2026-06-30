@@ -45,8 +45,29 @@ __all__ = [
     "_normalize_parsed_meta",
 ]
 
+# The complete set of keys produced by ``parse_title_metadata``. A cached
+# ``_meta`` dict is only safe to reuse (skipping a reparse) when it satisfies
+# this FULL contract — downstream consumers such as
+# ``fallback_streams_identity`` trust any dict found in ``_meta`` and never
+# reparse, so a partial dict would silently drop quality/edition/year/
+# upscaled/container/etc. from the fallback pipeline.
+_FILTER_META_STR_KEYS = (
+    "resolution",
+    "codec",
+    "group",
+    "quality",
+    "edition",
+    "channels",
+    "container",
+)
+_FILTER_META_LIST_KEYS = ("hdr", "audio", "languages")
+_FILTER_META_BOOL_KEYS = ("proper", "repack", "upscaled")
+_FILTER_META_INT_KEYS = ("year",)
 _FILTER_META_KEYS = frozenset(
-    ("resolution", "hdr", "audio", "codec", "languages", "group")
+    _FILTER_META_STR_KEYS
+    + _FILTER_META_LIST_KEYS
+    + _FILTER_META_BOOL_KEYS
+    + _FILTER_META_INT_KEYS
 )
 
 DEFAULT_PREFERRED_GROUPS = {
@@ -387,14 +408,24 @@ def _is_str_list(value):
 
 
 def _has_filter_metadata_shape(meta):
-    """Return True when cached metadata has keys filter_results indexes."""
+    """Return True when cached metadata satisfies the full parse contract.
+
+    Validates the complete set of fields produced by
+    ``parse_title_metadata`` (not just the ones ``filter_results`` indexes)
+    so a partial cached ``_meta`` is reparsed instead of being blindly
+    reused and propagated to ``fallback_streams_identity``.
+    """
     if not isinstance(meta, dict) or not _FILTER_META_KEYS <= set(meta):
         return False
-    scalars_ok = all(
-        isinstance(meta.get(key), str) for key in ("resolution", "codec", "group")
+    scalars_ok = all(isinstance(meta.get(key), str) for key in _FILTER_META_STR_KEYS)
+    lists_ok = all(_is_str_list(meta.get(key)) for key in _FILTER_META_LIST_KEYS)
+    bools_ok = all(isinstance(meta.get(key), bool) for key in _FILTER_META_BOOL_KEYS)
+    # bool is a subclass of int; reject it so a stray bool year fails.
+    ints_ok = all(
+        isinstance(meta.get(key), int) and not isinstance(meta.get(key), bool)
+        for key in _FILTER_META_INT_KEYS
     )
-    lists_ok = all(_is_str_list(meta.get(key)) for key in ("hdr", "audio", "languages"))
-    return scalars_ok and lists_ok
+    return scalars_ok and lists_ok and bools_ok and ints_ok
 
 
 def _resolve_result_meta(result, parsed_by_title):

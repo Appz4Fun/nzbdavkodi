@@ -88,6 +88,13 @@ def _read(path):
 
 
 def _discard_temp(fd, tmp_path):
+    """Best-effort cleanup of a failed atomic write's leftovers.
+
+    Closing the dangling descriptor and unlinking the orphaned temp file can
+    themselves fail (perms/race/already-gone); those are non-fatal since the
+    write already failed and was logged by the caller, so swallow them rather
+    than masking the original error.
+    """
     if fd is not None:
         try:
             os.close(fd)

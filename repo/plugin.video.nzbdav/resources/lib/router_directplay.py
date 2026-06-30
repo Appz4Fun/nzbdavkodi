@@ -105,10 +105,19 @@ def _direct_play_split_auth(url):
 def _head_content_length(resp):
     """Return (length, error) from a HEAD response's Content-Length header."""
     resp_headers = getattr(resp, "headers", {}) or {}
-    length = int(resp_headers.get("Content-Length", "1") or 1)
-    if length > 0:
-        return length, ""
-    return 0, "missing-length"
+    raw_length = resp_headers.get("Content-Length")
+    if raw_length in (None, ""):
+        # A HEAD without Content-Length is an UNKNOWN size, not a 1-byte body;
+        # fabricating length 1 would hand the proxy a bogus content length.
+        # Surface it as a failure instead.
+        return 0, "missing-length"
+    try:
+        length = int(raw_length)
+    except (TypeError, ValueError):
+        return 0, "invalid-length"
+    if length <= 0:
+        return 0, "missing-length"
+    return length, ""
 
 
 def _direct_play_head_length(url, auth_header):

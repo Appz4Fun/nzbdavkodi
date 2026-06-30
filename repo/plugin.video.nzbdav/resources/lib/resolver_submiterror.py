@@ -81,7 +81,9 @@ def _handle_submit_attempt_error(submit_error, ctx):
     if status in _resolver._TRANSIENT_HTTP_STATUSES:
         _resolver.xbmc.log(
             "NZB-DAV: Submit attempt {} hit transient HTTP {}: {}".format(
-                ctx["attempt_label"], status, submit_error["message"]
+                ctx["attempt_label"],
+                status,
+                _resolver._redact_log(submit_error["message"]),
             ),
             _resolver.xbmc.LOGWARNING,
         )
@@ -102,7 +104,7 @@ def _handle_submit_rejected(submit_error, ctx):
     """
     _resolver.xbmc.log(
         "NZB-DAV: nzbdav rejected the NZB for '{}': {}".format(
-            ctx["title"], submit_error["message"]
+            ctx["title"], _resolver._redact_log(submit_error["message"])
         ),
         _resolver.xbmc.LOGERROR,
     )
@@ -119,7 +121,7 @@ def _handle_submit_4xx(submit_error, ctx):
     """
     _resolver.xbmc.log(
         "NZB-DAV: Submit failed with HTTP {}, not probing queue: {}".format(
-            submit_error["status"], submit_error["message"]
+            submit_error["status"], _resolver._redact_log(submit_error["message"])
         ),
         _resolver.xbmc.LOGERROR,
     )
@@ -163,7 +165,7 @@ def _handle_submit_nontransient(submit_error, ctx):
         return adopted
     _resolver.xbmc.log(
         "NZB-DAV: Submit failed with HTTP {}, not retrying: {}".format(
-            submit_error["status"], submit_error["message"]
+            submit_error["status"], _resolver._redact_log(submit_error["message"])
         ),
         _resolver.xbmc.LOGERROR,
     )

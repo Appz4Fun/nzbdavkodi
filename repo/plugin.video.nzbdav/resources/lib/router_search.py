@@ -99,6 +99,19 @@ def _run_one_provider(provider_key, _provider_label, search_func, args, kwargs):
         )
 
 
+def _provider_error_message(provider_label, error):
+    """Format a provider failure, redacting any secrets the exception leaked.
+
+    urllib/provider exceptions routinely embed the full request URL (apikey
+    and all) in ``str(error)``. router.py later logs this and surfaces it to
+    the UI, so it must pass through the same ``redact_text`` scrub the
+    connection tests use before any provider error escapes.
+    """
+    from resources.lib.http_util import redact_text
+
+    return "{} search failed: {}".format(provider_label, redact_text(str(error)))
+
+
 def _run_provider_jobs(provider_jobs):
     """Run provider jobs (serially for one, threaded for many).
 
@@ -112,7 +125,7 @@ def _run_provider_jobs(provider_jobs):
                 provider_key, provider_label, search_func, args, kwargs
             )
         except Exception as error:  # pylint: disable=broad-exception-caught
-            outcome = ([], "{} search failed: {}".format(provider_label, error))
+            outcome = ([], _provider_error_message(provider_label, error))
         return [(provider_label, outcome)]
 
     with ThreadPoolExecutor(max_workers=len(provider_jobs)) as executor:
@@ -144,7 +157,7 @@ def _run_provider_jobs(provider_jobs):
                 provider_outcomes.append(
                     (
                         provider_label,
-                        ([], "{} search failed: {}".format(provider_label, error)),
+                        ([], _provider_error_message(provider_label, error)),
                     )
                 )
     return provider_outcomes

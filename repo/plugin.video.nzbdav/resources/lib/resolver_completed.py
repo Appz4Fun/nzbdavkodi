@@ -117,6 +117,8 @@ def _delegated_find_video_stream_for_folder(
                 )
             return video_path, stream_url, stream_headers
     except (AttributeError, ImportError):
+        # Optional fast-path helper is absent/incompatible on this build;
+        # fall through to the canonical find_video_file path below.
         pass
     return None
 

@@ -30,7 +30,22 @@ def _resolve_stage(message):
             stage_file.flush()
             os.fsync(stage_file.fileno())
     except OSError:
+        # Best-effort stage breadcrumb only (debug aid). The xbmc.log line
+        # above is the real record; a missing/unwritable temp path must never
+        # break resolve.
         pass
+
+
+def _redact_log(value):
+    """Redact URLs/credentials out of a value before it reaches Kodi logs.
+
+    Backend/WebDAV exception strings and stream URLs can embed signed query
+    strings or inline credentials; mirror the lower-level API helpers'
+    redaction (see http_util.redact_text / direct_indexers / hydra).
+    """
+    from resources.lib.http_util import redact_text
+
+    return redact_text(str(value))
 
 
 def _clamp_int_setting(setting_id, value, lo, hi):
@@ -323,6 +338,8 @@ def _captured_bookmark_resume_seconds(cur, id_file, bookmark_columns):
         try:
             resume_seconds = max(resume_seconds, float(time_in_seconds))
         except (TypeError, ValueError):
+            # A non-numeric/NULL bookmark row is simply skipped; resume falls
+            # back to other rows (or 0.0). Best-effort — never abort cleanup.
             pass
     return resume_seconds
 
@@ -384,6 +401,20 @@ def _coerce_resume_seconds(value):
     return max(0.0, float(value))
 
 
+def _kodi_video_db_version(path):
+    """Numeric MyVideos schema version from a DB filename (-1 if unparseable).
+
+    Used as a sort key so the NEWEST DB wins by integer version; a plain
+    lexicographic sort picks MyVideos99.db over MyVideos131.db on upgraded
+    installs, which would target a stale DB for bookmark cleanup.
+    """
+    import os
+    import re
+
+    match = re.search(r"MyVideos(\d+)\.db$", os.path.basename(path))
+    return int(match.group(1)) if match else -1
+
+
 def _locate_kodi_video_db():
     """Return the newest MyVideos DB path, or None when unavailable."""
     try:
@@ -401,7 +432,10 @@ def _locate_kodi_video_db():
         import os
 
         db_dir = _resolver.xbmcvfs.translatePath("special://database/")
-        db_files = sorted(glob.glob(os.path.join(db_dir, "MyVideos*.db")))
+        db_files = sorted(
+            glob.glob(os.path.join(db_dir, "MyVideos*.db")),
+            key=_kodi_video_db_version,
+        )
     except _resolver._DB_DISCOVERY_ERRORS as error:
         _resolver.xbmc.log(
             "NZB-DAV: Failed to locate MyVideos DB for bookmark cleanup: {}".format(

@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from resources.lib.filter import (
+    _has_filter_metadata_shape,
     _sort_results,
     filter_results,
     matches_filters,
@@ -637,14 +638,7 @@ def test_filter_results_attaches_meta_key(mock_settings):
 def test_filter_results_reuses_prefilled_meta(mock_settings):
     """filter_results should not reparse results that already have metadata."""
     mock_settings.return_value = _all_pass_settings()
-    meta = {
-        "resolution": "1080p",
-        "hdr": [],
-        "audio": [],
-        "codec": "x264/AVC",
-        "languages": [],
-        "group": "GRP",
-    }
+    meta = _complete_meta("Movie.2024.1080p.BluRay.x264-GRP")
     result = _make_result("Movie.2024.1080p.BluRay.x264-GRP")
     result["_meta"] = meta
 
@@ -782,14 +776,7 @@ def test_filter_results_seeds_duplicate_title_cache_from_prefilled_meta(mock_set
     """A valid prefilled _meta should satisfy later duplicate titles."""
     mock_settings.return_value = _all_pass_settings()
     title = "Movie.2024.1080p.BluRay.x264-GRP"
-    meta = {
-        "resolution": "1080p",
-        "hdr": [],
-        "audio": [],
-        "codec": "x264/AVC",
-        "languages": [],
-        "group": "GRP",
-    }
+    meta = _complete_meta(title)
     first = _make_result(title, link="http://example.com/one.nzb")
     first["_meta"] = meta
     second = _make_result(title, link="http://example.com/two.nzb")
@@ -1410,3 +1397,71 @@ def test_release_is_pack_false_for_last_final_season_movie_titles():
     # Numeric/positional season packs are unaffected.
     assert release_is_pack("Some.Show.First.Season.1080p-GRP") is True
     assert release_is_pack("Some.Show.Season.Two.1080p-GRP") is True
+
+
+# --- Cached _meta contract validation (PR #358 / CodeRabbit filter.py#413) ---
+
+
+def _complete_meta(title="Movie.2024.1080p.BluRay.x264-GROUP"):
+    """A fully-parsed _meta dict (the complete parse_title_metadata contract)."""
+    return parse_title_metadata(title)
+
+
+def test_complete_parsed_meta_passes_shape_check():
+    """A full parse_title_metadata() result satisfies the reuse contract."""
+    assert _has_filter_metadata_shape(_complete_meta()) is True
+
+
+def test_partial_cached_meta_fails_shape_check():
+    """A cached dict carrying only the six filter_results-indexed fields must
+    NOT be treated as reusable: it omits quality/edition/year/upscaled/
+    container/etc., which downstream fallback_streams_identity would silently
+    drop because it trusts any dict in _meta and skips reparsing."""
+    partial = {
+        "resolution": "1080p",
+        "hdr": [],
+        "audio": [],
+        "codec": "x264/AVC",
+        "languages": [],
+        "group": "GROUP",
+    }
+    assert _has_filter_metadata_shape(partial) is False
+
+
+def test_wrong_typed_meta_fields_fail_shape_check():
+    """Each field must match its contract type. bool is rejected for the int
+    year field (bool is an int subclass in Python)."""
+    bad_year = _complete_meta()
+    bad_year["year"] = True  # bool, not a real int year
+    assert _has_filter_metadata_shape(bad_year) is False
+
+    bad_upscaled = _complete_meta()
+    bad_upscaled["upscaled"] = "no"  # str, not bool
+    assert _has_filter_metadata_shape(bad_upscaled) is False
+
+
+@patch("resources.lib.filter._get_filter_settings")
+def test_partial_cached_meta_is_reparsed_not_reused(mock_settings):
+    """Regression: filter_results must reparse a result whose _meta is an
+    incomplete dict instead of blindly reusing it, so the full metadata
+    contract reaches the downstream fallback pipeline."""
+    mock_settings.return_value = _all_pass_settings()
+    title = "Movie.2024.2160p.BluRay.x265-GROUP"
+    result = _make_result(title)
+    # Pre-seed a partial _meta missing the downstream-only fields.
+    result["_meta"] = {
+        "resolution": "1080p",  # deliberately wrong to prove a reparse happened
+        "hdr": [],
+        "audio": [],
+        "codec": "x264/AVC",
+        "languages": [],
+        "group": "GROUP",
+    }
+    filtered, all_parsed = filter_results([result])
+    meta = all_parsed[0]["_meta"]
+    # Reparsed: the full contract keys are now present...
+    for key in ("quality", "edition", "year", "upscaled", "container"):
+        assert key in meta
+    # ...and the values reflect the real title, not the stale partial dict.
+    assert meta["resolution"] == "2160p"
+    assert _has_filter_metadata_shape(meta) is True

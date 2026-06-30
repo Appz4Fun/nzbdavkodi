@@ -515,7 +515,17 @@ def _handle_resolve_exception(label, error, handle=None):
         "NZB-DAV: Unexpected error in {}: {}".format(label, message),
         _resolver.xbmc.LOGERROR,
     )
-    _resolver.xbmcgui.Dialog().ok(_resolver._addon_name(), "Error: {}".format(message))
+    # The error dialog is best-effort UI; if it raises, the handle-based
+    # resolve must still receive its False resolution below or Kodi hangs.
+    try:
+        _resolver.xbmcgui.Dialog().ok(
+            _resolver._addon_name(), "Error: {}".format(message)
+        )
+    except (RuntimeError, OSError, TypeError) as dialog_error:
+        _resolver.xbmc.log(
+            "NZB-DAV: resolve error dialog failed: {}".format(dialog_error),
+            _resolver.xbmc.LOGWARNING,
+        )
     if handle is not None:
         _resolver.xbmcplugin.setResolvedUrl(handle, False, _resolver.xbmcgui.ListItem())
         _resolver.xbmc.PlayList(_resolver.xbmc.PLAYLIST_VIDEO).clear()

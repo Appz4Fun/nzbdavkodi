@@ -245,7 +245,7 @@ def _titles_core_related(primary_title, candidate_title, corroborated=False):
         return corroborated
     if left == right:
         return True
-    if left <= right or right <= left:
+    if left < right or right < left:
         return _fs._subset_titles_related(
             left, right, left_tokens, right_tokens, corroborated
         )

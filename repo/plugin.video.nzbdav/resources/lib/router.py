@@ -150,6 +150,7 @@ from resources.lib.router_search import (  # noqa: F401
     _hydra_duplicate_lookup_enabled,
     _LookupDoneJobs,
     _nzbget_mode_enabled,
+    _provider_error_message,
     _result_pubdate_consistent_with_downloads,
     _result_size_bytes,
     _run_provider_jobs,

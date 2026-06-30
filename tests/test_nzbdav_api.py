@@ -9,6 +9,7 @@ from urllib.error import URLError
 from resources.lib.nzbdav_api import (
     _DEFAULT_SUBMIT_TIMEOUT,
     _get_submit_timeout,
+    _response_slots,
     _sanitize_server_message,
     cancel_job,
     completed_jobs_lookup_done,
@@ -185,6 +186,35 @@ def test_submit_nzb_failure_returns_rejected_error(mock_http, mock_settings):
     assert nzo_id is None
     assert error is not None
     assert error["status"] == "rejected"
+
+
+@patch("resources.lib.nzbdav_api._get_settings")
+@patch("resources.lib.nzbdav_api._http_get")
+def test_submit_nzb_rejected_message_redacts_apikey(mock_http, mock_settings):
+    """A rejection that echoes the failing indexer URL (with apikey) must be
+    redacted in the returned ``message`` too — not just the log line — since
+    the resolver can surface it in a dialog or recovery log.
+    """
+    mock_settings.return_value = ("http://nzbdav:3000", "testkey")
+    mock_http.return_value = json.dumps(
+        {
+            "status": False,
+            "error": "Failed to fetch http://idx/getnzb?apikey=SECRET123",
+        }
+    )
+    nzo_id, error = submit_nzb("http://hydra:5076/getnzb/abc123", "The.Matrix")
+    assert nzo_id is None
+    assert error["status"] == "rejected"
+    assert "SECRET123" not in error["message"]
+    assert "REDACTED" in error["message"]
+
+
+def test_response_slots_filters_non_dict_entries():
+    """Malformed nzbdav JSON (None / str / scalar slot entries) must be
+    dropped at the boundary so downstream ``slot.get(...)`` walkers can't crash.
+    """
+    response = {"queue": {"slots": [{"nzo_id": "a"}, None, "junk", 5, {"nzo_id": "b"}]}}
+    assert _response_slots(response, "queue") == [{"nzo_id": "a"}, {"nzo_id": "b"}]
 
 
 @patch("resources.lib.nzbdav_api._get_settings")

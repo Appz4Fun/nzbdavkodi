@@ -135,7 +135,7 @@ def _completed_copy_blocks_clear_result(worker, result):
     if result.get("error") is not None:
         _resolver.xbmc.log(
             "NZB-DAV: completed-adopt probe failed before clearing the queue; "
-            "leaving queue intact: {}".format(result["error"]),
+            "leaving queue intact: {}".format(_resolver._redact_log(result["error"])),
             _resolver.xbmc.LOGWARNING,
         )
         return True
@@ -159,7 +159,7 @@ def _probe_clearable_queue_slots(title, settings_getter):
     except Exception as error:  # pylint: disable=broad-except
         _resolver.xbmc.log(
             "NZB-DAV: queue probe before submit failed; leaving queue intact: "
-            "{}".format(error),
+            "{}".format(_resolver._redact_log(error)),
             _resolver.xbmc.LOGWARNING,
         )
         return []

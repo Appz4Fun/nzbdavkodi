@@ -438,6 +438,9 @@ def _notify_no_fallback_candidates(candidate_lookup_disabled, settings_getter):
     try:
         _resolver._notify(_resolver._addon_name(), _resolver._string(30187), 4000)
     except (RuntimeError, OSError):
+        # The "no fallback candidates" toast is cosmetic; a UI failure (e.g.
+        # during shutdown) must not break the best-effort fallback worker's
+        # clean return.
         pass
 
 
@@ -579,7 +582,18 @@ def _start_fallback_submit_worker(
         target=_worker, name="nzbdav-fallback-submit", daemon=True
     )
     state["thread"] = thread
-    thread.start()
+    try:
+        thread.start()
+    except RuntimeError as error:
+        # Thread creation can fail during Kodi shutdown / interpreter
+        # teardown. Fallbacks are best-effort, so fail soft: mark the worker
+        # finished and let the resolve path continue instead of propagating.
+        state["thread"] = None
+        state["finished"].set()
+        _resolver.xbmc.log(
+            "NZB-DAV: Fallback submit worker did not start: {}".format(error),
+            _resolver.xbmc.LOGWARNING,
+        )
     return state
 
 

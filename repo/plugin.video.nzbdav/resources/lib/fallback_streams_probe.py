@@ -7,13 +7,14 @@
 import copy
 import hashlib
 import os
+import posixpath
 import re
 import threading
 import time
 from collections import namedtuple
 from functools import lru_cache
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import unquote, urlsplit, urlunsplit
 from urllib.request import Request
 
 try:
@@ -221,9 +222,34 @@ def _origin_key(parts):
     return scheme, parts.hostname.lower(), port
 
 
+def _canonical_probe_path(path):
+    """Return a decoded, normalized absolute path for allow-list checks.
+
+    Percent-encoded traversal (``/dav/%2e%2e/admin``) survives a raw-prefix
+    match but many WebDAV servers decode/normalize it back outside the base
+    path, which would forward the Authorization header to an escaped path. Decode
+    the path and reject anything containing a ``..`` segment or a backslash so the
+    containment check sees what the server will actually resolve.
+    """
+    try:
+        decoded = unquote(path or "/", errors="strict")
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if "\\" in decoded or any(part == ".." for part in decoded.split("/")):
+        return None
+    normalized = posixpath.normpath(decoded)
+    if not normalized.startswith("/"):
+        normalized = "/" + normalized
+    return normalized
+
+
 def _path_is_under_base(path, base_path):
     """Return whether a URL path is within the configured base path."""
-    prefix = (base_path or "").rstrip("/")
+    path = _canonical_probe_path(path)
+    base_path = _canonical_probe_path(base_path or "/")
+    if path is None or base_path is None:
+        return False
+    prefix = base_path.rstrip("/")
     if not prefix:
         return True
     return path == prefix or path.startswith(prefix + "/")

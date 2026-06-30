@@ -393,7 +393,10 @@ def _fetch_hydra_internal_search(base_url, title):
         )
         return []
 
-    return data.get("searchResults", []) if isinstance(data, dict) else []
+    if not isinstance(data, dict):
+        return []
+    search_results = data.get("searchResults", [])
+    return search_results if isinstance(search_results, list) else []
 
 
 def _duplicate_upload_from_raw(raw, title, picked_link):
