@@ -1397,13 +1397,22 @@ def test_selection_fallback_skips_candidate_wait_after_unusable_selected_manifes
 
     def fetch(url, **_kwargs):
         if url == selected["link"]:
+            # Load-independent gate: the scan aborts on the unusable selected
+            # manifest only once selected_ready, so block the selected manifest
+            # until a candidate fetch has actually started. Candidates are in the
+            # initial fetch window (submitted without needing selected_ready), so
+            # this cannot deadlock -- candidate_started is set before the scan
+            # aborts at realistic load. The 30s is a hang-safety bound only (a
+            # normally scheduled daemon thread starts in ms).
+            candidate_started.wait(30)
             return manifests[url]
         candidate_started.set()
-        # Released only in the finally below (AFTER the snapshot), with no early
-        # timer, so a candidate fetch can never complete before we record whether
-        # the scan consumed it -- the snapshot is load-independent. The 2s cap
-        # only bounds a regression where the scan wrongly waits for this fetch.
-        release_candidates.wait(timeout=2)
+        # No self-timeout: a candidate fetch stays in flight until the finally
+        # below releases it (after the snapshot), so it can never complete before
+        # we record whether the scan consumed it. The generous 3s only bounds a
+        # regression where the scan wrongly waits for this fetch (then it completes
+        # -> candidate_completions -> caught below).
+        release_candidates.wait(timeout=3)
         with completions_lock:
             candidate_completions[0] += 1
         return manifests[url]
@@ -1416,7 +1425,9 @@ def test_selection_fallback_skips_candidate_wait_after_unusable_selected_manifes
     finally:
         release_candidates.set()
 
-    assert candidate_started.wait(0.2)
+    # Deterministic via the selected-manifest gate above: candidate_started is
+    # guaranteed set before the scan aborts, so this assert is load-independent.
+    assert candidate_started.is_set()
     # Structural proof (load-independent): the unusable selected manifest must
     # abort the scan before any blocked candidate fetch is released (only the
     # finally above releases it, after the snapshot). If the scan wrongly kept
@@ -2095,11 +2106,22 @@ def test_selection_fallback_uses_later_completed_candidate_instead_of_slow_gap(
     def fetch(url, **_kwargs):
         if url == candidates[1]["link"]:
             slow_started.set()
-            # Released only in the finally below (after the snapshot), with no
-            # early timer, so the slow gap candidate can never complete before
-            # we record whether the scan waited for it -- load-independent.
-            release_slow.wait(timeout=1)
+            # No self-timeout: the slow gap candidate stays in flight until the
+            # finally below releases it (after the snapshot), so it can never
+            # complete before we record whether the scan waited for it. The
+            # generous 3s only bounds a regression where the scan blocks on this
+            # fetch (then it completes -> slow_completed -> caught below).
+            release_slow.wait(timeout=3)
             slow_completed.set()
+        elif url == selected["link"]:
+            # Load-independent gate: no candidate is attached, and the scan cannot
+            # return, until selected_ready. Block the selected manifest until the
+            # slow gap candidate's daemon thread has actually started, so
+            # slow_started is provably set before the scan returns -- removing the
+            # thread-start race at realistic load. The 30s is a hang-safety bound
+            # only (a normally scheduled daemon thread starts in ms; the slow
+            # candidate is in the initial window, so it is always submitted).
+            slow_started.wait(30)
         return manifests[url]
 
     mock_fetch.side_effect = fetch
@@ -2109,6 +2131,8 @@ def test_selection_fallback_uses_later_completed_candidate_instead_of_slow_gap(
     finally:
         release_slow.set()
 
+    # Deterministic via the selected-manifest gate above: slow_started is
+    # guaranteed set before the scan returns, so this assert is load-independent.
     assert slow_started.is_set()
     # Structural proof (load-independent): the slow gap candidate (GAP02) is left
     # in flight and never released here, so a healthy early-return that uses the
@@ -2304,12 +2328,22 @@ def test_selection_fallback_does_not_wait_for_optional_tail_after_max_filled(
     def fetch(url, **_kwargs):
         if url == candidates[6]["link"]:
             slow_started.set()
-            # Released only in the finally below (AFTER the snapshot), with no
-            # early timer, so the optional-tail fetch cannot complete before we
-            # record whether the scan waited for it -- load-independent. The 2s
-            # cap only bounds a regression where the scan blocks on this fetch.
-            release_slow.wait(timeout=2)
+            # No self-timeout: the optional-tail fetch stays in flight until the
+            # finally below releases it (after the snapshot), so it cannot complete
+            # before we record whether the scan waited for it. The generous 3s only
+            # bounds a regression where the scan blocks on this fetch (then it
+            # completes -> tail_completed -> caught below).
+            release_slow.wait(timeout=3)
             tail_completed[0] = True
+        elif url == selected["link"]:
+            # Load-independent gate: no candidate is attached, and the scan cannot
+            # return, until selected_ready. Block the selected manifest until the
+            # optional-tail candidate (candidates[6]) has actually started. It is
+            # submitted by the post-miss window refill, which does NOT require
+            # selected_ready, so this cannot deadlock -- slow_started is set
+            # before the scan returns at realistic load. The 30s is a hang-safety
+            # bound only (a normally scheduled daemon thread starts in ms).
+            slow_started.wait(30)
         return manifests[url]
 
     mock_fetch.side_effect = fetch
@@ -2319,6 +2353,8 @@ def test_selection_fallback_does_not_wait_for_optional_tail_after_max_filled(
     finally:
         release_slow.set()
 
+    # Deterministic via the selected-manifest gate above: slow_started is
+    # guaranteed set before the scan returns, so this assert is load-independent.
     assert slow_started.is_set()
     # Structural proof (load-independent): with max_candidates already filled,
     # the scan must return before the optional-tail fetch (candidates[6]) is
@@ -2380,11 +2416,22 @@ def test_selection_fallback_does_not_wait_for_optional_tail_after_partial_match(
     def fetch(url, **_kwargs):
         if url == candidates[1]["link"]:
             slow_started.set()
-            # Released only in the finally below (after the snapshot), with no
-            # early timer, so the slow optional-tail candidate can never complete
-            # before we record whether the scan waited for it -- load-independent.
-            release_slow.wait(timeout=1)
+            # No self-timeout: the slow optional-tail candidate stays in flight
+            # until the finally below releases it (after the snapshot), so it can
+            # never complete before we record whether the scan waited for it. The
+            # generous 3s only bounds a regression where the scan blocks on this
+            # fetch (then it completes -> slow_completed -> caught below).
+            release_slow.wait(timeout=3)
             slow_completed.set()
+        elif url == selected["link"]:
+            # Load-independent gate: no candidate is attached, and the scan cannot
+            # return, until selected_ready. Block the selected manifest until the
+            # slow optional-tail candidate's daemon thread has actually started, so
+            # slow_started is provably set before the scan returns -- removing the
+            # thread-start race at realistic load. The 30s is a hang-safety bound
+            # only (a normally scheduled daemon thread starts in ms; the slow
+            # candidate is in the initial window, so it is always submitted).
+            slow_started.wait(30)
         return manifests[url]
 
     mock_fetch.side_effect = fetch
@@ -2394,6 +2441,8 @@ def test_selection_fallback_does_not_wait_for_optional_tail_after_partial_match(
     finally:
         release_slow.set()
 
+    # Deterministic via the selected-manifest gate above: slow_started is
+    # guaranteed set before the scan returns, so this assert is load-independent.
     assert slow_started.is_set()
     # Structural proof (load-independent): the slow optional-tail candidate is
     # left in flight and never released here, so a healthy bounded tail-wait must
