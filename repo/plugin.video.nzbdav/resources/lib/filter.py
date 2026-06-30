@@ -116,8 +116,29 @@ ALL_RELEASE_GROUPS = [
     "ZAX",
 ]
 
+# The complete set of keys produced by ``parse_title_metadata``. A cached
+# ``_meta`` dict is only safe to reuse (skipping a reparse) when it satisfies
+# this FULL contract — downstream consumers such as
+# ``fallback_streams_identity`` trust any dict found in ``_meta`` and never
+# reparse, so a partial dict would silently drop quality/edition/year/
+# upscaled/container/etc. from the fallback pipeline.
+_FILTER_META_STR_KEYS = (
+    "resolution",
+    "codec",
+    "group",
+    "quality",
+    "edition",
+    "channels",
+    "container",
+)
+_FILTER_META_LIST_KEYS = ("hdr", "audio", "languages")
+_FILTER_META_BOOL_KEYS = ("proper", "repack", "upscaled")
+_FILTER_META_INT_KEYS = ("year",)
 _FILTER_META_KEYS = frozenset(
-    ("resolution", "hdr", "audio", "codec", "languages", "group")
+    _FILTER_META_STR_KEYS
+    + _FILTER_META_LIST_KEYS
+    + _FILTER_META_BOOL_KEYS
+    + _FILTER_META_INT_KEYS
 )
 
 DEFAULT_PREFERRED_GROUPS = {
@@ -738,17 +759,31 @@ def matches_filters(result, meta, settings):
 
 
 def _has_filter_metadata_shape(meta):
-    """Return True when cached metadata has keys filter_results indexes."""
+    """Return True when cached metadata satisfies the full parse contract.
+
+    Validates the complete set of fields produced by
+    ``parse_title_metadata`` (not just the ones ``filter_results`` indexes)
+    so a partial cached ``_meta`` is reparsed instead of being blindly
+    reused and propagated to ``fallback_streams_identity``.
+    """
     if not isinstance(meta, dict) or not _FILTER_META_KEYS <= set(meta):
         return False
-    for key in ("resolution", "codec", "group"):
+    for key in _FILTER_META_STR_KEYS:
         if not isinstance(meta.get(key), str):
             return False
-    for key in ("hdr", "audio", "languages"):
+    for key in _FILTER_META_LIST_KEYS:
         value = meta.get(key)
         if not isinstance(value, list):
             return False
         if any(not isinstance(item, str) for item in value):
+            return False
+    for key in _FILTER_META_BOOL_KEYS:
+        if not isinstance(meta.get(key), bool):
+            return False
+    for key in _FILTER_META_INT_KEYS:
+        value = meta.get(key)
+        # bool is a subclass of int; reject it so a stray bool year fails.
+        if not isinstance(value, int) or isinstance(value, bool):
             return False
     return True
 

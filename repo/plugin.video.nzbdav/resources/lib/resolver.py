@@ -120,7 +120,22 @@ def _resolve_stage(message):
             stage_file.flush()
             os.fsync(stage_file.fileno())
     except OSError:
+        # Best-effort stage breadcrumb only (debug aid). The xbmc.log line
+        # above is the real record; a missing/unwritable temp path must never
+        # break resolve.
         pass
+
+
+def _redact_log(value):
+    """Redact URLs/credentials out of a value before it reaches Kodi logs.
+
+    Backend/WebDAV exception strings and stream URLs can embed signed query
+    strings or inline credentials; mirror the lower-level API helpers'
+    redaction (see http_util.redact_text / direct_indexers / hydra).
+    """
+    from resources.lib.http_util import redact_text
+
+    return redact_text(str(value))
 
 
 def _clamp_int_setting(setting_id, value, lo, hi):
@@ -425,6 +440,8 @@ def _captured_bookmark_resume_seconds(cur, id_file, bookmark_columns):
         try:
             resume_seconds = max(resume_seconds, float(time_in_seconds))
         except (TypeError, ValueError):
+            # A non-numeric/NULL bookmark row is simply skipped; resume falls
+            # back to other rows (or 0.0). Best-effort — never abort cleanup.
             pass
     return resume_seconds
 
@@ -486,6 +503,20 @@ def _coerce_resume_seconds(value):
     return max(0.0, float(value))
 
 
+def _kodi_video_db_version(path):
+    """Numeric MyVideos schema version from a DB filename (-1 if unparseable).
+
+    Used as a sort key so the NEWEST DB wins by integer version; a plain
+    lexicographic sort picks MyVideos99.db over MyVideos131.db on upgraded
+    installs, which would target a stale DB for bookmark cleanup.
+    """
+    import os
+    import re
+
+    match = re.search(r"MyVideos(\d+)\.db$", os.path.basename(path))
+    return int(match.group(1)) if match else -1
+
+
 def _locate_kodi_video_db():
     """Return the newest MyVideos DB path, or None when unavailable."""
     try:
@@ -503,7 +534,10 @@ def _locate_kodi_video_db():
         import os
 
         db_dir = xbmcvfs.translatePath("special://database/")
-        db_files = sorted(glob.glob(os.path.join(db_dir, "MyVideos*.db")))
+        db_files = sorted(
+            glob.glob(os.path.join(db_dir, "MyVideos*.db")),
+            key=_kodi_video_db_version,
+        )
     except _DB_DISCOVERY_ERRORS as error:
         xbmc.log(
             "NZB-DAV: Failed to locate MyVideos DB for bookmark cleanup: {}".format(
@@ -1302,7 +1336,9 @@ def _finish_direct_playback(handle, prepared, resume_key="", resume_seconds=0.0)
         home = xbmcgui.Window(10000)
         if stream_info.get("direct"):
             xbmc.log(
-                "NZB-DAV: MP4 already faststart, direct play: {}".format(stream_url),
+                "NZB-DAV: MP4 already faststart, direct play: {}".format(
+                    _redact_log(stream_url)
+                ),
                 xbmc.LOGINFO,
             )
             bust_url = _cache_bust_url(stream_url)
@@ -1329,7 +1365,9 @@ def _finish_direct_playback(handle, prepared, resume_key="", resume_seconds=0.0)
     bust_url = _cache_bust_url(stream_url)
     play_url = _build_play_url(bust_url, stream_headers)
     xbmc.log(
-        "NZB-DAV: Playing direct (no proxy) (handle={}): {}".format(handle, bust_url),
+        "NZB-DAV: Playing direct (no proxy) (handle={}): {}".format(
+            handle, _redact_log(bust_url)
+        ),
         xbmc.LOGINFO,
     )
 
@@ -1365,7 +1403,9 @@ def _finish_player_playback(prepared, resume_key="", resume_seconds=0.0):
 
         if stream_info.get("direct"):
             xbmc.log(
-                "NZB-DAV: MP4 already faststart, direct play: {}".format(stream_url),
+                "NZB-DAV: MP4 already faststart, direct play: {}".format(
+                    _redact_log(stream_url)
+                ),
                 xbmc.LOGINFO,
             )
             bust_url = _cache_bust_url(stream_url)
@@ -1393,7 +1433,10 @@ def _finish_player_playback(prepared, resume_key="", resume_seconds=0.0):
     li = _make_playable_listitem(bust_url, stream_headers)
     _apply_resume_start_offset(li, resume_seconds)
     play_url = _build_play_url(bust_url, stream_headers)
-    xbmc.log("NZB-DAV: Playing direct (no proxy): {}".format(stream_url), xbmc.LOGINFO)
+    xbmc.log(
+        "NZB-DAV: Playing direct (no proxy): {}".format(_redact_log(stream_url)),
+        xbmc.LOGINFO,
+    )
     _set_playback_monitor_properties(
         home, play_url, stream_url, monitor_key, resume_seconds
     )
@@ -1708,6 +1751,13 @@ def _poll_once(
                             "storage": by_name.get("storage", ""),
                             "name": by_name.get("name", ""),
                             "fail_message": by_name.get("fail_message", ""),
+                            # Thread the validated terminal timestamp through
+                            # so the synthesized row carries the same
+                            # ``completed`` contract as a real history slot
+                            # (downstream consumers can re-apply the
+                            # stale-row guard without it being silently
+                            # absent).
+                            "completed": completed_ts,
                         }
             if _history_status_is_terminal(history_status[0]):
                 history_ready.set()
@@ -1884,6 +1934,8 @@ def _find_video_stream_for_folder(
                 )
             return video_path, stream_url, stream_headers
     except (AttributeError, ImportError):
+        # Optional fast-path helper is absent/incompatible on this build;
+        # fall through to the canonical find_video_file path below.
         pass
 
     kwargs = _settings_getter_kwargs(settings_getter)
@@ -2239,6 +2291,11 @@ def _submit_nzb_with_ui_pump(
     submit_result = [None, None]
     submit_done = threading.Event()
     activity_ready = threading.Event()
+    # Set when the user cancels or Kodi aborts while the (uninterruptible)
+    # addurl worker is still in flight. The worker re-checks this AFTER
+    # submit_nzb returns and cancels a late-accepted nzo_id so a user-cancelled
+    # download is never left running in nzbdav.
+    cancel_after_submit = threading.Event()
     submit_timeout_seconds = max(
         _get_submit_timeout_seconds(**_settings_getter_kwargs(settings_getter)), 1
     )
@@ -2253,6 +2310,28 @@ def _submit_nzb_with_ui_pump(
                 title,
                 **submit_kwargs,
             )
+            if submit_result[0] and cancel_after_submit.is_set():
+                # The user cancelled / Kodi aborted while addurl was still
+                # blocked; this nzo_id was accepted too late. Cancel it so the
+                # download does not keep running unattended in nzbdav.
+                try:
+                    cancel_job(
+                        submit_result[0],
+                        **_settings_getter_kwargs(settings_getter),
+                    )
+                    xbmc.log(
+                        "NZB-DAV: Cancelled late-accepted submit nzo_id={} for "
+                        "'{}' after user abort".format(submit_result[0], title),
+                        xbmc.LOGINFO,
+                    )
+                except Exception as cancel_error:  # pylint: disable=broad-except
+                    xbmc.log(
+                        "NZB-DAV: Failed to cancel late-accepted submit "
+                        "nzo_id={}: {}".format(
+                            submit_result[0], _redact_log(cancel_error)
+                        ),
+                        xbmc.LOGWARNING,
+                    )
         except Exception as e:  # pylint: disable=broad-except
             xbmc.log(
                 "NZB-DAV: submit_nzb worker raised: {}".format(e),
@@ -2465,10 +2544,12 @@ def _submit_nzb_with_ui_pump(
                     "NZB-DAV: User cancelled during submit for '{}'".format(title),
                     xbmc.LOGINFO,
                 )
+                cancel_after_submit.set()
                 return None, {"status": "cancelled", "message": ""}
             if _wait_for_submit_activity_or_abort(
                 _SUBMIT_ADOPTION_CHECK_INTERVAL_SECONDS
             ):
+                cancel_after_submit.set()
                 return None, {"status": "shutdown", "message": ""}
             probe_result = _probe_adoption_result()
             if probe_result:
@@ -2705,7 +2786,7 @@ def _completed_copy_blocks_clear(title, settings_getter):
     if result.get("error") is not None:
         xbmc.log(
             "NZB-DAV: completed-adopt probe failed before clearing the queue; "
-            "leaving queue intact: {}".format(result["error"]),
+            "leaving queue intact: {}".format(_redact_log(result["error"])),
             xbmc.LOGWARNING,
         )
         return True
@@ -2743,7 +2824,7 @@ def _maybe_clear_queue_before_submit(
     except Exception as error:  # pylint: disable=broad-except
         xbmc.log(
             "NZB-DAV: queue probe before submit failed; leaving queue intact: "
-            "{}".format(error),
+            "{}".format(_redact_log(error)),
             xbmc.LOGWARNING,
         )
         return
@@ -2890,7 +2971,10 @@ def _submit_nzb_with_retries(
             elif status in _TRANSIENT_HTTP_STATUSES:
                 xbmc.log(
                     "NZB-DAV: Submit attempt {}/{} hit transient HTTP {}: {}".format(
-                        attempt, max_submit_retries, status, submit_error["message"]
+                        attempt,
+                        max_submit_retries,
+                        status,
+                        _redact_log(submit_error["message"]),
                     ),
                     xbmc.LOGWARNING,
                 )
@@ -2901,7 +2985,7 @@ def _submit_nzb_with_retries(
                 # showing a generic failure.
                 xbmc.log(
                     "NZB-DAV: nzbdav rejected the NZB for '{}': {}".format(
-                        title, submit_error["message"]
+                        title, _redact_log(submit_error["message"])
                     ),
                     xbmc.LOGERROR,
                 )
@@ -2917,7 +3001,7 @@ def _submit_nzb_with_retries(
                 # probing queue/history just leaves the progress dialog stuck.
                 xbmc.log(
                     "NZB-DAV: Submit failed with HTTP {}, not probing queue: "
-                    "{}".format(status, submit_error["message"]),
+                    "{}".format(status, _redact_log(submit_error["message"])),
                     xbmc.LOGERROR,
                 )
                 _close_dialog_before_submit_error(dialog)
@@ -2948,7 +3032,7 @@ def _submit_nzb_with_retries(
                     return adopted_nzo_id
                 xbmc.log(
                     "NZB-DAV: Submit failed with HTTP {}, not retrying: {}".format(
-                        status, submit_error["message"]
+                        status, _redact_log(submit_error["message"])
                     ),
                     xbmc.LOGERROR,
                 )
@@ -3435,6 +3519,9 @@ def _start_fallback_submit_worker(
                     try:
                         _notify(_addon_name(), _string(30187), 4000)
                     except (RuntimeError, OSError):
+                        # The "no fallback candidates" toast is cosmetic; a UI
+                        # failure (e.g. during shutdown) must not break the
+                        # best-effort fallback worker's clean return.
                         pass
                 return
             _submit_fallback_candidates(
@@ -3459,7 +3546,18 @@ def _start_fallback_submit_worker(
         target=_worker, name="nzbdav-fallback-submit", daemon=True
     )
     state["thread"] = thread
-    thread.start()
+    try:
+        thread.start()
+    except RuntimeError as error:
+        # Thread creation can fail during Kodi shutdown / interpreter
+        # teardown. Fallbacks are best-effort, so fail soft: mark the worker
+        # finished and let the resolve path continue instead of propagating.
+        state["thread"] = None
+        state["finished"].set()
+        xbmc.log(
+            "NZB-DAV: Fallback submit worker did not start: {}".format(error),
+            xbmc.LOGWARNING,
+        )
     return state
 
 
@@ -3981,7 +4079,15 @@ def _handle_resolve_exception(label, error, handle=None):
     xbmc.log(
         "NZB-DAV: Unexpected error in {}: {}".format(label, message), xbmc.LOGERROR
     )
-    xbmcgui.Dialog().ok(_addon_name(), "Error: {}".format(message))
+    # The error dialog is best-effort UI; if it raises, the handle-based
+    # resolve must still receive its False resolution below or Kodi hangs.
+    try:
+        xbmcgui.Dialog().ok(_addon_name(), "Error: {}".format(message))
+    except (RuntimeError, OSError, TypeError) as dialog_error:
+        xbmc.log(
+            "NZB-DAV: resolve error dialog failed: {}".format(dialog_error),
+            xbmc.LOGWARNING,
+        )
     if handle is not None:
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
         xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
@@ -4205,7 +4311,16 @@ def resolve(handle, params):
     playback_cleanup_state = None
 
     if not nzb_url:
-        xbmcgui.Dialog().ok(_addon_name(), _string(30096))
+        # The notification is optional UI; if Dialog().ok() raises (e.g. during
+        # shutdown) the handle-based resolve must still receive its False
+        # resolution or Kodi hangs (TODO.md §H.2-H9 no-hang guarantee).
+        try:
+            xbmcgui.Dialog().ok(_addon_name(), _string(30096))
+        except (RuntimeError, OSError, TypeError) as error:
+            xbmc.log(
+                "NZB-DAV: missing-URL notification failed: {}".format(error),
+                xbmc.LOGWARNING,
+            )
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
         xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
         return

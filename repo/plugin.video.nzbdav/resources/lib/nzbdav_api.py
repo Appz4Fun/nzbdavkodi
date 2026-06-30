@@ -50,7 +50,9 @@ def _response_slots(response, section_name):
     if not isinstance(section, dict):
         return []
     slots = section.get("slots", [])
-    return slots if isinstance(slots, list) else []
+    if not isinstance(slots, list):
+        return []
+    return [slot for slot in slots if isinstance(slot, dict)]
 
 
 def _sanitize_server_message(raw):
@@ -318,7 +320,9 @@ def submit_nzb(nzb_url, nzb_name="", settings_getter=None, submit_timeout=None):
     )
     return None, {
         "status": "rejected",
-        "message": str(error_msg) if error_msg else "nzbdav rejected the NZB",
+        "message": (
+            _redact_text(str(error_msg)) if error_msg else "nzbdav rejected the NZB"
+        ),
     }
 
 

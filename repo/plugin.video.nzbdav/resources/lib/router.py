@@ -611,6 +611,19 @@ def _script_completed_job_for_selection(selected):
         return None
 
 
+def _provider_error_message(provider_label, error):
+    """Format a provider failure, redacting any secrets the exception leaked.
+
+    urllib/provider exceptions routinely embed the full request URL (apikey
+    and all) in ``str(error)``. router.py later logs this and surfaces it to
+    the UI, so it must pass through the same ``redact_text`` scrub the
+    connection tests use before any provider error escapes.
+    """
+    from resources.lib.http_util import redact_text
+
+    return "{} search failed: {}".format(provider_label, redact_text(str(error)))
+
+
 def _search_all_providers(
     search_type,
     title,
@@ -811,7 +824,7 @@ def _search_all_providers(
                 kwargs,
             )
         except Exception as error:  # pylint: disable=broad-exception-caught
-            outcome = ([], "{} search failed: {}".format(provider_label, error))
+            outcome = ([], _provider_error_message(provider_label, error))
         provider_outcomes = [
             (
                 provider_label,
@@ -850,7 +863,7 @@ def _search_all_providers(
                             provider_label,
                             (
                                 [],
-                                "{} search failed: {}".format(provider_label, error),
+                                _provider_error_message(provider_label, error),
                             ),
                         )
                     )
@@ -1261,7 +1274,16 @@ def _handle_direct_play(handle, params):
             opener = urllib_request.urlopen if urlopen is _ORIGINAL_URLOPEN else urlopen
             with opener(req, timeout=10) as resp:  # nosec B310
                 headers = getattr(resp, "headers", {}) or {}
-                length = int(headers.get("Content-Length", "1") or 1)
+                raw_length = headers.get("Content-Length")
+                if raw_length in (None, ""):
+                    # A HEAD without Content-Length is an UNKNOWN size, not a
+                    # 1-byte body; fabricating length 1 would hand the proxy a
+                    # bogus content length. Surface it as a failure instead.
+                    return 0, "missing-length"
+                try:
+                    length = int(raw_length)
+                except (TypeError, ValueError):
+                    return 0, "invalid-length"
                 if length <= 0:
                     return 0, "missing-length"
                 return length, ""
@@ -2162,13 +2184,44 @@ def _json_object(response):
     return data if isinstance(data, dict) else {}
 
 
+def _build_xxe_safe_xml_parser(element_tree):
+    """Return an ElementTree XMLParser with external entities disabled.
+
+    Mirrors ``prowlarr._build_xxe_safe_parser`` / ``hydra``: a hostile or
+    compromised Hydra/Newznab instance could otherwise coerce us into reading
+    arbitrary local files via an XXE payload in its (user-configured) response.
+    """
+    parser = element_tree.XMLParser()  # nosec B314 — entities disabled below
+    try:
+        parser.parser.DefaultHandler = lambda _d: None
+        parser.parser.ExternalEntityRefHandler = lambda *_: False
+    except AttributeError:  # pragma: no cover — non-expat parser backend
+        pass
+    return parser
+
+
 def _xml_root_name(response):
-    """Return the unqualified root XML tag name, lowercased."""
-    import xml.etree.ElementTree as ET  # nosec B405 - trusted service response
+    """Return the unqualified root XML tag name, lowercased.
+
+    The payload is a user-configured Hydra/Newznab service response, so it is
+    parsed with external entity resolution disabled (defusedxml when bundled,
+    otherwise an XXE-hardened stdlib parser) to keep parity with the other XML
+    clients. ``defusedxml``'s ``DefusedXmlException`` subclasses ``ValueError``,
+    so a hostile payload falls through to the empty-string fallback.
+    """
+    try:
+        from defusedxml import ElementTree as element_tree
+    except ImportError:  # pragma: no cover - Kodi installs may not bundle defusedxml
+        from xml.etree import ElementTree as element_tree
 
     try:
-        root = ET.fromstring(response)  # nosec B314 - trusted service response
-    except (TypeError, ET.ParseError):
+        if getattr(element_tree, "__name__", "").startswith("defusedxml."):
+            root = element_tree.fromstring(response)
+        else:
+            root = element_tree.fromstring(  # nosec B314 — XXE-safe parser below
+                response, parser=_build_xxe_safe_xml_parser(element_tree)
+            )
+    except (TypeError, ValueError, element_tree.ParseError):
         return ""
     return root.tag.rsplit("}", 1)[-1].lower()
 

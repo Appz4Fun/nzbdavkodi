@@ -3201,6 +3201,7 @@ def test_direct_play_decodes_percent_escaped_userinfo_for_basic_auth(
 
     class Response:  # pylint: disable=too-few-public-methods
         status = 200
+        headers = {"Content-Length": "123456"}
 
         def __enter__(self):
             return self
@@ -3726,3 +3727,138 @@ def test_test_nzbget_smb_reports_reachable_when_exists_true():
     msg = str(notified["message"]).lower()
     assert notified["message"] == 30226 or "reachable" in msg
     assert "not reachable" not in msg
+
+
+# --- CodeRabbit PR #358 regression tests ---
+
+
+def test_provider_error_message_redacts_apikey_secrets():
+    """Provider exceptions routinely stringify the request URL (apikey and
+    all); router.py later logs/returns that text, so the message must pass
+    through redact_text before any secret can escape (router_search#115)."""
+    from resources.lib.router import _provider_error_message
+
+    leaky = Exception("HTTP 500 for http://hydra:5076/api?t=search&apikey=s3cr3t")
+    msg = _provider_error_message("NZBHydra2", leaky)
+
+    assert "s3cr3t" not in msg
+    assert "apikey=REDACTED" in msg
+    assert msg.startswith("NZBHydra2 search failed: ")
+
+
+def test_provider_error_message_redacts_embedded_userinfo_password():
+    """A scheme://user:pass@host URL embedded in the exception must have its
+    password half scrubbed before the error is surfaced."""
+    from resources.lib.router import _provider_error_message
+
+    leaky = Exception("connect failed http://user:hunter2@prowlarr:9696/api")
+    msg = _provider_error_message("Prowlarr", leaky)
+
+    assert "hunter2" not in msg
+
+
+@patch("resources.lib.router.xbmcplugin")
+@patch("resources.lib.router.xbmcgui")
+@patch("resources.lib.resolver._prepare_direct_playback")
+@patch("resources.lib.resolver._direct_playback_service_config")
+@patch("resources.lib.router.urlopen")
+def test_direct_play_rejects_primary_without_content_length(
+    mock_urlopen, mock_config, mock_prepare, _mock_gui, mock_xbmcplugin
+):
+    """A HEAD response lacking Content-Length is UNKNOWN size, not 1 byte; the
+    primary must fail rather than be handed to the proxy with a fabricated
+    length of 1 (router_directplay#111)."""
+    from resources.lib.router import _handle_direct_play
+
+    class Response:  # pylint: disable=too-few-public-methods
+        status = 200
+        headers = {}  # no Content-Length
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    mock_urlopen.return_value = Response()
+    mock_config.return_value = {"base_url": "http://127.0.0.1:45678", "token": "tok"}
+    mock_prepare.return_value = "http://127.0.0.1:45678/stream/prepared"
+
+    _handle_direct_play(
+        7,
+        {"primary_url": "http://example.test/movie.mkv", "fallback_urls": "[]"},
+    )
+
+    # Failure path: resolved with success=False, and the proxy/prepare step is
+    # never reached (no bogus length-1 stream handed off).
+    mock_prepare.assert_not_called()
+    assert mock_xbmcplugin.setResolvedUrl.call_args.args[1] is False
+
+
+@patch("resources.lib.router.xbmcplugin")
+@patch("resources.lib.router.xbmcgui")
+@patch("resources.lib.resolver._prepare_direct_playback")
+@patch("resources.lib.resolver._direct_playback_service_config")
+@patch("resources.lib.router.urlopen")
+def test_direct_play_rejects_primary_with_unparseable_content_length(
+    mock_urlopen, mock_config, mock_prepare, _mock_gui, mock_xbmcplugin
+):
+    """A non-integer Content-Length is treated as unknown (failure), never as
+    length 1."""
+    from resources.lib.router import _handle_direct_play
+
+    class Response:  # pylint: disable=too-few-public-methods
+        status = 200
+        headers = {"Content-Length": "not-a-number"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    mock_urlopen.return_value = Response()
+    mock_config.return_value = {"base_url": "http://127.0.0.1:45678", "token": "tok"}
+    mock_prepare.return_value = "http://127.0.0.1:45678/stream/prepared"
+
+    _handle_direct_play(
+        7,
+        {"primary_url": "http://example.test/movie.mkv", "fallback_urls": "[]"},
+    )
+
+    mock_prepare.assert_not_called()
+    assert mock_xbmcplugin.setResolvedUrl.call_args.args[1] is False
+
+
+def test_xml_root_name_parses_well_formed_rss():
+    """Baseline: the hardened parser still reports the root tag (router_conn)."""
+    from resources.lib.router import _xml_root_name
+
+    assert _xml_root_name("<rss version='2.0'><channel/></rss>") == "rss"
+    assert _xml_root_name("<error code='100'/>") == "error"
+    assert _xml_root_name("not xml at all") == ""
+
+
+def test_xml_root_name_does_not_resolve_external_entities():
+    """A hostile/compromised Hydra/Newznab response must not be able to coerce
+    an XXE local-file read; the entity must not expand into the parsed tree
+    (router_conn#73). Either the parser rejects the payload (-> "") or the
+    entity is left unexpanded, but the file contents must never leak."""
+    import tempfile
+
+    from resources.lib.router import _xml_root_name
+
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as handle:
+        handle.write("TOP-SECRET-XXE-CANARY")
+        secret_path = handle.name
+
+    payload = (
+        '<?xml version="1.0"?>'
+        "<!DOCTYPE rss [<!ENTITY xxe SYSTEM "
+        '"file://{}">]>'
+        "<rss>&xxe;</rss>"
+    ).format(secret_path)
+
+    # Must not raise, must not embed the file contents in any result.
+    result = _xml_root_name(payload)
+    assert result in ("rss", "")

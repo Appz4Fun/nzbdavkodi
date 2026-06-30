@@ -350,7 +350,11 @@ def fetch_release_duplicate_uploads(picked, settings_getter=None):
         )
         return []
 
-    raw_results = data.get("searchResults", []) if isinstance(data, dict) else []
+    if not isinstance(data, dict):
+        raw_results = []
+    else:
+        search_results = data.get("searchResults", [])
+        raw_results = search_results if isinstance(search_results, list) else []
     picked_link = picked.get("link", "") if isinstance(picked, dict) else ""
     uploads = []
     for raw in raw_results:

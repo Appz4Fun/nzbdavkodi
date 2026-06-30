@@ -93,12 +93,18 @@ def get_cached(search_type, title, **kwargs):
             try:
                 os.remove(path)
             except OSError:
+                # Best-effort cleanup of a corrupt cache entry; a failed
+                # delete (perms/race) is non-fatal since we return None
+                # and the stale file is simply ignored / overwritten later.
                 pass
             return None
         if time.time() - timestamp > cache_ttl:
             try:
                 os.remove(path)
             except OSError:
+                # Best-effort eviction of an expired entry; a failed delete
+                # (perms/race) is non-fatal since we return None and the
+                # stale file is ignored until the next write or eviction.
                 pass
             return None
         try:

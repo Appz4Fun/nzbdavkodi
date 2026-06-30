@@ -105,11 +105,17 @@ def _write(path, payload):
             try:
                 os.close(fd)
             except OSError:
+                # Best-effort cleanup after a failed write; closing the
+                # dangling descriptor is non-fatal (the write already
+                # failed and was logged above) so swallow any close error.
                 pass
         if tmp_path:
             try:
                 os.unlink(tmp_path)
             except OSError:
+                # Best-effort removal of the orphaned temp file; an unlink
+                # failure (perms/race/already-gone) is non-fatal cleanup,
+                # so swallow it rather than masking the original error.
                 pass
 
 

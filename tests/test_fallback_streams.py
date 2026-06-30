@@ -5050,3 +5050,65 @@ def test_rank_fallback_candidates_dedupes_same_postdate():
     assert "https://distinct/nzb" in links
     assert ("https://early/nzb" in links) != ("https://dupe/nzb" in links)
     assert len(ranked) == 2
+
+
+def test_path_is_under_base_rejects_encoded_traversal():
+    """FS: canonicalize decoded paths before the base-path allow-list check.
+
+    A percent-encoded traversal like ``/dav/%2e%2e/admin`` passes a raw-prefix
+    match against base ``/dav`` but resolves outside it once the server decodes
+    it, which would leak the forwarded Authorization header to an escaped path.
+    The containment check must decode and reject the escape.
+    """
+    from resources.lib import fallback_streams as fs
+
+    # Legitimate in-base paths still pass (encoded and plain).
+    assert fs._path_is_under_base("/dav", "/dav") is True
+    assert fs._path_is_under_base("/dav/movie.mkv", "/dav") is True
+    assert fs._path_is_under_base("/dav/a%20b/movie.mkv", "/dav") is True
+    # Encoded ".." traversal under the base must be rejected.
+    assert fs._path_is_under_base("/dav/%2e%2e/admin", "/dav") is False
+    assert fs._path_is_under_base("/dav/sub/%2e%2e/%2e%2e/etc", "/dav") is False
+    # Raw ".." segments and backslash escapes are rejected too.
+    assert fs._path_is_under_base("/dav/../admin", "/dav") is False
+    assert fs._path_is_under_base("/dav\\..\\admin", "/dav") is False
+    # A sibling that merely shares the base prefix string is not "under" it.
+    assert fs._path_is_under_base("/davother/file", "/dav") is False
+
+
+def test_validated_probe_url_rejects_encoded_traversal():
+    """FS: encoded traversal must not survive probe-URL validation.
+
+    The Authorization-forwarding probe path (fetch_content_length /
+    fetch_range_digest) only runs on a URL that passes _validated_probe_url, so a
+    traversal that escapes the configured base must validate to None.
+    """
+    from resources.lib import fallback_streams as fs
+    from resources.lib.fallback_streams import _split_http_url
+
+    base = _split_http_url("https://host/dav")
+    assert base is not None
+
+    good = fs._validated_probe_url("https://host/dav/movie.mkv", probe_bases=[base])
+    assert good == "https://host/dav/movie.mkv"
+
+    escaped = fs._validated_probe_url(
+        "https://host/dav/%2e%2e/admin", probe_bases=[base]
+    )
+    assert escaped is None
+
+
+def test_titles_core_related_strict_subset_after_equality_fast_path():
+    """FS: the subset branch uses strict subsets (equality handled earlier).
+
+    The ``left == right`` fast path returns before the subset test, so the
+    subset comparison must be a strict subset on each side; a disjoint pair
+    (neither a subset of the other) is rejected without corroboration.
+    """
+    from resources.lib import fallback_streams as fs
+
+    # Proper-subset (junk suffix) repost still accepted in both directions.
+    assert fs._titles_core_related("the matrix", "the matrix mirror") is True
+    assert fs._titles_core_related("the matrix mirror", "the matrix") is True
+    # Identical titles still take the equality fast path.
+    assert fs._titles_core_related("the matrix", "the matrix") is True

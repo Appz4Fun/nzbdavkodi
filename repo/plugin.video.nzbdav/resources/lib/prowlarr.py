@@ -356,9 +356,12 @@ def _parse_json_results(text):
 
     if not isinstance(data, list):
         # Prowlarr error bodies are JSON objects ({"error": ...}), not arrays.
+        from resources.lib.http_util import redact_text
+
         message = ""
         if isinstance(data, dict):
-            message = data.get("error") or data.get("message") or ""
+            raw_message = data.get("error") or data.get("message") or ""
+            message = redact_text(str(raw_message)) if raw_message else ""
         xbmc.log(
             "NZB-DAV: Unexpected Prowlarr JSON payload (not an array): {}".format(
                 message or type(data).__name__
