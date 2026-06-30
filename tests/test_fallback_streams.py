@@ -3,7 +3,6 @@
 
 import hashlib
 import threading
-import time as _time
 from unittest.mock import ANY, MagicMock, patch
 from urllib.error import URLError
 from urllib.parse import urlsplit
@@ -32,6 +31,36 @@ def _clear_fallback_manifest_cache():
     fallback_streams.clear_fallback_manifest_cache()
     yield
     fallback_streams.clear_fallback_manifest_cache()
+
+
+# Generous structural ceiling for the "does not block on the optional tail"
+# guards below. Correct selection returns in milliseconds, so this is only ever
+# reached on a regression that actually waits on the still-pending fetch -- it
+# is NOT a wall-clock latency bound (the old `elapsed < 0.2`-style asserts were
+# flaky under machine load). The gated fetch blocks far longer than this, so a
+# blocking regression keeps the worker alive past the deadline and fails red.
+_NONBLOCKING_DEADLINE = 5.0
+
+
+def _attach_returns_without_blocking(selected, pool, deadline=_NONBLOCKING_DEADLINE):
+    """Run ``attach_fallback_candidates_for_selection`` in a worker and report
+    whether it RETURNED while a test-gated optional fetch is still pending.
+
+    Structural replacement for a ``elapsed < X`` timing assert: the optional
+    fetch blocks on an event the test only releases afterwards, so a correct,
+    non-blocking selection finishes the worker near-instantly (returns True),
+    while a regression that waits on the optional tail leaves the worker alive
+    until ``deadline`` (returns False -> caller asserts red). Daemon thread so a
+    regressed run can never hang the suite.
+    """
+    finished = threading.Event()
+
+    def _run():
+        attach_fallback_candidates_for_selection(selected, pool)
+        finished.set()
+
+    threading.Thread(target=_run, daemon=True).start()
+    return finished.wait(deadline)
 
 
 def _mock_range_response(body, status=206, headers=None):
@@ -1397,22 +1426,17 @@ def test_selection_fallback_skips_candidate_wait_after_unusable_selected_manifes
         if url == selected["link"]:
             return manifests[url]
         candidate_started.set()
-        release_candidates.wait(timeout=1)
+        release_candidates.wait(timeout=30)
         return manifests[url]
 
     mock_fetch.side_effect = fetch
-    release_timer = threading.Timer(0.3, release_candidates.set)
-    release_timer.start()
     try:
-        before = _time.monotonic()
-        attach_fallback_candidates_for_selection(selected, [selected] + candidates)
-        elapsed = _time.monotonic() - before
+        returned = _attach_returns_without_blocking(selected, [selected] + candidates)
     finally:
         release_candidates.set()
-        release_timer.cancel()
 
-    assert candidate_started.wait(0.2)
-    assert elapsed < 0.2
+    assert returned, "attach blocked on the still-pending candidate fetch"
+    assert candidate_started.is_set()
     assert selected["_fallback_candidates"] == []
     assert selected["_fallback_manifest_error"] == "fetch_error"
 
@@ -2085,22 +2109,17 @@ def test_selection_fallback_uses_later_completed_candidate_instead_of_slow_gap(
     def fetch(url, **_kwargs):
         if url == candidates[1]["link"]:
             slow_started.set()
-            release_slow.wait(timeout=1)
+            release_slow.wait(timeout=30)
         return manifests[url]
 
     mock_fetch.side_effect = fetch
-    release_timer = threading.Timer(0.25, release_slow.set)
-    release_timer.start()
     try:
-        before = _time.monotonic()
-        attach_fallback_candidates_for_selection(selected, [selected] + candidates)
-        elapsed = _time.monotonic() - before
+        returned = _attach_returns_without_blocking(selected, [selected] + candidates)
     finally:
         release_slow.set()
-        release_timer.cancel()
 
+    assert returned, "attach blocked on the slow gap candidate"
     assert slow_started.is_set()
-    assert elapsed < 0.18
     assert selected["_fallback_candidates"] == [candidates[0], candidates[2]]
 
 
@@ -2286,22 +2305,17 @@ def test_selection_fallback_does_not_wait_for_optional_tail_after_max_filled(
     def fetch(url, **_kwargs):
         if url == candidates[6]["link"]:
             slow_started.set()
-            release_slow.wait(timeout=1)
+            release_slow.wait(timeout=30)
         return manifests[url]
 
     mock_fetch.side_effect = fetch
-    release_timer = threading.Timer(0.25, release_slow.set)
-    release_timer.start()
     try:
-        before = _time.monotonic()
-        attach_fallback_candidates_for_selection(selected, [selected] + candidates)
-        elapsed = _time.monotonic() - before
+        returned = _attach_returns_without_blocking(selected, [selected] + candidates)
     finally:
         release_slow.set()
-        release_timer.cancel()
 
+    assert returned, "attach blocked on the optional tail after max filled"
     assert slow_started.is_set()
-    assert elapsed < 0.18
     assert selected["_fallback_candidates"] == candidates[:4] + [candidates[5]]
 
 
@@ -2356,22 +2370,17 @@ def test_selection_fallback_does_not_wait_for_optional_tail_after_partial_match(
     def fetch(url, **_kwargs):
         if url == candidates[1]["link"]:
             slow_started.set()
-            release_slow.wait(timeout=1)
+            release_slow.wait(timeout=30)
         return manifests[url]
 
     mock_fetch.side_effect = fetch
-    release_timer = threading.Timer(0.3, release_slow.set)
-    release_timer.start()
     try:
-        before = _time.monotonic()
-        attach_fallback_candidates_for_selection(selected, [selected] + candidates)
-        elapsed = _time.monotonic() - before
+        returned = _attach_returns_without_blocking(selected, [selected] + candidates)
     finally:
         release_slow.set()
-        release_timer.cancel()
 
+    assert returned, "attach blocked on the optional tail after partial match"
     assert slow_started.is_set()
-    assert elapsed < 0.22
     assert selected["_fallback_candidates"] == [candidates[0]]
 
 
