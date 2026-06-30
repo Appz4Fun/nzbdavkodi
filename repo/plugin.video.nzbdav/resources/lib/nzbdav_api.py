@@ -97,7 +97,7 @@ _SUBMIT_TIMEOUT_MAX = 600
 
 
 def _get_submit_timeout(settings_getter=None):
-    """Read the configurable submit timeout from settings, default 120s.
+    """Read the configurable submit timeout from settings, default 300s.
 
     Clamped to [_SUBMIT_TIMEOUT_MIN, _SUBMIT_TIMEOUT_MAX] so a typo
     in the Kodi settings UI can't produce a 83-hour timeout."""
@@ -596,7 +596,7 @@ def find_queued_by_name(name, settings_getter=None):
 
     Side effects:
         One HTTP GET to nzbdav /api?mode=queue with a bounded timeout
-        (30 s — this is a recovery-path probe, not the main submit).
+        (10 s — this is a recovery-path probe, not the main submit).
         No retries; the resolver calls this in a short loop after a
         submit timeout and handles its own pacing.
     """

@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, urlparse
 from urllib.request import urlopen
 
 import xbmc
-import xbmcaddon  # noqa: F401  # re-exported; router_settings/router_conn use _router.xbmcaddon
+import xbmcaddon  # noqa: F401  # re-exported; router_conn uses _router.xbmcaddon
 import xbmcgui
 import xbmcplugin
 

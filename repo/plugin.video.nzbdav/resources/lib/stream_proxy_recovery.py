@@ -12,8 +12,8 @@ names are re-exported by ``stream_proxy`` so existing references and test
 patches keep resolving.
 
 Plain constants are imported from ``stream_proxy``; parent helpers and any
-monkeypatch target (``xbmc``, ``_notify``, ``urlopen``) are reached at call
-time via ``_sp.<name>`` so patching keeps working.
+monkeypatch target (``xbmc``, ``_notify``) are reached at call time via
+``_sp.<name>`` so patching keeps working.
 """
 
 import socket as _socket  # noqa: E402

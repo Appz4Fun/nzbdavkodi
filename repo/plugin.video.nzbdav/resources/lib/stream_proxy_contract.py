@@ -11,7 +11,7 @@ and the zero-fill density-breaker window math. All names are re-exported by
 ``stream_proxy`` so existing references and test patches keep resolving.
 
 Plain constants are imported from ``stream_proxy``; parent helpers and any
-monkeypatch target (``xbmc``, ``urlopen``) are reached at call time via
+monkeypatch target (``xbmc``) are reached at call time via
 ``_sp.<name>`` so patching keeps working.
 """
 

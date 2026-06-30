@@ -467,7 +467,7 @@ def _release_similarity(primary, candidate):
 
     None means different content (hard reject). Otherwise:
       0  same resolution + codec + group, size within ~3%
-      1  same resolution + codec, size within ~10%
+      1  same resolution + codec
       2  same resolution, different codec
       3  same content, anything else (last resort)
     Lower tiers are tried first.

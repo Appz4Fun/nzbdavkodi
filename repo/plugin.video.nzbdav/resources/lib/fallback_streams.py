@@ -90,8 +90,9 @@ FALLBACK_CANDIDATES_DISABLED = object()
 # Cohesive helper groups split into sibling modules to keep this module
 # below Codacy's 500-NLOC file gate. Re-exported here so test imports and
 # ``@patch("resources.lib.fallback_streams.<name>")`` keep resolving; moved
-# helpers reach back via a function-local ``import resources.lib.fallback_streams
-# as _fs`` (call-time resolution preserves patches and breaks the import cycle).
+# helpers reach back via a module-level ``import resources.lib.fallback_streams
+# as _fs`` (call-time ``_fs.<name>`` resolution preserves patches; the import
+# cycle is benign/latent).
 from resources.lib.fallback_streams_attach import (  # noqa: F401,E402  pylint: disable=wrong-import-position
     _attach_candidates_for_target,
     _best_ranked_in_cluster,

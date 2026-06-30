@@ -123,8 +123,8 @@ _HLS_PRIVATE_TEMP_ROOT_LOCK = threading.Lock()
 # stream_proxy's module-level configuration constants live in
 # ``stream_proxy_const`` and are re-exported here so every ``stream_proxy.<NAME>``
 # reference keeps resolving -- the sibling mixins read them as ``_sp.<NAME>`` at
-# import time, the handler/producer class bodies below capture some as default-arg
-# values, and tests ``@patch`` them on this module. The names are imported
+# import time (including as default-argument values in their method signatures),
+# and tests ``@patch`` them on this module. The names are imported
 # EXPLICITLY (not ``import *``) so static analysers can follow the re-export chain
 # from ``from resources.lib.stream_proxy import _NAME`` in tests. This import MUST
 # stay above ``class _StreamHandler`` and the sibling mixin imports so load order holds.

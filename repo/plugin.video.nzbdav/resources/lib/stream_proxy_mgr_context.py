@@ -2,7 +2,7 @@
 # Copyright (C) 2026 nzbdav contributors
 # pylint: disable=cyclic-import
 
-"""Stream-context construction and prepare_stream handoff.
+"""Stream-context construction.
 
 Stage-3 mixin split of ``stream_proxy.StreamProxy``. These methods were moved
 verbatim; every reference to a ``stream_proxy`` module-level name is reached at
@@ -15,7 +15,7 @@ import resources.lib.stream_proxy as _sp  # noqa: E402
 
 
 class _MgrContextBuildMixin:  # pylint: disable=too-few-public-methods
-    """Stream-context construction and prepare_stream handoff."""
+    """Stream-context construction."""
 
     @staticmethod
     def _try_faststart_layout(remote_url, content_length, auth_header):

@@ -7,7 +7,7 @@
 These are the non-test-patched internals behind ``_search_all_providers`` and
 ``_tag_available`` (both of which stay in ``router`` because the suite imports /
 patches them). Names that the suite patches via ``resources.lib.router`` —
-``telemetry``, ``get_completed_jobs``, ``downloaded_pubdate_epochs`` — are
+``telemetry``, ``downloaded_pubdate_epochs`` — are
 reached at call time through ``import resources.lib.router as _router`` so those
 ``@patch`` decorators keep resolving; everything else is imported normally.
 """

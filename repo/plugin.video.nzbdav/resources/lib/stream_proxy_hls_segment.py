@@ -9,8 +9,9 @@ moved verbatim; every reference to a ``stream_proxy`` module-level name is
 reached at call time via ``_sp.<name>`` so test monkeypatches on
 ``resources.lib.stream_proxy`` keep resolving. MRO composes them back onto
 ``HlsProducer``; they keep using ``self`` for instance state, ``self._lock``
-for the producer lock, and the ``_PREPARE_PRODUCTION_TIMEOUT_SECONDS`` class
-attribute (which stays on ``HlsProducer``).
+for the producer lock, and capture ``_HLS_SEGMENT_WAIT_SECONDS`` as a
+default-argument value (``timeout=_sp._HLS_SEGMENT_WAIT_SECONDS``) in
+``wait_for_init`` / ``wait_for_segment``.
 """
 
 import resources.lib.stream_proxy as _sp  # noqa: E402
