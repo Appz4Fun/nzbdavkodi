@@ -131,6 +131,32 @@ def _await_adoptable_probe_result(lock, result, progress, expected_done):
         progress.clear()
 
 
+def _cancel_late_accepted_submit(nzo_id, title, settings_getter):
+    """Cancel an nzo_id accepted after the user cancelled / Kodi aborted.
+
+    The (uninterruptible) addurl worker re-checks the cancel flag AFTER
+    ``submit_nzb`` returns; if the job was accepted too late, cancel it so the
+    download does not keep running unattended in nzbdav. Best-effort: any
+    cancel error is logged (redacted) and swallowed.
+    """
+    try:
+        _resolver.cancel_job(
+            nzo_id,
+            **_resolver._settings_getter_kwargs(settings_getter),
+        )
+        _resolver.xbmc.log(
+            "NZB-DAV: Cancelled late-accepted submit nzo_id={} for "
+            "'{}' after user abort".format(nzo_id, title),
+            _resolver.xbmc.LOGINFO,
+        )
+    except Exception as cancel_error:  # pylint: disable=broad-except
+        _resolver.xbmc.log(
+            "NZB-DAV: Failed to cancel late-accepted submit "
+            "nzo_id={}: {}".format(nzo_id, _resolver._redact_log(cancel_error)),
+            _resolver.xbmc.LOGWARNING,
+        )
+
+
 def _submit_nzb_with_ui_pump(
     nzb_url, title, dialog, monitor, settings_getter=None, rejected_completed_ids=None
 ):
@@ -189,27 +215,7 @@ def _submit_nzb_with_ui_pump(
                 **submit_kwargs,
             )
             if submit_result[0] and cancel_after_submit.is_set():
-                # The user cancelled / Kodi aborted while addurl was still
-                # blocked; this nzo_id was accepted too late. Cancel it so the
-                # download does not keep running unattended in nzbdav.
-                try:
-                    _resolver.cancel_job(
-                        submit_result[0],
-                        **_resolver._settings_getter_kwargs(settings_getter),
-                    )
-                    _resolver.xbmc.log(
-                        "NZB-DAV: Cancelled late-accepted submit nzo_id={} for "
-                        "'{}' after user abort".format(submit_result[0], title),
-                        _resolver.xbmc.LOGINFO,
-                    )
-                except Exception as cancel_error:  # pylint: disable=broad-except
-                    _resolver.xbmc.log(
-                        "NZB-DAV: Failed to cancel late-accepted submit "
-                        "nzo_id={}: {}".format(
-                            submit_result[0], _resolver._redact_log(cancel_error)
-                        ),
-                        _resolver.xbmc.LOGWARNING,
-                    )
+                _cancel_late_accepted_submit(submit_result[0], title, settings_getter)
         except Exception as e:  # pylint: disable=broad-except
             _resolver.xbmc.log(
                 "NZB-DAV: submit_nzb worker raised: {}".format(e),
@@ -559,7 +565,7 @@ def _report_all_submit_attempts_failed(
                 max_submit_retries,
                 title,
                 last_submit_error["status"],
-                last_submit_error["message"],
+                _resolver._redact_log(last_submit_error["message"]),
             ),
             _resolver.xbmc.LOGERROR,
         )

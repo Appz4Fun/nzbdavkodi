@@ -173,6 +173,7 @@ def _finish_direct_playback(handle, prepared, resume_key="", resume_seconds=0.0)
     """
     _resolver._resolve_stage("finish_direct_playback_start")
     stream_url = prepared["stream_url"]
+    safe_url = _resolver._redact_log(stream_url)
     stream_headers = prepared["stream_headers"]
     service_port = prepared.get("service_port")
     _resolver._resolve_stage(
@@ -196,9 +197,7 @@ def _finish_direct_playback(handle, prepared, resume_key="", resume_seconds=0.0)
         home = _resolver.xbmcgui.Window(10000)
         if stream_info.get("direct"):
             _resolver.xbmc.log(
-                "NZB-DAV: MP4 already faststart, direct play: {}".format(
-                    _resolver._redact_log(stream_url)
-                ),
+                "NZB-DAV: MP4 already faststart, direct play: {}".format(safe_url),
                 _resolver.xbmc.LOGINFO,
             )
             bust_url = _resolver._cache_bust_url(stream_url)
@@ -224,10 +223,9 @@ def _finish_direct_playback(handle, prepared, resume_key="", resume_seconds=0.0)
 
     bust_url = _resolver._cache_bust_url(stream_url)
     play_url = _resolver._build_play_url(bust_url, stream_headers)
+    safe_bust = _resolver._redact_log(bust_url)
     _resolver.xbmc.log(
-        "NZB-DAV: Playing direct (no proxy) (handle={}): {}".format(
-            handle, _resolver._redact_log(bust_url)
-        ),
+        "NZB-DAV: Playing direct (no proxy) (handle={}): {}".format(handle, safe_bust),
         _resolver.xbmc.LOGINFO,
     )
 
@@ -249,6 +247,7 @@ def _finish_player_playback(prepared, resume_key="", resume_seconds=0.0):
     under.
     """
     stream_url = prepared["stream_url"]
+    safe_url = _resolver._redact_log(stream_url)
     stream_headers = prepared["stream_headers"]
     service_port = prepared.get("service_port")
     home = _resolver.xbmcgui.Window(10000)
@@ -263,9 +262,7 @@ def _finish_player_playback(prepared, resume_key="", resume_seconds=0.0):
 
         if stream_info.get("direct"):
             _resolver.xbmc.log(
-                "NZB-DAV: MP4 already faststart, direct play: {}".format(
-                    _resolver._redact_log(stream_url)
-                ),
+                "NZB-DAV: MP4 already faststart, direct play: {}".format(safe_url),
                 _resolver.xbmc.LOGINFO,
             )
             bust_url = _resolver._cache_bust_url(stream_url)
@@ -294,9 +291,7 @@ def _finish_player_playback(prepared, resume_key="", resume_seconds=0.0):
     _apply_resume_start_offset(li, resume_seconds)
     play_url = _resolver._build_play_url(bust_url, stream_headers)
     _resolver.xbmc.log(
-        "NZB-DAV: Playing direct (no proxy): {}".format(
-            _resolver._redact_log(stream_url)
-        ),
+        "NZB-DAV: Playing direct (no proxy): {}".format(safe_url),
         _resolver.xbmc.LOGINFO,
     )
     _set_playback_monitor_properties(

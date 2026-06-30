@@ -407,6 +407,26 @@ def _is_str_list(value):
     return isinstance(value, list) and all(isinstance(item, str) for item in value)
 
 
+def _is_str(value):
+    """True when value is a str."""
+    return isinstance(value, str)
+
+
+def _is_bool(value):
+    """True when value is a bool."""
+    return isinstance(value, bool)
+
+
+def _is_int_not_bool(value):
+    """True when value is an int but not a bool (bool subclasses int)."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _all_match(meta, keys, predicate):
+    """True iff ``predicate`` accepts ``meta.get(key)`` for every key."""
+    return all(predicate(meta.get(key)) for key in keys)
+
+
 def _has_filter_metadata_shape(meta):
     """Return True when cached metadata satisfies the full parse contract.
 
@@ -417,15 +437,13 @@ def _has_filter_metadata_shape(meta):
     """
     if not isinstance(meta, dict) or not _FILTER_META_KEYS <= set(meta):
         return False
-    scalars_ok = all(isinstance(meta.get(key), str) for key in _FILTER_META_STR_KEYS)
-    lists_ok = all(_is_str_list(meta.get(key)) for key in _FILTER_META_LIST_KEYS)
-    bools_ok = all(isinstance(meta.get(key), bool) for key in _FILTER_META_BOOL_KEYS)
-    # bool is a subclass of int; reject it so a stray bool year fails.
-    ints_ok = all(
-        isinstance(meta.get(key), int) and not isinstance(meta.get(key), bool)
-        for key in _FILTER_META_INT_KEYS
+    # bool is a subclass of int; ``_is_int_not_bool`` rejects a stray bool year.
+    return (
+        _all_match(meta, _FILTER_META_STR_KEYS, _is_str)
+        and _all_match(meta, _FILTER_META_LIST_KEYS, _is_str_list)
+        and _all_match(meta, _FILTER_META_BOOL_KEYS, _is_bool)
+        and _all_match(meta, _FILTER_META_INT_KEYS, _is_int_not_bool)
     )
-    return scalars_ok and lists_ok and bools_ok and ints_ok
 
 
 def _resolve_result_meta(result, parsed_by_title):

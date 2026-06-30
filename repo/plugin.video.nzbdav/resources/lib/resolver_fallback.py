@@ -582,19 +582,27 @@ def _start_fallback_submit_worker(
         target=_worker, name="nzbdav-fallback-submit", daemon=True
     )
     state["thread"] = thread
+    _safe_start_fallback_worker(thread, state)
+    return state
+
+
+def _safe_start_fallback_worker(thread, state):
+    """Start ``thread``, failing soft if creation is refused during teardown.
+
+    Thread creation can fail during Kodi shutdown / interpreter teardown.
+    Fallbacks are best-effort, so fail soft: mark the worker finished and let
+    the resolve path continue instead of propagating. Leaves ``state``
+    consistent on the failure path (``thread`` cleared, ``finished`` set).
+    """
     try:
         thread.start()
     except RuntimeError as error:
-        # Thread creation can fail during Kodi shutdown / interpreter
-        # teardown. Fallbacks are best-effort, so fail soft: mark the worker
-        # finished and let the resolve path continue instead of propagating.
         state["thread"] = None
         state["finished"].set()
         _resolver.xbmc.log(
             "NZB-DAV: Fallback submit worker did not start: {}".format(error),
             _resolver.xbmc.LOGWARNING,
         )
-    return state
 
 
 def _fallback_job_value(job, key, default=None):
