@@ -143,9 +143,9 @@ def redact_text(text):
     """
     if not text:
         return text
-    redacted = _EMBEDDED_CRED_RE.sub(
-        lambda m: "{}=REDACTED".format(m.group(1)), str(text)
-    )
+    # ``\1`` is the key group; a backreference replacement avoids a per-match
+    # Python callback on this hot logging/error path.
+    redacted = _EMBEDDED_CRED_RE.sub(r"\1=REDACTED", str(text))
     return _EMBEDDED_URL_RE.sub(_redact_url_userinfo_span, redacted)
 
 
@@ -354,6 +354,11 @@ def pubdate_to_epoch(pubdate_str):
         return None
 
 
+# Trailing fractional seconds in an ISO-8601 timestamp (e.g. ``.1234567``).
+# Compiled once at import; see :func:`iso8601_to_rfc2822`.
+_ISO_FRACTIONAL_SECONDS_RE = re.compile(r"\.\d+")
+
+
 def iso8601_to_rfc2822(value):
     """Convert an ISO-8601 datetime string to an RFC-2822 string.
 
@@ -380,8 +385,10 @@ def iso8601_to_rfc2822(value):
         return ""
     # .NET (Prowlarr's stack) can emit up to 7 fractional-second digits,
     # which pre-3.11 ``datetime.fromisoformat`` rejects; sub-second
-    # precision is irrelevant for identity/sort/age, so drop it.
-    text = re.sub(r"\.\d+", "", text)
+    # precision is irrelevant for identity/sort/age, so drop it. The pattern
+    # is module-level (``_ISO_FRACTIONAL_SECONDS_RE``) so it is compiled once
+    # rather than on every result parsed during a search.
+    text = _ISO_FRACTIONAL_SECONDS_RE.sub("", text)
     # ``fromisoformat`` only accepts a trailing 'Z' from Python 3.11 on;
     # map it to an explicit UTC offset for older Kodi runtimes (3.8–3.9).
     if text[-1:] in ("Z", "z"):

@@ -174,6 +174,12 @@ def test_parse_results_invalid_xml_returns_empty():
     assert not results
 
 
+def test_parse_results_handles_none_input_without_raising():
+    # Defensive contract: a None body degrades to empty, never an uncaught
+    # TypeError (parity with newznab_caps.parse_caps / direct_indexers).
+    assert parse_results(None) == []
+
+
 def test_parse_results_non_rss_root_returns_empty():
     xml_text = '<?xml version="1.0"?><response><error code="100"/></response>'
     results = parse_results(xml_text)

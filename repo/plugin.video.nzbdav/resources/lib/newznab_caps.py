@@ -4,12 +4,14 @@
 """Newznab caps parsing and fetching."""
 
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
-from xml.etree import ElementTree as ET
 
 import xbmc
 
 from resources.lib.http_util import format_request_error
 from resources.lib.http_util import http_get as _http_get
+from resources.lib.xml_safety import ParseError as _XmlParseError
+from resources.lib.xml_safety import UnsafeXmlError as _UnsafeXmlError
+from resources.lib.xml_safety import safe_fromstring as _safe_fromstring
 
 _REQUEST_ERRORS = (AttributeError, OSError, RuntimeError, TypeError, ValueError)
 _EMPTY_CAPS = {"search_types": [], "supported_params": {}, "categories": []}
@@ -77,8 +79,8 @@ def _params(value):
 
 def parse_caps(xml_text):
     try:
-        root = ET.fromstring(xml_text)  # nosec B314 - Python 3.8+ disables entities
-    except (ET.ParseError, TypeError):
+        root = _safe_fromstring(xml_text)
+    except (_XmlParseError, _UnsafeXmlError, TypeError):
         return _empty_caps()
 
     search_types = []

@@ -310,6 +310,36 @@ def test_parse_results_reports_invalid_xml():
     assert error.startswith("Direct indexer returned an invalid response:")
 
 
+def test_parse_results_rejects_billion_laughs_entities():
+    # A hostile/compromised indexer must not be able to expand XML entities.
+    from resources.lib.direct_indexers import parse_results
+
+    xml_text = (
+        '<?xml version="1.0"?>'
+        '<!DOCTYPE rss [<!ENTITY a "lol">'
+        '<!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;">'
+        '<!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;">]>'
+        '<rss version="2.0"><channel><item><title>&c;</title></item>'
+        "</channel></rss>"
+    )
+
+    results, error = parse_results(xml_text, "My Indexer")
+
+    assert not results
+    assert error.startswith("Direct indexer returned an invalid response:")
+
+
+def test_parse_results_handles_non_str_input_without_raising():
+    # Defensive contract: a None/garbage body degrades to an error tuple, never
+    # an uncaught TypeError (parity with newznab_caps.parse_caps).
+    from resources.lib.direct_indexers import parse_results
+
+    results, error = parse_results(None, "My Indexer")
+
+    assert not results
+    assert error.startswith("Direct indexer returned an invalid response:")
+
+
 EMPTY_RSS = """<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2010/feeds/attributes/">
 <channel><newznab:response offset="0" total="0"/></channel>

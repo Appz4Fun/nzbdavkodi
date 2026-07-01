@@ -270,6 +270,35 @@ def test_redact_url_preserves_userinfo_without_password():
     assert "alice@host.example.com" in result
 
 
+def test_redact_text_redacts_multiple_credential_params():
+    """The ``<key>=<value>`` redaction (backreference replacement) must scrub
+    every credential pair in a free-form string while keeping the key names."""
+    msg = "GET failed: apikey=secretA123 token=secretB456 imdbid=tt1 t=movie"
+    result = redact_text(msg)
+
+    assert "secretA123" not in result
+    assert "secretB456" not in result
+    assert "apikey=REDACTED" in result
+    assert "token=REDACTED" in result
+    # Non-credential params are untouched.
+    assert "imdbid=tt1" in result
+    assert "t=movie" in result
+
+
+def test_redact_text_redacts_digit_prefixed_values():
+    """The ``\\1=REDACTED`` backreference must not misfire when the secret value
+    begins with a digit — the literal ``=`` terminates the group, so there is no
+    ``\\1<digit>`` ambiguity."""
+    result = redact_text("apikey=123secret token=999 key=0abc&next=1")
+
+    assert "123secret" not in result
+    assert "token=999" not in result
+    assert "key=0abc" not in result
+    assert "apikey=REDACTED" in result
+    assert "token=REDACTED" in result
+    assert "key=REDACTED" in result
+
+
 def test_redact_text_strips_embedded_url_userinfo_password():
     """redact_text must also scrub `scheme://user:pass@host` userinfo when
     a URL is embedded in a free-form error string (e.g. a urllib/xbmcvfs

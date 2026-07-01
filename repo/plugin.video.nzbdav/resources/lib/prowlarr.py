@@ -13,7 +13,6 @@ routes JSON to ``_parse_json_results`` while still understanding Newznab XML
 """
 
 import json
-import xml.etree.ElementTree as ET  # nosec B405 — parsing trusted Prowlarr responses from user-configured local service
 from urllib.parse import urlencode, urlparse
 
 import xbmc
@@ -39,27 +38,11 @@ from resources.lib.http_util import (
 from resources.lib.http_util import (
     iso8601_to_rfc2822 as _iso_to_rfc2822,
 )
+from resources.lib.xml_safety import ParseError as _XmlParseError
+from resources.lib.xml_safety import UnsafeXmlError as _UnsafeXmlError
+from resources.lib.xml_safety import safe_fromstring as _safe_fromstring
 
 NEWZNAB_NS = "http://www.newznab.com/DTD/2010/feeds/attributes/"
-
-
-def _build_xxe_safe_parser():
-    """Return an ElementTree XMLParser with external entities disabled.
-
-    Mirrors ``hydra._build_xxe_safe_parser``. ``xml.etree.ElementTree`` does
-    not expose a ``resolve_entities=False`` knob, but the underlying expat
-    parser can be told to ignore DefaultHandler output and reject
-    ExternalEntityRef callbacks. A hostile or compromised Prowlarr instance
-    could otherwise coerce us into reading arbitrary local files via an XXE
-    payload — same threat model as the NZBHydra2 path, kept on parity here.
-    """
-    parser = ET.XMLParser()  # nosec B314 — entities disabled below
-    try:
-        parser.parser.DefaultHandler = lambda _d: None
-        parser.parser.ExternalEntityRefHandler = lambda *_: False
-    except AttributeError:  # pragma: no cover — non-expat parser backend
-        pass
-    return parser
 
 
 # _format_request_error, _get_text, _calculate_age imported from
@@ -631,10 +614,8 @@ def _parse_xml_results(xml_text):
             invalid or not an RSS feed; `None` on success.
     """
     try:
-        root = ET.fromstring(
-            xml_text, parser=_build_xxe_safe_parser()
-        )  # nosec B314 — entities disabled in _build_xxe_safe_parser
-    except ET.ParseError as e:
+        root = _safe_fromstring(xml_text)
+    except (_XmlParseError, _UnsafeXmlError, TypeError) as e:
         xbmc.log(
             "NZB-DAV: Failed to parse Prowlarr XML response: {}".format(e),
             xbmc.LOGERROR,
