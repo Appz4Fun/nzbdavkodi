@@ -10,6 +10,7 @@ declaration (billion-laughs or external XXE) is rejected on *both* the
 installs take.
 """
 
+import types
 import xml.etree.ElementTree as stdlib_et
 
 import pytest
@@ -54,7 +55,9 @@ def test_valid_xml_accepts_bytes():
 
 
 def test_internal_entity_rejected_default_path():
-    # Dev/CI has defusedxml installed, exercising the preferred path.
+    # Whatever path the environment provides: defusedxml if bundled, else the
+    # stdlib guard. CI ships no defusedxml, so this covers the stdlib guard;
+    # the defusedxml branch is pinned by test_defusedxml_branch_forbids_dtd.
     with pytest.raises(UnsafeXmlError):
         safe_fromstring(_INTERNAL_ENTITY_XML)
 
@@ -62,6 +65,28 @@ def test_internal_entity_rejected_default_path():
 def test_external_entity_rejected_default_path():
     with pytest.raises(UnsafeXmlError):
         safe_fromstring(_EXTERNAL_ENTITY_XML)
+
+
+def test_defusedxml_branch_forbids_dtd(monkeypatch):
+    # CI has no defusedxml, so the preferred branch (safe_fromstring's
+    # ``_ET.fromstring(xml_text, forbid_dtd=False)``) would otherwise be
+    # uncovered. Force it with a recording stub and assert it delegates with
+    # ``forbid_dtd=False`` — a regression flipping that (which would reject
+    # legitimate bare-DOCTYPE feeds) or dropping the call now ships red.
+    recorded = {}
+
+    def _fromstring(text, **kwargs):
+        recorded.update(kwargs)
+        return stdlib_et.fromstring(text)
+
+    stub_et = types.SimpleNamespace(fromstring=_fromstring)
+    monkeypatch.setattr(xml_safety, "_USING_DEFUSEDXML", True)
+    monkeypatch.setattr(xml_safety, "_ET", stub_et)
+
+    root = safe_fromstring(_VALID_XML)
+
+    assert root.tag == "rss"
+    assert recorded == {"forbid_dtd": False}
 
 
 @pytest.mark.parametrize("payload", [_INTERNAL_ENTITY_XML, _EXTERNAL_ENTITY_XML])
