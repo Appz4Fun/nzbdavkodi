@@ -66,6 +66,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **NZBGet mode: submit the same-release fleet as duplicate backups.** When the
+  NZBGet backend is enabled, selecting a release now also submits its
+  same-release siblings (the existing fallback candidates) to NZBGet as a single
+  duplicate set — one shared `DupeKey`, descending `DupeScore`, `DupeMode=SCORE`.
+  NZBGet downloads only the highest-scored member (the release you picked, so the
+  progress/poll is unchanged) and parks the rest in history as backups without
+  downloading them. If the primary turns out unrepairable (par2 repair fails,
+  unpack fails, or health drops below critical), NZBGet automatically fails over
+  and downloads a backup instead of leaving you with a broken file. The backups
+  are loaded and submitted in a background daemon thread so they never delay
+  playback, are bounded by **Maximum standby fallback streams**, and are gated by
+  the existing **Enable fallback streams** setting (on by default). Best-effort
+  throughout: a failed backup submit never affects the primary. (Issue #372.)
 - **NZBGet mode: pre-cached "DL" indicator in the NZB picker.** With the
   NZBGet backend enabled, the results picker now tags releases that are
   already completed in NZBGet's history with the same green `DL` chip the

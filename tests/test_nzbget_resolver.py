@@ -3,8 +3,14 @@ import sys
 from unittest.mock import MagicMock, patch
 
 from resources.lib.nzbget_resolver import (
+    _PRIMARY_DUPE_SCORE,
+    _dupe_fleet_enabled,
+    _dupe_fleet_max,
     _read_poll_interval,
     _read_settings,
+    _release_dupe_key,
+    _spawn_dupe_fleet,
+    _submit_dupe_fleet,
     play_nzbget,
     poll_nzbget_job,
     resolve_and_play_nzbget,
@@ -1069,3 +1075,347 @@ def test_resolve_reuse_applies_resume_offset():
         )
     append.assert_not_called()
     li.setProperty.assert_called_with("StartOffset", "137.0")
+
+
+# ---------------------------------------------------------------------------
+# #372 NZBGet duplicate-fleet submission
+# ---------------------------------------------------------------------------
+
+_APPEND = "resources.lib.nzbget_resolver.nzbget_api.append_nzb"
+
+
+def test_release_dupe_key_normalizes_and_namespaces():
+    # The whole fleet must share ONE identical non-empty DupeKey; derive it from
+    # the primary title (lowercased, whitespace-collapsed) and namespace it so
+    # unrelated same-named jobs from other tools on the box don't collide.
+    key = _release_dupe_key("The.Movie   2024  ")
+    assert key == "nzbdav:the.movie 2024"
+    assert _release_dupe_key(key) != ""
+    # Empty/whitespace title -> no key -> no grouping (primary stays single).
+    assert _release_dupe_key("") == ""
+    assert _release_dupe_key("   ") == ""
+
+
+def test_dupe_fleet_enabled_follows_fallback_setting():
+    assert _dupe_fleet_enabled(_settings({})) is True  # default on
+    assert _dupe_fleet_enabled(_settings({"fallback_streams_enabled": "true"})) is True
+    assert (
+        _dupe_fleet_enabled(_settings({"fallback_streams_enabled": "false"})) is False
+    )
+
+
+def test_dupe_fleet_max_reads_and_defaults():
+    assert _dupe_fleet_max(_settings({"fallback_streams_max": "3"})) == 3
+    assert _dupe_fleet_max(_settings({})) == 5
+    assert _dupe_fleet_max(_settings({"fallback_streams_max": "bogus"})) == 5
+
+
+def test_submit_dupe_fleet_submits_siblings_with_shared_key_descending_scores():
+    # Each same-release sibling is appended with the SHARED DupeKey and a
+    # strictly-descending DupeScore below the primary's, so NZBGet parks them as
+    # ordered duplicate backups. Non-dicts, missing link/title, and the primary's
+    # own URL are skipped.
+    candidates = [
+        {"link": "http://i/a.nzb", "title": "Show S01E01 GROUP1"},
+        "not-a-dict",
+        {"link": "", "title": "no link"},
+        {"link": "http://i/primary.nzb", "title": "the primary itself"},
+        {"link": "http://i/b.nzb", "title": "Show S01E01 GROUP2"},
+        {"link": "http://i/c.nzb", "title": "Show S01E01 GROUP3"},
+    ]
+    with patch(_APPEND, side_effect=lambda *a, **k: (100 + len(a), None)) as append:
+        submitted = _submit_dupe_fleet(
+            candidates,
+            "nzbdav:show s01e01",
+            "http://i/primary.nzb",
+            _settings({}),
+            max_count=5,
+        )
+
+    urls = [c.kwargs.get("dupe_url", c.args[0]) for c in append.call_args_list]
+    assert urls == ["http://i/a.nzb", "http://i/b.nzb", "http://i/c.nzb"]
+    scores = [c.kwargs["dupe_score"] for c in append.call_args_list]
+    assert scores == [
+        _PRIMARY_DUPE_SCORE - 1,
+        _PRIMARY_DUPE_SCORE - 2,
+        _PRIMARY_DUPE_SCORE - 3,
+    ]
+    assert all(s < _PRIMARY_DUPE_SCORE for s in scores)  # never beats the primary
+    assert all(
+        c.kwargs["dupe_key"] == "nzbdav:show s01e01" for c in append.call_args_list
+    )
+    # Distinct job names so NZBGet doesn't treat members as exact-copy dups.
+    names = [c.args[1] for c in append.call_args_list]
+    assert len(set(names)) == 3
+    assert len(submitted) == 3
+
+
+def test_submit_dupe_fleet_caps_at_max_count():
+    candidates = [
+        {"link": "http://i/{}.nzb".format(n), "title": "Show S01E01 {}".format(n)}
+        for n in range(10)
+    ]
+    with patch(_APPEND, return_value=(5, None)) as append:
+        _submit_dupe_fleet(candidates, "k", "http://i/primary", _settings({}), 3)
+    assert append.call_count == 3
+
+
+def test_submit_dupe_fleet_is_fail_soft_per_sibling():
+    # One sibling raising (bad NZB / network) must not abort the remaining ones.
+    candidates = [
+        {"link": "http://i/a.nzb", "title": "A"},
+        {"link": "http://i/b.nzb", "title": "B"},
+        {"link": "http://i/c.nzb", "title": "C"},
+    ]
+
+    def flaky(nzb_url, *a, **k):
+        if nzb_url == "http://i/b.nzb":
+            raise RuntimeError("boom")
+        return (7, None)
+
+    with patch(_APPEND, side_effect=flaky) as append:
+        submitted = _submit_dupe_fleet(candidates, "k", None, _settings({}), 5)
+    assert append.call_count == 3
+    assert len(submitted) == 2  # a and c succeeded despite b raising
+
+
+def test_submit_dupe_fleet_noops_without_dupe_key():
+    with patch(_APPEND) as append:
+        submitted = _submit_dupe_fleet(
+            [{"link": "http://i/a.nzb", "title": "A"}], "", None, _settings({}), 5
+        )
+    append.assert_not_called()
+    assert not submitted
+
+
+def test_resolve_submits_primary_with_highest_score_and_spawns_fleet():
+    # With the fleet enabled and same-release candidates present, the PRIMARY is
+    # appended with the shared DupeKey and the top DupeScore (so it stays the
+    # active download the poll tracks), and the backup fleet is spawned.
+    plugin = sys.modules["xbmcplugin"]
+    plugin.setResolvedUrl = MagicMock()
+    with patch(_APPEND, return_value=(42, None)) as append, patch(
+        "resources.lib.nzbget_resolver._spawn_dupe_fleet"
+    ) as spawn, patch(
+        "resources.lib.nzbget_resolver.poll_nzbget_job",
+        return_value={"outcome": "success", "dest_dir": "/dl/movies/The.Movie"},
+    ), patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video",
+        return_value="smb://host/completed/The.Movie/movie.mkv",
+    ):
+        resolve_and_play_nzbget(
+            7,
+            {
+                "nzburl": "http://i/x.nzb",
+                "title": "The.Movie",
+                "_fallback_candidates": [
+                    {"link": "http://i/b.nzb", "title": "The Movie GROUP2"}
+                ],
+            },
+            settings_getter=_full_settings(),
+        )
+    # Exactly one primary append here (fleet spawn is patched out).
+    append.assert_called_once()
+    assert append.call_args.kwargs["dupe_key"] == _release_dupe_key("The.Movie")
+    assert append.call_args.kwargs["dupe_score"] == _PRIMARY_DUPE_SCORE
+    spawn.assert_called_once()
+
+
+def test_resolve_without_candidates_submits_single_primary_no_fleet():
+    # No fallback candidates/loader -> pre-#372 behavior: primary appended with
+    # empty dupe params and no fleet spawned.
+    plugin = sys.modules["xbmcplugin"]
+    plugin.setResolvedUrl = MagicMock()
+    with patch(_APPEND, return_value=(42, None)) as append, patch(
+        "resources.lib.nzbget_resolver._spawn_dupe_fleet"
+    ) as spawn, patch(
+        "resources.lib.nzbget_resolver.poll_nzbget_job",
+        return_value={"outcome": "success", "dest_dir": "/dl/movies/The.Movie"},
+    ), patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video",
+        return_value="smb://host/completed/The.Movie/movie.mkv",
+    ):
+        resolve_and_play_nzbget(
+            7,
+            {"nzburl": "http://i/x.nzb", "title": "The.Movie"},
+            settings_getter=_full_settings(),
+        )
+    assert append.call_args.kwargs.get("dupe_key", "") == ""
+    assert append.call_args.kwargs.get("dupe_score", 0) == 0
+    spawn.assert_not_called()
+
+
+def test_resolve_fleet_setting_off_submits_single_primary():
+    plugin = sys.modules["xbmcplugin"]
+    plugin.setResolvedUrl = MagicMock()
+    getter = _settings(
+        {
+            "nzbget_url": "http://box:6789",
+            "nzbget_smb_root": "smb://host/completed",
+            "download_timeout": "600",
+            "fallback_streams_enabled": "false",
+        }
+    )
+    with patch(_APPEND, return_value=(42, None)) as append, patch(
+        "resources.lib.nzbget_resolver._spawn_dupe_fleet"
+    ) as spawn, patch(
+        "resources.lib.nzbget_resolver.poll_nzbget_job",
+        return_value={"outcome": "success", "dest_dir": "/dl/movies/The.Movie"},
+    ), patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video",
+        return_value="smb://host/completed/The.Movie/movie.mkv",
+    ):
+        resolve_and_play_nzbget(
+            7,
+            {
+                "nzburl": "http://i/x.nzb",
+                "title": "The.Movie",
+                "_fallback_candidates": [
+                    {"link": "http://i/b.nzb", "title": "The Movie GROUP2"}
+                ],
+            },
+            settings_getter=getter,
+        )
+    assert append.call_args.kwargs.get("dupe_key", "") == ""
+    spawn.assert_not_called()
+
+
+class _InlineThread:  # pylint: disable=too-few-public-methods
+    """A Thread stand-in that runs its target synchronously on start()."""
+
+    def __init__(self, target=None, name=None, daemon=None):
+        self._target = target
+        self.daemon = daemon
+
+    def start(self):
+        self._target()
+
+
+def _fleet_ctx(candidates=None, loader=None, getter=None):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        settings_getter=getter or _settings({}),
+        fallback_candidates=candidates,
+        fallback_loader=loader,
+    )
+
+
+def test_spawn_dupe_fleet_uses_loader_when_no_seeded_candidates():
+    loaded = [{"link": "http://i/a.nzb", "title": "A"}]
+    ctx = _fleet_ctx(candidates=None, loader=lambda: loaded)
+    with patch("resources.lib.nzbget_resolver.threading.Thread", _InlineThread), patch(
+        "resources.lib.nzbget_resolver._submit_dupe_fleet"
+    ) as core:
+        _spawn_dupe_fleet(ctx, "http://i/primary", "k")
+    core.assert_called_once()
+    assert core.call_args.args[0] == loaded  # loader's pool passed through
+
+
+def test_spawn_dupe_fleet_prefers_seeded_over_loader():
+    seeded = [{"link": "http://i/a.nzb", "title": "A"}]
+
+    def _loader():
+        raise AssertionError("loader must not run when candidates are seeded")
+
+    ctx = _fleet_ctx(candidates=seeded, loader=_loader)
+    with patch("resources.lib.nzbget_resolver.threading.Thread", _InlineThread), patch(
+        "resources.lib.nzbget_resolver._submit_dupe_fleet"
+    ) as core:
+        _spawn_dupe_fleet(ctx, "http://i/primary", "k")
+    assert core.call_args.args[0] == seeded
+
+
+def test_spawn_dupe_fleet_noop_when_max_is_zero():
+    ctx = _fleet_ctx(
+        candidates=[{"link": "http://i/a.nzb", "title": "A"}],
+        getter=_settings({"fallback_streams_max": "0"}),
+    )
+    with patch("resources.lib.nzbget_resolver.threading.Thread", _InlineThread), patch(
+        "resources.lib.nzbget_resolver._submit_dupe_fleet"
+    ) as core:
+        result = _spawn_dupe_fleet(ctx, "http://i/primary", "k")
+    assert result is None
+    core.assert_not_called()
+
+
+def test_spawn_dupe_fleet_swallows_loader_error():
+    def _loader():
+        raise RuntimeError("indexer down")
+
+    ctx = _fleet_ctx(candidates=None, loader=_loader)
+    with patch("resources.lib.nzbget_resolver.threading.Thread", _InlineThread), patch(
+        "resources.lib.nzbget_resolver._submit_dupe_fleet"
+    ) as core:
+        _spawn_dupe_fleet(ctx, "http://i/primary", "k")  # must not raise
+    core.assert_not_called()
+
+
+def test_spawn_dupe_fleet_noop_without_dupe_key():
+    ctx = _fleet_ctx(candidates=[{"link": "http://i/a.nzb", "title": "A"}])
+    with patch("resources.lib.nzbget_resolver.threading.Thread", _InlineThread), patch(
+        "resources.lib.nzbget_resolver._submit_dupe_fleet"
+    ) as core:
+        result = _spawn_dupe_fleet(ctx, "http://i/primary", "")
+    assert result is None
+    core.assert_not_called()
+
+
+def test_resolve_with_none_getter_and_fleet_does_not_silently_fail():
+    # Reproduces the real Kodi handle-based path: resolve_and_play_nzbget is
+    # called with NO settings_getter (None). The duplicate-fleet helpers call
+    # getter(key, default) directly, so a None getter must be bound to the real
+    # addon getter first -- otherwise _dupe_fleet_enabled(None) raises TypeError,
+    # the outer handler swallows it, and every NZBGet playback resolves False.
+    plugin = sys.modules["xbmcplugin"]
+    plugin.setResolvedUrl = MagicMock()
+    with patch(
+        "resources.lib.nzbget_resolver._read_settings",
+        return_value=("http://box", "smb://host/c", 600),
+    ), patch(
+        "resources.lib.nzbget_resolver.nzbget_api._get_settings",
+        return_value=("http://box", "u", "p", ""),
+    ), patch(
+        "resources.lib.nzbget_resolver.nzbget_api.completed_base_dir",
+        return_value="/dl",
+    ), patch(
+        "resources.lib.nzbget_resolver._read_poll_interval", return_value=1
+    ), patch(
+        _APPEND, return_value=(42, None)
+    ), patch(
+        "resources.lib.nzbget_resolver._spawn_dupe_fleet"
+    ) as spawn, patch(
+        "resources.lib.nzbget_resolver.poll_nzbget_job",
+        return_value={"outcome": "success", "dest_dir": "/dl/movies/X"},
+    ), patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video",
+        return_value="smb://host/c/X/x.mkv",
+    ):
+        resolve_and_play_nzbget(
+            7,
+            {
+                "nzburl": "http://i/x.nzb",
+                "title": "The.Movie",
+                "_fallback_candidates": [{"link": "http://i/b.nzb", "title": "B"}],
+            },
+            # settings_getter intentionally omitted -> None (the real Kodi path)
+        )
+    plugin.setResolvedUrl.assert_called_once()
+    assert plugin.setResolvedUrl.call_args[0][1] is True  # success, not silent fail
+    spawn.assert_called_once()
+
+
+def test_spawn_dupe_fleet_swallows_thread_start_error():
+    # The fleet is pure insurance: if the OS refuses a new thread, the
+    # already-queued primary playback must NOT be dragged down with it.
+    class _BoomThread:  # pylint: disable=too-few-public-methods
+        def __init__(self, *a, **k):
+            pass
+
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    ctx = _fleet_ctx(candidates=[{"link": "http://i/a.nzb", "title": "A"}])
+    with patch("resources.lib.nzbget_resolver.threading.Thread", _BoomThread):
+        result = _spawn_dupe_fleet(ctx, "http://i/primary", "k")  # must not raise
+    assert result is None

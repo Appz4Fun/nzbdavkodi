@@ -24,6 +24,7 @@ Only two areas are active right now:
 - Metadata filters may be too permissive when PTT cannot parse a release title.
 - WebDAV 401/403/5xx handling should stay typed and visible, not collapsed to "not found".
 - Session/window-property races should be reviewed before larger concurrency changes.
+- NZBGet duplicate fleet (#372) round 2: the poll tracks only the primary NZBID, so (a) if NZBGet fails over to a backup (a new NZBID under the shared DupeKey) the current resolve reports the primary's failure instead of following the backup to completion, and (b) a concurrent replay of the *same* release ties the in-flight primary's DupeScore and NZBGet parks the new submit as a dsDupe, which the single-NZBID poll reads as a false failure (this matches the pre-#372 name-based dupe behavior — not a new regression). Round 2 would track the DupeKey group / active NZBID rather than a single fixed NZBID.
 
 ## Backburner
 

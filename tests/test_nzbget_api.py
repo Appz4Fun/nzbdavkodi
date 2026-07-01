@@ -85,6 +85,64 @@ def test_append_nzb_fetches_encodes_and_returns_nzbid():
     assert params[10] == []
 
 
+def test_append_nzb_defaults_send_empty_dupe_params():
+    """Absent dupe args, the append is byte-for-byte the pre-#372 submit.
+
+    DupeKey empty + DupeScore 0 means NZBGet dupe-checks by NZB name only and
+    gives the item no ordering score -- the single-submit behavior every other
+    (non-fleet) NZBGet path relies on.
+    """
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    captured = {}
+
+    def fake_post(url, payload, timeout=0, basic_auth=None):
+        captured["payload"] = payload
+        return '{"result": 7, "error": null}'
+
+    with patch("resources.lib.nzbget_api._http_get", return_value="<nzb/>"), patch(
+        "resources.lib.nzbget_api._http_post_json", side_effect=fake_post
+    ):
+        nzbid, error = append_nzb("http://i/x.nzb", "X", settings_getter=getter)
+
+    assert (nzbid, error) == (7, None)
+    params = captured["payload"]["params"]
+    assert params[6] == ""  # DupeKey
+    assert params[7] == 0  # DupeScore
+    assert params[8] == "SCORE"  # DupeMode unchanged
+
+
+def test_append_nzb_sends_dupe_key_and_score():
+    """A fleet member carries a shared DupeKey + its ordering DupeScore.
+
+    NZBGet groups duplicates by an identical non-empty DupeKey and, under
+    DupeMode=SCORE, keeps only the highest DupeScore active while parking the
+    rest as history backups (#372).
+    """
+    getter = _getter({"nzbget_url": "http://box:6789", "nzbget_category": "tv"})
+    captured = {}
+
+    def fake_post(url, payload, timeout=0, basic_auth=None):
+        captured["payload"] = payload
+        return '{"result": 99, "error": null}'
+
+    with patch("resources.lib.nzbget_api._http_get", return_value="<nzb/>"), patch(
+        "resources.lib.nzbget_api._http_post_json", side_effect=fake_post
+    ):
+        nzbid, error = append_nzb(
+            "http://i/x.nzb",
+            "X",
+            settings_getter=getter,
+            dupe_key="nzbdav:the show s01e01",
+            dupe_score=9999,
+        )
+
+    assert (nzbid, error) == (99, None)
+    params = captured["payload"]["params"]
+    assert params[6] == "nzbdav:the show s01e01"  # DupeKey
+    assert params[7] == 9999  # DupeScore
+    assert params[8] == "SCORE"  # DupeMode
+
+
 def test_append_nzb_returns_error_when_nzbid_not_positive():
     getter = _getter({"nzbget_url": "http://box:6789"})
     with patch("resources.lib.nzbget_api._http_get", return_value="<nzb/>"), patch(

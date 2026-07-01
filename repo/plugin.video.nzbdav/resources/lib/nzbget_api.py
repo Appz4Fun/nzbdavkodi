@@ -94,7 +94,7 @@ def _fetch_nzb_bytes(nzb_url):
     return body
 
 
-def _append_params(nzb_name, nzb_bytes, category):
+def _append_params(nzb_name, nzb_bytes, category, dupe_key="", dupe_score=0):
     """Build NZBGet's modern 11-arg ``append`` params list.
 
     append(NZBFilename, Content, Category, Priority, AddToTop, AddPaused,
@@ -108,17 +108,37 @@ def _append_params(nzb_name, nzb_bytes, category):
     (the SMB completed-path mapping in nzbget_resolver depends on it rather
     than NZBGet auto-reassigning one); PPParameters=[] = no extra
     post-processing parameters.
+
+    ``dupe_key``/``dupe_score`` default to ``""``/``0`` (single-submit: dupe
+    check by NZB name only, no ordering score). A fleet submit (#372) passes an
+    identical non-empty DupeKey plus a distinct DupeScore per member so NZBGet
+    treats them as one duplicate set under DupeMode=SCORE -- highest score
+    downloads, the rest park in history as backups.
     """
     content_b64 = base64.b64encode(nzb_bytes).decode("ascii")
     filename = "{}.nzb".format(nzb_name or "submission")
-    return [filename, content_b64, category, 0, False, False, "", 0, "SCORE", False, []]
+    return [
+        filename,
+        content_b64,
+        category,
+        0,
+        False,
+        False,
+        dupe_key or "",
+        int(dupe_score or 0),
+        "SCORE",
+        False,
+        [],
+    ]
 
 
-def append_nzb(nzb_url, nzb_name, settings_getter=None):
+def append_nzb(nzb_url, nzb_name, settings_getter=None, dupe_key="", dupe_score=0):
     """Fetch the NZB and submit it to NZBGet via append.
 
     Returns (nzbid, error). On success (int > 0, None); on failure
-    (None, message).
+    (None, message). ``dupe_key``/``dupe_score`` are forwarded to
+    ``_append_params`` for #372 fleet (duplicate-backup) submissions; the
+    defaults reproduce the pre-#372 single-submit call exactly.
     """
     _base_url, _user, _password, category = _get_settings(settings_getter)
     try:
@@ -129,7 +149,7 @@ def append_nzb(nzb_url, nzb_name, settings_getter=None):
             xbmc.LOGERROR,
         )
         return None, _redact_text(str(exc))
-    params = _append_params(nzb_name, nzb_bytes, category)
+    params = _append_params(nzb_name, nzb_bytes, category, dupe_key, dupe_score)
     result, error = _rpc_call("append", params, settings_getter=settings_getter)
     if error is not None:
         return None, error

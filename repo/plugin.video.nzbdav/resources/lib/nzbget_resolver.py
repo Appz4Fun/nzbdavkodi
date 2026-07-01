@@ -8,6 +8,7 @@ here. Honors the same ``setResolvedUrl``-on-failure contract as the nzbdav
 path: exactly one resolution per exit, failures resolve False.
 """
 
+import threading
 import time
 from urllib.parse import unquote
 
@@ -481,6 +482,10 @@ class _SubmitCtx:  # pylint: disable=too-few-public-methods
         self.settings_getter = None
         self.on_success = None
         self.on_failure = None
+        # Same-release duplicate fleet (#372): a seeded candidate list and/or a
+        # lazy loader (an indexer search) threaded from the resolve params.
+        self.fallback_candidates = None
+        self.fallback_loader = None
 
 
 def _reuse_or_submit(ctx, nzb_url, title, completed_job, meta):
@@ -519,7 +524,14 @@ def _close_dialog(dialog):
 
 
 def _build_submit_ctx(
-    settings_getter, smb_root, dialog, timeout, on_success, on_failure
+    settings_getter,
+    smb_root,
+    dialog,
+    timeout,
+    on_success,
+    on_failure,
+    fallback_candidates=None,
+    fallback_loader=None,
 ):
     """Read the per-submit NZBGet context once for the submit flow.
 
@@ -528,8 +540,15 @@ def _build_submit_ctx(
     target must include that segment), and the global completed base used to
     map a history DestDir onto the SMB root regardless of category/custom
     layout (None when unavailable -> nzbget_smb_target falls back). Attaches
-    the flow's getter + callbacks so the submit helpers can stay low-arity.
+    the flow's getter + callbacks so the submit helpers can stay low-arity, plus
+    the same-release duplicate-fleet inputs (#372).
+
+    Binds a ``None`` getter (the real Kodi handle-based ``resolve`` path passes
+    no getter) to the addon-backed two-arg getter up front, so every submit
+    helper -- including the duplicate-fleet checks that call ``getter(key,
+    default)`` directly -- receives a callable instead of ``None``.
     """
+    settings_getter = _bind_getter(settings_getter)
     interval = _read_poll_interval(settings_getter)
     _u, _user, _pw, category = nzbget_api._get_settings(settings_getter=settings_getter)
     completed_base = nzbget_api.completed_base_dir(settings_getter=settings_getter)
@@ -537,7 +556,172 @@ def _build_submit_ctx(
     ctx.settings_getter = settings_getter
     ctx.on_success = on_success
     ctx.on_failure = on_failure
+    ctx.fallback_candidates = fallback_candidates
+    ctx.fallback_loader = fallback_loader
     return ctx
+
+
+# Primary DupeScore for a fleet submit (#372). The user's selected release must
+# stay the single ACTIVE download NZBGet keeps in the queue -- the poll tracks
+# only its NZBID -- so it is submitted at this ceiling and every same-release
+# backup gets a strictly-lower, descending score. If a backup tied or beat it,
+# NZBGet would park the primary in history as a dsDupe "duplicate" and the poll
+# would read that as a failed download.
+_PRIMARY_DUPE_SCORE = 10000
+
+
+def _release_dupe_key(title):
+    """Build the shared, stable NZBGet DupeKey for a release's whole fleet.
+
+    NZBGet groups duplicates by an identical non-empty DupeKey (case-insensitive;
+    the NZB name is ignored once both items carry a key). Derive it once from the
+    primary title -- lowercased, whitespace-collapsed -- and namespace it so an
+    unrelated same-named job from another tool on the box can't join the set. An
+    empty/whitespace title yields ``""`` so the primary stays an ungrouped single
+    submit (no fleet).
+    """
+    text = " ".join(str(title or "").split()).lower()
+    return "nzbdav:" + text if text else ""
+
+
+def _dupe_fleet_enabled(settings_getter):
+    """Whether to submit the same-release duplicate fleet (#372).
+
+    Reuses the ``fallback_streams_enabled`` toggle (default on): the NZBGet
+    duplicate fleet is the NZBGet-backend analogue of the nzbdav fallback
+    streams -- same-release backups -- so one switch governs both.
+    """
+    raw = settings_getter("fallback_streams_enabled", "true")
+    return str(raw or "").strip().lower() != "false"
+
+
+def _dupe_fleet_max(settings_getter):
+    """Max number of duplicate backups to submit, from ``fallback_streams_max``."""
+    try:
+        return max(0, int(settings_getter("fallback_streams_max", "5") or 5))
+    except (TypeError, ValueError):
+        return 5
+
+
+def _submit_dupe_fleet(
+    candidates, dupe_key, primary_nzb_url, settings_getter, max_count
+):
+    """Submit same-release siblings to NZBGet as ordered duplicate backups.
+
+    Each member carries the shared ``dupe_key`` and a strictly-descending
+    DupeScore below ``_PRIMARY_DUPE_SCORE`` (best candidate first, since the
+    candidate list is already ranked best-first), so NZBGet keeps them parked in
+    history as backups and, on the active release failing par2/unpack/health,
+    auto-redownloads the highest-scored one. Best-effort: a bad candidate or a
+    failed fetch/append for one sibling never aborts the rest. Skips non-dicts,
+    entries missing a link/title, and the primary's own URL. Returns the list of
+    submitted NZBIDs (for logging/tests).
+    """
+    submitted = []
+    if not dupe_key:
+        return submitted
+    # Import via ``fallback_streams`` (which re-exports it) rather than
+    # ``fallback_streams_attach`` directly: the two modules have a mutual import
+    # that only resolves cleanly when ``fallback_streams`` is imported first.
+    from resources.lib.fallback_streams import build_fallback_job_name
+
+    attempted = 0
+    for candidate in candidates or []:
+        if attempted >= max_count:
+            break
+        if not isinstance(candidate, dict):
+            continue
+        nzb_url = candidate.get("link")
+        title = candidate.get("title")
+        if not nzb_url or not title:
+            continue
+        if primary_nzb_url and nzb_url == primary_nzb_url:
+            continue
+        attempted += 1
+        job_name = build_fallback_job_name(title, nzb_url, attempted)
+        score = _PRIMARY_DUPE_SCORE - attempted
+        try:
+            nzbid, error = nzbget_api.append_nzb(
+                nzb_url,
+                job_name,
+                settings_getter=settings_getter,
+                dupe_key=dupe_key,
+                dupe_score=score,
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            xbmc.log(
+                "NZB-DAV: NZBGet duplicate backup submit raised: {}".format(
+                    _redact_text(str(exc))
+                ),
+                xbmc.LOGWARNING,
+            )
+            continue
+        if nzbid:
+            submitted.append(nzbid)
+            xbmc.log(
+                "NZB-DAV: Queued NZBGet duplicate backup '{}' (score {})".format(
+                    job_name, score
+                ),
+                xbmc.LOGINFO,
+            )
+        else:
+            xbmc.log(
+                "NZB-DAV: NZBGet duplicate backup submit failed: {}".format(error),
+                xbmc.LOGINFO,
+            )
+    return submitted
+
+
+def _spawn_dupe_fleet(ctx, primary_nzb_url, dupe_key):
+    """Fire-and-forget the same-release duplicate fleet in a daemon thread.
+
+    Loading the fleet is an indexer search (the ``_fallback_candidate_loader``),
+    so it runs off the resolve thread to avoid delaying the primary's poll and
+    progress dialog; the daemon flag keeps it from blocking Kodi shutdown. The
+    backups only need to reach NZBGet's history before the primary finishes, so
+    they land well within the download window. All errors are swallowed -- the
+    fleet is pure insurance and must never break the primary playback.
+    """
+    if not dupe_key:
+        return None
+    getter = ctx.settings_getter
+    max_count = _dupe_fleet_max(getter)
+    if max_count <= 0:
+        return None
+    seeded = list(ctx.fallback_candidates or [])
+    loader = ctx.fallback_loader
+
+    def _worker():
+        try:
+            pool = seeded
+            if not pool and loader is not None:
+                pool = loader() or []
+            _submit_dupe_fleet(pool, dupe_key, primary_nzb_url, getter, max_count)
+        except Exception as exc:  # pylint: disable=broad-except
+            xbmc.log(
+                "NZB-DAV: NZBGet duplicate fleet worker error: {}".format(
+                    _redact_text(str(exc))
+                ),
+                xbmc.LOGWARNING,
+            )
+
+    try:
+        thread = threading.Thread(
+            target=_worker, name="nzbdav-nzbget-dupe-fleet", daemon=True
+        )
+        thread.start()
+    except Exception as exc:  # pylint: disable=broad-except
+        # e.g. RuntimeError "can't start new thread" under thread exhaustion.
+        # The fleet is pure insurance -- never let it break the already-queued
+        # primary playback.
+        xbmc.log(
+            "NZB-DAV: NZBGet duplicate fleet spawn failed: {}".format(
+                _redact_text(str(exc))
+            ),
+            xbmc.LOGWARNING,
+        )
+        return None
+    return thread
 
 
 def _submit_poll_resolve(ctx, nzb_url, title, download_pubdate, download_size):
@@ -548,14 +732,38 @@ def _submit_poll_resolve(ctx, nzb_url, title, download_pubdate, download_size):
     reuse an existing job by name here: a bare name match has no
     size/pubdate/indexer corroboration, so a same-named repost could play the
     wrong job; NZBGet's own dupe handling covers a still-in-flight re-submit.
+
+    When the duplicate fleet is enabled and same-release candidates are
+    available (#372), the primary is submitted with the shared DupeKey at the
+    top DupeScore (so it stays the active download this poll tracks) and the
+    backup fleet is spawned; otherwise the primary is a plain single submit.
     """
     getter = ctx.settings_getter
-    nzbid, error = nzbget_api.append_nzb(nzb_url, title, settings_getter=getter)
+    dupe_key = ""
+    primary_score = 0
+    if _dupe_fleet_enabled(getter) and (ctx.fallback_candidates or ctx.fallback_loader):
+        dupe_key = _release_dupe_key(title)
+        if dupe_key:
+            primary_score = _PRIMARY_DUPE_SCORE
+    nzbid, error = nzbget_api.append_nzb(
+        nzb_url,
+        title,
+        settings_getter=getter,
+        dupe_key=dupe_key,
+        dupe_score=primary_score,
+    )
     if not nzbid:
         # Surface the specific (already-redacted) NZBGet message — auth vs dupe
         # vs "append returned 0" — per the spec error table, else the generic.
         ctx.on_failure(error or _string(30222))
         return False
+
+    # Primary is queued and highest-scored: spawn the same-release backups so
+    # NZBGet can fail over to one if the primary is unrepairable (#372). Spawned
+    # after the primary is confirmed queued so a failed primary never triggers a
+    # backup fleet, and off-thread so it doesn't delay the poll below.
+    if dupe_key:
+        _spawn_dupe_fleet(ctx, nzb_url, dupe_key)
 
     result = poll_nzbget_job(
         nzbid,
@@ -600,6 +808,8 @@ def _run_nzbget_backend(
     download_pubdate=None,
     download_size=None,
     completed_job=None,
+    fallback_candidates=None,
+    fallback_loader=None,
 ):
     """Shared NZBGet flow: reuse completed files, else submit -> poll -> SMB.
 
@@ -610,6 +820,8 @@ def _run_nzbget_backend(
     the selected result's identity in the ledger for the picker's "DL" tag;
     ``completed_job`` is the corroborated history match played directly (nothing
     submitted) when its ``dest_dir`` still holds a playable video over SMB.
+    ``fallback_candidates``/``fallback_loader`` seed the same-release duplicate
+    fleet (#372).
     """
     dialog = None
     leave_job = False
@@ -622,7 +834,14 @@ def _run_nzbget_backend(
         dialog = xbmcgui.DialogProgress()
         dialog.create(_addon_name(), _string(30218))
         ctx = _build_submit_ctx(
-            settings_getter, smb_root, dialog, timeout, on_success, on_failure
+            settings_getter,
+            smb_root,
+            dialog,
+            timeout,
+            on_success,
+            on_failure,
+            fallback_candidates=fallback_candidates,
+            fallback_loader=fallback_loader,
         )
         leave_job = _reuse_or_submit(
             ctx, nzb_url, title, completed_job, (download_pubdate, download_size)
@@ -712,6 +931,8 @@ def resolve_and_play_nzbget(
         download_pubdate=params.get("_download_pubdate"),
         download_size=params.get("_download_size"),
         completed_job=params.get("_nzbget_completed_job"),
+        fallback_candidates=params.get("_fallback_candidates"),
+        fallback_loader=params.get("_fallback_candidate_loader"),
     )
 
 
@@ -756,4 +977,6 @@ def play_nzbget(
         download_pubdate=resolve_params.get("_download_pubdate"),
         download_size=resolve_params.get("_download_size"),
         completed_job=resolve_params.get("_nzbget_completed_job"),
+        fallback_candidates=resolve_params.get("_fallback_candidates"),
+        fallback_loader=resolve_params.get("_fallback_candidate_loader"),
     )

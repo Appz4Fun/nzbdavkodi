@@ -261,6 +261,12 @@ Runtime switching still requires exact WebDAV `Content-Length` equality and 1000
 
 Fallback recovery is the only rescue path for fallback sessions: if no validated fallback source can resume the failed range, the proxy closes the stream instead of retrying the original source, zero-filling, or probing forward to skip bytes.
 
+#### NZBGet backend: duplicate backups
+
+The NZBGet backend downloads the whole release before playback, so it can't do live stream cutover. Instead it hands the same fallback fleet to NZBGet as a duplicate set. When **Enable fallback streams** is on, selecting a release submits the primary plus its same-release siblings with one shared `DupeKey`, a descending `DupeScore` (your pick highest), and `DupeMode=SCORE`. NZBGet keeps only the highest-scored member downloading — the release you selected, so the progress bar and completion behave exactly as before — and parks the rest in its history as backups without downloading them.
+
+If the active release finishes unrepairable (par2 repair fails, unpack fails, or health drops below NZBGet's critical threshold), NZBGet automatically pulls the next-highest-scored backup out of history and downloads it instead. NZBGet does not combine recovery blocks across releases; it fails over to a whole alternate release and repairs that with its own par2. The backups are loaded and submitted in a background thread so they never delay playback, are capped by **Maximum standby fallback streams**, and are best-effort — a backup that fails to submit never affects the primary download.
+
 Compatibility remux remains available for environments that need ffmpeg compatibility paths, but pass-through is the default. Setting **Force ffmpeg remux above (MB, 0=off)** to `0` disables non-MP4 remux entirely, including unknown-length streams.
 
 ---
