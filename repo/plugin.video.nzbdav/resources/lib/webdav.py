@@ -298,6 +298,7 @@ def _folder_total_fetch_root(url, username, password):
     Raises on any PROPFIND/parse failure; the caller turns that into the
     INCOMPLETE (fail-open) outcome.
     """
+    # nosemgrep
     import xml.etree.ElementTree as ET  # nosec B405 — parsing trusted WebDAV server response
 
     req = Request(url, method="PROPFIND")
@@ -311,12 +312,14 @@ def _folder_total_fetch_root(url, username, password):
     ) as resp:
         body = resp.read().decode("utf-8", errors="replace")
 
+    # nosemgrep
     _xml_parser = ET.XMLParser()  # nosec B314 — entities disabled below
     try:
         _xml_parser.parser.DefaultHandler = lambda _d: None
         _xml_parser.parser.ExternalEntityRefHandler = lambda *_: False
     except AttributeError:  # pragma: no cover — non-expat parser backend
         pass
+    # nosemgrep
     return ET.fromstring(body, parser=_xml_parser)  # nosec B314 — entities disabled
 
 
