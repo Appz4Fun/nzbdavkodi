@@ -90,60 +90,45 @@ def test_github_workflows_exclude_extreme_marker_from_default_pytest_runs():
         assert "pytest" not in contents
 
 
-def test_pages_workflow_deploys_repository_metadata_on_main_push():
+def test_pages_workflow_builds_and_deploys_docs_site_on_main_push():
+    # GitHub Pages for this repo serves the MkDocs documentation site, not a
+    # Kodi add-on repository. Add-on distribution now lives in the external
+    # Appz4Fun Kodi repository. Guard against the old repository-publishing
+    # workflow silently coming back.
     root = Path(__file__).resolve().parents[1]
     contents = (root / ".github" / "workflows" / "pages.yml").read_text(
         encoding="utf-8"
     )
 
+    assert "name: Docs" in contents
     assert "push:" in contents
     assert "branches: [main]" in contents
-    assert "repo/repository.nzbdav/**" in contents
-    assert "scripts/select_stable_release.py" in contents
-    assert "repo/repository.nzbdav.releases" not in contents
-    assert (
-        'gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100"'
-        in contents
-    )
-    assert "selected_tag=" in contents
-    assert "github.event.workflow_run.head_branch" in contents
-    assert "WORKFLOW_HEAD_BRANCH:" in contents
-    assert 'selected_tag="$WORKFLOW_HEAD_BRANCH"' in contents
-    assert 'selected_tag="${{ github.event.workflow_run.head_branch' not in contents
-    assert (
-        'python3 scripts/select_stable_release.py releases.json --tag "$selected_tag"'
-        in contents
-    )
-    assert "--clobber" in contents
-    assert "rm -rf pages-dist" in contents
-    assert "--output-dir pages-dist" in contents
-    assert "--addon-zip release-addon.zip" in contents
-    assert "--release-asset-url" not in contents
-    assert "--smoke-check" in contents
-    assert "--repository-addon-dir" not in contents
-    assert "scripts/generate_repo.py" in contents
+    # Rebuilds when the docs sources change.
+    assert "docs-site/**" in contents
+    assert "mkdocs.yml" in contents
+    # Builds the site strictly (broken links fail the build) and deploys it.
+    assert "mkdocs build --strict" in contents
+    assert "upload-pages-artifact" in contents
+    assert "deploy-pages" in contents
+    assert "pages: write" in contents
+    assert "id-token: write" in contents
+    # The retired Kodi-repository publishing machinery must be gone.
+    assert "generate_repo.py" not in contents
+    assert "select_stable_release.py" not in contents
+    assert "repository.nzbdav" not in contents
+    assert "pages-dist" not in contents
 
 
-def test_pages_workflow_skips_prerelease_release_runs_without_deploying():
-    root = Path(__file__).resolve().parents[1]
-    contents = (root / ".github" / "workflows" / "pages.yml").read_text(
-        encoding="utf-8"
-    )
-    skip_guard = "if: ${{ steps.stable_release.outputs.skip_deploy != 'true' }}"
+def test_justfile_has_docs_recipes():
+    contents = Path(__file__).resolve().parents[1].joinpath("justfile").read_text()
 
-    def assert_step_has_skip_guard(step_name):
-        pattern = (r"- name: {}\n" r"(?:        [^\n]*\n)*?" r"        {}\n").format(
-            re.escape(step_name), re.escape(skip_guard)
-        )
-        assert re.search(pattern, contents) is not None
-
-    assert "skip_deploy=true" in contents
-    assert "Skipping Pages deploy for non-stable release tag" in contents
-    assert "skip_deploy=false" in contents
-    assert_step_has_skip_guard("Download selected addon release")
-    assert_step_has_skip_guard("Generate Pages repository")
-    assert_step_has_skip_guard("Upload Pages artifact")
-    assert_step_has_skip_guard("Deploy to GitHub Pages")
+    assert "docs:" in contents
+    assert "docs-serve:" in contents
+    assert "mkdocs build --strict" in contents
+    assert "mkdocs serve" in contents
+    # The old local Kodi-repository preview recipes are gone.
+    assert "generate_repo.py" not in contents
+    assert "pages-dist" not in contents
 
 
 def test_release_workflow_does_not_generate_unpublished_repository_metadata():

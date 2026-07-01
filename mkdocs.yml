@@ -1,0 +1,113 @@
+site_name: NZB-DAV for Kodi
+site_description: >-
+  Stream Usenet movies and TV shows in Kodi through TMDBHelper, NZBHydra2 or
+  Prowlarr, and nzbdav — the complete user and technical guide.
+site_url: https://appz4fun.github.io/nzbdavkodi/
+site_author: Appz4Fun
+
+repo_url: https://github.com/Appz4Fun/nzbdavkodi
+repo_name: Appz4Fun/nzbdavkodi
+edit_uri: edit/main/docs-site/
+
+# The documentation source lives in docs-site/ so it never collides with the
+# contributor notes and generated reports under docs/.
+docs_dir: docs-site
+
+copyright: >-
+  NZB-DAV is free software licensed under GPL-3.0-or-later. It ships no content
+  and requires you to bring your own indexers and Usenet access.
+
+theme:
+  name: material
+  language: en
+  icon:
+    logo: material/play-network
+    repo: fontawesome/brands/github
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep purple
+      accent: purple
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep purple
+      accent: purple
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - navigation.indexes
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.tabs.link
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+plugins:
+  - search
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/Appz4Fun/nzbdavkodi
+      name: NZB-DAV on GitHub
+
+nav:
+  - Home: index.md
+  - Get started:
+      - Prerequisites: getting-started/prerequisites.md
+      - Install the add-on: getting-started/installation.md
+      - Configure connections: getting-started/configuration.md
+      - Set up TMDBHelper: getting-started/tmdbhelper.md
+      - Play your first title: getting-started/first-playback.md
+  - Features:
+      - Overview: features/index.md
+      - Search and indexers: features/search-and-indexers.md
+      - Quality filtering and sorting: features/quality-filtering.md
+      - Playback, remux, and seeking: features/playback-and-remux.md
+      - Fallback streams: features/fallback-streams.md
+      - NZBGet backend: features/nzbget-backend.md
+  - Settings reference:
+      - All settings: reference/settings.md
+      - advancedsettings.xml and seeking: reference/advancedsettings.md
+  - How it works:
+      - Architecture: how-it-works/architecture.md
+      - Search pipeline: how-it-works/search-pipeline.md
+      - Playback pipeline: how-it-works/playback-pipeline.md
+      - Stream proxy: how-it-works/stream-proxy.md
+      - Fallback cutover: how-it-works/fallback-cutover.md
+  - Operations:
+      - Troubleshooting: operations/troubleshooting.md
+      - CoreELEC and Linux tuning: operations/coreelec-tuning.md
+  - Contributing: contributing.md

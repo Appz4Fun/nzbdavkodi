@@ -14,9 +14,12 @@ uv.lock
 
 # Build
 dist/
-pages-dist/
 build/
 plugin.video.nzbdav.zip
+
+# Docs site (MkDocs build output)
+site/
+.cache/
 
 # IDE
 .vscode/
@@ -52,9 +55,6 @@ run-ralphforever.sh
 
 # Build zips (versioned)
 plugin.video.nzbdav-*.zip
-repository.nzbdav-*.zip
-!repository.nzbdav-*.zip
-!repo/zips/**/*.zip
 
 # dev docs
 devdocs

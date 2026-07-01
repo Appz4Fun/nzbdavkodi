@@ -1,0 +1,12 @@
+# Documentation site toolchain (GitHub Pages build only).
+#
+# This is NOT part of the Kodi addon runtime. The addon stays pure-Python and
+# 3.8-compatible; these packages run only in the "Docs" GitHub Actions workflow
+# (and locally via `just docs` / `just docs-serve`) to build the MkDocs site.
+#
+# Ranges (not exact pins) are used deliberately: the docs build is not shipped
+# to users, so tracking compatible minor releases is safer than pinning to a
+# single version that may be yanked.
+mkdocs-material>=9.5.0,<10.0.0
+pymdown-extensions>=10.7,<11.0.0
+mkdocs>=1.6.0,<2.0.0
