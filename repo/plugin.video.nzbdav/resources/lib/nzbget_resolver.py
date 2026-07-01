@@ -564,10 +564,18 @@ def _build_submit_ctx(
 # Primary DupeScore for a fleet submit (#372). The user's selected release must
 # stay the single ACTIVE download NZBGet keeps in the queue -- the poll tracks
 # only its NZBID -- so it is submitted at this ceiling and every same-release
-# backup gets a strictly-lower, descending score. If a backup tied or beat it,
-# NZBGet would park the primary in history as a dsDupe "duplicate" and the poll
-# would read that as a failed download.
-_PRIMARY_DUPE_SCORE = 10000
+# backup gets a strictly-lower (negative), descending score. If a backup tied or
+# beat it, NZBGet would park the primary in history as a dsDupe "duplicate" and
+# the poll would read that as a failed download.
+#
+# The ceiling is 0 (not a large positive) on purpose: it matches the pre-#372
+# single-submit score, so the primary's dupe-vs-history behavior is unchanged --
+# NZBGet still dupe-deletes a re-submit of an already-SUCCESS release (also
+# score 0; suppressed because new <= existing) on a reuse-miss instead of
+# re-downloading gigabytes already on disk. Backups at negative scores are
+# likewise suppressed against such a SUCCESS row, so no backup is re-fetched for
+# an already-good release either.
+_PRIMARY_DUPE_SCORE = 0
 
 
 def _release_dupe_key(title):
@@ -739,18 +747,19 @@ def _submit_poll_resolve(ctx, nzb_url, title, download_pubdate, download_size):
     backup fleet is spawned; otherwise the primary is a plain single submit.
     """
     getter = ctx.settings_getter
+    # Only the DupeKey gates the fleet; the primary always submits at
+    # _PRIMARY_DUPE_SCORE (0), which is both the ceiling above every negative
+    # backup score and the pre-#372 single-submit score, so a bare (no-fleet)
+    # submit stays byte-for-byte unchanged.
     dupe_key = ""
-    primary_score = 0
     if _dupe_fleet_enabled(getter) and (ctx.fallback_candidates or ctx.fallback_loader):
         dupe_key = _release_dupe_key(title)
-        if dupe_key:
-            primary_score = _PRIMARY_DUPE_SCORE
     nzbid, error = nzbget_api.append_nzb(
         nzb_url,
         title,
         settings_getter=getter,
         dupe_key=dupe_key,
-        dupe_score=primary_score,
+        dupe_score=_PRIMARY_DUPE_SCORE,
     )
     if not nzbid:
         # Surface the specific (already-redacted) NZBGet message — auth vs dupe

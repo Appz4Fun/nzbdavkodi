@@ -1419,3 +1419,26 @@ def test_spawn_dupe_fleet_swallows_thread_start_error():
     with patch("resources.lib.nzbget_resolver.threading.Thread", _BoomThread):
         result = _spawn_dupe_fleet(ctx, "http://i/primary", "k")  # must not raise
     assert result is None
+
+
+def test_fleet_primary_score_preserves_pre372_dupe_semantics():
+    # The primary keeps DupeScore 0 (its pre-#372 value) so NZBGet still
+    # dupe-deletes a re-submit of an already-SUCCESS release (score 0) on a
+    # reuse-miss instead of silently re-downloading gigabytes already on disk.
+    # Siblings sit strictly BELOW the primary at descending negative scores, so
+    # the primary still stays the single active download the poll tracks.
+    assert _PRIMARY_DUPE_SCORE == 0
+    with patch(_APPEND, return_value=(5, None)) as append:
+        _submit_dupe_fleet(
+            [
+                {"link": "http://i/a.nzb", "title": "A"},
+                {"link": "http://i/b.nzb", "title": "B"},
+            ],
+            "k",
+            None,
+            _settings({}),
+            5,
+        )
+    scores = [c.kwargs["dupe_score"] for c in append.call_args_list]
+    assert scores == [-1, -2]
+    assert all(s < _PRIMARY_DUPE_SCORE for s in scores)
