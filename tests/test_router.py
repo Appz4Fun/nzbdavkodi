@@ -223,21 +223,19 @@ def test_route_redacts_sensitive_params_in_logs(mock_handle_search, mock_xbmc):
     assert "'api_key': '***'" in logged
 
 
-@patch("resources.lib.router.install_player", create=True)
-def test_route_dispatches_to_install_player(mock_install):
+def test_route_dispatches_to_install_player():
     """route() with /install_player path should dispatch to install_player."""
-    with patch("resources.lib.router.install_player", mock_install, create=True):
-        # Patch the import inside route()
-        with patch.dict(
-            "sys.modules",
-            {"resources.lib.player_installer": MagicMock(install_player=mock_install)},
-        ):
-            argv = ["plugin://plugin.video.nzbdav/install_player", "1", ""]
-            route(argv)
-    # install_player is imported inside route() so we verify it was called via
-    # checking the module-level mock
-    # The simplest check: route didn't raise an exception
-    assert True, "route() with /install_player should complete without error"
+    mock_install = MagicMock()
+    # _route_install_player does a function-local
+    # ``from resources.lib.player_installer import install_player``, so patching
+    # that module in sys.modules is what actually intercepts the dispatch.
+    with patch.dict(
+        "sys.modules",
+        {"resources.lib.player_installer": MagicMock(install_player=mock_install)},
+    ):
+        argv = ["plugin://plugin.video.nzbdav/install_player", "1", ""]
+        route(argv)
+    mock_install.assert_called_once()
 
 
 @patch("xbmcaddon.Addon")
