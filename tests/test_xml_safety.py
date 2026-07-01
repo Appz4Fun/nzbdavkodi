@@ -218,12 +218,45 @@ def test_unsafe_error_is_value_error_subclass():
 # reorders, or mis-maps a codec entry, or that swaps an endianness, turns red.
 
 
-@pytest.mark.parametrize("prefix,codec", list(xml_safety._BOM_CODECS), ids=repr)
-def test_bom_codec_table_selects_correct_decoder(prefix, codec):
-    # A payload opening with each table prefix must decode under that entry's
-    # codec back to readable ASCII — proving the right endianness is chosen.
-    payload = prefix + "MARK".encode(codec)
-    assert "MARK" in xml_safety._xml_bytes_to_text(payload)
+# Independent vectors: each payload is built from a FIXED encoding (not read
+# back from _BOM_CODECS), so a mutation that swaps an endianness or drops an
+# entry decodes to mojibake and this turns red. The sentinel is distinctive
+# ASCII that only survives a *correct* decode.
+_DOC = "<z>SENTINEL</z>"
+_ENCODING_VECTORS = [
+    ("utf-32-be+BOM", b"\x00\x00\xfe\xff" + _DOC.encode("utf-32-be")),
+    ("utf-32-be+lead", _DOC.encode("utf-32-be")),
+    ("utf-32-le+BOM", b"\xff\xfe\x00\x00" + _DOC.encode("utf-32-le")),
+    ("utf-32-le+lead", _DOC.encode("utf-32-le")),
+    ("utf-8-sig", _DOC.encode("utf-8-sig")),
+    ("utf-16-be+BOM", b"\xfe\xff" + _DOC.encode("utf-16-be")),
+    ("utf-16-be+lead", _DOC.encode("utf-16-be")),
+    ("utf-16-le+BOM", b"\xff\xfe" + _DOC.encode("utf-16-le")),
+    ("utf-16-le+lead", _DOC.encode("utf-16-le")),
+]
+
+
+@pytest.mark.parametrize(
+    "payload", [v[1] for v in _ENCODING_VECTORS], ids=[v[0] for v in _ENCODING_VECTORS]
+)
+def test_xml_bytes_to_text_decodes_each_multibyte_encoding(payload):
+    # The sentinel must come back intact — proving the prefix was mapped to the
+    # correct codec AND endianness. A wrong codec yields null-interleaved/
+    # byte-swapped mojibake that does not contain the contiguous sentinel.
+    assert _DOC in xml_safety._xml_bytes_to_text(payload)
+
+
+def test_bom_codecs_table_covers_every_supported_encoding():
+    # Structural guard: every encoding the decoder must recognise is present, so
+    # deleting an entry (which would silently drop its test case) turns red here.
+    mapped = {codec for _prefix, codec in xml_safety._BOM_CODECS}
+    assert mapped == {"utf-32-be", "utf-32-le", "utf-8-sig", "utf-16-be", "utf-16-le"}
+    # Both endiannesses of UTF-16/32 must have BOTH a BOM and a bare-``<`` prefix.
+    prefixes = {codec: [] for codec in mapped}
+    for prefix, codec in xml_safety._BOM_CODECS:
+        prefixes[codec].append(prefix)
+    for codec in ("utf-16-be", "utf-16-le", "utf-32-be", "utf-32-le"):
+        assert len(prefixes[codec]) == 2, codec
 
 
 def test_xml_bytes_to_text_honours_declared_non_utf8_encoding():
