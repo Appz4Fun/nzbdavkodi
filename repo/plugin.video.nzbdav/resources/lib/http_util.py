@@ -141,13 +141,12 @@ def redact_text(text):
     """
     if not text:
         return text
-    redacted = _EMBEDDED_CRED_RE.sub(
-        lambda m: "{}=REDACTED".format(m.group(1)), str(text)
-    )
+    redacted = _EMBEDDED_CRED_RE.sub(r"\1=REDACTED", str(text))
     return _EMBEDDED_URL_RE.sub(_redact_url_userinfo_span, redacted)
 
 
 _WHITESPACE_RE = re.compile(r"\s+")
+_FRACTIONAL_SECONDS_RE = re.compile(r"\.\d+")
 
 
 def clean_search_query(title):
@@ -365,7 +364,7 @@ def iso8601_to_rfc2822(value):
     # .NET (Prowlarr's stack) can emit up to 7 fractional-second digits,
     # which pre-3.11 ``datetime.fromisoformat`` rejects; sub-second
     # precision is irrelevant for identity/sort/age, so drop it.
-    text = re.sub(r"\.\d+", "", text)
+    text = _FRACTIONAL_SECONDS_RE.sub("", text)
     # ``fromisoformat`` only accepts a trailing 'Z' from Python 3.11 on;
     # map it to an explicit UTC offset for older Kodi runtimes (3.8–3.9).
     if text[-1:] in ("Z", "z"):
