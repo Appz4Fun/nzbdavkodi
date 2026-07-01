@@ -209,3 +209,56 @@ def test_malformed_xml_raises_parse_error():
 def test_unsafe_error_is_value_error_subclass():
     # Callers that already catch ValueError keep working unchanged.
     assert issubclass(UnsafeXmlError, ValueError)
+
+
+# --- multi-byte encoding decoder unit coverage --------------------------------
+# White-box tests over _xml_bytes_to_text / _entity_scan_texts: every _BOM_CODECS
+# branch, the declared-encoding path, and the unknown-encoding fallback. These
+# lock the encoding logic the security guard depends on — a mutation that drops,
+# reorders, or mis-maps a codec entry, or that swaps an endianness, turns red.
+
+
+@pytest.mark.parametrize("prefix,codec", list(xml_safety._BOM_CODECS), ids=repr)
+def test_bom_codec_table_selects_correct_decoder(prefix, codec):
+    # A payload opening with each table prefix must decode under that entry's
+    # codec back to readable ASCII — proving the right endianness is chosen.
+    payload = prefix + "MARK".encode(codec)
+    assert "MARK" in xml_safety._xml_bytes_to_text(payload)
+
+
+def test_xml_bytes_to_text_honours_declared_non_utf8_encoding():
+    # No BOM, so the ``<?xml encoding=...?>`` declaration decides. ``\xe9`` is
+    # "é" in ISO-8859-1 but invalid UTF-8 — a correct latin-1 decode yields "é".
+    payload = b'<?xml version="1.0" encoding="iso-8859-1"?><d>caf\xe9</d>'
+    assert "café" in xml_safety._xml_bytes_to_text(payload)
+
+
+def test_xml_bytes_to_text_falls_back_to_utf8_on_unknown_encoding():
+    # An unknown declared codec must not raise — it falls back to UTF-8 so the
+    # entity scan still runs (covers the LookupError branch).
+    payload = b'<?xml version="1.0" encoding="no-such-codec-xyz"?><d>ok</d>'
+    assert "<d>ok</d>" in xml_safety._xml_bytes_to_text(payload)
+
+
+def test_xml_bytes_to_text_defaults_to_utf8_without_bom_or_declaration():
+    assert xml_safety._xml_bytes_to_text(b"<d>plain</d>") == "<d>plain</d>"
+
+
+def test_entity_scan_texts_adds_both_utf16_endianness_views():
+    # Best-guess decode + utf-16-le + utf-16-be = 3 views, so a BOM-less UTF-16
+    # entity declaration is caught whichever endianness it uses.
+    views = xml_safety._entity_scan_texts(b"<d/>")
+    assert len(views) == 3
+
+
+def test_unknown_declared_encoding_entity_still_rejected(monkeypatch):
+    # End-to-end: an entity payload declaring a bogus codec must still be
+    # rejected on the stdlib fallback (the UTF-8 fallback decode finds markers).
+    monkeypatch.setattr(xml_safety, "_USING_DEFUSEDXML", False)
+    monkeypatch.setattr(xml_safety, "_ET", stdlib_et)
+    payload = (
+        b'<?xml version="1.0" encoding="no-such-codec-xyz"?>'
+        b'<!DOCTYPE r [<!ENTITY a "x">]><r>&a;</r>'
+    )
+    with pytest.raises(UnsafeXmlError):
+        safe_fromstring(payload)

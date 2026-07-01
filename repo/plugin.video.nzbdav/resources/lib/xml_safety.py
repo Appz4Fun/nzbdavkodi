@@ -28,7 +28,7 @@ import re
 # nosemgrep
 import xml.etree.ElementTree as _stdlib_et  # nosec B405
 
-try:
+try:  # pragma: no cover - defusedxml import branch is env-specific
     from defusedxml import ElementTree as _ET
     from defusedxml.common import DefusedXmlException as _UnsafeXmlError
 
