@@ -564,7 +564,7 @@ def test_completed_job_stream_streams_when_midfile_body_available(mock_find_stre
 # ---------------------------------------------------------------------------
 
 
-@patch("resources.lib.webdav.get_video_file_size_hint", return_value=362_076_665)
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=362_076_665)
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 @patch("resources.lib.resolver._find_video_stream_for_folder")
 def test_completed_job_stream_rejects_stub_far_below_advertised(
@@ -599,7 +599,7 @@ def test_completed_job_stream_rejects_stub_far_below_advertised(
     mock_probe.assert_not_called()  # rejected on size before any body probe
 
 
-@patch("resources.lib.webdav.get_video_file_size_hint", return_value=80_000_000_000)
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=80_000_000_000)
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 @patch("resources.lib.resolver._find_video_stream_for_folder")
 def test_completed_job_stream_streams_single_file_matching_advertised(
@@ -627,7 +627,7 @@ def test_completed_job_stream_streams_single_file_matching_advertised(
     assert stream == ("http://webdav/movie.mkv", {"Authorization": "Basic x"})
 
 
-@patch("resources.lib.webdav.get_video_file_size_hint", return_value=3_000_000_000)
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=30_000_000_000)
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 @patch("resources.lib.resolver._find_video_stream_for_folder")
 def test_completed_job_stream_streams_pack_episode_below_advertised(
@@ -656,7 +656,7 @@ def test_completed_job_stream_streams_pack_episode_below_advertised(
     assert stream == ("http://webdav/show.s01e03.mkv", {"Authorization": "Basic x"})
 
 
-@patch("resources.lib.webdav.get_video_file_size_hint", return_value=1_000_000)
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=1_000_000)
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 @patch("resources.lib.resolver._find_video_stream_for_folder")
 def test_completed_job_stream_streams_when_advertised_size_unknown(
@@ -684,16 +684,17 @@ def test_completed_job_stream_streams_when_advertised_size_unknown(
     assert stream == ("http://webdav/movie.mkv", {"Authorization": "Basic x"})
 
 
-@patch("resources.lib.webdav.get_video_file_size_hint", return_value=80_000_000_000)
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=80_000_000_000)
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 @patch("resources.lib.resolver._find_video_stream_for_folder")
 def test_completed_job_stream_threads_stub_floor_into_discovery(
     mock_find_stream, _mock_probe, _mock_size
 ):
     """#282 follow-up D: the pre-submit cache-hit path also threads the
-    single-file advertised-size floor into discovery, so a stale Completed row
-    whose stub sits at the release root recurses into the subfolder holding the
-    real file instead of serving the stub. Packs/unknown pass a 0 floor."""
+    advertised-size floor into discovery, so a stale Completed row whose stub
+    sits at the release root recurses into the subfolder holding the real file
+    instead of serving the stub. Only an unknown advertised size passes a 0
+    floor (the floor is now pack-agnostic -- advertised*0.5 for any known size)."""
     from resources.lib.resolver import _STUB_VIDEO_MIN_ADVERTISED_FRACTION
 
     mock_find_stream.return_value = (
@@ -718,14 +719,18 @@ def test_completed_job_stream_threads_stub_floor_into_discovery(
     )
 
 
-@patch("resources.lib.webdav.get_video_file_size_hint", return_value=3_000_000_000)
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=30_000_000_000)
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 @patch("resources.lib.resolver._find_video_stream_for_folder")
-def test_completed_job_stream_threads_zero_floor_for_pack(
+def test_completed_job_stream_threads_advertised_floor_for_pack(
     mock_find_stream, _mock_probe, _mock_size
 ):
-    """A pack passes a 0 floor through the pre-submit path so a legitimately
-    pack-fraction episode is never deferred -- pack discovery stays unchanged."""
+    """PACK-AGNOSTIC: a pack threads the SAME advertised*0.5 floor into discovery
+    as a single file (no more pack-zero special case). The accept guard compares
+    the folder's total video bytes against it, so a real pack (episodes sum to
+    ~advertised) still streams while a stub-only folder is rejected."""
+    from resources.lib.resolver import _STUB_VIDEO_MIN_ADVERTISED_FRACTION
+
     mock_find_stream.return_value = (
         "/content/uncategorized/show/show.s01e03.mkv",
         "http://webdav/show.s01e03.mkv",
@@ -743,10 +748,12 @@ def test_completed_job_stream_threads_zero_floor_for_pack(
         download_size="30000000000",
     )
 
-    assert mock_find_stream.call_args.kwargs["min_video_size"] == 0
+    assert mock_find_stream.call_args.kwargs["min_video_size"] == (
+        30000000000 * _STUB_VIDEO_MIN_ADVERTISED_FRACTION
+    )
 
 
-@patch("resources.lib.webdav.get_video_file_size_hint", return_value=362_076_665)
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=362_076_665)
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 @patch("resources.lib.resolver._find_video_stream_for_folder")
 def test_existing_completed_stream_rejects_stub_via_download_size(
@@ -778,7 +785,7 @@ def test_existing_completed_stream_rejects_stub_via_download_size(
     mock_probe.assert_not_called()
 
 
-@patch("resources.lib.webdav.get_video_file_size_hint", return_value=362_076_665)
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=362_076_665)
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 @patch("resources.lib.resolver._find_video_stream_for_folder")
 def test_picker_completed_stream_rejects_stub_via_params_download_size(
@@ -7903,7 +7910,7 @@ def test_handle_history_result_body_unavailable_exhaustion_message(
 # ---------------------------------------------------------------------------
 
 
-@patch("resources.lib.webdav.get_video_file_size_hint", return_value=362_076_665)
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=362_076_665)
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 @patch("resources.lib.resolver._find_completed_video_stream_with_rechecks")
 def test_handle_history_result_rejects_stub_far_below_advertised(
@@ -7940,7 +7947,7 @@ def test_handle_history_result_rejects_stub_far_below_advertised(
     mock_probe.assert_not_called()  # rejected on size before any body probe
 
 
-@patch("resources.lib.webdav.get_video_file_size_hint", return_value=80_000_000_000)
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=80_000_000_000)
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 @patch("resources.lib.resolver._find_completed_video_stream_with_rechecks")
 def test_handle_history_result_streams_single_file_matching_advertised(
@@ -7972,7 +7979,7 @@ def test_handle_history_result_streams_single_file_matching_advertised(
     assert retries == 0
 
 
-@patch("resources.lib.webdav.get_video_file_size_hint", return_value=3_000_000_000)
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=30_000_000_000)
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 @patch("resources.lib.resolver._find_completed_video_stream_with_rechecks")
 def test_handle_history_result_streams_pack_episode_below_advertised(
@@ -8005,7 +8012,7 @@ def test_handle_history_result_streams_pack_episode_below_advertised(
     assert retries == 0
 
 
-@patch("resources.lib.webdav.get_video_file_size_hint", return_value=1_000_000)
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=1_000_000)
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 @patch("resources.lib.resolver._find_completed_video_stream_with_rechecks")
 def test_handle_history_result_streams_when_advertised_size_unknown(
@@ -8037,7 +8044,7 @@ def test_handle_history_result_streams_when_advertised_size_unknown(
 
 
 @patch("resources.lib.resolver.xbmcgui")
-@patch("resources.lib.webdav.get_video_file_size_hint", return_value=362_076_665)
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=362_076_665)
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 @patch("resources.lib.resolver._find_completed_video_stream_with_rechecks")
 def test_handle_history_result_stub_keeps_polling_and_defers_to_timeout(
@@ -8075,7 +8082,7 @@ def test_handle_history_result_stub_keeps_polling_and_defers_to_timeout(
 
 
 @patch("resources.lib.resolver.xbmcgui")
-@patch("resources.lib.webdav.get_video_file_size_hint", return_value=362_076_665)
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=362_076_665)
 @patch("resources.lib.resolver._find_completed_video_stream_with_rechecks")
 def test_handle_history_result_stub_does_not_starve_symlink_budget(
     mock_find_stream, _mock_size, mock_gui
@@ -8129,34 +8136,29 @@ def test_handle_history_result_stub_does_not_starve_symlink_budget(
 # is also threaded into WebDAV discovery (_stub_min_size_floor -> min_video_size)
 # so a root-level stub recurses into the subfolder holding the real file rather
 # than every poll re-picking the same root stub until download_timeout. The
-# floor is single-file only (0 for packs / unknown size), keeping packs and the
-# fail-open behavior unchanged.
+# floor is PACK-AGNOSTIC (advertised*0.5 for any known size, 0 for unknown),
+# keeping the fail-open behavior unchanged.
 # ---------------------------------------------------------------------------
 
 
-def test_stub_min_size_floor_single_file_is_half_advertised():
-    """A single-file (non-pack) release with a known advertised size floors at
-    half that size -- exactly the threshold _discovered_video_is_stub rejects
-    below, so discovery and the accept guard agree on what 'too small' means."""
+def test_stub_min_size_floor_is_half_advertised_pack_agnostic():
+    """The floor is half the advertised size for ANY release with a known size --
+    PACK-AGNOSTIC, no title/release_is_pack consultation. Packs are handled at
+    accept time by comparing the folder's TOTAL video bytes (episodes sum to
+    ~advertised) against this floor, not a single picked episode, so the floor
+    itself is the same for a movie and a season pack."""
     from resources.lib.resolver import (
         _STUB_VIDEO_MIN_ADVERTISED_FRACTION,
         _stub_min_size_floor,
     )
 
-    floor = _stub_min_size_floor(
-        "81610612736", "The.Undertakers.2024.2160p.UHD.BluRay.x265-GROUP"
+    assert _stub_min_size_floor("81610612736") == (
+        81610612736 * _STUB_VIDEO_MIN_ADVERTISED_FRACTION
     )
-
-    assert floor == 81610612736 * _STUB_VIDEO_MIN_ADVERTISED_FRACTION
-
-
-def test_stub_min_size_floor_pack_is_zero():
-    """A pack's advertised size spans every episode, so one episode is
-    legitimately a small fraction -- no floor (0) for packs, just like the
-    accept-time stub guard is skipped for them."""
-    from resources.lib.resolver import _stub_min_size_floor
-
-    assert _stub_min_size_floor("30000000000", "Some.Show.S01.1080p.WEB-DL.x264") == 0
+    # Same floor regardless of whether the name looks like a pack.
+    assert _stub_min_size_floor("30000000000") == (
+        30000000000 * _STUB_VIDEO_MIN_ADVERTISED_FRACTION
+    )
 
 
 def test_stub_min_size_floor_unknown_advertised_is_zero():
@@ -8164,9 +8166,9 @@ def test_stub_min_size_floor_unknown_advertised_is_zero():
     legitimately small file is never deferred or dropped."""
     from resources.lib.resolver import _stub_min_size_floor
 
-    assert _stub_min_size_floor(None, "Movie.2024") == 0
-    assert _stub_min_size_floor("0", "Movie.2024") == 0
-    assert _stub_min_size_floor("not-a-number", "Movie.2024") == 0
+    assert _stub_min_size_floor(None) == 0
+    assert _stub_min_size_floor("0") == 0
+    assert _stub_min_size_floor("not-a-number") == 0
 
 
 def test_advertised_size_bytes_non_finite_is_unknown():
@@ -8188,11 +8190,277 @@ def test_stub_min_size_floor_non_finite_advertised_is_zero():
     stub guard fails OPEN instead of raising out of discovery."""
     from resources.lib.resolver import _stub_min_size_floor
 
-    assert _stub_min_size_floor("inf", "Movie.2024") == 0
-    assert _stub_min_size_floor("1e10000", "Movie.2024") == 0
+    assert _stub_min_size_floor("inf") == 0
+    assert _stub_min_size_floor("1e10000") == 0
 
 
+# ---------------------------------------------------------------------------
+# _discovered_video_is_stub two-stage, PACK-AGNOSTIC logic (#282 redesign):
+#   stage 1 (fast path) -- a picked file already >= advertised*0.5 is the real
+#           single feature; accept WITHOUT a folder walk.
+#   stage 2 -- a small/unknown picked file is a stub OR a pack episode; sum the
+#           folder's TOTAL video bytes and reject only if the WHOLE folder is
+#           below the floor. This gives packs real stub protection (the old
+#           title-based release_is_pack exemption disabled the guard for them).
+# ---------------------------------------------------------------------------
+
+
+@patch("resources.lib.webdav.folder_video_total_bytes")
+@patch("resources.lib.webdav.get_video_file_size_hint")
+def test_discovered_video_is_stub_unknown_advertised_fails_open(
+    mock_picked, mock_total
+):
+    """No advertised size -> floor 0 -> fail OPEN with no I/O at all (neither the
+    picked-size hint nor the folder walk is consulted)."""
+    from resources.lib.resolver import _discovered_video_is_stub
+
+    assert _discovered_video_is_stub("/folder", "/folder/x.mkv", None) is False
+    mock_picked.assert_not_called()
+    mock_total.assert_not_called()
+
+
+@patch("resources.lib.webdav.folder_video_total_bytes")
 @patch("resources.lib.webdav.get_video_file_size_hint", return_value=80_000_000_000)
+def test_discovered_video_is_stub_fast_path_skips_folder_walk(mock_picked, mock_total):
+    """A real-sized single feature (picked file >= floor) is accepted WITHOUT the
+    extra folder-total walk -- the latency-cheap common-movie path."""
+    from resources.lib.resolver import _discovered_video_is_stub
+
+    # advertised ~81 GB -> floor ~40.8 GB; picked 80 GB is above it.
+    is_stub = _discovered_video_is_stub("/folder", "/folder/movie.mkv", "81610612736")
+
+    assert is_stub is False
+    mock_total.assert_not_called()  # no second walk for an obviously-real file
+
+
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=362_076_665)
+@patch("resources.lib.webdav.get_video_file_size_hint", return_value=362_076_665)
+def test_discovered_video_is_stub_rejects_stub_only_folder(mock_picked, mock_total):
+    """Picked file below the floor AND the folder total is just the stub -> a
+    job-start stub; reject. The walk runs to make the decision."""
+    from resources.lib.resolver import _discovered_video_is_stub
+
+    is_stub = _discovered_video_is_stub("/folder", "/folder/stub.mp4", "81610612736")
+
+    assert is_stub is True
+    mock_total.assert_called_once()
+
+
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=30_000_000_000)
+@patch("resources.lib.webdav.get_video_file_size_hint", return_value=3_000_000_000)
+def test_discovered_video_is_stub_accepts_real_pack_via_folder_total(
+    mock_picked, mock_total
+):
+    """THE pack-agnostic win: a picked episode (3 GB) is far below the advertised
+    pack size (30 GB, floor 15 GB), but the FOLDER total (30 GB of episodes) is
+    at/above the floor -> a real pack, accept. The old title-based guard would
+    have had to special-case this; the folder total handles it with no title."""
+    from resources.lib.resolver import _discovered_video_is_stub
+
+    is_stub = _discovered_video_is_stub("/pack", "/pack/Show.S01E03.mkv", "30000000000")
+
+    assert is_stub is False
+    mock_total.assert_called_once()
+
+
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=362_076_665)
+@patch("resources.lib.webdav.get_video_file_size_hint", return_value=400_000_000)
+def test_discovered_video_is_stub_rejects_pack_showing_only_stub(
+    mock_picked, mock_total
+):
+    """THE hole this redesign closes: a PACK (advertised 30 GB) whose folder so
+    far exposes only nzbdav's job-start stub (folder total 362 MB) is REJECTED,
+    so the poll loop keeps waiting for the real episodes. The previous
+    release_is_pack(title) exemption returned floor 0 for packs and would have
+    streamed this stub."""
+    from resources.lib.resolver import _discovered_video_is_stub
+
+    is_stub = _discovered_video_is_stub(
+        "/pack", "/pack/Some.Show.S01.Complete.stub.mp4", "30000000000"
+    )
+
+    assert is_stub is True  # pack stub no longer slips through
+    mock_total.assert_called_once()
+
+
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=0)
+@patch("resources.lib.webdav.get_video_file_size_hint", return_value=362_076_665)
+def test_discovered_video_is_stub_fails_open_when_folder_scan_empty(
+    mock_picked, mock_total
+):
+    """Picked file is small but the folder walk returns nothing (scan failed or
+    raced) -> fail OPEN rather than reject a possibly-real stream."""
+    from resources.lib.resolver import _discovered_video_is_stub
+
+    is_stub = _discovered_video_is_stub("/folder", "/folder/x.mkv", "81610612736")
+
+    assert is_stub is False
+
+
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=-1)
+@patch("resources.lib.webdav.get_video_file_size_hint", return_value=362_076_665)
+def test_discovered_video_is_stub_fails_open_on_incomplete_scan(
+    mock_picked, mock_total
+):
+    """When folder_video_total_bytes signals INCOMPLETE (negative sentinel -- a
+    PROPFIND error or an unsized video file), the total is untrustworthy, so the
+    guard fails OPEN and never rejects real content on partial data."""
+    from resources.lib.resolver import _discovered_video_is_stub
+
+    is_stub = _discovered_video_is_stub("/folder", "/folder/x.mkv", "81610612736")
+
+    assert is_stub is False
+
+
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=362_076_665)
+@patch("resources.lib.webdav.get_video_file_size_hint", return_value=0)
+def test_discovered_video_is_stub_walks_when_picked_size_unknown(
+    mock_picked, mock_total
+):
+    """When the picked file's own size is unknown (no cached hint), the guard
+    still walks the folder rather than fail-open blindly -- a stub-only folder is
+    caught even without a per-file size."""
+    from resources.lib.resolver import _discovered_video_is_stub
+
+    is_stub = _discovered_video_is_stub("/folder", "/folder/x.mp4", "81610612736")
+
+    assert is_stub is True
+    mock_total.assert_called_once()
+
+
+# Stage 2b (#355 review): the folder TOTAL clearing the floor does not prove the
+# PICKED file is real -- a materialised sibling can lift the total while the
+# requested file is still a stub. Reject a picked file dwarfed by the largest
+# video; accept a real episode comparable to its siblings.
+
+
+@patch("resources.lib.webdav.get_video_file_size_hint", return_value=10 * 1024**2)
+@patch("resources.lib.webdav.folder_video_total_bytes")
+def test_discovered_video_is_stub_rejects_below_floor_pick_dwarfed_by_sibling(
+    mock_total, _mock_hint
+):
+    """The picked file (10 MB stub) is below the floor, the folder total clears
+    the floor ONLY because an 8 GB sibling materialised. Pre-stage-2b this wrongly
+    ACCEPTED (the total >= floor); now the picked file being ~0.1% of the largest
+    video is rejected so the poll loop keeps waiting for the real requested file.
+    """
+    from resources.lib.resolver import _discovered_video_is_stub
+
+    def total(_folder, settings_getter=None, _stats=None):
+        if _stats is not None:
+            _stats["max"] = 8 * 1024**3  # the large materialised sibling
+        return 10 * 1024**2 + 8 * 1024**3  # >= floor, but driven by the sibling
+
+    mock_total.side_effect = total
+
+    is_stub = _discovered_video_is_stub(
+        "/content/x/Show.S01.Pack/",
+        "/content/x/Show.S01.Pack/Show.S01E05.mkv",
+        str(4 * 1024**3),  # advertised 4 GB -> floor 2 GB
+    )
+
+    assert is_stub is True
+
+
+@patch("resources.lib.webdav.get_video_file_size_hint", return_value=3 * 1024**3)
+@patch("resources.lib.webdav.folder_video_total_bytes")
+def test_discovered_video_is_stub_accepts_real_pack_episode_comparable_to_siblings(
+    mock_total, _mock_hint
+):
+    """A real pack episode (3 GB) below the half-pack floor but comparable in size
+    to its largest sibling (3 GB) must still stream -- stage 2b only rejects a file
+    ANOMALOUSLY tiny versus the largest video, never a legitimate episode."""
+    from resources.lib.resolver import _discovered_video_is_stub
+
+    def total(_folder, settings_getter=None, _stats=None):
+        if _stats is not None:
+            _stats["max"] = 3 * 1024**3
+        return 24 * 1024**3  # whole-pack total
+
+    mock_total.side_effect = total
+
+    is_stub = _discovered_video_is_stub(
+        "/content/x/Show.S01.Complete/",
+        "/content/x/Show.S01.Complete/Show.S01E05.mkv",
+        str(24 * 1024**3),  # advertised 24 GB -> floor 12 GB
+    )
+
+    assert is_stub is False
+
+
+@patch("resources.lib.webdav.get_video_file_size_hint", return_value=10 * 1024**2)
+@patch("resources.lib.webdav.folder_video_total_bytes")
+def test_discovered_video_is_stub_stage2b_fails_open_when_largest_unknown(
+    mock_total, _mock_hint
+):
+    """If the walk reported a total >= floor but no per-file max (largest 0),
+    stage 2b cannot judge and fails OPEN rather than reject real content."""
+    from resources.lib.resolver import _discovered_video_is_stub
+
+    def total(_folder, settings_getter=None, _stats=None):
+        return 8 * 1024**3  # >= floor, but leaves _stats empty (no max recorded)
+
+    mock_total.side_effect = total
+
+    is_stub = _discovered_video_is_stub("/folder", "/folder/x.mkv", str(4 * 1024**3))
+
+    assert is_stub is False
+
+
+@patch("resources.lib.webdav.get_video_file_size_hint", return_value=300 * 1024**2)
+@patch("resources.lib.webdav.folder_video_total_bytes")
+def test_discovered_video_is_stub_accepts_short_pack_special(mock_total, _mock_hint):
+    """#355 Codex review: a legitimately SHORT requested pack item (a 300 MB
+    recap/special, ~7% of the 4 GB longest episode) must still stream -- it is real
+    content, not a job-start stub. The folder total proves the pack is present; the
+    picked file at ~7% of the largest is above the stub fraction (0.05), so it is
+    accepted. (At the original 0.1 fraction this was wrongly rejected.)"""
+    from resources.lib.resolver import _discovered_video_is_stub
+
+    def total(_folder, settings_getter=None, _stats=None):
+        if _stats is not None:
+            _stats["max"] = 4 * 1024**3  # longest episode in the pack
+        return 30 * 1024**3  # whole pack materialised
+
+    mock_total.side_effect = total
+
+    is_stub = _discovered_video_is_stub(
+        "/content/x/Show.S01.Complete/",
+        "/content/x/Show.S01.Complete/Show.S01E00.Recap.mkv",
+        str(30 * 1024**3),  # pack advertised 30 GB -> floor 15 GB
+    )
+
+    assert is_stub is False
+
+
+@patch("resources.lib.webdav.get_video_file_size_hint", return_value=10 * 1024**2)
+@patch("resources.lib.webdav.folder_video_total_bytes")
+def test_discovered_video_is_stub_rejects_dwarfed_stub_even_when_total_incomplete(
+    mock_total, _mock_hint
+):
+    """#355 Codex review: when the folder-total scan is INCOMPLETE (negative
+    sentinel) but already sized a real sibling that dwarfs the picked file, the
+    picked file is a known job-start stub -- reject it. A transient second-PROPFIND
+    glitch (or a sibling missing getcontentlength) must NOT fail-open a stub when a
+    real sibling is visible. (Pre-fix, the incomplete total fail-opened first and
+    streamed the stub.)"""
+    from resources.lib.resolver import _discovered_video_is_stub
+
+    def total(_folder, settings_getter=None, _stats=None):
+        if _stats is not None:
+            _stats["max"] = 8 * 1024**3  # a real sibling WAS sized
+        return -1  # but the overall scan is INCOMPLETE (negative sentinel)
+
+    mock_total.side_effect = total
+
+    is_stub = _discovered_video_is_stub(
+        "/folder", "/folder/stub.mp4", str(4 * 1024**3)  # floor 2 GB
+    )
+
+    assert is_stub is True
+
+
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=80_000_000_000)
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 @patch("resources.lib.resolver._find_completed_video_stream_with_rechecks")
 def test_handle_history_result_threads_stub_floor_into_discovery(
@@ -8225,14 +8493,17 @@ def test_handle_history_result_threads_stub_floor_into_discovery(
     )
 
 
-@patch("resources.lib.webdav.get_video_file_size_hint", return_value=3_000_000_000)
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=30_000_000_000)
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 @patch("resources.lib.resolver._find_completed_video_stream_with_rechecks")
-def test_handle_history_result_threads_zero_floor_for_pack(
+def test_handle_history_result_threads_advertised_floor_for_pack(
     mock_find_stream, _mock_probe, _mock_size
 ):
-    """A pack passes a 0 floor into discovery so a legitimately pack-fraction
-    episode is never deferred or dropped -- pack discovery stays unchanged."""
+    """PACK-AGNOSTIC: a pack threads the SAME advertised*0.5 floor into discovery
+    as a single file. The folder-total accept guard (mocked at the full 30 GB
+    pack here) then accepts the real pack while a stub-only folder is rejected."""
+    from resources.lib.resolver import _STUB_VIDEO_MIN_ADVERTISED_FRACTION
+
     mock_find_stream.return_value = (
         "/content/uncategorized/show/show.s01e03.mkv",
         "http://webdav/show.s01e03.mkv",
@@ -8251,7 +8522,9 @@ def test_handle_history_result_threads_zero_floor_for_pack(
         download_size="30000000000",
     )
 
-    assert mock_find_stream.call_args.kwargs["min_video_size"] == 0
+    assert mock_find_stream.call_args.kwargs["min_video_size"] == (
+        30000000000 * _STUB_VIDEO_MIN_ADVERTISED_FRACTION
+    )
 
 
 @patch("resources.lib.resolver._find_video_stream_for_folder")
@@ -9241,3 +9514,21 @@ def test_completed_copy_blocks_clear_fails_soft_on_probe_thread_start_failure():
         # Must not raise; must return True (queue left intact).
         blocked = _completed_copy_blocks_clear("Title", lambda _k, _d=None: "")
     assert blocked is True
+
+
+def test_advertised_size_bytes_non_finite_numeric_fails_open():
+    """#282 follow-up: a non-finite numeric size (inf from a JSON overflow
+    literal, or nan) must fail OPEN (return 0) instead of raising OverflowError /
+    ValueError out of the resolver -- neither is in _RESOLVE_RUNTIME_ERRORS, so
+    an escape would skip the setResolvedUrl-on-failure path. The int/float branch
+    now matches the string branch's fail-open contract."""
+    from resources.lib.resolver import _advertised_size_bytes, _stub_min_size_floor
+
+    assert _advertised_size_bytes(float("inf")) == 0
+    assert _advertised_size_bytes(float("-inf")) == 0
+    assert _advertised_size_bytes(float("nan")) == 0
+    # finite values still parse normally.
+    assert _advertised_size_bytes(5.0) == 5
+    assert _advertised_size_bytes(81_610_612_736) == 81_610_612_736
+    # the floor helper must not propagate the error either.
+    assert _stub_min_size_floor(float("inf")) == 0

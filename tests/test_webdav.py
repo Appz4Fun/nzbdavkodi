@@ -9,6 +9,7 @@ from urllib.error import HTTPError
 from resources.lib.webdav import (
     find_video_file,
     find_video_stream_for_folder,
+    folder_video_total_bytes,
     get_webdav_stream_url_for_path,
     probe_webdav_reachable,
 )
@@ -284,6 +285,379 @@ def test_find_video_file_records_propfind_content_length_hint(
 
     assert path is not None
     assert webdav.get_video_file_size_hint(path) == 4294967296
+
+
+# ---------------------------------------------------------------------------
+# folder_video_total_bytes (#282 pack-agnostic stub guard): sum EVERY video in
+# the completed folder tree so the resolver can compare the folder's real
+# content against the advertised release size, instead of guessing pack-ness
+# from the title. Walks the whole tree (no first-match short-circuit), recurses
+# (depth cap 2), and returns a negative incomplete sentinel on sizing errors so
+# the resolver (which treats <= 0 as fail-open) never blocks a real stream.
+# ---------------------------------------------------------------------------
+
+
+def _propfind_resp(xml):
+    """Build a context-manager urlopen mock yielding the given PROPFIND XML."""
+    resp = MagicMock()
+    resp.__enter__ = lambda s: s
+    resp.__exit__ = MagicMock(return_value=False)
+    resp.read.return_value = xml.encode("utf-8")
+    return resp
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_folder_video_total_bytes_sums_all_videos_at_root(mock_urlopen, mock_settings):
+    """A flat folder of several episodes sums every video's getcontentlength --
+    the folder total a pack's stub guard compares against the advertised size."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    xml = """<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/content/uncategorized/Pack/</D:href>
+    <D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/content/uncategorized/Pack/Show.S01E01.mkv</D:href>
+    <D:propstat><D:prop><D:getcontentlength>1000000000</D:getcontentlength>
+      <D:resourcetype/></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/content/uncategorized/Pack/Show.S01E02.mkv</D:href>
+    <D:propstat><D:prop><D:getcontentlength>2000000000</D:getcontentlength>
+      <D:resourcetype/></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+</D:multistatus>"""
+    mock_urlopen.return_value = _propfind_resp(xml)
+
+    total = folder_video_total_bytes("/content/uncategorized/Pack/")
+
+    assert total == 3000000000
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_folder_video_total_bytes_recurses_subdirs(mock_urlopen, mock_settings):
+    """Season-pack folders nest episodes one level deep; the walk must recurse
+    and add the subfolder's videos to the root total (a single root-level stub
+    plus the real episodes in a subdir sum to the real content)."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    root_xml = """<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/content/uncategorized/Pack/</D:href>
+    <D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/content/uncategorized/Pack/Season%201/</D:href>
+    <D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/content/uncategorized/Pack/stub.mp4</D:href>
+    <D:propstat><D:prop><D:getcontentlength>362076665</D:getcontentlength>
+      <D:resourcetype/></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+</D:multistatus>"""
+    sub_xml = """<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/content/uncategorized/Pack/Season%201/</D:href>
+    <D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/content/uncategorized/Pack/Season%201/Show.S01E01.mkv</D:href>
+    <D:propstat><D:prop><D:getcontentlength>5000000000</D:getcontentlength>
+      <D:resourcetype/></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/content/uncategorized/Pack/Season%201/Show.S01E02.mkv</D:href>
+    <D:propstat><D:prop><D:getcontentlength>5000000000</D:getcontentlength>
+      <D:resourcetype/></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+</D:multistatus>"""
+    mock_urlopen.side_effect = [_propfind_resp(root_xml), _propfind_resp(sub_xml)]
+
+    total = folder_video_total_bytes("/content/uncategorized/Pack/")
+
+    # 362076665 (root stub) + 5e9 + 5e9 (subfolder episodes)
+    assert total == 362076665 + 10000000000
+    assert mock_urlopen.call_count == 2  # recursed exactly once into the subdir
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_folder_video_total_bytes_ignores_non_video_files(mock_urlopen, mock_settings):
+    """Sidecar .nfo/.srt files are not video and never count toward the total --
+    only real video files with a parseable length do."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    xml = """<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/content/uncategorized/Movie/</D:href>
+    <D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/content/uncategorized/Movie/movie.mkv</D:href>
+    <D:propstat><D:prop><D:getcontentlength>8000000000</D:getcontentlength>
+      <D:resourcetype/></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/content/uncategorized/Movie/movie.nfo</D:href>
+    <D:propstat><D:prop><D:getcontentlength>4096</D:getcontentlength>
+      <D:resourcetype/></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/content/uncategorized/Movie/subs.srt</D:href>
+    <D:propstat><D:prop><D:getcontentlength>51200</D:getcontentlength>
+      <D:resourcetype/></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+</D:multistatus>"""
+    mock_urlopen.return_value = _propfind_resp(xml)
+
+    total = folder_video_total_bytes("/content/uncategorized/Movie/")
+
+    assert total == 8000000000  # only the .mkv; .nfo/.srt sidecars excluded
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_folder_video_total_bytes_incomplete_on_unsized_video(
+    mock_urlopen, mock_settings
+):
+    """A matched VIDEO file with a missing/non-numeric getcontentlength makes the
+    whole total UNTRUSTWORTHY: returns the negative incomplete sentinel so the
+    stub guard fails OPEN rather than under-counting into a false reject of a real
+    multi-file release."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    xml = """<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/content/uncategorized/Movie/</D:href>
+    <D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/content/uncategorized/Movie/part1.mkv</D:href>
+    <D:propstat><D:prop><D:getcontentlength>6000000000</D:getcontentlength>
+      <D:resourcetype/></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/content/uncategorized/Movie/part2.mkv</D:href>
+    <D:propstat><D:prop><D:getcontentlength>not-a-number</D:getcontentlength>
+      <D:resourcetype/></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+</D:multistatus>"""
+    mock_urlopen.return_value = _propfind_resp(xml)
+
+    # part2's size is unknown -> cannot trust the 6 GB partial -> negative sentinel.
+    assert folder_video_total_bytes("/content/uncategorized/Movie/") < 0
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_folder_video_total_bytes_incomplete_propagates_from_subdir(
+    mock_urlopen, mock_settings
+):
+    """An unsized video deep in a subfolder makes the WHOLE folder incomplete --
+    the negative sentinel propagates up through recursion so a partial root total
+    never rejects a real nested pack."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    root_xml = """<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/content/uncategorized/Pack/</D:href>
+    <D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/content/uncategorized/Pack/Season%201/</D:href>
+    <D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/content/uncategorized/Pack/Show.S01E01.mkv</D:href>
+    <D:propstat><D:prop><D:getcontentlength>1000000000</D:getcontentlength>
+      <D:resourcetype/></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+</D:multistatus>"""
+    sub_xml = """<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/content/uncategorized/Pack/Season%201/</D:href>
+    <D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/content/uncategorized/Pack/Season%201/Show.S01E02.mkv</D:href>
+    <D:propstat><D:prop><D:resourcetype/></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+</D:multistatus>"""
+    mock_urlopen.side_effect = [_propfind_resp(root_xml), _propfind_resp(sub_xml)]
+
+    # The subdir episode has no getcontentlength -> incomplete bubbles to the root.
+    assert folder_video_total_bytes("/content/uncategorized/Pack/") < 0
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_folder_video_total_bytes_skips_dot_subdirs(mock_urlopen, mock_settings):
+    """Dot-prefixed admin subfolders (e.g. nzbdav's own .meta dirs) are not
+    recursed -- mirrors find_video_file's dot-prefix skip."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    xml = """<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/content/uncategorized/Movie/</D:href>
+    <D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/content/uncategorized/Movie/.hidden/</D:href>
+    <D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/content/uncategorized/Movie/movie.mkv</D:href>
+    <D:propstat><D:prop><D:getcontentlength>7000000000</D:getcontentlength>
+      <D:resourcetype/></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+</D:multistatus>"""
+    mock_urlopen.return_value = _propfind_resp(xml)
+
+    total = folder_video_total_bytes("/content/uncategorized/Movie/")
+
+    assert total == 7000000000
+    assert mock_urlopen.call_count == 1  # never recursed into .hidden
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_folder_video_total_bytes_incomplete_on_error(mock_urlopen, mock_settings):
+    """A network/parse error yields the negative INCOMPLETE sentinel (not 0) so
+    the stub guard fails OPEN -- a transient PROPFIND failure must never let a
+    partial total reject a real stream; the poll loop re-runs the guard."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    mock_urlopen.side_effect = Exception("Connection refused")
+
+    assert folder_video_total_bytes("/content/uncategorized/Movie/") < 0
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_folder_video_total_bytes_stub_only_folder_is_small(
+    mock_urlopen, mock_settings
+):
+    """A folder exposing only nzbdav's job-start stub totals just the stub's tiny
+    size -- which the resolver compares against the advertised release size to
+    reject it, whether the release is a movie or a pack."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    xml = """<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/content/uncategorized/Pack/</D:href>
+    <D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/content/uncategorized/Pack/job-start.mp4</D:href>
+    <D:propstat><D:prop><D:getcontentlength>362076665</D:getcontentlength>
+      <D:resourcetype/></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+</D:multistatus>"""
+    mock_urlopen.return_value = _propfind_resp(xml)
+
+    total = folder_video_total_bytes("/content/uncategorized/Pack/")
+
+    assert total == 362076665  # far below any multi-GB advertised release size
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_folder_video_total_bytes_stats_records_largest_video(
+    mock_urlopen, mock_settings
+):
+    """The optional _stats out-param captures the LARGEST single video across the
+    whole tree (root + subfolder) in the same walk -- the resolver's stage 2b uses
+    it to reject a picked file dwarfed by a real sibling (#355 review)."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    root_xml = """<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/content/uncategorized/Pack/</D:href>
+    <D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/content/uncategorized/Pack/Sub/</D:href>
+    <D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/content/uncategorized/Pack/stub.mp4</D:href>
+    <D:propstat><D:prop><D:getcontentlength>10000000</D:getcontentlength>
+      <D:resourcetype/></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+</D:multistatus>"""
+    sub_xml = """<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/content/uncategorized/Pack/Sub/</D:href>
+    <D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/content/uncategorized/Pack/Sub/Show.S01E04.mkv</D:href>
+    <D:propstat><D:prop><D:getcontentlength>8000000000</D:getcontentlength>
+      <D:resourcetype/></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+</D:multistatus>"""
+    mock_urlopen.side_effect = [_propfind_resp(root_xml), _propfind_resp(sub_xml)]
+
+    stats = {}
+    total = folder_video_total_bytes("/content/uncategorized/Pack/", _stats=stats)
+
+    assert total == 10000000 + 8000000000
+    assert stats["max"] == 8000000000  # the subfolder sibling, not the root stub
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_folder_video_total_bytes_negative_length_is_incomplete(
+    mock_urlopen, mock_settings
+):
+    """A negative getcontentlength is malformed metadata; it must be treated as
+    incomplete (negative sentinel) -- NOT subtracted from the total, which would
+    under-count a real folder into a false stub reject (#355 review)."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    xml = """<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/content/uncategorized/Movie/</D:href>
+    <D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/content/uncategorized/Movie/real.mkv</D:href>
+    <D:propstat><D:prop><D:getcontentlength>8000000000</D:getcontentlength>
+      <D:resourcetype/></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/content/uncategorized/Movie/weird.mp4</D:href>
+    <D:propstat><D:prop><D:getcontentlength>-1</D:getcontentlength>
+      <D:resourcetype/></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+</D:multistatus>"""
+    mock_urlopen.return_value = _propfind_resp(xml)
+
+    # The -1 must not subtract (would give 7999999999); it flags incomplete.
+    assert folder_video_total_bytes("/content/uncategorized/Movie/") < 0
 
 
 @patch("resources.lib.webdav._get_settings")

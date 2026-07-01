@@ -134,11 +134,11 @@ def _find_video_stream_for_folder(
     largest. When ``None`` (movie / no identifiable episode) the historical
     largest-video-wins behavior is preserved unchanged.
 
-    ``min_video_size`` is the precomputed single-file advertised-size floor
-    (``_stub_min_size_floor``); threading it into discovery lets a root-level
-    job-start stub recurse into the subfolder holding the real file rather than
-    being returned on every poll (#282 follow-up D). ``0`` (default) disables
-    the floor, so movie/pack/unknown-size paths are unchanged.
+    ``min_video_size`` is the precomputed advertised-size floor
+    (``_stub_min_size_floor``, pack-agnostic); threading it into discovery lets a
+    root-level job-start stub recurse into the subfolder holding the real file
+    rather than being returned on every poll (#282 follow-up D). ``0`` (default)
+    disables the floor, so the unknown-size path is unchanged.
     """
     delegated = _delegated_find_video_stream_for_folder(
         webdav_folder, settings_getter, title_hint, min_video_size
@@ -237,11 +237,11 @@ def _completed_job_stream(
     if webdav_folder is None:
         return None
     _start_existing_completed_cleanup(title, on_existing_completed)
-    # #282 follow-up D: thread the single-file advertised-size floor into
-    # discovery so a stale Completed row whose stub sits at the release root
-    # recurses into the subfolder holding the real file rather than serving the
-    # stub. 0 for packs / unknown size. The stub guard below shares the floor.
-    min_video_size = _resolver._stub_min_size_floor(download_size, title)
+    # #282 follow-up D: thread the advertised-size floor into discovery so a
+    # stale Completed row whose stub sits at the release root recurses into the
+    # subfolder holding the real file rather than serving the stub. 0 for unknown
+    # size. The stub guard below shares the same floor (folder-total comparison).
+    min_video_size = _resolver._stub_min_size_floor(download_size)
     video_path, stream_url, stream_headers = _resolver._find_video_stream_for_folder(
         webdav_folder,
         settings_getter=settings_getter,
@@ -258,6 +258,8 @@ def _completed_job_stream(
         stream_headers,
         download_size,
         rejected_completed_ids,
+        webdav_folder,
+        settings_getter,
     ):
         return None
     return stream_url, stream_headers
@@ -271,6 +273,8 @@ def _completed_job_video_rejected(
     stream_headers,
     download_size,
     rejected_completed_ids,
+    webdav_folder,
+    settings_getter=None,
 ):
     """Return True if a discovered completed video is a stub or has no body.
 
@@ -278,10 +282,14 @@ def _completed_job_video_rejected(
     prior failed attempt has an available body and would otherwise be served --
     the same placeholder .mp4 the post-submit accept path rejects), then rejects
     a Completed row whose mid-file body is unavailable. Records the row's nzo_id
-    on either rejection so the submit / poll paths skip it. Fails open /
-    pack-exempt inside ``_discovered_video_is_stub``.
+    on either rejection so the submit / poll paths skip it. Pack-agnostic: the
+    stub check compares the folder's TOTAL video bytes against the advertised
+    size, so a stub-only folder is rejected whether the release is a movie or a
+    pack. Fails open on unknown size inside ``_discovered_video_is_stub``.
     """
-    if _resolver._discovered_video_is_stub(video_path, download_size, title):
+    if _resolver._discovered_video_is_stub(
+        webdav_folder, video_path, download_size, settings_getter
+    ):
         _resolver.xbmc.log(
             "NZB-DAV: '{}' completed row exposes '{}' far smaller than the "
             "advertised release size; treating as nzbdav job-start stub and "

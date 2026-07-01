@@ -122,7 +122,7 @@ def _find_completed_video_stream_with_rechecks(
     discovery so a multi-episode pack resolves to the requested episode; with
     ``None`` the historical largest-video behavior is preserved.
 
-    ``min_video_size`` is the single-file advertised-size floor forwarded into
+    ``min_video_size`` is the advertised-size floor (pack-agnostic) forwarded into
     discovery so a root-level job-start stub recurses into the subfolder holding
     the real file (#282 follow-up D). ``0`` (default) disables the floor.
     """
@@ -173,7 +173,17 @@ def _advertised_size_bytes(download_size):
     if isinstance(download_size, bool):
         return 0
     if isinstance(download_size, (int, float)):
-        return int(download_size) if download_size > 0 else 0
+        if not download_size > 0:
+            return 0
+        try:
+            return int(download_size)
+        except (OverflowError, ValueError):
+            # A non-finite numeric size (``inf`` from a JSON overflow literal,
+            # or ``nan``) is not a real size. Fail OPEN (return 0) like the
+            # string branch rather than letting OverflowError/ValueError escape
+            # the resolver -- neither is in _RESOLVE_RUNTIME_ERRORS, so an escape
+            # would skip the setResolvedUrl-on-failure path (#282 follow-up).
+            return 0
     if isinstance(download_size, str):
         text = download_size.strip().replace(",", "")
         if not text:
@@ -189,66 +199,122 @@ def _advertised_size_bytes(download_size):
     return 0
 
 
-def _stub_min_size_floor(download_size, title):
-    """Return the minimum plausible discovered-video size (bytes) for a
-    single-file release, or 0 when no floor applies.
+def _stub_min_size_floor(download_size):
+    """Return the minimum plausible real-video size (bytes) for a release, or 0
+    when no floor applies.
 
-    The floor is ``advertised * _STUB_VIDEO_MIN_ADVERTISED_FRACTION`` -- exactly
-    the threshold ``_discovered_video_is_stub`` rejects below. Returning it (not
-    just a yes/no) lets webdav discovery treat a current-level candidate below
-    the floor as nzbdav's job-start stub and recurse into subfolders for the
-    real file before falling back to it (#282 follow-up D), so the accept-time
-    guard and discovery agree on what "too small" means.
+    The floor is ``advertised * _STUB_VIDEO_MIN_ADVERTISED_FRACTION``. Returning
+    it (not just a yes/no) lets webdav discovery treat a current-level candidate
+    below the floor as nzbdav's job-start stub and recurse into subfolders for
+    the real file before falling back to it (#282 follow-up D), so discovery and
+    the accept-time guard agree on what "too small" means.
 
-    Returns 0 (no floor) when the advertised size is unknown -- so the guard
-    fails OPEN -- and for packs, whose advertised size spans every episode so a
-    single picked episode is legitimately a fraction of it. May be fractional
-    (the exact float threshold) so callers stay byte-consistent with the
-    ``found < advertised * fraction`` comparison.
+    PACK-AGNOSTIC: unlike the old version this never consults the title /
+    ``release_is_pack``. The accept-time guard (``_discovered_video_is_stub``)
+    compares the folder's TOTAL video bytes against this floor, not a single
+    picked file, so a pack's many episodes sum to ~advertised and pass while a
+    single placeholder stub does not -- no per-title pack guessing needed, and
+    packs keep stub protection instead of forgoing it. Returns 0 (no floor) only
+    when the advertised size is unknown, so the guard fails OPEN. May be
+    fractional (the exact float threshold).
     """
     advertised = _advertised_size_bytes(download_size)
     if advertised <= 0:
         return 0
-    try:
-        from resources.lib.filter import release_is_pack
-
-        if release_is_pack(title):
-            return 0
-    except Exception:  # pylint: disable=broad-except
-        # Pack detection unavailable -> treat as single-file so the guard still
-        # protects the reported (movie) case; the fraction floor is the net.
-        pass
     return advertised * _resolver._STUB_VIDEO_MIN_ADVERTISED_FRACTION
 
 
-def _discovered_video_is_stub(video_path, download_size, title):
-    """Return True when a non-pack release's discovered video is implausibly
-    small versus the indexer-advertised size (nzbdav's job-start stub, #282).
+def _discovered_video_is_stub(
+    webdav_folder, video_path, download_size, settings_getter=None
+):
+    """Return True when a completed folder is exposing only nzbdav's job-start
+    stub rather than the real feature/episodes (#282).
 
     nzbdav writes a small placeholder ``.mp4`` when a job starts; the completed
     WebDAV scan can return it seconds after submit, and streaming it plays ~30s
-    of a stub instead of the feature. Compare the discovered file's size
-    (captured by webdav discovery as a PROPFIND ``getcontentlength`` hint)
-    against the advertised release size and reject anything far below it.
+    of a stub instead of the feature.
 
-    Fails OPEN (returns ``False``) when either size is unknown, so a missing
-    field never blocks a real stream, and is skipped for packs -- a pack's
-    advertised size spans every episode, so one picked episode is legitimately
-    a fraction of it. Shares ``_stub_min_size_floor`` with webdav discovery so
-    the two never disagree on the threshold.
+    Two-stage, PACK-AGNOSTIC and latency-cheap:
+
+    1. If the PICKED file's own size is already at/above the floor
+       (``advertised * fraction``) it is plainly the real single feature -- not a
+       stub -- so accept WITHOUT any extra network walk (the fast path for the
+       common single-movie case).
+    2. Otherwise -- the picked file is BELOW the floor (true for both a job-start
+       stub AND a legitimate pack episode) OR its size is unknown -- disambiguate
+       by summing every video in the folder tree (``folder_video_total_bytes``)
+       and comparing the TOTAL against the floor. A real multi-episode pack's
+       episodes sum to ~advertised and pass; a stub-only folder (movie or pack)
+       falls far below and is rejected, so the poll loop keeps waiting. This is
+       what makes the guard work for packs WITHOUT the old title-based exemption
+       that disabled it for them entirely.
+    2b. The total clears the floor but may have been lifted over it by a SIBLING
+       video while ``video_path`` is still the placeholder (the advertised size
+       is the SELECTED result's own size, so one materialised sibling can clear
+       the floor while the requested file is still a stub -- #355 review). Reject
+       when the picked file is a tiny fraction (< ``_STUB_VS_LARGEST_VIDEO_FRACTION``)
+       of the folder's largest video: the job-start stub is ~0.4% of advertised
+       (<=~3% of a pack episode) while real short content (recaps/specials) runs
+       >=~5%. This conflict is pack-only -- a single-episode selection's short
+       special clears the floor via its own advertised size at stage 1 and never
+       reaches here (#355 Codex review).
+
+    Fails OPEN (returns ``False``) -- never blocks a real stream on missing data --
+    when the advertised size is unknown (floor 0), when the folder scan yields no
+    video, when the scan is INCOMPLETE (``folder_video_total_bytes`` returns a
+    negative sentinel: a PROPFIND error, or a video file whose size the server did
+    not report, either of which would otherwise under-count into a false reject),
+    or when the picked / largest-sibling size is unknown. Only a complete folder
+    total that is genuinely below the floor -- or a picked file dwarfed by a real
+    sibling -- rejects.
     """
-    floor = _stub_min_size_floor(download_size, title)
+    floor = _stub_min_size_floor(download_size)
     if floor <= 0:
         return False
     try:
         from resources.lib import webdav as _webdav
 
-        found = _webdav.get_video_file_size_hint(video_path)
+        picked_size = _webdav.get_video_file_size_hint(video_path)
+    except Exception:  # pylint: disable=broad-except
+        picked_size = 0
+    # Fast path: a picked file already at/above the floor is plainly the real
+    # single feature -- accept without the extra folder-total walk (the common
+    # single-movie case, where discovery has cached the picked file's size). A
+    # SMALL or UNKNOWN picked size falls through to the folder-total walk, which
+    # disambiguates a job-start stub from a legitimate pack episode.
+    if picked_size >= floor:
+        return False
+    # Picked file is small (or its size is unknown): could be the job-start stub
+    # OR a legitimate pack episode. Disambiguate by the folder's total real video
+    # content -- a real pack's episodes sum to ~advertised and pass; a stub-only
+    # folder falls far below and is rejected. ``stats["max"]`` captures the
+    # largest single video in the same walk (no extra PROPFIND) for stage 2b.
+    stats = {}
+    try:
+        total = _webdav.folder_video_total_bytes(
+            webdav_folder, settings_getter=settings_getter, _stats=stats
+        )
     except Exception:  # pylint: disable=broad-except
         return False
-    if found <= 0:
+    # Stage 2b runs BEFORE the incomplete-total fail-open: if the picked file is
+    # a tiny placeholder dwarfed by a real sibling we ALREADY sized, it is the
+    # job-start stub regardless of whether the rest of the folder summed cleanly.
+    # So a transient second-PROPFIND glitch, or a sibling missing getcontentlength,
+    # can no longer fail-open a KNOWN below-floor stub while a real sibling is
+    # visible (#355 Codex review). The stub is ~0.4% of advertised (<=~3% of a
+    # pack episode) while real short content runs >=~5%, so the fraction sits
+    # between them; falls through when either size is unknown.
+    largest = stats.get("max", 0)
+    if picked_size > 0 and largest > 0:
+        if picked_size < largest * _resolver._STUB_VS_LARGEST_VIDEO_FRACTION:
+            return True
+    # No dwarfing sibling to judge by. ``total <= 0`` covers "no video found" (0)
+    # and the INCOMPLETE sentinel (negative): fail OPEN rather than reject on an
+    # unconfirmable total -- rejecting here would block a real pack episode whose
+    # sibling merely lacks a size (a worse, PERSISTENT failure).
+    if total <= 0:
         return False
-    return found < floor
+    return total < floor
 
 
 def _report_history_failed(history, title, modal_failures):
@@ -390,12 +456,12 @@ def _discover_completed_video(
     webdav_folder, title, monitor, settings_getter, download_size
 ):
     """Run WebDAV discovery for a completed folder, returning the stream tuple."""
-    # Thread the single-file advertised-size floor into discovery so a root-level
-    # job-start stub recurses into the subfolder holding the real file instead of
-    # being re-picked on every poll until download_timeout (#282 follow-up D).
-    # 0 for packs / unknown size, so those paths are unchanged. The accept-time
-    # guard shares the same floor via _stub_min_size_floor.
-    min_video_size = _stub_min_size_floor(download_size, title)
+    # Thread the advertised-size floor into discovery so a root-level job-start
+    # stub recurses into the subfolder holding the real file instead of being
+    # re-picked on every poll until download_timeout (#282 follow-up D). 0 for
+    # unknown size. The accept-time guard shares the same floor via
+    # _stub_min_size_floor (folder-total comparison).
+    min_video_size = _stub_min_size_floor(download_size)
     return _resolver._find_completed_video_stream_with_rechecks(
         webdav_folder,
         monitor=monitor,
@@ -420,14 +486,17 @@ def _classify_completed_video(
     )
     if not video_path:
         return "missing", None, None
-    # #282/#340: reject nzbdav's job-start stub before the body probe. A
-    # single-file release whose discovered video is far below the advertised
-    # size is the placeholder .mp4 nzbdav writes at job start, not the feature.
-    # Return "stub" WITHOUT touching the no-video retry counter (the poll loop's
-    # download_timeout is the stop authority), so the stub never plays and a
-    # later genuine symlink-visibility gap keeps its retries. Packs / unknown
-    # sizes are skipped inside _discovered_video_is_stub.
-    if _discovered_video_is_stub(video_path, download_size, title):
+    # #282/#340: reject nzbdav's job-start stub before the body probe. When the
+    # completed folder's TOTAL video content is far below the advertised size, it
+    # is exposing only the placeholder .mp4 nzbdav writes at job start, not the
+    # feature/episodes. Return "stub" WITHOUT touching the no-video retry counter
+    # (the poll loop's download_timeout is the stop authority), so the stub never
+    # plays and a later genuine symlink-visibility gap keeps its retries.
+    # Pack-agnostic via the folder-total comparison; fails open on unknown size
+    # inside _discovered_video_is_stub.
+    if _discovered_video_is_stub(
+        webdav_folder, video_path, download_size, settings_getter
+    ):
         _resolver.xbmc.log(
             "NZB-DAV: '{}' discovered video '{}' is far smaller than the "
             "advertised release size; treating as nzbdav job-start stub and "
