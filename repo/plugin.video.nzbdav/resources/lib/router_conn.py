@@ -14,6 +14,9 @@ references keep resolving.
 
 from urllib.parse import urlencode
 
+from resources.lib.xml_safety import ParseError as _XmlParseError
+from resources.lib.xml_safety import safe_fromstring as _safe_fromstring
+
 
 def _test_connection(label, url, test_url, ok_condition):
     """Test a service connection and notify the user of the result.
@@ -62,47 +65,18 @@ def _json_object(response):
     return data if isinstance(data, dict) else {}
 
 
-def _build_xxe_safe_xml_parser(element_tree):
-    """Return an ElementTree XMLParser with external entities disabled.
-
-    Mirrors ``prowlarr._build_xxe_safe_parser`` / ``hydra``: a hostile or
-    compromised Hydra/Newznab instance could otherwise coerce us into reading
-    arbitrary local files via an XXE payload in its (user-configured) response.
-    """
-    parser = element_tree.XMLParser()  # nosec B314 — entities disabled below
-    try:
-        parser.parser.DefaultHandler = lambda _d: None
-        parser.parser.ExternalEntityRefHandler = lambda *_: False
-    except AttributeError:  # pragma: no cover — non-expat parser backend
-        pass
-    return parser
-
-
 def _xml_root_name(response):
     """Return the unqualified root XML tag name, lowercased.
 
     The payload is a user-configured Hydra/Newznab service response, so it is
-    parsed with external entity resolution disabled (defusedxml when bundled,
-    otherwise an XXE-hardened stdlib parser) to keep parity with the other XML
-    clients. ``defusedxml``'s ``DefusedXmlException`` subclasses ``ValueError``,
-    so a hostile payload falls through to the empty-string fallback.
+    parsed through :func:`resources.lib.xml_safety.safe_fromstring`, which
+    refuses entity declarations (XXE / billion-laughs) on both the
+    ``defusedxml`` path and the stdlib fallback that Kodi installs take. A
+    hostile payload falls through to the empty-string result.
     """
     try:
-        from defusedxml import ElementTree as element_tree
-    except ImportError:  # pragma: no cover - Kodi installs may not bundle defusedxml
-        # nosemgrep
-        from xml.etree import ElementTree as element_tree
-
-    try:
-        if getattr(element_tree, "__name__", "").startswith("defusedxml."):
-            # nosemgrep
-            root = element_tree.fromstring(response)
-        else:
-            # nosemgrep
-            root = element_tree.fromstring(  # nosec B314 — XXE-safe parser below
-                response, parser=_build_xxe_safe_xml_parser(element_tree)
-            )
-    except (TypeError, ValueError, element_tree.ParseError):
+        root = _safe_fromstring(response)
+    except (TypeError, ValueError, _XmlParseError):
         return ""
     return root.tag.rsplit("}", 1)[-1].lower()
 

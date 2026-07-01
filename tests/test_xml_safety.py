@@ -1,0 +1,90 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 nzbdav contributors
+
+"""Tests for the shared XXE / billion-laughs safe XML parser.
+
+These lock in the behaviour every indexer/WebDAV XML client depends on:
+entity-free XML parses identically to the stdlib, while any entity
+declaration (billion-laughs or external XXE) is rejected on *both* the
+``defusedxml`` path and the standard-library fallback that real Kodi
+installs take.
+"""
+
+import xml.etree.ElementTree as stdlib_et
+
+import pytest
+from resources.lib import xml_safety
+from resources.lib.xml_safety import ParseError, UnsafeXmlError, safe_fromstring
+
+# A bounded internal-entity payload. Left unchecked, ``&d;`` expands to
+# 8**3 = 512 copies of "lol" — the billion-laughs shape, kept small so a
+# regression that *fails* to reject it still cannot hang the suite.
+_INTERNAL_ENTITY_XML = (
+    '<?xml version="1.0"?>\n'
+    "<!DOCTYPE root [\n"
+    '  <!ENTITY a "lol">\n'
+    '  <!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;">\n'
+    '  <!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;">\n'
+    '  <!ENTITY d "&c;&c;&c;&c;&c;&c;&c;&c;">\n'
+    "]>\n"
+    "<root><x>&d;</x></root>"
+)
+
+_EXTERNAL_ENTITY_XML = (
+    '<?xml version="1.0"?>'
+    '<!DOCTYPE r [<!ENTITY xxe SYSTEM "file:///etc/hostname">]>'
+    "<r>&xxe;</r>"
+)
+
+_VALID_XML = (
+    '<?xml version="1.0"?>'
+    "<rss><channel><item><title>Movie</title></item></channel></rss>"
+)
+
+
+def test_valid_xml_parses_identically_to_stdlib():
+    root = safe_fromstring(_VALID_XML)
+    assert root.tag == "rss"
+    assert root.find("./channel/item/title").text == "Movie"
+
+
+def test_valid_xml_accepts_bytes():
+    root = safe_fromstring(_VALID_XML.encode("utf-8"))
+    assert root.tag == "rss"
+
+
+def test_internal_entity_rejected_default_path():
+    # Dev/CI has defusedxml installed, exercising the preferred path.
+    with pytest.raises(UnsafeXmlError):
+        safe_fromstring(_INTERNAL_ENTITY_XML)
+
+
+def test_external_entity_rejected_default_path():
+    with pytest.raises(UnsafeXmlError):
+        safe_fromstring(_EXTERNAL_ENTITY_XML)
+
+
+@pytest.mark.parametrize("payload", [_INTERNAL_ENTITY_XML, _EXTERNAL_ENTITY_XML])
+def test_entities_rejected_on_stdlib_fallback(monkeypatch, payload):
+    # Force the no-defusedxml code path that packaged Kodi installs take.
+    monkeypatch.setattr(xml_safety, "_USING_DEFUSEDXML", False)
+    monkeypatch.setattr(xml_safety, "_ET", stdlib_et)
+    with pytest.raises(UnsafeXmlError):
+        safe_fromstring(payload)
+
+
+def test_valid_xml_still_parses_on_stdlib_fallback(monkeypatch):
+    monkeypatch.setattr(xml_safety, "_USING_DEFUSEDXML", False)
+    monkeypatch.setattr(xml_safety, "_ET", stdlib_et)
+    root = safe_fromstring(_VALID_XML)
+    assert root.tag == "rss"
+
+
+def test_malformed_xml_raises_parse_error():
+    with pytest.raises(ParseError):
+        safe_fromstring("<rss><channel></rss>")
+
+
+def test_unsafe_error_is_value_error_subclass():
+    # Callers that already catch ValueError keep working unchanged.
+    assert issubclass(UnsafeXmlError, ValueError)

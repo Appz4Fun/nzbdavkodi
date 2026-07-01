@@ -3876,25 +3876,15 @@ def test_xml_root_name_does_not_resolve_external_entities():
 
 
 def test_xml_root_name_rejects_internal_entity_expansion():
-    """The XXE-hardened parser must refuse to expand internal entities
-    (router_conn#65) when ``defusedxml`` is bundled. This is the behaviour that
-    distinguishes the hardened path from an unhardened ``ET.fromstring``: the
-    stdlib parser expands ``&a;`` and reports the ``rss`` root tag (a
-    billion-laughs DoS vector), whereas ``defusedxml`` raises
-    ``EntitiesForbidden`` (a ``ValueError`` subclass) so ``_xml_root_name``
-    falls through to the empty-string fallback.
+    """The hardened parser must refuse to expand internal entities
+    (billion-laughs DoS) via :func:`xml_safety.safe_fromstring`.
 
-    Skipped when ``defusedxml`` is unavailable: the stdlib-only fallback parser
-    only disables *external* entity refs and does not block internal entity
-    expansion, so this guard would not apply to that path.
+    An unhardened ``ET.fromstring`` expands ``&a;`` and returns the ``rss``
+    root tag; ``safe_fromstring`` refuses the entity declaration and
+    ``_xml_root_name`` falls through to the empty-string result. Unlike the
+    old expat-handler approach, this now holds on the stdlib fallback too, so
+    there is no ``defusedxml``-only skip.
     """
-    import pytest
-
-    pytest.importorskip(
-        "defusedxml",
-        reason="defusedxml not bundled; internal-entity blocking N/A",
-    )
-
     from resources.lib.router import _xml_root_name
 
     payload = (
@@ -3904,6 +3894,25 @@ def test_xml_root_name_rejects_internal_entity_expansion():
         "<rss>&b;&b;&b;&b;&b;</rss>"
     )
 
-    # Hardened (defusedxml) parser forbids entity expansion -> "". An
-    # unhardened ET.fromstring would expand the entities and return "rss".
+    assert _xml_root_name(payload) == ""
+
+
+def test_xml_root_name_rejects_internal_entity_on_stdlib_fallback(monkeypatch):
+    """Billion-laughs rejection must also hold on the no-defusedxml path that
+    packaged Kodi installs take — the gap the previous guard left open."""
+    import xml.etree.ElementTree as stdlib_et
+
+    from resources.lib import xml_safety
+    from resources.lib.router import _xml_root_name
+
+    monkeypatch.setattr(xml_safety, "_USING_DEFUSEDXML", False)
+    monkeypatch.setattr(xml_safety, "_ET", stdlib_et)
+
+    payload = (
+        '<?xml version="1.0"?>'
+        '<!DOCTYPE rss [<!ENTITY a "AAAAAAAAAA">'
+        '<!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">]>'
+        "<rss>&b;&b;&b;&b;&b;</rss>"
+    )
+
     assert _xml_root_name(payload) == ""

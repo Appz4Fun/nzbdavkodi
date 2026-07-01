@@ -8,7 +8,6 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Event
 from urllib.error import URLError
 from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
-from xml.etree import ElementTree as ET
 
 import xbmc
 import xbmcaddon
@@ -34,6 +33,9 @@ from resources.lib.http_util import (
 from resources.lib.indexer_store import load_indexers
 from resources.lib.newznab_caps import normalize_api_endpoint
 from resources.lib.search_planner import plan_newznab_search
+from resources.lib.xml_safety import ParseError as _XmlParseError
+from resources.lib.xml_safety import UnsafeXmlError as _UnsafeXmlError
+from resources.lib.xml_safety import safe_fromstring as _safe_fromstring
 
 PRESET_INDEXERS = (
     ("nzblife", "NZB.life / NZB.su", "https://api.nzb.su/api"),
@@ -193,10 +195,6 @@ def build_search_url(api_url, params):
     )
 
 
-def _build_xxe_safe_parser():
-    return ET.XMLParser()  # nosec B314 - Python 3.8+ disables external entities
-
-
 def _parse_newznab_attrs(item):
     size = ""
     indexer = ""
@@ -263,8 +261,8 @@ def _build_result(item, fallback_indexer):
 def parse_results(xml_text, fallback_indexer):
     """Parse Newznab XML into the existing normalized result shape."""
     try:
-        root = ET.fromstring(xml_text, parser=_build_xxe_safe_parser())  # nosec B314
-    except ET.ParseError as error:
+        root = _safe_fromstring(xml_text)
+    except (_XmlParseError, _UnsafeXmlError) as error:
         xbmc.log(
             "NZB-DAV: Failed to parse direct indexer XML: {}".format(error),
             xbmc.LOGERROR,

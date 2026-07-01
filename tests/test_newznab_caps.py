@@ -4,6 +4,7 @@
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
+import pytest
 from resources.lib.newznab_caps import (
     CAPS_MAX_BYTES,
     build_caps_url,
@@ -144,3 +145,51 @@ def test_fetch_caps_handles_request_errors(mock_http, mock_xbmc):
     mock_xbmc.log.assert_called_once()
     assert "network timeout" in mock_xbmc.log.call_args[0][0]
     assert mock_xbmc.log.call_args[0][1] is mock_xbmc.LOGWARNING
+
+
+# --- XXE / billion-laughs hardening -----------------------------------------
+# A hostile or compromised indexer can return a caps payload whose XML entities
+# expand to exhaust CPU/memory. If the guard were absent, ``&yes;`` below would
+# expand to ``available="yes"`` and yield a non-empty ``search_types``; the
+# safe parser refuses the declaration outright and returns empty caps.
+_CAPS_INTERNAL_ENTITY = (
+    '<?xml version="1.0"?>'
+    '<!DOCTYPE caps [<!ENTITY yes "yes">]>'
+    '<caps><searching><search available="&yes;" supportedParams="q" />'
+    "</searching></caps>"
+)
+_CAPS_EXTERNAL_ENTITY = (
+    '<?xml version="1.0"?>'
+    '<!DOCTYPE caps [<!ENTITY xxe SYSTEM "file:///etc/hostname">]>'
+    '<caps><searching><search available="&xxe;" /></searching></caps>'
+)
+
+
+@pytest.mark.parametrize("payload", [_CAPS_INTERNAL_ENTITY, _CAPS_EXTERNAL_ENTITY])
+def test_parse_caps_rejects_entity_payloads(payload):
+    assert parse_caps(payload) == {
+        "search_types": [],
+        "supported_params": {},
+        "categories": [],
+    }
+
+
+@pytest.mark.parametrize("payload", [_CAPS_INTERNAL_ENTITY, _CAPS_EXTERNAL_ENTITY])
+def test_parse_caps_rejects_entity_payloads_on_stdlib_fallback(monkeypatch, payload):
+    # Force the no-defusedxml path packaged Kodi installs take.
+    import xml.etree.ElementTree as stdlib_et
+
+    from resources.lib import xml_safety
+
+    monkeypatch.setattr(xml_safety, "_USING_DEFUSEDXML", False)
+    monkeypatch.setattr(xml_safety, "_ET", stdlib_et)
+
+    assert not parse_caps(payload)["search_types"]
+
+
+def test_parse_caps_still_parses_valid_caps_after_hardening():
+    caps = parse_caps(CAPS_XML)
+
+    assert "search" in caps["search_types"]
+    assert "tvsearch" in caps["search_types"]
+    assert {"id": 2000, "name": "Movies"} in caps["categories"]
