@@ -7,7 +7,7 @@ Pure helpers split out of ``webdav.py``: they turn release names into
 ``(season, episode)`` tag sets and loose token sets, and score how strongly a
 discovered file name matches a requested title/episode hint. This module
 imports nothing from ``webdav`` (no import cycle); ``webdav`` re-exports the
-public names (e.g. ``_episode_tags``, used by ``filter_pack``).
+public names (e.g. ``_episode_tags``, used by ``webdav_discovery``).
 """
 
 import re

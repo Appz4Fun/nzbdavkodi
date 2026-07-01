@@ -197,15 +197,29 @@ _COMPLETED_NO_VIDEO_RECHECK_DELAYS_SECONDS = (0.025, 0.075, 0.1)
 
 # #282: nzbdav writes a small placeholder .mp4 at job start; the completed
 # WebDAV scan can pick it up seconds after submit and stream it instead of the
-# feature (playing ~30s of a stub). A single-file (non-pack) release whose
-# discovered video is smaller than this fraction of the indexer-advertised size
-# is treated as that stub and rejected so the poll loop keeps waiting for the
-# real download. Conservatively low: a genuine single file is ~0.85-0.95 of its
+# feature (playing ~30s of a stub). A completed folder whose TOTAL video content
+# is smaller than this fraction of the indexer-advertised size is treated as that
+# stub and rejected so the poll loop keeps waiting for the real download.
+# Conservatively low: a genuine release's real files sum to ~0.85-0.95 of its
 # advertised NZB size (par2/rar/sample overhead), while the reported stub was
-# ~0.004, so 0.5 sits far from both. The guard fails OPEN when either size is
-# unknown and is skipped entirely for packs (release_is_pack), where one
-# episode is legitimately a fraction of the whole-pack advertised size.
+# ~0.004, so 0.5 sits far from both. Comparing the FOLDER TOTAL (not a single
+# picked file) is what makes the guard PACK-AGNOSTIC -- a real pack's episodes
+# sum to ~advertised and pass, while a stub-only folder (movie OR pack) falls far
+# below and is rejected. The guard fails OPEN when the advertised size is unknown.
 _STUB_VIDEO_MIN_ADVERTISED_FRACTION = 0.5
+# #355 review (stage 2b): even when the folder TOTAL clears the floor, the picked
+# file may still be the job-start stub if a real SIBLING video supplied the bytes
+# (the advertised size is the SELECTED result's own size, so one materialised
+# sibling can lift the total over the floor while the requested file is still a
+# placeholder). Reject when the picked file is a tiny fraction of the folder's
+# largest video. The job-start stub is ~0.4% of the advertised size (the original
+# #282 datum), i.e. <=~3% of a single pack episode; real short content (recaps,
+# OVAs, specials) runs >=~5% of a full episode. 0.05 sits between them: it catches
+# the stub while NOT rejecting a legitimately short pack item (#355 Codex review).
+# Only applied when picked < floor AND total >= floor. Note this conflict is
+# pack-only -- a single-episode selection's short special clears the floor via its
+# OWN advertised size (stage 1) and never reaches here.
+_STUB_VS_LARGEST_VIDEO_FRACTION = 0.05
 
 # After a submit timeout, how many times to poll nzbdav before giving up
 # on adoption and retrying the submit. 6 polls * 2 s = 12 s of total wait

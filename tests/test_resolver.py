@@ -391,25 +391,36 @@ def test_handle_job_status_accepts_fractional_percentage():
 
 
 def test_handle_job_status_does_not_block_on_stuck_dialog_update():
+    update_started = threading.Event()
+    release_update = threading.Event()
+    update_finished = threading.Event()
+
     def stuck_update(*_args):
-        _time.sleep(0.25)
+        update_started.set()
+        release_update.wait(5)
+        update_finished.set()
 
     dialog = MagicMock()
     dialog.iscanceled.return_value = False
     dialog.update.side_effect = stuck_update
 
-    started = _time.perf_counter()
-    should_stop, last_status = _handle_job_status(
-        {"status": "Downloading", "percentage": "99"},
-        "nzo_stuck_dialog",
-        dialog,
-        None,
-    )
-    elapsed = _time.perf_counter() - started
+    try:
+        should_stop, last_status = _handle_job_status(
+            {"status": "Downloading", "percentage": "99"},
+            "nzo_stuck_dialog",
+            dialog,
+            None,
+        )
 
-    assert should_stop is False
-    assert last_status == "Downloading"
-    assert elapsed < 0.2
+        # The call returns while the (blocked) dialog.update is still in flight:
+        # proves the update was dispatched to a background thread, not awaited.
+        assert update_started.wait(1.0)
+        assert not update_finished.is_set()
+        assert should_stop is False
+        assert last_status == "Downloading"
+    finally:
+        release_update.set()
+        update_finished.wait(1.0)
 
 
 @patch("resources.lib.resolver.find_video_file")
@@ -553,7 +564,7 @@ def test_completed_job_stream_streams_when_midfile_body_available(mock_find_stre
 # ---------------------------------------------------------------------------
 
 
-@patch("resources.lib.webdav.get_video_file_size_hint", return_value=362_076_665)
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=362_076_665)
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 @patch("resources.lib.resolver._find_video_stream_for_folder")
 def test_completed_job_stream_rejects_stub_far_below_advertised(
@@ -588,7 +599,7 @@ def test_completed_job_stream_rejects_stub_far_below_advertised(
     mock_probe.assert_not_called()  # rejected on size before any body probe
 
 
-@patch("resources.lib.webdav.get_video_file_size_hint", return_value=80_000_000_000)
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=80_000_000_000)
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 @patch("resources.lib.resolver._find_video_stream_for_folder")
 def test_completed_job_stream_streams_single_file_matching_advertised(
@@ -616,7 +627,7 @@ def test_completed_job_stream_streams_single_file_matching_advertised(
     assert stream == ("http://webdav/movie.mkv", {"Authorization": "Basic x"})
 
 
-@patch("resources.lib.webdav.get_video_file_size_hint", return_value=3_000_000_000)
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=30_000_000_000)
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 @patch("resources.lib.resolver._find_video_stream_for_folder")
 def test_completed_job_stream_streams_pack_episode_below_advertised(
@@ -645,7 +656,7 @@ def test_completed_job_stream_streams_pack_episode_below_advertised(
     assert stream == ("http://webdav/show.s01e03.mkv", {"Authorization": "Basic x"})
 
 
-@patch("resources.lib.webdav.get_video_file_size_hint", return_value=1_000_000)
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=1_000_000)
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 @patch("resources.lib.resolver._find_video_stream_for_folder")
 def test_completed_job_stream_streams_when_advertised_size_unknown(
@@ -673,16 +684,17 @@ def test_completed_job_stream_streams_when_advertised_size_unknown(
     assert stream == ("http://webdav/movie.mkv", {"Authorization": "Basic x"})
 
 
-@patch("resources.lib.webdav.get_video_file_size_hint", return_value=80_000_000_000)
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=80_000_000_000)
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 @patch("resources.lib.resolver._find_video_stream_for_folder")
 def test_completed_job_stream_threads_stub_floor_into_discovery(
     mock_find_stream, _mock_probe, _mock_size
 ):
     """#282 follow-up D: the pre-submit cache-hit path also threads the
-    single-file advertised-size floor into discovery, so a stale Completed row
-    whose stub sits at the release root recurses into the subfolder holding the
-    real file instead of serving the stub. Packs/unknown pass a 0 floor."""
+    advertised-size floor into discovery, so a stale Completed row whose stub
+    sits at the release root recurses into the subfolder holding the real file
+    instead of serving the stub. Only an unknown advertised size passes a 0
+    floor (the floor is now pack-agnostic -- advertised*0.5 for any known size)."""
     from resources.lib.resolver import _STUB_VIDEO_MIN_ADVERTISED_FRACTION
 
     mock_find_stream.return_value = (
@@ -707,14 +719,18 @@ def test_completed_job_stream_threads_stub_floor_into_discovery(
     )
 
 
-@patch("resources.lib.webdav.get_video_file_size_hint", return_value=3_000_000_000)
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=30_000_000_000)
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 @patch("resources.lib.resolver._find_video_stream_for_folder")
-def test_completed_job_stream_threads_zero_floor_for_pack(
+def test_completed_job_stream_threads_advertised_floor_for_pack(
     mock_find_stream, _mock_probe, _mock_size
 ):
-    """A pack passes a 0 floor through the pre-submit path so a legitimately
-    pack-fraction episode is never deferred -- pack discovery stays unchanged."""
+    """PACK-AGNOSTIC: a pack threads the SAME advertised*0.5 floor into discovery
+    as a single file (no more pack-zero special case). The accept guard compares
+    the folder's total video bytes against it, so a real pack (episodes sum to
+    ~advertised) still streams while a stub-only folder is rejected."""
+    from resources.lib.resolver import _STUB_VIDEO_MIN_ADVERTISED_FRACTION
+
     mock_find_stream.return_value = (
         "/content/uncategorized/show/show.s01e03.mkv",
         "http://webdav/show.s01e03.mkv",
@@ -732,10 +748,12 @@ def test_completed_job_stream_threads_zero_floor_for_pack(
         download_size="30000000000",
     )
 
-    assert mock_find_stream.call_args.kwargs["min_video_size"] == 0
+    assert mock_find_stream.call_args.kwargs["min_video_size"] == (
+        30000000000 * _STUB_VIDEO_MIN_ADVERTISED_FRACTION
+    )
 
 
-@patch("resources.lib.webdav.get_video_file_size_hint", return_value=362_076_665)
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=362_076_665)
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 @patch("resources.lib.resolver._find_video_stream_for_folder")
 def test_existing_completed_stream_rejects_stub_via_download_size(
@@ -767,7 +785,7 @@ def test_existing_completed_stream_rejects_stub_via_download_size(
     mock_probe.assert_not_called()
 
 
-@patch("resources.lib.webdav.get_video_file_size_hint", return_value=362_076_665)
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=362_076_665)
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 @patch("resources.lib.resolver._find_video_stream_for_folder")
 def test_picker_completed_stream_rejects_stub_via_params_download_size(
@@ -2394,7 +2412,10 @@ def test_resolve_overlaps_bookmark_cleanup_with_post_submit_poll(
         "after_ready_cleanup={:.3f}s".format(elapsed, after_ready_cleanup)
     )
     assert timing["cleanup_end"] <= timing["play"]
-    assert elapsed < 0.35, "selected-to-play path took {:.3f}s".format(elapsed)
+    # Intervals [cleanup_start, cleanup_end] and [poll_start, poll_end] intersect
+    # => cleanup ran in parallel with the post-submit poll (serial would not overlap).
+    # cleanup_start < poll_end is already asserted (with a message) above.
+    assert timing["poll_start"] < timing["cleanup_end"]
 
 
 @patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
@@ -2600,8 +2621,10 @@ def test_resolve_overlaps_proxy_prepare_with_bookmark_cleanup_after_ready(
 
     assert timing["prepare_start"] < timing["cleanup_end"]
     assert timing["cleanup_end"] <= timing["resolved"]
-    elapsed = timing["resolved"] - timing["ready"]
-    assert elapsed < 0.32, "ready-to-resolved stayed serial at {:.3f}s".format(elapsed)
+    # Intervals [prepare_start, prepare_end] and [cleanup_start, cleanup_end]
+    # intersect => proxy prepare overlapped the in-flight cleanup (not serial).
+    # prepare_start < cleanup_end is already asserted above.
+    assert timing["cleanup_start"] < timing["prepare_end"]
 
 
 @patch("resources.lib.cache_prompt.maybe_show_cache_prompt")
@@ -3317,9 +3340,10 @@ def test_resolve_overlaps_bookmark_cleanup_with_existing_completed_fast_path(
         )
     )
     assert timing["cleanup_end"] <= timing["play"]
-    assert elapsed < 0.35, "existing-completed selected-to-play took {:.3f}s".format(
-        elapsed
-    )
+    # Intervals [cleanup_start, cleanup_end] and [video_scan_start, video_scan_end]
+    # intersect => cleanup overlapped the completed-path video scan (serial would not).
+    assert timing["cleanup_start"] < timing["video_scan_end"]
+    assert timing["video_scan_start"] < timing["cleanup_end"]
 
 
 @patch("resources.lib.resolver._fallback_submit_jobs_snapshot", return_value=[])
@@ -3870,21 +3894,35 @@ def test_start_direct_playback_prepare_snapshots_settings_in_worker(
         calls.append(key)
         if len(calls) == 1:
             slow_started.set()
-            release_settings.wait(0.2)
+            # Block on a test-controlled gate released ONLY in the finally below
+            # (AFTER the snapshot), NOT a self-releasing timer: the worker stays
+            # in-flight until then, so ``done`` cannot be set before the snapshot.
+            # A self-releasing wait here would let the worker finish on its own
+            # under load and false-fail the snapshot.
+            release_settings.wait(timeout=2)
         return default
 
-    started_at = _time.monotonic()
     state = _start_direct_playback_prepare(
         "http://webdav/content/movie.mkv",
         {"Authorization": "Basic abc"},
         fallback_sources=[],
         settings_getter=settings_getter,
     )
-    elapsed = _time.monotonic() - started_at
+
+    # Load-independent thread-handle proof: the returned state must carry the
+    # live worker thread. If thread.start() raised and prepare ran synchronously
+    # (or a refactor dropped the handle / took the ready-state path), state
+    # carries "thread": None. This goes red even when the in-flight gate timing
+    # below stays green (e.g. a dropped ``state["thread"] = thread`` assignment).
+    assert state["thread"] is not None
 
     try:
-        assert elapsed < 0.18
-        assert slow_started.wait(0.2)
+        # The worker is genuinely in-flight (it has entered the blocked settings
+        # read) but cannot have finished prepare while the gate above is closed
+        # => structural proof prepare runs off the caller's thread. A
+        # synchronous-prepare regression sets ``done`` before this point.
+        assert slow_started.wait(2)
+        assert not state["done"].is_set()
         release_settings.set()
         prepared = _wait_direct_playback_prepare(state)
     finally:
@@ -4961,12 +4999,26 @@ def test_submit_ui_pump_continues_when_probe_threads_cannot_start(
 def test_submit_ui_pump_terminal_error_does_not_wait_for_probe_cleanup(
     mock_submit, mock_find_queued, mock_find_completed
 ):
+    probe_in_flight = threading.Event()
+    release_probe = threading.Event()
+    probe_completed = []
+
     def terminal_submit(_nzb_url, _title, **_kwargs):
-        _time.sleep(0.03)
+        # Hold the terminal error until a probe is genuinely MID-FLIGHT, so the
+        # snapshot below is meaningful: the terminal path must return while
+        # slow_probe is still blocked. A regression that joined/awaited probe
+        # cleanup on the terminal path would block on this in-flight probe.
+        assert probe_in_flight.wait(timeout=2)
         return None, {"status": 400, "message": "TooManyRequests"}
 
     def slow_probe(*_args, **_kwargs):
-        _time.sleep(0.25)
+        # Mark in-flight, then block until the test releases us in its finally
+        # (AFTER the snapshot), with no timer -- load-independent. The bounded
+        # wait caps the regression case (a terminal path that DOES await probe
+        # cleanup) so the test cannot hang.
+        probe_in_flight.set()
+        release_probe.wait(timeout=2)
+        probe_completed.append(True)
 
     mock_submit.side_effect = terminal_submit
     mock_find_queued.side_effect = slow_probe
@@ -4976,18 +5028,31 @@ def test_submit_ui_pump_terminal_error_does_not_wait_for_probe_cleanup(
     monitor = MagicMock()
     monitor.abortRequested.return_value = False
 
-    started = _time.monotonic()
-    nzo_id, submit_error = _submit_nzb_with_ui_pump(
-        "http://hydra/getnzb/rate-limited",
-        "movie.mkv",
-        dialog,
-        monitor,
-    )
-    elapsed = _time.monotonic() - started
-
-    assert nzo_id is None
-    assert submit_error == {"status": 400, "message": "TooManyRequests"}
-    assert elapsed < 0.2
+    try:
+        started = _time.monotonic()
+        nzo_id, submit_error = _submit_nzb_with_ui_pump(
+            "http://hydra/getnzb/rate-limited",
+            "movie.mkv",
+            dialog,
+            monitor,
+        )
+        elapsed = _time.monotonic() - started
+        # Load-independent proof: the terminal error returned WHILE the probe is
+        # still mid-flight (blocked) -- it was NOT awaited, so no slow_probe ran
+        # past its block and the completed list is still empty at return. Catches
+        # an UNBOUNDED await of the still-parked probe threads.
+        assert not probe_completed
+        # Bounded-join guard (test-analyzer): dropping the terminal-error
+        # early-skip would let cleanup fall through to t.join(timeout=1) on each
+        # still-parked probe, pinning the return at ~1-2s. The healthy terminal
+        # path returns in ~ms (>=10x margin); this generous 0.5s ceiling sits
+        # well below the ~1s+ regression, staying load-independent while still
+        # going red on the bounded join that `not probe_completed` alone misses.
+        assert elapsed < 0.5
+        assert nzo_id is None
+        assert submit_error == {"status": 400, "message": "TooManyRequests"}
+    finally:
+        release_probe.set()
 
 
 @patch("resources.lib.resolver._show_submit_error_dialog")
@@ -5061,11 +5126,14 @@ def test_wait_direct_playback_prepare_waits_for_local_proxy_when_prepare_stalls(
     mock_prepare.side_effect = slow_prepare
 
     state = _start_direct_playback_prepare(stream_url, stream_headers)
-    started = _time.perf_counter()
     prepared = _wait_direct_playback_prepare(state, wait_seconds=0.01)
-    elapsed = _time.perf_counter() - started
 
-    assert elapsed >= 0.03
+    # The returned proxy_url is the SLOW prepare's own output (".../stream/slow"),
+    # which only exists once the stalled 0.04s prepare ran to completion -- so a
+    # correct result proves _wait_direct_playback_prepare waited for it. The old
+    # `elapsed >= 0.03` lower bound was redundant with that AND flaked under load
+    # (the worker's 0.04s sleep can begin before `started` is captured, so the
+    # measured span dips below 0.03 even though the wait happened).
     assert prepared["service_port"] == 57800
     assert prepared["stream_url"] == stream_url
     assert prepared["stream_headers"] == stream_headers
@@ -5132,13 +5200,22 @@ def test_submit_ui_pump_adopts_existing_queue_without_initial_probe_delay(
     """Existing nzbdav queue jobs should be adopted without a fixed grace wait."""
     queue_seen = threading.Event()
     submit_can_finish = threading.Event()
+    submit_completed = [False]
+    first_probe_at = []
 
     def delayed_submit(_nzb_url, _title):
         assert queue_seen.wait(timeout=1)
+        # Released only in the finally below (AFTER the snapshot), with no
+        # early timer, so the slow submit worker cannot finish before we
+        # record whether adoption waited for it -- load-independent. The
+        # 0.75s cap only bounds a regression that blocks on this submit.
         submit_can_finish.wait(timeout=0.75)
+        submit_completed[0] = True
         return "SABnzbd_nzo_submitted_late", None
 
     def queued_job(_title):
+        if not first_probe_at:
+            first_probe_at.append(_time.perf_counter())
         queue_seen.set()
         return {
             "nzo_id": "SABnzbd_nzo_existing_queue",
@@ -5153,18 +5230,40 @@ def test_submit_ui_pump_adopts_existing_queue_without_initial_probe_delay(
     monitor = MagicMock()
     monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
 
-    started = _time.perf_counter()
     try:
         nzo_id, submit_error = _submit_nzb_with_ui_pump(
             "http://hydra/getnzb/abc", "movie.mkv", dialog, monitor
         )
+        submit_completed_at_return = submit_completed[0]
     finally:
         submit_can_finish.set()
-    elapsed = _time.perf_counter() - started
 
     assert (nzo_id, submit_error) == ("SABnzbd_nzo_existing_queue", None)
     monitor.waitForAbort.assert_not_called()
-    assert elapsed < 0.2, "existing queue adoption took {:.3f}s".format(elapsed)
+    # Structural proof (load-independent): the existing-queue hit must be
+    # adopted before the slow submit worker is released (only the finally
+    # above releases it, after the snapshot). If adoption wrongly waited out
+    # a fixed grace, delayed_submit would finish its bounded wait and set
+    # submit_completed -> submit_completed_at_return True.
+    assert submit_completed_at_return is False
+    # No-initial-probe-delay guard (CodeRabbit): the load-independent PRIMARY
+    # check is that the production constant is still zero -- it catches ANY
+    # reintroduced non-zero initial grace, including a small one (e.g. 0.05) that
+    # the coarse runtime ceiling below would let slip. The worker does
+    # `queue_stop.wait(_SUBMIT_QUEUE_PROBE_INITIAL_DELAY_SECONDS)` before its
+    # first find_queued_by_name, so a non-zero value delays the FIRST probe --
+    # which the submit_completed snapshot above cannot see.
+    from resources.lib.resolver import (  # pylint: disable=import-outside-toplevel
+        _SUBMIT_QUEUE_PROBE_INITIAL_DELAY_SECONDS,
+    )
+
+    assert _SUBMIT_QUEUE_PROBE_INITIAL_DELAY_SECONDS == 0
+    # Non-vacuity: the queue probe actually ran, so the adoption above was
+    # genuinely exercised. The previous 0.1s wall-clock ceiling on the first
+    # probe was removed (Codex P2): it measured thread creation + worker
+    # scheduling, so a loaded runner could exceed it even with a healthy zero
+    # initial delay -- the constant pin above is the load-independent guard.
+    assert first_probe_at, "queue probe never ran"
 
 
 @patch("resources.lib.resolver._existing_completed_stream", return_value=None)
@@ -5176,9 +5275,16 @@ def test_submit_ui_pump_rechecks_queue_quickly_after_initial_fast_miss(
     """A queue hit just after the first probe should not wait 200 ms."""
     submit_can_finish = threading.Event()
     queue_probe_times = []
+    submit_completed = [False]
 
     def delayed_submit(_nzb_url, _title):
+        # Slow op: blocks until the test releases submit_can_finish in its
+        # finally (AFTER snapshotting the flag below). submit_completed flips
+        # True only once this wait returns, so a fast path that adopts the
+        # queue hit without awaiting the worker observes it still False --
+        # load-independent. The 0.75s cap only bounds a regression that waits.
         submit_can_finish.wait(timeout=0.75)
+        submit_completed[0] = True
         return "SABnzbd_nzo_submitted", None
 
     def queued_job(_title):
@@ -5198,18 +5304,75 @@ def test_submit_ui_pump_rechecks_queue_quickly_after_initial_fast_miss(
     monitor = MagicMock()
     monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
 
-    started = _time.perf_counter()
+    # Record the actual interval the probe worker waits between probes by
+    # capturing queue_stop.wait(interval) directly (Codex P2) -- a load-robust
+    # signal that does not depend on scheduler-delayed wall-clock gaps.
+    recorded_probe_waits = []
+
+    class _RecordingEvent(threading.Event):
+        def wait(self, timeout=None):
+            recorded_probe_waits.append(timeout)
+            return super().wait(timeout)
+
     try:
-        nzo_id, submit_error = _submit_nzb_with_ui_pump(
-            "http://hydra/getnzb/abc", "movie.mkv", dialog, monitor
-        )
+        with patch("resources.lib.resolver.threading.Event", _RecordingEvent):
+            nzo_id, submit_error = _submit_nzb_with_ui_pump(
+                "http://hydra/getnzb/abc", "movie.mkv", dialog, monitor
+            )
+        submit_completed_at_return = submit_completed[0]
     finally:
         submit_can_finish.set()
-    elapsed = _time.perf_counter() - started
 
     assert (nzo_id, submit_error) == ("SABnzbd_nzo_second_fast_probe", None)
     assert len(queue_probe_times) == 2
-    assert elapsed < 0.2, "second fast queue probe took {:.3f}s".format(elapsed)
+    # Cadence guard (CodeRabbit Major + Codex P2): two probes happening is not
+    # enough -- the second probe must have been paced by the FAST retry interval,
+    # not the normal slow poll. A regression dropping the recheck to the slow poll
+    # (still < the 0.75s submit timeout) keeps len == 2 and the submit-not-
+    # completed snapshot green. Instead of measuring the scheduler-delayed inter-
+    # probe wall-clock gap (which flakes under load), the recording Event above
+    # captured the actual interval the worker passed to queue_stop.wait(); assert
+    # the slow interval was never used to pace a reprobe.
+    from resources.lib.resolver import (  # pylint: disable=import-outside-toplevel
+        _SUBMIT_QUEUE_PROBE_FAST_INTERVAL_SECONDS,
+        _SUBMIT_QUEUE_PROBE_FAST_WINDOW_SECONDS,
+        _SUBMIT_QUEUE_PROBE_INTERVAL_SECONDS,
+    )
+
+    # Premise pin (load-independent): the fast cadence only applies while elapsed
+    # < the fast window; shrinking the window to an intermediate value would end
+    # the fast cadence prematurely. Pin the documented window.
+    assert _SUBMIT_QUEUE_PROBE_FAST_WINDOW_SECONDS >= 2.0
+
+    # Every reprobe-pacing wait must be the fast interval. Waits below it (the
+    # 0.0 initial-delay wait and the <=0.01 history-probe coordination polls) are
+    # not cadence; any wait at or above the fast interval that isn't exactly the
+    # fast interval -- the slow poll OR an intermediate value like 0.1 -- is a
+    # cadence regression (CodeRabbit). The healthy run records only [~0.003, 0.01,
+    # 0.05], so the fast interval is the sole >= -fast value.
+    reprobe_interval_waits = [
+        timeout
+        for timeout in recorded_probe_waits
+        if timeout and timeout >= _SUBMIT_QUEUE_PROBE_FAST_INTERVAL_SECONDS
+    ]
+    assert reprobe_interval_waits, "probe worker never paced a reprobe"
+    assert all(
+        timeout == _SUBMIT_QUEUE_PROBE_FAST_INTERVAL_SECONDS
+        for timeout in reprobe_interval_waits
+    ), (
+        "reprobe used a non-fast interval (slow poll or intermediate value); "
+        "intervals >= fast were {} (fast={:.3f}s, slow={:.3f}s)".format(
+            reprobe_interval_waits,
+            _SUBMIT_QUEUE_PROBE_FAST_INTERVAL_SECONDS,
+            _SUBMIT_QUEUE_PROBE_INTERVAL_SECONDS,
+        )
+    )
+    # Structural proof (load-independent): the second queue probe's hit is
+    # adopted and returned while the submit worker is still blocked on
+    # submit_can_finish (released only in the finally above, after this
+    # snapshot). A regression that waits for the submit worker would let it
+    # complete first -> submit_completed_at_return True.
+    assert submit_completed_at_return is False
 
 
 @patch("resources.lib.resolver.find_completed_by_name")
@@ -6436,19 +6599,31 @@ def test_poll_once_returns_active_queue_before_slow_history(
 ):
     """An active queue row is enough to update progress and start the next poll."""
 
+    # Load-independent structural guard: the history fetch blocks on an event
+    # the test releases only in finally, AFTER the fast-path result is captured.
+    # If _poll_once returns without awaiting history, history_completed stays
+    # False at the snapshot. A regression that blocks on history would run
+    # slow_history to completion (setting the flag) before returning -> red.
+    release = threading.Event()
+    history_completed = {"done": False}
+
     def slow_history(_nzo_id):
-        _time.sleep(0.25)
+        release.wait(timeout=2)
+        history_completed["done"] = True
 
     mock_status.return_value = {"status": "Downloading", "percentage": "50"}
     mock_history.side_effect = slow_history
 
-    started = _time.monotonic()
-    job_status, history, webdav_error = _poll_once(
-        "nzo_active", "movie", _make_monitor()
-    )
-    elapsed = _time.monotonic() - started
+    try:
+        job_status, history, webdav_error = _poll_once(
+            "nzo_active", "movie", _make_monitor()
+        )
+        # The fast active-queue path must return before the slow history fetch
+        # has completed.
+        assert not history_completed["done"]
+    finally:
+        release.set()
 
-    assert elapsed < 0.2
     assert job_status == mock_status.return_value
     assert history is None
     assert webdav_error is None
@@ -6494,8 +6669,13 @@ def test_poll_once_returns_full_progress_queue_before_slow_history(
 ):
     """A 100% queue row should not block behind a slow history request."""
 
+    # Slow path is pushed far above the bound so the assertion stays
+    # red-on-regression: the legitimate path returns after the ~0.14s
+    # full-progress grace, while a regression that blocks on history would
+    # take ~2s and fail the widened bound. The wide gap (0.14s grace vs 2.0s
+    # block, bound 1.0s) makes the wall-clock check load-robust.
     def slow_history(_nzo_id):
-        _time.sleep(0.25)
+        _time.sleep(2.0)
 
     mock_status.return_value = {"status": "Downloading", "percentage": "100"}
     mock_history.side_effect = slow_history
@@ -6504,7 +6684,7 @@ def test_poll_once_returns_full_progress_queue_before_slow_history(
     job_status, history, webdav_error = _poll_once("nzo_full", "movie", _make_monitor())
     elapsed = _time.monotonic() - started
 
-    assert elapsed < 0.2, "100% queue row waited on history for {:.3f}s".format(elapsed)
+    assert elapsed < 1.0, "100% queue row waited on history for {:.3f}s".format(elapsed)
     assert job_status == mock_status.return_value
     assert history is None
     assert webdav_error is None
@@ -6805,8 +6985,13 @@ def test_poll_until_ready_waits_for_full_progress_history_before_poll_tick(
 
     def get_history(_nzo_id):
         history_calls.append(_time.perf_counter())
+        # Simulate a small history-arrival latency that lands comfortably inside
+        # _POLL_FULL_PROGRESS_HISTORY_GRACE_SECONDS (0.14). The earlier 0.12 sleep
+        # sat only 0.02s under the grace, so under CPU load it stretched past 0.14
+        # and forced a false 2nd poll. ~0.02 keeps a wide margin while still
+        # exercising the grace-wait path.
         if len(history_calls) == 1:
-            _time.sleep(0.12)
+            _time.sleep(0.02)
         return completed_history
 
     monitor = MagicMock()
@@ -6816,18 +7001,34 @@ def test_poll_until_ready_waits_for_full_progress_history_before_poll_tick(
     mock_find.return_value = "/content/uncategorized/movie/movie.mkv"
     mock_stream_url.return_value = ("http://webdav/movie.mkv", {"Authorization": "x"})
 
-    started = _time.perf_counter()
     url, headers = _poll_until_ready(
         "http://hydra/nzb", "movie", _make_dialog(), 0.25, 3600
     )
-    elapsed = _time.perf_counter() - started
 
     assert url == "http://webdav/movie.mkv"
     assert headers == {"Authorization": "x"}
+    # Structural red-on-regression signal (load-independent): the 100% grace
+    # caught completed history on the FIRST poll, so history was fetched once and
+    # no poll-tick / fast-repoll waitForAbort ran before resolving. If the
+    # full-progress grace regresses (shrinks below the history latency), the 100%
+    # row misses history on poll 1 and the loop sleeps a poll wait then re-fetches
+    # history -> len(history_calls) == 2 and a poll wait appears.
     assert len(history_calls) == 1
-    assert elapsed < 0.2, "full-progress history missed grace by {:.3f}s".format(
-        elapsed
+    poll_waits = [c.args[0] for c in monitor.waitForAbort.call_args_list if c.args]
+    assert not poll_waits, (
+        "full-progress grace missed history on poll 1 and slept a poll wait "
+        "before resolving; waitForAbort delays={}".format(poll_waits)
     )
+    # Premise pin (load-independent): the structural proof above rides on the
+    # ~0.02s simulated history latency landing inside the documented grace. An
+    # intermediate grace reduction (e.g. 0.07) would still sit above 0.02 and
+    # keep the len==1 / no-poll-wait snapshot green, yet shrink the real-world
+    # safety margin. Pin the documented grace so such a drift goes red here.
+    from resources.lib.resolver import (  # pylint: disable=import-outside-toplevel
+        _POLL_FULL_PROGRESS_HISTORY_GRACE_SECONDS,
+    )
+
+    assert _POLL_FULL_PROGRESS_HISTORY_GRACE_SECONDS == 0.14
 
 
 @patch("resources.lib.resolver._existing_completed_stream", return_value=None)
@@ -6836,9 +7037,11 @@ def test_poll_until_ready_waits_for_full_progress_history_before_poll_tick(
 @patch("resources.lib.resolver.find_video_file")
 @patch("resources.lib.resolver.get_job_history")
 @patch("resources.lib.resolver.get_job_status")
+@patch("resources.lib.resolver._wait_for_abort_or_timeout", return_value=False)
 @patch("resources.lib.resolver.xbmc")
 def test_poll_until_ready_repolls_full_progress_history_miss_before_full_tick(
     mock_xbmc,
+    mock_wait,
     mock_status,
     mock_history,
     mock_find,
@@ -6847,6 +7050,9 @@ def test_poll_until_ready_repolls_full_progress_history_miss_before_full_tick(
     _mock_find_completed,
 ):
     """A 100% queue row with a fast history miss should not wait a full tick."""
+    from resources.lib.resolver import _POLL_NEAR_COMPLETE_FAST_REPOLL_SECONDS
+
+    poll_interval = 1
     completed_history = {
         "status": "Completed",
         "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/movie",
@@ -6856,32 +7062,36 @@ def test_poll_until_ready_repolls_full_progress_history_miss_before_full_tick(
     mock_status.return_value = {"status": "Downloading", "percentage": "100"}
 
     def get_history(_nzo_id):
-        history_calls.append(_time.perf_counter())
+        history_calls.append(_nzo_id)
         if len(history_calls) == 1:
             return None
         return completed_history
 
     monitor = MagicMock()
-    monitor.waitForAbort.side_effect = lambda seconds: (_time.sleep(seconds) or False)
+    monitor.waitForAbort.return_value = False
     mock_xbmc.Monitor.return_value = monitor
     mock_history.side_effect = get_history
     mock_find.return_value = "/content/uncategorized/movie/movie.mkv"
     mock_stream_url.return_value = ("http://webdav/movie.mkv", {"Authorization": "x"})
 
-    started = _time.perf_counter()
     url, headers = _poll_until_ready(
-        "http://hydra/nzb", "movie", _make_dialog(), 1, 3600
+        "http://hydra/nzb", "movie", _make_dialog(), poll_interval, 3600
     )
-    elapsed = _time.perf_counter() - started
 
     assert url == "http://webdav/movie.mkv"
     assert headers == {"Authorization": "x"}
+    # The full-progress miss forced exactly one repoll (2 history calls).
     assert len(history_calls) == 2
-    history_gap = history_calls[1] - history_calls[0]
-    assert history_gap < 0.5, "full-progress history retry gap was {:.3f}s".format(
-        history_gap
-    )
-    assert elapsed < 0.5, "full-progress repoll waited {:.3f}s".format(elapsed)
+    # Structural, load-independent proof the repoll happened BEFORE the full
+    # poll tick. The per-poll wait (_wait_for_abort_or_timeout) is mocked, so it
+    # never really sleeps -- there is no wall-clock bound. The 100% (full
+    # progress) row must pace the single inter-poll wait on the near-complete
+    # fast-repoll interval, strictly shorter than the full poll_interval the
+    # slow path would have waited. A regression that drops the near-complete
+    # fast repoll would call this with poll_interval and fail the assertion.
+    expected_wait = min(poll_interval, _POLL_NEAR_COMPLETE_FAST_REPOLL_SECONDS)
+    mock_wait.assert_called_once_with(monitor, expected_wait)
+    assert expected_wait < poll_interval
 
 
 @patch("resources.lib.resolver.cancel_job")
@@ -7121,15 +7331,43 @@ def test_poll_until_ready_rechecks_completed_webdav_before_full_poll_interval(
         {"Authorization": "Basic primary"},
     )
 
-    started = _time.perf_counter()
-    url, headers = _poll_until_ready(
-        "http://hydra/nzb", "movie", _make_dialog(), 1, 3600
-    )
-    elapsed = _time.perf_counter() - started
+    from resources.lib import (
+        resolver as _resolver,
+    )  # pylint: disable=import-outside-toplevel
+
+    helper_poll_waits = []
+    _real_wait_for_abort = _resolver._wait_for_abort_or_timeout
+
+    def _spy_wait_for_abort(mon, wait_seconds, *args, **kwargs):
+        helper_poll_waits.append(wait_seconds)
+        return _real_wait_for_abort(mon, wait_seconds, *args, **kwargs)
+
+    with patch.object(_resolver, "_wait_for_abort_or_timeout", _spy_wait_for_abort):
+        url, headers = _poll_until_ready(
+            "http://hydra/nzb", "movie", _make_dialog(), 1, 3600
+        )
 
     assert url == "http://webdav/content/uncategorized/movie/movie.mkv"
     assert headers == {"Authorization": "Basic primary"}
-    assert elapsed < 0.5, "completed WebDAV recheck waited {:.3f}s".format(elapsed)
+    # Completed-WebDAV recheck guard (replaces a flake-prone wall-clock bound).
+    # The first find_video_file miss must recheck inline on the graduated 0.025s
+    # fast recheck delay AND return the video on that recheck -- it must NOT fall
+    # through to a full poll_interval (1s) tick before consuming the second lookup.
+    wait_delays = [c.args[0] for c in monitor.waitForAbort.call_args_list if c.args]
+    assert 0.025 in wait_delays, "inline 0.025s fast recheck was not requested"
+    # The full poll tick is requested two ways and BOTH must be absent before the
+    # recheck resolves (Codex P2): monitor.waitForAbort(poll_interval), and the
+    # helper _wait_for_abort_or_timeout(monitor, poll_interval), which waits on a
+    # threading.Event rather than waitForAbort. A 0.025s recheck followed by
+    # either would delay playback ~1s while still returning the right URL.
+    assert 1 not in wait_delays, (
+        "completed-WebDAV path waited a full poll tick (waitForAbort) before "
+        "consuming the recheck result; delays={}".format(wait_delays)
+    )
+    assert 1 not in helper_poll_waits, (
+        "completed-WebDAV path waited a full poll tick via "
+        "_wait_for_abort_or_timeout; helper waits={}".format(helper_poll_waits)
+    )
 
 
 @patch("resources.lib.resolver._existing_completed_stream", return_value=None)
@@ -7672,7 +7910,7 @@ def test_handle_history_result_body_unavailable_exhaustion_message(
 # ---------------------------------------------------------------------------
 
 
-@patch("resources.lib.webdav.get_video_file_size_hint", return_value=362_076_665)
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=362_076_665)
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 @patch("resources.lib.resolver._find_completed_video_stream_with_rechecks")
 def test_handle_history_result_rejects_stub_far_below_advertised(
@@ -7709,7 +7947,7 @@ def test_handle_history_result_rejects_stub_far_below_advertised(
     mock_probe.assert_not_called()  # rejected on size before any body probe
 
 
-@patch("resources.lib.webdav.get_video_file_size_hint", return_value=80_000_000_000)
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=80_000_000_000)
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 @patch("resources.lib.resolver._find_completed_video_stream_with_rechecks")
 def test_handle_history_result_streams_single_file_matching_advertised(
@@ -7741,7 +7979,7 @@ def test_handle_history_result_streams_single_file_matching_advertised(
     assert retries == 0
 
 
-@patch("resources.lib.webdav.get_video_file_size_hint", return_value=3_000_000_000)
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=30_000_000_000)
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 @patch("resources.lib.resolver._find_completed_video_stream_with_rechecks")
 def test_handle_history_result_streams_pack_episode_below_advertised(
@@ -7774,7 +8012,7 @@ def test_handle_history_result_streams_pack_episode_below_advertised(
     assert retries == 0
 
 
-@patch("resources.lib.webdav.get_video_file_size_hint", return_value=1_000_000)
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=1_000_000)
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 @patch("resources.lib.resolver._find_completed_video_stream_with_rechecks")
 def test_handle_history_result_streams_when_advertised_size_unknown(
@@ -7806,7 +8044,7 @@ def test_handle_history_result_streams_when_advertised_size_unknown(
 
 
 @patch("resources.lib.resolver.xbmcgui")
-@patch("resources.lib.webdav.get_video_file_size_hint", return_value=362_076_665)
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=362_076_665)
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 @patch("resources.lib.resolver._find_completed_video_stream_with_rechecks")
 def test_handle_history_result_stub_keeps_polling_and_defers_to_timeout(
@@ -7844,7 +8082,7 @@ def test_handle_history_result_stub_keeps_polling_and_defers_to_timeout(
 
 
 @patch("resources.lib.resolver.xbmcgui")
-@patch("resources.lib.webdav.get_video_file_size_hint", return_value=362_076_665)
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=362_076_665)
 @patch("resources.lib.resolver._find_completed_video_stream_with_rechecks")
 def test_handle_history_result_stub_does_not_starve_symlink_budget(
     mock_find_stream, _mock_size, mock_gui
@@ -7898,34 +8136,29 @@ def test_handle_history_result_stub_does_not_starve_symlink_budget(
 # is also threaded into WebDAV discovery (_stub_min_size_floor -> min_video_size)
 # so a root-level stub recurses into the subfolder holding the real file rather
 # than every poll re-picking the same root stub until download_timeout. The
-# floor is single-file only (0 for packs / unknown size), keeping packs and the
-# fail-open behavior unchanged.
+# floor is PACK-AGNOSTIC (advertised*0.5 for any known size, 0 for unknown),
+# keeping the fail-open behavior unchanged.
 # ---------------------------------------------------------------------------
 
 
-def test_stub_min_size_floor_single_file_is_half_advertised():
-    """A single-file (non-pack) release with a known advertised size floors at
-    half that size -- exactly the threshold _discovered_video_is_stub rejects
-    below, so discovery and the accept guard agree on what 'too small' means."""
+def test_stub_min_size_floor_is_half_advertised_pack_agnostic():
+    """The floor is half the advertised size for ANY release with a known size --
+    PACK-AGNOSTIC, no title/release_is_pack consultation. Packs are handled at
+    accept time by comparing the folder's TOTAL video bytes (episodes sum to
+    ~advertised) against this floor, not a single picked episode, so the floor
+    itself is the same for a movie and a season pack."""
     from resources.lib.resolver import (
         _STUB_VIDEO_MIN_ADVERTISED_FRACTION,
         _stub_min_size_floor,
     )
 
-    floor = _stub_min_size_floor(
-        "81610612736", "The.Undertakers.2024.2160p.UHD.BluRay.x265-GROUP"
+    assert _stub_min_size_floor("81610612736") == (
+        81610612736 * _STUB_VIDEO_MIN_ADVERTISED_FRACTION
     )
-
-    assert floor == 81610612736 * _STUB_VIDEO_MIN_ADVERTISED_FRACTION
-
-
-def test_stub_min_size_floor_pack_is_zero():
-    """A pack's advertised size spans every episode, so one episode is
-    legitimately a small fraction -- no floor (0) for packs, just like the
-    accept-time stub guard is skipped for them."""
-    from resources.lib.resolver import _stub_min_size_floor
-
-    assert _stub_min_size_floor("30000000000", "Some.Show.S01.1080p.WEB-DL.x264") == 0
+    # Same floor regardless of whether the name looks like a pack.
+    assert _stub_min_size_floor("30000000000") == (
+        30000000000 * _STUB_VIDEO_MIN_ADVERTISED_FRACTION
+    )
 
 
 def test_stub_min_size_floor_unknown_advertised_is_zero():
@@ -7933,9 +8166,9 @@ def test_stub_min_size_floor_unknown_advertised_is_zero():
     legitimately small file is never deferred or dropped."""
     from resources.lib.resolver import _stub_min_size_floor
 
-    assert _stub_min_size_floor(None, "Movie.2024") == 0
-    assert _stub_min_size_floor("0", "Movie.2024") == 0
-    assert _stub_min_size_floor("not-a-number", "Movie.2024") == 0
+    assert _stub_min_size_floor(None) == 0
+    assert _stub_min_size_floor("0") == 0
+    assert _stub_min_size_floor("not-a-number") == 0
 
 
 def test_advertised_size_bytes_non_finite_is_unknown():
@@ -7957,11 +8190,277 @@ def test_stub_min_size_floor_non_finite_advertised_is_zero():
     stub guard fails OPEN instead of raising out of discovery."""
     from resources.lib.resolver import _stub_min_size_floor
 
-    assert _stub_min_size_floor("inf", "Movie.2024") == 0
-    assert _stub_min_size_floor("1e10000", "Movie.2024") == 0
+    assert _stub_min_size_floor("inf") == 0
+    assert _stub_min_size_floor("1e10000") == 0
 
 
+# ---------------------------------------------------------------------------
+# _discovered_video_is_stub two-stage, PACK-AGNOSTIC logic (#282 redesign):
+#   stage 1 (fast path) -- a picked file already >= advertised*0.5 is the real
+#           single feature; accept WITHOUT a folder walk.
+#   stage 2 -- a small/unknown picked file is a stub OR a pack episode; sum the
+#           folder's TOTAL video bytes and reject only if the WHOLE folder is
+#           below the floor. This gives packs real stub protection (the old
+#           title-based release_is_pack exemption disabled the guard for them).
+# ---------------------------------------------------------------------------
+
+
+@patch("resources.lib.webdav.folder_video_total_bytes")
+@patch("resources.lib.webdav.get_video_file_size_hint")
+def test_discovered_video_is_stub_unknown_advertised_fails_open(
+    mock_picked, mock_total
+):
+    """No advertised size -> floor 0 -> fail OPEN with no I/O at all (neither the
+    picked-size hint nor the folder walk is consulted)."""
+    from resources.lib.resolver import _discovered_video_is_stub
+
+    assert _discovered_video_is_stub("/folder", "/folder/x.mkv", None) is False
+    mock_picked.assert_not_called()
+    mock_total.assert_not_called()
+
+
+@patch("resources.lib.webdav.folder_video_total_bytes")
 @patch("resources.lib.webdav.get_video_file_size_hint", return_value=80_000_000_000)
+def test_discovered_video_is_stub_fast_path_skips_folder_walk(mock_picked, mock_total):
+    """A real-sized single feature (picked file >= floor) is accepted WITHOUT the
+    extra folder-total walk -- the latency-cheap common-movie path."""
+    from resources.lib.resolver import _discovered_video_is_stub
+
+    # advertised ~81 GB -> floor ~40.8 GB; picked 80 GB is above it.
+    is_stub = _discovered_video_is_stub("/folder", "/folder/movie.mkv", "81610612736")
+
+    assert is_stub is False
+    mock_total.assert_not_called()  # no second walk for an obviously-real file
+
+
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=362_076_665)
+@patch("resources.lib.webdav.get_video_file_size_hint", return_value=362_076_665)
+def test_discovered_video_is_stub_rejects_stub_only_folder(mock_picked, mock_total):
+    """Picked file below the floor AND the folder total is just the stub -> a
+    job-start stub; reject. The walk runs to make the decision."""
+    from resources.lib.resolver import _discovered_video_is_stub
+
+    is_stub = _discovered_video_is_stub("/folder", "/folder/stub.mp4", "81610612736")
+
+    assert is_stub is True
+    mock_total.assert_called_once()
+
+
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=30_000_000_000)
+@patch("resources.lib.webdav.get_video_file_size_hint", return_value=3_000_000_000)
+def test_discovered_video_is_stub_accepts_real_pack_via_folder_total(
+    mock_picked, mock_total
+):
+    """THE pack-agnostic win: a picked episode (3 GB) is far below the advertised
+    pack size (30 GB, floor 15 GB), but the FOLDER total (30 GB of episodes) is
+    at/above the floor -> a real pack, accept. The old title-based guard would
+    have had to special-case this; the folder total handles it with no title."""
+    from resources.lib.resolver import _discovered_video_is_stub
+
+    is_stub = _discovered_video_is_stub("/pack", "/pack/Show.S01E03.mkv", "30000000000")
+
+    assert is_stub is False
+    mock_total.assert_called_once()
+
+
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=362_076_665)
+@patch("resources.lib.webdav.get_video_file_size_hint", return_value=400_000_000)
+def test_discovered_video_is_stub_rejects_pack_showing_only_stub(
+    mock_picked, mock_total
+):
+    """THE hole this redesign closes: a PACK (advertised 30 GB) whose folder so
+    far exposes only nzbdav's job-start stub (folder total 362 MB) is REJECTED,
+    so the poll loop keeps waiting for the real episodes. The previous
+    release_is_pack(title) exemption returned floor 0 for packs and would have
+    streamed this stub."""
+    from resources.lib.resolver import _discovered_video_is_stub
+
+    is_stub = _discovered_video_is_stub(
+        "/pack", "/pack/Some.Show.S01.Complete.stub.mp4", "30000000000"
+    )
+
+    assert is_stub is True  # pack stub no longer slips through
+    mock_total.assert_called_once()
+
+
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=0)
+@patch("resources.lib.webdav.get_video_file_size_hint", return_value=362_076_665)
+def test_discovered_video_is_stub_fails_open_when_folder_scan_empty(
+    mock_picked, mock_total
+):
+    """Picked file is small but the folder walk returns nothing (scan failed or
+    raced) -> fail OPEN rather than reject a possibly-real stream."""
+    from resources.lib.resolver import _discovered_video_is_stub
+
+    is_stub = _discovered_video_is_stub("/folder", "/folder/x.mkv", "81610612736")
+
+    assert is_stub is False
+
+
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=-1)
+@patch("resources.lib.webdav.get_video_file_size_hint", return_value=362_076_665)
+def test_discovered_video_is_stub_fails_open_on_incomplete_scan(
+    mock_picked, mock_total
+):
+    """When folder_video_total_bytes signals INCOMPLETE (negative sentinel -- a
+    PROPFIND error or an unsized video file), the total is untrustworthy, so the
+    guard fails OPEN and never rejects real content on partial data."""
+    from resources.lib.resolver import _discovered_video_is_stub
+
+    is_stub = _discovered_video_is_stub("/folder", "/folder/x.mkv", "81610612736")
+
+    assert is_stub is False
+
+
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=362_076_665)
+@patch("resources.lib.webdav.get_video_file_size_hint", return_value=0)
+def test_discovered_video_is_stub_walks_when_picked_size_unknown(
+    mock_picked, mock_total
+):
+    """When the picked file's own size is unknown (no cached hint), the guard
+    still walks the folder rather than fail-open blindly -- a stub-only folder is
+    caught even without a per-file size."""
+    from resources.lib.resolver import _discovered_video_is_stub
+
+    is_stub = _discovered_video_is_stub("/folder", "/folder/x.mp4", "81610612736")
+
+    assert is_stub is True
+    mock_total.assert_called_once()
+
+
+# Stage 2b (#355 review): the folder TOTAL clearing the floor does not prove the
+# PICKED file is real -- a materialised sibling can lift the total while the
+# requested file is still a stub. Reject a picked file dwarfed by the largest
+# video; accept a real episode comparable to its siblings.
+
+
+@patch("resources.lib.webdav.get_video_file_size_hint", return_value=10 * 1024**2)
+@patch("resources.lib.webdav.folder_video_total_bytes")
+def test_discovered_video_is_stub_rejects_below_floor_pick_dwarfed_by_sibling(
+    mock_total, _mock_hint
+):
+    """The picked file (10 MB stub) is below the floor, the folder total clears
+    the floor ONLY because an 8 GB sibling materialised. Pre-stage-2b this wrongly
+    ACCEPTED (the total >= floor); now the picked file being ~0.1% of the largest
+    video is rejected so the poll loop keeps waiting for the real requested file.
+    """
+    from resources.lib.resolver import _discovered_video_is_stub
+
+    def total(_folder, settings_getter=None, _stats=None):
+        if _stats is not None:
+            _stats["max"] = 8 * 1024**3  # the large materialised sibling
+        return 10 * 1024**2 + 8 * 1024**3  # >= floor, but driven by the sibling
+
+    mock_total.side_effect = total
+
+    is_stub = _discovered_video_is_stub(
+        "/content/x/Show.S01.Pack/",
+        "/content/x/Show.S01.Pack/Show.S01E05.mkv",
+        str(4 * 1024**3),  # advertised 4 GB -> floor 2 GB
+    )
+
+    assert is_stub is True
+
+
+@patch("resources.lib.webdav.get_video_file_size_hint", return_value=3 * 1024**3)
+@patch("resources.lib.webdav.folder_video_total_bytes")
+def test_discovered_video_is_stub_accepts_real_pack_episode_comparable_to_siblings(
+    mock_total, _mock_hint
+):
+    """A real pack episode (3 GB) below the half-pack floor but comparable in size
+    to its largest sibling (3 GB) must still stream -- stage 2b only rejects a file
+    ANOMALOUSLY tiny versus the largest video, never a legitimate episode."""
+    from resources.lib.resolver import _discovered_video_is_stub
+
+    def total(_folder, settings_getter=None, _stats=None):
+        if _stats is not None:
+            _stats["max"] = 3 * 1024**3
+        return 24 * 1024**3  # whole-pack total
+
+    mock_total.side_effect = total
+
+    is_stub = _discovered_video_is_stub(
+        "/content/x/Show.S01.Complete/",
+        "/content/x/Show.S01.Complete/Show.S01E05.mkv",
+        str(24 * 1024**3),  # advertised 24 GB -> floor 12 GB
+    )
+
+    assert is_stub is False
+
+
+@patch("resources.lib.webdav.get_video_file_size_hint", return_value=10 * 1024**2)
+@patch("resources.lib.webdav.folder_video_total_bytes")
+def test_discovered_video_is_stub_stage2b_fails_open_when_largest_unknown(
+    mock_total, _mock_hint
+):
+    """If the walk reported a total >= floor but no per-file max (largest 0),
+    stage 2b cannot judge and fails OPEN rather than reject real content."""
+    from resources.lib.resolver import _discovered_video_is_stub
+
+    def total(_folder, settings_getter=None, _stats=None):
+        return 8 * 1024**3  # >= floor, but leaves _stats empty (no max recorded)
+
+    mock_total.side_effect = total
+
+    is_stub = _discovered_video_is_stub("/folder", "/folder/x.mkv", str(4 * 1024**3))
+
+    assert is_stub is False
+
+
+@patch("resources.lib.webdav.get_video_file_size_hint", return_value=300 * 1024**2)
+@patch("resources.lib.webdav.folder_video_total_bytes")
+def test_discovered_video_is_stub_accepts_short_pack_special(mock_total, _mock_hint):
+    """#355 Codex review: a legitimately SHORT requested pack item (a 300 MB
+    recap/special, ~7% of the 4 GB longest episode) must still stream -- it is real
+    content, not a job-start stub. The folder total proves the pack is present; the
+    picked file at ~7% of the largest is above the stub fraction (0.05), so it is
+    accepted. (At the original 0.1 fraction this was wrongly rejected.)"""
+    from resources.lib.resolver import _discovered_video_is_stub
+
+    def total(_folder, settings_getter=None, _stats=None):
+        if _stats is not None:
+            _stats["max"] = 4 * 1024**3  # longest episode in the pack
+        return 30 * 1024**3  # whole pack materialised
+
+    mock_total.side_effect = total
+
+    is_stub = _discovered_video_is_stub(
+        "/content/x/Show.S01.Complete/",
+        "/content/x/Show.S01.Complete/Show.S01E00.Recap.mkv",
+        str(30 * 1024**3),  # pack advertised 30 GB -> floor 15 GB
+    )
+
+    assert is_stub is False
+
+
+@patch("resources.lib.webdav.get_video_file_size_hint", return_value=10 * 1024**2)
+@patch("resources.lib.webdav.folder_video_total_bytes")
+def test_discovered_video_is_stub_rejects_dwarfed_stub_even_when_total_incomplete(
+    mock_total, _mock_hint
+):
+    """#355 Codex review: when the folder-total scan is INCOMPLETE (negative
+    sentinel) but already sized a real sibling that dwarfs the picked file, the
+    picked file is a known job-start stub -- reject it. A transient second-PROPFIND
+    glitch (or a sibling missing getcontentlength) must NOT fail-open a stub when a
+    real sibling is visible. (Pre-fix, the incomplete total fail-opened first and
+    streamed the stub.)"""
+    from resources.lib.resolver import _discovered_video_is_stub
+
+    def total(_folder, settings_getter=None, _stats=None):
+        if _stats is not None:
+            _stats["max"] = 8 * 1024**3  # a real sibling WAS sized
+        return -1  # but the overall scan is INCOMPLETE (negative sentinel)
+
+    mock_total.side_effect = total
+
+    is_stub = _discovered_video_is_stub(
+        "/folder", "/folder/stub.mp4", str(4 * 1024**3)  # floor 2 GB
+    )
+
+    assert is_stub is True
+
+
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=80_000_000_000)
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 @patch("resources.lib.resolver._find_completed_video_stream_with_rechecks")
 def test_handle_history_result_threads_stub_floor_into_discovery(
@@ -7994,14 +8493,17 @@ def test_handle_history_result_threads_stub_floor_into_discovery(
     )
 
 
-@patch("resources.lib.webdav.get_video_file_size_hint", return_value=3_000_000_000)
+@patch("resources.lib.webdav.folder_video_total_bytes", return_value=30_000_000_000)
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 @patch("resources.lib.resolver._find_completed_video_stream_with_rechecks")
-def test_handle_history_result_threads_zero_floor_for_pack(
+def test_handle_history_result_threads_advertised_floor_for_pack(
     mock_find_stream, _mock_probe, _mock_size
 ):
-    """A pack passes a 0 floor into discovery so a legitimately pack-fraction
-    episode is never deferred or dropped -- pack discovery stays unchanged."""
+    """PACK-AGNOSTIC: a pack threads the SAME advertised*0.5 floor into discovery
+    as a single file. The folder-total accept guard (mocked at the full 30 GB
+    pack here) then accepts the real pack while a stub-only folder is rejected."""
+    from resources.lib.resolver import _STUB_VIDEO_MIN_ADVERTISED_FRACTION
+
     mock_find_stream.return_value = (
         "/content/uncategorized/show/show.s01e03.mkv",
         "http://webdav/show.s01e03.mkv",
@@ -8020,7 +8522,9 @@ def test_handle_history_result_threads_zero_floor_for_pack(
         download_size="30000000000",
     )
 
-    assert mock_find_stream.call_args.kwargs["min_video_size"] == 0
+    assert mock_find_stream.call_args.kwargs["min_video_size"] == (
+        30000000000 * _STUB_VIDEO_MIN_ADVERTISED_FRACTION
+    )
 
 
 @patch("resources.lib.resolver._find_video_stream_for_folder")
@@ -9010,3 +9514,21 @@ def test_completed_copy_blocks_clear_fails_soft_on_probe_thread_start_failure():
         # Must not raise; must return True (queue left intact).
         blocked = _completed_copy_blocks_clear("Title", lambda _k, _d=None: "")
     assert blocked is True
+
+
+def test_advertised_size_bytes_non_finite_numeric_fails_open():
+    """#282 follow-up: a non-finite numeric size (inf from a JSON overflow
+    literal, or nan) must fail OPEN (return 0) instead of raising OverflowError /
+    ValueError out of the resolver -- neither is in _RESOLVE_RUNTIME_ERRORS, so
+    an escape would skip the setResolvedUrl-on-failure path. The int/float branch
+    now matches the string branch's fail-open contract."""
+    from resources.lib.resolver import _advertised_size_bytes, _stub_min_size_floor
+
+    assert _advertised_size_bytes(float("inf")) == 0
+    assert _advertised_size_bytes(float("-inf")) == 0
+    assert _advertised_size_bytes(float("nan")) == 0
+    # finite values still parse normally.
+    assert _advertised_size_bytes(5.0) == 5
+    assert _advertised_size_bytes(81_610_612_736) == 81_610_612_736
+    # the floor helper must not propagate the error either.
+    assert _stub_min_size_floor(float("inf")) == 0
