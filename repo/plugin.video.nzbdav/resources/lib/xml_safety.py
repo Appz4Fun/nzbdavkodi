@@ -21,7 +21,12 @@ single reviewed implementation.
 """
 
 import re
-import xml.etree.ElementTree as _stdlib_et
+
+# This module is the XXE guard itself: the stdlib is the documented defusedxml
+# fallback and the ``ParseError`` source, and entity declarations are refused in
+# ``safe_fromstring`` before any parse — so this import is safe by construction.
+# nosemgrep
+import xml.etree.ElementTree as _stdlib_et  # nosec B405
 
 try:
     from defusedxml import ElementTree as _ET
