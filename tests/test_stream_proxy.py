@@ -4406,9 +4406,11 @@ def test_prepare_stream_does_not_block_new_url_on_old_ffmpeg_wait():
 
     wait_entered = threading.Event()
     release_wait = threading.Event()
+    wait_thread = []
 
     def slow_wait(timeout=None):
         assert timeout == 5
+        wait_thread.append(threading.current_thread())
         wait_entered.set()
         release_wait.wait(timeout=1)
 
@@ -4418,20 +4420,25 @@ def test_prepare_stream_does_not_block_new_url_on_old_ffmpeg_wait():
 
     timer = threading.Timer(0.18, release_wait.set)
     timer.start()
-    started = time.perf_counter()
+    calling_thread = threading.current_thread()
     try:
         with patch.object(sp, "_get_content_length", return_value=200000):
             sp.prepare_stream("http://host/two.mkv")
-        elapsed = time.perf_counter() - started
         assert old_proc.kill.called
         assert wait_entered.wait(timeout=1)
     finally:
         release_wait.set()
         timer.cancel()
 
-    assert elapsed < 0.13, "old ffmpeg wait blocked new proxy URL for {:.3f}s".format(
-        elapsed
-    )
+    # Structural guard (load-independent): the old ffmpeg's blocking wait() must
+    # run on the background reap thread, NOT on the thread that returns the new
+    # proxy URL. If teardown regressed to a synchronous wait on the prepare
+    # path, slow_wait would run on this calling thread and prepare_stream would
+    # block until the 0.18 s timer released it.
+    assert wait_thread, "old ffmpeg wait() never ran"
+    assert (
+        wait_thread[0] is not calling_thread
+    ), "old ffmpeg wait blocked the new proxy URL on the calling thread"
     assert len(sp._server.stream_sessions) == 1
 
 
@@ -6163,25 +6170,34 @@ def test_hls_producer_close_wait_false_kills_without_waiting(tmp_path):
     alive_proc.poll.return_value = None
     wait_entered = threading.Event()
     release_wait = threading.Event()
+    wait_thread = []
 
     def slow_wait(timeout=None):
         assert timeout == 5
+        wait_thread.append(threading.current_thread())
         wait_entered.set()
         release_wait.wait(timeout=1)
 
     alive_proc.wait.side_effect = slow_wait
     producer._proc = alive_proc
 
-    started = time.perf_counter()
+    calling_thread = threading.current_thread()
     try:
         producer.close(wait_for_process=False)
-        elapsed = time.perf_counter() - started
         alive_proc.kill.assert_called_once()
         assert wait_entered.wait(timeout=1)
     finally:
         release_wait.set()
 
-    assert elapsed < 0.13, "nonblocking HLS close waited {:.3f}s".format(elapsed)
+    # Structural guard (load-independent): the deferred wait() must run on a
+    # background thread, NOT the caller of close(wait_for_process=False). A
+    # regression to a synchronous wait would run slow_wait on this calling
+    # thread (blocking until the 1s release), which the thread-identity check
+    # catches without any flake-prone wall-clock bound.
+    assert wait_thread, "ffmpeg wait() never ran"
+    assert (
+        wait_thread[0] is not calling_thread
+    ), "nonblocking HLS close waited on the calling thread"
 
 
 def test_hls_producer_opens_ffmpeg_log_in_init(tmp_path):
@@ -6403,7 +6419,12 @@ def test_hls_producer_prepare_returns_when_init_and_first_segment_appear(
             started = time.perf_counter()
             producer.prepare()  # must not raise
             elapsed = time.perf_counter() - started
-        assert elapsed < 0.30, "fmp4 prepare waited {:.3f}s after early output".format(
+        # Bound sits between the ~0.1 s file-write delay (plus 0.05 s poll
+        # granularity) and the 0.5 s argv-rejection window: a regression that
+        # stopped returning early when init.mp4 + seg_000000.m4s are on disk
+        # would wait the full argv window (>= 0.5 s). 0.40 stays red on that
+        # regression while tolerating CI load spikes.
+        assert elapsed < 0.40, "fmp4 prepare waited {:.3f}s after early output".format(
             elapsed
         )
     finally:
@@ -9326,11 +9347,15 @@ def test_live_fallback_selection_pipelines_fingerprint_reads_before_cutover():
     assert source["validated"] is True
     assert len(calls) == 1 + len(ranges) * 2
     sequential_floor = len(calls) * delay
+    # Structural proof of pipelining (load-independent): at least two fingerprint
+    # reads were in flight at once. The old `elapsed < sequential_floor * 0.75`
+    # wall-clock bound proved the same overlap-saves-time property but flaked under
+    # heavy load (CPU starvation serialises the reads), so max_active is the sole
+    # guard -- a regression that serialises the reads keeps max_active at 1.
     assert max_active[0] > 1, (
         "expected overlapped fingerprint reads; max_active={} elapsed={:.3f}s "
         "sequential_floor={:.3f}s".format(max_active[0], elapsed, sequential_floor)
     )
-    assert elapsed < sequential_floor * 0.75
 
 
 def test_live_fallback_selection_tries_ready_source_before_standby_refresh():

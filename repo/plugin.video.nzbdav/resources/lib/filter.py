@@ -25,17 +25,15 @@ from resources.lib.filter_normalize import (
     _normalize_fallback_meta,
     _normalize_parsed_meta,
 )
-from resources.lib.filter_pack import release_is_pack
 
 # Re-exported so ``resources.lib.filter.<name>`` keeps resolving for callers
-# and tests after the fallback parser, groups dialog, pack detection, and
-# metadata normalization moved to sibling modules (``filter_fallback`` /
-# ``filter_groups`` / ``filter_pack`` / ``filter_normalize``).
+# and tests after the fallback parser, groups dialog, and metadata
+# normalization moved to sibling modules (``filter_fallback`` /
+# ``filter_groups`` / ``filter_normalize``).
 __all__ = [
     "xbmcgui",
     "ALL_RELEASE_GROUPS",
     "configure_groups_dialog",
-    "release_is_pack",
     "_fallback_audio",
     "_fallback_hdr",
     "_fallback_parse",
