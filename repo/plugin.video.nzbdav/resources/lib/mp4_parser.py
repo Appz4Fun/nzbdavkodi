@@ -56,6 +56,9 @@ def read_box_header(data, offset):
 # Box types that are not ftyp/moov/mdat but may appear at the top level
 _KNOWN_PASSTHROUGH = {b"free", b"wide", b"uuid", b"skip", b"pdin"}
 
+# Top-level boxes we record by their own offset/size keys.
+_TOP_LEVEL_KEYS = {b"ftyp": "ftyp", b"moov": "moov", b"mdat": "mdat"}
+
 
 def scan_top_level_boxes(data):
     """Scan top-level MP4 boxes and return their locations.
@@ -86,15 +89,10 @@ def scan_top_level_boxes(data):
         # then breaking left stale offsets pointing at truncated data.
         if total_size < 8:
             break
-        if box_type == b"ftyp":
-            result["ftyp_offset"] = offset
-            result["ftyp_size"] = total_size
-        elif box_type == b"moov":
-            result["moov_offset"] = offset
-            result["moov_size"] = total_size
-        elif box_type == b"mdat":
-            result["mdat_offset"] = offset
-            result["mdat_size"] = total_size
+        key = _TOP_LEVEL_KEYS.get(box_type)
+        if key is not None:
+            result[key + "_offset"] = offset
+            result[key + "_size"] = total_size
         elif box_type in _KNOWN_PASSTHROUGH:
             result["other_atoms"].append((offset, total_size, box_type))
         offset += total_size
@@ -176,6 +174,21 @@ _CONTAINER_BOXES = frozenset(
 )
 
 
+def _rewrite_box(data, box_type, body_start, body_end, delta):
+    """Rewrite a single box by type. Returns True on success/no-op.
+
+    stco/co64 boxes have their chunk offsets adjusted; container boxes
+    are recursed into. All other box types are a no-op success.
+    """
+    if box_type == b"stco":
+        return _rewrite_stco(data, body_start, body_end, delta)
+    if box_type == b"co64":
+        return _rewrite_co64(data, body_start, body_end, delta)
+    if box_type in _CONTAINER_BOXES:
+        return _rewrite_offsets_recursive(data, delta, body_start, body_end)
+    return True
+
+
 def _rewrite_offsets_recursive(data, delta, start=0, end=None):
     """Walk MP4 box tree, rewriting stco/co64 chunk offsets by delta.
 
@@ -208,16 +221,8 @@ def _rewrite_offsets_recursive(data, delta, start=0, end=None):
 
         body_start = offset + header_size
         body_end = offset + total_size
-
-        if box_type == b"stco":
-            if not _rewrite_stco(data, body_start, body_end, delta):
-                return False
-        elif box_type == b"co64":
-            if not _rewrite_co64(data, body_start, body_end, delta):
-                return False
-        elif box_type in _CONTAINER_BOXES:
-            if not _rewrite_offsets_recursive(data, delta, body_start, body_end):
-                return False
+        if not _rewrite_box(data, box_type, body_start, body_end, delta):
+            return False
 
         offset += total_size
 
@@ -252,6 +257,29 @@ _TAIL_PROBE_MAX = 8 * 1048576  # 8 MB — max tail probe before giving up
 _MAX_MOOV_SIZE = 50 * 1048576  # 50 MB — safety cap for moov fetch
 
 
+def _resp_status(resp):
+    """Resolve an HTTP response status code, defaulting to 206."""
+    status = getattr(resp, "status", None)
+    if isinstance(status, int):
+        return status
+    getcode = getattr(resp, "getcode", None)
+    return getcode() if callable(getcode) else 206
+
+
+def _check_content_range(resp, start, end):
+    """Raise ValueError if the response Content-Range contradicts the request."""
+    content_range = getattr(resp, "headers", {}).get("Content-Range")
+    if not content_range:
+        return
+    expected = "bytes {}-{}/".format(start, end)
+    if not str(content_range).strip().startswith(expected):
+        raise ValueError(
+            "Content-Range {!r} does not match bytes {}-{}".format(
+                content_range, start, end
+            )
+        )
+
+
 def _http_range(url, start, end, auth_header=None):
     """Fetch a byte range from a URL. Returns bytes."""
     if start < 0 or end < start:
@@ -266,21 +294,10 @@ def _http_range(url, start, end, auth_header=None):
     with urlopen(  # nosec B310 — URL from user-configured WebDAV
         req, timeout=30
     ) as resp:
-        status = getattr(resp, "status", None)
-        if not isinstance(status, int):
-            getcode = getattr(resp, "getcode", None)
-            status = getcode() if callable(getcode) else 206
+        status = _resp_status(resp)
         if status != 206:
             raise ValueError("range request returned status {}".format(status))
-        content_range = getattr(resp, "headers", {}).get("Content-Range")
-        if content_range:
-            expected = "bytes {}-{}/".format(start, end)
-            if not str(content_range).strip().startswith(expected):
-                raise ValueError(
-                    "Content-Range {!r} does not match bytes {}-{}".format(
-                        content_range, start, end
-                    )
-                )
+        _check_content_range(resp, start, end)
         data = resp.read(expected_len + 1)
         if len(data) != expected_len:
             raise ValueError(
@@ -368,6 +385,89 @@ def _find_moov_by_tail_probe(url, file_size, auth_header):
     return None
 
 
+def _extract_ftyp(head_data, head_layout):
+    """Extract (ftyp_data, ftyp_end) from a scanned head buffer."""
+    if head_layout["ftyp_offset"] < 0:
+        return b"", 0
+    ftyp_end = head_layout["ftyp_offset"] + head_layout["ftyp_size"]
+    if ftyp_end > len(head_data):
+        return b"", ftyp_end
+    return head_data[head_layout["ftyp_offset"] : ftyp_end], ftyp_end
+
+
+def _layout_for_front_moov(url, head_data, head_layout, ftyp_data, ftyp_end, auth):
+    """Build a faststart layout when moov is already at the front, else None."""
+    moov_offset = head_layout["moov_offset"]
+    moov_size = head_layout["moov_size"]
+    # The already-faststart shortcut serves moov verbatim (no stco/co64
+    # rewrite) and emits only ftyp+moov as the header. That is only correct
+    # when moov sits immediately after ftyp. For [ftyp][free|wide|uuid][moov]
+    # the gap atoms would be dropped while chunk offsets stay unrewritten,
+    # addressing mdat too early. Fall through (return None -> proxy fails safe
+    # to no-faststart) instead of corrupting playback.
+    if moov_offset != ftyp_end:
+        return None
+    if moov_offset + moov_size <= len(head_data):
+        moov_data = head_data[moov_offset : moov_offset + moov_size]
+    else:
+        moov_data = _fetch_and_validate_moov(url, moov_offset, moov_size, auth)
+        if moov_data is None:
+            return None
+    return _make_layout(
+        ftyp_data,
+        ftyp_end,
+        moov_data,
+        head_layout["mdat_offset"],
+        moov_offset,
+        True,
+    )
+
+
+def _moov_overlaps_mdat(mdat_offset, mdat_size, moov_offset, moov_size):
+    """True if the moov range overlaps the mdat range (forged-header guard)."""
+    if mdat_offset < 0 or mdat_size <= 0:
+        return False
+    mdat_end = mdat_offset + mdat_size
+    moov_end = moov_offset + moov_size
+    return moov_offset < mdat_end and mdat_offset < moov_end
+
+
+def _layout_for_trailing_moov(url, file_size, head_layout, ftyp_data, ftyp_end, auth):
+    """Locate a moov that follows mdat and build its layout, else None.
+
+    Tries the computed post-mdat position first, then a progressive tail
+    probe. Rejects a moov range that overlaps mdat (forged-header guard).
+    """
+    mdat_offset = head_layout["mdat_offset"]
+    result = _find_moov_after_mdat(
+        url, file_size, mdat_offset, head_layout["mdat_size"], auth
+    )
+    if result is None:
+        result = _find_moov_by_tail_probe(url, file_size, auth)
+    if result is None:
+        return None
+
+    moov_abs_offset, moov_size = result
+    # ``_find_moov_after_mdat`` places moov at ``mdat_offset + mdat_size`` so
+    # it's safe by construction, but the tail-probe fallback could discover a
+    # forged ``moov`` header inside mdat content. Faststart layout would then
+    # serve mdat bytes as if they were moov. Closes TODO.md §H.2-H3e.
+    if _moov_overlaps_mdat(
+        mdat_offset, head_layout["mdat_size"], moov_abs_offset, moov_size
+    ):
+        return None
+
+    moov_data = _fetch_and_validate_moov(url, moov_abs_offset, moov_size, auth)
+    if moov_data is None:
+        return None
+
+    if mdat_offset < 0:
+        mdat_offset = ftyp_end
+    return _make_layout(
+        ftyp_data, ftyp_end, moov_data, mdat_offset, moov_abs_offset, False
+    )
+
+
 def fetch_remote_mp4_layout(url, file_size, auth_header=None):
     """Fetch MP4 layout info from a remote file using HTTP range requests.
 
@@ -395,73 +495,34 @@ def fetch_remote_mp4_layout(url, file_size, auth_header=None):
         return None
     head_layout = scan_top_level_boxes(head_data)
 
-    ftyp_data = b""
-    ftyp_end = 0
-    if head_layout["ftyp_offset"] >= 0:
-        ftyp_end = head_layout["ftyp_offset"] + head_layout["ftyp_size"]
-        if ftyp_end <= len(head_data):
-            ftyp_data = head_data[head_layout["ftyp_offset"] : ftyp_end]
+    ftyp_data, ftyp_end = _extract_ftyp(head_data, head_layout)
 
     # Check if moov is already at the front (faststart)
     if head_layout["moov_offset"] >= 0 and head_layout["moov_before_mdat"]:
-        moov_offset = head_layout["moov_offset"]
-        moov_size = head_layout["moov_size"]
-        if moov_offset + moov_size <= len(head_data):
-            moov_data = head_data[moov_offset : moov_offset + moov_size]
-        else:
-            moov_data = _fetch_and_validate_moov(
-                url, moov_offset, moov_size, auth_header
-            )
-            if moov_data is None:
-                return None
-        return _make_layout(
-            ftyp_data,
-            ftyp_end,
-            moov_data,
-            head_layout["mdat_offset"],
-            moov_offset,
-            True,
+        return _layout_for_front_moov(
+            url, head_data, head_layout, ftyp_data, ftyp_end, auth_header
         )
 
     # 2. Moov not in head — try computed location, then tail probe
-    mdat_offset = head_layout["mdat_offset"]
-    result = _find_moov_after_mdat(
-        url, file_size, mdat_offset, head_layout["mdat_size"], auth_header
+    return _layout_for_trailing_moov(
+        url, file_size, head_layout, ftyp_data, ftyp_end, auth_header
     )
-    if result is None:
-        result = _find_moov_by_tail_probe(url, file_size, auth_header)
-    if result is None:
-        return None
 
-    moov_abs_offset, moov_size = result
 
-    # Validate moov range doesn't overlap mdat. ``_find_moov_after_mdat``
-    # places moov at ``mdat_offset + mdat_size`` so it's safe by
-    # construction, but the tail-probe fallback could discover a forged
-    # ``moov`` header inside mdat content. Faststart layout would then
-    # serve mdat bytes as if they were moov, with corrupt offsets.
-    # Closes TODO.md §H.2-H3e.
-    if mdat_offset >= 0 and head_layout["mdat_size"] > 0:
-        mdat_end = mdat_offset + head_layout["mdat_size"]
-        moov_end = moov_abs_offset + moov_size
-        if moov_abs_offset < mdat_end and mdat_offset < moov_end:
-            return None
-
-    moov_data = _fetch_and_validate_moov(url, moov_abs_offset, moov_size, auth_header)
-    if moov_data is None:
-        return None
-
-    if mdat_offset < 0:
-        mdat_offset = ftyp_end
-
-    return _make_layout(
-        ftyp_data,
-        ftyp_end,
-        moov_data,
-        mdat_offset,
-        moov_abs_offset,
-        False,
-    )
+def _already_faststart_layout(ftyp_data, moov_data, original_moov_offset):
+    """Layout dict for a file whose moov is already at the front."""
+    # moov is right after ftyp, so payload starts after moov.
+    moov_end = original_moov_offset + len(moov_data)
+    # payload_remote_end is unknown without file_size; use moov_end + 1 as a
+    # sentinel so callers can detect "extends to EOF" and substitute file_size.
+    return {
+        "header_data": ftyp_data + moov_data,
+        "virtual_size": -1,  # caller must use file_size for this case
+        "payload_remote_start": moov_end,
+        "payload_remote_end": moov_end + 1,  # sentinel for EOF
+        "payload_size": -1,
+        "already_faststart": True,
+    }
 
 
 def build_faststart_layout(layout_info):
@@ -475,17 +536,14 @@ def build_faststart_layout(layout_info):
 
     Virtual layout:
         [ftyp][rewritten moov][original bytes from ftyp_end to moov_start]
-
-    Range mapping for payload region:
+    Payload range mapping:
         remote_offset = payload_remote_start + (virtual_offset - header_len)
 
-    Returns dict with:
-        header_data: bytes (ftyp + rewritten moov) to serve first
-        virtual_size: total virtual file size
-        payload_remote_start: first byte in original file for payload region
-        payload_remote_end: last byte + 1 in original file for payload region
-        payload_size: payload_remote_end - payload_remote_start
-    Or None if offset rewriting fails (stco overflow).
+    Returns dict with: header_data (ftyp + rewritten moov, served first),
+    virtual_size (total virtual file size), payload_remote_start (first byte
+    in original file for the payload region), payload_remote_end (last byte +
+    1), payload_size (end - start). Or None if offset rewriting fails (stco
+    overflow).
     """
     ftyp_data = layout_info["ftyp_data"]
     moov_data = layout_info["moov_data"]
@@ -494,37 +552,20 @@ def build_faststart_layout(layout_info):
 
     if layout_info["moov_before_mdat"]:
         # Already faststart — serve ftyp + moov as header, rest as payload.
-        # moov is right after ftyp, so payload starts after moov.
-        moov_end = original_moov_offset + len(moov_data)
-        header_data = ftyp_data + moov_data
-        # payload_remote_start = moov_end (first byte after moov in original)
-        # payload_remote_end is unknown without file_size; use moov_end + 1 as
-        # a sentinel so callers can detect "extends to EOF" and substitute file_size.
-        return {
-            "header_data": header_data,
-            "virtual_size": -1,  # caller must use file_size for this case
-            "payload_remote_start": moov_end,
-            "payload_remote_end": moov_end + 1,  # sentinel for EOF
-            "payload_size": -1,
-            "already_faststart": True,
-        }
+        return _already_faststart_layout(ftyp_data, moov_data, original_moov_offset)
 
-    # Moov is after mdat — need to rewrite offsets.
-    # Files >4GB typically use co64 (64-bit chunk offsets) which can handle
-    # any size. The stco overflow check is in rewrite_moov_offsets() and only
-    # triggers for files that actually use 32-bit stco with values near 2^32.
-
-    # Virtual layout: ftyp + moov + original[ftyp_end:moov_start]
-    moov_size = len(moov_data)
-    delta = moov_size  # everything from ftyp_end shifts right by moov_size
-
+    # Moov is after mdat — need to rewrite offsets. Files >4GB typically use
+    # co64 (64-bit chunk offsets); the stco overflow check in
+    # rewrite_moov_offsets() only triggers for 32-bit stco values near 2^32.
+    # Virtual layout: ftyp + moov + original[ftyp_end:moov_start]; everything
+    # from ftyp_end shifts right by moov_size.
+    delta = len(moov_data)
     rewritten_moov = rewrite_moov_offsets(moov_data, delta)
     if rewritten_moov is None:
         return None  # stco overflow — caller uses fallback
 
     header_data = ftyp_data + rewritten_moov
     payload_size = original_moov_offset - ftyp_end
-
     return {
         "header_data": header_data,
         "virtual_size": len(header_data) + payload_size,

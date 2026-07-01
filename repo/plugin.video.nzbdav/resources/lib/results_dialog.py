@@ -60,6 +60,52 @@ def _available_text():
     return _c(_AVAILABLE_LABEL, "FF22C55E")
 
 
+def _build_result_item(result, row_index):
+    """Build a styled ListItem for a single search result row."""
+    meta = result.get("_meta", {})
+    li = xbmcgui.ListItem(label=result.get("title", ""))
+
+    res = meta.get("resolution", "")
+    li.setProperty("resolution", _c(res, _RES_COLORS.get(res, "FFEEEEEE")))
+
+    hdr_list = meta.get("hdr", [])
+    if hdr_list:
+        li.setProperty("hdr", _c(" ".join(hdr_list), "FFFBBF24"))
+    else:
+        li.setProperty("hdr", _c("SDR", "FF6B7280"))
+
+    li.setProperty("codec", _c(meta.get("codec", ""), "FF94A3B8"))
+
+    audio_list = meta.get("audio", [])
+    audio_str = " ".join(audio_list) if audio_list else ""
+    li.setProperty("audio", _c(audio_str, "FFE879A8"))
+
+    quality = meta.get("quality", "")
+    src_display = _SRC_SHORT.get(quality, quality)
+    li.setProperty("quality", _c(src_display, _SRC_COLORS.get(quality, "FFAAAAAA")))
+
+    # Container (MKV, MP4, etc.) — default to MKV since most scene releases
+    # are MKV and only MP4 releases tag the title.
+    container = (meta.get("container", "") or "MKV").upper()
+    # MKV green; everything else (incl. MP4, which is fully supported via the
+    # stream proxy) gets neutral grey rather than error-red, so a supported
+    # container is not flagged as a false negative.
+    container_color = "FF34D399" if container == "MKV" else "FFA1A1AA"
+    li.setProperty("container", _c(container, container_color))
+
+    li.setProperty("size", _c(_format_size(result.get("size")), "FFA1A1AA"))
+    li.setProperty("age", _c(result.get("age", ""), "FF6B7280"))
+    li.setProperty("indexer", _c(result.get("indexer", ""), "FF4A9EFF"))
+    li.setProperty("group", _c(meta.get("group", ""), "FF34D399"))
+
+    if result.get("_available"):
+        li.setProperty("available", _available_text())
+
+    # Alternating row background
+    li.setProperty("row_bg", _BG_A if row_index % 2 == 0 else _BG_B)
+    return li
+
+
 class ResultsDialog(xbmcgui.WindowXMLDialog):
     """Full-screen NZB results selection dialog."""
 
@@ -89,66 +135,7 @@ class ResultsDialog(xbmcgui.WindowXMLDialog):
         list_control = self.getControl(LIST_ID)
         list_control.reset()
 
-        items = []
-        for i, result in enumerate(self.results):
-            meta = result.get("_meta", {})
-            filename = result.get("title", "")
-
-            li = xbmcgui.ListItem(label=filename)
-
-            # Resolution — colored inline
-            res = meta.get("resolution", "")
-            res_color = _RES_COLORS.get(res, "FFEEEEEE")
-            li.setProperty("resolution", _c(res, res_color))
-
-            # HDR — colored inline
-            hdr_list = meta.get("hdr", [])
-            if hdr_list:
-                li.setProperty("hdr", _c(" ".join(hdr_list), "FFFBBF24"))
-            else:
-                li.setProperty("hdr", _c("SDR", "FF6B7280"))
-
-            # Codec
-            codec = meta.get("codec", "")
-            li.setProperty("codec", _c(codec, "FF94A3B8"))
-
-            # Audio
-            audio_list = meta.get("audio", [])
-            audio_str = " ".join(audio_list) if audio_list else ""
-            li.setProperty("audio", _c(audio_str, "FFE879A8"))
-
-            # Source / Quality — colored inline
-            quality = meta.get("quality", "")
-            src_display = _SRC_SHORT.get(quality, quality)
-            src_color = _SRC_COLORS.get(quality, "FFAAAAAA")
-            li.setProperty("quality", _c(src_display, src_color))
-
-            # Container (MKV, MP4, etc.) — default to MKV since most
-            # scene releases are MKV and only MP4 releases tag the title.
-            container = (meta.get("container", "") or "MKV").upper()
-            container_color = "FF34D399" if container == "MKV" else "FFEF4444"
-            li.setProperty("container", _c(container, container_color))
-
-            # Size
-            li.setProperty("size", _c(_format_size(result.get("size")), "FFA1A1AA"))
-
-            # Age
-            li.setProperty("age", _c(result.get("age", ""), "FF6B7280"))
-
-            # Indexer
-            li.setProperty("indexer", _c(result.get("indexer", ""), "FF4A9EFF"))
-
-            # Group
-            li.setProperty("group", _c(meta.get("group", ""), "FF34D399"))
-
-            # Already downloaded indicator
-            if result.get("_available"):
-                li.setProperty("available", _available_text())
-
-            # Alternating row background
-            li.setProperty("row_bg", _BG_A if i % 2 == 0 else _BG_B)
-
-            items.append(li)
+        items = [_build_result_item(result, i) for i, result in enumerate(self.results)]
 
         list_control.addItems(items)
         self.setFocusId(LIST_ID)

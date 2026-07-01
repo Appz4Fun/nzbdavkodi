@@ -55,6 +55,55 @@ def should_show_cache_prompt(
     return True
 
 
+def _log_warning(text):
+    """Best-effort warning log; never let logging break playback resolve."""
+    try:
+        import xbmc
+
+        xbmc.log(text, xbmc.LOGWARNING)
+    except Exception:  # pylint: disable=broad-except
+        pass
+
+
+def _prop_is_true(value):
+    """True iff a Kodi property/setting value is explicitly "true".
+
+    Kodi can return None from getProperty / getSetting after addon
+    reload races (especially during shutdown). Coerce to "" so the
+    comparison stays boolean-clean.
+    """
+    return (value or "").strip().lower() == "true"
+
+
+def _dialog_message(stream_info):
+    """Build the user-facing dialog message from the stream size."""
+    # Clamp negatives to 0: buggy upstream sizers (e.g. Newznab providers
+    # returning -1 for "unknown") would otherwise format as "-2.3 GB" in
+    # the user-facing dialog. 0 falls through to the size-less message.
+    total_bytes = max(0, int(stream_info.get("total_bytes") or 0))
+    size_gb = total_bytes / (1024.0**3) if total_bytes else 0.0
+    return _f(30153, size_gb) if size_gb else _s(30154)
+
+
+def _handle_prompt_result(result, addon):
+    """Act on the yesnocustom button result."""
+    if result == _DLG_SHOW_INSTRUCTIONS:
+        _show_instructions_dialog()
+        return
+    if result == _DLG_NEVER_ASK:
+        try:
+            addon.setSetting("cache_dialog_dismissed", "true")
+        except _SUPPRESSED_EXCEPTIONS as exc:
+            # Failed to persist "Never ask" — the dialog will return next
+            # session. Surface that to the log so the user has a clue why
+            # they're seeing it again, without crashing the resolve flow.
+            _log_warning(
+                "NZB-DAV: cache_prompt failed to persist 'Never ask' "
+                "(setting=cache_dialog_dismissed): {!r}".format(exc)
+            )
+    # _DLG_NOT_NOW (0) or cancelled (-1): session flag already set
+
+
 def maybe_show_cache_prompt(stream_info):
     """Evaluate show/suppress conditions and surface the dialog if
     appropriate. Handles the button result (Show instructions / Not
@@ -68,17 +117,8 @@ def maybe_show_cache_prompt(stream_info):
     addon = xbmcaddon.Addon("plugin.video.nzbdav")
 
     cache_is_set = has_cache_memorysize_zero()
-    # Kodi can return None from getProperty / getSetting after addon
-    # reload races (especially during shutdown). The bare ``.lower()``
-    # call AttributeErrors out, isn't in _SUPPRESSED_EXCEPTIONS, and
-    # would break playback resolution. Coerce to "" so the comparison
-    # stays boolean-clean and only matches when explicitly set to "true".
-    session_shown = (
-        window.getProperty(_PROP_SHOWN_THIS_SESSION) or ""
-    ).strip().lower() == "true"
-    persistent_dismissed = (
-        addon.getSetting("cache_dialog_dismissed") or ""
-    ).strip().lower() == "true"
+    session_shown = _prop_is_true(window.getProperty(_PROP_SHOWN_THIS_SESSION))
+    persistent_dismissed = _prop_is_true(addon.getSetting("cache_dialog_dismissed"))
 
     if not should_show_cache_prompt(
         stream_remux, cache_is_set, session_shown, persistent_dismissed
@@ -93,12 +133,7 @@ def maybe_show_cache_prompt(stream_info):
     except _SUPPRESSED_EXCEPTIONS:
         pass
 
-    # Clamp negatives to 0: buggy upstream sizers (e.g. Newznab providers
-    # returning -1 for "unknown") would otherwise format as "-2.3 GB" in
-    # the user-facing dialog. 0 falls through to the size-less message.
-    total_bytes = max(0, int(stream_info.get("total_bytes") or 0))
-    size_gb = total_bytes / (1024.0**3) if total_bytes else 0.0
-    message = _f(30153, size_gb) if size_gb else _s(30154)
+    message = _dialog_message(stream_info)
 
     # Dialog().yesnocustom can raise RuntimeError on Kodi lifecycle issues
     # (e.g. shutdown, no display). The session-shown flag was already set
@@ -114,37 +149,10 @@ def maybe_show_cache_prompt(stream_info):
             _s(30157),  # yes label: Show instructions
         )
     except RuntimeError as exc:
-        try:
-            import xbmc
-
-            xbmc.log(
-                "NZB-DAV: cache_prompt dialog suppressed: {!r}".format(exc),
-                xbmc.LOGWARNING,
-            )
-        except Exception:  # pylint: disable=broad-except
-            pass
+        _log_warning("NZB-DAV: cache_prompt dialog suppressed: {!r}".format(exc))
         return
 
-    if result == _DLG_SHOW_INSTRUCTIONS:
-        _show_instructions_dialog()
-    elif result == _DLG_NEVER_ASK:
-        try:
-            addon.setSetting("cache_dialog_dismissed", "true")
-        except _SUPPRESSED_EXCEPTIONS as exc:
-            # Failed to persist "Never ask" — the dialog will return next
-            # session. Surface that to the log so the user has a clue why
-            # they're seeing it again, without crashing the resolve flow.
-            try:
-                import xbmc
-
-                xbmc.log(
-                    "NZB-DAV: cache_prompt failed to persist 'Never ask' "
-                    "(setting=cache_dialog_dismissed): {!r}".format(exc),
-                    xbmc.LOGWARNING,
-                )
-            except Exception:  # pylint: disable=broad-except
-                pass
-    # _DLG_NOT_NOW (0) or cancelled (-1): session flag already set
+    _handle_prompt_result(result, addon)
 
 
 def _show_instructions_dialog():

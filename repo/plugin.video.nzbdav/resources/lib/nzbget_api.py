@@ -94,6 +94,26 @@ def _fetch_nzb_bytes(nzb_url):
     return body
 
 
+def _append_params(nzb_name, nzb_bytes, category):
+    """Build NZBGet's modern 11-arg ``append`` params list.
+
+    append(NZBFilename, Content, Category, Priority, AddToTop, AddPaused,
+           DupeKey, DupeScore, DupeMode, AutoCategory, PPParameters)
+
+    The trailing AutoCategory + PPParameters args are required by NZBGet's
+    modern append signature (nzbget.com v16+, verified against a live 26.1
+    box): dropping them makes NZBGet reject the whole call with
+    ``Invalid parameter (Parameters)`` (JSON-RPC code 2) and the NZB never
+    enters the queue. AutoCategory=False keeps the explicit category we pass
+    (the SMB completed-path mapping in nzbget_resolver depends on it rather
+    than NZBGet auto-reassigning one); PPParameters=[] = no extra
+    post-processing parameters.
+    """
+    content_b64 = base64.b64encode(nzb_bytes).decode("ascii")
+    filename = "{}.nzb".format(nzb_name or "submission")
+    return [filename, content_b64, category, 0, False, False, "", 0, "SCORE", False, []]
+
+
 def append_nzb(nzb_url, nzb_name, settings_getter=None):
     """Fetch the NZB and submit it to NZBGet via append.
 
@@ -109,32 +129,7 @@ def append_nzb(nzb_url, nzb_name, settings_getter=None):
             xbmc.LOGERROR,
         )
         return None, _redact_text(str(exc))
-    content_b64 = base64.b64encode(nzb_bytes).decode("ascii")
-    filename = "{}.nzb".format(nzb_name or "submission")
-    # append(NZBFilename, Content, Category, Priority, AddToTop, AddPaused,
-    #        DupeKey, DupeScore, DupeMode, AutoCategory, PPParameters)
-    #
-    # The trailing AutoCategory + PPParameters args are required by NZBGet's
-    # modern append signature (nzbget.com v16+, verified against a live 26.1
-    # box): dropping them makes NZBGet reject the whole call with
-    # ``Invalid parameter (Parameters)`` (JSON-RPC code 2) and the NZB never
-    # enters the queue. AutoCategory=False keeps the explicit category we pass
-    # (the SMB completed-path mapping in nzbget_resolver depends on it rather
-    # than NZBGet auto-reassigning one); PPParameters=[] = no extra
-    # post-processing parameters.
-    params = [
-        filename,
-        content_b64,
-        category,
-        0,
-        False,
-        False,
-        "",
-        0,
-        "SCORE",
-        False,
-        [],
-    ]
+    params = _append_params(nzb_name, nzb_bytes, category)
     result, error = _rpc_call("append", params, settings_getter=settings_getter)
     if error is not None:
         return None, error
@@ -222,11 +217,7 @@ def history_status(nzbid, settings_getter=None):
                 "present": True,
                 "success": status.startswith("SUCCESS"),
                 "status": status,
-                # A post-processing script that moves the output sets FinalDir
-                # to the final location while DestDir stays the original
-                # download dir; prefer FinalDir when present so the SMB target
-                # maps to where the playable file actually landed.
-                "dest_dir": (item.get("FinalDir") or item.get("DestDir") or ""),
+                "dest_dir": _dest_dir(item),
             }
     return {"present": False, "success": False, "status": "", "dest_dir": ""}
 
@@ -243,6 +234,16 @@ class _CompletedHistory(dict):
         lookup_done = kwargs.pop("lookup_done", False)
         super().__init__(*args, **kwargs)
         self._lookup_done = bool(lookup_done)
+
+
+def _dest_dir(item):
+    """Return a history item's destination dir, preferring FinalDir.
+
+    A post-processing script that moves the output sets FinalDir to the final
+    location while DestDir stays the original download dir; prefer FinalDir
+    when present so the SMB target maps to where the playable file landed.
+    """
+    return item.get("FinalDir") or item.get("DestDir") or ""
 
 
 def _history_item_bytes(item):
@@ -309,29 +310,38 @@ def completed_history(settings_getter=None):
         return {}
     jobs = _CompletedHistory(lookup_done=True)
     for item in hist:
-        if not isinstance(item, dict):
-            continue
-        status = str(item.get("Status") or "")
-        if not status.startswith("SUCCESS"):
-            continue
-        name = item.get("Name")
-        if not name:
+        entry = _completed_job_entry(item)
+        if entry is None:
             continue
         # History is newest-first; for same-name SUCCESS rows keep the newest
         # one — that's the row a replay's dupe handling would land on.
-        if name in jobs:
-            continue
-        jobs[name] = {
-            "name": name,
-            "status": status,
-            "bytes": _history_item_bytes(item),
-            "nzbid": item.get("NZBID"),
-            # Where the finished files live. FinalDir preferred over DestDir
-            # like history_status, so a post-processing-script move is
-            # followed to the file's final location.
-            "dest_dir": (item.get("FinalDir") or item.get("DestDir") or ""),
-        }
+        if entry["name"] not in jobs:
+            jobs[entry["name"]] = entry
     return jobs
+
+
+def _completed_job_entry(item):
+    """Build a SUCCESS completed-job entry from a history item, or None.
+
+    Returns ``None`` for non-dict rows, non-SUCCESS statuses, or unnamed jobs.
+    ``dest_dir`` prefers FinalDir like ``history_status`` so a
+    post-processing-script move is followed to the file's final location.
+    """
+    if not isinstance(item, dict):
+        return None
+    status = str(item.get("Status") or "")
+    if not status.startswith("SUCCESS"):
+        return None
+    name = item.get("Name")
+    if not name:
+        return None
+    return {
+        "name": name,
+        "status": status,
+        "bytes": _history_item_bytes(item),
+        "nzbid": item.get("NZBID"),
+        "dest_dir": _dest_dir(item),
+    }
 
 
 def completed_base_dir(settings_getter=None):
@@ -351,12 +361,17 @@ def completed_base_dir(settings_getter=None):
             continue
         if str(item.get("Name", "")).strip().lower() == "destdir":
             value = str(item.get("Value") or "").strip()
-            # Only trust an absolute path; an unexpanded template wouldn't be a
-            # reliable prefix of the reported history DestDir.
-            if value.startswith("/") or ":\\" in value or value.startswith("\\\\"):
-                return value
-            return None
+            return value if _is_absolute_path(value) else None
     return None
+
+
+def _is_absolute_path(value):
+    """Return whether ``value`` is an absolute POSIX or Windows path.
+
+    Only an absolute path is trusted; an unexpanded ``${MainDir}`` template
+    wouldn't be a reliable prefix of the reported history DestDir.
+    """
+    return value.startswith("/") or ":\\" in value or value.startswith("\\\\")
 
 
 def test_connection(settings_getter=None):

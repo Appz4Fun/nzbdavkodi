@@ -718,3 +718,34 @@ def test_range_cache_churn_keeps_recently_touched_entry_hot():
     assert cache.get(32, 64) is None
     assert cache.get(64, 96) == b"c" * 32
     assert cache.get(96, 128) == b"d" * 32
+
+
+def test_fetch_front_moov_with_gap_atom_skips_faststart():
+    """[ftyp][free][moov][mdat]: moov is before mdat but NOT adjacent to ftyp.
+    The verbatim already-faststart path serves moov without rewriting stco/co64
+    chunk offsets, so dropping the gap atom would address mdat too early. Bail
+    out (return None) so the proxy fails safe to no-faststart."""
+    from resources.lib.mp4_parser import fetch_remote_mp4_layout
+
+    ftyp = struct.pack(">I", 16) + b"ftyp" + b"\x00" * 8
+    free = struct.pack(">I", 24) + b"free" + b"\x00" * 16
+    moov = struct.pack(">I", 100) + b"moov" + b"\x00" * 92
+    mdat = struct.pack(">I", 500) + b"mdat" + b"\x00" * 492
+    full_file = ftyp + free + moov + mdat
+    file_size = len(full_file)
+
+    def mock_urlopen(req, timeout=None):
+        range_header = req.get_header("Range") or ""
+        if range_header.startswith("bytes="):
+            parts = range_header.replace("bytes=", "").split("-")
+            start = int(parts[0])
+            end = int(parts[1]) if parts[1] else file_size - 1
+            return _make_mock_response(full_file[start : end + 1])
+        return _make_mock_response(full_file)
+
+    with patch("resources.lib.mp4_parser.urlopen", side_effect=mock_urlopen):
+        layout = fetch_remote_mp4_layout(
+            "http://host/file.mp4", file_size, auth_header=None
+        )
+
+    assert layout is None

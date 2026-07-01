@@ -180,6 +180,20 @@ def test_parse_results_non_rss_root_returns_empty():
     assert not results
 
 
+def test_parse_json_results_redacts_apikey_in_error_payload():
+    """A Prowlarr JSON error body can echo the indexer apikey; it must be
+    redacted before it lands in the returned error string (and the log).
+    """
+    from resources.lib.prowlarr import _parse_json_results
+
+    body = '{"error": "bad request to http://idx?apikey=SECRET123"}'
+    results, error = _parse_json_results(body)
+    assert isinstance(results, list)
+    assert not results
+    assert "SECRET123" not in error
+    assert "REDACTED" in error
+
+
 # --- search_prowlarr URL-building tests ---
 
 

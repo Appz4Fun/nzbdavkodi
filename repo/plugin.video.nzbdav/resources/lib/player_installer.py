@@ -102,6 +102,70 @@ def discover_other_player_targets():
     return targets
 
 
+def _player_path_inside_profile(real_path):
+    """Return True iff ``real_path`` resolves inside the addon_data profile.
+
+    Defensive check: if special:// resolution is ever hijacked (symlink,
+    environment override, Kodi mis-config) we'd otherwise happily write
+    nzbdav.json anywhere on disk.
+    """
+    profile_root = xbmcvfs.translatePath(ADDON_DATA_ROOT)
+    # Use os.path.commonpath so a sibling like `/.../addon_data_evil/...`
+    # doesn't pass the prefix check just because its name happens to start
+    # with `addon_data`. Closes TODO.md §H.3.
+    real_resolved = os.path.realpath(real_path)
+    profile_resolved = os.path.realpath(profile_root)
+    try:
+        common = os.path.commonpath([real_resolved, profile_resolved])
+    except ValueError:
+        # Different drive on Windows — definitely not inside profile_root.
+        common = ""
+    return common == profile_resolved
+
+
+def _existing_player_is_current(file_path, target_name):
+    """Return True iff an existing player file matches the current schema.
+
+    When the schema differs, back up the old file before the caller
+    overwrites. Unreadable/malformed files report False (overwrite).
+    """
+    try:
+        existing_f = xbmcvfs.File(file_path, "r")
+        try:
+            existing_text = existing_f.read()
+        finally:
+            existing_f.close()
+        existing = json.loads(existing_text)
+    except (OSError, ValueError, TypeError):
+        # Unreadable or malformed existing file (including the
+        # MagicMock-returns-MagicMock case in tests) — just overwrite.
+        return False
+
+    if existing.get("schema_version") == _PLAYER_SCHEMA_VERSION:
+        xbmc.log(
+            "NZB-DAV: Player already installed at schema v{}; "
+            "preserving existing file".format(_PLAYER_SCHEMA_VERSION),
+            xbmc.LOGINFO,
+        )
+        _notify(_addon_name(), _fmt(30094, target_name))
+        return True
+
+    # Schema change — back up the old file before overwriting. If the backup
+    # cannot be written, re-raise so the caller's handler aborts the install
+    # (LOGERROR + "Failed" toast) and the user's existing file is preserved
+    # rather than silently overwritten without a backup.
+    backup_path = os.path.splitext(file_path)[0] + ".bak"
+    try:
+        xbmcvfs.copy(file_path, backup_path)
+    except Exception as e:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: Could not back up {} to {}: {}".format(file_path, backup_path, e),
+            xbmc.LOGWARNING,
+        )
+        raise
+    return False
+
+
 def _install_player_to_path(target_name, target_path):
     """Install player JSON to the requested Kodi player directory."""
     player_content = json.dumps(PLAYER_JSON, indent=4)
@@ -113,23 +177,7 @@ def _install_player_to_path(target_name, target_path):
     try:
         real_path = xbmcvfs.translatePath(target_path)
 
-        # Defensive check: the resolved real_path must sit under the Kodi
-        # profile's addon_data directory. If special:// resolution is ever
-        # hijacked (symlink, environment override, Kodi mis-config) we'd
-        # otherwise happily write nzbdav.json anywhere on disk.
-        profile_root = xbmcvfs.translatePath(ADDON_DATA_ROOT)
-        # Use os.path.commonpath so a sibling like
-        # `/.../addon_data_evil/...` doesn't pass the prefix check just
-        # because its name happens to start with `addon_data`. Closes
-        # TODO.md §H.3.
-        real_resolved = os.path.realpath(real_path)
-        profile_resolved = os.path.realpath(profile_root)
-        try:
-            common = os.path.commonpath([real_resolved, profile_resolved])
-        except ValueError:
-            # Different drive on Windows — definitely not inside profile_root.
-            common = ""
-        if common != profile_resolved:
+        if not _player_path_inside_profile(real_path):
             xbmc.log(
                 "NZB-DAV: Refusing to install player outside addon_data "
                 "(resolved {} from {})".format(real_path, target_path),
@@ -153,58 +201,38 @@ def _install_player_to_path(target_name, target_path):
         # skip the overwrite so a user who edited the file (e.g. customized
         # priority, added extra fields) doesn't lose those edits on every
         # addon upgrade. Different schema_version → overwrite with a backup.
-        if xbmcvfs.exists(file_path):
-            try:
-                existing_f = xbmcvfs.File(file_path, "r")
-                try:
-                    existing_text = existing_f.read()
-                finally:
-                    existing_f.close()
-                existing = json.loads(existing_text)
-                if existing.get("schema_version") == _PLAYER_SCHEMA_VERSION:
-                    xbmc.log(
-                        "NZB-DAV: Player already installed at schema v{}; "
-                        "preserving existing file".format(_PLAYER_SCHEMA_VERSION),
-                        xbmc.LOGINFO,
-                    )
-                    _notify(_addon_name(), _fmt(30094, target_name))
-                    return
-                # Schema change — back up the old file before overwriting.
-                backup_path = os.path.splitext(file_path)[0] + ".bak"
-                try:
-                    xbmcvfs.copy(file_path, backup_path)
-                except Exception as e:  # pylint: disable=broad-except
-                    xbmc.log(
-                        "NZB-DAV: Could not back up {} to {}: {}".format(
-                            file_path, backup_path, e
-                        ),
-                        xbmc.LOGWARNING,
-                    )
-            except (OSError, ValueError, TypeError):
-                # Unreadable or malformed existing file (including the
-                # MagicMock-returns-MagicMock case in tests) — just
-                # overwrite.
-                pass
+        if xbmcvfs.exists(file_path) and _existing_player_is_current(
+            file_path, target_name
+        ):
+            return
 
-        f = xbmcvfs.File(file_path, "w")
-        try:
-            # xbmcvfs.File.write returns False on disk-full / permission
-            # failure rather than raising; without this check the install
-            # path used to log "successfully" and toast a success
-            # notification on a partial write. TODO.md §H.2-L23.
-            wrote = f.write(player_content)
-            if wrote is False:
-                raise OSError(
-                    "xbmcvfs.File.write returned False "
-                    "(disk-full or permission failure)"
-                )
-            xbmc.log("NZB-DAV: Player installed successfully", xbmc.LOGINFO)
-            _notify(_addon_name(), _fmt(30094, target_name))
-        finally:
-            f.close()
+        _write_player_file(file_path, player_content, target_name)
     except Exception as e:
         xbmc.log("NZB-DAV: Failed to install player: {}".format(e), xbmc.LOGERROR)
         _notify(_addon_name(), _fmt(30095, target_name))
+
+
+def _write_player_file(file_path, player_content, target_name):
+    """Write the player JSON and notify on success.
+
+    Raises ``OSError`` on a partial/failed write so the caller's handler
+    reports the failure instead of a false success.
+    """
+    f = xbmcvfs.File(file_path, "w")
+    try:
+        # xbmcvfs.File.write returns False on disk-full / permission
+        # failure rather than raising; without this check the install
+        # path used to log "successfully" and toast a success
+        # notification on a partial write. TODO.md §H.2-L23.
+        wrote = f.write(player_content)
+        if wrote is False:
+            raise OSError(
+                "xbmcvfs.File.write returned False (disk-full or permission failure)"
+            )
+        xbmc.log("NZB-DAV: Player installed successfully", xbmc.LOGINFO)
+        _notify(_addon_name(), _fmt(30094, target_name))
+    finally:
+        f.close()
 
 
 def _enable_tmdbhelper_action_player_mode():

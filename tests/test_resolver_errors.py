@@ -343,3 +343,44 @@ def test_playback_fallback_sources_excludes_dead_url():
     )
 
     assert [s["nzo_id"] for s in sources] == ["nzo_ok"]
+
+
+def _dialog_close_called_when_poll_raises(helper_name, callbacks):
+    """Shared body: a raise in the submit/poll helper must close the locally
+    created DialogProgress before propagating (no-hang invariant). The split
+    into _resolve_*_submit_and_poll returns the dialog to the caller, so a raise
+    before the return would otherwise leak the modal."""
+    import pytest
+    from resources.lib import resolver
+
+    dialog = MagicMock()
+    # Patch the exact seam both helpers call (resolver_flow._invoke_poll_until_ready)
+    # rather than the inner resolver._poll_until_ready it currently delegates to, so
+    # the exception path stays forced even if that delegation ever changes.
+    with patch("resources.lib.resolver.xbmcgui") as gui, patch(
+        "resources.lib.resolver._get_poll_settings", return_value=(1, 10)
+    ), patch("resources.lib.resolver._maybe_clear_queue_before_submit"), patch(
+        "resources.lib.resolver._addon_name", return_value="NZB-DAV"
+    ), patch(
+        "resources.lib.resolver._string", return_value="msg"
+    ), patch(
+        "resources.lib.resolver_flow._invoke_poll_until_ready",
+        side_effect=RuntimeError("boom"),
+    ):
+        gui.DialogProgress.return_value = dialog
+        helper = getattr(resolver, helper_name)
+        with pytest.raises(RuntimeError):
+            helper("http://nzb", "Title", {}, True, "", set(), None, callbacks)
+    dialog.close.assert_called_once()
+
+
+def test_resolve_submit_and_poll_closes_dialog_when_poll_raises():
+    _dialog_close_called_when_poll_raises(
+        "_resolve_submit_and_poll", (lambda nzo: None, lambda: None)
+    )
+
+
+def test_resolve_and_play_submit_and_poll_closes_dialog_when_poll_raises():
+    _dialog_close_called_when_poll_raises(
+        "_resolve_and_play_submit_and_poll", (lambda nzo: None, lambda: None, None)
+    )

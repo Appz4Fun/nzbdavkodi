@@ -53,21 +53,45 @@ def nzbget_smb_target(smb_root, dest_dir, category="", completed_base=""):
     normalized = dest_dir.replace("\\", "/").rstrip("/")
     base = smb_root.rstrip("/")
 
-    cb = (completed_base or "").replace("\\", "/").rstrip("/")
-    if cb and normalized.casefold() != cb.casefold():
-        if (normalized + "/").casefold().startswith(cb.casefold() + "/"):
-            rel = normalized[len(cb) :].strip("/")
-            # Guard against a doubled tail when smb_root was pointed at a
-            # subfolder of the completed base (e.g. root .../movies + rel
-            # movies/Release): drop rel's leading segment if base already ends
-            # with it.
-            rel_head = rel.split("/", 1)[0] if rel else ""
-            if rel_head and base.casefold().endswith("/" + rel_head.casefold()):
-                rel = rel[len(rel_head) :].strip("/")
-            if rel:
-                return "{}/{}".format(base, rel)
+    exact = _smb_exact_mapping(normalized, base, completed_base)
+    if exact is not None:
+        return exact
 
-    segments = [seg for seg in normalized.split("/") if seg]
+    return _smb_fallback_mapping(normalized, base, category)
+
+
+def _smb_exact_mapping(normalized, base, completed_base):
+    """Map ``dest_dir`` onto ``base`` via the configured completed base.
+
+    Returns the smb:// URL when ``completed_base`` is known and a strict
+    prefix of ``dest_dir``, else ``None`` so the caller falls back to the
+    heuristic.
+    """
+    cb = (completed_base or "").replace("\\", "/").rstrip("/")
+    if not cb or normalized.casefold() == cb.casefold():
+        return None
+    if not (normalized + "/").casefold().startswith(cb.casefold() + "/"):
+        return None
+    rel = normalized[len(cb) :].strip("/")
+    # Guard against a doubled tail when smb_root was pointed at a
+    # subfolder of the completed base (e.g. root .../movies + rel
+    # movies/Release): drop rel's leading segment if base already ends
+    # with it.
+    rel_head = rel.split("/", 1)[0]
+    if rel_head and base.casefold().endswith("/" + rel_head.casefold()):
+        rel = rel[len(rel_head) :].strip("/")
+    if rel:
+        return "{}/{}".format(base, rel)
+    return None
+
+
+def _smb_fallback_mapping(normalized, base, category):
+    """Derive the SMB target from ``dest_dir``'s own tail segments.
+
+    Used when the completed base is unknown / outside ``dest_dir``. Returns
+    the smb:// URL, or ``None`` when ``dest_dir`` has no usable segments.
+    """
+    segments = list(filter(None, normalized.split("/")))
     if not segments:
         return None
     release_folder = segments[-1]
@@ -130,6 +154,29 @@ def _smb_file_size(path):
         return 0
 
 
+def _is_video_name(name):
+    """True when ``name`` ends in one of the playable video extensions."""
+    lower = name.lower()
+    return any(lower.endswith(ext) for ext in VIDEO_EXTENSIONS)
+
+
+def _largest_video_in_dir(folder, files):
+    """Return ``(url, size)`` for the largest video file directly in ``folder``.
+
+    Considers only the given ``files`` (no descent). Returns ``(None, -1)``
+    when none are playable videos.
+    """
+    best, best_size = None, -1
+    for name in files:
+        if not _is_video_name(name):
+            continue
+        path = "{}/{}".format(folder, name)
+        size = _smb_file_size(path)
+        if size > best_size:
+            best, best_size = path, size
+    return best, best_size
+
+
 def _largest_video_in_tree(folder, depth=_SMB_MAX_DEPTH):
     """Return ``(url, size)`` for the largest video at or below ``folder``.
 
@@ -142,21 +189,31 @@ def _largest_video_in_tree(folder, depth=_SMB_MAX_DEPTH):
         dirs, files = xbmcvfs.listdir(folder)
     except Exception:  # pylint: disable=broad-except
         return None, -1
-    best, best_size = None, -1
-    for name in files:
-        lower = name.lower()
-        if not any(lower.endswith(ext) for ext in VIDEO_EXTENSIONS):
-            continue
-        path = "{}/{}".format(folder, name)
-        size = _smb_file_size(path)
-        if size > best_size:
-            best, best_size = path, size
+    best, best_size = _largest_video_in_dir(folder, files)
     if depth > 0:
         for sub in dirs:
             url, size = _largest_video_in_tree("{}/{}".format(folder, sub), depth - 1)
             if url is not None and size > best_size:
                 best, best_size = url, size
     return best, best_size
+
+
+def _drive_resolve_dialog(dialog, now, deadline, budget):
+    """Advance the resolve progress bar; return True if the user canceled.
+
+    No-op (returns False) when no ``dialog`` is supplied. Otherwise drives the
+    progress bar over the resolve window so the user sees a "finishing up"
+    indicator instead of being dropped back to the home screen while the file
+    settles onto the share.
+    """
+    if dialog is None:
+        return False
+    if dialog.iscanceled():
+        return True
+    elapsed = budget - max(0.0, deadline - now)
+    percent = int(min(100.0, elapsed * 100.0 / budget)) if budget else 100
+    dialog.update(percent, _string(30219))
+    return False
 
 
 def resolve_smb_video(
@@ -188,15 +245,8 @@ def resolve_smb_video(
         now = time.monotonic()
         if now >= deadline:
             return None
-        if dialog is not None:
-            if dialog.iscanceled():
-                return None
-            # Drive the progress bar over the resolve window so the user sees
-            # a "finishing up" indicator instead of being dropped back to the
-            # home screen while the file settles onto the share.
-            elapsed = budget - max(0.0, deadline - now)
-            percent = int(min(100.0, elapsed * 100.0 / budget)) if budget else 100
-            dialog.update(percent, _string(30219))
+        if _drive_resolve_dialog(dialog, now, deadline, budget):
+            return None
         if monitor.waitForAbort(interval):
             return None
 
@@ -231,27 +281,47 @@ def poll_nzbget_job(
             return {"outcome": "canceled"}
         group = nzbget_api.group_status(nzbid, settings_getter=settings_getter)
         if group["present"]:
-            status = (group["status"] or "").upper()
-            if status in _DOWNLOAD_STATUSES:
-                dialog.update(group["percent"], _fmt(30105, group["percent"]))
-            else:
-                # Every non-download in-queue stage (LOADING_PARS, REPAIRING,
-                # UNPACKING, MOVING, EXECUTING_SCRIPT, QUEUED/PAUSED, ...) is
-                # past the download, so show "Post-processing..." instead of a
-                # frozen "Downloading... 100%".
-                dialog.update(group["percent"], _string(30219))
+            _update_active_dialog(dialog, group)
         else:
-            hist = nzbget_api.history_status(nzbid, settings_getter=settings_getter)
-            if hist["present"]:
-                if hist["success"]:
-                    return {"outcome": "success", "dest_dir": hist["dest_dir"]}
-                return {"outcome": "failed", "status": hist["status"]}
-            # Not in queue, not yet in history — brief gap during the
-            # hand-off; show post-processing and keep waiting.
-            dialog.update(100, _string(30219))
+            terminal = _poll_history_outcome(nzbid, dialog, settings_getter)
+            if terminal is not None:
+                return terminal
         if monitor.waitForAbort(interval):
             return {"outcome": "aborted"}
     return {"outcome": "timeout"}
+
+
+def _update_active_dialog(dialog, group):
+    """Update the progress dialog for an in-queue (still-present) job.
+
+    Shows the download percent while actively downloading, else a
+    "Post-processing..." message for every non-download in-queue stage
+    (LOADING_PARS, REPAIRING, UNPACKING, MOVING, EXECUTING_SCRIPT,
+    QUEUED/PAUSED, ...) instead of a frozen "Downloading... 100%".
+    """
+    status = (group["status"] or "").upper()
+    if status in _DOWNLOAD_STATUSES:
+        dialog.update(group["percent"], _fmt(30105, group["percent"]))
+    else:
+        dialog.update(group["percent"], _string(30219))
+
+
+def _poll_history_outcome(nzbid, dialog, settings_getter):
+    """Resolve a job that has left the queue via the NZBGet history.
+
+    Returns the terminal outcome dict (success/failed) once the history row
+    appears, or ``None`` during the brief queue->history hand-off gap (after
+    showing post-processing) so the poll loop keeps waiting.
+    """
+    hist = nzbget_api.history_status(nzbid, settings_getter=settings_getter)
+    if hist["present"]:
+        if hist["success"]:
+            return {"outcome": "success", "dest_dir": hist["dest_dir"]}
+        return {"outcome": "failed", "status": hist["status"]}
+    # Not in queue, not yet in history — brief gap during the hand-off; show
+    # post-processing and keep waiting.
+    dialog.update(100, _string(30219))
+    return None
 
 
 _DEFAULT_TIMEOUT = 3600
@@ -330,6 +400,197 @@ def _resolve_failure(handle, message=None):
     xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
 
 
+def _reuse_completed_job(
+    completed_job, smb_root, category, completed_base, dialog, interval
+):
+    """Probe an already-completed history match's SMB folder.
+
+    Returns the playable video URL when the corroborated ``completed_job``
+    still holds a video over SMB (the picker-reuse fast path), else ``None``
+    so the caller proceeds to the normal submit flow.
+    """
+    if not (isinstance(completed_job, dict) and completed_job.get("dest_dir")):
+        return None
+    reuse_folder = nzbget_smb_target(
+        smb_root, completed_job["dest_dir"], category, completed_base
+    )
+    if not reuse_folder:
+        return None
+    return resolve_smb_video(
+        reuse_folder,
+        dialog=dialog,
+        interval=interval,
+        budget=_SMB_REUSE_PROBE_BUDGET,
+    )
+
+
+def _handle_poll_failure(outcome, nzbid, settings_getter, on_failure):
+    """Dispatch a non-success poll outcome to its failure callback.
+
+    Returns ``(handled, leave_job)``: ``handled`` is True when ``outcome`` was
+    a terminal failure (the caller returns), ``leave_job`` documents the
+    timeout/abort policy of deliberately NOT canceling the job so it can
+    finish for a later retry. The success outcome returns ``(False, False)``
+    so the caller proceeds to the SMB resolve.
+    """
+    if outcome in ("timeout", "aborted"):
+        on_failure(_string(30101))
+        return True, True
+    if outcome == "canceled":
+        nzbget_api.cancel_job(nzbid, settings_getter=settings_getter)
+        on_failure(None)
+        return True, False
+    if outcome == "failed":
+        on_failure(_string(30220))
+        return True, False
+    return False, False
+
+
+def _resolve_completed_smb(
+    dest_dir, smb_root, category, completed_base, dialog, interval
+):
+    """Map a completed job's DestDir onto SMB and find the playable video.
+
+    Returns the video URL, or ``None`` when the mapping yields no folder or
+    no video appears within the resolve budget (both the same caller-facing
+    failure, error string 30223).
+    """
+    smb_folder = nzbget_smb_target(smb_root, dest_dir, category, completed_base)
+    if not smb_folder:
+        return None
+    return resolve_smb_video(smb_folder, dialog=dialog, interval=interval)
+
+
+class _SubmitCtx:  # pylint: disable=too-few-public-methods
+    """Resolved settings + callbacks threaded into the submit flow.
+
+    Bundles everything ``_run_nzbget_backend`` already has (SMB root, category,
+    completed base, progress dialog, poll interval, timeout) plus the flow's
+    callbacks/getter, so the submit helpers stay within the parameter budget.
+    ``settings_getter``, ``on_success``, ``on_failure`` are attached by the
+    builder after construction.
+    """
+
+    def __init__(self, smb_root, category, completed_base, dialog, interval, timeout):
+        self.smb_root = smb_root
+        self.category = category
+        self.completed_base = completed_base
+        self.dialog = dialog
+        self.interval = interval
+        self.timeout = timeout
+        self.settings_getter = None
+        self.on_success = None
+        self.on_failure = None
+
+
+def _reuse_or_submit(ctx, nzb_url, title, completed_job, meta):
+    """Play a corroborated completed match if present, else run the submit.
+
+    ``meta`` is ``(download_pubdate, download_size)``. Corroborated picker
+    reuse: the router tagged this selection against a SUCCESS history row
+    (exact name + size/pubdate gates), so play the already-completed files
+    instead of re-submitting — NZBGet's duplicate check (DupeCheck=yes by
+    default) dupe-deletes a re-submission of a SUCCESS item, which would fail
+    the resolve. A probe miss (files cleaned up / share moved) falls through to
+    the normal submit flow. Returns ``leave_job`` for the caller's finally.
+    """
+    reuse_url = _reuse_completed_job(
+        completed_job,
+        ctx.smb_root,
+        ctx.category,
+        ctx.completed_base,
+        ctx.dialog,
+        ctx.interval,
+    )
+    if reuse_url:
+        ctx.on_success(reuse_url)
+        return False
+    return _submit_poll_resolve(ctx, nzb_url, title, meta[0], meta[1])
+
+
+def _close_dialog(dialog):
+    """Close the progress dialog, swallowing any teardown error."""
+    if dialog is None:
+        return
+    try:
+        dialog.close()
+    except Exception:  # pylint: disable=broad-except
+        pass
+
+
+def _build_submit_ctx(
+    settings_getter, smb_root, dialog, timeout, on_success, on_failure
+):
+    """Read the per-submit NZBGet context once for the submit flow.
+
+    Resolves the poll interval, the category (NZBGet nests categorized
+    completed output under a per-category subfolder by default, so the SMB
+    target must include that segment), and the global completed base used to
+    map a history DestDir onto the SMB root regardless of category/custom
+    layout (None when unavailable -> nzbget_smb_target falls back). Attaches
+    the flow's getter + callbacks so the submit helpers can stay low-arity.
+    """
+    interval = _read_poll_interval(settings_getter)
+    _u, _user, _pw, category = nzbget_api._get_settings(settings_getter=settings_getter)
+    completed_base = nzbget_api.completed_base_dir(settings_getter=settings_getter)
+    ctx = _SubmitCtx(smb_root, category, completed_base, dialog, interval, timeout)
+    ctx.settings_getter = settings_getter
+    ctx.on_success = on_success
+    ctx.on_failure = on_failure
+    return ctx
+
+
+def _submit_poll_resolve(ctx, nzb_url, title, download_pubdate, download_size):
+    """Submit the NZB, poll to completion, then resolve+play the SMB video.
+
+    Returns ``leave_job`` (True only on the timeout/abort policy where the job
+    is left running for a later retry) for the caller's finally. We do NOT
+    reuse an existing job by name here: a bare name match has no
+    size/pubdate/indexer corroboration, so a same-named repost could play the
+    wrong job; NZBGet's own dupe handling covers a still-in-flight re-submit.
+    """
+    getter = ctx.settings_getter
+    nzbid, error = nzbget_api.append_nzb(nzb_url, title, settings_getter=getter)
+    if not nzbid:
+        # Surface the specific (already-redacted) NZBGet message — auth vs dupe
+        # vs "append returned 0" — per the spec error table, else the generic.
+        ctx.on_failure(error or _string(30222))
+        return False
+
+    result = poll_nzbget_job(
+        nzbid,
+        ctx.dialog,
+        xbmc.Monitor(),
+        ctx.timeout,
+        settings_getter=getter,
+        interval=ctx.interval,
+    )
+    handled, leave_job = _handle_poll_failure(
+        result["outcome"], nzbid, getter, ctx.on_failure
+    )
+    if handled:
+        return leave_job
+
+    # Download completed (now SUCCESS history): record the post-date before the
+    # SMB mapping, which can still fail without un-completing it. Fail-soft.
+    record_download(title, download_pubdate, download_size)
+
+    video_url = _resolve_completed_smb(
+        result["dest_dir"],
+        ctx.smb_root,
+        ctx.category,
+        ctx.completed_base,
+        ctx.dialog,
+        ctx.interval,
+    )
+    if not video_url:
+        ctx.on_failure(_string(30223))
+        return leave_job
+
+    ctx.on_success(video_url)
+    return leave_job
+
+
 def _run_nzbget_backend(
     nzb_url,
     title,
@@ -343,143 +604,41 @@ def _run_nzbget_backend(
     """Shared NZBGet flow: reuse completed files, else submit -> poll -> SMB.
 
     Calls ``on_success(video_url)`` exactly once on success, or
-    ``on_failure(message)`` exactly once on any failure (``message`` is
-    ``None`` for the silent cancel exit). Delivery — ``setResolvedUrl`` for
-    the handle path vs ``xbmc.Player().play`` for the handle-less
-    ``resolve_and_play`` path — is the caller's concern; this core
-    guarantees a single terminal callback and owns the progress dialog.
-
-    ``download_pubdate``/``download_size`` carry the selected result's
-    advertised Usenet post-date and size; a completed download records them
-    in the download ledger so the picker's NZBGet-mode "DL" tag can tell this
-    upload apart from a same-name repost (same gate as the nzbdav path).
-
-    ``completed_job`` is the picker's corroborated NZBGet history match
-    (``_nzbget_completed_job``): when its ``dest_dir`` still holds a playable
-    video over SMB, that file is played directly and nothing is submitted.
+    ``on_failure(message)`` exactly once on any failure (``message`` is ``None``
+    for the silent cancel exit); this core guarantees a single terminal callback
+    and owns the progress dialog. ``download_pubdate``/``download_size`` record
+    the selected result's identity in the ledger for the picker's "DL" tag;
+    ``completed_job`` is the corroborated history match played directly (nothing
+    submitted) when its ``dest_dir`` still holds a playable video over SMB.
     """
     dialog = None
-    nzbid = None
     leave_job = False
     try:
         url, smb_root, timeout = _read_settings(settings_getter)
-        if not url or not smb_root or not nzb_url:
+        if not all((url, smb_root, nzb_url)):
             on_failure(_string(30221))
             return
 
-        interval = _read_poll_interval(settings_getter)
-        # NZBGet nests categorized completed output under a per-category
-        # subfolder (default AppendCategoryDir=yes); the SMB target must
-        # include that segment or it 404s. _get_settings is the canonical
-        # category reader (same one append_nzb uses).
-        _u, _user, _pw, category = nzbget_api._get_settings(
-            settings_getter=settings_getter
-        )
-        # NZBGet's global completed base, used to map a history DestDir exactly
-        # onto the SMB root regardless of category/custom-DestDir layout. None
-        # when unavailable -> nzbget_smb_target falls back to its heuristic.
-        completed_base = nzbget_api.completed_base_dir(settings_getter=settings_getter)
-
         dialog = xbmcgui.DialogProgress()
         dialog.create(_addon_name(), _string(30218))
-
-        # Corroborated picker reuse: the router tagged this selection against
-        # a SUCCESS history row (exact name + size/pubdate gates), so play the
-        # already-completed files instead of re-submitting — NZBGet's
-        # duplicate check (DupeCheck=yes by default) dupe-deletes a
-        # re-submission of a SUCCESS item, which would fail the resolve. A
-        # probe miss (files cleaned up / share moved) falls through to the
-        # normal submit flow.
-        if isinstance(completed_job, dict) and completed_job.get("dest_dir"):
-            reuse_folder = nzbget_smb_target(
-                smb_root, completed_job["dest_dir"], category, completed_base
-            )
-            if reuse_folder:
-                video_url = resolve_smb_video(
-                    reuse_folder,
-                    dialog=dialog,
-                    interval=interval,
-                    budget=_SMB_REUSE_PROBE_BUDGET,
-                )
-                if video_url:
-                    on_success(video_url)
-                    return
-
-        # Submit the NZB the user actually selected. Beyond the corroborated
-        # reuse above, we deliberately do NOT reuse an existing NZBGet job
-        # (completed history *or* in-queue) by name: a bare name match has no
-        # size/pubdate/indexer corroboration (and that selected-result
-        # metadata isn't available on the handle-based entry path), so a
-        # same-named repost or a different indexer's result could attach to /
-        # play the wrong job instead of the one the user chose. NZBGet's own
-        # dupe handling deals with re-submitting a still-in-flight same-name
-        # job on a quick retry.
-        nzbid, error = nzbget_api.append_nzb(
-            nzb_url, title, settings_getter=settings_getter
+        ctx = _build_submit_ctx(
+            settings_getter, smb_root, dialog, timeout, on_success, on_failure
         )
-        if not nzbid:
-            # Surface the specific (already-redacted) NZBGet message — auth vs
-            # dupe vs "append returned 0" — per the spec error table, falling
-            # back to the generic string.
-            on_failure(error or _string(30222))
-            return
-
-        result = poll_nzbget_job(
-            nzbid,
-            dialog,
-            xbmc.Monitor(),
-            timeout,
-            settings_getter=settings_getter,
-            interval=interval,
+        leave_job = _reuse_or_submit(
+            ctx, nzb_url, title, completed_job, (download_pubdate, download_size)
         )
-        outcome = result["outcome"]
-
-        if outcome in ("timeout", "aborted"):
-            leave_job = True
-            on_failure(_string(30101))
-            return
-        if outcome == "canceled":
-            nzbget_api.cancel_job(nzbid, settings_getter=settings_getter)
-            on_failure(None)
-            return
-        if outcome == "failed":
-            on_failure(_string(30220))
-            return
-
-        # The download completed (it is now SUCCESS history): remember the
-        # selected result's post-date before the SMB mapping, which can still
-        # fail without un-completing the download. Fail-soft inside.
-        record_download(title, download_pubdate, download_size)
-
-        smb_folder = nzbget_smb_target(
-            smb_root, result["dest_dir"], category, completed_base
-        )
-        if not smb_folder:
-            on_failure(_string(30223))
-            return
-        video_url = resolve_smb_video(smb_folder, dialog=dialog, interval=interval)
-        if not video_url:
-            on_failure(_string(30223))
-            return
-
-        on_success(video_url)
     except Exception as exc:  # pylint: disable=broad-except
         # str(exc) can echo the indexer nzb_url (apikey=...) or the
-        # smb://user:pass@host root — redact both before logging.
+        # smb://user:pass@host root — redact before logging.
         xbmc.log(
             "NZB-DAV: NZBGet resolve error: {}".format(_redact_text(str(exc))),
             xbmc.LOGERROR,
         )
         on_failure(None)
     finally:
-        if dialog is not None:
-            try:
-                dialog.close()
-            except Exception:  # pylint: disable=broad-except
-                pass
+        _close_dialog(dialog)
         # leave_job documents the timeout policy: on timeout/abort we
-        # deliberately do NOT cancel_job so the download can finish for a
-        # later retry.
+        # deliberately do NOT cancel_job so the download can finish later.
         _ = leave_job
 
 

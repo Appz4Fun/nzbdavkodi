@@ -922,3 +922,21 @@ def test_resolve_indexer_returns_empty_when_no_source_at_all():
 
     item = ET.fromstring("<item><title>No source info</title></item>")
     assert _resolve_indexer(item, "") == ""
+
+
+@patch("resources.lib.hydra._get_settings")
+def test_fetch_release_duplicate_uploads_tolerates_null_search_results(mock_settings):
+    """Hydra returning {"searchResults": null} (or any non-list shape) must
+    yield [] rather than crashing fallback peer discovery on a non-iterable.
+    """
+    mock_settings.return_value = ("http://hydra:5076", "key")
+    fake_resp = MagicMock()
+    fake_resp.read.return_value = b'{"searchResults": null}'
+    fake_resp.__enter__.return_value = fake_resp
+    fake_resp.__exit__.return_value = False
+    with patch("urllib.request.urlopen", return_value=fake_resp):
+        uploads = hydra.fetch_release_duplicate_uploads(
+            {"title": "The Matrix", "link": "http://x"}
+        )
+    assert isinstance(uploads, list)
+    assert not uploads

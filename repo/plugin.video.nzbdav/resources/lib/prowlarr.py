@@ -129,6 +129,33 @@ def _digits(value):
     return "".join(ch for ch in str(value) if ch.isdigit())
 
 
+def _episode_query_tokens(imdb, tvdb, season, episode):
+    """Build the ``{token:value}`` list for a TV episode search.
+
+    tvdbid is preferred over imdbid (#318); season/episode tokens follow.
+    """
+    tokens = []
+    tvdbid = _digits(tvdb)
+    imdbid = _digits(imdb)
+    if tvdbid:
+        tokens.append("{{tvdbid:{}}}".format(tvdbid))
+    elif imdbid:
+        tokens.append("{{imdbid:{}}}".format(imdbid))
+    if season:
+        tokens.append("{{season:{}}}".format(season))
+    if episode:
+        tokens.append("{{episode:{}}}".format(episode))
+    return tokens
+
+
+def _movie_query_tokens(imdb):
+    """Build the ``{token:value}`` list for a movie search."""
+    imdbid = _digits(imdb)
+    if imdbid:
+        return ["{{imdbid:{}}}".format(imdbid)]
+    return []
+
+
 def _build_prowlarr_query(search_type, title, imdb="", tvdb="", season="", episode=""):
     """Compose Prowlarr's ``query`` value using its ``{token:value}`` syntax.
 
@@ -141,22 +168,10 @@ def _build_prowlarr_query(search_type, title, imdb="", tvdb="", season="", episo
     id-keyed search is to embed the tokens here (verified against Prowlarr
     source; see issue #313). For TV, tvdbid is preferred over imdbid (#318).
     """
-    tokens = []
     if search_type == "episode":
-        tvdbid = _digits(tvdb)
-        imdbid = _digits(imdb)
-        if tvdbid:
-            tokens.append("{{tvdbid:{}}}".format(tvdbid))
-        elif imdbid:
-            tokens.append("{{imdbid:{}}}".format(imdbid))
-        if season:
-            tokens.append("{{season:{}}}".format(season))
-        if episode:
-            tokens.append("{{episode:{}}}".format(episode))
+        tokens = _episode_query_tokens(imdb, tvdb, season, episode)
     else:
-        imdbid = _digits(imdb)
-        if imdbid:
-            tokens.append("{{imdbid:{}}}".format(imdbid))
+        tokens = _movie_query_tokens(imdb)
 
     token_str = "".join(tokens)
     # Strip query-breaking '&' from the keyword title (#294): Prowlarr passes
@@ -167,6 +182,128 @@ def _build_prowlarr_query(search_type, title, imdb="", tvdb="", season="", episo
     if text and token_str:
         return "{} {}".format(text, token_str)
     return text or token_str
+
+
+def _resolve_max_results(settings_getter):
+    """Resolve the configured ``max_results``, clamped to ``[1, 10000]``.
+
+    Defaults to 25 on a missing/blank/non-numeric setting, mirroring the
+    original inline behavior in ``search_prowlarr``.
+    """
+    if settings_getter is None:
+        import xbmcaddon
+
+        raw_max = xbmcaddon.Addon("plugin.video.nzbdav").getSetting("max_results")
+    else:
+        try:
+            raw_max = settings_getter("max_results", "25")
+        except Exception:  # pylint: disable=broad-except
+            raw_max = "25"
+    try:
+        max_results = int(raw_max) if raw_max not in (None, "") else 25
+    except (TypeError, ValueError):
+        max_results = 25
+    return max(1, min(max_results, 10000))
+
+
+def _execute_prowlarr_search(url):
+    """Issue the primary Prowlarr search request and parse the response.
+
+    Logs the (redacted) URL, fetches it, and parses the body. Returns
+    ``(results, error)`` where ``error`` is non-``None`` (a parse error or a
+    "Prowlarr unavailable" message) when the caller should bail with
+    ``([], error)``.
+    """
+    from resources.lib.http_util import redact_text, redact_url
+
+    xbmc.log("NZB-DAV: Prowlarr search URL: {}".format(redact_url(url)), xbmc.LOGDEBUG)
+
+    try:
+        xml_text = _http_get(url, timeout=300)
+    except Exception as e:
+        # Redact: HTTPError / URLError str() can echo back the failing URL
+        # (which embeds the apikey query param). Mirrors the redaction
+        # already in nzbdav_api's submit error path.
+        xbmc.log(
+            "NZB-DAV: Prowlarr search request failed: {}".format(redact_text(str(e))),
+            xbmc.LOGERROR,
+        )
+        return [], _prowlarr_unavailable_error(e)
+
+    results, parse_error = _parse_results_checked(xml_text)
+    if parse_error:
+        return [], parse_error
+    return results, None
+
+
+def _title_fallback_search(
+    base_url, params, indexer_ids, search_type, title, ids, season, episode
+):
+    """Retry the search by title after an id-keyed query found nothing.
+
+    ``ids`` is the ``(imdb, tvdb)`` pair, used only for the diagnostic log line.
+    Mutates ``params['query']`` to drop the id token (keeping season/episode
+    tokens for TV) and re-issues the request. Returns ``(results, error)``
+    where ``error`` is non-``None`` (a parse error or "Prowlarr unavailable"
+    message) when the caller should bail out with ``([], error)``.
+    """
+    from resources.lib.http_util import redact_text
+
+    imdb, tvdb = ids
+    xbmc.log(
+        "NZB-DAV: Prowlarr: no results with id (tvdb={} imdb={}), retrying "
+        "by title '{}'".format(tvdb or "-", imdb or "-", title),
+        xbmc.LOGINFO,
+    )
+    params["query"] = _build_prowlarr_query(
+        search_type, title, season=season, episode=episode
+    )
+    fallback_url = _build_search_url(base_url, params, indexer_ids)
+    try:
+        xml_text = _http_get(fallback_url, timeout=300)
+        results, parse_error = _parse_results_checked(xml_text)
+        if parse_error:
+            return [], parse_error
+        return results, None
+    except Exception as e:
+        xbmc.log(
+            "NZB-DAV: Prowlarr title fallback failed: {}".format(redact_text(str(e))),
+            xbmc.LOGERROR,
+        )
+        return [], _prowlarr_unavailable_error(e)
+
+
+def _build_initial_params(
+    api_key, settings_getter, search_type, title, imdb, tvdb, season, episode
+):
+    """Build the primary Prowlarr search params dict.
+
+    Prowlarr's native /api/v1/search binds only Query/Type/IndexerIds/
+    Categories/Limit/Offset. ids/season/episode are NOT query params here —
+    they must be embedded as {token:value} inside ``query``, and Prowlarr only
+    parses them when ``type`` is tvsearch/movie (see ``_build_prowlarr_query``).
+    """
+    params = {"apikey": api_key, "limit": _resolve_max_results(settings_getter)}
+    params["type"] = "tvsearch" if search_type == "episode" else "movie"
+    params["query"] = _build_prowlarr_query(
+        search_type, title, imdb=imdb, tvdb=tvdb, season=season, episode=episode
+    )
+    return params
+
+
+def _read_prowlarr_settings(settings_getter):
+    """Read Prowlarr settings, returning ``(settings_tuple, error)``.
+
+    ``settings_tuple`` is ``(base_url, api_key, indexer_ids)`` on success and
+    ``None`` on failure; ``error`` is a short message when reading failed.
+    """
+    try:
+        return _get_settings(settings_getter), None
+    except Exception as e:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: Failed to read Prowlarr settings: {}".format(e), xbmc.LOGERROR
+        )
+        return None, "Failed to read Prowlarr settings"
 
 
 def search_prowlarr(
@@ -202,13 +339,10 @@ def search_prowlarr(
             describing the failure. Returns `([], None)` when Prowlarr is
             enabled but no indexer IDs are configured.
     """
-    try:
-        base_url, api_key, indexer_ids = _get_settings(settings_getter)
-    except Exception as e:
-        xbmc.log(
-            "NZB-DAV: Failed to read Prowlarr settings: {}".format(e), xbmc.LOGERROR
-        )
-        return [], "Failed to read Prowlarr settings"
+    settings, settings_error = _read_prowlarr_settings(settings_getter)
+    if settings_error:
+        return [], settings_error
+    base_url, api_key, indexer_ids = settings
 
     if not indexer_ids:
         xbmc.log(
@@ -217,80 +351,49 @@ def search_prowlarr(
         )
         return [], None
 
-    if settings_getter is None:
-        import xbmcaddon
-
-        raw_max = xbmcaddon.Addon("plugin.video.nzbdav").getSetting("max_results")
-    else:
-        try:
-            raw_max = settings_getter("max_results", "25")
-        except Exception:  # pylint: disable=broad-except
-            raw_max = "25"
-    try:
-        max_results = int(raw_max) if raw_max not in (None, "") else 25
-    except (TypeError, ValueError):
-        max_results = 25
-    max_results = max(1, min(max_results, 10000))
-    params = {"apikey": api_key, "limit": max_results}
-
-    # Prowlarr's native /api/v1/search binds only Query/Type/IndexerIds/
-    # Categories/Limit/Offset. ids/season/episode are NOT query params here —
-    # they must be embedded as {token:value} inside `query`, and Prowlarr only
-    # parses them when `type` is tvsearch/movie (see _build_prowlarr_query).
-    params["type"] = "tvsearch" if search_type == "episode" else "movie"
-    params["query"] = _build_prowlarr_query(
-        search_type, title, imdb=imdb, tvdb=tvdb, season=season, episode=episode
+    params = _build_initial_params(
+        api_key, settings_getter, search_type, title, imdb, tvdb, season, episode
     )
 
-    from resources.lib.http_util import redact_text, redact_url
-
     url = _build_search_url(base_url, params, indexer_ids)
+    results, primary_error = _execute_prowlarr_search(url)
+    if primary_error:
+        return [], primary_error
 
-    xbmc.log("NZB-DAV: Prowlarr search URL: {}".format(redact_url(url)), xbmc.LOGDEBUG)
+    search_args = (search_type, title, imdb, tvdb, season, episode)
+    results, fallback_error = _apply_title_fallback(
+        results, base_url, params, indexer_ids, search_args
+    )
+    if fallback_error:
+        return [], fallback_error
+    return _log_and_return(results, title)
 
-    try:
-        xml_text = _http_get(url, timeout=300)
-    except Exception as e:
-        # Redact: HTTPError / URLError str() can echo back the failing URL
-        # (which embeds the apikey query param). Mirrors the redaction
-        # already in nzbdav_api's submit error path.
-        xbmc.log(
-            "NZB-DAV: Prowlarr search request failed: {}".format(redact_text(str(e))),
-            xbmc.LOGERROR,
-        )
-        return [], _prowlarr_unavailable_error(e)
 
-    results, parse_error = _parse_results_checked(xml_text)
-    if parse_error:
-        return [], parse_error
+def _apply_title_fallback(results, base_url, params, indexer_ids, search_args):
+    """Retry by title when an id-keyed query returned nothing.
 
-    # Fallback: an id-keyed query returned nothing — the id may be wrong or the
-    # indexer may not map it. Retry by title (keeping season/episode tokens for
-    # TV), dropping the id token.
-    if not results and (tvdb or imdb) and title:
-        xbmc.log(
-            "NZB-DAV: Prowlarr: no results with id (tvdb={} imdb={}), retrying "
-            "by title '{}'".format(tvdb or "-", imdb or "-", title),
-            xbmc.LOGINFO,
-        )
-        params["query"] = _build_prowlarr_query(
-            search_type, title, season=season, episode=episode
-        )
-        fallback_url = _build_search_url(base_url, params, indexer_ids)
-        try:
-            xml_text = _http_get(fallback_url, timeout=300)
-            results, parse_error = _parse_results_checked(xml_text)
-            if parse_error:
-                return [], parse_error
-        except Exception as e:
-            xbmc.log(
-                "NZB-DAV: Prowlarr title fallback failed: {}".format(
-                    redact_text(str(e))
-                ),
-                xbmc.LOGERROR,
-            )
-            return [], _prowlarr_unavailable_error(e)
+    ``search_args`` is ``(search_type, title, imdb, tvdb, season, episode)``.
+    Returns ``(results, error)`` unchanged when the fallback does not apply
+    (results already present, no id, or no title) — the id may be wrong or the
+    indexer may not map it.
+    """
+    search_type, title, imdb, tvdb, season, episode = search_args
+    if results or not (tvdb or imdb) or not title:
+        return results, None
+    return _title_fallback_search(
+        base_url,
+        params,
+        indexer_ids,
+        search_type,
+        title,
+        (imdb, tvdb),
+        season,
+        episode,
+    )
 
+
+def _log_and_return(results, title):
+    """Log the result count and return ``(results, None)``."""
     xbmc.log(
         "NZB-DAV: Prowlarr returned {} results for '{}'".format(len(results), title),
         xbmc.LOGINFO,
@@ -336,6 +439,58 @@ def _parse_results_checked(text):
     return _parse_xml_results(text)
 
 
+def _coerce_json_size(size_val):
+    """Normalize a Prowlarr JSON ``size`` field to a digit string or ``""``.
+
+    Booleans are rejected (``isinstance(True, int)`` is ``True``); positive
+    ints stringify; digit-only strings are trimmed; everything else is empty.
+    """
+    if isinstance(size_val, bool):
+        return ""
+    if isinstance(size_val, int) and size_val > 0:
+        return str(size_val)
+    if isinstance(size_val, str) and size_val.strip().isdigit():
+        return size_val.strip()
+    return ""
+
+
+def _json_entry_to_result(entry):
+    """Map one Prowlarr ``ReleaseResource`` dict onto the normalized shape."""
+    return {
+        "title": entry.get("title") or "",
+        "link": entry.get("downloadUrl") or "",
+        "size": _coerce_json_size(entry.get("size")),
+        "indexer": entry.get("indexer") or "",
+        # publishDate is ISO-8601; normalize to RFC-2822 so the
+        # pubdate_to_epoch / Age-sort consumers can parse it.
+        "pubdate": _iso_to_rfc2822(entry.get("publishDate")),
+        "age": _age_from_days(entry.get("age")),
+    }
+
+
+def _json_payload_error(data):
+    """Return an error message for a non-list JSON payload, logging it.
+
+    Prowlarr error bodies are JSON objects (``{"error": ...}``), not arrays.
+    The payload can echo the indexer apikey, so the message is redacted before
+    it lands in the log line or the returned error string.
+    """
+    from resources.lib.http_util import redact_text
+
+    message = ""
+    if isinstance(data, dict):
+        raw_message = data.get("error") or data.get("message") or ""
+        message = redact_text(str(raw_message)) if raw_message else ""
+    xbmc.log(
+        "NZB-DAV: Unexpected Prowlarr JSON payload (not an array): {}".format(
+            message or type(data).__name__
+        ),
+        xbmc.LOGERROR,
+    )
+    detail = ": {}".format(message) if message else ": expected a JSON array"
+    return "Prowlarr returned an invalid response{}".format(detail)
+
+
 def _parse_json_results(text):
     """Parse a Prowlarr native ``/api/v1/search`` JSON array into result dicts.
 
@@ -355,18 +510,7 @@ def _parse_json_results(text):
         return [], "Prowlarr returned an invalid response: {}".format(e)
 
     if not isinstance(data, list):
-        # Prowlarr error bodies are JSON objects ({"error": ...}), not arrays.
-        message = ""
-        if isinstance(data, dict):
-            message = data.get("error") or data.get("message") or ""
-        xbmc.log(
-            "NZB-DAV: Unexpected Prowlarr JSON payload (not an array): {}".format(
-                message or type(data).__name__
-            ),
-            xbmc.LOGERROR,
-        )
-        detail = ": {}".format(message) if message else ": expected a JSON array"
-        return [], "Prowlarr returned an invalid response{}".format(detail)
+        return [], _json_payload_error(data)
 
     results = []
     for entry in data:
@@ -379,30 +523,88 @@ def _parse_json_results(text):
         if (entry.get("protocol") or "").lower() != "usenet":
             continue
 
-        size_val = entry.get("size")
-        if isinstance(size_val, bool):
-            size = ""
-        elif isinstance(size_val, int) and size_val > 0:
-            size = str(size_val)
-        elif isinstance(size_val, str) and size_val.strip().isdigit():
-            size = size_val.strip()
-        else:
-            size = ""
-
-        results.append(
-            {
-                "title": entry.get("title") or "",
-                "link": entry.get("downloadUrl") or "",
-                "size": size,
-                "indexer": entry.get("indexer") or "",
-                # publishDate is ISO-8601; normalize to RFC-2822 so the
-                # pubdate_to_epoch / Age-sort consumers can parse it.
-                "pubdate": _iso_to_rfc2822(entry.get("publishDate")),
-                "age": _age_from_days(entry.get("age")),
-            }
-        )
+        results.append(_json_entry_to_result(entry))
 
     return results, None
+
+
+def _xml_item_attrs(item):
+    """Read size + indexer from an item's Newznab ``<attr>`` elements.
+
+    Returns ``(size, indexer)`` — either may be ``""`` when absent. The first
+    indexer-like attr wins, matching the original first-write-only behavior.
+    """
+    size = ""
+    indexer = ""
+    for attr in item.iter("{%s}attr" % NEWZNAB_NS):
+        name = attr.get("name", "")
+        if name == "size":
+            size = attr.get("value", "")
+        elif name in ("indexer", "source", "hydraIndexerName"):
+            if not indexer:
+                indexer = attr.get("value", "")
+    return size, indexer
+
+
+def _xml_source_hostname(item):
+    """Resolve an item's indexer from its ``<source>`` element.
+
+    Falls back to ``<source>`` text, then to the host of the ``url`` attr.
+    """
+    indexer = _get_text(item, "source")
+    if indexer:
+        return indexer
+    source_el = item.find("source")
+    if source_el is None:
+        return ""
+    indexer = source_el.get("url", "")
+    if indexer and "/" in indexer:
+        try:
+            indexer = urlparse(indexer).hostname or ""
+        except (ValueError, AttributeError):
+            # Narrow from bare Exception — urlparse only raises these for
+            # shape-mismatch input. A broader catch would hide real bugs in
+            # callers that pass unexpected types.
+            indexer = ""
+    return indexer
+
+
+def _xml_fill_from_enclosure(item, size, link):
+    """Backfill ``size``/``link`` from an item's ``<enclosure>`` when empty.
+
+    Returns the (possibly updated) ``(size, link)`` pair.
+    """
+    enclosure = item.find("enclosure")
+    if enclosure is not None:
+        if not size:
+            size = enclosure.get("length", "")
+        if not link:
+            link = enclosure.get("url", "")
+    return size, link
+
+
+def _xml_item_to_result(item):
+    """Convert one RSS ``<item>`` element into a normalized result dict."""
+    title = _get_text(item, "title")
+    link = _get_text(item, "link")
+    pubdate = _get_text(item, "pubDate")
+
+    size, indexer = _xml_item_attrs(item)
+    if not indexer:
+        indexer = _xml_source_hostname(item)
+
+    size, link = _xml_fill_from_enclosure(item, size, link)
+
+    age = _calculate_age(pubdate) if pubdate else ""
+
+    return {
+        "title": title or "",
+        "link": link or "",
+        "size": size,
+        "indexer": indexer,
+        "pubdate": pubdate or "",
+        "age": age,
+    }
 
 
 def _parse_xml_results(xml_text):
@@ -445,58 +647,7 @@ def _parse_xml_results(xml_text):
         )
         return [], "Prowlarr returned an invalid response: expected RSS feed"
 
-    results = []
-    for item in root.iter("item"):
-        title = _get_text(item, "title")
-        link = _get_text(item, "link")
-        pubdate = _get_text(item, "pubDate")
-
-        size = ""
-        indexer = ""
-        for attr in item.iter("{%s}attr" % NEWZNAB_NS):
-            name = attr.get("name", "")
-            if name == "size":
-                size = attr.get("value", "")
-            elif name in ("indexer", "source", "hydraIndexerName"):
-                if not indexer:
-                    indexer = attr.get("value", "")
-
-        if not indexer:
-            indexer = _get_text(item, "source")
-        if not indexer:
-            source_el = item.find("source")
-            if source_el is not None:
-                indexer = source_el.get("url", "")
-                if indexer and "/" in indexer:
-                    try:
-                        indexer = urlparse(indexer).hostname or ""
-                    except (ValueError, AttributeError):
-                        # Narrow from bare Exception — urlparse only
-                        # raises these for shape-mismatch input. A
-                        # broader catch would hide real bugs in
-                        # callers that pass unexpected types.
-                        indexer = ""
-
-        enclosure = item.find("enclosure")
-        if enclosure is not None:
-            if not size:
-                size = enclosure.get("length", "")
-            if not link:
-                link = enclosure.get("url", "")
-
-        age = _calculate_age(pubdate) if pubdate else ""
-
-        results.append(
-            {
-                "title": title or "",
-                "link": link or "",
-                "size": size,
-                "indexer": indexer,
-                "pubdate": pubdate or "",
-                "age": age,
-            }
-        )
-
+    results = [_xml_item_to_result(item) for item in root.iter("item")]
     return results, None
 
 

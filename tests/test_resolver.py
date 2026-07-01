@@ -28,7 +28,10 @@ from resources.lib.resolver import (
     _handle_history_result,
     _handle_job_status,
     _handle_resolve_exception,
+    _kodi_video_db_version,
+    _locate_kodi_video_db,
     _make_playable_listitem,
+    _maybe_clear_queue_before_submit,
     _play_direct,
     _play_via_proxy,
     _poll_once,
@@ -8807,3 +8810,203 @@ def test_resolve_and_play_reads_toggle_via_injected_getter():
     play_entry.assert_called_once_with(
         "http://i/x.nzb", "X", params, resume_seconds=0.0, resume_key=""
     )
+
+
+# --- CodeRabbit PR #358 quality-fix regression tests ---
+
+
+def _joined_log(xbmc_mock):
+    """Concatenate every xbmc.log() message for substring assertions."""
+    return " ".join(str(c) for c in xbmc_mock.log.call_args_list)
+
+
+def test_queue_probe_exception_redacted_before_logging():
+    """Finding 1: queue-probe exception strings are redacted before logging."""
+    secret_url = "http://nzbdav/api?apikey=SUPERSECRET123"
+    with patch("resources.lib.resolver.xbmc") as xbmc_mock, patch(
+        "resources.lib.resolver._clear_queue_on_submit_mode", return_value="ask"
+    ), patch(
+        "resources.lib.resolver.get_queue_slots",
+        side_effect=Exception("probe failed " + secret_url),
+    ):
+        _maybe_clear_queue_before_submit(
+            "Some.Title", settings_getter=lambda k, d=None: "0"
+        )
+    logged = _joined_log(xbmc_mock)
+    assert "SUPERSECRET123" not in logged
+    assert "apikey=REDACTED" in logged
+
+
+def test_resume_stream_url_redacted_before_logging():
+    """Finding 2: direct-play stream URLs are redacted in INFO logs."""
+    secret_url = "http://host/stream.mp4?apikey=SUPERSECRET123"
+    with patch("resources.lib.resolver.xbmc") as xbmc_mock, patch(
+        "resources.lib.resolver.xbmcgui"
+    ):
+        _finish_player_playback({"stream_url": secret_url, "stream_headers": {}})
+    logged = _joined_log(xbmc_mock)
+    assert "SUPERSECRET123" not in logged
+    assert "apikey=REDACTED" in logged
+
+
+def test_submit_error_message_redacted_before_logging():
+    """Finding 3: backend submit-error messages are redacted before logging."""
+    submit_error = {
+        "status": "rejected",
+        "message": "rejected http://indexer/getnzb?apikey=SUPERSECRET123",
+    }
+    with patch("resources.lib.resolver.xbmc") as xbmc_mock, patch(
+        "resources.lib.resolver.xbmcgui"
+    ), patch(
+        "resources.lib.resolver._submit_nzb_with_ui_pump",
+        return_value=(None, submit_error),
+    ), patch(
+        "resources.lib.resolver._show_submit_error_dialog"
+    ):
+        result = _submit_nzb_with_retries(
+            "nzburl", "Title", MagicMock(), MagicMock(), max_submit_retries=1
+        )
+    assert result is None
+    logged = _joined_log(xbmc_mock)
+    assert "SUPERSECRET123" not in logged
+    assert "apikey=REDACTED" in logged
+
+
+def test_fallback_worker_thread_start_failure_fails_soft():
+    """Finding 4: a RuntimeError from thread.start() is caught, not propagated."""
+    with patch("resources.lib.resolver.xbmc"), patch(
+        "resources.lib.resolver.threading.Thread"
+    ) as thread_cls:
+        thread = MagicMock()
+        thread.start.side_effect = RuntimeError("can't start new thread")
+        thread_cls.return_value = thread
+        state = _start_fallback_submit_worker(
+            candidates=[{"nzburl": "http://i/x.nzb", "title": "X"}]
+        )
+    assert state["thread"] is None
+    assert state["finished"].is_set()
+
+
+def test_resolve_missing_url_resolves_false_even_if_dialog_raises():
+    """Finding 5: setResolvedUrl(False) still runs if the notification raises."""
+    with patch("resources.lib.resolver.xbmc"), patch(
+        "resources.lib.resolver.xbmcgui"
+    ) as gui, patch("resources.lib.resolver.xbmcplugin") as plugin:
+        gui.Dialog.return_value.ok.side_effect = RuntimeError("no UI")
+        resolve(7, {})
+    plugin.setResolvedUrl.assert_called_once()
+    args = plugin.setResolvedUrl.call_args[0]
+    assert args[0] == 7 and args[1] is False
+
+
+def test_handle_resolve_exception_resolves_false_even_if_dialog_raises():
+    """Finding 6: an exception-path dialog must not block the False resolution."""
+    with patch("resources.lib.resolver.xbmc"), patch(
+        "resources.lib.resolver.xbmcgui"
+    ) as gui, patch("resources.lib.resolver.xbmcplugin") as plugin:
+        gui.Dialog.return_value.ok.side_effect = RuntimeError("no UI")
+        _handle_resolve_exception("label", Exception("boom"), handle=9)
+    plugin.setResolvedUrl.assert_called_once()
+    args = plugin.setResolvedUrl.call_args[0]
+    assert args[0] == 9 and args[1] is False
+
+
+def test_poll_once_by_name_terminal_threads_completed_timestamp():
+    """Finding 7: the synthesized by-name terminal row carries ``completed``."""
+    completed_ts = 1_000_000
+    slot = {
+        "status": "Failed",
+        "storage": "",
+        "name": "My.Title",
+        "nzo_id": "nzo-new",
+        "fail_message": "boom",
+        "completed": completed_ts,
+    }
+    with patch("resources.lib.resolver.xbmc"), patch(
+        "resources.lib.resolver.get_job_status", return_value=None
+    ), patch("resources.lib.resolver.get_job_history", return_value=None), patch(
+        "resources.lib.nzbdav_api.find_terminal_by_name", return_value=slot
+    ):
+        _, history_status, _ = _poll_once(
+            "nzo-old", "My.Title", MagicMock(), submit_started_wall=completed_ts
+        )
+    assert history_status is not None
+    assert history_status.get("status") == "Failed"
+    assert history_status.get("completed") == completed_ts
+
+
+def test_late_accepted_submit_is_cancelled_after_user_abort():
+    """Finding 8: an nzo_id accepted after user cancel is cancelled in nzbdav."""
+    submit_release = threading.Event()
+    cancelled = threading.Event()
+
+    def fake_submit(nzb_url, title, **kwargs):
+        submit_release.wait(2)
+        return "nzo-late", None
+
+    def fake_cancel(nzo_id, **kwargs):
+        cancelled.set()
+        return True
+
+    dialog = MagicMock()
+    dialog.iscanceled.return_value = True
+    monitor = MagicMock()
+    monitor.waitForAbort.return_value = False
+    monitor.abortRequested.return_value = False
+
+    with patch("resources.lib.resolver.xbmc"), patch(
+        "resources.lib.resolver.xbmcgui"
+    ), patch("resources.lib.resolver.submit_nzb", side_effect=fake_submit), patch(
+        "resources.lib.resolver.cancel_job", side_effect=fake_cancel
+    ), patch(
+        "resources.lib.resolver._get_submit_timeout_seconds", return_value=60
+    ):
+        nzo_id, submit_error = _submit_nzb_with_ui_pump(
+            "http://i/x.nzb", "Title", dialog, monitor
+        )
+        assert nzo_id is None
+        assert submit_error["status"] == "cancelled"
+        # Release the still-blocked addurl worker so it returns its late nzo_id.
+        submit_release.set()
+        assert cancelled.wait(2), "late-accepted submit was not cancelled"
+
+
+def test_kodi_video_db_version_parses_numeric_version():
+    """Finding 9: version key parses the integer schema version."""
+    assert _kodi_video_db_version("/db/MyVideos131.db") == 131
+    assert _kodi_video_db_version("/db/MyVideos99.db") == 99
+    assert _kodi_video_db_version("/db/Textures13.db") == -1
+
+
+def test_locate_kodi_video_db_picks_highest_numeric_version():
+    """Finding 9: newest DB chosen by numeric version, not lexicographic sort."""
+    with patch("resources.lib.resolver.xbmc") as xbmc_mock, patch(
+        "resources.lib.resolver.xbmcvfs"
+    ) as vfs_mock, patch("glob.glob") as glob_mock:
+        xbmc_mock.Player.return_value.isPlayingVideo.return_value = False
+        vfs_mock.translatePath.return_value = "/db/"
+        # Lexicographic sort would wrongly pick MyVideos99.db.
+        glob_mock.return_value = [
+            "/db/MyVideos99.db",
+            "/db/MyVideos131.db",
+            "/db/MyVideos100.db",
+        ]
+        result = _locate_kodi_video_db()
+    assert result == "/db/MyVideos131.db"
+
+
+def test_completed_copy_blocks_clear_fails_soft_on_probe_thread_start_failure():
+    """A RuntimeError from the adopt-probe thread.start() (Kodi teardown) must
+    not escape the clear-queue guard: fail soft like a probe timeout and leave
+    the queue intact (return True = SKIP the clear) instead of aborting submit."""
+    from resources.lib.resolver_queueclear import _completed_copy_blocks_clear
+
+    with patch("resources.lib.resolver.xbmc"), patch(
+        "resources.lib.resolver.threading.Thread"
+    ) as thread_cls:
+        thread = MagicMock()
+        thread.start.side_effect = RuntimeError("can't start new thread")
+        thread_cls.return_value = thread
+        # Must not raise; must return True (queue left intact).
+        blocked = _completed_copy_blocks_clear("Title", lambda _k, _d=None: "")
+    assert blocked is True

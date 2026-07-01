@@ -137,15 +137,18 @@ class _RpuNlq:
     linear_deadzone_threshold: list
 
     def is_mel(self):
-        return (
-            all(v == 0 for v in self.nlq_offset)
-            and all(v == 1 for v in self.vdr_in_max_int)
-            and all(v == 0 for v in self.vdr_in_max)
-            and all(v == 0 for v in self.linear_deadzone_slope_int)
-            and all(v == 0 for v in self.linear_deadzone_slope)
-            and all(v == 0 for v in self.linear_deadzone_threshold_int)
-            and all(v == 0 for v in self.linear_deadzone_threshold)
+        # MEL has every NLQ field zeroed except vdr_in_max_int, which is all
+        # ones. Each (values, expected) pair must hold across all components.
+        checks = (
+            (self.nlq_offset, 0),
+            (self.vdr_in_max_int, 1),
+            (self.vdr_in_max, 0),
+            (self.linear_deadzone_slope_int, 0),
+            (self.linear_deadzone_slope, 0),
+            (self.linear_deadzone_threshold_int, 0),
+            (self.linear_deadzone_threshold, 0),
         )
+        return all(all(v == expected for v in values) for values, expected in checks)
 
     def el_type(self):
         return "MEL" if self.is_mel() else "FEL"
@@ -167,19 +170,33 @@ def _validated_rpu_payload(data):
         raise ValueError("RPU data too short")
 
     while True:
-        if data[:5] == b"\x00\x00\x00\x01\x19":
-            return data[4:]
-        if data[:4] == b"\x00\x00\x01\x19":
-            return data[3:]
-        if data[:1] == b"\x19":
+        result, stripped = _strip_one_rpu_wrapper(data)
+        if result is not None:
+            return result
+        if stripped is None:
             return data
-        if len(data) >= 2 and data[:2] in (b"\x7c\x01", b"\x00\x01"):
-            data = data[2:]
-            continue
-        if data[:1] == b"\x01":
-            data = data[1:]
-            continue
-        return data
+        data = stripped
+
+
+def _strip_one_rpu_wrapper(data):
+    """Strip one RPU wrapper layer from ``data``.
+
+    Returns ``(rpu_bytes, None)`` once the stream starts at the 0x19 RPU
+    prefix (caller stops), ``(None, remaining)`` when a continuable wrapper
+    (``7c 01`` / ``00 01`` / ``01``) was stripped, and ``(None, None)`` when
+    no known wrapper matches (caller returns ``data`` unchanged).
+    """
+    if data[:5] == b"\x00\x00\x00\x01\x19":
+        return data[4:], None
+    if data[:4] == b"\x00\x00\x01\x19":
+        return data[3:], None
+    if data[:1] == b"\x19":
+        return data, None
+    if len(data) >= 2 and data[:2] in (b"\x7c\x01", b"\x00\x01"):
+        return None, data[2:]
+    if data[:1] == b"\x01":
+        return None, data[1:]
+    return None, None
 
 
 def _clear_emulation_prevention_bytes(data):
@@ -200,6 +217,56 @@ def _clear_emulation_prevention_bytes(data):
     return bytes(out)
 
 
+def _default_seq_info():
+    """Return the vdr_seq_info field defaults used when the block is absent."""
+    return {
+        "coefficient_data_type": 0,
+        "coefficient_log2_denom_length": 0,
+        "bl_bit_depth_minus8": 2,
+        "el_bit_depth_minus8": 2,
+        "vdr_bit_depth_minus8": 4,
+        "bl_video_full_range_flag": False,
+        "el_spatial_resampling_filter_flag": False,
+        "disable_residual_flag": True,
+    }
+
+
+def _parse_bit_depths(reader, fields):
+    """Read the bit-depth/resampling sub-block into ``fields`` in place."""
+    fields["bl_bit_depth_minus8"] = reader.read_ue()
+    # dovi_tool splits this ue into the low 8 bits (el_bit_depth_minus8) and
+    # the next 8 bits (ext_mapping_idc). We only need the low 8 for MEL/FEL
+    # classification, so the upper bits are discarded.
+    fields["el_bit_depth_minus8"] = reader.read_ue() & 0xFF
+    fields["vdr_bit_depth_minus8"] = reader.read_ue()
+    reader.read_bit()  # spatial_resampling_filter_flag
+    reader.read_bits(3)  # reserved_zero_3bits
+    fields["el_spatial_resampling_filter_flag"] = bool(reader.read_bit())
+    fields["disable_residual_flag"] = bool(reader.read_bit())
+
+
+def _parse_seq_info(reader, rpu_format):
+    """Parse the vdr_seq_info block, returning the derived header fields dict."""
+    fields = _default_seq_info()
+    reader.read_bit()  # chroma_resampling_explicit_filter_flag
+    coefficient_data_type = reader.read_bits(2)
+    fields["coefficient_data_type"] = coefficient_data_type
+    coefficient_log2_denom = reader.read_ue() if coefficient_data_type == 0 else 0
+    reader.read_bits(2)  # vdr_rpu_normalized_idc
+    fields["bl_video_full_range_flag"] = bool(reader.read_bit())
+
+    if rpu_format & 0x700 == 0:
+        _parse_bit_depths(reader, fields)
+
+    if coefficient_data_type == 0:
+        fields["coefficient_log2_denom_length"] = coefficient_log2_denom
+    elif coefficient_data_type == 1:
+        fields["coefficient_log2_denom_length"] = 32
+    else:
+        raise ValueError("invalid coefficient_data_type")
+    return fields
+
+
 def _parse_header(reader):
     rpu_type = reader.read_bits(6)
     if rpu_type != 2:
@@ -210,43 +277,10 @@ def _parse_header(reader):
     reader.read_bits(4)  # vdr_rpu_level
     vdr_seq_info_present_flag = bool(reader.read_bit())
 
-    coefficient_data_type = 0
-    coefficient_log2_denom_length = 0
-    bl_bit_depth_minus8 = 2
-    el_bit_depth_minus8 = 2
-    vdr_bit_depth_minus8 = 4
-    bl_video_full_range_flag = False
-    el_spatial_resampling_filter_flag = False
-    disable_residual_flag = True
-
     if vdr_seq_info_present_flag:
-        reader.read_bit()  # chroma_resampling_explicit_filter_flag
-        coefficient_data_type = reader.read_bits(2)
-        coefficient_log2_denom = 0
-        if coefficient_data_type == 0:
-            coefficient_log2_denom = reader.read_ue()
-        reader.read_bits(2)  # vdr_rpu_normalized_idc
-        bl_video_full_range_flag = bool(reader.read_bit())
-
-        if rpu_format & 0x700 == 0:
-            bl_bit_depth_minus8 = reader.read_ue()
-            # dovi_tool splits this ue into the low 8 bits (el_bit_depth_minus8)
-            # and the next 8 bits (ext_mapping_idc). We only need the low
-            # 8 for MEL/FEL classification, so the upper bits are discarded.
-            el_bit_depth_minus8_raw = reader.read_ue()
-            el_bit_depth_minus8 = el_bit_depth_minus8_raw & 0xFF
-            vdr_bit_depth_minus8 = reader.read_ue()
-            reader.read_bit()  # spatial_resampling_filter_flag
-            reader.read_bits(3)  # reserved_zero_3bits
-            el_spatial_resampling_filter_flag = bool(reader.read_bit())
-            disable_residual_flag = bool(reader.read_bit())
-
-        if coefficient_data_type == 0:
-            coefficient_log2_denom_length = coefficient_log2_denom
-        elif coefficient_data_type == 1:
-            coefficient_log2_denom_length = 32
-        else:
-            raise ValueError("invalid coefficient_data_type")
+        fields = _parse_seq_info(reader, rpu_format)
+    else:
+        fields = _default_seq_info()
 
     vdr_dm_metadata_present_flag = bool(reader.read_bit())
     use_prev_vdr_rpu_flag = bool(reader.read_bit())
@@ -256,16 +290,9 @@ def _parse_header(reader):
     return _RpuHeader(
         rpu_format=rpu_format,
         vdr_rpu_profile=vdr_rpu_profile,
-        coefficient_data_type=coefficient_data_type,
-        coefficient_log2_denom_length=coefficient_log2_denom_length,
-        bl_bit_depth_minus8=bl_bit_depth_minus8,
-        el_bit_depth_minus8=el_bit_depth_minus8,
-        vdr_bit_depth_minus8=vdr_bit_depth_minus8,
-        bl_video_full_range_flag=bl_video_full_range_flag,
-        el_spatial_resampling_filter_flag=el_spatial_resampling_filter_flag,
-        disable_residual_flag=disable_residual_flag,
         vdr_dm_metadata_present_flag=vdr_dm_metadata_present_flag,
         use_prev_vdr_rpu_flag=use_prev_vdr_rpu_flag,
+        **fields,
     )
 
 
@@ -304,6 +331,30 @@ def _parse_mmr_curve(reader, header):
             reader.read_var(header.coefficient_log2_denom_length)
 
 
+def _parse_mapping_pivots(reader, bl_bit_depth):
+    """Read each component's pivot values, returning the per-component piece count."""
+    num_pieces_per_cmp = []
+    for _ in range(_NUM_COMPONENTS):
+        num_pivots_minus2 = reader.read_ue()
+        num_pieces_per_cmp.append(num_pivots_minus2 + 1)
+        for _ in range(num_pivots_minus2 + 2):
+            reader.read_var(bl_bit_depth)
+    return num_pieces_per_cmp
+
+
+def _parse_mapping_curves(reader, header, num_pieces_per_cmp):
+    """Parse each piece's polynomial/MMR mapping curve."""
+    for num_pieces in num_pieces_per_cmp:
+        for _ in range(num_pieces):
+            mapping_idc = reader.read_ue()
+            if mapping_idc == 0:
+                _parse_polynomial_curve(reader, header)
+            elif mapping_idc == 1:
+                _parse_mmr_curve(reader, header)
+            else:
+                raise ValueError("unknown mapping_idc {}".format(mapping_idc))
+
+
 def _parse_mapping(reader, header):
     """Parse rpu_data_mapping() and return whether NLQ data follows."""
     reader.read_ue()  # vdr_rpu_id
@@ -311,12 +362,7 @@ def _parse_mapping(reader, header):
     reader.read_ue()  # mapping_chroma_format_idc
 
     bl_bit_depth = header.bl_bit_depth_minus8 + 8
-    num_pieces_per_cmp = []
-    for _ in range(_NUM_COMPONENTS):
-        num_pivots_minus2 = reader.read_ue()
-        num_pieces_per_cmp.append(num_pivots_minus2 + 1)
-        for _ in range(num_pivots_minus2 + 2):
-            reader.read_var(bl_bit_depth)
+    num_pieces_per_cmp = _parse_mapping_pivots(reader, bl_bit_depth)
 
     has_nlq = (header.rpu_format & 0x700 == 0) and not header.disable_residual_flag
     if has_nlq:
@@ -329,16 +375,7 @@ def _parse_mapping(reader, header):
     reader.read_ue()  # num_x_partitions_minus1
     reader.read_ue()  # num_y_partitions_minus1
 
-    for num_pieces in num_pieces_per_cmp:
-        for _ in range(num_pieces):
-            mapping_idc = reader.read_ue()
-            if mapping_idc == 0:
-                _parse_polynomial_curve(reader, header)
-            elif mapping_idc == 1:
-                _parse_mmr_curve(reader, header)
-            else:
-                raise ValueError("unknown mapping_idc {}".format(mapping_idc))
-
+    _parse_mapping_curves(reader, header, num_pieces_per_cmp)
     return has_nlq
 
 

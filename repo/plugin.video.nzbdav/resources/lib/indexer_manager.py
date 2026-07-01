@@ -39,6 +39,16 @@ _LAST_INDEXER_PROMPT = (
 _ALLOWED_URL_SCHEMES = frozenset({"http", "https"})
 
 
+def _invalid_url_char_reason(text):
+    """Return a rejection reason for the first bad char, else ``""``."""
+    for char in text:
+        if char.isspace():
+            return "URL must not contain whitespace"
+        if ord(char) < 0x20:
+            return "URL contains control characters"
+    return ""
+
+
 def _validate_indexer_url(url):
     """Return ``(True, "")`` if ``url`` is acceptable, else ``(False, reason)``.
 
@@ -49,11 +59,9 @@ def _validate_indexer_url(url):
     text = "" if url is None else str(url)
     if not text:
         return False, "URL is empty"
-    for char in text:
-        if char.isspace():
-            return False, "URL must not contain whitespace"
-        if ord(char) < 0x20:
-            return False, "URL contains control characters"
+    char_reason = _invalid_url_char_reason(text)
+    if char_reason:
+        return False, char_reason
     try:
         parts = urlsplit(text)
     except ValueError as error:
@@ -197,6 +205,17 @@ def _find_indexer(indexers, indexer_id):
     return -1, None
 
 
+def _legacy_needs_migration(legacy, existing_ids, existing_urls):
+    """Return True if a legacy entry is new (by id and api_url) and migratable."""
+    indexer_id = str(legacy.get("id") or "").strip()
+    if not indexer_id or indexer_id in existing_ids:
+        return False
+    api_url = str(legacy.get("api_url") or "").rstrip("/")
+    if api_url and api_url in existing_urls:
+        return False
+    return True
+
+
 def load_managed_indexers():
     """Load JSON indexers and migrate complete legacy static settings once."""
     indexers = load_indexers()
@@ -204,15 +223,11 @@ def load_managed_indexers():
     existing_urls = {
         str(indexer.get("api_url") or "").rstrip("/") for indexer in indexers
     }
-    migrated = []
-    for legacy in get_legacy_configured_indexers():
-        indexer_id = str(legacy.get("id") or "").strip()
-        api_url = str(legacy.get("api_url") or "").rstrip("/")
-        if not indexer_id or indexer_id in existing_ids:
-            continue
-        if api_url and api_url in existing_urls:
-            continue
-        migrated.append(_normalized_legacy_entry(legacy))
+    migrated = [
+        _normalized_legacy_entry(legacy)
+        for legacy in get_legacy_configured_indexers()
+        if _legacy_needs_migration(legacy, existing_ids, existing_urls)
+    ]
 
     if migrated:
         indexers = indexers + migrated
@@ -285,16 +300,6 @@ def set_indexer_enabled(indexer_id, enabled):
     return updated, None
 
 
-def enable_indexer(indexer_id):
-    """Enable an indexer and persist the change."""
-    return set_indexer_enabled(indexer_id, True)
-
-
-def disable_indexer(indexer_id):
-    """Disable an indexer and persist the change."""
-    return set_indexer_enabled(indexer_id, False)
-
-
 def toggle_indexer_enabled(indexer_id):
     """Toggle an indexer's enabled flag and persist the change."""
     indexers = load_indexers()
@@ -348,6 +353,18 @@ def retest_indexer(indexer_id):
     return caps, None
 
 
+def _apply_indexer_field_edits(indexer, name, api_url, api_key):
+    """Return a copy of ``indexer`` with non-``None`` field edits applied."""
+    updated = dict(indexer)
+    if name is not None:
+        updated["name"] = name
+    if api_url is not None:
+        updated["api_url"] = api_url
+    if api_key is not None:
+        updated["api_key"] = api_key
+    return updated
+
+
 def update_indexer(
     indexer_id, name=None, api_url=None, api_key=None, error_callback=None
 ):
@@ -363,13 +380,7 @@ def update_indexer(
         return None, _NOT_FOUND
 
     original_version = _entry_version(indexer)
-    updated = dict(indexer)
-    if name is not None:
-        updated["name"] = name
-    if api_url is not None:
-        updated["api_url"] = api_url
-    if api_key is not None:
-        updated["api_key"] = api_key
+    updated = _apply_indexer_field_edits(indexer, name, api_url, api_key)
 
     # Validate the *effective* URL on the updated entry. Edits that don't
     # touch api_url still get re-validated so a previously-stored bad URL
@@ -387,18 +398,32 @@ def update_indexer(
     if _entry_version(current_indexer) != original_version:
         return None, _VERSION_CONFLICT
 
-    connection_changed = updated.get("api_url") != indexer.get(
-        "api_url"
-    ) or updated.get("api_key") != indexer.get("api_key")
-    if connection_changed:
-        caps, error = fetch_caps(updated.get("api_url"), updated.get("api_key"))
-        if error:
-            return None, redact_text(error)
-        updated["caps"] = caps
+    error = _refresh_caps_if_connection_changed(updated, indexer)
+    if error:
+        return None, error
 
     current_indexers[current_position] = normalize_indexer(updated)
     save_indexers(current_indexers)
     return current_indexers[current_position], None
+
+
+def _refresh_caps_if_connection_changed(updated, indexer):
+    """Re-fetch caps into ``updated`` when api_url/api_key changed.
+
+    Mutates ``updated["caps"]`` on success and returns ``None``; returns a
+    redacted error string when the caps fetch fails. Returns ``None`` (no-op)
+    when the connection fields are unchanged.
+    """
+    connection_changed = updated.get("api_url") != indexer.get(
+        "api_url"
+    ) or updated.get("api_key") != indexer.get("api_key")
+    if not connection_changed:
+        return None
+    caps, error = fetch_caps(updated.get("api_url"), updated.get("api_key"))
+    if error:
+        return redact_text(error)
+    updated["caps"] = caps
+    return None
 
 
 def _notify(dialog, message, time=3000):
@@ -490,21 +515,30 @@ def _input_or_cancel(dialog, heading, current, hidden=False):
     return value
 
 
-def _edit_indexer_flow(dialog, indexer):
-    current_name = str(indexer.get("name") or "")
-    current_url = str(indexer.get("api_url") or "")
+def _prompt_indexer_edits(dialog, indexer):
+    """Prompt for name/url/key edits; return a kwargs dict or ``None`` on cancel."""
     current_key = str(indexer.get("api_key") or "")
-    name = _input_or_cancel(dialog, "Display name", current_name)
+    name = _input_or_cancel(dialog, "Display name", str(indexer.get("name") or ""))
     if name is None:
-        return
-    api_url = _input_or_cancel(dialog, "API URL", current_url)
+        return None
+    api_url = _input_or_cancel(dialog, "API URL", str(indexer.get("api_url") or ""))
     if api_url is None:
-        return
+        return None
     api_key = _input_or_cancel(dialog, "API key", current_key, hidden=True)
     if api_key is None:
-        return
+        return None
     if api_key is _KEEP_CURRENT_SENTINEL:
         api_key = current_key
+    return {"name": name, "api_url": api_url, "api_key": api_key}
+
+
+def _edit_indexer_flow(dialog, indexer):
+    edits = _prompt_indexer_edits(dialog, indexer)
+    if edits is None:
+        return
+    name = edits["name"]
+    api_url = edits["api_url"]
+    api_key = edits["api_key"]
 
     updated, error = update_indexer(
         _indexer_id(indexer),
@@ -518,43 +552,53 @@ def _edit_indexer_flow(dialog, indexer):
         _notify(dialog, "Updated {}".format(_indexer_label(updated)))
 
 
+def _retest_indexer_flow(dialog, indexer):
+    _caps, error = retest_indexer(_indexer_id(indexer))
+    # ``retest_indexer`` already redacts via http_util, but apply
+    # again defensively in case the error path changes upstream.
+    _show_result(
+        dialog,
+        "{} caps OK".format(_indexer_label(indexer)),
+        redact_text(error) if error else None,
+    )
+
+
+def _toggle_indexer_flow(dialog, indexer):
+    updated, error = toggle_indexer_enabled(_indexer_id(indexer))
+    if error:
+        _ok(dialog, error)
+        return
+    state = "enabled" if updated.get("enabled") else "disabled"
+    _notify(dialog, "{} {}".format(_indexer_label(updated), state))
+
+
+def _delete_indexer_flow(dialog, indexer):
+    if not dialog.yesno(addon_name(), "Delete {}?".format(_indexer_label(indexer))):
+        return
+    # If this is the last enabled indexer, warn the user before
+    # delete: search will fail with no enabled indexers configured.
+    enabled_count = sum(1 for entry in load_indexers() if bool(entry.get("enabled")))
+    if enabled_count == 1 and bool(indexer.get("enabled")):
+        if not dialog.yesno(_LAST_INDEXER_HEADING, _LAST_INDEXER_PROMPT):
+            return
+    _deleted, error = delete_indexer(_indexer_id(indexer))
+    _show_result(dialog, "Deleted {}".format(_indexer_label(indexer)), error)
+
+
 def _existing_indexer_flow(dialog, indexer):
     choice = dialog.select(_indexer_label(indexer), _indexer_actions(indexer))
     if choice < 0:
         return
 
-    indexer_id = _indexer_id(indexer)
-    if choice == 0:
-        _caps, error = retest_indexer(indexer_id)
-        # ``retest_indexer`` already redacts via http_util, but apply
-        # again defensively in case the error path changes upstream.
-        _show_result(
-            dialog,
-            "{} caps OK".format(_indexer_label(indexer)),
-            redact_text(error) if error else None,
-        )
-    elif choice == 1:
-        _edit_indexer_flow(dialog, indexer)
-    elif choice == 2:
-        updated, error = toggle_indexer_enabled(indexer_id)
-        if error:
-            _ok(dialog, error)
-        else:
-            state = "enabled" if updated.get("enabled") else "disabled"
-            _notify(dialog, "{} {}".format(_indexer_label(updated), state))
-    elif choice == 3 and dialog.yesno(
-        addon_name(), "Delete {}?".format(_indexer_label(indexer))
-    ):
-        # If this is the last enabled indexer, warn the user before
-        # delete: search will fail with no enabled indexers configured.
-        enabled_count = sum(
-            1 for entry in load_indexers() if bool(entry.get("enabled"))
-        )
-        if enabled_count == 1 and bool(indexer.get("enabled")):
-            if not dialog.yesno(_LAST_INDEXER_HEADING, _LAST_INDEXER_PROMPT):
-                return
-        _deleted, error = delete_indexer(indexer_id)
-        _show_result(dialog, "Deleted {}".format(_indexer_label(indexer)), error)
+    handlers = {
+        0: _retest_indexer_flow,
+        1: _edit_indexer_flow,
+        2: _toggle_indexer_flow,
+        3: _delete_indexer_flow,
+    }
+    handler = handlers.get(choice)
+    if handler is not None:
+        handler(dialog, indexer)
 
 
 def open_indexer_manager():
