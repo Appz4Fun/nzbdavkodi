@@ -80,6 +80,47 @@ def test_valid_xml_still_parses_on_stdlib_fallback(monkeypatch):
     assert root.tag == "rss"
 
 
+@pytest.mark.parametrize("encoding", ["utf-16", "utf-16-le", "utf-16-be", "utf-32"])
+def test_multibyte_encoded_entity_bytes_rejected_on_stdlib_fallback(
+    monkeypatch, encoding
+):
+    # A raw ``rb"<!ENTITY"`` byte scan misses multi-byte encodings, but the
+    # stdlib parser still decodes and expands them — so the guard must decode
+    # the payload to logical text before scanning. (CodeRabbit / Codacy #370.)
+    monkeypatch.setattr(xml_safety, "_USING_DEFUSEDXML", False)
+    monkeypatch.setattr(xml_safety, "_ET", stdlib_et)
+    payload = _INTERNAL_ENTITY_XML.encode(encoding)
+    with pytest.raises(UnsafeXmlError):
+        safe_fromstring(payload)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '<root><!-- config example: <!ENTITY x "y"> do not use --><a>ok</a></root>',
+        "<root><![CDATA[ <!ENTITY evil SYSTEM 'x'> ]]></root>",
+        "<root><a>&lt;!ENTITY escaped &quot;text&quot;&gt;</a></root>",
+    ],
+)
+def test_inert_entity_literal_without_doctype_is_not_a_false_positive(
+    monkeypatch, payload
+):
+    # A literal ``<!ENTITY`` inside a comment / CDATA / escaped text — with no
+    # DOCTYPE — is inert to the parser and must not be wrongly rejected, or a
+    # legitimate indexer feed silently returns zero results.
+    monkeypatch.setattr(xml_safety, "_USING_DEFUSEDXML", False)
+    monkeypatch.setattr(xml_safety, "_ET", stdlib_et)
+    root = safe_fromstring(payload)
+    assert root.tag == "root"
+
+
+def test_valid_utf16_bytes_parse_on_stdlib_fallback(monkeypatch):
+    monkeypatch.setattr(xml_safety, "_USING_DEFUSEDXML", False)
+    monkeypatch.setattr(xml_safety, "_ET", stdlib_et)
+    root = safe_fromstring(_VALID_XML.encode("utf-16"))
+    assert root.tag == "rss"
+
+
 def test_malformed_xml_raises_parse_error():
     with pytest.raises(ParseError):
         safe_fromstring("<rss><channel></rss>")
