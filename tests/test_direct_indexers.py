@@ -670,24 +670,39 @@ def test_search_direct_indexers_fans_out_concurrently(mock_xbmcaddon, mock_confi
     lock = Lock()
     started_ids = set()
 
+    both_started_at = [None]
+
     def slow_search(indexer, *_args, **_kwargs):
         with lock:
             started_ids.add(indexer["id"])
             if len(started_ids) == 2:
+                both_started_at[0] = time.monotonic()
                 both_started.set()
         assert both_started.wait(0.5)
         time.sleep(0.2)
         return ([{"title": indexer["label"], "link": indexer["id"]}], None)
 
-    started = time.monotonic()
     with patch("resources.lib.direct_indexers._search_one_indexer", new=slow_search):
         results, error = search_direct_indexers("movie", "The Matrix")
-    elapsed = time.monotonic() - started
+    returned_at = time.monotonic()
 
     assert error is None
     assert len(results) == 2
+    # both_started.is_set() (set only when both workers are concurrently in-flight)
+    # plus error is None / len == 2 prove the fan-out ran in parallel.
     assert both_started.is_set()
-    assert elapsed < 0.55
+    # Return-latency guard (Codex P2): once both workers are in flight they each
+    # finish ~0.2s later, so the fan-out must return shortly after -- it must NOT
+    # perform an extra bounded wait or serial cleanup first (which the removed
+    # total-elapsed bound caught). Measured from both-in-flight so it excludes
+    # worker-start latency; a generous 2s bound (~10x the 0.2s worker body)
+    # tolerates heavy CPU load yet stays red on a >~1.5s extra-wait regression.
+    assert both_started_at[0] is not None
+    return_latency = returned_at - both_started_at[0]
+    assert return_latency < 2.0, (
+        "fan-out returned {:.3f}s after both workers were in flight (extra wait "
+        "or serial cleanup before returning?)".format(return_latency)
+    )
 
 
 @patch("resources.lib.direct_indexers.get_configured_indexers")
@@ -709,7 +724,10 @@ def test_search_direct_indexers_marks_incomplete_futures_timed_out(
     mock_xbmcaddon.Addon.return_value = _addon_with_settings({"max_results": "25"})
 
     def slow_search(*_args, **_kwargs):
-        time.sleep(0.2)
+        # Sleep far longer than the 0.05s fan-out timeout so a regression that
+        # waits on the worker (e.g. executor.shutdown(wait=True)) is ~1.0s --
+        # dramatically over the bound -- while the timeout path stays ~0.05s.
+        time.sleep(1.0)
         return ([{"title": "late", "link": "late"}], None)
 
     mock_search_one.side_effect = slow_search
@@ -724,7 +742,7 @@ def test_search_direct_indexers_marks_incomplete_futures_timed_out(
     assert not results
     assert "Direct indexer Slow unavailable:" in error
     assert "timed out" in error
-    assert elapsed < 0.15
+    assert elapsed < 0.5
 
 
 @patch("resources.lib.direct_indexers.get_configured_indexers")
@@ -768,8 +786,19 @@ def test_test_configured_indexers_marks_incomplete_futures_timed_out(
         }
     ]
 
+    release_caps = Event()
+    caps_completions = [0]
+    completions_lock = Lock()
+
     def slow_caps(*_args, **_kwargs):
-        time.sleep(0.2)
+        # Released only in the finally below (AFTER the snapshot), with no early
+        # timer, so the caps worker can never complete before we record whether
+        # the fan-out joined it -- the snapshot is load-independent. The 2s cap
+        # only bounds a regression where the fan-out waits on the worker (e.g.
+        # executor.shutdown(wait=True)).
+        release_caps.wait(timeout=2)
+        with completions_lock:
+            caps_completions[0] += 1
         return "<caps></caps>"
 
     mock_http.side_effect = slow_caps
@@ -777,16 +806,28 @@ def test_test_configured_indexers_marks_incomplete_futures_timed_out(
     with patch(
         "resources.lib.direct_indexers._DIRECT_FANOUT_TIMEOUT", 0.05, create=True
     ):
-        started = time.monotonic()
-        ok_count, total_count, errors = test_configured_indexers()
-        elapsed = time.monotonic() - started
+        try:
+            ok_count, total_count, errors = test_configured_indexers()
+            with completions_lock:
+                caps_completions_at_return = caps_completions[0]
+        finally:
+            release_caps.set()
 
+    # Do not require the caps worker to have started (Codex P2): with the fan-out
+    # timeout patched to 0.05s, a loaded runner can legitimately hit the timeout
+    # before the executor schedules the worker -- and timing out an unscheduled
+    # worker is itself the behavior under test. The caps-not-completed snapshot
+    # below holds whether the worker blocked in-flight or never ran.
     assert ok_count == 0
     assert total_count == 1
     assert len(errors) == 1
     assert "Direct indexer Slow unavailable:" in errors[0]
     assert "timed out" in errors[0]
-    assert elapsed < 0.15
+    # Structural proof (load-independent): the fan-out must return at
+    # _DIRECT_FANOUT_TIMEOUT without joining the still-blocked caps worker.
+    # Only the finally above releases it, after the snapshot -- so if the
+    # fan-out wrongly waited, the worker would complete -> count > 0.
+    assert caps_completions_at_return == 0
 
 
 @patch("resources.lib.direct_indexers.get_configured_indexers")

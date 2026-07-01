@@ -2,6 +2,7 @@
 # Copyright (C) 2026 nzbdav contributors
 
 import time
+from threading import Lock
 from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
 
@@ -635,29 +636,41 @@ def test_find_video_file_parallelizes_sibling_subfolders_for_post_picker_start(
         ]
     )
 
+    spans = {}
+    spans_lock = Lock()
+
+    def _slow(key, response, delay):
+        with spans_lock:
+            spans.setdefault(key, {})["start"] = time.perf_counter()
+        time.sleep(delay)
+        with spans_lock:
+            spans[key]["end"] = time.perf_counter()
+        return _webdav_response(response)
+
     def propfind(req, **_kwargs):
         url = req.full_url
         if url.endswith("/Serial/"):
             return _webdav_response(parent)
         if url.endswith("/Serial/A/"):
-            time.sleep(0.08)
-            return _webdav_response(empty_a)
+            return _slow("A", empty_a, 0.08)
         if url.endswith("/Serial/B/"):
-            time.sleep(0.18)
-            return _webdav_response(empty_b)
+            return _slow("B", empty_b, 0.18)
         if url.endswith("/Serial/C/"):
-            time.sleep(0.18)
-            return _webdav_response(with_video)
+            return _slow("C", with_video, 0.18)
         raise AssertionError("unexpected PROPFIND URL: {}".format(url))
 
     mock_urlopen.side_effect = propfind
 
-    started = time.perf_counter()
     path = find_video_file("/content/uncategorized/Serial/")
-    elapsed = time.perf_counter() - started
 
     assert path == "/content/uncategorized/Serial/C/Movie.mkv"
-    assert elapsed < 0.30, "WebDAV sibling discovery took {:.3f}s".format(elapsed)
+    # Structural overlap proof: the two equally-slow siblings B and C must be
+    # in-flight at the same time (parallel fan-out). Serial probing would make
+    # B finish before C starts (B_end <= C_start) -> no overlap -> failure.
+    b, c = spans["B"], spans["C"]
+    assert (
+        b["start"] < c["end"] and c["start"] < b["end"]
+    ), "sibling probes B and C did not overlap: " "B={B} C={C}".format(B=b, C=c)
 
 
 @patch("resources.lib.webdav._get_settings")
@@ -695,31 +708,41 @@ def test_find_video_file_overlaps_first_sibling_probe_for_post_picker_start(
         ]
     )
 
+    spans = {}
+    spans_lock = Lock()
+
+    def _slow(key, response, delay):
+        with spans_lock:
+            spans.setdefault(key, {})["start"] = time.perf_counter()
+        time.sleep(delay)
+        with spans_lock:
+            spans[key]["end"] = time.perf_counter()
+        return _webdav_response(response)
+
     def propfind(req, **_kwargs):
         url = req.full_url
         if url.endswith("/Overlap/"):
             return _webdav_response(parent)
         if url.endswith("/Overlap/A/"):
-            time.sleep(0.16)
-            return _webdav_response(empty_a)
+            return _slow("A", empty_a, 0.16)
         if url.endswith("/Overlap/B/"):
-            time.sleep(0.16)
-            return _webdav_response(with_video_b)
+            return _slow("B", with_video_b, 0.16)
         if url.endswith("/Overlap/C/"):
-            time.sleep(0.6)
-            return _webdav_response(slow_c)
+            return _slow("C", slow_c, 0.6)
         raise AssertionError("unexpected PROPFIND URL: {}".format(url))
 
     mock_urlopen.side_effect = propfind
 
-    started = time.perf_counter()
     path = find_video_file("/content/uncategorized/Overlap/")
-    elapsed = time.perf_counter() - started
 
     assert path == "/content/uncategorized/Overlap/B/Movie.mkv"
-    # Overlapped: near the slowest sibling (~0.6s), well under the serial sum
-    # (0.16 + 0.16 + 0.6 = 0.92s).
-    assert elapsed < 0.85, "first-sibling WebDAV overlap took {:.3f}s".format(elapsed)
+    # Structural overlap proof: the fast winner B and the slowest sibling C must
+    # be in-flight simultaneously (probes overlap). Serial probing would make B
+    # finish before C starts (B_end <= C_start) -> no overlap -> failure.
+    b, c = spans["B"], spans["C"]
+    assert (
+        b["start"] < c["end"] and c["start"] < b["end"]
+    ), "first-sibling probes B and C did not overlap: " "B={B} C={C}".format(B=b, C=c)
 
 
 @patch("resources.lib.webdav._get_settings")
