@@ -100,12 +100,40 @@ def _xml_bytes_to_text(payload):
         return payload.decode("utf-8", "replace")
 
 
+def _has_entity_declaration(text):
+    # A real declaration needs both a DOCTYPE and an ENTITY; requiring both
+    # avoids rejecting an inert ``<!ENTITY`` literal in a comment/CDATA.
+    return bool(_DOCTYPE_RE.search(text) and _ENTITY_DECL_RE.search(text))
+
+
+def _entity_scan_texts(payload):
+    """Decodings of ``payload`` to scan for an entity declaration.
+
+    The best-guess decoding (BOM/declared-encoding) plus BOTH UTF-16
+    endiannesses. The UTF-16 candidates catch a BOM-less UTF-16 stream the
+    prefix sniffer can't classify — e.g. one that opens with legal XML
+    whitespace so the ``<`` isn't at byte 0 — which stdlib expat still
+    auto-detects and would expand. A valid, null-free UTF-8/single-byte
+    document cannot spell the null-interleaved markers under a UTF-16 decode,
+    so scanning these extra views adds no false positives.
+    """
+    texts = [_xml_bytes_to_text(payload)]
+    for codec in ("utf-16-le", "utf-16-be"):
+        try:
+            texts.append(payload.decode(codec, "replace"))
+        except (LookupError, ValueError):  # pragma: no cover - codecs bundled
+            pass
+    return texts
+
+
 def _reject_entity_declarations(xml_text):
-    text = xml_text
-    if isinstance(text, (bytes, bytearray)):
-        text = _xml_bytes_to_text(bytes(text))
-    if _DOCTYPE_RE.search(text) and _ENTITY_DECL_RE.search(text):
-        raise _UnsafeXmlError("XML entity declarations are not allowed")
+    if isinstance(xml_text, (bytes, bytearray)):
+        candidates = _entity_scan_texts(bytes(xml_text))
+    else:
+        candidates = [xml_text]
+    for text in candidates:
+        if _has_entity_declaration(text):
+            raise _UnsafeXmlError("XML entity declarations are not allowed")
 
 
 def safe_fromstring(xml_text):

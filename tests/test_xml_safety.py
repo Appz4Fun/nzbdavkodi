@@ -160,6 +160,22 @@ def test_utf8_bom_entity_bytes_rejected_and_valid_parses(monkeypatch):
     assert root.tag == "rss"
 
 
+# A BOM-less UTF-16 stream that opens with legal XML whitespace pushes the ``<``
+# off byte 0, so a prefix-only sniffer misreads it as UTF-8 and misses the
+# null-interleaved markers — yet stdlib expat still auto-detects UTF-16 and
+# expands the entity. The guard must scan both UTF-16 endiannesses to catch it.
+@pytest.mark.parametrize("encoding", ["utf-16-le", "utf-16-be"])
+@pytest.mark.parametrize("lead", ["\n", "  \n\t", ""])
+def test_bomless_utf16_entity_after_leading_whitespace_rejected(
+    monkeypatch, encoding, lead
+):
+    monkeypatch.setattr(xml_safety, "_USING_DEFUSEDXML", False)
+    monkeypatch.setattr(xml_safety, "_ET", stdlib_et)
+    doc = lead + '<!DOCTYPE r [<!ENTITY a "x">]><r>&a;</r>'
+    with pytest.raises(UnsafeXmlError):
+        safe_fromstring(doc.encode(encoding))
+
+
 def test_malformed_xml_raises_parse_error():
     with pytest.raises(ParseError):
         safe_fromstring("<rss><channel></rss>")
