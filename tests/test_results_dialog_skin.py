@@ -36,3 +36,36 @@ def test_results_dialog_scrollbar_is_linked_to_results_list():
     assert results_list.findtext("pagecontrol") == "60"
     assert scrollbar.findtext("orientation") == "vertical"
     assert scrollbar.findtext("showonepage") == "false"
+
+
+_FOCUS_ACCENT_COLOR = "FF4A9EFF"
+
+
+def _accent_bars(layout):
+    """Thin left-edge image bars (the high-contrast focus indicator)."""
+    if layout is None:
+        return []
+    bars = []
+    for image in layout.findall("./control[@type='image']"):
+        if (
+            image.findtext("colordiffuse") == _FOCUS_ACCENT_COLOR
+            and image.findtext("left") == "0"
+            and int(image.findtext("width") or "0") <= 8
+        ):
+            bars.append(image)
+    return bars
+
+
+def test_results_dialog_focused_row_has_high_contrast_focus_indicator():
+    """The selected row must carry a bright left accent bar so focus is
+    unmistakable on a TV — the recurring Palette accessibility ask. It lives
+    only in the focused layout, so it does not paint every row."""
+    root = ET.parse(_DIALOG_XML_PATH).getroot()
+    results_list = _control(root, "list", "50")
+    assert results_list is not None, "results list control id=50 missing"
+
+    focused = results_list.find("./focusedlayout")
+    unfocused = results_list.find("./itemlayout")
+
+    assert _accent_bars(focused), "focused row is missing the accent-bar indicator"
+    assert not _accent_bars(unfocused), "accent bar must be focus-only"
