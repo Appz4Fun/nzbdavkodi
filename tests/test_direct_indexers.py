@@ -329,6 +329,17 @@ def test_parse_results_rejects_billion_laughs_entities():
     assert error.startswith("Direct indexer returned an invalid response:")
 
 
+def test_parse_results_handles_non_str_input_without_raising():
+    # Defensive contract: a None/garbage body degrades to an error tuple, never
+    # an uncaught TypeError (parity with newznab_caps.parse_caps).
+    from resources.lib.direct_indexers import parse_results
+
+    results, error = parse_results(None, "My Indexer")
+
+    assert not results
+    assert error.startswith("Direct indexer returned an invalid response:")
+
+
 EMPTY_RSS = """<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2010/feeds/attributes/">
 <channel><newznab:response offset="0" total="0"/></channel>

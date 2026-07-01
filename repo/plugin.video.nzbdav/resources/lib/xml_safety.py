@@ -62,26 +62,35 @@ _DOCTYPE_RE = re.compile(r"<!DOCTYPE\b")
 _ENTITY_DECL_RE = re.compile(r"<!ENTITY\b")
 _XML_DECL_ENCODING_RE = re.compile(r'encoding\s*=\s*["\']([\w.\-]+)["\']')
 
+# Leading-bytes → codec, per the XML spec's encoding auto-detection (Appendix F):
+# an explicit BOM, or the byte pattern of the mandatory ``<`` start character
+# under each UTF-16/32 endianness. Ordered longest-prefix first so a 4-byte
+# UTF-32 marker is never shadowed by its 2-byte UTF-16 prefix. Endianness is
+# explicit — decoding with the wrong one would mangle the ASCII markup tokens.
+_BOM_CODECS = (
+    (b"\x00\x00\xfe\xff", "utf-32-be"),
+    (b"\x00\x00\x00<", "utf-32-be"),
+    (b"\xff\xfe\x00\x00", "utf-32-le"),
+    (b"<\x00\x00\x00", "utf-32-le"),
+    (b"\xef\xbb\xbf", "utf-8-sig"),
+    (b"\xfe\xff", "utf-16-be"),
+    (b"\x00<", "utf-16-be"),
+    (b"\xff\xfe", "utf-16-le"),
+    (b"<\x00", "utf-16-le"),
+)
+
 
 def _xml_bytes_to_text(payload):
     """Decode XML bytes to logical text for the entity scan.
 
     Honours a byte-order mark and the ``<?xml encoding=...?>`` declaration so
     UTF-16/UTF-32 payloads can't hide an entity declaration from the scan.
-    Endianness is resolved explicitly — decoding with the wrong one would mangle
-    the ASCII markup tokens we look for. ``errors="replace"`` keeps this
-    best-effort; the real parse still runs on the original bytes.
+    ``errors="replace"`` keeps this best-effort; the real parse still runs on
+    the original bytes.
     """
-    if payload[:4] in (b"\x00\x00\xfe\xff", b"\x00\x00\x00<"):
-        return payload.decode("utf-32-be", "replace")
-    if payload[:4] in (b"\xff\xfe\x00\x00", b"<\x00\x00\x00"):
-        return payload.decode("utf-32-le", "replace")
-    if payload[:2] in (b"\xfe\xff", b"\x00<"):
-        return payload.decode("utf-16-be", "replace")
-    if payload[:2] in (b"\xff\xfe", b"<\x00"):
-        return payload.decode("utf-16-le", "replace")
-    if payload[:3] == b"\xef\xbb\xbf":
-        return payload.decode("utf-8-sig", "replace")
+    for prefix, codec in _BOM_CODECS:
+        if payload[: len(prefix)] == prefix:
+            return payload.decode(codec, "replace")
     head = payload[:200].decode("ascii", "replace")
     match = _XML_DECL_ENCODING_RE.search(head)
     encoding = match.group(1) if match else "utf-8"

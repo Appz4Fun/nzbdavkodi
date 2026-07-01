@@ -121,6 +121,45 @@ def test_valid_utf16_bytes_parse_on_stdlib_fallback(monkeypatch):
     assert root.tag == "rss"
 
 
+# BOM-less multi-byte streams: the entity declaration must still be caught from
+# the ``<``-start byte pattern alone, and the decoder must pick the right
+# endianness. ``utf-16-le`` / ``-be`` here have no BOM by construction.
+@pytest.mark.parametrize(
+    "encoding", ["utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"]
+)
+def test_bomless_multibyte_entity_bytes_rejected_on_stdlib_fallback(
+    monkeypatch, encoding
+):
+    monkeypatch.setattr(xml_safety, "_USING_DEFUSEDXML", False)
+    monkeypatch.setattr(xml_safety, "_ET", stdlib_et)
+    payload = _INTERNAL_ENTITY_XML.encode(encoding)
+    with pytest.raises(UnsafeXmlError):
+        safe_fromstring(payload)
+
+
+# Only UTF-16 variants here: expat (the stdlib parser) does not support UTF-32,
+# so a valid UTF-32 document raises ParseError regardless of the guard — and by
+# the same token a UTF-32 entity payload can't reach entity expansion on the
+# stdlib path anyway. The guard still rejects UTF-32 entity declarations
+# defensively (see the rejection tests above).
+@pytest.mark.parametrize("encoding", ["utf-16", "utf-16-le", "utf-16-be"])
+def test_valid_multibyte_bytes_parse_on_stdlib_fallback(monkeypatch, encoding):
+    monkeypatch.setattr(xml_safety, "_USING_DEFUSEDXML", False)
+    monkeypatch.setattr(xml_safety, "_ET", stdlib_et)
+    root = safe_fromstring(_VALID_XML.encode(encoding))
+    assert root.tag == "rss"
+
+
+def test_utf8_bom_entity_bytes_rejected_and_valid_parses(monkeypatch):
+    monkeypatch.setattr(xml_safety, "_USING_DEFUSEDXML", False)
+    monkeypatch.setattr(xml_safety, "_ET", stdlib_et)
+    bom = b"\xef\xbb\xbf"
+    with pytest.raises(UnsafeXmlError):
+        safe_fromstring(bom + _INTERNAL_ENTITY_XML.encode("utf-8"))
+    root = safe_fromstring(bom + _VALID_XML.encode("utf-8"))
+    assert root.tag == "rss"
+
+
 def test_malformed_xml_raises_parse_error():
     with pytest.raises(ParseError):
         safe_fromstring("<rss><channel></rss>")

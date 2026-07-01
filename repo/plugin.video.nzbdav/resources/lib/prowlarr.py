@@ -615,7 +615,7 @@ def _parse_xml_results(xml_text):
     """
     try:
         root = _safe_fromstring(xml_text)
-    except (_XmlParseError, _UnsafeXmlError) as e:
+    except (_XmlParseError, _UnsafeXmlError, TypeError) as e:
         xbmc.log(
             "NZB-DAV: Failed to parse Prowlarr XML response: {}".format(e),
             xbmc.LOGERROR,

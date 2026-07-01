@@ -262,7 +262,7 @@ def parse_results(xml_text, fallback_indexer):
     """Parse Newznab XML into the existing normalized result shape."""
     try:
         root = _safe_fromstring(xml_text)
-    except (_XmlParseError, _UnsafeXmlError) as error:
+    except (_XmlParseError, _UnsafeXmlError, TypeError) as error:
         xbmc.log(
             "NZB-DAV: Failed to parse direct indexer XML: {}".format(error),
             xbmc.LOGERROR,
