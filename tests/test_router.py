@@ -1,5 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 nzbdav contributors
+# pylint: disable=too-many-arguments,too-many-positional-arguments
+# ^ 9-12-arg test signatures come from stacked @patch decorators; scheduled for
+#   fixture consolidation in the complexity-reduction Phase C1 wave, after
+#   which this module-level disable comes off.
 
 import itertools
 import threading
