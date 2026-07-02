@@ -251,8 +251,77 @@ def _handle_play_auto_select(handle, best, filtered):
             best, filtered
         ),
     }
+    _attach_nzbget_dupe_backups(resolver_params, best, filtered)
     _router._attach_selected_result_metadata(resolver_params, best)
     resolve(handle, resolver_params)
+
+
+def _normalize_release_name(title):
+    """Case/whitespace-normalized release name for same-name matching (#372)."""
+    return " ".join(str(title or "").split()).casefold()
+
+
+def _nzbget_dupe_backups_for_selection(selected, filtered):
+    """Same-release-name picker results to submit as NZBGet duplicate backups.
+
+    #372: when the NZBGet backend is enabled, the picker hands the resolver every
+    OTHER result whose release name matches the pick (reposts / mirrors from
+    other indexers). The resolver submits them under the pick's NZB name after
+    the pick is queued, so NZBGet groups them by name as duplicate backups and
+    can fail over to one if the pick is unrepairable. Returns ``[]`` (no backups)
+    unless NZBGet is enabled and fallback streams are on; bounded by
+    ``fallback_streams_max``. Empty on the nzbdav backend, which has its own live
+    fallback path.
+    """
+    import resources.lib.router as _router
+
+    addon = xbmcaddon.Addon("plugin.video.nzbdav")
+    nzbget_on = (
+        _router._get_addon_setting(addon, "nzbget_enabled", "false").lower() == "true"
+    )
+    fallback_on = (
+        _router._get_addon_setting(addon, "fallback_streams_enabled", "true").lower()
+        != "false"
+    )
+    if not (nzbget_on and fallback_on):
+        return []
+    try:
+        max_backups = int(
+            _router._get_addon_setting(addon, "fallback_streams_max", "5") or 5
+        )
+    except (TypeError, ValueError):
+        max_backups = 5
+    if max_backups <= 0:
+        return []
+
+    target = _normalize_release_name(selected.get("title"))
+    selected_link = selected.get("link")
+    backups = []
+    seen = set()
+    for result in filtered or []:
+        if not isinstance(result, dict):
+            continue
+        link = result.get("link")
+        if not link or link == selected_link or link in seen:
+            continue
+        if _normalize_release_name(result.get("title")) != target:
+            continue
+        seen.add(link)
+        backups.append({"link": link, "title": result.get("title")})
+        if len(backups) >= max_backups:
+            break
+    return backups
+
+
+def _attach_nzbget_dupe_backups(resolver_params, selected, filtered):
+    """Attach the same-name NZBGet duplicate backups, only when there are any.
+
+    Keeps the nzbdav-path params clean: the key is present only in NZBGet mode
+    with actual same-name backups to submit (#372).
+    """
+    backups = _nzbget_dupe_backups_for_selection(selected, filtered)
+    if backups:
+        resolver_params["_nzbget_dupe_backups"] = backups
 
 
 def _handle_play_resolve_selection(handle, selected, filtered, completed_jobs):
@@ -268,6 +337,7 @@ def _handle_play_resolve_selection(handle, selected, filtered, completed_jobs):
             selected, filtered
         ),
     }
+    _attach_nzbget_dupe_backups(resolver_params, selected, filtered)
     _apply_completed_job_hint(resolver_params, selected, completed_jobs)
     _router._attach_selected_result_metadata(resolver_params, selected)
     resolve(handle, resolver_params)
@@ -344,6 +414,7 @@ def _handle_search_auto_select(params, best, filtered):
     resolver_params["_fallback_candidate_loader"] = (
         _router._fallback_candidate_loader_for_selection(best, filtered)
     )
+    _attach_nzbget_dupe_backups(resolver_params, best, filtered)
     _router._attach_selected_result_metadata(resolver_params, best)
     resolve_and_play(best["link"], best["title"], params=resolver_params)
 
@@ -358,6 +429,7 @@ def _handle_search_resolve_selection(params, selected, filtered, completed_jobs)
     resolver_params["_fallback_candidate_loader"] = (
         _router._fallback_candidate_loader_for_selection(selected, filtered)
     )
+    _attach_nzbget_dupe_backups(resolver_params, selected, filtered)
     _apply_completed_job_hint(resolver_params, selected, completed_jobs)
     _router._attach_selected_result_metadata(resolver_params, selected)
     resolve_and_play(selected["link"], selected["title"], params=resolver_params)

@@ -94,7 +94,7 @@ def _fetch_nzb_bytes(nzb_url):
     return body
 
 
-def _append_params(nzb_name, nzb_bytes, category, dupe_key="", dupe_score=0):
+def _append_params(nzb_name, nzb_bytes, category):
     """Build NZBGet's modern 11-arg ``append`` params list.
 
     append(NZBFilename, Content, Category, Priority, AddToTop, AddPaused,
@@ -109,36 +109,22 @@ def _append_params(nzb_name, nzb_bytes, category, dupe_key="", dupe_score=0):
     than NZBGet auto-reassigning one); PPParameters=[] = no extra
     post-processing parameters.
 
-    ``dupe_key``/``dupe_score`` default to ``""``/``0`` (single-submit: dupe
-    check by NZB name only, no ordering score). A fleet submit (#372) passes an
-    identical non-empty DupeKey plus a distinct DupeScore per member so NZBGet
-    treats them as one duplicate set under DupeMode=SCORE -- highest score
-    downloads, the rest park in history as backups.
+    DupeKey is left empty and DupeScore 0: NZBGet dupe-checks by NZB name, which
+    is exactly what the #372 same-name duplicate submission relies on -- the pick
+    and its same-name backups all carry the same NZB name, so NZBGet groups them
+    as one duplicate set (highest/incumbent downloads, the rest park as history
+    backups) with no explicit key or score.
     """
     content_b64 = base64.b64encode(nzb_bytes).decode("ascii")
     filename = "{}.nzb".format(nzb_name or "submission")
-    return [
-        filename,
-        content_b64,
-        category,
-        0,
-        False,
-        False,
-        dupe_key or "",
-        int(dupe_score or 0),
-        "SCORE",
-        False,
-        [],
-    ]
+    return [filename, content_b64, category, 0, False, False, "", 0, "SCORE", False, []]
 
 
-def append_nzb(nzb_url, nzb_name, settings_getter=None, dupe_key="", dupe_score=0):
+def append_nzb(nzb_url, nzb_name, settings_getter=None):
     """Fetch the NZB and submit it to NZBGet via append.
 
     Returns (nzbid, error). On success (int > 0, None); on failure
-    (None, message). ``dupe_key``/``dupe_score`` are forwarded to
-    ``_append_params`` for #372 fleet (duplicate-backup) submissions; the
-    defaults reproduce the pre-#372 single-submit call exactly.
+    (None, message).
     """
     _base_url, _user, _password, category = _get_settings(settings_getter)
     try:
@@ -149,7 +135,7 @@ def append_nzb(nzb_url, nzb_name, settings_getter=None, dupe_key="", dupe_score=
             xbmc.LOGERROR,
         )
         return None, _redact_text(str(exc))
-    params = _append_params(nzb_name, nzb_bytes, category, dupe_key, dupe_score)
+    params = _append_params(nzb_name, nzb_bytes, category)
     result, error = _rpc_call("append", params, settings_getter=settings_getter)
     if error is not None:
         return None, error

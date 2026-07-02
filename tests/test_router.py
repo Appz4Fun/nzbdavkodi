@@ -3916,3 +3916,74 @@ def test_xml_root_name_rejects_internal_entity_on_stdlib_fallback(monkeypatch):
     )
 
     assert _xml_root_name(payload) == ""
+
+
+# ---------------------------------------------------------------------------
+# #372 picker-computed same-name NZBGet duplicate backups
+# ---------------------------------------------------------------------------
+
+
+def _dupe_setting_getter(values):
+    """Stand-in for router._get_addon_setting(addon, key, default)."""
+    return lambda addon, key, default="": values.get(key, default)
+
+
+def test_nzbget_dupe_backups_returns_same_name_others_only():
+    from resources.lib.router_play import _nzbget_dupe_backups_for_selection
+
+    selected = {"link": "http://i/pick.nzb", "title": "The Movie 2024 1080p"}
+    filtered = [
+        selected,
+        {"link": "http://i/a.nzb", "title": "The Movie 2024 1080p"},  # same name
+        {"link": "http://i/b.nzb", "title": "the  movie  2024  1080P"},  # norm-equal
+        {"link": "http://i/c.nzb", "title": "Different Movie 2024"},  # different
+    ]
+    with patch(
+        "resources.lib.router._get_addon_setting",
+        _dupe_setting_getter({"nzbget_enabled": "true"}),
+    ):
+        backups = _nzbget_dupe_backups_for_selection(selected, filtered)
+    assert [b["link"] for b in backups] == ["http://i/a.nzb", "http://i/b.nzb"]
+
+
+def test_nzbget_dupe_backups_empty_when_nzbget_disabled():
+    from resources.lib.router_play import _nzbget_dupe_backups_for_selection
+
+    selected = {"link": "http://i/pick.nzb", "title": "X"}
+    filtered = [selected, {"link": "http://i/a.nzb", "title": "X"}]
+    with patch(
+        "resources.lib.router._get_addon_setting",
+        _dupe_setting_getter({"nzbget_enabled": "false"}),
+    ):
+        assert not _nzbget_dupe_backups_for_selection(selected, filtered)
+
+
+def test_nzbget_dupe_backups_empty_when_fallback_streams_off():
+    from resources.lib.router_play import _nzbget_dupe_backups_for_selection
+
+    selected = {"link": "http://i/pick.nzb", "title": "X"}
+    filtered = [selected, {"link": "http://i/a.nzb", "title": "X"}]
+    with patch(
+        "resources.lib.router._get_addon_setting",
+        _dupe_setting_getter(
+            {"nzbget_enabled": "true", "fallback_streams_enabled": "false"}
+        ),
+    ):
+        assert not _nzbget_dupe_backups_for_selection(selected, filtered)
+
+
+def test_nzbget_dupe_backups_caps_and_dedupes_by_link():
+    from resources.lib.router_play import _nzbget_dupe_backups_for_selection
+
+    selected = {"link": "http://i/pick.nzb", "title": "X"}
+    filtered = [selected] + [
+        {"link": "http://i/{}.nzb".format(n), "title": "X"} for n in range(10)
+    ]
+    filtered.append({"link": "http://i/0.nzb", "title": "X"})  # duplicate link
+    with patch(
+        "resources.lib.router._get_addon_setting",
+        _dupe_setting_getter({"nzbget_enabled": "true", "fallback_streams_max": "3"}),
+    ):
+        backups = _nzbget_dupe_backups_for_selection(selected, filtered)
+    assert len(backups) == 3
+    assert len({b["link"] for b in backups}) == 3  # no duplicate links
