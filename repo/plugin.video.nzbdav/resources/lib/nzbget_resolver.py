@@ -961,6 +961,11 @@ def _submit_poll_resolve(ctx, nzb_url, title, download_pubdate, download_size):
     # so it never delays the poll below; scores (not order) keep the pick active.
     backups_thread = _spawn_dupe_backups(ctx) if dupe_key else None
 
+    def _backups_still_submitting():
+        # Don't exhaust the failover grace while the backup worker is still
+        # appending candidates (a fast-fail pick can beat a slow indexer).
+        return backups_thread is not None and backups_thread.is_alive()
+
     result = poll_nzbget_job(
         nzbid,
         ctx.dialog,
@@ -969,9 +974,7 @@ def _submit_poll_resolve(ctx, nzb_url, title, download_pubdate, download_size):
         settings_getter=getter,
         interval=ctx.interval,
         dupe_key=dupe_key,
-        # Don't exhaust the failover grace while the backup worker is still
-        # appending candidates (a fast-fail pick can beat a slow indexer).
-        is_submitting=(backups_thread.is_alive if backups_thread is not None else None),
+        is_submitting=_backups_still_submitting,
     )
     handled, leave_job = _handle_poll_failure(
         result["outcome"],
