@@ -78,6 +78,13 @@ delivers automatic updates on a **Stable** or **Beta** channel.
 4. **Settings → Add-ons → Install from repository → Appz4Fun Repository** →
    install **NZB-DAV**. Future updates install automatically.
 
+> **Upgrading from the old repository?** NZB-DAV used to be distributed from a
+> Kodi repository at `https://appz4fun.github.io/nzbdavkodi/`. That URL now hosts
+> this project's documentation, not add-on metadata, so installs made from it no
+> longer auto-update. Install the Appz4Fun repository above once to resume
+> updates, then remove the old `nzbdav` file-manager source and the old
+> **NZB-DAV Repository** add-on.
+
 ### Manual install
 
 Download `plugin.video.nzbdav.zip` from the

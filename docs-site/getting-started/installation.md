@@ -33,6 +33,14 @@ channel.
    then install **NZB-DAV** from **Video add-ons**.
 5. Kodi installs future NZB-DAV updates automatically.
 
+!!! info "Upgrading from the old repository?"
+    Earlier versions were distributed from a Kodi repository at
+    `https://appz4fun.github.io/nzbdavkodi/`. That URL now hosts this
+    documentation site, not add-on metadata, so installs made from it no longer
+    auto-update. Install the Appz4Fun repository (above) once to resume updates,
+    then remove the old `nzbdav` file-manager source and the old **NZB-DAV
+    Repository** add-on.
+
 !!! tip "Downloading the zip on the Kodi device"
     If your Kodi device has no browser, download the channel zip on another
     computer and copy it to the device, or add
