@@ -623,8 +623,10 @@ def _submit_dupe_backups(backups, dupe_key, settings_getter):
 
 
 # Warn about HealthCheck=Pause at most once per Kodi session (a list so the
-# module-level flag is mutable from the worker thread).
+# module-level flag is mutable from the worker thread; a lock so two concurrent
+# resolves' background threads can't both slip through the check-then-set).
 _HEALTHCHECK_WARNED = [False]
+_HEALTHCHECK_LOCK = threading.Lock()
 
 
 def _warn_if_healthcheck_pauses(settings_getter):
@@ -647,9 +649,11 @@ def _warn_if_healthcheck_pauses(settings_getter):
         "set it to Delete or None to enable it (#372).",
         xbmc.LOGWARNING,
     )
-    if not _HEALTHCHECK_WARNED[0]:
+    with _HEALTHCHECK_LOCK:
+        if _HEALTHCHECK_WARNED[0]:
+            return
         _HEALTHCHECK_WARNED[0] = True
-        _notify(_addon_name(), _string(30230), 6000)
+    _notify(_addon_name(), _string(30230), 6000)
 
 
 def _spawn_dupe_backups(ctx):

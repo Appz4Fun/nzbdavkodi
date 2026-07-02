@@ -4040,3 +4040,74 @@ def test_nzbget_dupe_submission_caps_backups_by_setting():
     ):
         dupe = _nzbget_dupe_submission_for_selection(selected, filtered, identity)
     assert len(dupe["backups"]) == 3
+
+
+def test_release_dupe_key_episode_without_numeric_se_is_empty():
+    # Episode context with missing/non-numeric season+episode must NOT emit a
+    # movie/show-level key -- that would merge every episode of the show (and the
+    # show's movie) into one NZBGet duplicate set.
+    from resources.lib.router_play import _release_dupe_key
+
+    assert _release_dupe_key({"type": "episode", "imdb": "tt111"}) == ""
+    assert (
+        _release_dupe_key(
+            {"type": "episode", "imdb": "tt111", "season": "", "episode": ""}
+        )
+        == ""
+    )
+    assert (
+        _release_dupe_key(
+            {"type": "episode", "imdb": "tt111", "season": "S1", "episode": "x"}
+        )
+        == ""
+    )
+    # Distinct episodes get distinct keys (regression guard for the merge bug).
+    k1 = _release_dupe_key(
+        {"type": "episode", "imdb": "tt111", "season": "1", "episode": "2"}
+    )
+    k2 = _release_dupe_key(
+        {"type": "episode", "imdb": "tt111", "season": "2", "episode": "5"}
+    )
+    assert (k1, k2) == ("imdb=111-S01-E02", "imdb=111-S02-E05")
+    assert k1 != k2
+
+
+def test_script_play_resolve_selected_attaches_nzbget_dupe_end_to_end():
+    # End-to-end through the ACTUAL TMDBHelper play path (RunScript -> script-play):
+    # identity -> DupeKey -> _nzbget_dupe reaches the resolver params.
+    from resources.lib import router_scriptplay
+
+    params = {
+        "type": "movie",
+        "title": "The Matrix",
+        "year": "1999",
+        "imdb": "tt0133093",
+    }
+    selected = {"link": "http://i/pick.nzb", "title": "The Matrix 1999 1080p"}
+    filtered = [selected, {"link": "http://i/b.nzb", "title": "The Matrix 1999 1080p"}]
+    captured = {}
+
+    def fake_rap(link, title, params=None):
+        captured["params"] = params
+
+    def fake_script_setting(key, default=""):
+        return {"nzbget_enabled": "true"}.get(key, default)
+
+    with patch("resources.lib.resolver.resolve_and_play", side_effect=fake_rap), patch(
+        "resources.lib.router._get_script_setting", fake_script_setting
+    ), patch(
+        "resources.lib.router._completed_lookup_was_done", return_value=True
+    ), patch(
+        "resources.lib.router._fallback_candidate_loader_for_selection",
+        return_value=None,
+    ), patch(
+        "resources.lib.router._attach_selected_result_metadata"
+    ), patch(
+        "resources.lib.router._script_play_stage"
+    ):
+        router_scriptplay._script_play_resolve_selected(params, selected, filtered, {})
+
+    dupe = captured["params"]["_nzbget_dupe"]
+    assert dupe["key"] == "imdb=0133093"
+    assert [b["link"] for b in dupe["backups"]] == ["http://i/b.nzb"]
+    assert dupe["backups"][0]["score"] < dupe["pick_score"]

@@ -315,10 +315,17 @@ def _release_dupe_key(identity):
     season = _int_or_none(identity.get("season"))
     episode = _int_or_none(identity.get("episode"))
     slug = _key_title_slug(identity.get("title"))
-    is_episode = identity.get("type") == "episode" or (
+    is_episode = (identity.get("type") or "").lower() == "episode" or (
         season is not None and episode is not None
     )
-    if is_episode and season is not None and episode is not None:
+    if is_episode:
+        # Episode context: NEVER fall through to a movie/show-level key. For an
+        # episode the imdb/title identify the SHOW, so a bare ``imdb=<show>``
+        # would merge every episode (and the show's movie) into one duplicate
+        # set. Without a numeric season+episode there is no safe episode key, so
+        # skip dupe grouping entirely.
+        if season is None or episode is None:
+            return ""
         suffix = "-S{:02d}-E{:02d}".format(season, episode)
         if tvdb:
             return "tvdbid={}{}".format(tvdb, suffix)
@@ -335,12 +342,9 @@ def _release_dupe_key(identity):
     return ""
 
 
-# Highest DupeScore, assigned to the user's pick so NZBGet keeps it the active
-# download (the one the poll tracks). Same-name backups get strictly-lower,
-# descending scores, so NZBGet parks them as history backups and fails over to
-# the best remaining one if the pick is unrepairable. Matches the docs' example
-# magnitudes (720p:1000 / 1080p:2000).
-_PICK_DUPE_SCORE = 1000
+# Hard ceiling on the number of duplicate backups, mirroring the nzbdav fallback
+# cap so an out-of-range ``fallback_streams_max`` can't submit a runaway fleet.
+_MAX_DUPE_BACKUPS = 5
 
 
 def _same_name_backups(selected, filtered, max_backups):
@@ -364,36 +368,39 @@ def _same_name_backups(selected, filtered, max_backups):
     return backups
 
 
-def _nzbget_dupe_submission_for_selection(selected, filtered, identity):
+def _nzbget_dupe_submission_for_selection(selected, filtered, identity, getter=None):
     """Build the NZBGet Smart-Duplicates submission for a pick (#372).
 
     Returns ``{"key", "pick_score", "backups": [{"link","title","score"}]}`` when
     the NZBGet backend is on, fallback streams are enabled, a DupeKey is
     computable, AND there is at least one same-release-name backup on the picker
     (reposts / mirrors) -- else ``None`` (plain single submit). The pick takes
-    the top DupeScore and the same-name backups take strictly-lower descending
-    scores, so NZBGet downloads the pick and parks the rest in history as
-    duplicate backups, failing over on an unrepairable download. Bounded by
-    ``fallback_streams_max``. Empty on the nzbdav backend (its own live fallback).
+    the top DupeScore and the same-name backups strictly-lower descending scores
+    (count-based, so always positive and pick-highest for any fleet size), so
+    NZBGet downloads the pick and parks the rest in history as duplicate backups,
+    failing over on an unrepairable download. Bounded by ``fallback_streams_max``
+    (hard-capped at ``_MAX_DUPE_BACKUPS``). ``getter`` reads settings on the
+    RunScript/script-play path (``_get_script_setting``); ``None`` reads the live
+    Kodi addon settings. Empty on the nzbdav backend (its own live fallback).
     """
     import resources.lib.router as _router
 
-    addon = xbmcaddon.Addon("plugin.video.nzbdav")
-    nzbget_on = (
-        _router._get_addon_setting(addon, "nzbget_enabled", "false").lower() == "true"
-    )
-    fallback_on = (
-        _router._get_addon_setting(addon, "fallback_streams_enabled", "true").lower()
-        != "false"
-    )
+    addon = None if getter is not None else xbmcaddon.Addon("plugin.video.nzbdav")
+
+    def _read(key, default):
+        if getter is not None:
+            return str(getter(key, default) or default)
+        return _router._get_addon_setting(addon, key, default)
+
+    nzbget_on = _read("nzbget_enabled", "false").lower() == "true"
+    fallback_on = _read("fallback_streams_enabled", "true").lower() != "false"
     if not (nzbget_on and fallback_on):
         return None
     try:
-        max_backups = int(
-            _router._get_addon_setting(addon, "fallback_streams_max", "5") or 5
-        )
+        max_backups = int(_read("fallback_streams_max", "5") or 5)
     except (TypeError, ValueError):
         max_backups = 5
+    max_backups = min(max_backups, _MAX_DUPE_BACKUPS)
     if max_backups <= 0:
         return None
     key = _release_dupe_key(identity or {})
@@ -402,11 +409,12 @@ def _nzbget_dupe_submission_for_selection(selected, filtered, identity):
     backups = _same_name_backups(selected, filtered, max_backups)
     if not backups:
         return None
+    count = len(backups)
     scored = [
-        {"link": b["link"], "title": b.get("title"), "score": _PICK_DUPE_SCORE - 1 - i}
+        {"link": b["link"], "title": b.get("title"), "score": count - i}
         for i, b in enumerate(backups)
     ]
-    return {"key": key, "pick_score": _PICK_DUPE_SCORE, "backups": scored}
+    return {"key": key, "pick_score": count + 1, "backups": scored}
 
 
 def _attach_nzbget_dupe(resolver_params, selected, filtered, identity):
@@ -414,8 +422,12 @@ def _attach_nzbget_dupe(resolver_params, selected, filtered, identity):
 
     Keeps nzbdav-path params clean: ``_nzbget_dupe`` is present only in NZBGet
     mode with a computable DupeKey and at least one same-name backup (#372).
+    Reads settings through ``resolver_params["_settings_getter"]`` when present
+    (the RunScript/script-play path), else the live Kodi addon settings.
     """
-    dupe = _nzbget_dupe_submission_for_selection(selected, filtered, identity)
+    dupe = _nzbget_dupe_submission_for_selection(
+        selected, filtered, identity, resolver_params.get("_settings_getter")
+    )
     if dupe:
         resolver_params["_nzbget_dupe"] = dupe
 

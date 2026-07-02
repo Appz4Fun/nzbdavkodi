@@ -107,6 +107,7 @@ from resources.lib.router_fallback import (  # noqa: F401
 )
 from resources.lib.router_play import (  # noqa: F401
     _apply_completed_job_hint,
+    _attach_nzbget_dupe,
     _extract_search_params,
     _filtered_or_prompt,
     _handle_play_auto_select,
@@ -116,6 +117,7 @@ from resources.lib.router_play import (  # noqa: F401
     _handle_search_filter_and_select,
     _handle_search_resolve_selection,
     _handle_search_tag_and_picker,
+    _identity_from_params,
     _lookup_search_episode_args,
     _query_and_cache_providers,
     _resolve_play_episode_args,
