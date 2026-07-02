@@ -139,13 +139,16 @@ def test_parallel_fallback_fingerprint_shutdown_works_on_python38_executor():
         assert handler._validate_fallback_fingerprint_parallel(
             ctx,
             ranges,
-            content_length=8,
-            probe_bases=(),
-            current_range=None,
-            primary_url="http://primary/video.mkv",
-            fallback_url="http://fallback/video.mkv",
-            fallback_auth=None,
-            primary_auth=None,
+            handler._fingerprint_probe_cfg(
+                content_length=8,
+                probe_bases=(),
+                current_range=None,
+                primary_url="http://primary/video.mkv",
+                fallback_url="http://fallback/video.mkv",
+                fallback_auth=None,
+                primary_auth=None,
+                cache_fallback_range_bytes=False,
+            ),
         )
 
     assert created
