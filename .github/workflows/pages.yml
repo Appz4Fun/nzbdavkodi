@@ -15,12 +15,21 @@ on:
       - "docs-site/**"
       - "requirements-docs.txt"
       - "README.md"
+  # Build-only (no deploy) on PRs that touch the docs, so a broken internal link
+  # or nav entry fails the PR check instead of only failing the Pages deploy
+  # after merge.
+  pull_request:
+    paths:
+      - ".github/workflows/pages.yml"
+      - "mkdocs.yml"
+      - "docs-site/**"
+      - "requirements-docs.txt"
+      - "README.md"
   workflow_dispatch:
 
+# Least privilege by default; the deploy job elevates to what Pages needs.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -53,17 +62,25 @@ jobs:
       - name: Build site (strict)
         # --strict fails the build on broken internal links or nav entries that
         # point at missing pages, so a typo cannot silently ship a broken site.
+        # This runs on pull_request too, gating docs changes before merge.
         run: mkdocs build --strict
 
       - name: Upload Pages artifact
+        # Only the deploy path needs the artifact; skip on PRs (build-only gate).
+        if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: ./site
 
   deploy:
     needs: build
+    # Never deploy from a pull request; publish only on main / manual dispatch.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
