@@ -257,10 +257,13 @@ from resources.lib.fallback_streams_probe import (  # noqa: F401,E402  pylint: d
     fingerprint_ranges,
 )
 from resources.lib.fallback_streams_select import (  # noqa: F401,E402  pylint: disable=wrong-import-position
+    SelectionAttachState,
     _advance_past_consumed,
+    _already_attached,
     _attach_manifest_candidate_if_matching,
     _attach_ready_selection_candidates,
     _attach_selection_candidates_streaming,
+    _classify_stream_wait_outcome,
     _consume_ready_candidate,
     _ensure_fallback_manifest,
     _ensure_fallback_manifests,
