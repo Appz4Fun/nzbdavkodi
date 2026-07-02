@@ -13,7 +13,12 @@ top-level import cycle; same-module sibling helpers are called directly. Every
 moved name is re-exported from ``resolver``.
 """
 
+import re
+
 import resources.lib.resolver as _resolver  # noqa: F401  pylint: disable=unused-import
+
+# Pre-compile regex for performance
+_MY_VIDEOS_DB_RE = re.compile(r"MyVideos(\d+)\.db$")
 
 
 def _resolve_stage(message):
@@ -413,9 +418,8 @@ def _kodi_video_db_version(path):
     installs, which would target a stale DB for bookmark cleanup.
     """
     import os
-    import re
 
-    match = re.search(r"MyVideos(\d+)\.db$", os.path.basename(path))
+    match = _MY_VIDEOS_DB_RE.search(os.path.basename(path))
     return int(match.group(1)) if match else -1
 
 
