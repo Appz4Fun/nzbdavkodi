@@ -4,7 +4,13 @@ Open the add-on settings at **Settings → Add-ons → My add-ons → Video add-
 NZB-DAV → Configure**. This page walks through the **Connection** tab — the
 minimum you need before your first search.
 
-![NZB-DAV settings](../images/settings.png)
+<!--
+Screenshot placeholder — Capture the NZB-DAV Connection settings tab.
+IMPORTANT: use sanitized/dummy values (example hostnames, no real IPs or
+usernames) — do not commit a screenshot of a live configuration.
+To add: save it as docs-site/images/settings.png, then replace this comment
+with:  ![NZB-DAV settings](../images/settings.png)
+-->
 
 ## Connect to nzbdav
 
