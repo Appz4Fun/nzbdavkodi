@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
 
 from resources.lib.webdav import (
+    TitleHints,
     find_video_file,
     find_video_stream_for_folder,
     folder_video_total_bytes,
@@ -1466,7 +1467,9 @@ def test_find_video_file_prefers_title_hint_over_largest(mock_urlopen, mock_sett
     )
     mock_urlopen.return_value = _webdav_response(listing)
 
-    path = find_video_file("/content/Show/", title_hint="Show.S02E05.1080p.WEB-DL")
+    path = find_video_file(
+        "/content/Show/", hints=TitleHints(title_hint="Show.S02E05.1080p.WEB-DL")
+    )
 
     assert path == "/content/Show/Show.S02E05.1080p.mkv"
 
@@ -1548,7 +1551,9 @@ def test_find_video_file_hint_no_match_falls_back_to_largest(
     )
     mock_urlopen.return_value = _webdav_response(listing)
 
-    path = find_video_file("/content/Show/", title_hint="Show.S05E99.1080p.WEB-DL")
+    path = find_video_file(
+        "/content/Show/", hints=TitleHints(title_hint="Show.S05E99.1080p.WEB-DL")
+    )
 
     assert path == "/content/Show/Show.S02E06.1080p.mkv"
 
@@ -1593,7 +1598,9 @@ def test_find_video_file_prefers_hint_across_sibling_subfolders(
 
     mock_urlopen.side_effect = propfind
 
-    path = find_video_file("/content/Pack/", title_hint="Show.S02E05.1080p.WEB-DL")
+    path = find_video_file(
+        "/content/Pack/", hints=TitleHints(title_hint="Show.S02E05.1080p.WEB-DL")
+    )
 
     assert path == "/content/Pack/E05/Show.S02E05.1080p.mkv"
 
@@ -1639,7 +1646,9 @@ def test_find_video_file_prefers_dir_tagged_episode_over_larger_sibling(
 
     mock_urlopen.side_effect = propfind
 
-    path = find_video_file("/content/Show/", title_hint="Show.S01E02.1080p.WEB-DL")
+    path = find_video_file(
+        "/content/Show/", hints=TitleHints(title_hint="Show.S01E02.1080p.WEB-DL")
+    )
 
     assert path == "/content/Show/Show.S01E02.1080p/video.mkv"
 
@@ -1687,7 +1696,8 @@ def test_find_video_file_nearest_dir_tag_not_masked_by_ancestor_pack(
     mock_urlopen.side_effect = propfind
 
     path = find_video_file(
-        "/content/Show.S01E02.Pack/", title_hint="Show.S01E02.1080p.WEB-DL"
+        "/content/Show.S01E02.Pack/",
+        hints=TitleHints(title_hint="Show.S01E02.1080p.WEB-DL"),
     )
 
     # NOT the larger S01E03: the nearest dir's own tag rules it out even
@@ -1727,7 +1737,9 @@ def test_find_video_file_grandparent_tag_matches_when_nearest_dir_generic(
 
     mock_urlopen.side_effect = propfind
 
-    path = find_video_file("/content/Show.S01E02/", title_hint="Show.S01E02.1080p")
+    path = find_video_file(
+        "/content/Show.S01E02/", hints=TitleHints(title_hint="Show.S01E02.1080p")
+    )
 
     assert path == "/content/Show.S01E02/1080p/video.mkv"
 
@@ -1759,7 +1771,8 @@ def test_find_video_file_basename_episode_overrides_parent_range_dir(
     mock_urlopen.return_value = _webdav_response(listing)
 
     path = find_video_file(
-        "/content/Show.S02E01-E10.Pack/", title_hint="Show.S02E05.1080p.WEB-DL"
+        "/content/Show.S02E01-E10.Pack/",
+        hints=TitleHints(title_hint="Show.S02E05.1080p.WEB-DL"),
     )
 
     # NOT the larger E07: its own basename tag rules it out even though the
@@ -1784,7 +1797,9 @@ def test_find_video_file_season_complete_parent_does_not_falsely_match(
     )
     mock_urlopen.return_value = _webdav_response(listing)
 
-    path = find_video_file("/content/Show.S01.Complete/", title_hint="Show.S01E02")
+    path = find_video_file(
+        "/content/Show.S01.Complete/", hints=TitleHints(title_hint="Show.S01E02")
+    )
 
     assert path == "/content/Show.S01.Complete/part2.mkv"
 
@@ -1824,7 +1839,9 @@ def test_find_video_file_recurses_past_wrong_episode_at_current_level(
 
     mock_urlopen.side_effect = propfind
 
-    path = find_video_file("/content/Pack/", title_hint="Show.S02E05.1080p.WEB-DL")
+    path = find_video_file(
+        "/content/Pack/", hints=TitleHints(title_hint="Show.S02E05.1080p.WEB-DL")
+    )
 
     assert path == "/content/Pack/Extras/Show.S02E05.1080p.mkv"
 
@@ -1856,7 +1873,9 @@ def test_find_video_file_keeps_wrong_episode_when_siblings_have_no_match(
 
     mock_urlopen.side_effect = propfind
 
-    path = find_video_file("/content/Pack/", title_hint="Show.S02E05.1080p.WEB-DL")
+    path = find_video_file(
+        "/content/Pack/", hints=TitleHints(title_hint="Show.S02E05.1080p.WEB-DL")
+    )
 
     assert path == "/content/Pack/Show.S02E06.1080p.mkv"
 
@@ -1878,7 +1897,9 @@ def test_find_video_file_matches_middle_episode_of_multi_ep_tag(
     )
     mock_urlopen.return_value = _webdav_response(listing)
 
-    path = find_video_file("/content/Show/", title_hint="Show.S01E02.1080p.WEB-DL")
+    path = find_video_file(
+        "/content/Show/", hints=TitleHints(title_hint="Show.S01E02.1080p.WEB-DL")
+    )
 
     assert path == "/content/Show/Show.S01E01E02E03.1080p.mkv"
 
@@ -1963,7 +1984,7 @@ def test_find_video_file_matches_nxn_episode_in_range_pack(mock_urlopen, mock_se
         ]
     )
     mock_urlopen.return_value = _webdav_response(listing)
-    path = find_video_file("/content/Show/", title_hint="Show 1x02")
+    path = find_video_file("/content/Show/", hints=TitleHints(title_hint="Show 1x02"))
     assert path == "/content/Show/Show.1x01-03.mkv"
 
 
@@ -1981,7 +2002,9 @@ def test_find_video_file_matches_episode_in_range_pack(mock_urlopen, mock_settin
         ]
     )
     mock_urlopen.return_value = _webdav_response(listing)
-    path = find_video_file("/content/Show/", title_hint="Show.S01E02.1080p.WEB-DL")
+    path = find_video_file(
+        "/content/Show/", hints=TitleHints(title_hint="Show.S01E02.1080p.WEB-DL")
+    )
     assert path == "/content/Show/Show.S01E01-E03.1080p.mkv"
 
 
@@ -2000,7 +2023,7 @@ def test_find_video_file_matches_nxnn_episode_notation(mock_urlopen, mock_settin
     )
     mock_urlopen.return_value = _webdav_response(listing)
 
-    path = find_video_file("/content/Show/", title_hint="Show 2x05")
+    path = find_video_file("/content/Show/", hints=TitleHints(title_hint="Show 2x05"))
 
     assert path == "/content/Show/Show.2x05.1080p.mkv"
 
@@ -2020,7 +2043,9 @@ def test_find_video_file_matches_nxnn_multi_episode_pack(mock_urlopen, mock_sett
     )
     mock_urlopen.return_value = _webdav_response(listing)
 
-    path = find_video_file("/content/Show/", title_hint="Doctor Who 2x06")
+    path = find_video_file(
+        "/content/Show/", hints=TitleHints(title_hint="Doctor Who 2x06")
+    )
 
     assert path == "/content/Show/Doctor.Who.2x05.2x06.mkv"
 
@@ -2057,7 +2082,9 @@ def test_find_video_file_keeps_larger_current_level_over_smaller_equalscore_sibl
 
     mock_urlopen.side_effect = propfind
 
-    path = find_video_file("/content/Pack/", title_hint="Show.S02E05.1080p.WEB-DL")
+    path = find_video_file(
+        "/content/Pack/", hints=TitleHints(title_hint="Show.S02E05.1080p.WEB-DL")
+    )
 
     assert path == "/content/Pack/Show.Complete.1080p.BIG.mkv"
 
@@ -2122,7 +2149,9 @@ def test_find_video_file_recurses_past_generic_nonepisode_at_current_level(
 
     mock_urlopen.side_effect = propfind
 
-    path = find_video_file("/content/Pack/", title_hint="Show.S02E05.1080p.WEB-DL")
+    path = find_video_file(
+        "/content/Pack/", hints=TitleHints(title_hint="Show.S02E05.1080p.WEB-DL")
+    )
 
     assert path == "/content/Pack/E05/Show.S02E05.1080p.WEB-DL.mkv"
 
@@ -2152,7 +2181,9 @@ def test_find_video_file_movie_hint_keeps_largest_over_token_heavy_extra(
 
     path = find_video_file(
         "/content/Dune/",
-        title_hint="Dune.Part.Two.2024.2160p.UHD.BluRay.REMUX-FraMeSToR",
+        hints=TitleHints(
+            title_hint="Dune.Part.Two.2024.2160p.UHD.BluRay.REMUX-FraMeSToR"
+        ),
     )
 
     assert path == "/content/Dune/Dune.mkv"
@@ -2205,7 +2236,9 @@ def test_find_video_file_movie_hint_keeps_largest_across_sibling_subfolders(
 
     path = find_video_file(
         "/content/Dune/",
-        title_hint="Dune.Part.Two.2024.2160p.UHD.BluRay.REMUX-FraMeSToR",
+        hints=TitleHints(
+            title_hint="Dune.Part.Two.2024.2160p.UHD.BluRay.REMUX-FraMeSToR"
+        ),
     )
 
     assert path == "/content/Dune/Movie/Dune.mkv"
@@ -2274,7 +2307,9 @@ def test_find_video_file_aspect_ratio_file_does_not_beat_real_episode(
 
     mock_urlopen.side_effect = propfind
 
-    path = find_video_file("/content/Show/", title_hint="Show.S01E02.1080p.WEB-DL")
+    path = find_video_file(
+        "/content/Show/", hints=TitleHints(title_hint="Show.S01E02.1080p.WEB-DL")
+    )
 
     assert path == "/content/Show/Show.S01E02/video.16x9.mkv"
 
@@ -2313,7 +2348,7 @@ def test_find_video_file_movie_hint_recurses_past_zero_size_token_file(
     mock_urlopen.side_effect = propfind
 
     path = find_video_file(
-        "/content/Dune/", title_hint="Dune.Part.Two.2024.2160p.BluRay"
+        "/content/Dune/", hints=TitleHints(title_hint="Dune.Part.Two.2024.2160p.BluRay")
     )
 
     assert path == "/content/Dune/Feature/Dune.Part.Two.2024.mkv"
@@ -2355,7 +2390,9 @@ def test_find_video_file_repeated_season_pack_covers_middle_episode(
     )
     mock_urlopen.return_value = _webdav_response(listing)
 
-    path = find_video_file("/content/Show/", title_hint="Show.S01E02.1080p.WEB-DL")
+    path = find_video_file(
+        "/content/Show/", hints=TitleHints(title_hint="Show.S01E02.1080p.WEB-DL")
+    )
 
     assert path == "/content/Show/Show.S01E01-S01E03.1080p.mkv"
 
@@ -2549,7 +2586,7 @@ def test_find_video_file_floor_prefers_real_episode_over_root_episode_stub(
 
     path = find_video_file(
         "/content/Show/",
-        title_hint="Show.S01E05.1080p.WEB-DL",
+        hints=TitleHints(title_hint="Show.S01E05.1080p.WEB-DL"),
         min_video_size=2_000_000_000,
     )
 
@@ -2595,7 +2632,7 @@ def test_find_video_file_floor_prefers_real_file_over_episode_tagged_stub(
 
     path = find_video_file(
         "/content/Show/",
-        title_hint="Show.S01E05.1080p.WEB-DL",
+        hints=TitleHints(title_hint="Show.S01E05.1080p.WEB-DL"),
         min_video_size=2_000_000_000,
     )
 
@@ -2631,7 +2668,7 @@ def test_find_video_file_floor_demotes_same_level_episode_stub(
 
     path = find_video_file(
         "/content/Show/",
-        title_hint="Show.S01E05.1080p.WEB-DL",
+        hints=TitleHints(title_hint="Show.S01E05.1080p.WEB-DL"),
         min_video_size=2_000_000_000,
     )
 
@@ -2675,7 +2712,7 @@ def test_find_video_file_floor_adopts_size_unknown_exact_episode_child(
 
     path = find_video_file(
         "/content/Show/",
-        title_hint="Show.S01E05.1080p.WEB-DL",
+        hints=TitleHints(title_hint="Show.S01E05.1080p.WEB-DL"),
         min_video_size=2_000_000_000,
     )
 
@@ -2712,7 +2749,7 @@ def test_find_video_file_floor_keeps_requested_stub_over_same_level_wrong_episod
 
     path = find_video_file(
         "/content/Show/",
-        title_hint="Show.S01E05.1080p.WEB-DL",
+        hints=TitleHints(title_hint="Show.S01E05.1080p.WEB-DL"),
         min_video_size=2_000_000_000,
     )
 
@@ -2764,7 +2801,7 @@ def test_find_video_file_floor_keeps_requested_stub_over_sibling_wrong_episode(
 
     path = find_video_file(
         "/content/Show/",
-        title_hint="Show.S01E05.1080p.WEB-DL",
+        hints=TitleHints(title_hint="Show.S01E05.1080p.WEB-DL"),
         min_video_size=2_000_000_000,
     )
 
@@ -2815,7 +2852,7 @@ def test_find_video_file_floor_prefers_generic_real_over_sibling_episode_stub(
 
     path = find_video_file(
         "/content/Show/",
-        title_hint="Show.S01E05.1080p.WEB-DL",
+        hints=TitleHints(title_hint="Show.S01E05.1080p.WEB-DL"),
         min_video_size=2_000_000_000,
     )
 

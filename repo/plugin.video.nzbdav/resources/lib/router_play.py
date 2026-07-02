@@ -57,21 +57,21 @@ def _query_and_cache_providers(search_type, title, cache_kwargs, set_cached):
     (non-error) non-empty query. Extracted verbatim from ``_search_with_cache``.
     """
     import resources.lib.router as _router
+    from resources.lib.search_planner import SearchQuery
 
     addon = xbmcaddon.Addon("plugin.video.nzbdav")
     xbmc.log(
         "NZB-DAV: Search stage: querying providers for '{}'".format(title),
         xbmc.LOGDEBUG,
     )
+    query = SearchQuery(search_type=search_type, title=title, **cache_kwargs)
     results, search_error = _router._search_all_providers(
-        search_type,
-        title,
+        query,
         settings_getter=lambda key, default="": (
             "true"
             if key == "nzbhydra_enabled"
             else _router._get_addon_setting(addon, key, default)
         ),
-        **cache_kwargs,
     )
     if search_error:
         xbmc.log(

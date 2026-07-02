@@ -14,6 +14,7 @@ from urllib.error import HTTPError
 
 import pytest
 from resources.lib.stream_proxy import _StreamHandler
+from resources.lib.webdav import TitleHints
 
 
 @pytest.fixture(autouse=True)
@@ -11278,7 +11279,9 @@ def test_select_live_fallback_refreshes_completed_standby_job():
     assert source["stream_headers"] == {"Authorization": "Basic fallback"}
     assert source["content_length"] == 10
     history.assert_called_once_with("nzo2")
-    find_video.assert_called_once_with("/content/movies/Fallback/", title_hint=None)
+    find_video.assert_called_once_with(
+        "/content/movies/Fallback/", hints=TitleHints(title_hint=None)
+    )
     stream_url.assert_called_once_with("/content/movies/Fallback/fallback.mkv")
     assert fetch_length.call_args[0] == (
         "http://webdav/fallback.mkv",
@@ -11534,7 +11537,7 @@ def test_standby_refresh_reuses_probe_bases_for_content_length_checks():
             {"Authorization": "Basic fallback"},
         )
 
-    def find_video_path(path, title_hint=None):
+    def find_video_path(path, hints=None):
         return "{}movie.mkv".format(path)
 
     with patch(
@@ -16018,7 +16021,7 @@ def test_standby_refresh_threads_source_title_as_find_video_file_hint():
     ):
         handler._refresh_standby_fallback_source(ctx, source)
 
-    assert find_video.call_args.kwargs["title_hint"] == (
+    assert find_video.call_args.kwargs["hints"].title_hint == (
         "The.Show.S03E07.1080p.WEB-DL.x264-GRP"
     )
 
@@ -16054,7 +16057,7 @@ def test_standby_refresh_passes_none_hint_when_source_title_absent():
     ):
         handler._refresh_standby_fallback_source(ctx, source)
 
-    assert find_video.call_args.kwargs["title_hint"] is None
+    assert find_video.call_args.kwargs["hints"].title_hint is None
 
 
 def test_storage_to_webdav_path_mnt_data_no_category():

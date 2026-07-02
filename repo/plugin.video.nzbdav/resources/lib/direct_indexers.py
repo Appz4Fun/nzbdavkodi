@@ -32,7 +32,7 @@ from resources.lib.http_util import (
 )
 from resources.lib.indexer_store import load_indexers
 from resources.lib.newznab_caps import normalize_api_endpoint
-from resources.lib.search_planner import plan_newznab_search
+from resources.lib.search_planner import SearchQuery, plan_newznab_search
 from resources.lib.xml_safety import ParseError as _XmlParseError
 from resources.lib.xml_safety import UnsafeXmlError as _UnsafeXmlError
 from resources.lib.xml_safety import safe_fromstring as _safe_fromstring
@@ -394,19 +394,22 @@ def _fetch_and_parse(indexer, params, error_prefix):
 
 def _plan_indexer_search(indexer, criteria, max_results):
     """Build the Newznab search plan for one indexer from search criteria."""
-    return plan_newznab_search(
-        provider_kind="direct",
-        host=indexer["api_url"],
+    query = SearchQuery(
         search_type=criteria["search_type"],
         title=criteria["title"],
         year=criteria.get("year", ""),
         imdb=criteria.get("imdb", ""),
         season=criteria.get("season", ""),
         episode=criteria.get("episode", ""),
+        tvdb=criteria.get("tvdb", ""),
+    )
+    return plan_newznab_search(
+        provider_kind="direct",
+        host=indexer["api_url"],
+        query=query,
         caps=indexer.get("caps", {}),
         api_key=indexer["api_key"],
         max_results=max_results,
-        tvdb=criteria.get("tvdb", ""),
     )
 
 
@@ -442,15 +445,9 @@ def _search_one_indexer(indexer, criteria, max_results):
 
 
 def search_direct_indexers(
-    search_type,
-    title,
-    year="",
-    imdb="",
-    season="",
-    episode="",
+    query,
     indexers=None,
     max_results=None,
-    tvdb="",
 ):
     """Search all configured direct Newznab indexers."""
     indexers = get_configured_indexers() if indexers is None else indexers
@@ -463,13 +460,13 @@ def search_direct_indexers(
     all_results = []
     errors = []
     criteria = {
-        "search_type": search_type,
-        "title": title,
-        "year": year,
-        "imdb": imdb,
-        "season": season,
-        "episode": episode,
-        "tvdb": tvdb,
+        "search_type": query.search_type,
+        "title": query.title,
+        "year": query.year,
+        "imdb": query.imdb,
+        "season": query.season,
+        "episode": query.episode,
+        "tvdb": query.tvdb,
     }
 
     def worker(indexer):
