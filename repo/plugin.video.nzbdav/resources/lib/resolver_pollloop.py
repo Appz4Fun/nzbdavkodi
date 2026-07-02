@@ -13,7 +13,24 @@ top-level import cycle; same-module sibling helpers are called directly. Every
 moved name is re-exported from ``resolver``.
 """
 
+from typing import NamedTuple
+
 import resources.lib.resolver as _resolver  # noqa: F401  pylint: disable=unused-import
+
+
+class PollContext(NamedTuple):
+    """Optional hooks/hints threaded from resolve entry into the poll loop."""
+
+    on_primary_submitted: object = None
+    on_existing_completed: object = None
+    completed_job_hint: object = None
+    completed_job_lookup_done: bool = False
+    settings_getter: object = None
+    selected_indexer: str = ""
+    rejected_completed_ids: object = None
+    download_pubdate: object = None
+    download_size: object = None
+    dead: object = None
 
 
 def _record_download_soft(title, download_pubdate, download_size):
@@ -86,45 +103,52 @@ def _cancel_job_on_shutdown(nzo_id, settings_getter):
         _resolver.cancel_job(nzo_id, settings_getter=settings_getter)
 
 
+def _submit_and_announce(nzb_url, title, dialog, monitor, poll_ctx):
+    """Submit the NZB (with retries) and fire the primary-submitted hook.
+
+    Returns nzo_id or None. Extracted verbatim from _poll_until_ready."""
+    nzo_id = _resolver._submit_nzb_with_retries(
+        nzb_url,
+        title,
+        dialog,
+        monitor,
+        settings_getter=poll_ctx.settings_getter,
+        selected_indexer=poll_ctx.selected_indexer,
+        rejected_completed_ids=poll_ctx.rejected_completed_ids,
+    )
+    if not nzo_id:
+        return None
+    _notify_primary_submitted(poll_ctx.on_primary_submitted, nzo_id)
+    return nzo_id
+
+
 def _poll_until_ready(
-    nzb_url,
-    title,
-    dialog,
-    poll_interval,
-    download_timeout,
-    on_primary_submitted=None,
-    on_existing_completed=None,
-    completed_job_hint=None,
-    completed_job_lookup_done=False,
-    settings_getter=None,
-    selected_indexer=None,
-    rejected_completed_ids=None,
-    download_pubdate=None,
-    download_size=None,
-    dead=None,
+    nzb_url, title, dialog, poll_interval, download_timeout, poll_ctx=None
 ):
     """Submit NZB and poll until download completes.
 
     Returns ``(stream_url, stream_headers)`` on success, or ``(None, None)``
     on failure (timeout, cancellation, server error, etc.).  All user
     notifications are issued inside this function; the caller only needs to
-    decide what to do with the resulting stream URL.
+    decide what to do with the resulting stream URL. ``poll_ctx`` bundles the
+    optional hooks/hints; ``None`` means ``PollContext()`` (all defaults).
     """
+    poll_ctx = poll_ctx or PollContext()
     # Completed rows the body probe rejects (Completed but mid-file body
     # unavailable) are collected here so neither the submit/adoption path nor
     # the poll-loop by-name fallback re-adopts the very row we just rejected
     # and bypasses the intended re-download. The caller may pass a shared set
     # so a picker-probe rejection (recorded before this call) is honored too.
-    if rejected_completed_ids is None:
-        rejected_completed_ids = set()
+    if poll_ctx.rejected_completed_ids is None:
+        poll_ctx = poll_ctx._replace(rejected_completed_ids=set())
     existing_stream = _resolver._existing_completed_stream(
         title,
-        on_existing_completed=on_existing_completed,
-        completed_job_hint=completed_job_hint,
-        completed_job_lookup_done=completed_job_lookup_done,
-        settings_getter=settings_getter,
-        rejected_completed_ids=rejected_completed_ids,
-        download_size=download_size,
+        on_existing_completed=poll_ctx.on_existing_completed,
+        completed_job_hint=poll_ctx.completed_job_hint,
+        completed_job_lookup_done=poll_ctx.completed_job_lookup_done,
+        settings_getter=poll_ctx.settings_getter,
+        rejected_completed_ids=poll_ctx.rejected_completed_ids,
+        download_size=poll_ctx.download_size,
     )
     if existing_stream is not None:
         return existing_stream
@@ -134,18 +158,9 @@ def _poll_until_ready(
     # fallback in _poll_once compares this against a slot's ``completed``
     # epoch to suppress stale prior-attempt false positives on resubmit.
     submit_started_wall = _resolver.time.time()
-    nzo_id = _resolver._submit_nzb_with_retries(
-        nzb_url,
-        title,
-        dialog,
-        monitor,
-        settings_getter=settings_getter,
-        selected_indexer=selected_indexer,
-        rejected_completed_ids=rejected_completed_ids,
-    )
+    nzo_id = _submit_and_announce(nzb_url, title, dialog, monitor, poll_ctx)
     if not nzo_id:
         return None, None
-    _notify_primary_submitted(on_primary_submitted, nzo_id)
 
     _resolver.xbmc.log(
         "NZB-DAV: NZB submitted, nzo_id={}, polling every {}s (timeout={}s)".format(
@@ -166,8 +181,8 @@ def _poll_until_ready(
     near_complete_fast_repolls = 0
 
     def _mark_dead(nzo):
-        if dead is not None:
-            dead.add(nzb_url=nzb_url, nzo_id=nzo)
+        if poll_ctx.dead is not None:
+            poll_ctx.dead.add(nzb_url=nzb_url, nzo_id=nzo)
 
     def _run_one_poll():
         """Run one poll iteration.
@@ -180,9 +195,9 @@ def _poll_until_ready(
             nzo_id,
             title,
             monitor,
-            settings_getter=settings_getter,
+            settings_getter=poll_ctx.settings_getter,
             submit_started_wall=submit_started_wall,
-            rejected_completed_ids=rejected_completed_ids,
+            rejected_completed_ids=poll_ctx.rejected_completed_ids,
         )
 
         should_stop, last_status = _resolver._handle_job_status(
@@ -199,13 +214,15 @@ def _poll_until_ready(
                 no_video_retries,
                 max_no_video_retries,
                 monitor=monitor,
-                settings_getter=settings_getter,
-                modal_failures=settings_getter is None,
-                download_size=download_size,
+                settings_getter=poll_ctx.settings_getter,
+                modal_failures=poll_ctx.settings_getter is None,
+                download_size=poll_ctx.download_size,
             )
         )
         if stream_url:
-            _record_download_soft(title, download_pubdate, download_size)
+            _record_download_soft(
+                title, poll_ctx.download_pubdate, poll_ctx.download_size
+            )
             return stream_url, stream_headers
         if should_stop:
             _mark_dead_on_failed_history(history, nzo_id, _mark_dead)
@@ -223,7 +240,9 @@ def _poll_until_ready(
         wait_seconds, near_complete_fast_repolls = _resolver._poll_wait_after_status(
             job_status, poll_interval, near_complete_fast_repolls
         )
-        return _wait_between_polls(monitor, wait_seconds, nzo_id, settings_getter)
+        return _wait_between_polls(
+            monitor, wait_seconds, nzo_id, poll_ctx.settings_getter
+        )
 
     while True:
         iteration += 1
