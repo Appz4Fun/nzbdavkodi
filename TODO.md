@@ -24,7 +24,7 @@ Only two areas are active right now:
 - Metadata filters may be too permissive when PTT cannot parse a release title.
 - WebDAV 401/403/5xx handling should stay typed and visible, not collapsed to "not found".
 - Session/window-property races should be reviewed before larger concurrency changes.
-- NZBGet duplicate backups (#372) round 2: the poll tracks only the pick's NZBID, so if NZBGet fails over to a same-name backup (a different NZBID) the current resolve reports the pick's failure instead of following the backup to completion. Round 2 would track the whole same-name group / the newly-active NZBID rather than a single fixed NZBID. Also consider widening "qualifying" beyond exact same-name to the same-content fallback identity (needs an explicit DupeKey since different-named releases don't group by name).
+- NZBGet duplicate backups (#372) round 2: the poll tracks only the pick's NZBID, so if NZBGet fails over to a same-name backup (a different NZBID) the current resolve reports the pick's failure instead of following the backup to completion. Round 2 would track the whole same-name group / the newly-active NZBID rather than a single fixed NZBID. Related timing edge: the backups are submitted off-thread after the pick is queued, so a pick that completes faster than the backups can be fetched+submitted (a tiny/cached release) races them — harmless on a fast SUCCESS (backups dupe-suppressed, none needed) but on a fast FAIL the backups download untracked (same round-2 poll gap). Also consider widening "qualifying" beyond exact same-name to the same-content fallback identity (needs an explicit DupeKey since different-named releases don't group by name).
 
 ## Backburner
 

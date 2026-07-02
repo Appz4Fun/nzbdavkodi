@@ -613,9 +613,19 @@ def _spawn_name_backups(ctx, name):
     NZBGet keeps active. Each backup fetch is an indexer HTTP round-trip, so it
     runs off the resolve thread to keep it from delaying the pick's poll/progress
     ("it won't affect playback"); the daemon flag keeps it from blocking Kodi
-    shutdown. The backups only need to reach NZBGet before the pick finishes, so
-    they land well within the download window. All errors are swallowed -- the
-    backups are pure insurance and must never break the pick's playback.
+    shutdown. All errors are swallowed -- the backups are pure insurance and must
+    never break the pick's playback.
+
+    Timing (best-effort): the backups only need to reach NZBGet before the pick
+    finishes to be available as failover, which for a normal-length download
+    (the target case -- a full release whose par2 repair fails) they easily do,
+    landing within seconds while the pick downloads for minutes. A pick that
+    completes in under the few seconds it takes to fetch+submit the backups (a
+    tiny or fully-cached release) can beat them: if it SUCCEEDED the late backups
+    are dupe-suppressed against its history row, which is harmless (a successful
+    pick needs no failover); if it FAILED fast the backups still submit (a failed
+    row does not suppress) and download, just untracked in this attempt (the
+    round-2 poll limitation). See TODO.md.
     """
     backups = list(ctx.dupe_backups or [])
     if not backups:
