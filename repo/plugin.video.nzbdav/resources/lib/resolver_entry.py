@@ -16,6 +16,144 @@ moved name is re-exported from ``resolver``.
 import resources.lib.resolver as _resolver  # noqa: F401  pylint: disable=unused-import
 
 
+class _ResolveSideEffects:
+    """Once-only playback-cleanup and fallback-worker starters shared by
+    both resolve entry paths. Replaces per-function nonlocal closures."""
+
+    def __init__(
+        self,
+        params,
+        fallback_candidates,
+        candidate_loader,
+        nzb_url,
+        dead,
+        settings_getter=None,
+    ):
+        self._params = params
+        self._candidates = fallback_candidates
+        self._loader = candidate_loader
+        self._nzb_url = nzb_url
+        self._dead = dead
+        self._settings_getter = settings_getter
+        self.cleanup_state = None
+        self.fallback_state = None
+
+    def start_cleanup_once(self):
+        if self.cleanup_state is None:
+            self.cleanup_state = _resolver._start_playback_state_cleanup(self._params)
+
+    def poll_context(self, selected_indexer, rejected_completed_ids):
+        """Bundle the once-only hooks + per-attempt hints into a PollContext."""
+        return _resolver.PollContext(
+            on_primary_submitted=self.start_fallback_after_primary,
+            on_existing_completed=self.start_cleanup_once,
+            settings_getter=self._settings_getter,
+            selected_indexer=selected_indexer,
+            rejected_completed_ids=rejected_completed_ids,
+            dead=self._dead,
+        )
+
+    def start_fallback_after_primary(self, _nzo_id):
+        self.start_cleanup_once()
+        if self.fallback_state is None:
+            kwargs = {
+                "candidate_loader": self._loader,
+                "prewarm_delay": _resolver._get_fallback_submit_delay_seconds(
+                    self._settings_getter
+                ),
+                "wait_for_playback": True,
+                "dead": self._dead,
+                "primary_nzb_url": self._nzb_url,
+            }
+            kwargs.update(_resolver._settings_getter_kwargs(self._settings_getter))
+            self.fallback_state = _resolver._start_fallback_submit_worker(
+                self._candidates, **kwargs
+            )
+        return self.fallback_state
+
+
+def _resolve_acquire_stream(nzb_url, title, params, rejected_completed_ids, effects):
+    """Acquire the stream for the handle-based ``resolve`` path.
+
+    Returns ``(stream_url, stream_headers, dialog)``: the completed fast-path
+    (``dialog`` is ``None``) or the submit+poll result. Extracted verbatim from
+    ``resolve``."""
+    selected_indexer = params.get("_selected_indexer", "")
+    picker_completed_lookup_done = _resolver._picker_completed_lookup_done(params)
+    completed_stream = _resolver._picker_completed_stream(
+        title,
+        params,
+        on_existing_completed=effects.start_cleanup_once,
+        rejected_completed_ids=rejected_completed_ids,
+    )
+    if completed_stream is not None:
+        stream_url, stream_headers = completed_stream
+        return stream_url, stream_headers, None
+    return _resolver._resolve_submit_and_poll(
+        nzb_url,
+        title,
+        params,
+        picker_completed_lookup_done,
+        effects.poll_context(selected_indexer, rejected_completed_ids),
+    )
+
+
+def _resolve_and_play_make_effects(params, resolve_params, nzb_url, settings_getter):
+    """Build the ``_ResolveSideEffects`` for the handle-less path.
+
+    Prefetches the fallback candidate loader and emits the deferred-lookup
+    resolve stages verbatim. Extracted from ``resolve_and_play``."""
+    fallback_candidates = resolve_params.get("_fallback_candidates", [])
+    fallback_candidate_loader = _resolver._prefetch_fallback_candidate_loader(
+        resolve_params.get("_fallback_candidate_loader")
+    )
+    _resolver._resolve_stage("fallback lookup deferred")
+    _resolver._resolve_stage("service config lookup deferred")
+    return _ResolveSideEffects(
+        params,
+        fallback_candidates,
+        fallback_candidate_loader,
+        nzb_url,
+        _resolver.DeadCandidates(),
+        settings_getter=settings_getter,
+    )
+
+
+def _resolve_and_play_acquire_stream(
+    nzb_url, title, resolve_params, settings_getter, effects
+):
+    """Acquire the stream for the handle-less ``resolve_and_play`` path.
+
+    Returns ``(stream_url, stream_headers, dialog)``: the completed fast-path
+    (``dialog`` is ``None``) or the submit+poll result, with the resolve-stage
+    logging woven in verbatim. Extracted verbatim from ``resolve_and_play``."""
+    selected_indexer = resolve_params.get("_selected_indexer", "")
+    picker_completed_lookup_done = _resolver._picker_completed_lookup_done(
+        resolve_params
+    )
+    # One rejected-id set per resolve attempt, shared so a Completed row the
+    # picker body probe rejects is honored by the submit/poll paths.
+    rejected_completed_ids = set()
+    completed_stream = _resolver._picker_completed_stream(
+        title,
+        resolve_params,
+        on_existing_completed=effects.start_cleanup_once,
+        settings_getter=settings_getter,
+        rejected_completed_ids=rejected_completed_ids,
+    )
+    _resolver._resolve_stage("picker completed stream checked")
+    if completed_stream is not None:
+        stream_url, stream_headers = completed_stream
+        return stream_url, stream_headers, None
+    return _resolver._resolve_and_play_submit_and_poll(
+        nzb_url,
+        title,
+        resolve_params,
+        picker_completed_lookup_done,
+        effects.poll_context(selected_indexer, rejected_completed_ids),
+    )
+
+
 def resolve(handle, params):
     """Handle plugin:// URL resolution (TMDBHelper integration).
 
@@ -33,8 +171,7 @@ def resolve(handle, params):
     """
     nzb_url = _resolver.unquote(params.get("nzburl", ""))
     title = _resolver.unquote(params.get("title", ""))
-    fallback_state = None
-    playback_cleanup_state = None
+    effects = None
 
     if not nzb_url:
         _resolver._reject_resolve_handle(
@@ -53,67 +190,33 @@ def resolve(handle, params):
     dialog = None
     try:
         fallback_candidates = params.get("_fallback_candidates", [])
-        selected_indexer = params.get("_selected_indexer", "")
         fallback_candidate_loader = _resolver._prefetch_fallback_candidate_loader(
             params.get("_fallback_candidate_loader")
         )
-        picker_completed_lookup_done = _resolver._picker_completed_lookup_done(params)
-
-        def _start_playback_cleanup_once():
-            nonlocal playback_cleanup_state
-            # nosemgrep
-            if playback_cleanup_state is None:
-                playback_cleanup_state = _resolver._start_playback_state_cleanup(params)
-
-        def _start_fallback_after_primary(_nzo_id):
-            nonlocal fallback_state
-            _start_playback_cleanup_once()
-            # nosemgrep
-            if fallback_state is None:
-                fallback_state = _resolver._start_fallback_submit_worker(
-                    fallback_candidates,
-                    candidate_loader=fallback_candidate_loader,
-                    prewarm_delay=_resolver._get_fallback_submit_delay_seconds(),
-                    wait_for_playback=True,
-                    dead=dead,
-                    primary_nzb_url=nzb_url,
-                )
-            return fallback_state
-
         # One rejected-id set per resolve attempt, shared so a Completed row
         # the picker body probe rejects is honored by the submit/poll paths.
         rejected_completed_ids = set()
         dead = _resolver.DeadCandidates()
-        completed_stream = _resolver._picker_completed_stream(
-            title,
-            params,
-            on_existing_completed=_start_playback_cleanup_once,
-            rejected_completed_ids=rejected_completed_ids,
+        effects = _ResolveSideEffects(
+            params, fallback_candidates, fallback_candidate_loader, nzb_url, dead
         )
-        if completed_stream is not None:
-            stream_url, stream_headers = completed_stream
-        else:
-            stream_url, stream_headers, dialog = _resolver._resolve_submit_and_poll(
-                nzb_url,
-                title,
-                params,
-                picker_completed_lookup_done,
-                selected_indexer,
-                rejected_completed_ids,
-                dead,
-                (_start_fallback_after_primary, _start_playback_cleanup_once),
-            )
+        stream_url, stream_headers, dialog = _resolve_acquire_stream(
+            nzb_url, title, params, rejected_completed_ids, effects
+        )
         dialog = _resolver._resolve_finish_or_reject(
             handle,
             params,
             (stream_url, stream_headers, dead),
-            (fallback_state, _start_fallback_after_primary),
-            playback_cleanup_state,
+            (effects.fallback_state, effects.start_fallback_after_primary),
+            effects.cleanup_state,
             dialog,
         )
     except _resolver._RESOLVE_RUNTIME_ERRORS as error:
         _resolver._resolve_stage("resolve_exception {}".format(error))
-        _resolver._stop_fallback_submit_worker(fallback_state, cancel_submitted=True)
+        _resolver._stop_fallback_submit_worker(
+            effects.fallback_state if effects is not None else None,
+            cancel_submitted=True,
+        )
         _resolver._handle_resolve_exception("resolve", error, handle=handle)
     finally:
         if dialog is not None:
@@ -139,8 +242,7 @@ def resolve_and_play(nzb_url, title, params=None):
     on the RunPlugin path. Same fix as `resolve()` — TODO.md §H.2-H9.
     """
     dialog = None
-    fallback_state = None
-    playback_cleanup_state = None
+    effects = None
     try:
         _resolver._resolve_stage("enter resolve_and_play")
         # NZBGet backend toggle (handle-less path). resolve_and_play has no
@@ -155,87 +257,25 @@ def resolve_and_play(nzb_url, title, params=None):
                 nzb_url, title, params, resolve_params
             )
             return
-        selected_indexer = resolve_params.get("_selected_indexer", "")
-        fallback_candidates = resolve_params.get("_fallback_candidates", [])
-        fallback_candidate_loader = _resolver._prefetch_fallback_candidate_loader(
-            resolve_params.get("_fallback_candidate_loader")
+        effects = _resolve_and_play_make_effects(
+            params, resolve_params, nzb_url, settings_getter
         )
-        _resolver._resolve_stage("fallback lookup deferred")
-        _resolver._resolve_stage("service config lookup deferred")
-        picker_completed_lookup_done = _resolver._picker_completed_lookup_done(
-            resolve_params
+        stream_url, stream_headers, dialog = _resolve_and_play_acquire_stream(
+            nzb_url, title, resolve_params, settings_getter, effects
         )
-
-        def _start_playback_cleanup_once():
-            nonlocal playback_cleanup_state
-            # nosemgrep
-            if playback_cleanup_state is None:
-                playback_cleanup_state = _resolver._start_playback_state_cleanup(params)
-
-        def _start_fallback_after_primary(_nzo_id):
-            nonlocal fallback_state
-            _start_playback_cleanup_once()
-            # nosemgrep
-            if fallback_state is None:
-                fallback_submit_kwargs = {
-                    "candidate_loader": fallback_candidate_loader,
-                    "prewarm_delay": _resolver._get_fallback_submit_delay_seconds(
-                        settings_getter
-                    ),
-                    "wait_for_playback": True,
-                    "dead": dead,
-                    "primary_nzb_url": nzb_url,
-                }
-                fallback_submit_kwargs.update(
-                    _resolver._settings_getter_kwargs(settings_getter)
-                )
-                fallback_state = _resolver._start_fallback_submit_worker(
-                    fallback_candidates,
-                    **fallback_submit_kwargs,
-                )
-            return fallback_state
-
-        # One rejected-id set per resolve attempt, shared so a Completed row
-        # the picker body probe rejects is honored by the submit/poll paths.
-        rejected_completed_ids = set()
-        dead = _resolver.DeadCandidates()
-        completed_stream = _resolver._picker_completed_stream(
-            title,
-            resolve_params,
-            on_existing_completed=_start_playback_cleanup_once,
-            settings_getter=settings_getter,
-            rejected_completed_ids=rejected_completed_ids,
-        )
-        _resolver._resolve_stage("picker completed stream checked")
-        if completed_stream is not None:
-            stream_url, stream_headers = completed_stream
-        else:
-            stream_url, stream_headers, dialog = (
-                _resolver._resolve_and_play_submit_and_poll(
-                    nzb_url,
-                    title,
-                    resolve_params,
-                    picker_completed_lookup_done,
-                    selected_indexer,
-                    rejected_completed_ids,
-                    dead,
-                    (
-                        _start_fallback_after_primary,
-                        _start_playback_cleanup_once,
-                        settings_getter,
-                    ),
-                )
-            )
         dialog = _resolver._resolve_and_play_finish_or_stop(
             _resolver._resume_params_with_title(resolve_params, title),
-            (stream_url, stream_headers, dead),
-            (fallback_state, _start_fallback_after_primary),
+            (stream_url, stream_headers, effects._dead),
+            (effects.fallback_state, effects.start_fallback_after_primary),
             settings_getter,
-            playback_cleanup_state,
+            effects.cleanup_state,
             dialog,
         )
     except _resolver._RESOLVE_RUNTIME_ERRORS as error:
-        _resolver._stop_fallback_submit_worker(fallback_state, cancel_submitted=True)
+        _resolver._stop_fallback_submit_worker(
+            effects.fallback_state if effects is not None else None,
+            cancel_submitted=True,
+        )
         _resolver._handle_resolve_exception("resolve_and_play", error)
     finally:
         if dialog is not None:

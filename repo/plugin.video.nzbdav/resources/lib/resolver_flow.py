@@ -178,28 +178,25 @@ def _invoke_poll_until_ready(
     download_timeout,
     params_src,
     picker_completed_lookup_done,
-    extras,
+    poll_ctx,
 ):
     """Verbatim ``_poll_until_ready`` invocation shared by both submit helpers.
 
     ``params_src`` is the params/resolve_params dict whose ``_completed_job`` /
-    ``_download_pubdate`` / ``_download_size`` are threaded through, and
-    ``extras`` is ``(on_primary_submitted, on_existing_completed,
-    selected_indexer, rejected_completed_ids, dead, settings_getter)``. The
-    resolve path passes ``settings_getter=None`` (its default), so this stays
-    byte-identical to the original handle-based call. Returns
+    ``_download_pubdate`` / ``_download_size`` are folded into ``poll_ctx``, the
+    ``PollContext`` bundling the hooks/hints constructed at the resolve entry.
+    The resolve path leaves ``settings_getter`` at its ``None`` default, so this
+    stays byte-identical to the original handle-based call. Returns
     ``(stream_url, stream_headers)``.
     """
-    (
-        on_primary_submitted,
-        on_existing_completed,
-        selected_indexer,
-        rejected_completed_ids,
-        dead,
-        settings_getter,
-    ) = extras
     completed_job_hint = (
         None if picker_completed_lookup_done else params_src.get("_completed_job")
+    )
+    poll_ctx = poll_ctx._replace(
+        completed_job_hint=completed_job_hint,
+        completed_job_lookup_done=picker_completed_lookup_done,
+        download_pubdate=params_src.get("_download_pubdate"),
+        download_size=params_src.get("_download_size"),
     )
     return _resolver._poll_until_ready(
         nzb_url,
@@ -207,16 +204,7 @@ def _invoke_poll_until_ready(
         dialog,
         poll_interval,
         download_timeout,
-        on_primary_submitted=on_primary_submitted,
-        on_existing_completed=on_existing_completed,
-        completed_job_hint=completed_job_hint,
-        completed_job_lookup_done=picker_completed_lookup_done,
-        settings_getter=settings_getter,
-        selected_indexer=selected_indexer,
-        rejected_completed_ids=rejected_completed_ids,
-        download_pubdate=params_src.get("_download_pubdate"),
-        download_size=params_src.get("_download_size"),
-        dead=dead,
+        poll_ctx=poll_ctx,
     )
 
 
@@ -225,19 +213,16 @@ def _resolve_submit_and_poll(
     title,
     params,
     picker_completed_lookup_done,
-    selected_indexer,
-    rejected_completed_ids,
-    dead,
-    callbacks,
+    poll_ctx,
 ):
     """Submit + poll for the handle-based ``resolve`` path (no completed hit).
 
-    Extracted verbatim from the ``else`` branch of ``resolve``. ``callbacks`` is
-    ``(on_primary_submitted, on_existing_completed)``. See
+    Extracted verbatim from the ``else`` branch of ``resolve``. ``poll_ctx`` is
+    the ``PollContext`` bundling the hooks/hints built at the entry (its
+    ``settings_getter`` stays ``None`` on this path). See
     ``_resolve_and_play_submit_and_poll`` for the bookmark-cleanup timing
     rationale. Returns ``(stream_url, stream_headers, dialog)``.
     """
-    on_primary_submitted, on_existing_completed = callbacks
     poll_interval, download_timeout = _resolver._get_poll_settings()
     # Offer the pre-submit queue clear before the dialog so the yes/no prompt
     # is never stacked behind a modal DialogProgress.
@@ -252,7 +237,7 @@ def _resolve_submit_and_poll(
     owner = dialog
     try:
         if not picker_completed_lookup_done:
-            on_existing_completed()
+            poll_ctx.on_existing_completed()
         stream_url, stream_headers = _invoke_poll_until_ready(
             nzb_url,
             title,
@@ -261,14 +246,7 @@ def _resolve_submit_and_poll(
             download_timeout,
             params,
             picker_completed_lookup_done,
-            (
-                on_primary_submitted,
-                on_existing_completed,
-                selected_indexer,
-                rejected_completed_ids,
-                dead,
-                None,
-            ),
+            poll_ctx,
         )
         owner = None
         return stream_url, stream_headers, dialog
@@ -399,18 +377,15 @@ def _resolve_and_play_submit_and_poll(
     title,
     resolve_params,
     picker_completed_lookup_done,
-    selected_indexer,
-    rejected_completed_ids,
-    dead,
-    callbacks,
+    poll_ctx,
 ):
     """Submit + poll (handle-less path); verbatim ``resolve_and_play`` ``else``.
 
     Mirrors ``_resolve_submit_and_poll`` with resolve-stage logging and a
-    threaded ``settings_getter``. ``callbacks`` is ``(on_primary_submitted,
-    on_existing_completed, settings_getter)``.
+    threaded ``settings_getter``. ``poll_ctx`` is the ``PollContext`` bundling
+    the hooks/hints built at the entry (including its ``settings_getter``).
     """
-    on_primary_submitted, on_existing_completed, settings_getter = callbacks
+    settings_getter = poll_ctx.settings_getter
     _resolver._resolve_stage("poll settings start")
     poll_interval, download_timeout = _resolver._get_poll_settings(
         settings_getter=settings_getter
@@ -429,7 +404,7 @@ def _resolve_and_play_submit_and_poll(
     owner = dialog
     try:
         if not picker_completed_lookup_done:
-            on_existing_completed()
+            poll_ctx.on_existing_completed()
         _resolver._resolve_stage("poll until ready start")
         stream_url, stream_headers = _invoke_poll_until_ready(
             nzb_url,
@@ -439,14 +414,7 @@ def _resolve_and_play_submit_and_poll(
             download_timeout,
             resolve_params,
             picker_completed_lookup_done,
-            (
-                on_primary_submitted,
-                on_existing_completed,
-                selected_indexer,
-                rejected_completed_ids,
-                dead,
-                settings_getter,
-            ),
+            poll_ctx,
         )
         _resolver._resolve_stage(
             "poll until ready done stream={}".format(bool(stream_url))

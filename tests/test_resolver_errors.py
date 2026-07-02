@@ -196,7 +196,7 @@ def test_poll_until_ready_records_dead_on_job_failed(resolver_mocks):
                 resolver_mocks.dialog,
                 1,
                 60,
-                dead=dead,
+                poll_ctx=resolver.PollContext(dead=dead),
             )
 
     assert stream_url is None
@@ -228,7 +228,7 @@ def test_poll_until_ready_does_not_record_dead_on_timeout(resolver_mocks):
                 resolver_mocks.dialog,
                 1,
                 60,
-                dead=dead,
+                poll_ctx=resolver.PollContext(dead=dead),
             )
 
     assert stream_url is None
@@ -345,7 +345,7 @@ def test_playback_fallback_sources_excludes_dead_url():
     assert [s["nzo_id"] for s in sources] == ["nzo_ok"]
 
 
-def _dialog_close_called_when_poll_raises(helper_name, callbacks):
+def _dialog_close_called_when_poll_raises(helper_name, poll_ctx):
     """Shared body: a raise in the submit/poll helper must close the locally
     created DialogProgress before propagating (no-hang invariant). The split
     into _resolve_*_submit_and_poll returns the dialog to the caller, so a raise
@@ -370,17 +370,30 @@ def _dialog_close_called_when_poll_raises(helper_name, callbacks):
         gui.DialogProgress.return_value = dialog
         helper = getattr(resolver, helper_name)
         with pytest.raises(RuntimeError):
-            helper("http://nzb", "Title", {}, True, "", set(), None, callbacks)
+            helper("http://nzb", "Title", {}, True, poll_ctx)
     dialog.close.assert_called_once()
 
 
 def test_resolve_submit_and_poll_closes_dialog_when_poll_raises():
+    from resources.lib import resolver
+
     _dialog_close_called_when_poll_raises(
-        "_resolve_submit_and_poll", (lambda nzo: None, lambda: None)
+        "_resolve_submit_and_poll",
+        resolver.PollContext(
+            on_primary_submitted=lambda nzo: None,
+            on_existing_completed=lambda: None,
+        ),
     )
 
 
 def test_resolve_and_play_submit_and_poll_closes_dialog_when_poll_raises():
+    from resources.lib import resolver
+
     _dialog_close_called_when_poll_raises(
-        "_resolve_and_play_submit_and_poll", (lambda nzo: None, lambda: None, None)
+        "_resolve_and_play_submit_and_poll",
+        resolver.PollContext(
+            on_primary_submitted=lambda nzo: None,
+            on_existing_completed=lambda: None,
+            settings_getter=None,
+        ),
     )

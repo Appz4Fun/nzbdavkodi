@@ -299,6 +299,10 @@ from resources.lib.resolver_completed import (  # noqa: E402,F401
     _submit_error_with_indexer,
 )
 from resources.lib.resolver_entry import (  # noqa: E402,F401
+    _resolve_acquire_stream,
+    _resolve_and_play_acquire_stream,
+    _resolve_and_play_make_effects,
+    _ResolveSideEffects,
     resolve,
     resolve_and_play,
 )
@@ -425,6 +429,7 @@ from resources.lib.resolver_poll import (  # noqa: E402,F401
     _wait_for_nearly_complete_history,
 )
 from resources.lib.resolver_pollloop import (  # noqa: E402,F401
+    PollContext,
     _cancel_job_on_shutdown,
     _job_status_is_dead,
     _mark_dead_on_failed_history,
@@ -432,6 +437,7 @@ from resources.lib.resolver_pollloop import (  # noqa: E402,F401
     _notify_primary_submitted,
     _poll_until_ready,
     _record_download_soft,
+    _submit_and_announce,
     _wait_between_polls,
 )
 from resources.lib.resolver_prepare import (  # noqa: E402,F401
@@ -488,6 +494,7 @@ from resources.lib.resolver_submit import (  # noqa: E402,F401
     _report_all_submit_attempts_failed,
     _safe_probe_by_name,
     _start_probe_thread_or_run,
+    _start_submit_worker,
     _submit_nzb_with_retries,
     _submit_nzb_with_ui_pump,
     _submit_probe_interval,
