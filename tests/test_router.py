@@ -3928,25 +3928,44 @@ def _dupe_setting_getter(values):
     return lambda addon, key, default="": values.get(key, default)
 
 
-def test_release_dupe_key_movie_prefers_imdb_then_tmdb_then_title():
+def test_release_dupe_key_is_release_scoped_with_content_prefix():
+    # The key is scoped to the SELECTED RELEASE NAME (its slug), with a canonical
+    # content id prefixed for namespacing -- so a different release of the same
+    # content gets a DIFFERENT key.
     from resources.lib.router_play import _release_dupe_key
 
-    assert _release_dupe_key({"type": "movie", "imdb": "tt1234567"}) == "imdb=1234567"
-    assert _release_dupe_key({"type": "movie", "tmdb_id": "603"}) == "themoviedb=603"
+    rel = "The Matrix 1999 1080p BluRay x264-GRP"
     assert (
-        _release_dupe_key({"type": "movie", "title": "The Matrix", "year": "1999"})
-        == "movie=the-matrix-1999"
+        _release_dupe_key({"type": "movie", "imdb": "tt1234567"}, rel)
+        == "imdb=1234567|the-matrix-1999-1080p-bluray-x264-grp"
     )
-    assert _release_dupe_key({"type": "movie"}) == ""  # nothing usable
+    assert (
+        _release_dupe_key({"type": "movie", "tmdb_id": "603"}, rel)
+        == "themoviedb=603|the-matrix-1999-1080p-bluray-x264-grp"
+    )
+    # No content id -> namespaced release-name key (still release-scoped).
+    assert _release_dupe_key({"type": "movie"}, rel).startswith("nzbdav:the-matrix-")
+    # A different release of the same movie gets a different key (no over-group).
+    k1080 = _release_dupe_key({"imdb": "tt42"}, "Movie 2024 1080p")
+    k2160 = _release_dupe_key({"imdb": "tt42"}, "Movie 2024 2160p")
+    assert k1080 != k2160
+    # Unusable release name -> no key (plain submit).
+    assert _release_dupe_key({"imdb": "tt42"}, "") == ""
 
 
-def test_release_dupe_key_episode_prefers_tvdb_then_imdb_then_title():
+def test_release_dupe_key_episode_prefixes_tvdb_then_imdb_with_se():
     from resources.lib.router_play import _release_dupe_key
 
     ep = {"type": "episode", "season": "2", "episode": "10"}
-    assert _release_dupe_key(dict(ep, tvdb="13434")) == "tvdbid=13434-S02-E10"
-    assert _release_dupe_key(dict(ep, imdb="tt944947")) == "imdb=944947-S02-E10"
-    assert _release_dupe_key(dict(ep, title="Dexter")) == "series=dexter-S02-E10"
+    rel = "Dexter S02E10 1080p WEB-DL-GRP"
+    assert _release_dupe_key(dict(ep, tvdb="13434"), rel).startswith(
+        "tvdbid=13434-S02-E10|"
+    )
+    assert _release_dupe_key(dict(ep, imdb="tt944947"), rel).startswith(
+        "imdb=944947-S02-E10|"
+    )
+    # No id -> namespaced release-name key (still distinct per episode name).
+    assert _release_dupe_key(dict(ep), rel).startswith("nzbdav:")
 
 
 def test_nzbget_dupe_submission_scores_pick_highest_and_backups_descending():
@@ -3965,7 +3984,8 @@ def test_nzbget_dupe_submission_scores_pick_highest_and_backups_descending():
         _dupe_setting_getter({"nzbget_enabled": "true"}),
     ):
         dupe = _nzbget_dupe_submission_for_selection(selected, filtered, identity)
-    assert dupe["key"] == "imdb=42"
+    # Release-scoped key: content id prefix + the pick's normalized release name.
+    assert dupe["key"] == "imdb=42|the-movie-2024-1080p"
     assert [b["link"] for b in dupe["backups"]] == ["http://i/a.nzb", "http://i/b.nzb"]
     # Pick strictly highest; backups strictly-lower descending.
     assert all(b["score"] < dupe["pick_score"] for b in dupe["backups"])
@@ -3989,17 +4009,20 @@ def test_nzbget_dupe_submission_none_when_no_same_name_backups():
         )
 
 
-def test_nzbget_dupe_submission_none_when_no_dupe_key():
+def test_nzbget_dupe_submission_none_when_no_release_name():
     from resources.lib.router_play import _nzbget_dupe_submission_for_selection
 
-    selected = {"link": "http://i/pick.nzb", "title": "X"}
-    filtered = [selected, {"link": "http://i/a.nzb", "title": "X"}]
-    # No id and no title in identity -> no key -> no submission.
+    # No usable release name on the pick -> no key -> no submission.
+    selected = {"link": "http://i/pick.nzb", "title": ""}
+    filtered = [selected, {"link": "http://i/a.nzb", "title": ""}]
     with patch(
         "resources.lib.router._get_addon_setting",
         _dupe_setting_getter({"nzbget_enabled": "true"}),
     ):
-        assert _nzbget_dupe_submission_for_selection(selected, filtered, {}) is None
+        assert (
+            _nzbget_dupe_submission_for_selection(selected, filtered, {"imdb": "tt1"})
+            is None
+        )
 
 
 def test_nzbget_dupe_submission_none_when_backend_or_setting_off():
@@ -4042,34 +4065,24 @@ def test_nzbget_dupe_submission_caps_backups_by_setting():
     assert len(dupe["backups"]) == 3
 
 
-def test_release_dupe_key_episode_without_numeric_se_is_empty():
+def test_release_dupe_key_episode_without_numeric_se_stays_distinct():
     # Episode context with missing/non-numeric season+episode must NOT emit a
-    # movie/show-level key -- that would merge every episode of the show (and the
-    # show's movie) into one NZBGet duplicate set.
+    # movie/show-level key that merges episodes. It drops the (unreliable) content
+    # id and falls back to the release-name key, which keeps distinct episodes
+    # apart (the merge bug's regression guard).
     from resources.lib.router_play import _release_dupe_key
 
-    assert _release_dupe_key({"type": "episode", "imdb": "tt111"}) == ""
-    assert (
-        _release_dupe_key(
-            {"type": "episode", "imdb": "tt111", "season": "", "episode": ""}
-        )
-        == ""
+    ep = {"type": "episode", "imdb": "tt111"}  # show imdb, no numeric S/E
+    k1 = _release_dupe_key(ep, "The Show S01E02 1080p GRP")
+    k2 = _release_dupe_key(ep, "The Show S02E05 1080p GRP")
+    assert k1.startswith("nzbdav:") and k2.startswith("nzbdav:")  # no show-level id
+    assert k1 != k2  # distinct episodes never collide
+    # A numeric S/E does prefix the canonical episode id, still release-scoped.
+    keyed = _release_dupe_key(
+        {"type": "episode", "imdb": "tt111", "season": "1", "episode": "2"},
+        "The Show S01E02 1080p GRP",
     )
-    assert (
-        _release_dupe_key(
-            {"type": "episode", "imdb": "tt111", "season": "S1", "episode": "x"}
-        )
-        == ""
-    )
-    # Distinct episodes get distinct keys (regression guard for the merge bug).
-    k1 = _release_dupe_key(
-        {"type": "episode", "imdb": "tt111", "season": "1", "episode": "2"}
-    )
-    k2 = _release_dupe_key(
-        {"type": "episode", "imdb": "tt111", "season": "2", "episode": "5"}
-    )
-    assert (k1, k2) == ("imdb=111-S01-E02", "imdb=111-S02-E05")
-    assert k1 != k2
+    assert keyed.startswith("imdb=111-S01-E02|")
 
 
 def test_script_play_resolve_selected_attaches_nzbget_dupe_end_to_end():
@@ -4108,6 +4121,6 @@ def test_script_play_resolve_selected_attaches_nzbget_dupe_end_to_end():
         router_scriptplay._script_play_resolve_selected(params, selected, filtered, {})
 
     dupe = captured["params"]["_nzbget_dupe"]
-    assert dupe["key"] == "imdb=0133093"
+    assert dupe["key"] == "imdb=0133093|the-matrix-1999-1080p"
     assert [b["link"] for b in dupe["backups"]] == ["http://i/b.nzb"]
     assert dupe["backups"][0]["score"] < dupe["pick_score"]

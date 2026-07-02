@@ -3,8 +3,11 @@ import sys
 from unittest.mock import MagicMock, patch
 
 from resources.lib.nzbget_resolver import (
+    _HEALTHCHECK_WARNED,
+    _dupe_check_disabled,
     _read_poll_interval,
     _read_settings,
+    _snapshot_conn_getter,
     _spawn_dupe_backups,
     _submit_dupe_backups,
     _warn_if_healthcheck_pauses,
@@ -1160,12 +1163,53 @@ def test_spawn_dupe_backups_submits_and_warns_healthcheck():
         "resources.lib.nzbget_resolver._submit_dupe_backups"
     ) as core, patch(
         "resources.lib.nzbget_resolver._warn_if_healthcheck_pauses"
-    ) as warn:
+    ) as warn, patch(
+        "resources.lib.nzbget_resolver._dupe_check_disabled", return_value=False
+    ):
         _spawn_dupe_backups(ctx)
     core.assert_called_once()
     assert core.call_args.args[0] == dupe["backups"]
     assert core.call_args.args[1] == "imdb=1"  # shared key
     warn.assert_called_once()
+
+
+def test_spawn_dupe_backups_skips_when_dupecheck_disabled():
+    # DupeCheck=no -> backups would download in parallel -> skip submission.
+    dupe = {"key": "imdb=1", "pick_score": 2, "backups": [{"link": "u", "score": 1}]}
+    with patch("resources.lib.nzbget_resolver.threading.Thread", _InlineThread), patch(
+        "resources.lib.nzbget_resolver._submit_dupe_backups"
+    ) as core, patch(
+        "resources.lib.nzbget_resolver._warn_if_healthcheck_pauses"
+    ), patch(
+        "resources.lib.nzbget_resolver._dupe_check_disabled", return_value=True
+    ):
+        _spawn_dupe_backups(_dupe_ctx(dupe))
+    core.assert_not_called()
+
+
+def test_snapshot_conn_getter_preserves_blank_username():
+    # A blank nzbget_username must survive into the worker getter (NZBGet's empty
+    # ControlUsername disables username checking) -- not be defaulted to "nzbget".
+    getter = _settings({"nzbget_url": "http://box:6789", "nzbget_username": ""})
+    snap = _snapshot_conn_getter(getter)
+    assert snap("nzbget_username", "nzbget") == ""
+    assert snap("nzbget_url", "http://localhost:6789") == "http://box:6789"
+
+
+def test_dupe_check_disabled_reads_config():
+    with patch(
+        "resources.lib.nzbget_resolver.nzbget_api.config_option", return_value="no"
+    ):
+        assert _dupe_check_disabled(_settings({})) is True
+    with patch(
+        "resources.lib.nzbget_resolver.nzbget_api.config_option", return_value="yes"
+    ):
+        assert _dupe_check_disabled(_settings({})) is False
+    with patch(
+        "resources.lib.nzbget_resolver.nzbget_api.config_option",
+        side_effect=RuntimeError("boom"),
+    ):
+        assert _dupe_check_disabled(_settings({})) is False  # best-effort
 
 
 def test_spawn_dupe_backups_noop_without_backups_or_key():
@@ -1195,9 +1239,7 @@ def test_spawn_dupe_backups_swallows_thread_start_error():
 
 
 def test_warn_if_healthcheck_pauses_notifies_once_on_pause():
-    import resources.lib.nzbget_resolver as mod
-
-    mod._HEALTHCHECK_WARNED[0] = False
+    _HEALTHCHECK_WARNED[0] = False
     with patch(
         "resources.lib.nzbget_resolver.nzbget_api.config_option", return_value="pause"
     ), patch("resources.lib.nzbget_resolver._notify") as notify:
@@ -1207,9 +1249,7 @@ def test_warn_if_healthcheck_pauses_notifies_once_on_pause():
 
 
 def test_warn_if_healthcheck_pauses_silent_when_not_pause():
-    import resources.lib.nzbget_resolver as mod
-
-    mod._HEALTHCHECK_WARNED[0] = False
+    _HEALTHCHECK_WARNED[0] = False
     with patch(
         "resources.lib.nzbget_resolver.nzbget_api.config_option", return_value="delete"
     ), patch("resources.lib.nzbget_resolver._notify") as notify:
@@ -1307,4 +1347,4 @@ def test_resolve_with_none_getter_and_dupe_does_not_crash():
         )  # settings_getter omitted -> None
     plugin.setResolvedUrl.assert_called_once()
     assert plugin.setResolvedUrl.call_args[0][1] is True
-    assert callable(spawn.call_args.args[0].settings_getter)
+    spawn.assert_called_once()  # dupe backups spawned; primary auth left raw

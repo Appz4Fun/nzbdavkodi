@@ -541,12 +541,12 @@ def _build_submit_ctx(
     the flow's getter + callbacks so the submit helpers can stay low-arity, plus
     the picker-computed NZBGet Smart-Duplicates submission (#372).
 
-    Binds a ``None`` getter (the real Kodi handle-based ``resolve`` path passes
-    no getter) to the addon-backed two-arg getter up front, so the background
-    backup-submit thread carries a valid getter created on this (main) thread
-    rather than a ``None`` it would have to resolve from a worker thread.
+    The getter is kept AS-IS (``None`` on the real Kodi handle-based path): the
+    primary submit + poll must read auth via ``_get_settings``'s raw
+    ``xbmcaddon`` branch so an intentionally blank ``nzbget_username`` is not
+    default-substituted to ``nzbget``. The background backup thread instead reads
+    from a main-thread SNAPSHOT (see ``_spawn_dupe_backups``).
     """
-    settings_getter = _bind_getter(settings_getter)
     interval = _read_poll_interval(settings_getter)
     _u, _user, _pw, category = nzbget_api._get_settings(settings_getter=settings_getter)
     completed_base = nzbget_api.completed_base_dir(settings_getter=settings_getter)
@@ -656,6 +656,42 @@ def _warn_if_healthcheck_pauses(settings_getter):
     _notify(_addon_name(), _string(30230), 6000)
 
 
+def _snapshot_conn_getter(settings_getter):
+    """A thread-safe getter over a main-thread snapshot of NZBGet connection
+    settings (#372).
+
+    Read the connection settings once on the calling (main/resolve) thread so the
+    background backup worker performs NO off-thread Kodi ``getSetting`` (unsafe on
+    CoreELEC/Kodi builds), and preserves a blank ``nzbget_username``/password
+    verbatim (``dict.get`` returns the stored ``""`` rather than the auth default
+    the addon getter substitutes).
+    """
+    url, user, password, category = nzbget_api._get_settings(settings_getter)
+    snapshot = {
+        "nzbget_url": url,
+        "nzbget_username": user,
+        "nzbget_password": password,
+        "nzbget_category": category,
+    }
+    return lambda key, default="": snapshot.get(key, default)
+
+
+def _dupe_check_disabled(settings_getter):
+    """True only when NZBGet's ``DupeCheck`` option is explicitly ``no``.
+
+    With DupeCheck off NZBGet does not park same-key items as backups -- it would
+    download every one as a normal queue item (parallel full downloads). Best-
+    effort: an unreadable config returns False (assume the default, on).
+    """
+    try:
+        return (
+            nzbget_api.config_option("DupeCheck", settings_getter=settings_getter)
+            == "no"
+        )
+    except Exception:  # pylint: disable=broad-except
+        return False
+
+
 def _spawn_dupe_backups(ctx):
     """Fire-and-forget the release's duplicate backups in a daemon thread (#372).
 
@@ -665,19 +701,28 @@ def _spawn_dupe_backups(ctx):
     an explicit DupeScore (the pick highest), NZBGet keeps the pick the active
     download regardless of when the backups land -- so submission order is not a
     concern and a backup arriving after the pick already succeeded is still put
-    into history as a backup, not deleted. Also warns once if the server's
-    HealthCheck=Pause would block automatic failover. All errors are swallowed --
-    the backups are pure insurance and must never break the pick's playback.
+    into history as a backup, not deleted. Skips entirely when the server has
+    DupeCheck disabled (backups would download in parallel), and warns once if
+    HealthCheck=Pause would block automatic failover. Reads settings from a
+    main-thread snapshot so the worker never touches Kodi off-thread. All errors
+    are swallowed -- backups are pure insurance and must never break playback.
     """
     dupe = ctx.dupe or {}
     dupe_key = dupe.get("key") or ""
     backups = list(dupe.get("backups") or [])
     if not dupe_key or not backups:
         return None
-    getter = ctx.settings_getter
+    getter = _snapshot_conn_getter(ctx.settings_getter)
 
     def _worker():
         try:
+            if _dupe_check_disabled(getter):
+                xbmc.log(
+                    "NZB-DAV: NZBGet DupeCheck=no -- skipping #372 duplicate "
+                    "backups (they would download in parallel).",
+                    xbmc.LOGINFO,
+                )
+                return
             _warn_if_healthcheck_pauses(getter)
             _submit_dupe_backups(backups, dupe_key, getter)
         except Exception as exc:  # pylint: disable=broad-except

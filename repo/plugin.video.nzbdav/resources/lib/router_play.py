@@ -299,47 +299,54 @@ def _int_or_none(value):
         return None
 
 
-def _release_dupe_key(identity):
-    """Build the canonical NZBGet DupeKey identifying the release (#372).
+def _content_prefix(identity):
+    """Canonical content id for DupeKey namespacing (docs formats), or ``""``.
 
-    Follows nzbget.com/documentation/rss/#duplicates key formats: episodes ->
-    ``tvdbid=<id>-S<ss>-E<ee>`` (else ``imdb=<digits>-S<ss>-E<ee>`` else the
-    title fallback ``series=<slug>-S<ss>-E<ee>``); movies -> ``imdb=<digits>``
-    (else ``themoviedb=<id>`` else ``movie=<slug>[-<year>]``). One identical key
-    is shared by the whole release (pick + same-name backups) so NZBGet treats
-    them as one duplicate set. Returns ``""`` when nothing usable is present.
+    Movies -> ``imdb=<digits>`` (else ``themoviedb=<id>``); episodes with a
+    numeric season+episode -> ``tvdbid=<id>-S<ss>-E<ee>`` (else
+    ``imdb=<digits>-S<ss>-E<ee>``). Returns ``""`` for an episode context without
+    a reliable numeric season+episode -- there the ``imdb``/``tvdb`` fields
+    identify the SHOW, so a bare id would span multiple episodes; the release
+    name (added by ``_release_dupe_key``) keeps distinct episodes apart instead.
     """
     imdb = _imdb_digits(identity.get("imdb"))
     tvdb = str(identity.get("tvdb") or "").strip()
     tmdb = str(identity.get("tmdb_id") or "").strip()
     season = _int_or_none(identity.get("season"))
     episode = _int_or_none(identity.get("episode"))
-    slug = _key_title_slug(identity.get("title"))
     is_episode = (identity.get("type") or "").lower() == "episode" or (
         season is not None and episode is not None
     )
     if is_episode:
-        # Episode context: NEVER fall through to a movie/show-level key. For an
-        # episode the imdb/title identify the SHOW, so a bare ``imdb=<show>``
-        # would merge every episode (and the show's movie) into one duplicate
-        # set. Without a numeric season+episode there is no safe episode key, so
-        # skip dupe grouping entirely.
         if season is None or episode is None:
             return ""
         suffix = "-S{:02d}-E{:02d}".format(season, episode)
         if tvdb:
             return "tvdbid={}{}".format(tvdb, suffix)
-        if imdb:
-            return "imdb={}{}".format(imdb, suffix)
-        return "series={}{}".format(slug, suffix) if slug else ""
+        return "imdb={}{}".format(imdb, suffix) if imdb else ""
     if imdb:
         return "imdb={}".format(imdb)
-    if tmdb:
-        return "themoviedb={}".format(tmdb)
-    if slug:
-        year = str(identity.get("year") or "").strip()
-        return "movie={}-{}".format(slug, year) if year else "movie={}".format(slug)
-    return ""
+    return "themoviedb={}".format(tmdb) if tmdb else ""
+
+
+def _release_dupe_key(identity, release_title):
+    """Build the NZBGet DupeKey grouping a pick with its same-name backups (#372).
+
+    The key is scoped to the SELECTED RELEASE (its normalized release name), not
+    just the content: the backups are exact same-name reposts, so keying on the
+    release name groups them while keeping a DIFFERENT release of the same
+    content (a 4K remux vs a prior 1080p encode, or a different episode of a
+    show) under a DIFFERENT key -- so NZBGet never suppresses a later distinct
+    pick as a duplicate of an earlier one. A canonical content id (imdb= /
+    tvdbid=-S-E / themoviedb=, per nzbget.com/documentation/rss/#duplicates) is
+    prefixed for namespacing when available. Returns "" when the release name is
+    unusable (then the pick is a plain single submit).
+    """
+    slug = _key_title_slug(release_title)
+    if not slug:
+        return ""
+    prefix = _content_prefix(identity or {})
+    return "{}|{}".format(prefix, slug) if prefix else "nzbdav:{}".format(slug)
 
 
 # Hard ceiling on the number of duplicate backups, mirroring the nzbdav fallback
@@ -403,7 +410,7 @@ def _nzbget_dupe_submission_for_selection(selected, filtered, identity, getter=N
     max_backups = min(max_backups, _MAX_DUPE_BACKUPS)
     if max_backups <= 0:
         return None
-    key = _release_dupe_key(identity or {})
+    key = _release_dupe_key(identity or {}, selected.get("title"))
     if not key:
         return None
     backups = _same_name_backups(selected, filtered, max_backups)
@@ -423,8 +430,11 @@ def _attach_nzbget_dupe(resolver_params, selected, filtered, identity):
     Keeps nzbdav-path params clean: ``_nzbget_dupe`` is present only in NZBGet
     mode with a computable DupeKey and at least one same-name backup (#372).
     Reads settings through ``resolver_params["_settings_getter"]`` when present
-    (the RunScript/script-play path), else the live Kodi addon settings.
+    (the RunScript/script-play path), else the live Kodi addon settings. Pops any
+    inherited ``_nzbget_dupe`` first so a stale value from ``dict(params)`` can't
+    survive when this selection yields no submission (bypassing the gate).
     """
+    resolver_params.pop("_nzbget_dupe", None)
     dupe = _nzbget_dupe_submission_for_selection(
         selected, filtered, identity, resolver_params.get("_settings_getter")
     )
