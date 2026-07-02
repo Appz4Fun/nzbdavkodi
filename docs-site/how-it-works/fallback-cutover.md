@@ -20,7 +20,9 @@ flowchart TD
     CUT --> PLAY
 ```
 
-Backups are prepared lazily. A healthy stream that never stalls submits **none**.
+Backups are prepared lazily and only after playback is established: a stream you
+stop before the submit delay elapses submits **none**, while steady playback
+submits its standby backups once the delay passes.
 The submit worker waits until playback has been live for the configured delay
 (default 120 seconds), because opening extra backend connections during the
 fragile startup window can starve the live stream.
@@ -59,7 +61,7 @@ clamped to **Maximum standby fallback streams** (default 5, hard ceiling 5).
 
 ## Verifying a switch is safe
 
-Switching is only safe if the alternate is byte-identical, so NZB-DAV proves it
+Switching is only safe if the alternate's bytes line up exactly, so NZB-DAV proves it
 in two stages:
 
 1. **Content-length equality.** The alternate's total size must **exactly** equal

@@ -28,10 +28,12 @@ On the **NZBGet** tab:
 Use **Test NZBGet Connection** to verify the control API, and **Test SMB Share**
 to verify the completed folder is reachable.
 
-> **📷 Screenshot needed** — Capture the **NZBGet** settings tab with the backend
-> toggle, connection fields, and the two test actions. Save it to
-> `docs-site/images/nzbget-settings.png` and replace this note with
-> `![NZBGet settings](../images/nzbget-settings.png)`.
+<!--
+Screenshot placeholder — Capture the NZBGet settings tab with the backend
+toggle, connection fields, and the two test actions.
+To add: save it as docs-site/images/nzbget-settings.png, then replace this
+comment with:  ![NZBGet settings](../images/nzbget-settings.png)
+-->
 
 ## How it works
 

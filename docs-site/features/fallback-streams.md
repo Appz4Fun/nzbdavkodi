@@ -3,20 +3,23 @@
 Usenet retention is imperfect: a release can lose articles at any time, and a
 source that starts fine can fail partway through. **Fallback streams** protect
 your playback against this. If the source you're watching goes bad mid-stream,
-NZB-DAV switches to a verified, byte-identical alternate release of the same
-content — and continues from the exact same point, with no stop, no rewind, and
+NZB-DAV switches to a verified alternate release of the same content — after a
+length check and sampled SHA-256 fingerprints confirm the bytes match — and
+continues from the same point, with no stop, no rewind, and
 no visible interruption.
 
 Fallback streams are on by default.
 
 ## How it behaves
 
-- Playback that never stalls submits **no** backups at all — the feature is lazy
-  by design and costs nothing when your source is healthy.
+- Backups aren't free: once playback has run for a short delay (default 120
+  seconds), NZB-DAV submits standby backups in the background, so even healthy
+  playback uses some backend and Usenet capacity.
 - Backups are only prepared after playback has been running successfully for a
   short while, so they don't compete with the fragile stream startup.
-- Before NZB-DAV ever switches, it proves the alternate is byte-for-byte
-  identical to what you were watching. If it can't prove that, it won't switch.
+- Before NZB-DAV ever switches, it verifies the alternate matches what you were
+  watching — an exact length match plus sampled SHA-256 fingerprints. If it
+  can't verify that, it won't switch.
 - When a switch does happen, you see a brief "Switched to fallback stream"
   notification. Playback itself doesn't pause or jump.
 

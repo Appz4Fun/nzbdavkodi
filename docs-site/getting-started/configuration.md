@@ -57,7 +57,7 @@ details. You can enable more than one — results are merged and de-duplicated.
     | **Enable Prowlarr** | Turn on. |
     | **Prowlarr URL** | e.g. `http://192.168.1.100:9696`. |
     | **Prowlarr API Key** | Prowlarr web UI → **Settings → General → Security → API Key**. |
-    | **Prowlarr Indexer IDs** | Comma-separated indexer IDs to query. Leave blank to query all. |
+    | **Prowlarr Indexer IDs** | Comma-separated indexer IDs to query. **Required** — Prowlarr returns no results if this is left empty. |
 
     Select **Test Prowlarr Connection** — it checks the URL, key, and indexer
     reachability. Prowlarr only contributes **Usenet** indexers; torrent

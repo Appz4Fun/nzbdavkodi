@@ -21,10 +21,12 @@ data while doing this:
 - If the write fails, you get a clear "Failed to install" message rather than a
   false success.
 
-> **📷 Screenshot needed** — Capture the NZB-DAV **Player Installation** settings
-> tab and the "Player installed to: TMDBHelper" notification. Save it to
-> `docs-site/images/install-player.png` and replace this note with
-> `![Install TMDBHelper Player](../images/install-player.png)`.
+<!--
+Screenshot placeholder — Capture the NZB-DAV Player Installation settings tab
+and the "Player installed to: TMDBHelper" notification.
+To add: save it as docs-site/images/install-player.png, then replace this
+comment with:  ![Install TMDBHelper Player](../images/install-player.png)
+-->
 
 ### Install into another add-on's player list
 
@@ -40,10 +42,12 @@ whatever compatible player add-ons you have installed.
 2. In TMDBHelper settings, set **Default player (Movies)** and **Default player
    (TV Shows)** to **NZB-DAV**.
 
-> **📷 Screenshot needed** — Capture TMDBHelper's player selection or the Default
-> player (Movies/TV) dropdown showing NZB-DAV selected. Save it to
-> `docs-site/images/tmdbhelper-default-player.png` and replace this note with
-> `![TMDBHelper default player](../images/tmdbhelper-default-player.png)`.
+<!--
+Screenshot placeholder — Capture TMDBHelper's player selection or the Default
+player (Movies/TV) dropdown showing NZB-DAV selected.
+To add: save it as docs-site/images/tmdbhelper-default-player.png, then replace
+this comment with:  ![TMDBHelper default player](../images/tmdbhelper-default-player.png)
+-->
 
 ## Why NZB-DAV uses a script player
 

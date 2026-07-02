@@ -44,10 +44,12 @@ Playback starts automatically as soon as enough of the file is ready. If the
 release turns out to be a placeholder or has missing article bodies, NZB-DAV
 detects it and moves on rather than playing a broken file.
 
-> **📷 Screenshot needed** — Capture the download progress dialog mid-download
-> (for example, showing "Downloading… 42%"). Save it to
-> `docs-site/images/progress-dialog.png` and replace this note with
-> `![Download progress dialog](../images/progress-dialog.png)`.
+<!--
+Screenshot placeholder — Capture the download progress dialog mid-download (for
+example, showing "Downloading... 42%").
+To add: save it as docs-site/images/progress-dialog.png, then replace this
+comment with:  ![Download progress dialog](../images/progress-dialog.png)
+-->
 
 ## Resume where you left off
 

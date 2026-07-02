@@ -57,8 +57,9 @@ seeking, on-the-fly remuxing, and mid-playback source switching.
 
 -   :material-swap-horizontal: __Self-healing fallback streams__
 
-    If a source loses articles mid-playback, NZB-DAV switches to a verified,
-    byte-identical alternate release without stopping or rewinding.
+    If a source loses articles mid-playback, NZB-DAV switches to a verified
+    alternate release (matched by length + sampled SHA-256) without stopping or
+    rewinding.
 
     [:octicons-arrow-right-24: Fallback streams](features/fallback-streams.md)
 

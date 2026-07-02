@@ -4,10 +4,12 @@ NZB-DAV filters the combined search results down to what you actually want, then
 ranks what's left. All filters live on the **Quality Filters** and **Keyword
 Filters** tabs; ranking lives on the **Sorting** tab.
 
-> **📷 Screenshot needed** — Capture the **Quality Filters** settings tab showing
-> the resolution, HDR, audio, codec, and language toggle groups. Save it to
-> `docs-site/images/quality-filters.png` and replace this note with
-> `![Quality filters](../images/quality-filters.png)`.
+<!--
+Screenshot placeholder — Capture the Quality Filters settings tab showing the
+resolution, HDR, audio, codec, and language toggle groups.
+To add: save it as docs-site/images/quality-filters.png, then replace this
+comment with:  ![Quality filters](../images/quality-filters.png)
+-->
 
 ## Quality filters
 
@@ -56,10 +58,12 @@ On the **Keyword Filters** tab:
       groups — if you want only certain groups, use required keywords or
       excluded groups instead.
 
-> **📷 Screenshot needed** — Capture the **Configure Preferred Groups** (or
-> Excluded Groups) multi-select dialog. Save it to
-> `docs-site/images/configure-groups.png` and replace this note with
-> `![Configure groups dialog](../images/configure-groups.png)`.
+<!--
+Screenshot placeholder — Capture the Configure Preferred Groups (or Excluded
+Groups) multi-select dialog.
+To add: save it as docs-site/images/configure-groups.png, then replace this
+comment with:  ![Configure groups dialog](../images/configure-groups.png)
+-->
 
 ## Sorting and selection
 

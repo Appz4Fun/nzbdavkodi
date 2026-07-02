@@ -26,8 +26,9 @@ devices.
 
 -   :material-swap-horizontal: __[Fallback streams](fallback-streams.md)__
 
-    When a source degrades mid-playback, NZB-DAV switches to a verified,
-    byte-identical alternate release without interrupting the video.
+    When a source degrades mid-playback, NZB-DAV switches to a verified
+    alternate release (matched by length + sampled SHA-256) without interrupting
+    the video.
 
 -   :material-download-network: __[NZBGet backend](nzbget-backend.md)__
 

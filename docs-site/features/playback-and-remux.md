@@ -61,9 +61,12 @@ reason.
 
 Direct pass-through supports full seeking only if Kodi's in-memory cache is
 turned off. Setting `<cache><memorysize>0</memorysize></cache>` in
-`advancedsettings.xml` enables this; without it, large files fall back to a
-remux mode where seeking is bounded. NZB-DAV prompts you about this the first
-time it matters. See [advancedsettings.xml and seeking](../reference/advancedsettings.md).
+`advancedsettings.xml` enables this. Without it, seeking on large files is
+limited on 32-bit Kodi: the default mode stays pass-through and does **not**
+switch to remux on its own. For bounded-seek remux instead, set **Large non-MP4
+stream mode** to a remux tier. NZB-DAV prompts you about the cache setting the
+first time a remux tier handles a large file. See
+[advancedsettings.xml and seeking](../reference/advancedsettings.md).
 
 ## Dolby Vision handling
 

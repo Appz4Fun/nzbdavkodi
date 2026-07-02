@@ -35,7 +35,10 @@ site/
 docs/superpowers/
 docs/memory/
 mockups/
-troubleshooting.md
+# Root-level scratch troubleshooting.md only. A bare "troubleshooting.md"
+# pattern also swallowed docs-site/operations/troubleshooting.md (a tracked
+# docs page), breaking the Pages build; scope it to the repo root.
+/troubleshooting.md
 .worktrees/
 .tmp/
 

@@ -39,10 +39,12 @@ channel.
     `https://appz4fun.github.io/Appz4Fun-Kodi-Repo/` as a source under
     **Settings → File manager → Add source** and install the zip from there.
 
-> **📷 Screenshot needed** — Capture the Appz4Fun repository landing page showing
-> the Stable and Beta channel download buttons. Save it to
-> `docs-site/images/appz4fun-repo-landing.png` and replace this note with
-> `![Appz4Fun Kodi repository landing page](../images/appz4fun-repo-landing.png)`.
+<!--
+Screenshot placeholder — Capture the Appz4Fun repository landing page showing
+the Stable and Beta channel download buttons.
+To add: save it as docs-site/images/appz4fun-repo-landing.png, then replace this
+comment with:  ![Appz4Fun Kodi repository landing page](../images/appz4fun-repo-landing.png)
+-->
 
 ## Install manually from a zip
 

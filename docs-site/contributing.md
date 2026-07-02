@@ -47,7 +47,8 @@ just docs-serve    # Serve the docs locally with live reload
   which rebuilds from each project's GitHub Releases. The `Release` workflow
   notifies it so updates appear quickly.
 - **This site** is built and deployed to GitHub Pages by the `Docs` workflow on
-  every change to `docs-site/`, `mkdocs.yml`, or the README.
+  every change to `docs-site/`, `mkdocs.yml`, `requirements-docs.txt`, or the
+  README.
 
 ## Testing notes
 

@@ -29,7 +29,7 @@ parameters, NZB-DAV embeds them as tokens — `{tvdbid:…}`, `{imdbid:…}`,
     indexer list contributes nothing.
 
 Set **Prowlarr Indexer IDs** to a comma-separated list to query specific
-indexers, or leave it blank to query all.
+indexers. Prowlarr returns no results if this list is empty, so specify at least one indexer ID.
 
 ### Direct Newznab indexers
 
@@ -48,10 +48,13 @@ Two ways to configure them, both on the **Indexers** tab:
 The **Manage Indexers** dialog validates each URL, re-fetches caps when you
 change a connection, and warns you before you disable your last enabled indexer.
 
-> **📷 Screenshot needed** — Capture the **Manage Indexers** dialog showing the
-> top-level list (Add Newznab Indexer, Refresh NZBHydra2 Caps, and per-indexer
-> entries). Save it to `docs-site/images/manage-indexers.png` and replace this
-> note with `![Manage Indexers dialog](../images/manage-indexers.png)`.
+<!--
+Screenshot placeholder — Capture the Manage Indexers dialog showing the
+top-level list (Add Newznab Indexer, Refresh NZBHydra2 Caps, and per-indexer
+entries).
+To add: save it as docs-site/images/manage-indexers.png, then replace this
+comment with:  ![Manage Indexers dialog](../images/manage-indexers.png)
+-->
 
 ## How results are combined
 

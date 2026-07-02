@@ -53,7 +53,7 @@ credentials.
 | Enable Prowlarr | `prowlarr_enabled` | `false` | Use Prowlarr as a search provider. Only Usenet results are kept. |
 | Prowlarr URL | `prowlarr_host` | `http://localhost:9696` | Base URL of your Prowlarr instance. |
 | Prowlarr API Key | `prowlarr_api_key` | *(empty)* | Prowlarr API key. Stored hidden. |
-| Prowlarr Indexer IDs (comma-separated) | `prowlarr_indexer_ids` | *(empty)* | Query only these indexer IDs. Leave blank for all. |
+| Prowlarr Indexer IDs (comma-separated) | `prowlarr_indexer_ids` | *(empty)* | Indexer IDs to query. Required for Prowlarr search — a blank value returns no results. |
 
 **Action:** *Test Prowlarr Connection* — verifies URL, key, and indexer
 reachability.
