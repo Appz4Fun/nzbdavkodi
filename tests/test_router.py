@@ -4124,3 +4124,33 @@ def test_script_play_resolve_selected_attaches_nzbget_dupe_end_to_end():
     assert dupe["key"] == "imdb=0133093|the-matrix-1999-1080p"
     assert [b["link"] for b in dupe["backups"]] == ["http://i/b.nzb"]
     assert dupe["backups"][0]["score"] < dupe["pick_score"]
+
+
+def test_attach_nzbget_dupe_builds_loader_with_thread_safe_getter():
+    # The backup worker runs the fallback loader OFF-THREAD. On the handle-based
+    # /play path resolver_params carries a loader built with a None getter, which
+    # would call xbmcaddon.Addon().getSetting off the main thread (CoreELEC crash
+    # class). _attach_nzbget_dupe must instead build the dupe loader with the
+    # pure-XML _get_script_setting (round-2 review finding: off-thread getSetting).
+    import resources.lib.router as _router
+    from resources.lib import router_play
+
+    seen = {}
+
+    def _factory(selected, results, settings_getter=None):
+        seen["getter"] = settings_getter
+        return "FRESH_LOADER"
+
+    # Handle path: no "_settings_getter"; a stale None-getter loader is present.
+    params = {"_fallback_candidate_loader": "STALE_NONE_GETTER_LOADER"}
+    stub_dupe = {"key": "k", "pick_score": 2, "backups": [{"link": "u", "score": 1}]}
+    with patch(
+        "resources.lib.router_play._nzbget_dupe_submission_for_selection",
+        return_value=stub_dupe,
+    ), patch.object(
+        _router, "_fallback_candidate_loader_for_selection", side_effect=_factory
+    ):
+        router_play._attach_nzbget_dupe(params, {"link": "p"}, [{"link": "p"}], {})
+
+    assert seen.get("getter") is _router._get_script_setting
+    assert params["_nzbget_dupe"]["loader"] == "FRESH_LOADER"

@@ -434,6 +434,8 @@ def _attach_nzbget_dupe(resolver_params, selected, filtered, identity):
     inherited ``_nzbget_dupe`` first so a stale value from ``dict(params)`` can't
     survive when this selection yields no submission (bypassing the gate).
     """
+    import resources.lib.router as _router
+
     resolver_params.pop("_nzbget_dupe", None)
     dupe = _nzbget_dupe_submission_for_selection(
         selected, filtered, identity, resolver_params.get("_settings_getter")
@@ -442,7 +444,14 @@ def _attach_nzbget_dupe(resolver_params, selected, filtered, identity):
         # Hand the fallback loader to the resolver's backup worker so it can add
         # the same-content / NZBHydra-deferred duplicate uploads (not just the
         # picker's same-name rows) as extra, lowest-priority backups (#372 r2).
-        dupe["loader"] = resolver_params.get("_fallback_candidate_loader")
+        # The worker runs the loader OFF-THREAD, so build it with the pure-XML
+        # _get_script_setting rather than reusing resolver_params'
+        # "_fallback_candidate_loader" -- on the handle-based /play path that one
+        # carries a None getter and would call xbmcaddon.Addon().getSetting off the
+        # main thread (a CoreELEC crash class the snapshot design exists to avoid).
+        dupe["loader"] = _router._fallback_candidate_loader_for_selection(
+            selected, filtered, settings_getter=_router._get_script_setting
+        )
         resolver_params["_nzbget_dupe"] = dupe
 
 

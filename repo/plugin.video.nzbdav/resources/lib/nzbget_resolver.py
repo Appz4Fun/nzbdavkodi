@@ -294,7 +294,7 @@ def poll_nzbget_job(
     can't stretch the configured budget — see the sibling nzbdav poll loop.
     """
     deadline = time.monotonic() + timeout
-    state = {"current": nzbid, "promotion_deadline": None}
+    state = {"current": nzbid, "promotion_deadline": None, "exclude": None}
     while time.monotonic() < deadline:
         if dialog.iscanceled():
             return {"outcome": "canceled"}
@@ -343,7 +343,11 @@ def _poll_tick(state, dialog, settings_getter, dupe_key):
                 return {"outcome": "success", "dest_dir": hist["dest_dir"]}
             if not dupe_key:
                 return {"outcome": "failed", "status": hist["status"]}
-            # The tracked member failed but a DupeKey group may fail over.
+            # The tracked member failed but a DupeKey group may fail over. Remember
+            # its id: NZBGet's queue->history transition is not atomic, so it can
+            # still linger in listgroups for a tick -- exclude it below so the
+            # promotion scan can't re-select the failed member as its own promotion.
+            state["exclude"] = current
             state["current"] = None
             state["promotion_deadline"] = time.monotonic() + _PROMOTION_GRACE
         else:
@@ -357,7 +361,7 @@ def _poll_tick(state, dialog, settings_getter, dupe_key):
     if succeeded["present"]:
         return {"outcome": "success", "dest_dir": succeeded["dest_dir"]}
     promoted = nzbget_api.active_group_by_dupekey(
-        dupe_key, settings_getter=settings_getter
+        dupe_key, exclude_nzbid=state["exclude"], settings_getter=settings_getter
     )
     if promoted["present"]:
         state["current"] = promoted["nzbid"]
@@ -822,6 +826,7 @@ def _spawn_dupe_backups(ctx):
     loader = dupe.get("loader")
 
     def _worker():
+        reached_submit = False
         try:
             if cancel_event.is_set() or _dupe_check_disabled(getter):
                 if not cancel_event.is_set():
@@ -832,6 +837,7 @@ def _spawn_dupe_backups(ctx):
                     )
                 return
             _warn_if_healthcheck_pauses(getter)
+            reached_submit = True
             _submit_dupe_backups(backups, dupe_key, getter, cancel_event=cancel_event)
             # Widen with same-content / Hydra-deferred candidates (#372 r2), as
             # lowest-priority backups keyed under the same (pick's) DupeKey.
@@ -850,6 +856,17 @@ def _spawn_dupe_backups(ctx):
                 ),
                 xbmc.LOGWARNING,
             )
+        finally:
+            # If a cancel arrived while a backup's append was already in flight, that
+            # backup can land in NZBGet AFTER _handle_poll_failure's one-shot
+            # cancel_dupekey_group sweep -- and NZBGet would then promote the orphan
+            # as the group's new active download. Re-sweep once the worker has
+            # drained so nothing the user canceled survives (#372 r2 cancel-race).
+            if reached_submit and cancel_event.is_set():
+                try:
+                    nzbget_api.cancel_dupekey_group(dupe_key, settings_getter=getter)
+                except Exception:  # pylint: disable=broad-except
+                    pass
 
     try:
         thread = threading.Thread(

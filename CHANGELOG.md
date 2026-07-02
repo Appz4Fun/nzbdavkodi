@@ -106,6 +106,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **NZBGet mode: failover-following no longer stalls, and cancel is airtight.**
+  Round-2 hardening: the resolver now excludes the just-failed download from its
+  promotion scan, so NZBGet's brief queue→history overlap can't make the poll
+  mistake the failed pick for its own replacement and hang. Canceling mid-submit
+  re-sweeps the duplicate set once the background worker drains, closing a race
+  where a backup whose submission was already in flight could survive the cancel
+  and be downloaded anyway. And the same-content/NZBHydra backup widening now
+  reads its settings through the thread-safe settings reader on every playback
+  path, never the live Kodi settings API off the worker thread. (Issue #372
+  round 2.)
 - **NZBGet mode: replaying an already-downloaded pick no longer fails.**
   Selecting a `DL`-tagged result now plays the completed files straight from
   the SMB share instead of re-submitting the NZB — NZBGet's duplicate check
