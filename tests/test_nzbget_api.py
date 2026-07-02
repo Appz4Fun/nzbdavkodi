@@ -85,12 +85,8 @@ def test_append_nzb_fetches_encodes_and_returns_nzbid():
     assert params[10] == []
 
 
-def test_append_nzb_sends_empty_dupe_key_for_name_grouping():
-    """The pick and its same-name backups all submit with empty DupeKey.
-
-    #372 relies on NZBGet's name-based duplicate grouping, so the append carries
-    no explicit DupeKey/DupeScore -- NZBGet groups items sharing the NZB name.
-    """
+def test_append_nzb_defaults_leave_dupe_fields_neutral():
+    """Absent dupe args, the append is byte-for-byte the pre-#372 single submit."""
     getter = _getter({"nzbget_url": "http://box:6789"})
     captured = {}
 
@@ -105,9 +101,57 @@ def test_append_nzb_sends_empty_dupe_key_for_name_grouping():
 
     assert (nzbid, error) == (7, None)
     params = captured["payload"]["params"]
-    assert params[6] == ""  # DupeKey (name-based grouping)
+    assert params[6] == ""  # DupeKey
     assert params[7] == 0  # DupeScore
     assert params[8] == "SCORE"  # DupeMode
+
+
+def test_append_nzb_sends_dupe_key_score_and_mode():
+    """A Smart-Duplicates submission carries the shared DupeKey, its DupeScore,
+    and DupeMode so NZBGet groups the release and picks the highest score."""
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    captured = {}
+
+    def fake_post(url, payload, timeout=0, basic_auth=None):
+        captured["payload"] = payload
+        return '{"result": 9, "error": null}'
+
+    with patch("resources.lib.nzbget_api._http_get", return_value="<nzb/>"), patch(
+        "resources.lib.nzbget_api._http_post_json", side_effect=fake_post
+    ):
+        nzbid, error = append_nzb(
+            "http://i/x.nzb",
+            "X",
+            settings_getter=getter,
+            dupe_key="imdb=1234567",
+            dupe_score=100,
+            dupe_mode="SCORE",
+        )
+
+    assert (nzbid, error) == (9, None)
+    params = captured["payload"]["params"]
+    assert params[6] == "imdb=1234567"  # DupeKey
+    assert params[7] == 100  # DupeScore
+    assert params[8] == "SCORE"  # DupeMode
+
+
+def test_config_option_reads_named_value_lowercased():
+    """config() returns [{Name,Value}]; read one option (e.g. HealthCheck)."""
+    from resources.lib.nzbget_api import config_option
+
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    cfg = [
+        {"Name": "MainDir", "Value": "/downloads"},
+        {"Name": "HealthCheck", "Value": "Pause"},
+    ]
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(cfg, None)):
+        assert config_option("HealthCheck", settings_getter=getter) == "pause"
+        assert config_option("healthcheck", settings_getter=getter) == "pause"
+    # Absent option / RPC error -> None (best-effort).
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(cfg, None)):
+        assert config_option("Missing", settings_getter=getter) is None
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(None, "boom")):
+        assert config_option("HealthCheck", settings_getter=getter) is None
 
 
 def test_append_nzb_returns_error_when_nzbid_not_positive():

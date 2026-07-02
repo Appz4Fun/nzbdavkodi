@@ -482,9 +482,9 @@ class _SubmitCtx:  # pylint: disable=too-few-public-methods
         self.settings_getter = None
         self.on_success = None
         self.on_failure = None
-        # Same-name duplicate backups (#372): the picker-computed list of
-        # same-release-name results, threaded from the resolve params.
-        self.dupe_backups = None
+        # NZBGet Smart-Duplicates submission (#372): the picker-computed
+        # {"key","pick_score","backups"} dict, threaded from the resolve params.
+        self.dupe = None
 
 
 def _reuse_or_submit(ctx, nzb_url, title, completed_job, meta):
@@ -529,7 +529,7 @@ def _build_submit_ctx(
     timeout,
     on_success,
     on_failure,
-    dupe_backups=None,
+    dupe=None,
 ):
     """Read the per-submit NZBGet context once for the submit flow.
 
@@ -539,7 +539,7 @@ def _build_submit_ctx(
     map a history DestDir onto the SMB root regardless of category/custom
     layout (None when unavailable -> nzbget_smb_target falls back). Attaches
     the flow's getter + callbacks so the submit helpers can stay low-arity, plus
-    the picker-computed same-name duplicate backups (#372).
+    the picker-computed NZBGet Smart-Duplicates submission (#372).
 
     Binds a ``None`` getter (the real Kodi handle-based ``resolve`` path passes
     no getter) to the addon-backed two-arg getter up front, so the background
@@ -554,25 +554,29 @@ def _build_submit_ctx(
     ctx.settings_getter = settings_getter
     ctx.on_success = on_success
     ctx.on_failure = on_failure
-    ctx.dupe_backups = dupe_backups
+    ctx.dupe = dupe
     return ctx
 
 
-def _submit_name_backups(backups, name, settings_getter):
-    """Submit same-name duplicate backups to NZBGet (#372).
+def _submit_dupe_backups(backups, dupe_key, settings_getter):
+    """Submit the release's duplicate backups to NZBGet (#372, Smart Duplicates).
 
-    ``backups`` is the picker-computed list of ``{"link": ...}`` results that
-    share the pick's release NAME. Each is appended under the pick's ``name`` so
-    NZBGet's name-based duplicate check groups it with the already-queued pick:
-    the pick (submitted first, so the incumbent) keeps downloading and each
-    backup is parked in history as a duplicate, and if the pick finishes
-    unrepairable (par2/unpack/health) NZBGet fails over to one. Best-effort: the
-    pick is already queued and playing out normally, so a bad/duplicate URL or a
-    failed fetch/append for one backup never aborts the rest or the playback.
+    ``backups`` is the picker-computed list of ``{"link","title","score"}`` for
+    the same-release-name reposts. Each is appended with the shared ``dupe_key``,
+    its own DupeScore (all below the pick's), and DupeMode=SCORE, so NZBGet keeps
+    the pick (highest score) downloading and parks each backup in history as a
+    duplicate -- failing over to the best remaining one if the pick is
+    unrepairable. Because NZBGet decides by score, submission order does not
+    matter: a backup submitted even after the pick has already succeeded is put
+    into history as a backup (not deleted). Best-effort: a bad/duplicate URL or a
+    failed fetch/append for one backup never aborts the rest or the pick.
     Returns the list of submitted NZBIDs (for logging/tests).
     """
+    from resources.lib.fallback_streams import build_fallback_job_name
+
     submitted = []
     seen = set()
+    index = 0
     for backup in backups or []:
         if not isinstance(backup, dict):
             continue
@@ -580,9 +584,19 @@ def _submit_name_backups(backups, name, settings_getter):
         if not nzb_url or nzb_url in seen:
             continue
         seen.add(nzb_url)
+        index += 1
+        score = int(backup.get("score") or 0)
+        job_name = build_fallback_job_name(
+            backup.get("title") or dupe_key, nzb_url, index
+        )
         try:
             nzbid, error = nzbget_api.append_nzb(
-                nzb_url, name, settings_getter=settings_getter
+                nzb_url,
+                job_name,
+                settings_getter=settings_getter,
+                dupe_key=dupe_key,
+                dupe_score=score,
+                dupe_mode="SCORE",
             )
         except Exception as exc:  # pylint: disable=broad-except
             xbmc.log(
@@ -595,7 +609,9 @@ def _submit_name_backups(backups, name, settings_getter):
         if nzbid:
             submitted.append(nzbid)
             xbmc.log(
-                "NZB-DAV: Queued NZBGet duplicate backup for '{}'".format(name),
+                "NZB-DAV: Queued NZBGet duplicate backup '{}' (score {})".format(
+                    job_name, score
+                ),
                 xbmc.LOGINFO,
             )
         else:
@@ -606,35 +622,60 @@ def _submit_name_backups(backups, name, settings_getter):
     return submitted
 
 
-def _spawn_name_backups(ctx, name):
-    """Fire-and-forget the same-name duplicate backups in a daemon thread.
+# Warn about HealthCheck=Pause at most once per Kodi session (a list so the
+# module-level flag is mutable from the worker thread).
+_HEALTHCHECK_WARNED = [False]
 
-    Called only after the pick is confirmed queued, so the pick is the incumbent
-    NZBGet keeps active. Each backup fetch is an indexer HTTP round-trip, so it
-    runs off the resolve thread to keep it from delaying the pick's poll/progress
-    ("it won't affect playback"); the daemon flag keeps it from blocking Kodi
-    shutdown. All errors are swallowed -- the backups are pure insurance and must
-    never break the pick's playback.
 
-    Timing (best-effort): the backups only need to reach NZBGet before the pick
-    finishes to be available as failover, which for a normal-length download
-    (the target case -- a full release whose par2 repair fails) they easily do,
-    landing within seconds while the pick downloads for minutes. A pick that
-    completes in under the few seconds it takes to fetch+submit the backups (a
-    tiny or fully-cached release) can beat them: if it SUCCEEDED the late backups
-    are dupe-suppressed against its history row, which is harmless (a successful
-    pick needs no failover); if it FAILED fast the backups still submit (a failed
-    row does not suppress) and download, just untracked in this attempt (the
-    round-2 poll limitation). See TODO.md.
+def _warn_if_healthcheck_pauses(settings_getter):
+    """Warn if NZBGet's ``HealthCheck=Pause`` disables automatic dup failover.
+
+    Per nzbget.com/documentation/rss/#duplicates automatic duplicate failover
+    needs HealthCheck = Delete, None (or Park); with Pause NZBGet pauses a failed
+    download instead of promoting a backup, so the picked release's backups sit
+    idle until the user unpauses one. Best-effort -- an unreadable config is
+    skipped. Always logs; notifies the user at most once per Kodi session.
     """
-    backups = list(ctx.dupe_backups or [])
-    if not backups:
+    try:
+        value = nzbget_api.config_option("HealthCheck", settings_getter=settings_getter)
+    except Exception:  # pylint: disable=broad-except
+        return
+    if value != "pause":
+        return
+    xbmc.log(
+        "NZB-DAV: NZBGet HealthCheck=Pause disables automatic duplicate failover; "
+        "set it to Delete or None to enable it (#372).",
+        xbmc.LOGWARNING,
+    )
+    if not _HEALTHCHECK_WARNED[0]:
+        _HEALTHCHECK_WARNED[0] = True
+        _notify(_addon_name(), _string(30230), 6000)
+
+
+def _spawn_dupe_backups(ctx):
+    """Fire-and-forget the release's duplicate backups in a daemon thread (#372).
+
+    Runs off the resolve thread (each backup is an indexer HTTP round-trip) so it
+    never delays the pick's poll/progress ("it won't affect playback"); the
+    daemon flag keeps it from blocking Kodi shutdown. Because every item carries
+    an explicit DupeScore (the pick highest), NZBGet keeps the pick the active
+    download regardless of when the backups land -- so submission order is not a
+    concern and a backup arriving after the pick already succeeded is still put
+    into history as a backup, not deleted. Also warns once if the server's
+    HealthCheck=Pause would block automatic failover. All errors are swallowed --
+    the backups are pure insurance and must never break the pick's playback.
+    """
+    dupe = ctx.dupe or {}
+    dupe_key = dupe.get("key") or ""
+    backups = list(dupe.get("backups") or [])
+    if not dupe_key or not backups:
         return None
     getter = ctx.settings_getter
 
     def _worker():
         try:
-            _submit_name_backups(backups, name, getter)
+            _warn_if_healthcheck_pauses(getter)
+            _submit_dupe_backups(backups, dupe_key, getter)
         except Exception as exc:  # pylint: disable=broad-except
             xbmc.log(
                 "NZB-DAV: NZBGet duplicate backup worker error: {}".format(
@@ -671,24 +712,35 @@ def _submit_poll_resolve(ctx, nzb_url, title, download_pubdate, download_size):
     size/pubdate/indexer corroboration, so a same-named repost could play the
     wrong job; NZBGet's own dupe handling covers a still-in-flight re-submit.
 
-    The pick is submitted exactly as before (#372 changes nothing here). Once
-    it is confirmed queued -- and therefore the incumbent NZBGet keeps active --
-    the picker-computed same-name backups are submitted so NZBGet can fail over
-    to one if the pick turns out unrepairable.
+    When the picker computed a Smart-Duplicates submission (#372), the pick is
+    submitted with the shared DupeKey at the top DupeScore so NZBGet keeps it the
+    active download (the one this poll tracks); otherwise it is a plain single
+    submit unchanged from pre-#372. Once queued, the release's duplicate backups
+    are submitted off-thread so NZBGet can fail over to one if the pick is
+    unrepairable.
     """
     getter = ctx.settings_getter
-    nzbid, error = nzbget_api.append_nzb(nzb_url, title, settings_getter=getter)
+    dupe = ctx.dupe or {}
+    dupe_key = dupe.get("key") or ""
+    nzbid, error = nzbget_api.append_nzb(
+        nzb_url,
+        title,
+        settings_getter=getter,
+        dupe_key=dupe_key,
+        dupe_score=int(dupe.get("pick_score") or 0) if dupe_key else 0,
+        dupe_mode="SCORE",
+    )
     if not nzbid:
         # Surface the specific (already-redacted) NZBGet message — auth vs dupe
         # vs "append returned 0" — per the spec error table, else the generic.
         ctx.on_failure(error or _string(30222))
         return False
 
-    # Pick is queued (the incumbent): submit its same-name duplicate backups so
-    # NZBGet can fail over to one if the pick is unrepairable (#372). Submitted
-    # AFTER the pick so a same-name backup can't become the incumbent and get
-    # the pick dupe-deleted, and off-thread so it never delays the poll below.
-    _spawn_name_backups(ctx, title)
+    # Pick is queued at the top DupeScore: submit the release's duplicate backups
+    # so NZBGet can fail over to one if the pick is unrepairable (#372). Off-thread
+    # so it never delays the poll below; scores (not order) keep the pick active.
+    if dupe_key:
+        _spawn_dupe_backups(ctx)
 
     result = poll_nzbget_job(
         nzbid,
@@ -733,7 +785,7 @@ def _run_nzbget_backend(
     download_pubdate=None,
     download_size=None,
     completed_job=None,
-    dupe_backups=None,
+    dupe=None,
 ):
     """Shared NZBGet flow: reuse completed files, else submit -> poll -> SMB.
 
@@ -744,8 +796,7 @@ def _run_nzbget_backend(
     the selected result's identity in the ledger for the picker's "DL" tag;
     ``completed_job`` is the corroborated history match played directly (nothing
     submitted) when its ``dest_dir`` still holds a playable video over SMB.
-    ``dupe_backups`` is the picker-computed list of same-name results submitted
-    as NZBGet duplicate backups after the pick is queued (#372).
+    ``dupe`` is the picker-computed NZBGet Smart-Duplicates submission (#372).
     """
     dialog = None
     leave_job = False
@@ -764,7 +815,7 @@ def _run_nzbget_backend(
             timeout,
             on_success,
             on_failure,
-            dupe_backups=dupe_backups,
+            dupe=dupe,
         )
         leave_job = _reuse_or_submit(
             ctx, nzb_url, title, completed_job, (download_pubdate, download_size)
@@ -854,7 +905,7 @@ def resolve_and_play_nzbget(
         download_pubdate=params.get("_download_pubdate"),
         download_size=params.get("_download_size"),
         completed_job=params.get("_nzbget_completed_job"),
-        dupe_backups=params.get("_nzbget_dupe_backups"),
+        dupe=params.get("_nzbget_dupe"),
     )
 
 
@@ -899,5 +950,5 @@ def play_nzbget(
         download_pubdate=resolve_params.get("_download_pubdate"),
         download_size=resolve_params.get("_download_size"),
         completed_job=resolve_params.get("_nzbget_completed_job"),
-        dupe_backups=resolve_params.get("_nzbget_dupe_backups"),
+        dupe=resolve_params.get("_nzbget_dupe"),
     )

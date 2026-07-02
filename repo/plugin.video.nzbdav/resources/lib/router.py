@@ -648,7 +648,17 @@ def _handle_play(handle, params):
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
         return
 
-    _handle_play_filter_and_select(handle, results, title, year, notify)
+    identity = {
+        "type": search_type,
+        "title": title,
+        "year": year,
+        "imdb": imdb,
+        "tvdb": tvdb,
+        "tmdb_id": tmdb_id,
+        "season": season,
+        "episode": episode,
+    }
+    _handle_play_filter_and_select(handle, results, title, year, notify, identity)
 
 
 def _handle_search(handle, params):

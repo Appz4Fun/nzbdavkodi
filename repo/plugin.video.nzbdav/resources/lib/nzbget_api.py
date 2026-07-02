@@ -94,7 +94,9 @@ def _fetch_nzb_bytes(nzb_url):
     return body
 
 
-def _append_params(nzb_name, nzb_bytes, category):
+def _append_params(
+    nzb_name, nzb_bytes, category, dupe_key="", dupe_score=0, dupe_mode="SCORE"
+):
     """Build NZBGet's modern 11-arg ``append`` params list.
 
     append(NZBFilename, Content, Category, Priority, AddToTop, AddPaused,
@@ -109,22 +111,43 @@ def _append_params(nzb_name, nzb_bytes, category):
     than NZBGet auto-reassigning one); PPParameters=[] = no extra
     post-processing parameters.
 
-    DupeKey is left empty and DupeScore 0: NZBGet dupe-checks by NZB name, which
-    is exactly what the #372 same-name duplicate submission relies on -- the pick
-    and its same-name backups all carry the same NZB name, so NZBGet groups them
-    as one duplicate set (highest/incumbent downloads, the rest park as history
-    backups) with no explicit key or score.
+    ``dupe_key``/``dupe_score``/``dupe_mode`` implement NZBGet Smart Duplicates
+    (#372, per nzbget.com/documentation/rss/#duplicates). Defaults ``""``/``0``/
+    ``"SCORE"`` reproduce the pre-#372 single submit exactly; a fleet submit
+    passes a shared DupeKey (identifying the release) plus a per-item DupeScore
+    (pick highest) so NZBGet downloads the highest score and parks the rest in
+    history as backups, failing over on an unrepairable download.
     """
     content_b64 = base64.b64encode(nzb_bytes).decode("ascii")
     filename = "{}.nzb".format(nzb_name or "submission")
-    return [filename, content_b64, category, 0, False, False, "", 0, "SCORE", False, []]
+    return [
+        filename,
+        content_b64,
+        category,
+        0,
+        False,
+        False,
+        dupe_key or "",
+        int(dupe_score or 0),
+        (dupe_mode or "SCORE").upper(),
+        False,
+        [],
+    ]
 
 
-def append_nzb(nzb_url, nzb_name, settings_getter=None):
+def append_nzb(
+    nzb_url,
+    nzb_name,
+    settings_getter=None,
+    dupe_key="",
+    dupe_score=0,
+    dupe_mode="SCORE",
+):
     """Fetch the NZB and submit it to NZBGet via append.
 
     Returns (nzbid, error). On success (int > 0, None); on failure
-    (None, message).
+    (None, message). ``dupe_key``/``dupe_score``/``dupe_mode`` drive NZBGet
+    Smart Duplicates (#372); their defaults reproduce the pre-#372 single submit.
     """
     _base_url, _user, _password, category = _get_settings(settings_getter)
     try:
@@ -135,7 +158,9 @@ def append_nzb(nzb_url, nzb_name, settings_getter=None):
             xbmc.LOGERROR,
         )
         return None, _redact_text(str(exc))
-    params = _append_params(nzb_name, nzb_bytes, category)
+    params = _append_params(
+        nzb_name, nzb_bytes, category, dupe_key, dupe_score, dupe_mode
+    )
     result, error = _rpc_call("append", params, settings_getter=settings_getter)
     if error is not None:
         return None, error
@@ -146,6 +171,25 @@ def append_nzb(nzb_url, nzb_name, settings_getter=None):
     if nzbid <= 0:
         return None, "append returned {!r}".format(result)
     return nzbid, None
+
+
+def config_option(name, settings_getter=None):
+    """Read one running-config option's value via the ``config`` RPC.
+
+    NZBGet's ``config`` returns the live merged config as a list of
+    ``{"Name","Value"}`` structs (options with fixed value sets come back
+    lower-cased). Returns the matched value lower-cased, or ``None`` when the
+    option is absent or the RPC fails -- callers treat it as best-effort (e.g.
+    the #372 HealthCheck=pause warning, per nzbget.com/documentation/rss).
+    """
+    rows, error = _rpc_call("config", [], settings_getter=settings_getter)
+    if error is not None or not isinstance(rows, list):
+        return None
+    target = str(name or "").lower()
+    for row in rows:
+        if isinstance(row, dict) and str(row.get("Name", "")).lower() == target:
+            return str(row.get("Value", "")).strip().lower()
+    return None
 
 
 def _as_number(value):

@@ -5,8 +5,9 @@ from unittest.mock import MagicMock, patch
 from resources.lib.nzbget_resolver import (
     _read_poll_interval,
     _read_settings,
-    _spawn_name_backups,
-    _submit_name_backups,
+    _spawn_dupe_backups,
+    _submit_dupe_backups,
+    _warn_if_healthcheck_pauses,
     play_nzbget,
     poll_nzbget_job,
     resolve_and_play_nzbget,
@@ -1074,52 +1075,54 @@ def test_resolve_reuse_applies_resume_offset():
 
 
 # ---------------------------------------------------------------------------
-# #372 NZBGet same-name duplicate backups
+# #372 NZBGet Smart Duplicates (DupeKey / DupeScore / DupeMode)
 # ---------------------------------------------------------------------------
 
 _APPEND = "resources.lib.nzbget_resolver.nzbget_api.append_nzb"
 
 
-def test_submit_name_backups_appends_each_under_the_pick_name():
-    # Every same-name backup is submitted under the PICK's NZB name so NZBGet
-    # groups them with the already-queued pick by name (no DupeKey/DupeScore).
+def test_submit_dupe_backups_appends_with_shared_key_and_scores():
+    # Each backup carries the SHARED DupeKey, its own (per-picker) DupeScore, and
+    # DupeMode=SCORE; NZBGet groups them by key and keeps the highest active.
     backups = [
-        {"link": "http://i/a.nzb", "title": "The Movie GROUP2"},
-        {"link": "http://i/b.nzb", "title": "The Movie GROUP3"},
+        {"link": "http://i/a.nzb", "title": "The Movie GROUP2", "score": 999},
+        {"link": "http://i/b.nzb", "title": "The Movie GROUP3", "score": 998},
     ]
     with patch(_APPEND, return_value=(5, None)) as append:
-        submitted = _submit_name_backups(backups, "The.Movie", _settings({}))
+        submitted = _submit_dupe_backups(backups, "imdb=1234567", _settings({}))
     assert [c.args[0] for c in append.call_args_list] == [
         "http://i/a.nzb",
         "http://i/b.nzb",
     ]
-    # All appended under the pick's name; no dupe kwargs (name-based grouping).
-    assert all(c.args[1] == "The.Movie" for c in append.call_args_list)
-    assert all(not c.kwargs.get("dupe_key") for c in append.call_args_list)
+    assert all(c.kwargs["dupe_key"] == "imdb=1234567" for c in append.call_args_list)
+    assert [c.kwargs["dupe_score"] for c in append.call_args_list] == [999, 998]
+    assert all(c.kwargs["dupe_mode"] == "SCORE" for c in append.call_args_list)
+    # Distinct job names (DupeKey groups them, so names need not match).
+    assert len({c.args[1] for c in append.call_args_list}) == 2
     assert len(submitted) == 2
 
 
-def test_submit_name_backups_skips_bad_and_duplicate_urls():
+def test_submit_dupe_backups_skips_bad_and_duplicate_urls():
     backups = [
-        {"link": "http://i/a.nzb", "title": "A"},
+        {"link": "http://i/a.nzb", "title": "A", "score": 9},
         "not-a-dict",
-        {"title": "no link"},
-        {"link": "http://i/a.nzb", "title": "dup url"},
-        {"link": "http://i/b.nzb", "title": "B"},
+        {"title": "no link", "score": 8},
+        {"link": "http://i/a.nzb", "title": "dup", "score": 7},
+        {"link": "http://i/b.nzb", "title": "B", "score": 6},
     ]
     with patch(_APPEND, return_value=(5, None)) as append:
-        _submit_name_backups(backups, "N", _settings({}))
+        _submit_dupe_backups(backups, "k", _settings({}))
     assert [c.args[0] for c in append.call_args_list] == [
         "http://i/a.nzb",
         "http://i/b.nzb",
     ]
 
 
-def test_submit_name_backups_is_fail_soft_per_backup():
+def test_submit_dupe_backups_is_fail_soft_per_backup():
     backups = [
-        {"link": "http://i/a.nzb", "title": "A"},
-        {"link": "http://i/b.nzb", "title": "B"},
-        {"link": "http://i/c.nzb", "title": "C"},
+        {"link": "http://i/a.nzb", "title": "A", "score": 3},
+        {"link": "http://i/b.nzb", "title": "B", "score": 2},
+        {"link": "http://i/c.nzb", "title": "C", "score": 1},
     ]
 
     def flaky(nzb_url, *a, **k):
@@ -1128,7 +1131,7 @@ def test_submit_name_backups_is_fail_soft_per_backup():
         return (7, None)
 
     with patch(_APPEND, side_effect=flaky) as append:
-        submitted = _submit_name_backups(backups, "N", _settings({}))
+        submitted = _submit_dupe_backups(backups, "k", _settings({}))
     assert append.call_count == 3
     assert len(submitted) == 2  # a and c despite b raising
 
@@ -1144,46 +1147,41 @@ class _InlineThread:  # pylint: disable=too-few-public-methods
         self._target()
 
 
-def _backup_ctx(backups, getter=None):
+def _dupe_ctx(dupe, getter=None):
     from types import SimpleNamespace
 
-    return SimpleNamespace(
-        settings_getter=getter or _settings({}), dupe_backups=backups
-    )
+    return SimpleNamespace(settings_getter=getter or _settings({}), dupe=dupe)
 
 
-def test_spawn_name_backups_submits_provided_list():
-    backups = [{"link": "http://i/a.nzb", "title": "A"}]
-    ctx = _backup_ctx(backups)
+def test_spawn_dupe_backups_submits_and_warns_healthcheck():
+    dupe = {"key": "imdb=1", "pick_score": 1000, "backups": [{"link": "u", "score": 9}]}
+    ctx = _dupe_ctx(dupe)
     with patch("resources.lib.nzbget_resolver.threading.Thread", _InlineThread), patch(
-        "resources.lib.nzbget_resolver._submit_name_backups"
-    ) as core:
-        _spawn_name_backups(ctx, "The.Movie")
+        "resources.lib.nzbget_resolver._submit_dupe_backups"
+    ) as core, patch(
+        "resources.lib.nzbget_resolver._warn_if_healthcheck_pauses"
+    ) as warn:
+        _spawn_dupe_backups(ctx)
     core.assert_called_once()
-    assert core.call_args.args[0] == backups
-    assert core.call_args.args[1] == "The.Movie"
+    assert core.call_args.args[0] == dupe["backups"]
+    assert core.call_args.args[1] == "imdb=1"  # shared key
+    warn.assert_called_once()
 
 
-def test_spawn_name_backups_noop_when_empty():
-    ctx = _backup_ctx([])
+def test_spawn_dupe_backups_noop_without_backups_or_key():
     with patch("resources.lib.nzbget_resolver.threading.Thread", _InlineThread), patch(
-        "resources.lib.nzbget_resolver._submit_name_backups"
+        "resources.lib.nzbget_resolver._submit_dupe_backups"
     ) as core:
-        result = _spawn_name_backups(ctx, "N")
-    assert result is None
+        assert _spawn_dupe_backups(_dupe_ctx({"key": "k", "backups": []})) is None
+        assert (
+            _spawn_dupe_backups(_dupe_ctx({"key": "", "backups": [{"link": "u"}]}))
+            is None
+        )
+        assert _spawn_dupe_backups(_dupe_ctx(None)) is None
     core.assert_not_called()
 
 
-def test_spawn_name_backups_swallows_worker_error():
-    ctx = _backup_ctx([{"link": "http://i/a.nzb", "title": "A"}])
-    with patch("resources.lib.nzbget_resolver.threading.Thread", _InlineThread), patch(
-        "resources.lib.nzbget_resolver._submit_name_backups",
-        side_effect=RuntimeError("boom"),
-    ):
-        _spawn_name_backups(ctx, "N")  # must not raise
-
-
-def test_spawn_name_backups_swallows_thread_start_error():
+def test_spawn_dupe_backups_swallows_thread_start_error():
     class _BoomThread:  # pylint: disable=too-few-public-methods
         def __init__(self, *a, **k):
             pass
@@ -1191,19 +1189,46 @@ def test_spawn_name_backups_swallows_thread_start_error():
         def start(self):
             raise RuntimeError("can't start new thread")
 
-    ctx = _backup_ctx([{"link": "http://i/a.nzb", "title": "A"}])
+    ctx = _dupe_ctx({"key": "k", "backups": [{"link": "u", "score": 1}]})
     with patch("resources.lib.nzbget_resolver.threading.Thread", _BoomThread):
-        result = _spawn_name_backups(ctx, "N")  # must not raise
-    assert result is None
+        assert _spawn_dupe_backups(ctx) is None  # must not raise
 
 
-def test_resolve_submits_pick_unchanged_then_spawns_name_backups():
-    # The pick is appended exactly as pre-#372 (name=title, no dupe kwargs); the
-    # picker-provided same-name backups are then spawned.
+def test_warn_if_healthcheck_pauses_notifies_once_on_pause():
+    import resources.lib.nzbget_resolver as mod
+
+    mod._HEALTHCHECK_WARNED[0] = False
+    with patch(
+        "resources.lib.nzbget_resolver.nzbget_api.config_option", return_value="pause"
+    ), patch("resources.lib.nzbget_resolver._notify") as notify:
+        _warn_if_healthcheck_pauses(_settings({}))
+        _warn_if_healthcheck_pauses(_settings({}))
+    notify.assert_called_once()  # at most once per session
+
+
+def test_warn_if_healthcheck_pauses_silent_when_not_pause():
+    import resources.lib.nzbget_resolver as mod
+
+    mod._HEALTHCHECK_WARNED[0] = False
+    with patch(
+        "resources.lib.nzbget_resolver.nzbget_api.config_option", return_value="delete"
+    ), patch("resources.lib.nzbget_resolver._notify") as notify:
+        _warn_if_healthcheck_pauses(_settings({}))
+    notify.assert_not_called()
+
+
+def test_resolve_submits_pick_with_dupe_key_and_spawns_backups():
+    # With a picker-computed dupe submission, the PICK is appended with the shared
+    # DupeKey at the top DupeScore, and the backups are spawned.
     plugin = sys.modules["xbmcplugin"]
     plugin.setResolvedUrl = MagicMock()
+    dupe = {
+        "key": "imdb=1234567",
+        "pick_score": 1000,
+        "backups": [{"link": "http://i/b.nzb", "title": "B", "score": 999}],
+    }
     with patch(_APPEND, return_value=(42, None)) as append, patch(
-        "resources.lib.nzbget_resolver._spawn_name_backups"
+        "resources.lib.nzbget_resolver._spawn_dupe_backups"
     ) as spawn, patch(
         "resources.lib.nzbget_resolver.poll_nzbget_job",
         return_value={"outcome": "success", "dest_dir": "/dl/movies/The.Movie"},
@@ -1213,29 +1238,23 @@ def test_resolve_submits_pick_unchanged_then_spawns_name_backups():
     ):
         resolve_and_play_nzbget(
             7,
-            {
-                "nzburl": "http://i/x.nzb",
-                "title": "The.Movie",
-                "_nzbget_dupe_backups": [{"link": "http://i/b.nzb", "title": "B"}],
-            },
+            {"nzburl": "http://i/x.nzb", "title": "The.Movie", "_nzbget_dupe": dupe},
             settings_getter=_full_settings(),
         )
-    # Pick appended once, positionally (url, title), with no dupe kwargs.
     append.assert_called_once()
     assert append.call_args.args[0] == "http://i/x.nzb"
-    assert append.call_args.args[1] == "The.Movie"
-    assert not append.call_args.kwargs.get("dupe_key")
-    assert not append.call_args.kwargs.get("dupe_score")
+    assert append.call_args.kwargs["dupe_key"] == "imdb=1234567"
+    assert append.call_args.kwargs["dupe_score"] == 1000  # top score
+    assert append.call_args.kwargs["dupe_mode"] == "SCORE"
     spawn.assert_called_once()
-    assert spawn.call_args.args[1] == "The.Movie"  # backups keyed to the pick name
 
 
-def test_resolve_without_backups_still_calls_spawn_which_noops():
-    # No backups threaded -> spawn is still called but no-ops (empty list). The
-    # pick submit/poll/play is unchanged.
+def test_resolve_without_dupe_submits_plain_pick():
     plugin = sys.modules["xbmcplugin"]
     plugin.setResolvedUrl = MagicMock()
     with patch(_APPEND, return_value=(42, None)) as append, patch(
+        "resources.lib.nzbget_resolver._spawn_dupe_backups"
+    ) as spawn, patch(
         "resources.lib.nzbget_resolver.poll_nzbget_job",
         return_value={"outcome": "success", "dest_dir": "/dl/movies/The.Movie"},
     ), patch(
@@ -1247,15 +1266,19 @@ def test_resolve_without_backups_still_calls_spawn_which_noops():
             {"nzburl": "http://i/x.nzb", "title": "The.Movie"},
             settings_getter=_full_settings(),
         )
-    assert append.call_count == 1  # only the pick; no backups
+    assert append.call_count == 1
+    assert append.call_args.kwargs.get("dupe_key", "") == ""
+    assert append.call_args.kwargs.get("dupe_score", 0) == 0
+    spawn.assert_not_called()
     assert plugin.setResolvedUrl.call_args[0][1] is True
 
 
-def test_resolve_with_none_getter_and_backups_does_not_crash():
+def test_resolve_with_none_getter_and_dupe_does_not_crash():
     # Real Kodi handle-based path passes settings_getter=None; _build_submit_ctx
-    # must bind it so the background backup thread carries a callable getter.
+    # binds it so the background dupe thread carries a callable getter.
     plugin = sys.modules["xbmcplugin"]
     plugin.setResolvedUrl = MagicMock()
+    dupe = {"key": "imdb=1", "pick_score": 1000, "backups": [{"link": "u", "score": 9}]}
     with patch(
         "resources.lib.nzbget_resolver._read_settings",
         return_value=("http://box", "smb://host/c", 600),
@@ -1270,7 +1293,7 @@ def test_resolve_with_none_getter_and_backups_does_not_crash():
     ), patch(
         _APPEND, return_value=(42, None)
     ), patch(
-        "resources.lib.nzbget_resolver._spawn_name_backups"
+        "resources.lib.nzbget_resolver._spawn_dupe_backups"
     ) as spawn, patch(
         "resources.lib.nzbget_resolver.poll_nzbget_job",
         return_value={"outcome": "success", "dest_dir": "/dl/movies/X"},
@@ -1280,14 +1303,8 @@ def test_resolve_with_none_getter_and_backups_does_not_crash():
     ):
         resolve_and_play_nzbget(
             7,
-            {
-                "nzburl": "http://i/x.nzb",
-                "title": "The.Movie",
-                "_nzbget_dupe_backups": [{"link": "http://i/b.nzb", "title": "B"}],
-            },
-            # settings_getter omitted -> None (the real Kodi path)
-        )
+            {"nzburl": "http://i/x.nzb", "title": "The.Movie", "_nzbget_dupe": dupe},
+        )  # settings_getter omitted -> None
     plugin.setResolvedUrl.assert_called_once()
     assert plugin.setResolvedUrl.call_args[0][1] is True
-    # ctx passed to spawn carries a bound (callable) getter, not None.
     assert callable(spawn.call_args.args[0].settings_getter)

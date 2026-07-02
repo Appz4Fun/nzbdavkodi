@@ -261,11 +261,19 @@ Runtime switching still requires exact WebDAV `Content-Length` equality and 1000
 
 Fallback recovery is the only rescue path for fallback sessions: if no validated fallback source can resume the failed range, the proxy closes the stream instead of retrying the original source, zero-filling, or probing forward to skip bytes.
 
-#### NZBGet backend: duplicate backups
+#### NZBGet backend: Smart Duplicates
 
-The NZBGet backend downloads the whole release before playback, so it can't do live stream cutover. Instead, when you pick a release the picker also submits every other result that shares the **same release name** (reposts / mirrors of the same release from other indexers) to NZBGet as duplicate backups. NZBGet groups items by NZB name, so no special duplicate key is needed: the pick is submitted first and stays the download NZBGet keeps active — the progress bar and completion behave exactly as before — and each same-name backup is parked in NZBGet's history without downloading.
+The NZBGet backend downloads the whole release before playback, so it can't do live stream cutover. Instead it uses NZBGet's own [Smart Duplicates](https://nzbget.com/documentation/rss/#duplicates). When you pick a release, the picker also submits every other result that shares the **same release name** (reposts / mirrors of the same release from other indexers), all with:
 
-If the pick finishes unrepairable (par2 repair fails, unpack fails, or health drops below NZBGet's critical threshold), NZBGet automatically pulls one of the same-name backups out of history and downloads it instead. NZBGet does not combine recovery blocks across releases; it fails over to a whole alternate copy and repairs that with its own par2. The backups are submitted in a background thread after the pick is queued so they never delay playback, are capped by **Maximum standby fallback streams**, gated by **Enable fallback streams**, and are best-effort — a backup that fails to submit never affects the pick's download or playback.
+- a shared **duplicate key** identifying the release — a canonical `imdb=<id>` / `tvdbid=<id>-S<ss>-E<ee>` when the id is known, otherwise a title-based fallback;
+- a per-item **duplicate score**, with your pick scored highest and each backup strictly lower;
+- **duplicate mode `SCORE`**.
+
+NZBGet then downloads the highest-scored item — your pick, so the progress bar and completion behave exactly as before — and parks the rest in its history as duplicate backups (status `dupe`) without downloading them. Because the pick is chosen by score rather than by submission order, it reliably stays the one that plays, and the backups can be submitted at any time (in a background thread, so they never delay playback).
+
+If the pick finishes unrepairable (par2 repair fails, unpack fails, or health drops below NZBGet's critical threshold), NZBGet automatically pulls the highest-scored backup out of history and downloads it instead. NZBGet does not combine recovery blocks across releases; it fails over to a whole alternate copy and repairs that with its own par2.
+
+Automatic failover requires NZBGet's **HealthCheck** option to be `Delete` or `None` (the modern default is `Delete`). If it is set to `Pause`, NZBGet pauses a broken download instead of promoting a backup; the addon shows a one-time notice if it detects this. The backups are capped by **Maximum standby fallback streams**, gated by **Enable fallback streams**, and best-effort — a backup that fails to submit never affects the pick's download or playback.
 
 Compatibility remux remains available for environments that need ffmpeg compatibility paths, but pass-through is the default. Setting **Force ffmpeg remux above (MB, 0=off)** to `0` disables non-MP4 remux entirely, including unknown-length streams.
 

@@ -3919,7 +3919,7 @@ def test_xml_root_name_rejects_internal_entity_on_stdlib_fallback(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# #372 picker-computed same-name NZBGet duplicate backups
+# #372 picker-computed NZBGet Smart-Duplicates submission
 # ---------------------------------------------------------------------------
 
 
@@ -3928,62 +3928,115 @@ def _dupe_setting_getter(values):
     return lambda addon, key, default="": values.get(key, default)
 
 
-def test_nzbget_dupe_backups_returns_same_name_others_only():
-    from resources.lib.router_play import _nzbget_dupe_backups_for_selection
+def test_release_dupe_key_movie_prefers_imdb_then_tmdb_then_title():
+    from resources.lib.router_play import _release_dupe_key
+
+    assert _release_dupe_key({"type": "movie", "imdb": "tt1234567"}) == "imdb=1234567"
+    assert _release_dupe_key({"type": "movie", "tmdb_id": "603"}) == "themoviedb=603"
+    assert (
+        _release_dupe_key({"type": "movie", "title": "The Matrix", "year": "1999"})
+        == "movie=the-matrix-1999"
+    )
+    assert _release_dupe_key({"type": "movie"}) == ""  # nothing usable
+
+
+def test_release_dupe_key_episode_prefers_tvdb_then_imdb_then_title():
+    from resources.lib.router_play import _release_dupe_key
+
+    ep = {"type": "episode", "season": "2", "episode": "10"}
+    assert _release_dupe_key(dict(ep, tvdb="13434")) == "tvdbid=13434-S02-E10"
+    assert _release_dupe_key(dict(ep, imdb="tt944947")) == "imdb=944947-S02-E10"
+    assert _release_dupe_key(dict(ep, title="Dexter")) == "series=dexter-S02-E10"
+
+
+def test_nzbget_dupe_submission_scores_pick_highest_and_backups_descending():
+    from resources.lib.router_play import _nzbget_dupe_submission_for_selection
 
     selected = {"link": "http://i/pick.nzb", "title": "The Movie 2024 1080p"}
     filtered = [
         selected,
         {"link": "http://i/a.nzb", "title": "The Movie 2024 1080p"},  # same name
         {"link": "http://i/b.nzb", "title": "the  movie  2024  1080P"},  # norm-equal
-        {"link": "http://i/c.nzb", "title": "Different Movie 2024"},  # different
+        {"link": "http://i/c.nzb", "title": "Different Movie"},  # different
     ]
+    identity = {"type": "movie", "imdb": "tt42", "title": "The Movie", "year": "2024"}
     with patch(
         "resources.lib.router._get_addon_setting",
         _dupe_setting_getter({"nzbget_enabled": "true"}),
     ):
-        backups = _nzbget_dupe_backups_for_selection(selected, filtered)
-    assert [b["link"] for b in backups] == ["http://i/a.nzb", "http://i/b.nzb"]
+        dupe = _nzbget_dupe_submission_for_selection(selected, filtered, identity)
+    assert dupe["key"] == "imdb=42"
+    assert [b["link"] for b in dupe["backups"]] == ["http://i/a.nzb", "http://i/b.nzb"]
+    # Pick strictly highest; backups strictly-lower descending.
+    assert all(b["score"] < dupe["pick_score"] for b in dupe["backups"])
+    assert [b["score"] for b in dupe["backups"]] == sorted(
+        [b["score"] for b in dupe["backups"]], reverse=True
+    )
 
 
-def test_nzbget_dupe_backups_empty_when_nzbget_disabled():
-    from resources.lib.router_play import _nzbget_dupe_backups_for_selection
+def test_nzbget_dupe_submission_none_when_no_same_name_backups():
+    from resources.lib.router_play import _nzbget_dupe_submission_for_selection
+
+    selected = {"link": "http://i/pick.nzb", "title": "Unique Release"}
+    filtered = [selected, {"link": "http://i/x.nzb", "title": "Other Release"}]
+    identity = {"type": "movie", "imdb": "tt7"}
+    with patch(
+        "resources.lib.router._get_addon_setting",
+        _dupe_setting_getter({"nzbget_enabled": "true"}),
+    ):
+        assert (
+            _nzbget_dupe_submission_for_selection(selected, filtered, identity) is None
+        )
+
+
+def test_nzbget_dupe_submission_none_when_no_dupe_key():
+    from resources.lib.router_play import _nzbget_dupe_submission_for_selection
 
     selected = {"link": "http://i/pick.nzb", "title": "X"}
     filtered = [selected, {"link": "http://i/a.nzb", "title": "X"}]
+    # No id and no title in identity -> no key -> no submission.
+    with patch(
+        "resources.lib.router._get_addon_setting",
+        _dupe_setting_getter({"nzbget_enabled": "true"}),
+    ):
+        assert _nzbget_dupe_submission_for_selection(selected, filtered, {}) is None
+
+
+def test_nzbget_dupe_submission_none_when_backend_or_setting_off():
+    from resources.lib.router_play import _nzbget_dupe_submission_for_selection
+
+    selected = {"link": "http://i/pick.nzb", "title": "X"}
+    filtered = [selected, {"link": "http://i/a.nzb", "title": "X"}]
+    identity = {"type": "movie", "imdb": "tt1"}
     with patch(
         "resources.lib.router._get_addon_setting",
         _dupe_setting_getter({"nzbget_enabled": "false"}),
     ):
-        assert not _nzbget_dupe_backups_for_selection(selected, filtered)
-
-
-def test_nzbget_dupe_backups_empty_when_fallback_streams_off():
-    from resources.lib.router_play import _nzbget_dupe_backups_for_selection
-
-    selected = {"link": "http://i/pick.nzb", "title": "X"}
-    filtered = [selected, {"link": "http://i/a.nzb", "title": "X"}]
+        assert (
+            _nzbget_dupe_submission_for_selection(selected, filtered, identity) is None
+        )
     with patch(
         "resources.lib.router._get_addon_setting",
         _dupe_setting_getter(
             {"nzbget_enabled": "true", "fallback_streams_enabled": "false"}
         ),
     ):
-        assert not _nzbget_dupe_backups_for_selection(selected, filtered)
+        assert (
+            _nzbget_dupe_submission_for_selection(selected, filtered, identity) is None
+        )
 
 
-def test_nzbget_dupe_backups_caps_and_dedupes_by_link():
-    from resources.lib.router_play import _nzbget_dupe_backups_for_selection
+def test_nzbget_dupe_submission_caps_backups_by_setting():
+    from resources.lib.router_play import _nzbget_dupe_submission_for_selection
 
     selected = {"link": "http://i/pick.nzb", "title": "X"}
     filtered = [selected] + [
         {"link": "http://i/{}.nzb".format(n), "title": "X"} for n in range(10)
     ]
-    filtered.append({"link": "http://i/0.nzb", "title": "X"})  # duplicate link
+    identity = {"type": "movie", "imdb": "tt1"}
     with patch(
         "resources.lib.router._get_addon_setting",
         _dupe_setting_getter({"nzbget_enabled": "true", "fallback_streams_max": "3"}),
     ):
-        backups = _nzbget_dupe_backups_for_selection(selected, filtered)
-    assert len(backups) == 3
-    assert len({b["link"] for b in backups}) == 3  # no duplicate links
+        dupe = _nzbget_dupe_submission_for_selection(selected, filtered, identity)
+    assert len(dupe["backups"]) == 3

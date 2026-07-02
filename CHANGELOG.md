@@ -66,19 +66,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **NZBGet mode: submit same-name duplicate backups from the picker.** When the
-  NZBGet backend is enabled, picking a release now also submits every other
-  result on the picker that shares the same release name (reposts / mirrors from
-  other indexers) to NZBGet as duplicate backups. NZBGet groups them by name:
-  your pick keeps downloading and playing exactly as before, and the same-name
-  backups sit in NZBGet's history without downloading. If the pick turns out
-  unrepairable (par2 repair fails, unpack fails, or health drops below critical),
-  NZBGet automatically fails over and downloads one of the backups instead of
-  leaving you with a broken file. The backups are submitted in the background
-  after the pick is queued, so they never delay playback; they are bounded by
-  **Maximum standby fallback streams** and gated by the existing **Enable
-  fallback streams** setting (on by default). Best-effort throughout: a failed
-  backup submit never affects the pick's playback. (Issue #372.)
+- **NZBGet mode: Smart Duplicates for broken downloads.** When the NZBGet
+  backend is enabled, picking a release now also submits every other result on
+  the picker that shares the same release name (reposts / mirrors from other
+  indexers) to NZBGet using its documented duplicate handling — one shared
+  duplicate key (derived from the IMDb/TVDB id, or a title fallback), a per-item
+  duplicate score with your pick scored highest, and duplicate mode `SCORE`. So
+  NZBGet downloads your pick and parks the rest in its history as duplicate
+  backups without downloading them; if the pick turns out unrepairable (par2
+  repair fails, unpack fails, or health drops below critical) NZBGet
+  automatically fails over and downloads one of the backups instead of leaving
+  you with a broken file. Because NZBGet decides by score, the pick reliably
+  stays the one that plays and the submission order no longer matters. The
+  backups are submitted in the background so they never delay playback, are
+  bounded by **Maximum standby fallback streams**, and are gated by **Enable
+  fallback streams** (on by default). If NZBGet's `HealthCheck` is set to `Pause`
+  (which blocks automatic failover), a one-time notice suggests setting it to
+  `Delete` or `None`. Best-effort throughout: a failed backup submit never
+  affects the pick's playback. (Issue #372, per
+  [nzbget.com duplicates](https://nzbget.com/documentation/rss/#duplicates).)
 - **NZBGet mode: pre-cached "DL" indicator in the NZB picker.** With the
   NZBGet backend enabled, the results picker now tags releases that are
   already completed in NZBGet's history with the same green `DL` chip the

@@ -14,6 +14,8 @@ keep resolving and no top-level import cycle is introduced. ``xbmc*`` are global
 modules (mocked once in conftest) so they are imported normally.
 """
 
+import re
+
 import xbmc
 import xbmcaddon
 import xbmcgui
@@ -189,12 +191,12 @@ def _lookup_search_episode_args(params, search_type, title, season, episode, imd
     return title, season, episode
 
 
-def _handle_play_filter_and_select(handle, results, title, year, notify):
+def _handle_play_filter_and_select(handle, results, title, year, notify, identity=None):
     """Filter, optionally auto-select, tag, and run the picker for ``_handle_play``.
 
     Resolves the Kodi handle itself (False on abort / no selection, or via the
-    auto-select / picker-selection resolvers). Extracted verbatim from the tail
-    of ``_handle_play``.
+    auto-select / picker-selection resolvers). ``identity`` carries the release
+    id fields the NZBGet DupeKey is built from (#372).
     """
     import resources.lib.router as _router
 
@@ -219,7 +221,7 @@ def _handle_play_filter_and_select(handle, results, title, year, notify):
     # Auto-select best match if enabled
     addon = xbmcaddon.Addon("plugin.video.nzbdav")
     if _router._get_addon_setting(addon, "auto_select_best", "false").lower() == "true":
-        _handle_play_auto_select(handle, filtered[0], filtered)
+        _handle_play_auto_select(handle, filtered[0], filtered, identity)
         return
 
     # Tag results already downloaded in the active backend (nzbdav / NZBGet)
@@ -233,12 +235,14 @@ def _handle_play_filter_and_select(handle, results, title, year, notify):
     )
 
     if selected:
-        _handle_play_resolve_selection(handle, selected, filtered, completed_jobs)
+        _handle_play_resolve_selection(
+            handle, selected, filtered, completed_jobs, identity
+        )
     else:
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
 
 
-def _handle_play_auto_select(handle, best, filtered):
+def _handle_play_auto_select(handle, best, filtered, identity=None):
     """Resolve the auto-selected best release through the handle-based resolver."""
     import resources.lib.router as _router
     from resources.lib.resolver import resolve
@@ -251,9 +255,25 @@ def _handle_play_auto_select(handle, best, filtered):
             best, filtered
         ),
     }
-    _attach_nzbget_dupe_backups(resolver_params, best, filtered)
+    _attach_nzbget_dupe(resolver_params, best, filtered, identity)
     _router._attach_selected_result_metadata(resolver_params, best)
     resolve(handle, resolver_params)
+
+
+def _identity_from_params(params):
+    """Release-identity subset the DupeKey is built from (#372)."""
+    season = params.get("season", "") or params.get("ep_season", "")
+    episode = params.get("episode", "") or params.get("ep_episode", "")
+    return {
+        "type": params.get("type", ""),
+        "title": params.get("title", ""),
+        "year": params.get("year", ""),
+        "imdb": params.get("imdb", ""),
+        "tvdb": params.get("tvdb", ""),
+        "tmdb_id": params.get("tmdb_id", ""),
+        "season": season,
+        "episode": episode,
+    }
 
 
 def _normalize_release_name(title):
@@ -261,39 +281,70 @@ def _normalize_release_name(title):
     return " ".join(str(title or "").split()).casefold()
 
 
-def _nzbget_dupe_backups_for_selection(selected, filtered):
-    """Same-release-name picker results to submit as NZBGet duplicate backups.
+def _imdb_digits(value):
+    """Bare IMDb digits from a possibly ``tt``-prefixed id (docs: ``imdb=123456``)."""
+    match = re.search(r"(\d+)", str(value or ""))
+    return match.group(1) if match else ""
 
-    #372: when the NZBGet backend is enabled, the picker hands the resolver every
-    OTHER result whose release name matches the pick (reposts / mirrors from
-    other indexers). The resolver submits them under the pick's NZB name after
-    the pick is queued, so NZBGet groups them by name as duplicate backups and
-    can fail over to one if the pick is unrepairable. Returns ``[]`` (no backups)
-    unless NZBGet is enabled and fallback streams are on; bounded by
-    ``fallback_streams_max``. Empty on the nzbdav backend, which has its own live
-    fallback path.
-    """
-    import resources.lib.router as _router
 
-    addon = xbmcaddon.Addon("plugin.video.nzbdav")
-    nzbget_on = (
-        _router._get_addon_setting(addon, "nzbget_enabled", "false").lower() == "true"
-    )
-    fallback_on = (
-        _router._get_addon_setting(addon, "fallback_streams_enabled", "true").lower()
-        != "false"
-    )
-    if not (nzbget_on and fallback_on):
-        return []
+def _key_title_slug(title):
+    """Lowercased hyphen slug of a title for the fallback (title-based) DupeKey."""
+    return re.sub(r"[^\w]+", "-", str(title or "").strip().lower()).strip("-")
+
+
+def _int_or_none(value):
     try:
-        max_backups = int(
-            _router._get_addon_setting(addon, "fallback_streams_max", "5") or 5
-        )
+        return int(str(value).strip())
     except (TypeError, ValueError):
-        max_backups = 5
-    if max_backups <= 0:
-        return []
+        return None
 
+
+def _release_dupe_key(identity):
+    """Build the canonical NZBGet DupeKey identifying the release (#372).
+
+    Follows nzbget.com/documentation/rss/#duplicates key formats: episodes ->
+    ``tvdbid=<id>-S<ss>-E<ee>`` (else ``imdb=<digits>-S<ss>-E<ee>`` else the
+    title fallback ``series=<slug>-S<ss>-E<ee>``); movies -> ``imdb=<digits>``
+    (else ``themoviedb=<id>`` else ``movie=<slug>[-<year>]``). One identical key
+    is shared by the whole release (pick + same-name backups) so NZBGet treats
+    them as one duplicate set. Returns ``""`` when nothing usable is present.
+    """
+    imdb = _imdb_digits(identity.get("imdb"))
+    tvdb = str(identity.get("tvdb") or "").strip()
+    tmdb = str(identity.get("tmdb_id") or "").strip()
+    season = _int_or_none(identity.get("season"))
+    episode = _int_or_none(identity.get("episode"))
+    slug = _key_title_slug(identity.get("title"))
+    is_episode = identity.get("type") == "episode" or (
+        season is not None and episode is not None
+    )
+    if is_episode and season is not None and episode is not None:
+        suffix = "-S{:02d}-E{:02d}".format(season, episode)
+        if tvdb:
+            return "tvdbid={}{}".format(tvdb, suffix)
+        if imdb:
+            return "imdb={}{}".format(imdb, suffix)
+        return "series={}{}".format(slug, suffix) if slug else ""
+    if imdb:
+        return "imdb={}".format(imdb)
+    if tmdb:
+        return "themoviedb={}".format(tmdb)
+    if slug:
+        year = str(identity.get("year") or "").strip()
+        return "movie={}-{}".format(slug, year) if year else "movie={}".format(slug)
+    return ""
+
+
+# Highest DupeScore, assigned to the user's pick so NZBGet keeps it the active
+# download (the one the poll tracks). Same-name backups get strictly-lower,
+# descending scores, so NZBGet parks them as history backups and fails over to
+# the best remaining one if the pick is unrepairable. Matches the docs' example
+# magnitudes (720p:1000 / 1080p:2000).
+_PICK_DUPE_SCORE = 1000
+
+
+def _same_name_backups(selected, filtered, max_backups):
+    """The other picker results sharing the pick's release name, deduped/capped."""
     target = _normalize_release_name(selected.get("title"))
     selected_link = selected.get("link")
     backups = []
@@ -313,18 +364,65 @@ def _nzbget_dupe_backups_for_selection(selected, filtered):
     return backups
 
 
-def _attach_nzbget_dupe_backups(resolver_params, selected, filtered):
-    """Attach the same-name NZBGet duplicate backups, only when there are any.
+def _nzbget_dupe_submission_for_selection(selected, filtered, identity):
+    """Build the NZBGet Smart-Duplicates submission for a pick (#372).
 
-    Keeps the nzbdav-path params clean: the key is present only in NZBGet mode
-    with actual same-name backups to submit (#372).
+    Returns ``{"key", "pick_score", "backups": [{"link","title","score"}]}`` when
+    the NZBGet backend is on, fallback streams are enabled, a DupeKey is
+    computable, AND there is at least one same-release-name backup on the picker
+    (reposts / mirrors) -- else ``None`` (plain single submit). The pick takes
+    the top DupeScore and the same-name backups take strictly-lower descending
+    scores, so NZBGet downloads the pick and parks the rest in history as
+    duplicate backups, failing over on an unrepairable download. Bounded by
+    ``fallback_streams_max``. Empty on the nzbdav backend (its own live fallback).
     """
-    backups = _nzbget_dupe_backups_for_selection(selected, filtered)
-    if backups:
-        resolver_params["_nzbget_dupe_backups"] = backups
+    import resources.lib.router as _router
+
+    addon = xbmcaddon.Addon("plugin.video.nzbdav")
+    nzbget_on = (
+        _router._get_addon_setting(addon, "nzbget_enabled", "false").lower() == "true"
+    )
+    fallback_on = (
+        _router._get_addon_setting(addon, "fallback_streams_enabled", "true").lower()
+        != "false"
+    )
+    if not (nzbget_on and fallback_on):
+        return None
+    try:
+        max_backups = int(
+            _router._get_addon_setting(addon, "fallback_streams_max", "5") or 5
+        )
+    except (TypeError, ValueError):
+        max_backups = 5
+    if max_backups <= 0:
+        return None
+    key = _release_dupe_key(identity or {})
+    if not key:
+        return None
+    backups = _same_name_backups(selected, filtered, max_backups)
+    if not backups:
+        return None
+    scored = [
+        {"link": b["link"], "title": b.get("title"), "score": _PICK_DUPE_SCORE - 1 - i}
+        for i, b in enumerate(backups)
+    ]
+    return {"key": key, "pick_score": _PICK_DUPE_SCORE, "backups": scored}
 
 
-def _handle_play_resolve_selection(handle, selected, filtered, completed_jobs):
+def _attach_nzbget_dupe(resolver_params, selected, filtered, identity):
+    """Attach the NZBGet Smart-Duplicates submission, only when there is one.
+
+    Keeps nzbdav-path params clean: ``_nzbget_dupe`` is present only in NZBGet
+    mode with a computable DupeKey and at least one same-name backup (#372).
+    """
+    dupe = _nzbget_dupe_submission_for_selection(selected, filtered, identity)
+    if dupe:
+        resolver_params["_nzbget_dupe"] = dupe
+
+
+def _handle_play_resolve_selection(
+    handle, selected, filtered, completed_jobs, identity=None
+):
     """Resolve a picker selection through the handle-based resolver."""
     import resources.lib.router as _router
     from resources.lib.resolver import resolve
@@ -337,7 +435,7 @@ def _handle_play_resolve_selection(handle, selected, filtered, completed_jobs):
             selected, filtered
         ),
     }
-    _attach_nzbget_dupe_backups(resolver_params, selected, filtered)
+    _attach_nzbget_dupe(resolver_params, selected, filtered, identity)
     _apply_completed_job_hint(resolver_params, selected, completed_jobs)
     _router._attach_selected_result_metadata(resolver_params, selected)
     resolve(handle, resolver_params)
@@ -414,7 +512,7 @@ def _handle_search_auto_select(params, best, filtered):
     resolver_params["_fallback_candidate_loader"] = (
         _router._fallback_candidate_loader_for_selection(best, filtered)
     )
-    _attach_nzbget_dupe_backups(resolver_params, best, filtered)
+    _attach_nzbget_dupe(resolver_params, best, filtered, _identity_from_params(params))
     _router._attach_selected_result_metadata(resolver_params, best)
     resolve_and_play(best["link"], best["title"], params=resolver_params)
 
@@ -429,7 +527,9 @@ def _handle_search_resolve_selection(params, selected, filtered, completed_jobs)
     resolver_params["_fallback_candidate_loader"] = (
         _router._fallback_candidate_loader_for_selection(selected, filtered)
     )
-    _attach_nzbget_dupe_backups(resolver_params, selected, filtered)
+    _attach_nzbget_dupe(
+        resolver_params, selected, filtered, _identity_from_params(params)
+    )
     _apply_completed_job_hint(resolver_params, selected, completed_jobs)
     _router._attach_selected_result_metadata(resolver_params, selected)
     resolve_and_play(selected["link"], selected["title"], params=resolver_params)
