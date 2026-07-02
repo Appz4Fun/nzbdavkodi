@@ -11,7 +11,18 @@ reached at call time via ``_sp.<name>`` so test monkeypatches on
 ``_StreamHandler``; they keep using ``self`` for handler state and methods.
 """
 
+from typing import NamedTuple
+
 import resources.lib.stream_proxy as _sp  # noqa: E402
+
+
+class FirstCandidateProbe(NamedTuple):
+    """Pre-probed first-candidate results forwarded into fallback selection."""
+
+    stream_url: str = None
+    failed: bool = None
+    nzo_id: str = None
+    standby: dict = None
 
 
 class _FallbackCutoverMixin:  # pylint: disable=too-few-public-methods
@@ -190,10 +201,12 @@ class _FallbackCutoverMixin:  # pylint: disable=too-few-public-methods
             failed_byte,
             range_end,
             start_index=first_selectable_index,
-            first_stream_url=first_selectable_stream_url,
-            first_failed=False,
-            first_nzo_id=first_selectable_nzo_id,
-            first_standby=first_standby,
+            first=FirstCandidateProbe(
+                stream_url=first_selectable_stream_url,
+                failed=False,
+                nzo_id=first_selectable_nzo_id,
+                standby=first_standby,
+            ),
             expected_length=expected_length,
         )
         if source:
@@ -319,13 +332,17 @@ class _FallbackCutoverMixin:  # pylint: disable=too-few-public-methods
         failed_byte,
         range_end,
         start_index=0,
-        first_stream_url=None,
-        first_failed=None,
-        first_nzo_id=None,
-        first_standby=None,
+        first=None,
         expected_length=None,
     ):
-        """Return a validated already-resolved fallback source, if any."""
+        """Return a validated already-resolved fallback source, if any.
+
+        ``first`` is a :class:`FirstCandidateProbe` carrying the pre-probed
+        stream URL / failed flag / nzo_id / standby dict for the first
+        selectable candidate (all ``None`` when not supplied).
+        """
+        if first is None:
+            first = FirstCandidateProbe()
         sources = ctx.get("fallback_sources", [])
         start_index = max(0, start_index)
         if expected_length is None:
@@ -335,10 +352,10 @@ class _FallbackCutoverMixin:  # pylint: disable=too-few-public-methods
             "failed_byte": failed_byte,
             "range_end": range_end,
             "expected_length": expected_length,
-            "first_stream_url": first_stream_url,
-            "first_failed": first_failed,
-            "first_nzo_id": first_nzo_id,
-            "first_standby": first_standby,
+            "first_stream_url": first.stream_url,
+            "first_failed": first.failed,
+            "first_nzo_id": first.nzo_id,
+            "first_standby": first.standby,
         }
         state = {
             "primary_url": _sp._FALLBACK_SOURCE_STATE_NOT_PROVIDED,
