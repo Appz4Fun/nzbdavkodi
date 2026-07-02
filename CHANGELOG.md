@@ -85,6 +85,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Delete` or `None`. Best-effort throughout: a failed backup submit never
   affects the pick's playback. (Issue #372, per
   [nzbget.com duplicates](https://nzbget.com/documentation/rss/#duplicates).)
+- **NZBGet mode: follow the failover to a working backup within one play.** When
+  your pick turns out unrepairable, the resolver now follows NZBGet's automatic
+  duplicate failover live — it tracks the promoted backup (a new download NZBGet
+  starts under the same duplicate set) and plays it when it completes, or plays a
+  backup that already finished, instead of reporting a failed playback. Canceling
+  the play now removes the whole duplicate set so NZBGet can't keep a backup
+  running, and the backup pool is widened to include same-content mirrors and
+  NZBHydra's deferred duplicate uploads (as lowest-priority backups) beyond the
+  exact same-name reposts. (Issue #372 round 2.)
 - **NZBGet mode: pre-cached "DL" indicator in the NZB picker.** With the
   NZBGet backend enabled, the results picker now tags releases that are
   already completed in NZBGet's history with the same green `DL` chip the

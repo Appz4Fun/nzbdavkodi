@@ -439,6 +439,10 @@ def _attach_nzbget_dupe(resolver_params, selected, filtered, identity):
         selected, filtered, identity, resolver_params.get("_settings_getter")
     )
     if dupe:
+        # Hand the fallback loader to the resolver's backup worker so it can add
+        # the same-content / NZBHydra-deferred duplicate uploads (not just the
+        # picker's same-name rows) as extra, lowest-priority backups (#372 r2).
+        dupe["loader"] = resolver_params.get("_fallback_candidate_loader")
         resolver_params["_nzbget_dupe"] = dupe
 
 

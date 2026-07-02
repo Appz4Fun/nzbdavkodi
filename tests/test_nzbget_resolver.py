@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 from resources.lib.nzbget_resolver import (
     _HEALTHCHECK_WARNED,
     _dupe_check_disabled,
+    _handle_poll_failure,
     _read_poll_interval,
     _read_settings,
     _snapshot_conn_getter,
@@ -1151,9 +1152,14 @@ class _InlineThread:  # pylint: disable=too-few-public-methods
 
 
 def _dupe_ctx(dupe, getter=None):
+    import threading
     from types import SimpleNamespace
 
-    return SimpleNamespace(settings_getter=getter or _settings({}), dupe=dupe)
+    return SimpleNamespace(
+        settings_getter=getter or _settings({}),
+        dupe=dupe,
+        cancel_event=threading.Event(),
+    )
 
 
 def test_spawn_dupe_backups_submits_and_warns_healthcheck():
@@ -1348,3 +1354,177 @@ def test_resolve_with_none_getter_and_dupe_does_not_crash():
     plugin.setResolvedUrl.assert_called_once()
     assert plugin.setResolvedUrl.call_args[0][1] is True
     spawn.assert_called_once()  # dupe backups spawned; primary auth left raw
+
+
+# ---------------------------------------------------------------------------
+# #372 round 2: poll follows the promoted backup + cancel cleans up the group
+# ---------------------------------------------------------------------------
+
+_GS = "resources.lib.nzbget_resolver.nzbget_api.group_status"
+_HS = "resources.lib.nzbget_resolver.nzbget_api.history_status"
+_ACT = "resources.lib.nzbget_resolver.nzbget_api.active_group_by_dupekey"
+_SUC = "resources.lib.nzbget_resolver.nzbget_api.history_success_by_dupekey"
+
+
+def _seq_group_status(sequences):
+    def _fn(nzbid, settings_getter=None):
+        seq = sequences.get(nzbid, [])
+        present = seq.pop(0) if seq else False
+        return {"present": present, "status": "DOWNLOADING", "percent": 10}
+
+    return _fn
+
+
+def test_poll_follows_promoted_backup_to_success():
+    # Pick(1) fails -> NZBGet promotes backup(9) -> poll switches to 9 -> 9 succeeds.
+    dialog = _Dialog()
+    hs = {
+        1: {
+            "present": True,
+            "success": False,
+            "status": "FAILURE/HEALTH",
+            "dest_dir": "",
+        },
+        9: {
+            "present": True,
+            "success": True,
+            "status": "SUCCESS/ALL",
+            "dest_dir": "/dl/B",
+        },
+    }
+    with patch(
+        _GS, side_effect=_seq_group_status({1: [True, False], 9: [True, False]})
+    ), patch(
+        _HS, side_effect=lambda n, settings_getter=None: hs.get(n, {"present": False})
+    ), patch(
+        _ACT,
+        return_value={
+            "present": True,
+            "nzbid": 9,
+            "status": "DOWNLOADING",
+            "percent": 5,
+        },
+    ), patch(
+        _SUC, return_value={"present": False}
+    ):
+        result = poll_nzbget_job(1, dialog, _Monitor(), 60, interval=0, dupe_key="k")
+    assert result == {"outcome": "success", "dest_dir": "/dl/B"}
+
+
+def test_poll_plays_already_succeeded_group_member():
+    # Pick(1) fails but a group member already completed in history -> play it.
+    dialog = _Dialog()
+    with patch(_GS, side_effect=_seq_group_status({1: [False]})), patch(
+        _HS,
+        return_value={
+            "present": True,
+            "success": False,
+            "status": "FAILURE/HEALTH",
+            "dest_dir": "",
+        },
+    ), patch(_ACT, return_value={"present": False}), patch(
+        _SUC, return_value={"present": True, "nzbid": 2, "dest_dir": "/dl/done"}
+    ):
+        result = poll_nzbget_job(1, dialog, _Monitor(), 60, interval=0, dupe_key="k")
+    assert result == {"outcome": "success", "dest_dir": "/dl/done"}
+
+
+def test_poll_reports_failed_when_group_exhausted():
+    # Pick fails and no backup is promoted within the grace window -> failed.
+    dialog = _Dialog()
+    with patch("resources.lib.nzbget_resolver._PROMOTION_GRACE", 0), patch(
+        _GS, side_effect=_seq_group_status({1: [False]})
+    ), patch(
+        _HS,
+        return_value={
+            "present": True,
+            "success": False,
+            "status": "FAILURE/HEALTH",
+            "dest_dir": "",
+        },
+    ), patch(
+        _ACT, return_value={"present": False}
+    ), patch(
+        _SUC, return_value={"present": False}
+    ):
+        result = poll_nzbget_job(1, dialog, _Monitor(), 60, interval=0, dupe_key="k")
+    assert result["outcome"] == "failed"
+
+
+def test_poll_without_dupe_key_fails_on_primary_failure_unchanged():
+    # No dupe_key -> pre-#372 behavior: a primary failure ends the poll at once.
+    dialog = _Dialog()
+    with patch(_GS, side_effect=_seq_group_status({1: [False]})), patch(
+        _HS,
+        return_value={
+            "present": True,
+            "success": False,
+            "status": "FAILURE/PAR",
+            "dest_dir": "",
+        },
+    ), patch(_ACT) as act:
+        result = poll_nzbget_job(1, dialog, _Monitor(), 60, interval=0)
+    assert result["outcome"] == "failed"
+    act.assert_not_called()  # never consults the group without a dupe_key
+
+
+def test_handle_poll_failure_cancel_deletes_group_and_stops_worker():
+    import threading
+
+    ev = threading.Event()
+    calls = []
+    with patch(
+        "resources.lib.nzbget_resolver.nzbget_api.cancel_dupekey_group",
+        side_effect=lambda k, settings_getter=None: calls.append(k),
+    ), patch("resources.lib.nzbget_resolver.nzbget_api.cancel_job") as cancel_job:
+        handled, leave = _handle_poll_failure(
+            "canceled", 5, _settings({}), lambda m: None, dupe_key="k", cancel_event=ev
+        )
+    assert (handled, leave) == (True, False)
+    assert calls == ["k"]  # whole group deleted
+    assert ev.is_set()  # backup worker signaled to stop
+    cancel_job.assert_not_called()  # group path, not the single-job path
+
+
+def test_submit_dupe_backups_stops_on_cancel_event():
+    import threading
+
+    ev = threading.Event()
+    ev.set()
+    with patch(_APPEND) as append:
+        submitted = _submit_dupe_backups(
+            [{"link": "http://i/a.nzb", "title": "A", "score": 1}],
+            "k",
+            _settings({}),
+            cancel_event=ev,
+        )
+    append.assert_not_called()
+    assert not submitted
+
+
+def test_extra_backups_from_loader_dedups_caps_and_scores_descending():
+    from resources.lib.nzbget_resolver import _extra_backups_from_loader
+
+    candidates = [
+        {"link": "http://i/same.nzb", "title": "dup of same-name"},  # already seen
+        {"link": "http://i/x.nzb", "title": "720p mirror"},
+        {"link": "http://i/x.nzb", "title": "dup link"},  # dedup
+        {"link": "", "title": "no link"},
+        {"link": "http://i/y.nzb", "title": "another"},
+    ]
+    extras = _extra_backups_from_loader(lambda: candidates, ["http://i/same.nzb"])
+    assert [e["link"] for e in extras] == ["http://i/x.nzb", "http://i/y.nzb"]
+    # Scored descending from 0 (below every same-name backup, which are >= 1).
+    assert [e["score"] for e in extras] == [0, -1]
+
+
+def test_extra_backups_from_loader_best_effort_on_none_or_error():
+    from resources.lib.nzbget_resolver import _extra_backups_from_loader
+
+    assert not _extra_backups_from_loader(None, [])
+    assert not _extra_backups_from_loader(lambda: "DISABLED_SENTINEL", [])
+
+    def _boom():
+        raise RuntimeError("indexer down")
+
+    assert not _extra_backups_from_loader(_boom, [])

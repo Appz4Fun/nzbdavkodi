@@ -24,11 +24,7 @@ Only two areas are active right now:
 - Metadata filters may be too permissive when PTT cannot parse a release title.
 - WebDAV 401/403/5xx handling should stay typed and visible, not collapsed to "not found".
 - Session/window-property races should be reviewed before larger concurrency changes.
-- NZBGet Smart Duplicates (#372) round 2 (several sub-items, from the PR #373 review):
-  - **Follow the promoted backup.** The poll tracks only the pick's NZBID, so if NZBGet fails over to a backup (a different NZBID under the shared DupeKey) the current resolve reports the pick's failure instead of following the backup to completion. Track the DupeKey group / the newly-active NZBID rather than a single fixed NZBID. (Explicit DupeScores already made submission order-independent, so the prior fast-pick timing race no longer applies — a late backup after a SUCCESS is put into history as a backup, not deleted.)
-  - **Cancel the backups on user-cancel.** The fire-and-forget backup worker has no stop signal and the cancel path only cancels the primary NZBID; a primary cancel/delete can make NZBGet promote a parked backup. Thread the submitted backup NZBIDs back to the cancel path.
-  - **Reuse a promoted backup that succeeded.** The picker DL-tag/reuse fast path corroborates the PRIMARY only; a backup that completes after the primary fails is invisible to it. Tie into the poll-follow work above.
-  - **Widen "qualifying" beyond exact same-name.** Include the same-content fallback identity and the loader-fetched NZBHydra deferred duplicate uploads (not just the picker's `filtered` rows); the release-scoped DupeKey already keeps distinct releases apart, so a same-content widening needs a content-scoped key variant.
+- NZBGet Smart Duplicates (#372) round 2 — SHIPPED (poll follows the DupeKey group, cancel cleans it up, succeeded members are reused, candidates widened). Remaining nuances worth a later pass: (a) the poll's group-follow uses a fixed `_PROMOTION_GRACE` (20s) window rather than reading NZBGet's hidden `Kind=DUP` history to know precisely when the group is exhausted; (b) `cancel_dupekey_group` is best-effort — a backup submitted in the tiny window between `cancel_event.set()` and the group delete can survive (parked, not downloading); (c) a SUCCESS reached via a promoted backup completes under the backup's own name, so the picker's exact-name DL-tag won't recognize it on a later replay (NZBGet's own dupe check still maps a re-submit onto it).
 
 ## Backburner
 

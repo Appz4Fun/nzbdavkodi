@@ -262,31 +262,45 @@ _POLL_INTERVAL = 2.0
 _DOWNLOAD_STATUSES = frozenset({"DOWNLOADING", "FETCHING"})
 
 
+# After a tracked member fails, wait up to this long for NZBGet to promote a
+# duplicate backup into the queue before declaring the whole group failed (#372
+# round 2). Promotion is immediate server-side; this only absorbs the poll gap.
+_PROMOTION_GRACE = 20
+
+
 def poll_nzbget_job(
-    nzbid, dialog, monitor, timeout, settings_getter=None, interval=_POLL_INTERVAL
+    nzbid,
+    dialog,
+    monitor,
+    timeout,
+    settings_getter=None,
+    interval=_POLL_INTERVAL,
+    dupe_key="",
 ):
-    """Wait for an NZBGet job to reach a terminal state.
+    """Wait for an NZBGet job (or its duplicate group) to reach a terminal state.
 
     Returns a dict with "outcome" in {"success","failed","canceled",
     "timeout","aborted"} and, on success, "dest_dir". Drives the progress
-    dialog: download % from listgroups, then a post-processing message
-    once the job leaves the active queue.
+    dialog: download % from listgroups, then a post-processing message once the
+    job leaves the active queue.
+
+    When ``dupe_key`` is set (#372 round 2) the poll follows NZBGet's automatic
+    failover: if the tracked member fails, a promoted backup (a new active NZBID
+    under the same DupeKey) is tracked instead, or an already-completed group
+    member is played, before the resolve is reported failed.
 
     ``timeout`` is enforced against the wall clock (``time.monotonic``) so a
     slow/stalled NZBGet box whose RPCs take far longer than ``interval``
     can't stretch the configured budget — see the sibling nzbdav poll loop.
     """
     deadline = time.monotonic() + timeout
+    state = {"current": nzbid, "promotion_deadline": None}
     while time.monotonic() < deadline:
         if dialog.iscanceled():
             return {"outcome": "canceled"}
-        group = nzbget_api.group_status(nzbid, settings_getter=settings_getter)
-        if group["present"]:
-            _update_active_dialog(dialog, group)
-        else:
-            terminal = _poll_history_outcome(nzbid, dialog, settings_getter)
-            if terminal is not None:
-                return terminal
+        terminal = _poll_tick(state, dialog, settings_getter, dupe_key)
+        if terminal is not None:
+            return terminal
         if monitor.waitForAbort(interval):
             return {"outcome": "aborted"}
     return {"outcome": "timeout"}
@@ -307,20 +321,55 @@ def _update_active_dialog(dialog, group):
         dialog.update(group["percent"], _string(30219))
 
 
-def _poll_history_outcome(nzbid, dialog, settings_getter):
-    """Resolve a job that has left the queue via the NZBGet history.
+def _poll_tick(state, dialog, settings_getter, dupe_key):
+    """One poll iteration. Returns a terminal outcome dict, or None to continue.
 
-    Returns the terminal outcome dict (success/failed) once the history row
-    appears, or ``None`` during the brief queue->history hand-off gap (after
-    showing post-processing) so the poll loop keeps waiting.
+    Tracks ``state["current"]`` (the NZBID being followed). When it leaves the
+    queue as a failure and ``dupe_key`` is set, drops into group-follow mode
+    (``current=None``): plays an already-completed group member, or switches to a
+    promoted backup, or -- if none appears within ``_PROMOTION_GRACE`` -- reports
+    the group failed.
     """
-    hist = nzbget_api.history_status(nzbid, settings_getter=settings_getter)
-    if hist["present"]:
-        if hist["success"]:
-            return {"outcome": "success", "dest_dir": hist["dest_dir"]}
-        return {"outcome": "failed", "status": hist["status"]}
-    # Not in queue, not yet in history — brief gap during the hand-off; show
-    # post-processing and keep waiting.
+    current = state["current"]
+    if current is not None:
+        group = nzbget_api.group_status(current, settings_getter=settings_getter)
+        if group["present"]:
+            _update_active_dialog(dialog, group)
+            state["promotion_deadline"] = None
+            return None
+        hist = nzbget_api.history_status(current, settings_getter=settings_getter)
+        if hist["present"]:
+            if hist["success"]:
+                return {"outcome": "success", "dest_dir": hist["dest_dir"]}
+            if not dupe_key:
+                return {"outcome": "failed", "status": hist["status"]}
+            # The tracked member failed but a DupeKey group may fail over.
+            state["current"] = None
+            state["promotion_deadline"] = time.monotonic() + _PROMOTION_GRACE
+        else:
+            # Not in queue, not yet in history — brief hand-off gap; keep waiting.
+            dialog.update(100, _string(30219))
+            return None
+    # Group-follow mode: the tracked member failed; follow the DupeKey group.
+    succeeded = nzbget_api.history_success_by_dupekey(
+        dupe_key, settings_getter=settings_getter
+    )
+    if succeeded["present"]:
+        return {"outcome": "success", "dest_dir": succeeded["dest_dir"]}
+    promoted = nzbget_api.active_group_by_dupekey(
+        dupe_key, settings_getter=settings_getter
+    )
+    if promoted["present"]:
+        state["current"] = promoted["nzbid"]
+        state["promotion_deadline"] = None
+        _update_active_dialog(dialog, promoted)
+        return None
+    if (
+        state["promotion_deadline"] is not None
+        and time.monotonic() >= state["promotion_deadline"]
+    ):
+        # No backup was promoted within the grace window -> group exhausted.
+        return {"outcome": "failed", "status": "FAILURE/DUPE"}
     dialog.update(100, _string(30219))
     return None
 
@@ -425,7 +474,9 @@ def _reuse_completed_job(
     )
 
 
-def _handle_poll_failure(outcome, nzbid, settings_getter, on_failure):
+def _handle_poll_failure(
+    outcome, nzbid, settings_getter, on_failure, dupe_key="", cancel_event=None
+):
     """Dispatch a non-success poll outcome to its failure callback.
 
     Returns ``(handled, leave_job)``: ``handled`` is True when ``outcome`` was
@@ -438,7 +489,15 @@ def _handle_poll_failure(outcome, nzbid, settings_getter, on_failure):
         on_failure(_string(30101))
         return True, True
     if outcome == "canceled":
-        nzbget_api.cancel_job(nzbid, settings_getter=settings_getter)
+        # Stop the backup worker, then delete the whole DupeKey group so NZBGet
+        # can't promote a parked backup after the pick is deleted (#372 round 2);
+        # fall back to canceling just the pick when there is no group.
+        if cancel_event is not None:
+            cancel_event.set()
+        if dupe_key:
+            nzbget_api.cancel_dupekey_group(dupe_key, settings_getter=settings_getter)
+        else:
+            nzbget_api.cancel_job(nzbid, settings_getter=settings_getter)
         on_failure(None)
         return True, False
     if outcome == "failed":
@@ -485,6 +544,9 @@ class _SubmitCtx:  # pylint: disable=too-few-public-methods
         # NZBGet Smart-Duplicates submission (#372): the picker-computed
         # {"key","pick_score","backups"} dict, threaded from the resolve params.
         self.dupe = None
+        # Set on user-cancel so the background backup worker stops submitting
+        # more duplicates (#372 round 2).
+        self.cancel_event = threading.Event()
 
 
 def _reuse_or_submit(ctx, nzb_url, title, completed_job, meta):
@@ -558,7 +620,7 @@ def _build_submit_ctx(
     return ctx
 
 
-def _submit_dupe_backups(backups, dupe_key, settings_getter):
+def _submit_dupe_backups(backups, dupe_key, settings_getter, cancel_event=None):
     """Submit the release's duplicate backups to NZBGet (#372, Smart Duplicates).
 
     ``backups`` is the picker-computed list of ``{"link","title","score"}`` for
@@ -569,8 +631,9 @@ def _submit_dupe_backups(backups, dupe_key, settings_getter):
     unrepairable. Because NZBGet decides by score, submission order does not
     matter: a backup submitted even after the pick has already succeeded is put
     into history as a backup (not deleted). Best-effort: a bad/duplicate URL or a
-    failed fetch/append for one backup never aborts the rest or the pick.
-    Returns the list of submitted NZBIDs (for logging/tests).
+    failed fetch/append for one backup never aborts the rest or the pick. Stops
+    early if ``cancel_event`` fires (the user canceled the resolve). Returns the
+    list of submitted NZBIDs (for logging/tests).
     """
     from resources.lib.fallback_streams import build_fallback_job_name
 
@@ -578,6 +641,8 @@ def _submit_dupe_backups(backups, dupe_key, settings_getter):
     seen = set()
     index = 0
     for backup in backups or []:
+        if cancel_event is not None and cancel_event.is_set():
+            break
         if not isinstance(backup, dict):
             continue
         nzb_url = backup.get("link")
@@ -692,6 +757,46 @@ def _dupe_check_disabled(settings_getter):
         return False
 
 
+_MAX_EXTRA_BACKUPS = 5
+
+
+def _extra_backups_from_loader(loader, seen_links):
+    """Same-content / NZBHydra-deferred candidates from the fallback loader.
+
+    #372 round 2 widening: beyond the picker's exact same-name rows, the fallback
+    loader (an indexer search, already threaded for the nzbdav path) surfaces the
+    same-content mirrors and NZBHydra duplicate uploads that were collapsed into a
+    single picker row. Returns ``[{"link","title","score"}]`` deduped against
+    ``seen_links``, capped, scored DESCENDING from 0 so they sit BELOW every
+    same-name backup (a last-resort failover, keyed under the pick's DupeKey).
+    Best-effort: a missing/erroring loader, or its "disabled" sentinel (a
+    non-list), yields ``[]``.
+    """
+    if loader is None:
+        return []
+    try:
+        candidates = loader()
+    except Exception:  # pylint: disable=broad-except
+        return []
+    if not isinstance(candidates, list):
+        return []
+    extras = []
+    seen = set(seen_links or [])
+    score = 0
+    for candidate in candidates:
+        if len(extras) >= _MAX_EXTRA_BACKUPS:
+            break
+        if not isinstance(candidate, dict):
+            continue
+        link = candidate.get("link")
+        if not link or link in seen:
+            continue
+        seen.add(link)
+        extras.append({"link": link, "title": candidate.get("title"), "score": score})
+        score -= 1
+    return extras
+
+
 def _spawn_dupe_backups(ctx):
     """Fire-and-forget the release's duplicate backups in a daemon thread (#372).
 
@@ -713,18 +818,31 @@ def _spawn_dupe_backups(ctx):
     if not dupe_key or not backups:
         return None
     getter = _snapshot_conn_getter(ctx.settings_getter)
+    cancel_event = ctx.cancel_event
+    loader = dupe.get("loader")
 
     def _worker():
         try:
-            if _dupe_check_disabled(getter):
-                xbmc.log(
-                    "NZB-DAV: NZBGet DupeCheck=no -- skipping #372 duplicate "
-                    "backups (they would download in parallel).",
-                    xbmc.LOGINFO,
-                )
+            if cancel_event.is_set() or _dupe_check_disabled(getter):
+                if not cancel_event.is_set():
+                    xbmc.log(
+                        "NZB-DAV: NZBGet DupeCheck=no -- skipping #372 duplicate "
+                        "backups (they would download in parallel).",
+                        xbmc.LOGINFO,
+                    )
                 return
             _warn_if_healthcheck_pauses(getter)
-            _submit_dupe_backups(backups, dupe_key, getter)
+            _submit_dupe_backups(backups, dupe_key, getter, cancel_event=cancel_event)
+            # Widen with same-content / Hydra-deferred candidates (#372 r2), as
+            # lowest-priority backups keyed under the same (pick's) DupeKey.
+            if not cancel_event.is_set():
+                extras = _extra_backups_from_loader(
+                    loader, [b.get("link") for b in backups]
+                )
+                if extras:
+                    _submit_dupe_backups(
+                        extras, dupe_key, getter, cancel_event=cancel_event
+                    )
         except Exception as exc:  # pylint: disable=broad-except
             xbmc.log(
                 "NZB-DAV: NZBGet duplicate backup worker error: {}".format(
@@ -798,9 +916,15 @@ def _submit_poll_resolve(ctx, nzb_url, title, download_pubdate, download_size):
         ctx.timeout,
         settings_getter=getter,
         interval=ctx.interval,
+        dupe_key=dupe_key,
     )
     handled, leave_job = _handle_poll_failure(
-        result["outcome"], nzbid, getter, ctx.on_failure
+        result["outcome"],
+        nzbid,
+        getter,
+        ctx.on_failure,
+        dupe_key=dupe_key,
+        cancel_event=ctx.cancel_event,
     )
     if handled:
         return leave_job

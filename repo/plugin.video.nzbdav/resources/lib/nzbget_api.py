@@ -454,3 +454,111 @@ def cancel_job(nzbid, settings_getter=None):
         ["HistoryFinalDelete", "", [nzbid]],
         settings_getter=settings_getter,
     )
+
+
+def _dupekey_match(item, dupe_key):
+    """Case-insensitive DupeKey compare (NZBGet matches keys case-insensitively)."""
+    return (
+        str(item.get("DupeKey") or "").strip().lower()
+        == str(dupe_key or "").strip().lower()
+    )
+
+
+def active_group_by_dupekey(dupe_key, exclude_nzbid=None, settings_getter=None):
+    """The active (non-PAUSED) queued group sharing ``dupe_key`` (#372 round 2).
+
+    After the pick fails, NZBGet promotes a duplicate backup from history into
+    the queue -- it appears in listgroups under the SAME DupeKey with its OWN new
+    NZBID and an un-paused status (other backups stay PAUSED). Returns
+    ``{"present","nzbid","status","percent"}`` for that promoted download, else
+    ``{"present": False}``.
+    """
+    if not dupe_key:
+        return {"present": False}
+    groups, error = _rpc_call("listgroups", [0], settings_getter=settings_getter)
+    if error is not None or not isinstance(groups, list):
+        return {"present": False}
+    for group in groups:
+        if not isinstance(group, dict) or not _dupekey_match(group, dupe_key):
+            continue
+        if exclude_nzbid is not None and _same_nzbid(group.get("NZBID"), exclude_nzbid):
+            continue
+        status = str(group.get("Status") or "")
+        if status.upper() == "PAUSED":
+            continue  # a still-parked backup, not the promoted-active one
+        downloaded = _as_number(group.get("DownloadedSizeMB"))
+        total = _as_number(group.get("FileSizeMB"))
+        percent = int(downloaded * 100 / total) if total else 0
+        return {
+            "present": True,
+            "nzbid": group.get("NZBID"),
+            "status": status,
+            "percent": percent,
+        }
+    return {"present": False}
+
+
+def history_success_by_dupekey(dupe_key, settings_getter=None):
+    """A SUCCESS history item sharing ``dupe_key`` (a completed group member).
+
+    Lets the poll play a duplicate backup that NZBGet already downloaded to
+    success after the pick failed (#372 round 2). Returns
+    ``{"present","nzbid","dest_dir"}`` or ``{"present": False}``.
+    """
+    if not dupe_key:
+        return {"present": False}
+    hist, error = _rpc_call("history", [False], settings_getter=settings_getter)
+    if error is not None or not isinstance(hist, list):
+        return {"present": False}
+    for item in hist:
+        if not isinstance(item, dict) or not _dupekey_match(item, dupe_key):
+            continue
+        if str(item.get("Status") or "").startswith("SUCCESS"):
+            return {
+                "present": True,
+                "nzbid": item.get("NZBID"),
+                "dest_dir": _dest_dir(item),
+            }
+    return {"present": False}
+
+
+def cancel_dupekey_group(dupe_key, settings_getter=None):
+    """Delete every member of a DupeKey group on user-cancel (#372 round 2).
+
+    Removes the parked duplicate backups (hidden ``Kind=DUP`` history records,
+    fetched with ``history(Hidden=true)``) FIRST so NZBGet has nothing to promote,
+    then the queued members (the active pick / a promoted backup). Best-effort --
+    a single ``editqueue`` per bucket deletes all matching NZBIDs at once.
+    """
+    if not dupe_key:
+        return
+    hist, error = _rpc_call("history", [True], settings_getter=settings_getter)
+    if error is None and isinstance(hist, list):
+        hist_ids = [
+            item.get("NZBID")
+            for item in hist
+            if isinstance(item, dict)
+            and _dupekey_match(item, dupe_key)
+            and item.get("NZBID") is not None
+        ]
+        if hist_ids:
+            _rpc_call(
+                "editqueue",
+                ["HistoryFinalDelete", "", hist_ids],
+                settings_getter=settings_getter,
+            )
+    groups, error = _rpc_call("listgroups", [0], settings_getter=settings_getter)
+    if error is None and isinstance(groups, list):
+        group_ids = [
+            group.get("NZBID")
+            for group in groups
+            if isinstance(group, dict)
+            and _dupekey_match(group, dupe_key)
+            and group.get("NZBID") is not None
+        ]
+        if group_ids:
+            _rpc_call(
+                "editqueue",
+                ["GroupFinalDelete", "", group_ids],
+                settings_getter=settings_getter,
+            )

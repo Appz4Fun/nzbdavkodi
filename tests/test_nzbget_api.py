@@ -562,3 +562,78 @@ def test_completed_history_keeps_newest_same_name_entry():
     with patch("resources.lib.nzbget_api._rpc_call", return_value=(hist, None)):
         jobs = completed_history(settings_getter=getter)
     assert jobs["Movie.mkv"]["bytes"] == 100 * 1048576
+
+
+def test_active_group_by_dupekey_finds_unpaused_promoted_backup():
+    from resources.lib.nzbget_api import active_group_by_dupekey
+
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    groups = [
+        {"NZBID": 5, "DupeKey": "k", "Status": "PAUSED", "FileSizeMB": 100},
+        {
+            "NZBID": 9,
+            "DupeKey": "K",  # case-insensitive match
+            "Status": "DOWNLOADING",
+            "DownloadedSizeMB": 50,
+            "FileSizeMB": 100,
+        },
+        {"NZBID": 3, "DupeKey": "other", "Status": "DOWNLOADING"},
+    ]
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(groups, None)):
+        g = active_group_by_dupekey("k", settings_getter=getter)
+    assert g["present"] is True
+    assert g["nzbid"] == 9  # the unpaused one, not the PAUSED 5 or other-key 3
+    assert g["percent"] == 50
+
+
+def test_active_group_by_dupekey_absent_when_only_paused_or_error():
+    from resources.lib.nzbget_api import active_group_by_dupekey
+
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    with patch(
+        "resources.lib.nzbget_api._rpc_call",
+        return_value=([{"NZBID": 5, "DupeKey": "k", "Status": "PAUSED"}], None),
+    ):
+        assert active_group_by_dupekey("k", settings_getter=getter)["present"] is False
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(None, "boom")):
+        assert active_group_by_dupekey("k", settings_getter=getter)["present"] is False
+    assert active_group_by_dupekey("", settings_getter=getter)["present"] is False
+
+
+def test_history_success_by_dupekey_returns_completed_member():
+    from resources.lib.nzbget_api import history_success_by_dupekey
+
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    hist = [
+        {"NZBID": 1, "DupeKey": "k", "Status": "FAILURE/HEALTH"},
+        {"NZBID": 2, "DupeKey": "k", "Status": "SUCCESS/ALL", "DestDir": "/dl/X"},
+    ]
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(hist, None)):
+        s = history_success_by_dupekey("k", settings_getter=getter)
+    assert s["present"] is True
+    assert s["nzbid"] == 2
+    assert s["dest_dir"] == "/dl/X"
+
+
+def test_cancel_dupekey_group_deletes_backups_then_queued():
+    from resources.lib.nzbget_api import cancel_dupekey_group
+
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    calls = []
+
+    def fake_rpc(method, params, settings_getter=None):
+        calls.append((method, list(params)))
+        if method == "history":
+            return ([{"NZBID": 7, "DupeKey": "k", "Kind": "DUP"}], None)
+        if method == "listgroups":
+            return ([{"NZBID": 9, "DupeKey": "k", "Status": "DOWNLOADING"}], None)
+        return (None, None)
+
+    with patch("resources.lib.nzbget_api._rpc_call", side_effect=fake_rpc):
+        cancel_dupekey_group("k", settings_getter=getter)
+    edits = [c for c in calls if c[0] == "editqueue"]
+    # Hidden history backups deleted before queued members.
+    assert edits[0] == ("editqueue", ["HistoryFinalDelete", "", [7]])
+    assert edits[1] == ("editqueue", ["GroupFinalDelete", "", [9]])
+    # history() queried with Hidden=true to see the parked DUP backups.
+    assert ("history", [True]) in calls
