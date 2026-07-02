@@ -64,3 +64,10 @@ exclude_paths:
   - "tests-extensive/**"
   - "mockups/**"
   - "docs/**"
+  # docs-site/ is the MkDocs (Material) documentation source published to GitHub
+  # Pages. markdownlint's defaults conflict with Material syntax (grid cards
+  # require inline HTML / MD033, 3-space list markers / MD030, and __bold__ /
+  # MD050), and the site is validated separately by `mkdocs build --strict`
+  # (broken links/nav) plus mermaid diagram validation. Exclude it the same way
+  # docs/** is excluded so doc-style nits don't red the gate.
+  - "docs-site/**"

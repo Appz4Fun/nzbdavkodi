@@ -69,7 +69,7 @@ Use `pr_agent_context.py` when starting a PR review or addressing comments from 
 - `repo/plugin.video.nzbdav/resources/settings.xml` -- Kodi settings schema
 - `docs-site/` -- MkDocs (Material) documentation source published to GitHub Pages
 - `mkdocs.yml` / `requirements-docs.txt` -- docs site config and build toolchain
-- `docs/` -- contributor deep-dives (proxy internals, DV/HLS notes) and images
+- `docs/` -- contributor deep-dives (proxy internals, Dolby Vision (DV) / HLS notes) and images
 - `scripts/` -- addon zip build and PR-review helper scripts
 - `tests/` -- pytest suite with Kodi module mocks in `conftest.py`
 - `.github/workflows/` -- CI, release, and docs (Pages) workflows
@@ -142,10 +142,10 @@ The background service (`service.py`) runs `StreamProxy`. MP4 sources may be rew
 
 `player_installer.py` installs the `nzbdav.json` TMDBHelper player file. Two routes exist:
 
-- `install_player` always targets TMDBHelper's `players/` directory.
+- `install_player` targets TMDBHelper's `players/` directory.
 - `install_player_other` calls `discover_other_player_targets()`, which scans `special://profile/addon_data/*/players/` at runtime and offers any existing player folder in a select dialog. There is no static `PLAYER_TARGETS` map and no per-target boolean setting.
 
-When changing player behavior, preserve the profile-containment guard (writes must stay under `addon_data`) and the schema-version preserve/backup logic.
+When changing player behavior, keep the profile-containment guard (writes stay under `addon_data`) and the schema-version preserve/backup logic, unless a change deliberately revises them — in which case update the tests to match.
 
 ### Playback / Resolver Changes
 
