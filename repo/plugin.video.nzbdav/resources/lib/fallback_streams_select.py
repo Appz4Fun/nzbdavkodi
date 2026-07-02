@@ -9,10 +9,13 @@ import time
 import resources.lib.fallback_streams as _fs
 from resources.lib import telemetry
 from resources.lib.fallback_streams_select_streaming import (  # noqa: F401  pylint: disable=wrong-import-position
+    SelectionAttachState,
     _advance_past_consumed,
+    _already_attached,
     _attach_manifest_candidate_if_matching,
     _attach_ready_selection_candidates,
     _attach_selection_candidates_streaming,
+    _classify_stream_wait_outcome,
     _consume_ready_candidate,
     _fetch_selection_manifest_for_queue,
     _fill_cap_from_completed,
@@ -294,16 +297,19 @@ def attach_fallback_candidates_for_selection(selected, results, fallback_setting
 
     started = time.monotonic()
     selected_manifest_fetch = not selected_manifest_ready
+    attach_state = _fs.SelectionAttachState(
+        candidates=candidates,
+        seen_candidate_links=seen_candidate_links,
+        seen_article_digests=seen_article_digests,
+        max_candidates=max_candidates,
+    )
     _fs._attach_selection_candidates_streaming(
         selected,
         _fs._iter_selection_prefetch_candidates(
             selected, results, seen_prefetch_links, selected_meta
         ),
-        candidates,
-        seen_candidate_links,
-        seen_article_digests,
+        attach_state,
         include_selected_manifest=selected_manifest_fetch,
-        max_candidates=max_candidates,
     )
     telemetry.log_timing(
         "fallback_selection_manifests",

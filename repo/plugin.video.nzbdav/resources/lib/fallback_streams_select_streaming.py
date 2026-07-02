@@ -14,26 +14,52 @@ patch targets and internal ``_fs.<name>`` call sites keep resolving unchanged.
 import threading
 import time
 from queue import Empty, Queue
+from typing import NamedTuple
 
 import resources.lib.fallback_streams as _fs
 
 
-def _attach_manifest_candidate_if_matching(
-    selected, candidate, candidates, seen_candidate_links, seen_article_digests
-):
-    """Attach a fetched candidate when manifest evidence still matches."""
+class SelectionAttachState(NamedTuple):
+    """Mutable-collection bundle threaded through the streaming attach loop.
+
+    The collections themselves are mutated in place; the tuple is only the
+    handle that carries them (and the immutable cap) between the attach helpers.
+    """
+
+    candidates: list
+    seen_candidate_links: set
+    seen_article_digests: set
+    max_candidates: int
+
+
+def _already_attached(state, candidate):
+    """Return the dedup gate for one candidate plus its cached link/digest.
+
+    Yields ``(already_attached, candidate_link, candidate_digest)`` where
+    ``already_attached`` is True when the candidate's link or (when present)
+    article digest is already in ``state``'s seen-sets. Returning the computed
+    link/digest lets the caller record them without re-deriving, preserving the
+    original single ``_article_digest`` evaluation.
+    """
     candidate_link = candidate.get("link", "")
     candidate_digest = _fs._article_digest(candidate)
-    if (
-        candidate_link in seen_candidate_links
-        or (candidate_digest and candidate_digest in seen_article_digests)
-        or not _fs._fallback_manifest_peer_matches(selected, candidate)
-    ):
+    already_attached = candidate_link in state.seen_candidate_links or (
+        candidate_digest and candidate_digest in state.seen_article_digests
+    )
+    return already_attached, candidate_link, candidate_digest
+
+
+def _attach_manifest_candidate_if_matching(selected, candidate, state):
+    """Attach a fetched candidate when manifest evidence still matches."""
+    already_attached, candidate_link, candidate_digest = _fs._already_attached(
+        state, candidate
+    )
+    if already_attached or not _fs._fallback_manifest_peer_matches(selected, candidate):
         return False
-    candidates.append(candidate)
-    seen_candidate_links.add(candidate_link)
+    state.candidates.append(candidate)
+    state.seen_candidate_links.add(candidate_link)
     if candidate_digest:
-        seen_article_digests.add(candidate_digest)
+        state.seen_article_digests.add(candidate_digest)
     return True
 
 
@@ -69,39 +95,20 @@ def _advance_past_consumed(next_to_attach, consumed_indices):
 
 
 def _consume_ready_candidate(
-    selected,
-    completed,
-    ready_index,
-    candidates,
-    seen_candidate_links,
-    seen_article_digests,
-    misses_seen,
-    consumed_indices,
+    selected, completed, ready_index, state, misses_seen, consumed_indices
 ):
     """Pop one ready candidate, attach it, and count a miss when it does not match."""
     ready_candidate = completed.pop(ready_index)
     consumed_indices.add(ready_index)
     attached = _fs._attach_manifest_candidate_if_matching(
-        selected,
-        ready_candidate,
-        candidates,
-        seen_candidate_links,
-        seen_article_digests,
+        selected, ready_candidate, state
     )
     if not attached:
         misses_seen[0] += 1
 
 
 def _attach_ready_selection_candidates(
-    selected,
-    completed,
-    next_to_attach,
-    candidates,
-    seen_candidate_links,
-    seen_article_digests,
-    max_candidates,
-    misses_seen,
-    consumed_indices,
+    selected, completed, next_to_attach, state, misses_seen, consumed_indices
 ):
     """Attach completed candidate manifests strictly in result order.
 
@@ -113,51 +120,28 @@ def _attach_ready_selection_candidates(
     _fs._advance_past_consumed(next_to_attach, consumed_indices)
     while next_to_attach[0] in completed:
         _fs._consume_ready_candidate(
-            selected,
-            completed,
-            next_to_attach[0],
-            candidates,
-            seen_candidate_links,
-            seen_article_digests,
-            misses_seen,
-            consumed_indices,
+            selected, completed, next_to_attach[0], state, misses_seen, consumed_indices
         )
         next_to_attach[0] += 1
         _fs._advance_past_consumed(next_to_attach, consumed_indices)
-        if len(candidates) >= max_candidates:
+        if len(state.candidates) >= state.max_candidates:
             return True
     return False
 
 
-def _fill_cap_from_completed(
-    selected,
-    completed,
-    candidates,
-    seen_candidate_links,
-    seen_article_digests,
-    max_candidates,
-    misses_seen,
-    consumed_indices,
-):
+def _fill_cap_from_completed(selected, completed, state, misses_seen, consumed_indices):
     """Fill the remaining cap slots from out-of-order completions, lowest index
     first. Called only once the earlier in-flight gap has settled (completed or
     exceeded its settle window), so this no longer skips an earlier peer that is
     about to arrive. Returns True when the cap is reached."""
-    remaining_slots = max_candidates - len(candidates)
+    remaining_slots = state.max_candidates - len(state.candidates)
     if len(completed) < remaining_slots or remaining_slots <= 0:
         return False
     for ready_index in sorted(completed):
         _fs._consume_ready_candidate(
-            selected,
-            completed,
-            ready_index,
-            candidates,
-            seen_candidate_links,
-            seen_article_digests,
-            misses_seen,
-            consumed_indices,
+            selected, completed, ready_index, state, misses_seen, consumed_indices
         )
-        if len(candidates) >= max_candidates:
+        if len(state.candidates) >= state.max_candidates:
             return True
     return False
 
@@ -190,16 +174,33 @@ def _post_record_action(selected_ready, selected_can_match, attach_ready):
     return "continue"
 
 
+def _classify_stream_wait_outcome(
+    settle_pending, optional_tail_wait_remaining, start_stall_speculation
+):
+    """Classify the loop action when the manifest queue wait times out (``Empty``).
+
+    Mirrors the original ``_receive_next`` except-arm order exactly: a pending
+    settle window drains first, then an expired optional-tail wait, otherwise a
+    stall-speculation fetch is kicked off and the loop continues. ``settle_pending``
+    is passed pre-evaluated so ``optional_tail_wait_remaining`` keeps its original
+    short-circuit -- it is only invoked when no settle window is pending, which
+    preserves the timing of its deadline side effect.
+    """
+    if settle_pending:
+        return "settle_expired", None
+    if optional_tail_wait_remaining() is not None:
+        return "return_true", None
+    start_stall_speculation()
+    return "continue", None
+
+
 def _attach_selection_candidates_streaming(
-    selected,
-    candidate_iter,
-    candidates,
-    seen_candidate_links,
-    seen_article_digests,
-    include_selected_manifest,
-    max_candidates,
+    selected, candidate_iter, state, include_selected_manifest
 ):
     """Fetch selected fallback manifests with a rolling ordered window."""
+    candidates = state.candidates
+    seen_article_digests = state.seen_article_digests
+    max_candidates = state.max_candidates
     result_queue = Queue()
     completed = {}
     next_candidate_index = [0]
@@ -316,12 +317,11 @@ def _attach_selection_candidates_streaming(
                 )
             return "got", result_queue.get()
         except Empty:
-            if settle_pending[0]:
-                return "settle_expired", None
-            if _optional_tail_wait_remaining() is not None:
-                return "return_true", None
-            _start_stall_speculation()
-            return "continue", None
+            return _fs._classify_stream_wait_outcome(
+                settle_pending[0],
+                _optional_tail_wait_remaining,
+                _start_stall_speculation,
+            )
 
     def _record_result(kind, index, target):
         active[0] -= 1
@@ -337,15 +337,7 @@ def _attach_selection_candidates_streaming(
 
     def _attach_ready():
         return _fs._attach_ready_selection_candidates(
-            selected,
-            completed,
-            next_to_attach,
-            candidates,
-            seen_candidate_links,
-            seen_article_digests,
-            max_candidates,
-            misses_seen,
-            consumed_indices,
+            selected, completed, next_to_attach, state, misses_seen, consumed_indices
         )
 
     def _maybe_fill_cap(force):
@@ -372,31 +364,14 @@ def _attach_selection_candidates_streaming(
         settle_pending[0] = False
         settle_deadline[0] = None
         return _fs._fill_cap_from_completed(
-            selected,
-            completed,
-            candidates,
-            seen_candidate_links,
-            seen_article_digests,
-            max_candidates,
-            misses_seen,
-            consumed_indices,
+            selected, completed, state, misses_seen, consumed_indices
         )
 
-    _fill_candidate_window()
-
-    while active[0]:
-        action, message = _receive_next()
-        if action == "return_true":
-            return True
-        if action == "settle_expired":
-            if _maybe_fill_cap(force=True):
-                return True
-            continue
-        if action == "continue":
-            continue
-        kind, index, target = message
+    def _apply_recorded_result(kind, index, target):
+        # Record one streamed manifest result and return the loop verdict:
+        # ``False``/``True`` end the stream, ``None`` keeps draining. Preserves
+        # the original in-loop order: record, post-record gate, then cap fill.
         _record_result(kind, index, target)
-
         post_record = _fs._post_record_action(
             selected_ready[0], selected_can_match[0], _attach_ready
         )
@@ -406,7 +381,26 @@ def _attach_selection_candidates_streaming(
             return True
         if _maybe_fill_cap(force=False):
             return True
-
         _fill_candidate_window()
+        return None
 
-    return selected_can_match[0]
+    def _drain_result_stream():
+        while active[0]:
+            action, message = _receive_next()
+            if action == "return_true":
+                return True
+            if action == "settle_expired":
+                if _maybe_fill_cap(force=True):
+                    return True
+                continue
+            if action == "continue":
+                continue
+            kind, index, target = message
+            outcome = _apply_recorded_result(kind, index, target)
+            if outcome is not None:
+                return outcome
+        return selected_can_match[0]
+
+    _fill_candidate_window()
+
+    return _drain_result_stream()
