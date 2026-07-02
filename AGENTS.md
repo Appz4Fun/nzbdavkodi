@@ -69,7 +69,7 @@ Use `pr_agent_context.py` when starting a PR review or addressing comments from 
 - `repo/plugin.video.nzbdav/resources/settings.xml` -- Kodi settings schema
 - `docs-site/` -- MkDocs (Material) documentation source published to GitHub Pages
 - `mkdocs.yml` / `requirements-docs.txt` -- docs site config and build toolchain
-- `docs/` -- contributor deep-dives (proxy internals, Dolby Vision (DV) / HLS notes) and images
+- `docs/` -- contributor deep-dives (proxy internals, Dolby Vision (DV) and HTTP Live Streaming (HLS) notes) and images
 - `scripts/` -- addon zip build and PR-review helper scripts
 - `tests/` -- pytest suite with Kodi module mocks in `conftest.py`
 - `.github/workflows/` -- CI, release, and docs (Pages) workflows
