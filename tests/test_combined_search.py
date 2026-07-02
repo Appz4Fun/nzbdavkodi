@@ -7,6 +7,7 @@ import threading
 from unittest.mock import MagicMock, patch
 
 from resources.lib.router import _search_all_providers
+from resources.lib.search_planner import SearchQuery
 
 
 def _make_result(title, link, indexer="TestIndexer"):
@@ -97,7 +98,7 @@ def test_both_providers_returns_combined_results(mock_addon, mock_prowlarr, mock
         nzbhydra_enabled="true", prowlarr_enabled="true"
     )
 
-    results, error = _search_all_providers("movie", "The Matrix")
+    results, error = _search_all_providers(SearchQuery("movie", "The Matrix"))
 
     assert error is None
     assert len(results) == 2
@@ -119,12 +120,14 @@ def test_episode_passes_explicit_tvdb_to_providers(
     )
 
     _search_all_providers(
-        "episode",
-        "Silo",
-        imdb="tt14688458",
-        tvdb="305288",
-        season="2",
-        episode="5",
+        SearchQuery(
+            "episode",
+            "Silo",
+            imdb="tt14688458",
+            tvdb="305288",
+            season="2",
+            episode="5",
+        )
     )
 
     mock_resolve.assert_not_called()
@@ -142,12 +145,14 @@ def test_episode_resolves_tvdb_when_absent(mock_addon, mock_prowlarr, mock_resol
     )
 
     _search_all_providers(
-        "episode",
-        "Silo",
-        imdb="tt14688458",
-        tmdb_id="125988",
-        season="2",
-        episode="5",
+        SearchQuery(
+            "episode",
+            "Silo",
+            imdb="tt14688458",
+            tmdb_id="125988",
+            season="2",
+            episode="5",
+        )
     )
 
     assert mock_resolve.called
@@ -162,7 +167,7 @@ def test_movie_search_does_not_resolve_tvdb(mock_addon, mock_prowlarr, mock_reso
         nzbhydra_enabled="false", prowlarr_enabled="true"
     )
 
-    _search_all_providers("movie", "The Matrix", imdb="tt0133093")
+    _search_all_providers(SearchQuery("movie", "The Matrix", imdb="tt0133093"))
 
     mock_resolve.assert_not_called()
     assert mock_prowlarr.call_args.kwargs["tvdb"] == ""
@@ -180,7 +185,14 @@ def test_episode_unresolved_tvdb_falls_through_empty(
     )
 
     _search_all_providers(
-        "episode", "Silo", imdb="tt14688458", tmdb_id="125988", season="2", episode="5"
+        SearchQuery(
+            "episode",
+            "Silo",
+            imdb="tt14688458",
+            tmdb_id="125988",
+            season="2",
+            episode="5",
+        )
     )
 
     assert mock_prowlarr.call_args.kwargs["tvdb"] == ""
@@ -197,7 +209,7 @@ def test_both_providers_deduplicates_by_link(mock_addon, mock_prowlarr, mock_hyd
         nzbhydra_enabled="true", prowlarr_enabled="true"
     )
 
-    results, error = _search_all_providers("movie", "The Matrix")
+    results, error = _search_all_providers(SearchQuery("movie", "The Matrix"))
 
     assert error is None
     assert len(results) == 1, "Duplicate link must be dropped"
@@ -228,7 +240,7 @@ def test_both_top_level_providers_run_concurrently(
     mock_hydra.side_effect = hydra_search
     mock_prowlarr.side_effect = prowlarr_search
 
-    results, error = _search_all_providers("movie", "The Matrix")
+    results, error = _search_all_providers(SearchQuery("movie", "The Matrix"))
 
     assert error is None
     assert len(results) == 2
@@ -273,7 +285,7 @@ def test_concurrent_provider_search_uses_snapshot_settings_getter(
     mock_prowlarr.side_effect = prowlarr_search
 
     results, error = _search_all_providers(
-        "movie", "The Matrix", settings_getter=setting
+        SearchQuery("movie", "The Matrix"), settings_getter=setting
     )
 
     assert error is None
@@ -292,7 +304,7 @@ def test_only_nzbhydra_enabled(mock_addon, mock_hydra):
         nzbhydra_enabled="true", prowlarr_enabled="false"
     )
 
-    results, error = _search_all_providers("movie", "The Matrix")
+    results, error = _search_all_providers(SearchQuery("movie", "The Matrix"))
 
     assert error is None
     assert len(results) == 1
@@ -306,7 +318,7 @@ def test_single_provider_exception_returns_provider_error(mock_addon, mock_hydra
         nzbhydra_enabled="true", prowlarr_enabled="false"
     )
 
-    results, error = _search_all_providers("movie", "The Matrix")
+    results, error = _search_all_providers(SearchQuery("movie", "The Matrix"))
 
     assert not results
     assert error == "NZBHydra2 search failed: boom"
@@ -319,7 +331,7 @@ def test_only_prowlarr_enabled(mock_addon, mock_prowlarr):
         nzbhydra_enabled="false", prowlarr_enabled="true"
     )
 
-    results, error = _search_all_providers("movie", "The Matrix")
+    results, error = _search_all_providers(SearchQuery("movie", "The Matrix"))
 
     assert error is None
     assert len(results) == 1
@@ -335,7 +347,7 @@ def test_neither_provider_enabled_returns_error(mock_addon):
         nzbhydra_enabled="false", prowlarr_enabled="false"
     )
 
-    results, error = _search_all_providers("movie", "The Matrix")
+    results, error = _search_all_providers(SearchQuery("movie", "The Matrix"))
 
     assert not results
     assert error is not None
@@ -355,7 +367,7 @@ def test_hydra_fails_prowlarr_succeeds_returns_prowlarr_results(
         nzbhydra_enabled="true", prowlarr_enabled="true"
     )
 
-    results, error = _search_all_providers("movie", "The Matrix")
+    results, error = _search_all_providers(SearchQuery("movie", "The Matrix"))
 
     assert error is None, "Should not error when at least one provider succeeded"
     assert len(results) == 1
@@ -374,7 +386,7 @@ def test_prowlarr_fails_hydra_succeeds_returns_hydra_results(
         nzbhydra_enabled="true", prowlarr_enabled="true"
     )
 
-    results, error = _search_all_providers("movie", "The Matrix")
+    results, error = _search_all_providers(SearchQuery("movie", "The Matrix"))
 
     assert error is None, "Should not error when at least one provider succeeded"
     assert len(results) == 1
@@ -391,7 +403,7 @@ def test_provider_exception_preserves_other_provider_results(
         nzbhydra_enabled="true", prowlarr_enabled="true"
     )
 
-    results, error = _search_all_providers("movie", "The Matrix")
+    results, error = _search_all_providers(SearchQuery("movie", "The Matrix"))
 
     assert error is None, "Should not error when at least one provider succeeded"
     assert len(results) == 1
@@ -408,7 +420,7 @@ def test_all_providers_fail_returns_first_error(mock_addon, mock_prowlarr, mock_
         nzbhydra_enabled="true", prowlarr_enabled="true"
     )
 
-    results, error = _search_all_providers("movie", "The Matrix")
+    results, error = _search_all_providers(SearchQuery("movie", "The Matrix"))
 
     assert not results
     assert error == "NZBHydra unavailable"
