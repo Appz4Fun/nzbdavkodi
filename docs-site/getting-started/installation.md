@@ -43,9 +43,8 @@ channel.
 
 !!! tip "Downloading the zip on the Kodi device"
     If your Kodi device has no browser, download the channel zip on another
-    computer and copy it to the device, or add
-    `https://appz4fun.github.io/Appz4Fun-Kodi-Repo/` as a source under
-    **Settings → File manager → Add source** and install the zip from there.
+    computer, copy it to the device (USB drive or network share), and install
+    it with **Install from zip file** by browsing to that local copy.
 
 <!--
 Screenshot placeholder — Capture the Appz4Fun repository landing page showing
