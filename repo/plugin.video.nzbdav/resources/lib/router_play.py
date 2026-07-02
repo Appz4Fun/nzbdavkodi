@@ -421,7 +421,15 @@ def _nzbget_dupe_submission_for_selection(selected, filtered, identity, getter=N
         {"link": b["link"], "title": b.get("title"), "score": count - i}
         for i, b in enumerate(backups)
     ]
-    return {"key": key, "pick_score": count + 1, "backups": scored}
+    # Carry the standby cap so the backup worker can bound its loader-widened
+    # extras by the cap's REMAINING slots (same-name backups + extras must not
+    # exceed "Maximum standby fallback streams").
+    return {
+        "key": key,
+        "pick_score": count + 1,
+        "backups": scored,
+        "max_backups": max_backups,
+    }
 
 
 def _attach_nzbget_dupe(resolver_params, selected, filtered, identity):

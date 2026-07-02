@@ -529,6 +529,11 @@ def cancel_dupekey_group(dupe_key, settings_getter=None):
     fetched with ``history(Hidden=true)``) FIRST so NZBGet has nothing to promote,
     then the queued members (the active pick / a promoted backup). Best-effort --
     a single ``editqueue`` per bucket deletes all matching NZBIDs at once.
+
+    ``history(Hidden=true)`` also returns VISIBLE rows (a prior ``Kind=NZB``
+    ``SUCCESS/*`` for a stable DupeKey), so the history delete is restricted to
+    ``Kind=DUP``: only untried parked backups can be promoted, and this must never
+    ``HistoryFinalDelete`` a completed success (which would wipe its files).
     """
     if not dupe_key:
         return
@@ -539,6 +544,7 @@ def cancel_dupekey_group(dupe_key, settings_getter=None):
             for item in hist
             if isinstance(item, dict)
             and _dupekey_match(item, dupe_key)
+            and str(item.get("Kind") or "").upper() == "DUP"
             and item.get("NZBID") is not None
         ]
         if hist_ids:

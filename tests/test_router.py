@@ -13,6 +13,7 @@ from resources.lib.router import (
     _fallback_candidate_loader_for_selection,
     _format_info_line,
     _format_size,
+    _get_script_setting,
     _get_tmdb_poster,
     _handle_play,
     _handle_search,
@@ -4132,7 +4133,6 @@ def test_attach_nzbget_dupe_builds_loader_with_thread_safe_getter():
     # would call xbmcaddon.Addon().getSetting off the main thread (CoreELEC crash
     # class). _attach_nzbget_dupe must instead build the dupe loader with the
     # pure-XML _get_script_setting (round-2 review finding: off-thread getSetting).
-    import resources.lib.router as _router
     from resources.lib import router_play
 
     seen = {}
@@ -4147,10 +4147,33 @@ def test_attach_nzbget_dupe_builds_loader_with_thread_safe_getter():
     with patch(
         "resources.lib.router_play._nzbget_dupe_submission_for_selection",
         return_value=stub_dupe,
-    ), patch.object(
-        _router, "_fallback_candidate_loader_for_selection", side_effect=_factory
+    ), patch(
+        "resources.lib.router._fallback_candidate_loader_for_selection",
+        side_effect=_factory,
     ):
         router_play._attach_nzbget_dupe(params, {"link": "p"}, [{"link": "p"}], {})
 
-    assert seen.get("getter") is _router._get_script_setting
+    assert seen.get("getter") is _get_script_setting
     assert params["_nzbget_dupe"]["loader"] == "FRESH_LOADER"
+
+
+def test_nzbget_dupe_submission_reports_standby_max_for_extras_bound():
+    # The submission carries max_backups so the backup worker can bound its loader
+    # extras against the same "Maximum standby fallback streams" cap (round-2
+    # review finding: extras must count against the standby cap).
+    from resources.lib.router_play import _nzbget_dupe_submission_for_selection
+
+    selected = {"link": "http://i/pick.nzb", "title": "The Matrix 1999 1080p"}
+    filtered = [
+        selected,
+        {"link": "http://i/b.nzb", "title": "The Matrix 1999 1080p"},
+        {"link": "http://i/c.nzb", "title": "The Matrix 1999 1080p"},
+    ]
+    identity = {"type": "movie", "imdb": "tt0133093"}
+    with patch(
+        "resources.lib.router._get_addon_setting",
+        _dupe_setting_getter({"nzbget_enabled": "true", "fallback_streams_max": "2"}),
+    ):
+        dupe = _nzbget_dupe_submission_for_selection(selected, filtered, identity)
+    assert dupe["max_backups"] == 2  # min(fallback_streams_max, hard cap)
+    assert len(dupe["backups"]) == 2  # same-name backups already capped at 2

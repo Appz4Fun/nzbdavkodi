@@ -764,19 +764,22 @@ def _dupe_check_disabled(settings_getter):
 _MAX_EXTRA_BACKUPS = 5
 
 
-def _extra_backups_from_loader(loader, seen_links):
+def _extra_backups_from_loader(loader, seen_links, limit=_MAX_EXTRA_BACKUPS):
     """Same-content / NZBHydra-deferred candidates from the fallback loader.
 
     #372 round 2 widening: beyond the picker's exact same-name rows, the fallback
     loader (an indexer search, already threaded for the nzbdav path) surfaces the
     same-content mirrors and NZBHydra duplicate uploads that were collapsed into a
     single picker row. Returns ``[{"link","title","score"}]`` deduped against
-    ``seen_links``, capped, scored DESCENDING from 0 so they sit BELOW every
-    same-name backup (a last-resort failover, keyed under the pick's DupeKey).
-    Best-effort: a missing/erroring loader, or its "disabled" sentinel (a
-    non-list), yields ``[]``.
+    ``seen_links``, scored DESCENDING from 0 so they sit BELOW every same-name
+    backup (a last-resort failover, keyed under the pick's DupeKey). Bounded by
+    ``limit`` (the standby cap's remaining slots, hard-capped at
+    ``_MAX_EXTRA_BACKUPS``) so the total backup count honors the user's
+    "Maximum standby fallback streams". Best-effort: a missing/erroring loader,
+    its "disabled" sentinel (a non-list), or ``limit <= 0`` yields ``[]``.
     """
-    if loader is None:
+    cap = min(limit, _MAX_EXTRA_BACKUPS)
+    if loader is None or cap <= 0:
         return []
     try:
         candidates = loader()
@@ -788,7 +791,7 @@ def _extra_backups_from_loader(loader, seen_links):
     seen = set(seen_links or [])
     score = 0
     for candidate in candidates:
-        if len(extras) >= _MAX_EXTRA_BACKUPS:
+        if len(extras) >= cap:
             break
         if not isinstance(candidate, dict):
             continue
@@ -821,9 +824,22 @@ def _spawn_dupe_backups(ctx):
     backups = list(dupe.get("backups") or [])
     if not dupe_key or not backups:
         return None
-    getter = _snapshot_conn_getter(ctx.settings_getter)
+    try:
+        getter = _snapshot_conn_getter(ctx.settings_getter)
+    except Exception as exc:  # pylint: disable=broad-except
+        # The snapshot reads Kodi/injected settings and runs AFTER the primary is
+        # already accepted. Backups are pure insurance -- a settings-read failure
+        # here must skip them, never propagate out and fail the primary's playback.
+        xbmc.log(
+            "NZB-DAV: NZBGet duplicate backup snapshot failed: {}".format(
+                _redact_text(str(exc))
+            ),
+            xbmc.LOGWARNING,
+        )
+        return None
     cancel_event = ctx.cancel_event
     loader = dupe.get("loader")
+    extras_limit = dupe.get("max_backups")
 
     def _worker():
         reached_submit = False
@@ -840,10 +856,17 @@ def _spawn_dupe_backups(ctx):
             reached_submit = True
             _submit_dupe_backups(backups, dupe_key, getter, cancel_event=cancel_event)
             # Widen with same-content / Hydra-deferred candidates (#372 r2), as
-            # lowest-priority backups keyed under the same (pick's) DupeKey.
+            # lowest-priority backups keyed under the same (pick's) DupeKey. Bound
+            # them by the standby cap's REMAINING slots so same-name backups +
+            # extras never exceed "Maximum standby fallback streams".
             if not cancel_event.is_set():
+                remaining = (
+                    _MAX_EXTRA_BACKUPS
+                    if extras_limit is None
+                    else max(0, extras_limit - len(backups))
+                )
                 extras = _extra_backups_from_loader(
-                    loader, [b.get("link") for b in backups]
+                    loader, [b.get("link") for b in backups], limit=remaining
                 )
                 if extras:
                     _submit_dupe_backups(

@@ -1530,6 +1530,60 @@ def test_extra_backups_from_loader_best_effort_on_none_or_error():
     assert not _extra_backups_from_loader(_boom, [])
 
 
+def test_extra_backups_from_loader_honors_limit():
+    # Loader extras must be bounded by the caller's remaining standby-cap slots so
+    # same-name backups + extras never exceed "Maximum standby fallback streams"
+    # (round-2 review finding: extras were added on top of the cap).
+    from resources.lib.nzbget_resolver import _extra_backups_from_loader
+
+    cands = [{"link": "x"}, {"link": "y"}, {"link": "z"}]
+    got = _extra_backups_from_loader(lambda: cands, [], limit=2)
+    assert [e["link"] for e in got] == ["x", "y"]
+    assert not _extra_backups_from_loader(lambda: cands, [], limit=0)
+
+
+def test_spawn_dupe_backups_fail_soft_when_snapshot_raises():
+    # Reading the connection snapshot can raise (a bad injected getter / Kodi
+    # settings read). Backups are pure insurance submitted AFTER the primary is
+    # already accepted -- a snapshot failure must skip them, never propagate out
+    # and fail the primary's playback (round-2 review finding: fail-soft snapshot).
+    dupe = {"key": "k", "pick_score": 2, "backups": [{"link": "u", "score": 1}]}
+    with patch(
+        "resources.lib.nzbget_resolver._snapshot_conn_getter",
+        side_effect=RuntimeError("settings read failed"),
+    ), patch("resources.lib.nzbget_resolver.threading.Thread") as thread:
+        result = _spawn_dupe_backups(_dupe_ctx(dupe))
+    assert result is None  # skipped, did not raise
+    thread.assert_not_called()  # no worker spawned
+
+
+def test_spawn_dupe_backups_bounds_extras_by_remaining_standby_slots():
+    # With max_backups=2 already spent on two same-name backups, the loader extras
+    # get 0 remaining slots -- the widening must not exceed the standby cap.
+    dupe = {
+        "key": "k",
+        "pick_score": 3,
+        "backups": [{"link": "a", "score": 2}, {"link": "b", "score": 1}],
+        "max_backups": 2,
+        "loader": lambda: [{"link": "x"}],
+    }
+    seen = {}
+
+    def _extra(loader, seen_links, limit=5):
+        seen["limit"] = limit
+        return []
+
+    with patch("resources.lib.nzbget_resolver.threading.Thread", _InlineThread), patch(
+        "resources.lib.nzbget_resolver._submit_dupe_backups", return_value=2
+    ), patch("resources.lib.nzbget_resolver._warn_if_healthcheck_pauses"), patch(
+        "resources.lib.nzbget_resolver._dupe_check_disabled", return_value=False
+    ), patch(
+        "resources.lib.nzbget_resolver._extra_backups_from_loader", side_effect=_extra
+    ):
+        _spawn_dupe_backups(_dupe_ctx(dupe))
+    assert seen["limit"] == 0  # 2 cap - 2 same-name backups used = 0 slots left
+
+
 def test_poll_excludes_just_failed_member_from_promotion_scan():
     # NZBGet's queue->history transition is not atomic: the just-failed pick can
     # still linger in listgroups under the same DupeKey for a tick. The promotion

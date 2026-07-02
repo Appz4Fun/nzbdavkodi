@@ -637,3 +637,36 @@ def test_cancel_dupekey_group_deletes_backups_then_queued():
     assert edits[1] == ("editqueue", ["GroupFinalDelete", "", [9]])
     # history() queried with Hidden=true to see the parked DUP backups.
     assert ("history", [True]) in calls
+
+
+def test_cancel_dupekey_group_never_deletes_a_prior_success_row():
+    # history(True) returns hidden Kind=DUP backups AND visible rows for the same
+    # DupeKey -- including a prior Kind=NZB SUCCESS from an earlier completed play.
+    # Cancel must final-delete ONLY the parked DUP backups, never the SUCCESS row
+    # (whose files would be wiped) (P1 review finding).
+    from resources.lib.nzbget_api import cancel_dupekey_group
+
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    calls = []
+
+    def fake_rpc(method, params, settings_getter=None):
+        calls.append((method, list(params)))
+        if method == "history":
+            return (
+                [
+                    {"NZBID": 7, "DupeKey": "k", "Kind": "DUP", "Status": ""},
+                    {"NZBID": 8, "DupeKey": "k", "Kind": "NZB", "Status": "SUCCESS/A"},
+                ],
+                None,
+            )
+        if method == "listgroups":
+            return ([], None)
+        return (None, None)
+
+    with patch("resources.lib.nzbget_api._rpc_call", side_effect=fake_rpc):
+        cancel_dupekey_group("k", settings_getter=getter)
+    hist_deletes = [
+        c[1] for c in calls if c[0] == "editqueue" and c[1][0] == "HistoryFinalDelete"
+    ]
+    # Only the DUP backup (7), never the prior SUCCESS row (8).
+    assert hist_deletes == [["HistoryFinalDelete", "", [7]]]
