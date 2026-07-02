@@ -112,10 +112,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mistake the failed pick for its own replacement and hang. Canceling mid-submit
   re-sweeps the duplicate set once the background worker drains, closing a race
   where a backup whose submission was already in flight could survive the cancel
-  and be downloaded anyway. And the same-content/NZBHydra backup widening now
-  reads its settings through the thread-safe settings reader on every playback
-  path, never the live Kodi settings API off the worker thread. (Issue #372
-  round 2.)
+  and be downloaded anyway. The same-content/NZBHydra backup widening now reads
+  its settings through the thread-safe settings reader on every playback path,
+  never the live Kodi settings API off the worker thread, and its extra backups
+  count against **Maximum standby fallback streams** instead of stacking on top.
+  A pick that fails almost immediately no longer gives up before its backups have
+  even been submitted (the failover grace waits for the background submitter). And
+  canceling a play can no longer delete a *previously* completed download's files
+  that happen to share the release's duplicate key. (Issue #372 round 2.)
 - **NZBGet mode: replaying an already-downloaded pick no longer fails.**
   Selecting a `DL`-tagged result now plays the completed files straight from
   the SMB share instead of re-submitting the NZB — NZBGet's duplicate check

@@ -1451,6 +1451,46 @@ def test_poll_reports_failed_when_group_exhausted():
     assert result["outcome"] == "failed"
 
 
+def test_poll_waits_for_backup_submitter_before_declaring_failed():
+    # A fast-failing primary can hit the promotion grace before the backup daemon
+    # has even appended a backup (each NZB fetch can take up to the 30s timeout).
+    # The poll must not declare the group exhausted while backups are still being
+    # submitted, else automatic failover is lost (round-2 review finding).
+    dialog = _Dialog()
+    calls = {"n": 0}
+
+    def _is_submitting():
+        calls["n"] += 1
+        return calls["n"] < 3  # still appending for the first two exhaustion checks
+
+    with patch("resources.lib.nzbget_resolver._PROMOTION_GRACE", 0), patch(
+        _GS, side_effect=_seq_group_status({1: [False]})
+    ), patch(
+        _HS,
+        return_value={
+            "present": True,
+            "success": False,
+            "status": "FAILURE/HEALTH",
+            "dest_dir": "",
+        },
+    ), patch(
+        _ACT, return_value={"present": False}
+    ), patch(
+        _SUC, return_value={"present": False}
+    ):
+        result = poll_nzbget_job(
+            1,
+            dialog,
+            _Monitor(),
+            60,
+            interval=0,
+            dupe_key="k",
+            is_submitting=_is_submitting,
+        )
+    assert result["outcome"] == "failed"
+    assert calls["n"] >= 3  # it kept waiting while the submitter was alive
+
+
 def test_poll_without_dupe_key_fails_on_primary_failure_unchanged():
     # No dupe_key -> pre-#372 behavior: a primary failure ends the poll at once.
     dialog = _Dialog()

@@ -276,6 +276,7 @@ def poll_nzbget_job(
     settings_getter=None,
     interval=_POLL_INTERVAL,
     dupe_key="",
+    is_submitting=None,
 ):
     """Wait for an NZBGet job (or its duplicate group) to reach a terminal state.
 
@@ -287,7 +288,11 @@ def poll_nzbget_job(
     When ``dupe_key`` is set (#372 round 2) the poll follows NZBGet's automatic
     failover: if the tracked member fails, a promoted backup (a new active NZBID
     under the same DupeKey) is tracked instead, or an already-completed group
-    member is played, before the resolve is reported failed.
+    member is played, before the resolve is reported failed. ``is_submitting`` (a
+    predicate, the backup worker's ``Thread.is_alive``) keeps the poll from
+    declaring the group exhausted while backups are still being appended -- a
+    fast-failing pick can hit the promotion grace before a slow indexer's
+    ``append_nzb`` has landed a backup.
 
     ``timeout`` is enforced against the wall clock (``time.monotonic``) so a
     slow/stalled NZBGet box whose RPCs take far longer than ``interval``
@@ -298,7 +303,7 @@ def poll_nzbget_job(
     while time.monotonic() < deadline:
         if dialog.iscanceled():
             return {"outcome": "canceled"}
-        terminal = _poll_tick(state, dialog, settings_getter, dupe_key)
+        terminal = _poll_tick(state, dialog, settings_getter, dupe_key, is_submitting)
         if terminal is not None:
             return terminal
         if monitor.waitForAbort(interval):
@@ -321,7 +326,7 @@ def _update_active_dialog(dialog, group):
         dialog.update(group["percent"], _string(30219))
 
 
-def _poll_tick(state, dialog, settings_getter, dupe_key):
+def _poll_tick(state, dialog, settings_getter, dupe_key, is_submitting=None):
     """One poll iteration. Returns a terminal outcome dict, or None to continue.
 
     Tracks ``state["current"]`` (the NZBID being followed). When it leaves the
@@ -372,6 +377,14 @@ def _poll_tick(state, dialog, settings_getter, dupe_key):
         state["promotion_deadline"] is not None
         and time.monotonic() >= state["promotion_deadline"]
     ):
+        if is_submitting is not None and is_submitting():
+            # Backups are still being appended (each NZB fetch can take up to the
+            # 30s timeout); a fast-failing pick must not be reported failed before
+            # its backups can reach NZBGet. Extend the grace so a backup that lands
+            # after this point still gets a promotion window.
+            state["promotion_deadline"] = time.monotonic() + _PROMOTION_GRACE
+            dialog.update(100, _string(30219))
+            return None
         # No backup was promoted within the grace window -> group exhausted.
         return {"outcome": "failed", "status": "FAILURE/DUPE"}
     dialog.update(100, _string(30219))
@@ -946,8 +959,7 @@ def _submit_poll_resolve(ctx, nzb_url, title, download_pubdate, download_size):
     # Pick is queued at the top DupeScore: submit the release's duplicate backups
     # so NZBGet can fail over to one if the pick is unrepairable (#372). Off-thread
     # so it never delays the poll below; scores (not order) keep the pick active.
-    if dupe_key:
-        _spawn_dupe_backups(ctx)
+    backups_thread = _spawn_dupe_backups(ctx) if dupe_key else None
 
     result = poll_nzbget_job(
         nzbid,
@@ -957,6 +969,9 @@ def _submit_poll_resolve(ctx, nzb_url, title, download_pubdate, download_size):
         settings_getter=getter,
         interval=ctx.interval,
         dupe_key=dupe_key,
+        # Don't exhaust the failover grace while the backup worker is still
+        # appending candidates (a fast-fail pick can beat a slow indexer).
+        is_submitting=(backups_thread.is_alive if backups_thread is not None else None),
     )
     handled, leave_job = _handle_poll_failure(
         result["outcome"],
