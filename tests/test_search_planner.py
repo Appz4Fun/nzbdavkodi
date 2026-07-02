@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 nzbdav contributors
 
-from resources.lib.search_planner import plan_newznab_search
+from resources.lib.search_planner import SearchQuery, plan_newznab_search
 
 
 def _supported_caps():
@@ -19,9 +19,7 @@ def test_movie_with_supported_imdb_uses_movie_id():
     plan = plan_newznab_search(
         provider_kind="direct",
         host="https://api.example.test",
-        search_type="movie",
-        title="The Matrix",
-        imdb="tt0133093",
+        query=SearchQuery(search_type="movie", title="The Matrix", imdb="tt0133093"),
         caps=_supported_caps(),
         api_key="secret",
         max_results=42,
@@ -48,8 +46,7 @@ def test_movie_title_on_nzbgeek_falls_back_to_search():
     plan = plan_newznab_search(
         provider_kind="direct",
         host="https://api.nzbgeek.info",
-        search_type="movie",
-        title="The Matrix",
+        query=SearchQuery(search_type="movie", title="The Matrix"),
         caps=_supported_caps(),
         api_key="secret",
         max_results=25,
@@ -68,8 +65,7 @@ def test_movie_title_ampersand_stripped_from_query():
     plan = plan_newznab_search(
         provider_kind="direct",
         host="https://api.example.test",
-        search_type="movie",
-        title="Your Friends & Neighbors",
+        query=SearchQuery(search_type="movie", title="Your Friends & Neighbors"),
         caps=_supported_caps(),
         api_key="secret",
         max_results=25,
@@ -84,10 +80,9 @@ def test_episode_title_ampersand_stripped_from_query():
     plan = plan_newznab_search(
         provider_kind="direct",
         host="https://api.example.test",
-        search_type="episode",
-        title="Will & Grace",
-        season="1",
-        episode="1",
+        query=SearchQuery(
+            search_type="episode", title="Will & Grace", season="1", episode="1"
+        ),
         caps=_supported_caps(),
         api_key="secret",
         max_results=25,
@@ -109,12 +104,14 @@ def test_episode_prefers_tvdbid_when_supported_and_present():
     plan = plan_newznab_search(
         provider_kind="direct",
         host="https://api.example.test",
-        search_type="episode",
-        title="Silo",
-        imdb="tt14688458",
-        tvdb="305288",
-        season="2",
-        episode="5",
+        query=SearchQuery(
+            search_type="episode",
+            title="Silo",
+            imdb="tt14688458",
+            tvdb="305288",
+            season="2",
+            episode="5",
+        ),
         caps=_supported_caps_with_tvdbid(),
         api_key="secret",
         max_results=10,
@@ -141,12 +138,14 @@ def test_episode_uses_imdbid_when_tvdbid_not_in_caps():
     plan = plan_newznab_search(
         provider_kind="direct",
         host="https://api.example.test",
-        search_type="episode",
-        title="Silo",
-        imdb="tt14688458",
-        tvdb="305288",
-        season="2",
-        episode="5",
+        query=SearchQuery(
+            search_type="episode",
+            title="Silo",
+            imdb="tt14688458",
+            tvdb="305288",
+            season="2",
+            episode="5",
+        ),
         caps=_supported_caps(),  # tvsearch caps lack "tvdbid"
         api_key="secret",
         max_results=10,
@@ -161,11 +160,13 @@ def test_episode_without_tvdb_is_unchanged():
     plan = plan_newznab_search(
         provider_kind="direct",
         host="https://api.example.test",
-        search_type="episode",
-        title="Silo",
-        imdb="tt14688458",
-        season="2",
-        episode="5",
+        query=SearchQuery(
+            search_type="episode",
+            title="Silo",
+            imdb="tt14688458",
+            season="2",
+            episode="5",
+        ),
         caps=_supported_caps_with_tvdbid(),
         api_key="secret",
         max_results=10,
@@ -180,11 +181,13 @@ def test_episode_tvdb_id_sanitized_to_digits():
     plan = plan_newznab_search(
         provider_kind="direct",
         host="https://api.example.test",
-        search_type="episode",
-        title="Silo",
-        tvdb="tvdb-305288",
-        season="2",
-        episode="5",
+        query=SearchQuery(
+            search_type="episode",
+            title="Silo",
+            tvdb="tvdb-305288",
+            season="2",
+            episode="5",
+        ),
         caps=_supported_caps_with_tvdbid(),
         api_key="secret",
         max_results=10,
@@ -199,12 +202,14 @@ def test_missing_caps_episode_prefers_tvdbid_when_present():
     plan = plan_newznab_search(
         provider_kind="nzbhydra2",
         host="https://hydra.test",
-        search_type="episode",
-        title="Silo",
-        imdb="tt14688458",
-        tvdb="305288",
-        season="2",
-        episode="5",
+        query=SearchQuery(
+            search_type="episode",
+            title="Silo",
+            imdb="tt14688458",
+            tvdb="305288",
+            season="2",
+            episode="5",
+        ),
         caps=None,
         api_key="secret",
         max_results=10,
@@ -222,11 +227,13 @@ def test_episode_uses_tvsearch_when_supported():
     plan = plan_newznab_search(
         provider_kind="direct",
         host="https://api.example.test",
-        search_type="episode",
-        title="Silo",
-        imdb="tt14688458",
-        season="2",
-        episode="5",
+        query=SearchQuery(
+            search_type="episode",
+            title="Silo",
+            imdb="tt14688458",
+            season="2",
+            episode="5",
+        ),
         caps=_supported_caps(),
         api_key="secret",
         max_results=10,
@@ -256,8 +263,7 @@ def test_hydra_uses_provider_caps_without_direct_host_fallback():
     plan = plan_newznab_search(
         provider_kind="nzbhydra2",
         host="https://api.nzbgeek.info",
-        search_type="movie",
-        title="The Matrix",
+        query=SearchQuery(search_type="movie", title="The Matrix"),
         caps=_supported_caps(),
         api_key="secret",
         max_results=25,
@@ -275,9 +281,7 @@ def test_movie_title_includes_year_when_provider_supports_it():
     plan = plan_newznab_search(
         provider_kind="direct",
         host="https://api.example.test",
-        search_type="movie",
-        title="The Odyssey",
-        year="2026",
+        query=SearchQuery(search_type="movie", title="The Odyssey", year="2026"),
         caps=caps,
         api_key="secret",
         max_results=25,
@@ -297,10 +301,12 @@ def test_generic_movie_fallback_includes_year_when_supported():
     plan = plan_newznab_search(
         provider_kind="direct",
         host="https://api.example.test",
-        search_type="movie",
-        title="The Odyssey",
-        year="2026",
-        imdb="tt33764258",
+        query=SearchQuery(
+            search_type="movie",
+            title="The Odyssey",
+            year="2026",
+            imdb="tt33764258",
+        ),
         caps=caps,
         api_key="secret",
         max_results=25,
@@ -317,8 +323,7 @@ def test_missing_caps_keeps_conservative_defaults():
     movie = plan_newznab_search(
         provider_kind="direct",
         host="https://api.example.test",
-        search_type="movie",
-        title="The Matrix",
+        query=SearchQuery(search_type="movie", title="The Matrix"),
         caps=None,
         api_key="secret",
         max_results=25,
@@ -326,11 +331,13 @@ def test_missing_caps_keeps_conservative_defaults():
     episode = plan_newznab_search(
         provider_kind="direct",
         host="https://api.example.test",
-        search_type="episode",
-        title="Silo",
-        imdb="tt14688458",
-        season="2",
-        episode="5",
+        query=SearchQuery(
+            search_type="episode",
+            title="Silo",
+            imdb="tt14688458",
+            season="2",
+            episode="5",
+        ),
         caps={},
         api_key="secret",
         max_results=25,
@@ -357,8 +364,7 @@ def test_movie_title_without_supported_search_returns_no_query():
     plan = plan_newznab_search(
         provider_kind="direct",
         host="https://api.example.test",
-        search_type="movie",
-        title="The Matrix",
+        query=SearchQuery(search_type="movie", title="The Matrix"),
         caps={
             "search_types": ["movie"],
             "supported_params": {"movie": ["imdbid"]},
@@ -376,8 +382,7 @@ def test_episode_without_tvsearch_or_search_returns_no_query():
     plan = plan_newznab_search(
         provider_kind="direct",
         host="https://api.example.test",
-        search_type="episode",
-        title="Silo",
+        query=SearchQuery(search_type="episode", title="Silo"),
         caps={
             "search_types": ["movie"],
             "supported_params": {"movie": ["q", "imdbid"]},
@@ -395,8 +400,7 @@ def test_generic_search_without_q_does_not_include_unsupported_q():
     plan = plan_newznab_search(
         provider_kind="direct",
         host="https://api.nzbgeek.info",
-        search_type="movie",
-        title="The Matrix",
+        query=SearchQuery(search_type="movie", title="The Matrix"),
         caps={
             "search_types": ["search", "movie"],
             "supported_params": {"search": [], "movie": []},

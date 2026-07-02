@@ -419,17 +419,7 @@ def _script_completed_job_for_selection(selected):
         return None
 
 
-def _search_all_providers(
-    search_type,
-    title,
-    year="",
-    imdb="",
-    season="",
-    episode="",
-    settings_getter=None,
-    tvdb="",
-    tmdb_id="",
-):
+def _search_all_providers(query, settings_getter=None):
     """
     Search enabled indexer providers and return combined, deduplicated results.
 
@@ -448,6 +438,14 @@ def _search_all_providers(
                 `None`.
     """
     _script_play_stage("providers entry")
+    search_type = query.search_type
+    title = query.title
+    year = query.year
+    imdb = query.imdb
+    season = query.season
+    episode = query.episode
+    tvdb = query.tvdb
+    tmdb_id = query.tmdb_id
     settings_getter = _settings_getter_or_addon_default(settings_getter)
 
     # Provider defaults mirror settings.xml. Runtime setting read failures still
@@ -493,7 +491,17 @@ def _search_all_providers(
     )
 
     provider_outcomes = _run_provider_jobs(provider_jobs)
+    return _collect_provider_outcomes(provider_outcomes)
 
+
+def _collect_provider_outcomes(provider_outcomes):
+    """Merge provider outcomes into deduplicated results plus a first error.
+
+    Logs each provider failure, dedupes surviving results by ``link``, and
+    returns ``(deduped, error_message)`` where ``error_message`` is the first
+    collected provider error only when every provider produced no surviving
+    result; otherwise ``None``.
+    """
     all_results = []
     errors = []
     for provider_label, outcome in provider_outcomes:
