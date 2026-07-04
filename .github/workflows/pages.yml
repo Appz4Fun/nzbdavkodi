@@ -1,118 +1,90 @@
-name: Pages
+name: Docs
+
+# Builds the MkDocs (Material) documentation site and publishes it to GitHub
+# Pages. This repository no longer self-hosts a Kodi add-on repository on Pages;
+# add-on distribution now lives in the multi-channel Appz4Fun Kodi repository at
+# https://github.com/Appz4Fun/Appz4Fun-Kodi-Repo (served from its own Pages
+# site). GitHub Pages for THIS repository serves user + technical documentation.
 
 on:
   push:
     branches: [main]
     paths:
       - ".github/workflows/pages.yml"
-      - "repo/repository.nzbdav/**"
-      - "repo/plugin.video.nzbdav/addon.xml"
-      - "scripts/generate_repo.py"
-      - "scripts/select_stable_release.py"
-  workflow_run:
-    workflows: ["Release"]
-    types: [completed]
+      - "mkdocs.yml"
+      - "docs-site/**"
+      - "requirements-docs.txt"
+      - "README.md"
+  # Build-only (no deploy) on PRs that touch the docs, so a broken internal link
+  # or nav entry fails the PR check instead of only failing the Pages deploy
+  # after merge.
+  pull_request:
+    paths:
+      - ".github/workflows/pages.yml"
+      - "mkdocs.yml"
+      - "docs-site/**"
+      - "requirements-docs.txt"
+      - "README.md"
   workflow_dispatch:
 
+# Least privilege by default; the deploy job elevates to what Pages needs.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+# Allow only one concurrent deployment; skip queued runs in between.
 concurrency:
   group: github-pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
-  deploy-pages:
-    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+  build:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          # Always run the Pages infra scripts from the trusted default branch
-          # rather than the workflow_run head SHA. The deploy reads releases via
-          # the API and downloads the published asset, so it never needs the
-          # triggering ref's tree. Avoids checking out untrusted code in this
-          # privileged (pages: write, id-token: write) context.
-          ref: main
+          # Docs-only build and upload; no authenticated git operations are
+          # needed, so don't persist the default GITHUB_TOKEN in .git/config.
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: "3.10"
+          python-version: "3.12"
+          cache: pip
 
-      - name: Configure Pages
-        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - name: Install documentation toolchain
+        run: pip install -r requirements-docs.txt
 
-      - name: Read GitHub releases
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" > releases.json
-
-      - name: Select latest stable addon release
-        id: stable_release
-        env:
-          WORKFLOW_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch || '' }}
-        run: |
-          selected_tag="$WORKFLOW_HEAD_BRANCH"
-          # Keep in sync with _STABLE_SEMVER_RE in scripts/select_stable_release.py.
-          stable_tag_re='^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
-          if [[ "$selected_tag" == v* && ! "$selected_tag" =~ $stable_tag_re ]]; then
-            echo "skip_deploy=true" >> "$GITHUB_OUTPUT"
-            echo "Skipping Pages deploy for non-stable release tag: $selected_tag"
-            exit 0
-          fi
-          echo "skip_deploy=false" >> "$GITHUB_OUTPUT"
-          if [[ "$selected_tag" == v* ]]; then
-            python3 scripts/select_stable_release.py releases.json --tag "$selected_tag" >> "$GITHUB_OUTPUT"
-          else
-            python3 scripts/select_stable_release.py releases.json >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Download selected addon release
-        if: ${{ steps.stable_release.outputs.skip_deploy != 'true' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          for attempt in 1 2 3 4 5; do
-            if gh release download "${{ steps.stable_release.outputs.tag }}" \
-              --repo "$GITHUB_REPOSITORY" \
-              --pattern "${{ steps.stable_release.outputs.asset_name }}" \
-              --clobber \
-              --output release-addon.zip; then
-              break
-            fi
-            if [ "$attempt" -eq 5 ]; then
-              echo "Failed to download selected addon release asset" >&2
-              exit 1
-            fi
-            sleep 15
-          done
-
-      - name: Generate Pages repository
-        if: ${{ steps.stable_release.outputs.skip_deploy != 'true' }}
-        run: |
-          rm -rf pages-dist
-          python3 scripts/generate_repo.py \
-            --output-dir pages-dist \
-            --addon-zip release-addon.zip \
-            --smoke-check
+      - name: Build site (strict)
+        # --strict fails the build on broken internal links or nav entries that
+        # point at missing pages, so a typo cannot silently ship a broken site.
+        # This runs on pull_request too, gating docs changes before merge.
+        run: mkdocs build --strict
 
       - name: Upload Pages artifact
-        if: ${{ steps.stable_release.outputs.skip_deploy != 'true' }}
+        # Only the deploy path needs the artifact; skip on PRs (build-only gate).
+        if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
-          path: ./pages-dist
+          path: ./site
 
+  deploy:
+    needs: build
+    # Never deploy from a pull request; publish only on main / manual dispatch.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - name: Deploy to GitHub Pages
-        if: ${{ steps.stable_release.outputs.skip_deploy != 'true' }}
         id: deployment
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0

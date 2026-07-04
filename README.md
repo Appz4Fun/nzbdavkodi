@@ -3,373 +3,183 @@
 [![CI](https://github.com/Appz4Fun/nzbdavkodi/actions/workflows/ci.yml/badge.svg)](https://github.com/Appz4Fun/nzbdavkodi/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/Appz4Fun/nzbdavkodi/actions/workflows/codeql.yml/badge.svg)](https://github.com/Appz4Fun/nzbdavkodi/actions/workflows/codeql.yml)
 [![Release](https://github.com/Appz4Fun/nzbdavkodi/actions/workflows/release.yml/badge.svg)](https://github.com/Appz4Fun/nzbdavkodi/actions/workflows/release.yml)
-[![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/Appz4Fun/nzbdavkodi?utm_source=oss&utm_medium=github&utm_campaign=Appz4Fun%2Fnzbdavkodi&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)](https://coderabbit.ai)
+[![Docs](https://github.com/Appz4Fun/nzbdavkodi/actions/workflows/pages.yml/badge.svg)](https://github.com/Appz4Fun/nzbdavkodi/actions/workflows/pages.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Kodi](https://img.shields.io/badge/Kodi-21%20Omega-blue.svg)](https://kodi.tv/)
 [![Python](https://img.shields.io/badge/Python-3.8%2B-blue.svg)](https://www.python.org/)
 
-A Kodi 21 (Omega) player/resolver addon that enables Usenet-based streaming through NZBHydra2 (or Prowlarr) and nzbdav. Works as a TMDBHelper player -- search for a movie or TV episode, pick an NZB, and stream it directly through nzbdav's WebDAV server.
+A Kodi 21 (Omega) player/resolver add-on that streams Usenet media through
+[TMDBHelper](https://github.com/jurialmunkey/plugin.video.themoviedb.helper). You
+browse a movie or TV episode in TMDBHelper, pick an NZB, and NZB-DAV searches
+your indexers, downloads through [nzbdav](https://github.com/nzbdav-dev/nzbdav),
+and streams the file — with a progress bar, seeking, and automatic recovery when
+a source goes bad. No manual NZB handling required.
 
-## Start Here
+> **This add-on provides software, not content.** You bring your own indexers
+> (NZBHydra2, Prowlarr, or direct Newznab), your own nzbdav server, and your own
+> Usenet provider.
 
-If you already have NZBHydra2 or Prowlarr and nzbdav running, follow the
-[Quickstart](docs/quickstart.md) first. It covers the setup order that matters:
-install NZB-DAV, enter service credentials, install the TMDBHelper player file,
-refresh TMDBHelper players, set movie and TV defaults, and verify first
-playback.
+## 📖 Full documentation
 
-If something does not appear in TMDBHelper or playback does not start, use the
-[Troubleshooting guide](docs/troubleshooting.md).
+**This README is the short version. The complete guide — every setting, every
+feature, and a technical breakdown of how it all works — lives at:**
 
-See [CHANGELOG.md](CHANGELOG.md) for the current release notes and full
-per-release history.
+### 👉 [appz4fun.github.io/nzbdavkodi](https://appz4fun.github.io/nzbdavkodi/)
 
-## How It Works
+There you'll find [getting-started walkthroughs](https://appz4fun.github.io/nzbdavkodi/getting-started/prerequisites/),
+a [complete settings reference](https://appz4fun.github.io/nzbdavkodi/reference/settings/),
+[feature guides](https://appz4fun.github.io/nzbdavkodi/features/),
+and a [technical "how it works" section](https://appz4fun.github.io/nzbdavkodi/how-it-works/architecture/)
+with architecture diagrams.
+
+## How it works
 
 ```mermaid
 flowchart LR
     A[TMDBHelper] -->|movie / episode| B[NZB-DAV Addon]
-    B -->|Newznab search| C[NZBHydra2]
-    C -->|NZB results| B
-    B -->|user picks result| D{Filter & Select}
+    B -->|Newznab / native search| C[NZBHydra2 / Prowlarr /<br/>direct indexers]
+    C -->|results| B
+    B -->|you pick a result| D{Filter & rank}
     D -->|submit NZB| E[nzbdav]
     E -->|poll status| B
-    E -->|stream ready| F[WebDAV Server]
-    F -->|range requests| G[Stream Proxy]
-    G -->|HTTP 206 / zero-fill on bad articles| H[Kodi Player]
+    E -->|WebDAV| F[Local stream proxy]
+    F -->|range requests, gap recovery| G[Kodi player]
 ```
 
-No separate SABnzbd needed -- nzbdav handles both downloading and serving.
+nzbdav handles both downloading and serving over WebDAV — no separate SABnzbd
+needed. A background stream proxy adds seeking, on-the-fly remuxing, and
+mid-playback source switching.
 
 ## Requirements
 
 | Component | Description |
 |-----------|-------------|
 | **Kodi 21 (Omega)** | Or later |
-| **NZBHydra2** *or* **Prowlarr** | At least one indexer aggregator running and accessible |
-| **nzbdav** | Running and accessible (provides SABnzbd-compatible API + WebDAV) |
-| **TMDBHelper** | To trigger searches |
-| **ffmpeg** *(recommended)* | Required for force-remux. Without it the proxy falls back to pass-through for all files. |
+| **nzbdav** | Running and reachable (SABnzbd-compatible API + WebDAV) |
+| **NZBHydra2**, **Prowlarr**, *or* **direct Newznab indexers** | At least one search provider |
+| **TMDBHelper** | To browse titles and trigger playback |
+| **ffmpeg** *(recommended)* | Enables the optional remux tiers; without it the proxy uses pass-through |
+
+See [Prerequisites](https://appz4fun.github.io/nzbdavkodi/getting-started/prerequisites/)
+for details.
 
 ## Installation
 
-### Via Kodi Repository (recommended)
-
-Install through the NZB-DAV repository for automatic updates:
-
-1. In Kodi: **Settings > File Manager > Add source** > enter `https://appz4fun.github.io/nzbdavkodi/` > name it `nzbdav`
-2. **Settings > Add-ons > Install from zip file** > `nzbdav` > the latest `repository.nzbdav-*.zip` shown at the source root
-3. **Settings > Add-ons > Install from repository > NZB-DAV Repository > Video add-ons > NZB-DAV**
-4. Future updates are installed automatically
-
-### Manual Install
-
-1. Download the addon zip from the [releases page](https://github.com/Appz4Fun/nzbdavkodi/releases)
-2. In Kodi: **Settings > Add-ons > Install from zip file** > select `plugin.video.nzbdav.zip`
-
----
-
-## TMDBHelper Setup
-
-For first-time setup, follow the [Quickstart](docs/quickstart.md). The important
-order is:
-
-1. Install TMDBHelper.
-2. Configure NZB-DAV service credentials.
-3. In NZB-DAV settings, click **Install TMDBHelper Player**.
-4. Restart Kodi or run TMDBHelper **Players > Update players**.
-5. Set **Default player (Movies)** and **Default player (TV Shows)** to
-   **NZB-DAV**.
-6. Verify by playing one known movie or episode from TMDBHelper.
-
-If NZB-DAV does not appear as a player, see
-[Troubleshooting](docs/troubleshooting.md#nzb-dav-does-not-appear-in-tmdbhelper).
-
----
-
-## Configuration
-
-Open the addon settings (**Add-ons > My add-ons > Video add-ons > NZB-DAV > Configure**):
-
-![NZB-DAV Settings](docs/images/settings.png)
-
-### Connection Settings
-
-| Setting | Where to find it |
-|---------|-----------------|
-| Enable NZBHydra2 | Enable if you use NZBHydra2 |
-| NZBHydra2 URL | URL to your NZBHydra2 instance (e.g., `http://192.168.1.100:5076`) |
-| NZBHydra2 API Key | NZBHydra2 web UI > `http://<hydra>:5076/config/main` > **Security** section > **API key** |
-| nzbdav URL | URL to your nzbdav instance (e.g., `http://192.168.1.100:3333`) |
-| nzbdav API Key | nzbdav web UI > `http://<nzbdav>/settings` > **Usenet** tab > **API Key** |
-| WebDAV URL | Clear this field when WebDAV uses the nzbdav URL; only enter a separate WebDAV base URL if your nzbdav setup exposes one |
-| WebDAV Username | nzbdav web UI > `http://<nzbdav>/settings` > **WebDAV** tab > **Username** |
-| WebDAV Password | nzbdav web UI > `http://<nzbdav>/settings` > **WebDAV** tab > **Password** |
-
-#### Prowlarr (optional, alternative to NZBHydra2)
-
-Enable **Prowlarr** in addon settings to use Prowlarr as the search backend instead of (or alongside) NZBHydra2:
-
-| Setting | Description |
-|---------|-------------|
-| Enable Prowlarr | Turn on Prowlarr search |
-| Prowlarr URL | URL to your Prowlarr instance (e.g., `http://localhost:9696`) |
-| Prowlarr API Key | Prowlarr web UI > **Settings > General > Security** > API Key |
-| Prowlarr Indexer IDs | Comma-separated indexer IDs to query (leave blank for all) |
-| Test Prowlarr Connection | Action button — verifies URL + API key + indexer reachability |
-
-> **Tip for entering long API keys:** Use a Kodi remote app with keyboard support (e.g., Sybu on iPhone). Navigate to the nzbdav/NZBHydra2/Prowlarr settings page on your computer, copy the key, then paste from your clipboard into the Kodi input field via the remote app's on-screen keyboard.
-
-### Player Installation
-
-Click **Install TMDBHelper Player** to install the `nzbdav.json` player to TMDBHelper. This registers NZB-DAV as a playback source in TMDBHelper's player selection menu. The player is installed directly to TMDBHelper's players directory.
-
-### Quality Filters
-
-All filters default to **everything enabled** -- deselect what you don't want.
-
-| Filter | Options |
-|--------|---------|
-| Resolution | 2160p, 1080p, 720p, 480p |
-| HDR | HDR10, HDR10+, Dolby Vision, HLG, SDR |
-| Audio | Atmos, TrueHD, DTS-HD MA, DTS:X, DD+, DD, AAC |
-| Video Codec | x265/HEVC, x264/AVC, AV1, VP9, MPEG-2 |
-| Language | EN, ES, FR, DE, IT, PT, NL, RU, JA, KO, ZH, AR, HI |
-
-### Keyword Filters
-
-| Setting | Description |
-|---------|-------------|
-| Preferred release groups | Comma-separated (e.g., `SPARKS,FGT,NTb`) -- boosted to top |
-| Excluded release groups | Comma-separated -- removed from results |
-| Min file size | In MB (0 = no limit) |
-| Max file size | In MB (0 = no limit) |
-| Exclude keywords | Comma-separated |
-| Require keywords | Comma-separated |
-
-### Sort & Display
-
-| Setting | Options | Default |
-|---------|---------|---------|
-| Sort by | Relevance, Size (largest/smallest), Age (newest/oldest) | Relevance |
-| Max results | 1--100 | 25 |
-
-### Relevance Sort Order
-
-When sorted by relevance, results are ranked by priority:
-
-| Priority | Criteria | Ranking |
-|----------|----------|---------|
-| 1 | Resolution | 4K > 1080p > 720p > 480p |
-| 2 | HDR | Dolby Vision > HDR10+ > HDR10 > HLG > SDR |
-| 3 | Preferred group | Configured groups boosted |
-| 4 | Audio | TrueHD+Atmos > Atmos DD+ > TrueHD > DTS:X > DTS-HD MA > DTS > DD+ > DD > AAC |
-| 5 | Size | Largest first |
-
-### Polling
-
-| Setting | Description | Default |
-|---------|-------------|---------|
-| Poll interval | Seconds between status checks | 1 |
-| Download timeout | Max wait time in seconds | 3600 |
-| Submit timeout | Max wait for nzbdav submit-NZB API to respond (seconds) | 300 |
-
-### Search Cache
-
-| Setting | Description | Default |
-|---------|-------------|---------|
-| Cache duration | Seconds to cache search results (0 to disable) | 300 |
-| Clear Cache | Available from addon main menu | -- |
-
-### Auto-Select
-
-| Setting | Description | Default |
-|---------|-------------|---------|
-| Auto-select best match | Automatically pick the top result and skip the selection dialog | Off |
-
-### Advanced
-
-These tune stream-proxy behaviour. Defaults are safe; only flip these if you have a reason.
-
-| Setting | Description | Default |
-|---------|-------------|---------|
-| Enable fallback streams | Submit conservative duplicate releases in the background and keep them as standby streams for live proxy switching | On |
-| Maximum standby fallback streams | Maximum standby releases attached per primary result | 5 |
-| Large non-MP4 stream mode | `Direct pass-through (default)` / `fMP4 HLS (compatibility, experimental)` / `Matroska remux (compatibility)` | Direct pass-through |
-| Force ffmpeg remux above (MB, 0=off) | File size above which the proxy switches to the optional force-remux tier; `0` disables non-MP4 force-remux entirely, including unknown-length streams | 15000 (~15 GB) |
-| Convert MP4 subtitles to SRT | mov_text → SRT during remux so embedded subs survive the matroska/HLS pipeline | On |
-| Strict upstream contract mode | How to react when nzbdav responds with HTTP shapes that violate the strict Range/Content-Length contract: `Off` / `Warn only` / `Enforce` | Warn only |
-| Enable density breaker | Abort streams where recovery zero-fill exceeds 50% of a sliding window (catches dead releases early) | Off |
-| Enable zero-fill budget | Cap total per-stream zero-fill bytes; stream terminates with a clean error when the budget is hit | On |
-| Enable retry ladder before skip probe | Re-issue the original Range request with backoff on transient upstream errors before falling back to skip-fill | On |
-| Send 200 for no-range pass-through | Send `200 OK` instead of always `206 Partial Content` when Kodi requests a full object. **Off by default** until validated on the target build. | Off |
-
----
-
-## Playing A Title
-
-1. Open **TMDBHelper** and browse to a movie or TV episode
-2. Select **Play with NZB-DAV**
-3. Pick an NZB from the full-screen results dialog
-4. Wait for the download to complete (progress dialog shows status)
-5. Playback starts automatically from nzbdav's WebDAV server
-
-### Results Dialog
-
-The results dialog shows all matching NZBs with color-coded quality labels, sorted by relevance. Each row displays the release name, resolution, codec, audio format, release type, file size, age, indexer, and release group.
-
-![NZB Results Dialog](docs/images/results-dialog.png)
-
-The status bar at the bottom shows how many sources passed your filters. Use **Enter** to download and play, **C** for the context menu, or **Esc** to go back.
-
-With **Auto-select best match** enabled, the dialog is skipped and the top result plays automatically.
-
----
-
-## Stream Proxy
-
-Every playback request is routed through a local HTTP proxy (`stream_proxy.py`) running on a random port in the background service. Kodi never talks to the WebDAV server directly, which sidesteps a PROPFIND parent-directory scan that caused `Open - Unhandled exception` errors on several Kodi builds.
-
-The proxy picks one of four paths based on the container, fallback metadata, file size, and the configured large non-MP4 stream mode:
-
-1. **MP4 (already faststart)** -- served through the local pass-through proxy, preserving native range seeking while keeping proxy session tracking available for fallback/rescue handling.
-2. **MP4 (moov at tail)** -- parsed in pure Python via HTTP range requests, `stco` and `co64` chunk offsets rewritten (so 4 GB+ MP4s work on 32-bit Kodi), and served as a virtual faststart MP4 with `Accept-Ranges: bytes`. If parsing fails, falls back to an ffmpeg tempfile remux.
-3. **MKV and other containers (default path)** -- served as a byte pass-through with ranged upstream fetches. Kodi gets native seeking from the source file's real Cues, and the proxy layers zero-fill recovery on top: when an upstream read fails mid-stream, it probes forward to the next readable offset, writes zero bytes across the gap, and keeps streaming.
-4. **Optional compatibility tier** -- when **Large non-MP4 stream mode** is set to Matroska remux or fMP4 HLS and the stream is above the non-zero threshold, the proxy uses ffmpeg:
-   - **Matroska remux** -- `ffmpeg -c copy -f matroska pipe:1`, unsized. Known-good on Dolby Vision HEVC + TrueHD/Atmos 100 GB REMUXes. Seek is approximate (each seek respawns ffmpeg with `-ss`).
-   - **fMP4 HLS** -- produces an HLS VOD playlist with per-segment `hvc1`-tagged fMP4 + a canonical `init.mp4` that survives seek respawns. Gives full random seek across multi-hundred-gigabyte sources. **Self-healing**: if ffmpeg fails to start or doesn't produce a valid init segment within 30 s, the proxy automatically rewrites the session to the matroska branch *before* Kodi sees a broken URL.
-
-**Dolby Vision routing matrix** (applied within the compatibility tier): P5, P7 FEL, P8, and unknown-DV sources are routed to **matroska** (the safest option on Amlogic CAMLCodec). P7 MEL and confirmed non-DV are eligible for **fMP4 HLS** when that mode is selected. P7 FEL specifically is forced to matroska because fMP4 cannot carry dual-layer HEVC.
-
-If ffmpeg isn't installed, the proxy degrades gracefully to pass-through.
-
-> **Architecture deep-dive:** [`docs/proxy-architecture.md`](docs/proxy-architecture.md)
-> documents the full session lifecycle, proxy tier selection, HLS producer
-> internals, and debugging entry points. That page is contributor-level
-> internals with historical context; this README remains the current
-> user-facing behavior summary.
-
-### Live Fallback Streams
-
-When **Enable fallback streams** is enabled, the resolver attaches conservative duplicate candidates from the result list and submits them after the primary NZB is accepted. This is enabled by default. Standby submits run in a background worker so primary playback can continue polling immediately. Once playback starts, the proxy keeps the fallback job metadata with the session and can switch to another prepared stream if the active source becomes unrecoverable.
-
-Fallback grouping is based on the NZB manifest's selected payload entry, not the search result size. The addon fetches each candidate NZB, prefers the main video filename and file-level segment-byte total when visible, and falls back to a provisional archive/RAR grouping key when only archive parts are visible. If the parser cannot extract a usable video entry from an otherwise plausible candidate, the addon can synthesize conservative video evidence from the indexer's reported size when it is at least 100 MB. Candidates with the same selected payload Article Message-IDs, or the same link-derived synthetic digest, are treated as mirrored copies of the same NZB and are not used as fallbacks.
-
-Before fetching a candidate NZB for selection-time fallback evidence, the addon also rejects candidates whose indexer-reported sizes are more than +/-25% away from the selected result. This is intentionally wider than the manifest match gate because indexer sizes can include RAR/PAR2 overhead, but it avoids downloading large NZBs for obvious size mismatches.
-
-Runtime switching still requires exact WebDAV `Content-Length` equality and 1000 pseudo-random 4096-byte fingerprint samples before the proxy switches to a fallback source. **Maximum standby fallback streams** caps how many standby submits are attached per primary result and defaults to `5`.
-
-Fallback recovery is the only rescue path for fallback sessions: if no validated fallback source can resume the failed range, the proxy closes the stream instead of retrying the original source, zero-filling, or probing forward to skip bytes.
-
-Compatibility remux remains available for environments that need ffmpeg compatibility paths, but pass-through is the default. Setting **Force ffmpeg remux above (MB, 0=off)** to `0` disables non-MP4 remux entirely, including unknown-length streams.
-
----
-
-## More Documentation
-
-- [Quickstart](docs/quickstart.md) - first-time setup with existing backend services.
-- [Troubleshooting](docs/troubleshooting.md) - common setup, search, WebDAV, and playback issues.
-- [Architecture overview](docs/architecture.md) - contributor map of search, resolve, and proxy flows.
-- [Proxy architecture](docs/proxy-architecture.md) - deep internals for playback/proxy work.
-
----
+### From the Appz4Fun Kodi repository (recommended)
+
+NZB-DAV is distributed through the
+[Appz4Fun Kodi repository](https://github.com/Appz4Fun/Appz4Fun-Kodi-Repo), which
+delivers automatic updates on a **Stable** or **Beta** channel.
+
+1. Open [appz4fun.github.io/Appz4Fun-Kodi-Repo](https://appz4fun.github.io/Appz4Fun-Kodi-Repo/)
+   and download the channel zip (for example `repository.appz4fun.stable-1.0.0.zip`).
+2. In Kodi: **Settings → System → Add-ons** → enable **Unknown sources**.
+3. **Settings → Add-ons → Install from zip file** → select the channel zip.
+4. **Settings → Add-ons → Install from repository → Appz4Fun Repository** →
+   install **NZB-DAV**. Future updates install automatically.
+
+> **Upgrading from the old repository?** NZB-DAV used to be distributed from a
+> Kodi repository at `https://appz4fun.github.io/nzbdavkodi/`. That URL now hosts
+> this project's documentation, not add-on metadata, so installs made from it no
+> longer auto-update. Install the Appz4Fun repository above once to resume
+> updates, then remove the old `nzbdav` file-manager source and the old
+> **NZB-DAV Repository** add-on.
+
+### Manual install
+
+Download `plugin.video.nzbdav.zip` from the
+[releases page](https://github.com/Appz4Fun/nzbdavkodi/releases), then
+**Settings → Add-ons → Install from zip file**. Manual installs don't
+auto-update.
+
+Full steps: [Install the add-on](https://appz4fun.github.io/nzbdavkodi/getting-started/installation/).
+
+## Quick setup
+
+1. Open **My add-ons → Video add-ons → NZB-DAV → Configure** and enter your
+   **nzbdav** URL + API key and **WebDAV** credentials. Use the **Test** actions.
+2. Enable a search provider (NZBHydra2, Prowlarr, or direct indexers) and test it.
+3. On the **Player Installation** tab, select **Install TMDBHelper Player**.
+4. Restart Kodi (or run TMDBHelper **Players → Update players**), then set
+   **Default player (Movies)** and **Default player (TV Shows)** to **NZB-DAV**.
+5. Play a title from TMDBHelper.
+
+Full walkthrough:
+[Configure connections](https://appz4fun.github.io/nzbdavkodi/getting-started/configuration/) ·
+[Set up TMDBHelper](https://appz4fun.github.io/nzbdavkodi/getting-started/tmdbhelper/) ·
+[Play your first title](https://appz4fun.github.io/nzbdavkodi/getting-started/first-playback/).
+
+## Key features
+
+- **Multi-provider search** across NZBHydra2, Prowlarr, and direct Newznab
+  indexers, merged and de-duplicated.
+- **Quality filtering and ranking** by resolution, HDR, audio, codec, language,
+  release group, size, and keywords.
+- **A local stream proxy** that preserves seeking, rewrites tail-`moov` MP4s in
+  pure Python, recovers from missing articles, and offers optional Matroska
+  remux and fMP4 HLS tiers for large or Dolby Vision files.
+- **Self-healing fallback streams** that switch to a verified, byte-identical
+  alternate release mid-playback without stopping or rewinding.
+- **Optional NZBGet backend** as an alternative to nzbdav.
+
+Each feature is documented in full under
+[Features](https://appz4fun.github.io/nzbdavkodi/features/).
+
+## Troubleshooting
+
+If NZB-DAV doesn't appear in TMDBHelper, no results show, or playback fails, see
+the [Troubleshooting guide](https://appz4fun.github.io/nzbdavkodi/operations/troubleshooting/).
+See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 ## Development
 
-For a contributor-facing map of the search, resolve, and stream proxy paths, see
-the [architecture overview](docs/architecture.md).
-
-### Prerequisites
-
-- [uv](https://docs.astral.sh/uv/) — runs the pinned test/lint tooling on Python 3.14 (`make-dev` and every `just` test/lint recipe invoke it)
-- Kodi addon runtime remains Python 3.8+
-- [just](https://github.com/casey/just) (command runner)
-
-### Commands
+Requires [uv](https://docs.astral.sh/uv/) (runs the pinned test/lint toolchain)
+and [just](https://github.com/casey/just). Addon runtime code stays Python 3.8+
+and pure Python.
 
 ```bash
-just test              # Run the default non-integration pytest suite
-just test-verbose      # Run unit tests with full output
-just test-integration  # Run integration tests against a real ffmpeg binary
-just lint              # Check ruff + black formatting
-just lint-fix          # Auto-fix lint issues
-just release           # Build plugin.video.nzbdav.zip
-just ship              # Run tests then build release
-just repo              # Build release + generate local Pages preview in pages-dist/
-just repo-zip          # Build repo + copy repository zip to cwd
-just clean             # Remove build artifacts
-just dist-clean        # Remove build artifacts + generated Pages preview
+just test          # Run the default unit test suite
+just lint          # ruff + black + pylint + vermin
+just lint-fix      # Auto-fix lint/format issues
+just release       # Build plugin.video.nzbdav.zip
+just ship          # Test, then build the release zip
+just docs          # Build the documentation site into ./site (strict)
+just docs-serve    # Serve the docs site locally with live reload
 ```
 
-### Project Structure
+Contributor orientation: [AGENTS.md](AGENTS.md) ·
+architecture and internals:
+[How it works](https://appz4fun.github.io/nzbdavkodi/how-it-works/architecture/) and
+[`docs/proxy-architecture.md`](docs/proxy-architecture.md).
+
+### Project structure
 
 ```text
-repo/plugin.video.nzbdav/
-  addon.xml              # Kodi addon manifest
-  addon.py               # Entry point
-  service.py             # Background service (stream proxy + playback monitor)
+repo/plugin.video.nzbdav/     # The Kodi add-on (installed via zip)
+  addon.xml                   # Add-on manifest
+  addon.py / service.py       # Entry point + background service (stream proxy)
   resources/
-    settings.xml         # Kodi settings UI
-    lib/
-      router.py            # URL routing
-      hydra.py             # NZBHydra2 API client
-      prowlarr.py          # Prowlarr API client (alternative indexer)
-      nzbdav_api.py        # nzbdav API client
-      webdav.py            # WebDAV availability checker
-      filter.py            # Result filtering with PTT
-      results_dialog.py    # Custom full-screen results dialog
-      resolver.py          # Download + polling orchestrator
-      stream_proxy.py      # Local HTTP proxy -- pass-through, MP4 rewrite, optional remux
-      mp4_parser.py        # Pure-Python MP4 moov / stco / co64 rewriter
-      dv_source.py         # Dolby Vision source probe (profile / RPU detection)
-      dv_rpu.py            # DV RPU NAL parser
-      cache.py             # JSON-based search result cache
-      fallback_streams.py  # Duplicate release fallback selection and payloads
-      cache_prompt.py      # Legacy cache compatibility prompt helpers
-      kodi_advancedsettings.py  # Probe Kodi's advancedsettings.xml cache settings
-      player_installer.py  # TMDBHelper player JSON installer
-      http_util.py         # Shared HTTP utilities
-      i18n.py              # Localization helper
-      ptt/                 # Vendored PTT library (parse-torrent-title)
-    language/             # Kodi localization files
-    skins/Default/
-      1080i/results-dialog.xml  # Dialog skin XML
-      media/white.png           # Texture for backgrounds
-scripts/
-  build_zip.py           # Addon zip builder
-  generate_repo.py       # Kodi repo metadata generator
-  select_stable_release.py  # Pages workflow release selector
-repo/
-  repository.nzbdav/     # Repository addon descriptor pointing to Pages metadata
-.github/workflows/
-  ci.yml                 # Lint + test on 3.14 + a 3.8 compileall gate, on push/PR
-  release.yml            # Build GitHub Releases on version tags
-  pages.yml              # Publish Kodi repository metadata to GitHub Pages
-  codeql.yml             # CodeQL analysis
-  bandit.yml             # Bandit security scan
-tests/
-  conftest.py                       # Kodi module mocks
-  test_*.py                         # Default unit test suite
-  test_integration_hls_ffmpeg.py    # 2 integration tests (real ffmpeg, opt-in)
-TODO.md                             # Active backlog
+    settings.xml              # Kodi settings UI
+    lib/                      # Runtime modules (router, search, resolver, proxy, ...)
+    language/                 # Localization
+docs-site/                    # MkDocs documentation source (GitHub Pages)
+mkdocs.yml                    # Docs site config
+docs/                         # Contributor deep-dives (proxy internals, DV/HLS notes)
+scripts/                      # Addon zip build + PR-review helpers
+tests/                        # pytest suite (Kodi mocks in conftest.py)
+.github/workflows/            # ci.yml, release.yml, pages.yml (docs), security scans
 ```
 
 ### Releasing
 
-1. Bump `version` in `repo/plugin.video.nzbdav/addon.xml`
-2. Run `just lint` and `just test`.
-3. Commit the version bump:
-   `git add repo/plugin.video.nzbdav/addon.xml`
-4. Commit: `git commit -m "release: v0.X.0"`
-5. Tag and push: `git tag v0.X.0 && git push origin main v0.X.0`
-6. GitHub Actions builds the zip and creates a GitHub Release.
-7. The Pages workflow republishes the tagged stable release into Kodi repository metadata.
-8. Kodi picks up the update automatically from the GitHub Pages repository.
+1. Bump `version` in `repo/plugin.video.nzbdav/addon.xml`.
+2. Update `CHANGELOG.md` and `repo/plugin.video.nzbdav/changelog.txt`.
+3. Run `just lint` and `just test`.
+4. Commit, then tag and push: `git tag vX.Y.Z && git push origin main vX.Y.Z`.
 
-Prerelease tags such as `v1.2.3-beta.1` may create GitHub Release artifacts, but
-the Pages workflow skips publishing them to the public Kodi repository.
-
----
+The Release workflow builds the zip and creates a GitHub Release, then notifies
+the [Appz4Fun Kodi repository](https://github.com/Appz4Fun/Appz4Fun-Kodi-Repo) to
+rebuild and republish. Pre-release tags are published to the Beta channel.
 
 ## Compatibility
 
@@ -378,11 +188,9 @@ the Pages workflow skips publishing them to the public Kodi repository.
 | Kodi | 21 (Omega) and later |
 | Python | 3.8+ |
 | OS | CoreELEC, LibreELEC, OSMC, Windows, macOS, Linux |
-| Architecture | ARM64 (aarch64), x86_64 |
-| Dependencies | None -- all vendored, no pip required |
-
----
+| Architecture | ARM64 (aarch64), x86-64 |
+| Dependencies | None — all vendored, no pip required |
 
 ## License
 
-GPLv3 -- see [LICENSE](LICENSE) for details.
+GPLv3 — see [LICENSE](LICENSE) for details.
