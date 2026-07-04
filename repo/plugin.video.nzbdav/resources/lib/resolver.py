@@ -309,18 +309,11 @@ from resources.lib.resolver_entry import (  # noqa: E402,F401
 )
 from resources.lib.resolver_fallback import (  # noqa: E402,F401
     _adopt_existing_fallback_job,
-    _await_fallback_worker_finish,
     _await_playback_start,
-    _cancel_fallback_job,
-    _cancel_fallback_submitted_jobs,
     _collect_fallback_candidate_jobs,
     _fallback_candidate_row,
-    _fallback_job_pending,
-    _fallback_job_value,
     _fallback_streams_enabled,
-    _fallback_submit_jobs_snapshot,
     _get_fallback_submit_delay_seconds,
-    _invoke_fallback_job_cancel,
     _load_and_submit_fallback_candidates,
     _lookup_existing_fallback_jobs,
     _notify_no_fallback_candidates,
@@ -333,10 +326,19 @@ from resources.lib.resolver_fallback import (  # noqa: E402,F401
     _run_fallback_on_append_hook,
     _signal_fallback_playback_started,
     _start_fallback_submit_worker,
-    _stop_fallback_submit_worker,
     _submit_fallback_candidates,
     _submit_one_fallback_candidate,
     _wait_prewarm_or_inactive,
+)
+from resources.lib.resolver_fallback_jobs import (  # noqa: E402,F401
+    _await_fallback_worker_finish,
+    _cancel_fallback_job,
+    _cancel_fallback_submitted_jobs,
+    _fallback_job_pending,
+    _fallback_job_value,
+    _fallback_submit_jobs_snapshot,
+    _invoke_fallback_job_cancel,
+    _stop_fallback_submit_worker,
 )
 from resources.lib.resolver_flow import (  # noqa: E402,F401
     _invoke_poll_until_ready,
