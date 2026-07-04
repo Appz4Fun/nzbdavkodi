@@ -6,6 +6,10 @@ set positional-arguments
 python_ver := env_var_or_default("UV_PYTHON", "3.14")
 uvdev := "uv run --with-requirements requirements-dev.txt --no-project --python " + python_ver
 
+# Docs toolchain (MkDocs Material) runs on its own pinned Python. The docs build
+# is not part of the addon runtime, so it uses requirements-docs.txt, not -dev.
+docs_run := "uv run --with-requirements requirements-docs.txt --no-project --python 3.12"
+
 # Install local development dependencies needed by the other recipes
 make-dev:
     #!/usr/bin/env bash
@@ -295,26 +299,13 @@ release:
 # Run tests then build release
 ship: test release
 
-# Generate a local GitHub Pages/Kodi repository preview in pages-dist/
-repo: release
-    #!/usr/bin/env bash
-    set -euo pipefail
+# Build the documentation site into ./site (mirrors the Docs GitHub Pages build)
+docs:
+    {{docs_run}} mkdocs build --strict
 
-    addon_version="$(
-        python3 -c 'import sys, xml.etree.ElementTree as ET; version = ET.parse("repo/plugin.video.nzbdav/addon.xml").getroot().attrib.get("version"); sys.exit("addon.xml is missing a version attribute") if not version else print(version)'
-    )"
-    addon_zip="plugin.video.nzbdav-${addon_version}.zip"
-    if [[ ! -f "${addon_zip}" ]]; then
-        echo "Expected release zip not found: ${addon_zip}" >&2
-        exit 1
-    fi
-    rm -rf pages-dist/
-    python3 scripts/generate_repo.py --output-dir pages-dist --addon-zip "${addon_zip}" --smoke-check
-
-# Copy the repository zip to cwd for easy access
-repo-zip: repo
-    cp pages-dist/repository.nzbdav-*.zip .
-    @ls -lh repository.nzbdav-*.zip
+# Serve the documentation site locally with live reload
+docs-serve:
+    {{docs_run}} mkdocs serve
 
 # Clean build artifacts
 clean:
@@ -322,6 +313,6 @@ clean:
     find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
     find . -type d -name .pytest_cache -exec rm -rf {} + 2>/dev/null || true
 
-# Clean everything including generated Pages output
+# Clean everything including the generated docs site
 dist-clean: clean
-    rm -rf pages-dist/
+    rm -rf site/

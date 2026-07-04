@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Orientation for agents (Claude, Copilot, Codex, etc.) working in this repo. User-facing install, config, and usage docs live in [README.md](README.md). Outstanding work and architecture deep-dives live in [TODO.md](TODO.md).
+Orientation for agents (Claude, Copilot, Codex, etc.) working in this repo. A short install/setup summary lives in [README.md](README.md); the full user and technical documentation lives in `docs-site/` and is published to GitHub Pages at <https://appz4fun.github.io/nzbdavkodi/>. Outstanding work lives in [TODO.md](TODO.md).
 
 ## TL;DR
 
@@ -8,7 +8,7 @@ Orientation for agents (Claude, Copilot, Codex, etc.) working in this repo. User
 - Preserve `setResolvedUrl`, `waitForAbort`, and HTTP Range behavior.
 - Follow existing Kodi mock, settings, HTTP helper, and player install patterns.
 - Run `just lint` and `just test` before commit or push.
-- For releases, bump only `repo/plugin.video.nzbdav/addon.xml`; the tag release and Pages workflows publish repo metadata.
+- For releases, bump only `repo/plugin.video.nzbdav/addon.xml`; the Release workflow builds the zip and the external Appz4Fun Kodi repository republishes it. The Pages workflow publishes documentation, not add-on metadata.
 
 ## Agent Contract
 
@@ -20,8 +20,8 @@ Follow these rules before making code, release, or deployment changes:
 - Do not add compiled dependencies or C extensions. CoreELEC/ARM64 installs must stay pure Python.
 - Do not edit vendored PTT under `repo/plugin.video.nzbdav/resources/lib/ptt/` unless fixing compatibility.
 - Do not duplicate shared HTTP or notification helpers; use `http_util.py`.
-- Do not bump the repository addon version for normal addon releases. Only bump `repo/plugin.video.nzbdav/addon.xml`.
-- Do not hand-edit generated Pages output under `pages-dist/`. `repo/zips/` is a tracked legacy migration endpoint only.
+- Only bump `repo/plugin.video.nzbdav/addon.xml` for add-on releases. This repo no longer contains a Kodi repository add-on.
+- Do not hand-edit the generated docs site under `site/`. The documentation source lives in `docs-site/` and is published to GitHub Pages by the Docs workflow.
 - Do not commit real API keys, WebDAV credentials, Kodi logs, copied crash logs, or local device artifacts.
 
 ## Critical Invariants
@@ -40,13 +40,14 @@ These must stay true or Kodi playback, shutdown, or updates can break:
 
 ```bash
 just test          # Run all tests
-just lint          # ruff + black check
+just lint          # ruff + black + pylint + vermin
 just lint-fix      # Auto-fix lint/format issues, then re-run just lint
 just release       # Build plugin.video.nzbdav.zip
 just ship          # test + release
-just repo          # Build release + generate local Pages preview in pages-dist/
+just docs          # Build the MkDocs docs site into ./site (strict)
+just docs-serve    # Serve the docs site locally with live reload
 just clean         # Remove __pycache__, .pytest_cache, zip
-just dist-clean    # clean + remove pages-dist/
+just dist-clean    # clean + remove the generated docs site
 ```
 
 ## PR Review Helper Scripts
@@ -66,12 +67,12 @@ Use `pr_agent_context.py` when starting a PR review or addressing comments from 
 - `repo/plugin.video.nzbdav/resources/lib/` -- addon runtime Python modules
 - `repo/plugin.video.nzbdav/resources/lib/ptt/` -- vendored PTT library
 - `repo/plugin.video.nzbdav/resources/settings.xml` -- Kodi settings schema
-- `repo/repository.nzbdav/` -- Kodi repository addon descriptor
-- `repo/zips/` -- tracked legacy migration endpoint for pre-Pages repository add-ons
-- `pages-dist/` -- generated local GitHub Pages repository preview
-- `scripts/` -- build and repo generation scripts
+- `docs-site/` -- MkDocs (Material) documentation source published to GitHub Pages
+- `mkdocs.yml` / `requirements-docs.txt` -- docs site config and build toolchain
+- `docs/` -- contributor deep-dives (proxy internals, Dolby Vision (DV) and HTTP Live Streaming (HLS) notes) and images
+- `scripts/` -- addon zip build and PR-review helper scripts
 - `tests/` -- pytest suite with Kodi module mocks in `conftest.py`
-- `.github/workflows/` -- CI and release workflows
+- `.github/workflows/` -- CI, release, and docs (Pages) workflows
 
 ## Where To Start
 
@@ -137,18 +138,14 @@ The background service (`service.py`) runs `StreamProxy`. MP4 sources may be rew
 3. Add tests that mock the setting value.
 4. Run `just test` and `just lint`.
 
-### Adding Player Targets
+### Player Installation
 
-Add to `PLAYER_TARGETS` in `repo/plugin.video.nzbdav/resources/lib/player_installer.py`:
+`player_installer.py` installs the `nzbdav.json` TMDBHelper player file. Two routes exist:
 
-```python
-"AddonName": {
-    "setting_id": "install_addonname",
-    "path": "special://profile/addon_data/plugin.video.addonname/players/",
-}
-```
+- `install_player` targets TMDBHelper's `players/` directory.
+- `install_player_other` calls `discover_other_player_targets()`, which scans `special://profile/addon_data/*/players/` at runtime and offers any existing player folder in a select dialog. There is no static `PLAYER_TARGETS` map and no per-target boolean setting.
 
-Then add the corresponding boolean setting in `resources/settings.xml`.
+When changing player behavior, keep the profile-containment guard (writes stay under `addon_data`) and the schema-version preserve/backup logic, unless a change deliberately revises them — in which case update the tests to match.
 
 ### Playback / Resolver Changes
 
@@ -190,9 +187,9 @@ Prefer evidence first, restart second. If Kodi is actively wedged and logs are a
 ## CI/CD
 
 - CI runs on every push to `main` and PRs: `just lint` (ruff + black + pylint) and `just test` on Python 3.14, plus a `compat-3-8` job that `compileall`s the addon on Python 3.8.
-- Release workflow triggers on `v*` tags: runs tests, verifies `addon.xml` version matches the tag, builds the zip, and creates a GitHub Release.
-- Kodi repo metadata is served from GitHub Pages at `https://appz4fun.github.io/nzbdavkodi/`.
-- The old raw `repo/zips/` endpoint is retained only as a legacy migration endpoint so installed repository add-ons can update to the Pages-backed descriptor.
+- Release workflow triggers on `v*` tags: runs tests, verifies `addon.xml` version matches the tag, builds the zip, creates a GitHub Release, and pings the external Appz4Fun Kodi repository to rebuild.
+- Add-on distribution lives in the external multi-channel Kodi repository at `https://github.com/Appz4Fun/Appz4Fun-Kodi-Repo` (served from its own Pages site). This repo no longer self-hosts a Kodi repository.
+- The Docs workflow (`pages.yml`) builds the MkDocs site from `docs-site/` and deploys it to GitHub Pages at `https://appz4fun.github.io/nzbdavkodi/`.
 
 ## Release Checklist
 
@@ -201,11 +198,10 @@ Before cutting a new versioned release:
 1. Update `README.md` with user-visible changes.
 2. Update repo-level `CHANGELOG.md` with full version notes.
 3. Update `repo/plugin.video.nzbdav/changelog.txt` with only a short Kodi-visible summary under 80 characters.
-4. Bump only the addon version in `repo/plugin.video.nzbdav/addon.xml`.
-5. Do not bump the repository addon version for normal addon releases.
-6. Optionally run `just repo` to smoke-check the local `pages-dist/` preview.
-7. Run `just lint` and `just test`.
-8. Commit and push to `main`.
-9. Tag with the new semver and push the tag: `git tag vX.Y.Z && git push origin main vX.Y.Z`.
+4. Bump the addon version in `repo/plugin.video.nzbdav/addon.xml`.
+5. Run `just lint` and `just test`.
+6. Commit and push to `main`.
+7. Tag with the new semver and push the tag: `git tag vX.Y.Z && git push origin main vX.Y.Z`.
 
-The Release workflow takes over after the tag is pushed.
+The Release workflow builds the zip and creates the GitHub Release; the external
+Appz4Fun Kodi repository then rebuilds and republishes NZB-DAV to its users.

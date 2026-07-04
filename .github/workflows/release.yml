@@ -62,6 +62,11 @@ jobs:
         with:
           files: plugin.video.nzbdav-${{ steps.version.outputs.version }}.zip
           generate_release_notes: true
+          # Semver prerelease tags (e.g. v1.2.6-beta.1) carry a hyphen after the
+          # version. Flag those as pre-release so the Appz4Fun Kodi repository,
+          # which splits Stable vs Beta by the GitHub pre-release checkbox, routes
+          # beta builds to the Beta channel instead of publishing them to Stable.
+          prerelease: ${{ contains(github.ref_name, '-') }}
 
       # Ping the Appz4Fun Kodi repository so it rebuilds within seconds instead
       # of waiting for its daily schedule. Needs a fine-grained PAT with

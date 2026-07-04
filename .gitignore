@@ -14,9 +14,12 @@ uv.lock
 
 # Build
 dist/
-pages-dist/
 build/
 plugin.video.nzbdav.zip
+
+# Docs site (MkDocs build output)
+site/
+.cache/
 
 # IDE
 .vscode/
@@ -32,7 +35,10 @@ plugin.video.nzbdav.zip
 docs/superpowers/
 docs/memory/
 mockups/
-troubleshooting.md
+# Root-level scratch troubleshooting.md only. A bare "troubleshooting.md"
+# pattern also swallowed docs-site/operations/troubleshooting.md (a tracked
+# docs page), breaking the Pages build; scope it to the repo root.
+/troubleshooting.md
 .worktrees/
 .tmp/
 
@@ -52,9 +58,6 @@ run-ralphforever.sh
 
 # Build zips (versioned)
 plugin.video.nzbdav-*.zip
-repository.nzbdav-*.zip
-!repository.nzbdav-*.zip
-!repo/zips/**/*.zip
 
 # dev docs
 devdocs

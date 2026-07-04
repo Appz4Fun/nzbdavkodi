@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build the nzbdav addon zip via `just repo-zip`, copy into the kodi container,
+# Build the nzbdav addon zip via `just release`, copy into the kodi container,
 # extract into addons/, render settings.xml from the template, and enable.
 # Usage: install_nzbdav_addon.sh <container> <kodi_jsonrpc_url> <user:password> <template_path>
 set -euo pipefail
@@ -37,10 +37,10 @@ kodi_version_supported() {
     [[ "$major" =~ ^[0-9]+$ ]] && (( 10#$major >= REQUIRED_KODI_MAJOR ))
 }
 
-echo "[nzbdav-addon] just repo-zip"
-( cd "$REPO_ROOT" && just repo-zip )
+echo "[nzbdav-addon] just release"
+( cd "$REPO_ROOT" && just release )
 
-# `just repo-zip` writes the addon zip to the repository root; find the latest.
+# `just release` writes the addon zip to the repository root; find the latest.
 ZIP="$(ls -t "$REPO_ROOT"/plugin.video.nzbdav-*.zip 2>/dev/null | head -n1)"
 if [[ -z "$ZIP" ]]; then
     echo "[nzbdav-addon] FATAL: no zip found in $REPO_ROOT/"
