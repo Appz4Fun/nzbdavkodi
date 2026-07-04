@@ -940,3 +940,24 @@ def test_fetch_release_duplicate_uploads_tolerates_null_search_results(mock_sett
         )
     assert isinstance(uploads, list)
     assert not uploads
+
+
+def test_get_settings_mirrors_schema_default_url_for_raw_getters():
+    # The injected settings_getter (_get_script_setting, and the raw-XML getters
+    # the NZBGet dupe loader is built with) reads the profile settings.xml,
+    # where a setting left at its DISPLAYED default is simply absent -- the
+    # getter returns the fallback we pass. The live-Kodi branch returns the
+    # schema default (http://localhost:5076), so the getter branch must mirror
+    # it or a default-URL Hydra setup silently loses every hydra_url-gated
+    # feature off the live path (round-3 #372 review finding).
+    def absent_settings(key, default=""):
+        return default  # nothing stored in profile XML
+
+    url, api_key = hydra._get_settings(absent_settings)
+    assert url == "http://localhost:5076"
+    assert api_key == ""
+    # An explicitly stored URL still wins over the mirrored default.
+    url, _ = hydra._get_settings(
+        lambda key, default="": {"hydra_url": "http://box:5076/"}.get(key, default)
+    )
+    assert url == "http://box:5076"

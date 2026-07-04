@@ -334,11 +334,20 @@ def _hydra_duplicate_lookup_enabled(selected, settings_getter=None):
 
 
 def _hydra_lookup_enabled_by_settings(settings_getter):
-    """Hydra-duplicate gate when an explicit settings getter is available."""
+    """Hydra-duplicate gate when an explicit settings getter is available.
+
+    ``hydra_url`` falls back to its settings.xml schema default: raw-XML
+    getters (``_get_script_setting``, the dupe-loader getters) return the
+    passed fallback for a setting left at its displayed default, while the
+    live Kodi layer returns the schema default -- without the mirror a
+    default-URL Hydra setup silently fails this gate off the live path.
+    """
+    from resources.lib.hydra import _DEFAULT_HYDRA_URL
+
     enabled = settings_getter("nzbhydra_enabled", "false")
     if str(enabled).lower() != "true":
         return False
-    hydra_url = settings_getter("hydra_url", "")
+    hydra_url = settings_getter("hydra_url", _DEFAULT_HYDRA_URL)
     return bool(str(hydra_url or "").strip())
 
 

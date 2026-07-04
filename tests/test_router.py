@@ -4177,3 +4177,23 @@ def test_nzbget_dupe_submission_reports_standby_max_for_extras_bound():
         dupe = _nzbget_dupe_submission_for_selection(selected, filtered, identity)
     assert dupe["max_backups"] == 2  # min(fallback_streams_max, hard cap)
     assert len(dupe["backups"]) == 2  # same-name backups already capped at 2
+
+
+def test_hydra_duplicate_lookup_enabled_with_default_url_left_unset():
+    # Handle-path dupe loaders are built with the raw-XML _get_script_setting,
+    # which returns the passed fallback for settings left at their displayed
+    # default. With NZBHydra enabled but hydra_url untouched (schema default
+    # http://localhost:5076, absent from profile XML), the settings gate must
+    # still enable Hydra's duplicate-upload lookup -- matching the live-Kodi
+    # branch, which returns the schema default (round-3 #372 review finding).
+    from resources.lib.router_search import _hydra_duplicate_lookup_enabled
+
+    def stored(key, default=""):
+        return {"nzbhydra_enabled": "true"}.get(key, default)
+
+    assert (
+        _hydra_duplicate_lookup_enabled(
+            {"indexer": "NZBHydra2", "link": "http://h/x"}, settings_getter=stored
+        )
+        is True
+    )
