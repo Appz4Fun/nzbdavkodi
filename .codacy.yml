@@ -10,9 +10,14 @@ engines:
       - "scripts/**"
   bandit:
     enabled: true
+    # scripts/ is dev tooling, not shipped code: CI's bandit.yml scans only
+    # repo/plugin.video.nzbdav/ (and skips B603 there), matching the repo's
+    # security-scan scope. Keep the Codacy engine aligned so list-form
+    # subprocess calls in helper scripts don't trip the PR issue gate.
     exclude_paths:
       - "tests/**"
       - "tests-extensive/**"
+      - "scripts/**"
       - "plugin.video.nzbdav/resources/lib/ptt/**"
       - "repo/plugin.video.nzbdav/resources/lib/ptt/**"
   # Prospector's only output unique to this Kodi addon is pydocstyle (hundreds of
