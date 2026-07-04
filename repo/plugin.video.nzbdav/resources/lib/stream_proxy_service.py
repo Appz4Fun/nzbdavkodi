@@ -17,7 +17,6 @@ call time via ``_sp.<name>`` so patching keeps working.
 """
 
 import socket as _socket  # noqa: E402
-import time  # noqa: E402
 from urllib.error import URLError  # noqa: E402
 from urllib.request import Request  # noqa: E402
 
