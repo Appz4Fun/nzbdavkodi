@@ -281,19 +281,10 @@ def _read_hydra_settings(settings_getter):
     return base_url, api_key, None
 
 
-def _plan_hydra_search(base_url, api_key, search_type, fields):
+def _plan_hydra_search(base_url, api_key, query, settings_getter):
     """Build the Newznab search plan and caps-availability flag."""
-    max_results = _resolve_max_results(fields["settings_getter"])
+    max_results = _resolve_max_results(settings_getter)
     caps, has_provider_caps = _get_hydra_caps_for_search(base_url, api_key)
-    query = SearchQuery(
-        search_type=search_type,
-        title=fields["title"],
-        year=fields["year"],
-        imdb=fields["imdb"],
-        season=fields["season"],
-        episode=fields["episode"],
-        tvdb=fields["tvdb"],
-    )
     plan = plan_newznab_search(
         provider_kind="nzbhydra2",
         host=base_url,
@@ -340,16 +331,18 @@ def search_hydra(
     if settings_error:
         return [], settings_error
 
-    fields = {
-        "title": title,
-        "year": year,
-        "imdb": imdb,
-        "season": season,
-        "episode": episode,
-        "settings_getter": settings_getter,
-        "tvdb": tvdb,
-    }
-    plan, has_provider_caps = _plan_hydra_search(base_url, api_key, search_type, fields)
+    query = SearchQuery(
+        search_type=search_type,
+        title=title,
+        year=year,
+        imdb=imdb,
+        season=season,
+        episode=episode,
+        tvdb=tvdb,
+    )
+    plan, has_provider_caps = _plan_hydra_search(
+        base_url, api_key, query, settings_getter
+    )
     return _execute_hydra_plan(base_url, plan, title, has_provider_caps)
 
 

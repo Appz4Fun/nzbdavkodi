@@ -238,7 +238,6 @@ from resources.lib.stream_proxy_const import (  # noqa: F401,E402  pylint: disab
 # in default arguments (e.g. _AUTH_HEADER_NOT_PROVIDED) so the partially
 # initialized module already exposes them when each mixin class body runs.
 from resources.lib.stream_proxy_handler_cutover import (  # noqa: E402,F401  pylint: disable=unused-import
-    FirstCandidateProbe,
     _FallbackCutoverMixin,
 )
 from resources.lib.stream_proxy_handler_dispatch import _DispatchMixin  # noqa: E402

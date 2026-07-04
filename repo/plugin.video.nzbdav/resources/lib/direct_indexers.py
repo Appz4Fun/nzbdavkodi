@@ -32,7 +32,7 @@ from resources.lib.http_util import (
 )
 from resources.lib.indexer_store import load_indexers
 from resources.lib.newznab_caps import normalize_api_endpoint
-from resources.lib.search_planner import SearchQuery, plan_newznab_search
+from resources.lib.search_planner import plan_newznab_search
 from resources.lib.xml_safety import ParseError as _XmlParseError
 from resources.lib.xml_safety import UnsafeXmlError as _UnsafeXmlError
 from resources.lib.xml_safety import safe_fromstring as _safe_fromstring
@@ -392,17 +392,8 @@ def _fetch_and_parse(indexer, params, error_prefix):
     return results, None
 
 
-def _plan_indexer_search(indexer, criteria, max_results):
-    """Build the Newznab search plan for one indexer from search criteria."""
-    query = SearchQuery(
-        search_type=criteria["search_type"],
-        title=criteria["title"],
-        year=criteria.get("year", ""),
-        imdb=criteria.get("imdb", ""),
-        season=criteria.get("season", ""),
-        episode=criteria.get("episode", ""),
-        tvdb=criteria.get("tvdb", ""),
-    )
+def _plan_indexer_search(indexer, query, max_results):
+    """Build the Newznab search plan for one indexer from the search query."""
     return plan_newznab_search(
         provider_kind="direct",
         host=indexer["api_url"],
@@ -413,8 +404,8 @@ def _plan_indexer_search(indexer, criteria, max_results):
     )
 
 
-def _search_one_indexer(indexer, criteria, max_results):
-    plan = _plan_indexer_search(indexer, criteria, max_results)
+def _search_one_indexer(indexer, query, max_results):
+    plan = _plan_indexer_search(indexer, query, max_results)
     params = plan.primary
     if not params:
         xbmc.log(
@@ -459,18 +450,9 @@ def search_direct_indexers(
     )
     all_results = []
     errors = []
-    criteria = {
-        "search_type": query.search_type,
-        "title": query.title,
-        "year": query.year,
-        "imdb": query.imdb,
-        "season": query.season,
-        "episode": query.episode,
-        "tvdb": query.tvdb,
-    }
 
     def worker(indexer):
-        return _search_one_indexer(indexer, criteria, max_results)
+        return _search_one_indexer(indexer, query, max_results)
 
     for _indexer, results, error in _run_indexer_fanout(indexers, worker):
         if error:

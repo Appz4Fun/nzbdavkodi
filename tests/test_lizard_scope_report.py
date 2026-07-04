@@ -28,5 +28,5 @@ def test_classify_tests_and_extensive():
 
 
 def test_classify_scripts_and_other():
-    assert classify_scope("scripts/generate_repo.py") == "scripts"
+    assert classify_scope("scripts/pr_agent_context.py") == "scripts"
     assert classify_scope("setup_something.py") == "other"
