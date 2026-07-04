@@ -165,6 +165,7 @@ def prepare_stream_via_service(
                 raise
         if index < _PREPARE_MAX_ATTEMPTS - 1:
             import xbmc
+
             if xbmc.Monitor().waitForAbort(_PREPARE_RETRY_BACKOFF):
                 break
     # Every attempt failed with a fast connection reset.
