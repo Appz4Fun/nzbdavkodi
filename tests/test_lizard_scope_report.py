@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from lizard_scope_report import classify_scope  # noqa: E402
+from lizard_scope_report import _normalize_rule, classify_scope  # noqa: E402
 
 
 def test_classify_shipped_lib():
@@ -30,3 +30,15 @@ def test_classify_tests_and_extensive():
 def test_classify_scripts_and_other():
     assert classify_scope("scripts/pr_agent_context.py") == "scripts"
     assert classify_scope("setup_something.py") == "other"
+
+
+def test_normalize_rule_strips_every_codacy_severity_suffix():
+    assert _normalize_rule("Lizard_ccn-minor") == "ccn"
+    assert _normalize_rule("Lizard_nloc-medium") == "nloc"
+    assert _normalize_rule("Lizard_parameter-count-medium") == "parameter-count"
+    assert _normalize_rule("Lizard_file-nloc-critical") == "file-nloc"
+
+
+def test_normalize_rule_leaves_unsuffixed_rule_intact():
+    assert _normalize_rule("Lizard_ccn") == "ccn"
+    assert _normalize_rule("SomethingElse") == "SomethingElse"

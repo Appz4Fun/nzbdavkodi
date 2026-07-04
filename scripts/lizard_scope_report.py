@@ -13,6 +13,18 @@ from collections import Counter, defaultdict
 
 RULES = ("ccn", "nloc", "parameter-count", "file-nloc")
 
+# codacy-cli lizard rule ids look like "Lizard_<metric>-<severity>" where
+# severity is minor/medium/critical depending on the configured thresholds.
+_SEVERITY_SUFFIXES = ("-minor", "-medium", "-critical")
+
+
+def _normalize_rule(rule_id):
+    rule = rule_id.replace("Lizard_", "")
+    for suffix in _SEVERITY_SUFFIXES:
+        if rule.endswith(suffix):
+            return rule[: -len(suffix)]
+    return rule
+
 
 def classify_scope(path):
     if "/ptt/" in path:
@@ -29,7 +41,7 @@ def classify_scope(path):
 
 
 def _basename_map():
-    files = subprocess.check_output(["git", "ls-files", "*.py"], text=True).split()
+    files = subprocess.check_output(["git", "ls-files", "*.py"], text=True).splitlines()
     bymap = defaultdict(list)
     for f in files:
         bymap[f.rsplit("/", 1)[-1]].append(f)
@@ -44,9 +56,7 @@ def summarize(sarif_path):
     for run in doc.get("runs", []):
         for result in run.get("results", []):
             uri = result["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
-            rule = (
-                result.get("ruleId", "").replace("Lizard_", "").replace("-medium", "")
-            )
+            rule = _normalize_rule(result.get("ruleId", ""))
             candidates = bymap.get(uri, [uri])
             if len(candidates) > 1:
                 scope = "AMBIG:" + uri
