@@ -119,7 +119,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A pick that fails almost immediately no longer gives up before its backups have
   even been submitted (the failover grace waits for the background submitter). And
   canceling a play can no longer delete a *previously* completed download's files
-  that happen to share the release's duplicate key. (Issue #372 round 2.)
+  that happen to share the release's duplicate key. Round 3: canceling after a
+  failover also deletes the promoted backup directly (not only via the duplicate
+  set scan), the background worker's post-cancel cleanup deletes exactly its own
+  submissions so an immediate retry of the same release survives it, and a
+  promoted backup sitting paused (e.g. NZBGet paused) holds the failover wait
+  instead of reporting a failed playback. (Issue #372 rounds 2-3.)
 - **NZBGet mode: replaying an already-downloaded pick no longer fails.**
   Selecting a `DL`-tagged result now plays the completed files straight from
   the SMB share instead of re-submitting the NZB — NZBGet's duplicate check

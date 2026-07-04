@@ -456,6 +456,22 @@ def cancel_job(nzbid, settings_getter=None):
     )
 
 
+def cancel_jobs(nzbids, settings_getter=None):
+    """Final-delete a batch of NZBIDs from history, then the queue (#372 r3).
+
+    Used by the backup worker's post-cancel cleanup: it deletes exactly the
+    NZBIDs THIS resolve submitted (never a whole-DupeKey sweep, which could
+    wipe a fresh retry of the same release). History first -- the parked hidden
+    ``Kind=DUP`` backups -- so nothing is left to promote when the queued ones
+    go. Empty input is a no-op; best-effort like ``cancel_job``.
+    """
+    ids = [nzbid for nzbid in nzbids or [] if nzbid is not None]
+    if not ids:
+        return
+    _final_delete("HistoryFinalDelete", ids, settings_getter)
+    _final_delete("GroupFinalDelete", ids, settings_getter)
+
+
 def _dupekey_match(item, dupe_key):
     """Case-insensitive DupeKey compare (NZBGet matches keys case-insensitively)."""
     return (
@@ -464,13 +480,20 @@ def _dupekey_match(item, dupe_key):
     )
 
 
-def _promoted_group_entry(group, dupe_key, exclude_nzbid):
-    """Build the promoted-download entry for one listgroups row, or None.
+# Sentinel returned by _promoted_group_entry for a same-key member that is
+# queued but PAUSED: not a promotion to track, yet not an exhausted group
+# either (e.g. NZBGet globally paused when the backup was promoted).
+_PAUSED_MATCH = object()
 
-    Keeps ``active_group_by_dupekey`` a flat scan: the DupeKey match, the
-    exclude-NZBID skip (the failed pick itself), and the PAUSED skip (a
-    still-parked backup, not the promoted-active one) all live here so the
-    caller only decides "match or keep scanning".
+
+def _promoted_group_entry(group, dupe_key, exclude_nzbid):
+    """Classify one listgroups row for the promotion scan.
+
+    Keeps ``active_group_by_dupekey`` a flat scan: the DupeKey match and the
+    exclude-NZBID skip (the failed pick itself) live here. Returns the
+    promoted-download entry dict, ``_PAUSED_MATCH`` for a same-key member that
+    is queued PAUSED (it can still resume, so the group is not exhausted), or
+    ``None`` for a non-match.
     """
     if not isinstance(group, dict) or not _dupekey_match(group, dupe_key):
         return None
@@ -478,7 +501,7 @@ def _promoted_group_entry(group, dupe_key, exclude_nzbid):
         return None
     status = str(group.get("Status") or "")
     if status.upper() == "PAUSED":
-        return None
+        return _PAUSED_MATCH
     downloaded = _as_number(group.get("DownloadedSizeMB"))
     total = _as_number(group.get("FileSizeMB"))
     percent = int(downloaded * 100 / total) if total else 0
@@ -497,18 +520,24 @@ def active_group_by_dupekey(dupe_key, exclude_nzbid=None, settings_getter=None):
     the queue -- it appears in listgroups under the SAME DupeKey with its OWN new
     NZBID and an un-paused status (other backups stay PAUSED). Returns
     ``{"present","nzbid","status","percent"}`` for that promoted download, else
-    ``{"present": False}``.
+    ``{"present": False, "paused_present": <bool>}`` -- ``paused_present`` flags
+    a same-key member queued PAUSED (e.g. NZBGet globally paused when the
+    promotion happened), which the poll must treat as "not exhausted yet"
+    rather than a failed group.
     """
     if not dupe_key:
-        return {"present": False}
+        return {"present": False, "paused_present": False}
     groups, error = _rpc_call("listgroups", [0], settings_getter=settings_getter)
     if error is not None or not isinstance(groups, list):
-        return {"present": False}
+        return {"present": False, "paused_present": False}
+    paused_present = False
     for group in groups:
         entry = _promoted_group_entry(group, dupe_key, exclude_nzbid)
-        if entry is not None:
+        if entry is _PAUSED_MATCH:
+            paused_present = True
+        elif entry is not None:
             return entry
-    return {"present": False}
+    return {"present": False, "paused_present": paused_present}
 
 
 def history_success_by_dupekey(dupe_key, settings_getter=None):

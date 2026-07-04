@@ -302,7 +302,11 @@ def poll_nzbget_job(
     state = {"current": nzbid, "promotion_deadline": None, "exclude": None}
     while time.monotonic() < deadline:
         if dialog.iscanceled():
-            return {"outcome": "canceled"}
+            # Carry the CURRENTLY tracked NZBID (the promoted backup once
+            # failover switched; None in group-follow mode) so the cancel path
+            # can final-delete it directly -- the DupeKey sweep alone can miss
+            # it on a transient listgroups error.
+            return {"outcome": "canceled", "nzbid": state["current"]}
         terminal = _poll_tick(state, dialog, settings_getter, dupe_key, is_submitting)
         if terminal is not None:
             return terminal
@@ -404,18 +408,28 @@ def _tick_group_follow(state, dialog, settings_getter, dupe_key, is_submitting):
         state["promotion_deadline"] is not None
         and time.monotonic() >= state["promotion_deadline"]
     ):
-        if is_submitting is not None and is_submitting():
-            # Backups are still being appended (each NZB fetch can take up to the
-            # 30s timeout); a fast-failing pick must not be reported failed before
-            # its backups can reach NZBGet. Extend the grace so a backup that lands
-            # after this point still gets a promotion window.
-            state["promotion_deadline"] = time.monotonic() + _PROMOTION_GRACE
-            dialog.update(100, _string(30219))
-            return None
-        # No backup was promoted within the grace window -> group exhausted.
-        return {"outcome": "failed", "status": "FAILURE/DUPE"}
+        if not _promotion_still_pending(promoted, is_submitting):
+            # No backup was promoted within the grace window -> group exhausted.
+            return {"outcome": "failed", "status": "FAILURE/DUPE"}
+        # A promotion can still materialize: extend the grace so it keeps its
+        # window (bounded by the outer poll timeout either way).
+        state["promotion_deadline"] = time.monotonic() + _PROMOTION_GRACE
     dialog.update(100, _string(30219))
     return None
+
+
+def _promotion_still_pending(promoted, is_submitting):
+    """True while group exhaustion must NOT be declared at grace expiry.
+
+    Two waits: the backup worker is still appending candidates (a fast-failing
+    pick can beat a slow indexer's 30s NZB fetch), or a same-key member sits
+    PAUSED in the queue (e.g. NZBGet globally paused when the backup was
+    promoted) -- it can still resume, so the group is not exhausted. Both are
+    bounded by the outer poll timeout.
+    """
+    if is_submitting is not None and is_submitting():
+        return True
+    return bool(promoted.get("paused_present"))
 
 
 _DEFAULT_TIMEOUT = 3600
@@ -519,7 +533,13 @@ def _reuse_completed_job(
 
 
 def _handle_poll_failure(
-    outcome, nzbid, settings_getter, on_failure, dupe_key="", cancel_event=None
+    outcome,
+    nzbid,
+    settings_getter,
+    on_failure,
+    dupe_key="",
+    cancel_event=None,
+    tracked_nzbid=None,
 ):
     """Dispatch a non-success poll outcome to its failure callback.
 
@@ -527,30 +547,39 @@ def _handle_poll_failure(
     a terminal failure (the caller returns), ``leave_job`` documents the
     timeout/abort policy of deliberately NOT canceling the job so it can
     finish for a later retry. The success outcome returns ``(False, False)``
-    so the caller proceeds to the SMB resolve.
+    so the caller proceeds to the SMB resolve. ``tracked_nzbid`` is the poll's
+    currently followed member (the promoted backup once failover switched).
     """
     if outcome in ("timeout", "aborted"):
         on_failure(_string(30101))
         return True, True
     if outcome == "canceled":
-        # Stop the backup worker, then delete the whole DupeKey group so NZBGet
-        # can't promote a parked backup after the pick is deleted (#372 round 2).
-        # The group sweep is IN ADDITION to canceling the tracked NZBID, not a
-        # replacement: the DupeKey scan alone can miss the pick (a transient
-        # listgroups error, or the pick already parked in history as a Kind=NZB
-        # failure row the Kind=DUP-only sweep deliberately skips), and the
-        # direct cancel alone would let NZBGet promote a parked backup.
         if cancel_event is not None:
-            cancel_event.set()
-        if dupe_key:
-            nzbget_api.cancel_dupekey_group(dupe_key, settings_getter=settings_getter)
-        nzbget_api.cancel_job(nzbid, settings_getter=settings_getter)
+            cancel_event.set()  # stop the backup worker first
+        _cancel_resolve_downloads(nzbid, tracked_nzbid, dupe_key, settings_getter)
         on_failure(None)
         return True, False
     if outcome == "failed":
         on_failure(_string(30220))
         return True, False
     return False, False
+
+
+def _cancel_resolve_downloads(nzbid, tracked_nzbid, dupe_key, settings_getter):
+    """Delete everything a canceled resolve may have running (#372 rounds 2-3).
+
+    DupeKey sweep first (hidden parked backups deleted so NZBGet has nothing to
+    promote into the gap), then the currently tracked NZBID directly (the
+    promoted backup once failover switched -- the sweep alone can miss it on a
+    transient listgroups error), then the original pick (its Kind=NZB history
+    failure row is skipped by the sweep's Kind=DUP-only filter). Each step is
+    best-effort; together they cover each other's blind spots.
+    """
+    if dupe_key:
+        nzbget_api.cancel_dupekey_group(dupe_key, settings_getter=settings_getter)
+    if tracked_nzbid is not None and tracked_nzbid != nzbid:
+        nzbget_api.cancel_job(tracked_nzbid, settings_getter=settings_getter)
+    nzbget_api.cancel_job(nzbid, settings_getter=settings_getter)
 
 
 def _resolve_completed_smb(
@@ -895,7 +924,9 @@ def _dupe_worker_should_skip(getter, cancel_event):
     return False
 
 
-def _submit_backup_fleet(getter, cancel_event, dupe_key, backups, loader, extras_limit):
+def _submit_backup_fleet(
+    getter, cancel_event, dupe_key, backups, loader, extras_limit, submitted_ids
+):
     """Submit the same-name backups, then the loader-widened extras (#372).
 
     Widens with same-content / Hydra-deferred candidates (#372 r2) as
@@ -903,8 +934,12 @@ def _submit_backup_fleet(getter, cancel_event, dupe_key, backups, loader, extras
     by the standby cap's REMAINING slots so same-name backups + extras never
     exceed "Maximum standby fallback streams". Reads ONLY the snapshot
     ``getter`` -- this runs on the worker thread, which must never touch Kodi.
+    Every appended NZBID is recorded into ``submitted_ids`` AS IT LANDS so the
+    post-cancel cleanup can delete exactly this resolve's submissions.
     """
-    _submit_dupe_backups(backups, dupe_key, getter, cancel_event=cancel_event)
+    submitted_ids.extend(
+        _submit_dupe_backups(backups, dupe_key, getter, cancel_event=cancel_event) or []
+    )
     if cancel_event.is_set():
         return
     remaining = (
@@ -916,18 +951,24 @@ def _submit_backup_fleet(getter, cancel_event, dupe_key, backups, loader, extras
         loader, [b.get("link") for b in backups], limit=remaining
     )
     if extras:
-        _submit_dupe_backups(extras, dupe_key, getter, cancel_event=cancel_event)
+        submitted_ids.extend(
+            _submit_dupe_backups(extras, dupe_key, getter, cancel_event=cancel_event)
+            or []
+        )
 
 
-def _resweep_after_cancel(getter, dupe_key):
-    """One extra canceled-group sweep after the backup worker drains (#372 r2).
+def _cleanup_canceled_submissions(getter, submitted_ids):
+    """Delete exactly THIS worker's submissions after a mid-submit cancel (#372).
 
     Covers the append that was already in flight when the user canceled and so
-    landed after _handle_poll_failure's one-shot sweep. Best-effort like every
-    other backup step: a failed sweep is swallowed, never raised off-thread.
+    landed after _handle_poll_failure's one-shot DupeKey sweep. Scoped to the
+    NZBIDs this resolve submitted -- NEVER a whole-DupeKey sweep, which could
+    wipe a fresh retry of the same release (it shares the stable DupeKey) that
+    started while this stale worker drained. Best-effort like every other
+    backup step: a failed delete is swallowed, never raised off-thread.
     """
     try:
-        nzbget_api.cancel_dupekey_group(dupe_key, settings_getter=getter)
+        nzbget_api.cancel_jobs(submitted_ids, settings_getter=getter)
     except Exception:  # pylint: disable=broad-except
         pass
 
@@ -971,13 +1012,20 @@ def _spawn_dupe_backups(ctx):
 
     def _worker():
         reached_submit = False
+        submitted_ids = []
         try:
             if _dupe_worker_should_skip(getter, cancel_event):
                 return
             _warn_if_healthcheck_pauses(getter)
             reached_submit = True
             _submit_backup_fleet(
-                getter, cancel_event, dupe_key, backups, loader, extras_limit
+                getter,
+                cancel_event,
+                dupe_key,
+                backups,
+                loader,
+                extras_limit,
+                submitted_ids,
             )
         except Exception as exc:  # pylint: disable=broad-except
             xbmc.log(
@@ -987,13 +1035,14 @@ def _spawn_dupe_backups(ctx):
                 xbmc.LOGWARNING,
             )
         finally:
-            # If a cancel arrived while a backup's append was already in flight, that
-            # backup can land in NZBGet AFTER _handle_poll_failure's one-shot
-            # cancel_dupekey_group sweep -- and NZBGet would then promote the orphan
-            # as the group's new active download. Re-sweep once the worker has
-            # drained so nothing the user canceled survives (#372 r2 cancel-race).
-            if reached_submit and cancel_event.is_set():
-                _resweep_after_cancel(getter, dupe_key)
+            # If a cancel arrived while a backup's append was already in flight,
+            # that backup can land in NZBGet AFTER _handle_poll_failure's
+            # one-shot cancel_dupekey_group sweep -- and NZBGet would then
+            # promote the orphan as the group's new active download. Clean up
+            # once the worker has drained, scoped to this resolve's own
+            # submissions (#372 r2 cancel-race, r3 retry-race).
+            if reached_submit and cancel_event.is_set() and submitted_ids:
+                _cleanup_canceled_submissions(getter, submitted_ids)
 
     try:
         thread = threading.Thread(
@@ -1066,6 +1115,7 @@ def _submit_poll_resolve(ctx, nzb_url, title, download_pubdate, download_size):
         ctx.on_failure,
         dupe_key=dupe_key,
         cancel_event=ctx.cancel_event,
+        tracked_nzbid=result.get("nzbid"),
     )
     if handled:
         return leave_job

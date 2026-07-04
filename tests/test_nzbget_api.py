@@ -639,6 +639,58 @@ def test_cancel_dupekey_group_deletes_backups_then_queued():
     assert ("history", [True]) in calls
 
 
+def test_cancel_jobs_deletes_history_then_queue_and_skips_empty():
+    # cancel_jobs final-deletes a batch of NZBIDs -- history first (parked DUP
+    # backups deleted so nothing can be promoted), then the queue -- and is a
+    # no-op on empty input (round-3 review: id-scoped post-cancel cleanup).
+    from resources.lib.nzbget_api import cancel_jobs
+
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    calls = []
+
+    def fake_rpc(method, params, settings_getter=None):
+        calls.append((method, list(params)))
+        return (None, None)
+
+    with patch("resources.lib.nzbget_api._rpc_call", side_effect=fake_rpc):
+        cancel_jobs([7, None, 9], settings_getter=getter)
+    assert calls == [
+        ("editqueue", ["HistoryFinalDelete", "", [7, 9]]),
+        ("editqueue", ["GroupFinalDelete", "", [7, 9]]),
+    ]
+    calls.clear()
+    with patch("resources.lib.nzbget_api._rpc_call", side_effect=fake_rpc):
+        cancel_jobs([], settings_getter=getter)
+        cancel_jobs(None, settings_getter=getter)
+    assert not calls  # empty input -> no RPC round-trips
+
+
+def test_active_group_by_dupekey_reports_paused_presence():
+    # A same-key member queued PAUSED (e.g. NZBGet globally paused when the
+    # backup was promoted) is not a promotion -- but it is not an exhausted
+    # group either. The scan reports it so the poll can keep waiting instead of
+    # declaring FAILURE/DUPE (round-3 review finding). The excluded (just
+    # failed) member's own paused row does NOT count.
+    from resources.lib.nzbget_api import active_group_by_dupekey
+
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    paused_other = {"NZBID": 9, "DupeKey": "k", "Status": "PAUSED"}
+    paused_failed = {"NZBID": 1, "DupeKey": "k", "Status": "PAUSED"}
+    with patch(
+        "resources.lib.nzbget_api._rpc_call",
+        return_value=([paused_failed, paused_other], None),
+    ):
+        got = active_group_by_dupekey("k", exclude_nzbid=1, settings_getter=getter)
+    assert got["present"] is False
+    assert got["paused_present"] is True
+    with patch(
+        "resources.lib.nzbget_api._rpc_call", return_value=([paused_failed], None)
+    ):
+        got = active_group_by_dupekey("k", exclude_nzbid=1, settings_getter=getter)
+    assert got["present"] is False
+    assert got["paused_present"] is False  # only the excluded member is paused
+
+
 def test_cancel_dupekey_group_never_deletes_a_prior_success_row():
     # history(True) returns hidden Kind=DUP backups AND visible rows for the same
     # DupeKey -- including a prior Kind=NZB SUCCESS from an earlier completed play.

@@ -1491,6 +1491,92 @@ def test_poll_waits_for_backup_submitter_before_declaring_failed():
     assert calls["n"] >= 3  # it kept waiting while the submitter was alive
 
 
+def test_poll_canceled_carries_tracked_nzbid_after_failover():
+    # Cancel after failover switched to a promoted backup: the canceled outcome
+    # must carry the CURRENTLY tracked NZBID (the promoted backup), so the
+    # cancel path can final-delete it directly -- the DupeKey sweep alone can
+    # miss it on a transient listgroups error (round-3 review finding).
+    dialog = _Dialog()
+
+    def _act(dupe_key, exclude_nzbid=None, settings_getter=None):
+        dialog.canceled = True  # user cancels right as the promotion is seen
+        return {"present": True, "nzbid": 9, "status": "DOWNLOADING", "percent": 5}
+
+    with patch(_GS, side_effect=_seq_group_status({1: [False]})), patch(
+        _HS,
+        return_value={
+            "present": True,
+            "success": False,
+            "status": "FAILURE/HEALTH",
+            "dest_dir": "",
+        },
+    ), patch(_ACT, side_effect=_act), patch(_SUC, return_value={"present": False}):
+        result = poll_nzbget_job(1, dialog, _Monitor(), 60, interval=0, dupe_key="k")
+    assert result["outcome"] == "canceled"
+    assert result["nzbid"] == 9  # the promoted backup, not the original pick
+
+
+def test_handle_poll_failure_cancel_also_cancels_promoted_backup():
+    # With failover already switched to backup 9, cancel must delete the group,
+    # then the tracked backup directly, then the original pick (whose Kind=NZB
+    # failure row the sweep's Kind=DUP-only filter skips).
+    import threading
+
+    calls = []
+    with patch(
+        "resources.lib.nzbget_resolver.nzbget_api.cancel_dupekey_group",
+        side_effect=lambda k, settings_getter=None: calls.append(("group", k)),
+    ), patch(
+        "resources.lib.nzbget_resolver.nzbget_api.cancel_job",
+        side_effect=lambda n, settings_getter=None: calls.append(("job", n)),
+    ):
+        handled, leave = _handle_poll_failure(
+            "canceled",
+            5,
+            _settings({}),
+            lambda m: None,
+            dupe_key="k",
+            cancel_event=threading.Event(),
+            tracked_nzbid=9,
+        )
+    assert (handled, leave) == (True, False)
+    assert calls == [("group", "k"), ("job", 9), ("job", 5)]
+
+
+def test_poll_holds_failover_while_promotion_sits_paused():
+    # A promoted backup queued PAUSED (e.g. NZBGet globally paused) is not an
+    # exhausted group: the poll must keep waiting (bounded by the outer
+    # timeout) instead of reporting FAILURE/DUPE at grace expiry, and fail only
+    # once no paused member remains (round-3 review finding).
+    dialog = _Dialog()
+    act_results = [
+        {"present": False, "paused_present": True},  # grace expired, but paused
+        {"present": False, "paused_present": False},  # paused member gone
+    ]
+
+    def _act(dupe_key, exclude_nzbid=None, settings_getter=None):
+        return act_results.pop(0) if act_results else {"present": False}
+
+    with patch("resources.lib.nzbget_resolver._PROMOTION_GRACE", 0), patch(
+        _GS, side_effect=_seq_group_status({1: [False]})
+    ), patch(
+        _HS,
+        return_value={
+            "present": True,
+            "success": False,
+            "status": "FAILURE/HEALTH",
+            "dest_dir": "",
+        },
+    ), patch(
+        _ACT, side_effect=_act
+    ), patch(
+        _SUC, return_value={"present": False}
+    ):
+        result = poll_nzbget_job(1, dialog, _Monitor(), 60, interval=0, dupe_key="k")
+    assert result["outcome"] == "failed"
+    assert not act_results  # first (paused) tick did NOT fail; it kept waiting
+
+
 def test_poll_without_dupe_key_fails_on_primary_failure_unchanged():
     # No dupe_key -> pre-#372 behavior: a primary failure ends the poll at once.
     dialog = _Dialog()
@@ -1620,7 +1706,7 @@ def test_spawn_dupe_backups_bounds_extras_by_remaining_standby_slots():
         return []
 
     with patch("resources.lib.nzbget_resolver.threading.Thread", _InlineThread), patch(
-        "resources.lib.nzbget_resolver._submit_dupe_backups", return_value=2
+        "resources.lib.nzbget_resolver._submit_dupe_backups", return_value=[10, 11]
     ), patch("resources.lib.nzbget_resolver._warn_if_healthcheck_pauses"), patch(
         "resources.lib.nzbget_resolver._dupe_check_disabled", return_value=False
     ), patch(
@@ -1663,50 +1749,60 @@ def test_poll_excludes_just_failed_member_from_promotion_scan():
     assert 1 in seen_exclude  # the just-failed pick id is excluded from promotion
 
 
-def test_spawn_dupe_backups_resweeps_group_on_cancel_after_submit():
+def test_spawn_dupe_backups_cleans_own_submissions_on_cancel_after_submit():
     # A cancel arriving mid-submit can let a backup's in-flight append land in
-    # NZBGet AFTER _handle_poll_failure's one-shot cancel_dupekey_group sweep; that
-    # orphan would be promoted as the group's new active download. The worker must
-    # re-sweep once it observes the cancel (round-2 review finding: cancel-race).
+    # NZBGet AFTER _handle_poll_failure's one-shot cancel_dupekey_group sweep;
+    # that orphan would be promoted as the group's new active download. The
+    # worker must clean up once it observes the cancel -- deleting exactly the
+    # NZBIDs IT submitted, never the whole DupeKey: a fresh retry of the same
+    # release shares the stable key and must survive a stale worker's cleanup
+    # (round-3 review finding: retry race).
     import threading
 
     ev = threading.Event()
     dupe = {"key": "imdb=1", "pick_score": 9, "backups": [{"link": "u", "score": 1}]}
     ctx = _dupe_ctx(dupe)
     ctx.cancel_event = ev
+    cleaned = []
     swept = []
 
     def _submit(backups, key, getter, cancel_event=None):
         ev.set()  # cancel observed only after this submit's append is already away
-        return 1
+        return [7]
 
     with patch("resources.lib.nzbget_resolver.threading.Thread", _InlineThread), patch(
         "resources.lib.nzbget_resolver._submit_dupe_backups", side_effect=_submit
     ), patch("resources.lib.nzbget_resolver._warn_if_healthcheck_pauses"), patch(
         "resources.lib.nzbget_resolver._dupe_check_disabled", return_value=False
     ), patch(
+        "resources.lib.nzbget_resolver.nzbget_api.cancel_jobs",
+        side_effect=lambda ids, settings_getter=None: cleaned.append(list(ids)),
+    ), patch(
         "resources.lib.nzbget_resolver.nzbget_api.cancel_dupekey_group",
         side_effect=lambda k, settings_getter=None: swept.append(k),
     ):
         _spawn_dupe_backups(ctx)
-    assert swept == ["imdb=1"]  # worker re-swept the group after the mid-submit cancel
+    assert cleaned == [[7]]  # exactly this worker's submissions deleted
+    assert not swept  # never a whole-DupeKey sweep (would kill a fresh retry)
 
 
-def test_spawn_dupe_backups_does_not_resweep_on_normal_completion():
-    # The re-sweep must fire ONLY on cancel -- a normal, non-canceled run must never
-    # delete the pick's own DupeKey group (that would wipe the active download and
-    # every backup the worker just submitted).
+def test_spawn_dupe_backups_does_not_clean_up_on_normal_completion():
+    # The cleanup must fire ONLY on cancel -- a normal, non-canceled run must
+    # never delete the backups the worker just submitted (nor the pick's group).
     dupe = {"key": "imdb=1", "pick_score": 9, "backups": [{"link": "u", "score": 1}]}
-    swept = []
+    cleaned = []
     with patch("resources.lib.nzbget_resolver.threading.Thread", _InlineThread), patch(
-        "resources.lib.nzbget_resolver._submit_dupe_backups", return_value=1
+        "resources.lib.nzbget_resolver._submit_dupe_backups", return_value=[1]
     ), patch("resources.lib.nzbget_resolver._warn_if_healthcheck_pauses"), patch(
         "resources.lib.nzbget_resolver._dupe_check_disabled", return_value=False
     ), patch(
         "resources.lib.nzbget_resolver._extra_backups_from_loader", return_value=[]
     ), patch(
+        "resources.lib.nzbget_resolver.nzbget_api.cancel_jobs",
+        side_effect=lambda ids, settings_getter=None: cleaned.append(list(ids)),
+    ), patch(
         "resources.lib.nzbget_resolver.nzbget_api.cancel_dupekey_group",
-        side_effect=lambda k, settings_getter=None: swept.append(k),
+        side_effect=lambda k, settings_getter=None: cleaned.append(("sweep", k)),
     ):
         _spawn_dupe_backups(_dupe_ctx(dupe))
-    assert not swept  # no cancel -> the group is left intact
+    assert not cleaned  # no cancel -> everything submitted is left intact
