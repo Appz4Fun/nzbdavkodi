@@ -335,31 +335,58 @@ def _poll_tick(state, dialog, settings_getter, dupe_key, is_submitting=None):
     promoted backup, or -- if none appears within ``_PROMOTION_GRACE`` -- reports
     the group failed.
     """
+    if state["current"] is not None:
+        outcome = _tick_tracked_member(state, dialog, settings_getter, dupe_key)
+        if outcome is not _FOLLOW_GROUP:
+            return outcome
+    return _tick_group_follow(state, dialog, settings_getter, dupe_key, is_submitting)
+
+
+# Sentinel returned by _tick_tracked_member so "the tracked member failed but
+# its DupeKey group may fail over" is distinguishable from both a terminal
+# outcome dict and the plain keep-waiting None.
+_FOLLOW_GROUP = object()
+
+
+def _tick_tracked_member(state, dialog, settings_getter, dupe_key):
+    """Poll the currently tracked NZBID (the ``state["current"]`` branch).
+
+    Returns a terminal outcome dict, None to keep waiting, or ``_FOLLOW_GROUP``
+    when the member failed under a ``dupe_key`` and the caller must drop into
+    group-follow mode for this same tick (no extra poll interval is lost).
+    """
     current = state["current"]
-    if current is not None:
-        group = nzbget_api.group_status(current, settings_getter=settings_getter)
-        if group["present"]:
-            _update_active_dialog(dialog, group)
-            state["promotion_deadline"] = None
-            return None
-        hist = nzbget_api.history_status(current, settings_getter=settings_getter)
-        if hist["present"]:
-            if hist["success"]:
-                return {"outcome": "success", "dest_dir": hist["dest_dir"]}
-            if not dupe_key:
-                return {"outcome": "failed", "status": hist["status"]}
-            # The tracked member failed but a DupeKey group may fail over. Remember
-            # its id: NZBGet's queue->history transition is not atomic, so it can
-            # still linger in listgroups for a tick -- exclude it below so the
-            # promotion scan can't re-select the failed member as its own promotion.
-            state["exclude"] = current
-            state["current"] = None
-            state["promotion_deadline"] = time.monotonic() + _PROMOTION_GRACE
-        else:
-            # Not in queue, not yet in history — brief hand-off gap; keep waiting.
-            dialog.update(100, _string(30219))
-            return None
-    # Group-follow mode: the tracked member failed; follow the DupeKey group.
+    group = nzbget_api.group_status(current, settings_getter=settings_getter)
+    if group["present"]:
+        _update_active_dialog(dialog, group)
+        state["promotion_deadline"] = None
+        return None
+    hist = nzbget_api.history_status(current, settings_getter=settings_getter)
+    if not hist["present"]:
+        # Not in queue, not yet in history — brief hand-off gap; keep waiting.
+        dialog.update(100, _string(30219))
+        return None
+    if hist["success"]:
+        return {"outcome": "success", "dest_dir": hist["dest_dir"]}
+    if not dupe_key:
+        return {"outcome": "failed", "status": hist["status"]}
+    # The tracked member failed but a DupeKey group may fail over. Remember
+    # its id: NZBGet's queue->history transition is not atomic, so it can
+    # still linger in listgroups for a tick -- exclude it below so the
+    # promotion scan can't re-select the failed member as its own promotion.
+    state["exclude"] = current
+    state["current"] = None
+    state["promotion_deadline"] = time.monotonic() + _PROMOTION_GRACE
+    return _FOLLOW_GROUP
+
+
+def _tick_group_follow(state, dialog, settings_getter, dupe_key, is_submitting):
+    """Group-follow mode: the tracked member failed; follow the DupeKey group.
+
+    Plays an already-completed group member, re-tracks a promoted backup, or --
+    once the promotion grace expires with no backup still being appended --
+    reports the group exhausted.
+    """
     succeeded = nzbget_api.history_success_by_dupekey(
         dupe_key, settings_getter=settings_getter
     )
@@ -652,56 +679,79 @@ def _submit_dupe_backups(backups, dupe_key, settings_getter, cancel_event=None):
     early if ``cancel_event`` fires (the user canceled the resolve). Returns the
     list of submitted NZBIDs (for logging/tests).
     """
-    from resources.lib.fallback_streams import build_fallback_job_name
-
     submitted = []
     seen = set()
     index = 0
     for backup in backups or []:
         if cancel_event is not None and cancel_event.is_set():
             break
-        if not isinstance(backup, dict):
-            continue
-        nzb_url = backup.get("link")
-        if not nzb_url or nzb_url in seen:
+        nzb_url = _usable_backup_link(backup, seen)
+        if not nzb_url:
             continue
         seen.add(nzb_url)
         index += 1
-        score = int(backup.get("score") or 0)
-        job_name = build_fallback_job_name(
-            backup.get("title") or dupe_key, nzb_url, index
-        )
-        try:
-            nzbid, error = nzbget_api.append_nzb(
-                nzb_url,
-                job_name,
-                settings_getter=settings_getter,
-                dupe_key=dupe_key,
-                dupe_score=score,
-                dupe_mode="SCORE",
-            )
-        except Exception as exc:  # pylint: disable=broad-except
-            xbmc.log(
-                "NZB-DAV: NZBGet duplicate backup submit raised: {}".format(
-                    _redact_text(str(exc))
-                ),
-                xbmc.LOGWARNING,
-            )
-            continue
+        nzbid = _append_one_backup(nzb_url, backup, dupe_key, index, settings_getter)
         if nzbid:
             submitted.append(nzbid)
-            xbmc.log(
-                "NZB-DAV: Queued NZBGet duplicate backup '{}' (score {})".format(
-                    job_name, score
-                ),
-                xbmc.LOGINFO,
-            )
-        else:
-            xbmc.log(
-                "NZB-DAV: NZBGet duplicate backup submit failed: {}".format(error),
-                xbmc.LOGINFO,
-            )
     return submitted
+
+
+def _usable_backup_link(candidate, seen):
+    """The candidate's usable NZB link, or None to skip the row.
+
+    Shared filter for the picker's same-name backups and the loader-widened
+    extras: skip non-dict rows (defensive -- both lists are best-effort inputs)
+    and links already accepted this pass or already submitted (``seen``), so one
+    URL is never appended to NZBGet twice under the same DupeKey.
+    """
+    if not isinstance(candidate, dict):
+        return None
+    link = candidate.get("link")
+    if not link or link in seen:
+        return None
+    return link
+
+
+def _append_one_backup(nzb_url, backup, dupe_key, index, settings_getter):
+    """Append one duplicate backup to NZBGet and log the outcome (#372).
+
+    Returns the new NZBID, or None on a failed/raised append -- the caller keeps
+    iterating either way (best-effort: one bad backup never aborts the rest).
+    """
+    from resources.lib.fallback_streams import build_fallback_job_name
+
+    score = int(backup.get("score") or 0)
+    job_name = build_fallback_job_name(backup.get("title") or dupe_key, nzb_url, index)
+    try:
+        nzbid, error = nzbget_api.append_nzb(
+            nzb_url,
+            job_name,
+            settings_getter=settings_getter,
+            dupe_key=dupe_key,
+            dupe_score=score,
+            dupe_mode="SCORE",
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: NZBGet duplicate backup submit raised: {}".format(
+                _redact_text(str(exc))
+            ),
+            xbmc.LOGWARNING,
+        )
+        return None
+    if nzbid:
+        xbmc.log(
+            "NZB-DAV: Queued NZBGet duplicate backup '{}' (score {})".format(
+                job_name, score
+            ),
+            xbmc.LOGINFO,
+        )
+        return nzbid
+    xbmc.log(
+        "NZB-DAV: NZBGet duplicate backup submit failed: {}".format(error),
+        xbmc.LOGINFO,
+    )
+    return None
 
 
 # Warn about HealthCheck=Pause at most once per Kodi session (a list so the
@@ -794,27 +844,89 @@ def _extra_backups_from_loader(loader, seen_links, limit=_MAX_EXTRA_BACKUPS):
     cap = min(limit, _MAX_EXTRA_BACKUPS)
     if loader is None or cap <= 0:
         return []
-    try:
-        candidates = loader()
-    except Exception:  # pylint: disable=broad-except
-        return []
-    if not isinstance(candidates, list):
-        return []
     extras = []
     seen = set(seen_links or [])
     score = 0
-    for candidate in candidates:
+    for candidate in _load_extra_candidates(loader):
         if len(extras) >= cap:
             break
-        if not isinstance(candidate, dict):
-            continue
-        link = candidate.get("link")
-        if not link or link in seen:
+        link = _usable_backup_link(candidate, seen)
+        if not link:
             continue
         seen.add(link)
         extras.append({"link": link, "title": candidate.get("title"), "score": score})
         score -= 1
     return extras
+
+
+def _load_extra_candidates(loader):
+    """Run the fallback loader, absorbing every failure mode (#372 r2).
+
+    Returns the candidate list, or ``[]`` for an erroring loader or its
+    "disabled" sentinel (a non-list) -- the extras are best-effort widening
+    only, so a broken indexer search must never surface past here.
+    """
+    try:
+        candidates = loader()
+    except Exception:  # pylint: disable=broad-except
+        return []
+    return candidates if isinstance(candidates, list) else []
+
+
+def _dupe_worker_should_skip(getter, cancel_event):
+    """True when the backup worker must submit nothing (#372).
+
+    Skips silently on a pre-submit cancel (the user already gave up on the
+    resolve), and skips with a log when the server has DupeCheck=no -- same-key
+    items would then download in parallel instead of parking as backups.
+    """
+    if cancel_event.is_set():
+        return True
+    if _dupe_check_disabled(getter):
+        xbmc.log(
+            "NZB-DAV: NZBGet DupeCheck=no -- skipping #372 duplicate "
+            "backups (they would download in parallel).",
+            xbmc.LOGINFO,
+        )
+        return True
+    return False
+
+
+def _submit_backup_fleet(getter, cancel_event, dupe_key, backups, loader, extras_limit):
+    """Submit the same-name backups, then the loader-widened extras (#372).
+
+    Widens with same-content / Hydra-deferred candidates (#372 r2) as
+    lowest-priority backups keyed under the same (pick's) DupeKey. Bounds them
+    by the standby cap's REMAINING slots so same-name backups + extras never
+    exceed "Maximum standby fallback streams". Reads ONLY the snapshot
+    ``getter`` -- this runs on the worker thread, which must never touch Kodi.
+    """
+    _submit_dupe_backups(backups, dupe_key, getter, cancel_event=cancel_event)
+    if cancel_event.is_set():
+        return
+    remaining = (
+        _MAX_EXTRA_BACKUPS
+        if extras_limit is None
+        else max(0, extras_limit - len(backups))
+    )
+    extras = _extra_backups_from_loader(
+        loader, [b.get("link") for b in backups], limit=remaining
+    )
+    if extras:
+        _submit_dupe_backups(extras, dupe_key, getter, cancel_event=cancel_event)
+
+
+def _resweep_after_cancel(getter, dupe_key):
+    """One extra canceled-group sweep after the backup worker drains (#372 r2).
+
+    Covers the append that was already in flight when the user canceled and so
+    landed after _handle_poll_failure's one-shot sweep. Best-effort like every
+    other backup step: a failed sweep is swallowed, never raised off-thread.
+    """
+    try:
+        nzbget_api.cancel_dupekey_group(dupe_key, settings_getter=getter)
+    except Exception:  # pylint: disable=broad-except
+        pass
 
 
 def _spawn_dupe_backups(ctx):
@@ -857,34 +969,13 @@ def _spawn_dupe_backups(ctx):
     def _worker():
         reached_submit = False
         try:
-            if cancel_event.is_set() or _dupe_check_disabled(getter):
-                if not cancel_event.is_set():
-                    xbmc.log(
-                        "NZB-DAV: NZBGet DupeCheck=no -- skipping #372 duplicate "
-                        "backups (they would download in parallel).",
-                        xbmc.LOGINFO,
-                    )
+            if _dupe_worker_should_skip(getter, cancel_event):
                 return
             _warn_if_healthcheck_pauses(getter)
             reached_submit = True
-            _submit_dupe_backups(backups, dupe_key, getter, cancel_event=cancel_event)
-            # Widen with same-content / Hydra-deferred candidates (#372 r2), as
-            # lowest-priority backups keyed under the same (pick's) DupeKey. Bound
-            # them by the standby cap's REMAINING slots so same-name backups +
-            # extras never exceed "Maximum standby fallback streams".
-            if not cancel_event.is_set():
-                remaining = (
-                    _MAX_EXTRA_BACKUPS
-                    if extras_limit is None
-                    else max(0, extras_limit - len(backups))
-                )
-                extras = _extra_backups_from_loader(
-                    loader, [b.get("link") for b in backups], limit=remaining
-                )
-                if extras:
-                    _submit_dupe_backups(
-                        extras, dupe_key, getter, cancel_event=cancel_event
-                    )
+            _submit_backup_fleet(
+                getter, cancel_event, dupe_key, backups, loader, extras_limit
+            )
         except Exception as exc:  # pylint: disable=broad-except
             xbmc.log(
                 "NZB-DAV: NZBGet duplicate backup worker error: {}".format(
@@ -899,10 +990,7 @@ def _spawn_dupe_backups(ctx):
             # as the group's new active download. Re-sweep once the worker has
             # drained so nothing the user canceled survives (#372 r2 cancel-race).
             if reached_submit and cancel_event.is_set():
-                try:
-                    nzbget_api.cancel_dupekey_group(dupe_key, settings_getter=getter)
-                except Exception:  # pylint: disable=broad-except
-                    pass
+                _resweep_after_cancel(getter, dupe_key)
 
     try:
         thread = threading.Thread(
@@ -940,16 +1028,8 @@ def _submit_poll_resolve(ctx, nzb_url, title, download_pubdate, download_size):
     unrepairable.
     """
     getter = ctx.settings_getter
-    dupe = ctx.dupe or {}
-    dupe_key = dupe.get("key") or ""
-    nzbid, error = nzbget_api.append_nzb(
-        nzb_url,
-        title,
-        settings_getter=getter,
-        dupe_key=dupe_key,
-        dupe_score=int(dupe.get("pick_score") or 0) if dupe_key else 0,
-        dupe_mode="SCORE",
-    )
+    dupe_key = (ctx.dupe or {}).get("key") or ""
+    nzbid, error = _submit_pick(ctx, nzb_url, title, dupe_key)
     if not nzbid:
         # Surface the specific (already-redacted) NZBGet message — auth vs dupe
         # vs "append returned 0" — per the spec error table, else the generic.
@@ -986,13 +1066,40 @@ def _submit_poll_resolve(ctx, nzb_url, title, download_pubdate, download_size):
     )
     if handled:
         return leave_job
+    _play_completed_download(
+        ctx, result["dest_dir"], title, download_pubdate, download_size
+    )
+    return leave_job
 
-    # Download completed (now SUCCESS history): record the post-date before the
-    # SMB mapping, which can still fail without un-completing it. Fail-soft.
+
+def _submit_pick(ctx, nzb_url, title, dupe_key):
+    """Append the pick, with the #372 Smart-Duplicates fields when computed.
+
+    The pick carries the shared DupeKey at the top DupeScore so NZBGet keeps it
+    the active download; without a ``dupe_key`` this is a plain single submit
+    unchanged from pre-#372. Returns ``append_nzb``'s ``(nzbid, error)``.
+    """
+    dupe = ctx.dupe or {}
+    return nzbget_api.append_nzb(
+        nzb_url,
+        title,
+        settings_getter=ctx.settings_getter,
+        dupe_key=dupe_key,
+        dupe_score=int(dupe.get("pick_score") or 0) if dupe_key else 0,
+        dupe_mode="SCORE",
+    )
+
+
+def _play_completed_download(ctx, dest_dir, title, download_pubdate, download_size):
+    """Ledger-record the completed download, then resolve+play it over SMB.
+
+    Recording happens BEFORE the SMB mapping, which can still fail without
+    un-completing the download (fail-soft): the picker's "DL" tag must reflect
+    the box's history even when the share is unreachable right now.
+    """
     record_download(title, download_pubdate, download_size)
-
     video_url = _resolve_completed_smb(
-        result["dest_dir"],
+        dest_dir,
         ctx.smb_root,
         ctx.category,
         ctx.completed_base,
@@ -1001,10 +1108,8 @@ def _submit_poll_resolve(ctx, nzb_url, title, download_pubdate, download_size):
     )
     if not video_url:
         ctx.on_failure(_string(30223))
-        return leave_job
-
+        return
     ctx.on_success(video_url)
-    return leave_job
 
 
 def _run_nzbget_backend(

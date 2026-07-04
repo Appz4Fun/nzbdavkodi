@@ -464,6 +464,32 @@ def _dupekey_match(item, dupe_key):
     )
 
 
+def _promoted_group_entry(group, dupe_key, exclude_nzbid):
+    """Build the promoted-download entry for one listgroups row, or None.
+
+    Keeps ``active_group_by_dupekey`` a flat scan: the DupeKey match, the
+    exclude-NZBID skip (the failed pick itself), and the PAUSED skip (a
+    still-parked backup, not the promoted-active one) all live here so the
+    caller only decides "match or keep scanning".
+    """
+    if not isinstance(group, dict) or not _dupekey_match(group, dupe_key):
+        return None
+    if exclude_nzbid is not None and _same_nzbid(group.get("NZBID"), exclude_nzbid):
+        return None
+    status = str(group.get("Status") or "")
+    if status.upper() == "PAUSED":
+        return None
+    downloaded = _as_number(group.get("DownloadedSizeMB"))
+    total = _as_number(group.get("FileSizeMB"))
+    percent = int(downloaded * 100 / total) if total else 0
+    return {
+        "present": True,
+        "nzbid": group.get("NZBID"),
+        "status": status,
+        "percent": percent,
+    }
+
+
 def active_group_by_dupekey(dupe_key, exclude_nzbid=None, settings_getter=None):
     """The active (non-PAUSED) queued group sharing ``dupe_key`` (#372 round 2).
 
@@ -479,22 +505,9 @@ def active_group_by_dupekey(dupe_key, exclude_nzbid=None, settings_getter=None):
     if error is not None or not isinstance(groups, list):
         return {"present": False}
     for group in groups:
-        if not isinstance(group, dict) or not _dupekey_match(group, dupe_key):
-            continue
-        if exclude_nzbid is not None and _same_nzbid(group.get("NZBID"), exclude_nzbid):
-            continue
-        status = str(group.get("Status") or "")
-        if status.upper() == "PAUSED":
-            continue  # a still-parked backup, not the promoted-active one
-        downloaded = _as_number(group.get("DownloadedSizeMB"))
-        total = _as_number(group.get("FileSizeMB"))
-        percent = int(downloaded * 100 / total) if total else 0
-        return {
-            "present": True,
-            "nzbid": group.get("NZBID"),
-            "status": status,
-            "percent": percent,
-        }
+        entry = _promoted_group_entry(group, dupe_key, exclude_nzbid)
+        if entry is not None:
+            return entry
     return {"present": False}
 
 
@@ -511,15 +524,29 @@ def history_success_by_dupekey(dupe_key, settings_getter=None):
     if error is not None or not isinstance(hist, list):
         return {"present": False}
     for item in hist:
-        if not isinstance(item, dict) or not _dupekey_match(item, dupe_key):
-            continue
-        if str(item.get("Status") or "").startswith("SUCCESS"):
-            return {
-                "present": True,
-                "nzbid": item.get("NZBID"),
-                "dest_dir": _dest_dir(item),
-            }
+        entry = _success_history_entry(item, dupe_key)
+        if entry is not None:
+            return entry
     return {"present": False}
+
+
+def _success_history_entry(item, dupe_key):
+    """Build the completed-member entry for one history row, or None.
+
+    Keeps ``history_success_by_dupekey`` a flat scan: the DupeKey match and
+    the SUCCESS/* gate (same completion guarantee as ``history_status`` — only
+    a fully post-processed row is playable) live here so the caller only
+    decides "match or keep scanning".
+    """
+    if not isinstance(item, dict) or not _dupekey_match(item, dupe_key):
+        return None
+    if not str(item.get("Status") or "").startswith("SUCCESS"):
+        return None
+    return {
+        "present": True,
+        "nzbid": item.get("NZBID"),
+        "dest_dir": _dest_dir(item),
+    }
 
 
 def cancel_dupekey_group(dupe_key, settings_getter=None):
@@ -539,32 +566,59 @@ def cancel_dupekey_group(dupe_key, settings_getter=None):
         return
     hist, error = _rpc_call("history", [True], settings_getter=settings_getter)
     if error is None and isinstance(hist, list):
-        hist_ids = [
-            item.get("NZBID")
-            for item in hist
-            if isinstance(item, dict)
-            and _dupekey_match(item, dupe_key)
-            and str(item.get("Kind") or "").upper() == "DUP"
-            and item.get("NZBID") is not None
-        ]
-        if hist_ids:
-            _rpc_call(
-                "editqueue",
-                ["HistoryFinalDelete", "", hist_ids],
-                settings_getter=settings_getter,
-            )
+        _final_delete(
+            "HistoryFinalDelete",
+            _dup_backup_history_ids(hist, dupe_key),
+            settings_getter,
+        )
     groups, error = _rpc_call("listgroups", [0], settings_getter=settings_getter)
     if error is None and isinstance(groups, list):
-        group_ids = [
-            group.get("NZBID")
-            for group in groups
-            if isinstance(group, dict)
-            and _dupekey_match(group, dupe_key)
-            and group.get("NZBID") is not None
-        ]
-        if group_ids:
-            _rpc_call(
-                "editqueue",
-                ["GroupFinalDelete", "", group_ids],
-                settings_getter=settings_getter,
-            )
+        _final_delete(
+            "GroupFinalDelete",
+            _queued_group_ids(groups, dupe_key),
+            settings_getter,
+        )
+
+
+def _dup_backup_history_ids(hist, dupe_key):
+    """NZBIDs of the parked ``Kind=DUP`` backups sharing ``dupe_key``.
+
+    The ``Kind=DUP`` gate is the safety invariant: ``history(Hidden=true)``
+    also returns visible ``Kind=NZB`` rows (e.g. a prior SUCCESS/* for a
+    stable DupeKey), and ``HistoryFinalDelete`` on a completed success would
+    wipe its files. Only untried parked backups can be promoted.
+    """
+    return [
+        item.get("NZBID")
+        for item in hist
+        if isinstance(item, dict)
+        and _dupekey_match(item, dupe_key)
+        and str(item.get("Kind") or "").upper() == "DUP"
+        and item.get("NZBID") is not None
+    ]
+
+
+def _queued_group_ids(groups, dupe_key):
+    """NZBIDs of the queued listgroups members sharing ``dupe_key``.
+
+    Matches the active pick and any promoted backup; no Kind gate needed —
+    listgroups only ever returns queued downloads, never history rows.
+    """
+    return [
+        group.get("NZBID")
+        for group in groups
+        if isinstance(group, dict)
+        and _dupekey_match(group, dupe_key)
+        and group.get("NZBID") is not None
+    ]
+
+
+def _final_delete(command, ids, settings_getter):
+    """One best-effort ``editqueue`` final-delete for all ``ids`` at once.
+
+    Skips the RPC entirely when the scan matched nothing — an empty-IDs
+    editqueue would be a pointless round-trip on every cancel.
+    """
+    if not ids:
+        return
+    _rpc_call("editqueue", [command, "", ids], settings_getter=settings_getter)

@@ -299,6 +299,31 @@ def _int_or_none(value):
         return None
 
 
+def _episode_content_prefix(tvdb, imdb, season, episode):
+    """Episode-form content id (``tvdbid=<id>-S<ss>-E<ee>``, docs), or ``""``.
+
+    Split out of ``_content_prefix`` so each key shape stays simple. Empty
+    without a reliable numeric season+episode -- there the ``imdb``/``tvdb``
+    fields identify the SHOW, so a bare id would span multiple episodes.
+    """
+    if season is None or episode is None:
+        return ""
+    suffix = "-S{:02d}-E{:02d}".format(season, episode)
+    if tvdb:
+        return "tvdbid={}{}".format(tvdb, suffix)
+    return "imdb={}{}".format(imdb, suffix) if imdb else ""
+
+
+def _movie_content_prefix(imdb, tmdb):
+    """Movie-form content id (``imdb=<digits>``, else ``themoviedb=``), or ``""``.
+
+    Split out of ``_content_prefix`` so each key shape stays simple.
+    """
+    if imdb:
+        return "imdb={}".format(imdb)
+    return "themoviedb={}".format(tmdb) if tmdb else ""
+
+
 def _content_prefix(identity):
     """Canonical content id for DupeKey namespacing (docs formats), or ``""``.
 
@@ -310,23 +335,16 @@ def _content_prefix(identity):
     name (added by ``_release_dupe_key``) keeps distinct episodes apart instead.
     """
     imdb = _imdb_digits(identity.get("imdb"))
-    tvdb = str(identity.get("tvdb") or "").strip()
-    tmdb = str(identity.get("tmdb_id") or "").strip()
     season = _int_or_none(identity.get("season"))
     episode = _int_or_none(identity.get("episode"))
     is_episode = (identity.get("type") or "").lower() == "episode" or (
         season is not None and episode is not None
     )
     if is_episode:
-        if season is None or episode is None:
-            return ""
-        suffix = "-S{:02d}-E{:02d}".format(season, episode)
-        if tvdb:
-            return "tvdbid={}{}".format(tvdb, suffix)
-        return "imdb={}{}".format(imdb, suffix) if imdb else ""
-    if imdb:
-        return "imdb={}".format(imdb)
-    return "themoviedb={}".format(tmdb) if tmdb else ""
+        tvdb = str(identity.get("tvdb") or "").strip()
+        return _episode_content_prefix(tvdb, imdb, season, episode)
+    tmdb = str(identity.get("tmdb_id") or "").strip()
+    return _movie_content_prefix(imdb, tmdb)
 
 
 def _release_dupe_key(identity, release_title):
@@ -354,6 +372,21 @@ def _release_dupe_key(identity, release_title):
 _MAX_DUPE_BACKUPS = 5
 
 
+def _is_same_name_backup(result, target, selected_link, seen):
+    """Whether a picker row is a usable same-name backup for the pick (#372).
+
+    Requires a dict row with a link that is neither the pick's nor already
+    collected, and a normalized release name matching the pick's. Split out of
+    ``_same_name_backups`` so the collection loop stays simple.
+    """
+    if not isinstance(result, dict):
+        return False
+    link = result.get("link")
+    if not link or link == selected_link or link in seen:
+        return False
+    return _normalize_release_name(result.get("title")) == target
+
+
 def _same_name_backups(selected, filtered, max_backups):
     """The other picker results sharing the pick's release name, deduped/capped."""
     target = _normalize_release_name(selected.get("title"))
@@ -361,34 +394,25 @@ def _same_name_backups(selected, filtered, max_backups):
     backups = []
     seen = set()
     for result in filtered or []:
-        if not isinstance(result, dict):
+        if not _is_same_name_backup(result, target, selected_link, seen):
             continue
-        link = result.get("link")
-        if not link or link == selected_link or link in seen:
-            continue
-        if _normalize_release_name(result.get("title")) != target:
-            continue
-        seen.add(link)
-        backups.append({"link": link, "title": result.get("title")})
+        seen.add(result["link"])
+        backups.append({"link": result["link"], "title": result.get("title")})
         if len(backups) >= max_backups:
             break
     return backups
 
 
-def _nzbget_dupe_submission_for_selection(selected, filtered, identity, getter=None):
-    """Build the NZBGet Smart-Duplicates submission for a pick (#372).
+def _dupe_max_backups(getter):
+    """Settings gate for the duplicate fleet: the capped backup count, or ``None``.
 
-    Returns ``{"key", "pick_score", "backups": [{"link","title","score"}]}`` when
-    the NZBGet backend is on, fallback streams are enabled, a DupeKey is
-    computable, AND there is at least one same-release-name backup on the picker
-    (reposts / mirrors) -- else ``None`` (plain single submit). The pick takes
-    the top DupeScore and the same-name backups strictly-lower descending scores
-    (count-based, so always positive and pick-highest for any fleet size), so
-    NZBGet downloads the pick and parks the rest in history as duplicate backups,
-    failing over on an unrepairable download. Bounded by ``fallback_streams_max``
-    (hard-capped at ``_MAX_DUPE_BACKUPS``). ``getter`` reads settings on the
-    RunScript/script-play path (``_get_script_setting``); ``None`` reads the live
-    Kodi addon settings. Empty on the nzbdav backend (its own live fallback).
+    ``None`` (plain single submit) when the NZBGet backend is off, fallback
+    streams are disabled, or the parsed ``fallback_streams_max`` cap is
+    zero/negative; else the cap bounded by ``_MAX_DUPE_BACKUPS``. ``getter``
+    reads settings on the RunScript/script-play path; ``None`` reads the live
+    Kodi addon settings. Split out of
+    ``_nzbget_dupe_submission_for_selection`` so the submission builder stays
+    simple.
     """
     import resources.lib.router as _router
 
@@ -408,7 +432,26 @@ def _nzbget_dupe_submission_for_selection(selected, filtered, identity, getter=N
     except (TypeError, ValueError):
         max_backups = 5
     max_backups = min(max_backups, _MAX_DUPE_BACKUPS)
-    if max_backups <= 0:
+    return max_backups if max_backups > 0 else None
+
+
+def _nzbget_dupe_submission_for_selection(selected, filtered, identity, getter=None):
+    """Build the NZBGet Smart-Duplicates submission for a pick (#372).
+
+    Returns ``{"key", "pick_score", "backups": [{"link","title","score"}]}`` when
+    the NZBGet backend is on, fallback streams are enabled, a DupeKey is
+    computable, AND there is at least one same-release-name backup on the picker
+    (reposts / mirrors) -- else ``None`` (plain single submit). The pick takes
+    the top DupeScore and the same-name backups strictly-lower descending scores
+    (count-based, so always positive and pick-highest for any fleet size), so
+    NZBGet downloads the pick and parks the rest in history as duplicate backups,
+    failing over on an unrepairable download. Bounded by ``fallback_streams_max``
+    (hard-capped at ``_MAX_DUPE_BACKUPS``). ``getter`` reads settings on the
+    RunScript/script-play path (``_get_script_setting``); ``None`` reads the live
+    Kodi addon settings. Empty on the nzbdav backend (its own live fallback).
+    """
+    max_backups = _dupe_max_backups(getter)
+    if max_backups is None:
         return None
     key = _release_dupe_key(identity or {}, selected.get("title"))
     if not key:
