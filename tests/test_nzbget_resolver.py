@@ -1515,15 +1515,21 @@ def test_handle_poll_failure_cancel_deletes_group_and_stops_worker():
     calls = []
     with patch(
         "resources.lib.nzbget_resolver.nzbget_api.cancel_dupekey_group",
-        side_effect=lambda k, settings_getter=None: calls.append(k),
-    ), patch("resources.lib.nzbget_resolver.nzbget_api.cancel_job") as cancel_job:
+        side_effect=lambda k, settings_getter=None: calls.append(("group", k)),
+    ), patch(
+        "resources.lib.nzbget_resolver.nzbget_api.cancel_job",
+        side_effect=lambda n, settings_getter=None: calls.append(("job", n)),
+    ):
         handled, leave = _handle_poll_failure(
             "canceled", 5, _settings({}), lambda m: None, dupe_key="k", cancel_event=ev
         )
     assert (handled, leave) == (True, False)
-    assert calls == ["k"]  # whole group deleted
     assert ev.is_set()  # backup worker signaled to stop
-    cancel_job.assert_not_called()  # group path, not the single-job path
+    # Group sweep FIRST (backups deleted so nothing can be promoted), then the
+    # tracked NZBID is canceled directly as well: the DupeKey scan alone can
+    # miss the pick (transient listgroups error, or the pick already parked in
+    # history as a Kind=NZB failure row the Kind=DUP-only sweep skips).
+    assert calls == [("group", "k"), ("job", 5)]
 
 
 def test_submit_dupe_backups_stops_on_cancel_event():

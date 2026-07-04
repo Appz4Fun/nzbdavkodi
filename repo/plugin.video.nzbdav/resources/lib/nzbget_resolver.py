@@ -534,14 +534,17 @@ def _handle_poll_failure(
         return True, True
     if outcome == "canceled":
         # Stop the backup worker, then delete the whole DupeKey group so NZBGet
-        # can't promote a parked backup after the pick is deleted (#372 round 2);
-        # fall back to canceling just the pick when there is no group.
+        # can't promote a parked backup after the pick is deleted (#372 round 2).
+        # The group sweep is IN ADDITION to canceling the tracked NZBID, not a
+        # replacement: the DupeKey scan alone can miss the pick (a transient
+        # listgroups error, or the pick already parked in history as a Kind=NZB
+        # failure row the Kind=DUP-only sweep deliberately skips), and the
+        # direct cancel alone would let NZBGet promote a parked backup.
         if cancel_event is not None:
             cancel_event.set()
         if dupe_key:
             nzbget_api.cancel_dupekey_group(dupe_key, settings_getter=settings_getter)
-        else:
-            nzbget_api.cancel_job(nzbid, settings_getter=settings_getter)
+        nzbget_api.cancel_job(nzbid, settings_getter=settings_getter)
         on_failure(None)
         return True, False
     if outcome == "failed":
