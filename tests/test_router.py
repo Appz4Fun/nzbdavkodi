@@ -1,5 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 nzbdav contributors
+# pylint: disable=too-many-arguments,too-many-positional-arguments
+# ^ 9-12-arg test signatures come from stacked @patch decorators; scheduled for
+#   fixture consolidation in the complexity-reduction Phase C1 wave, after
+#   which this module-level disable comes off.
 
 import itertools
 import threading
@@ -28,6 +32,7 @@ from resources.lib.router import (
     parse_route,
     route,
 )
+from resources.lib.search_planner import SearchQuery
 
 
 def test_parse_route_root():
@@ -275,24 +280,28 @@ def test_search_all_providers_calls_direct_indexers_when_enabled(mock_addon):
         },
     ):
         results, error = _search_all_providers(
+            SearchQuery(
+                "episode",
+                "Breaking Bad",
+                year="2008",
+                imdb="tt0903747",
+                season="5",
+                episode="14",
+            )
+        )
+
+    assert error is None
+    assert len(results) == 1
+    direct_search.assert_called_once_with(
+        SearchQuery(
             "episode",
             "Breaking Bad",
             year="2008",
             imdb="tt0903747",
             season="5",
             episode="14",
-        )
-
-    assert error is None
-    assert len(results) == 1
-    direct_search.assert_called_once_with(
-        "episode",
-        "Breaking Bad",
-        year="2008",
-        imdb="tt0903747",
-        season="5",
-        episode="14",
-        tvdb="",
+            tvdb="",
+        ),
         indexers=ANY,
         max_results=ANY,
     )
@@ -310,7 +319,7 @@ def test_search_all_providers_treats_missing_hydra_enabled_as_disabled(mock_addo
         "resources.lib.hydra.search_hydra",
         side_effect=AssertionError("Hydra should default disabled"),
     ):
-        results, error = _search_all_providers("movie", "The Matrix")
+        results, error = _search_all_providers(SearchQuery("movie", "The Matrix"))
 
     assert not results
     assert "No search providers enabled" in error
@@ -330,7 +339,7 @@ def test_search_all_providers_no_provider_error_mentions_direct_indexers(
     }.get(key, "")
     mock_addon.return_value = addon
 
-    results, error = _search_all_providers("movie", "The Matrix")
+    results, error = _search_all_providers(SearchQuery("movie", "The Matrix"))
 
     assert not results
     assert "direct indexers" in error
@@ -363,7 +372,7 @@ def test_search_all_providers_uses_defaults_when_setting_read_raises(mock_addon)
     )
 
     with patch("resources.lib.hydra.search_hydra", hydra_search):
-        results, error = _search_all_providers("movie", "The Matrix")
+        results, error = _search_all_providers(SearchQuery("movie", "The Matrix"))
 
     assert error is None
     assert len(results) == 1
@@ -403,7 +412,7 @@ def test_search_all_providers_uses_default_for_one_snapshot_setting_failure():
 
     with patch("resources.lib.hydra.search_hydra", hydra_search):
         results, error = _search_all_providers(
-            "movie", "The Matrix", settings_getter=setting
+            SearchQuery("movie", "The Matrix"), settings_getter=setting
         )
 
     assert error is None
@@ -444,7 +453,7 @@ def test_search_all_providers_uses_script_settings_getter_without_kodi_addon(
 
     with patch("resources.lib.hydra.search_hydra", hydra_search):
         results, error = _search_all_providers(
-            "movie", "The Odyssey", settings_getter=setting
+            SearchQuery("movie", "The Odyssey"), settings_getter=setting
         )
 
     assert error is None
@@ -509,7 +518,8 @@ def test_search_all_providers_logs_provider_timing(mock_log_timing):
 
         with patch(patch_path, search_mock):
             results, error = _search_all_providers(
-                "movie", "The Matrix", settings_getter=setting(provider_key)
+                SearchQuery("movie", "The Matrix"),
+                settings_getter=setting(provider_key),
             )
 
         assert error is None
@@ -540,7 +550,7 @@ def test_search_all_providers_logs_provider_timing_for_errors(mock_log_timing):
 
     with patch("resources.lib.hydra.search_hydra", hydra_search):
         results, error = _search_all_providers(
-            "movie", "The Matrix", settings_getter=setting
+            SearchQuery("movie", "The Matrix"), settings_getter=setting
         )
 
     assert not results
@@ -571,7 +581,7 @@ def test_search_all_providers_logs_provider_timing_for_exceptions(mock_log_timin
 
     with patch("resources.lib.hydra.search_hydra", hydra_search):
         results, error = _search_all_providers(
-            "movie", "The Matrix", settings_getter=setting
+            SearchQuery("movie", "The Matrix"), settings_getter=setting
         )
 
     assert not results
@@ -2203,9 +2213,9 @@ def test_handle_script_play_recovers_episode_numbers_from_listitem(
     _handle_script_play({"type": "episode", "imdb": "tt9813792", "tmdb_id": "124364"})
 
     mock_search.assert_called_once()
-    kwargs = mock_search.call_args.kwargs
-    assert kwargs["season"] == "3"
-    assert kwargs["episode"] == "5"
+    query = mock_search.call_args.args[0]
+    assert query.season == "3"
+    assert query.episode == "5"
 
 
 @patch("xbmcaddon.Addon")
@@ -2241,9 +2251,9 @@ def test_handle_script_play_recovers_episode_numbers_from_container_listitem(
     _handle_script_play({"type": "episode", "imdb": "tt9813792", "tmdb_id": "124364"})
 
     mock_search.assert_called_once()
-    kwargs = mock_search.call_args.kwargs
-    assert kwargs["season"] == "3"
-    assert kwargs["episode"] == "5"
+    query = mock_search.call_args.args[0]
+    assert query.season == "3"
+    assert query.episode == "5"
 
 
 @patch("xbmcaddon.Addon")
@@ -2280,9 +2290,9 @@ def test_handle_script_play_listitem_labels_are_atomic_per_source(
 
     _handle_script_play({"type": "episode", "imdb": "tt9813792", "tmdb_id": "124364"})
 
-    kwargs = mock_search.call_args.kwargs
-    assert kwargs["season"] == "3"
-    assert kwargs["episode"] == "5"
+    query = mock_search.call_args.args[0]
+    assert query.season == "3"
+    assert query.episode == "5"
 
 
 @patch("xbmcaddon.Addon")
@@ -2321,9 +2331,9 @@ def test_handle_script_play_skips_stale_root_for_title_matching_root(
 
     _handle_script_play({"type": "episode", "imdb": "tt9813792", "tmdb_id": "124364"})
 
-    kwargs = mock_search.call_args.kwargs
-    assert kwargs["season"] == "3"
-    assert kwargs["episode"] == "5"
+    query = mock_search.call_args.args[0]
+    assert query.season == "3"
+    assert query.episode == "5"
 
 
 @patch("xbmcaddon.Addon")
@@ -2357,9 +2367,9 @@ def test_handle_script_play_ignores_listitem_episode_for_different_show(
     _handle_script_play({"type": "episode", "imdb": "tt9813792", "tmdb_id": "124364"})
 
     mock_search.assert_called_once()
-    kwargs = mock_search.call_args.kwargs
-    assert kwargs["season"] == ""
-    assert kwargs["episode"] == ""
+    query = mock_search.call_args.args[0]
+    assert query.season == ""
+    assert query.episode == ""
 
 
 @patch(

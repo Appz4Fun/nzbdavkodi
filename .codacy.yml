@@ -10,9 +10,14 @@ engines:
       - "scripts/**"
   bandit:
     enabled: true
+    # scripts/ is dev tooling, not shipped code: CI's bandit.yml scans only
+    # repo/plugin.video.nzbdav/ (and skips B603 there), matching the repo's
+    # security-scan scope. Keep the Codacy engine aligned so list-form
+    # subprocess calls in helper scripts don't trip the PR issue gate.
     exclude_paths:
       - "tests/**"
       - "tests-extensive/**"
+      - "scripts/**"
       - "plugin.video.nzbdav/resources/lib/ptt/**"
       - "repo/plugin.video.nzbdav/resources/lib/ptt/**"
   # Prospector's only output unique to this Kodi addon is pydocstyle (hundreds of
@@ -35,20 +40,21 @@ engines:
       - "repo/plugin.video.nzbdav/resources/lib/ptt/**"
       - "scripts/**"
       - "repo/plugin.video.nzbdav/**"
-  # Lizard's default "medium" thresholds contradict this project's committed
-  # complexity policy. 12 of its findings are parameter-count > 8, but .pylintrc
-  # explicitly disables too-many-arguments (R0913) because the threaded fallback /
-  # fingerprint helpers legitimately thread many bound values; one is file-nloc >
-  # 500 (tracked as its own decomposition ticket). Cyclomatic-complexity discipline
-  # is still enforced on the library by pylint (mccabe via .pylintrc) and by the
-  # dev-time codacy-cli lizard run at this project's own thresholds. Scope the cloud
-  # Lizard tool away from the shipped library so its default-standard thresholds
-  # don't red the gate on complexity the project has already decided to accept.
+  # The shipped library is back under cloud Lizard enforcement. The A1-A4
+  # param-bundling / decomposition refactors removed the parameter-count and
+  # file-nloc floor the old exclusion defended; the two remaining shipped-lib
+  # findings (_serve_proxy CCN 9, _discovered_video_is_stub CCN 9) are
+  # individually accepted — splitting either harms readability of a cohesive
+  # state machine / rejection predicate. .pylintrc re-enables
+  # too-many-arguments at the same threshold (max-args=8). Tests stay excluded
+  # pending the Phase C test-suite wave (fixture consolidation + giant-file
+  # splits); the vendored ptt exclusion is permanent.
   lizard:
     exclude_paths:
       - "tests/**"
       - "tests-extensive/**"
-      - "repo/plugin.video.nzbdav/**"
+      - "plugin.video.nzbdav/resources/lib/ptt/**"
+      - "repo/plugin.video.nzbdav/resources/lib/ptt/**"
   # Codacy enables Trivy (dependency/vuln scanner) by default, but no patterns are
   # configured for it in this project, so it aborts ("Failed to configure Codacy
   # Trivy: no patterns configured") and reds both the Codacy Security Scan workflow

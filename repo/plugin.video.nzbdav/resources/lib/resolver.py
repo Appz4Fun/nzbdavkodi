@@ -54,6 +54,7 @@ from resources.lib.nzbdav_api import (  # noqa: F401
     submit_nzb,
 )
 from resources.lib.webdav import (  # noqa: F401
+    TitleHints,
     find_video_file,
     find_video_stream_for_folder,
     get_webdav_stream_url_for_path,
@@ -299,23 +300,20 @@ from resources.lib.resolver_completed import (  # noqa: E402,F401
     _submit_error_with_indexer,
 )
 from resources.lib.resolver_entry import (  # noqa: E402,F401
+    _resolve_acquire_stream,
+    _resolve_and_play_acquire_stream,
+    _resolve_and_play_make_effects,
+    _ResolveSideEffects,
     resolve,
     resolve_and_play,
 )
 from resources.lib.resolver_fallback import (  # noqa: E402,F401
     _adopt_existing_fallback_job,
-    _await_fallback_worker_finish,
     _await_playback_start,
-    _cancel_fallback_job,
-    _cancel_fallback_submitted_jobs,
     _collect_fallback_candidate_jobs,
     _fallback_candidate_row,
-    _fallback_job_pending,
-    _fallback_job_value,
     _fallback_streams_enabled,
-    _fallback_submit_jobs_snapshot,
     _get_fallback_submit_delay_seconds,
-    _invoke_fallback_job_cancel,
     _load_and_submit_fallback_candidates,
     _lookup_existing_fallback_jobs,
     _notify_no_fallback_candidates,
@@ -328,10 +326,19 @@ from resources.lib.resolver_fallback import (  # noqa: E402,F401
     _run_fallback_on_append_hook,
     _signal_fallback_playback_started,
     _start_fallback_submit_worker,
-    _stop_fallback_submit_worker,
     _submit_fallback_candidates,
     _submit_one_fallback_candidate,
     _wait_prewarm_or_inactive,
+)
+from resources.lib.resolver_fallback_jobs import (  # noqa: E402,F401
+    _await_fallback_worker_finish,
+    _cancel_fallback_job,
+    _cancel_fallback_submitted_jobs,
+    _fallback_job_pending,
+    _fallback_job_value,
+    _fallback_submit_jobs_snapshot,
+    _invoke_fallback_job_cancel,
+    _stop_fallback_submit_worker,
 )
 from resources.lib.resolver_flow import (  # noqa: E402,F401
     _invoke_poll_until_ready,
@@ -425,6 +432,7 @@ from resources.lib.resolver_poll import (  # noqa: E402,F401
     _wait_for_nearly_complete_history,
 )
 from resources.lib.resolver_pollloop import (  # noqa: E402,F401
+    PollContext,
     _cancel_job_on_shutdown,
     _job_status_is_dead,
     _mark_dead_on_failed_history,
@@ -432,6 +440,7 @@ from resources.lib.resolver_pollloop import (  # noqa: E402,F401
     _notify_primary_submitted,
     _poll_until_ready,
     _record_download_soft,
+    _submit_and_announce,
     _wait_between_polls,
 )
 from resources.lib.resolver_prepare import (  # noqa: E402,F401
@@ -488,6 +497,7 @@ from resources.lib.resolver_submit import (  # noqa: E402,F401
     _report_all_submit_attempts_failed,
     _safe_probe_by_name,
     _start_probe_thread_or_run,
+    _start_submit_worker,
     _submit_nzb_with_retries,
     _submit_nzb_with_ui_pump,
     _submit_probe_interval,

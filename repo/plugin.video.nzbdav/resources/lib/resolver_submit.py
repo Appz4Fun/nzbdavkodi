@@ -159,6 +159,55 @@ def _cancel_late_accepted_submit(nzo_id, title, settings_getter):
         )
 
 
+def _start_submit_worker(
+    nzb_url, title, settings_getter, submit_timeout_seconds, activity_ready
+):
+    """Build the submit worker + its events; return the daemon thread.
+
+    Extracted verbatim from ``_submit_nzb_with_ui_pump``. ``activity_ready`` is
+    owned by the caller (the concurrent queue/history probes also set it), so it
+    is threaded in rather than created here. Returns
+    ``(submit_result, submit_done, cancel_after_submit, thread)``; the caller
+    starts the thread (or runs it inline via ``thread.run()`` as a fallback).
+    """
+    submit_result = [None, None]
+    submit_done = _resolver.threading.Event()
+    # Set when the user cancels or Kodi aborts while the (uninterruptible)
+    # addurl worker is still in flight. The worker re-checks this AFTER
+    # submit_nzb returns and cancels a late-accepted nzo_id so a user-cancelled
+    # download is never left running in nzbdav.
+    cancel_after_submit = _resolver.threading.Event()
+
+    def _submit_worker():
+        try:
+            submit_kwargs = _resolver._settings_getter_kwargs(settings_getter)
+            if settings_getter is not None:
+                submit_kwargs["submit_timeout"] = submit_timeout_seconds
+            submit_result[0], submit_result[1] = _resolver.submit_nzb(
+                nzb_url,
+                title,
+                **submit_kwargs,
+            )
+            if submit_result[0] and cancel_after_submit.is_set():
+                _cancel_late_accepted_submit(submit_result[0], title, settings_getter)
+        except Exception as e:  # pylint: disable=broad-except
+            _resolver.xbmc.log(
+                "NZB-DAV: submit_nzb worker raised: {}".format(
+                    _resolver._redact_log(e)
+                ),
+                _resolver.xbmc.LOGERROR,
+            )
+            submit_result[0], submit_result[1] = None, None
+        finally:
+            submit_done.set()
+            activity_ready.set()
+
+    thread = _resolver.threading.Thread(
+        target=_submit_worker, name="nzbdav-submit", daemon=True
+    )
+    return submit_result, submit_done, cancel_after_submit, thread
+
+
 def _submit_nzb_with_ui_pump(
     nzb_url, title, dialog, monitor, settings_getter=None, rejected_completed_ids=None
 ):
@@ -191,44 +240,16 @@ def _submit_nzb_with_ui_pump(
     # re-adopted by the concurrent history probe (finding #7); a tuple keeps
     # the `in` test cheap and never None.
     rejected_ids = tuple(rejected_completed_ids or ())
-    submit_result = [None, None]
-    submit_done = _resolver.threading.Event()
     activity_ready = _resolver.threading.Event()
-    # Set when the user cancels or Kodi aborts while the (uninterruptible)
-    # addurl worker is still in flight. The worker re-checks this AFTER
-    # submit_nzb returns and cancels a late-accepted nzo_id so a user-cancelled
-    # download is never left running in nzbdav.
-    cancel_after_submit = _resolver.threading.Event()
     submit_timeout_seconds = max(
         _resolver._get_submit_timeout_seconds(
             **_resolver._settings_getter_kwargs(settings_getter)
         ),
         1,
     )
-
-    def _submit_worker():
-        try:
-            submit_kwargs = _resolver._settings_getter_kwargs(settings_getter)
-            if settings_getter is not None:
-                submit_kwargs["submit_timeout"] = submit_timeout_seconds
-            submit_result[0], submit_result[1] = _resolver.submit_nzb(
-                nzb_url,
-                title,
-                **submit_kwargs,
-            )
-            if submit_result[0] and cancel_after_submit.is_set():
-                _cancel_late_accepted_submit(submit_result[0], title, settings_getter)
-        except Exception as e:  # pylint: disable=broad-except
-            _resolver.xbmc.log(
-                "NZB-DAV: submit_nzb worker raised: {}".format(
-                    _resolver._redact_log(e)
-                ),
-                _resolver.xbmc.LOGERROR,
-            )
-            submit_result[0], submit_result[1] = None, None
-        finally:
-            submit_done.set()
-            activity_ready.set()
+    submit_result, submit_done, cancel_after_submit, submit_t = _start_submit_worker(
+        nzb_url, title, settings_getter, submit_timeout_seconds, activity_ready
+    )
 
     queue_hit = [None]
     adoption_status = [""]
@@ -312,40 +333,46 @@ def _submit_nzb_with_ui_pump(
             if queue_stop.wait(_submit_probe_interval(probe_started)):
                 return
 
-    submit_t = _resolver.threading.Thread(
-        target=_submit_worker, name="nzbdav-submit", daemon=True
-    )
     probe_t = _resolver.threading.Thread(
         target=_queue_probe_worker, name="nzbdav-submit-probe", daemon=True
     )
     history_probe_t = _resolver.threading.Thread(
         target=_history_probe_worker, name="nzbdav-submit-history-probe", daemon=True
     )
-    started_threads = []
 
-    def _start_submit_thread(thread, label):
-        try:
-            thread.start()
-        except RuntimeError as error:
+    def _start_all_threads():
+        """Start submit + probe threads (inline submit fallback on failure).
+
+        Returns the list of threads that actually started, for the join
+        cleanup. Extracted verbatim from the parent."""
+        started = []
+
+        def _start_submit_thread(thread, label):
+            try:
+                thread.start()
+            except RuntimeError as error:
+                _resolver.xbmc.log(
+                    "NZB-DAV: Could not start {} thread for '{}': {}".format(
+                        label, title, error
+                    ),
+                    _resolver.xbmc.LOGWARNING,
+                )
+                return False
+            started.append(thread)
+            return True
+
+        if not _start_submit_thread(submit_t, "submit"):
             _resolver.xbmc.log(
-                "NZB-DAV: Could not start {} thread for '{}': {}".format(
-                    label, title, error
-                ),
+                "NZB-DAV: Falling back to synchronous submit for '{}'".format(title),
                 _resolver.xbmc.LOGWARNING,
             )
-            return False
-        started_threads.append(thread)
-        return True
+            submit_t.run()
+        elif not submit_done.is_set():
+            _start_submit_thread(probe_t, "queue probe")
+            _start_submit_thread(history_probe_t, "history probe")
+        return started
 
-    if not _start_submit_thread(submit_t, "submit"):
-        _resolver.xbmc.log(
-            "NZB-DAV: Falling back to synchronous submit for '{}'".format(title),
-            _resolver.xbmc.LOGWARNING,
-        )
-        _submit_worker()
-    elif not submit_done.is_set():
-        _start_submit_thread(probe_t, "queue probe")
-        _start_submit_thread(history_probe_t, "history probe")
+    started_threads = _start_all_threads()
 
     # Anchor elapsed to wall-clock via time.monotonic() instead of
     # accumulating _SUBMIT_UI_PUMP_INTERVAL_SECONDS per loop; the per-loop

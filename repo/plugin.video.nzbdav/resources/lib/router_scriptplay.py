@@ -129,9 +129,11 @@ def _script_play_search_results(search_type, title, search_kwargs, notify):
     ``None`` so the caller stops, exactly as the prior inline block did.
     """
     import resources.lib.router as _router
+    from resources.lib.search_planner import SearchQuery
 
+    query = SearchQuery(search_type=search_type, title=title, **search_kwargs)
     results, search_error = _router._search_all_providers(
-        search_type, title, settings_getter=_router._get_script_setting, **search_kwargs
+        query, settings_getter=_router._get_script_setting
     )
     _router._script_play_stage(
         "provider search done count={}".format(len(results or []))

@@ -5,6 +5,8 @@ import time
 from threading import Event, Lock
 from unittest.mock import MagicMock, patch
 
+from resources.lib.search_planner import SearchQuery
+
 
 def _addon_with_settings(values):
     addon = MagicMock()
@@ -379,7 +381,7 @@ def test_search_direct_indexers_movie_uses_imdb_when_present(
     mock_http.return_value = ONE_RESULT_RSS
 
     results, error = search_direct_indexers(
-        "movie", "The Matrix", year="1999", imdb="tt0133093"
+        SearchQuery("movie", "The Matrix", year="1999", imdb="tt0133093")
     )
 
     assert error is None
@@ -412,7 +414,7 @@ def test_search_direct_indexers_episode_uses_tvsearch_params(
     mock_http.return_value = ONE_RESULT_RSS
 
     results, error = search_direct_indexers(
-        "episode", "Breaking Bad", season="5", episode="14"
+        SearchQuery("episode", "Breaking Bad", season="5", episode="14")
     )
 
     assert error is None
@@ -447,12 +449,14 @@ def test_search_direct_indexers_episode_prefers_tvdbid(
     mock_http.return_value = ONE_RESULT_RSS
 
     results, error = search_direct_indexers(
-        "episode",
-        "Breaking Bad",
-        imdb="tt0903747",
-        tvdb="81189",
-        season="5",
-        episode="14",
+        SearchQuery(
+            "episode",
+            "Breaking Bad",
+            imdb="tt0903747",
+            tvdb="81189",
+            season="5",
+            episode="14",
+        )
     )
 
     assert error is None
@@ -482,7 +486,9 @@ def test_search_direct_indexers_imdb_empty_retries_with_title(
     mock_xbmcaddon.Addon.return_value = _addon_with_settings({"max_results": "25"})
     mock_http.side_effect = [EMPTY_RSS, ONE_RESULT_RSS]
 
-    results, error = search_direct_indexers("movie", "The Matrix", imdb="tt0133093")
+    results, error = search_direct_indexers(
+        SearchQuery("movie", "The Matrix", imdb="tt0133093")
+    )
 
     assert error is None
     assert len(results) == 1
@@ -515,7 +521,9 @@ def test_search_direct_indexers_uses_planner_for_host_fallback(
     mock_xbmcaddon.Addon.return_value = _addon_with_settings({"max_results": "25"})
     mock_http.return_value = ONE_RESULT_RSS
 
-    results, error = search_direct_indexers("movie", "The Matrix", imdb="tt0133093")
+    results, error = search_direct_indexers(
+        SearchQuery("movie", "The Matrix", imdb="tt0133093")
+    )
 
     assert error is None
     assert len(results) == 1
@@ -548,7 +556,9 @@ def test_search_direct_indexers_passes_supported_movie_year_to_planner(
     mock_xbmcaddon.Addon.return_value = _addon_with_settings({"max_results": "25"})
     mock_http.return_value = ONE_RESULT_RSS
 
-    results, error = search_direct_indexers("movie", "The Odyssey", year="2026")
+    results, error = search_direct_indexers(
+        SearchQuery("movie", "The Odyssey", year="2026")
+    )
 
     assert error is None
     assert len(results) == 1
@@ -578,7 +588,7 @@ def test_search_direct_indexers_allows_large_result_limit_up_to_ten_thousand(
     mock_xbmcaddon.Addon.return_value = _addon_with_settings({"max_results": "2500"})
     mock_http.return_value = ONE_RESULT_RSS
 
-    results, error = search_direct_indexers("movie", "Terminator 2")
+    results, error = search_direct_indexers(SearchQuery("movie", "Terminator 2"))
 
     assert error is None
     assert len(results) == 1
@@ -606,7 +616,9 @@ def test_search_direct_indexers_normalizes_injected_max_results(
     mock_xbmcaddon.Addon.return_value = _addon_with_settings({"max_results": "999"})
     mock_http.return_value = ONE_RESULT_RSS
 
-    results, error = search_direct_indexers("movie", "Terminator 2", max_results="many")
+    results, error = search_direct_indexers(
+        SearchQuery("movie", "Terminator 2"), max_results="many"
+    )
 
     assert error is None
     assert len(results) == 1
@@ -637,7 +649,7 @@ def test_search_direct_indexers_skips_when_caps_have_no_supported_query(
     ]
     mock_xbmcaddon.Addon.return_value = _addon_with_settings({"max_results": "25"})
 
-    results, error = search_direct_indexers("movie", "The Matrix")
+    results, error = search_direct_indexers(SearchQuery("movie", "The Matrix"))
 
     assert not results
     assert error is None
@@ -669,7 +681,7 @@ def test_search_direct_indexers_partial_failure_keeps_successful_results(
     mock_xbmcaddon.Addon.return_value = _addon_with_settings({"max_results": "25"})
     mock_http.side_effect = [RuntimeError("down"), ONE_RESULT_RSS]
 
-    results, error = search_direct_indexers("movie", "The Matrix")
+    results, error = search_direct_indexers(SearchQuery("movie", "The Matrix"))
 
     assert error is None
     assert len(results) == 1
@@ -713,7 +725,7 @@ def test_search_direct_indexers_fans_out_concurrently(mock_xbmcaddon, mock_confi
         return ([{"title": indexer["label"], "link": indexer["id"]}], None)
 
     with patch("resources.lib.direct_indexers._search_one_indexer", new=slow_search):
-        results, error = search_direct_indexers("movie", "The Matrix")
+        results, error = search_direct_indexers(SearchQuery("movie", "The Matrix"))
     returned_at = time.monotonic()
 
     assert error is None
@@ -766,7 +778,7 @@ def test_search_direct_indexers_marks_incomplete_futures_timed_out(
         "resources.lib.direct_indexers._DIRECT_FANOUT_TIMEOUT", 0.05, create=True
     ):
         started = time.monotonic()
-        results, error = search_direct_indexers("movie", "The Matrix")
+        results, error = search_direct_indexers(SearchQuery("movie", "The Matrix"))
         elapsed = time.monotonic() - started
 
     assert not results
@@ -794,7 +806,7 @@ def test_search_direct_indexers_all_failures_return_error(
     mock_xbmcaddon.Addon.return_value = _addon_with_settings({"max_results": "25"})
     mock_http.side_effect = RuntimeError("down")
 
-    results, error = search_direct_indexers("movie", "The Matrix")
+    results, error = search_direct_indexers(SearchQuery("movie", "The Matrix"))
 
     assert not results
     assert error == "Direct indexer Bad unavailable: down"

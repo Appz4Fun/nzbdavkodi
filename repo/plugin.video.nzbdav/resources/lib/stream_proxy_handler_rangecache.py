@@ -11,7 +11,18 @@ reached at call time via ``_sp.<name>`` so test monkeypatches on
 ``_StreamHandler``; they keep using ``self`` for handler state and methods.
 """
 
+from typing import NamedTuple
+
 import resources.lib.stream_proxy as _sp  # noqa: E402
+
+
+class FallbackRangeProbe(NamedTuple):
+    """Byte-span + sizing values threaded through fallback range probes."""
+
+    failed_byte: int
+    range_end: int
+    content_length: int
+    probe_bases: tuple = None
 
 
 class _RangeCacheMixin:  # pylint: disable=too-few-public-methods
@@ -52,22 +63,20 @@ class _RangeCacheMixin:  # pylint: disable=too-few-public-methods
     def _probe_fallback_current_range(
         self,
         source,
-        failed_byte,
-        range_end,
-        content_length,
-        probe_bases=None,
+        probe,
         auth_header=_sp._AUTH_HEADER_NOT_PROVIDED,
         stream_url=None,
         cache_ctx=None,
     ):
-        """Verify fallback can serve bytes at the failing offset."""
+        """Verify fallback can serve bytes at the failing offset.
+
+        ``probe`` is a :class:`FallbackRangeProbe` carrying the byte span and
+        sizing values for the current-range check.
+        """
         return bool(
             self._fetch_fallback_current_range_digest(
                 source,
-                failed_byte,
-                range_end,
-                content_length,
-                probe_bases,
+                probe,
                 auth_header=auth_header,
                 stream_url=stream_url,
                 cache_ctx=cache_ctx,
@@ -77,15 +86,20 @@ class _RangeCacheMixin:  # pylint: disable=too-few-public-methods
     def _fetch_fallback_current_range_digest(
         self,
         source,
-        failed_byte,
-        range_end,
-        content_length,
-        probe_bases=None,
+        probe,
         auth_header=_sp._AUTH_HEADER_NOT_PROVIDED,
         stream_url=None,
         cache_ctx=None,
     ):
-        """Return the digest proving fallback can serve bytes at the failing offset."""
+        """Return the digest proving fallback can serve bytes at the failing offset.
+
+        ``probe`` is a :class:`FallbackRangeProbe` carrying the byte span and
+        sizing values for the current-range check.
+        """
+        failed_byte = probe.failed_byte
+        range_end = probe.range_end
+        content_length = probe.content_length
+        probe_bases = probe.probe_bases
         probe_end = min(range_end, failed_byte + 4095)
         if auth_header is _sp._AUTH_HEADER_NOT_PROVIDED:
             auth_header = self._fallback_source_auth(source)

@@ -13,7 +13,19 @@ top-level import cycle; same-module sibling helpers are called directly. Every
 moved name is re-exported from ``resolver``.
 """
 
+from typing import NamedTuple
+
 import resources.lib.resolver as _resolver  # noqa: F401  pylint: disable=unused-import
+
+
+class CompletedVideoProbe(NamedTuple):
+    """Discovered completed-copy video plus the context needed to validate it."""
+
+    video_path: str
+    stream_url: str
+    stream_headers: dict
+    download_size: object
+    webdav_folder: str
 
 
 def _submit_error_is_too_many_requests(submit_error):
@@ -150,7 +162,7 @@ def _find_video_stream_for_folder(
     _resolver._resolve_stage("find_video_file_start folder={}".format(webdav_folder))
     video_path = _resolver.find_video_file(
         webdav_folder,
-        title_hint=title_hint,
+        hints=_resolver.TitleHints(title_hint=title_hint),
         min_video_size=min_video_size,
         **kwargs,
     )
@@ -253,12 +265,14 @@ def _completed_job_stream(
     if _completed_job_video_rejected(
         title,
         completed_job,
-        video_path,
-        stream_url,
-        stream_headers,
-        download_size,
+        CompletedVideoProbe(
+            video_path=video_path,
+            stream_url=stream_url,
+            stream_headers=stream_headers,
+            download_size=download_size,
+            webdav_folder=webdav_folder,
+        ),
         rejected_completed_ids,
-        webdav_folder,
         settings_getter,
     ):
         return None
@@ -268,12 +282,8 @@ def _completed_job_stream(
 def _completed_job_video_rejected(
     title,
     completed_job,
-    video_path,
-    stream_url,
-    stream_headers,
-    download_size,
+    probe,
     rejected_completed_ids,
-    webdav_folder,
     settings_getter=None,
 ):
     """Return True if a discovered completed video is a stub or has no body.
@@ -287,6 +297,11 @@ def _completed_job_video_rejected(
     size, so a stub-only folder is rejected whether the release is a movie or a
     pack. Fails open on unknown size inside ``_discovered_video_is_stub``.
     """
+    video_path = probe.video_path
+    stream_url = probe.stream_url
+    stream_headers = probe.stream_headers
+    download_size = probe.download_size
+    webdav_folder = probe.webdav_folder
     if _resolver._discovered_video_is_stub(
         webdav_folder, video_path, download_size, settings_getter
     ):
