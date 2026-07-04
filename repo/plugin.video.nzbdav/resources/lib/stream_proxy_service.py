@@ -165,7 +165,9 @@ def prepare_stream_via_service(
             else:
                 raise
         if index < _PREPARE_MAX_ATTEMPTS - 1:
-            time.sleep(_PREPARE_RETRY_BACKOFF)
+            import xbmc
+            if xbmc.Monitor().waitForAbort(_PREPARE_RETRY_BACKOFF):
+                break
     # Every attempt failed with a fast connection reset.
     raise ServiceProxyUnavailableError(unreachable) from last_error
 
