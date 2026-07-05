@@ -10,6 +10,9 @@ uvdev := "uv run --with-requirements requirements-dev.txt --no-project --python 
 # is not part of the addon runtime, so it uses requirements-docs.txt, not -dev.
 docs_run := "uv run --with-requirements requirements-docs.txt --no-project --python 3.12"
 
+# CoreELEC/Kodi box that receives `just deploy-addon` (override: COREELEC_HOST=user@host)
+coreelec_host := env_var_or_default("COREELEC_HOST", "root@coreelec.local")
+
 # Install local development dependencies needed by the other recipes
 make-dev:
     #!/usr/bin/env bash
@@ -256,6 +259,8 @@ setup-extreme-functional-test:
     echo "  1. Verify the file: cat $target"
     echo "  2. Run the test:    just extreme-functional-test"
 
+alias extreme-tests := extreme-functional-test
+
 # Run the extreme end-to-end fault-recovery test (20+ minutes, real Eweka, real Hydra).
 # Brings up a self-contained docker-compose stack, installs TMDBHelper from the
 # jurialmunkey repository and the nzbdav addon from `just repo-zip`, picks a random
@@ -292,12 +297,56 @@ lint-fix:
     {{uvdev}} ruff check repo/plugin.video.nzbdav/ tests/ tests-extensive/ scripts/ --fix
     {{uvdev}} black repo/plugin.video.nzbdav/ tests/ tests-extensive/ scripts/
 
+# Run the same checks as GitHub CI: lint + test + the Python 3.8 compat gate
+ci: lint test compat-3-8
+
+# Verify the addon runtime parses on the Python 3.8 floor (mirrors CI's compat-3-8 job)
+compat-3-8:
+    uv run --python 3.8 --no-project python -m compileall repo/plugin.video.nzbdav/
+
 # Build the addon zip for Kodi installation
 release:
     python3 scripts/build_zip.py
 
 # Run tests then build release
 ship: test release
+
+# Print the current addon version from addon.xml
+version:
+    @python3 -c "import xml.etree.ElementTree as ET; print(ET.parse('repo/plugin.video.nzbdav/addon.xml').getroot().get('version'))"
+
+# Show the Kodi-visible addon changelog (full version notes live in CHANGELOG.md)
+changelog:
+    @cat repo/plugin.video.nzbdav/changelog.txt
+
+# Backs up the installed addon to /tmp on the box first; addon settings under
+# userdata/addon_data are untouched. Restarts Kodi by default because plugin
+# code reloads per invocation but service/stream-proxy changes only apply
+# after a restart — pass `norestart` to skip that.
+# Deploy the addon tree to the Kodi box (override with COREELEC_HOST=user@host)
+deploy-addon restart="restart":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    host="{{coreelec_host}}"
+    addon="plugin.video.nzbdav"
+    dest="/storage/.kodi/addons/$addon"
+    stage="$dest.deploy-staging"
+
+    echo "Staging $addon on $host..."
+    tar -C repo -cf - --exclude='*__pycache__*' --exclude='*.pyc' --exclude='.DS_Store' "$addon" \
+        | ssh -o ConnectTimeout=10 "$host" "rm -rf '$stage' && mkdir -p '$stage' && tar -C '$stage' -xf -"
+
+    echo "Swapping in the new addon (backup kept in /tmp on the box)..."
+    ssh "$host" "if [ -d '$dest' ]; then mv '$dest' \"/tmp/$addon.\$(date +%Y%m%d-%H%M%S).bak\"; fi && mv '$stage/$addon' '$dest' && rmdir '$stage'"
+
+    if [ "{{restart}}" = "norestart" ]; then
+        echo "Deployed without restarting Kodi. Plugin code reloads per invocation;"
+        echo "service/proxy changes need: ssh $host 'systemctl restart kodi'"
+    else
+        echo "Restarting Kodi..."
+        ssh "$host" 'systemctl restart kodi'
+    fi
+    echo "Deployed $addon to $host."
 
 # Build the documentation site into ./site (mirrors the Docs GitHub Pages build)
 docs:

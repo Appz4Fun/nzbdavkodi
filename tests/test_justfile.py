@@ -149,3 +149,47 @@ def test_extreme_functional_test_recipe_preserves_exported_env_overrides():
     assert "env_snapshot" in body
     assert 'source "$env_file"' in body
     assert 'source "$env_snapshot"' in body
+
+
+def test_justfile_ci_recipe_mirrors_github_ci_jobs():
+    contents = Path(__file__).resolve().parents[1].joinpath("justfile").read_text()
+
+    # ci = lint + test + the 3.8 compileall gate, the same trio ci.yml runs.
+    assert re.search(r"^ci: lint test compat-3-8$", contents, re.M)
+    body = _recipe_body(contents, "compat-3-8")
+    assert "--python 3.8" in body
+    assert "compileall" in body
+    assert "repo/plugin.video.nzbdav/" in body
+
+
+def test_justfile_deploy_addon_backs_up_then_syncs_and_restarts():
+    contents = Path(__file__).resolve().parents[1].joinpath("justfile").read_text()
+    body = _recipe_body(contents, "deploy-addon")
+
+    # Backup-first, no __pycache__ shipped, and a Kodi restart by default so
+    # service.py changes actually take effect (skippable via `norestart`).
+    assert "/storage/.kodi/addons" in body
+    assert "__pycache__" in body
+    assert ".bak" in body
+    assert "systemctl restart kodi" in body
+    assert "norestart" in body
+
+
+def test_justfile_docs_recipe_builds_strictly_and_serve_serves():
+    contents = Path(__file__).resolve().parents[1].joinpath("justfile").read_text()
+
+    assert "mkdocs build --strict" in _recipe_body(contents, "docs")
+    assert "mkdocs serve" in _recipe_body(contents, "docs-serve")
+
+
+def test_justfile_version_and_changelog_read_addon_sources():
+    contents = Path(__file__).resolve().parents[1].joinpath("justfile").read_text()
+
+    assert "addon.xml" in _recipe_body(contents, "version")
+    assert "changelog.txt" in _recipe_body(contents, "changelog")
+
+
+def test_justfile_extreme_tests_alias_points_at_full_recipe():
+    contents = Path(__file__).resolve().parents[1].joinpath("justfile").read_text()
+
+    assert "alias extreme-tests := extreme-functional-test" in contents
