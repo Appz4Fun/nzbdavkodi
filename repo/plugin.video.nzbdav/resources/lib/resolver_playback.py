@@ -13,7 +13,16 @@ top-level import cycle; same-module sibling helpers are called directly. Every
 moved name is re-exported from ``resolver``.
 """
 
+import re
+
 import resources.lib.resolver as _resolver  # noqa: F401  pylint: disable=unused-import
+
+# Pre-compile the MyVideos DB schema version regex at the module level.
+# `_kodi_video_db_version` is used as a sort key (`key=_kodi_video_db_version`)
+# against a potentially large list of DB files. Pre-compiling avoids a CPython
+# dictionary lookup in the `re` module cache for every file during the sort loop,
+# reducing overhead in a performance-critical path.
+_MYVIDEOS_DB_RE = re.compile(r"MyVideos(\d+)\.db$")
 
 
 def _resolve_stage(message):
@@ -413,9 +422,8 @@ def _kodi_video_db_version(path):
     installs, which would target a stale DB for bookmark cleanup.
     """
     import os
-    import re
 
-    match = re.search(r"MyVideos(\d+)\.db$", os.path.basename(path))
+    match = _MYVIDEOS_DB_RE.search(os.path.basename(path))
     return int(match.group(1)) if match else -1
 
 
@@ -475,7 +483,6 @@ def _add_own_plugin_target_ids(cur, target_ids):
 
 def _add_tmdb_helper_target_ids(cur, target_ids, params):
     """Add bookmark targets for matching TMDBHelper URLs."""
-    import re
     from urllib.parse import parse_qs, urlsplit
 
     tmdb_id = (params or {}).get("tmdb_id", "")

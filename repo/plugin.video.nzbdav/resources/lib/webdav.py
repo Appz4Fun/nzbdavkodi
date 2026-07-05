@@ -307,15 +307,13 @@ def _folder_total_resolve_url(settings_getter, settings, folder_path, already_en
 def _folder_total_fetch_root(url, username, password):
     """PROPFIND ``url`` and return the parsed XML root with entities disabled.
 
-    External entities are disabled on the expat backend (DefaultHandler /
-    ExternalEntityRefHandler) so a hostile WebDAV server cannot coerce a local
-    file read via an external entity reference -- the ``nosec`` markers below
-    are a defended scanner false positive, not a suppression of a real risk.
+    Parsing delegates to ``resources.lib.xml_safety.safe_fromstring``, which
+    rejects entity declarations (XXE / billion-laughs) before the parser can
+    act on them, so a hostile WebDAV server cannot coerce a local file read.
     Raises on any PROPFIND/parse failure; the caller turns that into the
     INCOMPLETE (fail-open) outcome.
     """
-    # nosemgrep
-    import xml.etree.ElementTree as ET  # nosec B405 — parsing trusted WebDAV server response
+    from resources.lib.xml_safety import safe_fromstring
 
     req = Request(url, method="PROPFIND")
     req.add_header("Depth", "1")
@@ -328,15 +326,7 @@ def _folder_total_fetch_root(url, username, password):
     ) as resp:
         body = resp.read().decode("utf-8", errors="replace")
 
-    # nosemgrep
-    _xml_parser = ET.XMLParser()  # nosec B314 — entities disabled below
-    try:
-        _xml_parser.parser.DefaultHandler = lambda _d: None
-        _xml_parser.parser.ExternalEntityRefHandler = lambda *_: False
-    except AttributeError:  # pragma: no cover — non-expat parser backend
-        pass
-    # nosemgrep
-    return ET.fromstring(body, parser=_xml_parser)  # nosec B314 — entities disabled
+    return safe_fromstring(body)
 
 
 def _folder_total_href_path(response, ns):

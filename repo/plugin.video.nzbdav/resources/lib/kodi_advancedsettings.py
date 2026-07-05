@@ -19,13 +19,16 @@ import xbmcvfs
 
 
 def _parse_local_xml_root(path):
-    """Parse Kodi profile XML while rejecting DTD/entity declarations."""
+    """Parse Kodi profile XML through the shared XXE-safe XML helper.
+
+    ``safe_fromstring`` rejects entity declarations (XXE / billion-laughs)
+    before the parser can act on them; entity-free XML parses normally.
+    """
+    from resources.lib.xml_safety import safe_fromstring
+
     with open(path, "rb") as fh:
         xml_bytes = fh.read()
-    upper_xml = xml_bytes.upper()
-    if b"<!DOCTYPE" in upper_xml or b"<!ENTITY" in upper_xml:
-        raise ET.ParseError("DTD/entity declarations are not supported")
-    return ET.fromstring(xml_bytes)
+    return safe_fromstring(xml_bytes)
 
 
 def has_cache_memorysize_zero():
@@ -50,7 +53,7 @@ def has_cache_memorysize_zero():
         return False
     try:
         root = _parse_local_xml_root(path)
-    except (ET.ParseError, OSError):
+    except (ET.ParseError, OSError, ValueError):
         return False
     cache = root.find("cache")
     if cache is None:

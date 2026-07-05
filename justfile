@@ -10,6 +10,9 @@ uvdev := "uv run --with-requirements requirements-dev.txt --no-project --python 
 # is not part of the addon runtime, so it uses requirements-docs.txt, not -dev.
 docs_run := "uv run --with-requirements requirements-docs.txt --no-project --python 3.12"
 
+# CoreELEC/Kodi box that receives `just deploy-addon` (override: COREELEC_HOST=user@host)
+coreelec_host := env_var_or_default("COREELEC_HOST", "root@coreelec.local")
+
 # Install local development dependencies needed by the other recipes
 make-dev:
     #!/usr/bin/env bash
@@ -256,6 +259,8 @@ setup-extreme-functional-test:
     echo "  1. Verify the file: cat $target"
     echo "  2. Run the test:    just extreme-functional-test"
 
+alias extreme-tests := extreme-functional-test
+
 # Run the extreme end-to-end fault-recovery test (20+ minutes, real Eweka, real Hydra).
 # Brings up a self-contained docker-compose stack, installs TMDBHelper from the
 # jurialmunkey repository and the nzbdav addon from `just repo-zip`, picks a random
@@ -292,12 +297,75 @@ lint-fix:
     {{uvdev}} ruff check repo/plugin.video.nzbdav/ tests/ tests-extensive/ scripts/ --fix
     {{uvdev}} black repo/plugin.video.nzbdav/ tests/ tests-extensive/ scripts/
 
+# Run the same checks as GitHub CI: lint + test + the Python 3.8 compat gate
+ci: lint test compat-3-8
+
+# Verify the addon runtime parses on the Python 3.8 floor (mirrors CI's compat-3-8 job)
+compat-3-8:
+    uv run --python 3.8 --no-project python -m compileall repo/plugin.video.nzbdav/
+
 # Build the addon zip for Kodi installation
 release:
     python3 scripts/build_zip.py
 
 # Run tests then build release
 ship: test release
+
+# Print the current addon version from addon.xml
+version:
+    @python3 -c "import xml.etree.ElementTree as ET; print(ET.parse('repo/plugin.video.nzbdav/addon.xml').getroot().get('version'))"
+
+# Show the Kodi-visible addon changelog (full version notes live in CHANGELOG.md)
+changelog:
+    @cat repo/plugin.video.nzbdav/changelog.txt
+
+# Deploy the addon tree to the Kodi box (override with COREELEC_HOST=user@host).
+# A single SSH connection stages, backs up, swaps, and (by default) restarts
+# Kodi — pass `norestart` to skip the restart (plugin code reloads per
+# invocation but service/stream-proxy changes only apply after a restart).
+# The previous install is kept as a timestamped .bak under
+# /storage/deploy-backups: same filesystem as .kodi so the move is an atomic
+# rename that survives reboots, and outside .kodi/addons so Kodi never scans
+# the backup copy. The swap restores it automatically if installing the staged
+# tree fails, and the 3 newest backups are retained. Addon settings under
+# userdata/addon_data are untouched.
+deploy-addon restart="restart":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    host="{{coreelec_host}}"
+    addon="plugin.video.nzbdav"
+    dest="/storage/.kodi/addons/$addon"
+    stage="$dest.deploy-staging"
+    bdir="/storage/deploy-backups"
+
+    echo "Deploying $addon to $host..."
+    tar -C repo -cf - --exclude='*__pycache__*' --exclude='*.pyc' --exclude='.DS_Store' "$addon" \
+        | ssh -o ConnectTimeout=10 "$host" "
+            set -eu
+            rm -rf '$stage' && mkdir -p '$stage' '$bdir'
+            tar -C '$stage' -xf -
+            backup=''
+            if [ -d '$dest' ]; then
+                backup=\"$bdir/$addon.\$(date +%Y%m%d-%H%M%S).bak\"
+                mv '$dest' \"\$backup\"
+            fi
+            if ! mv '$stage/$addon' '$dest'; then
+                if [ -n \"\$backup\" ]; then mv \"\$backup\" '$dest'; fi
+                echo 'deploy-addon: swap failed; previous addon restored' >&2
+                exit 1
+            fi
+            rmdir '$stage'
+            ls -1dt '$bdir/$addon.'*.bak 2>/dev/null | tail -n +4 | xargs -r rm -rf
+            if [ '{{restart}}' != 'norestart' ]; then
+                echo 'Restarting Kodi...'
+                systemctl restart kodi
+            fi
+        "
+    if [ "{{restart}}" = "norestart" ]; then
+        echo "Deployed without restarting Kodi. Plugin code reloads per invocation;"
+        echo "service/proxy changes need: ssh $host 'systemctl restart kodi'"
+    fi
+    echo "Deployed $addon to $host."
 
 # Build the documentation site into ./site (mirrors the Docs GitHub Pages build)
 docs:
