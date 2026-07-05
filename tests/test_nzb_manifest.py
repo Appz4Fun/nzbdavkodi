@@ -792,8 +792,9 @@ def test_entity_payloads_are_rejected_as_invalid_xml(payload):
 @pytest.mark.parametrize("payload", [_XXE_EXTERNAL_ENTITY, _BILLION_LAUGHS])
 def test_entity_payloads_are_rejected_on_stdlib_fallback(monkeypatch, payload):
     # Force the no-defusedxml code path Kodi installs typically take.
-    from resources.lib import xml_safety
     import xml.etree.ElementTree as stdlib_et
+
+    from resources.lib import xml_safety
 
     monkeypatch.setattr(xml_safety, "_USING_DEFUSEDXML", False)
     monkeypatch.setattr(xml_safety, "_ET", stdlib_et)
