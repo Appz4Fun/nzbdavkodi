@@ -4248,3 +4248,77 @@ def test_hydra_duplicate_lookup_falls_back_to_selection_inference():
     plain_row = {"indexer": "SomeIndexer", "link": "http://i/x"}
     assert _hydra_duplicate_lookup_enabled(hydra_row, settings_getter=stored) is True
     assert _hydra_duplicate_lookup_enabled(plain_row, settings_getter=stored) is False
+
+
+def test_nzbget_dupe_scores_ride_on_the_wall_clock_base():
+    # Every fresh submission's DupeScores sit on a minutes-since-epoch base so a
+    # replay (which only reaches the submit path when the completed files are
+    # gone or unverifiable) OUTRANKS any prior same-key SUCCESS in history --
+    # NZBGet then re-downloads instead of dupe-deleting the re-submission into
+    # a failed playback (review threads: replay dupe scores).
+    from resources.lib.router_play import _nzbget_dupe_submission_for_selection
+
+    selected = {"link": "http://i/pick.nzb", "title": "The Matrix 1999 1080p"}
+    filtered = [selected, {"link": "http://i/b.nzb", "title": "The Matrix 1999 1080p"}]
+    identity = {"type": "movie", "imdb": "tt0133093"}
+    with patch(
+        "resources.lib.router._get_addon_setting",
+        _dupe_setting_getter({"nzbget_enabled": "true"}),
+    ), patch("resources.lib.router_play._dupe_score_base", return_value=100000):
+        dupe = _nzbget_dupe_submission_for_selection(selected, filtered, identity)
+    assert dupe["score_base"] == 100000
+    assert dupe["pick_score"] == 100000 + 2  # base + count+1
+    assert [b["score"] for b in dupe["backups"]] == [100000 + 1]
+    # The real base is wall-clock derived: strictly positive and monotonic-ish.
+    from resources.lib.router_play import _dupe_score_base
+
+    assert _dupe_score_base() > 29_000_000  # minutes since epoch, year >= 2025
+
+
+def test_attach_nzbget_dupe_allows_loader_only_submission():
+    # NZBHydra collapses mirrors into one picker row -> no same-name backups --
+    # but the fallback loader can still supply same-content duplicate uploads.
+    # The attach must then produce a loader-only submission (empty backups,
+    # DupeKey + based pick score) instead of dropping the widened pool
+    # (review thread: loader-only duplicate backups).
+    from resources.lib import router_play
+
+    params = {}
+    selected = {"link": "http://i/pick.nzb", "title": "The Matrix 1999 1080p"}
+    filtered = [selected]  # single row: no same-name backups
+    identity = {"type": "movie", "imdb": "tt0133093"}
+    with patch(
+        "resources.lib.router._get_addon_setting",
+        _dupe_setting_getter({"nzbget_enabled": "true"}),
+    ), patch(
+        "resources.lib.router._fallback_candidate_loader_for_selection",
+        return_value="LOADER",
+    ), patch(
+        "resources.lib.router_play._dupe_score_base", return_value=100000
+    ):
+        router_play._attach_nzbget_dupe(params, selected, filtered, identity)
+    dupe = params["_nzbget_dupe"]
+    assert dupe["backups"] == []
+    assert dupe["loader"] == "LOADER"
+    assert dupe["key"] == "imdb=0133093|the-matrix-1999-1080p"
+    assert dupe["pick_score"] == 100000 + 1
+    assert dupe["score_base"] == 100000
+
+
+def test_attach_nzbget_dupe_no_loader_only_when_loader_absent():
+    # Single row AND no loader (pool provably has no peers) -> plain submit.
+    from resources.lib import router_play
+
+    params = {}
+    selected = {"link": "http://i/pick.nzb", "title": "The Matrix 1999 1080p"}
+    with patch(
+        "resources.lib.router._get_addon_setting",
+        _dupe_setting_getter({"nzbget_enabled": "true"}),
+    ), patch(
+        "resources.lib.router._fallback_candidate_loader_for_selection",
+        return_value=None,
+    ):
+        router_play._attach_nzbget_dupe(
+            params, selected, [selected], {"type": "movie", "imdb": "tt0133093"}
+        )
+    assert "_nzbget_dupe" not in params

@@ -722,3 +722,38 @@ def test_cancel_dupekey_group_never_deletes_a_prior_success_row():
     ]
     # Only the DUP backup (7), never the prior SUCCESS row (8).
     assert hist_deletes == [["HistoryFinalDelete", "", [7]]]
+
+
+def test_history_success_by_dupekey_excludes_stale_ids():
+    from resources.lib.nzbget_api import history_success_by_dupekey
+
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    hist = [
+        {"NZBID": 3, "DupeKey": "k", "Status": "SUCCESS/ALL", "DestDir": "/old"},
+        {"NZBID": 9, "DupeKey": "k", "Status": "SUCCESS/ALL", "DestDir": "/new"},
+    ]
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(hist, None)):
+        got = history_success_by_dupekey(
+            "k", exclude_nzbids=(3,), settings_getter=getter
+        )
+    assert got["present"] is True and got["nzbid"] == 9
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=([hist[0]], None)):
+        got = history_success_by_dupekey(
+            "k", exclude_nzbids=(3,), settings_getter=getter
+        )
+    assert got["present"] is False
+
+
+def test_success_ids_by_dupekey_lists_matching_success_rows():
+    from resources.lib.nzbget_api import success_ids_by_dupekey
+
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    hist = [
+        {"NZBID": 3, "DupeKey": "k", "Status": "SUCCESS/ALL"},
+        {"NZBID": 4, "DupeKey": "k", "Status": "FAILURE/PAR"},
+        {"NZBID": 5, "DupeKey": "other", "Status": "SUCCESS/ALL"},
+    ]
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(hist, None)):
+        assert success_ids_by_dupekey("k", settings_getter=getter) == [3]
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(None, "boom")):
+        assert not success_ids_by_dupekey("k", settings_getter=getter)

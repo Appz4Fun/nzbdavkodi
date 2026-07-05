@@ -15,6 +15,7 @@ modules (mocked once in conftest) so they are imported normally.
 """
 
 import re
+import time
 
 import xbmc
 import xbmcaddon
@@ -479,18 +480,61 @@ def _nzbget_dupe_submission_for_selection(selected, filtered, identity, getter=N
     if not backups:
         return None
     count = len(backups)
+    base = _dupe_score_base()
     scored = [
-        {"link": b["link"], "title": b.get("title"), "score": count - i}
+        {"link": b["link"], "title": b.get("title"), "score": base + count - i}
         for i, b in enumerate(backups)
     ]
     # Carry the standby cap so the backup worker can bound its loader-widened
     # extras by the cap's REMAINING slots (same-name backups + extras must not
-    # exceed "Maximum standby fallback streams").
+    # exceed "Maximum standby fallback streams"), and the score base so the
+    # extras ride on it too.
     return {
         "key": key,
-        "pick_score": count + 1,
+        "pick_score": base + count + 1,
         "backups": scored,
         "max_backups": max_backups,
+        "score_base": base,
+    }
+
+
+def _dupe_score_base():
+    """Minutes-since-epoch base under every DupeScore in a submission (#372 r4).
+
+    A fresh submission must OUTRANK any prior same-DupeKey ``SUCCESS`` in
+    NZBGet's history: a replay only reaches the submit path when the completed
+    files are gone or unverifiable (a reuse-probe HIT plays them directly), and
+    with an equal-or-lower score NZBGet would dupe-delete the re-submission
+    into a failed playback instead of re-downloading. Minute granularity keeps
+    the score far inside NZBGet's int range; the fleet's intra-submission
+    ordering (pick > same-name backups > loader extras) rides on top.
+    """
+    return int(time.time() // 60)
+
+
+def _loader_only_dupe_submission(selected, identity, getter=None):
+    """A Smart-Duplicates submission with NO same-name backups (#372 r4).
+
+    NZBHydra collapses same-release mirrors into a single picker row, so
+    ``filtered`` can hold no same-name backup while the fallback loader can
+    still surface the collapsed duplicate uploads. The caller only uses this
+    when that loader EXISTS; the fleet is then loader-extras-only. Same gates
+    as ``_nzbget_dupe_submission_for_selection``; returns ``None`` when they
+    fail.
+    """
+    max_backups = _dupe_max_backups(getter)
+    if max_backups is None:
+        return None
+    key = _release_dupe_key(identity or {}, selected.get("title"))
+    if not key:
+        return None
+    base = _dupe_score_base()
+    return {
+        "key": key,
+        "pick_score": base + 1,
+        "backups": [],
+        "max_backups": max_backups,
+        "score_base": base,
     }
 
 
@@ -507,21 +551,26 @@ def _attach_nzbget_dupe(resolver_params, selected, filtered, identity):
     import resources.lib.router as _router
 
     resolver_params.pop("_nzbget_dupe", None)
-    dupe = _nzbget_dupe_submission_for_selection(
-        selected, filtered, identity, resolver_params.get("_settings_getter")
+    getter = resolver_params.get("_settings_getter")
+    dupe = _nzbget_dupe_submission_for_selection(selected, filtered, identity, getter)
+    # The fallback loader hands the backup worker the same-content /
+    # NZBHydra-deferred duplicate uploads (not just the picker's same-name
+    # rows) as extra, lowest-priority backups (#372 r2). The worker runs it
+    # OFF-THREAD, so build it with the pure-XML _get_script_setting rather than
+    # reusing resolver_params' "_fallback_candidate_loader" -- on the
+    # handle-based /play path that one carries a None getter and would call
+    # xbmcaddon.Addon().getSetting off the main thread (a CoreELEC crash class
+    # the snapshot design exists to avoid).
+    loader = _router._fallback_candidate_loader_for_selection(
+        selected, filtered, settings_getter=_router._get_script_setting
     )
+    if dupe is None and loader is not None:
+        # NZBHydra collapsed every mirror into this single picker row: no
+        # same-name backups exist, but the loader can still surface the
+        # collapsed duplicate uploads -- submit a loader-only fleet (#372 r4).
+        dupe = _loader_only_dupe_submission(selected, identity, getter)
     if dupe:
-        # Hand the fallback loader to the resolver's backup worker so it can add
-        # the same-content / NZBHydra-deferred duplicate uploads (not just the
-        # picker's same-name rows) as extra, lowest-priority backups (#372 r2).
-        # The worker runs the loader OFF-THREAD, so build it with the pure-XML
-        # _get_script_setting rather than reusing resolver_params'
-        # "_fallback_candidate_loader" -- on the handle-based /play path that one
-        # carries a None getter and would call xbmcaddon.Addon().getSetting off the
-        # main thread (a CoreELEC crash class the snapshot design exists to avoid).
-        dupe["loader"] = _router._fallback_candidate_loader_for_selection(
-            selected, filtered, settings_getter=_router._get_script_setting
-        )
+        dupe["loader"] = loader
         resolver_params["_nzbget_dupe"] = dupe
 
 

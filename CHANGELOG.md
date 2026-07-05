@@ -106,6 +106,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **NZBGet mode: replays re-download when the files are gone, single-row Hydra
+  picks get backups, and stale successes can't fail the failover.** Duplicate
+  scores now ride on a wall-clock base, so re-submitting a release whose
+  completed files were cleaned outranks the old history entry and re-downloads
+  it (previously NZBGet dupe-deleted the re-submission and the play failed).
+  When NZBHydra collapses every mirror of a release into a single picker row,
+  the pick now still gets a duplicate-backup fleet built from Hydra's deferred
+  duplicate uploads. And the failover-follow ignores same-release successes
+  that predate the play, so a leftover history entry whose files are gone can
+  no longer end the recovery with "No video file found". (Issue #372 round 4.)
 - **NZBGet mode: failover-following no longer stalls, and cancel is airtight.**
   Round-2 hardening: the resolver now excludes the just-failed download from its
   promotion scan, so NZBGet's brief queue→history overlap can't make the poll

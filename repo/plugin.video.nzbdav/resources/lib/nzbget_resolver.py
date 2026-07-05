@@ -34,6 +34,8 @@ from resources.lib.nzbget_resolver_dupes import (  # noqa: E402,F401
     _dupe_worker_should_skip,
     _extra_backups_from_loader,
     _load_extra_candidates,
+    _loader_extras_for_fleet,
+    _nothing_to_submit,
     _snapshot_conn_getter,
     _spawn_dupe_backups,
     _submit_backup_fleet,
@@ -107,6 +109,8 @@ def poll_nzbget_job(
     """
     deadline = time.monotonic() + timeout
     state = {"current": nzbid, "promotion_deadline": None, "exclude": None}
+    if dupe_key:
+        state["stale_successes"] = _preexisting_success_ids(dupe_key, settings_getter)
     while time.monotonic() < deadline:
         if dialog.iscanceled():
             # Carry the CURRENTLY tracked NZBID (the promoted backup once
@@ -120,6 +124,23 @@ def poll_nzbget_job(
         if monitor.waitForAbort(interval):
             return {"outcome": "aborted"}
     return {"outcome": "timeout"}
+
+
+def _preexisting_success_ids(dupe_key, settings_getter):
+    """Same-key SUCCESS rows already in history when the poll starts (#372 r4).
+
+    Group-follow must IGNORE them: they predate this resolve (their files may
+    be long gone -- the picker's reuse probe already declined them), and
+    playing one would fail "No video file found" instead of waiting for this
+    fleet's own member to complete. Best-effort: an RPC error yields ``()``
+    (fail-open to the pre-round-4 behavior).
+    """
+    try:
+        return tuple(
+            nzbget_api.success_ids_by_dupekey(dupe_key, settings_getter=settings_getter)
+        )
+    except Exception:  # pylint: disable=broad-except
+        return ()
 
 
 def _update_active_dialog(dialog, group):
@@ -199,7 +220,9 @@ def _tick_group_follow(state, dialog, settings_getter, dupe_key, is_submitting):
     reports the group exhausted.
     """
     succeeded = nzbget_api.history_success_by_dupekey(
-        dupe_key, settings_getter=settings_getter
+        dupe_key,
+        exclude_nzbids=state.get("stale_successes"),
+        settings_getter=settings_getter,
     )
     if succeeded["present"]:
         return {"outcome": "success", "dest_dir": succeeded["dest_dir"]}

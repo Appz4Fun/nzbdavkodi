@@ -540,12 +540,16 @@ def active_group_by_dupekey(dupe_key, exclude_nzbid=None, settings_getter=None):
     return {"present": False, "paused_present": paused_present}
 
 
-def history_success_by_dupekey(dupe_key, settings_getter=None):
+def history_success_by_dupekey(dupe_key, exclude_nzbids=None, settings_getter=None):
     """A SUCCESS history item sharing ``dupe_key`` (a completed group member).
 
     Lets the poll play a duplicate backup that NZBGet already downloaded to
-    success after the pick failed (#372 round 2). Returns
-    ``{"present","nzbid","dest_dir"}`` or ``{"present": False}``.
+    success after the pick failed (#372 round 2). ``exclude_nzbids`` filters
+    out STALE successes that predate the resolve (#372 round 4): their files
+    may be long gone -- the reuse probe already declined them -- and playing
+    one would fail "No video file found" instead of waiting for the fleet's
+    own member. Returns ``{"present","nzbid","dest_dir"}`` or
+    ``{"present": False}``.
     """
     if not dupe_key:
         return {"present": False}
@@ -554,9 +558,35 @@ def history_success_by_dupekey(dupe_key, settings_getter=None):
         return {"present": False}
     for item in hist:
         entry = _success_history_entry(item, dupe_key)
-        if entry is not None:
-            return entry
+        if entry is None or _nzbid_in(entry["nzbid"], exclude_nzbids):
+            continue
+        return entry
     return {"present": False}
+
+
+def _nzbid_in(nzbid, nzbids):
+    """True when ``nzbid`` matches any id in ``nzbids`` (str/int tolerant)."""
+    return any(_same_nzbid(nzbid, other) for other in nzbids or ())
+
+
+def success_ids_by_dupekey(dupe_key, settings_getter=None):
+    """NZBIDs of every SUCCESS history row sharing ``dupe_key`` (#372 round 4).
+
+    Snapshotted when a dupe-enabled poll starts so group-follow can exclude
+    successes that PREDATE the resolve (see ``history_success_by_dupekey``).
+    Best-effort: an RPC error or empty history yields ``[]``.
+    """
+    if not dupe_key:
+        return []
+    hist, error = _rpc_call("history", [False], settings_getter=settings_getter)
+    if error is not None or not isinstance(hist, list):
+        return []
+    ids = []
+    for item in hist:
+        entry = _success_history_entry(item, dupe_key)
+        if entry is not None and entry["nzbid"] is not None:
+            ids.append(entry["nzbid"])
+    return ids
 
 
 def _success_history_entry(item, dupe_key):

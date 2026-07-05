@@ -186,15 +186,19 @@ def _dupe_check_disabled(settings_getter):
 _MAX_EXTRA_BACKUPS = 5
 
 
-def _extra_backups_from_loader(loader, seen_links, limit=_MAX_EXTRA_BACKUPS):
+def _extra_backups_from_loader(
+    loader, seen_links, limit=_MAX_EXTRA_BACKUPS, score_base=0
+):
     """Same-content / NZBHydra-deferred candidates from the fallback loader.
 
     #372 round 2 widening: beyond the picker's exact same-name rows, the fallback
     loader (an indexer search, already threaded for the nzbdav path) surfaces the
     same-content mirrors and NZBHydra duplicate uploads that were collapsed into a
     single picker row. Returns ``[{"link","title","score"}]`` deduped against
-    ``seen_links``, scored DESCENDING from 0 so they sit BELOW every same-name
-    backup (a last-resort failover, keyed under the pick's DupeKey). Bounded by
+    ``seen_links``, scored DESCENDING from ``score_base`` (the fleet's
+    wall-clock base) so they OUTRANK any prior same-key success while sitting
+    BELOW every same-name backup, which start at ``score_base + 1`` (a
+    last-resort failover, keyed under the pick's DupeKey). Bounded by
     ``limit`` (the standby cap's remaining slots, hard-capped at
     ``_MAX_EXTRA_BACKUPS``) so the total backup count honors the user's
     "Maximum standby fallback streams". Best-effort: a missing/erroring loader,
@@ -205,7 +209,7 @@ def _extra_backups_from_loader(loader, seen_links, limit=_MAX_EXTRA_BACKUPS):
         return []
     extras = []
     seen = set(seen_links or [])
-    score = 0
+    score = score_base
     for candidate in _core._load_extra_candidates(loader):
         if len(extras) >= cap:
             break
@@ -251,33 +255,28 @@ def _dupe_worker_should_skip(getter, cancel_event):
     return False
 
 
-def _submit_backup_fleet(
-    getter, cancel_event, dupe_key, backups, loader, extras_limit, submitted_ids
-):
+def _submit_backup_fleet(getter, cancel_event, dupe_key, dupe, submitted_ids):
     """Submit the same-name backups, then the loader-widened extras (#372).
 
     Widens with same-content / Hydra-deferred candidates (#372 r2) as
     lowest-priority backups keyed under the same (pick's) DupeKey. Bounds them
     by the standby cap's REMAINING slots so same-name backups + extras never
-    exceed "Maximum standby fallback streams". Reads ONLY the snapshot
-    ``getter`` -- this runs on the worker thread, which must never touch Kodi.
-    Every appended NZBID is recorded into ``submitted_ids`` AS IT LANDS so the
+    exceed "Maximum standby fallback streams", and rides them on the fleet's
+    ``score_base`` so they outrank prior same-key successes (#372 r4). A
+    loader-only fleet (``backups`` empty, NZBHydra collapsed every mirror into
+    one row) submits just the extras. Reads ONLY the snapshot ``getter`` --
+    this runs on the worker thread, which must never touch Kodi. Every
+    appended NZBID is recorded into ``submitted_ids`` AS IT LANDS so the
     post-cancel cleanup can delete exactly this resolve's submissions.
     """
+    backups = list(dupe.get("backups") or [])
     submitted_ids.extend(
         _core._submit_dupe_backups(backups, dupe_key, getter, cancel_event=cancel_event)
         or []
     )
     if cancel_event.is_set():
         return
-    remaining = (
-        _MAX_EXTRA_BACKUPS
-        if extras_limit is None
-        else max(0, extras_limit - len(backups))
-    )
-    extras = _core._extra_backups_from_loader(
-        loader, [b.get("link") for b in backups], limit=remaining
-    )
+    extras = _core._loader_extras_for_fleet(dupe, backups)
     if extras:
         submitted_ids.extend(
             _core._submit_dupe_backups(
@@ -285,6 +284,27 @@ def _submit_backup_fleet(
             )
             or []
         )
+
+
+def _loader_extras_for_fleet(dupe, backups):
+    """The fleet's loader-widened extras, bounded and score-based (#372 r2/r4).
+
+    Bounds the extras by the standby cap's REMAINING slots (``max_backups``
+    minus the same-name backups already spent; ``None`` = the hard extras cap)
+    and rides them on the fleet's ``score_base``.
+    """
+    extras_limit = dupe.get("max_backups")
+    remaining = (
+        _MAX_EXTRA_BACKUPS
+        if extras_limit is None
+        else max(0, extras_limit - len(backups))
+    )
+    return _core._extra_backups_from_loader(
+        dupe.get("loader"),
+        [b.get("link") for b in backups],
+        limit=remaining,
+        score_base=int(dupe.get("score_base") or 0),
+    )
 
 
 def _cleanup_canceled_submissions(getter, submitted_ids):
@@ -301,6 +321,18 @@ def _cleanup_canceled_submissions(getter, submitted_ids):
         _core.nzbget_api.cancel_jobs(submitted_ids, settings_getter=getter)
     except Exception:  # pylint: disable=broad-except
         pass
+
+
+def _nothing_to_submit(dupe_key, dupe):
+    """True when the worker has no possible submission (#372 r4).
+
+    No key means no Smart-Duplicates fleet at all; with a key, an empty
+    same-name list is still submittable when a loader exists to widen from
+    (the NZBHydra collapsed-mirrors case -- a loader-only fleet).
+    """
+    if not dupe_key:
+        return True
+    return not dupe.get("backups") and dupe.get("loader") is None
 
 
 def _spawn_dupe_backups(ctx):
@@ -320,8 +352,7 @@ def _spawn_dupe_backups(ctx):
     """
     dupe = ctx.dupe or {}
     dupe_key = dupe.get("key") or ""
-    backups = list(dupe.get("backups") or [])
-    if not dupe_key or not backups:
+    if _core._nothing_to_submit(dupe_key, dupe):
         return None
     try:
         getter = _core._snapshot_conn_getter(ctx.settings_getter)
@@ -337,8 +368,6 @@ def _spawn_dupe_backups(ctx):
         )
         return None
     cancel_event = ctx.cancel_event
-    loader = dupe.get("loader")
-    extras_limit = dupe.get("max_backups")
 
     def _worker():
         reached_submit = False
@@ -349,13 +378,7 @@ def _spawn_dupe_backups(ctx):
             _core._warn_if_healthcheck_pauses(getter)
             reached_submit = True
             _core._submit_backup_fleet(
-                getter,
-                cancel_event,
-                dupe_key,
-                backups,
-                loader,
-                extras_limit,
-                submitted_ids,
+                getter, cancel_event, dupe_key, dupe, submitted_ids
             )
         except Exception as exc:  # pylint: disable=broad-except
             _core.xbmc.log(

@@ -1701,7 +1701,7 @@ def test_spawn_dupe_backups_bounds_extras_by_remaining_standby_slots():
     }
     seen = {}
 
-    def _extra(loader, seen_links, limit=5):
+    def _extra(loader, seen_links, limit=5, score_base=0):
         seen["limit"] = limit
         return []
 
@@ -1806,3 +1806,108 @@ def test_spawn_dupe_backups_does_not_clean_up_on_normal_completion():
     ):
         _spawn_dupe_backups(_dupe_ctx(dupe))
     assert not cleaned  # no cancel -> everything submitted is left intact
+
+
+def test_extra_backups_scores_sit_on_the_score_base():
+    # Loader extras must carry the fleet's wall-clock score base so they too
+    # outrank prior same-key successes, while staying strictly below every
+    # same-name backup (base+1 and up).
+    from resources.lib.nzbget_resolver import _extra_backups_from_loader
+
+    cands = [{"link": "x"}, {"link": "y"}]
+    got = _extra_backups_from_loader(lambda: cands, [], limit=5, score_base=500)
+    assert [e["score"] for e in got] == [500, 499]
+
+
+def test_spawn_dupe_backups_threads_score_base_into_extras():
+    dupe = {
+        "key": "k",
+        "pick_score": 100002,
+        "score_base": 100000,
+        "backups": [{"link": "a", "score": 100001}],
+        "max_backups": 3,
+        "loader": lambda: [{"link": "x"}],
+    }
+    seen = {}
+
+    def _extra(loader, seen_links, limit=5, score_base=0):
+        seen["limit"] = limit
+        seen["score_base"] = score_base
+        return []
+
+    with patch("resources.lib.nzbget_resolver.threading.Thread", _InlineThread), patch(
+        "resources.lib.nzbget_resolver._submit_dupe_backups", return_value=[7]
+    ), patch("resources.lib.nzbget_resolver._warn_if_healthcheck_pauses"), patch(
+        "resources.lib.nzbget_resolver._dupe_check_disabled", return_value=False
+    ), patch(
+        "resources.lib.nzbget_resolver._extra_backups_from_loader", side_effect=_extra
+    ):
+        _spawn_dupe_backups(_dupe_ctx(dupe))
+    assert seen["score_base"] == 100000
+    assert seen["limit"] == 2  # 3 cap - 1 same-name
+
+
+def test_spawn_dupe_backups_runs_loader_only_fleet():
+    # A loader-only submission (no same-name backups) must still spawn the
+    # worker and submit the loader extras under the fleet's DupeKey
+    # (review thread: loader-only duplicate backups).
+    dupe = {
+        "key": "k",
+        "pick_score": 100001,
+        "score_base": 100000,
+        "backups": [],
+        "max_backups": 3,
+        "loader": lambda: [{"link": "x", "title": "X"}],
+    }
+    submitted = []
+
+    def _submit(backups, key, getter, cancel_event=None):
+        submitted.append(list(backups))
+        return [11] if backups else []
+
+    with patch("resources.lib.nzbget_resolver.threading.Thread", _InlineThread), patch(
+        "resources.lib.nzbget_resolver._submit_dupe_backups", side_effect=_submit
+    ), patch("resources.lib.nzbget_resolver._warn_if_healthcheck_pauses"), patch(
+        "resources.lib.nzbget_resolver._dupe_check_disabled", return_value=False
+    ):
+        thread = _spawn_dupe_backups(_dupe_ctx(dupe))
+    assert thread is not None  # worker ran (not the no-backups noop)
+    # Second submit call carries the loader extras with based scores.
+    assert submitted[-1] == [{"link": "x", "title": "X", "score": 100000}]
+
+
+def test_poll_group_follow_ignores_stale_preexisting_success():
+    # A prior same-key SUCCESS whose files are gone must NOT satisfy the
+    # group-follow: only successes that appear AFTER this resolve started may
+    # play. The poll snapshots pre-existing success ids and excludes them
+    # (review thread: stale successes during failover follow).
+    dialog = _Dialog()
+    seen_excludes = []
+
+    def _suc(dupe_key, exclude_nzbids=None, settings_getter=None):
+        seen_excludes.append(tuple(exclude_nzbids or ()))
+        if exclude_nzbids and 3 in tuple(exclude_nzbids):
+            return {"present": False}  # stale 3 filtered -> nothing playable yet
+        return {"present": True, "nzbid": 3, "dest_dir": "/dl/stale"}
+
+    with patch("resources.lib.nzbget_resolver._PROMOTION_GRACE", 0), patch(
+        _GS, side_effect=_seq_group_status({1: [False]})
+    ), patch(
+        _HS,
+        return_value={
+            "present": True,
+            "success": False,
+            "status": "FAILURE/HEALTH",
+            "dest_dir": "",
+        },
+    ), patch(
+        _ACT, return_value={"present": False, "paused_present": False}
+    ), patch(
+        _SUC, side_effect=_suc
+    ), patch(
+        "resources.lib.nzbget_resolver._preexisting_success_ids",
+        return_value=(3,),
+    ):
+        result = poll_nzbget_job(1, dialog, _Monitor(), 60, interval=0, dupe_key="k")
+    assert result["outcome"] == "failed"  # stale success never played
+    assert all(3 in ex for ex in seen_excludes)
