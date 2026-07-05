@@ -4269,10 +4269,20 @@ def test_nzbget_dupe_scores_ride_on_the_wall_clock_base():
     assert dupe["score_base"] == 100000
     assert dupe["pick_score"] == 100000 + 2  # base + count+1
     assert [b["score"] for b in dupe["backups"]] == [100000 + 1]
-    # The real base is wall-clock derived: strictly positive and monotonic-ish.
+    # The real base is wall-clock derived: strictly positive, inside NZBGet's
+    # 32-bit int score range, and different across nearby submissions -- a
+    # replay 30s after a SUCCESS must OUTRANK it, not tie it (equal is not
+    # higher, so a tie would suppress the re-download).
     from resources.lib.router_play import _dupe_score_base
 
-    assert _dupe_score_base() > 29_000_000  # minutes since epoch, year >= 2025
+    now = 1_800_000_000.0  # some 2027 wall clock
+    with patch("resources.lib.router_play.time.time", return_value=now):
+        first = _dupe_score_base()
+    with patch("resources.lib.router_play.time.time", return_value=now + 30):
+        retry = _dupe_score_base()
+    assert first > 0
+    assert retry - first >= 30  # sub-minute retries strictly outrank
+    assert _dupe_score_base() < 2_000_000_000  # far inside int32 for decades
 
 
 def test_attach_nzbget_dupe_allows_loader_only_submission():

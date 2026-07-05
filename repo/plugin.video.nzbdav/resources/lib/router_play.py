@@ -498,18 +498,28 @@ def _nzbget_dupe_submission_for_selection(selected, filtered, identity, getter=N
     }
 
 
+# _dupe_score_base counts seconds from here (2026-01-01 UTC) rather than the
+# Unix epoch: raw epoch-seconds (~1.75e9) would sit uncomfortably close to
+# NZBGet's 32-bit int DupeScore ceiling (2038 overflow), while this offset
+# stays in range for decades.
+_DUPE_SCORE_EPOCH = 1767225600
+
+
 def _dupe_score_base():
-    """Minutes-since-epoch base under every DupeScore in a submission (#372 r4).
+    """Seconds-since-2026 base under every DupeScore in a submission (#372 r4).
 
     A fresh submission must OUTRANK any prior same-DupeKey ``SUCCESS`` in
     NZBGet's history: a replay only reaches the submit path when the completed
     files are gone or unverifiable (a reuse-probe HIT plays them directly), and
     with an equal-or-lower score NZBGet would dupe-delete the re-submission
-    into a failed playback instead of re-downloading. Minute granularity keeps
-    the score far inside NZBGet's int range; the fleet's intra-submission
-    ordering (pick > same-name backups > loader extras) rides on top.
+    into a failed playback instead of re-downloading. SECOND granularity so
+    even a same-minute retry strictly outranks the prior success (the fleet's
+    intra-submission offsets span at most ``_MAX_DUPE_BACKUPS + 1``, far less
+    than any humanly-possible replay gap). Floored at 0: a box whose clock
+    predates 2026 (RTC before NTP sync) degrades to the plain count-only
+    ordering instead of emitting hugely negative scores.
     """
-    return int(time.time() // 60)
+    return max(0, int(time.time() - _DUPE_SCORE_EPOCH))
 
 
 def _loader_only_dupe_submission(selected, identity, getter=None):
