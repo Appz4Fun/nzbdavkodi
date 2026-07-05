@@ -16,7 +16,24 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from resources.lib.http_util import pubdate_to_epoch
+from resources.lib.hydra import _DEFAULT_HYDRA_URL
 from resources.lib.nzbdav_api import completed_jobs_lookup_done
+
+# Pre-read defaults for the provider-search settings snapshot
+# (router._search_all_providers wraps every getter in _snapshot_settings_getter
+# seeded from this map, so worker threads never touch Kodi settings).
+# ``hydra_url`` seeds the schema default: the snapshot pre-reads every key, so
+# a URL left at its displayed default (absent from the profile XML) would
+# otherwise snapshot to "" and bypass the ``hydra._DEFAULT_HYDRA_URL`` mirror
+# for the whole provider-search path.
+_PROVIDER_SEARCH_SETTING_DEFAULTS = {
+    "hydra_url": _DEFAULT_HYDRA_URL,
+    "hydra_api_key": "",
+    "prowlarr_host": "",
+    "prowlarr_api_key": "",
+    "prowlarr_indexer_ids": "",
+    "max_results": "25",
+}
 
 
 def _build_provider_jobs(

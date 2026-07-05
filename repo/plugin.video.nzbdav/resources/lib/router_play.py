@@ -130,6 +130,25 @@ def _apply_completed_job_hint(resolver_params, selected, completed_jobs):
         resolver_params["_completed_job_lookup_done"] = True
 
 
+def _play_identity(params, title, season, episode):
+    """The release-identity dict ``_release_dupe_key`` consumes, for ``/play``.
+
+    Built from the route params plus the locally RESOLVED title/season/episode
+    (``_resolve_play_episode_args`` may have backfilled them from InfoLabels or
+    an IMDB lookup, so the raw params can be stale for those three).
+    """
+    return {
+        "type": params.get("type", "movie"),
+        "title": title,
+        "year": params.get("year", ""),
+        "imdb": params.get("imdb", ""),
+        "tvdb": params.get("tvdb", ""),
+        "tmdb_id": params.get("tmdb_id", ""),
+        "season": season,
+        "episode": episode,
+    }
+
+
 def _extract_search_params(params):
     """Pull the common (search_type, title, year, imdb, tvdb, tmdb_id, season,
     episode) tuple from cleaned route params.

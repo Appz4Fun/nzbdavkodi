@@ -119,6 +119,7 @@ from resources.lib.router_play import (  # noqa: F401
     _handle_search_tag_and_picker,
     _identity_from_params,
     _lookup_search_episode_args,
+    _play_identity,
     _query_and_cache_providers,
     _resolve_play_episode_args,
     _search_with_cache,
@@ -144,6 +145,7 @@ from resources.lib.router_scriptplay import (  # noqa: F401
     _write_back_episode_params,
 )
 from resources.lib.router_search import (  # noqa: F401
+    _PROVIDER_SEARCH_SETTING_DEFAULTS,
     _PUBDATE_MATCH_TOLERANCE_SECONDS,
     _build_provider_jobs,
     _completed_job_matches_result,
@@ -182,14 +184,6 @@ _SCRIPT_PLAY_STAGE_PATH = "/storage/.kodi/temp/nzbdav-script-play-stage.log"
 _SCRIPT_SETTINGS_PATH = (
     "/storage/.kodi/userdata/addon_data/plugin.video.nzbdav/settings.xml"
 )
-_PROVIDER_SEARCH_SETTING_DEFAULTS = {
-    "hydra_url": "",
-    "hydra_api_key": "",
-    "prowlarr_host": "",
-    "prowlarr_api_key": "",
-    "prowlarr_indexer_ids": "",
-    "max_results": "25",
-}
 
 
 def _script_play_stage(message):
@@ -658,16 +652,7 @@ def _handle_play(handle, params):
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
         return
 
-    identity = {
-        "type": search_type,
-        "title": title,
-        "year": year,
-        "imdb": imdb,
-        "tvdb": tvdb,
-        "tmdb_id": tmdb_id,
-        "season": season,
-        "episode": episode,
-    }
+    identity = _play_identity(params, title, season, episode)
     _handle_play_filter_and_select(handle, results, title, year, notify, identity)
 
 

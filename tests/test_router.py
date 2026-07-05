@@ -462,7 +462,12 @@ def test_search_all_providers_uses_script_settings_getter_without_kodi_addon(
     mock_addon.assert_not_called()
     hydra_search.assert_called_once()
     assert hydra_search.call_args.kwargs["settings_getter"] is not setting
-    assert hydra_search.call_args.kwargs["settings_getter"]("hydra_url") == ""
+    # An unset hydra_url snapshots to the schema default (the mirror in
+    # _PROVIDER_SEARCH_SETTING_DEFAULTS), matching the live Kodi settings layer.
+    from resources.lib.hydra import _DEFAULT_HYDRA_URL
+
+    snap_getter = hydra_search.call_args.kwargs["settings_getter"]
+    assert snap_getter("hydra_url") == _DEFAULT_HYDRA_URL
 
 
 @patch("resources.lib.router.telemetry.log_timing")
@@ -4207,3 +4212,23 @@ def test_hydra_duplicate_lookup_enabled_with_default_url_left_unset():
         )
         is True
     )
+
+
+def test_provider_search_defaults_mirror_hydra_schema_url():
+    # _search_all_providers snapshots settings through
+    # _PROVIDER_SEARCH_SETTING_DEFAULTS before any provider reads them; a
+    # hydra_url left at its displayed default (absent from profile XML) must
+    # snapshot to the schema default -- seeding "" here bypassed the
+    # hydra._DEFAULT_HYDRA_URL mirror on the whole provider-search path
+    # (merge-QA finding).
+    from resources.lib.hydra import _DEFAULT_HYDRA_URL
+    from resources.lib.router_search import _PROVIDER_SEARCH_SETTING_DEFAULTS
+
+    assert _PROVIDER_SEARCH_SETTING_DEFAULTS["hydra_url"] == _DEFAULT_HYDRA_URL
+    # And through the real snapshot machinery with nothing stored:
+    import resources.lib.router as _router_mod
+
+    snap = _router_mod._snapshot_settings_getter(
+        lambda key, default="": default, _PROVIDER_SEARCH_SETTING_DEFAULTS
+    )
+    assert snap("hydra_url", "") == _DEFAULT_HYDRA_URL
