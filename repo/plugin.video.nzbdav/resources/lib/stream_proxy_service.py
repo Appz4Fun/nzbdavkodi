@@ -136,6 +136,7 @@ def prepare_stream_via_service(
         "restart Kodi or toggle the addon".format(port)
     )
     last_error = None
+    monitor = None
     for index in range(_PREPARE_MAX_ATTEMPTS):
         try:
             return _prepare_attempt(req)
@@ -164,9 +165,13 @@ def prepare_stream_via_service(
             else:
                 raise
         if index < _PREPARE_MAX_ATTEMPTS - 1:
-            import xbmc
-
-            if xbmc.Monitor().waitForAbort(_PREPARE_RETRY_BACKOFF):
+            # Monitor.waitForAbort instead of time.sleep so a Kodi shutdown
+            # during the backoff aborts the retry loop promptly. Reached via
+            # ``_sp.xbmc`` (module-level import there) and created lazily so
+            # the happy path never constructs a Monitor; reused across waits.
+            if monitor is None:
+                monitor = _sp.xbmc.Monitor()
+            if monitor.waitForAbort(_PREPARE_RETRY_BACKOFF):
                 break
     # Every attempt failed with a fast connection reset.
     raise ServiceProxyUnavailableError(unreachable) from last_error

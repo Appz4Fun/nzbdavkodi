@@ -307,10 +307,9 @@ def _folder_total_resolve_url(settings_getter, settings, folder_path, already_en
 def _folder_total_fetch_root(url, username, password):
     """PROPFIND ``url`` and return the parsed XML root with entities disabled.
 
-    External entities are disabled on the expat backend (DefaultHandler /
-    ExternalEntityRefHandler) so a hostile WebDAV server cannot coerce a local
-    file read via an external entity reference -- the ``nosec`` markers below
-    are a defended scanner false positive, not a suppression of a real risk.
+    Parsing delegates to ``resources.lib.xml_safety.safe_fromstring``, which
+    rejects entity declarations (XXE / billion-laughs) before the parser can
+    act on them, so a hostile WebDAV server cannot coerce a local file read.
     Raises on any PROPFIND/parse failure; the caller turns that into the
     INCOMPLETE (fail-open) outcome.
     """
