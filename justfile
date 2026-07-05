@@ -319,11 +319,16 @@ version:
 changelog:
     @cat repo/plugin.video.nzbdav/changelog.txt
 
-# Backs up the installed addon to /tmp on the box first; addon settings under
-# userdata/addon_data are untouched. Restarts Kodi by default because plugin
-# code reloads per invocation but service/stream-proxy changes only apply
-# after a restart — pass `norestart` to skip that.
-# Deploy the addon tree to the Kodi box (override with COREELEC_HOST=user@host)
+# Deploy the addon tree to the Kodi box (override with COREELEC_HOST=user@host).
+# A single SSH connection stages, backs up, swaps, and (by default) restarts
+# Kodi — pass `norestart` to skip the restart (plugin code reloads per
+# invocation but service/stream-proxy changes only apply after a restart).
+# The previous install is kept as a timestamped .bak under
+# /storage/deploy-backups: same filesystem as .kodi so the move is an atomic
+# rename that survives reboots, and outside .kodi/addons so Kodi never scans
+# the backup copy. The swap restores it automatically if installing the staged
+# tree fails, and the 3 newest backups are retained. Addon settings under
+# userdata/addon_data are untouched.
 deploy-addon restart="restart":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -331,20 +336,34 @@ deploy-addon restart="restart":
     addon="plugin.video.nzbdav"
     dest="/storage/.kodi/addons/$addon"
     stage="$dest.deploy-staging"
+    bdir="/storage/deploy-backups"
 
-    echo "Staging $addon on $host..."
+    echo "Deploying $addon to $host..."
     tar -C repo -cf - --exclude='*__pycache__*' --exclude='*.pyc' --exclude='.DS_Store' "$addon" \
-        | ssh -o ConnectTimeout=10 "$host" "rm -rf '$stage' && mkdir -p '$stage' && tar -C '$stage' -xf -"
-
-    echo "Swapping in the new addon (backup kept in /tmp on the box)..."
-    ssh "$host" "if [ -d '$dest' ]; then mv '$dest' \"/tmp/$addon.\$(date +%Y%m%d-%H%M%S).bak\"; fi && mv '$stage/$addon' '$dest' && rmdir '$stage'"
-
+        | ssh -o ConnectTimeout=10 "$host" "
+            set -eu
+            rm -rf '$stage' && mkdir -p '$stage' '$bdir'
+            tar -C '$stage' -xf -
+            backup=''
+            if [ -d '$dest' ]; then
+                backup=\"$bdir/$addon.\$(date +%Y%m%d-%H%M%S).bak\"
+                mv '$dest' \"\$backup\"
+            fi
+            if ! mv '$stage/$addon' '$dest'; then
+                if [ -n \"\$backup\" ]; then mv \"\$backup\" '$dest'; fi
+                echo 'deploy-addon: swap failed; previous addon restored' >&2
+                exit 1
+            fi
+            rmdir '$stage'
+            ls -1dt '$bdir/$addon.'*.bak 2>/dev/null | tail -n +4 | xargs -r rm -rf
+            if [ '{{restart}}' != 'norestart' ]; then
+                echo 'Restarting Kodi...'
+                systemctl restart kodi
+            fi
+        "
     if [ "{{restart}}" = "norestart" ]; then
         echo "Deployed without restarting Kodi. Plugin code reloads per invocation;"
         echo "service/proxy changes need: ssh $host 'systemctl restart kodi'"
-    else
-        echo "Restarting Kodi..."
-        ssh "$host" 'systemctl restart kodi'
     fi
     echo "Deployed $addon to $host."
 
