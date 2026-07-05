@@ -42,10 +42,15 @@ These must stay true or Kodi playback, shutdown, or updates can break:
 just test          # Run all tests
 just lint          # ruff + black + pylint + vermin
 just lint-fix      # Auto-fix lint/format issues, then re-run just lint
+just ci            # Same checks as GitHub CI: lint + test + Python 3.8 compileall gate
 just release       # Build plugin.video.nzbdav.zip
 just ship          # test + release
+just deploy-addon  # Push the addon tree to the CoreELEC box and restart Kodi
+just version       # Print the current addon version from addon.xml
+just changelog     # Show the Kodi-visible addon changelog
 just docs          # Build the MkDocs docs site into ./site (strict)
 just docs-serve    # Serve the docs site locally with live reload
+just extreme-tests # Run the extreme end-to-end fault-recovery test
 just clean         # Remove __pycache__, .pytest_cache, zip
 just dist-clean    # clean + remove the generated docs site
 ```
