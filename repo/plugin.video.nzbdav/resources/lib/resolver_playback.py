@@ -483,7 +483,6 @@ def _add_own_plugin_target_ids(cur, target_ids):
 
 def _add_tmdb_helper_target_ids(cur, target_ids, params):
     """Add bookmark targets for matching TMDBHelper URLs."""
-    import re
     from urllib.parse import parse_qs, urlsplit
 
     tmdb_id = (params or {}).get("tmdb_id", "")
