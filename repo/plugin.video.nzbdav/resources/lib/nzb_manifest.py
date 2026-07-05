@@ -5,21 +5,6 @@
 
 import hashlib
 import re
-
-try:
-    from defusedxml import ElementTree as ET
-    from defusedxml.common import DefusedXmlException as _UnsafeXmlError
-
-    _USING_DEFUSEDXML = True
-except ImportError:  # pragma: no cover - Kodi installs may not bundle defusedxml
-    import xml.etree.ElementTree as ET
-
-    _USING_DEFUSEDXML = False
-
-    class _UnsafeXmlError(ValueError):
-        """Raised when the stdlib fallback rejects an entity declaration."""
-
-
 from urllib.parse import urlsplit
 
 from resources.lib.http_util import HttpResponseTooLarge, http_get
@@ -398,41 +383,13 @@ def _split_payload_video_candidates(file_elems, health_check):
     return [candidate]
 
 
-# Matches an ``<!ENTITY ...>`` markup declaration. XML keywords are
-# case-sensitive, so the literal upper-case form is the only valid spelling.
-# Standard NZB files only carry an (external) ``<!DOCTYPE nzb PUBLIC ...>``
-# declaration and never define their own entities, so any entity declaration
-# is treated as hostile.
-_ENTITY_DECL_RE = re.compile(rb"<!ENTITY\b")
-
-
-def _reject_entity_declarations(nzb_bytes):
-    """Reject NZB payloads that declare XML entities (XXE / billion-laughs).
-
-    ``defusedxml`` does this for us when it is installed. On Kodi installs that
-    only ship the standard library, ``xml.etree`` still expands internal
-    entities and will resolve some external ones, so we refuse outright any
-    document containing an entity declaration before it reaches the parser.
-    """
-    payload = nzb_bytes
-    if isinstance(payload, str):
-        payload = payload.encode("utf-8", "ignore")
-    if _ENTITY_DECL_RE.search(payload):
-        raise _UnsafeXmlError("entity declarations are not allowed in NZB XML")
-
-
 def _parse_nzb_root(nzb_bytes):
     """Parse NZB bytes into an XML root, or None on parse/safety failure."""
+    from resources.lib.xml_safety import ParseError, UnsafeXmlError, safe_fromstring
+
     try:
-        if _USING_DEFUSEDXML:
-            # forbid_dtd=False keeps the standard NZB ``<!DOCTYPE nzb ...>``
-            # working; entity/external-reference defenses stay enabled.
-            # nosemgrep
-            return ET.fromstring(nzb_bytes, forbid_dtd=False)
-        _reject_entity_declarations(nzb_bytes)
-        # nosemgrep
-        return ET.fromstring(nzb_bytes)
-    except (ET.ParseError, TypeError, _UnsafeXmlError):
+        return safe_fromstring(nzb_bytes)
+    except (ParseError, TypeError, UnsafeXmlError, ValueError):
         return None
 
 
