@@ -17,8 +17,12 @@ import re
 
 import resources.lib.resolver as _resolver  # noqa: F401  pylint: disable=unused-import
 
-# Pre-compile regex for performance
-_MY_VIDEOS_DB_RE = re.compile(r"MyVideos(\d+)\.db$")
+# Pre-compile the MyVideos DB schema version regex at the module level.
+# `_kodi_video_db_version` is used as a sort key (`key=_kodi_video_db_version`)
+# against a potentially large list of DB files. Pre-compiling avoids a CPython
+# dictionary lookup in the `re` module cache for every file during the sort loop,
+# reducing overhead in a performance-critical path.
+_MYVIDEOS_DB_RE = re.compile(r"MyVideos(\d+)\.db$")
 
 
 def _resolve_stage(message):
@@ -419,7 +423,7 @@ def _kodi_video_db_version(path):
     """
     import os
 
-    match = _MY_VIDEOS_DB_RE.search(os.path.basename(path))
+    match = _MYVIDEOS_DB_RE.search(os.path.basename(path))
     return int(match.group(1)) if match else -1
 
 
