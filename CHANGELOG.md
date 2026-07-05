@@ -82,7 +82,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bounded by **Maximum standby fallback streams**, and are gated by **Enable
   fallback streams** (on by default). If NZBGet's `HealthCheck` is set to `Pause`
   (which blocks automatic failover), a one-time notice suggests setting it to
-  `Delete` or `None`. Best-effort throughout: a failed backup submit never
+  `Delete`, `None`, or `Park`. Best-effort throughout: a failed backup submit never
   affects the pick's playback. (Issue #372, per
   [nzbget.com duplicates](https://nzbget.com/documentation/rss/#duplicates).)
 - **NZBGet mode: follow the failover to a working backup within one play.** When

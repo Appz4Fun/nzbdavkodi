@@ -96,8 +96,8 @@ includes same-content mirrors and NZBHydra's deferred duplicate uploads as
 lowest-priority backups.
 
 !!! note "HealthCheck must allow failover"
-    Automatic failover requires NZBGet's **HealthCheck** option to be `Delete`
-    or `None` (the modern default is `Delete`). If it is set to `Pause`,
+    Automatic failover requires NZBGet's **HealthCheck** option to be `Delete`,
+    `None`, or `Park` (the modern default is `Delete`). If it is set to `Pause`,
     NZBGet pauses a broken download instead of promoting a backup; the add-on
     shows a one-time notice if it detects this.
 

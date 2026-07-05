@@ -883,5 +883,5 @@ msgid "TMDB API key (optional, improves TV results via TVDB id)"
 msgstr "TMDB API key (optional, improves TV results via TVDB id)"
 
 msgctxt "#30230"
-msgid "NZBGet HealthCheck=Pause: set it to Delete or None so a broken download can fail over to a duplicate"
-msgstr "NZBGet HealthCheck=Pause: set it to Delete or None so a broken download can fail over to a duplicate"
+msgid "NZBGet HealthCheck=Pause: set it to Delete, None, or Park so a broken download can fail over to a duplicate"
+msgstr "NZBGet HealthCheck=Pause: set it to Delete, None, or Park so a broken download can fail over to a duplicate"
