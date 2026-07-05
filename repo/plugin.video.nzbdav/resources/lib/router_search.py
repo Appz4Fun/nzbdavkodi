@@ -352,11 +352,20 @@ def _completed_lookup_was_done(completed_jobs):
 
 
 def _hydra_duplicate_lookup_enabled(selected, settings_getter=None):
-    """Return whether the selected row should use Hydra's duplicate API."""
+    """Return whether the selected row should use Hydra's duplicate API.
+
+    With a getter, the settings gate decides -- but a row the SELECTION itself
+    identifies as Hydra still qualifies when the gate says no: the ``/play``
+    search path forces ``nzbhydra_enabled`` at query time, so a Hydra row can
+    be selected while the setting is not stored true, and the pre-getter
+    behavior (pure selection inference) must not regress for it.
+    """
     if not isinstance(selected, dict):
         return False
-    if settings_getter is not None:
-        return _hydra_lookup_enabled_by_settings(settings_getter)
+    if settings_getter is not None and _hydra_lookup_enabled_by_settings(
+        settings_getter
+    ):
+        return True
     return _hydra_lookup_enabled_by_selection(selected)
 
 

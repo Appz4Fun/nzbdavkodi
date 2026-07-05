@@ -23,6 +23,7 @@ from resources.lib.router import (
     _handle_search,
     _prowlarr_indexers_response_ok,
     _safe_resolve_handle,
+    _snapshot_settings_getter,
     _tag_available,
     _test_connection,
     _test_hydra_connection,
@@ -4226,9 +4227,24 @@ def test_provider_search_defaults_mirror_hydra_schema_url():
 
     assert _PROVIDER_SEARCH_SETTING_DEFAULTS["hydra_url"] == _DEFAULT_HYDRA_URL
     # And through the real snapshot machinery with nothing stored:
-    import resources.lib.router as _router_mod
-
-    snap = _router_mod._snapshot_settings_getter(
+    snap = _snapshot_settings_getter(
         lambda key, default="": default, _PROVIDER_SEARCH_SETTING_DEFAULTS
     )
     assert snap("hydra_url", "") == _DEFAULT_HYDRA_URL
+
+
+def test_hydra_duplicate_lookup_falls_back_to_selection_inference():
+    # The /play path FORCES nzbhydra_enabled=true at search time, so a Hydra row
+    # can be selected while the setting is not stored true. The getter-based
+    # gate alone would then drop Hydra's deferred duplicate uploads from the
+    # dupe-backup loader -- the pre-getter behavior (selection inference) must
+    # win when the settings gate says no (round-4 review finding).
+    from resources.lib.router_search import _hydra_duplicate_lookup_enabled
+
+    def stored(key, default=""):
+        return {}.get(key, default)  # nothing stored: nzbhydra_enabled absent
+
+    hydra_row = {"indexer": "NZBHydra2", "link": "http://h/x"}
+    plain_row = {"indexer": "SomeIndexer", "link": "http://i/x"}
+    assert _hydra_duplicate_lookup_enabled(hydra_row, settings_getter=stored) is True
+    assert _hydra_duplicate_lookup_enabled(plain_row, settings_getter=stored) is False
