@@ -119,8 +119,7 @@ def pick_largest_video(filenames, size_of):
     best = None
     best_size = -1
     for name in filenames:
-        lower = name.lower()
-        if not any(lower.endswith(ext) for ext in VIDEO_EXTENSIONS):
+        if not _core._is_video_name(name):
             continue
         size = size_of(name)
         if size > best_size:
