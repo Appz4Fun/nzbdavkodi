@@ -314,7 +314,7 @@ def _folder_total_fetch_root(url, username, password):
     Raises on any PROPFIND/parse failure; the caller turns that into the
     INCOMPLETE (fail-open) outcome.
     """
-    from resources.lib.xml_safety import safe_fromstring as _safe_fromstring
+    from resources.lib.xml_safety import safe_fromstring
 
     req = Request(url, method="PROPFIND")
     req.add_header("Depth", "1")
@@ -327,7 +327,7 @@ def _folder_total_fetch_root(url, username, password):
     ) as resp:
         body = resp.read().decode("utf-8", errors="replace")
 
-    return _safe_fromstring(body)
+    return safe_fromstring(body)
 
 
 def _folder_total_href_path(response, ns):

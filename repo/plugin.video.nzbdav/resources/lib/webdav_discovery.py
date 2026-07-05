@@ -245,9 +245,9 @@ def _build_propfind_request(folder_path, _already_encoded, settings):
 
 def _parse_propfind_xml(body):
     """Parse a PROPFIND XML body with external entities disabled (XXE-safe)."""
-    from resources.lib.xml_safety import safe_fromstring as _safe_fromstring
+    from resources.lib.xml_safety import safe_fromstring
 
-    return _safe_fromstring(body)
+    return safe_fromstring(body)
 
 
 def _extract_href_path(href_text, base_host):

@@ -794,8 +794,10 @@ def test_entity_payloads_are_rejected_on_stdlib_fallback(monkeypatch, payload):
     # Force the no-defusedxml code path Kodi installs typically take.
     import xml.etree.ElementTree as stdlib_et
 
-    monkeypatch.setattr(_nzb_manifest, "_USING_DEFUSEDXML", False)
-    monkeypatch.setattr(_nzb_manifest, "ET", stdlib_et)
+    from resources.lib import xml_safety
+
+    monkeypatch.setattr(xml_safety, "_USING_DEFUSEDXML", False)
+    monkeypatch.setattr(xml_safety, "_ET", stdlib_et)
 
     manifest = extract_nzb_video_manifest(payload)
 
