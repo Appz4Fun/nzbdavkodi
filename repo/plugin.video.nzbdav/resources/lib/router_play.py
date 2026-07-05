@@ -417,7 +417,16 @@ def _same_name_backups(selected, filtered, max_backups):
         if not _is_same_name_backup(result, target, selected_link, seen):
             continue
         seen.add(result["link"])
-        backups.append({"link": result["link"], "title": result.get("title")})
+        # Carry the row's post-date: each same-name backup is a DIFFERENT
+        # upload, and a follow-to-backup success is ledger-recorded under the
+        # backup's own identity so the picker's repost-guard recognizes it.
+        backups.append(
+            {
+                "link": result["link"],
+                "title": result.get("title"),
+                "pubdate": result.get("pubdate"),
+            }
+        )
         if len(backups) >= max_backups:
             break
     return backups
@@ -481,10 +490,7 @@ def _nzbget_dupe_submission_for_selection(selected, filtered, identity, getter=N
         return None
     count = len(backups)
     base = _dupe_score_base()
-    scored = [
-        {"link": b["link"], "title": b.get("title"), "score": base + count - i}
-        for i, b in enumerate(backups)
-    ]
+    scored = [dict(b, score=base + count - i) for i, b in enumerate(backups)]
     # Carry the standby cap so the backup worker can bound its loader-widened
     # extras by the cap's REMAINING slots (same-name backups + extras must not
     # exceed "Maximum standby fallback streams"), and the score base so the

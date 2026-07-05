@@ -1930,3 +1930,46 @@ def test_backups_submit_under_their_own_release_title():
             cancel_event=ev,
         )
     assert append.call_args.args[1] == "The.Movie.2024.1080p-GRP"
+
+
+def test_completed_download_records_fleet_pubdates():
+    # Failover can complete under ANY fleet member -- a different upload with
+    # its own post-date. Success must ledger-record every same-name backup's
+    # pubdate under the shared title so the picker's repost-guard
+    # (_result_pubdate_consistent_with_downloads) recognizes whichever member
+    # completed on the next render (review thread: record the promoted
+    # backup's own identity).
+    from types import SimpleNamespace
+
+    from resources.lib.nzbget_resolver import _play_completed_download
+
+    ctx = SimpleNamespace(
+        smb_root="smb://s/d",
+        category="",
+        completed_base="",
+        dialog=None,
+        interval=0,
+        on_failure=lambda m: None,
+        on_success=lambda url: None,
+        dupe={
+            "key": "k",
+            "backups": [
+                {"link": "b1", "pubdate": "Tue, 02 Jun 2026 11:00:00 +0000"},
+                {"link": "b2"},  # no pubdate -> skipped, never crashes
+            ],
+        },
+    )
+    recorded = []
+    with patch(
+        "resources.lib.nzbget_resolver.record_download",
+        side_effect=lambda title, pubdate, size=None: recorded.append((title, pubdate)),
+    ), patch(
+        "resources.lib.nzbget_resolver._resolve_completed_smb",
+        return_value="smb://s/d/x.mkv",
+    ):
+        _play_completed_download(
+            ctx, "/dl/x", "The Title", "Mon, 01 Jun 2026 10:00:00 +0000", "700"
+        )
+    assert ("The Title", "Mon, 01 Jun 2026 10:00:00 +0000") in recorded  # the pick
+    assert ("The Title", "Tue, 02 Jun 2026 11:00:00 +0000") in recorded  # backup
+    assert len(recorded) == 2  # pubdate-less backup skipped

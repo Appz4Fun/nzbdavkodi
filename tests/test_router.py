@@ -4332,3 +4332,31 @@ def test_attach_nzbget_dupe_no_loader_only_when_loader_absent():
             params, selected, [selected], {"type": "movie", "imdb": "tt0133093"}
         )
     assert "_nzbget_dupe" not in params
+
+
+def test_same_name_backups_carry_their_own_pubdates():
+    # Each same-name backup is a DIFFERENT upload with its own post-date. The
+    # submission must carry it so a follow-to-backup success can be ledger-
+    # recorded under the backup's identity -- else the picker's repost-guard
+    # rejects the completed backup's row on replay (review thread: record the
+    # promoted backup's own identity).
+    from resources.lib.router_play import _nzbget_dupe_submission_for_selection
+
+    selected = {
+        "link": "http://i/pick.nzb",
+        "title": "The Matrix 1999 1080p",
+        "pubdate": "Mon, 01 Jun 2026 10:00:00 +0000",
+    }
+    backup_row = {
+        "link": "http://i/b.nzb",
+        "title": "The Matrix 1999 1080p",
+        "pubdate": "Tue, 02 Jun 2026 11:00:00 +0000",
+    }
+    with patch(
+        "resources.lib.router._get_addon_setting",
+        _dupe_setting_getter({"nzbget_enabled": "true"}),
+    ):
+        dupe = _nzbget_dupe_submission_for_selection(
+            selected, [selected, backup_row], {"type": "movie", "imdb": "tt0133093"}
+        )
+    assert dupe["backups"][0]["pubdate"] == "Tue, 02 Jun 2026 11:00:00 +0000"

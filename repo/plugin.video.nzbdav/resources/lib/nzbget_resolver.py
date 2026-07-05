@@ -611,9 +611,13 @@ def _play_completed_download(ctx, dest_dir, title, download_pubdate, download_si
 
     Recording happens BEFORE the SMB mapping, which can still fail without
     un-completing the download (fail-soft): the picker's "DL" tag must reflect
-    the box's history even when the share is unreachable right now.
+    the box's history even when the share is unreachable right now. The whole
+    fleet's post-dates are recorded, not just the pick's: failover can complete
+    under ANY same-name backup (a different upload with its own pubdate), and
+    the picker's repost-guard only tags rows whose pubdate the ledger knows.
     """
     record_download(title, download_pubdate, download_size)
+    _record_fleet_pubdates(getattr(ctx, "dupe", None), title)
     video_url = _resolve_completed_smb(
         dest_dir,
         ctx.smb_root,
@@ -626,6 +630,24 @@ def _play_completed_download(ctx, dest_dir, title, download_pubdate, download_si
         ctx.on_failure(_string(30223))
         return
     ctx.on_success(video_url)
+
+
+def _record_fleet_pubdates(dupe, title):
+    """Ledger-record every same-name backup's post-date under ``title`` (#372).
+
+    Any fleet member can become the SUCCESS row the next picker render reuses
+    (the poll follows a promoted backup), and each is a different upload with
+    its own pubdate. Recording the whole fleet keeps the repost-guard's
+    purpose intact -- an unrelated same-name repost from another day is still
+    rejected (its pubdate is never recorded). Loader extras need no entries:
+    NZBHydra collapsed them, so no picker row carries their pubdate; their
+    completion tags through the pick's own recorded row. record_download is
+    best-effort and dedups epochs, so double-recording is harmless.
+    """
+    for backup in (dupe or {}).get("backups") or []:
+        pubdate = backup.get("pubdate")
+        if pubdate:
+            record_download(title, pubdate)
 
 
 def _run_nzbget_backend(
